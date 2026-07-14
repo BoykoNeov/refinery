@@ -1,0 +1,8 @@
+# Normalize line endings to LF in the repository on all platforms.
+# Keeps diffs clean and cross-platform (Linux CI, Windows dev, Godot builds).
+* text=auto eol=lf
+
+# Binary-ish assets should never be normalized (add as the project grows).
+*.png binary
+*.jpg binary
+*.wav binary

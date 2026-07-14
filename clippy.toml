@@ -1,0 +1,6 @@
+# Determinism: iteration order of std hash collections is randomized per
+# process. Simulation code must use Vec, BTreeMap, or indexmap::IndexMap.
+disallowed-types = [
+    { path = "std::collections::HashMap", reason = "nondeterministic iteration; use BTreeMap or indexmap::IndexMap" },
+    { path = "std::collections::HashSet", reason = "nondeterministic iteration; use BTreeSet or indexmap::IndexSet" },
+]

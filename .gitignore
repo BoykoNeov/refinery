@@ -1,0 +1,11 @@
+# Rust build artifacts
+target/
+
+# CLI run output and agent transcripts (JSON lines).
+*.jsonl
+# ...but keep committed golden-snapshot fixtures under any tests/ dir.
+!**/tests/**/*.jsonl
+
+# Cargo.lock IS committed (not ignored) — this workspace ships a binary and
+# determinism is a hard project rule (CLAUDE.md), so dependency versions are
+# pinned for reproducible builds.

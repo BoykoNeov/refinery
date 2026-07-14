@@ -1,0 +1,43 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/solvers",
+    "crates/scenarios",
+    "crates/cli",
+]
+# godot-ext is deliberately excluded from the default workspace until M6
+# (requires Godot toolchain). Build with: cargo build --manifest-path crates/godot-ext/Cargo.toml
+exclude = ["crates/godot-ext"]
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+
+[workspace.dependencies]
+refinery-core = { path = "crates/core" }
+refinery-solvers = { path = "crates/solvers" }
+refinery-scenarios = { path = "crates/scenarios" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+petgraph = { version = "0.6", features = ["serde-1"] }
+faer = "0.20"
+toml = "0.8"
+indexmap = { version = "2", features = ["serde"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+
+# test/dev
+proptest = "1"
+approx = "0.5"
+criterion = "0.5"
+
+[profile.release]
+lto = "thin"
+
+# Property tests and Newton iterations are slow in debug; optimize deps.
+[profile.dev.package."*"]
+opt-level = 2

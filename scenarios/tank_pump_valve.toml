@@ -1,0 +1,65 @@
+# M1 reference plant: supply tank → pump → control valve → receiving tank.
+# This is the hand-calculation reference case (see
+# crates/solvers/tests/reference/) and the golden-snapshot determinism case.
+#
+# Units at this boundary are human-friendly (bar, °C, Kv); the loader
+# converts to SI. See refinery-scenarios docs.
+
+[meta]
+name = "tank_pump_valve"
+description = "Pump transfers water between two vented tanks through a control valve."
+
+[simulation]
+dt = 0.1            # seconds per tick
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.supply_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 20.0
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0           # metric Kv [m^3/h at 1 bar], converted to SI on load
+opening = 0.5
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 1.0
+temperature_c = 20.0
+
+[[pipes]]
+name = "suction"
+from = "supply_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "discharge_valve"
+length_m = 30.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "discharge_valve"
+to = "receiving_tank"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = 5.0

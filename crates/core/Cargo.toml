@@ -1,0 +1,19 @@
+[package]
+name = "refinery-core"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+petgraph.workspace = true
+indexmap.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+proptest.workspace = true
+
+[lints.clippy]
+# Determinism guardrails — HashMap iteration order is nondeterministic.
+disallowed-types = "deny"

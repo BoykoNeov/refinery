@@ -1,0 +1,20 @@
+# M6 crate — excluded from the default workspace (needs Godot 4 toolchain).
+# Build: cargo build --manifest-path crates/godot-ext/Cargo.toml
+#
+# THE ONLY CRATE ALLOWED TO IMPORT GODOT. If core or solvers ever need a
+# change to satisfy this crate, the adapter is wrong — fix it here.
+
+[package]
+name = "refinery-godot-ext"
+edition = "2021"
+version = "0.1.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+refinery-core = { path = "../core" }
+refinery-scenarios = { path = "../scenarios" }
+# Pin to the gdext version matching the Godot 4.x minor in use when M6 starts:
+# godot = "0.x"
+serde_json = "1"
