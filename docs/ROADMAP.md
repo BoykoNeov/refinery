@@ -8,9 +8,12 @@ Water only. Units: Source, Sink, Atmosphere, Tank, Pump, Valve, Junction.
 NetworkFlowSolver (Newton) + SimpleFlowSolver behind the same trait.
 - [ ] `core`: units newtypes, Stream, PlantGraph, Engine tick skeleton,
       Snapshot/Command, solver traits
-- [ ] `scenarios`: TOML loader + EngineBuilder; `tank_pump_valve.toml`
-- [ ] `solvers`: element characteristics (pipe/valve/pump), Newton solver
-      with damping, SimpleFlowSolver
+- [x] `scenarios`: TOML loader + EngineBuilder (`build_engine`: node/pipe
+      instantiation with SI conversion + load-time topology validation);
+      `tank_pump_valve.toml`
+- [x] `solvers`: element characteristics (pipe/valve/pump), Newton solver
+      with damping, SimpleFlowSolver (shared network compilation in
+      `solvers/network.rs`; conductance-scaled Gauss–Seidel)
 - [ ] `cli`: run scenario N ticks, JSON snapshot output, `--solver` override
 - [ ] Tests: hand-calc reference (pump fills tank through valve, compare
       steady flow to analytic value), proptest mass conservation on random
