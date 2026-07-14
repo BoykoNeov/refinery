@@ -78,6 +78,13 @@ with the residual history attached.
 Fluids: incompressible liquid through M3. Gas/compressibility is milestone
 M5 and gets its own design note before implementation.
 
+No cavitation / vapor-pressure floor in M1: the hydraulic solve is a pure
+pressure-flow system, so an over-driven pump (e.g. low downstream resistance)
+can produce a genuine solution with sub-zero *absolute* suction pressure. That
+is real cavitation the model does not yet represent; a vapor-pressure clamp is
+a later milestone. Frontends should treat negative absolute node pressure as a
+"cavitating" signal, not a solver error.
+
 **SimpleFlowSolver** (game-fidelity): no global solve; each branch flow from
 local upstream/downstream pressures of the previous tick, relaxed toward the
 element characteristic. Not conservative to machine precision, but stable,

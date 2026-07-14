@@ -6,7 +6,13 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum SimError {
     #[error("hydraulic solver diverged after {iterations} iterations (residual {residual:.3e})")]
-    SolverDiverged { iterations: u32, residual: f64 },
+    SolverDiverged {
+        iterations: u32,
+        /// Final ‖R‖_∞ (kg/s).
+        residual: f64,
+        /// Per-iteration ‖R‖_∞ history for diagnostics (DESIGN §3).
+        residual_history: Vec<f64>,
+    },
 
     #[error("non-finite value produced at {location}")]
     NonFiniteState { location: String },

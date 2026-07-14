@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 11832542821a479acbf9ad6f4c70e3f852853247f78a9103f7480661e4115706 # shrinks to mids = [Pump { h0: 46.984920740714735, a: 100.0, on: true }], raw_pipes = [(1.0, 0.05, 0.01, 0.0), (1.0, 0.25063999782149515, 0.01, 0.0), (1.0, 0.05, 0.01, 0.0), (1.0, 0.05, 0.01, 0.0), (1.0, 0.05, 0.01, 0.0), (1.0, 0.05, 0.01, 0.0)], p_src = 100000.0, p_snk = 100000.0

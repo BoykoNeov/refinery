@@ -65,6 +65,90 @@ pub fn pump_pressure_rise_dq(q: f64, a: f64, rho: f64, g: f64) -> f64 {
     rho * g * (-2.0 * a * q.abs())
 }
 
+/// Series-composable branch characteristic covering every M1 hydraulic
+/// element. Each is affine in `Q·|Q|`:  `dp = alpha·Q·|Q| + beta`, with
+/// `dp = P_upstream − P_downstream` [Pa], `Q` = volumetric flow [m³/s].
+/// `alpha ≥ 0` is the quadratic resistance; `beta` is the pressure offset
+/// (elevation head, and the pump's pressure "jump"). Because the form is
+/// closed under series composition (`Σalpha, Σbeta`), a pipe and the pump or
+/// valve folded into its end compose in **closed form** — the combined branch
+/// inverts to `Q(dp)` with no inner scalar solve (see `newton_flow`).
+///
+/// Regularization note (matters for later cross-fidelity tests): `flow`
+/// applies `eps` [Pa] to the *combined* shifted drop `dp − beta`, whereas the
+/// standalone `valve_flow` applies `eps` to `dp/rho_rel`. The two agree away
+/// from zero but differ within the O(eps) smoothing zone for non-unit SG. The
+/// Newton solver only ever uses this type, so it is self-consistent; a future
+/// SimpleFlowSolver cross-check near zero flow must account for this (or route
+/// through this same type).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct QuadraticBranch {
+    /// Quadratic resistance [Pa/(m³/s)²]. `+∞` ⇒ fully closed (flow → 0).
+    pub alpha: f64,
+    /// Pressure offset [Pa]: static head + pump jump.
+    pub beta: f64,
+}
+
+impl QuadraticBranch {
+    /// Plain pipe: `alpha = k` (Darcy–Weisbach, from `pipe_resistance`),
+    /// `beta = elev_head_pa = rho·g·Δz` static head (Δz = downstream − upstream
+    /// elevation), so at zero flow a higher downstream sits at lower pressure.
+    pub fn pipe(k: f64, elev_head_pa: f64) -> Self {
+        Self {
+            alpha: k,
+            beta: elev_head_pa,
+        }
+    }
+
+    /// Control valve (ISA): `Q = cv_eff·sqrt(dp/rho_rel)` ⇒
+    /// `alpha = rho_rel / cv_eff²`, `beta = 0`. `opening = 0` ⇒ `cv_eff = 0` ⇒
+    /// `alpha = +∞` (closed): `flow` then yields exactly 0 by IEEE arithmetic,
+    /// never NaN.
+    pub fn valve(cv_si: f64, opening: f64, rho_rel: f64) -> Self {
+        let cv_eff = cv_si * opening.clamp(0.0, 1.0);
+        Self {
+            alpha: rho_rel / (cv_eff * cv_eff),
+            beta: 0.0,
+        }
+    }
+
+    /// Centrifugal pump `H(Q) = h0 − a·Q·|Q|`, rise `dP = rho·g·H`. Across the
+    /// device `P_out = P_in + rho·g·H`, so its contribution to the series
+    /// *drop* is `dp = −rho·g·H = rho·g·a·Q|Q| − rho·g·h0`: `alpha = rho·g·a`
+    /// (≥0), `beta = −rho·g·h0` (the negative offset is the pressure jump). An
+    /// off pump passes `h0 = 0` (beta = 0) and acts as pure resistance.
+    pub fn pump(h0: f64, a: f64, rho: f64, g: f64) -> Self {
+        Self {
+            alpha: rho * g * a,
+            beta: -rho * g * h0,
+        }
+    }
+
+    /// Compose two branches in series: resistances and offsets add.
+    pub fn in_series(self, other: Self) -> Self {
+        Self {
+            alpha: self.alpha + other.alpha,
+            beta: self.beta + other.beta,
+        }
+    }
+
+    /// Volumetric flow from branch pressure drop, C¹-smooth through zero.
+    /// Invert `dp − beta = alpha·Q·|Q|` ⇒
+    /// `Q = smooth_signed_sqrt(dp − beta, eps)/sqrt(alpha)`.
+    /// `alpha = +∞` (closed) ⇒ `Q = 0`.
+    #[inline]
+    pub fn flow(&self, dp: f64, eps: f64) -> f64 {
+        smooth_signed_sqrt(dp - self.beta, eps) / self.alpha.sqrt()
+    }
+
+    /// `d(flow)/d(dp)` — the branch conductance `g_e ≥ 0` used in the Jacobian.
+    /// `alpha = +∞` ⇒ `0`.
+    #[inline]
+    pub fn flow_ddp(&self, dp: f64, eps: f64) -> f64 {
+        smooth_signed_sqrt_deriv(dp - self.beta, eps) / self.alpha.sqrt()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +179,66 @@ mod tests {
         // k = 0.02·100·1000 / (2·0.1·A²) = 2000/(0.2·6.1685e-5) = 1.6211e8
         let k = pipe_resistance(0.02, 100.0, 0.1, 1000.0);
         assert_relative_eq!(k, 1.6211e8, max_relative = 1e-3);
+    }
+
+    #[test]
+    fn branch_pipe_matches_pipe_flow() {
+        // A QuadraticBranch pipe must reproduce the standalone pipe_flow away
+        // from zero (no elevation ⇒ beta = 0).
+        let k = 1.6211e8;
+        let b = QuadraticBranch::pipe(k, 0.0);
+        for dp in [1e5f64, -1e5, 3e6] {
+            assert_relative_eq!(b.flow(dp, 1.0), pipe_flow(dp, k, 1.0), max_relative = 1e-12);
+            assert_relative_eq!(
+                b.flow_ddp(dp, 1.0),
+                pipe_flow_ddp(dp, k, 1.0),
+                max_relative = 1e-12
+            );
+        }
+    }
+
+    #[test]
+    fn branch_closed_valve_is_zero_not_nan() {
+        // opening = 0 ⇒ alpha = +∞ ⇒ flow and conductance are exactly 0.
+        let b = QuadraticBranch::valve(1e-3, 0.0, 1.0);
+        assert!(b.alpha.is_infinite());
+        assert_eq!(b.flow(5e5, 1.0), 0.0);
+        assert_eq!(b.flow_ddp(5e5, 1.0), 0.0);
+        assert!(b.flow(5e5, 1.0).is_finite());
+    }
+
+    #[test]
+    fn branch_pump_offset_and_shifted_oddness() {
+        // Pump: beta = −rho·g·h0. At zero net drop the pump drives flow; the
+        // combined branch is odd about dp = beta, NOT about 0.
+        let (rho, g, h0, a) = (1000.0, 9.806_65, 20.0, 1.0e3);
+        let b = QuadraticBranch::pump(h0, a, rho, g);
+        let beta = -rho * g * h0;
+        assert_relative_eq!(b.beta, beta, max_relative = 1e-12);
+        assert!(b.alpha > 0.0);
+        // Shifted oddness: flow(beta + d) = −flow(beta − d).
+        for d in [1e4f64, 5e5, 2e6] {
+            assert_relative_eq!(
+                b.flow(beta + d, 1.0),
+                -b.flow(beta - d, 1.0),
+                max_relative = 1e-12
+            );
+        }
+    }
+
+    #[test]
+    fn branch_series_composition_adds() {
+        // pipe ∘ pump: alpha and beta add; invert round-trips to the same Q.
+        let (rho, g) = (1000.0, 9.806_65);
+        let pipe = QuadraticBranch::pipe(2.0e7, rho * g * 5.0); // 5 m rise
+        let pump = QuadraticBranch::pump(30.0, 8.0e5, rho, g);
+        let comp = pipe.in_series(pump);
+        assert_relative_eq!(comp.alpha, pipe.alpha + pump.alpha, max_relative = 1e-12);
+        assert_relative_eq!(comp.beta, pipe.beta + pump.beta, max_relative = 1e-12);
+        // Forward-then-inverse: pick Q, compute dp = alpha·Q|Q| + beta, recover Q.
+        let q = 0.05;
+        let dp = comp.alpha * q * q.abs() + comp.beta;
+        // eps → 0 limit: use a tiny eps so the smooth form ≈ exact sqrt.
+        assert_relative_eq!(comp.flow(dp, 1e-6), q, max_relative = 1e-4);
     }
 }

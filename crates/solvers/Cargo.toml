@@ -6,10 +6,8 @@ license.workspace = true
 
 [dependencies]
 refinery-core.workspace = true
-# Enable when the Newton linear solve lands (first task of M1).
-# Kept out of the tree until used so the scaffold builds on older toolchains;
-# faer 0.20's dep chain requires a recent stable Rust.
-# faer.workspace = true
+# faer provides the dense LU for the Newton network solve (M1).
+faer.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 
