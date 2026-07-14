@@ -1,6 +1,16 @@
 # Rust build artifacts
 target/
 
+# GDAI MCP editor plugin — local AI tooling (native binaries), not shipped.
+# The project references it via project.godot but each dev supplies their own.
+/addons/gdai-mcp-plugin-godot/
+
+# Godot editor cache & imported-asset metadata (regenerated on project open).
+.godot/
+# Godot export output and per-user export presets (may hold secrets/keystores).
+/export/
+export_presets.cfg
+
 # CLI run output and agent transcripts (JSON lines).
 *.jsonl
 # ...but keep committed golden-snapshot fixtures under any tests/ dir.

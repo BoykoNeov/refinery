@@ -1,0 +1,24 @@
+; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format documentation:
+; https://docs.godotengine.org/en/stable/tutorials/editor/project_settings.html
+;
+; This project is the Godot 4 frontend host for the Refinery simulator.
+; It exists so the Godot editor (and the GDAI MCP editor plugin in
+; res://addons/) has a project to open. The refinery simulation itself lives
+; in the Rust workspace (crates/*) and will be surfaced here via the
+; refinery-godot-ext GDExtension when milestone M6 begins — see docs/ROADMAP.md.
+
+config_version=5
+
+[application]
+
+config/name="Refinery"
+config/description="Godot 4 frontend host for the Refinery simulator. Loads the GDAI MCP editor plugin; the refinery-godot-ext GDExtension is wired in at milestone M6."
+config/features=PackedStringArray("4.3", "Forward Plus")
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/gdai-mcp-plugin-godot/plugin.cfg")
