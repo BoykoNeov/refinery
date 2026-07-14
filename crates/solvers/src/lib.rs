@@ -10,6 +10,7 @@
 //! here or in core branches on a fidelity flag.
 
 pub mod elements;
+pub mod network;
 pub mod newton_flow;
 pub mod simple_flow;
 

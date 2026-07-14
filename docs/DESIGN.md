@@ -85,11 +85,20 @@ is real cavitation the model does not yet represent; a vapor-pressure clamp is
 a later milestone. Frontends should treat negative absolute node pressure as a
 "cavitating" signal, not a solver error.
 
-**SimpleFlowSolver** (game-fidelity): no global solve; each branch flow from
-local upstream/downstream pressures of the previous tick, relaxed toward the
-element characteristic. Not conservative to machine precision, but stable,
-cheap, and O(edges). Shares 100% of the graph and element-characteristic code
-with the Newton solver.
+**SimpleFlowSolver** (game-fidelity): solves the *same* quasi-steady fixed point
+as Newton, but matrix-free — **nonlinear Gauss–Seidel** over node pressures
+instead of a global linear solve. Each free node takes a scalar Newton step from
+its own mass imbalance, `ΔP_n = ω · imbalance_n / Σ_e g_e` with branch
+conductance `g_e = ρ · dQ/d(dP) ≥ 0`, sweeping in ascending id order until the
+max node imbalance is below tolerance (looser than Newton's). This is diagonal
+(Jacobi) preconditioning of the same weighted-Laplacian system, so it is
+scale-invariant across the wide pipe/valve conductance spread — unlike a fixed
+pressure-gain constant, which diverges on stiff branches. O(edges) per sweep,
+warm-started from the previous tick, so steady state costs a handful of sweeps;
+non-convergence in `max_iter` sweeps is `Err(SolverDiverged)`, never a NaN or an
+unconverged `Ok`. Node classification, element compilation, and the final
+edge-flow/NaN-scan are shared verbatim with the Newton solver (`solvers/network.rs`),
+so the two fidelities agree on well-posed networks to well within 5% (I5).
 
 ## 4. Streams and pseudo-components
 

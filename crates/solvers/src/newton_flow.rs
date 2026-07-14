@@ -37,21 +37,16 @@
 //! Newton system, and every edge touching one reports zero flow. This is a
 //! legitimate, frequent game state (operator closes a valve), not an error.
 
-use crate::elements::{pipe_resistance, QuadraticBranch};
+use crate::network::{
+    classify, compile_edges, edge_flows, finalize, validate_degrees, CompiledEdge,
+};
 use refinery_core::components::Slate;
 use refinery_core::error::SimError;
-use refinery_core::graph::{EdgeId, Node, NodeId, NodeKind, PlantGraph};
-use refinery_core::traits::{FlowSolver, HydraulicSolution, SolveDiagnostics};
-use refinery_core::units::{Pascal, Seconds, G, P_ATM};
+use refinery_core::graph::{EdgeId, NodeId, PlantGraph};
+use refinery_core::traits::{FlowSolver, HydraulicSolution};
+use refinery_core::units::{Seconds, P_ATM};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Valve openings below this snap to fully closed, so a valve "cracked to
-/// 1e-9" cannot anchor a subnetwork with a numerically negligible (near-
-/// singular) conductance — it is treated as closed instead.
-const OPEN_EPS: f64 = 1e-6;
-/// Reference density for valve SG (ρ_rel). Matches `PseudoComponent::water`
-/// so water gives ρ_rel = 1.0.
-const RHO_WATER_REF: f64 = 998.0;
 /// Max damped-halvings per Newton step (min step 1/256).
 const MAX_HALVINGS: u32 = 8;
 /// Armijo sufficient-decrease coefficient for the line search.
@@ -81,18 +76,6 @@ impl Default for NewtonFlowSolver {
     }
 }
 
-/// One edge compiled for the solve: its series branch, transport density, and
-/// whether it conducts (open path) for connectivity.
-struct Compiled {
-    src: NodeId,
-    tgt: NodeId,
-    branch: QuadraticBranch,
-    /// Transport density [kg/m³] (ṁ = ρ·Q).
-    rho: f64,
-    /// True if the branch can carry flow (α finite & > 0); false = closed.
-    conducts: bool,
-}
-
 impl FlowSolver for NewtonFlowSolver {
     fn solve(
         &mut self,
@@ -103,42 +86,22 @@ impl FlowSolver for NewtonFlowSolver {
         // F6: pumps/valves must have exactly one inlet and one outlet edge.
         validate_degrees(graph)?;
 
-        // Compile every edge's series branch (pipe ∘ device-at-source).
-        let mut compiled: BTreeMap<EdgeId, Compiled> = BTreeMap::new();
-        for eid in graph.edge_ids() {
-            compiled.insert(eid, compile_branch(graph, eid, slate)?);
-        }
+        // Compile every edge's series branch (pipe ∘ device-at-source) and
+        // classify the nodes (fixed/free, anchored set, cold-start seed) — both
+        // shared with SimpleFlowSolver so the two fidelities agree by construction.
+        let compiled = compile_edges(graph, slate)?;
+        let cls = classify(graph, slate, &compiled);
+        let anchored = &cls.anchored;
+        let free = &cls.free;
+        let cold = cls.cold;
 
-        // Classify nodes; pin fixed pressures.
-        let mut pressures: BTreeMap<NodeId, f64> = BTreeMap::new();
-        let mut fixed: BTreeSet<NodeId> = BTreeSet::new();
-        let mut free: Vec<NodeId> = Vec::new();
-        let (mut fixed_sum, mut fixed_cnt) = (0.0, 0usize);
-        for nid in graph.node_ids() {
-            if let Some(p) = fixed_pressure(graph.node(nid), slate) {
-                pressures.insert(nid, p);
-                fixed.insert(nid);
-                fixed_sum += p;
-                fixed_cnt += 1;
-            } else {
-                free.push(nid);
-            }
-        }
-        // Cold start for nodes without a warm-start value (uniqueness makes the
-        // seed affect only the iterate path, never the answer).
-        let cold = if fixed_cnt > 0 {
-            fixed_sum / fixed_cnt as f64
-        } else {
-            P_ATM.value()
-        };
-
-        // F2: anchored = fixed ∪ free reachable via CONDUCTING edges.
-        let anchored = anchored_set(graph, &compiled, &fixed);
+        // Pin fixed pressures; free nodes seeded below.
+        let mut pressures: BTreeMap<NodeId, f64> = cls.fixed.clone();
 
         // Newton unknowns = anchored free nodes, ascending (deterministic).
         let mut idx: BTreeMap<NodeId, usize> = BTreeMap::new();
         let mut unknowns: Vec<NodeId> = Vec::new();
-        for &nid in &free {
+        for &nid in free {
             let seed = if anchored.contains(&nid) {
                 idx.insert(nid, unknowns.len());
                 unknowns.push(nid);
@@ -157,21 +120,14 @@ impl FlowSolver for NewtonFlowSolver {
         // scenario loader is responsible for rejecting components that lack a
         // pressure reference, so the solver stays lenient rather than Err'ing.
         if n == 0 {
-            let (flows, _) = edge_flows(graph, &compiled, &pressures, &anchored, self.eps_dp);
+            let (flows, _) = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
             return finalize(&pressures, flows, 0, 0.0);
         }
 
         // Damped Newton.
         let mut history: Vec<f64> = Vec::new();
-        let (mut r, mut jac, mut throughput) = assemble(
-            graph,
-            &compiled,
-            &pressures,
-            &idx,
-            &anchored,
-            n,
-            self.eps_dp,
-        );
+        let (mut r, mut jac, mut throughput) =
+            assemble(graph, &compiled, &pressures, &idx, anchored, n, self.eps_dp);
         let mut res = inf_norm(&r); // ∞-norm: convergence + reporting (per-node imbalance)
         let mut merit = half_sq_norm(&r); // ½‖R‖₂²: smooth line-search merit
         history.push(res);
@@ -201,7 +157,7 @@ impl FlowSolver for NewtonFlowSolver {
             for _ in 0..=MAX_HALVINGS {
                 let trial = apply_step(&pressures, &unknowns, &idx, &dp, t);
                 let (r_t, jac_t, tp_t) =
-                    assemble(graph, &compiled, &trial, &idx, &anchored, n, self.eps_dp);
+                    assemble(graph, &compiled, &trial, &idx, anchored, n, self.eps_dp);
                 let merit_t = half_sq_norm(&r_t);
                 if merit_t <= (1.0 - 2.0 * ARMIJO_C * t) * merit {
                     pressures = trial;
@@ -230,12 +186,12 @@ impl FlowSolver for NewtonFlowSolver {
         }
 
         // Converged: update warm start (converged-only), then build solution.
-        for &nid in &free {
+        for &nid in free {
             if let Some(&p) = pressures.get(&nid) {
                 self.warm_start.insert(nid, p);
             }
         }
-        let (flows, _) = edge_flows(graph, &compiled, &pressures, &anchored, self.eps_dp);
+        let (flows, _) = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
         finalize(&pressures, flows, iterations, res)
     }
 
@@ -256,121 +212,12 @@ fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimEr
     }
 }
 
-/// F6: every Pump/Valve node must have exactly one inlet and one outlet edge.
-fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
-    for nid in graph.node_ids() {
-        let node = graph.node(nid);
-        if matches!(node.kind, NodeKind::Pump { .. } | NodeKind::Valve { .. }) {
-            let inc = graph.incident(nid);
-            let n_in = inc.iter().filter(|(_, _, incoming)| *incoming).count();
-            let n_out = inc.len() - n_in;
-            if n_in != 1 || n_out != 1 {
-                return Err(SimError::Numerical(format!(
-                    "{} ({:?}) must have exactly 1 inlet + 1 outlet edge, has {n_in} in / {n_out} out",
-                    node.name, nid
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Pinned pressure for a fixed node, or None if the node is free.
-fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
-    match &node.kind {
-        NodeKind::Source { pressure, .. } => Some(pressure.value()),
-        NodeKind::Sink { pressure } => Some(pressure.value()),
-        NodeKind::Atmosphere => Some(P_ATM.value()),
-        NodeKind::Tank(t) => {
-            let rho = t.composition.mixture_density(slate);
-            Some(t.bottom_pressure(rho).value())
-        }
-        NodeKind::Pump { .. } | NodeKind::Valve { .. } | NodeKind::Junction => None,
-    }
-}
-
-/// Compile one edge into its series branch. The device (if any) at the edge's
-/// SOURCE node folds into this outlet edge, per the module convention.
-fn compile_branch(graph: &PlantGraph, eid: EdgeId, slate: &Slate) -> Result<Compiled, SimError> {
-    let (src, tgt) = graph.endpoints(eid);
-    let pipe = graph.pipe(eid);
-    let rho = pipe.stream.composition.mixture_density(slate).value();
-    // Darcy–Weisbach resistance; a valid pipe always contributes k > 0, which
-    // keeps α_tot > 0 so the closed-form inverse never divides by zero.
-    let k = pipe_resistance(
-        pipe.friction_factor,
-        pipe.length.value(),
-        pipe.diameter.value(),
-        rho,
-    );
-    if !k.is_finite() || k <= 0.0 {
-        return Err(SimError::Numerical(format!(
-            "pipe {} ({eid:?}) has non-positive resistance k={k:.3e} (bad length/diameter/friction/ρ)",
-            pipe.name
-        )));
-    }
-    // Static head β = ρ·g·Δz (Δz = downstream − upstream elevation).
-    let elev_head = rho * G * pipe.elevation_change.value();
-    let mut branch = QuadraticBranch::pipe(k, elev_head);
-
-    match &graph.node(src).kind {
-        NodeKind::Pump { h0, a, on } => {
-            let h0_eff = if *on { h0.value() } else { 0.0 };
-            branch = branch.in_series(QuadraticBranch::pump(h0_eff, *a, rho, G));
-        }
-        NodeKind::Valve { cv_max, opening } => {
-            let op = if *opening < OPEN_EPS { 0.0 } else { *opening };
-            let rho_rel = rho / RHO_WATER_REF;
-            branch = branch.in_series(QuadraticBranch::valve(*cv_max, op, rho_rel));
-        }
-        _ => {}
-    }
-
-    let conducts = branch.alpha.is_finite() && branch.alpha > 0.0;
-    Ok(Compiled {
-        src,
-        tgt,
-        branch,
-        rho,
-        conducts,
-    })
-}
-
-/// Nodes reachable from any fixed node through conducting edges (undirected).
-/// Free nodes NOT in this set are floating (indeterminate pressure).
-fn anchored_set(
-    graph: &PlantGraph,
-    compiled: &BTreeMap<EdgeId, Compiled>,
-    fixed: &BTreeSet<NodeId>,
-) -> BTreeSet<NodeId> {
-    let mut adj: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
-    for eid in graph.edge_ids() {
-        let c = &compiled[&eid];
-        if c.conducts {
-            adj.entry(c.src).or_default().push(c.tgt);
-            adj.entry(c.tgt).or_default().push(c.src);
-        }
-    }
-    let mut anchored = fixed.clone();
-    let mut stack: Vec<NodeId> = fixed.iter().copied().collect();
-    while let Some(n) = stack.pop() {
-        if let Some(neigh) = adj.get(&n) {
-            for &m in neigh {
-                if anchored.insert(m) {
-                    stack.push(m);
-                }
-            }
-        }
-    }
-    anchored
-}
-
 /// Assemble the residual R and Jacobian J = ∂R/∂P over anchored free nodes.
 /// Only ACTIVE edges (both endpoints anchored) contribute; edges touching a
 /// floating node are inert (zero flow). Returns (R, J, throughput = max|ṁ|).
 fn assemble(
     graph: &PlantGraph,
-    compiled: &BTreeMap<EdgeId, Compiled>,
+    compiled: &BTreeMap<EdgeId, CompiledEdge>,
     pressures: &BTreeMap<NodeId, f64>,
     idx: &BTreeMap<NodeId, usize>,
     anchored: &BTreeSet<NodeId>,
@@ -408,30 +255,6 @@ fn assemble(
         }
     }
     (r, jac, throughput)
-}
-
-/// Mass flow (kg/s) per edge in graph direction; inert edges report 0.
-fn edge_flows(
-    graph: &PlantGraph,
-    compiled: &BTreeMap<EdgeId, Compiled>,
-    pressures: &BTreeMap<NodeId, f64>,
-    anchored: &BTreeSet<NodeId>,
-    eps: f64,
-) -> (BTreeMap<EdgeId, f64>, f64) {
-    let mut flows = BTreeMap::new();
-    let mut throughput = 0.0f64;
-    for eid in graph.edge_ids() {
-        let c = &compiled[&eid];
-        let mdot = if anchored.contains(&c.src) && anchored.contains(&c.tgt) {
-            let dp = pressures[&c.src] - pressures[&c.tgt];
-            c.rho * c.branch.flow(dp, eps)
-        } else {
-            0.0
-        };
-        throughput = throughput.max(mdot.abs());
-        flows.insert(eid, mdot);
-    }
-    (flows, throughput)
 }
 
 /// Copy `pressures`, advancing each unknown by `t·ΔP`.
@@ -476,39 +299,4 @@ fn solve_linear(jac: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
     let rhs = faer::Mat::from_fn(n, 1, |i, _| b[i]);
     let x = a.partial_piv_lu().solve(&rhs);
     (0..n).map(|i| x[(i, 0)]).collect()
-}
-
-/// Build the solution with a final NaN/Inf scan (rule 5: nothing non-finite
-/// escapes a solve).
-fn finalize(
-    pressures: &BTreeMap<NodeId, f64>,
-    flows: BTreeMap<EdgeId, f64>,
-    iterations: u32,
-    residual: f64,
-) -> Result<HydraulicSolution, SimError> {
-    let mut node_pressure = BTreeMap::new();
-    for (nid, p) in pressures {
-        if !p.is_finite() {
-            return Err(SimError::NonFiniteState {
-                location: format!("{nid:?} pressure"),
-            });
-        }
-        node_pressure.insert(*nid, Pascal(*p));
-    }
-    for (eid, f) in &flows {
-        if !f.is_finite() {
-            return Err(SimError::NonFiniteState {
-                location: format!("{eid:?} mass flow"),
-            });
-        }
-    }
-    Ok(HydraulicSolution {
-        node_pressure,
-        edge_mass_flow: flows,
-        diagnostics: SolveDiagnostics {
-            iterations,
-            residual,
-            converged: true,
-        },
-    })
 }

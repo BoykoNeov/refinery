@@ -10,7 +10,12 @@
 //!   I4. Determinism: same scenario + same commands ⇒ byte-identical
 //!       serialized snapshots across two fresh engine instances.
 //!   I5. Fidelity agreement: Newton and Simple steady states match within
-//!       5% on flows for well-posed networks (lands with SimpleFlowSolver).
+//!       5% on flows for well-posed networks. Breadth here (random chain/tree,
+//!       compared only when BOTH solvers converge — a stiff network Simple
+//!       cannot crack is skipped, exactly as I3 accepts SolverDiverged). The
+//!       load-bearing, guaranteed-convergence half lives in
+//!       `fidelity_agreement.rs`; `simple_agrees_on_a_healthy_fraction` below
+//!       guards that this random half is not vacuously skipped.
 //!
 //! Two generators, complementary:
 //!
@@ -59,7 +64,7 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{Node, NodeKind, Pipe, PlantGraph};
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
 use refinery_core::units::*;
-use refinery_solvers::NewtonFlowSolver;
+use refinery_solvers::{NewtonFlowSolver, SimpleFlowSolver};
 
 // ---------------------------------------------------------------------------
 // Shared node/pipe/edge builders.
@@ -382,6 +387,70 @@ fn strategy_actually_branches() {
 }
 
 // ---------------------------------------------------------------------------
+// Non-vacuous guard for the I5 breadth tests: on the CHAIN generator (1-in/1-out
+// nodes, well-conditioned far more often than stiff random trees), Simple must
+// converge AND agree with Newton on a healthy fraction of the cases where Newton
+// converges. Without this, `chain_fidelity_agreement` could pass while silently
+// skipping every case (Simple always diverging), verifying nothing.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn simple_agrees_on_a_healthy_fraction() {
+    const SAMPLES: usize = 300;
+    let mut runner = TestRunner::deterministic();
+    let strat = (
+        prop::collection::vec(mid_strategy(), 0..5usize),
+        prop::collection::vec(pipe_strategy(), 6usize..7),
+        1.0e5..8.0e5f64,
+        1.0e5..8.0e5f64,
+    );
+    let slate = Slate::water_only();
+
+    let mut newton_ok = 0usize;
+    let mut agreed = 0usize;
+    for _ in 0..SAMPLES {
+        let (mids, pipes, p_src, p_snk) = strat
+            .new_tree(&mut runner)
+            .expect("strategy produces a value")
+            .current();
+        let (g, _) = build_chain(&mids, &pipes, p_src, p_snk);
+        let n = match NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1)) {
+            Ok(n) if n.diagnostics.converged => n,
+            _ => continue,
+        };
+        newton_ok += 1;
+        let s = match SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1)) {
+            Ok(s) if s.diagnostics.converged => s,
+            _ => continue,
+        };
+        // Both converged: require flow agreement within 5% on non-tiny edges.
+        let throughput = n
+            .edge_mass_flow
+            .values()
+            .fold(0.0f64, |m, &f| m.max(f.abs()));
+        let floor = 1e-6 + 1e-3 * throughput;
+        let ok = n.edge_mass_flow.iter().all(|(eid, &fa)| {
+            let fb = s.edge_mass_flow[eid];
+            let scale = fa.abs().max(fb.abs());
+            scale < floor || (fa - fb).abs() / scale <= 0.05
+        });
+        if ok {
+            agreed += 1;
+        }
+    }
+
+    assert!(newton_ok > 0, "Newton converged on no chain samples");
+    // Empirically Simple converges+agrees on ≈100% of Newton-converged chains
+    // (295/296 at time of writing); 50% is a safe floor that still fails loudly
+    // if Simple silently stops converging.
+    assert!(
+        agreed * 2 >= newton_ok,
+        "Simple agreed with Newton on only {agreed}/{newton_ok} converged chains \
+         (I5 breadth would be vacuously skipping)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Property tests.
 // ---------------------------------------------------------------------------
 
@@ -491,6 +560,77 @@ proptest! {
         let b = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
         assert_same_solution(a, b)?;
     }
+
+    /// CHAIN — I5 breadth: where BOTH solvers converge, their steady flows agree
+    /// within 5%. A chain Simple cannot crack is skipped (legal per I3).
+    #[test]
+    fn chain_fidelity_agreement(
+        mids in prop::collection::vec(mid_strategy(), 0..5usize),
+        raw_pipes in prop::collection::vec(pipe_strategy(), 6usize..7),
+        p_src in 1.0e5..8.0e5f64,
+        p_snk in 1.0e5..8.0e5f64,
+    ) {
+        let (g, _) = build_chain(&mids, &raw_pipes, p_src, p_snk);
+        let slate = Slate::water_only();
+        let newton = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        let simple = SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        assert_fidelity_agreement(newton, simple)?;
+    }
+
+    /// TREE — I5 breadth over branching topologies (same both-converged rule).
+    #[test]
+    fn tree_fidelity_agreement(inputs in tree_inputs_strategy()) {
+        let g = build_tree(&inputs);
+        let slate = Slate::water_only();
+        let newton = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        let simple = SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        assert_fidelity_agreement(newton, simple)?;
+    }
+
+    /// I4 for the Simple solver: two fresh instances (empty warm-start) on the
+    /// same tree produce byte-identical results, or both diverge.
+    #[test]
+    fn tree_simple_is_deterministic(inputs in tree_inputs_strategy()) {
+        let g = build_tree(&inputs);
+        let slate = Slate::water_only();
+        let a = SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        let b = SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        assert_same_solution(a, b)?;
+    }
+}
+
+/// I5 comparison: if BOTH solvers return Ok(converged), every non-negligible
+/// edge flow must agree within 5% (the I5 contract). Otherwise skip — a network
+/// only one solver cracks is legal (I3). An absolute floor (0.1% of Newton
+/// throughput + 1e-6 kg/s) ignores near-zero edges, where relative error is
+/// meaningless.
+fn assert_fidelity_agreement(
+    newton: Result<HydraulicSolution, SimError>,
+    simple: Result<HydraulicSolution, SimError>,
+) -> Result<(), TestCaseError> {
+    let (n, s) = match (newton, simple) {
+        (Ok(n), Ok(s)) if n.diagnostics.converged && s.diagnostics.converged => (n, s),
+        _ => return Ok(()), // at least one did not converge → skip
+    };
+    let throughput = n
+        .edge_mass_flow
+        .values()
+        .fold(0.0f64, |m, &f| m.max(f.abs()));
+    let floor = 1e-6 + 1e-3 * throughput;
+    for (eid, &fa) in &n.edge_mass_flow {
+        let fb = s.edge_mass_flow[eid];
+        let scale = fa.abs().max(fb.abs());
+        if scale < floor {
+            continue;
+        }
+        let rel = (fa - fb).abs() / scale;
+        prop_assert!(
+            rel <= 0.05,
+            "fidelity flow mismatch at {:?}: newton={fa}, simple={fb} (rel {rel})",
+            eid
+        );
+    }
+    Ok(())
 }
 
 /// Two solves of the same network must agree bit-for-bit, or both diverge.
