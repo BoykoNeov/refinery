@@ -12,22 +12,48 @@
 //!   I5. Fidelity agreement: Newton and Simple steady states match within
 //!       5% on flows for well-posed networks (lands with SimpleFlowSolver).
 //!
-//! Generator: a linear chain Source → (Junction | Pump | Valve)* → Sink joined
-//! by pipes. A chain gives every pump/valve exactly one inlet + one outlet edge
-//! (F6 satisfied by construction) and, by randomizing the two end pressures,
-//! exercises both flow directions — so the combined-branch's shifted-oddness
-//! reverse-flow path is covered. Parameters are generated first and topology
-//! is implied by their count, so shrinking stays valid.
+//! Two generators, complementary:
 //!
-//! Scope note: the chain generator verifies termination/finiteness/determinism
-//! and series conservation over MANY random parameterizations, but every node
-//! is 1-in/1-out. Merge/split conservation (Σ over 3+ edges) and the genuine
-//! floating-subnetwork pinning path are covered by hand-checkable cases in
-//! `newton_reference.rs` (`tee_junction_conserves_mass`,
-//! `floating_subnetwork_with_pump_reports_zero_flow`). Extending this generator
-//! to random trees is a later refinement.
+//!   * CHAIN — Source → (Junction | Pump | Valve)* → Sink joined by pipes.
+//!     Every node is 1-in/1-out, so it is a targeted reverse-flow-through-device
+//!     path (randomized end pressures exercise both flow directions, hence the
+//!     combined-branch's shifted-oddness reverse path). It does NOT branch.
+//!
+//!   * TREE — a hub-biased random tree: interior Junctions with 3+ incident
+//!     edges (parents drawn from the first `HUB_SPAN` nodes so branching is
+//!     structural, not a full-size-only fluke that shrinking erases — see
+//!     `strategy_actually_branches`, which is the guard that this generator
+//!     earns its keep). Pumps/valves are inserted by SUBDIVIDING an edge, which
+//!     gives the device exactly one inlet + one outlet edge (F6 by
+//!     construction). Leaves are fixed Source/Sink at random pressures; every
+//!     open branch conducts, so the whole tree is anchored (no floating).
+//!
+//! WHAT THE TREE TEST ACTUALLY CATCHES (be honest — it is NOT a correctness
+//! oracle). The per-node balance recomputes each residual R_i from the RETURNED
+//! edge flows, and the solver only returns Ok when ‖R‖ is already below tol, so
+//! on a fully anchored tree the balance is near-tautological on the pressures.
+//! Its real value is:
+//!   - `edge_flows` (post-processing) must agree with `assemble` (the Newton
+//!     residual): they are SEPARATE functions, and a divergence between them —
+//!     a sign flip, a missed edge, a wrong device fold — shows up here as a
+//!     broken balance at a 3+ degree node that chains never build.
+//!   - no NaN/Inf escapes a solve over branching topologies (I2/I3);
+//!   - determinism holds with device nodes interleaved (I4).
+//!
+//! What it does NOT catch: a converged-but-WRONG answer. There is no closed
+//! form for a random network, and a bad Jacobian typically surfaces as
+//! `SolverDiverged` (which these tests accept as legal per I3). Correctness on
+//! random networks is I5's job (Newton vs SimpleFlowSolver agreement, landing
+//! with the Simple solver); this generator does not attempt it.
+//!
+//! Floating-subnetwork pinning (a closed valve severing part of the graph) is a
+//! separate path, covered by hand-checkable cases in `newton_reference.rs`
+//! (`floating_subnetwork_with_pump_reports_zero_flow`, `closed_valve_*`); the
+//! generators here keep every branch conducting on purpose.
 
 use proptest::prelude::*;
+use proptest::strategy::{Strategy, ValueTree};
+use proptest::test_runner::TestRunner;
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
 use refinery_core::graph::{Node, NodeKind, Pipe, PlantGraph};
@@ -35,27 +61,9 @@ use refinery_core::traits::{FlowSolver, HydraulicSolution};
 use refinery_core::units::*;
 use refinery_solvers::NewtonFlowSolver;
 
-#[derive(Debug, Clone)]
-enum Mid {
-    Junction,
-    Pump { h0: f64, a: f64, on: bool },
-    Valve { cv: f64, opening: f64 },
-}
-
-fn mid_strategy() -> impl Strategy<Value = Mid> {
-    prop_oneof![
-        Just(Mid::Junction),
-        (10.0..60.0f64, 1e2..1e4f64, any::<bool>()).prop_map(|(h0, a, on)| Mid::Pump { h0, a, on }),
-        // opening ≥ 0.05 keeps the chain conducting (closed-valve floating is
-        // covered by a dedicated unit test, not here).
-        (1e-4..5e-3f64, 0.05..1.0f64).prop_map(|(cv, opening)| Mid::Valve { cv, opening }),
-    ]
-}
-
-/// (length_m, diameter_m, friction_factor, elevation_change_m).
-fn pipe_strategy() -> impl Strategy<Value = (f64, f64, f64, f64)> {
-    (1.0..50.0f64, 0.05..0.3f64, 0.01..0.05f64, -5.0..5.0f64)
-}
+// ---------------------------------------------------------------------------
+// Shared node/pipe/edge builders.
+// ---------------------------------------------------------------------------
 
 fn source(p: f64) -> Node {
     Node {
@@ -79,6 +87,50 @@ fn sink(p: f64) -> Node {
     }
 }
 
+/// (length_m, diameter_m, friction_factor, elevation_change_m).
+fn pipe(p: (f64, f64, f64, f64), name: &str) -> Pipe {
+    let (length, diameter, friction_factor, elevation) = p;
+    Pipe {
+        name: name.into(),
+        length: Meter(length),
+        diameter: Meter(diameter),
+        friction_factor,
+        elevation_change: Meter(elevation),
+        leak_area: SquareMeter(0.0),
+        stream: refinery_core::stream::Stream::stagnant(1, T_AMBIENT, P_ATM),
+    }
+}
+
+fn pipe_strategy() -> impl Strategy<Value = (f64, f64, f64, f64)> {
+    (1.0..50.0f64, 0.05..0.3f64, 0.01..0.05f64, -5.0..5.0f64)
+}
+
+fn all_finite(sol: &HydraulicSolution) -> bool {
+    sol.node_pressure.values().all(|p| p.value().is_finite())
+        && sol.edge_mass_flow.values().all(|f| f.is_finite())
+}
+
+// ---------------------------------------------------------------------------
+// CHAIN generator: Source → mids* → Sink (no branching; reverse-flow path).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+enum Mid {
+    Junction,
+    Pump { h0: f64, a: f64, on: bool },
+    Valve { cv: f64, opening: f64 },
+}
+
+fn mid_strategy() -> impl Strategy<Value = Mid> {
+    prop_oneof![
+        Just(Mid::Junction),
+        (10.0..60.0f64, 1e2..1e4f64, any::<bool>()).prop_map(|(h0, a, on)| Mid::Pump { h0, a, on }),
+        // opening ≥ 0.05 keeps the chain conducting (closed-valve floating is
+        // covered by a dedicated unit test, not here).
+        (1e-4..5e-3f64, 0.05..1.0f64).prop_map(|(cv, opening)| Mid::Valve { cv, opening }),
+    ]
+}
+
 fn mid_node(m: &Mid, i: usize) -> Node {
     let kind = match *m {
         Mid::Junction => NodeKind::Junction,
@@ -99,19 +151,6 @@ fn mid_node(m: &Mid, i: usize) -> Node {
     }
 }
 
-fn pipe(p: (f64, f64, f64, f64), i: usize) -> Pipe {
-    let (length, diameter, friction_factor, elevation) = p;
-    Pipe {
-        name: format!("pipe{i}"),
-        length: Meter(length),
-        diameter: Meter(diameter),
-        friction_factor,
-        elevation_change: Meter(elevation),
-        leak_area: SquareMeter(0.0),
-        stream: refinery_core::stream::Stream::stagnant(1, T_AMBIENT, P_ATM),
-    }
-}
-
 /// Build a Source → mids* → Sink chain and its ordered edge ids.
 fn build_chain(
     mids: &[Mid],
@@ -128,23 +167,231 @@ fn build_chain(
 
     let mut edges = Vec::new();
     for i in 0..chain.len() - 1 {
-        edges.push(g.add_pipe(chain[i], chain[i + 1], pipe(pipes[i], i)));
+        edges.push(g.add_pipe(chain[i], chain[i + 1], pipe(pipes[i], &format!("pipe{i}"))));
     }
     (g, edges)
 }
 
-fn all_finite(sol: &HydraulicSolution) -> bool {
-    sol.node_pressure.values().all(|p| p.value().is_finite())
-        && sol.edge_mass_flow.values().all(|f| f.is_finite())
+// ---------------------------------------------------------------------------
+// TREE generator: hub-biased random tree with branching junctions.
+// ---------------------------------------------------------------------------
+
+/// Max non-root primary nodes ⇒ up to `MAX_K + 1` primary nodes before any
+/// device subdivision.
+const MAX_K: usize = 8;
+const MAX_NODES: usize = MAX_K + 1;
+/// Parents are drawn from the first `HUB_SPAN` node indices, so a handful of
+/// nodes accumulate children and become genuine 3+ degree hubs — branching is
+/// then a STRUCTURAL property of the generator, present even for small k where
+/// shrinking lands, not a large-k-only accident. `strategy_actually_branches`
+/// asserts this holds for the real strategy.
+const HUB_SPAN: usize = 3;
+
+/// A device optionally spliced into a tree edge. `None` leaves the edge a plain
+/// pipe; the others subdivide it into pipe → device → pipe (F6: 1 in / 1 out).
+#[derive(Debug, Clone)]
+enum MidDevice {
+    None,
+    Pump { h0: f64, a: f64, on: bool },
+    Valve { cv: f64, opening: f64 },
 }
+
+fn device_strategy() -> impl Strategy<Value = MidDevice> {
+    prop_oneof![
+        3 => Just(MidDevice::None),
+        1 => (10.0..60.0f64, 1e2..1e4f64, any::<bool>())
+            .prop_map(|(h0, a, on)| MidDevice::Pump { h0, a, on }),
+        1 => (1e-4..5e-3f64, 0.05..1.0f64)
+            .prop_map(|(cv, opening)| MidDevice::Valve { cv, opening }),
+    ]
+}
+
+fn fixed_node(is_source: bool, p: f64, i: usize) -> Node {
+    let kind = if is_source {
+        NodeKind::Source {
+            pressure: Pascal(p),
+            temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
+        }
+    } else {
+        NodeKind::Sink {
+            pressure: Pascal(p),
+        }
+    };
+    Node {
+        name: format!("fix{i}"),
+        kind,
+        heat_input: Watt(0.0),
+    }
+}
+
+fn is_free(k: &NodeKind) -> bool {
+    matches!(
+        k,
+        NodeKind::Junction | NodeKind::Pump { .. } | NodeKind::Valve { .. }
+    )
+}
+
+/// All four generated inputs. Every vec has a FIXED, generous length indexed by
+/// position (advisor #3: no k-tied lengths / `prop_flat_map`); only `raw_parents`
+/// carries the node count, and topology is derived from it by modulo + degree so
+/// any shrunk sample is still a valid tree.
+type TreeInputs = (
+    Vec<usize>,                // raw_parents: length = node count − 1; carries size
+    Vec<(bool, f64)>,          // fixed_specs[i]: (is_source, pressure) if node i is a leaf
+    Vec<MidDevice>,            // devices[j-1]: optional device on edge into child j
+    Vec<(f64, f64, f64, f64)>, // pipes: primary edge j-1, subdivided half MAX_K+j-1
+);
+
+fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
+    (
+        prop::collection::vec(0..1000usize, 1..=MAX_K),
+        prop::collection::vec((any::<bool>(), 1.0e5..8.0e5f64), MAX_NODES..=MAX_NODES),
+        prop::collection::vec(device_strategy(), MAX_K..=MAX_K),
+        prop::collection::vec(pipe_strategy(), (2 * MAX_K)..=(2 * MAX_K)),
+    )
+}
+
+/// Build a hub-biased random tree. Child `j` (1..=k) attaches to parent
+/// `raw_parents[j-1] % min(j, HUB_SPAN)`, so the first `HUB_SPAN` nodes become
+/// hubs. Degree-1 nodes are leaves ⇒ fixed Source/Sink (pressure reference);
+/// higher-degree nodes are Junctions. A selected edge is subdivided by a device.
+fn build_tree(inputs: &TreeInputs) -> PlantGraph {
+    let (raw_parents, fixed_specs, devices, pipes) = inputs;
+    let k = raw_parents.len();
+    let n_nodes = k + 1;
+
+    // Parent + degree of every primary node.
+    let mut parent = vec![0usize; n_nodes];
+    let mut degree = vec![0usize; n_nodes];
+    for j in 1..=k {
+        let span = j.min(HUB_SPAN);
+        let p = raw_parents[j - 1] % span;
+        parent[j] = p;
+        degree[j] += 1;
+        degree[p] += 1;
+    }
+
+    // Leaves (degree 1) pin pressure as fixed Source/Sink; interiors are
+    // Junctions. A tree with ≥2 nodes always has ≥2 leaves, so the graph is
+    // always anchored.
+    let mut g = PlantGraph::new();
+    let mut ids = Vec::with_capacity(n_nodes);
+    for (i, &deg) in degree.iter().enumerate().take(n_nodes) {
+        let node = if deg == 1 {
+            let (is_source, p) = fixed_specs[i];
+            fixed_node(is_source, p, i)
+        } else {
+            Node {
+                name: format!("jn{i}"),
+                kind: NodeKind::Junction,
+                heat_input: Watt(0.0),
+            }
+        };
+        ids.push(g.add_node(node));
+    }
+
+    // Edges parent → child, oriented so a spliced device folds into its OUTLET
+    // edge (device → child), matching the solver's fold-at-source convention.
+    for j in 1..=k {
+        let src = ids[parent[j]];
+        let dst = ids[j];
+        match &devices[j - 1] {
+            MidDevice::None => {
+                g.add_pipe(src, dst, pipe(pipes[j - 1], &format!("e{j}")));
+            }
+            dev => {
+                let kind = match dev {
+                    MidDevice::Pump { h0, a, on } => NodeKind::Pump {
+                        h0: Meter(*h0),
+                        a: *a,
+                        on: *on,
+                    },
+                    MidDevice::Valve { cv, opening } => NodeKind::Valve {
+                        cv_max: *cv,
+                        opening: *opening,
+                    },
+                    MidDevice::None => unreachable!("matched above"),
+                };
+                let mid = g.add_node(Node {
+                    name: format!("dev{j}"),
+                    kind,
+                    heat_input: Watt(0.0),
+                });
+                g.add_pipe(src, mid, pipe(pipes[j - 1], &format!("e{j}a")));
+                g.add_pipe(mid, dst, pipe(pipes[MAX_K + j - 1], &format!("e{j}b")));
+            }
+        }
+    }
+    g
+}
+
+/// Signed mass imbalance at a node from the RETURNED edge flows:
+/// Σ(incoming ṁ) − Σ(outgoing ṁ). Should be ~0 at every zero-volume free node.
+fn node_imbalance(
+    g: &PlantGraph,
+    sol: &HydraulicSolution,
+    nid: refinery_core::graph::NodeId,
+) -> f64 {
+    let mut bal = 0.0;
+    for (e, _other, incoming) in g.incident(nid) {
+        let f = sol.edge_mass_flow[&e];
+        bal += if incoming { f } else { -f };
+    }
+    bal
+}
+
+// ---------------------------------------------------------------------------
+// Meta-test (advisor #1): the tree strategy must actually produce branching
+// nodes, or it adds nothing over the chain test. Sample the REAL strategy with
+// a deterministic runner and assert 3+ degree hubs appear at a healthy rate.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn strategy_actually_branches() {
+    const SAMPLES: usize = 300;
+    let mut runner = TestRunner::deterministic();
+    let strat = tree_inputs_strategy();
+
+    let mut max_seen = 0usize;
+    let mut branched = 0usize;
+    for _ in 0..SAMPLES {
+        let inputs = strat
+            .new_tree(&mut runner)
+            .expect("strategy produces a value")
+            .current();
+        let g = build_tree(&inputs);
+        let md = g.node_ids().map(|n| g.incident(n).len()).max().unwrap_or(0);
+        max_seen = max_seen.max(md);
+        if md >= 3 {
+            branched += 1;
+        }
+    }
+
+    assert!(
+        max_seen >= 3,
+        "tree generator never produced a 3+ degree node in {SAMPLES} samples \
+         (it degenerated to chains — the whole test adds nothing over build_chain)"
+    );
+    // Branching must be COMMON, not a one-in-300 fluke, or shrinking will strip
+    // it away in practice. Empirically ≈60% branch; 20% is a safe floor.
+    assert!(
+        branched * 5 >= SAMPLES,
+        "branching too rare: only {branched}/{SAMPLES} samples had a 3+ degree node"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Property tests.
+// ---------------------------------------------------------------------------
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(400))]
 
-    /// I2 + I3 + I1: the solver terminates as Ok(converged, all-finite) or
-    /// Err(SolverDiverged); and when it converges, a series chain conserves
+    /// CHAIN — I2 + I3 + I1: the solver terminates as Ok(converged, all-finite)
+    /// or Err(SolverDiverged); and when it converges, a series chain conserves
     /// mass — every edge carries the same flow (no accumulation at the
-    /// zero-volume interior nodes), and no pressure is non-finite or negative.
+    /// zero-volume interior nodes), and no pressure is non-finite.
     #[test]
     fn chain_conserves_or_diverges(
         mids in prop::collection::vec(mid_strategy(), 0..5usize),
@@ -184,9 +431,10 @@ proptest! {
         }
     }
 
-    /// I4: two fresh solvers on the same network produce bit-identical results.
+    /// CHAIN — I4: two fresh solvers on the same network produce bit-identical
+    /// results.
     #[test]
-    fn solve_is_deterministic(
+    fn chain_solve_is_deterministic(
         mids in prop::collection::vec(mid_strategy(), 0..5usize),
         raw_pipes in prop::collection::vec(pipe_strategy(), 6usize..7),
         p_src in 1.0e5..8.0e5f64,
@@ -196,19 +444,71 @@ proptest! {
         let slate = Slate::water_only();
         let a = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
         let b = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
-        match (a, b) {
-            (Ok(sa), Ok(sb)) => {
-                // Bit-exact: BTreeMap ordering is deterministic and the solve
-                // has no wall-clock/RNG/HashMap dependence.
-                prop_assert_eq!(sa.edge_mass_flow, sb.edge_mass_flow);
-                prop_assert_eq!(
-                    format!("{:?}", sa.node_pressure),
-                    format!("{:?}", sb.node_pressure)
-                );
-                prop_assert_eq!(sa.diagnostics.iterations, sb.diagnostics.iterations);
+        assert_same_solution(a, b)?;
+    }
+
+    /// TREE — I2 + I3 + I1 over BRANCHING topologies: the solver terminates
+    /// legally, and on convergence every zero-volume free node (Junction / Pump /
+    /// Valve, including 3+ degree hubs the chain never builds) balances mass:
+    /// Σ incoming ṁ = Σ outgoing ṁ. This exercises `assemble`'s Σ-over-3+-edges
+    /// residual AND cross-checks that `edge_flows` (a separate function) agrees
+    /// with it. See the module doc on what this does and does not verify.
+    #[test]
+    fn tree_conserves_or_diverges(inputs in tree_inputs_strategy()) {
+        let g = build_tree(&inputs);
+        let mut solver = NewtonFlowSolver::default();
+
+        match solver.solve(&g, &Slate::water_only(), Seconds(0.1)) {
+            Ok(sol) => {
+                prop_assert!(sol.diagnostics.converged, "Ok must mean converged");
+                prop_assert!(all_finite(&sol), "no NaN/Inf may escape a solve");
+                let throughput = sol
+                    .edge_mass_flow
+                    .values()
+                    .fold(0.0f64, |m, &f| m.max(f.abs()));
+                for nid in g.node_ids() {
+                    if is_free(&g.node(nid).kind) {
+                        let bal = node_imbalance(&g, &sol, nid);
+                        prop_assert!(
+                            bal.abs() <= 1e-5 + 1e-6 * throughput,
+                            "mass imbalance {bal} at {nid:?} (throughput {throughput})"
+                        );
+                    }
+                }
             }
-            (Err(_), Err(_)) => { /* both diverge identically */ }
-            _ => prop_assert!(false, "determinism: one solve converged, the other did not"),
+            Err(SimError::SolverDiverged { .. }) => { /* acceptable per I3 */ }
+            Err(other) => prop_assert!(false, "unexpected error: {other}"),
         }
     }
+
+    /// TREE — I4: determinism holds with device nodes interleaved into a
+    /// branching graph (BTreeMap ordering + no wall-clock/RNG/HashMap).
+    #[test]
+    fn tree_solve_is_deterministic(inputs in tree_inputs_strategy()) {
+        let g = build_tree(&inputs);
+        let slate = Slate::water_only();
+        let a = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        let b = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        assert_same_solution(a, b)?;
+    }
+}
+
+/// Two solves of the same network must agree bit-for-bit, or both diverge.
+fn assert_same_solution(
+    a: Result<HydraulicSolution, SimError>,
+    b: Result<HydraulicSolution, SimError>,
+) -> Result<(), TestCaseError> {
+    match (a, b) {
+        (Ok(sa), Ok(sb)) => {
+            prop_assert_eq!(sa.edge_mass_flow, sb.edge_mass_flow);
+            prop_assert_eq!(
+                format!("{:?}", sa.node_pressure),
+                format!("{:?}", sb.node_pressure)
+            );
+            prop_assert_eq!(sa.diagnostics.iterations, sb.diagnostics.iterations);
+        }
+        (Err(_), Err(_)) => { /* both diverge identically */ }
+        _ => prop_assert!(false, "determinism: one solve converged, the other did not"),
+    }
+    Ok(())
 }
