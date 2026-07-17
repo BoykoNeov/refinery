@@ -73,6 +73,11 @@ pub enum NodeDef {
     },
     Sink {
         pressure_bar: f64,
+        /// Temperature of the fluid the sink returns under reverse flow.
+        /// Optional: a sink that never back-feeds is unaffected by it, so
+        /// requiring it in every file would be noise. Defaults to ambient.
+        #[serde(default = "default_ambient_c")]
+        temperature_c: f64,
     },
     Atmosphere,
     Tank {
@@ -95,6 +100,11 @@ pub enum NodeDef {
 }
 fn default_true() -> bool {
     true
+}
+/// Ambient in the scenario file's display units (°C), so the default round-trips
+/// through `c_to_k` to exactly `T_AMBIENT` rather than to a near-miss constant.
+fn default_ambient_c() -> f64 {
+    T_AMBIENT.value() - 273.15
 }
 
 #[derive(Debug, Deserialize)]
@@ -215,8 +225,12 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
             temperature: c_to_k(*temperature_c),
             composition: water.clone(),
         },
-        NodeDef::Sink { pressure_bar } => NodeKind::Sink {
+        NodeDef::Sink {
+            pressure_bar,
+            temperature_c,
+        } => NodeKind::Sink {
             pressure: bar_to_pa(*pressure_bar),
+            temperature: c_to_k(*temperature_c),
         },
         NodeDef::Atmosphere => NodeKind::Atmosphere,
         NodeDef::Tank {

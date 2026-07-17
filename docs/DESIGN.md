@@ -36,6 +36,8 @@ Data flow per tick:
    a. **Hydraulic solve** (quasi-steady): FlowSolver computes node pressures
       and branch flows for the current network + element states.
    b. **Transport**: move mass/energy/composition along branches for `dt`.
+      Energy transport is upwind advection off the solved flow signs (§4a);
+      composition transport arrives with the pseudo-component slate in M3.
    c. **Unit dynamics**: each unit integrates its slow states (tank level,
       column temperatures, reactor lump concentrations) with the resolved
       flows as boundary conditions.
@@ -114,6 +116,79 @@ scenarios have a slate of one. Crude slates: 10–30 TBP cuts. Mixture
 properties are mass-fraction-weighted (adequate at this fidelity; document
 exceptions where they matter, e.g. mixture density uses volume-fraction
 weighting).
+
+## 4a. Energy transport (M2)
+
+The temperature field is **mixed**, and naming the two kinds of node is what
+makes it tractable. The distinction is *thermal inertia*, not unit type:
+
+- **Inertial nodes** — `Tank`, `Source`, `Sink`, `Atmosphere`. They carry a
+  temperature. A tank integrates it as a slow state (§1 step c); the reservoirs
+  hold it fixed. Within a tick, all four are *boundary conditions*, read at
+  their start-of-tick value.
+- **Zero-volume nodes** — `Junction`, `Pump`, `Valve`. No inventory, so
+  temperature is not a state at all: it is **algebraic**, the instantaneous
+  enthalpy-weighted mix of the inflows,
+  `T = T_REF + Σ(ṁ_in·cp_in·(T_in − T_REF) + Q) / Σ(ṁ_in·cp_in)` — the first
+  law for a point with no accumulation.
+
+An edge's stream temperature is its **upwind** node's temperature, selected by
+the sign of the solved flow (donor-cell). Flow sign, never edge direction: the
+hydraulic solver produces reverse flows routinely, and upwinding off the graph's
+arrows would silently transport heat the wrong way.
+
+Zero-volume nodes must therefore be resolved upstream-first — a topological sort
+over *this tick's flow directions*, not the graph's edge directions. Kahn sweep,
+lowest node id first, so the order is a function of the graph alone (rule 3).
+
+**Why an acyclic sweep is sufficient, not a shortcut.** The ordering fails to
+exist only if a recycle passes through zero-volume nodes *exclusively*. Any tank
+or reservoir in the loop breaks it: its temperature is a start-of-tick constant,
+so the dependency chain terminates there. A zero-volume-only recycle is a
+genuine simultaneous system (every temperature defined in terms of the others);
+it is rejected with `SimError::Numerical` naming the stuck nodes, rather than
+resolved in some arbitrary order that would look plausible and be wrong. No
+scenario in the workspace builds one. If a real plant needs it — a recycle loop
+with no vessel anywhere in it — the fix is a linear solve over the loop, and it
+should arrive with the scenario that motivates it, not before.
+
+**Enthalpy datum.** `h = cp·(T − T_REF)`, `T_REF = 273.15 K`. Every flux in the
+engine goes through `energy::enthalpy_flux`, so the datum cancels exactly as
+long as mass balances. It is deliberately non-zero: a 0 K datum makes `h = cp·T`
+and would hide any path that dropped the reference entirely.
+
+**Accuracy is inherited from the hydraulics.** Enthalpy cancels at a junction
+only as exactly as *mass* balances there, and the flow solver stops at a finite
+residual (Newton: `1e-8 + 1e-8·throughput` kg/s). That ε leaves the junction
+carrying `cp·ε·(T − T_REF)` W of unbalanced enthalpy, so the relative energy
+error settles at ≈ ε/ṁ ≈ 1e-8 — measured at 9.4e-9. Energy conservation cannot
+be made tighter than the mass conservation it rides on; tightening I6 means
+tightening the flow solver first.
+
+**Known limitations at this fidelity** (each deliberate, none accidental):
+
+- **No pump work or valve throttling heat.** Both dissipate into the stream in
+  reality; a pass-through device currently copies its inlet temperature to its
+  outlet. The reference pump's rise is ~0.02 K — far below the model's accuracy.
+- **Heat into a zero-volume node with no throughput is dropped.** It has no
+  thermal mass to store it and no stream to carry it away. A fire against
+  stagnant inventory belongs on a `Tank`; this is the one case where the engine
+  does not conserve energy, and it is a gap in the model rather than slack the
+  invariant tests are widened to tolerate.
+- **An empty tank holds its last temperature.** `T = T_REF + E/(m·cp)` is
+  singular at `m = 0`, and the Euler mass update can overshoot into the clamp,
+  at which point mass and energy have both stopped being conserved and the ratio
+  is meaningless rather than merely imprecise.
+- **No heat loss to ambient** and no `HeatExchanger`/`Furnace` yet — the rest of
+  M2 (see ROADMAP).
+
+**`ThermoModel` is still a reserved slot.** Transport uses constant-property
+`cp` off `Composition` (ideal mass-fraction mixing), which is exactly what the
+trait's doc prescribes: extend when a consumer actually needs a property, not
+before. Constant-cp water does not. It takes over when T-dependent or non-ideal
+properties arrive — at which point `Composition`'s `mixture_*` helpers delegate
+to it, and the symmetry premise of the mixing reference test needs rechecking
+(equal-temperature legs stop carrying equal flows once density varies with T).
 
 ## 5. Reactions and separation
 

@@ -7,6 +7,7 @@
 //! - SI units via `units` newtypes on all public APIs.
 
 pub mod components;
+pub mod energy;
 pub mod engine;
 pub mod error;
 pub mod graph;

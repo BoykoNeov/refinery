@@ -87,6 +87,10 @@ fn sink(p: f64) -> Node {
         name: "snk".into(),
         kind: NodeKind::Sink {
             pressure: Pascal(p),
+            // These are hydraulic tests: the solver never reads a temperature,
+            // so ambient keeps them isothermal and out of the way. Thermal
+            // transport gets its own generators in `energy_invariants.rs`.
+            temperature: T_AMBIENT,
         },
         heat_input: Watt(0.0),
     }
@@ -221,6 +225,7 @@ fn fixed_node(is_source: bool, p: f64, i: usize) -> Node {
     } else {
         NodeKind::Sink {
             pressure: Pascal(p),
+            temperature: T_AMBIENT,
         }
     };
     Node {

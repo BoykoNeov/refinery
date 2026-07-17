@@ -76,7 +76,7 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
 pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
     match &node.kind {
         NodeKind::Source { pressure, .. } => Some(pressure.value()),
-        NodeKind::Sink { pressure } => Some(pressure.value()),
+        NodeKind::Sink { pressure, .. } => Some(pressure.value()),
         NodeKind::Atmosphere => Some(P_ATM.value()),
         NodeKind::Tank(t) => {
             let rho = t.composition.mixture_density(slate);

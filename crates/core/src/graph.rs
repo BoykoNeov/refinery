@@ -54,9 +54,16 @@ pub enum NodeKind {
         temperature: Kelvin,
         composition: Composition,
     },
-    /// Infinite sink at fixed pressure.
-    Sink { pressure: Pascal },
-    /// The outside world; leak edges terminate here. Fixed at P_ATM.
+    /// Infinite sink at fixed pressure. `temperature` is the fluid it returns
+    /// if the network ever drives flow *backwards* into it (network pressure
+    /// below the sink's): an infinite reservoir has to have a temperature to
+    /// back-feed, and leaving it implicit would make reverse flow ill-defined.
+    Sink {
+        pressure: Pascal,
+        temperature: Kelvin,
+    },
+    /// The outside world; leak edges terminate here. Fixed at P_ATM and,
+    /// symmetrically, at T_AMBIENT.
     Atmosphere,
     /// Vertical cylindrical tank, vented (gas blanket pressure = P_ATM for
     /// M1; pressurized vessels are a later fidelity step).

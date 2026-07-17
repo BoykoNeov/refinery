@@ -36,6 +36,10 @@ pub struct NodeSnapshot {
     pub name: String,
     pub kind: NodeKind,
     pub pressure_pa: f64,
+    /// Resolved node temperature [K] — a tank's own state, a reservoir's fixed
+    /// value, or a zero-volume node's mixed inflow temperature. NaN before the
+    /// first tick, like `pressure_pa`.
+    pub temperature_k: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

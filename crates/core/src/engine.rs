@@ -5,11 +5,22 @@
 //!   → validation → snapshot available.
 
 use crate::components::Slate;
+use crate::energy::{self, T_REF};
 use crate::error::SimError;
-use crate::graph::{NodeKind, PlantGraph};
+use crate::graph::{NodeId, NodeKind, PlantGraph};
 use crate::snapshot::{Command, EdgeSnapshot, NodeSnapshot, Snapshot};
 use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, ThermoModel};
 use crate::units::*;
+use std::collections::BTreeMap;
+
+/// Inventory below which a tank has no meaningful temperature [kg].
+///
+/// `T = T_REF + E/(m·cp)` is singular at `m = 0`, and explicit Euler can
+/// overshoot a nearly-empty tank into the mass clamp — at which point mass and
+/// energy have both stopped being conserved and the ratio is meaningless, not
+/// merely imprecise. Below a milligram the tank is empty for any refinery
+/// purpose, so its last temperature is held instead of dividing by ~0.
+const MIN_THERMAL_MASS_KG: f64 = 1e-6;
 
 pub struct EngineConfig {
     pub dt: Seconds,
@@ -26,12 +37,22 @@ pub struct Engine {
     pub slate: Slate,
     config: EngineConfig,
     flow_solver: Box<dyn FlowSolver>,
-    #[allow(dead_code)] // slot reserved; used from M2/M4
-    thermo: Box<dyn ThermoModel>,
+    /// Still a reserved slot at M2: transport uses constant-property `cp` off
+    /// `Composition` (ideal mixing), which is exactly what `ThermoModel`'s doc
+    /// says to leave alone until a consumer needs more. It takes over when
+    /// T-dependent or non-ideal properties arrive.
     #[allow(dead_code)]
+    thermo: Box<dyn ThermoModel>,
+    #[allow(dead_code)] // slot reserved; used from M4
     reactions: Box<dyn ReactionModel>,
     tick: u64,
     last_solution: Option<HydraulicSolution>,
+    /// Resolved node temperature field [K] from the last tick. Derived state,
+    /// not inventory — the symmetric counterpart of `node_pressure` living in
+    /// `HydraulicSolution` rather than on the nodes. Retained across ticks only
+    /// to give a zero-volume node with no inflow a reproducible value to hold
+    /// (see `energy::resolve_node_temperatures`).
+    node_temperature: BTreeMap<NodeId, Kelvin>,
 }
 
 impl Engine {
@@ -52,6 +73,7 @@ impl Engine {
             reactions,
             tick: 0,
             last_solution: None,
+            node_temperature: BTreeMap::new(),
         }
     }
 
@@ -108,28 +130,70 @@ impl Engine {
                 .ok_or_else(|| SimError::Numerical(format!("solver omitted edge {eid:?}")))?;
             let pipe = self.graph.pipe_mut(eid);
             pipe.stream.mass_flow = KgPerSec(flow);
-            // Composition/temperature transport: M1 water is trivial
-            // (single component, isothermal); real advection lands in M2/M3.
+            // Composition transport is still trivial at M2 (single-component
+            // water); it lands with the pseudo-component slate in M3.
         }
 
-        // 3. Unit dynamics: integrate slow states (tank inventories).
+        // 2b. Resolve the node temperature field: inertial nodes contribute
+        //     their start-of-tick temperature, zero-volume nodes mix their
+        //     inflows in flow order (docs/DESIGN.md §4a).
+        let node_temperature = energy::resolve_node_temperatures(
+            &self.graph,
+            &self.slate,
+            &solution.edge_mass_flow,
+            &self.node_temperature,
+        )?;
+
+        // 2c. Transport: an edge's stream takes its UPWIND node's temperature,
+        //     picked by flow sign so reverse flow needs no special case. At
+        //     exactly zero flow the pick is arbitrary — the stream carries no
+        //     enthalpy either way — so it takes `from` to stay deterministic.
+        for eid in self.graph.edge_ids().collect::<Vec<_>>() {
+            let (from, to) = self.graph.endpoints(eid);
+            let upwind = if self.graph.pipe(eid).stream.mass_flow.value() >= 0.0 {
+                from
+            } else {
+                to
+            };
+            if let Some(t) = node_temperature.get(&upwind) {
+                self.graph.pipe_mut(eid).stream.temperature = *t;
+            }
+        }
+
+        // 3. Unit dynamics: integrate the tanks' slow states — inventory and
+        //    thermal energy. Both are explicit Euler off start-of-tick values.
+        //
+        //    The energy balance is the first law for a well-mixed open vessel,
+        //    d(m·u)/dt = Σ ṁ·h + Q, with liquid u ≈ h = cp·(T − T_REF). It
+        //    needs no in/out branch: an outflow edge is upwind of the tank, so
+        //    its stream already carries the tank's own temperature, and the
+        //    signed flux subtracts exactly the enthalpy that leaves. That is
+        //    what makes the discrete balance close to round-off (I6).
         for nid in self.graph.node_ids().collect::<Vec<_>>() {
-            let net_in: f64 = self
-                .graph
-                .incident(nid)
-                .iter()
-                .map(|(eid, _, incoming)| {
-                    let q = self.graph.pipe(*eid).stream.mass_flow.value();
-                    if *incoming {
-                        q
-                    } else {
-                        -q
-                    }
-                })
-                .sum();
+            let heat_input = self.graph.node(nid).heat_input.value();
+            let mut net_mass = 0.0; // [kg/s] into the node
+            let mut net_enthalpy = 0.0; // [W] into the node
+            for (eid, _other, incoming) in self.graph.incident(nid) {
+                let stream = &self.graph.pipe(eid).stream;
+                let flow = stream.mass_flow.value();
+                let into_node = if incoming { flow } else { -flow };
+                let cp = stream.composition.mixture_cp(&self.slate).value();
+                net_mass += into_node;
+                net_enthalpy += energy::enthalpy_flux(into_node, cp, stream.temperature);
+            }
+
             if let NodeKind::Tank(tank) = &mut self.graph.node_mut(nid).kind {
-                // Explicit Euler on inventory; adequate for slow tank dynamics.
-                tank.mass = Kg((tank.mass.value() + net_in * dt.value()).max(0.0));
+                let cp = tank.composition.mixture_cp(&self.slate).value();
+                let mass_old = tank.mass.value();
+                let energy_old = mass_old * cp * (tank.temperature.value() - T_REF.value());
+
+                let mass_new = (mass_old + net_mass * dt.value()).max(0.0);
+                let energy_new = energy_old + (net_enthalpy + heat_input) * dt.value();
+
+                tank.mass = Kg(mass_new);
+                if mass_new > MIN_THERMAL_MASS_KG {
+                    tank.temperature = Kelvin(T_REF.value() + energy_new / (mass_new * cp));
+                }
             }
         }
 
@@ -141,7 +205,25 @@ impl Engine {
                 });
             }
         }
+        for nid in self.graph.node_ids() {
+            let node = self.graph.node(nid);
+            // Tank inventory is integrated here, so a NaN in it would otherwise
+            // escape into the next tick's hydraulics via the hydrostatic head.
+            if let NodeKind::Tank(tank) = &node.kind {
+                if !tank.mass.is_finite() || !tank.temperature.is_finite() {
+                    return Err(SimError::NonFiniteState {
+                        location: format!("tank '{}'", node.name),
+                    });
+                }
+            }
+            if !node_temperature.get(&nid).is_none_or(|t| t.is_finite()) {
+                return Err(SimError::NonFiniteState {
+                    location: format!("temperature at node '{}'", node.name),
+                });
+            }
+        }
 
+        self.node_temperature = node_temperature;
         self.last_solution = Some(solution);
         self.tick += 1;
         Ok(())
@@ -161,6 +243,10 @@ impl Engine {
                     pressure_pa: sol
                         .and_then(|s| s.node_pressure.get(&id))
                         .map_or(f64::NAN, |p| p.value()),
+                    temperature_k: self
+                        .node_temperature
+                        .get(&id)
+                        .map_or(f64::NAN, |t| t.value()),
                 }
             })
             .collect();
