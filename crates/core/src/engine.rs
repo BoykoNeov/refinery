@@ -177,9 +177,10 @@ impl Engine {
                 let stream = &self.graph.pipe(eid).stream;
                 let flow = stream.mass_flow.value();
                 let into_node = if incoming { flow } else { -flow };
-                let cp = stream.composition.mixture_cp(&self.slate).value();
+                let cp = stream.composition.mixture_cp(&self.slate);
                 net_mass += into_node;
-                net_enthalpy += energy::enthalpy_flux(into_node, cp, stream.temperature);
+                net_enthalpy +=
+                    energy::enthalpy_flux(KgPerSec(into_node), cp, stream.temperature).value();
             }
 
             if let NodeKind::Tank(tank) = &mut self.graph.node_mut(nid).kind {

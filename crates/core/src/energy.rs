@@ -32,7 +32,7 @@
 use crate::components::Slate;
 use crate::error::SimError;
 use crate::graph::{EdgeId, NodeId, NodeKind, PlantGraph};
-use crate::units::{Kelvin, T_AMBIENT};
+use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, T_AMBIENT};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Reference temperature for specific enthalpy: `h = cp·(T − T_REF)` [K].
@@ -43,7 +43,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// energy tests actually discriminate on it.
 pub const T_REF: Kelvin = Kelvin(273.15);
 
-/// Enthalpy flux carried by a mass flow [W]: `ṁ·cp·(T − T_REF)`.
+/// Enthalpy flux carried by a mass flow: `ṁ·cp·(T − T_REF)`.
 ///
 /// Sign follows `mass_flow`: the caller passes flow *into* the node it is
 /// accounting for, so an outflow (negative) subtracts its enthalpy. This is
@@ -51,8 +51,8 @@ pub const T_REF: Kelvin = Kelvin(273.15);
 /// tank integration, junction mixing, and the invariant tests all call it, so
 /// they cannot disagree about the datum.
 #[inline]
-pub fn enthalpy_flux(mass_flow: f64, cp: f64, temperature: Kelvin) -> f64 {
-    mass_flow * cp * (temperature.value() - T_REF.value())
+pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> Watt {
+    Watt(mass_flow.value() * cp.value() * (temperature.value() - T_REF.value()))
 }
 
 /// True for nodes with no inventory, whose temperature is an instantaneous
@@ -255,14 +255,9 @@ fn mix_inflows(
                 graph.node(node).name
             ))
         })?;
-        let cp = graph
-            .pipe(edge)
-            .stream
-            .composition
-            .mixture_cp(slate)
-            .value();
-        enthalpy += enthalpy_flux(into_node, cp, upstream_t);
-        capacity += into_node * cp;
+        let cp = graph.pipe(edge).stream.composition.mixture_cp(slate);
+        enthalpy += enthalpy_flux(KgPerSec(into_node), cp, upstream_t).value();
+        capacity += into_node * cp.value();
     }
 
     if capacity > 0.0 {

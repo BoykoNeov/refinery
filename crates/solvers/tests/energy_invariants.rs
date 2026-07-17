@@ -424,7 +424,12 @@ fn boundary_power(engine: &Engine) -> f64 {
                     let flow = stream.mass_flow.value();
                     let into_reservoir = if incoming { flow } else { -flow };
                     // Into the reservoir is out of the plant, hence the minus.
-                    power -= enthalpy_flux(into_reservoir, CP_WATER, stream.temperature);
+                    power -= enthalpy_flux(
+                        KgPerSec(into_reservoir),
+                        JPerKgK(CP_WATER),
+                        stream.temperature,
+                    )
+                    .value();
                 }
             }
             NodeKind::Tank(_) => power += node.heat_input.value(),
@@ -455,7 +460,10 @@ fn worst_relative_energy_error(engine: &mut Engine, ticks: u32) -> Option<f64> {
             .edge_ids()
             .map(|e| {
                 let s = &engine.graph.pipe(e).stream;
-                DT.value() * enthalpy_flux(s.mass_flow.value(), CP_WATER, s.temperature).abs()
+                DT.value()
+                    * enthalpy_flux(s.mass_flow, JPerKgK(CP_WATER), s.temperature)
+                        .value()
+                        .abs()
             })
             .fold(1.0f64, f64::max);
         let relative = (actual - expected).abs() / scale;
