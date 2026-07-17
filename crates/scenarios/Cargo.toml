@@ -11,3 +11,7 @@ serde.workspace = true
 toml.workspace = true
 thiserror.workspace = true
 indexmap.workspace = true
+
+[dev-dependencies]
+# Snapshot serialization for the M1 bit-identical rerun gate.
+serde_json.workspace = true
