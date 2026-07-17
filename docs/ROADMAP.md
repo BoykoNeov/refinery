@@ -15,16 +15,30 @@ NetworkFlowSolver (Newton) + SimpleFlowSolver behind the same trait.
       with damping, SimpleFlowSolver (shared network compilation in
       `solvers/network.rs`; conductance-scaled Gauss–Seidel)
 - [x] `cli`: run scenario N ticks, JSON snapshot output, `--solver` override
-- [x] Tests: hand-calc reference (pump fills tank through valve, compare
-      steady flow to analytic value), proptest mass conservation on random
-      networks, golden determinism test (bit-identical reruns)
+- [ ] Tests: hand-calc reference (pump fills tank through valve, compare
+      steady flow to analytic value). NOT DONE — and it is the last M1 gap.
+      `newton_reference.rs` pins pipe/pump/tank/junction in isolation, but no
+      test drives a Kv-derived valve (both valve cases hardcode `cv_max`, and
+      one only checks a *closed* valve blocks flow). So the scenario-boundary
+      `kv_to_cv_si = Kv/(3600·√1e5)` conversion and `tank_pump_valve`'s
+      ~13.7 kg/s steady flow are correct-by-derivation only, never checked
+      against an analytic value. Nothing else covers this: a wrong conversion
+      conserves mass, converges, and reruns bit-identically — all green — and
+      two solvers can agree on the same wrong number.
+- [x] Tests: proptest mass conservation on random networks
+      (`solvers/tests/invariants.rs`, I1 chain + tree)
+- [x] Tests: golden determinism test (bit-identical reruns)
+      (`scenarios/tests/m1_acceptance.rs`)
 - [x] Acceptance: 1000-tick run of tank_pump_valve converges every tick in
       <50 Newton iterations; mass balance error <1e-8; both solvers produce
       qualitatively matching steady states.
       Enforced by `scenarios/tests/m1_acceptance.rs` (convergence, mass
       balance, bit-identical reruns) + `solvers/tests/fidelity_agreement.rs`
       (newton ↔ simple). Measured on the reference plant: 9 Newton iterations
-      worst case, 1.7e-10 kg worst mass drift.
+      worst case, 1.7e-10 kg worst mass drift. Note these criteria check that
+      the plant is *self-consistent*, not that its magnitudes are *right* —
+      the hand-calc box above is what pins that, so M1 is not closed until it
+      lands.
 
 ## M2 — Heat
 Temperature transport in streams, tank thermal inventory, HeatExchanger and
