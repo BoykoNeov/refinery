@@ -205,14 +205,25 @@ fn valve_at_half_open_passes_half_the_kv_flow() {
 /// (Root-found to 1e-15; the roadmap's "~13.7 kg/s" estimate agrees.)
 const HAND_CALC_MASS_FLOW_KG_S: f64 = 13.753287;
 
-/// Tolerance for the hand calc [relative].
+/// Tolerance for the hand calc [relative]. **Do not loosen past ~2e-3** — the
+/// margin here is 6.6x, not the "orders of magnitude" such tolerances usually
+/// enjoy. It is bracketed from both sides by measurement:
 ///
-/// Slack is dominated by the solver's `eps_dp = 1.0` Pa sqrt-regularization,
-/// which stiffens each of the three branches by ~1 Pa against a ~411 kPa total
-/// driving head — a ~4e-6 relative shift in Q. 1e-3 clears that by ~250x while
-/// staying orders of magnitude tighter than any plausible conversion bug (the
-/// smallest realistic Kv slip, dropping the √ on the bar→Pa factor, is off by
-/// ~300x).
+/// - **Floor (3.6e-6).** Both fidelities land 3.632e-6 from the value above,
+///   dominated by the solver's `eps_dp = 1.0` Pa sqrt-regularization, which
+///   stiffens each of the three branches by ~1 Pa against ~411 kPa of driving
+///   head. (Measured; it matches the ~4e-6 predicted from eps analytically, and
+///   the two solvers agree with each other to 1e-9.) 1e-3 clears this by ~275x.
+/// - **Ceiling (6.6e-3).** The *smallest realistic* Kv slip is confusing bar
+///   with atm — `√101325` for `√1e5` — which is a mere +0.66% and converges
+///   perfectly happily. That is only 6.6x this tolerance, and it is the bug
+///   this file exists to catch: it leaves every other M1 test green.
+///
+/// Note the tolerance does NOT have to catch gross slips like dropping the √
+/// on the bar→Pa factor (~300x). Those collapse the network's conditioning and
+/// Newton simply diverges, so the solve errors out long before any magnitude is
+/// compared — which is also why such a mutation is worthless for falsifying
+/// this test.
 const HAND_CALC_TOLERANCE: f64 = 1e-3;
 
 fn reference_graph() -> PlantGraph {
