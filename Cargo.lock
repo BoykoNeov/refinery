@@ -1034,6 +1034,7 @@ dependencies = [
 name = "refinery-scenarios"
 version = "0.1.0"
 dependencies = [
+ "approx",
  "indexmap",
  "refinery-core",
  "refinery-solvers",

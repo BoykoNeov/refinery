@@ -15,3 +15,5 @@ indexmap.workspace = true
 [dev-dependencies]
 # Snapshot serialization for the M1 bit-identical rerun gate.
 serde_json.workspace = true
+# Tolerance comparisons for the Kv / hand-calc reference tests.
+approx.workspace = true

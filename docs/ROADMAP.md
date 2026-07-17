@@ -15,16 +15,33 @@ NetworkFlowSolver (Newton) + SimpleFlowSolver behind the same trait.
       with damping, SimpleFlowSolver (shared network compilation in
       `solvers/network.rs`; conductance-scaled Gauss–Seidel)
 - [x] `cli`: run scenario N ticks, JSON snapshot output, `--solver` override
-- [ ] Tests: hand-calc reference (pump fills tank through valve, compare
-      steady flow to analytic value). NOT DONE — and it is the last M1 gap.
-      `newton_reference.rs` pins pipe/pump/tank/junction in isolation, but no
-      test drives a Kv-derived valve (both valve cases hardcode `cv_max`, and
-      one only checks a *closed* valve blocks flow). So the scenario-boundary
-      `kv_to_cv_si = Kv/(3600·√1e5)` conversion and `tank_pump_valve`'s
-      ~13.7 kg/s steady flow are correct-by-derivation only, never checked
-      against an analytic value. Nothing else covers this: a wrong conversion
-      conserves mass, converges, and reruns bit-identically — all green — and
-      two solvers can agree on the same wrong number.
+- [x] Tests: hand-calc reference (pump fills tank through valve, compare
+      steady flow to analytic value) — `scenarios/tests/kv_reference.rs`.
+      Two levels, pinning different things:
+      1. The `Kv → cv_si` conversion against the **published definition**
+         (IEC 60534-2-1 / ISA-75.01: a Kv valve passes Kv m³/h of water at
+         1 bar, SG 1). This is the only *truly* independent anchor in M1 —
+         its expected value comes from the standard, not from any formula in
+         the workspace.
+      2. `tank_pump_valve`'s flow at its initial levels (8.0 m / 1.0 m)
+         against an independently derived **13.753287 kg/s**, with the valve
+         coefficient in the reference derived from the Kv definition rather
+         than from `kv_to_cv_si` — reusing the code's own conversion would
+         hide a bug in it on both sides. Both fidelities are pinned to the
+         analytic number, not merely to each other.
+      Lives in `scenarios/` rather than `solvers/tests/reference/` because
+      `kv_to_cv_si` is private to that crate and only observable through the
+      loader (deliberate deviation, noted in the file).
+      **Falsified before trusted:** a plausible bar-vs-atm slip (`√101325`
+      for `√1e5`, a +0.66% error) leaves *every* other M1 test green — it
+      converges, conserves mass, reruns bit-identically, and both solvers
+      agree on the same wrong number — and only `kv_reference` fails. The gap
+      this box described was real, and is now closed.
+      (Caveat worth keeping: the network hand-calc in (2) necessarily mirrors
+      `QuadraticBranch`'s series algebra — the inherent ceiling of any network
+      hand calc. It catches wrong constants, sign/fold errors and unit slips,
+      not an error in the model's formulation. (1) is what has no such
+      ceiling.)
 - [x] Tests: proptest mass conservation on random networks
       (`solvers/tests/invariants.rs`, I1 chain + tree)
 - [x] Tests: golden determinism test (bit-identical reruns)
@@ -37,8 +54,12 @@ NetworkFlowSolver (Newton) + SimpleFlowSolver behind the same trait.
       (newton ↔ simple). Measured on the reference plant: 9 Newton iterations
       worst case, 1.7e-10 kg worst mass drift. Note these criteria check that
       the plant is *self-consistent*, not that its magnitudes are *right* —
-      the hand-calc box above is what pins that, so M1 is not closed until it
-      lands.
+      the hand-calc box above is what pins that, and it has now landed
+      (`scenarios/tests/kv_reference.rs`).
+
+**M1 acceptance criteria are met.** All boxes ticked; `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
+are green. M2 may begin.
 
 ## M2 — Heat
 Temperature transport in streams, tank thermal inventory, HeatExchanger and
