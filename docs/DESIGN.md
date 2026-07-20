@@ -47,7 +47,7 @@ Data flow per tick:
 ## 2. Plant graph
 
 - **Nodes** = units: `Source`, `Sink`, `Atmosphere`, `Tank`, `Pump`, `Valve`,
-  `Junction`, later `Furnace`, `HeatExchanger`, `Column`, `Reactor`.
+  `Junction`, `Furnace`, `Cooler`, later `HeatExchanger`, `Column`, `Reactor`.
   (Pumps/valves are nodes with one in / one out edge; this keeps *all*
   flow elements uniform for the solver: every edge is a plain pipe.)
 - **Edges** = pipes: geometry (L, D, roughness), and the transported
@@ -126,7 +126,7 @@ makes it tractable. The distinction is *thermal inertia*, not unit type:
   temperature. A tank integrates it as a slow state (§1 step c); the reservoirs
   hold it fixed. Within a tick, all four are *boundary conditions*, read at
   their start-of-tick value.
-- **Zero-volume nodes** — `Junction`, `Pump`, `Valve`, `Furnace`. No inventory,
+- **Zero-volume nodes** — `Junction`, `Pump`, `Valve`, `Furnace`, `Cooler`. No inventory,
   so temperature is not a state at all: it is **algebraic**, the instantaneous
   enthalpy-weighted mix of the inflows,
   `T = T_REF + Σ(ṁ_in·cp_in·(T_in − T_REF) + Q) / Σ(ṁ_in·cp_in)` — the first
@@ -151,6 +151,29 @@ but for a different reason: theirs is the hydraulic fold-at-source convention
 there is one process stream. Nothing numerical forces it — the mixing formula
 would average N inlets happily — so a branched furnace is rejected because the
 author meant something the model does not represent.
+
+**The `Cooler` is the same `Q` term with the other sign** (M2.2) — structurally
+the furnace's mirror in every respect, and it exists as a separate unit rather
+than as a furnace with a negative duty. Both store `duty` as a non-negative
+**magnitude**; direction is a property of the *unit*, applied in the one place
+that owns the convention, `energy::heat_load`. The alternative — one unit, signed
+duty — puts the physics in the sign of a number in a TOML file, where a typo
+turns a heater into a chiller and the plant still runs. With two units the intent
+is in the name, a negative duty means nothing, and both the loader and the
+`Set*Duty` commands reject it. The payoff comes free at `heat_load`'s sum: a fire
+on a cooler *fights* the cooling instead of replacing it, exactly as it *adds* to
+a furnace's duty.
+
+**Over-cooling is an error, not a clamp.** A duty exceeding the sensible heat its
+stream carries above 0 K drives the mix below absolute zero. The result is
+*finite*, so no NaN/Inf check sees it, and it would propagate downstream as an
+ordinary temperature — measured at **−508 K** on `cooler_chiller.toml` at 200 MW
+with the check removed. `mix_inflows` therefore rejects `T < 0 K` with
+`SimError::Numerical`. The check is stated generally rather than as a
+cooler-specific case: a negative absolute temperature is broken whatever produced
+it, and only a cooler can reach it *today*. Clamping to 0 K was rejected — it
+reports a plausible number instead of the one that was asked for, the silent
+wrong answer this project treats as worse than a failure.
 
 An edge's stream temperature is its **upwind** node's temperature, selected by
 the sign of the solved flow (donor-cell). Flow sign, never edge direction: the
@@ -199,11 +222,18 @@ tightening the flow solver first.
   singular at `m = 0`, and the Euler mass update can overshoot into the clamp,
   at which point mass and energy have both stopped being conserved and the ratio
   is meaningless rather than merely imprecise.
-- **A furnace with no throughput drops its duty**, by the stagnant-node rule
-  above. Firing a heater with no flow through it is a real and dangerous
+- **A furnace or cooler with no throughput drops its duty**, by the stagnant-node
+  rule above. Firing a heater with no flow through it is a real and dangerous
   operating state (tube damage), and the model is silent on it rather than
   wrong about it — representing it needs tube metal as a thermal mass, which is
-  a fidelity step, not a bug fix.
+  a fidelity step, not a bug fix. This is also why neither unit appears in the
+  proptest generators: a stagnant one would "violate" energy conservation for a
+  documented model-gap reason rather than a defect.
+- **A cooler has no coolant-temperature floor.** Its duty is fixed, so it will
+  cool a stream past any coolant temperature, past ambient, and (absent the
+  guard above) past 0 K. Only the last is detectable without modelling a coolant.
+  Cooling to a realistic approach temperature is the `HeatExchanger`'s job — a
+  fidelity step, not a missing bound here.
 - **No heat loss to ambient** and no `HeatExchanger` yet — the rest of M2
   (see ROADMAP).
 

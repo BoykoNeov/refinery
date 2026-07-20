@@ -102,6 +102,12 @@ pub enum NodeDef {
     Furnace {
         duty_mw: f64,
     },
+    /// Cooler. Duty in MW REMOVED from the stream — a positive magnitude, like
+    /// a furnace's. Use this rather than a negative `furnace` duty; the loader
+    /// rejects those.
+    Cooler {
+        duty_mw: f64,
+    },
     Junction,
 }
 fn default_true() -> bool {
@@ -156,6 +162,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // conversion happens here, at the human-friendly ↔ SI boundary.
     let mut graph = PlantGraph::new();
     for (name, def) in &scenario.nodes {
+        validate_node_def(name, def)?;
         let kind = node_kind(def, &water, rho_water);
         graph.add_node(Node {
             name: name.clone(),
@@ -268,8 +275,38 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
         NodeDef::Furnace { duty_mw } => NodeKind::Furnace {
             duty: Watt(*duty_mw * 1e6),
         },
+        NodeDef::Cooler { duty_mw } => NodeKind::Cooler {
+            duty: Watt(*duty_mw * 1e6),
+        },
         NodeDef::Junction => NodeKind::Junction,
     }
+}
+
+/// Reject node definitions whose numbers are out of physical range, at load
+/// rather than at solve.
+///
+/// Duty is a non-negative MAGNITUDE in both units — direction is the unit's
+/// identity, not the sign of its number (see `NodeKind::Cooler`). A negative
+/// `furnace` duty used to be the only way to express cooling; now that `cooler`
+/// exists it can only be a sign slip, and a silently-chilling furnace is a
+/// plausible-looking wrong plant. Rejecting it here is what makes the two-unit
+/// design safe rather than merely tidy.
+fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
+    let duty = match def {
+        NodeDef::Furnace { duty_mw } => Some(("furnace", *duty_mw)),
+        NodeDef::Cooler { duty_mw } => Some(("cooler", *duty_mw)),
+        _ => None,
+    };
+    if let Some((unit, duty_mw)) = duty {
+        if !duty_mw.is_finite() || duty_mw < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "{unit} '{name}' has duty_mw = {duty_mw}: duty must be finite and \
+                 >= 0. It is a magnitude — to remove heat use a 'cooler' node, \
+                 not a negative furnace duty."
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn bar_to_pa(bar: f64) -> Pascal {

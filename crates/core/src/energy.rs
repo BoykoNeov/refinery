@@ -55,18 +55,25 @@ pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> W
     Watt(mass_flow.value() * cp.value() * (temperature.value() - T_REF.value()))
 }
 
-/// Total heat delivered into a node's stream [W]: external heat plus, for a
-/// furnace, its operating duty.
+/// Total heat delivered into a node's stream [W]: external heat plus the
+/// operating duty of a fired heater, minus that of a cooler.
 ///
-/// The two terms are separate fields and SUM here rather than sharing storage.
+/// This function is the single owner of the duty **sign convention**. Both
+/// `Furnace` and `Cooler` store `duty` as a non-negative magnitude — "how much
+/// heat this unit moves" — and which direction it moves is a property of the
+/// unit, applied here. Nothing else in the engine needs to know.
+///
+/// The terms are separate fields and SUM here rather than sharing storage.
 /// `heat_input` is the damage model's hook — `Command::SetHeatInput` sets it —
-/// so folding a furnace's duty into it would make a fire on a furnace silently
-/// overwrite the operator's setpoint instead of stacking on top of it. Every
-/// consumer of "how much heat enters this node" goes through this function, so
-/// the two can never drift apart.
+/// so folding a unit's duty into it would make a fire silently overwrite the
+/// operator's setpoint instead of stacking on top of it. Every consumer of "how
+/// much heat enters this node" goes through this function, so the two can never
+/// drift apart. On a cooler that same sum gives the physically right answer for
+/// free: a fire fights the cooling rather than replacing it.
 pub fn heat_load(node: &crate::graph::Node) -> Watt {
     let duty = match &node.kind {
         NodeKind::Furnace { duty } => duty.value(),
+        NodeKind::Cooler { duty } => -duty.value(),
         _ => 0.0,
     };
     Watt(node.heat_input.value() + duty)
@@ -75,10 +82,10 @@ pub fn heat_load(node: &crate::graph::Node) -> Watt {
 /// True for nodes with no inventory, whose temperature is an instantaneous
 /// mix of their inflows rather than a state (DESIGN §4a).
 ///
-/// Pumps, valves and furnaces are zero-volume *pass-throughs*: with exactly one
-/// inlet and one outlet (enforced by `validate_degrees`) the mixing formula
-/// degenerates to "outlet temperature = inlet temperature", plus whatever heat
-/// `heat_load` adds. Pump work and valve throttling both dissipate into the
+/// Pumps, valves, furnaces and coolers are zero-volume *pass-throughs*: with
+/// exactly one inlet and one outlet (enforced by `validate_degrees`) the mixing
+/// formula degenerates to "outlet temperature = inlet temperature", plus
+/// whatever heat `heat_load` adds. Pump work and valve throttling both dissipate into the
 /// stream as heat; at M2 fidelity that rise is neglected (~0.02 K for the
 /// reference pump — far below the model's accuracy) and is a documented
 /// DESIGN §4a limitation, not an oversight.
@@ -89,6 +96,7 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
             | NodeKind::Pump { .. }
             | NodeKind::Valve { .. }
             | NodeKind::Furnace { .. }
+            | NodeKind::Cooler { .. }
     )
 }
 
@@ -103,14 +111,15 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         NodeKind::Sink { temperature, .. } => Some(*temperature),
         NodeKind::Atmosphere => Some(T_AMBIENT),
         NodeKind::Tank(tank) => Some(tank.temperature),
-        // A furnace belongs here, with the other zero-volume nodes: `None` is
-        // what makes the sweep MIX its inflows and apply `heat_load`. Returning
-        // `Some(..)` would compile and quietly make it inertial — its duty would
-        // never reach the stream.
+        // Furnaces and coolers belong here, with the other zero-volume nodes:
+        // `None` is what makes the sweep MIX their inflows and apply
+        // `heat_load`. Returning `Some(..)` would compile and quietly make one
+        // inertial — its duty would never reach the stream.
         NodeKind::Junction
         | NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
-        | NodeKind::Furnace { .. } => None,
+        | NodeKind::Furnace { .. }
+        | NodeKind::Cooler { .. } => None,
     }
 }
 
@@ -290,7 +299,31 @@ fn mix_inflows(
     }
 
     if capacity > 0.0 {
-        Ok(Kelvin(T_REF.value() + (enthalpy + heat_input) / capacity))
+        let mixed = T_REF.value() + (enthalpy + heat_input) / capacity;
+        // A duty that exceeds the sensible heat available in the stream drives
+        // the mix below absolute zero. The result is FINITE, so the engine's
+        // NaN/Inf checks never see it: without this guard a sub-zero Kelvin
+        // propagates downstream as an ordinary temperature and the plant runs on
+        // a number physics forbids.
+        //
+        // Stated generally rather than as `if Cooler`, per the no-special-case
+        // rule: a negative absolute temperature is broken whatever produced it.
+        // Only a cooler can reach it today, but the check owes nothing to that.
+        //
+        // Err, never clamp. Clamping would report a plausible 0 K instead of the
+        // temperature asked for, which is exactly the silently-wrong answer this
+        // project treats as worse than a crash.
+        if mixed < 0.0 {
+            return Err(SimError::Numerical(format!(
+                "'{}' cools to {mixed:.2} K, below absolute zero: net heat load \
+                 {heat_input:.4e} W exceeds the {capacity:.4e} W/K · {:.2} K of \
+                 sensible heat its inflow carries above 0 K. Reduce the duty or \
+                 raise the flow through it.",
+                graph.node(node).name,
+                enthalpy / capacity + T_REF.value(),
+            )));
+        }
+        Ok(Kelvin(mixed))
     } else {
         // No inflow: indeterminate but inert (mass balance ⇒ no outflow either).
         //

@@ -185,6 +185,69 @@ fn a_furnace_at_zero_duty_is_exactly_isothermal() {
     }
 }
 
+/// A furnace duty is a non-negative magnitude, at both entry points.
+///
+/// Since M2.2 gave cooling its own `Cooler` unit, a negative furnace duty
+/// expresses nothing — it can only be a sign slip, and a furnace that quietly
+/// chills is exactly the plausible-looking wrong plant the two-unit split
+/// exists to prevent (DESIGN §4a).
+///
+/// The command half must be sent to a REAL furnace to mean anything: on any
+/// other node kind `SetFurnaceDuty` returns `InvalidCommand` from the wrong-kind
+/// arm whether or not the duty was ever range-checked, so the assertion would
+/// hold with the guard deleted. That is why this lives here rather than beside
+/// its cooler counterpart in `cooler_reference.rs`.
+#[test]
+fn negative_furnace_duty_is_refused() {
+    use refinery_core::error::SimError;
+    use refinery_core::snapshot::Command;
+    use refinery_core::units::Watt;
+
+    // At load. `Engine` is not `Debug`, so unwrap the Result by hand.
+    let mut file: ScenarioFile = refinery_scenarios::load_str(SCENARIO).expect("must parse");
+    match file.nodes.get_mut("heater").expect("a 'heater' node") {
+        NodeDef::Furnace { duty_mw: d } => *d = -1.0,
+        other => panic!("'heater' must be a furnace, got {other:?}"),
+    }
+    match refinery_scenarios::build_engine(&file) {
+        Ok(_) => panic!("a negative furnace duty_mw must not build"),
+        Err(e) => assert!(
+            matches!(e, SimError::Scenario(_)) && e.to_string().contains("furnace"),
+            "must fail as a Scenario error naming the unit, got {e:?}"
+        ),
+    }
+
+    // At the command boundary, against the real furnace.
+    let mut engine = build(1.0);
+    let heater = engine.graph.find_node("heater").expect("a 'heater' node");
+    let error = engine
+        .apply(Command::SetFurnaceDuty {
+            node: heater,
+            duty: Watt(-1.0),
+        })
+        .expect_err("a negative duty setpoint must be refused");
+    assert!(
+        matches!(error, SimError::InvalidCommand(_)),
+        "a bad setpoint is an invalid command, got {error:?}"
+    );
+    assert!(
+        !error.to_string().contains("is not a furnace"),
+        "this must be refused for its NEGATIVE duty, not rejected as the wrong \
+         node kind — otherwise the guard is untested: {error}"
+    );
+
+    // The refusal must leave the setpoint alone rather than half-apply it.
+    for _ in 1..=TICKS {
+        engine.tick().expect("the furnace plant must still run");
+    }
+    let rise = edge(&engine, "transfer_line").stream.temperature.value() - FEED_K;
+    assert!(
+        rise > 1.0,
+        "the rejected command must not have disturbed the 1 MW setpoint, got a \
+         {rise} K rise"
+    );
+}
+
 /// A fire on a furnace must ADD to its duty, not replace it.
 ///
 /// This is the whole reason `duty` is a field of its own rather than reusing

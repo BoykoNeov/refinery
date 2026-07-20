@@ -133,9 +133,46 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       that is the evidence it earns its place. Falsification also found a
       vacuity: the fire gate passed under the inertial mutation because 0 K
       doubles to 0 K, so it now asserts the duty produces a real rise first.
+- [x] `Cooler` (duty removed from a flowing stream). The furnace's structural
+      mirror, and a SEPARATE unit rather than a negative-duty furnace: both store
+      duty as a non-negative magnitude and `energy::heat_load` owns the sign, so
+      the physics lives in the unit's identity instead of in the sign of a number
+      in a TOML file, where a typo would turn a heater into a chiller and still
+      run. Negative duty is consequently meaningless and rejected at both entry
+      points (loader and `Set*Duty`). A fire on a cooler *fights* it, free, from
+      the same sum that makes a fire *add* to a furnace. See DESIGN §4a.
+- [x] Absolute-zero guard in `mix_inflows`: a duty exceeding the stream's
+      sensible heat above 0 K yields a *finite* negative Kelvin — measured at
+      −508 K on `cooler_chiller.toml` at 200 MW with the check removed, which
+      converged, serialized, and propagated downstream as an ordinary
+      temperature. Rejected as `SimError::Numerical`, never clamped. Stated
+      generally, not as `if Cooler`.
+- [x] Tests: `scenarios/tests/cooler_reference.rs` + `scenarios/cooler_chiller.toml`.
+      Covers only what the furnace tests do not: the SIGN (a signed absolute
+      check — comparing magnitudes would pass under the one-character slip this
+      unit invites), duty and `heat_input` OPPOSING to an exactly isothermal flat
+      line, the 0 K guard, and negative duty refused at each entry point
+      separately.
+      **Falsified before trusted:** the sign slip (`+duty` for a cooler) fails
+      all four gates; disabling the 0 K guard fails **that gate alone** and the
+      plant then reports −508 K with `converged: true`; and each negative-duty
+      guard was removed independently, each failing only its own assertion —
+      loader and command are separate ways in and neither covers the other.
+      Falsification also caught a **vacuity in the test file itself**: the
+      furnace-command half was originally asserted against the *cooler* plant,
+      where `SetFurnaceDuty` returns `InvalidCommand` from the wrong-kind arm
+      whether or not the duty is ever range-checked — green with the guard
+      deleted. It now runs against a real furnace in `furnace_reference.rs`
+      (`negative_furnace_duty_is_refused`) and asserts the refusal is for the
+      negative duty rather than the node kind.
 - [ ] `HeatExchanger` (two streams coupled; simple ΔT-effectiveness fidelity
-      before any NTU model).
-- [ ] Heat loss to ambient from tanks and pipes.
+      before any NTU model). Also owns the *approach temperature* a fixed-duty
+      `Cooler` deliberately lacks (DESIGN §4a).
+- [ ] Ambient heat exchange for tanks and pipes. NOT "loss": the driving force is
+      `T_ambient − T_node`, so the same term must HEAT a body colder than ambient
+      and cool one hotter, with no second code path and no sign convention of its
+      own. A one-directional "loss" would be wrong for a chilled tank on a warm
+      day — and, given the `Cooler` above, that is now a reachable plant state.
 - [ ] Pump work / valve throttling into the stream, if it earns its keep — see
       DESIGN §4a's limitation list (~0.02 K on the reference pump).
 

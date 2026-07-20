@@ -25,15 +25,26 @@ pub enum Command {
     },
     /// Damage: external heat on a node (fire). 0 to extinguish.
     ///
-    /// Distinct from `SetFurnaceDuty`: this is heat the plant did not ask for,
-    /// and it stacks on top of a furnace's duty rather than replacing it.
+    /// Distinct from `SetFurnaceDuty`/`SetCoolerDuty`: this is heat the plant
+    /// did not ask for, and it stacks on top of a unit's duty rather than
+    /// replacing it — so a fire adds to a furnace and fights a cooler.
     SetHeatInput {
         node: NodeId,
         power: Watt,
     },
     /// Operating setpoint of a fired heater [W delivered to the process fluid].
-    /// 0 shuts it down.
+    /// Must be >= 0; 0 shuts it down.
     SetFurnaceDuty {
+        node: NodeId,
+        duty: Watt,
+    },
+    /// Operating setpoint of a cooler [W REMOVED from the process fluid].
+    /// Must be >= 0; 0 shuts it down.
+    ///
+    /// Separate from `SetFurnaceDuty` rather than one signed `SetDuty`, because
+    /// the same positive number would mean opposite things depending on the
+    /// node's kind — unreadable at the call site. See `NodeKind::Cooler`.
+    SetCoolerDuty {
         node: NodeId,
         duty: Watt,
     },

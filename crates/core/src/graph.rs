@@ -93,6 +93,29 @@ pub enum NodeKind {
     /// model's hook (fires), and a fire on a furnace must ADD to its duty, not
     /// overwrite the operator's setpoint. See `energy::heat_load`.
     Furnace { duty: Watt },
+    /// Cooler: a duty *removed* from the stream passing through it.
+    ///
+    /// Structurally the furnace's mirror — zero-volume, hydraulically a
+    /// pass-through, algebraic outlet temperature — and `duty` is likewise a
+    /// non-negative magnitude: `energy::heat_load` applies the sign, SUBTRACTING
+    /// a cooler's duty where it adds a furnace's.
+    ///
+    /// A separate unit rather than a negative-duty `Furnace`, deliberately. A
+    /// bare signed number in a scenario file cannot be read without knowing
+    /// which sign convention its unit uses, and a sign typo would silently turn
+    /// a heater into a chiller. With two units the intent is in the name, and
+    /// negative duty becomes meaningless input that both the loader and
+    /// `Command::SetFurnaceDuty`/`SetCoolerDuty` reject.
+    ///
+    /// A fire (`Node::heat_input`) on a cooler correctly *fights* the cooling
+    /// rather than replacing it, for free — `heat_load` sums the two terms.
+    ///
+    /// KNOWN LIMITATION: a fixed duty has no coolant-temperature floor, so a
+    /// large duty on a small flow cools past the coolant, past ambient, and in
+    /// the limit past 0 K. Only the last of those is detectable without a
+    /// coolant model, and `mix_inflows` rejects it. Cooling to a realistic
+    /// approach temperature is the `HeatExchanger`'s job (M2.2), not this one's.
+    Cooler { duty: Watt },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

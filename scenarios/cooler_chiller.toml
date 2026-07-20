@@ -1,0 +1,54 @@
+# M2.2 reference plant: hot feed → cooler → product sink.
+#
+# `furnace_heater.toml`'s mirror, deliberately identical in hydraulics: same
+# pressures, same two 20 m × 0.10 m pipes, so the two plants solve to the same
+# mass flow and a cooler's ΔT can be compared against a furnace's directly. Only
+# the unit and the feed temperature differ — the feed runs hot (80 °C) so there
+# is sensible heat to remove without approaching the absolute-zero guard.
+#
+# Duty is a positive MAGNITUDE here, as it is for a furnace; that it is REMOVED
+# is the unit's identity, not the sign of its number. A negative duty_mw is
+# rejected at load.
+#
+# Units at this boundary are human-friendly (bar, °C, MW); the loader converts
+# to SI. See refinery-scenarios docs.
+
+[meta]
+name = "cooler_chiller"
+description = "Hot water feed cooled on its way to a product sink."
+
+[simulation]
+dt = 0.1            # seconds per tick
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[nodes.hot_feed]
+type = "source"
+pressure_bar = 3.0
+temperature_c = 80.0
+
+[nodes.chiller]
+type = "cooler"
+duty_mw = 1.0       # removed from the process fluid [MW], converted to W on load
+
+[nodes.product]
+type = "sink"
+pressure_bar = 1.0
+temperature_c = 80.0
+
+[[pipes]]
+name = "feed_line"
+from = "hot_feed"
+to = "chiller"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "transfer_line"
+from = "chiller"
+to = "product"
+length_m = 20.0
+diameter_m = 0.10

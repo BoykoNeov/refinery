@@ -116,12 +116,13 @@ impl Engine {
                 self.graph.node_mut(node).heat_input = power;
                 Ok(())
             }
+            // Both duty commands take a non-negative MAGNITUDE; the direction is
+            // the unit's, applied by `energy::heat_load`. Negative is rejected
+            // rather than quietly meaning "cool with a furnace" — with a
+            // dedicated `Cooler` there is no longer anything for a negative duty
+            // to express, so it can only be a sign slip.
             Command::SetFurnaceDuty { node, duty } => {
-                if !duty.value().is_finite() {
-                    return Err(SimError::InvalidCommand(
-                        "furnace duty must be finite".into(),
-                    ));
-                }
+                check_duty(duty, "furnace")?;
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Furnace { duty: d } => {
                         *d = duty;
@@ -129,6 +130,18 @@ impl Engine {
                     }
                     _ => Err(SimError::InvalidCommand(format!(
                         "{node:?} is not a furnace"
+                    ))),
+                }
+            }
+            Command::SetCoolerDuty { node, duty } => {
+                check_duty(duty, "cooler")?;
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Cooler { duty: d } => {
+                        *d = duty;
+                        Ok(())
+                    }
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} is not a cooler"
                     ))),
                 }
             }
@@ -307,4 +320,20 @@ impl Engine {
     pub fn dt(&self) -> Seconds {
         self.config.dt
     }
+}
+
+/// Validate a heater/cooler duty setpoint: finite and non-negative.
+///
+/// Shared by both duty commands so the two can never disagree about what a
+/// legal setpoint is. `unit` names the kind in the message, since "duty must be
+/// >= 0" is only actionable if the operator knows which node rejected it.
+fn check_duty(duty: Watt, unit: &str) -> Result<(), SimError> {
+    if !duty.value().is_finite() || duty.value() < 0.0 {
+        return Err(SimError::InvalidCommand(format!(
+            "{unit} duty must be finite and >= 0 (it is a magnitude; the \
+             direction is the unit's), got {} W",
+            duty.value()
+        )));
+    }
+    Ok(())
 }
