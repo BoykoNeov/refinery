@@ -84,10 +84,16 @@ fn the_reactor_cracks_gasoil_yet_conserves_total_mass() {
     );
 
     // The product edge carries the CRACKED slate — the reaction actually ran.
+    // Every product lump the demo table makes must appear: gasoline up, gasoil
+    // down, and the trace gas/coke lumps present where the feed had none.
     let prod_frac = product.composition.fractions();
     assert!(
         prod_frac[GASOLINE] > 0.5 && prod_frac[GASOIL] < 0.3,
         "the reaction must have cracked gasoil into gasoline (product {prod_frac:?})"
+    );
+    assert!(
+        prod_frac[GAS] > 0.0 && prod_frac[COKE] > 0.0,
+        "cracking must produce gas and coke the pure-gasoil feed had none of (product {prod_frac:?})"
     );
     for (i, &expected) in CRACKED.iter().enumerate() {
         assert!(
@@ -103,9 +109,13 @@ fn the_reactor_cracks_gasoil_yet_conserves_total_mass() {
         "product composition must sum to 1 (mass neutrality), got {sum}"
     );
 
-    // THE GATE: mass in = mass out through the reactor, despite the composition
-    // change above. Both edges point away from their upwind end, so both flows
-    // are positive and must be equal.
+    // Total mass is conserved through the reactor. Note WHAT guards this: the
+    // hydraulic continuity at the free zero-volume node forces m_out == m_in
+    // regardless of the reaction, and the reaction's OWN mass-neutrality is the
+    // Σ products = 1 asserted above (guarded in isolation by the solvers test
+    // `rows_are_renormalized_so_mass_is_conserved`). So this pair is the two
+    // conservations meeting: mass balances (continuity) AND nothing was created
+    // by the composition change (renormalization).
     let (m_in, m_out) = (feed.mass_flow.value(), product.mass_flow.value());
     assert!(
         m_in > 0.0,
@@ -113,7 +123,7 @@ fn the_reactor_cracks_gasoil_yet_conserves_total_mass() {
     );
     assert!(
         (m_in - m_out).abs() < TOL * m_in.max(1.0),
-        "total mass must be conserved through the reactor: {m_in} kg/s in vs {m_out} kg/s out"
+        "total mass in == out through the reactor: {m_in} kg/s in vs {m_out} kg/s out"
     );
 
     // Per-COMPONENT mass is NOT conserved — the point of a reactor. Gasoil mass
@@ -125,7 +135,6 @@ fn the_reactor_cracks_gasoil_yet_conserves_total_mass() {
         "gasoil mass must FALL across the reactor ({gasoil_in} → {gasoil_out} kg/s): a reactor \
          breaks per-component conservation by design"
     );
-    let _ = (GAS, COKE); // slate positions documented above; asserted via sum.
 
     // The setpoint is imposed on the reactor's outlet, not mixed from the feed.
     let riser = node(&snap.nodes, "riser");

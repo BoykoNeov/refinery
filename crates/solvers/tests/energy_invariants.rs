@@ -602,6 +602,16 @@ fn plant_inputs_strategy() -> impl Strategy<Value = PlantInputs> {
 /// `ΔE` has one unambiguous meaning), and every temperature is independently
 /// random (so nothing cancels by accident — an isothermal plant would satisfy
 /// any balance, correct or not).
+///
+/// **I6 EXCLUDES reactors, by construction, and this generator is where that is
+/// enforced.** It builds only Source/Junction/Tank/Sink — never a `Reactor`.
+/// I6 already carries a furnace's Q (heat IS in its frame), but a reactor is
+/// different in kind: its reported duty includes `ṁ·Δh_rxn`, chemical energy the
+/// sensible-only datum (`cp·(T − T_REF)`, no formation enthalpy) does not track,
+/// so a reactor's energy sits OUTSIDE this balance rather than violating it. The
+/// reactor's energy is gated instead by the two-duty test that pins the sensible
+/// and Δh_rxn terms separately (`core::energy`'s reactor tests, docs/DESIGN.md
+/// §5).
 fn build_thermal_plant(inputs: &PlantInputs) -> PlantGraph {
     let (supplies, tank_t, tank_q, sink_p, sink_t) = inputs;
     let mut graph = PlantGraph::new();

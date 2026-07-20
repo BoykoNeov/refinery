@@ -623,28 +623,34 @@ not track (vs I6).
       downstream node sees the product composition; the single uniform outlet means
       `edge_composition_at` is untouched (unlike the column's N differing draws).
 
-### M4.1 — Simple lookup reactor (all the machinery, no ODE)
-- [ ] `core`: `NodeKind::Reactor` (zero-volume, 1-in-1-out; config = `T_set`, `τ`);
-      `Reactor` arms in `classify`/`fixed_pressure`/`validate_degrees` mirroring
-      `Furnace`; `resolve_node_states` takes `&dyn ReactionModel` and resolves a
-      reactor to its product composition + `T_set`, computing the emergent duty.
-- [ ] `traits`: flesh out `ReactionModel` —
-      `react(feed, T, slate) -> Result<(Composition, Δh_rxn), SimError>`; `NoReactions`
-      default (identity, 0) so every pre-M4 golden stays bit-identical.
-- [ ] `solvers`: `SimpleLookup` — fixed conversion table per `(T-band, feed lump)`,
-      rows renormalized to `Σ = 1` (the reactor's load-bearing normalization).
-- [ ] `scenarios`: `[[reactor]]`/`NodeKind::Reactor` loader, multi-lump slate with
-      the FCC lumps, engine wiring of the selected `ReactionModel`.
-- [ ] Tests: reactor **total-mass** gate (columns-sum-to-zero); reactor **energy**
-      gate pinning the two duties separately — the reported duty must sit exactly
-      `ṁ·Δh_rxn` above the sensible-only baseline `ṁ·Δ(cp·(T−T_ref))`, asserted as
-      that DIFFERENCE (not reported-duty against its own formula, which is a
-      tautology), so `Δh_rxn` and the cp-shift each falsify their own term;
-      per-lump conversion against the lookup table in isolation; `NoReactions`
-      regression anchor (all M1/M2/M3 goldens bit-identical). I7/I6 excludes
-      reactors — stated, since a splitter-style "green by construction" argument
-      does NOT apply to a unit that breaks per-component conservation; those
-      invariants' networks simply contain none.
+### M4.1 — Simple lookup reactor (all the machinery, no ODE) — **LANDED** 2026-07-20
+- [x] `core`: `NodeKind::Reactor` (zero-volume, 1-in-1-out; config = `t_set`, `tau`);
+      `Reactor` arms in `fixed_pressure`/`validate_degrees` mirroring `Furnace`
+      (`classify` reads `fixed_pressure`, so no separate arm); `resolve_node_states`
+      takes `&dyn ReactionModel` and resolves a reactor to its product composition
+      + `T_set`, computing the two emergent duties onto `NodeStates.reactor_duty`.
+- [x] `traits`: fleshed out `ReactionModel` —
+      `react(feed, T, tau, slate) -> Result<Reaction { products, dh_rxn }, SimError>`.
+      Refined from the roadmap sketch: `tau` threaded now (M4.2 kinetics integrate
+      over it), a named `Reaction` struct not a tuple, `dh_rxn: JPerKg` with an
+      explicit sign convention (positive = endothermic). `NoReactions` default
+      (identity, 0) keeps every pre-M4 golden bit-identical.
+- [x] `solvers`: `SimpleLookup` — fixed conversion table per `(T-band, feed lump)`,
+      rows renormalized to `Σ = 1` at construction (the reactor's load-bearing
+      normalization); `fcc_demo(slate)` is the illustrative name-resolved table.
+- [x] `scenarios`: `NodeDef::Reactor { t_set_c, tau_s }` loader arm,
+      `reactions = "lookup"` selecting `SimpleLookup::fcc_demo`, `fcc_reactor.toml`
+      demo plant with the four FCC lumps.
+- [x] Tests: reactor **energy** gate (core unit test) pinning the two duties
+      separately — reported − independent-sensible == `ṁ·Δh_rxn`, mutation-verified
+      that the cp-shift and `Δh_rxn` terms each fail on their own; per-lump
+      conversion + band selection + renormalization (solvers unit tests); reactor
+      total-mass / composition-change / setpoint gate end to end
+      (`reactor_reference.rs`); `NoReactions` regression anchor (all M1/M2/M3
+      goldens bit-identical). I7/I6 exclude reactors — now **stated at each
+      generator** (`composition_transport.rs`, `energy_invariants.rs`): I7 because
+      a reactor breaks per-component mass by construction, I6 because `Δh_rxn` sits
+      outside its sensible-only frame.
 
 ### M4.2 — FCC 4-lump kinetics (additive fidelity swap)
 - [ ] `solvers`: `FourLump` — Weekman/Lee-style Arrhenius kinetics, **fixed-count**

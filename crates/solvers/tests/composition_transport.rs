@@ -412,6 +412,18 @@ fn plant_inputs_strategy() -> impl Strategy<Value = PlantInputs> {
 /// has one meaning), and every feed composition is independently random — a
 /// plant fed one composition everywhere would satisfy any blending rule,
 /// correct or not.
+///
+/// **I7 EXCLUDES reactors, by construction, and this generator is where that is
+/// enforced.** It builds only Source/Junction/Tank/Sink — never a `Reactor` —
+/// and the exclusion is deliberate, not incidental: a reactor is the one unit
+/// that BREAKS per-component mass on purpose (it moves mass between components,
+/// e.g. gasoil → gasoline + gas + coke), so a network containing one could not
+/// satisfy this balance at all. A splitter-style "green by construction"
+/// argument does not rescue it — there is no argument that makes a
+/// mass-redistributing unit conserve per-component mass. The reaction's OWN
+/// mass-neutrality (Σ products = 1) is guarded elsewhere: `reactor.rs`'s
+/// `rows_are_renormalized_so_mass_is_conserved` and the reactor total-mass gate
+/// in `scenarios/tests/reactor_reference.rs` (docs/DESIGN.md §5).
 fn build_plant(inputs: &PlantInputs) -> PlantGraph {
     let (supplies, sink_p, tank_heavy) = inputs;
     let mut graph = PlantGraph::new();

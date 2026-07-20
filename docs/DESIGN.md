@@ -950,7 +950,7 @@ structurally simple — **hydraulically it is a furnace**:
   (the trait lives in `core`, so this is not a `core → solvers` dependency — the
   engine passes its `reactions` object down). When the Kahn sweep reaches a
   reactor, its inflows are already resolved: mix them to the **feed**, call
-  `reactions.react(feed, T_set, slate)` to get the **product** composition and
+  `reactions.react(feed, T_set, τ, slate)` to get the **product** composition and
   `Δh_rxn`, and store the *product* as the reactor's resolved composition and
   `T_set` as its resolved temperature. Note the reactor is the first **T-overriding
   zero-volume node**: it is *swept*, so `boundary_temperature`/`boundary_composition`
@@ -972,11 +972,20 @@ structurally simple — **hydraulically it is a furnace**:
 **The `ReactionModel` contract.** One method — a pure function
 
 ```
-react(feed: &Composition, T: Kelvin, slate: &Slate)
-    -> Result<(Composition, JPerKg /* Δh_rxn, specific, at T_ref */), SimError>
+react(feed: &Composition, temperature: Kelvin, tau: Seconds, slate: &Slate)
+    -> Result<Reaction { products: Composition, dh_rxn: JPerKg }, SimError>
 ```
 
-testable in isolation exactly like `energy::column_separation`, with impls in
+*As built (M4.1), this refines the sketch above in three ways, none changing the
+physics:* `τ` is threaded now (the lookup fidelity ignores it, but `FourLump`
+integrates `dC/dτ` over it — putting it in the signature now spares a trait
+churn one milestone later); the two returns are a named `Reaction` struct rather
+than a bare tuple; and `Δh_rxn` is a `JPerKg` newtype with an explicit **sign
+convention — positive = endothermic (heat absorbed)** — so the reported duty
+`= sensible + ṁ·Δh_rxn` and FCC cracking carries a positive value. The two
+emergent duties are returned to the engine on `NodeStates.reactor_duty`.
+
+Testable in isolation exactly like `energy::column_separation`, with impls in
 `solvers/`:
 
 - **`NoReactions`** — identity composition, `Δh_rxn = 0`. The default, so every
