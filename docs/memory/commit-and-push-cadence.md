@@ -5,6 +5,7 @@ metadata:
   node_type: memory
   type: feedback
   originSessionId: 10843f67-db12-4aaf-a9ed-1a7853cf0d0f
+  modified: 2026-07-20T18:37:03.761Z
 ---
 
 The user wants me to **always commit AND push** — proactively, without being
@@ -17,10 +18,15 @@ asked — after any change lands. Restated explicitly by the user on 2026-07-14:
 
 Default is "commit + push now," not "batch it up for later."
 
-**Commit directly to `main`, no feature branch.** Reaffirmed 2026-07-14 when
-offered a branch-first option: the user chose "always commit and push to main."
-This overrides the harness default of branching off the default branch — for
-this project, commit and push straight to `main`, and don't ask each time.
+**Branch policy — the 2026-07-14 "commit to main" is superseded by observed
+practice.** As of M3/M4 the actual workflow is **one feature branch per
+milestone**, pushed to origin, NOT direct-to-main: M3 shipped on
+`m3-composition` (6 commits ahead of `main`, never merged), and M4 opened on
+`m4-reactor` off that HEAD on 2026-07-20. So at a milestone boundary, branch
+`m<n>-<topic>` off the previous milestone's branch; within a milestone, keep
+committing to the current branch. The "always commit and push" cadence is
+unchanged — only the destination is a per-milestone branch, not `main`. Don't
+switch to `main` to commit; it is behind and unmerged.
 
 **Why:** The user wants durable, frequent checkpoints on the private GitHub
 remote (`git@github.com:BoykoNeov/refinery.git`, private) rather than a large
