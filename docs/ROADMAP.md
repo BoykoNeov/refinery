@@ -391,16 +391,40 @@ reference, which the sweep mutation cannot reach — its plant has no junction);
 and dropping the outflow term above (I7 alone, with I1 green, which is the proof
 I7 is not I1 restated).
 
-**Deferred, on falsifiability grounds.** A stream's `cp` and density still come
-from the pipe's stored composition, one tick stale, rather than from the resolved
-upwind node. Upwind is the better physics, but no M3.1 gate can turn red on it:
-composition transport is entirely `cp`-free, and the regression anchor is
-one-component, where every `cp` is equal by construction. Shipping a behaviour
-change no gate can falsify is what [[falsifiability-as-scoping-criterion]] exists
-to prevent. The lag is uniform (both readers run before the write, deliberately)
-and bounded — a transient, not a conservation error. It belongs with the first
-multi-component *temperature* reference. `Atmosphere`'s composition is defaulted
-to the first cut on the same terms: nothing in M3.1 draws mass out of one.
+- [x] Tests: a multi-component TANK ENERGY reference — a hot cut of one `cp`
+      entering a tank of another. The only case where the two fields are
+      coupled, and the only gate in the workspace that reads a heat capacity
+      that MOVED.
+- [x] Tests: a deterministic back-fed-sink composition gate, mirroring M2's
+      `a_back_fed_sink_supplies_its_own_temperature`. The `Sink` composition
+      field exists precisely for this case, so leaving it to I7's generator to
+      reach by chance was the wrong coverage for it.
+
+**A deferral that did not survive its own gate — worth recording as a method
+note.** The stream `cp`/density source (pipe's stored composition, one tick
+stale, versus the resolved upwind node) was deferred on the grounds that no
+M3.1 gate could falsify it: transport is `cp`-free and the regression anchor is
+one-component. That reasoning was sound and its *premise* was wrong. The premise
+held only because every multi-component test was isothermal and every thermal
+test one-component — a gap in the test surface, not a fact about the change.
+Writing the one case that crosses both (above) showed the lag is not the bounded
+transient the deferral assumed: a tank fed a cut whose `cp` differs from the
+pipe's stale one books the wrong enthalpy on the *first* tick. `cp` now comes
+from the resolved upwind node through `energy::stream_cp_at`, and the goldens
+stayed bit-identical, as one-component construction guarantees.
+
+The lesson is not "defer less". It is that "no gate can falsify this" is a claim
+about the *test surface*, and before it justifies a deferral it is worth asking
+whether the surface has a hole exactly where the change lives. Two orthogonal
+axes each tested alone will always look like they cover the plane.
+
+**Still deferred, and this one holds.** `network.rs` derives stream density from
+the stored composition for the hydraulic solve. That lag is structural — the
+solve opens the tick, before any composition is resolved — and is the same
+quasi-steady staleness the tank levels feeding it already have. `Atmosphere`'s
+composition is defaulted to the first cut: nothing in M3.1 draws mass out of one,
+and unlike the `cp` case there is no test that could be written to show
+otherwise without first building the leak back-feed that would need it.
 
 ### M3.2 — Fixed-cut-point column (design note first — the crux is the solver)
 **Not an additive unit like M2's furnace and cooler.** Every M2 unit was a

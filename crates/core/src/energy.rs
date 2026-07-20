@@ -222,6 +222,7 @@ pub fn edge_temperature_at(
     graph: &PlantGraph,
     slate: &Slate,
     temperature: &BTreeMap<NodeId, Kelvin>,
+    composition: &BTreeMap<NodeId, Composition>,
     edge: EdgeId,
     mass_flow: f64,
     node: NodeId,
@@ -238,13 +239,47 @@ pub fn edge_temperature_at(
         return Ok(inlet);
     }
     let pipe = graph.pipe(edge);
-    let cp = pipe.stream.composition.mixture_cp(slate);
+    // The cp of what is IN the pipe this tick — the upwind node's resolved
+    // composition, not the pipe's stored copy of last tick's. See
+    // `stream_cp_at` for why the difference is not cosmetic.
+    let cp = stream_cp_at(graph, slate, composition, edge, mass_flow)?;
     Ok(pipe_outlet_temperature(
         inlet,
         pipe.ambient_ua,
         KgPerSec(mass_flow),
         cp,
     ))
+}
+
+/// The specific heat of the fluid crossing `edge` this tick [J/(kg·K)].
+///
+/// Off the RESOLVED upwind composition, and deliberately not off
+/// `pipe.stream.composition`. The stored copy is written at the end of a tick,
+/// so every reader during the tick would see the PREVIOUS one's — and a stream
+/// that has just changed composition would be charged the heat capacity of the
+/// fluid it replaced.
+///
+/// That was shipped as an accepted one-tick lag on the grounds that no gate
+/// could falsify it, which was true only while every multi-component test was
+/// isothermal. It is not a bounded transient: a tank fed a cut whose cp differs
+/// from the pipe's stale one books the wrong enthalpy on the very first tick,
+/// and `a_tank_changing_composition_while_heating_lands_on_its_new_heat_capacity`
+/// is the reference that says so.
+///
+/// Bit-identical on a one-component slate, where every composition is `[1.0]`
+/// and both sources of cp agree by construction — which is what keeps every
+/// M1/M2 golden unchanged.
+///
+/// # Errors
+/// `SimError::Numerical` if the upwind node's composition is unresolved.
+pub fn stream_cp_at(
+    graph: &PlantGraph,
+    slate: &Slate,
+    composition: &BTreeMap<NodeId, Composition>,
+    edge: EdgeId,
+    mass_flow: f64,
+) -> Result<JPerKgK, SimError> {
+    Ok(edge_composition_at(graph, composition, edge, mass_flow)?.mixture_cp(slate))
 }
 
 /// Total heat delivered into a node [W]: external heat, plus the operating duty
@@ -587,6 +622,7 @@ pub fn resolve_node_states(
                     slate,
                     edge_mass_flow,
                     &temperature,
+                    &composition,
                     &previous.temperature,
                     (*a, *b),
                 )?;
@@ -600,6 +636,7 @@ pub fn resolve_node_states(
                         slate,
                         edge_mass_flow,
                         &temperature,
+                        &composition,
                         &previous.temperature,
                         id,
                     )?;
@@ -752,6 +789,7 @@ fn inflow_totals(
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
     temperature: &BTreeMap<NodeId, Kelvin>,
+    composition: &BTreeMap<NodeId, Composition>,
     node: NodeId,
 ) -> Result<InflowTotals, SimError> {
     let mut enthalpy = 0.0; // Σ ṁ·cp·(T − T_REF) [W]
@@ -774,8 +812,12 @@ fn inflow_totals(
         // seeded — but the helper returns an error rather than indexing, so a
         // sort bug can never panic (rule 5).
         let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
-        let inlet_t = edge_temperature_at(graph, slate, temperature, edge, flow, node)?;
-        let cp = graph.pipe(edge).stream.composition.mixture_cp(slate);
+        let inlet_t =
+            edge_temperature_at(graph, slate, temperature, composition, edge, flow, node)?;
+        // The same resolved-upwind cp the transform above used, through the same
+        // helper: an inlet transformed at one heat capacity and mixed at another
+        // would not conserve enthalpy across the pipe.
+        let cp = stream_cp_at(graph, slate, composition, edge, flow)?;
         enthalpy += enthalpy_flux(KgPerSec(into_node), cp, inlet_t).value();
         capacity += into_node * cp.value();
     }
@@ -789,6 +831,7 @@ fn mix_inflows(
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
     temperature: &BTreeMap<NodeId, Kelvin>,
+    composition: &BTreeMap<NodeId, Composition>,
     previous: &BTreeMap<NodeId, Kelvin>,
     node: NodeId,
 ) -> Result<Kelvin, SimError> {
@@ -800,7 +843,7 @@ fn mix_inflows(
     let heat_input = heat_load(graph.node(node)).value();
 
     if let Some((enthalpy, capacity)) =
-        inflow_totals(graph, slate, edge_mass_flow, temperature, node)?
+        inflow_totals(graph, slate, edge_mass_flow, temperature, composition, node)?
     {
         let mixed = T_REF.value() + (enthalpy + heat_input) / capacity;
         // A duty that exceeds the sensible heat available in the stream drives
@@ -863,6 +906,7 @@ fn exchange_pair(
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
     temperature: &BTreeMap<NodeId, Kelvin>,
+    composition: &BTreeMap<NodeId, Composition>,
     previous: &BTreeMap<NodeId, Kelvin>,
     (side_a, side_b): (NodeId, NodeId),
 ) -> Result<(Kelvin, Kelvin), SimError> {
@@ -873,8 +917,22 @@ fn exchange_pair(
         ))
     })?;
 
-    let totals_a = inflow_totals(graph, slate, edge_mass_flow, temperature, side_a)?;
-    let totals_b = inflow_totals(graph, slate, edge_mass_flow, temperature, side_b)?;
+    let totals_a = inflow_totals(
+        graph,
+        slate,
+        edge_mass_flow,
+        temperature,
+        composition,
+        side_a,
+    )?;
+    let totals_b = inflow_totals(
+        graph,
+        slate,
+        edge_mass_flow,
+        temperature,
+        composition,
+        side_b,
+    )?;
 
     // Positive duty = heat flowing A → B.
     let duty = match (totals_a, totals_b) {

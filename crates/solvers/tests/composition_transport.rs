@@ -76,16 +76,19 @@ fn composition(weights: &[f64]) -> Composition {
     Composition::from_weights(weights).expect("test weights must be a valid composition")
 }
 
+/// Isothermal by default: most of this file is about WHAT flows, not how hot it
+/// is, and a temperature gradient would let a thermal bug surface here rather
+/// than in the file that owns it. `hot_source` is the deliberate exception.
 fn source(name: &str, pressure_pa: f64, weights: &[f64]) -> Node {
+    hot_source(name, pressure_pa, weights, T_AMBIENT)
+}
+
+fn hot_source(name: &str, pressure_pa: f64, weights: &[f64], temperature: Kelvin) -> Node {
     node(
         name,
         NodeKind::Source {
             pressure: Pascal(pressure_pa),
-            // Isothermal on purpose: this file is about WHAT flows, not how hot
-            // it is. A temperature gradient would let a thermal bug show up
-            // here, where the diagnosis would be worse than in the file that
-            // owns it.
-            temperature: T_AMBIENT,
+            temperature,
             composition: composition(weights),
         },
     )
@@ -247,6 +250,134 @@ fn a_draining_tank_holds_its_composition() {
         before.fractions(),
         "an outflow removes mass at the tank's OWN composition, which cannot \
          change the fractions"
+    );
+}
+
+/// A sink driven backwards supplies its OWN composition to the plant.
+///
+/// The composition twin of `energy_invariants.rs`'s
+/// `a_back_fed_sink_supplies_its_own_temperature`, and the reason
+/// `NodeKind::Sink` carries a composition at all: an infinite reservoir the
+/// network pushes fluid out of has to have something to push.
+///
+/// Deterministic on purpose. I7's generator does reach reverse flow through a
+/// sink, but only for part of its pressure range — leaving the one field that
+/// exists for this case covered by chance. This plant reverses every run: the
+/// sink sits at 9 bar against a 1 bar feed.
+#[test]
+fn a_back_fed_sink_supplies_its_own_composition() {
+    let mut graph = PlantGraph::new();
+    let feed = graph.add_node(source("feed", 1.0e5, &[1.0, 0.0])); // pure light
+    let tee = graph.add_node(node("tee", NodeKind::Junction));
+    let back = graph.add_node(sink("back", 9.0e5, &[0.0, 1.0])); // pure heavy
+    graph.add_pipe(feed, tee, pipe("inlet", 10.0, 0.1));
+    graph.add_pipe(tee, back, pipe("outlet", 10.0, 0.1));
+
+    let mut engine = engine(graph);
+    engine.tick().expect("tick must converge");
+
+    // Non-vacuity first: the premise is that flow actually reversed.
+    let outlet_flow = flow_through(&engine, "outlet");
+    assert!(
+        outlet_flow < -1.0,
+        "the 9 bar sink must drive flow backwards up the outlet, got {outlet_flow} kg/s"
+    );
+
+    // The `inlet` pipe is drawn feed→tee but flows tee→feed, so its upwind is
+    // the tee — which is itself fed by the back-flowing sink. A transport model
+    // reading the edge's declared direction reports pure light here, and the
+    // heavy the sink actually supplied never enters the plant.
+    let inlet = engine
+        .snapshot()
+        .edges
+        .into_iter()
+        .find(|e| e.name == "inlet")
+        .expect("inlet must exist");
+    let fractions = inlet.stream.composition.fractions().to_vec();
+    assert!(
+        (fractions[1] - 1.0).abs() < 1e-12,
+        "the back-fed inlet stream must carry the sink's pure heavy, not the pure \
+         light of the node its arrow points away from; got {fractions:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reference — tank energy with a composition-dependent heat capacity.
+// ---------------------------------------------------------------------------
+
+/// REFERENCE — a tank whose contents CHANGE COMPOSITION while heating ends the
+/// tick at the temperature an energy balance on the new mixture predicts.
+///
+/// This is the one case where composition and temperature are coupled, and it
+/// is the only place the tank's two heat capacities can be told apart. A tank
+/// of 1000 kg pure light (cp 1000) at ambient is fed pure heavy (cp 4000) at
+/// 400 K. Over one tick `Δm = ṁ·dt` kilograms arrive, and:
+///
+/// ```text
+/// E_old = 1000·cp_light·(T_amb − T_REF)              [J above the datum]
+/// E_in  = Δm·cp_heavy·(400 − T_REF)                  [J carried in]
+/// m_new = 1000 + Δm
+/// cp_new = (1000·cp_light + Δm·cp_heavy) / m_new     [additive heat capacity]
+/// T_new = T_REF + (E_old + E_in) / (m_new·cp_new)
+/// ```
+///
+/// Every term is written from the slate's numbers and the measured `Δm`; the
+/// only thing borrowed from the engine is the flow, which is I1's business.
+/// Note `cp_new` is derived here from ADDITIVITY (`m·cp = Σ m_c·cp_c`), not by
+/// calling `mixture_cp` — so the mixing rule appears on one side only.
+///
+/// THE MUTATION THIS EXISTS FOR: computing the final temperature with the
+/// tank's START-of-tick cp. That is bit-identical on a one-component slate and
+/// invisible in every isothermal multi-component test, which is precisely why
+/// this case had to be written rather than assumed — it is the only gate in the
+/// workspace that reads a heat capacity that MOVED.
+#[test]
+fn a_tank_changing_composition_while_heating_lands_on_its_new_heat_capacity() {
+    const CP_LIGHT: f64 = 1000.0;
+    const CP_HEAVY: f64 = 4000.0;
+    const FEED_T: f64 = 400.0;
+    const T_REF_K: f64 = 273.15;
+
+    let mut graph = PlantGraph::new();
+    let feed = graph.add_node(hot_source("feed", 5.0e5, &[0.0, 1.0], Kelvin(FEED_T)));
+    let vessel = graph.add_node(tank_node("vessel", 1_000.0, &[1.0, 0.0]));
+    graph.add_pipe(feed, vessel, pipe("fill", 12.0, 0.12));
+
+    let mut engine = engine(graph);
+    engine.tick().expect("one tick must converge");
+
+    let arrived = flow_through(&engine, "fill") * DT.value();
+    assert!(
+        arrived > 0.0,
+        "the feed must deliver mass, got {arrived} kg"
+    );
+
+    let energy_old = 1_000.0 * CP_LIGHT * (T_AMBIENT.value() - T_REF_K);
+    let energy_in = arrived * CP_HEAVY * (FEED_T - T_REF_K);
+    let mass_new = 1_000.0 + arrived;
+    let capacity_new = 1_000.0 * CP_LIGHT + arrived * CP_HEAVY;
+    let expected = T_REF_K + (energy_old + energy_in) / capacity_new;
+
+    let tank = tank_of(&engine, "vessel");
+    assert!(
+        (tank.mass.value() - mass_new).abs() < 1e-9,
+        "inventory must be {mass_new} kg, got {}",
+        tank.mass.value()
+    );
+    assert!(
+        (tank.temperature.value() - expected).abs() < 1e-9,
+        "the vessel must land at {expected} K on its NEW heat capacity, got {}. \
+         Holding the start-of-tick cp gives {} K.",
+        tank.temperature.value(),
+        T_REF_K + (energy_old + energy_in) / (mass_new * CP_LIGHT),
+    );
+    // Guard the guard: the two answers must be far apart, or this cannot
+    // discriminate. With a 4:1 cp ratio they are, as long as real mass arrived.
+    let stale = T_REF_K + (energy_old + energy_in) / (mass_new * CP_LIGHT);
+    assert!(
+        (stale - expected).abs() > 1.0,
+        "the stale-cp answer must differ by more than a kelvin for this reference \
+         to bite, got {stale} vs {expected}"
     );
 }
 

@@ -206,6 +206,7 @@ impl Engine {
                 &self.graph,
                 &self.slate,
                 node_temperature,
+                &node_states.composition,
                 eid,
                 flow,
                 downstream,
@@ -271,7 +272,17 @@ impl Engine {
                 let stream = &self.graph.pipe(eid).stream;
                 let flow = stream.mass_flow.value();
                 let into_node = if incoming { flow } else { -flow };
-                let cp = stream.composition.mixture_cp(&self.slate);
+                // Off the RESOLVED upwind composition, through the same helper
+                // the sweep used: the pipe's stored composition is last tick's,
+                // and charging an arriving stream the heat capacity of the
+                // fluid it replaced is wrong on the very first tick it changes.
+                let cp = energy::stream_cp_at(
+                    &self.graph,
+                    &self.slate,
+                    &node_states.composition,
+                    eid,
+                    flow,
+                )?;
                 // The raw stored flow, not `into_node`: the helper selects the
                 // upwind end from the sign, and `into_node` has been re-signed
                 // positive-into-this-tank, which would name the wrong end on
@@ -280,6 +291,7 @@ impl Engine {
                     &self.graph,
                     &self.slate,
                     node_temperature,
+                    &node_states.composition,
                     eid,
                     flow,
                     nid,
@@ -288,11 +300,6 @@ impl Engine {
                 net_enthalpy += energy::enthalpy_flux(KgPerSec(into_node), cp, crossing_t).value();
 
                 if into_node > 0.0 {
-                    // Off the RESOLVED field, not off `stream.composition`: the
-                    // sweep just settled what every node holds this tick, and
-                    // the pipe's stored copy is written after this loop (step
-                    // 3b) precisely so mass transport reads the fresh value
-                    // while cp reads the lagged one, consistently.
                     let arriving = energy::edge_composition_at(
                         &self.graph,
                         &node_states.composition,
@@ -411,22 +418,25 @@ impl Engine {
         //     a pipe trades heat with ambient, never mass, so there is no
         //     transform to apply.
         //
-        //     Written AFTER the tank loop on purpose. Two readers derive `cp`
-        //     and density from this field — `energy`'s sweep and `network`'s
-        //     hydraulics — and both run *before* this line, so both see the
-        //     PREVIOUS tick's composition. That one-tick lag is deliberate and
-        //     uniform: writing here instead of in step 2c would leave the sweep
-        //     reading a lagged cp while the tank loop read a fresh one, an
-        //     inconsistency inside a single tick's energy balance. Uniformly
-        //     lagged, cp is merely a tick behind while composition MASS moves
-        //     with no lag at all (the tank loop reads the resolved field).
+        //     This field is now OUTPUT, not state that anything inside a tick
+        //     reads back. Every consumer of "what is in this pipe" — the
+        //     temperature sweep, the tank loop, the pipe transform — goes to the
+        //     resolved upwind node through `energy::stream_cp_at` or
+        //     `edge_composition_at` instead, so where in the tick this write
+        //     lands no longer changes any answer.
         //
-        //     Deriving cp from the resolved upwind node instead — killing the
-        //     lag outright — is the better physics and is deferred: it is
-        //     bit-identical on a one-component slate, so no M3.1 gate can turn
-        //     red on it, and shipping an unfalsifiable behaviour change is what
-        //     this project defers by policy. It belongs with the first
-        //     multi-component TEMPERATURE reference.
+        //     It did once. Deriving cp from this stored copy charged an arriving
+        //     stream the heat capacity of the fluid it replaced, wrong on the
+        //     first tick a composition changed rather than merely lagging; the
+        //     reference that says so is
+        //     `a_tank_changing_composition_while_heating_lands_on_its_new_heat_capacity`.
+        //
+        //     ONE reader still takes the lagged value: `network.rs` derives
+        //     stream density from it for the hydraulic solve. That lag is
+        //     structural rather than incidental — the solve opens the tick, so
+        //     there is no resolved composition yet to read — and it is the same
+        //     quasi-steady staleness the tank levels feeding that solve already
+        //     have.
         for eid in self.graph.edge_ids().collect::<Vec<_>>() {
             let flow = self.graph.pipe(eid).stream.mass_flow.value();
             let upwind =
