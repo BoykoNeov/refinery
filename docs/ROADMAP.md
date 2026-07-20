@@ -310,6 +310,112 @@ Component slates in scenarios, composition transport, mixture properties,
 fixed-cut-point column (simple fidelity). Demo: crude source → furnace →
 column → three product tanks.
 
+Sliced like M2, but for a different reason. In M2 the transport design carried
+the whole milestone and the units were additive once it was right. Here the two
+halves are hard in *different* ways and are independent: composition transport
+is a new field on an existing sweep, while the column is the first unit that
+needs something the flow solver cannot currently express. Neither blocks the
+other, so they ship separately.
+
+### M3.1 — Slate + composition transport
+The scaffolding already exists and is unused: `core::components` has `Slate`,
+`PseudoComponent` and `Composition` (with `mixture_cp` / `mixture_density`),
+and the energy path already reads mixture properties through them. What is
+missing is that nothing ever *builds* a slate of more than one component and
+nothing ever *changes* a composition — the loader hardcodes `Slate::water_only()`
+and every stream keeps the composition it was born with.
+- [x] `scenarios`: `[[components]]` slate table in TOML, per-node composition on
+      the two kinds that carry material state (`source`, `tank`). File order is
+      canonical slate order — `Composition` is a positional vector, so the order
+      is part of the engine's identity — but compositions are written and
+      resolved by NAME, so no file has to count positions.
+      An absent table is the water-only slate, which is what every pre-M3 file
+      meant; that default is why the whole workspace stayed green rather than
+      needing every scenario rewritten.
+      An absent *composition* is refused on a multi-component slate rather than
+      defaulted to the first cut: defaulting would make a crude source pure
+      light naphtha, a plant that loads, converges and is wrong.
+      **A latent bug fell out of this.** The loader computed tank mass as
+      `ρ_water·A·h` — invisible for as long as every slate had one component,
+      and a ~27% inventory error the moment one didn't. It is now the density of
+      the tank's OWN contents. Note no conservation test could have caught it:
+      mass is conserved perfectly from a wrong datum.
+      **Falsified before trusted**, three mutations, each caught by exactly one
+      gate and no others: tank mass at a slate-wide density instead of its own
+      contents' (fails the 787.5 kg/m³ hand-derived gate alone — the rest of the
+      workspace stays green, which is the claim above demonstrated rather than
+      asserted); resolving weights by position instead of by name (fails only
+      the by-name gate, and survives the unknown-name refusal, so the two are
+      genuinely independent); and defaulting a missing composition instead of
+      refusing it.
+- [ ] `core`: composition co-resolved on the **existing** `resolve_node_temperatures`
+      sweep — not a parallel one. The Kahn ordering, the exchanger pair merge and
+      the recycle rejection are already correct and must not be duplicated.
+      Mass-weighted blending is *exactly* consistent with the enthalpy mix that
+      sweep already performs, by linearity:
+      `Σ_c (Σ_s m_s·f_sc)·cp_c = Σ_s m_s·(Σ_c f_sc·cp_c) = Σ_s m_s·cp_s`,
+      so co-resolving the two fields cannot drift from the M2 energy math.
+- [ ] `core`: tank composition inventory integrated over the tick. Carries the
+      same pre/post-tick mass-datum trap as the M2.1 Euler slip — blending on the
+      wrong mass basis is invisible at steady state and wrong everywhere else.
+- [ ] Tests: I7 per-component mass conservation proptest, the I-series analog of
+      I1's total-mass gate. CLAUDE.md names it explicitly ("mass in = mass out +
+      accumulation, **per component**").
+- [ ] Tests: the **1-component regression anchor**. A slate of one forces every
+      composition to `[1.0]` identically, so every M1/M2 golden — and
+      `isothermal_plant.rs` in particular — must stay *bit*-identical. This is
+      the analog of `UA` defaulting to 0 in M2.2, and it is what makes the change
+      additive rather than a rewrite.
+- [ ] Tests: a reference case pinning an absolute blended number physics predicts,
+      since the proptest pins only consistency. Two sources of different
+      composition into one tank must land on the mass-weighted result — and the
+      blend must be predicted from the *mass ratio*, not by re-running the code's
+      own blend formula on both sides.
+
+### M3.2 — Fixed-cut-point column (design note first — the crux is the solver)
+**Not an additive unit like M2's furnace and cooler.** Every M2 unit was a
+hydraulic pass-through — the flow solver never learned the exchanger's two sides
+were even paired. A column is one-in-three-out where the split ratio comes from
+the feed's *composition*, not from the draws' hydraulic resistances.
+
+Those two facts cannot both hold alongside per-component mass conservation
+unless the draw flows are **prescribed**. And the solver cannot prescribe a flow:
+`network.rs` and `elements.rs` are entirely pressure-driven — every edge flow is
+`QuadraticBranch::flow(dp)`, and there is no prescribed-flow or divider branch
+anywhere. So the column necessarily introduces a fixed-mass-flow element into a
+purely pressure-driven Newton solve. That is solver machinery, not a unit model,
+and it is why this gets a written note before any code.
+
+The fork the note must settle — the discriminating question is *which quantity is
+held fixed*:
+- **(A) Cut points fixed, draw rates follow.** `draw_i = feed · yield_i`, with
+  `yield_i` the mass fraction of components whose Tb lands in draw i's band, plus
+  a smearing parameter. This is what DESIGN §5 already states the simple column
+  is. Needs a fixed-flow branch (`flow = setpoint`, `dflow/dp = 0`), the setpoint
+  taken from the *previous* tick's feed — a one-tick lag, which is fine at
+  quasi-steady and should be stated as a limitation rather than iterated away.
+  **The risk to settle before committing:** an element with zero dP-derivative
+  can leave the Jacobian singular, so a fixed-flow branch needs a pressure anchor
+  elsewhere to stay well-posed. If it cannot be made well-posed, (B) is the
+  fallback.
+- **(B) Draw valves fixed, cut points emergent.** Hydraulics set the draw flows
+  and the column fills draws greedily by boiling point. No solver change — but
+  per-draw composition then depends on the hydraulic solve, a starved draw
+  contaminates the next, and the reference number becomes hydraulics-dependent
+  and much harder to pin.
+
+DESIGN §5 says the cut points are the fixed thing, which argues for (A).
+- [ ] Design note in DESIGN.md settling A vs B, with the well-posedness question
+      answered rather than assumed.
+- [ ] Solver: the fixed-flow branch (if A), landing *before* the column that sits
+      on it, with its own well-posedness and determinism tests.
+- [ ] `core`/`scenarios`: the column unit, cut assignment, smearing.
+- [ ] Tests: the reference must pin a **per-draw composition** number, not a mass
+      balance. The mutation this unit invites — a cut-boundary off by one
+      component, or smearing silently disabled — **conserves total mass exactly**,
+      so a mass-balance gate cannot falsify it and I7 would stay green.
+- [ ] Demo: crude source → furnace → column → three product tanks.
+
 ## M4 — Reactor
 FCC 4-lump complex reactor + lookup-table simple reactor behind
 ReactionModel. Reference test against published lump yields.

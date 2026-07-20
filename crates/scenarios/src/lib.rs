@@ -10,7 +10,7 @@
 //!   volumes in m³, flow coefficients as customary metric Kv (m³/h at 1 bar)
 //!   — human-friendly at the boundary, SI inside, per CLAUDE.md rule 4.
 
-use refinery_core::components::{Composition, Slate};
+use refinery_core::components::{Composition, PseudoComponent, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
@@ -19,7 +19,8 @@ use refinery_core::graph::{
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, ReactionModel, ThermoModel};
 use refinery_core::units::{
-    Kelvin, Kg, KgPerM3, Meter, Pascal, SquareMeter, Watt, WattPerKelvin, P_ATM, T_AMBIENT,
+    JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Pascal, SquareMeter, Watt, WattPerKelvin, P_ATM,
+    T_AMBIENT,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -37,6 +38,30 @@ pub struct ScenarioFile {
     /// no exchangers needs no table.
     #[serde(default)]
     pub exchangers: Vec<ExchangerDef>,
+    /// The pseudo-component slate, in canonical order. Optional: absent means
+    /// the water-only slate every scenario written before M3 meant, which is
+    /// what keeps those files bit-identical (see `build_engine` step 1).
+    #[serde(default)]
+    pub components: Vec<ComponentDef>,
+}
+
+/// One `[[components]]` entry: a boiling-point cut.
+///
+/// File ORDER is the canonical slate order, exactly as `[nodes]` order fixes
+/// node ids — `Composition` is a positional vector of mass fractions, so the
+/// slate's order is part of the engine's identity and must not depend on a hash
+/// or on sorting by name. Compositions elsewhere in the file are written by
+/// NAME and resolved against this order, so a reader never has to count
+/// positions.
+#[derive(Debug, Deserialize)]
+pub struct ComponentDef {
+    pub name: String,
+    /// True boiling point of the cut [°C at this boundary, K inside].
+    pub tb_c: f64,
+    pub molar_mass_kg_per_mol: f64,
+    /// Liquid density at reference conditions [kg/m³].
+    pub density_kg_per_m3: f64,
+    pub cp_j_per_kg_k: f64,
 }
 
 /// One `[[exchangers]]` entry: which two sides are thermally coupled, and how
@@ -91,6 +116,16 @@ pub enum NodeDef {
     Source {
         pressure_bar: f64,
         temperature_c: f64,
+        /// Mass-fraction weights keyed by component name; normalized on load.
+        ///
+        /// Optional, and the default is deliberately NOT "component 0" — it is
+        /// "the only component, if there is only one". A one-component slate has
+        /// exactly one meaning for an absent composition, so omitting it is
+        /// unambiguous; with a real crude slate, defaulting to the first cut
+        /// would silently make a crude source pure light naphtha, which is a
+        /// plant that runs and is wrong. See `resolve_composition`.
+        #[serde(default)]
+        composition: Option<BTreeMap<String, f64>>,
     },
     Sink {
         pressure_bar: f64,
@@ -115,6 +150,9 @@ pub enum NodeDef {
         /// `TankState::ambient_ua`.
         #[serde(default)]
         ambient_ua_w_per_k: f64,
+        /// Initial tank contents. Same rule as `Source::composition`.
+        #[serde(default)]
+        composition: Option<BTreeMap<String, f64>>,
     },
     Pump {
         h0_m: f64,
@@ -193,12 +231,10 @@ pub fn load_str(toml_src: &str) -> Result<ScenarioFile, SimError> {
 /// 4. Select solver impls from [fidelity]; unknown names are errors
 ///    listing valid options.
 pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
-    // Step 1: slate. Water-only until M3's [components] table exists; take the
-    // water density from the slate itself so unit conversions can't drift from
-    // the component definition.
-    let slate = Slate::water_only();
-    let water = Composition::pure(slate.len(), 0);
-    let rho_water = water.mixture_density(&slate);
+    // Step 1: slate. An absent [[components]] table means the water-only slate,
+    // which is what every scenario written before M3 meant — that default is
+    // what keeps those files bit-identical rather than merely still-loading.
+    let slate = build_slate(&scenario.components)?;
 
     // Step 2: instantiate nodes in file order (IndexMap preserves it, so node
     // ids are deterministic), then pipes — resolving names → NodeIds. Unit
@@ -206,7 +242,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     let mut graph = PlantGraph::new();
     for (name, def) in &scenario.nodes {
         validate_node_def(name, def)?;
-        let kind = node_kind(def, &water, rho_water);
+        let kind = node_kind(name, def, &slate)?;
         graph.add_node(Node {
             name: name.clone(),
             kind,
@@ -274,19 +310,121 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     Ok(Engine::new(graph, slate, config, flow, thermo, reactions))
 }
 
+/// Build the canonical slate from the `[[components]]` table, in file order.
+///
+/// An empty table is the water-only slate rather than an error: that is what
+/// every pre-M3 scenario means, and making it explicit would churn every file
+/// for no gain. Duplicate names ARE an error — `Composition` is written by name,
+/// so two cuts called the same thing make a composition ambiguous, and
+/// `Slate::index_of` would silently resolve every mention to the first.
+fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
+    if defs.is_empty() {
+        return Ok(Slate::water_only());
+    }
+    for (i, def) in defs.iter().enumerate() {
+        if defs[..i].iter().any(|d| d.name == def.name) {
+            return Err(SimError::Scenario(format!(
+                "component '{}' is defined twice: names must be unique, because \
+                 compositions reference components by name",
+                def.name
+            )));
+        }
+        // Every property is a positive physical magnitude; a zero density would
+        // divide by zero in `mixture_density`, and a zero cp makes any heat
+        // input an infinite temperature rise.
+        for (field, value) in [
+            ("tb_c", def.tb_c + 273.15),
+            ("molar_mass_kg_per_mol", def.molar_mass_kg_per_mol),
+            ("density_kg_per_m3", def.density_kg_per_m3),
+            ("cp_j_per_kg_k", def.cp_j_per_kg_k),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "component '{}' has a non-positive or non-finite {field} \
+                     ({value}); every component property must be > 0",
+                    def.name
+                )));
+            }
+        }
+    }
+    Slate::new(
+        defs.iter()
+            .map(|d| PseudoComponent {
+                name: d.name.clone(),
+                tb: c_to_k(d.tb_c),
+                molar_mass: KgPerMol(d.molar_mass_kg_per_mol),
+                density: KgPerM3(d.density_kg_per_m3),
+                cp: JPerKgK(d.cp_j_per_kg_k),
+            })
+            .collect(),
+    )
+}
+
+/// Resolve a node's `composition = { name = weight, ... }` against the slate.
+///
+/// Weights are normalized (`Composition::from_weights`), so a file may write
+/// fractions summing to 1 or raw mass amounts — whichever reads better — and
+/// both mean the same thing. Unknown names are rejected rather than ignored: a
+/// typo'd cut name would otherwise silently drop that fraction and renormalize
+/// the rest, producing a plausible-looking wrong feed.
+///
+/// An absent composition is only meaningful on a one-component slate, where
+/// there is exactly one thing the fluid can be. On a real slate it is refused
+/// rather than defaulted — see `NodeDef::Source::composition`.
+fn resolve_composition(
+    node: &str,
+    weights: &Option<BTreeMap<String, f64>>,
+    slate: &Slate,
+) -> Result<Composition, SimError> {
+    let Some(weights) = weights else {
+        if slate.len() == 1 {
+            return Ok(Composition::pure(1, 0));
+        }
+        return Err(SimError::Scenario(format!(
+            "node '{node}' has no composition, but the slate has {} components. \
+             Only a one-component slate has an unambiguous default; write \
+             composition = {{ <component> = <weight>, ... }}",
+            slate.len()
+        )));
+    };
+    let mut fractions = vec![0.0; slate.len()];
+    for (name, weight) in weights {
+        let index = slate.index_of(name).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "node '{node}' references unknown component '{name}'; the slate \
+                 defines: {}",
+                slate
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        fractions[index] = *weight;
+    }
+    Composition::from_weights(&fractions)
+        .map_err(|e| SimError::Scenario(format!("node '{node}': {e}")))
+}
+
 /// Convert a scenario node definition into a core `NodeKind`, applying the
 /// human-friendly → SI conversions at this boundary (bar → Pa, °C → K,
-/// metric Kv → element cv_si, tank level → mass). M1 is water-only, so every
-/// material node carries the pure-water composition.
-fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind {
-    match def {
+/// metric Kv → element cv_si, tank level → mass).
+///
+/// A tank's initial mass is `ρ·A·h` at the density of ITS OWN contents, not at
+/// water's. With a one-component slate the two coincide, which is why this went
+/// unnoticed through M1 and M2; with a crude slate, filling a tank with a light
+/// cut and computing its mass at 998 kg/m³ would over-charge the inventory by
+/// ~40% and break mass conservation at tick zero.
+fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimError> {
+    Ok(match def {
         NodeDef::Source {
             pressure_bar,
             temperature_c,
+            composition,
         } => NodeKind::Source {
             pressure: bar_to_pa(*pressure_bar),
             temperature: c_to_k(*temperature_c),
-            composition: water.clone(),
+            composition: resolve_composition(name, composition, slate)?,
         },
         NodeDef::Sink {
             pressure_bar,
@@ -302,16 +440,19 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
             initial_level_m,
             temperature_c,
             ambient_ua_w_per_k,
+            composition,
         } => {
             let area = SquareMeter(*area_m2);
-            // m = ρ·A·h.
-            let mass = Kg(rho_water.value() * area.value() * initial_level_m);
+            let composition = resolve_composition(name, composition, slate)?;
+            // m = ρ·A·h, at the density of the tank's own contents.
+            let density = composition.mixture_density(slate);
+            let mass = Kg(density.value() * area.value() * initial_level_m);
             NodeKind::Tank(TankState {
                 area,
                 height: Meter(*height_m),
                 mass,
                 temperature: c_to_k(*temperature_c),
-                composition: water.clone(),
+                composition,
                 ambient_ua: WattPerKelvin(*ambient_ua_w_per_k),
             })
         }
@@ -332,7 +473,7 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
         },
         NodeDef::HeatExchanger => NodeKind::HeatExchanger,
         NodeDef::Junction => NodeKind::Junction,
-    }
+    })
 }
 
 /// Reject node definitions whose numbers are out of physical range, at load
