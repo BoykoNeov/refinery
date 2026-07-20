@@ -239,10 +239,22 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       NOT additive. An edge's stream temperature is currently *identically* its
       upwind node's, which is the core of the M2.1 sweep; a pipe that exchanges
       heat has outlet ≠ inlet and needs a new per-edge transform
-      (`T_out = T_amb + (T_in − T_amb)·exp(−UA/(ṁ·cp))`, analytic rather than
-      Euler so it cannot overshoot ambient on a long tick) running in flow order
-      between the sweep and transport. Design note first, like the
-      `HeatExchanger` got.
+      (`T_out = T_amb + (T_in − T_amb)·exp(−UA/(|ṁ|·cp))`, analytic rather than
+      Euler so it cannot overshoot ambient on a long tick).
+      **Design note landed** (DESIGN §4a, "Ambient exchange for pipes"), and it
+      corrected this box's original framing twice over. The transform is not a
+      step running *between* the sweep and transport — a pipe's outlet is an
+      input to the downstream node's mix, so it cannot run after the mixing that
+      consumes it; it is interleaved, as one value change in `inflow_totals`,
+      and the topological order is untouched. And the real change is deeper than
+      the transform: an edge stops being ISOTHERMAL, so the enthalpy leaving the
+      upstream node and the enthalpy arriving downstream differ by the pipe's
+      ambient `Q`. One helper — "the temperature entering node N from edge E" —
+      owns it for both readers (`inflow_totals` and the tank loop), which
+      retires the tank loop's "no in/out branch" property: that was a
+      consequence of isothermal edges, not a fact about tanks.
+      Blocking implementation, both stated in the note: `|ṁ|` not signed `ṁ`,
+      and a zero-flow guard (`0/0 → NaN`, reachable today via a closed valve).
 - [ ] Pump work / valve throttling into the stream, if it earns its keep — see
       DESIGN §4a's limitation list (~0.02 K on the reference pump).
 

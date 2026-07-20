@@ -349,8 +349,8 @@ The single ROADMAP line covering both hid a real asymmetry:
 - **A pipe is not.** Today an edge's stream temperature IS its upwind node's
   temperature, carried along unchanged; that identity is the core of the M2.1
   upwind sweep. A pipe exchanging heat with ambient has an outlet that differs
-  from its inlet, which the model has no way to express — it needs a new
-  per-edge TRANSFORM step between the sweep and transport:
+  from its inlet, which the model has no way to express — it needs a per-edge
+  TRANSFORM:
 
   ```text
   T_out = T_ambient + (T_in − T_ambient)·exp(−UA/(ṁ·cp))
@@ -358,10 +358,9 @@ The single ROADMAP line covering both hid a real asymmetry:
 
   the analytic solution for plug flow along a pipe, not an Euler step, so it
   stays stable and correct at any `UA/(ṁ·cp)` instead of overshooting past
-  ambient on a long tick. That is a change to how transport works, and it
-  interacts with the sweep: a pipe's outlet becomes an input to the downstream
-  node's mix, so the transform has to run in the same flow order. It gets its
-  own box and its own note.
+  ambient on a long tick. It gets its own box and its own note — see
+  **Ambient exchange for pipes** below, which corrects this bullet's original
+  claim that the transform is a step running *between* the sweep and transport.
 
 Tanks land first, alone, because they are testable alone: heat a cold tank,
 cool a hot one, and check both against `T(t) = T_amb + (T₀ − T_amb)·exp(−UA·t/(m·cp))`
@@ -380,6 +379,132 @@ is unreachable — `α` is ~1e-6 at refinery scale — so it is documented in
 `Engine::tick` rather than guarded. For a PIPE it is not unreachable at all,
 since `ṁ·cp` can be small, which is the second and independent reason that box
 insists on the analytic transform rather than an Euler step.
+
+### Ambient exchange for pipes (M2.2) — specified before building
+
+**The change is not "one more heat term". It is that an edge stops being
+isothermal.** Every heat term so far has been imposed on a *node*; this one acts
+along an *edge*, and that breaks an identity the whole M2.1 transport rests on:
+an edge's temperature IS its upwind node's, carried along unchanged. With a `UA`
+on a pipe, the enthalpy that *leaves* the upstream node is at the inlet
+temperature and the enthalpy that *arrives* downstream is at the outlet
+temperature, and the difference is the heat the pipe traded with ambient. An
+edge therefore has TWO temperatures, and the single `Stream::temperature` field
+can no longer answer "what temperature does this edge carry" without first
+asking "at which end".
+
+The transform is the analytic plug-flow solution:
+
+```text
+T_out = T_AMBIENT + (T_in − T_AMBIENT)·exp(−UA/(|ṁ|·cp))
+```
+
+Three details of that form are load-bearing:
+
+- **`|ṁ|`, not signed `ṁ`.** The sign of the flow already did its job upstream —
+  it selected which end is the inlet (donor-cell). The denominator is a capacity
+  *rate*, a magnitude. Feeding a signed `ṁ` flips the exponent on every reverse
+  flow, turning decay into growth: the pipe would run *away* from ambient, and
+  it would do so only on reversed edges, which the reference plants do not have.
+- **Analytic, not Euler.** `exp` cannot cross ambient however large the exponent
+  gets; a `1 − UA/(ṁ·cp)` step overshoots past it and then diverges. The tank
+  box tolerated explicit Euler because `α = UA·dt/(m·cp)` is ~1e-6 at refinery
+  scale and the instability is unreachable. Here the denominator is `ṁ·cp`, a
+  *flow* rather than an inventory, and a nearly-closed valve drives it toward
+  zero — so the unstable regime is not merely reachable, it is one throttle away.
+- **`UA` defaults to 0**, exactly as it does for tanks: `exp(0) = 1`, the
+  transform is the identity, and every existing scenario stays bit-identical.
+  `isothermal_plant.rs` keeps meaning what it meant.
+
+**Zero flow is a guard, not a limit.** At `ṁ = 0` with `UA = 0` the exponent is
+`0/0 → NaN`, and a NaN temperature is *not* caught by the mixing guard — it
+would reach step 4's finiteness check as a bare "non-finite" with no diagnostic
+naming the pipe. This is not hypothetical: a closed valve produces zero-flow
+edges today (`newton_reference.rs::closed_valve_blocks_flow_both_ends_anchored`).
+Below a flow threshold the transform returns `T_in` unchanged, which is also the
+physically right answer at this fidelity — a stagnant pipe carries no enthalpy
+either way, the same reasoning that lets transport pick `from` arbitrarily at
+exactly zero flow. It is the same limitation as heat into a stagnant zero-volume
+node: with no throughput there is no stream to carry the heat, and modelling it
+honestly needs pipe-wall thermal mass, which is a fidelity step.
+
+**The sweep does not get harder, and this is worth stating because the bullet
+above originally implied it would.** The transform needs only that edge's own
+`ṁ` and `UA`, both known before the sweep starts — it introduces no dependency
+on any temperature the sweep has not already resolved. The topological order is
+therefore untouched. What changes is a single *value*: `inflow_totals` reads its
+upstream node's temperature and must instead read the transformed edge outlet.
+"Interleaved into the sweep" is accurate; "a step between the sweep and
+transport" was not, because a pipe's outlet is an input to the downstream node's
+mix and so cannot run after the mixing that consumes it.
+
+**One owner: "the temperature entering node N from edge E".** The transform is
+read from two places — `energy::inflow_totals` (the sweep's mixing) and the tank
+integration in `Engine::tick` step 3 — and both go through one function that
+finds the upwind end and applies the transform only when `N` is the *downstream*
+end. Applying it ad hoc at each site is the same mistake the `HeatExchanger`
+note rejected in its "two independently computed effectiveness terms" form: two
+copies of a rule that must agree, with nothing forcing them to. With `UA = 0`
+the helper returns the same value at both ends, which is why the change is
+bit-identical by construction rather than by measurement.
+
+**This retires a property the tank loop currently documents.** That loop needs
+"no in/out branch" today because an outflow edge is upwind of the tank and so
+already carries the tank's own temperature, making the signed flux subtract
+exactly the enthalpy that leaves. That was never a fact about tanks — it was a
+*consequence* of edges being isothermal, and it does not survive them. Routed
+through the helper it becomes true again for the right reason: at the tank's
+outflow edge the tank IS the upwind end, so no transform applies and the flux is
+unchanged; at an inflow edge the tank is downstream and gets the transformed
+value. The comment must say which of those it is relying on.
+
+`Stream::temperature` is then consumed by nothing in the engine but transport's
+own write — only tests and the snapshot read it — so which end it reports
+becomes a deliberate *display* choice rather than a correctness one. It reports
+the **outlet**: that is what the downstream node receives, and it is the only one
+of the two that a snapshot cannot reconstruct from the upwind node's temperature.
+
+**I6 needs no new term, and deliberately does not get one.** The pipe's ambient
+`Q` sits on no node, so a UA-bearing pipe would open a hole in the telescoping
+sum that I6 checks. It does not, because the proptest generators leave pipe `UA`
+at its default 0 — every generated edge stays isothermal and the enthalpy
+cancels exactly as before. This is the same containment that keeps furnaces,
+coolers and exchangers out of those generators, but for a better reason than the
+furnace's: nothing is *wrong* with a UA-pipe in an energy balance, it simply
+needs a term the invariant does not currently carry. Folding a fixed UA-pipe
+into an I6-style case is the cheap way to close that later; it is not this box.
+What this box does instead is pin the term with reference cases, **one of which
+asserts the energy closes** — inlet-minus-outlet enthalpy equals the pipe's
+ambient `Q` — so "the heat goes somewhere accounted for" is tested rather than
+asserted in prose.
+
+**The `HeatExchanger` composes for free**, and saying so explicitly is cheaper
+than rediscovering it. An exchanger side is an ordinary zero-volume node
+resolved through `inflow_totals`, so it reads its inlet as a transformed edge
+temperature without any change to the coupling. The pair merge is unaffected:
+the feeding edge's upwind node still resolves before the pair vertex becomes
+ready, because the transform added no dependency.
+
+**Tests, and what would falsify them.** The discriminating case — the analogue
+of the exchanger's pair-merge ordering test — is a pipe with `UA` **between two
+zero-volume nodes**, where mixing the downstream node against the raw upwind
+node temperature instead of the transformed outlet gives a visibly different
+answer. That is the gate that proves the transform is inside the sweep rather
+than after it; a pipe feeding a tank cannot prove it, because the tank's
+integration would mask the ordering. Alongside it: a single-pipe reference
+against the closed-form exponential, at **round-off tolerance (~1e-9), not the
+tank box's 1e-3** — the contrast is the point, since this transform is analytic
+and has no truncation error to budget for; an overshoot case at large
+`UA/(|ṁ|·cp)` where an Euler step would cross ambient and the analytic form
+provably cannot; the zero-flow/closed-valve case reaching a finite temperature;
+and the energy-closure case above.
+
+Each must be falsified before it is trusted, per the boxes above: at minimum,
+signed `ṁ` in place of `|ṁ|` (should fail only on a reversed-flow case — if
+nothing fails, no test covers reverse flow and one is missing), the raw-upwind
+mutation (should fail the two-zero-volume-nodes gate and *only* it), and
+removing the zero-flow guard (should fail with a NaN, and if the plant instead
+runs, the guard is being reached by some other path and the test is vacuous).
 
 **Known limitations at this fidelity** (each deliberate, none accidental):
 
