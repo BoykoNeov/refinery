@@ -6,3 +6,4 @@
 - [M1 acceptance gate](m1-acceptance-gate.md) — acceptance test landed 2026-07-17 (mass tolerance absolute-by-measurement, gates falsified before trusted); M1 now closed
 - [Kv hand-calc reference](kv-handcalc-reference.md) — closed M1 2026-07-17; the tautology trap, and why falsification needs a *subtle* mutation (a violent one catches for the wrong reason)
 - [HeatExchanger + pair merge](heat-exchanger-pair-merge.md) — landed 2026-07-20 (M2.2); the sweep is vertex-based now, and why C_min must sit on side A
+- [Euler truncation tolerance](euler-truncation-tolerance.md) — tank ambient exchange landed 2026-07-20; derive a truncation-sized tolerance, never assert against the integrator's own formula

@@ -57,6 +57,8 @@ pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> W
 
 /// Heat exchanged with the surroundings [W], SIGNED: positive into the body.
 ///
+/// Newton's law of cooling, in the lumped `UA` form (any heat transfer text):
+///
 /// ```text
 /// Q_ambient = UA·(T_AMBIENT − T_body)
 /// ```
