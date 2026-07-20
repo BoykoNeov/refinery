@@ -215,13 +215,23 @@ impl Engine {
         for nid in self.graph.node_ids().collect::<Vec<_>>() {
             // Through `heat_load`, not off `heat_input` directly: that function
             // is the single owner of "how much heat enters this node", summing
-            // the fire and the unit's own duty with the sign the unit implies.
-            // The two agree today — a tank is neither furnace nor cooler, so it
-            // has no duty to miss — which is exactly why the raw read was worth
-            // replacing rather than leaving: it is a second answer to the same
-            // question that happens to be right, and would go on compiling
-            // while quietly ignoring any heat term a tank later gains. Ambient
-            // exchange is that term.
+            // the fire and the unit's own terms with the signs the unit implies.
+            // The raw read was replaced back when the two still agreed, on the
+            // grounds that it was a second answer to the same question that
+            // happened to be right and would go on compiling while quietly
+            // ignoring any heat term a tank later gained. Ambient exchange is
+            // that term, and it reaches the balance below through this line
+            // without the loop being told it exists.
+            //
+            // KNOWN LIMITATION: the ambient term is explicit Euler like the rest
+            // of this balance, so it is only stable while UA·dt/(m·cp) < 2 — a
+            // tank approaches ambient geometrically per tick, and a large enough
+            // UA on a small enough inventory would oscillate about it and then
+            // diverge. At refinery scale that ratio is ~1e-6 (a 1000 kg tank at
+            // dt = 0.1 s needs UA > 8e7 W/K to reach it), so a guard would cost
+            // a branch to catch input no plant produces. The analytic form is
+            // what the PIPE transform needs, where ṁ·cp is small enough to
+            // matter (docs/DESIGN.md §4a).
             let heat_input = energy::heat_load(self.graph.node(nid)).value();
             let mut net_mass = 0.0; // [kg/s] into the node
             let mut net_enthalpy = 0.0; // [W] into the node

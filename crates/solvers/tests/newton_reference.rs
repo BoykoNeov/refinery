@@ -401,6 +401,7 @@ fn tank_hydrostatic_head_drives_flow() {
             mass: Kg(mass),
             temperature: T_AMBIENT,
             composition: Composition::pure(1, 0),
+            ambient_ua: WattPerKelvin::ZERO,
         }),
     ));
     let snk = g.add_node(node(

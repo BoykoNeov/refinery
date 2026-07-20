@@ -171,6 +171,7 @@ fn agree_tank_drain() {
             mass: Kg(RHO_WATER * area * level),
             temperature: T_AMBIENT,
             composition: Composition::pure(1, 0),
+            ambient_ua: WattPerKelvin::ZERO,
         }),
     ));
     let snk = g.add_node(node("snk", sink(P_ATM.value())));
@@ -193,6 +194,7 @@ fn agree_tank_pump_valve() {
             mass: Kg(RHO_WATER * area * level),
             temperature: T_AMBIENT,
             composition: Composition::pure(1, 0),
+            ambient_ua: WattPerKelvin::ZERO,
         }),
     ));
     let pmp = g.add_node(node(

@@ -19,7 +19,7 @@ use refinery_core::graph::{
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, ReactionModel, ThermoModel};
 use refinery_core::units::{
-    Kelvin, Kg, KgPerM3, Meter, Pascal, SquareMeter, Watt, P_ATM, T_AMBIENT,
+    Kelvin, Kg, KgPerM3, Meter, Pascal, SquareMeter, Watt, WattPerKelvin, P_ATM, T_AMBIENT,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -106,6 +106,15 @@ pub enum NodeDef {
         height_m: f64,
         initial_level_m: f64,
         temperature_c: f64,
+        /// Ambient heat transfer coefficient × area, `UA` [W/K]. Already SI —
+        /// there is no customary unit for it worth converting from, unlike the
+        /// bar/°C/MW elsewhere in this file.
+        ///
+        /// Optional, defaulting to 0: a perfectly insulated tank, which is what
+        /// every scenario written before this field existed meant. See
+        /// `TankState::ambient_ua`.
+        #[serde(default)]
+        ambient_ua_w_per_k: f64,
     },
     Pump {
         h0_m: f64,
@@ -280,6 +289,7 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
             height_m,
             initial_level_m,
             temperature_c,
+            ambient_ua_w_per_k,
         } => {
             let area = SquareMeter(*area_m2);
             // m = ρ·A·h.
@@ -290,6 +300,7 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
                 mass,
                 temperature: c_to_k(*temperature_c),
                 composition: water.clone(),
+                ambient_ua: WattPerKelvin(*ambient_ua_w_per_k),
             })
         }
         NodeDef::Pump { h0_m, a, on } => NodeKind::Pump {
@@ -321,7 +332,26 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
 /// exists it can only be a sign slip, and a silently-chilling furnace is a
 /// plausible-looking wrong plant. Rejecting it here is what makes the two-unit
 /// design safe rather than merely tidy.
+///
+/// A tank's `UA` is refused on the same grounds. It is a CONDUCTANCE, not a
+/// signed rate: the direction of ambient exchange already comes from
+/// `T_AMBIENT − T_tank`, so a negative `UA` does not mean "loses heat" — it
+/// inverts the driving force, warming a hot tank further and cooling a cold one,
+/// a positive feedback that runs away from ambient instead of towards it.
 fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
+    if let NodeDef::Tank {
+        ambient_ua_w_per_k, ..
+    } = def
+    {
+        if !ambient_ua_w_per_k.is_finite() || *ambient_ua_w_per_k < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "tank '{name}' has ambient_ua_w_per_k = {ambient_ua_w_per_k}: it must \
+                 be finite and >= 0. UA is a conductance; the DIRECTION of ambient \
+                 exchange comes from (T_ambient − T_tank), so a negative value does \
+                 not mean 'loses heat' — it drives the tank away from ambient."
+            )));
+        }
+    }
     let duty = match def {
         NodeDef::Furnace { duty_mw } => Some(("furnace", *duty_mw)),
         NodeDef::Cooler { duty_mw } => Some(("cooler", *duty_mw)),
@@ -514,6 +544,87 @@ mod tests {
         assert_eq!(s.fidelity.flow, "newton");
         // IndexMap preserves file order → deterministic node ids.
         assert_eq!(s.nodes.get_index(0).unwrap().0, "supply_tank");
+    }
+
+    /// `ambient_ua_w_per_k` is optional and defaults to a perfectly insulated
+    /// tank. This is what keeps every scenario written before the field existed
+    /// bit-identical — `tank_pump_valve.toml` does not mention it, and must
+    /// still load a tank with UA = 0 rather than failing to parse or picking up
+    /// some other number.
+    #[test]
+    fn a_tank_without_an_ambient_ua_is_perfectly_insulated() {
+        use refinery_core::graph::NodeKind;
+
+        let src = include_str!("../../../scenarios/tank_pump_valve.toml");
+        let s = super::load_str(src).unwrap();
+        let engine = super::build_engine(&s).expect("reference plant must build");
+        let id = engine.graph.find_node("supply_tank").unwrap();
+        match &engine.graph.node(id).kind {
+            NodeKind::Tank(t) => assert_eq!(
+                t.ambient_ua.value(),
+                0.0,
+                "a tank whose file omits ambient_ua_w_per_k must be insulated"
+            ),
+            _ => panic!("supply_tank must be a tank"),
+        }
+    }
+
+    /// A `UA` written in a file reaches the tank unchanged. Unlike every other
+    /// quantity in the format it is ALREADY SI — there is no customary unit for
+    /// it worth converting from — so what this pins is the absence of a
+    /// conversion: bar→Pa and °C→K next door make a stray factor here the
+    /// natural mistake.
+    #[test]
+    fn an_ambient_ua_reaches_the_tank_in_watts_per_kelvin() {
+        use refinery_core::graph::NodeKind;
+
+        let src = include_str!("../../../scenarios/tank_pump_valve.toml").replace(
+            "[nodes.supply_tank]",
+            "[nodes.supply_tank]\nambient_ua_w_per_k = 500.0",
+        );
+        let s = super::load_str(&src).expect("must parse with an ambient_ua_w_per_k");
+        let engine = super::build_engine(&s).expect("must build");
+        let id = engine.graph.find_node("supply_tank").unwrap();
+        match &engine.graph.node(id).kind {
+            NodeKind::Tank(t) => assert_eq!(
+                t.ambient_ua.value(),
+                500.0,
+                "500 W/K in the file must be 500 W/K in the tank, unscaled"
+            ),
+            _ => panic!("supply_tank must be a tank"),
+        }
+    }
+
+    /// A negative `UA` is refused at load. It is a CONDUCTANCE, not a signed
+    /// rate: direction already comes from `(T_ambient − T_tank)`, so a negative
+    /// value does not mean "loses heat" — it inverts the driving force into
+    /// positive feedback, warming a hot tank further. That plant RUNS and
+    /// reports finite temperatures the whole way, which is why it has to be
+    /// stopped at the file rather than caught downstream.
+    #[test]
+    fn a_negative_ambient_ua_is_refused() {
+        let src = include_str!("../../../scenarios/tank_pump_valve.toml");
+        let mut file = super::load_str(src).expect("must parse");
+        match file.nodes.get_mut("supply_tank").expect("a supply_tank") {
+            super::NodeDef::Tank {
+                ambient_ua_w_per_k, ..
+            } => *ambient_ua_w_per_k = -1.0,
+            other => panic!("supply_tank must be a tank, got {other:?}"),
+        }
+        // `Engine` is not `Debug`, so unwrap the Result by hand.
+        match super::build_engine(&file) {
+            Ok(_) => panic!("a negative ambient_ua_w_per_k must not build"),
+            Err(e) => {
+                let message = e.to_string();
+                assert!(
+                    matches!(e, refinery_core::error::SimError::Scenario(_))
+                        && message.contains("supply_tank")
+                        && message.contains("conductance"),
+                    "must fail as a Scenario error naming the tank and explaining \
+                     why, got: {message}"
+                );
+            }
+        }
     }
 
     /// The reference plant must build into a wired graph and actually run:

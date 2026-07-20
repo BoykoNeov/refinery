@@ -163,6 +163,29 @@ pub struct TankState {
     pub mass: Kg,
     pub temperature: Kelvin,
     pub composition: Composition,
+    /// Ambient heat transfer coefficient × exposed area, `UA` [W/K].
+    ///
+    /// Drives `Q = UA·(T_AMBIENT − T_tank)` — a SIGNED term, applied by
+    /// `energy::ambient_exchange`, which heats a tank colder than ambient and
+    /// cools one hotter with no second code path. See `energy::heat_load`.
+    ///
+    /// Defaults to ZERO: a perfectly insulated tank. That default is load
+    /// bearing, not a placeholder — every scenario written before this field
+    /// existed stays bit-identical, and `isothermal_plant.rs` keeps testing what
+    /// it always tested. A tank that silently started leaking heat the day the
+    /// field landed would turn that flat line into a lie.
+    #[serde(default = "no_ambient_exchange")]
+    pub ambient_ua: WattPerKelvin,
+}
+
+/// The `ambient_ua` default: a perfectly insulated body.
+///
+/// A local function rather than a blanket `Default` on the unit newtypes: `0`
+/// is the physically meaningful "no exchange" here, whereas a default `Kelvin`
+/// of 0 K would be a silent absurdity waiting for the first struct that forgot
+/// to set one.
+fn no_ambient_exchange() -> WattPerKelvin {
+    WattPerKelvin::ZERO
 }
 
 impl TankState {

@@ -207,7 +207,7 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       right answer. The plant now puts C_min on side A deliberately, and the
       test asserts that premise so it fails loudly rather than silently testing
       less than it claims.
-- [ ] Ambient heat exchange for TANKS. NOT "loss": the driving force is
+- [x] Ambient heat exchange for TANKS. NOT "loss": the driving force is
       `T_ambient − T_node`, so the same term must HEAT a body colder than ambient
       and cool one hotter, with no second code path and no sign convention of its
       own. A one-directional "loss" would be wrong for a chilled tank on a warm
@@ -216,6 +216,25 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       every existing scenario stays bit-identical and `isothermal_plant.rs` keeps
       meaning what it meant. Additive: one more term in the tank's existing `Q`,
       already covered by `checked_temperature`. See DESIGN §4a.
+      It landed exactly as specified: `ambient_exchange` owns the sign,
+      `heat_load` sums it in, and the engine's tank loop picked the term up
+      without being told it exists — the payoff for routing that loop through
+      `heat_load` back when the two still agreed.
+      **Tests and what falsification found.** Two single-tick reference cases,
+      one either side of ambient, pin the magnitude to round-off (the discrete
+      step is exact there — the driving force is evaluated once); a 10 000-tick
+      case checks Newton's law of cooling at exactly one time constant.
+      That third test's tolerance is **Euler truncation, not round-off** — the
+      integrator gives `(1−α)^N` where physics gives `exp(−αN)` — so it is 1e-3 K
+      against the others' 1e-9, derived in the test rather than tuned until
+      green. Asserting against `(1−α)^N` would have been tighter and worthless:
+      that formula IS the integrator and would agree with any Euler
+      implementation of any wrong `Q`. Falsification: flipping the sign fails
+      all three; a **0.1% error in the term** also fails all three, including
+      the loose-tolerance one — so the wide tolerance costs no discrimination.
+      Explicit Euler makes the term stable only while `UA·dt/(m·cp) < 2`;
+      at refinery scale that ratio is ~1e-6, so it is documented in
+      `Engine::tick` rather than guarded.
 - [ ] Ambient heat exchange for PIPES — split out of the box above, because it is
       NOT additive. An edge's stream temperature is currently *identically* its
       upwind node's, which is the core of the M2.1 sweep; a pipe that exchanges

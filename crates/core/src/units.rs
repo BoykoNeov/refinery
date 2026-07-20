@@ -67,6 +67,13 @@ unit!(/// Power [W].
     Watt);
 unit!(/// Specific heat capacity [J/(kg·K)].
     JPerKgK);
+unit!(/// Overall heat transfer coefficient times area, `UA` [W/K].
+    ///
+    /// Deliberately ONE number rather than a separate `U` and `A`: at this
+    /// fidelity nothing distinguishes them — no geometry, no wind, no insulation
+    /// model, no radiation — so splitting them would invent two quantities the
+    /// model cannot tell apart (docs/DESIGN.md §4a).
+    WattPerKelvin);
 unit!(/// Molar mass [kg/mol].
     KgPerMol);
 

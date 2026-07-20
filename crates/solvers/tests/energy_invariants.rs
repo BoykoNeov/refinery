@@ -90,6 +90,19 @@ fn sink(name: &str, pressure_pa: f64, temperature: Kelvin) -> Node {
 }
 
 fn tank_node(name: &str, mass_kg: f64, temperature: Kelvin, heat: Watt) -> Node {
+    tank_node_with_ambient(name, mass_kg, temperature, heat, WattPerKelvin::ZERO)
+}
+
+/// A tank with an ambient boundary. `tank_node` above delegates here with
+/// `UA = 0` — a perfectly insulated tank — so every test written before ambient
+/// exchange existed keeps the plant it was written against.
+fn tank_node_with_ambient(
+    name: &str,
+    mass_kg: f64,
+    temperature: Kelvin,
+    heat: Watt,
+    ambient_ua: WattPerKelvin,
+) -> Node {
     Node {
         name: name.into(),
         kind: NodeKind::Tank(TankState {
@@ -98,6 +111,7 @@ fn tank_node(name: &str, mass_kg: f64, temperature: Kelvin, heat: Watt) -> Node 
             mass: Kg(mass_kg),
             temperature,
             composition: Composition::pure(1, 0),
+            ambient_ua,
         }),
         heat_input: heat,
     }
@@ -271,6 +285,152 @@ fn a_tank_cooled_below_absolute_zero_is_rejected() {
     assert!(
         message.contains("absolute zero") && message.contains("overcooled"),
         "the error must name the tank and what went wrong, got: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Ambient exchange (tanks)
+// ---------------------------------------------------------------------------
+
+/// `UA` for the ambient cases [W/K]. With 1000 kg of water (`m·cp` = 4.184e6
+/// J/K) and `dt` = 0.1 s this makes the per-tick decay factor
+/// `α = UA·dt/(m·cp)` exactly 1e-4, which is what lets the reference below state
+/// its truncation error in closed form. Physically it is an absurdly
+/// well-coupled tank; the point here is arithmetic that can be checked by eye.
+const AMBIENT_UA: f64 = 4184.0;
+/// `α = UA·dt/(m·cp)` for the plants below — the fraction of the remaining gap
+/// to ambient that one Euler tick closes.
+const ALPHA: f64 = 1e-4;
+
+/// REFERENCE — one tick of ambient exchange against the hand calculation, for a
+/// tank BELOW ambient. `Q = UA·(T_amb − T)` with `T₀` 20 K below ambient is
+/// +83 680 W, and over one 0.1 s tick that is `α·20 K` = exactly 2 mK of
+/// WARMING.
+///
+/// One tick, deliberately: the discrete step is exact here (the driving force is
+/// evaluated once, at the start-of-tick temperature), so the tolerance is pure
+/// float round-off, with no Euler truncation to absorb. That makes this the
+/// sharpest possible statement of the term's magnitude. The multi-tick case
+/// below is where the integrator's error enters, and it is tested separately so
+/// the two failure modes cannot be confused for one another.
+#[test]
+fn one_tick_of_ambient_exchange_warms_a_cold_tank_by_the_hand_calculation() {
+    let mut graph = PlantGraph::new();
+    graph.add_node(tank_node_with_ambient(
+        "cold_store",
+        1000.0,
+        Kelvin(273.15), // 20 K below ambient
+        Watt::ZERO,
+        WattPerKelvin(AMBIENT_UA),
+    ));
+    let mut engine = engine(graph);
+    engine.tick().expect("tick must succeed");
+
+    let expected = 273.15 + ALPHA * 20.0; // 273.152 K
+    let actual = tank_temperature(&engine, "cold_store");
+    assert!(
+        (actual - expected).abs() < 1e-9,
+        "a tank 20 K below ambient must WARM to {expected} K in one tick, got {actual}"
+    );
+}
+
+/// REFERENCE — the same tank, the same `UA`, the same tick, on the other side of
+/// ambient: 20 K ABOVE it must cool by exactly the same 2 mK.
+///
+/// This is the test the whole "not heat loss" naming exists for (DESIGN §4a).
+/// One signed `Q = UA·(T_amb − T_body)` has to run both ways, and a
+/// one-directional loss — or an `abs()`, or a branch on which side is warmer —
+/// passes the warming case above and fails here. The symmetry is exact because
+/// the two plants are mirror images about ambient, so the expected number needs
+/// no separate derivation: it is the first one's, reflected.
+#[test]
+fn the_same_term_cools_a_tank_above_ambient() {
+    let mut graph = PlantGraph::new();
+    graph.add_node(tank_node_with_ambient(
+        "hot_store",
+        1000.0,
+        Kelvin(313.15), // 20 K above ambient
+        Watt::ZERO,
+        WattPerKelvin(AMBIENT_UA),
+    ));
+    let mut engine = engine(graph);
+    engine.tick().expect("tick must succeed");
+
+    let expected = 313.15 - ALPHA * 20.0; // 313.148 K
+    let actual = tank_temperature(&engine, "hot_store");
+    assert!(
+        (actual - expected).abs() < 1e-9,
+        "a tank 20 K above ambient must COOL to {expected} K in one tick, got {actual}"
+    );
+}
+
+/// REFERENCE — Newton's law of cooling, integrated. With constant mass and no
+/// flow, `m·cp·dT/dt = UA·(T_amb − T)` has the closed-form solution
+///
+/// ```text
+/// T(t) = T_amb + (T₀ − T_amb)·exp(−UA·t/(m·cp))
+/// ```
+///
+/// Source: Newton's law of cooling, any heat transfer text. Run for
+/// `UA·t/(m·cp)` = 1 exactly — 10 000 ticks × 0.1 s = 1000 s — where the tank
+/// has closed `1 − 1/e` ≈ 63.2% of its initial 20 K gap. That point is chosen
+/// because it discriminates: a term off by a constant factor, or applied to the
+/// wrong ΔT, lands visibly elsewhere on the curve, whereas testing near t = 0 or
+/// t = ∞ would pass for almost any decaying model.
+///
+/// THE TOLERANCE IS EULER TRUNCATION, NOT ROUND-OFF — this is why it is 1e-3 K
+/// where the single-tick cases above are 1e-9. Explicit Euler produces
+/// `(1 − α)^N` where the analytic solution has `exp(−αN)`, and with `α` = 1e-4,
+/// `N` = 10 000:
+///
+/// ```text
+/// (1−α)^N = exp(N·ln(1−α)) = exp(−1 − N·α²/2 − …) ≈ e⁻¹·(1 − 5e-5)
+/// error ≈ 20 K · e⁻¹ · 5e-5 ≈ 3.7e-4 K
+/// ```
+///
+/// so 1e-3 K admits the integrator's known error with room to spare while
+/// staying 4 orders of magnitude below the 12.6 K the tank actually moves.
+/// Asserting against `(1 − α)^N` instead would tighten the number and destroy
+/// the test: that formula IS the integrator, so it would agree with any Euler
+/// implementation of any wrong `Q`.
+#[test]
+fn a_tank_approaches_ambient_on_newtons_law_of_cooling() {
+    let mut graph = PlantGraph::new();
+    graph.add_node(tank_node_with_ambient(
+        "cooling_store",
+        1000.0,
+        Kelvin(273.15),
+        Watt::ZERO,
+        WattPerKelvin(AMBIENT_UA),
+    ));
+    let mut engine = engine(graph);
+
+    let ambient = T_AMBIENT.value();
+    let mut previous = 273.15;
+    for tick in 1..=10_000 {
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("tick {tick} must succeed: {e:?}"));
+        let now = tank_temperature(&engine, "cooling_store");
+        // Approach, never arrival and never overshoot. A tank driven only by
+        // ambient exchange must close the gap monotonically and stop at
+        // ambient: the driving force shrinks with the gap, so crossing it would
+        // mean the step overshot — the failure the PIPE transform must use the
+        // analytic form to avoid, and which this tank's α ≪ 1 rules out here.
+        assert!(
+            now > previous && now < ambient,
+            "tick {tick}: must warm monotonically toward but never past ambient \
+             ({ambient} K); went {previous} → {now}"
+        );
+        previous = now;
+    }
+
+    let expected = ambient + (273.15 - ambient) * (-1.0f64).exp(); // ≈ 285.7924 K
+    let actual = tank_temperature(&engine, "cooling_store");
+    assert!(
+        (actual - expected).abs() < 1e-3,
+        "after one time constant the tank must sit at {expected} K \
+         (63.2% of the way to ambient), got {actual}"
     );
 }
 

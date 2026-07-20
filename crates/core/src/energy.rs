@@ -32,7 +32,7 @@
 use crate::components::Slate;
 use crate::error::SimError;
 use crate::graph::{EdgeId, NodeId, NodeKind, PlantGraph};
-use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, T_AMBIENT};
+use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Reference temperature for specific enthalpy: `h = cp·(T − T_REF)` [K].
@@ -55,8 +55,31 @@ pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> W
     Watt(mass_flow.value() * cp.value() * (temperature.value() - T_REF.value()))
 }
 
-/// Total heat delivered into a node's stream [W]: external heat plus the
-/// operating duty of a fired heater, minus that of a cooler.
+/// Heat exchanged with the surroundings [W], SIGNED: positive into the body.
+///
+/// ```text
+/// Q_ambient = UA·(T_AMBIENT − T_body)
+/// ```
+///
+/// This is NOT "heat loss", and the naming carries weight (docs/DESIGN.md §4a).
+/// The driving force is a temperature DIFFERENCE, so the one term must heat a
+/// body colder than ambient and cool one hotter — a one-directional loss would
+/// be wrong for a chilled tank on a warm day, and with the `Cooler` and the
+/// `HeatExchanger` in place that is a reachable plant state rather than a
+/// hypothetical. The direction falls out of the subtraction, so there is no
+/// `if colder` branch, no second code path, and no sign convention of its own:
+/// the same move that made `heat_load` the sole owner of the duty sign.
+///
+/// Ambient is the global `T_AMBIENT`, the same constant the `Atmosphere` node is
+/// pinned to. A body sitting in the outside world and the outside world itself
+/// must agree on how warm it is; a per-unit ambient would let them disagree.
+#[inline]
+pub fn ambient_exchange(ua: WattPerKelvin, body_temperature: Kelvin) -> Watt {
+    Watt(ua.value() * (T_AMBIENT.value() - body_temperature.value()))
+}
+
+/// Total heat delivered into a node [W]: external heat, plus the operating duty
+/// of a fired heater, minus that of a cooler, plus exchange with ambient.
 ///
 /// This function is the single owner of the duty **sign convention**. Both
 /// `Furnace` and `Cooler` store `duty` as a non-negative magnitude — "how much
@@ -70,13 +93,25 @@ pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> W
 /// much heat enters this node" goes through this function, so the two can never
 /// drift apart. On a cooler that same sum gives the physically right answer for
 /// free: a fire fights the cooling rather than replacing it.
+///
+/// A TANK's ambient exchange joins the same sum. It belongs here for the reason
+/// the duty does — every consumer already asks this function how much heat
+/// enters a node, so the tank's energy integration in `Engine::tick` picks the
+/// term up without knowing it exists. Only a tank has one: an ambient boundary
+/// needs a body with thermal mass and a temperature of its OWN, and a
+/// zero-volume node has neither. A pipe does have one, but its outlet is not
+/// its inlet plus `Q/(ṁ·cp)` — it needs the analytic plug-flow transform, which
+/// is its own change to how transport works (docs/DESIGN.md §4a).
 pub fn heat_load(node: &crate::graph::Node) -> Watt {
-    let duty = match &node.kind {
+    let unit_term = match &node.kind {
         NodeKind::Furnace { duty } => duty.value(),
         NodeKind::Cooler { duty } => -duty.value(),
+        // The tank's temperature is its START-of-tick value here, which is what
+        // makes this an explicit-Euler term like every other slow state.
+        NodeKind::Tank(tank) => ambient_exchange(tank.ambient_ua, tank.temperature).value(),
         _ => 0.0,
     };
-    Watt(node.heat_input.value() + duty)
+    Watt(node.heat_input.value() + unit_term)
 }
 
 /// Accept a computed temperature [K] only if physics permits it, or fail with
@@ -588,6 +623,7 @@ mod tests {
                 mass: Kg(50_000.0),
                 temperature,
                 composition: Composition::pure(1, 0),
+                ambient_ua: WattPerKelvin::ZERO,
             }),
         )
     }

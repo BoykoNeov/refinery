@@ -367,6 +367,20 @@ Tanks land first, alone, because they are testable alone: heat a cold tank,
 cool a hot one, and check both against `T(t) = T_amb + (T₀ − T_amb)·exp(−UA·t/(m·cp))`
 in the constant-mass limit.
 
+**Tanks are done** (the pipe box remains open). The term lives in
+`energy::ambient_exchange` and is summed by `heat_load`, so the engine's tank
+integration receives it without a line changed there. One thing the note above
+did not anticipate: the exponential is the *continuous* solution, and the tank's
+`Q` is integrated by explicit Euler like every other slow state, so the discrete
+result is `(1−α)^N` with `α = UA·dt/(m·cp)` — close to `exp(−αN)` but not equal.
+That gap is Euler truncation, and it sets the reference test's tolerance
+(1e-3 K at one time constant, against 1e-9 for a single exact step). It also
+bounds stability: the term oscillates and diverges once `α > 2`. For a tank that
+is unreachable — `α` is ~1e-6 at refinery scale — so it is documented in
+`Engine::tick` rather than guarded. For a PIPE it is not unreachable at all,
+since `ṁ·cp` can be small, which is the second and independent reason that box
+insists on the analytic transform rather than an Euler step.
+
 **Known limitations at this fidelity** (each deliberate, none accidental):
 
 - **No pump work or valve throttling heat.** Both dissipate into the stream in
