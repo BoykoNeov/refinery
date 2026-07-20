@@ -190,6 +190,41 @@ pub enum NodeKind {
         /// previous draw's. See `ColumnDraw`.
         draws: Vec<ColumnDraw>,
     },
+    /// Isothermal conversion reactor (simple fidelity): one feed in, one product
+    /// out, held at a fixed reactor-outlet temperature `t_set`, whose chemistry
+    /// comes from the engine's `ReactionModel` (DESIGN §5, "Simple reactor").
+    ///
+    /// Hydraulically it IS a furnace — zero-volume, 1-in-1-out, total-mass-neutral
+    /// — so it reuses every furnace arm in the solver (`classify`,
+    /// `fixed_pressure`, `validate_degrees`) unchanged. What is new is chemistry,
+    /// and it collides with both M3 conservation invariants at once: the reaction
+    /// conserves TOTAL mass but not per-component mass (vs I7), and it moves
+    /// chemical energy the sensible datum does not track (vs I6). Both are settled
+    /// by design, not code branches:
+    ///
+    /// - **Isothermal at a ROT setpoint, not adiabatic.** Holding `t_set` makes the
+    ///   reaction extent a pure function of a KNOWN temperature — no inner solve —
+    ///   and is the operator's real handle. The reactor imposes `t_set` on its
+    ///   outlet exactly as a furnace imposes a duty; the heat that costs is an
+    ///   EMERGENT diagnostic (`energy::reactor_duty`), not a stored `duty` field.
+    ///   Adiabatic (coupling `dC/dτ` and `dT/dτ` into a fixed point) is deferred.
+    /// - **Chemistry lives in the `ReactionModel`, keyed by the slate.** The
+    ///   kinetic lumps ARE slate components, resolved by name; `react` maps the
+    ///   feed composition to products at `t_set`. The single uniform outlet means
+    ///   the reactor needs no per-draw composition machinery (unlike the column).
+    ///
+    /// `t_set` is a setpoint the vessel holds regardless of flow, so unlike a
+    /// zero-volume mixing point the reactor's resolved temperature is `t_set`
+    /// even with no inflow — there is nothing to mix, and the setpoint is a
+    /// config fact, not a derived value.
+    Reactor {
+        /// Held reactor-outlet temperature [K] (the ROT setpoint). Imposed on the
+        /// product stream; the heat to hold it is emergent, not configured.
+        t_set: Kelvin,
+        /// Residence time [s]. Unused by the lookup fidelity but passed to
+        /// `ReactionModel::react`; the M4.2 kinetics integrate over it.
+        tau: Seconds,
+    },
 }
 
 /// One draw of a `Column`: the outlet it feeds and the top of its boiling-range

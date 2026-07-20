@@ -39,6 +39,7 @@
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{ColumnDraw, EdgeId, NodeId, NodeKind, PlantGraph};
+use crate::traits::ReactionModel;
 use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -563,6 +564,14 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
             // temperature/composition are the mix of its ONE inflow (the feed);
             // the draws are outflows and do not enter that mix.
             | NodeKind::Column { .. }
+            // A reactor holds no inventory either, so it is SWEPT — its
+            // composition is its feed mix transformed by `react`. It is the one
+            // exception to this function's "temperature = mix of inflows" premise:
+            // its temperature is IMPOSED (`t_set`), not mixed. The sweep handles
+            // that in its single-node branch; here it must count as zero-volume so
+            // the sweep visits it at all (an inertial node would never resolve its
+            // feed-dependent composition).
+            | NodeKind::Reactor { .. }
     )
 }
 
@@ -591,7 +600,11 @@ pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Compositio
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::HeatExchanger
-        | NodeKind::Column { .. } => None,
+        | NodeKind::Column { .. }
+        // A reactor's composition is its feed mix, then `react`'d — mixed here,
+        // transformed in the sweep. It is zero-volume in BOTH fields (the
+        // partition must agree), so it is `None` here too.
+        | NodeKind::Reactor { .. } => None,
     }
 }
 
@@ -620,7 +633,13 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         // temperature (DESIGN §5), which falls out for free: a zero-volume node
         // with one inflow mixes to that inflow's temperature, and the draws read
         // the column as their upwind end. No column-specific temperature code.
-        | NodeKind::Column { .. } => None,
+        | NodeKind::Column { .. }
+        // A reactor's temperature is IMPOSED (`t_set`), not mixed — but it is
+        // still `None` here, because seeding it as inertial would trip the
+        // partition assertion (its composition is zero-volume) and the sweep must
+        // visit it to resolve that composition. `t_set` is applied in the sweep's
+        // single-node branch, overriding the mixed value.
+        | NodeKind::Reactor { .. } => None,
     }
 }
 
@@ -668,6 +687,30 @@ pub struct NodeStates {
     pub temperature: BTreeMap<NodeId, Kelvin>,
     /// Resolved mass-fraction composition per node.
     pub composition: BTreeMap<NodeId, Composition>,
+    /// Per-reactor heat duties [W], the one extensive quantity resolved on this
+    /// sweep. Computed where the reactor's inlet meets its imposed outlet (the
+    /// only place feed, `T_in`, products and `Δh_rxn` are all in hand). Empty for
+    /// a network with no reactor. See `ReactorDuty` and `reactor_duty`.
+    pub reactor_duty: BTreeMap<NodeId, ReactorDuty>,
+}
+
+/// The two heat duties a reactor's isothermal setpoint implies, both extensive
+/// [W]. Neither drives the forward solve — they are DIAGNOSTICS, computed so the
+/// energy gate can pin each term separately (DESIGN §5). The reactor's outlet
+/// temperature is `t_set` regardless of either.
+#[derive(Debug, Clone, Copy)]
+pub struct ReactorDuty {
+    /// Emergent SENSIBLE duty [W]: the heat that carries the feed from its inlet
+    /// mix enthalpy to the product enthalpy at `t_set`,
+    /// `ṁ·cp_out·(T_set − T_REF) − Σ ṁ_in·cp_in·(T_in − T_REF)`. It INCLUDES the
+    /// cp shift the composition change causes (`cp_out` is the products'). Closes
+    /// by construction — the reactor imposes `t_set` like a furnace imposes duty.
+    pub sensible: Watt,
+    /// Reported PHYSICAL duty [W]: `sensible + ṁ·Δh_rxn`. The heat the reactor
+    /// actually trades with the outside to hold `t_set` while running the
+    /// reaction. The `Δh_rxn` term sits OUTSIDE the sensible-only datum, which is
+    /// why I6 excludes reactors (DESIGN §5).
+    pub reported: Watt,
 }
 
 /// Resolve every node's temperature [K] and composition for this tick.
@@ -695,17 +738,25 @@ pub struct NodeStates {
 /// Holding the last resolved value keeps the field finite and reproducible
 /// instead of dividing 0/0.
 ///
+/// A **reactor** is the one zero-volume node whose two fields diverge: its
+/// composition is the feed mix transformed by `reactions`, and its temperature
+/// is IMPOSED (`t_set`) rather than mixed. Both, plus its emergent duties, are
+/// resolved in the single-node branch (`reactor_duty`).
+///
 /// # Errors
 /// `SimError::Numerical` if a recycle among zero-volume nodes leaves the sweep
-/// with no valid order (see the module docs).
+/// with no valid order (see the module docs), or if `reactions` cannot produce
+/// valid products for a reactor's feed.
 pub fn resolve_node_states(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    reactions: &dyn ReactionModel,
     previous: &NodeStates,
 ) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
     let mut composition: BTreeMap<NodeId, Composition> = BTreeMap::new();
+    let mut reactor_duties: BTreeMap<NodeId, ReactorDuty> = BTreeMap::new();
 
     // 1. Inertial nodes are the roots of the sweep: known before it starts.
     //    Both fields are seeded from the SAME node, so the two boundary helpers
@@ -824,16 +875,46 @@ pub fn resolve_node_states(
             }
             _ => {
                 for &id in sides {
-                    let mixed = mix_inflows(
-                        graph,
-                        slate,
-                        edge_mass_flow,
-                        &temperature,
-                        &composition,
-                        &previous.temperature,
-                        id,
-                    )?;
-                    temperature.insert(id, mixed);
+                    // A reactor diverges from the ordinary mixing point in BOTH
+                    // fields: it reacts the feed just mixed above into products,
+                    // and it IMPOSES `t_set` instead of mixing a temperature. Its
+                    // two emergent duties are recorded for the energy gate.
+                    let reactor_cfg = match &graph.node(id).kind {
+                        NodeKind::Reactor { t_set, tau } => Some((*t_set, *tau)),
+                        _ => None,
+                    };
+                    if let Some((t_set, tau)) = reactor_cfg {
+                        let feed = composition
+                            .get(&id)
+                            .expect("this vertex's composition was mixed above")
+                            .clone();
+                        let (products, duty) = reactor_duty(
+                            graph,
+                            slate,
+                            edge_mass_flow,
+                            &temperature,
+                            &composition,
+                            id,
+                            &feed,
+                            t_set,
+                            tau,
+                            reactions,
+                        )?;
+                        composition.insert(id, products);
+                        temperature.insert(id, t_set);
+                        reactor_duties.insert(id, duty);
+                    } else {
+                        let mixed = mix_inflows(
+                            graph,
+                            slate,
+                            edge_mass_flow,
+                            &temperature,
+                            &composition,
+                            &previous.temperature,
+                            id,
+                        )?;
+                        temperature.insert(id, mixed);
+                    }
                 }
             }
         }
@@ -890,7 +971,67 @@ pub fn resolve_node_states(
     Ok(NodeStates {
         temperature,
         composition,
+        reactor_duty: reactor_duties,
     })
+}
+
+/// Resolve a reactor: react its feed into products and compute its two emergent
+/// duties. The caller stores `products` as the reactor's composition, `t_set` as
+/// its temperature, and the returned `ReactorDuty` in `NodeStates`.
+///
+/// The emergent sensible duty is built from the SAME resolved inflows the
+/// temperature mix would use — `inflow_totals` gives `Σ ṁ_in·cp_in·(T_in − T_REF)`
+/// — plus the total inflow mass `ṁ` for the product-side term
+/// `ṁ·cp_out·(T_set − T_REF)`, with `cp_out` taken from the PRODUCTS so the cp
+/// shift is captured. The reactor is total-mass-neutral (`ṁ_out = ṁ_in`), so one
+/// mass suffices for both ends.
+///
+/// A reactor with no inflow contributes zero of everything: `react` still runs
+/// (on the fallback feed) so the composition field is defined, but with `ṁ = 0`
+/// both duties are zero and there is no capacity to divide by.
+#[allow(clippy::too_many_arguments)]
+fn reactor_duty(
+    graph: &PlantGraph,
+    slate: &Slate,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    temperature: &BTreeMap<NodeId, Kelvin>,
+    composition: &BTreeMap<NodeId, Composition>,
+    node: NodeId,
+    feed: &Composition,
+    t_set: Kelvin,
+    tau: crate::units::Seconds,
+    reactions: &dyn ReactionModel,
+) -> Result<(Composition, ReactorDuty), SimError> {
+    let reaction = reactions.react(feed, t_set, tau, slate)?;
+
+    // Total inflow mass ṁ [kg/s]. `validate_degrees` pins the reactor at one
+    // inflow, but summing is both correct and robust to that guard changing.
+    let mass_in: f64 = inflow_edges(graph, edge_mass_flow, node)
+        .iter()
+        .map(|(_, _, into_node)| *into_node)
+        .sum();
+
+    // Σ ṁ_in·cp_in·(T_in − T_REF) [W] — the inlet enthalpy above the datum, the
+    // same sum `mix_inflows` divides to get a mixed temperature. `None` = no
+    // inflow, so no duty.
+    let sensible =
+        match inflow_totals(graph, slate, edge_mass_flow, temperature, composition, node)? {
+            Some((inlet_enthalpy, _capacity)) => {
+                let cp_out = reaction.products.mixture_cp(slate).value();
+                let outlet_enthalpy = mass_in * cp_out * (t_set.value() - T_REF.value());
+                outlet_enthalpy - inlet_enthalpy
+            }
+            None => 0.0,
+        };
+    let reported = sensible + mass_in * reaction.dh_rxn.value();
+
+    Ok((
+        reaction.products,
+        ReactorDuty {
+            sensible: Watt(sensible),
+            reported: Watt(reported),
+        },
+    ))
 }
 
 /// Mass-weighted mix of a zero-volume node's inflow compositions.
@@ -1184,7 +1325,31 @@ mod tests {
     use crate::components::{Composition, Slate};
     use crate::graph::{HeatExchangerCoupling, Node, Pipe, TankState};
     use crate::stream::Stream;
+    use crate::traits::Reaction;
     use crate::units::*;
+
+    /// Identity reaction for the sweep tests that carry no reactor — mirrors the
+    /// `solvers::NoReactions` the engine uses, kept here so `core`'s own tests
+    /// depend on nothing downstream. Reactor-specific tests define their own
+    /// converting model inline.
+    struct NoRxn;
+    impl ReactionModel for NoRxn {
+        fn name(&self) -> &'static str {
+            "test-none"
+        }
+        fn react(
+            &self,
+            feed: &Composition,
+            _t: Kelvin,
+            _tau: Seconds,
+            _slate: &Slate,
+        ) -> Result<Reaction, SimError> {
+            Ok(Reaction {
+                products: feed.clone(),
+                dh_rxn: JPerKg::ZERO,
+            })
+        }
+    }
 
     fn node(name: &str, kind: NodeKind) -> Node {
         Node {
@@ -1236,8 +1401,14 @@ mod tests {
         graph: &PlantGraph,
         flows: &BTreeMap<EdgeId, f64>,
     ) -> Result<BTreeMap<NodeId, Kelvin>, SimError> {
-        resolve_node_states(graph, &Slate::water_only(), flows, &NodeStates::default())
-            .map(|states| states.temperature)
+        resolve_node_states(
+            graph,
+            &Slate::water_only(),
+            flows,
+            &NoRxn,
+            &NodeStates::default(),
+        )
+        .map(|states| states.temperature)
     }
 
     /// The composition half of the same sweep, for the tests that read it.
@@ -1246,7 +1417,7 @@ mod tests {
         slate: &Slate,
         flows: &BTreeMap<EdgeId, f64>,
     ) -> Result<BTreeMap<NodeId, Composition>, SimError> {
-        resolve_node_states(graph, slate, flows, &NodeStates::default())
+        resolve_node_states(graph, slate, flows, &NoRxn, &NodeStates::default())
             .map(|states| states.composition)
     }
 
@@ -1413,8 +1584,9 @@ mod tests {
                     idle,
                     Composition::from_weights(&[0.2, 0.8]).unwrap(),
                 )]),
+                ..Default::default()
             };
-            let held = resolve_node_states(&g, &slate, &flows, &previous)
+            let held = resolve_node_states(&g, &slate, &flows, &NoRxn, &previous)
                 .unwrap()
                 .composition;
             assert_eq!(held[&idle].fractions(), &[0.2, 0.8]);
@@ -1921,8 +2093,9 @@ mod tests {
         let previous = NodeStates {
             temperature: BTreeMap::from([(idle, Kelvin(311.0))]),
             composition: BTreeMap::new(),
+            ..Default::default()
         };
-        let temperature = resolve_node_states(&g, &Slate::water_only(), &flows, &previous)
+        let temperature = resolve_node_states(&g, &Slate::water_only(), &flows, &NoRxn, &previous)
             .unwrap()
             .temperature;
         assert_eq!(
@@ -2267,6 +2440,192 @@ mod tests {
                 feed.fractions(),
                 "an empty draw carries the feed composition as an inert placeholder"
             );
+        }
+    }
+
+    /// The reactor's contract in the sweep — imposed `t_set`, product composition,
+    /// and the two emergent duties — with hand-built flows and a KNOWN converting
+    /// reaction, so the numbers are all traceable to arithmetic.
+    mod reactor_tests {
+        use super::*;
+        use crate::components::PseudoComponent;
+
+        /// A two-cut slate whose components have DELIBERATELY different `cp`, so a
+        /// composition change shifts the mixture `cp` — the property the reactor's
+        /// sensible duty must capture (`cp_out` from the products, not the feed).
+        fn two_cut_slate() -> Slate {
+            let cut = |name: &str, cp: f64| PseudoComponent {
+                name: name.into(),
+                tb: Kelvin(400.0),
+                molar_mass: KgPerMol(0.1),
+                density: KgPerM3(800.0),
+                cp: JPerKgK(cp),
+            };
+            Slate::new(vec![cut("feed_lump", 2000.0), cut("product_lump", 3000.0)]).unwrap()
+        }
+
+        /// Converts ANY feed into a fixed product slate with a fixed heat of
+        /// reaction. The lookup fidelity's job in miniature: the numbers here are
+        /// what the energy gate recomputes against, independently.
+        struct FixedConversion {
+            products: Composition,
+            dh_rxn: JPerKg,
+        }
+        impl ReactionModel for FixedConversion {
+            fn name(&self) -> &'static str {
+                "test-fixed"
+            }
+            fn react(
+                &self,
+                _feed: &Composition,
+                _t: Kelvin,
+                _tau: Seconds,
+                _slate: &Slate,
+            ) -> Result<Reaction, SimError> {
+                Ok(Reaction {
+                    products: self.products.clone(),
+                    dh_rxn: self.dh_rxn,
+                })
+            }
+        }
+
+        /// source → reactor → sink, one reactor pass. Asserts the two duties
+        /// SEPARATELY against an independent recompute: the sensible term against
+        /// `ṁ·(cp_out·(T_set−T_REF) − cp_in·(T_in−T_REF))`, and the reported term
+        /// as the DIFFERENCE `reported − sensible == ṁ·Δh_rxn` — never the reported
+        /// duty against its own formula, which would be a tautology. So `Δh_rxn`
+        /// and the cp-shift each falsify their own term (verified by mutation:
+        /// swapping `cp_out`→`cp_in` breaks the sensible assert; a wrong `Δh_rxn`
+        /// breaks the difference).
+        #[test]
+        fn the_two_duties_pin_the_cp_shift_and_the_heat_of_reaction_separately() {
+            let slate = two_cut_slate();
+            let t_in = Kelvin(300.0);
+            let t_set = Kelvin(800.0);
+            let mdot = 5.0;
+            let dh_rxn = JPerKg(1.0e5); // endothermic
+
+            // Feed is pure lump 0 (cp 2000); products 40/60 (cp 2600).
+            let feed = Composition::pure(2, 0);
+            let products = Composition::from_weights(&[0.4, 0.6]).unwrap();
+
+            let mut g = PlantGraph::new();
+            let src = g.add_node(node(
+                "src",
+                NodeKind::Source {
+                    pressure: Pascal(2.0e5),
+                    temperature: t_in,
+                    composition: feed.clone(),
+                },
+            ));
+            let rx = g.add_node(node(
+                "rx",
+                NodeKind::Reactor {
+                    t_set,
+                    tau: Seconds(2.0),
+                },
+            ));
+            let snk = g.add_node(node(
+                "snk",
+                NodeKind::Sink {
+                    pressure: Pascal(1.0e5),
+                    temperature: t_in,
+                    composition: feed.clone(),
+                },
+            ));
+            let feed_edge = g.add_pipe(src, rx, pipe("feed"));
+            let prod_edge = g.add_pipe(rx, snk, pipe("prod"));
+            let flows = BTreeMap::from([(feed_edge, mdot), (prod_edge, mdot)]);
+
+            let reactions = FixedConversion {
+                products: products.clone(),
+                dh_rxn,
+            };
+            let states =
+                resolve_node_states(&g, &slate, &flows, &reactions, &NodeStates::default())
+                    .unwrap();
+
+            // The reactor imposes t_set and carries the PRODUCTS downstream.
+            assert_eq!(states.temperature[&rx], t_set);
+            assert_eq!(states.composition[&rx].fractions(), products.fractions());
+
+            let duty = states.reactor_duty[&rx];
+
+            // Independent recompute of the sensible baseline — cp_out from the
+            // PRODUCTS, cp_in from the FEED, not the engine's own value.
+            let cp_in = feed.mixture_cp(&slate).value();
+            let cp_out = products.mixture_cp(&slate).value();
+            let tref = T_REF.value();
+            let sensible_expected =
+                mdot * (cp_out * (t_set.value() - tref) - cp_in * (t_in.value() - tref));
+
+            assert!(
+                (duty.sensible.value() - sensible_expected).abs() < 1e-6,
+                "emergent sensible duty {} W must equal the independent baseline {} W \
+                 (this is the cp-shift term)",
+                duty.sensible.value(),
+                sensible_expected
+            );
+            // The reported duty sits exactly ṁ·Δh_rxn above the sensible baseline.
+            let difference = duty.reported.value() - sensible_expected;
+            assert!(
+                (difference - mdot * dh_rxn.value()).abs() < 1e-6,
+                "reported − sensible = {} W must equal ṁ·Δh_rxn = {} W (the heat-of-\
+                 reaction term)",
+                difference,
+                mdot * dh_rxn.value()
+            );
+        }
+
+        /// A reactor with no throughput still resolves — `t_set` on the outlet, the
+        /// reaction run on the (inert) feed, and BOTH duties zero because ṁ = 0.
+        /// The divide-by-capacity is never reached.
+        #[test]
+        fn a_dead_reactor_holds_its_setpoint_with_zero_duty() {
+            let slate = two_cut_slate();
+            let products = Composition::from_weights(&[0.4, 0.6]).unwrap();
+
+            let mut g = PlantGraph::new();
+            let src = g.add_node(node(
+                "src",
+                NodeKind::Source {
+                    pressure: Pascal(2.0e5),
+                    temperature: Kelvin(300.0),
+                    composition: Composition::pure(2, 0),
+                },
+            ));
+            let rx = g.add_node(node(
+                "rx",
+                NodeKind::Reactor {
+                    t_set: Kelvin(800.0),
+                    tau: Seconds(2.0),
+                },
+            ));
+            let snk = g.add_node(node(
+                "snk",
+                NodeKind::Sink {
+                    pressure: Pascal(1.0e5),
+                    temperature: Kelvin(300.0),
+                    composition: Composition::pure(2, 0),
+                },
+            ));
+            let feed_edge = g.add_pipe(src, rx, pipe("feed"));
+            let prod_edge = g.add_pipe(rx, snk, pipe("prod"));
+            // No flow anywhere.
+            let flows = BTreeMap::from([(feed_edge, 0.0), (prod_edge, 0.0)]);
+
+            let reactions = FixedConversion {
+                products,
+                dh_rxn: JPerKg(1.0e5),
+            };
+            let states =
+                resolve_node_states(&g, &slate, &flows, &reactions, &NodeStates::default())
+                    .unwrap();
+
+            assert_eq!(states.temperature[&rx], Kelvin(800.0));
+            let duty = states.reactor_duty[&rx];
+            assert_eq!(duty.sensible.value(), 0.0);
+            assert_eq!(duty.reported.value(), 0.0);
         }
     }
 }

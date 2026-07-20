@@ -184,6 +184,7 @@ impl Engine {
             &self.graph,
             &self.slate,
             &solution.edge_mass_flow,
+            self.reactions.as_ref(),
             &self.node_states,
         )?;
         let node_temperature = &node_states.temperature;

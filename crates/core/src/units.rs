@@ -67,6 +67,14 @@ unit!(/// Power [W].
     Watt);
 unit!(/// Specific heat capacity [J/(kg·K)].
     JPerKgK);
+unit!(/// Specific enthalpy [J/kg]. Used for a reaction's heat `Δh_rxn`.
+    ///
+    /// SIGN CONVENTION: positive = ENDOTHERMIC (heat ABSORBED by the reaction).
+    /// A reactor holding its setpoint must then SUPPLY `ṁ·Δh_rxn` on top of the
+    /// sensible change, which is why the reported physical duty is
+    /// `sensible + ṁ·Δh_rxn` (docs/DESIGN.md §5, `traits::ReactionModel`). FCC
+    /// cracking is endothermic, so its lumps carry a positive `Δh_rxn`.
+    JPerKg);
 unit!(/// Overall heat transfer coefficient times area, `UA` [W/K].
     ///
     /// Deliberately ONE number rather than a separate `U` and `A`: at this

@@ -83,6 +83,9 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
             | NodeKind::Valve { .. }
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
+            // A reactor is the furnace's process constraint too: "the stream it
+            // converts" names one definite feed, so it is 1-in-1-out.
+            | NodeKind::Reactor { .. }
             | NodeKind::HeatExchanger => Some((1, 1)),
             // One feed, one outlet per draw. The feed is stored INTO the column
             // and each draw OUT of it (the loader enforces the direction), so the
@@ -118,14 +121,15 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         // pressure-driven edge into a fixed node and the draws (fixed→fixed) never
         // enter the Jacobian (DESIGN §5).
         NodeKind::Column { pressure, .. } => Some(pressure.value()),
-        // Furnaces and coolers pin no pressure: at M2 both are hydraulically
+        // Furnaces, coolers and reactors pin no pressure: all are hydraulically
         // pass-throughs, so they are free nodes whose pressure the network
-        // determines.
+        // determines. A reactor is hydraulically a furnace (DESIGN §5).
         NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
         | NodeKind::Junction
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
+        | NodeKind::Reactor { .. }
         | NodeKind::HeatExchanger => None,
     }
 }

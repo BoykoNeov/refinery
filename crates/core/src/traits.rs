@@ -5,10 +5,10 @@
 //! implementations at engine build time. Shared engine code must never
 //! branch on fidelity.
 
-use crate::components::Slate;
+use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{EdgeId, NodeId, PlantGraph};
-use crate::units::{Pascal, Seconds};
+use crate::units::{JPerKg, Kelvin, Pascal, Seconds};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -54,9 +54,48 @@ pub trait ThermoModel: Send {
     // at which point Composition's mixture_* helpers delegate here.
 }
 
-/// Chemical conversion inside reactor units. Implementations: NoReactions,
-/// lookup-table (simple), FCC 4-lump kinetics (complex). Arrives in M4;
-/// the trait exists now so the engine tick has its slot reserved.
+/// The outcome of one reactor pass: the product composition and its heat of
+/// reaction.
+#[derive(Debug, Clone)]
+pub struct Reaction {
+    /// Product mass-fraction composition (Σ = 1). TOTAL mass is conserved — the
+    /// reaction moves mass BETWEEN components, which is exactly what makes a
+    /// reactor the first unit to break per-component conservation (I7).
+    pub products: Composition,
+    /// Specific heat of reaction [J per kg of feed]; positive = endothermic
+    /// (heat absorbed). The reactor's reported physical duty adds `ṁ·Δh_rxn`
+    /// to the emergent sensible duty (`energy::reactor_duty`).
+    pub dh_rxn: JPerKg,
+}
+
+/// Chemical conversion inside reactor units. Implementations: `NoReactions`
+/// (identity), `SimpleLookup` (conversion table), FCC 4-lump kinetics (M4.2).
+///
+/// The engine applies `react` INSIDE the energy sweep, so a downstream node
+/// sees the product composition the same tick (DESIGN §5).
 pub trait ReactionModel: Send {
     fn name(&self) -> &'static str;
+
+    /// Convert one reactor pass's FEED into products at the reactor's held
+    /// temperature `temperature` over residence time `tau`.
+    ///
+    /// Isothermal at a ROT setpoint (DESIGN §5): `temperature` is imposed by the
+    /// reactor, so the extent is a pure function of a KNOWN temperature with no
+    /// inner temperature solve. `tau` is unused by the lookup fidelity but is
+    /// load-bearing for the M4.2 kinetics, which integrate `dC/dτ` over it — it
+    /// is in the signature now so that additive swap needs no trait churn.
+    ///
+    /// `NoReactions` returns the feed unchanged with `Δh_rxn = 0`, so a network
+    /// with no reactor node — every scenario before M4 — stays bit-identical.
+    ///
+    /// # Errors
+    /// `SimError` if the model cannot produce a valid product composition (e.g.
+    /// a table whose row does not normalize, or a feed lump it does not know).
+    fn react(
+        &self,
+        feed: &Composition,
+        temperature: Kelvin,
+        tau: Seconds,
+        slate: &Slate,
+    ) -> Result<Reaction, SimError>;
 }
