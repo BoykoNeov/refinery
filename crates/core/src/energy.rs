@@ -80,6 +80,126 @@ pub fn ambient_exchange(ua: WattPerKelvin, body_temperature: Kelvin) -> Watt {
     Watt(ua.value() * (T_AMBIENT.value() - body_temperature.value()))
 }
 
+/// Outlet temperature of a pipe exchanging heat with ambient [K].
+///
+/// The analytic plug-flow solution — integrating `ṁ·cp·dT/dx = ua'·(T_AMBIENT −
+/// T)` along the pipe, the same Newton's-law driving force as
+/// `ambient_exchange` but applied to a body with throughput and no inventory:
+///
+/// ```text
+/// T_out = T_AMBIENT + (T_in − T_AMBIENT)·exp(−UA/(|ṁ|·cp))
+/// ```
+///
+/// Three details are load bearing (docs/DESIGN.md §4a):
+///
+/// - **`|ṁ|`, not signed `ṁ`.** The flow's sign already did its work upstream,
+///   selecting which end is the inlet; the denominator is a capacity RATE, a
+///   magnitude. A signed `ṁ` flips the exponent on reverse flow, turning decay
+///   into growth — the pipe would run *away* from ambient, and only on reversed
+///   edges, which the reference plants do not have.
+/// - **Analytic, not Euler.** `exp` cannot cross ambient however large the
+///   exponent grows, where a `1 − UA/(ṁ·cp)` step overshoots and then diverges.
+///   The tank balance tolerates explicit Euler because its `UA·dt/(m·cp)` is
+///   ~1e-6 at refinery scale; here the denominator is a FLOW rather than an
+///   inventory and a nearly-closed valve drives it toward zero, so the unstable
+///   regime is one throttle away rather than unreachable.
+/// - **`UA = 0` needs no special case.** `exp(0) = 1` makes the transform the
+///   identity, which is what keeps every pre-existing scenario bit-identical.
+///   Short-circuiting it with an `if ua == 0.0` would be worse than redundant:
+///   it would mask the zero-flow guard below on exactly the case that reaches
+///   it, leaving the guard untested and its falsification vacuous.
+///
+/// Zero flow is guarded, and only zero. At `ṁ = 0` with `UA = 0` the exponent is
+/// `0/0 → NaN`, and a NaN temperature slips past the mixing guard to surface as
+/// a bare non-finite with no diagnostic naming the pipe; a closed valve produces
+/// such edges today. Every OTHER input is already well behaved — `ṁ = 0` with
+/// `UA > 0` gives `−∞ → exp = 0 → T_AMBIENT`, and any nonzero `ṁ`, however
+/// small, stays finite — so the test is exact equality, not a threshold. A
+/// threshold would be a magic number that also silently flattened legitimately
+/// small flows.
+///
+/// Returning the inlet at zero flow is the physically right answer here, not a
+/// convenient one: a stagnant pipe carries no enthalpy either way, the same
+/// reasoning that lets transport pick an arbitrary upwind end at exactly zero
+/// flow. Modelling a stagnant pipe warming toward ambient needs pipe-wall
+/// thermal mass, which is a fidelity step, not a guard.
+#[inline]
+pub fn pipe_outlet_temperature(
+    inlet: Kelvin,
+    ua: WattPerKelvin,
+    mass_flow: KgPerSec,
+    cp: JPerKgK,
+) -> Kelvin {
+    let capacity_rate = mass_flow.value().abs() * cp.value(); // [W/K]
+    if capacity_rate == 0.0 {
+        return inlet;
+    }
+    let decay = (-ua.value() / capacity_rate).exp();
+    Kelvin(T_AMBIENT.value() + (inlet.value() - T_AMBIENT.value()) * decay)
+}
+
+/// The temperature at which fluid crosses `node`'s boundary along `edge` [K].
+///
+/// The single owner of "which end of this edge am I looking at". Once a pipe
+/// can exchange heat with ambient it has TWO temperatures, and every reader has
+/// to resolve the same question — is this node the pipe's inlet or its outlet? —
+/// with the same answer. Two call sites applying that rule independently is the
+/// mistake the `HeatExchanger` note rejected in its "two independently computed
+/// effectiveness terms" form: two copies of a rule that must agree, with nothing
+/// forcing them to.
+///
+/// - `node` is the UPWIND end: the fluid leaves at the node's own temperature,
+///   before the pipe has done anything to it. No transform.
+/// - `node` is the DOWNSTREAM end: the fluid arrives at the transformed outlet.
+///
+/// Both readers pass every incident edge through here regardless of direction,
+/// which is what makes the difference between the two ends land on the pipe
+/// rather than on a node. Debiting a tank at its outflow pipe's OUTLET
+/// temperature would charge the tank for heat the pipe traded with ambient
+/// downstream of it — invisible while `UA = 0`, and a silent enthalpy error the
+/// moment one pipe gets a real value.
+///
+/// With `UA = 0` both branches return the same number, which is why this change
+/// is bit-identical to its predecessor by construction rather than by
+/// measurement.
+///
+/// # Errors
+/// `SimError::Numerical` if the upwind node's temperature is not yet resolved —
+/// returned rather than indexed so a sweep-ordering bug cannot panic (rule 5).
+pub fn edge_temperature_at(
+    graph: &PlantGraph,
+    slate: &Slate,
+    temperature: &BTreeMap<NodeId, Kelvin>,
+    edge: EdgeId,
+    mass_flow: f64,
+    node: NodeId,
+) -> Result<Kelvin, SimError> {
+    let (from, to) = graph.endpoints(edge);
+    // Upwind by flow SIGN, never by edge direction — the same donor-cell rule
+    // transport uses, so reverse flow needs no special case. At exactly zero
+    // flow the pick is arbitrary (no enthalpy moves either way) and takes
+    // `from` to stay deterministic.
+    let upwind = if mass_flow >= 0.0 { from } else { to };
+    let inlet = temperature.get(&upwind).copied().ok_or_else(|| {
+        SimError::Numerical(format!(
+            "internal: upwind node '{}' of pipe '{}' unresolved during the temperature sweep",
+            graph.node(upwind).name,
+            graph.pipe(edge).name
+        ))
+    })?;
+    if node == upwind {
+        return Ok(inlet);
+    }
+    let pipe = graph.pipe(edge);
+    let cp = pipe.stream.composition.mixture_cp(slate);
+    Ok(pipe_outlet_temperature(
+        inlet,
+        pipe.ambient_ua,
+        KgPerSec(mass_flow),
+        cp,
+    ))
+}
+
 /// Total heat delivered into a node [W]: external heat, plus the operating duty
 /// of a fired heater, minus that of a cooler, plus exchange with ambient.
 ///
@@ -426,19 +546,26 @@ fn inflow_totals(
     let mut enthalpy = 0.0; // Σ ṁ·cp·(T − T_REF) [W]
     let mut capacity = 0.0; // Σ ṁ·cp [W/K]
 
-    for (edge, upstream, into_node) in inflow_edges(graph, edge_mass_flow, node) {
-        // Resolved by construction: the sweep only visits a node once every
-        // zero-volume upstream is done, and inertial ones are seeded. Return an
-        // error rather than indexing, so a sort bug can never panic (rule 5).
-        let upstream_t = temperature.get(&upstream).copied().ok_or_else(|| {
-            SimError::Numerical(format!(
-                "internal: upstream '{}' of '{}' unresolved during the temperature sweep",
-                graph.node(upstream).name,
-                graph.node(node).name
-            ))
-        })?;
+    for (edge, _upstream, into_node) in inflow_edges(graph, edge_mass_flow, node) {
+        // The transformed OUTLET, not the raw upwind node temperature: with a
+        // nonzero pipe `UA` those differ, and mixing the raw value would apply
+        // the transform after the mixing that consumes it — i.e. never.
+        //
+        // `edge_mass_flow`, not `into_node`: the helper picks the upwind end
+        // from the flow's SIGN, and `into_node` has already been re-signed
+        // positive-into-this-node by `inflow_edges`. Feeding it that would name
+        // the wrong end on every edge whose stored direction runs into `node`.
+        // (This is the same class of error as passing a signed `ṁ` to the
+        // transform, and it is why the helper takes the raw flow.)
+        //
+        // Resolution is guaranteed by construction — the sweep visits a node
+        // only once every zero-volume upstream is done, and inertial ones are
+        // seeded — but the helper returns an error rather than indexing, so a
+        // sort bug can never panic (rule 5).
+        let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
+        let inlet_t = edge_temperature_at(graph, slate, temperature, edge, flow, node)?;
         let cp = graph.pipe(edge).stream.composition.mixture_cp(slate);
-        enthalpy += enthalpy_flux(KgPerSec(into_node), cp, upstream_t).value();
+        enthalpy += enthalpy_flux(KgPerSec(into_node), cp, inlet_t).value();
         capacity += into_node * cp.value();
     }
 
@@ -638,6 +765,7 @@ mod tests {
             friction_factor: 0.02,
             elevation_change: Meter(0.0),
             leak_area: SquareMeter::ZERO,
+            ambient_ua: WattPerKelvin::ZERO,
             stream: Stream::stagnant(1, T_AMBIENT, P_ATM),
         }
     }
@@ -1145,5 +1273,169 @@ mod tests {
         // With no history at all it falls back to ambient rather than NaN.
         let fresh = resolve(&g, &flows).unwrap();
         assert_eq!(fresh[&idle].value(), T_AMBIENT.value());
+    }
+
+    // -----------------------------------------------------------------------
+    // The pipe ambient transform, as a pure function.
+    // -----------------------------------------------------------------------
+    //
+    // Tested here rather than only through an engine because the closed form is
+    // worth pinning against a HAND-COMPUTED number, and an engine-level test
+    // cannot do that: the mass flow comes out of the solver, so the expected
+    // value would have to be built by re-evaluating the same formula the code
+    // just evaluated — a tautology that passes whatever the exponent's sign is.
+    // The engine-level file (`solvers/tests/pipe_ambient_reference.rs`) tests
+    // the complementary thing: that this function is actually WIRED IN, and it
+    // cross-checks the physics against the log-mean form, which is independent.
+    mod pipe_ambient {
+        use super::*;
+
+        /// Water's cp [J/(kg·K)] — written out rather than read from the slate,
+        /// so both sides of the reference do not share one source of truth.
+        const CP: JPerKgK = JPerKgK(4184.0);
+
+        /// REFERENCE — hand computation at exactly one transfer unit.
+        ///
+        /// Chosen so `UA/(ṁ·cp)` is exactly 1 and the decay is `e⁻¹`, a constant
+        /// that can be written down independently of the code:
+        ///
+        ///   ṁ·cp   = 1 kg/s · 4184 J/(kg·K) = 4184 W/K
+        ///   UA     = 4184 W/K            ⇒ exponent = −1
+        ///   e⁻¹    = 0.367879441171442334
+        ///   ΔT_in  = 373.15 − 293.15 = 80 K
+        ///   T_out  = 293.15 + 80·e⁻¹ = 293.15 + 29.4303552937153867
+        ///          = 322.580355293715387 K
+        ///
+        /// A wrong-signed exponent gives 293.15 + 80·e = 510.6 K, and an Euler
+        /// step gives 293.15 + 80·(1−1) = 293.15 K exactly — both far outside
+        /// the tolerance, which is round-off because this form is analytic and
+        /// has no truncation error to budget for (contrast the tank's 1e-3).
+        #[test]
+        fn one_transfer_unit_decays_by_exactly_e_inverse() {
+            let out =
+                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin(4184.0), KgPerSec(1.0), CP);
+            // The hand computation above gives 322.580355293715387; this is
+            // that value truncated to what an f64 can actually hold. The
+            // difference is ~1e-13, well inside the 1e-9 tolerance, so the
+            // reference is still the hand calculation and not a readback.
+            let expected = 322.580_355_293_715_4;
+            assert!(
+                (out.value() - expected).abs() < 1e-9,
+                "one transfer unit must decay by e⁻¹ to {expected} K, got {}",
+                out.value()
+            );
+        }
+
+        /// `UA = 0` is the identity, which is what makes every scenario written
+        /// before this field existed bit-identical. Asserted EXACTLY: `exp(0)`
+        /// is 1.0 to the bit, so any tolerance here would hide a near-miss.
+        #[test]
+        fn no_ua_is_exactly_the_identity() {
+            let inlet = Kelvin(373.15);
+            let out = pipe_outlet_temperature(inlet, WattPerKelvin::ZERO, KgPerSec(2.5), CP);
+            assert_eq!(out.value(), inlet.value());
+        }
+
+        /// The `|ṁ|` requirement. Reversing the flow reverses which end is the
+        /// inlet — a decision made before this function is called — so the
+        /// transform itself must be blind to the sign.
+        ///
+        /// Under a signed `ṁ` the exponent flips and this returns 510.6 K: the
+        /// pipe would run AWAY from ambient, heating an already-hot stream. That
+        /// is the mutation this test exists to catch, and it catches it here
+        /// rather than in a plant, so the coverage does not depend on some
+        /// scenario happening to reverse a flow.
+        #[test]
+        fn reverse_flow_decays_identically() {
+            let forward =
+                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin(4184.0), KgPerSec(1.0), CP);
+            let reverse =
+                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin(4184.0), KgPerSec(-1.0), CP);
+            assert_eq!(
+                forward.value(),
+                reverse.value(),
+                "the transform must depend on |ṁ| only — the flow's sign already \
+                 picked the inlet end"
+            );
+        }
+
+        /// The reason for analytic rather than Euler, stated as a test.
+        ///
+        /// At 100 transfer units an explicit step, `T + (UA/(ṁ·cp))·(T_amb − T)`,
+        /// would land at 293.15 − 99·80 ≈ −7627 K: past ambient, past absolute
+        /// zero, and diverging further every tick. `exp` cannot cross ambient at
+        /// any exponent, so the outlet is bracketed by ambient below and the
+        /// inlet above no matter how extreme the ratio.
+        #[test]
+        fn a_huge_transfer_ratio_approaches_ambient_but_never_crosses_it() {
+            let out = pipe_outlet_temperature(
+                Kelvin(373.15),
+                WattPerKelvin(418_400.0), // 100 transfer units
+                KgPerSec(1.0),
+                CP,
+            );
+            assert!(
+                out.value() >= T_AMBIENT.value() && out.value() <= 373.15,
+                "the outlet must stay between ambient and the inlet, got {}",
+                out.value()
+            );
+            assert!(
+                (out.value() - T_AMBIENT.value()).abs() < 1e-9,
+                "100 transfer units must land on ambient, got {}",
+                out.value()
+            );
+        }
+
+        /// The zero-flow guard, on the case that actually reaches it.
+        ///
+        /// `ṁ = 0` with `UA = 0` is `0/0`. Without the guard this returns NaN,
+        /// which no downstream check attributes to a pipe — it surfaces as a
+        /// bare non-finite. This is the DEFAULT pipe with a closed valve, so it
+        /// is the reachable case, not a contrived one.
+        #[test]
+        fn a_stagnant_uninsulated_pipe_is_finite_not_nan() {
+            let out =
+                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin::ZERO, KgPerSec::ZERO, CP);
+            assert!(
+                out.value().is_finite(),
+                "a stagnant pipe must not produce a NaN temperature, got {}",
+                out.value()
+            );
+            assert_eq!(out.value(), 373.15);
+        }
+
+        /// The other stagnant case: zero flow with a real `UA`. This one is
+        /// finite even without the guard (`−∞ → exp = 0 → ambient`), so it is
+        /// documenting a CHOICE rather than preventing a NaN. Holding the inlet
+        /// is the honest answer at this fidelity: with no throughput there is no
+        /// stream to carry the heat, and a pipe that instantly equilibrated with
+        /// ambient the moment its valve shut would be modelling a wall thermal
+        /// mass the engine does not have.
+        #[test]
+        fn a_stagnant_insulated_pipe_holds_its_inlet_rather_than_snapping_to_ambient() {
+            let out =
+                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin(4184.0), KgPerSec::ZERO, CP);
+            assert_eq!(
+                out.value(),
+                373.15,
+                "a stagnant pipe holds its inlet; snapping to ambient would claim \
+                 a wall thermal mass this fidelity does not model"
+            );
+        }
+
+        /// Ambient exchange is not one-directional. A stream COLDER than ambient
+        /// must warm toward it through the same term, with no second code path —
+        /// the same property `ambient_exchange` has for tanks, and reachable in
+        /// a plant with a `Cooler` upstream.
+        #[test]
+        fn a_cold_stream_warms_toward_ambient() {
+            let out =
+                pipe_outlet_temperature(Kelvin(273.15), WattPerKelvin(4184.0), KgPerSec(1.0), CP);
+            assert!(
+                out.value() > 273.15 && out.value() < T_AMBIENT.value(),
+                "a stream below ambient must warm toward it, got {}",
+                out.value()
+            );
+        }
     }
 }

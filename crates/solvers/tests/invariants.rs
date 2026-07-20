@@ -106,6 +106,7 @@ fn pipe(p: (f64, f64, f64, f64), name: &str) -> Pipe {
         friction_factor,
         elevation_change: Meter(elevation),
         leak_area: SquareMeter(0.0),
+        ambient_ua: WattPerKelvin::ZERO,
         stream: refinery_core::stream::Stream::stagnant(1, T_AMBIENT, P_ATM),
     }
 }

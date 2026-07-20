@@ -214,7 +214,31 @@ pub struct Pipe {
     pub elevation_change: Meter,
     /// Leak orifice area (damage model); 0 = intact.
     pub leak_area: SquareMeter,
+    /// Ambient heat transfer coefficient × exposed area, `UA` [W/K].
+    ///
+    /// Spelled like `TankState::ambient_ua` and defaulting to ZERO for the same
+    /// reason, but it does NOT drive the same equation. A tank is a lumped
+    /// inventory, so its exchange is one signed `Q` added to its energy balance;
+    /// a pipe is a flow-through body with no inventory at this fidelity, so its
+    /// exchange is a TRANSFORM along the edge — see
+    /// `energy::pipe_outlet_temperature`. Adding `UA·(T_AMBIENT − T)` to a pipe
+    /// as if it were a tank would be dimensionally fine and physically wrong.
+    ///
+    /// The consequence worth flagging at the field: a pipe with a nonzero `UA`
+    /// is NO LONGER ISOTHERMAL, which retires the identity M2.1 transport was
+    /// built on (an edge's temperature is its upwind node's). Everything that
+    /// reads a temperature off an edge must therefore say which END it means,
+    /// and go through `energy::edge_temperature_at` to get it.
+    #[serde(default = "no_ambient_exchange")]
+    pub ambient_ua: WattPerKelvin,
     /// Transported material state, updated by the engine each tick.
+    ///
+    /// `stream.temperature` is the pipe's OUTLET temperature — the value the
+    /// downstream node receives. With `ambient_ua = 0` the two ends agree and
+    /// the distinction is invisible; with a nonzero `UA` it is a deliberate
+    /// display choice, taken because nothing in the engine consumes this field
+    /// (only tests and the snapshot do) and the outlet is the one end a snapshot
+    /// reader cannot reconstruct from the upwind node's temperature.
     pub stream: Stream,
 }
 

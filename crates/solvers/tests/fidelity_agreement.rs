@@ -56,6 +56,7 @@ fn pipe_ez(name: &str, l: f64, d: f64, elev: f64) -> Pipe {
         friction_factor: 0.02,
         elevation_change: Meter(elev),
         leak_area: SquareMeter(0.0),
+        ambient_ua: WattPerKelvin::ZERO,
         stream: water_stream(),
     }
 }

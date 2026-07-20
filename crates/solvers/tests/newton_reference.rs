@@ -32,6 +32,7 @@ fn pipe(name: &str, length_m: f64, diameter_m: f64) -> Pipe {
         friction_factor: 0.02,
         elevation_change: Meter(0.0),
         leak_area: SquareMeter(0.0),
+        ambient_ua: WattPerKelvin::ZERO,
         stream: water_stream(),
     }
 }

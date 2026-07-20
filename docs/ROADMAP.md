@@ -235,7 +235,7 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       Explicit Euler makes the term stable only while `UA·dt/(m·cp) < 2`;
       at refinery scale that ratio is ~1e-6, so it is documented in
       `Engine::tick` rather than guarded.
-- [ ] Ambient heat exchange for PIPES — split out of the box above, because it is
+- [x] Ambient heat exchange for PIPES — split out of the box above, because it is
       NOT additive. An edge's stream temperature is currently *identically* its
       upwind node's, which is the core of the M2.1 sweep; a pipe that exchanges
       heat has outlet ≠ inlet and needs a new per-edge transform
@@ -255,6 +255,34 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       consequence of isothermal edges, not a fact about tanks.
       Blocking implementation, both stated in the note: `|ṁ|` not signed `ṁ`,
       and a zero-flow guard (`0/0 → NaN`, reachable today via a closed valve).
+      **Landed.** `energy::pipe_outlet_temperature` is the transform,
+      `energy::edge_temperature_at` the single owner of which END a reader
+      means, and both `inflow_totals` and the tank loop go through it. The note
+      specified the shape correctly, including the part easiest to get wrong:
+      the tank loop routes BOTH directions through the helper, not just
+      inflows. It was the first implementation PLAN that had it as "inflows
+      only, outflow unchanged", and review caught that before any code existed.
+      Once transport writes the OUTLET into `stream.temperature`, debiting a
+      tank at its outflow edge would charge it for heat the pipe traded with
+      ambient after the fluid had already left — invisible at `UA = 0`, silent
+      corruption above it. Both directions are now gated, the downstream one by
+      its own test because no other mutation reaches it (debiting-at-outlet is
+      a no-op on an inflow edge, where `stream.temperature` already holds the
+      transformed value).
+      Six mutations run, each caught by the tests that should catch it and no
+      others: signed `ṁ`, Euler-for-analytic, guard removed, raw-upwind in the
+      sweep, tank debited at the outlet, and tank reading the raw upstream.
+      That last one needed its own mutation — the sweep and the tank loop are
+      separate readers, so the sweep's raw-upwind mutation never reaches the
+      tank path, and the test asserting it was unfalsified until checked.
+      The engine reference asserts the enthalpy drop against `UA·LMTD` —
+      algebraically identical to the exponential but derived independently, so
+      it is a check rather than a readback.
+      One vacuity found and fixed in the process: the tank gate first read the
+      snapshot's node temperature, which for a tank is the sweep's
+      start-of-tick boundary value and never moves within the tick, so it
+      passed under its own mutation until it was pointed at the tank's
+      integrated state instead.
 - [ ] Pump work / valve throttling into the stream, if it earns its keep — see
       DESIGN §4a's limitation list (~0.02 K on the reference pump).
 

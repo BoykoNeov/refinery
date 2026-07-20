@@ -125,6 +125,21 @@ fn pipe(name: &str, length_m: f64, diameter_m: f64) -> Pipe {
         friction_factor: 0.02,
         elevation_change: Meter(0.0),
         leak_area: SquareMeter::ZERO,
+        // ZERO, and NOT a knob for the generators to vary. I6 checks that the
+        // plant's enthalpy telescopes: every edge's contribution appears twice,
+        // debited from its upwind node and credited to its downstream one, and
+        // the two cancel because they are the same number. A pipe with a nonzero
+        // UA breaks that by construction — the enthalpy leaving is not the
+        // enthalpy arriving, and the difference is heat that went to ambient,
+        // which sits on no node and so has no term in the sum. That would make
+        // I6 fail for a real reason, not a bug in the transform.
+        //
+        // Closing it needs an explicit ambient term in the invariant, the same
+        // way furnaces and coolers are kept out of these generators. Until that
+        // lands, the transform is pinned by the reference cases in
+        // `pipe_ambient_reference.rs`, one of which asserts exactly this
+        // balance for a single pipe.
+        ambient_ua: WattPerKelvin::ZERO,
         stream: refinery_core::stream::Stream::stagnant(1, T_AMBIENT, P_ATM),
     }
 }

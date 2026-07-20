@@ -164,6 +164,15 @@ pub struct PipeDef {
     pub friction_factor: f64,
     #[serde(default)]
     pub elevation_change_m: f64,
+    /// Ambient heat transfer coefficient × exposed area, `UA` [W/K].
+    ///
+    /// Optional and defaulting to 0 — a perfectly insulated pipe — for the same
+    /// reason as the tank's, and it matters more here: a pipe is the one body
+    /// EVERY scenario has, so a nonzero default would change the answer of every
+    /// file ever written rather than only those with tanks. See
+    /// `Pipe::ambient_ua` for why this drives a transform and not a heat term.
+    #[serde(default)]
+    pub ambient_ua_w_per_k: f64,
 }
 fn default_friction() -> f64 {
     0.02
@@ -205,6 +214,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         });
     }
     for pipe in &scenario.pipes {
+        validate_pipe_def(pipe)?;
         let from = graph.find_node(&pipe.from).ok_or_else(|| {
             SimError::Scenario(format!(
                 "pipe '{}' references unknown 'from' node '{}'",
@@ -227,8 +237,10 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
                 friction_factor: pipe.friction_factor,
                 elevation_change: Meter(pipe.elevation_change_m),
                 leak_area: SquareMeter::ZERO,
-                // Isothermal water for M1; the solver overwrites mass_flow each
-                // tick. Seed representative T/P at ambient / atmospheric.
+                ambient_ua: WattPerKelvin(pipe.ambient_ua_w_per_k),
+                // The solver overwrites mass_flow each tick, and transport
+                // overwrites the temperature. Seed representative T/P at
+                // ambient / atmospheric.
                 stream: Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
             },
         );
@@ -338,6 +350,28 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
 /// `T_AMBIENT − T_tank`, so a negative `UA` does not mean "loses heat" — it
 /// inverts the driving force, warming a hot tank further and cooling a cold one,
 /// a positive feedback that runs away from ambient instead of towards it.
+/// Reject a pipe's `UA` on the same grounds as a tank's, and one sharper one.
+///
+/// For a tank a negative `UA` inverts the driving force — bad, but the runaway
+/// is geometric per tick and bounded by the tick count. For a pipe it lands in
+/// an EXPONENT: `exp(−UA/(|ṁ|·cp))` with `UA < 0` is `exp(+x)`, which multiplies
+/// the temperature difference from ambient every time the fluid crosses the
+/// pipe, and a loop of such pipes diverges to infinity within a few ticks. Same
+/// conceptual error, a much shorter fuse.
+fn validate_pipe_def(def: &PipeDef) -> Result<(), SimError> {
+    if !def.ambient_ua_w_per_k.is_finite() || def.ambient_ua_w_per_k < 0.0 {
+        return Err(SimError::Scenario(format!(
+            "pipe '{}' has ambient_ua_w_per_k = {}: it must be finite and >= 0. UA \
+             is a conductance; the DIRECTION of ambient exchange comes from \
+             (T_ambient − T_in), so a negative value does not mean 'loses heat' — \
+             in a pipe it inverts the exponent and drives the outlet away from \
+             ambient without bound.",
+            def.name, def.ambient_ua_w_per_k
+        )));
+    }
+    Ok(())
+}
+
 fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
     if let NodeDef::Tank {
         ambient_ua_w_per_k, ..
@@ -566,6 +600,72 @@ mod tests {
                 "a tank whose file omits ambient_ua_w_per_k must be insulated"
             ),
             _ => panic!("supply_tank must be a tank"),
+        }
+    }
+
+    /// The pipe field is optional too, and it matters more than the tank's: a
+    /// pipe is the one body EVERY scenario has, so a nonzero default would move
+    /// the answer of every file ever written rather than only those with tanks.
+    #[test]
+    fn a_pipe_without_an_ambient_ua_is_perfectly_insulated() {
+        let src = include_str!("../../../scenarios/tank_pump_valve.toml");
+        let s = super::load_str(src).unwrap();
+        let engine = super::build_engine(&s).expect("reference plant must build");
+        for edge in engine.graph.edge_ids() {
+            let pipe = engine.graph.pipe(edge);
+            assert_eq!(
+                pipe.ambient_ua.value(),
+                0.0,
+                "pipe '{}' omits ambient_ua_w_per_k and must be insulated",
+                pipe.name
+            );
+        }
+    }
+
+    /// A pipe `UA` written in a file reaches the pipe unchanged, and is already
+    /// SI for the same reason the tank's is.
+    #[test]
+    fn an_ambient_ua_reaches_the_pipe_in_watts_per_kelvin() {
+        let src = include_str!("../../../scenarios/tank_pump_valve.toml").replace(
+            "name = \"suction\"",
+            "name = \"suction\"\nambient_ua_w_per_k = 750.0",
+        );
+        let s = super::load_str(&src).expect("must parse with an ambient_ua_w_per_k");
+        let engine = super::build_engine(&s).expect("must build");
+        let suction = engine
+            .graph
+            .edge_ids()
+            .find(|e| engine.graph.pipe(*e).name == "suction")
+            .expect("the suction pipe must exist");
+        assert_eq!(
+            engine.graph.pipe(suction).ambient_ua.value(),
+            750.0,
+            "750 W/K in the file must be 750 W/K on the pipe, unscaled"
+        );
+    }
+
+    /// A negative pipe `UA` is refused at LOAD, not discovered at solve. In a
+    /// pipe the sign lands in an exponent, so `UA < 0` turns the decay toward
+    /// ambient into growth away from it — a plant that diverges rather than one
+    /// that merely reports a wrong number.
+    #[test]
+    fn a_negative_pipe_ambient_ua_is_refused() {
+        let src = include_str!("../../../scenarios/tank_pump_valve.toml").replace(
+            "name = \"suction\"",
+            "name = \"suction\"\nambient_ua_w_per_k = -1.0",
+        );
+        let file = super::load_str(&src).expect("must parse");
+        match super::build_engine(&file) {
+            Ok(_) => panic!("a negative pipe ambient_ua_w_per_k must not build"),
+            Err(e) => {
+                let message = e.to_string();
+                assert!(
+                    matches!(e, refinery_core::error::SimError::Scenario(_))
+                        && message.contains("suction")
+                        && message.contains("conductance"),
+                    "the error must name the pipe and say why, got: {message}"
+                );
+            }
         }
     }
 

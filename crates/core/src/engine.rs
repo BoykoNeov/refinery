@@ -187,31 +187,57 @@ impl Engine {
             &self.node_temperature,
         )?;
 
-        // 2c. Transport: an edge's stream takes its UPWIND node's temperature,
-        //     picked by flow sign so reverse flow needs no special case. At
-        //     exactly zero flow the pick is arbitrary — the stream carries no
-        //     enthalpy either way — so it takes `from` to stay deterministic.
+        // 2c. Transport: an edge's stream takes its OUTLET temperature — its
+        //     upwind node's, transformed by whatever heat the pipe traded with
+        //     ambient on the way (`energy::edge_temperature_at`). The upwind end
+        //     is picked by flow sign, so reverse flow needs no special case.
+        //
+        //     This field is display only: nothing downstream in the engine reads
+        //     it (the tank loop below goes through the same helper instead), so
+        //     which of a pipe's two ends it reports is a presentation choice.
+        //     While `ambient_ua` is 0 the transform is the identity and this is
+        //     bit-identical to the isothermal transport it replaces.
         for eid in self.graph.edge_ids().collect::<Vec<_>>() {
             let (from, to) = self.graph.endpoints(eid);
-            let upwind = if self.graph.pipe(eid).stream.mass_flow.value() >= 0.0 {
-                from
-            } else {
-                to
-            };
-            if let Some(t) = node_temperature.get(&upwind) {
-                self.graph.pipe_mut(eid).stream.temperature = *t;
-            }
+            let flow = self.graph.pipe(eid).stream.mass_flow.value();
+            // The outlet is the end the flow LEAVES by, which mirrors the
+            // helper's own upwind pick so the two cannot disagree about which
+            // way the pipe runs.
+            let downstream = if flow >= 0.0 { to } else { from };
+            let outlet = energy::edge_temperature_at(
+                &self.graph,
+                &self.slate,
+                &node_temperature,
+                eid,
+                flow,
+                downstream,
+            )?;
+            self.graph.pipe_mut(eid).stream.temperature = outlet;
         }
 
         // 3. Unit dynamics: integrate the tanks' slow states — inventory and
         //    thermal energy. Both are explicit Euler off start-of-tick values.
         //
         //    The energy balance is the first law for a well-mixed open vessel,
-        //    d(m·u)/dt = Σ ṁ·h + Q, with liquid u ≈ h = cp·(T − T_REF). It
-        //    needs no in/out branch: an outflow edge is upwind of the tank, so
-        //    its stream already carries the tank's own temperature, and the
-        //    signed flux subtracts exactly the enthalpy that leaves. That is
-        //    what makes the discrete balance close to round-off (I6).
+        //    d(m·u)/dt = Σ ṁ·h + Q, with liquid u ≈ h = cp·(T − T_REF).
+        //
+        //    It still needs no in/out branch, but for a narrower reason than it
+        //    used to. The old one was that an outflow edge is upwind of the tank
+        //    and so already carries the tank's own temperature — which was never
+        //    a fact about tanks, only a consequence of edges being ISOTHERMAL,
+        //    and it does not survive a pipe with an ambient `UA`. What replaces
+        //    it: every incident edge goes through `energy::edge_temperature_at`,
+        //    which asks which END this tank sits at. On an outflow edge the tank
+        //    is upwind, no transform applies, and the signed flux subtracts
+        //    exactly the enthalpy that leaves; on an inflow edge the tank is
+        //    downstream and receives the transformed outlet. The branch exists,
+        //    it just lives in the helper where both readers share it.
+        //
+        //    Debiting a tank at its outflow pipe's OUTLET would charge it for
+        //    heat the pipe traded with ambient after the fluid had already left
+        //    — invisible while every `ambient_ua` is 0, and a silent enthalpy
+        //    error the moment one is not. That is what makes the discrete
+        //    balance close to round-off (I6).
         for nid in self.graph.node_ids().collect::<Vec<_>>() {
             // Through `heat_load`, not off `heat_input` directly: that function
             // is the single owner of "how much heat enters this node", summing
@@ -240,9 +266,20 @@ impl Engine {
                 let flow = stream.mass_flow.value();
                 let into_node = if incoming { flow } else { -flow };
                 let cp = stream.composition.mixture_cp(&self.slate);
+                // The raw stored flow, not `into_node`: the helper selects the
+                // upwind end from the sign, and `into_node` has been re-signed
+                // positive-into-this-tank, which would name the wrong end on
+                // every edge stored pointing inward.
+                let crossing_t = energy::edge_temperature_at(
+                    &self.graph,
+                    &self.slate,
+                    &node_temperature,
+                    eid,
+                    flow,
+                    nid,
+                )?;
                 net_mass += into_node;
-                net_enthalpy +=
-                    energy::enthalpy_flux(KgPerSec(into_node), cp, stream.temperature).value();
+                net_enthalpy += energy::enthalpy_flux(KgPerSec(into_node), cp, crossing_t).value();
             }
 
             // The name is read before the tank is borrowed mutably: the guard
