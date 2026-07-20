@@ -510,7 +510,11 @@ runs, the guard is being reached by some other path and the test is vacuous).
 
 - **No pump work or valve throttling heat.** Both dissipate into the stream in
   reality; a pass-through device currently copies its inlet temperature to its
-  outlet. The reference pump's rise is ~0.02 K — far below the model's accuracy.
+  outlet. The reference pump's rise is ~0.02 K — far below the model's accuracy,
+  and below any tolerance a reference test could be falsified against, so
+  building it in M2 would have meant a feature with no gate that earns its
+  place. Deferred to M5 (ROADMAP), where ΔP-driven throttling in a high-head
+  service and real enthalpy make the quantity large enough to be worth pinning.
 - **Heat into a zero-volume node with no throughput is dropped.** It has no
   thermal mass to store it and no stream to carry it away. A fire against
   stagnant inventory belongs on a `Tank`; this is the one case where the engine

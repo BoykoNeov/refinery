@@ -61,7 +61,7 @@ NetworkFlowSolver (Newton) + SimpleFlowSolver behind the same trait.
 `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
 are green. M2 may begin.
 
-## M2 — Heat (CURRENT)
+## M2 — Heat (DONE)
 Temperature transport in streams, tank thermal inventory, HeatExchanger and
 Furnace units, heat loss to ambient. Energy-balance property tests.
 
@@ -110,7 +110,7 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       inherited, not intrinsic (DESIGN §4a); the budget is now 1e-6, ~100x above
       the real floor and ~5 orders below any defect worth catching.
 
-### M2.2 — Heated/cooled units and ambient loss (CURRENT)
+### M2.2 — Heated/cooled units and ambient loss (DONE)
 - [x] `Furnace` (duty into a flowing stream). Zero-volume, hydraulically a
       pass-through: it is the `Q` term of M2.1's mixing formula and adds no new
       physics. `duty` is its own field, NOT `Node::heat_input` — that is the
@@ -283,10 +283,29 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       start-of-tick boundary value and never moves within the tick, so it
       passed under its own mutation until it was pointed at the tank's
       integrated state instead.
-- [ ] Pump work / valve throttling into the stream, if it earns its keep — see
-      DESIGN §4a's limitation list (~0.02 K on the reference pump).
+- [~] Pump work / valve throttling into the stream — **deferred to M5**, not
+      dropped. It did not earn its keep here: the reference pump's rise is
+      ~0.02 K, far below this fidelity's accuracy, and a gate at that magnitude
+      could not be falsified against the 1e-3 K Euler tolerance the ambient
+      tests already carry — it would be a feature with no test that earns its
+      place, which is the one thing M2 has consistently refused to ship. It is
+      recorded as a deliberate limitation in DESIGN §4a rather than as an
+      omission. The case for revisiting is throttling, not pumping: dissipation
+      scales with ΔP, so a heavily throttled high-head service is not 0.02 K.
+      That is a fidelity step needing real enthalpy, which is why it moves to
+      M5 and not M3.
 
-## M3 — Pseudo-component crude + simple column
+**M2 acceptance criteria are met.** M2.1 and M2.2 complete; the one remaining
+box is deferred with reasons above, not outstanding. `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
+are green, and the runnable-demo criterion is met by
+`cargo run -p refinery-cli -- run scenarios/heat_recovery.toml --ticks 200`:
+the exchanger moves the hot side 473.15 → 365.15 K and the cold side
+293.15 → 310.54 K, and the two duties agree to 0.05% by hand
+(10.94 × 108.0 vs 67.95 × 17.39), so the demo shows the milestone's physics
+rather than merely exiting zero. M3 may begin.
+
+## M3 — Pseudo-component crude + simple column (CURRENT)
 Component slates in scenarios, composition transport, mixture properties,
 fixed-cut-point column (simple fidelity). Demo: crude source → furnace →
 column → three product tanks.
@@ -298,6 +317,15 @@ ReactionModel. Reference test against published lump yields.
 ## M5 — Gas & pressure realism (scoped design note first)
 Compressible/two-phase approximations where needed (column overheads, flare).
 May be simplified or deferred — decide with a written note in docs/.
+- [ ] Pump work / valve throttling heat into the stream, deferred here from M2.2.
+      It belongs with this milestone rather than with M2's heat work because the
+      quantity that makes it worth modelling is ΔP-driven dissipation in a
+      heavily throttled high-head service, and judging it needs real enthalpy —
+      at M2's fidelity the reference pump's rise was ~0.02 K, below the model's
+      own accuracy and below any tolerance a test could falsify against.
+      Decide it the same way: measure the rise on a plant where it should be
+      largest, and only build it if a gate on that number can be made to fail
+      for the right reason.
 
 ## M6 — Godot frontend + damage
 godot-ext adapter, minimal scene reading snapshots; leak/fire commands
