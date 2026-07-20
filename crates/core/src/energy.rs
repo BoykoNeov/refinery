@@ -599,40 +599,11 @@ mod tests {
         );
     }
 
-    /// The cooler path, end to end through the sweep: a duty larger than the
-    /// sensible heat its inflow carries above 0 K must Err, not return a finite
-    /// sub-zero Kelvin that the engine's NaN/Inf check would wave through.
-    #[test]
-    fn a_duty_beyond_the_streams_sensible_heat_is_rejected() {
-        let mut g = PlantGraph::new();
-        let src = g.add_node(source("src", Kelvin(300.0)));
-        // 1 kg/s of water at 300 K carries 1·4184·300 = 1.2552e6 W above 0 K;
-        // pull twice that out and the mix lands far below absolute zero.
-        let chiller = g.add_node(node(
-            "chiller",
-            NodeKind::Cooler {
-                duty: Watt(2.0 * 4184.0 * 300.0),
-            },
-        ));
-        let out = g.add_node(node(
-            "out",
-            NodeKind::Sink {
-                pressure: Pascal(1.0e5),
-                temperature: T_AMBIENT,
-            },
-        ));
-        let e_in = g.add_pipe(src, chiller, pipe("inlet"));
-        let e_out = g.add_pipe(chiller, out, pipe("outlet"));
-
-        let flows = BTreeMap::from([(e_in, 1.0), (e_out, 1.0)]);
-        let err = resolve(&g, &flows).expect_err("a sub-zero mix must be an error, not a value");
-
-        let message = err.to_string();
-        assert!(
-            message.contains("absolute zero") && message.contains("chiller"),
-            "the error must name the node and what went wrong, got: {message}"
-        );
-    }
+    // The COOLER path through this guard is not re-tested here: it is pinned
+    // end-to-end by `cooler_reference.rs::cooling_below_absolute_zero_is_rejected`,
+    // through a real scenario and solver. A copy at this level could only fail
+    // together with that one, so it would add a maintenance point and no
+    // discrimination. What is genuinely new is the shared checker above.
 
     /// A junction nothing flows through is indeterminate (0/0), not broken. It
     /// must hold the last value it saw — finite and reproducible — because mass

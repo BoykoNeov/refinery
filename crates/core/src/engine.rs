@@ -241,12 +241,20 @@ impl Engine {
                 if mass_new > MIN_THERMAL_MASS_KG {
                     let value = T_REF.value() + energy_new / (mass_new * cp);
                     tank.temperature = energy::checked_temperature(value, || {
+                        // Both sides are ENERGIES over this tick, and both are
+                        // stated against the START-of-tick inventory that
+                        // actually held the heat: `mass_old·cp·T_old` is what
+                        // was there above 0 K, and `(net + Q)·dt` is what the
+                        // tick took out. Comparing a rate against an energy, or
+                        // the drawn energy against the post-drain mass, would
+                        // print two numbers that do not explain each other.
                         format!(
                             "tank '{node_name}' cools to {value:.2} K, below absolute zero: over \
-                             this tick the net heat load {:.4e} W removed more than the {:.4e} J \
-                             of sensible heat its {mass_new:.4e} kg held above 0 K. Reduce the \
-                             heat being drawn out of it.",
+                             this tick a net heat load of {:.4e} W removed {:.4e} J, more than \
+                             the {:.4e} J of sensible heat its {mass_old:.4e} kg held above 0 K. \
+                             Reduce the heat being drawn out of it.",
                             net_enthalpy + heat_input,
+                            (net_enthalpy + heat_input) * dt.value(),
                             energy_old + mass_old * cp * T_REF.value(),
                         )
                     })?;
