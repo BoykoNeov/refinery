@@ -19,8 +19,8 @@ use refinery_core::graph::{
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, ReactionModel, ThermoModel};
 use refinery_core::units::{
-    JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Pascal, SquareMeter, Watt, WattPerKelvin, P_ATM,
-    T_AMBIENT,
+    JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Pascal, Seconds, SquareMeter, Watt,
+    WattPerKelvin, P_ATM, T_AMBIENT,
 };
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -202,6 +202,18 @@ pub enum NodeDef {
         /// product node it feeds and the top of its boiling band. See `DrawDef`.
         draws: Vec<DrawDef>,
     },
+    /// Isothermal conversion reactor (simple fidelity). One feed in, one product
+    /// out, held at `t_set_c`; the chemistry comes from the engine's selected
+    /// `ReactionModel` (`[fidelity].reactions`). Hydraulically a furnace
+    /// (docs/DESIGN.md §5).
+    Reactor {
+        /// Held reactor-outlet temperature [°C] — the ROT setpoint imposed on the
+        /// product stream.
+        t_set_c: f64,
+        /// Residence time [s]. Passed to the reaction model; the lookup fidelity
+        /// ignores it, the M4.2 kinetics integrate over it.
+        tau_s: f64,
+    },
 }
 
 /// One `draws = [...]` entry of a `column` node.
@@ -349,7 +361,18 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         }
     };
     let thermo: Box<dyn ThermoModel> = Box::new(refinery_solvers::ConstantThermo);
-    let reactions: Box<dyn ReactionModel> = Box::new(refinery_solvers::NoReactions);
+    let reactions: Box<dyn ReactionModel> = match scenario.fidelity.reactions.as_str() {
+        "none" => Box::new(refinery_solvers::NoReactions),
+        // The FCC placeholder table (M4.1); M4.2 adds "fcc" for the kinetics. The
+        // table resolves its lumps against the slate by name, so an absent lump
+        // is a load-time error, not a solve-time surprise.
+        "lookup" => Box::new(refinery_solvers::SimpleLookup::fcc_demo(&slate)?),
+        other => {
+            return Err(SimError::Scenario(format!(
+                "unknown reaction model '{other}' (valid: none, lookup)"
+            )))
+        }
+    };
 
     let config = EngineConfig {
         dt: refinery_core::units::Seconds(scenario.simulation.dt),
@@ -541,6 +564,10 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             // draw can name an outlet defined later in the file (like couplings).
             draws: Vec::new(),
         },
+        NodeDef::Reactor { t_set_c, tau_s } => NodeKind::Reactor {
+            t_set: c_to_k(*t_set_c),
+            tau: Seconds(*tau_s),
+        },
     })
 }
 
@@ -613,6 +640,23 @@ fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
             return Err(SimError::Scenario(format!(
                 "column '{name}' has smearing_k = {smearing_k}: it must be finite and >= 0 \
                  (a ramp width; 0 is a sharp splitter)."
+            )));
+        }
+    }
+    if let NodeDef::Reactor { t_set_c, tau_s } = def {
+        // A residence time is a non-negative magnitude; a negative one is a sign
+        // slip, and the M4.2 kinetics would integrate over a backwards interval.
+        if !tau_s.is_finite() || *tau_s < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "reactor '{name}' has tau_s = {tau_s}: residence time must be finite and >= 0."
+            )));
+        }
+        // The setpoint is an absolute temperature; below 0 K it is unphysical and
+        // would seed the sweep with a negative outlet the datum cannot represent.
+        if !t_set_c.is_finite() || c_to_k(*t_set_c).value() < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "reactor '{name}' has t_set_c = {t_set_c}: the setpoint must be finite and \
+                 at or above absolute zero (−273.15 °C)."
             )));
         }
     }

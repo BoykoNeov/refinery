@@ -12,9 +12,11 @@
 pub mod elements;
 pub mod network;
 pub mod newton_flow;
+pub mod reactor;
 pub mod simple_flow;
 
 pub use newton_flow::NewtonFlowSolver;
+pub use reactor::SimpleLookup;
 pub use simple_flow::SimpleFlowSolver;
 
 use refinery_core::components::{Composition, Slate};

@@ -1,0 +1,99 @@
+# M4.1 demo plant: gasoil → isothermal reactor → cracked products.
+#
+# The milestone's showcase for the reactor as machinery (no ODE yet). A pure
+# vacuum-gasoil feed passes through a conversion reactor held at a fixed
+# reactor-outlet temperature (ROT); the `reactions = "lookup"` model cracks the
+# gasoil into gasoline, gas and coke by a FIXED conversion table (an illustrative
+# placeholder — M4.2 replaces it with real Arrhenius kinetics behind the same
+# trait).
+#
+# What makes the reactor unlike every earlier unit (docs/DESIGN.md §5): it is the
+# first to change composition by CHEMISTRY, which conserves TOTAL mass but not
+# per-component mass (so it breaks I7 by construction) and moves chemical energy
+# the sensible datum does not track (so I6 excludes it). Hydraulically it is a
+# furnace — zero-volume, one feed in, one product out, total-mass-neutral — so it
+# needs no new solver machinery.
+#
+# Units at this boundary are human-friendly (bar, °C, s); the loader converts to
+# SI. `coke` is given a deliberately high boiling point so a downstream column
+# would route it to bottoms (the awkward-pseudo-component cost noted in §5).
+
+[meta]
+name = "fcc_reactor"
+description = "Vacuum gasoil cracked to gasoline, gas and coke in an isothermal lookup reactor."
+
+[simulation]
+dt = 0.1            # seconds per tick
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "lookup"   # the FCC placeholder conversion table (M4.1)
+
+# --- the FCC lump slate: the four lumps the lookup table names -----------------
+
+[[components]]
+name = "gas"
+tb_c = -40.0
+molar_mass_kg_per_mol = 0.030
+density_kg_per_m3 = 400.0
+cp_j_per_kg_k = 2500.0
+
+[[components]]
+name = "gasoline"
+tb_c = 100.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 720.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "gasoil"
+tb_c = 400.0
+molar_mass_kg_per_mol = 0.300
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "coke"
+tb_c = 900.0
+molar_mass_kg_per_mol = 0.600
+density_kg_per_m3 = 1200.0
+cp_j_per_kg_k = 1500.0
+
+# --- the plant ----------------------------------------------------------------
+
+# A hot pure-gasoil feed.
+[nodes.gasoil_feed]
+type = "source"
+pressure_bar = 6.0
+temperature_c = 350.0
+composition = { gasoil = 1.0 }
+
+# The reactor, held at a cracking ROT. Zero-volume, a hydraulic pass-through; the
+# heat to hold t_set while cracking is emergent, not configured.
+[nodes.riser]
+type = "reactor"
+t_set_c = 520.0
+tau_s = 3.0
+
+# Product knockout: a fixed-pressure sink taking the cracked stream.
+[nodes.product_out]
+type = "sink"
+pressure_bar = 1.5
+composition = { gasoil = 1.0 }
+
+# --- pipes --------------------------------------------------------------------
+
+[[pipes]]
+name = "feed_line"
+from = "gasoil_feed"
+to = "riser"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "product_line"
+from = "riser"
+to = "product_out"
+length_m = 20.0
+diameter_m = 0.15
