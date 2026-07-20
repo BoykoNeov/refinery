@@ -582,6 +582,80 @@ mass-neutral to round-off), not a zero exit. M4 may begin.
 FCC 4-lump complex reactor + lookup-table simple reactor behind
 ReactionModel. Reference test against published lump yields.
 
+Sliced like M2/M3: a design note settles the crux first, then the simple slice
+lands all the structural machinery and the complex slice is an additive fidelity
+swap behind the same trait. Here the crux is **not** the kinetics — it is that a
+reactor is the first unit to change composition by chemistry, which collides with
+both M3 conservation invariants at once: it conserves TOTAL mass but not
+per-component mass (vs I7), and it moves chemical energy the sensible datum does
+not track (vs I6).
+
+### M4.0 — Design note (the crux is conservation + well-posedness, not the ODE)
+- [x] Design note in DESIGN.md settling the three forks. **Landed** (DESIGN §5,
+      "Simple reactor (M4)"). Verdicts:
+      **(1) Vocabulary — the kinetic lumps ARE slate members**, resolved by name
+      like column draws / exchanger sides. A Tb-band↔lump mapping loses: the
+      within-lump redistribution it needs is underdetermined (a second invented
+      model with unfalsifiable parameters). Cost stated: coke/light gas are
+      awkward pseudo-components (coke given a high `Tb` so a column routes it to
+      bottoms).
+      **(2) Energy is a co-equal crux, not a footnote.** The sensible-only datum
+      (`cp·(T−T_ref)`, no formation enthalpy) makes a reaction invisible two ways:
+      the cp-shift at constant T, and the heat of reaction. `ReactionModel` returns
+      an explicit `Δh_rxn`. Two DISTINCT duties, not one: the **emergent sensible
+      duty** `ṁ·Δ(cp·(T−T_ref))` closes by construction (the reactor imposes `T_set`
+      like a furnace imposes duty) and gates the cp-shift; the **reported physical
+      duty** = sensible + `ṁ·Δh_rxn` is a diagnostic that gates `Δh_rxn` and never
+      feeds the forward outlet T (feeding it back is the deferred adiabatic case).
+      **I6 excludes reactors** — a choice, not a necessity (I6 already carries a
+      furnace's Q), because the reported duty's `Δh_rxn` term sits outside I6's
+      sensible-only frame.
+      **(3) Well-posedness — isothermal at a ROT setpoint, not adiabatic.** Holding
+      `T_set` makes extent a pure function of a known T (no inner solve); it is the
+      operator's real handle (the "columns run on pressure control" move); and it
+      keeps the published-yield reference constructible. Adiabatic couples
+      `dC/dτ`+`dT/dτ` into a fixed point inside a zero-volume node — deferred.
+      Structural consequence: **the reactor is hydraulically a furnace** —
+      zero-volume, 1-in-1-out, total-mass-neutral, so no new solver machinery
+      (`classify`/`fixed_pressure`/`validate_degrees` gain a `Reactor` arm identical
+      to `Furnace`'s). The one real plumbing change is that `resolve_node_states`
+      gains a `&dyn ReactionModel` and applies the reaction *inside* the sweep, so a
+      downstream node sees the product composition; the single uniform outlet means
+      `edge_composition_at` is untouched (unlike the column's N differing draws).
+
+### M4.1 — Simple lookup reactor (all the machinery, no ODE)
+- [ ] `core`: `NodeKind::Reactor` (zero-volume, 1-in-1-out; config = `T_set`, `τ`);
+      `Reactor` arms in `classify`/`fixed_pressure`/`validate_degrees` mirroring
+      `Furnace`; `resolve_node_states` takes `&dyn ReactionModel` and resolves a
+      reactor to its product composition + `T_set`, computing the emergent duty.
+- [ ] `traits`: flesh out `ReactionModel` —
+      `react(feed, T, slate) -> Result<(Composition, Δh_rxn), SimError>`; `NoReactions`
+      default (identity, 0) so every pre-M4 golden stays bit-identical.
+- [ ] `solvers`: `SimpleLookup` — fixed conversion table per `(T-band, feed lump)`,
+      rows renormalized to `Σ = 1` (the reactor's load-bearing normalization).
+- [ ] `scenarios`: `[[reactor]]`/`NodeKind::Reactor` loader, multi-lump slate with
+      the FCC lumps, engine wiring of the selected `ReactionModel`.
+- [ ] Tests: reactor **total-mass** gate (columns-sum-to-zero); reactor **energy**
+      gate pinning the two duties separately — the reported duty must sit exactly
+      `ṁ·Δh_rxn` above the sensible-only baseline `ṁ·Δ(cp·(T−T_ref))`, asserted as
+      that DIFFERENCE (not reported-duty against its own formula, which is a
+      tautology), so `Δh_rxn` and the cp-shift each falsify their own term;
+      per-lump conversion against the lookup table in isolation; `NoReactions`
+      regression anchor (all M1/M2/M3 goldens bit-identical). I7/I6 excludes
+      reactors — stated, since a splitter-style "green by construction" argument
+      does NOT apply to a unit that breaks per-component conservation; those
+      invariants' networks simply contain none.
+
+### M4.2 — FCC 4-lump kinetics (additive fidelity swap)
+- [ ] `solvers`: `FourLump` — Weekman/Lee-style Arrhenius kinetics, **fixed-count**
+      RK4 substeps over `τ` (determinism), `Δh_rxn` from lump formation enthalpies.
+      Cite the exact parameter set in the code.
+- [ ] Tests: reference against **published lump yields** at a stated `T_set`/`τ`
+      (`solvers/tests/reference/`) — the roadmap's required anchor; a wrong rate
+      constant, transposed stoichiometry, or dropped substep fails it.
+- [ ] Demo: crude source → furnace → reactor → column → product tanks, showing the
+      gasoil→gasoline conversion as visible physics (yields shift, mass-neutral).
+
 ## M5 — Gas & pressure realism (scoped design note first)
 Compressible/two-phase approximations where needed (column overheads, flare).
 May be simplified or deferred — decide with a written note in docs/.

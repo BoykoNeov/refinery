@@ -810,6 +810,227 @@ a holdup mixes to a single composition and its outlets carry *that*, so it
 separates nothing — and it would make the reference number depend on tick
 history.)
 
+### Simple reactor (M4) — specified before building
+
+The roadmap opens M4 with a `ReactionModel` trait that is a bare stub and an
+engine slot (`reactions`) reserved but unused. A reactor is the first unit that
+changes composition by **chemistry** — it destroys some pseudo-components and
+creates others — which puts it at odds with the two conservation invariants M3
+built (I7 per-component mass, I6 energy), both of which assume every interior
+node conserves each component and its sensible enthalpy. A reactor conserves
+**total** mass but not per-component mass, and it moves chemical energy the
+engine's datum does not track. Those two collisions, not the kinetics, are the
+crux, so this gets a written note before any code — the same discipline the
+column got.
+
+There are three forks to settle. Two are decisive on inspection; the third is
+the well-posedness question, and it is the one that shapes the unit.
+
+**Fork 1 — vocabulary: are the kinetic lumps slate members, or a layer above
+the slate?** The FCC 4-lump model speaks in four lumps (gasoil → gasoline →
+gas + coke); everything else in the engine — transport, tanks, the column, I7 —
+speaks the engine-wide pseudo-component **slate** (a positional vector, canonical
+order, §4). Two ways to reconcile them:
+
+- **(V-slate) the lumps ARE slate members.** A scenario that runs an FCC reactor
+  puts the four lumps in its slate as ordinary pseudo-components, each with its
+  own `Tb`, `MW`, `density`, `cp`. The reaction is then a transformation on the
+  composition vector, reading and writing those components by index, resolved
+  from names at load exactly as column draws and exchanger sides already are.
+- **(V-map) a Tb-band ↔ lump mapping.** Aggregate the slate's cuts into lumps by
+  boiling range, react the lumps, then redistribute each lump's mass change back
+  across its member cuts.
+
+**(V-slate) wins, and (V-map) is not close.** The redistribution (V-map) needs is
+*underdetermined*: when a kilogram of the gasoil lump cracks, which member cuts
+of the gasoline lump receive the product, and in what proportion, is not
+information the 4-lump model carries — it would be a second invented model bolted
+under the first, with its own unfalsifiable parameters. (V-slate) has no such
+freedom: the reaction network names exactly the components it moves mass between.
+Its cost, stated rather than hidden: **coke and light gas are awkward
+pseudo-components.** Coke does not boil; it is given a defensibly high `Tb` so a
+downstream column routes it to the bottoms/residue draw, and its `density`/`cp`
+are nominal. That is a modelling compromise, but it is a *local* one (four
+parameter rows in a slate) rather than a whole redistribution model, and it keeps
+one vocabulary across the entire plant.
+
+**Fork 2 — energy: this is a co-equal crux, not a footnote.** The engine's energy
+datum is **sensible-only**: `h = cp·(T − T_ref)`, no formation enthalpy (§4a).
+A reaction is invisible to that datum in two distinct ways, and both must be
+handled:
+
+1. **The cp shift at constant T.** `Σ_c m_c·cp_c` changes when the composition
+   changes, even with the temperature held fixed, because the lumps have
+   different heat capacities. So a reactor cannot be "sensible-enthalpy neutral";
+   the sensible books move across it *by construction*, and something must own
+   that move.
+2. **The heat of reaction.** Cracking is endothermic. The energy absorbed is
+   formation-enthalpy change, which the sensible datum does not carry at all, so
+   it must enter as an explicit parameter `Δh_rxn` (specific, at `T_ref`) that
+   the `ReactionModel` returns alongside the product composition. If it is not
+   modelled it has no gate, and a feature with no falsifiable gate is one M-work
+   has consistently refused to ship — so either `Δh_rxn` is modelled and pinned,
+   or the reactor's energy behaviour is a lie by omission.
+
+Two *distinct* duties fall out of this, and conflating them makes the energy gate
+vacuous — the trap worth naming before an implementer walks into it:
+
+- **Emergent sensible duty** = `ṁ·[cp_out·(T_set − T_ref) − cp_feed·(T_feed −
+  T_ref)]`. This is what the engine's sensible books see, and it closes **by
+  construction** because the reactor imposes `T_set` — exactly as a furnace's
+  sensible books close because it imposes its duty. The reactor is the furnace
+  inverted: duty emergent, temperature fixed. Pinning this quantity gates the
+  **cp-shift** (using `cp_feed` at both ends fails it), and nothing more.
+- **Reported physical duty** = emergent sensible duty **+ `ṁ·Δh_rxn`**. This is
+  the external heat a regenerator/operator must supply to hold `T_set` against
+  the endotherm, and it is the **only** quantity that gates `Δh_rxn`. It is a
+  reported diagnostic: under the isothermal verdict below, **`Δh_rxn` never feeds
+  the forward outlet temperature** — a reader looking for where `Δh_rxn` changes a
+  downstream `T` will correctly find nothing, because feeding it back *is* the
+  adiabatic case (Fork 3) this milestone defers. Modelling it explicitly is what
+  gives the endotherm a falsifiable home despite the sensible-only datum.
+
+The invariant consequence mirrors the mass story: **I6 excludes reactors.** Not
+because I6 structurally cannot span one — it already carries a furnace's `Q` in
+its boundary accounting — but because the reactor's reported duty carries a
+`Δh_rxn` term that lives *outside* I6's sensible-only frame, so folding it in
+would mean teaching I6 about formation enthalpy it otherwise never touches.
+The reactor's own energy gate owns that instead.
+
+**Fork 3 — the well-posedness verdict: isothermal at a riser-outlet-temperature
+(ROT) setpoint, not adiabatic.** This is the fork that decides whether the unit
+is explicit or implicit, and it is the direct analog of M3.2's "columns run on
+pressure control."
+
+- **(T-iso) the reactor holds a fixed outlet temperature `T_set`.** Reaction
+  extent is then a **pure function of the known `T_set`**, the feed composition,
+  and the residence time — no inner solve. The duty required to hold `T_set` is
+  *emergent* (computed, reported), exactly inverting the furnace, whose duty is
+  an input and whose ΔT is emergent.
+- **(T-adia) the reactor is adiabatic; outlet T emerges from the feed enthalpy
+  plus the heat of reaction.** With T-dependent kinetics (Arrhenius), extent
+  depends on T and T depends on extent, so the outlet is an **implicit fixed
+  point solved inside a zero-volume node** — the same shape of ill-posedness the
+  column note dissected, and worse, because it couples the composition ODE to a
+  temperature ODE along the residence coordinate.
+
+**(T-iso) wins for M4, and it is not a fudge.** Riser outlet temperature *is* the
+FCC operator's primary handle — the catalyst circulation rate is trimmed to hold
+it — so pinning `T_set` is the same modelling move, and the same justification, as
+pinning the column's pressure. It also keeps the unit's reference **constructible**:
+the roadmap requires a test against *published lump yields at a known temperature*,
+and (T-iso) evaluates the kinetics at exactly that known temperature, whereas
+(T-adia) drags a temperature trajectory along the residence coordinate into the
+reference number. Adiabatic / emergent-T is deferred — it is where the coupled
+`dC/dτ` + `dT/dτ` ODE earns its place, a later fidelity step, not M4's.
+
+**The design that falls out.** With those three settled, the reactor is
+structurally simple — **hydraulically it is a furnace**:
+
+- `NodeKind::Reactor` is a **zero-volume, 1-in-1-out** node carrying only config:
+  the outlet setpoint `T_set` and the residence time `τ` (a fixed design
+  parameter — flow-dependent `τ = V·ρ/ṁ` is deferred, since it would make the
+  published-yield reference `ṁ`-dependent). The reacting components, the rate
+  constants, and `Δh_rxn` live in the **`ReactionModel`**, not the node — fidelity
+  is trait-impl selection (CLAUDE.md rule 2), and the node carries parameters the
+  way a valve carries its `Cv` while the algorithm lives in the solver.
+- **No new solver machinery.** Total-mass-neutral and 1-in-1-out means outlet flow
+  = feed flow, both edges ordinary pressure-driven, and the flow solver's existing
+  zero-volume node mass balance already forces `ṁ_out = ṁ_in` — it never learns a
+  reaction happened. `classify`, `fixed_pressure` and `validate_degrees` each gain
+  a `Reactor` arm **identical to `Furnace`'s** (zero-volume, pins no pressure,
+  one inlet + one outlet). No prescribed-flow branch, no Jacobian change, and —
+  unlike the column — **no post-sweep draw-flow prescription**, because there is
+  one outlet and its flow is hydraulically determined.
+- **The reaction runs inside the composition sweep, and this is the one real
+  plumbing change.** A node downstream of a reactor must see the *product*
+  composition within the same sweep, so the transform cannot be deferred to a
+  post-sweep step (that would feed the downstream node the pre-reaction feed).
+  Therefore `energy::resolve_node_states` gains a `&dyn ReactionModel` parameter
+  (the trait lives in `core`, so this is not a `core → solvers` dependency — the
+  engine passes its `reactions` object down). When the Kahn sweep reaches a
+  reactor, its inflows are already resolved: mix them to the **feed**, call
+  `reactions.react(feed, T_set, slate)` to get the **product** composition and
+  `Δh_rxn`, and store the *product* as the reactor's resolved composition and
+  `T_set` as its resolved temperature. Note the reactor is the first **T-overriding
+  zero-volume node**: it is *swept*, so `boundary_temperature`/`boundary_composition`
+  must both return `None` for it (returning `Some` T trips the sweep's
+  inertial-vs-swept partition guard), yet it carries **two** temperatures at once —
+  the feed (mixed inflows, needed for the emergent-duty calc) and the outlet
+  (`T_set`, imposed on everything downstream). A furnace, by contrast, mixes its
+  inflows for T and merely adds duty; the reactor discards the mixed feed T for its
+  outlet. Because the reactor has a **single outlet**
+  that carries a **uniform** product composition, the existing upwind rule
+  delivers it to every outlet edge with **no change to `edge_composition_at`** —
+  the reactor is genuinely simpler than the column here, which needed
+  `edge_composition_at` special-casing only because its N draws differ.
+- **`react()` is called once per reactor per tick.** RK4 over `τ` is not cheap;
+  computing the product once in the sweep and letting the upwind rule distribute
+  it (rather than re-integrating per outlet edge, as a naive `edge_composition_at`
+  hook would) is deliberate.
+
+**The `ReactionModel` contract.** One method — a pure function
+
+```
+react(feed: &Composition, T: Kelvin, slate: &Slate)
+    -> Result<(Composition, JPerKg /* Δh_rxn, specific, at T_ref */), SimError>
+```
+
+testable in isolation exactly like `energy::column_separation`, with impls in
+`solvers/`:
+
+- **`NoReactions`** — identity composition, `Δh_rxn = 0`. The default, so every
+  pre-M4 scenario stays bit-identical (the regression anchor M3 also relied on).
+- **`SimpleLookup`** — fixed conversion table per `(T-band, feed lump)`; no ODE.
+  Establishes all the plumbing and every gate — mass redistribution, the emergent
+  duty, the composition transform through the sweep — *without* the kinetics.
+- **`FourLump`** — Weekman/Lee-style FCC 4-lump Arrhenius kinetics, integrated
+  with **fixed-count** RK4 substeps over `τ` (fixed count, not adaptive:
+  determinism, CLAUDE.md rule 3). Cite the exact parameter set in the code.
+
+Mass-conservation is the reaction network's own property: for kinetics the rate
+matrix has columns summing to zero (mass created in products equals mass
+destroyed in reactants), and the lookup table's rows are renormalized to `Σ = 1`.
+This is the reactor's load-bearing normalization — the exact analog of the
+column's `Σᵢ w_ic = 1` — and its violation is M3.1's "conserves total mass,
+corrupts the fractions" signature applied to a reaction instead of a blend.
+
+**What the tests must pin, and why the obvious gate is worthless here.** As with
+the column, a total-mass gate cannot falsify this unit — the reaction is total-mass
+neutral by construction — and I7 excludes it. The gates that earn their place:
+
+- **A per-lump yield reference** against published 4-lump numbers at a stated
+  `T_set` and `τ` (`solvers/tests/reference/`), the roadmap's required anchor.
+  This is what a wrong rate constant, a transposed stoichiometry, or a dropped
+  RK4 substep fails.
+- **The reactor total-mass gate** — `Σ_c` out = `Σ_c` in across the unit — which a
+  rate matrix whose columns do *not* sum to zero fails, while every per-component
+  and energy check that cannot see a uniform mass leak stays green.
+- **The reactor energy gate** — the two duties above, pinned separately so each
+  falsifies its own term. The *reported* duty must sit exactly `ṁ·Δh_rxn` above
+  the *sensible-only* baseline `ṁ·[cp_out·(T_set − T_ref) − cp_feed·(T_feed −
+  T_ref)]`, so a wrong or dropped `Δh_rxn` fails it and nothing else. The gate is
+  the **difference**, not the reported duty against its own formula: computing the
+  duty by that formula and asserting it equals the formula is a tautology (a
+  well-posed, self-consistent gate that pins nothing). Dropping the cp-shift
+  (using `cp_feed` at both ends) fails the sensible baseline itself.
+- **The `NoReactions` regression anchor** — every M1/M2/M3 golden bit-identical,
+  the same one-component-slate guarantee M3 leaned on.
+
+**Slice: simple first.** The `SimpleLookup` reactor lands the whole
+redistribution + `Δh_rxn` + sweep-transform machinery and all four gate *shapes*
+without the ODE; `FourLump` is then additive kinetics behind the same trait,
+pinned by the published-yield reference. This is the M2/M3 slicing rationale
+again: put the milestone's structural difficulty in the first slice and make the
+second slice a fidelity swap.
+
+**Deferred, stated rather than omitted.** Adiabatic / emergent-T (the coupled ODE,
+Fork 3); flow-dependent residence time `τ = V·ρ/ṁ`; a 1-in-2-out reactor that
+separates coke at the outlet (that reintroduces the column's draw-flow machinery —
+coke rides the single outlet and a downstream column routes it); and the catalyst
+regenerator loop that physically supplies the endothermic duty (the emergent duty
+is reported, not sourced from a coupled regenerator).
+
 ## 6. Time
 
 - Engine fixed timestep, default `dt = 0.1 s` (config per scenario).
