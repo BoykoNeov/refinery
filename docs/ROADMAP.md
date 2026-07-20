@@ -207,11 +207,23 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       right answer. The plant now puts C_min on side A deliberately, and the
       test asserts that premise so it fails loudly rather than silently testing
       less than it claims.
-- [ ] Ambient heat exchange for tanks and pipes. NOT "loss": the driving force is
+- [ ] Ambient heat exchange for TANKS. NOT "loss": the driving force is
       `T_ambient − T_node`, so the same term must HEAT a body colder than ambient
       and cool one hotter, with no second code path and no sign convention of its
       own. A one-directional "loss" would be wrong for a chilled tank on a warm
-      day — and, given the `Cooler` above, that is now a reachable plant state.
+      day — and, given the `Cooler` and `HeatExchanger` above, that is now a
+      reachable plant state. `UA` [W/K] defaults to 0 (perfectly insulated) so
+      every existing scenario stays bit-identical and `isothermal_plant.rs` keeps
+      meaning what it meant. Additive: one more term in the tank's existing `Q`,
+      already covered by `checked_temperature`. See DESIGN §4a.
+- [ ] Ambient heat exchange for PIPES — split out of the box above, because it is
+      NOT additive. An edge's stream temperature is currently *identically* its
+      upwind node's, which is the core of the M2.1 sweep; a pipe that exchanges
+      heat has outlet ≠ inlet and needs a new per-edge transform
+      (`T_out = T_amb + (T_in − T_amb)·exp(−UA/(ṁ·cp))`, analytic rather than
+      Euler so it cannot overshoot ambient on a long tick) running in flow order
+      between the sweep and transport. Design note first, like the
+      `HeatExchanger` got.
 - [ ] Pump work / valve throttling into the stream, if it earns its keep — see
       DESIGN §4a's limitation list (~0.02 K on the reference pump).
 

@@ -315,6 +315,58 @@ a constant ε from the scenario file is what "simple before complex" means here,
 and the geometry-dependent models are a later trait implementation, not a
 refinement to bolt onto this one.
 
+**Ambient exchange is not "heat loss", and the naming matters** (M2.2). The
+driving force is `T_ambient − T_body`, so ONE signed term must heat a body
+colder than ambient and cool one hotter:
+
+```text
+Q_ambient = UA·(T_ambient − T_body)        [W, signed]
+```
+
+A one-directional "loss" would be wrong for a chilled tank on a warm day — and
+with the `Cooler` and the `HeatExchanger` in place, that is now a reachable
+plant state rather than a hypothetical. The term therefore lives in ONE function
+whose sign falls out of the subtraction, consumed by every body that has an
+ambient boundary. No `if colder` branch, no second code path, and no sign
+convention of its own to remember — the same move that made `heat_load` the sole
+owner of the duty sign.
+
+`UA` [W/K] lumps the overall heat transfer coefficient with the exposed area,
+because at this fidelity nothing distinguishes them: no geometry, no wind, no
+insulation model, no radiation. It defaults to ZERO — a perfectly insulated
+body — so every existing scenario is bit-identical after the change, and
+`isothermal_plant.rs` keeps testing exactly what it tested before. A default
+that silently started leaking heat would make that flat line a lie.
+
+**Tanks and pipes are NOT one change, and are deliberately separate boxes.**
+The single ROADMAP line covering both hid a real asymmetry:
+
+- **A tank is additive.** Its temperature is already an integrated state with a
+  `Q` term in `d(m·u)/dt = Σ ṁ·h + Q`; ambient exchange is one more contribution
+  to that `Q`, guarded on arrival by `checked_temperature` — which §4a already
+  records as cover placed in advance for exactly this term. Nothing structural
+  moves.
+- **A pipe is not.** Today an edge's stream temperature IS its upwind node's
+  temperature, carried along unchanged; that identity is the core of the M2.1
+  upwind sweep. A pipe exchanging heat with ambient has an outlet that differs
+  from its inlet, which the model has no way to express — it needs a new
+  per-edge TRANSFORM step between the sweep and transport:
+
+  ```text
+  T_out = T_ambient + (T_in − T_ambient)·exp(−UA/(ṁ·cp))
+  ```
+
+  the analytic solution for plug flow along a pipe, not an Euler step, so it
+  stays stable and correct at any `UA/(ṁ·cp)` instead of overshooting past
+  ambient on a long tick. That is a change to how transport works, and it
+  interacts with the sweep: a pipe's outlet becomes an input to the downstream
+  node's mix, so the transform has to run in the same flow order. It gets its
+  own box and its own note.
+
+Tanks land first, alone, because they are testable alone: heat a cold tank,
+cool a hot one, and check both against `T(t) = T_amb + (T₀ − T_amb)·exp(−UA·t/(m·cp))`
+in the constant-mass limit.
+
 **Known limitations at this fidelity** (each deliberate, none accidental):
 
 - **No pump work or valve throttling heat.** Both dissipate into the stream in
