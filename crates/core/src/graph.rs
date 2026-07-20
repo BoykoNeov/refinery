@@ -54,13 +54,22 @@ pub enum NodeKind {
         temperature: Kelvin,
         composition: Composition,
     },
-    /// Infinite sink at fixed pressure. `temperature` is the fluid it returns
-    /// if the network ever drives flow *backwards* into it (network pressure
-    /// below the sink's): an infinite reservoir has to have a temperature to
-    /// back-feed, and leaving it implicit would make reverse flow ill-defined.
+    /// Infinite sink at fixed pressure. `temperature` and `composition` are the
+    /// fluid it returns if the network ever drives flow *backwards* into it
+    /// (network pressure below the sink's): an infinite reservoir has to have
+    /// both to back-feed, and leaving either implicit would make reverse flow
+    /// ill-defined.
+    ///
+    /// `composition` mirrors `temperature` exactly, and for the same reason —
+    /// the alternative considered was a stateful sink that remembers what last
+    /// flowed into it, which makes the back-fed fluid depend on tick history
+    /// rather than on the plant definition. Reverse flow into a sink is not
+    /// hypothetical: `energy_invariants.rs`'s chain proptest already generates
+    /// it.
     Sink {
         pressure: Pascal,
         temperature: Kelvin,
+        composition: Composition,
     },
     /// The outside world; leak edges terminate here. Fixed at P_ATM and,
     /// symmetrically, at T_AMBIENT.

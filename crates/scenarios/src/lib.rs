@@ -134,6 +134,12 @@ pub enum NodeDef {
         /// requiring it in every file would be noise. Defaults to ambient.
         #[serde(default = "default_ambient_c")]
         temperature_c: f64,
+        /// Composition of the fluid the sink returns under reverse flow.
+        /// Optional on a one-component slate only — see the `Source` field and
+        /// `node_kind`'s Sink arm for why this one cannot default the way its
+        /// temperature does.
+        #[serde(default)]
+        composition: Option<BTreeMap<String, f64>>,
     },
     Atmosphere,
     Tank {
@@ -429,9 +435,18 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
         NodeDef::Sink {
             pressure_bar,
             temperature_c,
+            composition,
         } => NodeKind::Sink {
             pressure: bar_to_pa(*pressure_bar),
             temperature: c_to_k(*temperature_c),
+            // Through the same resolver a source uses, so an absent composition
+            // on a real slate is REFUSED rather than defaulted. This is the one
+            // place a sink's composition does not mirror its temperature, and
+            // the asymmetry is in the physics, not the design: ambient is a
+            // defensible neutral temperature to back-feed, and there is no
+            // corresponding neutral composition — "the first cut" is a guess
+            // that would run.
+            composition: resolve_composition(name, composition, slate)?,
         },
         NodeDef::Atmosphere => NodeKind::Atmosphere,
         NodeDef::Tank {

@@ -85,6 +85,7 @@ fn sink(name: &str, pressure_pa: f64, temperature: Kelvin) -> Node {
         NodeKind::Sink {
             pressure: Pascal(pressure_pa),
             temperature,
+            composition: Composition::pure(1, 0),
         },
     )
 }

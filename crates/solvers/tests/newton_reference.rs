@@ -61,6 +61,7 @@ fn source_pipe_sink_hand_calc() {
         NodeKind::Sink {
             pressure: Pascal(1.0e5),
             temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
         },
     ));
     let e = g.add_pipe(src, snk, pipe("line", 10.0, 0.1));
@@ -101,6 +102,7 @@ fn symmetric_junction_midpoint_pressure() {
         NodeKind::Sink {
             pressure: Pascal(1.0e5),
             temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
         },
     ));
     let e1 = g.add_pipe(src, jn, pipe("a", 10.0, 0.1));
@@ -150,6 +152,7 @@ fn pump_drives_flow_between_equal_pressures() {
             NodeKind::Sink {
                 pressure: Pascal(1.0e5),
                 temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
             },
         ));
         let e_in = g.add_pipe(src, pmp, pipe("in", 5.0, 0.15));
@@ -216,6 +219,7 @@ fn closed_valve_blocks_flow_both_ends_anchored() {
         NodeKind::Sink {
             pressure: Pascal(1.0e5),
             temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
         },
     ));
     let e_in = g.add_pipe(src, vlv, pipe("in", 5.0, 0.1));
@@ -323,6 +327,7 @@ fn tee_junction_conserves_mass() {
         NodeKind::Sink {
             pressure: Pascal(1.0e5),
             temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
         },
     ));
     let snk2 = g.add_node(node(
@@ -330,6 +335,7 @@ fn tee_junction_conserves_mass() {
         NodeKind::Sink {
             pressure: Pascal(1.0e5),
             temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
         },
     ));
     let e_a = g.add_pipe(src, jn, pipe("a", 10.0, 0.12)); // inlet
@@ -410,6 +416,7 @@ fn tank_hydrostatic_head_drives_flow() {
         NodeKind::Sink {
             pressure: Pascal(P_ATM.value()),
             temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
         },
     ));
     let e = g.add_pipe(tank, snk, pipe("drain", 8.0, 0.1));

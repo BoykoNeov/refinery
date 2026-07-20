@@ -45,6 +45,7 @@ fn sink(p: f64) -> NodeKind {
     NodeKind::Sink {
         pressure: Pascal(p),
         temperature: T_AMBIENT,
+        composition: Composition::pure(1, 0),
     }
 }
 /// Pipe with an optional elevation change; friction fixed at 0.02 (Darcy).

@@ -91,6 +91,7 @@ fn sink(p: f64) -> Node {
             // so ambient keeps them isothermal and out of the way. Thermal
             // transport gets its own generators in `energy_invariants.rs`.
             temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
         },
         heat_input: Watt(0.0),
     }
@@ -227,6 +228,7 @@ fn fixed_node(is_source: bool, p: f64, i: usize) -> Node {
         NodeKind::Sink {
             pressure: Pascal(p),
             temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
         }
     };
     Node {

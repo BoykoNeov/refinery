@@ -4,14 +4,13 @@
 //!   commands → hydraulic solve (quasi-steady) → transport → unit dynamics
 //!   → validation → snapshot available.
 
-use crate::components::Slate;
+use crate::components::{Composition, Slate};
 use crate::energy::{self, T_REF};
 use crate::error::SimError;
-use crate::graph::{NodeId, NodeKind, PlantGraph};
+use crate::graph::{NodeKind, PlantGraph};
 use crate::snapshot::{Command, EdgeSnapshot, NodeSnapshot, Snapshot};
 use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, ThermoModel};
 use crate::units::*;
-use std::collections::BTreeMap;
 
 /// Inventory below which a tank has no meaningful temperature [kg].
 ///
@@ -47,12 +46,12 @@ pub struct Engine {
     reactions: Box<dyn ReactionModel>,
     tick: u64,
     last_solution: Option<HydraulicSolution>,
-    /// Resolved node temperature field [K] from the last tick. Derived state,
-    /// not inventory — the symmetric counterpart of `node_pressure` living in
-    /// `HydraulicSolution` rather than on the nodes. Retained across ticks only
-    /// to give a zero-volume node with no inflow a reproducible value to hold
-    /// (see `energy::resolve_node_temperatures`).
-    node_temperature: BTreeMap<NodeId, Kelvin>,
+    /// Resolved node temperature [K] and composition fields from the last tick.
+    /// Derived state, not inventory — the symmetric counterpart of
+    /// `node_pressure` living in `HydraulicSolution` rather than on the nodes.
+    /// Retained across ticks only to give a zero-volume node with no inflow a
+    /// reproducible value to hold (see `energy::resolve_node_states`).
+    node_states: energy::NodeStates,
 }
 
 impl Engine {
@@ -73,7 +72,7 @@ impl Engine {
             reactions,
             tick: 0,
             last_solution: None,
-            node_temperature: BTreeMap::new(),
+            node_states: energy::NodeStates::default(),
         }
     }
 
@@ -173,19 +172,18 @@ impl Engine {
                 .ok_or_else(|| SimError::Numerical(format!("solver omitted edge {eid:?}")))?;
             let pipe = self.graph.pipe_mut(eid);
             pipe.stream.mass_flow = KgPerSec(flow);
-            // Composition transport is still trivial at M2 (single-component
-            // water); it lands with the pseudo-component slate in M3.
         }
 
-        // 2b. Resolve the node temperature field: inertial nodes contribute
-        //     their start-of-tick temperature, zero-volume nodes mix their
-        //     inflows in flow order (docs/DESIGN.md §4a).
-        let node_temperature = energy::resolve_node_temperatures(
+        // 2b. Resolve the node temperature AND composition fields: inertial
+        //     nodes contribute their start-of-tick values, zero-volume nodes mix
+        //     their inflows in flow order (docs/DESIGN.md §4a).
+        let node_states = energy::resolve_node_states(
             &self.graph,
             &self.slate,
             &solution.edge_mass_flow,
-            &self.node_temperature,
+            &self.node_states,
         )?;
+        let node_temperature = &node_states.temperature;
 
         // 2c. Transport: an edge's stream takes its OUTLET temperature — its
         //     upwind node's, transformed by whatever heat the pipe traded with
@@ -207,7 +205,7 @@ impl Engine {
             let outlet = energy::edge_temperature_at(
                 &self.graph,
                 &self.slate,
-                &node_temperature,
+                node_temperature,
                 eid,
                 flow,
                 downstream,
@@ -261,6 +259,14 @@ impl Engine {
             let heat_input = energy::heat_load(self.graph.node(nid)).value();
             let mut net_mass = 0.0; // [kg/s] into the node
             let mut net_enthalpy = 0.0; // [W] into the node
+                                        // Per-component mass rate arriving [kg/s], and its total. Only
+                                        // INFLOWS contribute: an outflow leaves at the tank's own
+                                        // composition, which removes mass without moving the fractions, so
+                                        // subtracting it here would be double-counting a change that is
+                                        // already the identity.
+            let mut inflow_component_rate = vec![0.0; self.slate.len()];
+            let mut inflow_mass_rate = 0.0; // [kg/s]
+            let mut outflow_mass_rate = 0.0; // [kg/s], positive magnitude
             for (eid, _other, incoming) in self.graph.incident(nid) {
                 let stream = &self.graph.pipe(eid).stream;
                 let flow = stream.mass_flow.value();
@@ -273,13 +279,35 @@ impl Engine {
                 let crossing_t = energy::edge_temperature_at(
                     &self.graph,
                     &self.slate,
-                    &node_temperature,
+                    node_temperature,
                     eid,
                     flow,
                     nid,
                 )?;
                 net_mass += into_node;
                 net_enthalpy += energy::enthalpy_flux(KgPerSec(into_node), cp, crossing_t).value();
+
+                if into_node > 0.0 {
+                    // Off the RESOLVED field, not off `stream.composition`: the
+                    // sweep just settled what every node holds this tick, and
+                    // the pipe's stored copy is written after this loop (step
+                    // 3b) precisely so mass transport reads the fresh value
+                    // while cp reads the lagged one, consistently.
+                    let arriving = energy::edge_composition_at(
+                        &self.graph,
+                        &node_states.composition,
+                        eid,
+                        flow,
+                    )?;
+                    for (rate, fraction) in
+                        inflow_component_rate.iter_mut().zip(arriving.fractions())
+                    {
+                        *rate += into_node * fraction;
+                    }
+                    inflow_mass_rate += into_node;
+                } else {
+                    outflow_mass_rate -= into_node;
+                }
             }
 
             // The name is read before the tank is borrowed mutably: the guard
@@ -287,9 +315,59 @@ impl Engine {
             // both ways at once.
             let node_name = self.graph.node(nid).name.clone();
             if let NodeKind::Tank(tank) = &mut self.graph.node_mut(nid).kind {
-                let cp = tank.composition.mixture_cp(&self.slate).value();
                 let mass_old = tank.mass.value();
-                let energy_old = mass_old * cp * (tank.temperature.value() - T_REF.value());
+                // The inventory's enthalpy at the composition that actually
+                // held it. `cp_new` below is the composition it ends the tick
+                // with — the two differ only while a tank's contents are
+                // changing, and using one for both would book the enthalpy of a
+                // mixture that was never in the vessel.
+                let cp_old = tank.composition.mixture_cp(&self.slate).value();
+                let energy_old = mass_old * cp_old * (tank.temperature.value() - T_REF.value());
+
+                // Composition: a per-component mass balance over the tick,
+                // explicit Euler like every other slow state here.
+                //
+                //   m_c_new = f_c_old·(m_old − ṁ_out·dt) + ṁ_c,in·dt
+                //
+                // The outflow term is what makes this close. Fluid LEAVES at the
+                // tank's start-of-tick composition — that is what the upwind
+                // rule put on the outflow edge, and what the reservoir at the
+                // far end was credited with — so the inventory must be debited
+                // at the same one. Blending inflow against the full `m_old` and
+                // letting the total mass update handle the outflow separately is
+                // the natural-looking alternative, and it debits the outflow at
+                // the END-of-tick composition instead: total mass still balances
+                // exactly, and the per-component books are off by
+                // `ṁ_out·dt·(f_new − f_old)` every tick. I7 is what catches it.
+                //
+                // The weights sum to `m_old + (ṁ_in − ṁ_out)·dt`, which is
+                // `mass_new` — so normalizing them is dividing by the very
+                // inventory these fractions describe.
+                //
+                // Skipped entirely with no inflow, rather than run with a zero
+                // inflow term: nothing arrived, so the fractions cannot have
+                // moved, and re-normalizing `f·k` would rewrite them with a
+                // rounding error's worth of drift on every tick a tank merely
+                // drains.
+                if inflow_mass_rate > 0.0 {
+                    let mut weights: Vec<f64> = inflow_component_rate
+                        .iter()
+                        .map(|rate| rate * dt.value())
+                        .collect();
+                    // Clamped for the same reason `mass_new` is: a tank that
+                    // drains past empty within one step must not carry negative
+                    // weight into a composition.
+                    let retained = (mass_old - outflow_mass_rate * dt.value()).max(0.0);
+                    for (weight, fraction) in weights.iter_mut().zip(tank.composition.fractions()) {
+                        *weight += retained * fraction;
+                    }
+                    tank.composition = Composition::from_weights(&weights).map_err(|e| {
+                        SimError::Numerical(format!(
+                            "tank '{node_name}' blended to no valid composition: {e}"
+                        ))
+                    })?;
+                }
+                let cp = tank.composition.mixture_cp(&self.slate).value();
 
                 let mass_new = (mass_old + net_mass * dt.value()).max(0.0);
                 let energy_new = energy_old + (net_enthalpy + heat_input) * dt.value();
@@ -322,11 +400,39 @@ impl Engine {
                              Reduce the heat being drawn out of it.",
                             net_enthalpy + heat_input,
                             (net_enthalpy + heat_input) * dt.value(),
-                            energy_old + mass_old * cp * T_REF.value(),
+                            energy_old + mass_old * cp_old * T_REF.value(),
                         )
                     })?;
                 }
             }
+        }
+
+        // 3b. Publish each stream's composition: its upwind node's, unchanged —
+        //     a pipe trades heat with ambient, never mass, so there is no
+        //     transform to apply.
+        //
+        //     Written AFTER the tank loop on purpose. Two readers derive `cp`
+        //     and density from this field — `energy`'s sweep and `network`'s
+        //     hydraulics — and both run *before* this line, so both see the
+        //     PREVIOUS tick's composition. That one-tick lag is deliberate and
+        //     uniform: writing here instead of in step 2c would leave the sweep
+        //     reading a lagged cp while the tank loop read a fresh one, an
+        //     inconsistency inside a single tick's energy balance. Uniformly
+        //     lagged, cp is merely a tick behind while composition MASS moves
+        //     with no lag at all (the tank loop reads the resolved field).
+        //
+        //     Deriving cp from the resolved upwind node instead — killing the
+        //     lag outright — is the better physics and is deferred: it is
+        //     bit-identical on a one-component slate, so no M3.1 gate can turn
+        //     red on it, and shipping an unfalsifiable behaviour change is what
+        //     this project defers by policy. It belongs with the first
+        //     multi-component TEMPERATURE reference.
+        for eid in self.graph.edge_ids().collect::<Vec<_>>() {
+            let flow = self.graph.pipe(eid).stream.mass_flow.value();
+            let upwind =
+                energy::edge_composition_at(&self.graph, &node_states.composition, eid, flow)?
+                    .clone();
+            self.graph.pipe_mut(eid).stream.composition = upwind;
         }
 
         // 4. Validation: nothing non-finite escapes a tick.
@@ -355,7 +461,7 @@ impl Engine {
             }
         }
 
-        self.node_temperature = node_temperature;
+        self.node_states = node_states;
         self.last_solution = Some(solution);
         self.tick += 1;
         Ok(())
@@ -376,7 +482,8 @@ impl Engine {
                         .and_then(|s| s.node_pressure.get(&id))
                         .map_or(f64::NAN, |p| p.value()),
                     temperature_k: self
-                        .node_temperature
+                        .node_states
+                        .temperature
                         .get(&id)
                         .map_or(f64::NAN, |t| t.value()),
                 }

@@ -348,29 +348,59 @@ and every stream keeps the composition it was born with.
       the by-name gate, and survives the unknown-name refusal, so the two are
       genuinely independent); and defaulting a missing composition instead of
       refusing it.
-- [ ] `core`: composition co-resolved on the **existing** `resolve_node_temperatures`
-      sweep — not a parallel one. The Kahn ordering, the exchanger pair merge and
-      the recycle rejection are already correct and must not be duplicated.
-      Mass-weighted blending is *exactly* consistent with the enthalpy mix that
-      sweep already performs, by linearity:
+- [x] `core`: composition co-resolved on the **existing** sweep, now honestly
+      named `resolve_node_states` and returning both fields. The Kahn ordering,
+      the exchanger pair merge and the recycle rejection are untouched and
+      unduplicated. Mass-weighted blending is *exactly* consistent with the
+      enthalpy mix that sweep already performs, by linearity:
       `Σ_c (Σ_s m_s·f_sc)·cp_c = Σ_s m_s·(Σ_c f_sc·cp_c) = Σ_s m_s·cp_s`,
-      so co-resolving the two fields cannot drift from the M2 energy math.
-- [ ] `core`: tank composition inventory integrated over the tick. Carries the
-      same pre/post-tick mass-datum trap as the M2.1 Euler slip — blending on the
-      wrong mass basis is invisible at steady state and wrong everywhere else.
-- [ ] Tests: I7 per-component mass conservation proptest, the I-series analog of
+      so co-resolving the two fields cannot drift from the M2 energy math — and
+      that identity is now a test rather than a claim in this document.
+      `NodeKind::Sink` gained a `composition`, mirroring the `temperature` M2
+      gave it for the same reason: reverse flow into a sink needs a defined
+      fluid to back-feed, and the chain proptest already generates it.
+- [x] `core`: tank composition inventory integrated over the tick. The trap this
+      box was flagged for is real and it bit — see the outflow note below.
+- [x] Tests: I7 per-component mass conservation proptest, the I-series analog of
       I1's total-mass gate. CLAUDE.md names it explicitly ("mass in = mass out +
-      accumulation, **per component**").
-- [ ] Tests: the **1-component regression anchor**. A slate of one forces every
-      composition to `[1.0]` identically, so every M1/M2 golden — and
-      `isothermal_plant.rs` in particular — must stay *bit*-identical. This is
-      the analog of `UA` defaulting to 0 in M2.2, and it is what makes the change
-      additive rather than a rewrite.
-- [ ] Tests: a reference case pinning an absolute blended number physics predicts,
-      since the proptest pins only consistency. Two sources of different
-      composition into one tank must land on the mass-weighted result — and the
-      blend must be predicted from the *mass ratio*, not by re-running the code's
-      own blend formula on both sides.
+      accumulation, **per component**"). It needs a slate whose cuts differ in
+      `cp`: on a one-component slate I7 is arithmetically identical to I1.
+- [x] Tests: the **1-component regression anchor** — held. Every M1/M2 golden,
+      `isothermal_plant.rs` included, is bit-identical with no change to any
+      pre-M3 scenario file.
+- [x] Tests: a reference case pinning an absolute blended number, predicted from
+      the *measured mass ratios* (the two legs' `ṁ·dt` and the tank's start-of-tick
+      inventory) rather than by re-running the blend formula on both sides.
+
+**The trap the tank box was flagged for, as it actually appeared.** Blending
+inflow against the full start-of-tick mass and letting the total-mass update
+handle the outflow separately debits the outflow at the tank's *end*-of-tick
+composition — but the fluid physically left at its *start*-of-tick composition,
+which is what the upwind rule put on the edge and what the far reservoir was
+credited with. Total mass balances to the bit, so I1 stays green; the
+per-component books are off by `ṁ_out·dt·(f_new − f_old)` every tick. I7 caught
+it on the first run, from a generated case, and the fix is an explicit outflow
+term in the blend.
+
+**Falsified before trusted**, three mutations, each caught by a different set:
+weighting the sweep's blend by `ṁ·cp` instead of `ṁ` (the whole workspace stays
+green except the three core mixing gates and I7 — the "conserves total mass,
+passes every energy balance, corrupts only the fractions" signature, demonstrated
+rather than asserted); the same mutation on the *tank* blend (adds the blend
+reference, which the sweep mutation cannot reach — its plant has no junction);
+and dropping the outflow term above (I7 alone, with I1 green, which is the proof
+I7 is not I1 restated).
+
+**Deferred, on falsifiability grounds.** A stream's `cp` and density still come
+from the pipe's stored composition, one tick stale, rather than from the resolved
+upwind node. Upwind is the better physics, but no M3.1 gate can turn red on it:
+composition transport is entirely `cp`-free, and the regression anchor is
+one-component, where every `cp` is equal by construction. Shipping a behaviour
+change no gate can falsify is what [[falsifiability-as-scoping-criterion]] exists
+to prevent. The lag is uniform (both readers run before the write, deliberately)
+and bounded — a transient, not a conservation error. It belongs with the first
+multi-component *temperature* reference. `Atmosphere`'s composition is defaulted
+to the first cut on the same terms: nothing in M3.1 draws mass out of one.
 
 ### M3.2 — Fixed-cut-point column (design note first — the crux is the solver)
 **Not an additive unit like M2's furnace and cooler.** Every M2 unit was a

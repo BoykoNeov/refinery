@@ -1,4 +1,11 @@
-//! Energy transport: upwind (donor-cell) temperature advection.
+//! Transport of the intensive fields: upwind (donor-cell) advection of
+//! temperature and composition.
+//!
+//! Both ride ONE sweep (`resolve_node_states`). They share the topology — the
+//! same inflow edges, the same upwind rule, the same ordering, the same recycle
+//! rejection — and differ only in the weight each mix uses: enthalpy by `ṁ·cp`,
+//! composition by `ṁ` alone. See `mix_compositions` for why that difference is
+//! the sharpest edge in this module.
 //!
 //! The temperature field over the plant graph is *mixed*, and naming the two
 //! kinds of node is what makes it tractable (docs/DESIGN.md §4a):
@@ -29,7 +36,7 @@
 //! mass balances — the invariant tests state it against `T_REF` explicitly
 //! rather than assuming a zero reference makes it moot.
 
-use crate::components::Slate;
+use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{EdgeId, NodeId, NodeKind, PlantGraph};
 use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
@@ -138,6 +145,51 @@ pub fn pipe_outlet_temperature(
     Kelvin(T_AMBIENT.value() + (inlet.value() - T_AMBIENT.value()) * decay)
 }
 
+/// The end of `edge` the fluid comes FROM, given a signed mass flow.
+///
+/// Upwind by flow SIGN, never by edge direction — the donor-cell rule transport
+/// uses, so reverse flow needs no special case. At exactly zero flow the pick is
+/// arbitrary (nothing moves either way) and takes `from` to stay deterministic.
+///
+/// Extracted because temperature and composition are transported by the same
+/// rule and must never disagree about which way a pipe runs: one definition, two
+/// readers.
+fn upwind_end(graph: &PlantGraph, edge: EdgeId, mass_flow: f64) -> NodeId {
+    let (from, to) = graph.endpoints(edge);
+    if mass_flow >= 0.0 {
+        from
+    } else {
+        to
+    }
+}
+
+/// The composition crossing `node`'s boundary along `edge`.
+///
+/// The composition analogue of `edge_temperature_at`, and deliberately simpler:
+/// a pipe transforms the TEMPERATURE of what passes through it (ambient
+/// exchange) but not its composition — heat crosses the wall, mass does not. So
+/// there is no inlet/outlet distinction to make and `node` is not needed: both
+/// ends see the upwind node's composition.
+///
+/// # Errors
+/// `SimError::Numerical` if the upwind node's composition is unresolved —
+/// returned rather than indexed so a sweep-ordering bug cannot panic (rule 5).
+pub fn edge_composition_at<'a>(
+    graph: &PlantGraph,
+    composition: &'a BTreeMap<NodeId, Composition>,
+    edge: EdgeId,
+    mass_flow: f64,
+) -> Result<&'a Composition, SimError> {
+    let upwind = upwind_end(graph, edge, mass_flow);
+    composition.get(&upwind).ok_or_else(|| {
+        SimError::Numerical(format!(
+            "internal: upwind node '{}' of pipe '{}' unresolved during the composition sweep",
+            graph.node(upwind).name,
+            graph.pipe(edge).name
+        ))
+    })
+}
+
 /// The temperature at which fluid crosses `node`'s boundary along `edge` [K].
 ///
 /// The single owner of "which end of this edge am I looking at". Once a pipe
@@ -174,12 +226,7 @@ pub fn edge_temperature_at(
     mass_flow: f64,
     node: NodeId,
 ) -> Result<Kelvin, SimError> {
-    let (from, to) = graph.endpoints(edge);
-    // Upwind by flow SIGN, never by edge direction — the same donor-cell rule
-    // transport uses, so reverse flow needs no special case. At exactly zero
-    // flow the pick is arbitrary (no enthalpy moves either way) and takes
-    // `from` to stay deterministic.
-    let upwind = if mass_flow >= 0.0 { from } else { to };
+    let upwind = upwind_end(graph, edge, mass_flow);
     let inlet = temperature.get(&upwind).copied().ok_or_else(|| {
         SimError::Numerical(format!(
             "internal: upwind node '{}' of pipe '{}' unresolved during the temperature sweep",
@@ -297,6 +344,34 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
     )
 }
 
+/// Start-of-tick composition of an inertial node, or `None` for a zero-volume
+/// node (whose composition must be mixed from its inflows instead).
+///
+/// The exact partition `boundary_temperature` makes, and it must stay exact:
+/// the sweep seeds one field and mixes the other from the same `Some`/`None`
+/// answer, so a node inertial in temperature and zero-volume in composition
+/// would be swept in an order its own dependencies do not justify.
+///
+/// `Atmosphere` is the one node with no composition to state. It is given the
+/// first slate component — arbitrary, and honestly so: nothing in M3.1 draws
+/// mass out of an Atmosphere node (leak edges run *into* it), so no gate can
+/// falsify this choice. It is a compile-time default standing in for a decision
+/// the milestone that back-feeds from a leak will have to make properly.
+pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Composition> {
+    match kind {
+        NodeKind::Source { composition, .. } => Some(composition.clone()),
+        NodeKind::Sink { composition, .. } => Some(composition.clone()),
+        NodeKind::Atmosphere => Some(Composition::pure(slate.len(), 0)),
+        NodeKind::Tank(tank) => Some(tank.composition.clone()),
+        NodeKind::Junction
+        | NodeKind::Pump { .. }
+        | NodeKind::Valve { .. }
+        | NodeKind::Furnace { .. }
+        | NodeKind::Cooler { .. }
+        | NodeKind::HeatExchanger => None,
+    }
+}
+
 /// Start-of-tick temperature of an inertial node, or `None` for a zero-volume
 /// node (whose temperature must be mixed from its inflows instead).
 ///
@@ -349,7 +424,25 @@ fn inflow_edges(
     inflows
 }
 
-/// Resolve every node's temperature for this tick [K].
+/// Every node's resolved intensive state for one tick.
+///
+/// Temperature and composition are resolved TOGETHER, on one sweep, because
+/// they are transported by the same topology: the same inflow edges, the same
+/// upwind rule, the same Kahn ordering, the same recycle rejection. A second
+/// sweep computing composition alongside would be a duplicate of all four, free
+/// to drift.
+///
+/// They are nonetheless mixed with DIFFERENT weights, which is the whole subtle
+/// point of this pair — see `mix_compositions`.
+#[derive(Debug, Clone, Default)]
+pub struct NodeStates {
+    /// Resolved temperature [K] per node.
+    pub temperature: BTreeMap<NodeId, Kelvin>,
+    /// Resolved mass-fraction composition per node.
+    pub composition: BTreeMap<NodeId, Composition>,
+}
+
+/// Resolve every node's temperature [K] and composition for this tick.
 ///
 /// Inertial nodes seed the field with their start-of-tick temperature;
 /// zero-volume nodes are then swept in flow order, each mixing its inflows:
@@ -362,6 +455,12 @@ fn inflow_edges(
 /// no accumulation and no work), reducing to the mass-weighted mean when every
 /// stream shares a `cp`.
 ///
+/// and composition alongside it, by mass alone:
+///
+/// ```text
+/// f_c = Σ(ṁ_in · f_in,c) / Σ ṁ_in
+/// ```
+///
 /// `previous` supplies the fallback for a zero-volume node with **no inflow**:
 /// nothing enters it, so its temperature is physically indeterminate — and it
 /// carries no enthalpy either way, since mass balance forces zero outflow too.
@@ -371,22 +470,41 @@ fn inflow_edges(
 /// # Errors
 /// `SimError::Numerical` if a recycle among zero-volume nodes leaves the sweep
 /// with no valid order (see the module docs).
-pub fn resolve_node_temperatures(
+pub fn resolve_node_states(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
-    previous: &BTreeMap<NodeId, Kelvin>,
-) -> Result<BTreeMap<NodeId, Kelvin>, SimError> {
+    previous: &NodeStates,
+) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
+    let mut composition: BTreeMap<NodeId, Composition> = BTreeMap::new();
 
     // 1. Inertial nodes are the roots of the sweep: known before it starts.
+    //    Both fields are seeded from the SAME node, so the two boundary helpers
+    //    agreeing on which nodes are inertial is load-bearing — asserted here
+    //    rather than assumed, because a mismatch would leave a node seeded in
+    //    one field and swept in the other, and the sweep would then read an
+    //    unresolved upwind and error somewhere far from the cause.
     let mut zero_volume: Vec<NodeId> = Vec::new();
     for id in graph.node_ids() {
-        match boundary_temperature(&graph.node(id).kind) {
-            Some(t) => {
+        let kind = &graph.node(id).kind;
+        match (
+            boundary_temperature(kind),
+            boundary_composition(kind, slate),
+        ) {
+            (Some(t), Some(c)) => {
                 temperature.insert(id, t);
+                composition.insert(id, c);
             }
-            None => zero_volume.push(id),
+            (None, None) => zero_volume.push(id),
+            _ => {
+                return Err(SimError::Numerical(format!(
+                    "internal: node '{}' is inertial in one intensive field and \
+                     zero-volume in the other — `boundary_temperature` and \
+                     `boundary_composition` must partition the node kinds identically",
+                    graph.node(id).name
+                )))
+            }
         }
     }
 
@@ -451,6 +569,16 @@ pub fn resolve_node_temperatures(
     while let Some(&leader) = ready.iter().next() {
         ready.remove(&leader);
         let sides = &members[&leader];
+
+        // Composition first, and uniformly across both branches: it is settled
+        // by mass alone, so an exchanger's two sides are ordinary mixing points
+        // to it. Heat crosses between them; mass does not, and a pair whose
+        // compositions influenced each other would be modelling a leak.
+        for &id in sides {
+            let mixed = mix_compositions(graph, slate, edge_mass_flow, &composition, previous, id)?;
+            composition.insert(id, mixed);
+        }
+
         match sides.as_slice() {
             [a, b] => {
                 // Both outlets from one signed Q, computed from both inlets.
@@ -459,7 +587,7 @@ pub fn resolve_node_temperatures(
                     slate,
                     edge_mass_flow,
                     &temperature,
-                    previous,
+                    &previous.temperature,
                     (*a, *b),
                 )?;
                 temperature.insert(*a, t_a);
@@ -467,8 +595,14 @@ pub fn resolve_node_temperatures(
             }
             _ => {
                 for &id in sides {
-                    let mixed =
-                        mix_inflows(graph, slate, edge_mass_flow, &temperature, previous, id)?;
+                    let mixed = mix_inflows(
+                        graph,
+                        slate,
+                        edge_mass_flow,
+                        &temperature,
+                        &previous.temperature,
+                        id,
+                    )?;
                     temperature.insert(id, mixed);
                 }
             }
@@ -523,7 +657,84 @@ pub fn resolve_node_temperatures(
         )));
     }
 
-    Ok(temperature)
+    Ok(NodeStates {
+        temperature,
+        composition,
+    })
+}
+
+/// Mass-weighted mix of a zero-volume node's inflow compositions.
+///
+/// ```text
+/// f_c = Σ(ṁ_in · f_in,c) / Σ ṁ_in
+/// ```
+///
+/// **The weight is `ṁ`, not `ṁ·cp`** — and that distinction is the one thing
+/// this function exists to get right. `mix_inflows` sits ten lines away
+/// weighting by `ṁ·cp`, because enthalpy is what mixes there; here the
+/// conserved quantity is the mass of each component, and cp has nothing to do
+/// with it. Reusing the enthalpy weights is the natural mistake and is nearly
+/// invisible: it still conserves TOTAL mass and still passes every energy
+/// balance, corrupting only the fractions — so it is caught by the
+/// per-component invariant (I7) and the blend reference and by nothing else.
+///
+/// The two mixes stay consistent for free, which is why composition can ride
+/// this sweep without perturbing M2's energy math: cp is linear in composition,
+/// so `Σ_c (Σ_s ṁ_s·f_sc)·cp_c = Σ_s ṁ_s·cp_s` — the mixed stream's capacity
+/// rate is exactly the sum of its inflows'.
+///
+/// # Errors
+/// `SimError::Numerical` if an upwind composition is unresolved, or if the
+/// accumulated weights are not a valid composition.
+fn mix_compositions(
+    graph: &PlantGraph,
+    slate: &Slate,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    composition: &BTreeMap<NodeId, Composition>,
+    previous: &NodeStates,
+    node: NodeId,
+) -> Result<Composition, SimError> {
+    // Accumulated in `inflow_edges` order, which is edge-id order — so the
+    // float summation order is a function of the graph alone (rule 3).
+    let mut weights = vec![0.0; slate.len()];
+    let mut total_inflow = 0.0;
+
+    for (edge, _upstream, into_node) in inflow_edges(graph, edge_mass_flow, node) {
+        // The raw stored flow, not `into_node`: `upwind_end` picks the end from
+        // the SIGN, and `inflow_edges` has already re-signed `into_node`
+        // positive-into-this-node, which would name the wrong end on every edge
+        // stored pointing inward. Same trap as the temperature path.
+        let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
+        let incoming = edge_composition_at(graph, composition, edge, flow)?;
+        for (weight, fraction) in weights.iter_mut().zip(incoming.fractions()) {
+            *weight += into_node * fraction;
+        }
+        total_inflow += into_node;
+    }
+
+    if total_inflow > 0.0 {
+        Composition::from_weights(&weights).map_err(|e| {
+            SimError::Numerical(format!(
+                "mixing the inflows of '{}' produced no valid composition: {e}",
+                graph.node(node).name
+            ))
+        })
+    } else {
+        // No inflow: indeterminate but inert, mirroring `mix_inflows`' rule for
+        // the same case exactly — mass balance forces zero outflow too, so
+        // whatever is held here is carried nowhere. Holding the last resolved
+        // value keeps the field reproducible; `Composition::from_weights` errs
+        // on an all-zero weight vector, so mixing through it is not an option.
+        //
+        // With no history at all, the first slate component: the composition
+        // counterpart of the temperature path's fallback to ambient, and inert
+        // for the same reason.
+        Ok(previous
+            .composition
+            .get(&node)
+            .cloned()
+            .unwrap_or_else(|| Composition::pure(slate.len(), 0)))
+    }
 }
 
 /// A node's inflow enthalpy [W] and capacity rate [W/K], or `None` when nothing
@@ -774,7 +985,194 @@ mod tests {
         graph: &PlantGraph,
         flows: &BTreeMap<EdgeId, f64>,
     ) -> Result<BTreeMap<NodeId, Kelvin>, SimError> {
-        resolve_node_temperatures(graph, &Slate::water_only(), flows, &BTreeMap::new())
+        resolve_node_states(graph, &Slate::water_only(), flows, &NodeStates::default())
+            .map(|states| states.temperature)
+    }
+
+    /// The composition half of the same sweep, for the tests that read it.
+    fn resolve_compositions(
+        graph: &PlantGraph,
+        slate: &Slate,
+        flows: &BTreeMap<EdgeId, f64>,
+    ) -> Result<BTreeMap<NodeId, Composition>, SimError> {
+        resolve_node_states(graph, slate, flows, &NodeStates::default())
+            .map(|states| states.composition)
+    }
+
+    /// The composition sweep, on a slate whose two cuts have DELIBERATELY
+    /// mismatched `cp` — the property that separates a mass-weighted mix from a
+    /// capacity-rate-weighted one.
+    mod composition_mixing {
+        use super::*;
+        use crate::components::PseudoComponent;
+
+        fn cut(name: &str, cp: f64) -> PseudoComponent {
+            PseudoComponent {
+                name: name.into(),
+                tb: Kelvin(400.0),
+                molar_mass: KgPerMol(0.1),
+                density: KgPerM3(800.0),
+                cp: JPerKgK(cp),
+            }
+        }
+
+        /// cp ratio 4:1. Every other property is equal, so nothing but the
+        /// weighting rule can move the answer.
+        fn two_cuts() -> Slate {
+            Slate::new(vec![cut("light", 1000.0), cut("heavy", 4000.0)]).unwrap()
+        }
+
+        fn feed(name: &str, fractions: &[f64]) -> Node {
+            node(
+                name,
+                NodeKind::Source {
+                    pressure: Pascal(2.0e5),
+                    temperature: Kelvin(300.0),
+                    composition: Composition::from_weights(fractions).unwrap(),
+                },
+            )
+        }
+
+        /// REFERENCE — the blend, predicted from the MASS RATIO by hand.
+        ///
+        /// A junction is fed 1 kg/s of pure `light` and 3 kg/s of pure `heavy`.
+        /// Per-component mass balance on a vessel with no accumulation:
+        ///
+        ///   light: 1 kg/s in, of 4 kg/s total  ⇒  f_light = 0.25
+        ///   heavy: 3 kg/s in, of 4 kg/s total  ⇒  f_heavy = 0.75
+        ///
+        /// stated from the flows alone, with no reference to `mix_compositions`
+        /// or to `Composition::blend` — the expected numbers cannot be produced
+        /// by the same rule they are checking.
+        ///
+        /// THE MUTATION THIS EXISTS FOR: weight the mix by `ṁ·cp` instead of
+        /// `ṁ`, i.e. reuse the enthalpy weights sitting in the same sweep. The
+        /// capacity rates here are 1·1000 and 3·4000, so that mutation returns
+        /// f_light = 1000/13000 ≈ 0.0769 rather than 0.25. It is a mutation
+        /// worth guarding at this size because it is nearly invisible
+        /// elsewhere: total mass is still 4 kg/s, every energy balance still
+        /// closes, and only the fractions are wrong.
+        ///
+        /// The 4:1 cp ratio is what gives the two answers room to differ. With
+        /// equal cp they coincide exactly and this test would pass under the
+        /// mutation — which is the whole reason the slate above is built by
+        /// hand instead of reusing water.
+        #[test]
+        fn a_junction_blends_its_inflows_by_mass_not_by_capacity_rate() {
+            let slate = two_cuts();
+            let mut g = PlantGraph::new();
+            let light_src = g.add_node(feed("light_src", &[1.0, 0.0]));
+            let heavy_src = g.add_node(feed("heavy_src", &[0.0, 1.0]));
+            let mix = g.add_node(node("mix", NodeKind::Junction));
+            let e_light = g.add_pipe(light_src, mix, pipe("light_line"));
+            let e_heavy = g.add_pipe(heavy_src, mix, pipe("heavy_line"));
+
+            let flows = BTreeMap::from([(e_light, 1.0), (e_heavy, 3.0)]);
+            let composition = resolve_compositions(&g, &slate, &flows).unwrap();
+
+            let mixed = composition[&mix].fractions();
+            assert!(
+                (mixed[0] - 0.25).abs() < 1e-12 && (mixed[1] - 0.75).abs() < 1e-12,
+                "1 kg/s light + 3 kg/s heavy is 25/75 by MASS; got {mixed:?}. The \
+                 capacity-rate weighting this guards against gives ~[0.077, 0.923]."
+            );
+        }
+
+        /// The consistency that lets composition ride the energy sweep without
+        /// perturbing it: cp is linear in composition, so the mixed stream's
+        /// capacity rate equals the sum of its inflows'.
+        ///
+        ///   Σ_c (Σ_s ṁ_s·f_sc)·cp_c  =  Σ_s ṁ_s·cp_s
+        ///   here: 4 kg/s · (0.25·1000 + 0.75·4000) = 13 000 W/K = 1·1000 + 3·4000
+        ///
+        /// Stated as a test because it is the reason the two mixes can disagree
+        /// about their weights and still describe the same stream. If it failed,
+        /// M2's energy balances would drift the moment a slate had two cuts.
+        #[test]
+        fn the_mixed_capacity_rate_is_the_sum_of_the_inflows() {
+            let slate = two_cuts();
+            let mut g = PlantGraph::new();
+            let light_src = g.add_node(feed("light_src", &[1.0, 0.0]));
+            let heavy_src = g.add_node(feed("heavy_src", &[0.0, 1.0]));
+            let mix = g.add_node(node("mix", NodeKind::Junction));
+            let e_light = g.add_pipe(light_src, mix, pipe("light_line"));
+            let e_heavy = g.add_pipe(heavy_src, mix, pipe("heavy_line"));
+
+            let flows = BTreeMap::from([(e_light, 1.0), (e_heavy, 3.0)]);
+            let composition = resolve_compositions(&g, &slate, &flows).unwrap();
+
+            let mixed_capacity = 4.0 * composition[&mix].mixture_cp(&slate).value();
+            let inflow_capacity = 1.0 * 1000.0 + 3.0 * 4000.0;
+            assert!(
+                (mixed_capacity - inflow_capacity).abs() < 1e-9,
+                "{mixed_capacity} W/K out vs {inflow_capacity} W/K in"
+            );
+        }
+
+        /// Composition follows the FLOW's direction, not the edge's. Both pipes
+        /// below are stored pointing away from the junction and carry negative
+        /// flow, so the fluid arrives from the far ends — and a sweep reading
+        /// `from` unconditionally would take the junction's own (unresolved)
+        /// composition as its inlet.
+        ///
+        /// This is the composition twin of the reverse-flow temperature case,
+        /// and it needs its own gate: the two fields read the upwind end through
+        /// one helper now, but nothing in the type system stops that from being
+        /// re-derived independently later.
+        #[test]
+        fn reverse_flow_blends_from_the_far_end() {
+            let slate = two_cuts();
+            let mut g = PlantGraph::new();
+            let mix = g.add_node(node("mix", NodeKind::Junction));
+            let light_src = g.add_node(feed("light_src", &[1.0, 0.0]));
+            let heavy_src = g.add_node(feed("heavy_src", &[0.0, 1.0]));
+            // Stored mix → source, flowing source → mix.
+            let e_light = g.add_pipe(mix, light_src, pipe("light_line"));
+            let e_heavy = g.add_pipe(mix, heavy_src, pipe("heavy_line"));
+
+            let flows = BTreeMap::from([(e_light, -1.0), (e_heavy, -3.0)]);
+            let composition = resolve_compositions(&g, &slate, &flows).unwrap();
+
+            let mixed = composition[&mix].fractions();
+            assert!(
+                (mixed[0] - 0.25).abs() < 1e-12,
+                "reverse flow must blend the same 25/75 as forward flow, got {mixed:?}"
+            );
+        }
+
+        /// A junction with nothing flowing through it holds a composition rather
+        /// than dividing 0/0 — the rule `mix_inflows` applies to temperature,
+        /// mirrored. `Composition::from_weights` rejects an all-zero weight
+        /// vector, so without the explicit fallback this path would ERROR on a
+        /// closed valve, which is an ordinary plant state.
+        #[test]
+        fn a_stagnant_junction_holds_a_valid_composition() {
+            let slate = two_cuts();
+            let mut g = PlantGraph::new();
+            let src = g.add_node(feed("src", &[0.5, 0.5]));
+            let idle = g.add_node(node("idle", NodeKind::Junction));
+            let dead = g.add_pipe(src, idle, pipe("dead_leg"));
+
+            let flows = BTreeMap::from([(dead, 0.0)]);
+
+            // With history, it holds what it last saw.
+            let previous = NodeStates {
+                temperature: BTreeMap::new(),
+                composition: BTreeMap::from([(
+                    idle,
+                    Composition::from_weights(&[0.2, 0.8]).unwrap(),
+                )]),
+            };
+            let held = resolve_node_states(&g, &slate, &flows, &previous)
+                .unwrap()
+                .composition;
+            assert_eq!(held[&idle].fractions(), &[0.2, 0.8]);
+
+            // With none, a valid composition rather than an error or a NaN.
+            let fresh = resolve_compositions(&g, &slate, &flows).unwrap();
+            let sum: f64 = fresh[&idle].fractions().iter().sum();
+            assert!((sum - 1.0).abs() < 1e-12, "must still sum to 1");
+        }
     }
 
     /// Enthalpy weighting, hand-calculated: 1 kg/s at 280 K and 3 kg/s at 320 K
@@ -790,6 +1188,7 @@ mod tests {
             NodeKind::Sink {
                 pressure: Pascal(1.0e5),
                 temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
             },
         ));
         let e_cold = g.add_pipe(cold, mix, pipe("cold_line"));
@@ -820,6 +1219,7 @@ mod tests {
             NodeKind::Sink {
                 pressure: Pascal(9.0e5),
                 temperature: Kelvin(350.0),
+                composition: Composition::pure(1, 0),
             },
         ));
         let e_in = g.add_pipe(src, mix, pipe("inlet"));
@@ -852,6 +1252,7 @@ mod tests {
             NodeKind::Sink {
                 pressure: Pascal(1.0e5),
                 temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
             },
         ));
         let e_in = g.add_pipe(src, heater, pipe("inlet"));
@@ -986,6 +1387,7 @@ mod tests {
             NodeKind::Sink {
                 pressure: Pascal(1.0e5),
                 temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
             },
         ));
         let cold_src = g.add_node(source("cold_src", cold_inlet));
@@ -995,6 +1397,7 @@ mod tests {
             NodeKind::Sink {
                 pressure: Pascal(1.0e5),
                 temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
             },
         ));
 
@@ -1125,6 +1528,7 @@ mod tests {
             NodeKind::Sink {
                 pressure: Pascal(1.0e5),
                 temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
             },
         ));
         let cold_src = g.add_node(source("cold_src", Kelvin(300.0)));
@@ -1134,6 +1538,7 @@ mod tests {
             NodeKind::Sink {
                 pressure: Pascal(1.0e5),
                 temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
             },
         ));
         // Higher node id than either side, so the sweep pops it LAST if it is
@@ -1192,6 +1597,7 @@ mod tests {
             NodeKind::Sink {
                 pressure: Pascal(1.0e5),
                 temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
             },
         ));
         let feed = g.add_pipe(src, side_a, pipe("feed"));
@@ -1261,9 +1667,13 @@ mod tests {
         let dead = g.add_pipe(src, idle, pipe("dead_leg"));
 
         let flows = BTreeMap::from([(dead, 0.0)]);
-        let previous = BTreeMap::from([(idle, Kelvin(311.0))]);
-        let temperature =
-            resolve_node_temperatures(&g, &Slate::water_only(), &flows, &previous).unwrap();
+        let previous = NodeStates {
+            temperature: BTreeMap::from([(idle, Kelvin(311.0))]),
+            composition: BTreeMap::new(),
+        };
+        let temperature = resolve_node_states(&g, &Slate::water_only(), &flows, &previous)
+            .unwrap()
+            .temperature;
         assert_eq!(
             temperature[&idle].value(),
             311.0,
