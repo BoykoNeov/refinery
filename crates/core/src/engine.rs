@@ -213,7 +213,16 @@ impl Engine {
         //    signed flux subtracts exactly the enthalpy that leaves. That is
         //    what makes the discrete balance close to round-off (I6).
         for nid in self.graph.node_ids().collect::<Vec<_>>() {
-            let heat_input = self.graph.node(nid).heat_input.value();
+            // Through `heat_load`, not off `heat_input` directly: that function
+            // is the single owner of "how much heat enters this node", summing
+            // the fire and the unit's own duty with the sign the unit implies.
+            // The two agree today — a tank is neither furnace nor cooler, so it
+            // has no duty to miss — which is exactly why the raw read was worth
+            // replacing rather than leaving: it is a second answer to the same
+            // question that happens to be right, and would go on compiling
+            // while quietly ignoring any heat term a tank later gains. Ambient
+            // exchange is that term.
+            let heat_input = energy::heat_load(self.graph.node(nid)).value();
             let mut net_mass = 0.0; // [kg/s] into the node
             let mut net_enthalpy = 0.0; // [W] into the node
             for (eid, _other, incoming) in self.graph.incident(nid) {
