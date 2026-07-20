@@ -529,6 +529,40 @@ diameter_m = 0.10
     );
 }
 
+/// Determinism (I4) for a column plant. The I4 proptest generators build only
+/// chains and trees, so no random case ever exercises a column; this pins the
+/// demo plant instead. A column's order-sensitive parts — the BTreeMap sweep, the
+/// file-order draw vector, the two-pass draw write — are all deterministic by
+/// construction, and this is the byte-level proof: two fresh engines, serialized
+/// each tick, must render identical f64 bits.
+#[test]
+fn the_demo_column_plant_reruns_bit_identically() {
+    let src = include_str!("../../../scenarios/crude_column.toml");
+    let run = || -> Vec<Vec<u8>> {
+        let mut engine = build(src).expect("demo plant should build");
+        (0..50)
+            .map(|tick| {
+                engine
+                    .tick()
+                    .unwrap_or_else(|e| panic!("tick {tick} must converge: {e}"));
+                serde_json::to_vec(&engine.snapshot()).expect("snapshot must serialize")
+            })
+            .collect()
+    };
+    let first = run();
+    let second = run();
+    assert_eq!(first.len(), 50, "a run must capture one snapshot per tick");
+    for (i, (a, b)) in first.iter().zip(&second).enumerate() {
+        assert!(
+            a == b,
+            "column demo diverged at tick {}:\n  first:  {}\n  second: {}",
+            i + 1,
+            String::from_utf8_lossy(a),
+            String::from_utf8_lossy(b)
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Loader validation — each refusal stops a plant that would otherwise load and
 // be wrong (DESIGN §5). Most fire in `resolve_column_draws`, before the pipes
@@ -730,6 +764,63 @@ fn a_draw_to_a_free_node_is_refused() {
     assert!(
         m.contains("bypass") && m.contains("free"),
         "the error must name the free node on the draw line, got: {m}"
+    );
+}
+
+/// A draw to a SOURCE is refused. A source pins pressure, so the free-node guard
+/// alone (which checks only that) would wave it through — but a source is an
+/// infinite supply, and a draw into it vanishes the product while total mass
+/// still "balances" at the boundary: a plant that runs and lies. The outlet is
+/// restricted to product stores explicitly, not merely to pressure-fixers.
+#[test]
+fn a_draw_to_a_source_is_refused() {
+    let m = build_err(
+        &loader_plant(
+            r#"[
+    { outlet = "light_tank", up_to_c = 150.0 },
+    { outlet = "feed", up_to_c = 250.0 },
+    { outlet = "heavy_tank" },
+]"#,
+            "",
+        ),
+        "a draw to a source",
+    );
+    assert!(
+        m.contains("feed") && m.contains("source"),
+        "the error must name the source outlet and why, got: {m}"
+    );
+}
+
+/// A draw to ANOTHER COLUMN is refused. It too pins pressure, so it slips the
+/// free-node guard — but the post-sweep, two-pass draw write reads an upstream
+/// column's draw edge (guarded to zero in the solve) before the downstream
+/// column's own write lands, so a chained column silently sees a zero feed and
+/// does nothing. Chaining columns is not modelled at this fidelity; refuse it at
+/// load rather than run a silently-dead second column.
+#[test]
+fn a_draw_to_another_column_is_refused() {
+    let m = build_err(
+        &loader_plant(
+            r#"[
+    { outlet = "light_tank", up_to_c = 150.0 },
+    { outlet = "col2", up_to_c = 250.0 },
+    { outlet = "heavy_tank" },
+]"#,
+            r#"[nodes.col2]
+type = "column"
+pressure_bar = 1.2
+draws = [
+    { outlet = "middle_tank", up_to_c = 200.0 },
+    { outlet = "light_tank" },
+]
+
+"#,
+        ),
+        "a draw to another column",
+    );
+    assert!(
+        m.contains("col2") && m.contains("column"),
+        "the error must name the column outlet and why, got: {m}"
     );
 }
 

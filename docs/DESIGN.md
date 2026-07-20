@@ -719,6 +719,19 @@ line at load time**, because a guard whose failure mode cannot be exercised by a
 scenario in the repo is a guard that cannot be falsified. Lifting the
 restriction is a later, tested step, not a silent capability.
 
+**Pressure-fixing is necessary but not sufficient for a draw outlet.** The guard
+cannot simply be "the outlet pins a pressure": `fixed_pressure` is `Some` for
+five kinds, and two of them — `Source` and `Column` — are pressure-fixing yet
+wrong outlets that *run*. A draw into a `Source` vanishes the product into an
+infinite supply, mass "conserved" at the boundary; a draw into another `Column`
+chains them, and the post-sweep two-pass draw write reads the upstream draw edge
+(guarded to zero in the solve) before the downstream column's own write lands, so
+the second column silently sees a zero feed. Both are refused at load: a draw
+outlet is restricted to the three product-store kinds (`Tank`/`Sink`/
+`Atmosphere`) explicitly, not to the pressure-fixing set. Chaining columns is a
+later, tested extension, refused now rather than run half-working — the same move
+as the valve-on-a-draw case above.
+
 **Cut assignment and smearing.** Separation acts on the **feed**, not on any
 stored inventory. Each draw `i` owns a boiling-point band from the column's
 ordered cut points; component `c` with normal boiling point `Tb_c` gets a weight

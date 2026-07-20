@@ -294,7 +294,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // free-node-on-a-draw-line rejection, DESIGN §5); the pipe-level topology
     // (one pipe per draw, correct direction) is checked in `validate_topology`
     // once the pipes exist.
-    resolve_column_draws(&mut graph, scenario, &slate)?;
+    resolve_column_draws(&mut graph, scenario)?;
 
     for pipe in &scenario.pipes {
         validate_pipe_def(pipe)?;
@@ -732,14 +732,11 @@ fn build_couplings(graph: &mut PlantGraph, defs: &[ExchangerDef]) -> Result<(), 
 ///   backwards band.
 /// - **Distinct outlets** — the engine maps a draw edge to a draw by its outlet,
 ///   so the mapping has to be one-to-one.
-/// - **Outlet is a pressure-fixing node** — a free node on a draw line (a valve
-///   or junction) puts a prescribed edge back into the Jacobian, which M3.2 does
-///   not support; deferred, not half-supported (DESIGN §5).
-fn resolve_column_draws(
-    graph: &mut PlantGraph,
-    scenario: &ScenarioFile,
-    slate: &Slate,
-) -> Result<(), SimError> {
+/// - **Outlet is a product store** (tank/sink/atmosphere) — a free node on a draw
+///   line puts a prescribed edge back into the Jacobian (unsupported), and a
+///   source or column outlet is pressure-fixing but still wrong (vanishes the
+///   product, or chains columns the draw write cannot feed); both refused.
+fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
     for (name, def) in &scenario.nodes {
         let NodeDef::Column {
             draws: draw_defs, ..
@@ -805,13 +802,36 @@ fn resolve_column_draws(
                     d.outlet
                 ))
             })?;
-            if !fixed_pressure_node(graph.node(outlet), slate) {
-                return Err(SimError::Scenario(format!(
-                    "column '{name}' draws to '{}', a free (non-pressure-fixing) node. A draw \
-                     line must end at a pressure-fixing node (tank/sink/atmosphere); a valve or \
-                     junction on a draw is not supported at this fidelity.",
-                    d.outlet
-                )));
+            // A draw must end at a PRODUCT STORE. "Pressure-fixing" is necessary
+            // (a free node would put a prescribed edge in the Jacobian) but NOT
+            // sufficient: `fixed_pressure` is also `Some` for a Source and a
+            // Column, and both are silently wrong outlets. Drawing to a Source
+            // would vanish the product into an infinite supply — mass "conserved"
+            // at the boundary, a plant that runs and lies. Drawing to another
+            // Column would chain them, and the post-sweep two-pass draw write
+            // reads the upstream draw edge before the downstream column's write
+            // lands, so the second column silently sees a zero feed and does
+            // nothing. Neither is modelled at this fidelity, so the outlet is
+            // restricted to the three product-store kinds explicitly.
+            match &graph.node(outlet).kind {
+                NodeKind::Tank(_) | NodeKind::Sink { .. } | NodeKind::Atmosphere => {}
+                NodeKind::Source { .. } | NodeKind::Column { .. } => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draws to '{}', a source or column. A draw must end at a \
+                         product store — a tank, sink, or atmosphere. Drawing to a source vanishes \
+                         the product into a supply, and chaining columns is not supported at this \
+                         fidelity.",
+                        d.outlet
+                    )));
+                }
+                _ => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draws to '{}', a free (non-pressure-fixing) node. A draw \
+                         line must end at a product store (tank/sink/atmosphere); a valve or \
+                         junction on a draw is not supported at this fidelity.",
+                        d.outlet
+                    )));
+                }
             }
             resolved.push(ColumnDraw {
                 outlet,
