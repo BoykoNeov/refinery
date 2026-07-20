@@ -165,9 +165,45 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       deleted. It now runs against a real furnace in `furnace_reference.rs`
       (`negative_furnace_duty_is_refused`) and asserts the refusal is for the
       negative duty rather than the node kind.
-- [ ] `HeatExchanger` (two streams coupled; simple ΔT-effectiveness fidelity
-      before any NTU model). Also owns the *approach temperature* a fixed-duty
-      `Cooler` deliberately lacks (DESIGN §4a).
+- [x] `HeatExchanger` (two streams coupled; ΔT-effectiveness fidelity, no NTU).
+      Two hydraulically independent zero-volume sides — the flow solver never
+      learns they are paired — joined by a coupling carrying ε. Three decisions
+      the design note (`ea13c8e`) argued before any code:
+      **one signed `Q = ε·C_min·(T_a_in − T_b_in)`**, subtracted from A and
+      added to B so energy conserves by construction; **neither side is "the
+      hot one"** (the sign of the inlet difference decides, so a reversing
+      service needs no reconfiguration); and **`C_min`, not `C_max`**, which
+      with ε ≤ 1 keeps each stream from passing the other's inlet without a
+      second-law check. ε lives on the PAIR, not on either node, so a pair whose
+      halves disagree about it is unrepresentable.
+      The real difficulty was the sweep: an exchanger is the first unit whose
+      outlet depends on an inlet that is **not one of its own inflow edges**, so
+      a per-node Kahn sweep marks a side ready too early. Each pair is therefore
+      merged into ONE vertex, ready when the union of both sides' dependencies
+      clears. A self-dependency (one side feeding the other) is counted and
+      never released, so that genuinely circular plant falls into M2.1's
+      existing recycle rejection instead of resolving against a stale inlet.
+- [x] Tests: `core::energy::tests` (hand-built flows: the ΔT-effectiveness
+      arithmetic with **unequal** capacity rates, the direction flip, the ε = 1
+      limit, the pair-merge ordering, the side-feeds-partner rejection, a
+      stalled side) + `scenarios/tests/heat_recovery_reference.rs` with
+      `scenarios/heat_recovery.toml` (the coupling as wired: the loader building
+      it at all, it surviving a real hydraulic solve that hands the two sides
+      flows the file never states, and six loader refusals).
+      **Falsified before trusted**, each mutation caught for the right reason:
+      `C_max` for `C_min` fails the reference *and* the second-law gate while
+      leaving energy conservation green — exactly the right discrimination,
+      since it is the wrong magnitude, not a conservation error; a per-side
+      effectiveness term instead of one shared signed `Q` fails the
+      conservation gate; dropping the pair merge fails five gates including the
+      ordering one; and making a side inertial (`boundary_temperature` returning
+      `Some`, which compiles cleanly) fails six.
+      Falsification also found a **vacuity in the reference plant**: the
+      per-side-effectiveness mutation was invisible there, because the C_min
+      stream happened to be side B, where the wrong formula coincides with the
+      right answer. The plant now puts C_min on side A deliberately, and the
+      test asserts that premise so it fails loudly rather than silently testing
+      less than it claims.
 - [ ] Ambient heat exchange for tanks and pipes. NOT "loss": the driving force is
       `T_ambient − T_node`, so the same term must HEAT a body colder than ambient
       and cool one hotter, with no second code path and no sign convention of its

@@ -53,8 +53,8 @@ pub struct Classification {
     pub cold: f64,
 }
 
-/// Every Pump/Valve/Furnace/Cooler node must have exactly one inlet and one
-/// outlet edge — but for two different reasons, which is worth keeping straight:
+/// Every Pump/Valve/Furnace/Cooler/HeatExchanger node must have one inlet and
+/// one outlet edge — but for two different reasons, which is worth keeping straight:
 ///
 /// - **Pump/Valve (F6):** a *hydraulic* constraint. Their characteristic folds
 ///   into the single outlet edge (`compile_edge`'s fold-at-source convention),
@@ -64,6 +64,9 @@ pub struct Classification {
 ///   process stream. The mixing formula would happily average N inlets, so
 ///   nothing numerical forces this — it is rejected because a branched heater
 ///   means the scenario author meant something the model does not represent.
+/// - **HeatExchanger:** the same process constraint, per SIDE. "The stream
+///   through this side" is what the ΔT-effectiveness model transfers heat
+///   between, and a branched side would leave `C_min` naming nothing definite.
 pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);
@@ -73,6 +76,7 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
                 | NodeKind::Valve { .. }
                 | NodeKind::Furnace { .. }
                 | NodeKind::Cooler { .. }
+                | NodeKind::HeatExchanger
         ) {
             let inc = graph.incident(nid);
             let n_in = inc.iter().filter(|(_, _, incoming)| *incoming).count();
@@ -105,7 +109,8 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         | NodeKind::Valve { .. }
         | NodeKind::Junction
         | NodeKind::Furnace { .. }
-        | NodeKind::Cooler { .. } => None,
+        | NodeKind::Cooler { .. }
+        | NodeKind::HeatExchanger => None,
     }
 }
 

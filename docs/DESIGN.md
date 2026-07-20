@@ -126,7 +126,8 @@ makes it tractable. The distinction is *thermal inertia*, not unit type:
   temperature. A tank integrates it as a slow state (§1 step c); the reservoirs
   hold it fixed. Within a tick, all four are *boundary conditions*, read at
   their start-of-tick value.
-- **Zero-volume nodes** — `Junction`, `Pump`, `Valve`, `Furnace`, `Cooler`. No inventory,
+- **Zero-volume nodes** — `Junction`, `Pump`, `Valve`, `Furnace`, `Cooler`, and
+  each side of a `HeatExchanger`. No inventory,
   so temperature is not a state at all: it is **algebraic**, the instantaneous
   enthalpy-weighted mix of the inflows,
   `T = T_REF + Σ(ṁ_in·cp_in·(T_in − T_REF) + Q) / Σ(ṁ_in·cp_in)` — the first
@@ -330,9 +331,20 @@ refinement to bolt onto this one.
   cool a stream past any coolant temperature, past ambient, and (absent the
   guard above) past 0 K. Only the last is detectable without modelling a coolant.
   Cooling to a realistic approach temperature is the `HeatExchanger`'s job — a
-  fidelity step, not a missing bound here.
-- **No heat loss to ambient** and no `HeatExchanger` yet — the rest of M2
-  (see ROADMAP).
+  fidelity step, not a missing bound here. That unit has now landed, so a plant
+  that needs the floor can have it; the `Cooler` keeps its fixed duty on purpose.
+- **An exchanger side with no throughput transfers nothing**, by the same
+  stagnant-node rule. That one is physics rather than a gap: with no flow there
+  is no capacity rate to transfer against, and the running side passes straight
+  through. Exchangers stay out of the proptest generators anyway, for the
+  stagnant-node reason furnaces and coolers do.
+- **The exchanger is ΔT-effectiveness only** — no NTU, no LMTD, no
+  co-/counter-current distinction, and ε is a constant rather than a function of
+  flow. Consequently the model has no opinion on outlet ORDERING: a cold outlet
+  above the hot outlet is ordinary counter-current behaviour and is not flagged.
+  What ε ≤ 1 with `C_min` does guarantee is the bound that matters — neither
+  stream passes the other's inlet.
+- **No heat loss to ambient** yet — the rest of M2 (see ROADMAP).
 
 **`ThermoModel` is still a reserved slot.** Transport uses constant-property
 `cp` off `Composition` (ideal mass-fraction mixing), which is exactly what the

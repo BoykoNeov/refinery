@@ -116,6 +116,44 @@ pub enum NodeKind {
     /// coolant model, and `mix_inflows` rejects it. Cooling to a realistic
     /// approach temperature is the `HeatExchanger`'s job (M2.2), not this one's.
     Cooler { duty: Watt },
+    /// One side of a two-stream heat exchanger.
+    ///
+    /// A side is an ordinary zero-volume pass-through — hydraulically identical
+    /// to a junction — and carries NO parameters of its own. What makes it an
+    /// exchanger is the `HeatExchangerCoupling` naming it and its partner; this
+    /// variant only says "I am a side", which is what `energy::is_zero_volume`
+    /// and `energy::boundary_temperature` need to recognize.
+    ///
+    /// The effectiveness deliberately lives on the coupling rather than here.
+    /// It is a property of the PAIR, and storing it once makes a pair whose two
+    /// halves disagree about ε unrepresentable — the same instinct that made
+    /// `Furnace` and `Cooler` separate units instead of one signed duty: put the
+    /// invariant in the type, not in a convention.
+    ///
+    /// Neither side is "the hot one". Which way heat flows is decided per tick
+    /// by the sign of `T_a_in − T_b_in`, so an exchanger whose duty reverses
+    /// (seasonal service, a startup transient) needs no reconfiguration.
+    HeatExchanger,
+}
+
+/// The thermal pairing of two `HeatExchanger` sides.
+///
+/// Hydraulically the two sides are unrelated: the flow solver never sees this
+/// list, and the streams do not mix. The coupling exists only so the energy
+/// sweep knows the pair must be resolved TOGETHER — each side's outlet depends
+/// on the other side's inlet, which is not one of its own inflow edges.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeatExchangerCoupling {
+    pub side_a: NodeId,
+    pub side_b: NodeId,
+    /// Effectiveness ε ∈ (0, 1]: the fraction of the thermodynamically maximum
+    /// duty `C_min·(T_a_in − T_b_in)` this exchanger actually transfers.
+    ///
+    /// ε > 1 transfers more heat than the temperature difference makes
+    /// available and would cross the outlet temperatures — a second-law
+    /// violation — so it is rejected at every entry point. ε = 0 is a nonsense
+    /// exchanger (use a plain pipe) and is likewise refused.
+    pub effectiveness: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -164,6 +202,10 @@ pub struct Pipe {
 #[derive(Debug, Clone, Default)]
 pub struct PlantGraph {
     g: StableDiGraph<Node, Pipe>,
+    /// Thermal pairings between `HeatExchanger` sides. A `Vec`, not a map:
+    /// insertion-ordered iteration is deterministic (rule 3), and the list is
+    /// short enough that the linear `partner` lookup costs nothing.
+    couplings: Vec<HeatExchangerCoupling>,
 }
 
 impl PlantGraph {
@@ -236,6 +278,33 @@ impl PlantGraph {
     }
     pub fn edge_count(&self) -> usize {
         self.g.edge_count()
+    }
+
+    /// Thermally pair two `HeatExchanger` sides. Validation of the node kinds
+    /// and of ε belongs to the loader, which can name the offending scenario
+    /// entry; this is the plain storage operation.
+    pub fn add_coupling(&mut self, coupling: HeatExchangerCoupling) {
+        self.couplings.push(coupling);
+    }
+
+    pub fn couplings(&self) -> &[HeatExchangerCoupling] {
+        &self.couplings
+    }
+
+    /// The other side of `id`'s exchanger, with the pair's effectiveness.
+    ///
+    /// Searches both fields, so a coupling may be declared in either order and
+    /// no caller has to know whether a given node was written as side A or B.
+    pub fn exchanger_partner(&self, id: NodeId) -> Option<(NodeId, f64)> {
+        self.couplings.iter().find_map(|c| {
+            if c.side_a == id {
+                Some((c.side_b, c.effectiveness))
+            } else if c.side_b == id {
+                Some((c.side_a, c.effectiveness))
+            } else {
+                None
+            }
+        })
     }
 
     pub fn find_node(&self, name: &str) -> Option<NodeId> {

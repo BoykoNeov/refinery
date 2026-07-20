@@ -1,0 +1,107 @@
+# M2.2 reference plant: hot product preheating cold feed across an exchanger.
+#
+# Two streams that never mix. They share no pipe, no node and no pressure — the
+# flow solver has no idea they are related — and are joined only by the
+# [[exchangers]] entry below, which the ENERGY sweep reads. That separation is
+# the design being tested: a heat exchanger is a thermal coupling laid over an
+# unchanged hydraulic network.
+#
+# The two sides deliberately carry DIFFERENT flows: the HOT line is the narrower
+# pipe against the smaller driving pressure, so its capacity rate ṁ·cp is well
+# below the cold side's. Two things ride on that choice, both found by
+# falsifying `heat_recovery_reference.rs` rather than guessed at:
+#
+#   * With equal capacity rates C_min and C_max are the same number and the
+#     model's choice between them is untestable.
+#   * C_min must sit on the side the energy sweep resolves as "A" (the lower
+#     node id, i.e. the stream declared FIRST below). A bug that gave each side
+#     its own effectiveness term instead of sharing one signed Q is invisible
+#     when the C_min stream is side B — the wrong formula then coincides with
+#     the right answer on that side, and the plant conserves energy anyway.
+#     With C_min on side A the same bug shows up as an outright energy
+#     imbalance.
+#
+# Units at this boundary are human-friendly (bar, °C); the loader converts to SI.
+
+[meta]
+name = "heat_recovery"
+description = "Hot product preheating a cold feed through a two-stream heat exchanger."
+
+[simulation]
+dt = 0.1            # seconds per tick
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+# --- hot stream: the SMALL one (C_min), giving up heat ------------------------
+
+[nodes.hot_source]
+type = "source"
+pressure_bar = 2.0
+temperature_c = 200.0
+
+[nodes.hx_hot]
+type = "heat_exchanger"
+
+[nodes.hot_sink]
+type = "sink"
+pressure_bar = 1.0
+temperature_c = 200.0
+
+# --- cold stream: the large one, taking it up --------------------------------
+
+[nodes.cold_source]
+type = "source"
+pressure_bar = 4.0
+temperature_c = 20.0
+
+[nodes.hx_cold]
+type = "heat_exchanger"
+
+[nodes.cold_sink]
+type = "sink"
+pressure_bar = 1.0
+temperature_c = 20.0
+
+# --- the thermal coupling ----------------------------------------------------
+#
+# Effectiveness is written ONCE, on the pair, because it is a property of the
+# pair. Neither side is declared "the hot one": which way heat moves is decided
+# each tick by the sign of the inlet temperature difference.
+
+[[exchangers]]
+side_a = "hx_hot"
+side_b = "hx_cold"
+effectiveness = 0.6
+
+# --- pipes -------------------------------------------------------------------
+
+[[pipes]]
+name = "hot_feed_line"
+from = "hot_source"
+to = "hx_hot"
+length_m = 20.0
+diameter_m = 0.06
+
+[[pipes]]
+name = "hot_product_line"
+from = "hx_hot"
+to = "hot_sink"
+length_m = 20.0
+diameter_m = 0.06
+
+[[pipes]]
+name = "cold_feed_line"
+from = "cold_source"
+to = "hx_cold"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "cold_product_line"
+from = "hx_cold"
+to = "cold_sink"
+length_m = 20.0
+diameter_m = 0.10

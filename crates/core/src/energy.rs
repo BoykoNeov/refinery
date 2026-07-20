@@ -136,6 +136,7 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
             | NodeKind::Valve { .. }
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
+            | NodeKind::HeatExchanger
     )
 }
 
@@ -158,7 +159,8 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         | NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
         | NodeKind::Furnace { .. }
-        | NodeKind::Cooler { .. } => None,
+        | NodeKind::Cooler { .. }
+        | NodeKind::HeatExchanger => None,
     }
 }
 
@@ -231,60 +233,124 @@ pub fn resolve_node_temperatures(
         }
     }
 
-    // 2. Count each zero-volume node's unresolved upstream dependencies. Only
-    //    zero-volume upstreams count — an inertial upstream is already known.
-    let mut pending: BTreeMap<NodeId, usize> = BTreeMap::new();
+    // 2. Group the zero-volume nodes into sweep VERTICES. Almost every vertex
+    //    is a single node; a heat exchanger's two sides are ONE vertex.
+    //
+    //    This merge is the whole reason the sweep is not simply per-node. Each
+    //    side's outlet depends on the OTHER side's inlet, which is not one of
+    //    its own inflow edges — so a per-node sweep would happily mark side A
+    //    ready as soon as A's own upstreams cleared and mix it against a stale
+    //    partner inlet. That failure converges, serializes and reruns
+    //    identically; nothing downstream looks wrong. Merged, a side becomes
+    //    ready only when the UNION of both sides' upstreams is resolved, which
+    //    is exactly the condition under which both inlets are known.
+    //
+    //    A vertex is keyed by its LEADER, the lower of the two node ids, so the
+    //    key is a function of the graph alone (rule 3).
+    let leader_of = |id: NodeId| -> NodeId {
+        match graph.exchanger_partner(id) {
+            Some((partner, _)) => id.min(partner),
+            None => id,
+        }
+    };
+    let mut members: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
     for &id in &zero_volume {
-        let deps = inflow_edges(graph, edge_mass_flow, id)
-            .iter()
-            .filter(|(_, upstream, _)| is_zero_volume(&graph.node(*upstream).kind))
-            .count();
-        pending.insert(id, deps);
+        members.entry(leader_of(id)).or_default().push(id);
     }
 
-    // 3. Kahn sweep. BTreeSet, always popping the lowest id: the order is then
+    // 3. Count each vertex's unresolved upstream dependencies. Only zero-volume
+    //    upstreams count — an inertial upstream is already known.
+    //
+    //    A dependency on our OWN vertex IS counted here, and the release step
+    //    below deliberately never clears it. That asymmetry is the cycle
+    //    detector: one exchanger side feeding the other is a genuine circular
+    //    definition — A's outlet depends on B's inlet, which is A's outlet — so
+    //    the vertex must never become ready and must fall into the step-5
+    //    recycle error. Discounting the self-dependency instead would make the
+    //    vertex ready immediately and resolve it against a partner inlet that
+    //    does not exist yet.
+    let mut pending: BTreeMap<NodeId, usize> = BTreeMap::new();
+    for (&leader, sides) in &members {
+        let deps = sides
+            .iter()
+            .flat_map(|&id| inflow_edges(graph, edge_mass_flow, id))
+            .filter(|(_, upstream, _)| is_zero_volume(&graph.node(*upstream).kind))
+            .count();
+        pending.insert(leader, deps);
+    }
+
+    // 4. Kahn sweep. BTreeSet, always popping the lowest id: the order is then
     //    a function of the graph alone, never of insertion history (rule 3).
     //    Any valid topological order yields identical temperatures anyway —
     //    each mix reads only already-resolved upstreams — but a deterministic
     //    order keeps the float summation order fixed too.
-    let mut ready: BTreeSet<NodeId> = zero_volume
-        .iter()
+    let mut ready: BTreeSet<NodeId> = members
+        .keys()
         .copied()
-        .filter(|id| pending[id] == 0)
+        .filter(|leader| pending[leader] == 0)
         .collect();
 
     let mut resolved = 0usize;
-    while let Some(&id) = ready.iter().next() {
-        ready.remove(&id);
-        let mixed = mix_inflows(graph, slate, edge_mass_flow, &temperature, previous, id)?;
-        temperature.insert(id, mixed);
-        resolved += 1;
+    while let Some(&leader) = ready.iter().next() {
+        ready.remove(&leader);
+        let sides = &members[&leader];
+        match sides.as_slice() {
+            [a, b] => {
+                // Both outlets from one signed Q, computed from both inlets.
+                let (t_a, t_b) = exchange_pair(
+                    graph,
+                    slate,
+                    edge_mass_flow,
+                    &temperature,
+                    previous,
+                    (*a, *b),
+                )?;
+                temperature.insert(*a, t_a);
+                temperature.insert(*b, t_b);
+            }
+            _ => {
+                for &id in sides {
+                    let mixed =
+                        mix_inflows(graph, slate, edge_mass_flow, &temperature, previous, id)?;
+                    temperature.insert(id, mixed);
+                }
+            }
+        }
+        resolved += sides.len();
 
-        // Release the downstream zero-volume nodes this one feeds. An edge is
-        // an inflow to the far node exactly when it is an outflow here: the
-        // two views share one `flow`, so `into_other == -into_id` identically.
-        // Counting per EDGE (not per node) mirrors `pending`, which counted
-        // inflow edges — parallel pipes decrement once each, as they should.
-        for (edge, downstream, incoming) in graph.incident(id) {
-            if downstream == id || !is_zero_volume(&graph.node(downstream).kind) {
-                continue;
-            }
-            let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
-            let into_id = if incoming { flow } else { -flow };
-            if into_id >= 0.0 {
-                continue; // not an outflow ⇒ not an inflow to `downstream`
-            }
-            if let Some(count) = pending.get_mut(&downstream) {
-                *count = count.saturating_sub(1);
-                if *count == 0 {
-                    ready.insert(downstream);
+        // Release the downstream vertices this one feeds. An edge is an inflow
+        // to the far node exactly when it is an outflow here: the two views
+        // share one `flow`, so `into_other == -into_id` identically. Counting
+        // per EDGE (not per node) mirrors `pending`, which counted inflow edges
+        // — parallel pipes decrement once each, as they should.
+        for &id in sides {
+            for (edge, downstream, incoming) in graph.incident(id) {
+                if downstream == id || !is_zero_volume(&graph.node(downstream).kind) {
+                    continue;
+                }
+                let downstream_leader = leader_of(downstream);
+                if downstream_leader == leader {
+                    continue; // self-dependency: counted, never cleared (step 3)
+                }
+                let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
+                let into_id = if incoming { flow } else { -flow };
+                if into_id >= 0.0 {
+                    continue; // not an outflow ⇒ not an inflow to `downstream`
+                }
+                if let Some(count) = pending.get_mut(&downstream_leader) {
+                    *count = count.saturating_sub(1);
+                    if *count == 0 {
+                        ready.insert(downstream_leader);
+                    }
                 }
             }
         }
     }
 
-    // 4. A node left unresolved means its dependencies never cleared: the only
-    //    way that happens is a cycle among zero-volume nodes.
+    // 5. A node left unresolved means its dependencies never cleared: the only
+    //    way that happens is a cycle among zero-volume vertices — which now
+    //    includes one side of an exchanger feeding the other, correctly, since
+    //    that plant's two outlets really are mutually defined.
     if resolved < zero_volume.len() {
         let stuck: Vec<String> = zero_volume
             .iter()
@@ -303,21 +369,23 @@ pub fn resolve_node_temperatures(
     Ok(temperature)
 }
 
-/// Enthalpy-weighted mix of a zero-volume node's inflows [K].
-fn mix_inflows(
+/// A node's inflow enthalpy [W] and capacity rate [W/K], or `None` when nothing
+/// flows in.
+///
+/// The single definition of both sums. `mix_inflows` divides them to get a
+/// mixed temperature; the exchanger needs the capacity rate itself, to size
+/// `C_min`. Computing them in one place keeps the inlet temperature the
+/// exchanger transfers heat *from* identical to the one an uncoupled node would
+/// have mixed to.
+type InflowTotals = Option<(f64, f64)>;
+
+fn inflow_totals(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
     temperature: &BTreeMap<NodeId, Kelvin>,
-    previous: &BTreeMap<NodeId, Kelvin>,
     node: NodeId,
-) -> Result<Kelvin, SimError> {
-    // Heat — external (a fire) and a furnace's duty alike — joins the same
-    // first law: for a node with no accumulation, Σ ṁ·h_in + Q = Σ ṁ·h_out.
-    // Without this term `Command::SetHeatInput` would be a silent no-op on
-    // every junction (the damage model's "fire on a node" would do nothing at
-    // all) and a furnace would be an inert pass-through.
-    let heat_input = heat_load(graph.node(node)).value();
+) -> Result<InflowTotals, SimError> {
     let mut enthalpy = 0.0; // Σ ṁ·cp·(T − T_REF) [W]
     let mut capacity = 0.0; // Σ ṁ·cp [W/K]
 
@@ -337,7 +405,28 @@ fn mix_inflows(
         capacity += into_node * cp.value();
     }
 
-    if capacity > 0.0 {
+    Ok((capacity > 0.0).then_some((enthalpy, capacity)))
+}
+
+/// Enthalpy-weighted mix of a zero-volume node's inflows [K].
+fn mix_inflows(
+    graph: &PlantGraph,
+    slate: &Slate,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    temperature: &BTreeMap<NodeId, Kelvin>,
+    previous: &BTreeMap<NodeId, Kelvin>,
+    node: NodeId,
+) -> Result<Kelvin, SimError> {
+    // Heat — external (a fire) and a furnace's duty alike — joins the same
+    // first law: for a node with no accumulation, Σ ṁ·h_in + Q = Σ ṁ·h_out.
+    // Without this term `Command::SetHeatInput` would be a silent no-op on
+    // every junction (the damage model's "fire on a node" would do nothing at
+    // all) and a furnace would be an inert pass-through.
+    let heat_input = heat_load(graph.node(node)).value();
+
+    if let Some((enthalpy, capacity)) =
+        inflow_totals(graph, slate, edge_mass_flow, temperature, node)?
+    {
         let mixed = T_REF.value() + (enthalpy + heat_input) / capacity;
         // A duty that exceeds the sensible heat available in the stream drives
         // the mix below absolute zero; `checked_temperature` owns that rule for
@@ -365,6 +454,99 @@ fn mix_inflows(
     }
 }
 
+/// Both outlet temperatures of a coupled `HeatExchanger` pair [K].
+///
+/// ΔT-effectiveness fidelity (docs/DESIGN.md §4a) — no NTU, no LMTD, no
+/// counter- versus co-current distinction at this level:
+///
+/// ```text
+/// C_a = ṁ_a·cp_a,  C_b = ṁ_b·cp_b,  C_min = min(C_a, C_b)
+/// Q   = ε·C_min·(T_a_in − T_b_in)
+/// T_a_out = T_a_in − Q/C_a        T_b_out = T_b_in + Q/C_b
+/// ```
+///
+/// Three properties this arrangement buys, each deliberate:
+///
+/// - **One signed `Q`, subtracted from A and added to B.** Energy conserves by
+///   construction, for any ε and any pair of capacity rates — there is no
+///   balance left to get wrong. Computing each side's outlet from its own
+///   independent effectiveness term is the natural-looking alternative and
+///   quietly creates or destroys heat.
+/// - **Neither side is the hot one.** The sign of `T_a_in − T_b_in` decides the
+///   direction, so a service that reverses needs no reconfiguration and no
+///   second code path.
+/// - **`C_min`, not `C_max`.** With ε ≤ 1 this bounds `Q` by the heat the
+///   smaller stream can actually carry, so the outlets cannot cross and the
+///   second law holds without a check. The two agree exactly when the capacity
+///   rates are equal, which is why the reference case makes them unequal.
+///
+/// A side with no throughput exchanges nothing: `Q` is zero and each side falls
+/// back to the ordinary zero-volume rules. That is physics, not a guard — an
+/// exchanger with one stream stopped is a pipe.
+fn exchange_pair(
+    graph: &PlantGraph,
+    slate: &Slate,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    temperature: &BTreeMap<NodeId, Kelvin>,
+    previous: &BTreeMap<NodeId, Kelvin>,
+    (side_a, side_b): (NodeId, NodeId),
+) -> Result<(Kelvin, Kelvin), SimError> {
+    let (_, effectiveness) = graph.exchanger_partner(side_a).ok_or_else(|| {
+        SimError::Numerical(format!(
+            "internal: '{}' was swept as an exchanger side but has no coupling",
+            graph.node(side_a).name
+        ))
+    })?;
+
+    let totals_a = inflow_totals(graph, slate, edge_mass_flow, temperature, side_a)?;
+    let totals_b = inflow_totals(graph, slate, edge_mass_flow, temperature, side_b)?;
+
+    // Positive duty = heat flowing A → B.
+    let duty = match (totals_a, totals_b) {
+        (Some((enthalpy_a, capacity_a)), Some((enthalpy_b, capacity_b))) => {
+            let inlet_a = T_REF.value() + enthalpy_a / capacity_a;
+            let inlet_b = T_REF.value() + enthalpy_b / capacity_b;
+            effectiveness * capacity_a.min(capacity_b) * (inlet_a - inlet_b)
+        }
+        _ => 0.0,
+    };
+
+    Ok((
+        exchanger_side_outlet(graph, previous, side_a, totals_a, -duty)?,
+        exchanger_side_outlet(graph, previous, side_b, totals_b, duty)?,
+    ))
+}
+
+/// One exchanger side's outlet [K]: its own inflow mix, plus whatever heat it
+/// receives — `transferred` from the partner stream, and `heat_load` from a
+/// fire, which stacks here exactly as it does on a furnace.
+fn exchanger_side_outlet(
+    graph: &PlantGraph,
+    previous: &BTreeMap<NodeId, Kelvin>,
+    node: NodeId,
+    totals: InflowTotals,
+    transferred: f64,
+) -> Result<Kelvin, SimError> {
+    let Some((enthalpy, capacity)) = totals else {
+        // Same indeterminate-but-inert case `mix_inflows` documents.
+        return Ok(previous.get(&node).copied().unwrap_or(T_AMBIENT));
+    };
+    let heat = heat_load(graph.node(node)).value() + transferred;
+    let outlet = T_REF.value() + (enthalpy + heat) / capacity;
+    checked_temperature(outlet, || {
+        format!(
+            "exchanger side '{}' cools to {outlet:.2} K, below absolute zero: it \
+             gives up {:.4e} W to its partner stream (plus {:.4e} W of external \
+             heat), more than the {capacity:.4e} W/K · {:.2} K of sensible heat \
+             its inflow carries above 0 K.",
+            graph.node(node).name,
+            -transferred,
+            heat_load(graph.node(node)).value(),
+            enthalpy / capacity + T_REF.value(),
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
     //! The sweep is tested with HAND-BUILT flow maps, never through a solver.
@@ -374,7 +556,7 @@ mod tests {
 
     use super::*;
     use crate::components::{Composition, Slate};
-    use crate::graph::{Node, Pipe, TankState};
+    use crate::graph::{HeatExchangerCoupling, Node, Pipe, TankState};
     use crate::stream::Stream;
     use crate::units::*;
 
@@ -612,6 +794,295 @@ mod tests {
     // through a real scenario and solver. A copy at this level could only fail
     // together with that one, so it would add a maintenance point and no
     // discrimination. What is genuinely new is the shared checker above.
+
+    // -----------------------------------------------------------------------
+    // Heat exchanger
+    // -----------------------------------------------------------------------
+
+    /// Two independent streams, coupled. `flows` are hand-built as everywhere
+    /// else in this module: the exchanger's contract is thermal, and routing it
+    /// through a hydraulic solve would only add a way for the test to fail for
+    /// an unrelated reason.
+    ///
+    /// The hot side is deliberately the SMALLER stream (1 kg/s against 3), so
+    /// `C_a ≠ C_b` and `C_min` is distinguishable from `C_max`. With equal
+    /// capacity rates the two are the same number and the choice is untestable.
+    fn coupled_pair(
+        hot_inlet: Kelvin,
+        cold_inlet: Kelvin,
+        effectiveness: f64,
+    ) -> (PlantGraph, BTreeMap<EdgeId, f64>, NodeId, NodeId) {
+        let mut g = PlantGraph::new();
+        let hot_src = g.add_node(source("hot_src", hot_inlet));
+        let hot_side = g.add_node(node("hot_side", NodeKind::HeatExchanger));
+        let hot_out = g.add_node(node(
+            "hot_out",
+            NodeKind::Sink {
+                pressure: Pascal(1.0e5),
+                temperature: T_AMBIENT,
+            },
+        ));
+        let cold_src = g.add_node(source("cold_src", cold_inlet));
+        let cold_side = g.add_node(node("cold_side", NodeKind::HeatExchanger));
+        let cold_out = g.add_node(node(
+            "cold_out",
+            NodeKind::Sink {
+                pressure: Pascal(1.0e5),
+                temperature: T_AMBIENT,
+            },
+        ));
+
+        let hot_in = g.add_pipe(hot_src, hot_side, pipe("hot_in"));
+        let hot_o = g.add_pipe(hot_side, hot_out, pipe("hot_out"));
+        let cold_in = g.add_pipe(cold_src, cold_side, pipe("cold_in"));
+        let cold_o = g.add_pipe(cold_side, cold_out, pipe("cold_out"));
+
+        g.add_coupling(HeatExchangerCoupling {
+            side_a: hot_side,
+            side_b: cold_side,
+            effectiveness,
+        });
+
+        let flows = BTreeMap::from([(hot_in, 1.0), (hot_o, 1.0), (cold_in, 3.0), (cold_o, 3.0)]);
+        (g, flows, hot_side, cold_side)
+    }
+
+    /// Hand calculation, ΔT-effectiveness (DESIGN §4a):
+    ///
+    /// ```text
+    /// C_hot  = 1·4184 = 4184 W/K      C_cold = 3·4184 = 12552 W/K
+    /// C_min  = 4184 W/K               ΔT_in  = 400 − 300 = 100 K
+    /// Q      = 0.5 · 4184 · 100 = 209 200 W
+    /// T_hot_out  = 400 − 209200/4184  = 350 K exactly
+    /// T_cold_out = 300 + 209200/12552 = 300 + 50/3 K
+    /// ```
+    ///
+    /// The asymmetry is the point: the same Q moves both outlets, but by
+    /// different amounts, so the test would fail if either side used the wrong
+    /// capacity rate. Using `C_max` instead of `C_min` would give Q = 627 600 W
+    /// and cool the hot stream to 250 K — BELOW the cold inlet, which is the
+    /// second-law violation `C_min` exists to prevent.
+    #[test]
+    fn an_exchanger_transfers_effectiveness_times_c_min() {
+        let (g, flows, hot_side, cold_side) = coupled_pair(Kelvin(400.0), Kelvin(300.0), 0.5);
+        let temperature = resolve(&g, &flows).expect("two independent streams must resolve");
+
+        assert!(
+            (temperature[&hot_side].value() - 350.0).abs() < 1e-9,
+            "hot outlet must be 350 K, got {}",
+            temperature[&hot_side].value()
+        );
+        assert!(
+            (temperature[&cold_side].value() - (300.0 + 50.0 / 3.0)).abs() < 1e-9,
+            "cold outlet must be 300 + 50/3 K, got {}",
+            temperature[&cold_side].value()
+        );
+
+        // The duty leaving one stream is the duty entering the other, to the
+        // last bit the floats allow: one signed Q, applied twice (DESIGN §4a).
+        let given = 4184.0 * (400.0 - temperature[&hot_side].value());
+        let taken = 3.0 * 4184.0 * (temperature[&cold_side].value() - 300.0);
+        assert!(
+            (given - taken).abs() < 1e-6,
+            "energy must balance across the exchanger: {given} W out, {taken} W in"
+        );
+    }
+
+    /// Neither side is hardcoded as the hot one. With the inlets swapped, the
+    /// SAME plant must run the heat the other way — the sign of
+    /// `T_a_in − T_b_in` is the only thing that decides direction.
+    ///
+    /// Mirrors the reference above: the small stream now GAINS 50 K and the
+    /// large one loses 50/3 K.
+    #[test]
+    fn heat_flows_from_whichever_side_is_hotter() {
+        let (g, flows, side_a, side_b) = coupled_pair(Kelvin(300.0), Kelvin(400.0), 0.5);
+        let temperature = resolve(&g, &flows).expect("two independent streams must resolve");
+
+        assert!(
+            (temperature[&side_a].value() - 350.0).abs() < 1e-9,
+            "the colder small stream must be HEATED to 350 K, got {}",
+            temperature[&side_a].value()
+        );
+        assert!(
+            (temperature[&side_b].value() - (400.0 - 50.0 / 3.0)).abs() < 1e-9,
+            "the hotter large stream must be COOLED to 400 − 50/3 K, got {}",
+            temperature[&side_b].value()
+        );
+    }
+
+    /// ε scales the duty linearly, and ε = 1 is the thermodynamic limit: the
+    /// small stream leaves at exactly the other inlet's temperature, never past
+    /// it. This is the boundary `C_min` guarantees and `C_max` would breach.
+    #[test]
+    fn full_effectiveness_approaches_the_other_inlet_without_crossing_it() {
+        let (g, flows, hot_side, cold_side) = coupled_pair(Kelvin(400.0), Kelvin(300.0), 1.0);
+        let temperature = resolve(&g, &flows).expect("two independent streams must resolve");
+
+        assert!(
+            (temperature[&hot_side].value() - 300.0).abs() < 1e-9,
+            "at ε = 1 the C_min stream must reach the other inlet exactly, got {}",
+            temperature[&hot_side].value()
+        );
+        // The second-law bound is each outlet against the OTHER STREAM'S INLET,
+        // not against the other outlet. A cold outlet above the hot outlet is
+        // ordinary counter-current behaviour, not a violation — and this model
+        // draws no co-/counter-current distinction, so asserting the outlets
+        // stay ordered would pin a restriction the physics does not impose.
+        assert!(
+            temperature[&hot_side].value() >= 300.0 - 1e-9,
+            "the hot stream must not be cooled below the cold inlet, got {}",
+            temperature[&hot_side].value()
+        );
+        assert!(
+            temperature[&cold_side].value() <= 400.0 + 1e-9,
+            "the cold stream must not be heated above the hot inlet, got {}",
+            temperature[&cold_side].value()
+        );
+    }
+
+    /// The pair is ONE vertex in the sweep, and this is the test that says so.
+    ///
+    /// The cold side is fed through a junction, so its inlet is not known until
+    /// that junction resolves — while the hot side's own inflow is ready
+    /// immediately and carries the lower node id. A per-node sweep therefore
+    /// reaches the hot side FIRST and has to read a cold inlet that does not
+    /// exist yet. Merged, the pair waits for the union of both sides'
+    /// dependencies, which is exactly when both inlets are known.
+    #[test]
+    fn an_exchanger_pair_waits_for_both_sides_upstreams() {
+        let mut g = PlantGraph::new();
+        let hot_src = g.add_node(source("hot_src", Kelvin(400.0)));
+        let hot_side = g.add_node(node("hot_side", NodeKind::HeatExchanger));
+        let hot_out = g.add_node(node(
+            "hot_out",
+            NodeKind::Sink {
+                pressure: Pascal(1.0e5),
+                temperature: T_AMBIENT,
+            },
+        ));
+        let cold_src = g.add_node(source("cold_src", Kelvin(300.0)));
+        let cold_side = g.add_node(node("cold_side", NodeKind::HeatExchanger));
+        let cold_out = g.add_node(node(
+            "cold_out",
+            NodeKind::Sink {
+                pressure: Pascal(1.0e5),
+                temperature: T_AMBIENT,
+            },
+        ));
+        // Higher node id than either side, so the sweep pops it LAST if it is
+        // ordering by node rather than by vertex.
+        let mid = g.add_node(node("mid", NodeKind::Junction));
+
+        let hot_in = g.add_pipe(hot_src, hot_side, pipe("hot_in"));
+        let hot_o = g.add_pipe(hot_side, hot_out, pipe("hot_out"));
+        let cold_feed = g.add_pipe(cold_src, mid, pipe("cold_feed"));
+        let cold_in = g.add_pipe(mid, cold_side, pipe("cold_in"));
+        let cold_o = g.add_pipe(cold_side, cold_out, pipe("cold_out"));
+
+        g.add_coupling(HeatExchangerCoupling {
+            side_a: hot_side,
+            side_b: cold_side,
+            effectiveness: 0.5,
+        });
+
+        let flows = BTreeMap::from([
+            (hot_in, 1.0),
+            (hot_o, 1.0),
+            (cold_feed, 3.0),
+            (cold_in, 3.0),
+            (cold_o, 3.0),
+        ]);
+        let temperature = resolve(&g, &flows).expect("the pair must wait for the junction");
+
+        // Same hand calculation as the reference: the junction is a pure
+        // pass-through, so the numbers must be untouched by its presence.
+        assert!(
+            (temperature[&hot_side].value() - 350.0).abs() < 1e-9,
+            "hot outlet must still be 350 K, got {}",
+            temperature[&hot_side].value()
+        );
+        assert!(
+            (temperature[&cold_side].value() - (300.0 + 50.0 / 3.0)).abs() < 1e-9,
+            "cold outlet must still be 300 + 50/3 K, got {}",
+            temperature[&cold_side].value()
+        );
+    }
+
+    /// One side feeding the other is a genuine circular definition — side A's
+    /// outlet depends on B's inlet, which IS A's outlet — so it must land in
+    /// the existing recycle rejection rather than resolve against a stale
+    /// value. This is why the merge skips self-dependencies in BOTH the count
+    /// and the release: discounting them in only one place would make this
+    /// plant silently ready.
+    #[test]
+    fn an_exchanger_feeding_its_own_partner_is_rejected() {
+        let mut g = PlantGraph::new();
+        let src = g.add_node(source("src", Kelvin(400.0)));
+        let side_a = g.add_node(node("side_a", NodeKind::HeatExchanger));
+        let side_b = g.add_node(node("side_b", NodeKind::HeatExchanger));
+        let out = g.add_node(node(
+            "out",
+            NodeKind::Sink {
+                pressure: Pascal(1.0e5),
+                temperature: T_AMBIENT,
+            },
+        ));
+        let feed = g.add_pipe(src, side_a, pipe("feed"));
+        let across = g.add_pipe(side_a, side_b, pipe("across"));
+        let drain = g.add_pipe(side_b, out, pipe("drain"));
+
+        g.add_coupling(HeatExchangerCoupling {
+            side_a,
+            side_b,
+            effectiveness: 0.5,
+        });
+
+        let flows = BTreeMap::from([(feed, 1.0), (across, 1.0), (drain, 1.0)]);
+        let err = resolve(&g, &flows)
+            .expect_err("an exchanger in series with itself is mutually defined");
+        let message = err.to_string();
+        assert!(
+            message.contains("recycle"),
+            "the error must explain what went wrong, got: {message}"
+        );
+        for name in ["side_a", "side_b"] {
+            assert!(
+                message.contains(name),
+                "the error must name the stuck side {name}, got: {message}"
+            );
+        }
+    }
+
+    /// An exchanger with one stream stopped is a pipe: no throughput on a side
+    /// means no capacity rate to transfer against, so the duty is zero and the
+    /// running side passes its inlet straight through. Physics, not a guard —
+    /// but worth pinning, because the alternative (dividing by a zero capacity)
+    /// produces NaN that would propagate as an ordinary temperature.
+    #[test]
+    fn a_stalled_side_transfers_nothing() {
+        let (mut g, mut flows, hot_side, cold_side) =
+            coupled_pair(Kelvin(400.0), Kelvin(300.0), 0.5);
+        let _ = &mut g;
+        for flow in flows.values_mut() {
+            // Stop the cold stream only; its two pipes carry 3.0.
+            if *flow == 3.0 {
+                *flow = 0.0;
+            }
+        }
+        let temperature = resolve(&g, &flows).expect("a stalled side must not break the sweep");
+
+        assert!(
+            (temperature[&hot_side].value() - 400.0).abs() < 1e-12,
+            "with nothing to exchange with, the hot side must pass 400 K through, got {}",
+            temperature[&hot_side].value()
+        );
+        assert!(
+            temperature[&cold_side].value().is_finite(),
+            "the stalled side must hold a finite temperature, got {}",
+            temperature[&cold_side].value()
+        );
+    }
 
     /// A junction nothing flows through is indeterminate (0/0), not broken. It
     /// must hold the last value it saw — finite and reproducible — because mass

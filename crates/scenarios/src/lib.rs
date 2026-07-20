@@ -13,7 +13,9 @@
 use refinery_core::components::{Composition, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
-use refinery_core::graph::{Node, NodeId, NodeKind, Pipe, PlantGraph, TankState};
+use refinery_core::graph::{
+    HeatExchangerCoupling, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState,
+};
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, ReactionModel, ThermoModel};
 use refinery_core::units::{
@@ -31,6 +33,25 @@ pub struct ScenarioFile {
     /// so node ids are deterministic and human-predictable.
     pub nodes: indexmap::IndexMap<String, NodeDef>,
     pub pipes: Vec<PipeDef>,
+    /// Thermal pairings between `heat_exchanger` nodes. Optional: a plant with
+    /// no exchangers needs no table.
+    #[serde(default)]
+    pub exchangers: Vec<ExchangerDef>,
+}
+
+/// One `[[exchangers]]` entry: which two sides are thermally coupled, and how
+/// effectively.
+///
+/// A table of its own rather than a field on the node, because effectiveness is
+/// a property of the PAIR. Written on the nodes it would have to be repeated,
+/// and two halves of one exchanger could then disagree — an inconsistency the
+/// loader would have to detect. Here it cannot be expressed.
+#[derive(Debug, Deserialize)]
+pub struct ExchangerDef {
+    pub side_a: String,
+    pub side_b: String,
+    /// ε ∈ (0, 1]. See `HeatExchangerCoupling::effectiveness`.
+    pub effectiveness: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +129,10 @@ pub enum NodeDef {
     Cooler {
         duty_mw: f64,
     },
+    /// One side of a two-stream heat exchanger. Carries no parameters: the
+    /// pairing and its effectiveness live in an `[[exchangers]]` entry, which
+    /// every side must appear in exactly once.
+    HeatExchanger,
     Junction,
 }
 fn default_true() -> bool {
@@ -200,6 +225,10 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         );
     }
 
+    // Step 2b: thermally pair the exchanger sides, after every node exists so
+    // both ends of a coupling can be resolved regardless of file order.
+    build_couplings(&mut graph, &scenario.exchangers)?;
+
     // Step 3: validate topology at load — a clear error here beats solve-time
     // divergence for the same structural fault.
     validate_topology(&graph, &slate)?;
@@ -278,6 +307,7 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
         NodeDef::Cooler { duty_mw } => NodeKind::Cooler {
             duty: Watt(*duty_mw * 1e6),
         },
+        NodeDef::HeatExchanger => NodeKind::HeatExchanger,
         NodeDef::Junction => NodeKind::Junction,
     }
 }
@@ -303,6 +333,89 @@ fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
                 "{unit} '{name}' has duty_mw = {duty_mw}: duty must be finite and \
                  >= 0. It is a magnitude — to remove heat use a 'cooler' node, \
                  not a negative furnace duty."
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the `[[exchangers]]` table into graph couplings, rejecting every way
+/// a pairing can be malformed.
+///
+/// The checks are not defensive noise — each rules out a plant that would
+/// otherwise RUN and report plausible temperatures:
+///
+/// - **ε outside (0, 1]** transfers more heat than the inlet temperature
+///   difference makes available, crossing the outlets. That is a second-law
+///   violation the sweep cannot detect locally, since every intermediate number
+///   stays finite and positive.
+/// - **A side paired twice** would give one node two partners, and the energy
+///   sweep's pair merge silently uses whichever coupling it finds first.
+/// - **A side paired with itself** makes the exchanger its own upstream.
+/// - **An uncoupled `heat_exchanger` node** is not an exchanger at all — it
+///   would behave as a plain junction, transferring nothing, which is exactly
+///   what a scenario author who forgot the table would fail to notice.
+fn build_couplings(graph: &mut PlantGraph, defs: &[ExchangerDef]) -> Result<(), SimError> {
+    let mut paired: BTreeMap<NodeId, String> = BTreeMap::new();
+
+    for def in defs {
+        if !(def.effectiveness.is_finite() && def.effectiveness > 0.0 && def.effectiveness <= 1.0) {
+            return Err(SimError::Scenario(format!(
+                "exchanger '{}'/'{}' has effectiveness = {}: it must lie in (0, 1]. \
+                 Above 1 the exchanger would transfer more than the inlet \
+                 temperature difference allows and cross the outlet temperatures; \
+                 0 or less is not an exchanger.",
+                def.side_a, def.side_b, def.effectiveness
+            )));
+        }
+        if def.side_a == def.side_b {
+            return Err(SimError::Scenario(format!(
+                "exchanger pairs '{}' with itself: the two sides must be \
+                 different nodes",
+                def.side_a
+            )));
+        }
+
+        let resolve = |name: &str| -> Result<NodeId, SimError> {
+            let id = graph.find_node(name).ok_or_else(|| {
+                SimError::Scenario(format!("exchanger references unknown node '{name}'"))
+            })?;
+            if !matches!(graph.node(id).kind, NodeKind::HeatExchanger) {
+                return Err(SimError::Scenario(format!(
+                    "exchanger side '{name}' is a {:?}, not a heat_exchanger node",
+                    graph.node(id).kind
+                )));
+            }
+            Ok(id)
+        };
+        let side_a = resolve(&def.side_a)?;
+        let side_b = resolve(&def.side_b)?;
+
+        for (id, name) in [(side_a, &def.side_a), (side_b, &def.side_b)] {
+            if let Some(other) = paired.get(&id) {
+                return Err(SimError::Scenario(format!(
+                    "exchanger side '{name}' is paired more than once (already \
+                     coupled with '{other}'): each side has exactly one partner"
+                )));
+            }
+            paired.insert(id, name.clone());
+        }
+
+        graph.add_coupling(HeatExchangerCoupling {
+            side_a,
+            side_b,
+            effectiveness: def.effectiveness,
+        });
+    }
+
+    // Every side must be in the table: an unpaired one is a silent plain pipe.
+    for id in graph.node_ids().collect::<Vec<_>>() {
+        if matches!(graph.node(id).kind, NodeKind::HeatExchanger) && !paired.contains_key(&id) {
+            return Err(SimError::Scenario(format!(
+                "heat_exchanger node '{}' is not paired in any [[exchangers]] \
+                 entry: an unpaired side transfers no heat at all and would run \
+                 as a plain junction",
+                graph.node(id).name
             )));
         }
     }
