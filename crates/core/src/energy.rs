@@ -79,6 +79,39 @@ pub fn heat_load(node: &crate::graph::Node) -> Watt {
     Watt(node.heat_input.value() + duty)
 }
 
+/// Accept a computed temperature [K] only if physics permits it, or fail with
+/// `context` explaining what produced the impossible value.
+///
+/// This is the single owner of "an absolute temperature below zero is an
+/// error", for every path that computes one. There is more than one: a
+/// zero-volume node mixes its inflows, a tank integrates its thermal
+/// inventory, and each can be driven sub-zero by a large enough net heat
+/// SINK. The result is FINITE in both cases, so the engine's NaN/Inf checks
+/// never see it — without this guard the plant runs on a number physics
+/// forbids, propagating downstream as an ordinary temperature.
+///
+/// Deliberately stated as "any net heat sink", not `if cooler` or
+/// `if heat_input < 0`: a negative absolute temperature is broken whatever
+/// produced it, and the callers owe nothing to which lever got them there.
+/// Today that lever is a cooler's duty or a negative `heat_input`; ambient
+/// exchange will add another, and it arrives already guarded.
+///
+/// Err, never clamp. Clamping would report a plausible 0 K instead of the
+/// temperature asked for, which is exactly the silently-wrong answer this
+/// project treats as worse than a crash.
+///
+/// # Errors
+/// `SimError::Numerical` if `value` is below absolute zero.
+pub fn checked_temperature(
+    value: f64,
+    context: impl FnOnce() -> String,
+) -> Result<Kelvin, SimError> {
+    if value < 0.0 {
+        return Err(SimError::Numerical(context()));
+    }
+    Ok(Kelvin(value))
+}
+
 /// True for nodes with no inventory, whose temperature is an instantaneous
 /// mix of their inflows rather than a state (DESIGN §4a).
 ///
@@ -301,29 +334,18 @@ fn mix_inflows(
     if capacity > 0.0 {
         let mixed = T_REF.value() + (enthalpy + heat_input) / capacity;
         // A duty that exceeds the sensible heat available in the stream drives
-        // the mix below absolute zero. The result is FINITE, so the engine's
-        // NaN/Inf checks never see it: without this guard a sub-zero Kelvin
-        // propagates downstream as an ordinary temperature and the plant runs on
-        // a number physics forbids.
-        //
-        // Stated generally rather than as `if Cooler`, per the no-special-case
-        // rule: a negative absolute temperature is broken whatever produced it.
-        // Only a cooler can reach it today, but the check owes nothing to that.
-        //
-        // Err, never clamp. Clamping would report a plausible 0 K instead of the
-        // temperature asked for, which is exactly the silently-wrong answer this
-        // project treats as worse than a crash.
-        if mixed < 0.0 {
-            return Err(SimError::Numerical(format!(
+        // the mix below absolute zero; `checked_temperature` owns that rule for
+        // this path and the tank's alike (see its docs for why it Errs).
+        checked_temperature(mixed, || {
+            format!(
                 "'{}' cools to {mixed:.2} K, below absolute zero: net heat load \
                  {heat_input:.4e} W exceeds the {capacity:.4e} W/K · {:.2} K of \
                  sensible heat its inflow carries above 0 K. Reduce the duty or \
                  raise the flow through it.",
                 graph.node(node).name,
                 enthalpy / capacity + T_REF.value(),
-            )));
-        }
-        Ok(Kelvin(mixed))
+            )
+        })
     } else {
         // No inflow: indeterminate but inert (mass balance ⇒ no outflow either).
         //
@@ -544,6 +566,72 @@ mod tests {
                 temperature[&id].value()
             );
         }
+    }
+
+    /// The shared guard, tested directly rather than only through the callers
+    /// that reach it. Every path that computes a temperature routes through
+    /// this one function, so its contract is worth pinning independently of
+    /// whether any particular lever (a cooler duty, a negative `heat_input`,
+    /// ambient exchange later) still exists to drive a node sub-zero.
+    ///
+    /// 0 K itself is legal: absolute zero is unreachable, not forbidden, and
+    /// erroring on it would reject an exactly-drained stream at the boundary.
+    #[test]
+    fn checked_temperature_rejects_below_absolute_zero_only() {
+        assert_eq!(
+            checked_temperature(0.0, || "unused".into())
+                .expect("0 K is a legal boundary, not an error")
+                .value(),
+            0.0
+        );
+        assert_eq!(
+            checked_temperature(300.0, || "unused".into())
+                .expect("an ordinary temperature must pass")
+                .value(),
+            300.0
+        );
+
+        let err = checked_temperature(-1e-9, || "the context explains it".into())
+            .expect_err("any negative absolute temperature must be rejected, however small");
+        assert!(
+            err.to_string().contains("the context explains it"),
+            "the caller's diagnostic must reach the error, got: {err}"
+        );
+    }
+
+    /// The cooler path, end to end through the sweep: a duty larger than the
+    /// sensible heat its inflow carries above 0 K must Err, not return a finite
+    /// sub-zero Kelvin that the engine's NaN/Inf check would wave through.
+    #[test]
+    fn a_duty_beyond_the_streams_sensible_heat_is_rejected() {
+        let mut g = PlantGraph::new();
+        let src = g.add_node(source("src", Kelvin(300.0)));
+        // 1 kg/s of water at 300 K carries 1·4184·300 = 1.2552e6 W above 0 K;
+        // pull twice that out and the mix lands far below absolute zero.
+        let chiller = g.add_node(node(
+            "chiller",
+            NodeKind::Cooler {
+                duty: Watt(2.0 * 4184.0 * 300.0),
+            },
+        ));
+        let out = g.add_node(node(
+            "out",
+            NodeKind::Sink {
+                pressure: Pascal(1.0e5),
+                temperature: T_AMBIENT,
+            },
+        ));
+        let e_in = g.add_pipe(src, chiller, pipe("inlet"));
+        let e_out = g.add_pipe(chiller, out, pipe("outlet"));
+
+        let flows = BTreeMap::from([(e_in, 1.0), (e_out, 1.0)]);
+        let err = resolve(&g, &flows).expect_err("a sub-zero mix must be an error, not a value");
+
+        let message = err.to_string();
+        assert!(
+            message.contains("absolute zero") && message.contains("chiller"),
+            "the error must name the node and what went wrong, got: {message}"
+        );
     }
 
     /// A junction nothing flows through is indeterminate (0/0), not broken. It

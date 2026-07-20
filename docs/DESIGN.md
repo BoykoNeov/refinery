@@ -168,12 +168,25 @@ a furnace's duty.
 stream carries above 0 K drives the mix below absolute zero. The result is
 *finite*, so no NaN/Inf check sees it, and it would propagate downstream as an
 ordinary temperature — measured at **−508 K** on `cooler_chiller.toml` at 200 MW
-with the check removed. `mix_inflows` therefore rejects `T < 0 K` with
-`SimError::Numerical`. The check is stated generally rather than as a
+with the check removed. The check is stated generally rather than as a
 cooler-specific case: a negative absolute temperature is broken whatever produced
-it, and only a cooler can reach it *today*. Clamping to 0 K was rejected — it
-reports a plausible number instead of the one that was asked for, the silent
-wrong answer this project treats as worse than a failure.
+it. Clamping to 0 K was rejected — it reports a plausible number instead of the
+one that was asked for, the silent wrong answer this project treats as worse than
+a failure.
+
+`energy::checked_temperature` is the single owner of that rule, because there is
+more than one path that computes a temperature and **a cooler is not the only
+lever that can drive one sub-zero**. Zero-volume nodes mix their inflows in
+`mix_inflows`; tanks integrate their thermal inventory in the engine's unit-dynamics
+step, on a path the mixing guard never watched. A large enough net heat *sink* on
+a tank — a negative `Command::SetHeatInput` today, ambient exchange later —
+integrates the same finite, forbidden number. Both paths route through the one
+checker so they cannot drift apart on what "impossible" means, and a new heat term
+arrives already guarded rather than reopening the hole on whichever path is newest.
+
+The tank guard sits *inside* the minimum-thermal-mass branch: a nearly-empty tank
+has no meaningful temperature and holds its last valid one, so it has no computed
+value to check and must not trip the guard.
 
 An edge's stream temperature is its **upwind** node's temperature, selected by
 the sign of the solved flow (donor-cell). Flow sign, never edge direction: the

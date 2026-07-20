@@ -212,6 +212,61 @@ fn a_cooled_tank_follows_the_first_law() {
     );
 }
 
+/// REGRESSION — the cooling case run past the point physics allows. A tank's
+/// thermal inventory is integrated in the engine, NOT through the zero-volume
+/// mixing sweep, so the sub-zero guard that lives in `mix_inflows` never
+/// watched this path: for a while the only protection a tank had was the
+/// NaN/Inf check, and a sub-zero Kelvin is perfectly finite.
+///
+/// The plant is `a_cooled_tank_follows_the_first_law` with the clock run on:
+/// -418.4 kW drops 1000 kg of water by 0.1 K/s, so from 293.15 K it reaches
+/// 0 K after 2931.5 s = 29 315 ticks and must fail on the tick after. Asking
+/// for 30 000 leaves the run comfortably past the boundary.
+///
+/// The assertion is that it ERRS — not that it clamps at 0 K. A clamp would
+/// report a plausible temperature the plant never had, which this project
+/// treats as worse than a stopped simulation.
+#[test]
+fn a_tank_cooled_below_absolute_zero_is_rejected() {
+    let mut graph = PlantGraph::new();
+    graph.add_node(tank_node(
+        "overcooled",
+        1000.0,
+        Kelvin(293.15),
+        Watt(-418_400.0),
+    ));
+    let mut engine = engine(graph);
+
+    let mut failed_at = None;
+    for tick in 1..=30_000 {
+        if let Err(e) = engine.tick() {
+            failed_at = Some((tick, e));
+            break;
+        }
+        // Until it does fail, every reported temperature must be physical.
+        let t = tank_temperature(&engine, "overcooled");
+        assert!(
+            t >= 0.0,
+            "tick {tick} reported {t} K — a sub-zero temperature escaped as a finite value"
+        );
+    }
+
+    let (tick, error) = failed_at.expect(
+        "cooling 1000 kg of water at 418.4 kW for 3000 s must drive it below 0 K and be rejected",
+    );
+    // 0 K is crossed during tick 29 316; allow a tick either side for the
+    // float arithmetic rather than pinning the exact step.
+    assert!(
+        (29_315..=29_317).contains(&tick),
+        "must fail as it crosses 0 K around tick 29 316, not before or long after; got {tick}"
+    );
+    let message = error.to_string();
+    assert!(
+        message.contains("absolute zero") && message.contains("overcooled"),
+        "the error must name the tank and what went wrong, got: {message}"
+    );
+}
+
 /// REFERENCE — a mixing tee, predicted from SYMMETRY rather than from the
 /// mixing formula: two supply legs identical in every respect except
 /// temperature must, by symmetry, carry identical flows, so the mixed stream

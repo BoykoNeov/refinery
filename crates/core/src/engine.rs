@@ -215,6 +215,10 @@ impl Engine {
                     energy::enthalpy_flux(KgPerSec(into_node), cp, stream.temperature).value();
             }
 
+            // The name is read before the tank is borrowed mutably: the guard
+            // below needs it for its diagnostic, and a node cannot be borrowed
+            // both ways at once.
+            let node_name = self.graph.node(nid).name.clone();
             if let NodeKind::Tank(tank) = &mut self.graph.node_mut(nid).kind {
                 let cp = tank.composition.mixture_cp(&self.slate).value();
                 let mass_old = tank.mass.value();
@@ -224,8 +228,28 @@ impl Engine {
                 let energy_new = energy_old + (net_enthalpy + heat_input) * dt.value();
 
                 tank.mass = Kg(mass_new);
+                // Guarded exactly like a zero-volume node's mix: a net heat SINK
+                // large enough to remove more than the inventory's sensible heat
+                // integrates to a finite, sub-zero Kelvin that step 4's NaN/Inf
+                // check would wave straight through. The check lives with the
+                // mixing one in `energy::checked_temperature` so the two paths
+                // cannot drift apart on what "impossible" means.
+                //
+                // Inside the mass branch on purpose: a nearly-empty tank has no
+                // meaningful temperature and holds its last valid one, so it has
+                // no computed value to check and must not trip this.
                 if mass_new > MIN_THERMAL_MASS_KG {
-                    tank.temperature = Kelvin(T_REF.value() + energy_new / (mass_new * cp));
+                    let value = T_REF.value() + energy_new / (mass_new * cp);
+                    tank.temperature = energy::checked_temperature(value, || {
+                        format!(
+                            "tank '{node_name}' cools to {value:.2} K, below absolute zero: over \
+                             this tick the net heat load {:.4e} W removed more than the {:.4e} J \
+                             of sensible heat its {mass_new:.4e} kg held above 0 K. Reduce the \
+                             heat being drawn out of it.",
+                            net_enthalpy + heat_input,
+                            energy_old + mass_old * cp * T_REF.value(),
+                        )
+                    })?;
                 }
             }
         }
