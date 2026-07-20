@@ -236,6 +236,75 @@ error settles at ≈ ε/ṁ ≈ 1e-8 — measured at 9.4e-9. Energy conservation
 be made tighter than the mass conservation it rides on; tightening I6 means
 tightening the flow solver first.
 
+**The `HeatExchanger` is the first unit that does not fit the per-node sweep**
+(M2.2). Every heat term before it — a fire, a furnace's duty, a cooler's — is
+imposed on one node from outside, so `heat_load` can answer "how much heat
+enters this node" by looking at that node alone. An exchanger's heat comes from
+*another stream*, and how much there is depends on that stream's temperature.
+It is the first place two nodes' temperatures are computed together.
+
+**Representation: two nodes, hydraulically independent, thermally coupled.**
+Each side is an ordinary zero-volume 1-in/1-out pass-through, exactly like a
+furnace, and **the flow solver is unchanged and does not know the two are
+paired** — no heat-carrying edge, no four-port node. Both alternatives fight the
+model's central premise that an edge is a pipe carrying mass; a thermal link
+carries none, and giving one node four ports would make "the stream through it"
+ambiguous everywhere that phrase is currently load-bearing.
+
+Duty at ΔT-effectiveness fidelity, one *signed* quantity computed once:
+
+```text
+C_a = ṁ_a·cp_a,  C_b = ṁ_b·cp_b,  C_min = min(C_a, C_b)
+Q   = ε·C_min·(T_a_in − T_b_in)
+T_a_out = T_a_in − Q/C_a        T_b_out = T_b_in + Q/C_b
+```
+
+Three properties of that form are load-bearing, and each is a bug if broken:
+
+- **Energy conserves by construction.** One `Q`, subtracted from one side and
+  added to the other, for *any* ε and any capacity rates: `−Q + Q = 0`
+  identically. Two independently computed effectiveness terms would be the
+  natural-looking alternative and would break I6 for a reason no reference test
+  would localize. Same discipline as `heat_load`: one owner of the sign.
+- **Neither side is "the hot one".** The labels are for humans reading TOML; the
+  physics is in the sign of `(T_a_in − T_b_in)`, so a side fed hotter than its
+  partner simply reverses `Q` with no second code path. This is the direct
+  analogue of ambient exchange's `T_ambient − T_node`, and it is reachable:
+  the `Cooler` above can chill a stream below the one it later meets.
+- **`C_min`, not `C_max` or either side's own C.** With `C_min` and `ε ≤ 1`, the
+  outlet temperatures cannot cross — the second law holds automatically rather
+  than needing a check. Using `C_max` lets the cold outlet exceed the hot inlet.
+  This is invisible when `C_a = C_b`, which is why the reference case deliberately
+  gives the two sides **unequal** capacity rates.
+
+**The sweep resolves a pair as one vertex.** Both outlets depend only on the two
+*inlets*, so there is no simultaneous solve inside an exchanger — but side A
+reads `T_b_in`, which is **not one of A's inflow edges**. A per-node Kahn sweep
+would mark A ready as soon as A's own inflows cleared and mix it against a stale
+partner inlet, which converges, serializes and looks entirely plausible. So each
+pair is merged into a single sweep vertex: ready when the *union* of both sides'
+zero-volume upstream dependencies clears, then both sides resolved together.
+
+That merge also gets the pathological case right for free. If one side's outlet
+feeds the other's inlet through zero-volume nodes only, the merged vertex can
+never become ready and the existing zero-volume-recycle rejection fires — which
+is correct, because that plant *is* a genuine simultaneous system, exactly the
+kind the sweep declines to guess at.
+
+**ε is a property of the pair, not of either node**, so it is stored once, in a
+coupling list on `PlantGraph`, rather than duplicated into both `NodeKind`s where
+the two copies could disagree. The node kind carries only the side's *identity*
+(what makes `is_zero_volume` and `boundary_temperature` recognize it). This is
+the same instinct that made `Furnace` and `Cooler` separate units instead of one
+signed duty: put the invariant somewhere it cannot be violated, rather than in a
+convention someone has to remember. ε ∈ (0, 1] is validated at both entry
+points — loader and command — as negative duty already is.
+
+No NTU, no LMTD, and no counter- versus co-current distinction at this fidelity:
+a constant ε from the scenario file is what "simple before complex" means here,
+and the geometry-dependent models are a later trait implementation, not a
+refinement to bolt onto this one.
+
 **Known limitations at this fidelity** (each deliberate, none accidental):
 
 - **No pump work or valve throttling heat.** Both dissipate into the stream in
