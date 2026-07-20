@@ -14,4 +14,4 @@
 - ["Unfalsifiable" is about coverage](unfalsifiable-is-a-claim-about-coverage.md) — M3.1 composition transport landed 2026-07-20; a deferral that died when the missing test was written
 - [Well-posed ≠ correct](well-posed-is-not-correct.md) — M3.2 column note 2026-07-20; a solve can converge, conserve mass and rerun bit-identically while frozen-wrong
 - [M3 column landed](m3-column-landed.md) — M3 closed 2026-07-20; the draw-flow write is post-sweep (fresh-feed consistency), and a guard test can be vacuous when a later stage masks the fault
-- [M4 reactor crux](m4-reactor-crux.md) — M4 opened 2026-07-20; crux is conservation + the sensible-only datum (not kinetics), isothermal-ROT avoids the adiabatic fixed point, energy gate is a two-duty DIFFERENCE to dodge a tautology
+- [M4 reactor crux](m4-reactor-crux.md) — crux is conservation + the sensible-only datum (not kinetics); energy gate is a two-duty DIFFERENCE; M4.1 (NodeKind::Reactor + SimpleLookup) LANDED 2026-07-20 — T-overriding zero-volume node, mutation-verified gate, mass gate is tautological (attribute to renormalization)
