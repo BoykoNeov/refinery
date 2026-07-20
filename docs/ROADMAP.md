@@ -175,7 +175,10 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       service needs no reconfiguration); and **`C_min`, not `C_max`**, which
       with ε ≤ 1 keeps each stream from passing the other's inlet without a
       second-law check. ε lives on the PAIR, not on either node, so a pair whose
-      halves disagree about it is unrepresentable.
+      halves disagree about it is unrepresentable. ε is guarded at the LOADER
+      only — deliberately unlike `Set*Duty`, because ε is fixed hardware rather
+      than an operator setpoint, and a command with no caller would be dead code
+      whose guard could not be falsified (DESIGN §4a).
       The real difficulty was the sweep: an exchanger is the first unit whose
       outlet depends on an inlet that is **not one of its own inflow edges**, so
       a per-node Kahn sweep marks a side ready too early. Each pair is therefore

@@ -298,8 +298,17 @@ the two copies could disagree. The node kind carries only the side's *identity*
 (what makes `is_zero_volume` and `boundary_temperature` recognize it). This is
 the same instinct that made `Furnace` and `Cooler` separate units instead of one
 signed duty: put the invariant somewhere it cannot be violated, rather than in a
-convention someone has to remember. ε ∈ (0, 1] is validated at both entry
-points — loader and command — as negative duty already is.
+convention someone has to remember.
+
+ε ∈ (0, 1] is validated at the **loader, which is its only entry point**. This
+is a deliberate departure from the `Furnace`/`Cooler` precedent of guarding both
+loader and command, and the difference is what the quantity IS: a duty is an
+operator setpoint that moves during a run, so `Set*Duty` exists and needs its own
+guard, whereas ε is fixed hardware — surface area and geometry — that nothing
+changes mid-run. Adding a `Set*Effectiveness` command purely to have a second
+place to validate would be dead code with no caller, and a guard on a path
+nothing takes cannot be falsified. If a fouling model ever makes ε time-varying,
+it arrives with its own entry point and its own guard.
 
 No NTU, no LMTD, and no counter- versus co-current distinction at this fidelity:
 a constant ε from the scenario file is what "simple before complex" means here,
@@ -336,8 +345,14 @@ refinement to bolt onto this one.
 - **An exchanger side with no throughput transfers nothing**, by the same
   stagnant-node rule. That one is physics rather than a gap: with no flow there
   is no capacity rate to transfer against, and the running side passes straight
-  through. Exchangers stay out of the proptest generators anyway, for the
-  stagnant-node reason furnaces and coolers do.
+  through. Exchangers are absent from the I6 proptest generators for a
+  different reason than furnaces and coolers, worth stating so it is not
+  mistaken for a conservation gap: a both-sides-flowing exchanger conserves
+  energy BY CONSTRUCTION and would strengthen I6 rather than strain it. What
+  keeps it out is generator complexity — random valid networks would have to
+  emit paired sides and a coupling table — so this is a cost decision, not a
+  model limitation. A fixed exchanger in an I6-style case is the cheap way in
+  if it is ever wanted.
 - **The exchanger is ΔT-effectiveness only** — no NTU, no LMTD, no
   co-/counter-current distinction, and ε is a constant rather than a function of
   flow. Consequently the model has no opinion on outlet ORDERING: a cold outlet
