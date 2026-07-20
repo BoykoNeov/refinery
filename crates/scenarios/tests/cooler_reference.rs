@@ -15,7 +15,9 @@
 //!      stagnant-node reason furnaces are) and so has no other coverage at all,
 //!   4. negative duty being refused at both entry points, which is what makes
 //!      "two units, each with a positive magnitude" safe rather than a
-//!      convention nothing enforces.
+//!      convention nothing enforces,
+//!   5. the same refusal for a negative `heat_input` — no cooling fires, so
+//!      every net heat sink belongs to a unit that declares itself one.
 //!
 //! Lives in `scenarios/` for the same reason as `furnace_reference.rs`: it needs
 //! the TOML and its loader, and `scenarios` depends on `solvers`, so the reverse
@@ -156,6 +158,57 @@ fn a_fire_on_a_cooler_cancels_its_duty() {
         (outlet - FEED_K).abs() < TOLERANCE_K,
         "a fire of Q on a cooler removing Q must leave the stream at its {FEED_K} K \
          feed temperature, got {outlet} K"
+    );
+}
+
+/// A fire is a heat SOURCE; a negative one is refused, not applied.
+///
+/// The companion to the duty check below, and the same argument: `heat_input` is
+/// the damage model's hook, and there is no damage that chills a unit. A cooling
+/// fire would be a second, undeclared way to spend heat — one that bypasses the
+/// `Cooler` the model added for exactly that job, and that could push a node's
+/// balance to a place no plant reaches. Refusing it keeps every net heat sink
+/// the property of a unit that declares itself one.
+///
+/// Zero is asserted legal in the same breath, because "the fire is out" must
+/// remain expressible: a guard written `<= 0` would pass a test that only
+/// checked the negative case, and would then refuse to extinguish a fire.
+#[test]
+fn a_cooling_fire_is_refused_but_no_fire_is_allowed() {
+    let mut engine = build(1.0);
+    let chiller = engine.graph.find_node("chiller").expect("a 'chiller' node");
+
+    let error = engine
+        .apply(Command::SetHeatInput {
+            node: chiller,
+            power: Watt(-DUTY_W),
+        })
+        .expect_err("a negative heat input must be refused");
+    assert!(
+        matches!(error, SimError::InvalidCommand(_)),
+        "a cooling fire is an invalid command, not a numerical failure: got {error:?}"
+    );
+
+    engine
+        .apply(Command::SetHeatInput {
+            node: chiller,
+            power: Watt::ZERO,
+        })
+        .expect("extinguishing a fire must stay legal");
+
+    // The refusal must not have half-applied: the plant still cools by exactly
+    // its scenario duty, with no leftover heat term either way.
+    run(&mut engine).expect("the cooler plant must still run");
+    let drop = FEED_K - edge(&engine, "transfer_line").stream.temperature.value();
+    let cooling_only = {
+        let mut e = build(1.0);
+        run(&mut e).expect("the cooler plant must run");
+        FEED_K - edge(&e, "transfer_line").stream.temperature.value()
+    };
+    assert!(
+        (drop - cooling_only).abs() < TOLERANCE_K,
+        "a refused fire must leave the plant exactly as it was: expected a \
+         {cooling_only} K drop, got {drop} K"
     );
 }
 

@@ -109,9 +109,20 @@ impl Engine {
                 self.graph.pipe_mut(edge).leak_area = area;
                 Ok(())
             }
+            // A heat SOURCE, and only a source. This is the damage model's hook
+            // — a fire, applied heating — and there is no such thing as a fire
+            // that cools, so a negative value here can only be a sign slip. A
+            // genuine net heat sink is a unit's own property (a cooler's duty)
+            // or, later, ambient exchange, both of which carry their own term.
+            // Zero stays legal: it is "the fire is out", the field's default.
             Command::SetHeatInput { node, power } => {
-                if !power.value().is_finite() {
-                    return Err(SimError::InvalidCommand("heat input must be finite".into()));
+                if !power.value().is_finite() || power.value() < 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "heat input must be finite and >= 0 — it is a heat SOURCE (a \
+                         fire, applied heating); a net heat sink comes from a cooler's \
+                         duty, not a negative fire. Got {} W",
+                        power.value()
+                    )));
                 }
                 self.graph.node_mut(node).heat_input = power;
                 Ok(())

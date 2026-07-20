@@ -93,8 +93,14 @@ pub fn heat_load(node: &crate::graph::Node) -> Watt {
 /// Deliberately stated as "any net heat sink", not `if cooler` or
 /// `if heat_input < 0`: a negative absolute temperature is broken whatever
 /// produced it, and the callers owe nothing to which lever got them there.
-/// Today that lever is a cooler's duty or a negative `heat_input`; ambient
-/// exchange will add another, and it arrives already guarded.
+///
+/// Today exactly one lever reaches it — a cooler's duty, on the mixing path.
+/// Nothing reaches the TANK path: `Command::SetHeatInput` refuses a negative
+/// fire, a tank carries no duty of its own, and mixing cannot fall below its
+/// coldest inflow. The tank guard is therefore cover held in advance, for the
+/// ambient exchange that will put a signed Q straight onto that balance. That
+/// is the point of a shared checker: the new term arrives already guarded,
+/// instead of reopening this on whichever path is newest.
 ///
 /// Err, never clamp. Clamping would report a plausible 0 K instead of the
 /// temperature asked for, which is exactly the silently-wrong answer this
@@ -571,8 +577,10 @@ mod tests {
     /// The shared guard, tested directly rather than only through the callers
     /// that reach it. Every path that computes a temperature routes through
     /// this one function, so its contract is worth pinning independently of
-    /// whether any particular lever (a cooler duty, a negative `heat_input`,
-    /// ambient exchange later) still exists to drive a node sub-zero.
+    /// which levers happen to reach it. That set moves: a negative
+    /// `Command::SetHeatInput` was one until the command started refusing it,
+    /// a cooler duty is one now, ambient exchange will be one later. This test
+    /// holds whatever the plant can currently do to a node.
     ///
     /// 0 K itself is legal: absolute zero is unreachable, not forbidden, and
     /// erroring on it would reject an exactly-drained stream at the boundary.

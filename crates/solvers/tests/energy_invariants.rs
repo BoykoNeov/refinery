@@ -212,11 +212,18 @@ fn a_cooled_tank_follows_the_first_law() {
     );
 }
 
-/// REGRESSION — the cooling case run past the point physics allows. A tank's
+/// FORWARD COVER — the cooling case run past the point physics allows. A tank's
 /// thermal inventory is integrated in the engine, NOT through the zero-volume
 /// mixing sweep, so the sub-zero guard that lives in `mix_inflows` never
-/// watched this path: for a while the only protection a tank had was the
-/// NaN/Inf check, and a sub-zero Kelvin is perfectly finite.
+/// watched this path: the only protection a tank had was the NaN/Inf check,
+/// and a sub-zero Kelvin is perfectly finite.
+///
+/// No COMMAND can set a tank up this way: `SetHeatInput` refuses a negative
+/// fire, a tank carries no duty, and mixing cannot fall below its coldest
+/// inflow. The net heat sink is therefore built straight onto the field, which
+/// is what ambient exchange will do to this same balance once it lands. That is
+/// the condition under test — held in advance, so the term arrives guarded
+/// rather than opening the hole and being caught afterwards.
 ///
 /// The plant is `a_cooled_tank_follows_the_first_law` with the clock run on:
 /// -418.4 kW drops 1000 kg of water by 0.1 K/s, so from 293.15 K it reaches

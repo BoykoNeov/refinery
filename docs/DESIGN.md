@@ -179,10 +179,25 @@ more than one path that computes a temperature and **a cooler is not the only
 lever that can drive one sub-zero**. Zero-volume nodes mix their inflows in
 `mix_inflows`; tanks integrate their thermal inventory in the engine's unit-dynamics
 step, on a path the mixing guard never watched. A large enough net heat *sink* on
-a tank — a negative `Command::SetHeatInput` today, ambient exchange later —
-integrates the same finite, forbidden number. Both paths route through the one
-checker so they cannot drift apart on what "impossible" means, and a new heat term
-arrives already guarded rather than reopening the hole on whichever path is newest.
+a tank integrates the same finite, forbidden number. Both paths route through the
+one checker so they cannot drift apart on what "impossible" means, and a new heat
+term arrives already guarded rather than reopening the hole on whichever path is
+newest.
+
+Nothing reaches the tank path *today*: a tank carries no duty, mixing cannot fall
+below its coldest inflow, and `Command::SetHeatInput` refuses a negative fire (see
+below). That guard is therefore cover held in advance, for the **ambient exchange**
+that will put a signed `Q` straight onto the tank balance — the one heat term that
+is legitimately signed, because a vessel warmer than its surroundings loses heat
+and a colder one gains it. Writing the check before that term rather than after it
+is the whole point of consolidating the two sites.
+
+**A fire only heats.** `Command::SetHeatInput` refuses a negative power for the
+same reason `Set*Duty` refuses a negative magnitude: `heat_input` is the damage
+model's hook, and there is no damage that chills a unit. Allowing one would be a
+second, undeclared way to spend heat, bypassing the `Cooler` the model added for
+that job. Zero stays legal — it is "the fire is out". Every *net* heat sink is
+thus the property of a unit that declares itself one, ambient exchange included.
 
 The tank guard sits *inside* the minimum-thermal-mass branch: a nearly-empty tank
 has no meaningful temperature and holds its last valid one, so it has no computed
