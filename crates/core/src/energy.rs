@@ -55,19 +55,40 @@ pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> W
     Watt(mass_flow.value() * cp.value() * (temperature.value() - T_REF.value()))
 }
 
+/// Total heat delivered into a node's stream [W]: external heat plus, for a
+/// furnace, its operating duty.
+///
+/// The two terms are separate fields and SUM here rather than sharing storage.
+/// `heat_input` is the damage model's hook — `Command::SetHeatInput` sets it —
+/// so folding a furnace's duty into it would make a fire on a furnace silently
+/// overwrite the operator's setpoint instead of stacking on top of it. Every
+/// consumer of "how much heat enters this node" goes through this function, so
+/// the two can never drift apart.
+pub fn heat_load(node: &crate::graph::Node) -> Watt {
+    let duty = match &node.kind {
+        NodeKind::Furnace { duty } => duty.value(),
+        _ => 0.0,
+    };
+    Watt(node.heat_input.value() + duty)
+}
+
 /// True for nodes with no inventory, whose temperature is an instantaneous
 /// mix of their inflows rather than a state (DESIGN §4a).
 ///
-/// Pumps and valves are zero-volume *pass-throughs*: with exactly one inlet and
-/// one outlet (enforced by `validate_degrees`) the mixing formula degenerates
-/// to "outlet temperature = inlet temperature". Pump work and valve throttling
-/// both dissipate into the stream as heat; at M2 fidelity that rise is
-/// neglected (~0.02 K for the reference pump — far below the model's accuracy)
-/// and is a documented DESIGN §4a limitation, not an oversight.
+/// Pumps, valves and furnaces are zero-volume *pass-throughs*: with exactly one
+/// inlet and one outlet (enforced by `validate_degrees`) the mixing formula
+/// degenerates to "outlet temperature = inlet temperature", plus whatever heat
+/// `heat_load` adds. Pump work and valve throttling both dissipate into the
+/// stream as heat; at M2 fidelity that rise is neglected (~0.02 K for the
+/// reference pump — far below the model's accuracy) and is a documented
+/// DESIGN §4a limitation, not an oversight.
 pub fn is_zero_volume(kind: &NodeKind) -> bool {
     matches!(
         kind,
-        NodeKind::Junction | NodeKind::Pump { .. } | NodeKind::Valve { .. }
+        NodeKind::Junction
+            | NodeKind::Pump { .. }
+            | NodeKind::Valve { .. }
+            | NodeKind::Furnace { .. }
     )
 }
 
@@ -82,7 +103,14 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         NodeKind::Sink { temperature, .. } => Some(*temperature),
         NodeKind::Atmosphere => Some(T_AMBIENT),
         NodeKind::Tank(tank) => Some(tank.temperature),
-        NodeKind::Junction | NodeKind::Pump { .. } | NodeKind::Valve { .. } => None,
+        // A furnace belongs here, with the other zero-volume nodes: `None` is
+        // what makes the sweep MIX its inflows and apply `heat_load`. Returning
+        // `Some(..)` would compile and quietly make it inertial — its duty would
+        // never reach the stream.
+        NodeKind::Junction
+        | NodeKind::Pump { .. }
+        | NodeKind::Valve { .. }
+        | NodeKind::Furnace { .. } => None,
     }
 }
 
@@ -236,11 +264,12 @@ fn mix_inflows(
     previous: &BTreeMap<NodeId, Kelvin>,
     node: NodeId,
 ) -> Result<Kelvin, SimError> {
-    // External heat (a fire, a heater) joins the same first law: for a node
-    // with no accumulation, Σ ṁ·h_in + Q = Σ ṁ·h_out. Without this term
-    // `Command::SetHeatInput` would be a silent no-op on every junction — the
-    // damage model's "fire on a node" would do nothing at all.
-    let heat_input = graph.node(node).heat_input.value();
+    // Heat — external (a fire) and a furnace's duty alike — joins the same
+    // first law: for a node with no accumulation, Σ ṁ·h_in + Q = Σ ṁ·h_out.
+    // Without this term `Command::SetHeatInput` would be a silent no-op on
+    // every junction (the damage model's "fire on a node" would do nothing at
+    // all) and a furnace would be an inert pass-through.
+    let heat_input = heat_load(graph.node(node)).value();
     let mut enthalpy = 0.0; // Σ ṁ·cp·(T − T_REF) [W]
     let mut capacity = 0.0; // Σ ṁ·cp [W/K]
 

@@ -110,8 +110,27 @@ impl Engine {
                 Ok(())
             }
             Command::SetHeatInput { node, power } => {
+                if !power.value().is_finite() {
+                    return Err(SimError::InvalidCommand("heat input must be finite".into()));
+                }
                 self.graph.node_mut(node).heat_input = power;
                 Ok(())
+            }
+            Command::SetFurnaceDuty { node, duty } => {
+                if !duty.value().is_finite() {
+                    return Err(SimError::InvalidCommand(
+                        "furnace duty must be finite".into(),
+                    ));
+                }
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Furnace { duty: d } => {
+                        *d = duty;
+                        Ok(())
+                    }
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} is not a furnace"
+                    ))),
+                }
             }
         }
     }

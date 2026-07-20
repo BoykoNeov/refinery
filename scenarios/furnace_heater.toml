@@ -1,0 +1,51 @@
+# M2.2 reference plant: cold feed → fired heater → product sink.
+#
+# The smallest plant that wires a furnace: one pressure-driven stream, one
+# unit, nothing else that could move a temperature. Its purpose is to pin the
+# furnace AS WIRED — the MW→W conversion in the loader, the duty reaching the
+# temperature sweep, and the outlet stream carrying the heated temperature —
+# none of which `core::energy`'s unit tests can see, since they hand-build
+# their flow maps and never touch the loader or the engine tick.
+#
+# Units at this boundary are human-friendly (bar, °C, MW); the loader converts
+# to SI. See refinery-scenarios docs.
+
+[meta]
+name = "furnace_heater"
+description = "Cold water feed heated by a fired heater on its way to a product sink."
+
+[simulation]
+dt = 0.1            # seconds per tick
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[nodes.cold_feed]
+type = "source"
+pressure_bar = 3.0
+temperature_c = 20.0
+
+[nodes.heater]
+type = "furnace"
+duty_mw = 1.0       # delivered to the process fluid [MW], converted to W on load
+
+[nodes.product]
+type = "sink"
+pressure_bar = 1.0
+temperature_c = 20.0
+
+[[pipes]]
+name = "feed_line"
+from = "cold_feed"
+to = "heater"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "transfer_line"
+from = "heater"
+to = "product"
+length_m = 20.0
+diameter_m = 0.10

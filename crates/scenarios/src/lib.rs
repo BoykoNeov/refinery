@@ -96,6 +96,12 @@ pub enum NodeDef {
         kv: f64,
         opening: f64,
     },
+    /// Fired heater. Duty in MW — the unit refinery heaters are actually
+    /// specified in, converted to W at this boundary like every other
+    /// human-friendly quantity in the file.
+    Furnace {
+        duty_mw: f64,
+    },
     Junction,
 }
 fn default_true() -> bool {
@@ -258,6 +264,9 @@ fn node_kind(def: &NodeDef, water: &Composition, rho_water: KgPerM3) -> NodeKind
         NodeDef::Valve { kv, opening } => NodeKind::Valve {
             cv_max: kv_to_cv_si(*kv),
             opening: *opening,
+        },
+        NodeDef::Furnace { duty_mw } => NodeKind::Furnace {
+            duty: Watt(*duty_mw * 1e6),
         },
         NodeDef::Junction => NodeKind::Junction,
     }

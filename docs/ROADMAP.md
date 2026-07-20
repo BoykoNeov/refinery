@@ -110,9 +110,31 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       inherited, not intrinsic (DESIGN §4a); the budget is now 1e-6, ~100x above
       the real floor and ~5 orders below any defect worth catching.
 
-### M2.2 — Heated/cooled units and ambient loss (NEXT)
-- [ ] `Furnace` (duty into a flowing stream) and `HeatExchanger` (two streams
-      coupled; simple ΔT-effectiveness fidelity before any NTU model).
+### M2.2 — Heated/cooled units and ambient loss (CURRENT)
+- [x] `Furnace` (duty into a flowing stream). Zero-volume, hydraulically a
+      pass-through: it is the `Q` term of M2.1's mixing formula and adds no new
+      physics. `duty` is its own field, NOT `Node::heat_input` — that is the
+      damage hook, and `energy::heat_load` SUMS them so a fire on a furnace
+      stacks on the duty instead of overwriting it. Sharing storage would make
+      a plant run *colder* during a fire. See DESIGN §4a.
+- [x] Tests: `scenarios/tests/furnace_reference.rs` + `scenarios/furnace_heater.toml`.
+      The first law for a heated zero-volume node was already pinned by
+      `core::energy`'s junction test, so re-running that arithmetic on a
+      `Furnace` would add nothing — these gates cover the furnace *as wired*,
+      which the hand-built flow maps cannot see: the loader's MW→W conversion,
+      the duty surviving a real hydraulic solve, and transport writing the heat
+      onto the outlet stream and not the inlet.
+      **Falsified before trusted**, each mutation caught for the right reason:
+      an MW→kW slip in the loader is caught by the absolute `Q/(ṁ·cp)` gate;
+      making the furnace *inertial* (`boundary_temperature` returning `Some`,
+      which compiles cleanly and silently drops the duty) by that gate and the
+      duty-linearity one; and duty *replacing* `heat_input` rather than adding
+      to it by the fire-stacking gate **alone** — no other test sets both, and
+      that is the evidence it earns its place. Falsification also found a
+      vacuity: the fire gate passed under the inertial mutation because 0 K
+      doubles to 0 K, so it now asserts the duty produces a real rise first.
+- [ ] `HeatExchanger` (two streams coupled; simple ΔT-effectiveness fidelity
+      before any NTU model).
 - [ ] Heat loss to ambient from tanks and pipes.
 - [ ] Pump work / valve throttling into the stream, if it earns its keep — see
       DESIGN §4a's limitation list (~0.02 K on the reference pump).

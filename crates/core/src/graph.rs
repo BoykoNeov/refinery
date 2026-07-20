@@ -76,6 +76,23 @@ pub enum NodeKind {
     Valve { cv_max: f64, opening: f64 },
     /// Zero-volume mixing point.
     Junction,
+    /// Fired heater: a duty delivered into the stream passing through it.
+    ///
+    /// Zero-volume like a pump or valve — a furnace's tube inventory is
+    /// negligible against its duty, so its outlet temperature is algebraic
+    /// (`T_out = T_in + Q/(ṁ·cp)`) rather than a state. Hydraulically it is a
+    /// plain pass-through at M2: the tube-side pressure drop belongs to the
+    /// connecting pipes' resistance, not to a device characteristic.
+    ///
+    /// `duty` is the heat actually delivered to the process fluid [W], not a
+    /// firing rate — combustion efficiency is a later fidelity step. Duty 0 is
+    /// an unlit furnace; there is no separate `on` flag because there is
+    /// nothing for one to express that 0 does not.
+    ///
+    /// Deliberately NOT stored in `Node::heat_input`: that field is the damage
+    /// model's hook (fires), and a fire on a furnace must ADD to its duty, not
+    /// overwrite the operator's setpoint. See `energy::heat_load`.
+    Furnace { duty: Watt },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

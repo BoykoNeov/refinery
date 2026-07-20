@@ -53,11 +53,24 @@ pub struct Classification {
     pub cold: f64,
 }
 
-/// F6: every Pump/Valve node must have exactly one inlet and one outlet edge.
+/// Every Pump/Valve/Furnace node must have exactly one inlet and one outlet
+/// edge — but for two different reasons, which is worth keeping straight:
+///
+/// - **Pump/Valve (F6):** a *hydraulic* constraint. Their characteristic folds
+///   into the single outlet edge (`compile_edge`'s fold-at-source convention),
+///   which is only well defined when there is exactly one of each.
+/// - **Furnace:** a *process* constraint. Its duty heats "the stream through
+///   it", and that phrase only names something with one defined process
+///   stream. The mixing formula would happily average N inlets, so nothing
+///   numerical forces this — it is rejected because a branched furnace means
+///   the scenario author meant something the model does not represent.
 pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);
-        if matches!(node.kind, NodeKind::Pump { .. } | NodeKind::Valve { .. }) {
+        if matches!(
+            node.kind,
+            NodeKind::Pump { .. } | NodeKind::Valve { .. } | NodeKind::Furnace { .. }
+        ) {
             let inc = graph.incident(nid);
             let n_in = inc.iter().filter(|(_, _, incoming)| *incoming).count();
             let n_out = inc.len() - n_in;
@@ -82,7 +95,12 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
             let rho = t.composition.mixture_density(slate);
             Some(t.bottom_pressure(rho).value())
         }
-        NodeKind::Pump { .. } | NodeKind::Valve { .. } | NodeKind::Junction => None,
+        // A furnace pins no pressure: at M2 it is hydraulically a pass-through,
+        // so it is a free node whose pressure the network determines.
+        NodeKind::Pump { .. }
+        | NodeKind::Valve { .. }
+        | NodeKind::Junction
+        | NodeKind::Furnace { .. } => None,
     }
 }
 

@@ -24,9 +24,18 @@ pub enum Command {
         area: SquareMeter,
     },
     /// Damage: external heat on a node (fire). 0 to extinguish.
+    ///
+    /// Distinct from `SetFurnaceDuty`: this is heat the plant did not ask for,
+    /// and it stacks on top of a furnace's duty rather than replacing it.
     SetHeatInput {
         node: NodeId,
         power: Watt,
+    },
+    /// Operating setpoint of a fired heater [W delivered to the process fluid].
+    /// 0 shuts it down.
+    SetFurnaceDuty {
+        node: NodeId,
+        duty: Watt,
     },
 }
 

@@ -126,11 +126,31 @@ makes it tractable. The distinction is *thermal inertia*, not unit type:
   temperature. A tank integrates it as a slow state (§1 step c); the reservoirs
   hold it fixed. Within a tick, all four are *boundary conditions*, read at
   their start-of-tick value.
-- **Zero-volume nodes** — `Junction`, `Pump`, `Valve`. No inventory, so
-  temperature is not a state at all: it is **algebraic**, the instantaneous
+- **Zero-volume nodes** — `Junction`, `Pump`, `Valve`, `Furnace`. No inventory,
+  so temperature is not a state at all: it is **algebraic**, the instantaneous
   enthalpy-weighted mix of the inflows,
   `T = T_REF + Σ(ṁ_in·cp_in·(T_in − T_REF) + Q) / Σ(ṁ_in·cp_in)` — the first
   law for a point with no accumulation.
+
+**The `Furnace` is entirely that formula's `Q` term** (M2.2). It adds no
+physics: a fired heater's tube inventory is negligible against its duty, so its
+outlet is algebraic, `T_out = T_in + Q/(ṁ·cp)`, and it is hydraulically a
+pass-through at this fidelity — the tube-side pressure drop belongs to the
+connecting pipes' resistance rather than to a device characteristic. Its duty
+is the heat delivered *to the process fluid*; combustion efficiency and a
+firing-rate model are a later fidelity step.
+
+`duty` is a field of `NodeKind::Furnace`, deliberately **not** stored in
+`Node::heat_input`. That field is the damage model's hook, and the two sum in
+`energy::heat_load`: a fire on a furnace must *add* to its duty, not overwrite
+the operator's setpoint. Sharing storage would make a plant run **colder**
+during a fire — a wrong answer that looks entirely plausible in a snapshot.
+Like `Pump`/`Valve`, a furnace is restricted to one inlet and one outlet edge,
+but for a different reason: theirs is the hydraulic fold-at-source convention
+(F6), the furnace's is that "the stream through it" only names something when
+there is one process stream. Nothing numerical forces it — the mixing formula
+would average N inlets happily — so a branched furnace is rejected because the
+author meant something the model does not represent.
 
 An edge's stream temperature is its **upwind** node's temperature, selected by
 the sign of the solved flow (donor-cell). Flow sign, never edge direction: the
@@ -179,8 +199,13 @@ tightening the flow solver first.
   singular at `m = 0`, and the Euler mass update can overshoot into the clamp,
   at which point mass and energy have both stopped being conserved and the ratio
   is meaningless rather than merely imprecise.
-- **No heat loss to ambient** and no `HeatExchanger`/`Furnace` yet — the rest of
-  M2 (see ROADMAP).
+- **A furnace with no throughput drops its duty**, by the stagnant-node rule
+  above. Firing a heater with no flow through it is a real and dangerous
+  operating state (tube damage), and the model is silent on it rather than
+  wrong about it — representing it needs tube metal as a thermal mass, which is
+  a fidelity step, not a bug fix.
+- **No heat loss to ambient** and no `HeatExchanger` yet — the rest of M2
+  (see ROADMAP).
 
 **`ThermoModel` is still a reserved slot.** Transport uses constant-property
 `cp` off `Composition` (ideal mass-fraction mixing), which is exactly what the
