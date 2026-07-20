@@ -161,8 +161,11 @@ impl Engine {
     pub fn tick(&mut self) -> Result<(), SimError> {
         let dt = self.config.dt;
 
-        // 1. Quasi-steady hydraulic solve (read-only over graph).
-        let solution = self.flow_solver.solve(&self.graph, &self.slate, dt)?;
+        // 1. Quasi-steady hydraulic solve (read-only over graph). `mut` because
+        //    step 2b writes prescribed column draw flows back into it once the
+        //    feed composition is known — the solver deliberately leaves those at
+        //    zero (see `network::edge_flows`).
+        let mut solution = self.flow_solver.solve(&self.graph, &self.slate, dt)?;
 
         // 2. Apply flows to edge streams.
         for eid in self.graph.edge_ids().collect::<Vec<_>>() {
@@ -184,6 +187,75 @@ impl Engine {
             &self.node_states,
         )?;
         let node_temperature = &node_states.temperature;
+
+        // 2b′. Column draws: prescribe ṁ_drawᵢ = splitᵢ · ṁ_feed_now, split by the
+        //      feed composition RESOLVED just above (DESIGN §5). This is the one
+        //      place the draw flows can be finalized: the split needs the feed
+        //      composition, which the sweep only just produced, and the draw
+        //      FLOW and the draw COMPOSITION (read in transport below) must be
+        //      built from the SAME feed composition or per-component mass fails
+        //      to balance at the fixed, zero-volume column. So it runs after the
+        //      sweep and before transport; the hydraulic solver reports these
+        //      edges as zero (`network::edge_flows`) rather than a bogus
+        //      pressure-driven number.
+        //
+        //      The sweep above is insensitive to the draw magnitudes it ran with
+        //      (zero): a column mixes only its inflows, and every draw outlet is
+        //      a fixed product node (the loader rejects a free node on a draw
+        //      line), which is inertial and breaks any downstream dependency — so
+        //      no resolved state changes now that the real flows are written.
+        let mut draw_writes: Vec<(crate::graph::EdgeId, f64)> = Vec::new();
+        for nid in self.graph.node_ids().collect::<Vec<_>>() {
+            let (draws, smearing) = match &self.graph.node(nid).kind {
+                NodeKind::Column {
+                    draws, smearing, ..
+                } => (draws.clone(), *smearing),
+                _ => continue,
+            };
+            let feed_comp = node_states.composition.get(&nid).ok_or_else(|| {
+                SimError::Numerical(format!(
+                    "internal: column '{}' unresolved in the composition sweep",
+                    self.graph.node(nid).name
+                ))
+            })?;
+            let separation = energy::column_separation(&self.slate, feed_comp, &draws, smearing)?;
+
+            // Sum the feed inflow and collect the draw edges. The feed is the one
+            // incident edge whose far end is NOT a draw outlet (validate_degrees
+            // guarantees exactly one). Draw edges carry the split out of the
+            // column regardless of the direction they were stored in.
+            let mut feed_into = 0.0;
+            let mut draw_edges: Vec<(crate::graph::EdgeId, usize, f64)> = Vec::new();
+            for (eid, other, incoming) in self.graph.incident(nid) {
+                if let Some(idx) = draws.iter().position(|d| d.outlet == other) {
+                    // +1 when the column is the edge's source (graph-direction
+                    // flow leaves the column), −1 when it is the target.
+                    let sign_out = if incoming { -1.0 } else { 1.0 };
+                    draw_edges.push((eid, idx, sign_out));
+                } else {
+                    let flow = self.graph.pipe(eid).stream.mass_flow.value();
+                    feed_into += if incoming { flow } else { -flow };
+                }
+            }
+            if feed_into < 0.0 {
+                return Err(SimError::Numerical(format!(
+                    "column '{}' has reverse feed flow ({feed_into:.4e} kg/s): the simple \
+                     column splits its feed by boiling range, which names nothing when the \
+                     feed runs backwards. Check the upstream pressures.",
+                    self.graph.node(nid).name
+                )));
+            }
+            for (eid, idx, sign_out) in draw_edges {
+                draw_writes.push((eid, sign_out * separation[idx].split * feed_into));
+            }
+        }
+        for (eid, flow) in draw_writes {
+            self.graph.pipe_mut(eid).stream.mass_flow = KgPerSec(flow);
+            // Keep the hydraulic solution consistent with the streams, so any
+            // reader of `edge_mass_flow` (a mass-balance check, a frontend) sees
+            // the prescribed draw and not the solver's placeholder zero.
+            solution.edge_mass_flow.insert(eid, flow);
+        }
 
         // 2c. Transport: an edge's stream takes its OUTLET temperature — its
         //     upwind node's, transformed by whatever heat the pipe traded with
@@ -302,6 +374,7 @@ impl Engine {
                 if into_node > 0.0 {
                     let arriving = energy::edge_composition_at(
                         &self.graph,
+                        &self.slate,
                         &node_states.composition,
                         eid,
                         flow,
@@ -439,9 +512,14 @@ impl Engine {
         //     have.
         for eid in self.graph.edge_ids().collect::<Vec<_>>() {
             let flow = self.graph.pipe(eid).stream.mass_flow.value();
-            let upwind =
-                energy::edge_composition_at(&self.graph, &node_states.composition, eid, flow)?
-                    .clone();
+            let upwind = energy::edge_composition_at(
+                &self.graph,
+                &self.slate,
+                &node_states.composition,
+                eid,
+                flow,
+            )?
+            .into_owned();
             self.graph.pipe_mut(eid).stream.composition = upwind;
         }
 

@@ -143,6 +143,72 @@ pub enum NodeKind {
     /// by the sign of `T_a_in − T_b_in`, so an exchanger whose duty reverses
     /// (seasonal service, a startup transient) needs no reconfiguration.
     HeatExchanger,
+    /// Fixed cut-point distillation column (simple fidelity): one feed in, N
+    /// draws out, split by the feed's boiling-range, NOT by the draws' hydraulic
+    /// resistances (docs/DESIGN.md §5).
+    ///
+    /// The unit that does not fit the M2 mould. Every earlier device is a
+    /// hydraulic pass-through the flow solver never learns is special; a column
+    /// is one-in-N-out and the split comes from *composition*. Reconciling that
+    /// with per-component mass conservation forced two structural choices, argued
+    /// in the DESIGN note before any code:
+    ///
+    /// - **Fixed-pressure and zero-volume.** `pressure` is pinned (real columns
+    ///   run on pressure control, and the overhead pressure is the setpoint that
+    ///   sets the cut structure), so the feed edge is an ordinary pressure-driven
+    ///   edge acting on it — a throttled feed valve or a draining supply lowers
+    ///   `ṁ_feed`, which a free column with draws prescribed from the *previous*
+    ///   feed could not do (it freezes the feed forever; see the note). The draws
+    ///   are then `ṁ_drawᵢ = splitᵢ · ṁ_feed_now` with `Σ splitᵢ = 1`, so the
+    ///   column is mass-neutral identically every tick — no holdup, no lag.
+    /// - **Separation acts on the FEED, never on a holdup.** A holdup mixes to a
+    ///   single composition and its outlets carry *that*, separating nothing. So
+    ///   the column stores no inventory; `energy::column_separation` splits the
+    ///   feed composition resolved this tick.
+    ///
+    /// The draw flows cannot be finalized in the hydraulic solve: the split needs
+    /// the feed composition, which only exists after the transport sweep, and
+    /// flow-split and composition-split must come from the SAME feed composition
+    /// or per-component mass fails to balance at the column. So `Engine::tick`
+    /// computes them post-sweep, and `network::edge_flows` only GUARDS the draw
+    /// edges (reports zero rather than a bogus pressure-driven number). See the
+    /// DESIGN note and `energy::column_separation`.
+    ///
+    /// Stated limitations (deliberate, not omissions): draws leave at the feed
+    /// temperature; reverse feed flow is refused; a draw is insensitive to
+    /// downstream back-pressure (a full product tank does not throttle it).
+    Column {
+        /// Operating pressure [Pa], pinned like a Source/Sink/Tank. Real columns
+        /// run on pressure control; this is the operator setpoint.
+        pressure: Pascal,
+        /// Ramp width across each cut point [K]. A component boiling within
+        /// `smearing` of a boundary lands partly in each adjacent draw. `0` is a
+        /// sharp splitter — the degenerate case, kept representable.
+        smearing: Kelvin,
+        /// Draws in ascending boiling-point order (lightest first). Each feeds one
+        /// outlet node and owns the band below its `upper_cut` and above the
+        /// previous draw's. See `ColumnDraw`.
+        draws: Vec<ColumnDraw>,
+    },
+}
+
+/// One draw of a `Column`: the outlet it feeds and the top of its boiling-range
+/// band.
+///
+/// The ordered `draws` list defines the cut points implicitly — draw `i`'s band
+/// runs from draw `i−1`'s `upper_cut` (or −∞ for the lightest) up to its own.
+/// `upper_cut = None` marks the heaviest draw, the open-topped catch-all that
+/// every component above the last finite cut lands in; making it `None` rather
+/// than `+∞` keeps the field JSON-serializable (snapshots carry `NodeKind`) and
+/// makes "this is the residue draw" a type-level fact rather than a magic value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ColumnDraw {
+    /// The product node this draw feeds. Resolved from a name by the loader,
+    /// exactly as a `HeatExchangerCoupling`'s sides are.
+    pub outlet: NodeId,
+    /// Upper boiling-point boundary of this draw's band [K]; `None` for the
+    /// heaviest (open-topped) draw.
+    pub upper_cut: Option<Kelvin>,
 }
 
 /// The thermal pairing of two `HeatExchanger` sides.

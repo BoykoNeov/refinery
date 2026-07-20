@@ -305,7 +305,7 @@ the exchanger moves the hot side 473.15 → 365.15 K and the cold side
 (10.94 × 108.0 vs 67.95 × 17.39), so the demo shows the milestone's physics
 rather than merely exiting zero. M3 may begin.
 
-## M3 — Pseudo-component crude + simple column (CURRENT)
+## M3 — Pseudo-component crude + simple column (DONE)
 Component slates in scenarios, composition transport, mixture properties,
 fixed-cut-point column (simple fidelity). Demo: crude source → furnace →
 column → three product tanks.
@@ -490,7 +490,7 @@ DESIGN §5 says the cut points are the fixed thing, which argues for (A).
       (a valve on the kerosene draw is a plausible want, and is deferred rather
       than half-supported), because a guard no repo scenario can exercise is a
       guard that cannot be falsified.
-- [ ] `core`/`scenarios`: the column unit, cut assignment, smearing.
+- [x] `core`/`scenarios`: the column unit, cut assignment, smearing.
       Shape settled by the note: `NodeKind::Column` is fixed-pressure and
       zero-volume; `Σᵢ w_ic = 1` is enforced by **normalization**, which is what
       makes per-component conservation true by construction; separation acts on
@@ -507,7 +507,25 @@ DESIGN §5 says the cut points are the fixed thing, which argues for (A).
       cp_feed` follows from `Σᵢ w_ic = 1` — M3.1's linearity identity applied to
       a split rather than a blend — which makes that normalization load-bearing
       for mass conservation and the energy balance both.
-- [ ] Tests: the reference must pin a **per-draw composition** number, not a mass
+      **Landed, and it corrected the note's framing on the load-bearing point**
+      (DESIGN §5, "Correction from building it"). The note imagined the draw flow
+      being *computed* in `network::edge_flows`; it cannot be. The split needs the
+      feed composition, the feed a column consumes this tick is the sweep's
+      *resolved* one (the intake is unavoidably fresh), and per-component balance
+      at the fixed zero-volume column holds only if the flow-split and the
+      composition-split come from the **same** feed — so the draw flow cannot be
+      finalized inside the solve. `energy::column_separation` is the single owner
+      of the split, called from `edge_composition_at` for the draw compositions
+      and from `Engine::tick` (post-sweep, pre-transport) for the draw flows.
+      `edge_flows` only **guards**, reporting draws as zero — which also stops the
+      wrong-sign back-feed of a full product tank from polluting the sweep, a
+      hazard the original "bogus magnitude" framing missed. The verdict is
+      untouched: (A), fixed-pressure zero-volume, no prescribed-flow branch,
+      mass-neutral every tick; only the *location* of the draw-flow write moved.
+      The `Σᵢ w_ic = 1` telescoping makes weights non-negative and the sum exactly
+      1 before the defensive normalization, and `smearing = 0` is the sharp
+      splitter (its `0/0` guarded).
+- [x] Tests: the reference must pin a **per-draw composition** number, not a mass
       balance. The mutation this unit invites — a cut-boundary off by one
       component, or smearing silently disabled — **conserves total mass exactly**,
       so a mass-balance gate cannot falsify it and I7 would stay green.
@@ -521,11 +539,46 @@ DESIGN §5 says the cut points are the fixed thing, which argues for (A).
       **silent bogus draw flow**. `edge_flows` reporting `ρ·branch.flow(dp)` on
       a prescribed edge is finite, deterministic and conserves mass at both
       endpoints, so it needs a gate asserting the draw flow equals
-      `splitᵢ · ṁ_feed` and not a pressure-driven number — falsified by making
-      the draw pipes' resistance absurd, which must not move the draws.
-- [ ] Demo: crude source → furnace → column → three product tanks.
+      `splitᵢ · ṁ_feed` and not a pressure-driven number.
+      **Landed.** Per-draw composition + split are pinned two ways: hand calcs
+      against `energy::column_separation` in isolation (`column_separation_tests`
+      — a sharp splitter for the cut-boundary mutation, a smeared boundary cut for
+      the disabled-smearing mutation, `Σsplit = 1`, and an empty band), and the
+      unit *as wired* (`scenarios/tests/column_reference.rs`: the loader building
+      it, a real solve handing it a feed flow the file never states, each draw's
+      cut composition off the published stream, `Σ draws = feed`, draws at the
+      feed temperature, and reverse-feed refusal, plus loader guards for the
+      catch-all/ordering/free-node/unknown/duplicate/degree faults).
+      **Falsification found the obvious silent-bogus-flow gate was VACUOUS.** The
+      first version made a draw pipe absurdly restrictive and checked the draw did
+      not move — which passes *even with the `edge_flows` guard removed*, because
+      the engine's post-sweep override rewrites the (out-flowing, correct-sign)
+      draw anyway. That test pins the override, not the guard. The guard's real
+      hazard is the *wrong-sign* case: a product tank filled above the column
+      pressure whose ungated pressure-driven draw back-feeds into the sweep and
+      pollutes the feed mix. `a_full_product_tank_does_not_pollute_the_split`
+      pins that (light split holds at 0.2; without the guard it falls to 0.165),
+      and fails on the guard removal and nothing else. The Option-A stale-split
+      mutation (split the *stored* feed comp) fails **only**
+      `per_component_mass_survives_a_moving_feed_composition` — the moving-feed
+      transient gate — while every fixed-feed reference stays green, which is the
+      coverage-hole argument from [[unfalsifiable-is-a-claim-about-coverage]]
+      demonstrated rather than asserted.
+- [x] Demo: crude source → furnace → column → three product tanks
+      (`scenarios/crude_column.toml`). A five-cut crude is preheated and split
+      into naphtha / distillate / bottoms; the draws sum to the feed to 3e-14 and
+      each product tank fills with its own composition
+      (`cargo run -p refinery-cli -- run scenarios/crude_column.toml --ticks 200`).
 
-## M4 — Reactor
+**M3 acceptance criteria are met.** M3.1 (slate + composition transport) and M3.2
+(fixed cut-point column) complete; `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
+are green, the 1-component regression anchor held (every M1/M2 golden
+bit-identical), and the runnable-demo criterion is met by `crude_column.toml`
+above — the split is visible physics (three products, distinct compositions,
+mass-neutral to round-off), not a zero exit. M4 may begin.
+
+## M4 — Reactor (CURRENT)
 FCC 4-lump complex reactor + lookup-table simple reactor behind
 ReactionModel. Reference test against published lump yields.
 

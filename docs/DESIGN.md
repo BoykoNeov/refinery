@@ -646,15 +646,60 @@ number for an edge whose flow is prescribed. That is the hazard to guard, and it
 is a silent one: the bogus flow is finite, deterministic, and mass-conserving at
 both endpoints (both are infinite reservoirs), so nothing downstream complains.
 
+**Correction from building it — `edge_flows` only GUARDS; the authoritative
+draw flow is written post-sweep.** This box first read as if `edge_flows` would
+*compute* `splitᵢ · ṁ_feed`. It cannot, and the reason is per-component
+conservation, not convenience. The split needs the feed composition; the feed
+composition a column consumes this tick is the sweep's *resolved* one (the feed
+edge delivers `ṁ_feed · f_feed_fresh` into the column — you cannot make the
+intake stale without breaking the sweep); and per-component balance at the
+fixed, zero-volume column,
+
+```
+Σᵢ ṁ_drawᵢ · comp_i,c = ṁ_feed · f_feed_fresh,c ,
+```
+
+holds *only if the flow-split and the composition-split are built from the same
+feed composition*. Since the intake is fresh and the fresh feed composition does
+not exist until after the sweep, the draw flow cannot be finalized inside the
+solve. Splitting `edge_flows`'s *stored* (one-tick-stale) composition — the
+tempting literal reading — unbalances every component on any feed transient
+(worst on tick 0, where the stored value is the stagnant seed). So the split
+runs in **one** place, `energy::column_separation`, called twice from the same
+resolved feed: by `edge_composition_at` for the draw *compositions*, and by
+`Engine::tick` (after the sweep, before transport) for the draw *flows*.
+
+`edge_flows` therefore only **guards**: it reports every draw edge as zero. That
+kills the bogus pressure-driven magnitude, and — the part the original framing
+missed — it also stops the *wrong-sign* case. When a product tank fills above
+the column pressure, the ungated `ρ·branch.flow(dp)` runs the draw backwards
+(tank → column); fed to the sweep that spurious inflow pollutes the column's
+feed mix, so the very split that prescribes the draws is taken from a
+contaminated feed. Zeroing the draw for the sweep is what makes a draw insensitive
+to its product tank's back-pressure (a stated limitation below) actually hold.
+The consequence for `edge_flows`: under this arrangement it needs no slate and no
+composition, only the topology telling a draw edge from an ordinary one.
+
+This refines the verdict without touching it: (A) still wins, the column is still
+fixed-pressure zero-volume, still needs no prescribed-flow branch, still
+mass-neutral every tick. Only the *location* of the draw-flow write moved — out
+of the solve and into the post-sweep engine step. And "I7 is green by
+construction" (below) becomes a property to *hit*, not a freebie: it is true only
+under this split/composition consistency, which a fixed-feed reference cannot
+check (there stale = fresh). The moving-feed per-component gate
+(`per_component_mass_survives_a_moving_feed_composition`) is what earns it.
+
 To be precise about "no solver change": `network::fixed_pressure`, `classify`
 and `validate_degrees` each gain a `Column` arm — the last because the column is
 the **first 1-in-N-out unit**, where every existing device is 1-in-1-out, so
 that function's degree rule cannot simply be extended to it. What is *not*
 needed is the new machinery: no prescribed-flow branch type, no Jacobian change,
-no change to `assemble`. The only algorithmic change is the `edge_flows`
-override, and it carries one ordering obligation worth stating here rather than
-rediscovering in code: **the feed flow must be computed before the draws that
-scale off it**, which edge-id iteration order does not guarantee.
+no change to `assemble`. The algorithmic changes are the `edge_flows` guard and
+the post-sweep engine step above, and that step carries one ordering obligation
+worth stating rather than rediscovering in code: **the feed flow must be summed
+before the draws that scale off it** — trivially satisfied where it lives now
+(the engine reads the resolved feed edge, then writes every draw), but it was the
+buried assumption when the write was imagined inside `edge_flows`'s edge-id loop.
 
 Likewise, "reject a free node on a draw line at load time" is a topology
 *trace* of the column's outlet edges, not a field lookup. Cheap, but it is real

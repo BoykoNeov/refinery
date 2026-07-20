@@ -38,8 +38,9 @@
 
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
-use crate::graph::{EdgeId, NodeId, NodeKind, PlantGraph};
+use crate::graph::{ColumnDraw, EdgeId, NodeId, NodeKind, PlantGraph};
 use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Reference temperature for specific enthalpy: `h = cp·(T − T_REF)` [K].
@@ -165,29 +166,209 @@ fn upwind_end(graph: &PlantGraph, edge: EdgeId, mass_flow: f64) -> NodeId {
 
 /// The composition crossing `node`'s boundary along `edge`.
 ///
-/// The composition analogue of `edge_temperature_at`, and deliberately simpler:
-/// a pipe transforms the TEMPERATURE of what passes through it (ambient
-/// exchange) but not its composition — heat crosses the wall, mass does not. So
-/// there is no inlet/outlet distinction to make and `node` is not needed: both
+/// The composition analogue of `edge_temperature_at`, and — for every node but a
+/// column — deliberately simpler: a pipe transforms the TEMPERATURE of what
+/// passes through it (ambient exchange) but not its composition — heat crosses
+/// the wall, mass does not — so there is no inlet/outlet distinction and both
 /// ends see the upwind node's composition.
 ///
+/// A **column is the exception**: it is the first node whose outlets do NOT all
+/// carry its own composition. When the upwind node is a `Column` and this edge is
+/// one of its draws, the crossing composition is that draw's *cut* composition —
+/// `energy::column_separation` applied to the column's resolved (feed) mix — not
+/// the feed itself. This function is therefore the single owner of "which draw am
+/// I", the same way `edge_temperature_at` owns "which end am I". The result is
+/// `Cow`: borrowed from the map in the ordinary case, owned for a computed draw.
+///
 /// # Errors
-/// `SimError::Numerical` if the upwind node's composition is unresolved —
-/// returned rather than indexed so a sweep-ordering bug cannot panic (rule 5).
+/// `SimError::Numerical` if the upwind node's composition is unresolved (rule 5:
+/// returned rather than indexed so a sweep-ordering bug cannot panic), if a
+/// column's draw cannot be matched to this edge, or if separation fails.
 pub fn edge_composition_at<'a>(
     graph: &PlantGraph,
+    slate: &Slate,
     composition: &'a BTreeMap<NodeId, Composition>,
     edge: EdgeId,
     mass_flow: f64,
-) -> Result<&'a Composition, SimError> {
+) -> Result<Cow<'a, Composition>, SimError> {
     let upwind = upwind_end(graph, edge, mass_flow);
-    composition.get(&upwind).ok_or_else(|| {
+    let feed = composition.get(&upwind).ok_or_else(|| {
         SimError::Numerical(format!(
             "internal: upwind node '{}' of pipe '{}' unresolved during the composition sweep",
             graph.node(upwind).name,
             graph.pipe(edge).name
         ))
-    })
+    })?;
+
+    if let NodeKind::Column {
+        draws, smearing, ..
+    } = &graph.node(upwind).kind
+    {
+        // The upwind node is a column, so this edge leaves it: it must be a draw.
+        // Its cut composition is a function of the resolved feed mix (`feed`)
+        // alone — no tick history, which is what makes the reference a clean hand
+        // calc (DESIGN §5).
+        let draw = draw_index_for_edge(graph, edge, upwind, draws)?;
+        let separation = column_separation(slate, feed, draws, *smearing)?;
+        return Ok(Cow::Owned(separation[draw].composition.clone()));
+    }
+
+    Ok(Cow::Borrowed(feed))
+}
+
+/// Which draw of `column` the `edge` leaving it feeds, by matching the edge's far
+/// endpoint to a draw's outlet.
+///
+/// `column` is already known to be `edge`'s upwind end, so the *other* endpoint
+/// is the draw's outlet. An edge leaving a column that names no draw is a wiring
+/// error the loader is supposed to have rejected; it is an internal error here
+/// rather than a panic (rule 5).
+fn draw_index_for_edge(
+    graph: &PlantGraph,
+    edge: EdgeId,
+    column: NodeId,
+    draws: &[ColumnDraw],
+) -> Result<usize, SimError> {
+    let (from, to) = graph.endpoints(edge);
+    let outlet = if from == column { to } else { from };
+    draws
+        .iter()
+        .position(|d| d.outlet == outlet)
+        .ok_or_else(|| {
+            SimError::Numerical(format!(
+                "internal: edge '{}' leaves column '{}' but its outlet '{}' names no draw",
+                graph.pipe(edge).name,
+                graph.node(column).name,
+                graph.node(outlet).name
+            ))
+        })
+}
+
+/// The mass fraction of a component boiling at `tb` that lands on the HEAVY side
+/// of a cut point at `cut` [K], given a `smearing` ramp width [K].
+///
+/// A linear ramp centred on the cut: `0` a half-width below, `0.5` exactly at the
+/// cut, `1` a half-width above. `smearing = 0` is the sharp splitter — a step,
+/// with a component boiling exactly on the boundary shared evenly. The `s <= 0`
+/// branch also guards the `(tb − cut)/s` divide that the sharp case would hit.
+fn cut_fraction_above(tb: f64, cut: f64, smearing: f64) -> f64 {
+    if smearing <= 0.0 {
+        if tb < cut {
+            0.0
+        } else if tb > cut {
+            1.0
+        } else {
+            0.5
+        }
+    } else {
+        ((tb - cut) / smearing + 0.5).clamp(0.0, 1.0)
+    }
+}
+
+/// One draw's separation result: the fraction of the feed mass it takes and the
+/// composition that fraction carries.
+#[derive(Debug, Clone)]
+pub struct DrawSeparation {
+    /// `splitᵢ = Σ_c f_feed,c · w_ic` — the mass fraction of the feed to draw i.
+    pub split: f64,
+    /// `comp_i,c = f_feed,c · w_ic / splitᵢ` — draw i's composition.
+    pub composition: Composition,
+}
+
+/// Split a column feed into its draws by boiling range (DESIGN §5).
+///
+/// The single owner of the separation math: `edge_composition_at` calls it for a
+/// draw's composition, and `Engine::tick` calls it for the draw *flows*, so the
+/// two cannot disagree about how the feed is divided — which is exactly what
+/// per-component conservation at the column requires.
+///
+/// For each draw `i` a component `c` gets a weight `w_ic` from a ramp across the
+/// cut points; the split and per-draw composition are
+///
+/// ```text
+/// splitᵢ    = Σ_c f_feed,c · w_ic
+/// comp_i,c  = f_feed,c · w_ic / splitᵢ
+/// ```
+///
+/// **`Σᵢ w_ic = 1` holds by construction, not by luck.** Writing draw `i`'s
+/// weight as a difference of cumulative "fraction below cut" terms telescopes:
+/// `w_0 = 1 − h₀`, `w_i = h_{i−1} − h_i`, `w_{last} = h_{last−1}`, summing to 1
+/// for every component. With cut temperatures strictly increasing, each `h_{i−1}
+/// ≥ h_i` pointwise, so every weight is non-negative without a clamp. The splits
+/// are then normalized defensively so `Σᵢ splitᵢ = 1` to machine precision — the
+/// identity that makes the column mass-neutral and (via M3.1's linearity, since
+/// `Σᵢ splitᵢ·cpᵢ = cp_feed`) energy-neutral both.
+///
+/// A draw whose band catches no feed component has `splitᵢ = 0`; it carries the
+/// feed composition as an inert placeholder (its flow will be zero), never a
+/// divide-by-zero.
+///
+/// # Errors
+/// `SimError::Numerical` if a computed draw composition is not a valid
+/// composition (should not happen for a valid feed, but checked rather than
+/// unwrapped — rule 5).
+pub fn column_separation(
+    slate: &Slate,
+    feed: &Composition,
+    draws: &[ColumnDraw],
+    smearing: Kelvin,
+) -> Result<Vec<DrawSeparation>, SimError> {
+    let n = draws.len();
+    let s = smearing.value();
+    let f = feed.fractions();
+
+    // Cumulative "fraction of a component at or below draw i's upper cut". The
+    // heaviest draw (`upper_cut = None`) is the open catch-all: everything is at
+    // or below +∞, so its cumulative is 1.
+    let cumulative_below = |i: usize, tb: f64| -> f64 {
+        match draws[i].upper_cut {
+            Some(cut) => 1.0 - cut_fraction_above(tb, cut.value(), s),
+            None => 1.0,
+        }
+    };
+
+    let mut result: Vec<DrawSeparation> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut weights = vec![0.0; slate.len()];
+        let mut split = 0.0;
+        for (c, &fc) in f.iter().enumerate() {
+            let tb = slate.get(c).tb.value();
+            let c_i = cumulative_below(i, tb);
+            let c_prev = if i == 0 {
+                0.0
+            } else {
+                cumulative_below(i - 1, tb)
+            };
+            let w_ic = c_i - c_prev; // ≥ 0 since cuts increase ⇒ c_i ≥ c_prev
+            let contribution = fc * w_ic;
+            weights[c] = contribution;
+            split += contribution;
+        }
+        let composition = if split > 0.0 {
+            Composition::from_weights(&weights).map_err(|e| {
+                SimError::Numerical(format!(
+                    "column draw {i} produced no valid composition: {e}"
+                ))
+            })?
+        } else {
+            // Inert draw: no feed component in its band. Its flow is zero, so the
+            // placeholder is never carried anywhere; the feed keeps it finite.
+            feed.clone()
+        };
+        result.push(DrawSeparation { split, composition });
+    }
+
+    // Defensive normalization: the telescoping sum is 1 in exact arithmetic, so
+    // this only removes float drift, but it is what the DESIGN note names as the
+    // mechanism that *enforces* `Σ splitᵢ = 1` rather than hoping for it. Guarded
+    // against an all-zero feed band that no valid composition can produce.
+    let total: f64 = result.iter().map(|d| d.split).sum();
+    if total > 0.0 {
+        for d in &mut result {
+            d.split /= total;
+        }
+    }
+    Ok(result)
 }
 
 /// The temperature at which fluid crosses `node`'s boundary along `edge` [K].
@@ -279,7 +460,7 @@ pub fn stream_cp_at(
     edge: EdgeId,
     mass_flow: f64,
 ) -> Result<JPerKgK, SimError> {
-    Ok(edge_composition_at(graph, composition, edge, mass_flow)?.mixture_cp(slate))
+    Ok(edge_composition_at(graph, slate, composition, edge, mass_flow)?.mixture_cp(slate))
 }
 
 /// Total heat delivered into a node [W]: external heat, plus the operating duty
@@ -376,6 +557,12 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
             | NodeKind::HeatExchanger
+            // A column holds no inventory: its composition is the instantaneous
+            // feed mix and its draws separate that, never a holdup (DESIGN §5).
+            // So it is swept in flow order like any zero-volume node — its own
+            // temperature/composition are the mix of its ONE inflow (the feed);
+            // the draws are outflows and do not enter that mix.
+            | NodeKind::Column { .. }
     )
 }
 
@@ -403,7 +590,8 @@ pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Compositio
         | NodeKind::Valve { .. }
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
-        | NodeKind::HeatExchanger => None,
+        | NodeKind::HeatExchanger
+        | NodeKind::Column { .. } => None,
     }
 }
 
@@ -427,7 +615,12 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         | NodeKind::Valve { .. }
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
-        | NodeKind::HeatExchanger => None,
+        | NodeKind::HeatExchanger
+        // A column's temperature is its feed mix — the draws leave at the feed
+        // temperature (DESIGN §5), which falls out for free: a zero-volume node
+        // with one inflow mixes to that inflow's temperature, and the draws read
+        // the column as their upwind end. No column-specific temperature code.
+        | NodeKind::Column { .. } => None,
     }
 }
 
@@ -742,7 +935,7 @@ fn mix_compositions(
         // positive-into-this-node, which would name the wrong end on every edge
         // stored pointing inward. Same trap as the temperature path.
         let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
-        let incoming = edge_composition_at(graph, composition, edge, flow)?;
+        let incoming = edge_composition_at(graph, slate, composition, edge, flow)?;
         for (weight, fraction) in weights.iter_mut().zip(incoming.fractions()) {
             *weight += into_node * fraction;
         }
@@ -1903,6 +2096,176 @@ mod tests {
                 out.value() > 273.15 && out.value() < T_AMBIENT.value(),
                 "a stream below ambient must warm toward it, got {}",
                 out.value()
+            );
+        }
+    }
+
+    /// `column_separation` — the cut-point splitter's math, in isolation, against
+    /// hand calculations. This is the gate the DESIGN note names as the ONLY one
+    /// with discriminating power over a column: a splitter conserves every
+    /// component identically, so I7 is green by construction and cannot see a cut
+    /// boundary off by one or a disabled smearing — but a per-draw *composition*
+    /// vector against a hand calc can.
+    mod column_separation_tests {
+        use super::*;
+        use crate::components::{Composition, PseudoComponent, Slate};
+        use crate::graph::{ColumnDraw, NodeId};
+        use crate::units::{JPerKgK, KgPerM3, KgPerMol};
+
+        /// A slate whose only meaningful property here is each cut's boiling
+        /// point — density/cp/MW are placeholders, since separation reads only
+        /// `tb`.
+        fn slate_with_tbs(tbs: &[f64]) -> Slate {
+            Slate::new(
+                tbs.iter()
+                    .enumerate()
+                    .map(|(i, &tb)| PseudoComponent {
+                        name: format!("cut{i}"),
+                        tb: Kelvin(tb),
+                        molar_mass: KgPerMol(0.1),
+                        density: KgPerM3(800.0),
+                        cp: JPerKgK(2000.0),
+                    })
+                    .collect(),
+            )
+            .unwrap()
+        }
+
+        /// The outlet id is unused by `column_separation` (it splits by boiling
+        /// range, not by which tank a draw feeds), so a dummy id suffices.
+        fn draw(upper_cut_k: Option<f64>) -> ColumnDraw {
+            ColumnDraw {
+                outlet: NodeId(0),
+                upper_cut: upper_cut_k.map(Kelvin),
+            }
+        }
+
+        /// SHARP splitter (smearing 0): each component lands wholly in the one
+        /// band its boiling point falls in. Four cuts at 50/150/250/350 K, three
+        /// draws split at 100 and 300 K, feed [0.1, 0.2, 0.3, 0.4]:
+        ///
+        ///   draw 0 (< 100): cut0 only            → split 0.1, comp [1,0,0,0]
+        ///   draw 1 (100–300): cut1, cut2         → split 0.5, comp [0,0.4,0.6,0]
+        ///   draw 2 (> 300): cut3 only            → split 0.4, comp [0,0,0,1]
+        ///
+        /// THE MUTATION THIS EXISTS FOR: a cut boundary off by one component
+        /// moves cut2 (250 K) from draw 1 into draw 0, which no mass balance sees
+        /// — total in still equals total out — but which this per-draw comp
+        /// assertion fails loudly on.
+        #[test]
+        fn sharp_splitter_assigns_each_cut_to_its_band() {
+            let slate = slate_with_tbs(&[50.0, 150.0, 250.0, 350.0]);
+            let feed = Composition::from_weights(&[0.1, 0.2, 0.3, 0.4]).unwrap();
+            let draws = [draw(Some(100.0)), draw(Some(300.0)), draw(None)];
+
+            let sep = column_separation(&slate, &feed, &draws, Kelvin(0.0)).unwrap();
+
+            let splits: Vec<f64> = sep.iter().map(|d| d.split).collect();
+            assert!(
+                (splits[0] - 0.1).abs() < 1e-12
+                    && (splits[1] - 0.5).abs() < 1e-12
+                    && (splits[2] - 0.4).abs() < 1e-12,
+                "splits should be [0.1, 0.5, 0.4], got {splits:?}"
+            );
+            let expect = [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 0.4, 0.6, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ];
+            for (i, want) in expect.iter().enumerate() {
+                for (c, w) in want.iter().enumerate() {
+                    assert!(
+                        (sep[i].composition.fractions()[c] - w).abs() < 1e-12,
+                        "draw {i} comp[{c}] should be {w}, got {}",
+                        sep[i].composition.fractions()[c]
+                    );
+                }
+            }
+        }
+
+        /// SMEARED splitter: a component boiling INSIDE the ramp of a cut is split
+        /// between the two adjacent draws. Two cuts at 175/400 K, one boundary at
+        /// 200 K, smearing 100 K (half-width 50, band 150–250):
+        ///
+        ///   cut0 (175 K): fraction heavy = (175−200)/100 + 0.5 = 0.25
+        ///                 → 0.75 to draw 0, 0.25 to draw 1
+        ///   cut1 (400 K): far above       → 1.0 to draw 1
+        ///
+        /// Feed [0.5, 0.5]:
+        ///   split 0 = 0.5·0.75            = 0.375, comp [1, 0]
+        ///   split 1 = 0.5·0.25 + 0.5·1.0  = 0.625, comp [0.2, 0.8]
+        ///
+        /// THE MUTATION THIS EXISTS FOR: smearing silently disabled (treated as
+        /// 0). cut0 would then land WHOLLY in draw 0 — split 0.5, draw 1 comp
+        /// [0, 1] — so this assertion, unlike the sharp one, cannot pass unless
+        /// the ramp is actually applied. The sharp test alone leaves smearing
+        /// untested (its answer is the same at smearing 0), which is why both
+        /// exist.
+        #[test]
+        fn smearing_splits_a_boundary_cut_between_adjacent_draws() {
+            let slate = slate_with_tbs(&[175.0, 400.0]);
+            let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+            let draws = [draw(Some(200.0)), draw(None)];
+
+            let sep = column_separation(&slate, &feed, &draws, Kelvin(100.0)).unwrap();
+
+            assert!(
+                (sep[0].split - 0.375).abs() < 1e-12 && (sep[1].split - 0.625).abs() < 1e-12,
+                "smeared splits should be [0.375, 0.625], got [{}, {}]",
+                sep[0].split,
+                sep[1].split
+            );
+            let d1 = sep[1].composition.fractions();
+            assert!(
+                (d1[0] - 0.2).abs() < 1e-12 && (d1[1] - 0.8).abs() < 1e-12,
+                "draw 1 (with smearing) should be [0.2, 0.8], got {d1:?}; a sharp \
+                 splitter would give [0, 1] — this is what a disabled smearing fails"
+            );
+        }
+
+        /// `Σᵢ splitᵢ = 1` for any feed and any cut structure — the identity that
+        /// makes the column mass-neutral (and, via linearity, energy-neutral). It
+        /// holds by telescoping before the defensive normalization, so this is a
+        /// tight bound. A five-cut feed through four draws with a nontrivial
+        /// smearing exercises overlapping ramps.
+        #[test]
+        fn splits_always_sum_to_one() {
+            let slate = slate_with_tbs(&[60.0, 140.0, 210.0, 300.0, 420.0]);
+            let feed = Composition::from_weights(&[0.05, 0.30, 0.15, 0.10, 0.40]).unwrap();
+            let draws = [
+                draw(Some(120.0)),
+                draw(Some(250.0)),
+                draw(Some(360.0)),
+                draw(None),
+            ];
+
+            let sep = column_separation(&slate, &feed, &draws, Kelvin(40.0)).unwrap();
+            let total: f64 = sep.iter().map(|d| d.split).sum();
+            assert!(
+                (total - 1.0).abs() < 1e-12,
+                "Σ splitᵢ must be 1 (mass neutrality), got {total}"
+            );
+        }
+
+        /// A draw whose band catches NO feed component has split 0 and carries the
+        /// feed composition as an inert placeholder — never a divide-by-zero. Here
+        /// the middle draw's band (150–250 K) contains neither cut (100 K, 400 K).
+        #[test]
+        fn an_empty_band_draw_is_zero_split_and_carries_the_feed() {
+            let slate = slate_with_tbs(&[100.0, 400.0]);
+            let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+            let draws = [draw(Some(150.0)), draw(Some(250.0)), draw(None)];
+
+            let sep = column_separation(&slate, &feed, &draws, Kelvin(0.0)).unwrap();
+            assert!(
+                sep[1].split.abs() < 1e-12,
+                "the empty middle band must take no mass, got split {}",
+                sep[1].split
+            );
+            assert_eq!(
+                sep[1].composition.fractions(),
+                feed.fractions(),
+                "an empty draw carries the feed composition as an inert placeholder"
             );
         }
     }

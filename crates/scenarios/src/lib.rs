@@ -14,7 +14,7 @@ use refinery_core::components::{Composition, PseudoComponent, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    HeatExchangerCoupling, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState,
+    ColumnDraw, HeatExchangerCoupling, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, ReactionModel, ThermoModel};
@@ -187,6 +187,39 @@ pub enum NodeDef {
     /// every side must appear in exactly once.
     HeatExchanger,
     Junction,
+    /// Fixed cut-point distillation column (simple fidelity). One feed in, N
+    /// draws out, split by boiling range (docs/DESIGN.md §5).
+    Column {
+        /// Operating pressure [bar]. Pinned like a source/sink/tank; real columns
+        /// run on pressure control and the overhead pressure sets the cut
+        /// structure.
+        pressure_bar: f64,
+        /// Ramp width across each cut point [K]. A temperature WIDTH, so no
+        /// °C→K offset (a delta of 10 °C is 10 K). `0` is a sharp splitter.
+        #[serde(default)]
+        smearing_k: f64,
+        /// Draws in ascending boiling-point order, lightest first. Each names the
+        /// product node it feeds and the top of its boiling band. See `DrawDef`.
+        draws: Vec<DrawDef>,
+    },
+}
+
+/// One `draws = [...]` entry of a `column` node.
+///
+/// The list order is the cut order: draw `i`'s band runs from the previous
+/// draw's `up_to_c` (or −∞ for the lightest) up to its own. The heaviest draw
+/// OMITS `up_to_c` — it is the open-topped catch-all that takes everything above
+/// the last cut, so no component can fall off the end and be lost. Every other
+/// draw must set it, strictly increasing. Outlets are addressed by name, matching
+/// the slate's positional-vector / name-addressed-file convention.
+#[derive(Debug, Deserialize)]
+pub struct DrawDef {
+    /// Name of the product node this draw feeds.
+    pub outlet: String,
+    /// Top of this draw's boiling band [°C, absolute]. Omitted on (and only on)
+    /// the heaviest, last draw.
+    #[serde(default)]
+    pub up_to_c: Option<f64>,
 }
 fn default_true() -> bool {
     true
@@ -255,6 +288,14 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
             heat_input: Watt::ZERO,
         });
     }
+    // Step 2a: resolve column draws now that every node exists — a draw may name
+    // an outlet defined later in the file, exactly like an exchanger coupling.
+    // This is where a draw's outlet must be a pressure-fixing node (the
+    // free-node-on-a-draw-line rejection, DESIGN §5); the pipe-level topology
+    // (one pipe per draw, correct direction) is checked in `validate_topology`
+    // once the pipes exist.
+    resolve_column_draws(&mut graph, scenario, &slate)?;
+
     for pipe in &scenario.pipes {
         validate_pipe_def(pipe)?;
         let from = graph.find_node(&pipe.from).ok_or_else(|| {
@@ -488,6 +529,18 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
         },
         NodeDef::HeatExchanger => NodeKind::HeatExchanger,
         NodeDef::Junction => NodeKind::Junction,
+        NodeDef::Column {
+            pressure_bar,
+            smearing_k,
+            ..
+        } => NodeKind::Column {
+            pressure: bar_to_pa(*pressure_bar),
+            // A temperature WIDTH, so no °C→K offset — a 10 °C ramp is 10 K.
+            smearing: Kelvin(*smearing_k),
+            // Draws are resolved in a second pass, once every node exists so a
+            // draw can name an outlet defined later in the file (like couplings).
+            draws: Vec::new(),
+        },
     })
 }
 
@@ -539,6 +592,27 @@ fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
                  be finite and >= 0. UA is a conductance; the DIRECTION of ambient \
                  exchange comes from (T_ambient − T_tank), so a negative value does \
                  not mean 'loses heat' — it drives the tank away from ambient."
+            )));
+        }
+    }
+    if let NodeDef::Column {
+        pressure_bar,
+        smearing_k,
+        ..
+    } = def
+    {
+        if !pressure_bar.is_finite() || *pressure_bar <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' has pressure_bar = {pressure_bar}: it must be finite and > 0 \
+                 (a pinned operating pressure)."
+            )));
+        }
+        // Zero is legal — the sharp splitter. Negative is not: a ramp width is a
+        // magnitude, and `smearing < 0` would flip the ramp's slope.
+        if !smearing_k.is_finite() || *smearing_k < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' has smearing_k = {smearing_k}: it must be finite and >= 0 \
+                 (a ramp width; 0 is a sharp splitter)."
             )));
         }
     }
@@ -642,6 +716,117 @@ fn build_couplings(graph: &mut PlantGraph, defs: &[ExchangerDef]) -> Result<(), 
     Ok(())
 }
 
+/// Resolve every `column` node's draws (name → NodeId) and reject every way a
+/// draw list can be malformed. Runs after all nodes exist so a draw may name an
+/// outlet defined later in the file, exactly like an exchanger coupling.
+///
+/// Each check rules out a plant that would otherwise load and be wrong:
+///
+/// - **Fewer than two draws** separates nothing — use a pipe.
+/// - **The catch-all convention** — exactly the LAST draw omits `up_to_c`. The
+///   heaviest draw is open-topped so every component lands somewhere; if it had a
+///   finite top, components above it would be split into no draw and lost, a
+///   silent mass leak. Making "which draw is the residue" a syntactic fact keeps
+///   conservation a load-time guarantee.
+/// - **Cut points strictly increasing** — a flat or inverted cut is an empty or
+///   backwards band.
+/// - **Distinct outlets** — the engine maps a draw edge to a draw by its outlet,
+///   so the mapping has to be one-to-one.
+/// - **Outlet is a pressure-fixing node** — a free node on a draw line (a valve
+///   or junction) puts a prescribed edge back into the Jacobian, which M3.2 does
+///   not support; deferred, not half-supported (DESIGN §5).
+fn resolve_column_draws(
+    graph: &mut PlantGraph,
+    scenario: &ScenarioFile,
+    slate: &Slate,
+) -> Result<(), SimError> {
+    for (name, def) in &scenario.nodes {
+        let NodeDef::Column {
+            draws: draw_defs, ..
+        } = def
+        else {
+            continue;
+        };
+        if draw_defs.len() < 2 {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' has {} draw(s): a column needs at least two, else it \
+                 separates nothing (use a pipe).",
+                draw_defs.len()
+            )));
+        }
+
+        let last = draw_defs.len() - 1;
+        let mut prev_cut = f64::NEG_INFINITY;
+        let mut resolved: Vec<ColumnDraw> = Vec::with_capacity(draw_defs.len());
+        for (i, d) in draw_defs.iter().enumerate() {
+            // Exactly the last draw omits up_to_c — the open catch-all.
+            let upper_cut_c = match (i == last, d.up_to_c) {
+                (true, None) => None,
+                (false, Some(c)) => Some(c),
+                (true, Some(_)) => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draw '{}' is the heaviest (last) draw and must OMIT \
+                         up_to_c: it is the catch-all for everything above the last cut, so a \
+                         finite top would drop every heavier component.",
+                        d.outlet
+                    )))
+                }
+                (false, None) => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draw '{}' omits up_to_c but is not the last draw: only \
+                         the heaviest (last) draw may — every other draw needs a boiling-range top.",
+                        d.outlet
+                    )))
+                }
+            };
+            if let Some(c) = upper_cut_c {
+                let cut_k = c_to_k(c).value();
+                if cut_k <= prev_cut {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draw '{}' has up_to_c = {c} °C, not strictly above the \
+                         previous cut: draws must be listed in ascending boiling order.",
+                        d.outlet
+                    )));
+                }
+                prev_cut = cut_k;
+            }
+
+            if draw_defs[..i].iter().any(|e| e.outlet == d.outlet) {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' draws to '{}' more than once: each draw feeds a distinct \
+                     product node.",
+                    d.outlet
+                )));
+            }
+
+            let outlet = graph.find_node(&d.outlet).ok_or_else(|| {
+                SimError::Scenario(format!(
+                    "column '{name}' draw references unknown outlet node '{}'",
+                    d.outlet
+                ))
+            })?;
+            if !fixed_pressure_node(graph.node(outlet), slate) {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' draws to '{}', a free (non-pressure-fixing) node. A draw \
+                     line must end at a pressure-fixing node (tank/sink/atmosphere); a valve or \
+                     junction on a draw is not supported at this fidelity.",
+                    d.outlet
+                )));
+            }
+            resolved.push(ColumnDraw {
+                outlet,
+                upper_cut: upper_cut_c.map(c_to_k),
+            });
+        }
+
+        let col_id = graph.find_node(name).expect("column node was just added");
+        if let NodeKind::Column { draws, .. } = &mut graph.node_mut(col_id).kind {
+            *draws = resolved;
+        }
+    }
+    Ok(())
+}
+
 fn bar_to_pa(bar: f64) -> Pascal {
     Pascal(bar * 1e5)
 }
@@ -695,6 +880,46 @@ fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(), SimError> 
                  problem is singular",
                 graph.node(member).name
             )));
+        }
+    }
+
+    // (c) Column draw wiring. `validate_degrees` above pins the COUNTS (1 feed
+    //     in, N draws out by graph direction); this pins the TARGETS, so a draw's
+    //     splitᵢ·ṁ_feed is routed to the product the file named and is never
+    //     silently dropped or doubled. An outgoing edge to a non-draw node, or a
+    //     draw with zero or two outlet pipes, is a wiring error caught here.
+    for nid in graph.node_ids() {
+        let NodeKind::Column { draws, .. } = &graph.node(nid).kind else {
+            continue;
+        };
+        let mut outlet_hits: BTreeMap<NodeId, usize> =
+            draws.iter().map(|d| (d.outlet, 0usize)).collect();
+        for (eid, other, incoming) in graph.incident(nid) {
+            if incoming {
+                continue; // the feed edge; its single-ness is a degree check
+            }
+            match outlet_hits.get_mut(&other) {
+                Some(count) => *count += 1,
+                None => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{}' has an outlet pipe '{}' to '{}', which is not one of its \
+                         draws: every pipe leaving a column must be a declared draw.",
+                        graph.node(nid).name,
+                        graph.pipe(eid).name,
+                        graph.node(other).name
+                    )))
+                }
+            }
+        }
+        for (outlet, count) in &outlet_hits {
+            if *count != 1 {
+                return Err(SimError::Scenario(format!(
+                    "column '{}' draw to '{}' is fed by {count} pipe(s); it needs exactly one \
+                     (a draw carries splitᵢ·ṁ_feed and must have a single outlet edge).",
+                    graph.node(nid).name,
+                    graph.node(*outlet).name
+                )));
+            }
         }
     }
     Ok(())

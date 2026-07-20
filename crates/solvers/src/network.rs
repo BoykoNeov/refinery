@@ -67,23 +67,34 @@ pub struct Classification {
 /// - **HeatExchanger:** the same process constraint, per SIDE. "The stream
 ///   through this side" is what the ΔT-effectiveness model transfers heat
 ///   between, and a branched side would leave `C_min` naming nothing definite.
+/// - **Column:** the ONE unit that is not 1-in-1-out. It needs exactly one feed
+///   (inlet) but exactly `draws.len()` outlets, one per draw. `ṁ_drawᵢ = splitᵢ
+///   · ṁ_feed` names one definite feed stream to split; two feeds would leave
+///   "the feed's boiling range" ambiguous, and a draw with no outlet edge would
+///   silently drop `splitᵢ · ṁ_feed` and break mass conservation.
 pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);
-        if matches!(
-            node.kind,
+        let inc = graph.incident(nid);
+        let n_in = inc.iter().filter(|(_, _, incoming)| *incoming).count();
+        let n_out = inc.len() - n_in;
+        let expected: Option<(usize, usize)> = match &node.kind {
             NodeKind::Pump { .. }
-                | NodeKind::Valve { .. }
-                | NodeKind::Furnace { .. }
-                | NodeKind::Cooler { .. }
-                | NodeKind::HeatExchanger
-        ) {
-            let inc = graph.incident(nid);
-            let n_in = inc.iter().filter(|(_, _, incoming)| *incoming).count();
-            let n_out = inc.len() - n_in;
-            if n_in != 1 || n_out != 1 {
+            | NodeKind::Valve { .. }
+            | NodeKind::Furnace { .. }
+            | NodeKind::Cooler { .. }
+            | NodeKind::HeatExchanger => Some((1, 1)),
+            // One feed, one outlet per draw. The feed is stored INTO the column
+            // and each draw OUT of it (the loader enforces the direction), so the
+            // graph-direction in/out counts are exactly (1, N).
+            NodeKind::Column { draws, .. } => Some((1, draws.len())),
+            _ => None,
+        };
+        if let Some((want_in, want_out)) = expected {
+            if n_in != want_in || n_out != want_out {
                 return Err(SimError::Numerical(format!(
-                    "{} ({:?}) must have exactly 1 inlet + 1 outlet edge, has {n_in} in / {n_out} out",
+                    "{} ({:?}) must have exactly {want_in} inlet + {want_out} outlet edge(s), \
+                     has {n_in} in / {n_out} out",
                     node.name, nid
                 )));
             }
@@ -102,6 +113,11 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
             let rho = t.composition.mixture_density(slate);
             Some(t.bottom_pressure(rho).value())
         }
+        // A column runs on pressure control: its operating pressure is pinned,
+        // exactly like a Source/Sink/Tank, so the feed edge is an ordinary
+        // pressure-driven edge into a fixed node and the draws (fixed→fixed) never
+        // enter the Jacobian (DESIGN §5).
+        NodeKind::Column { pressure, .. } => Some(pressure.value()),
         // Furnaces and coolers pin no pressure: at M2 both are hydraulically
         // pass-throughs, so they are free nodes whose pressure the network
         // determines.
@@ -245,6 +261,18 @@ pub fn anchored_set(
 
 /// Mass flow (kg/s) per edge in graph direction; inert edges (either endpoint
 /// unanchored) report 0. Returns (flows, throughput = max|ṁ|).
+///
+/// **Column draw edges are guarded to zero here, not computed.** A draw's flow is
+/// `splitᵢ · ṁ_feed`, prescribed by the feed's composition, and both endpoints
+/// (column and product tank) are fixed reservoirs — so the pressure-driven
+/// `ρ·branch.flow(dp)` this function would otherwise report is a finite,
+/// deterministic, mass-conserving *wrong* number that nothing downstream flags
+/// (DESIGN §5's silent hazard). It also has the wrong SIGN when a product tank
+/// fills above the column pressure, which would feed the sweep a spurious inflow
+/// and corrupt the column's mix. The authoritative draw flow is written
+/// post-sweep by `Engine::tick`, once the feed composition is resolved; here we
+/// only refuse to leak a bogus value. This needs no slate or composition — only
+/// the graph topology telling a draw edge from an ordinary one.
 pub fn edge_flows(
     graph: &PlantGraph,
     compiled: &BTreeMap<EdgeId, CompiledEdge>,
@@ -256,7 +284,9 @@ pub fn edge_flows(
     let mut throughput = 0.0f64;
     for eid in graph.edge_ids() {
         let c = &compiled[&eid];
-        let mdot = if anchored.contains(&c.src) && anchored.contains(&c.tgt) {
+        let mdot = if is_column_draw_edge(graph, eid) {
+            0.0
+        } else if anchored.contains(&c.src) && anchored.contains(&c.tgt) {
             let dp = pressures[&c.src] - pressures[&c.tgt];
             c.rho * c.branch.flow(dp, eps)
         } else {
@@ -266,6 +296,22 @@ pub fn edge_flows(
         flows.insert(eid, mdot);
     }
     (flows, throughput)
+}
+
+/// True if `edge` is a column draw: one of its endpoints is a `Column` and the
+/// *other* endpoint is one of that column's draw outlets. The feed edge — whose
+/// far endpoint is the feeder, not a draw — is not matched, so it stays an
+/// ordinary pressure-driven edge.
+pub fn is_column_draw_edge(graph: &PlantGraph, edge: EdgeId) -> bool {
+    let (from, to) = graph.endpoints(edge);
+    for (maybe_column, other) in [(from, to), (to, from)] {
+        if let NodeKind::Column { draws, .. } = &graph.node(maybe_column).kind {
+            if draws.iter().any(|d| d.outlet == other) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Build the solution with a final NaN/Inf scan (rule 5: nothing non-finite

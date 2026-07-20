@@ -1,0 +1,156 @@
+# M3.2 demo plant: crude → furnace → fixed-cut-point column → three products.
+#
+# The milestone's showcase. A five-cut crude is heated in a furnace and fed to a
+# simple distillation column, which splits it by boiling range into three draws —
+# an overhead naphtha, a middle distillate, and a bottoms residue — each landing
+# in its own product tank with its OWN composition.
+#
+# What makes the column unlike every earlier unit (docs/DESIGN.md §5): it is
+# one-feed-in, three-draws-out, and the split ratio comes from the feed's
+# COMPOSITION, not from the draws' pipe resistances. The column is a fixed-
+# pressure, zero-volume node; its draw flows are ṁ_drawᵢ = splitᵢ · ṁ_feed with
+# Σ splitᵢ = 1, so it is mass-neutral every tick with no holdup. A draw is
+# insensitive to its product tank's back-pressure — the column keeps pushing even
+# as a tank fills (a stated limitation of this fidelity, not an oversight).
+#
+# Units at this boundary are human-friendly (bar, °C, MW); the loader converts to
+# SI. Cut points (`up_to_c`) are absolute boiling temperatures; `smearing_k` is a
+# ramp WIDTH, so a component boiling within it of a boundary lands partly in each
+# adjacent draw.
+
+[meta]
+name = "crude_column"
+description = "Crude heated in a furnace and separated into three products by a fixed cut-point column."
+
+[simulation]
+dt = 0.1            # seconds per tick
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+# --- the crude slate: five boiling-point cuts, lightest first ----------------
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[[components]]
+name = "kerosene"
+tb_c = 220.0
+molar_mass_kg_per_mol = 0.170
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2050.0
+
+[[components]]
+name = "diesel"
+tb_c = 300.0
+molar_mass_kg_per_mol = 0.220
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "residue"
+tb_c = 400.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 950.0
+cp_j_per_kg_k = 1900.0
+
+# --- the plant ---------------------------------------------------------------
+
+[nodes.crude_source]
+type = "source"
+pressure_bar = 6.0
+temperature_c = 150.0
+composition = { light_naphtha = 0.12, heavy_naphtha = 0.18, kerosene = 0.25, diesel = 0.25, residue = 0.20 }
+
+# A fired heater raising the crude toward its flash temperature. Zero-volume, a
+# hydraulic pass-through; the duty is delivered to the stream (docs/DESIGN.md §4a).
+[nodes.preheater]
+type = "furnace"
+duty_mw = 8.0
+
+# The column. Pinned pressure (columns run on pressure control); three draws in
+# ascending boiling order. The last draw OMITS up_to_c — it is the residue, the
+# open-topped catch-all for everything above the last cut.
+[nodes.column]
+type = "column"
+pressure_bar = 1.6
+smearing_k = 25.0
+draws = [
+    { outlet = "naphtha_tank", up_to_c = 185.0 },
+    { outlet = "distillate_tank", up_to_c = 340.0 },
+    { outlet = "bottoms_tank" },
+]
+
+[nodes.naphtha_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { light_naphtha = 1.0 }
+
+[nodes.distillate_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { kerosene = 1.0 }
+
+[nodes.bottoms_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { residue = 1.0 }
+
+# --- pipes -------------------------------------------------------------------
+
+[[pipes]]
+name = "crude_line"
+from = "crude_source"
+to = "preheater"
+length_m = 30.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "hot_feed_line"
+from = "preheater"
+to = "column"
+length_m = 15.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "naphtha_draw"
+from = "column"
+to = "naphtha_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "distillate_draw"
+from = "column"
+to = "distillate_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "bottoms_draw"
+from = "column"
+to = "bottoms_tank"
+length_m = 20.0
+diameter_m = 0.12
