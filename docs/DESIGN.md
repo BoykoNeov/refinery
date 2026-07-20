@@ -579,6 +579,179 @@ to it, and the symmetry premise of the mixing reference test needs rechecking
   pseudo-component to a draw by boiling range, with a smearing parameter for
   imperfect separation.
 
+### Simple column (M3.2) — specified before building
+
+The roadmap opened M3.2 with a fork — **(A)** cut points fixed and draw rates
+following, versus **(B)** draw valves fixed and cut points emergent — and with a
+flagged risk: (A) appeared to need a *prescribed-flow branch*
+(`flow = setpoint`, `dflow/dp = 0`) in a solve that is entirely pressure-driven,
+which could leave the Jacobian singular. **The verdict is (A), and the risk turns
+out to be avoidable rather than merely survivable: the prescribed-flow branch is
+not needed at all.** The reasoning below is the point of this note; the shape it
+lands on is a consequence.
+
+**Why (B) loses, in one line.** Per-draw composition would depend on the
+hydraulic solve, so the reference number this unit needs (see "What the tests
+must pin") becomes hydraulics-dependent and effectively unpinnable. That is
+decisive on its own.
+
+**Well-posedness — the dichotomy that kills the naive (A).** Suppose each draw
+is prescribed from the *previous* tick's feed, `sᵢ = yieldᵢ · ṁ_feed_prev`, as
+the roadmap sketched. There are only two ways to treat the column node, and both
+fail:
+
+- **Column free (zero-volume, pressure an unknown).** Its residual is
+  `R_C = ṁ_feed(P_C) − Σᵢ sᵢ = 0`. Since `Σᵢ yieldᵢ = 1`, that reads
+  `ṁ_feed_now = ṁ_feed_prev`. One equation, one unknown, and `ṁ_feed` is
+  monotone in `P_C`, so it *converges* — to a plant in which the feed is frozen
+  at its initial value forever. Close a valve upstream, drain the supply tank:
+  `P_C` slides to absorb it and the feed never moves. A converging, mass-
+  conserving, deterministic, thoroughly wrong plant.
+- **Column fixed-pressure (zero-volume).** There is then no mass-balance
+  equation at the column at all, so `ṁ_feed_now − Σᵢ sᵢ` is created or destroyed
+  inside a zero-volume node. Per-component conservation breaks and I7 fails.
+
+The lag is not a "limitation to state"; it is the defect. What both branches
+show is that the *total* through a column must stay hydraulically determined,
+and only the *split* may be composition-determined.
+
+**The design.** Pin the column's pressure and take the split from the
+**current** solve:
+
+- The column is a **fixed-pressure, zero-volume** node — `NodeKind::Column`
+  carries an operating `pressure`, and `network::fixed_pressure` returns it,
+  exactly as `Source`/`Sink`/`Tank` do. This is not a modelling fudge to dodge
+  the solver: real columns run on pressure control, and the overhead pressure is
+  the operator setpoint that sets the whole cut structure.
+- The feed edge is an **ordinary pressure-driven edge** into that fixed node.
+  Nothing about it is new, and the plant therefore acts on the column: a
+  throttled feed valve or a draining supply tank lowers `ṁ_feed`, which is
+  precisely what the frozen-feed branch above could not do.
+- Draw flows are computed **after** the hydraulic solve as
+  `ṁ_drawᵢ = splitᵢ · ṁ_feed_now`, with `Σᵢ splitᵢ = 1` by construction.
+  The column is therefore mass-neutral **identically, every tick** — no holdup,
+  no lag, and no residual to leak. (M3.1's composition staleness in the
+  hydraulic density is unchanged and unrelated.)
+
+**Why this needs no new solver machinery, and where the real change is.** Draw edges
+run column (fixed) → product tank (fixed). `assemble` only accumulates residual
+and conductance for endpoints present in `idx`, which holds *free* nodes only,
+so a fixed→fixed edge contributes nothing to the Jacobian. The singular
+zero-derivative branch the roadmap feared never enters the system — the risk is
+not solved, it does not arise.
+
+The change lands one layer out, in `network::edge_flows`, which would otherwise
+evaluate a draw edge as `ρ·branch.flow(dp)` and report a *pressure-driven*
+number for an edge whose flow is prescribed. That is the hazard to guard, and it
+is a silent one: the bogus flow is finite, deterministic, and mass-conserving at
+both endpoints (both are infinite reservoirs), so nothing downstream complains.
+
+To be precise about "no solver change": `network::fixed_pressure`, `classify`
+and `validate_degrees` each gain a `Column` arm — the last because the column is
+the **first 1-in-N-out unit**, where every existing device is 1-in-1-out, so
+that function's degree rule cannot simply be extended to it. What is *not*
+needed is the new machinery: no prescribed-flow branch type, no Jacobian change,
+no change to `assemble`. The only algorithmic change is the `edge_flows`
+override, and it carries one ordering obligation worth stating here rather than
+rediscovering in code: **the feed flow must be computed before the draws that
+scale off it**, which edge-id iteration order does not guarantee.
+
+Likewise, "reject a free node on a draw line at load time" is a topology
+*trace* of the column's outlet edges, not a field lookup. Cheap, but it is real
+validation work and belongs in the loader alongside the existing checks.
+
+**The restriction this buys, stated rather than assumed.** The "no Jacobian
+change" claim holds only while every draw edge has fixed nodes at both ends. A
+free node on a draw line — an operator valve on the kerosene draw, which a game
+plainly wants — puts a prescribed edge back into the system. That case is not
+automatically ill-posed: a free node fed by one prescribed edge and drained by
+one pressure-driven edge has residual `sᵢ − ṁ(P)`, one monotone equation in one
+unknown. The general statement is: **the Jacobian stays nonsingular iff every
+free node retains at least one pressure-driven edge to an anchored node**, which
+is the existing `anchored_set` reachability with prescribed edges excluded from
+`conducts`. M3.2 ships the fixed→fixed case and **rejects a free node on a draw
+line at load time**, because a guard whose failure mode cannot be exercised by a
+scenario in the repo is a guard that cannot be falsified. Lifting the
+restriction is a later, tested step, not a silent capability.
+
+**Cut assignment and smearing.** Separation acts on the **feed**, not on any
+stored inventory. Each draw `i` owns a boiling-point band from the column's
+ordered cut points; component `c` with normal boiling point `Tb_c` gets a weight
+`w_ic` per draw, and the split and per-draw composition are
+
+```
+splitᵢ      = Σ_c f_feed,c · w_ic          (mass fraction of feed to draw i)
+comp_i,c    = f_feed,c · w_ic / splitᵢ     (draw i's composition)
+```
+
+`w_ic` is a ramp of width `smearing` [K] across each cut point rather than a
+step, so a component boiling near a boundary lands partly in each adjacent draw.
+**`Σᵢ w_ic = 1` is enforced by normalization, not hoped for**: that identity is
+exactly what makes `Σᵢ splitᵢ = 1` and hence per-component conservation true by
+construction rather than by numerical luck. `smearing = 0` is a sharp splitter
+and is the degenerate case worth keeping representable.
+
+Determinism: cut points are listed in file order and each names its outlet by
+name, matching M3.1's slate convention (positional vectors, name-addressed
+files).
+
+**Transport.** A column is the first node whose outlets do **not** all carry the
+node's own composition, so `energy::edge_composition_at` — already the single
+owner of "which end of this edge am I" for the upwind rule — becomes the single
+owner of "which *draw* am I" as well, returning the cut composition when the
+upwind node is a column. Additive, and it keeps the rule in one place, the same
+reason `edge_temperature_at` exists.
+
+**Energy, and the identity that actually carries it.** Draws leave at the
+**feed temperature**, but that alone does *not* make the enthalpy books balance
+by inspection: the draws have different compositions and therefore different
+heat capacities, so they do not share a specific enthalpy and `Σᵢ ṁᵢ·h` cannot
+be written with one `h` factored out. What conserves energy is the same
+normalization that conserves mass:
+
+```
+Σᵢ splitᵢ·cpᵢ = Σᵢ splitᵢ·(Σ_c comp_i,c·cp_c)
+              = Σ_c f_feed,c·cp_c·(Σᵢ w_ic)
+              = cp_feed                       since Σᵢ w_ic = 1
+```
+
+That is M3.1's linearity identity again (`Σ_c (Σ_s m_s·f_sc)·cp_c = Σ_s m_s·cp_s`,
+already a test rather than a claim), applied to a split instead of a blend. So
+`Σᵢ w_ic = 1` is load-bearing **twice over** — it is what makes per-component
+mass conservation and the energy balance both true by construction, and its
+violation is exactly M3.1's "conserves total mass, corrupts the fractions"
+signature. I6 stays green because of this identity, not because the draws are
+isothermal.
+
+A real column's draws sit at their tray temperatures; representing that needs
+the reboiler/condenser duties and a tray cascade, which is the complex column.
+
+**Three things this fidelity does not model, deliberately.** **Reverse flow on
+the feed** is rejected as `SimError::Numerical`: "the feed splits by boiling
+range" names nothing when the feed runs backwards, and silently splitting a
+negative flow would produce negative draws. Zero feed is *not* an error — all
+draws are zero and each carries the feed composition. Draws leave at the **feed
+temperature**, per the paragraph above. And a draw is **insensitive to
+downstream back-pressure**: `ṁ_drawᵢ = splitᵢ · ṁ_feed` discards the draw edge's
+`P_col − P_tank` entirely, so a product tank near full does not throttle or
+reverse its draw — the column keeps pushing. That is inherent to (A) rather than
+an oversight, and it is reachable in a game, so it is a stated limitation and
+not merely an assertion buried in a test.
+
+**What the tests must pin, and why the obvious gate is worthless here.** A
+splitter conserves every component identically — in = out, by the normalization
+above — so **I7 is green by construction and cannot falsify this unit at all.**
+Neither can a total-mass gate. A cut boundary off by one component, or smearing
+silently disabled, moves no mass balance anywhere. The reference must therefore
+assert a **per-draw composition vector** against a hand calculation. Zero-volume
+is what makes that hand calculation clean: each draw's composition is a pure
+function of the feed composition, with no holdup history in it.
+
+(This is also why "a tank with split outlets" was rejected as an implementation:
+a holdup mixes to a single composition and its outlets carry *that*, so it
+separates nothing — and it would make the reference number depend on tick
+history.)
+
 ## 6. Time
 
 - Engine fixed timestep, default `dt = 0.1 s` (config per scenario).

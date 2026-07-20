@@ -459,15 +459,70 @@ held fixed*:
   and much harder to pin.
 
 DESIGN §5 says the cut points are the fixed thing, which argues for (A).
-- [ ] Design note in DESIGN.md settling A vs B, with the well-posedness question
-      answered rather than assumed.
-- [ ] Solver: the fixed-flow branch (if A), landing *before* the column that sits
-      on it, with its own well-posedness and determinism tests.
+- [x] Design note in DESIGN.md settling A vs B, with the well-posedness question
+      answered rather than assumed. **Landed** (DESIGN §5, "Simple column
+      (M3.2)"), and it corrected this box's framing on the load-bearing point.
+      The verdict is **(A)**, but the fixed-flow branch this box assumed (A)
+      required is **not needed** — the risk is avoided, not survived.
+      The well-posedness question had a sharper answer than "is the Jacobian
+      singular": prescribing draws from the *previous* feed fails **both** ways.
+      A free zero-volume column solves `ṁ_feed(P_C) = Σsᵢ = ṁ_feed_prev` — it
+      converges, conserves mass, reruns bit-identically, and freezes the feed at
+      its initial value forever, so closing an upstream valve does nothing. A
+      fixed-pressure zero-volume column has no mass-balance equation at all, so
+      the mismatch is created inside a zero-volume node and I7 fails. The lag
+      was not a limitation to state; it was the defect.
+      The resolution is to pin the column's pressure (columns run on pressure
+      control) and take the split from the **current** solve:
+      `ṁ_drawᵢ = splitᵢ · ṁ_feed_now` with `Σsplitᵢ = 1`, so the column is
+      mass-neutral identically, every tick, with no holdup and no lag. Draw
+      edges then run fixed→fixed and never enter the Jacobian, since `assemble`
+      only accumulates for endpoints in `idx` (free nodes).
+      The real change is one layer out and is a **silent** hazard:
+      `network::edge_flows` would otherwise report `ρ·branch.flow(dp)` for a
+      draw edge — a finite, deterministic, mass-conserving *wrong* number, since
+      both endpoints are infinite reservoirs and nothing downstream complains.
+- [x] ~~Solver: the fixed-flow branch~~ — **not needed**, per the note above.
+      What replaces it is a load-time restriction with a general statement
+      behind it: the Jacobian stays nonsingular iff every free node retains at
+      least one pressure-driven edge to an anchored node. M3.2 ships only the
+      fixed→fixed draw case and rejects a free node on a draw line at load time
+      (a valve on the kerosene draw is a plausible want, and is deferred rather
+      than half-supported), because a guard no repo scenario can exercise is a
+      guard that cannot be falsified.
 - [ ] `core`/`scenarios`: the column unit, cut assignment, smearing.
+      Shape settled by the note: `NodeKind::Column` is fixed-pressure and
+      zero-volume; `Σᵢ w_ic = 1` is enforced by **normalization**, which is what
+      makes per-component conservation true by construction; separation acts on
+      the **feed**, never on a holdup (a holdup mixes to one composition and its
+      outlets carry *that*, so it separates nothing);
+      `energy::edge_composition_at` becomes the single owner of "which draw am
+      I", the same way `edge_temperature_at` owns "which end am I". Draws leave
+      at the feed temperature, reverse feed flow is refused, and a draw is
+      insensitive to downstream back-pressure (a full product tank does not
+      throttle it) — all three stated limitations, not omissions.
+      Note the energy argument is NOT "the draws are isothermal so enthalpy
+      trivially balances": the draws have different compositions and therefore
+      different `cp`, so they share no specific enthalpy. `Σᵢ splitᵢ·cpᵢ =
+      cp_feed` follows from `Σᵢ w_ic = 1` — M3.1's linearity identity applied to
+      a split rather than a blend — which makes that normalization load-bearing
+      for mass conservation and the energy balance both.
 - [ ] Tests: the reference must pin a **per-draw composition** number, not a mass
       balance. The mutation this unit invites — a cut-boundary off by one
       component, or smearing silently disabled — **conserves total mass exactly**,
       so a mass-balance gate cannot falsify it and I7 would stay green.
+      The note sharpens this from "would stay green" to **cannot possibly fail**:
+      a splitter conserves every component identically, so I7 is green *by
+      construction* here and has no discriminating power over this unit at all.
+      Zero-volume is what makes the replacement gate a clean hand calc — each
+      draw's composition is a pure function of the feed's, with no tick history
+      in it.
+      One gate has no analog in earlier milestones and is easy to omit: the
+      **silent bogus draw flow**. `edge_flows` reporting `ρ·branch.flow(dp)` on
+      a prescribed edge is finite, deterministic and conserves mass at both
+      endpoints, so it needs a gate asserting the draw flow equals
+      `splitᵢ · ṁ_feed` and not a pressure-driven number — falsified by making
+      the draw pipes' resistance absurd, which must not move the draws.
 - [ ] Demo: crude source → furnace → column → three product tanks.
 
 ## M4 — Reactor
