@@ -1,6 +1,6 @@
 ---
 name: m4-reactor-crux
-description: "M4 reactor: crux is conservation + the sensible-only datum (not kinetics); energy gate is a two-duty DIFFERENCE. M4.1 (NodeKind::Reactor + SimpleLookup) LANDED 2026-07-20"
+description: "M4 reactor: crux is conservation + the sensible-only datum (not kinetics); energy gate is a two-duty DIFFERENCE. M4 CLOSED 2026-07-28 (M4.1 SimpleLookup + M4.2 FourLump kinetics)"
 metadata: 
   node_type: memory
   type: project
@@ -72,6 +72,34 @@ four commits on `m4-reactor`. Durable lessons from the build:
   sensible + ṁ·Δh_rxn and FCC cracking is positive). Duties returned on
   `NodeStates.reactor_duty` (NOT the snapshot — no speculative surface).
 
-Next: M4.2 — `FourLump` Arrhenius kinetics (fixed-count RK4 over τ, determinism),
-Δh_rxn from formation enthalpies, reference against published lump yields; the
-crude→furnace→reactor→column→tanks demo.
+**M4.2 LANDED 2026-07-28** (`FourLump`: 4-lump Arrhenius kinetics, 64 fixed RK4
+substeps, Weekman decay, Δh_rxn from per-lump formation enthalpies), closing M4.
+It was additive exactly as the slice promised — `NodeKind::Reactor`, the sweep and
+the two duties were untouched; the swap is one trait impl plus a `reactions =
+"fcc"` match arm. Durable lessons:
+- **The crux was UNITS, not the ODE.** Published FCC constants are per unit
+  catalyst mass or against space time in hours; dropping one into `τ = 3 s` gives
+  a conversion wrong by decades that converges, conserves mass and reruns
+  bit-identically. Stated the convention once in the module doc and folded
+  catalyst loading into the constants at the reference plant's COR. **Rejected
+  adding a `cat_oil_ratio` node field**: the reactor models no catalyst inventory,
+  so it would have one value in every scenario, and a parameter with one possible
+  value has no gate that could falsify it ([[falsifiability-as-scoping-criterion]]).
+- **The anchor degraded from a point match to an ENVELOPE** because every
+  tabulated `k` set was paywalled — see [[published-anchor-envelope]] for the
+  method and the fetchable-host notes.
+- **Closed forms pin the rate law; the order-of-convergence ratio pins the
+  integrator** — see [[integrator-order-of-convergence]]. Weekman decay
+  `φ = e^{−αt}` is a pure reparametrization `θ = (1−e^{−ατ})/α`, which is what
+  makes the closed forms elementary at all.
+- **The source paper prints a typo** (Olufemi et al. eqs. 15–16 put the gasoline
+  paths at second order, contradicting their own stated assumption). Followed the
+  assumption, noted the discrepancy in code, and wrote the first-order gate so it
+  cannot be reintroduced silently.
+- Eight mutations run. The two that show the gate design is right: constants a
+  decade low fails the envelope and the wired plant while **every closed-form gate
+  stays green**; one shared activation energy fails the Arrhenius gate **alone**.
+- **The demo is the first plant where a reactor feeds a column**, which finally
+  tests DESIGN §5's claim that coke's invented high `Tb` routes it to bottoms.
+  A claim in a design note is untested until some scenario exercises it
+  ([[unfalsifiable-is-a-claim-about-coverage]]).

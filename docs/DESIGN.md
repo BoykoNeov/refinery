@@ -1040,6 +1040,104 @@ coke rides the single outlet and a downstream column routes it); and the catalys
 regenerator loop that physically supplies the endothermic duty (the emergent duty
 is reported, not sourced from a coupled regenerator).
 
+### FCC 4-lump kinetics (M4.2) — what building it settled
+
+The additive fidelity swap the slice above promised: `FourLump` implements
+`ReactionModel` beside `SimpleLookup`, selected by `reactions = "fcc"`, and
+nothing above the trait changed. `NodeKind::Reactor`, the sweep, the two duties
+and the loader arm are all M4.1's, untouched. What follows is what only building
+the kinetics could decide.
+
+**The network, and a typo in the source.** Gas oil → gasoline (`k₁`), → light
+gases (`k₂`), → coke (`k₃`); gasoline → light gases (`k₄`), → coke (`k₅`). Gas
+oil cracking is **second order** in its mass fraction, gasoline cracking **first
+order** — stated by Olufemi, Latinwo & Olukayode, *Riser Reactor Simulation in a
+Fluid Catalytic Cracking Unit*, Chem. & Process Eng. Research 7 (2013) 12–21, and
+independently by Bunny et al., RJPBCS 6(4) (2015) 1269. Olufemi's *printed*
+eqs. (15)–(16) put the gasoline paths at `x₃²`, contradicting that same paper's
+stated assumption; the code follows the assumption, notes the discrepancy, and
+`first_order_gasoline_cracking_matches_the_closed_form` exists so that the typo
+cannot be reintroduced silently.
+
+**Catalyst decay is a reparametrization, and that is why the model is checkable.**
+`φ(t) = exp(−α·t)` (Weekman) depends only on time, so `θ(τ) = ∫₀^τ φ =
+(1 − e^{−ατ})/α` turns every rate law into its decay-free form in θ. Second-order
+gas oil then has the closed form `1/y₁ = 1 + Kθ` with each product taking `kᵢ/K`
+of the converted feed, and a pure-gasoline feed decays as `e^{−(k₄+k₅)θ}`. Those
+are hand calculations, derived from the rate law rather than read back from the
+integrator, and they are what pins the stoichiometry.
+
+**The units crux — and the `core` change that was NOT made.** Published FCC rate
+constants are almost never in units that accept a 3-second residence time: they
+are per unit **catalyst mass** (riser models multiply by holdup and catalyst
+density) or are quoted against *space time* in hours. Dropping such a constant
+into `τ = 3 s` gives a conversion wrong by decades that still converges, still
+conserves mass, and still reruns bit-identically — this milestone's version of the
+`√101325`-for-`√1e5` slip M1's `kv_reference` was built for. The convention is
+therefore stated once, in the module: **`k₁…k₃` in (mass fraction·s)⁻¹, `k₄`,`k₅`
+in s⁻¹, against `tau` in seconds, with catalyst loading folded in** at the
+reference plant's catalyst-to-oil ratio. A `cat_oil_ratio` field on
+`NodeKind::Reactor` was considered and rejected: the node deliberately models no
+catalyst inventory (the regenerator loop is deferred above), so the field would
+have exactly one value in every scenario, and a parameter with one value has no
+gate that could falsify it.
+
+**The anchor is an ENVELOPE, and that is a limitation with a name.** The roadmap
+asked for a reference against published lump yields at a stated `T_set`/`τ`. Every
+source that tabulates `k₁…k₅` for this network proved unreachable behind a
+paywall, and transcribing constants from a search summary is precisely the
+silent-wrong-number failure this workspace refuses. So the constants are
+**calibrated, not transcribed**, and the published anchor is the industrial riser
+data reproduced by Olufemi et al. Tables 1–4 from Ali & Rohani (1997): outlet
+795–808 K, COR 5.43–7.20, gasoline 41.78–46.90 wt%, coke 5.34–5.83 wt%, 79 wt%
+conversion. The calibrated set lands at gasoline 43.8, coke 5.70, conversion 79.0
+and light gases 29.6 wt% at 800 K / 3 s. What that anchor buys is the decade-scale
+fault above; what it cannot buy is a percent-level check on any individual rate
+constant. Both halves are stated in the test file rather than implied. Upgrading
+to a point match against a tabulated set (Lee et al. 1989; Ahari et al. 2008)
+remains available and needs only the paper.
+
+**`Δh_rxn` from per-lump formation enthalpies**, `Σᵢ (y_out,i − y_in,i)·h_f,i`.
+Path-independent (a state function, which is what enthalpy of formation means),
+identically zero when nothing reacts, and mass-consistent given `Σy = 1` at both
+ends. The datum is free — only differences matter — so gas oil is 0. Formation
+enthalpies for "light gases" and "coke" are not published quantities: these are
+chosen numbers whose SUM is published (a few hundred kJ/kg of feed for FCC
+cracking, Sadeghbeigi), and the code says so rather than presenting them as
+sourced.
+
+**The gate that had to be invented.** The closed forms pass at the shipped 64 RK4
+substeps with orders of magnitude to spare, so they cannot tell a correct RK4 from
+a degraded one — a dropped stage still converges, just slower. The discriminating
+gate is the **order of convergence**: halving the step must cut the error ~16×.
+Measuring it also exposed that the naive step range is wrong — below 32 substeps
+this problem is not asymptotic (the error changes sign between 8 and 16 steps and
+the ratio reads 245, meaning nothing), so the gate runs at 32/64/128 where the
+measured ratios are 14.7 and 15.5. Truncation at the shipped count is 5.6e-9,
+which is what makes the closed-form tolerance a derived number instead of a tuned
+one.
+
+**Falsified before trusted**, eight mutations, each caught by the set that should
+catch it: rate constants a decade low fails the envelope and the wired plant
+**while every closed-form gate stays green** — the two gate kinds discriminating
+exactly as claimed; first-order gas oil; second-order gasoline (the paper's typo);
+**one shared activation energy, which fails the Arrhenius gate and nothing else**;
+mis-set RK4 stage weights, caught by the order gate; a flipped decay sign, which
+makes the catalyst gain activity; formation enthalpies signed backwards, which
+fails only the two energy gates and leaves every composition gate green; and a
+rate-matrix column that does not sum to zero, which the pre-normalization mass
+check turns into an `Err` rather than a plausible composition. Falsification also
+found a **vacuity in a test of this file's own**: asserting that the products sum
+to 1 proves nothing, because `Composition::from_weights` normalizes — it now
+asserts on a slate carrying an inert, where the reacting lumps' combined share is
+a genuinely free quantity.
+
+**Deferred, on top of the reactor note's list.** Coke-on-catalyst deactivation
+(the Voorhies/Bunny form `φ = (B+1)/(B + exp(A·C_coke))`, which couples decay to
+the coke the pass itself makes and so needs a catalyst inventory this reactor does
+not have); feed-quality dependence of the constants; and any second lump slate —
+`FourLump` names its four lumps and refuses a slate without them.
+
 ## 6. Time
 
 - Engine fixed timestep, default `dt = 0.1 s` (config per scenario).

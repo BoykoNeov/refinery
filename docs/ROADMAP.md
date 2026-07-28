@@ -652,15 +652,85 @@ not track (vs I6).
       a reactor breaks per-component mass by construction, I6 because `Δh_rxn` sits
       outside its sensible-only frame.
 
-### M4.2 — FCC 4-lump kinetics (additive fidelity swap)
-- [ ] `solvers`: `FourLump` — Weekman/Lee-style Arrhenius kinetics, **fixed-count**
-      RK4 substeps over `τ` (determinism), `Δh_rxn` from lump formation enthalpies.
-      Cite the exact parameter set in the code.
-- [ ] Tests: reference against **published lump yields** at a stated `T_set`/`τ`
-      (`solvers/tests/reference/`) — the roadmap's required anchor; a wrong rate
-      constant, transposed stoichiometry, or dropped substep fails it.
-- [ ] Demo: crude source → furnace → reactor → column → product tanks, showing the
-      gasoil→gasoline conversion as visible physics (yields shift, mass-neutral).
+### M4.2 — FCC 4-lump kinetics (additive fidelity swap) — **LANDED** 2026-07-28
+- [x] `solvers`: `FourLump` — Arrhenius kinetics on the classical 4-lump network
+      (gas oil second order, gasoline first order), Weekman exponential catalyst
+      decay, **fixed-count** RK4 (64 substeps) over `τ`, `Δh_rxn` from per-lump
+      formation enthalpies. Additive exactly as promised: `NodeKind::Reactor`, the
+      sweep, the two duties and the M4.1 loader arm are untouched; the swap is one
+      more `ReactionModel` impl plus a `reactions = "fcc"` match arm.
+      **The crux was units, not the ODE** (DESIGN §5, "FCC 4-lump kinetics"):
+      published constants are per unit catalyst mass or against space time in
+      hours, and dropping one into `τ = 3 s` gives a conversion wrong by decades
+      that still converges, conserves mass and reruns bit-identically. The
+      convention is stated once in the module and catalyst loading is FOLDED IN at
+      the reference plant's COR — a `cat_oil_ratio` field on the node was
+      considered and rejected, since the reactor models no catalyst inventory and
+      a parameter with one possible value has no gate that could falsify it.
+- [x] Tests: `solvers/tests/reference/four_lump.rs` — the directory CLAUDE.md
+      names, created here and declared as an explicit `[[test]]` target (Cargo
+      auto-discovers only `tests/*.rs`).
+      **The required anchor landed as an ENVELOPE, not a point match, and that is
+      a stated limitation.** Every source tabulating `k₁…k₅` proved paywalled, and
+      transcribing constants from a search summary is the silent-wrong-number
+      failure this workspace refuses — so the constants are **calibrated, not
+      transcribed**, against the industrial riser data reproduced by Olufemi et
+      al. (2013) Tables 1–4 from Ali & Rohani (1997): outlet 795–808 K, COR
+      5.43–7.20, gasoline 41.78–46.90 wt%, coke 5.34–5.83 wt%, 79 wt% conversion.
+      The set lands at gasoline 43.8 / coke 5.70 / conversion 79.0 / light gases
+      29.6 wt% at 800 K, 3 s. That anchor catches the decade-scale unit slip and
+      nothing subtler; the closed-form gates carry the rest (second-order gas oil
+      under decay via the `θ = (1−e^{−ατ})/α` reparametrization, first-order
+      gasoline, per-path Arrhenius scaling), and an **order-of-convergence** gate
+      carries what neither can — a dropped or mis-weighted RK4 stage, which still
+      converges and so passes every closed form at the shipped substep count.
+      Measuring that gate corrected its own first draft: below 32 substeps this
+      problem is not asymptotic (the error changes sign, and `e(4)/e(8)` reads 245),
+      so it runs at 32/64/128 where the ratios are 14.7 and 15.5, and the shipped
+      truncation of 5.6e-9 is what makes the closed-form tolerance derived rather
+      than tuned.
+      **Falsified before trusted**, eight mutations, each caught by the right set:
+      constants a decade low fails the envelope and the wired plant **while every
+      closed-form gate stays green** (the two gate kinds discriminating as
+      claimed); first-order gas oil; second-order gasoline — the typo the source
+      paper actually prints; **one shared activation energy, which fails the
+      Arrhenius gate alone**; mis-set RK4 weights, caught by the order gate; a
+      flipped decay sign; formation enthalpies signed backwards, which fails only
+      the two energy gates; and a rate-matrix column that does not sum to zero,
+      which the pre-normalization mass check turns into an `Err`. It also found a
+      **vacuity in this slice's own test**: asserting the products sum to 1 proves
+      nothing, since `Composition::from_weights` normalizes — the gate now runs on
+      a slate carrying an inert, where the reacting lumps' combined share is free.
+- [x] Demo: `scenarios/fcc_plant.toml` — gasoil source → furnace → reactor →
+      column → three product tanks, the first plant in the workspace where a
+      REACTOR feeds a COLUMN. At 41 kg/s the riser effluent is gas 29.6 /
+      gasoline 43.8 / gasoil 21.0 / coke 5.70 wt%, the three draws sum to the feed
+      to 1e-9, and each product leaves with its own cut
+      (`cargo run -p refinery-cli -- run scenarios/fcc_plant.toml --ticks 200`).
+      Gated by `scenarios/tests/fcc_plant_reference.rs`, which covers only what
+      the isolated tests cannot: the `"fcc"` selection reaching a real reactor,
+      the kinetics running inside a real solve on a feed flow the file never
+      states, **conversion responding to `t_set_c`** (the property M4.1's fixed
+      table could never have — a dropped Arrhenius shift passes every other gate),
+      and **coke routed to the bottoms draw**, which is DESIGN §5's stated
+      justification for giving coke a boiling point at all and was untested until
+      a reactor stood upstream of a column.
+
+**M4 acceptance criteria are met.** M4.0 (design note), M4.1 (`NodeKind::Reactor`
++ `SimpleLookup`) and M4.2 (`FourLump` kinetics) complete; `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
+are green, and the `NoReactions` regression anchor held — every M1/M2/M3 golden is
+bit-identical, since `react` is never called on a network with no reactor node.
+The runnable-demo criterion is met by `fcc_plant.toml` above: the conversion is
+computed from kinetics rather than read from a table, it responds to the reactor
+setpoint, and the cracked slate is separated into three products that sum back to
+the feed — visible physics, not a zero exit.
+
+One caveat carried forward rather than buried: the published anchor is an
+**envelope**, because the tabulated parameter sets were unreachable. A point-match
+reference against Lee et al. (1989) or Ahari et al. (2008) would strengthen it and
+needs only access to either paper — the gate's shape would not change, only its
+width. M5 may begin.
 
 ## M5 — Gas & pressure realism (scoped design note first)
 Compressible/two-phase approximations where needed (column overheads, flare).

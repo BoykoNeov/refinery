@@ -363,13 +363,16 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     let thermo: Box<dyn ThermoModel> = Box::new(refinery_solvers::ConstantThermo);
     let reactions: Box<dyn ReactionModel> = match scenario.fidelity.reactions.as_str() {
         "none" => Box::new(refinery_solvers::NoReactions),
-        // The FCC placeholder table (M4.1); M4.2 adds "fcc" for the kinetics. The
-        // table resolves its lumps against the slate by name, so an absent lump
-        // is a load-time error, not a solve-time surprise.
+        // The FCC placeholder table (M4.1). Both reacting fidelities resolve
+        // their lumps against the slate by name, so an absent lump is a
+        // load-time error, not a solve-time surprise.
         "lookup" => Box::new(refinery_solvers::SimpleLookup::fcc_demo(&slate)?),
+        // FCC 4-lump Arrhenius kinetics (M4.2), integrated with fixed-count RK4
+        // over the reactor's `tau_s`.
+        "fcc" => Box::new(refinery_solvers::FourLump::fcc(&slate)?),
         other => {
             return Err(SimError::Scenario(format!(
-                "unknown reaction model '{other}' (valid: none, lookup)"
+                "unknown reaction model '{other}' (valid: none, lookup, fcc)"
             )))
         }
     };

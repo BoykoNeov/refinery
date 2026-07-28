@@ -4,17 +4,19 @@
 //! |----------------|----------------------|-------------------------|
 //! | FlowSolver     | SimpleFlowSolver     | NewtonFlowSolver        |
 //! | ThermoModel    | ConstantThermo (M2)  | CutThermo (M2/M3)       |
-//! | ReactionModel  | LookupReactor (M4)   | FccFourLump (M4)        |
+//! | ReactionModel  | SimpleLookup (M4.1)  | FourLump (M4.2)         |
 //!
 //! Selection happens in refinery-scenarios from TOML config; nothing in
 //! here or in core branches on a fidelity flag.
 
 pub mod elements;
+pub mod four_lump;
 pub mod network;
 pub mod newton_flow;
 pub mod reactor;
 pub mod simple_flow;
 
+pub use four_lump::{FourLump, FourLumpParams};
 pub use newton_flow::NewtonFlowSolver;
 pub use reactor::SimpleLookup;
 pub use simple_flow::SimpleFlowSolver;
