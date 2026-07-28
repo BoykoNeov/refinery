@@ -1091,11 +1091,20 @@ silent-wrong-number failure this workspace refuses. So the constants are
 data reproduced by Olufemi et al. Tables 1–4 from Ali & Rohani (1997): outlet
 795–808 K, COR 5.43–7.20, gasoline 41.78–46.90 wt%, coke 5.34–5.83 wt%, 79 wt%
 conversion. The calibrated set lands at gasoline 43.8, coke 5.70, conversion 79.0
-and light gases 29.6 wt% at 800 K / 3 s. What that anchor buys is the decade-scale
-fault above; what it cannot buy is a percent-level check on any individual rate
-constant. Both halves are stated in the test file rather than implied. Upgrading
-to a point match against a tabulated set (Lee et al. 1989; Ahari et al. 2008)
-remains available and needs only the paper.
+and light gases 29.6 wt% at 800 K / 3 s.
+
+**And the envelope gate's ceiling has to be named, because it is easy to
+overclaim.** The constants were *fitted* to that envelope and the gate then checks
+they land in it — one anchor used twice. It is therefore a **regression lock on
+the calibration, not an independent validation of the parameter set**: it fails
+loudly on a fault introduced later (a `tau` unit slip, a dropped catalyst-loading
+fold — decades out of band) and says nothing about whether these five constants
+are the right five. That is the same ceiling `kv_reference` names for M1's network
+hand calc, and it is why upgrading to a point match against a tabulated set
+(Lee et al. 1989; Ahari et al. 2008) is worth doing when either paper becomes
+reachable: it converts the gate from a regression lock into an independent check.
+The closed-form gates are unaffected — they are told the parameters, so they carry
+no such circularity.
 
 **`Δh_rxn` from per-lump formation enthalpies**, `Σᵢ (y_out,i − y_in,i)·h_f,i`.
 Path-independent (a state function, which is what enthalpy of formation means),

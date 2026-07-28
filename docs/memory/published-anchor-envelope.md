@@ -32,6 +32,16 @@ downstream would ever complain.
   what it cannot (percent-level errors in any one constant), then cover the rest
   with closed forms. Two gate kinds, each labelled
   ([[unfalsifiable-is-a-claim-about-coverage]]).
+- **Name the circularity, and do not skip this one.** If you CALIBRATE constants
+  against the envelope and then gate on the envelope, that is one anchor used
+  twice: the gate is a **regression lock on the calibration, not an independent
+  validation of it**. It still earns its place — it catches a fault introduced
+  later — but writing "the only anchor with no ceiling" over it is the same
+  overclaim as [[well-posed-is-not-correct]] and M1's tautology trap
+  ([[kv-handcalc-reference]]). Advisor caught exactly this wording in M4.2.
+- Watch for bands spliced across tables. M4.2's light-gas band was a residual
+  built from two tables of one paper, one of them internally inconsistent —
+  flagged in the test as the weakest of the four rather than presented as equal.
 - Record the degradation in ROADMAP as a caveat carried forward, with what would
   upgrade it — the user may have access you don't.
 - Fetchable hosts, for next time: iiste.org and rjpbcs.com serve PDFs, and the

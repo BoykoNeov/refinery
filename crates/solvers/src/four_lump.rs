@@ -65,11 +65,17 @@
 //! against, is the plant data reproduced by Olufemi et al. (2013) Tables 1–4 from
 //! Ali & Rohani (1997): four industrial cases at riser outlet 795–808 K with
 //! catalyst-to-oil 5.43–7.20, giving gasoline 41.78–46.90 wt%, coke 5.34–5.83
-//! wt%, and 79 wt% gas oil conversion. That is a coarser anchor than a point
-//! match against a tabulated `k` set — it pins the model to an envelope, which
-//! is enough to falsify a residence-time or catalyst-loading unit slip (those miss
-//! by decades, not percent) and is honest about catching nothing subtler. The
-//! closed-form gate covers the subtler faults.
+//! wt%, and 79 wt% gas oil conversion.
+//!
+//! **The ceiling on that gate, stated because it is easy to overclaim.** These
+//! constants were FITTED to that envelope, and the envelope gate then checks they
+//! land in it — one anchor used twice. So the gate is a **regression lock on the
+//! calibration, not an independent validation of it**: it catches a unit slip
+//! *introduced later* (a change to how `tau` enters, a refactor that drops the
+//! catalyst-loading fold — those miss by decades), and it does NOT confirm that
+//! the parameter set is right. Only a point match against an independently
+//! tabulated `k` set would do that. This is the same ceiling `kv_reference` names
+//! for M1's network hand calc, and it is stated here for the same reason.
 
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;

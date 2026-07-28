@@ -11,11 +11,13 @@
 //!
 //! This file carries two KINDS of gate, and the split is deliberate:
 //!
-//! 1. **The published envelope** — industrial riser data, the only anchor here
-//!    with no ceiling. It catches what this milestone actually invites: a
-//!    residence-time or catalyst-loading unit slip, or a rate constant wrong by a
-//!    decade. Those miss by orders of magnitude. It catches nothing subtler, and
-//!    is honest about that.
+//! 1. **The published envelope** — industrial riser data. It catches what this
+//!    milestone actually invites: a residence-time or catalyst-loading unit slip,
+//!    or a rate constant wrong by a decade. Those miss by orders of magnitude. It
+//!    catches nothing subtler, and — the part that is easy to overclaim — it does
+//!    not independently validate the parameter set, because that set was FITTED
+//!    to this envelope. It is a regression lock on the calibration. See the gate
+//!    itself for the full statement.
 //! 2. **Closed forms** — the ODE solved analytically, independently of the
 //!    integrator. These catch transposed stoichiometry, a wrong constant at the
 //!    percent level, a shared activation energy, and (through the order-of-
@@ -94,16 +96,26 @@ fn theta(alpha: f64, tau: f64) -> f64 {
 /// 12–21, Tables 1–4, reproducing four industrial cases of Ali & Rohani (1997):
 /// riser outlet 795–808 K, catalyst-to-oil 5.43–7.20 kg/kg, gasoline
 /// 41.78–46.90 wt%, coke 5.34–5.83 wt%, and (Table 1) 79.0 wt% gas oil
-/// conversion with 46.0 wt% gasoline. Light gases are not tabulated directly;
-/// the balance of Table 2's case (100 − 44 − 5.8 − 21) puts them near 29 wt%,
-/// consistent with that paper's Figure 2 exit profile.
+/// conversion with 46.0 wt% gasoline.
 ///
-/// The catalyst-to-oil ratio is folded into the rate constants (see the module
-/// note in `four_lump.rs`) rather than carried as a reactor parameter, so this
-/// gate is stated at the plant's COR by construction and cannot discriminate a
-/// COR change. What it CAN discriminate is the fault this milestone invites:
-/// treating `tau` as hours or as a space time, or omitting catalyst loading
-/// entirely, moves conversion to ~100% or to ~1% — decades outside this band.
+/// **What this gate proves, and what it does not.** The constants in
+/// `FourLumpParams::fcc` were CALIBRATED to this envelope, and this gate then
+/// checks they land in it — one published anchor used twice. So it is a
+/// **regression lock on the calibration, not an independent validation of the
+/// parameter set**: it fails loudly if a later change moves the model out of the
+/// band (a `tau` unit slip, a dropped catalyst-loading fold, a refactor that
+/// scales a rate constant — all of which miss by decades, not percent), and it
+/// says nothing about whether these five constants are the right five. Only a
+/// point match against an independently tabulated set could say that, and the
+/// sources carrying one were unreachable (see the module note). This is the same
+/// ceiling `scenarios/tests/kv_reference.rs` names for M1's network hand calc.
+///
+/// The catalyst-to-oil ratio is folded into the rate constants rather than
+/// carried as a reactor parameter, so this gate is stated at the plant's COR by
+/// construction and cannot discriminate a COR change.
+///
+/// One band is weaker than the others and is marked as such below: light gases
+/// are not tabulated in the source at all.
 #[test]
 fn the_calibrated_set_lands_in_the_published_plant_envelope() {
     let slate = fcc_slate();
@@ -130,10 +142,17 @@ fn the_calibrated_set_lands_in_the_published_plant_envelope() {
     };
     // Bands are the plant spread widened to the nearest whole percent, not
     // tuned to the model: gasoline 41.78–46.90 → [40, 50], coke 5.34–5.83 →
-    // [4, 7], conversion 79.0 → [70, 85], light gases ~29 → [22, 35].
+    // [4, 7], conversion 79.0 → [70, 85]. Those three are tabulated values.
     band("gasoline", y[GASOLINE], 0.40, 0.50);
     band("coke", y[COKE], 0.04, 0.07);
     band("gas oil conversion", conversion, 0.70, 0.85);
+    // The light-gas band is the LEAST supported of the four and is deliberately
+    // the widest. The source tabulates no light-gas yield; ~29 wt% is a residual
+    // (100 − gasoline − coke − unconverted) spliced across two of its tables,
+    // and one of those, Table 1, is internally inconsistent — it lists coke at
+    // 30.0 wt% alongside 79.0 wt% conversion, which cannot both hold, and Table 2
+    // gives 5.60 for the same quantity. Read this assertion as "light gases are a
+    // major product, not a trace", which is all the source will actually support.
     band("light gases", y[GAS], 0.22, 0.35);
 
     // Endothermic, at the few-hundred-kJ/kg magnitude quoted for FCC cracking.

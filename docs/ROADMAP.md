@@ -678,8 +678,19 @@ not track (vs I6).
       al. (2013) Tables 1–4 from Ali & Rohani (1997): outlet 795–808 K, COR
       5.43–7.20, gasoline 41.78–46.90 wt%, coke 5.34–5.83 wt%, 79 wt% conversion.
       The set lands at gasoline 43.8 / coke 5.70 / conversion 79.0 / light gases
-      29.6 wt% at 800 K, 3 s. That anchor catches the decade-scale unit slip and
-      nothing subtler; the closed-form gates carry the rest (second-order gas oil
+      29.6 wt% at 800 K, 3 s.
+      **The envelope gate's ceiling is named rather than glossed:** the constants
+      were FITTED to that envelope and the gate then checks they land in it — one
+      anchor used twice — so it is a **regression lock on the calibration, not an
+      independent validation of the parameter set**. It catches a fault introduced
+      later (a `tau` unit slip, a dropped catalyst-loading fold: decades out of
+      band); it cannot tell whether these five constants are the right five. Same
+      ceiling `kv_reference` names for M1's network hand calc. The light-gas band
+      is further the weakest of the four — the source tabulates no light-gas yield,
+      so ~29 wt% is a residual spliced across two of its tables, one of which is
+      internally inconsistent (coke 30.0 wt% alongside 79.0 conversion).
+      The closed-form gates carry no such circularity — they are told the
+      parameters — and they carry the rest (second-order gas oil
       under decay via the `θ = (1−e^{−ατ})/α` reparametrization, first-order
       gasoline, per-path Arrhenius scaling), and an **order-of-convergence** gate
       carries what neither can — a dropped or mis-weighted RK4 stage, which still
@@ -727,10 +738,12 @@ setpoint, and the cracked slate is separated into three products that sum back t
 the feed — visible physics, not a zero exit.
 
 One caveat carried forward rather than buried: the published anchor is an
-**envelope**, because the tabulated parameter sets were unreachable. A point-match
-reference against Lee et al. (1989) or Ahari et al. (2008) would strengthen it and
-needs only access to either paper — the gate's shape would not change, only its
-width. M5 may begin.
+**envelope**, because the tabulated parameter sets were unreachable — *and* the
+constants were calibrated against that same envelope, so the gate is a regression
+lock rather than an independent validation. A point-match reference against Lee
+et al. (1989) or Ahari et al. (2008) needs only access to either paper, and would
+upgrade it from the former to the latter. That is the concrete value of getting
+one of those papers; nothing else about the model would change. M5 may begin.
 
 ## M5 — Gas & pressure realism (scoped design note first)
 Compressible/two-phase approximations where needed (column overheads, flare).
