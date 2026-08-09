@@ -260,6 +260,42 @@ impl Composition {
         }
     }
 
+    /// Mixture heat capacity at constant VOLUME [J/(kg·K)]: mass-fraction
+    /// weighted, `cv = cp` for a liquid component and `cp − R/M` for a gas one.
+    ///
+    /// The phase branch is legitimate for the reason `density_at`'s is — it is a
+    /// property law branching on a material property, not a fidelity `if`
+    /// (docs/DESIGN.md §3a fork 3). And it must be a branch: applying `cp − R/M`
+    /// to water shifts its `cv` by 11%, which would move every golden in the
+    /// workspace. For a liquid this returns `mixture_cp` bit for bit.
+    ///
+    /// Weighting the per-component `cv` by mass fraction is the SAME rule as
+    /// `cp − R/M̄` on the mixture, not an approximation of it:
+    /// `Σ fᵢ(cpᵢ − R/Mᵢ) = cp̄ − R·Σ(fᵢ/Mᵢ) = cp̄ − R/M̄`, because `M̄` is defined by
+    /// exactly that reciprocal sum (`mean_molar_mass`). Both forms are gated
+    /// against each other below, so neither can drift.
+    ///
+    /// Why this exists at all: a gas holdup's internal energy is not its
+    /// enthalpy. Using `cp` for a blowing-down vessel overstates its stored
+    /// energy by a factor of `γ` and, with it, suppresses the cooling that makes
+    /// a relief event look like one.
+    pub fn mixture_cv(&self, slate: &Slate) -> JPerKgK {
+        JPerKgK(
+            self.mass_fractions
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let component = slate.get(i);
+                    let cv = match component.phase {
+                        Phase::Liquid => component.cp.value(),
+                        Phase::Gas => component.cp.value() - R_GAS / component.molar_mass.value(),
+                    };
+                    f * cv
+                })
+                .sum(),
+        )
+    }
+
     /// Mixture heat capacity: mass-fraction weighted.
     pub fn mixture_cp(&self, slate: &Slate) -> JPerKgK {
         JPerKgK(
@@ -366,6 +402,48 @@ mod tests {
             .unwrap();
         assert_eq!(at_ambient.value().to_bits(), at_pressure.value().to_bits());
         approx::assert_relative_eq!(at_ambient.value(), 998.0, max_relative = 1e-12);
+    }
+
+    /// `cv` by mass-weighted components equals `cp̄ − R/M̄` on the mixture — the
+    /// two forms of the same rule, gated against each other so neither drifts.
+    ///
+    /// On a 50/50 methane/propane blend the two molar masses differ by 2.75×, so
+    /// this is a real agreement and not an identity read off a pure cut.
+    #[test]
+    fn mixture_cv_agrees_with_cp_minus_r_over_mean_molar_mass() {
+        let slate = Slate::new(vec![gas("methane", 0.016), gas("propane", 0.044)]).unwrap();
+        let half = Composition::from_weights(&[0.5, 0.5]).unwrap();
+        let from_mean =
+            half.mixture_cp(&slate).value() - R_GAS / half.mean_molar_mass(&slate).value();
+        approx::assert_relative_eq!(
+            half.mixture_cv(&slate).value(),
+            from_mean,
+            max_relative = 1e-12
+        );
+        // And it is a real correction, not a rounding: γ = cp/cv is well above 1.
+        let gamma = half.mixture_cp(&slate).value() / half.mixture_cv(&slate).value();
+        assert!(
+            gamma > 1.1,
+            "a gas mixture's γ must be distinguishable from 1, got {gamma}"
+        );
+    }
+
+    /// A LIQUID's `cv` is its `cp`, bit for bit — the phase branch is what keeps
+    /// every all-liquid golden in the workspace unchanged. Applying the gas rule
+    /// to water would shift it by 11%, which the second assertion sizes.
+    #[test]
+    fn a_liquids_cv_is_its_cp_exactly() {
+        let slate = Slate::new(vec![PseudoComponent::water()]).unwrap();
+        let water = Composition::pure(1, 0);
+        assert_eq!(
+            water.mixture_cv(&slate).value().to_bits(),
+            water.mixture_cp(&slate).value().to_bits()
+        );
+        let if_gas_rule = 4184.0 - R_GAS / 0.018;
+        assert!(
+            (4184.0 - if_gas_rule) / 4184.0 > 0.10,
+            "the slip this branch prevents must be large enough to matter"
+        );
     }
 
     /// Zero-fraction components do not vote on a composition's phase. Without

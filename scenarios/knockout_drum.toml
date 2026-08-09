@@ -1,0 +1,78 @@
+# M5.3 reference plant: a knock-out drum on a fuel-gas header.
+#
+# THE PLANT THE MILESTONE'S CENTRAL DESIGN DECISION TURNS ON (docs/DESIGN.md §3a
+# fork 2). Not a contrived case — a 1 m³ drum on a fat, low-pressure line is
+# unremarkable piece of plant — and that is exactly the point. Its numbers are
+# the ones in fork 2's table:
+#
+#   C = V·M̄/(R·T) = 1 · 0.030 / (8.3145 · 300)  =  1.203e-5 kg/Pa
+#
+# against `tank_pump_valve`'s supply tank at 2.04 kg/Pa. Five orders. The
+# rejected alternative — treat the drum as a `tank` with a gas pressure law,
+# pinned from the start-of-tick inventory — is stable only while `dt·g/C < 2`,
+# and this drum sits WELL outside that bound with the two branches it has. It
+# would oscillate and diverge, which is why the vessel's pressure is solved with
+# a capacitance term instead of integrated after the fact.
+#
+# `capacitive_vessel_reference.rs` measures `g` at this plant's own converged
+# state rather than reading it off the table, so the verdict is falsified by the
+# plant and not by the note that predicted it.
+#
+# The drum starts BELOW its steady pressure (8 bar against ~10) so the gate
+# watches it fill and settle, rather than starting it at the answer.
+#
+# A drum is a gas holdup, so it is a `vessel` and not a `tank`: its state is
+# pressure, not level. The loader refuses each kind in the other's place.
+
+[meta]
+name = "knockout_drum"
+description = "A knock-out drum fills from a fuel-gas header and settles at its balance pressure."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+# One gas-phase cut standing for a light hydrocarbon mix — the M̄ = 0.030 kg/mol
+# of fork 2's table, so the capacitance the gate checks is the tabulated one.
+[[components]]
+name = "fuel_gas"
+phase = "gas"
+tb_c = -100.0
+molar_mass_kg_per_mol = 0.030
+cp_j_per_kg_k = 2000.0
+
+[nodes.header]
+type = "source"
+pressure_bar = 10.2
+temperature_c = 26.85          # 300 K, fork 2's table temperature
+
+[nodes.drum]
+type = "vessel"
+volume_m3 = 1.0
+pressure_bar = 8.0             # deliberately off the balance point
+temperature_c = 26.85
+
+[nodes.downstream]
+type = "sink"
+pressure_bar = 9.8
+temperature_c = 26.85
+
+# Both runs sized for ~20 kg/s at the 0.2 bar drop fork 2's table assumes, which
+# is what puts `g` where it does.
+[[pipes]]
+name = "inlet_run"
+from = "header"
+to = "drum"
+length_m = 10.0
+diameter_m = 0.193
+
+[[pipes]]
+name = "outlet_run"
+from = "drum"
+to = "downstream"
+length_m = 10.0
+diameter_m = 0.193

@@ -15,11 +15,12 @@ use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
     ColumnDraw, HeatExchangerCoupling, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState,
+    VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, ReactionModel, ThermoModel};
 use refinery_core::units::{
-    JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Pascal, Seconds, SquareMeter, Watt,
+    CubicMeter, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Pascal, Seconds, SquareMeter, Watt,
     WattPerKelvin, P_ATM, T_AMBIENT,
 };
 use serde::Deserialize;
@@ -168,6 +169,23 @@ pub enum NodeDef {
         #[serde(default)]
         ambient_ua_w_per_k: f64,
         /// Initial tank contents. Same rule as `Source::composition`.
+        #[serde(default)]
+        composition: Option<BTreeMap<String, f64>>,
+    },
+    /// Capacitive gas vessel (docs/DESIGN.md §3a fork 2): knock-out drum,
+    /// receiver, blowdown vessel. Gas only — a liquid holdup is a `tank`.
+    ///
+    /// It declares a PRESSURE, not an inventory, because that is the number an
+    /// operator knows about a vessel and the number its state actually is; the
+    /// mass follows from `m = P·V·M̄/(R·T)`. The tank is the mirror image and for
+    /// the same reason: it declares a LEVEL, and its mass follows from `ρ·A·h`.
+    Vessel {
+        volume_m3: f64,
+        /// Initial pressure [bar]. The vessel's state; its mass is derived.
+        pressure_bar: f64,
+        temperature_c: f64,
+        /// Initial contents. Same rule as `Source::composition`, and it must be
+        /// gas-phase — see `node_kind`'s Vessel arm.
         #[serde(default)]
         composition: Option<BTreeMap<String, f64>>,
     },
@@ -613,6 +631,41 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                 ambient_ua: WattPerKelvin(*ambient_ua_w_per_k),
             })
         }
+        NodeDef::Vessel {
+            volume_m3,
+            pressure_bar,
+            temperature_c,
+            composition,
+        } => {
+            let composition = resolve_composition(name, composition, slate)?;
+            // The mirror of the tank's liquid-only guard, and the other half of
+            // the same partition: a holdup is a tank if its state is a level and
+            // a vessel if its state is a pressure. `C = V·M̄/(R·T)` is the
+            // ideal-gas relation — for an incompressible liquid it is not merely
+            // inaccurate, it names nothing, and it would silently produce a
+            // capacitance ~5 orders too small and a plant that oscillates.
+            if composition.phase(slate)? != Phase::Gas {
+                return Err(SimError::Scenario(format!(
+                    "vessel '{name}' holds a liquid-phase composition. A vessel's state is \
+                     PRESSURE and its capacitance C = V·M̄/(R·T) is the ideal-gas relation; \
+                     a liquid holdup is a tank, whose state is level (docs/DESIGN.md §3a)"
+                )));
+            }
+            let mut vessel = VesselState {
+                volume: CubicMeter(*volume_m3),
+                // Filled in immediately below, from the capacitance this same
+                // struct computes. Going through `capacitance` rather than
+                // writing `P·V·M̄/(R·T)` out again is what guarantees the vessel's
+                // `pressure()` reads back EXACTLY the declared bar figure — and
+                // therefore that the accumulation term's `Pⁿ` starts where the
+                // file says the plant does.
+                mass: Kg(0.0),
+                temperature: c_to_k(*temperature_c),
+                composition,
+            };
+            vessel.mass = Kg(bar_to_pa(*pressure_bar).value() * vessel.capacitance(slate));
+            NodeKind::Vessel(vessel)
+        }
         NodeDef::Pump { h0_m, a, on } => NodeKind::Pump {
             h0: Meter(*h0_m),
             a: *a,
@@ -697,6 +750,38 @@ fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
                  be finite and >= 0. UA is a conductance; the DIRECTION of ambient \
                  exchange comes from (T_ambient − T_tank), so a negative value does \
                  not mean 'loses heat' — it drives the tank away from ambient."
+            )));
+        }
+    }
+    if let NodeDef::Vessel {
+        volume_m3,
+        pressure_bar,
+        temperature_c,
+        ..
+    } = def
+    {
+        // Every one of these three sits in `C = V·M̄/(R·T)` or in `m = C·P`, and
+        // a non-positive value in any of them produces a finite, plausible-looking
+        // capacitance or inventory rather than an obvious failure: V ≤ 0 gives a
+        // vessel that stores nothing (the zero-volume junction it is not), T ≤ 0
+        // flips or blows up C, and P ≤ 0 starts the vessel at or below vacuum with
+        // no gas in it. Caught at load, where the file can be named.
+        if !volume_m3.is_finite() || *volume_m3 <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "vessel '{name}' has volume_m3 = {volume_m3}: it must be finite and > 0 \
+                 (a vessel with no volume has no capacitance, which is a junction)."
+            )));
+        }
+        if !pressure_bar.is_finite() || *pressure_bar <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "vessel '{name}' has pressure_bar = {pressure_bar}: it must be finite and > 0. \
+                 It is the vessel's STATE (its mass follows from it), not a setpoint."
+            )));
+        }
+        if !temperature_c.is_finite() || c_to_k(*temperature_c).value() <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "vessel '{name}' has temperature_c = {temperature_c}: it must be finite and \
+                 above absolute zero (−273.15 °C); it divides into the capacitance."
             )));
         }
     }
@@ -1009,7 +1094,7 @@ fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(), SimError> 
     let mut representative: BTreeMap<usize, NodeId> = BTreeMap::new();
     for &id in &ids {
         let root = uf_find(&mut parent, id.0 as usize);
-        let fixes = fixed_pressure_node(graph.node(id), slate);
+        let fixes = provides_pressure_reference(graph.node(id), slate);
         *has_fixer.entry(root).or_insert(false) |= fixes;
         representative.entry(root).or_insert(id);
     }
@@ -1017,8 +1102,8 @@ fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(), SimError> 
         if !*fixed {
             let member = representative[root];
             return Err(SimError::Scenario(format!(
-                "network component containing '{}' has no pressure-fixing node \
-                 (needs at least one source/sink/atmosphere/tank); its hydraulic \
+                "network component containing '{}' has no pressure reference \
+                 (needs at least one source/sink/atmosphere/tank, or a capacitive vessel); its hydraulic \
                  problem is singular",
                 graph.node(member).name
             )));
@@ -1142,6 +1227,10 @@ fn declared_composition(kind: &NodeKind) -> Option<&Composition> {
             Some(composition)
         }
         NodeKind::Tank(t) => Some(&t.composition),
+        // A vessel declares its contents like a tank does, so it votes on its
+        // component's phase — and it is the node most likely to be the gas vote
+        // in a mixed-slate file.
+        NodeKind::Vessel(v) => Some(&v.composition),
         _ => None,
     }
 }
@@ -1171,11 +1260,24 @@ fn seed_component_index(slate: &Slate, phase: Phase) -> usize {
         .unwrap_or_default()
 }
 
-/// True if the node pins a pressure (Source/Sink/Atmosphere/Tank). Delegates to
-/// the solver's `fixed_pressure` so load-time and solve-time agree on what
-/// counts as a boundary.
-fn fixed_pressure_node(node: &Node, slate: &Slate) -> bool {
+/// True if the node gives its connected component a pressure REFERENCE, so the
+/// component's hydraulic problem is not singular.
+///
+/// Two ways to be one, and they are deliberately not the same predicate as
+/// `network::fixed_pressure`:
+///
+/// - **Pinned** (Source/Sink/Atmosphere/Tank/Column) — the pressure is imposed.
+/// - **Capacitive** (Vessel) — the pressure is an UNKNOWN, but the node supplies
+///   its own equation for it (`C·(P − Pⁿ)/dt`), so the component is well posed
+///   with no pinned node anywhere in it. This is the load-time half of
+///   "capacitance is an anchor" (DESIGN §3a fork 2); without it a closed gas
+///   system would be refused here before the solver ever got to demonstrate it.
+///
+/// Both arms delegate to the solver so load-time and solve-time cannot disagree
+/// about what counts as a boundary.
+fn provides_pressure_reference(node: &Node, slate: &Slate) -> bool {
     refinery_solvers::network::fixed_pressure(node, slate).is_some()
+        || refinery_solvers::network::capacitance(node, slate).is_some()
 }
 
 fn uf_find(parent: &mut [usize], mut x: usize) -> usize {

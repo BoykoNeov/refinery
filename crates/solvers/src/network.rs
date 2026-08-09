@@ -60,10 +60,18 @@ pub struct CompiledEdge {
 pub struct Classification {
     /// Pinned pressures [Pa] for fixed nodes (Source/Sink/Atmosphere/Tank).
     pub fixed: BTreeMap<NodeId, f64>,
-    /// Free node ids (Junction/Pump/Valve), ascending — deterministic order.
+    /// Free node ids (Junction/Pump/Valve/Vessel), ascending — deterministic
+    /// order. A capacitive vessel is FREE: its pressure is an unknown the solve
+    /// determines, it is simply an unknown with an equation of its own.
     pub free: Vec<NodeId>,
+    /// Capacitive free nodes and their `(C, Pⁿ)`, ascending. A subset of `free`.
+    pub capacitive: BTreeMap<NodeId, Capacitance>,
     /// Deterministic cold-start pressure seed: mean of the fixed pressures, or
     /// P_ATM when the network has no fixed node at all.
+    ///
+    /// A capacitive node never falls back to it — its own `Pⁿ` is a better cold
+    /// start and always exists — which also keeps a closed gas system, where
+    /// there are no fixed pressures to average, off a mean of an empty set.
     pub cold: f64,
 }
 
@@ -76,11 +84,14 @@ pub struct Prepared {
     /// tracks the pressure iterate; only `anchored` is computed once, from this
     /// first compile, so the anchored set cannot flap mid-solve.
     pub compiled: BTreeMap<EdgeId, CompiledEdge>,
-    /// Fixed ∪ free-reachable-via-conducting-edges. Free nodes NOT in this set
-    /// are floating (indeterminate pressure); their incident edges carry zero.
+    /// (Fixed ∪ capacitive) ∪ free-reachable-from-those-via-conducting-edges.
+    /// Free nodes NOT in this set are floating (indeterminate pressure); their
+    /// incident edges carry zero. A capacitive node is always in it, with or
+    /// without a conducting path to a reservoir.
     pub anchored: BTreeSet<NodeId>,
-    /// Seeded pressures: fixed pinned, anchored free warm-started or cold,
-    /// floating free warm-started or at `P_ATM`.
+    /// Seeded pressures: fixed pinned, free warm-started, else `Pⁿ` for a
+    /// capacitive node and the cold mean for any other; floating free
+    /// warm-started or at `P_ATM`.
     pub pressures: BTreeMap<NodeId, f64>,
 }
 
@@ -155,14 +166,69 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         // Furnaces, coolers and reactors pin no pressure: all are hydraulically
         // pass-throughs, so they are free nodes whose pressure the network
         // determines. A reactor is hydraulically a furnace (DESIGN §5).
+        //
+        // A VESSEL is free too, and that is the point of it: a holdup that pinned
+        // its pressure would be the rejected explicit scheme (DESIGN §3a fork 2).
+        // Its inventory enters through `capacitance` instead, as a term in its own
+        // residual — so it is an ANCHOR without being FIXED, which is a
+        // distinction this file did not have to make before.
         NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
         | NodeKind::Junction
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::Reactor { .. }
+        | NodeKind::Vessel(_)
         | NodeKind::HeatExchanger => None,
     }
+}
+
+/// The capacitive state of a node that stores mass against pressure, or `None`
+/// for every node that does not.
+///
+/// The counterpart of `fixed_pressure`, and the two are mutually exclusive by
+/// construction: a node either pins a pressure, carries a capacitance, or is a
+/// zero-volume algebraic junction. Together they are the three node classes
+/// DESIGN §3a fork 2 unifies — `C → 0` is the junction, `C → ∞` the reservoir.
+pub fn capacitance(node: &Node, slate: &Slate) -> Option<Capacitance> {
+    match &node.kind {
+        NodeKind::Vessel(vessel) => Some(Capacitance {
+            c: vessel.capacitance(slate),
+            p_prev: vessel.pressure(slate).value(),
+        }),
+        _ => None,
+    }
+}
+
+/// One capacitive node's contribution to its own mass balance.
+#[derive(Debug, Clone, Copy)]
+pub struct Capacitance {
+    /// `C = dm/dP` [kg/Pa], exact at the vessel's start-of-tick `T` and `M̄`.
+    pub c: f64,
+    /// `Pⁿ` [Pa]: the pressure the START-OF-TICK inventory implies, `mⁿ/C`.
+    ///
+    /// A fact about the state, never a warm start and never the cold seed — the
+    /// accumulation term measures `m(P) − mⁿ` from here, so seeding a vessel
+    /// anywhere else would make the step integrate from a mass it never held.
+    pub p_prev: f64,
+}
+
+/// The accumulation term `−C·(P − Pⁿ)/dt` [kg/s] and its derivative `−C/dt`
+/// w.r.t. this node's own pressure.
+///
+/// Lives HERE, in the shared file, rather than in either solver: it is the same
+/// term in the same residual, and both fidelities must inherit it from one
+/// definition or I5 stops meaning anything. Newton adds it to `R_i` and to the
+/// Jacobian diagonal; the Simple sweep adds it to `imbalance` and to `g_sum`,
+/// where `C/dt` is the diagonal preconditioning it already performs.
+///
+/// The sign follows the residual's convention, `R = Σ ṁ_in − Σ ṁ_out`: mass
+/// accumulating in the vessel is mass that did NOT leave, so it subtracts. The
+/// derivative is strictly negative, which is why a capacitive diagonal strictly
+/// improves the conditioning of `J = −L` rather than merely preserving it.
+#[inline]
+pub fn accumulation(cap: &Capacitance, pressure: f64, dt: f64) -> (f64, f64) {
+    (-cap.c * (pressure - cap.p_prev) / dt, -cap.c / dt)
 }
 
 /// Compile one edge into its series branch. The device (if any) at the edge's
@@ -317,13 +383,44 @@ pub fn prepare(
     // edges it reaches are inert either way.
     let mut pressures = classes.fixed.clone();
     for &nid in &classes.free {
-        let seed = warm_start.get(&nid).copied().unwrap_or(classes.cold);
+        // A capacitive node falls back to its OWN `Pⁿ`, never to the cold mean:
+        // a 10 bar vessel started at the mean of a 10 bar header and a 0 bar
+        // flare would begin its first step somewhere its own mass never was.
+        //
+        // The warm start still wins where there is one, and that ordering is
+        // MEASURED rather than reasoned. `Pⁿ` looks like the more principled
+        // seed — it is a fact about the inventory rather than a guess — but the
+        // two are not competing on principle: the seed cannot move the answer at
+        // all, because `Pⁿ` reaches the residual through `Capacitance`
+        // independently of where the iterate starts. It is purely a path, so the
+        // question is only which path is shorter, and the previous tick's `P*`
+        // is nearer this tick's than `Pⁿ` is — they differ by exactly the
+        // accumulation the solve is about to add back. Measured on
+        // `knockout_drum` over 200 ticks: 172 Newton iterations for the rule
+        // below, 277 for `Pⁿ` unconditionally, 168 for a cold-mean fallback that
+        // happens to suit this plant (its two reservoirs bracket the answer) and
+        // would not suit a lone vessel. A blowdown to vacuum is 400 under all
+        // three. Nothing in the suite can tell any of them apart on the ANSWER,
+        // which is the honest statement of what this line is worth.
+        let seed =
+            warm_start
+                .get(&nid)
+                .copied()
+                .unwrap_or_else(|| match classes.capacitive.get(&nid) {
+                    Some(cap) => cap.p_prev,
+                    None => classes.cold,
+                });
         pressures.insert(nid, seed);
     }
 
     let compiled = compile_edges(graph, slate, &pressures)?;
-    let fixed_set: BTreeSet<NodeId> = classes.fixed.keys().copied().collect();
-    let anchored = anchored_set(graph, &compiled, &fixed_set);
+    // Anchors are the pinned nodes AND the capacitive ones: a vessel's own
+    // equation determines its pressure, so it needs no conducting path to a
+    // reservoir (DESIGN §3a fork 2). This is what makes a closed gas system well
+    // posed for the first time.
+    let mut anchors: BTreeSet<NodeId> = classes.fixed.keys().copied().collect();
+    anchors.extend(classes.capacitive.keys().copied());
+    let anchored = anchored_set(graph, &compiled, &anchors);
 
     // A floating free node's pressure is indeterminate and its edges are inert,
     // so it is parked at its warm-start value or at P_ATM rather than at the
@@ -349,6 +446,7 @@ pub fn prepare(
 pub fn classify(graph: &PlantGraph, slate: &Slate) -> Classification {
     let mut fixed: BTreeMap<NodeId, f64> = BTreeMap::new();
     let mut free: Vec<NodeId> = Vec::new();
+    let mut capacitive: BTreeMap<NodeId, Capacitance> = BTreeMap::new();
     let (mut fixed_sum, mut fixed_cnt) = (0.0, 0usize);
     for nid in graph.node_ids() {
         if let Some(p) = fixed_pressure(graph.node(nid), slate) {
@@ -357,6 +455,9 @@ pub fn classify(graph: &PlantGraph, slate: &Slate) -> Classification {
             fixed_cnt += 1;
         } else {
             free.push(nid);
+            if let Some(cap) = capacitance(graph.node(nid), slate) {
+                capacitive.insert(nid, cap);
+            }
         }
     }
     // Cold start for nodes without a warm-start value (uniqueness makes the
@@ -366,15 +467,26 @@ pub fn classify(graph: &PlantGraph, slate: &Slate) -> Classification {
     } else {
         P_ATM.value()
     };
-    Classification { fixed, free, cold }
+    Classification {
+        fixed,
+        free,
+        capacitive,
+        cold,
+    }
 }
 
-/// Nodes reachable from any fixed node through conducting edges (undirected).
+/// Nodes reachable from any ANCHOR through conducting edges (undirected).
 /// Free nodes NOT in this set are floating (indeterminate pressure).
+///
+/// `anchors` is the pinned nodes plus the capacitive ones. Capacitance anchors
+/// because a vessel's residual determines its own pressure with no reference to
+/// anything outside it — the `C·(P − Pⁿ)/dt` term is an equation in `P` alone —
+/// so "reachable from a pressure reference" is no longer the same question as
+/// "reachable from a FIXED node" (DESIGN §3a fork 2).
 pub fn anchored_set(
     graph: &PlantGraph,
     compiled: &BTreeMap<EdgeId, CompiledEdge>,
-    fixed: &BTreeSet<NodeId>,
+    anchors: &BTreeSet<NodeId>,
 ) -> BTreeSet<NodeId> {
     let mut adj: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
     for eid in graph.edge_ids() {
@@ -384,8 +496,8 @@ pub fn anchored_set(
             adj.entry(c.tgt).or_default().push(c.src);
         }
     }
-    let mut anchored = fixed.clone();
-    let mut stack: Vec<NodeId> = fixed.iter().copied().collect();
+    let mut anchored = anchors.clone();
+    let mut stack: Vec<NodeId> = anchors.iter().copied().collect();
     while let Some(n) = stack.pop() {
         if let Some(neigh) = adj.get(&n) {
             for &m in neigh {

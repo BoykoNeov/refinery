@@ -63,6 +63,17 @@ Quasi-steady network solve each tick. Unknowns: pressure at every internal
 node. Equations: mass balance at every internal node, with branch flow given
 by the element characteristic between adjacent nodes:
 
+> **Amended by M5.3.** "Quasi-steady" is no longer exactly right, and the
+> difference is worth stating where the claim is made rather than only in §3a.
+> With a capacitive vessel in the network, one solve is not a steady state — it
+> is **one implicit-Euler step of a differential-algebraic system**: an algebraic
+> mass balance `Σṁ = 0` at every zero-volume node, and `Σṁ = C·dP/dt` at every
+> capacitive one. Pressure *accumulation* is now inside the solve instead of
+> absent from the model. Pressure WAVES remain out of scope, unchanged: the
+> vessel stores mass against pressure, it does not propagate anything. A network
+> with no vessel in it is bit-for-bit the steady solve described below, because
+> `C` is simply absent from every node's residual.
+
 - Pipe (turbulent, Darcy–Weisbach): `dP = f(Re) · L/D · ρv²/2`; start with a
   fixed friction factor, add Colebrook/Haaland later.
 - Valve (ISA): `Q = Cv_eff(opening) · sqrt(dP/SG)`, smooth near dP=0 to keep
@@ -590,6 +601,71 @@ temperature, `m·cv·dT/dt = −ṁ·(cp − cv)·T`, whose first integral is
 `T/Tᵢ = (m/mᵢ)^(γ−1)`. That relation is *path-independent* — it does not contain
 `t`, the resistance, or the downstream pressure — which is what makes it a
 reference gate rather than a readback of the integrator.
+
+#### Corrections from building it (M5.3, landed)
+
+Forks 2 and 3 survived in outline — capacitance in the shared residual,
+capacitance as an anchor, `cv` phase-conditional, the vessel inertial like a
+tank, blowdown cooling emergent. Four things they got wrong or did not see.
+
+**Fork 3's `u = cv·(T − T_REF)` is wrong, and it would have killed fork 3's own
+first integral.** The rule has to be consistent with the enthalpy every stream
+crossing the boundary already carries, `h = cp·(T − T_REF)`, and thermodynamics
+fixes their difference at `h − u = P/ρ = (R/M̄)·T`. The stated rule gives
+`(R/M̄)·(T − T_REF)` instead. The correct form is
+
+```
+u = cv·T − cp·T_REF
+```
+
+which is `cp·(T − T_REF)` for a liquid (`cv = cp`) — so every existing tank
+balance is bit-identical — and is what makes `m·cv·dT/dt = −ṁ·(R/M̄)·T` come out.
+Note fork 3 *derived* that ODE with `T` and then wrote the rule with
+`(T − T_REF)`, contradicting itself in the same paragraph. The size of the slip:
+The size of the slip:
+on the reference blowdown the inconsistent datum predicts a **5.5 K** drop where
+the consistent one predicts **80.3 K** over the run. Both are finite, smooth,
+mass-conserving and reproducible — the `well-posed ≠ correct` failure mode
+again, and the reason gate (ii) is a first integral and not a plausibility check.
+The offset is invisible whenever a holdup's mass is constant, which is why no
+tank ever noticed and why only a vessel could surface it.
+
+**The Simple solver was measuring its residual against stale coefficients.** It
+compiled the density coefficients at the start of each sweep and then measured
+the post-sweep residual — and shipped the resulting flows — with those same
+pre-sweep coefficients. Harmless while every free node was warm-started at a
+pressure it barely moved from; a capacitive vessel moves ~400 Pa **every tick by
+design**, so the sweep converges in one pass and the coefficient is never
+refreshed. That put the two fidelities 2.0e-4 apart on the blowdown, about four
+orders above the residual either solver reported. A convergence flag can be
+perfectly honest about a fixed point nobody solved. The compile moved after the
+sweep; all-liquid networks are unaffected because `density_at` ignores its
+arguments there.
+
+**"Capacitance is an anchor" is two changes, not one, and they are in different
+crates.** `network::anchored_set` had to seed its walk from the capacitive nodes
+as well as the fixed ones — but the scenario loader would have refused the plant
+before the solver ever saw it, because `validate_topology` demanded a
+*pressure-fixing* node per connected component. The load-time predicate is
+therefore a distinct one (`provides_pressure_reference`) from
+`network::fixed_pressure`, which still answers `None` for a vessel. Two names,
+two meanings; collapsing them would either refuse closed gas systems or pin a
+vessel's pressure.
+
+**The stability verdict is stronger on the plant than in the table.** Fork 2
+costs `dt·g/C = 4.2` for the drum, from a single 20 kg/s branch. The reference
+plant wires it to two — a drum with an inlet and an outlet, which is what a
+knock-out drum is — and `g` is the sum over its branches, so the measured figure
+at the plant's own converged state is **8.35**. The rejected explicit scheme's
+amplification factor `|1 − dt·g/C|` is 7.35 per tick there.
+
+One thing the note predicted and the build confirmed, worth recording because it
+was the load-bearing assumption of gate (iii): `m_new = C·P_solved` holds
+identically, so the discharge edge's `ρ = P·M̄/(R·T)` IS the vessel's `m/V`
+exactly. That is what makes the closed-form blowdown an anchor rather than a
+readback — and it only holds because a gas edge takes its temperature from the
+upwind NODE (see the M5.2 correction above); with the pipe's own outlet
+temperature it is off by `(γ−1)/γ` at every step size.
 
 ### Fork 4 — choked flow versus the C¹ invariant
 

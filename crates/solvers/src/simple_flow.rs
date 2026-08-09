@@ -31,7 +31,7 @@
 //! a NaN escape (rule 5). Cross-fidelity agreement with Newton on well-posed
 //! networks is the I5 property test.
 
-use crate::network::{compile_edges, edge_flows, prepare, validate_degrees};
+use crate::network::{accumulation, compile_edges, edge_flows, prepare, validate_degrees};
 use refinery_core::components::Slate;
 use refinery_core::error::SimError;
 use refinery_core::graph::{EdgeId, NodeId, PlantGraph};
@@ -78,13 +78,14 @@ impl FlowSolver for SimpleFlowSolver {
         &mut self,
         graph: &PlantGraph,
         slate: &Slate,
-        _dt: Seconds,
+        dt: Seconds,
     ) -> Result<HydraulicSolution, SimError> {
         // Same classification + seeding + compilation as Newton (the fidelity
         // seam), through the same `prepare`.
         validate_degrees(graph)?;
         let prep = prepare(graph, slate, &self.warm_start)?;
         let cls = prep.classes;
+        let capacitive = &cls.capacitive;
         let anchored = &prep.anchored;
         let mut compiled = prep.compiled;
         let mut pressures = prep.pressures;
@@ -130,15 +131,13 @@ impl FlowSolver for SimpleFlowSolver {
         while iterations < self.max_iter {
             iterations += 1;
 
-            // Refresh the frozen density coefficients at the current iterate,
-            // once per sweep rather than once per node: within a sweep the
-            // node-wise Newton step already treats its neighbours as fixed, so
-            // per-node recompilation would refresh coefficients the step is not
-            // differentiating anyway. All-liquid networks recompile to identical
-            // numbers (M5.2, `network::compile_edge`).
-            compiled = compile_edges(graph, slate, &pressures)?;
-
-            // In-place update sweep.
+            // In-place update sweep, against coefficients valid at the CURRENT
+            // pressures — from `prepare` on the first pass, refreshed after each
+            // sweep below. Once per sweep rather than once per node: within a
+            // sweep the node-wise Newton step already treats its neighbours as
+            // fixed, so per-node recompilation would refresh coefficients the
+            // step is not differentiating anyway. All-liquid networks recompile
+            // to identical numbers (M5.2, `network::compile_edge`).
             for &nid in &unknowns {
                 let mut imbalance = 0.0;
                 let mut g_sum = 0.0;
@@ -149,6 +148,18 @@ impl FlowSolver for SimpleFlowSolver {
                     g_sum += c.rho * c.branch.flow_ddp(dp, self.eps_dp); // ≥ 0
                     imbalance += if incoming { mdot } else { -mdot };
                 }
+                // A capacitive node carries its own accumulation, through the
+                // SAME `network::accumulation` Newton assembles — the shared
+                // residual is what keeps the two fidelities on one fixed point.
+                // `−C/dt` is a slope like any branch conductance, so it enters
+                // `g_sum` with its sign flipped and the node-wise Newton step
+                // needs no new algebra: it is the diagonal preconditioning this
+                // sweep already performs, now including the vessel's own term.
+                if let Some(cap) = capacitive.get(&nid) {
+                    let (term, slope) = accumulation(cap, pressures[&nid], dt.value());
+                    imbalance += term;
+                    g_sum -= slope;
+                }
                 // g_sum > 0 for any anchored free node; the node-wise Newton
                 // step ΔP = imbalance / g_sum drives this node's balance to zero.
                 let step = self.omega * imbalance / g_sum;
@@ -158,13 +169,28 @@ impl FlowSolver for SimpleFlowSolver {
                 *pressures.get_mut(&nid).expect("unknown is a node") += step;
             }
 
-            // Residual on the post-sweep flows (throughput = max|ṁ| over all
-            // active edges, so the relative tolerance matches Newton's).
+            // Refresh the frozen density coefficients at the POST-sweep
+            // pressures, before the residual is measured off them.
+            //
+            // The ordering is load-bearing and M5.3 is what exposed it.
+            // Measuring with coefficients compiled before the sweep tests a
+            // fixed point nobody solved, and the solution `finalize` then ships
+            // is internally inconsistent — a flow computed from one iterate's
+            // density at another iterate's pressure. It went unnoticed while
+            // every free node was warm-started at a pressure it barely moved
+            // from; a capacitive vessel moves ~400 Pa EVERY tick by design, so
+            // the sweep converges in one pass and the stale coefficient is
+            // never refreshed. That put the two fidelities 2.0e-4 apart on the
+            // blowdown, ~4 orders above the residual either one reported, which
+            // is how a convergence flag can be honest and the answer still
+            // wrong. Bit-identical for an all-liquid network, where
+            // `density_at` ignores both arguments.
+            compiled = compile_edges(graph, slate, &pressures)?;
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
             let (flows, throughput) = (&edges.mass_flow, edges.throughput);
             let mut residual = 0.0f64;
             for &nid in &unknowns {
-                let bal: f64 = incident[&nid]
+                let mut bal: f64 = incident[&nid]
                     .iter()
                     .map(|&(eid, incoming)| {
                         let f = flows[&eid];
@@ -175,6 +201,14 @@ impl FlowSolver for SimpleFlowSolver {
                         }
                     })
                     .sum();
+                // The SAME residual the sweep drove to zero. Measuring only the
+                // edge flows would declare a vessel converged the moment its
+                // branches balanced each other, which for a blowing-down vessel
+                // is never — its inflow and outflow are meant to differ by
+                // exactly the accumulation.
+                if let Some(cap) = capacitive.get(&nid) {
+                    bal += accumulation(cap, pressures[&nid], dt.value()).0;
+                }
                 residual = residual.max(bal.abs());
             }
             history.push(residual);

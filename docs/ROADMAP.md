@@ -1036,7 +1036,7 @@ was already large enough, on the reference plant rather than a contrived one.
       second pressure point exists to catch — is 3.5% off at 10 bar and **26.7%**
       off at 20, which is that design choice paying for itself.
 
-### M5.3 — Capacitive vessel (the central design decision)
+### M5.3 — Capacitive vessel (the central design decision) — **LANDED**
 A gas vessel's residual is `Σ_e ṁ_e(P) − (m(P) − mⁿ)/dt` with
 `m(P) = P·V·M̄/(R·T)`, i.e. an accumulation term `C·(P − Pⁿ)/dt` with
 **`C = V·M̄/(R·T)` [kg/Pa]**. The rejected alternative — a `Tank` with an
@@ -1048,7 +1048,7 @@ oscillates and diverges). Liquid and gas capacitance are five orders apart —
 2.04 kg/Pa versus 1.2e-5 — which is also why M1 was right to do the simple thing.
 A guard is worse than useless here: the regime it would refuse is a small vessel
 relieving quickly, which is the scenario the milestone exists to simulate.
-- [ ] `core`/`solvers`: the capacitance term in the **shared** residual
+- [x] `core`/`solvers`: the capacitance term in the **shared** residual
       (`network.rs`), so both fidelities inherit it — `SimpleFlowSolver`'s
       per-node update gains `C/dt` in the denominator, which is the diagonal
       preconditioning it already does. `FlowSolver::solve` already takes `dt`, so
@@ -1056,16 +1056,16 @@ relieving quickly, which is the scenario the milestone exists to simulate.
       linear in `P` at fixed `T`, `M̄`). Capacitance is an **anchor**:
       `anchored_set` must stop calling a capacitive node floating, which makes a
       closed gas system with no fixed node well-posed for the first time.
-- [ ] `core`: the vessel is inertial — it integrates mass, temperature and
+- [x] `core`: the vessel is inertial — it integrates mass, temperature and
       composition like a tank — with `u = cv·(T − T_REF)`, `cv = cp − R/M̄` for
       gas components and `cv = cp` for liquid ones. The branch must be
       phase-conditional: applying `cp − R/M̄` to water shifts its `cv` by 11% and
       changes every golden. Blowdown cooling then **emerges** rather than being
       modelled.
-- [ ] Docs: §3 says the solve is a steady state. With a capacitive node it is one
+- [x] Docs: §3 says the solve is a steady state. With a capacitive node it is one
       **implicit-Euler step of a DAE**. Pressure waves stay out of scope; what
       changed is that accumulation is now inside the solve.
-- [ ] Tests, three gates because no one of them covers it:
+- [x] Tests, three gates because no one of them covers it:
       (i) **the design-decision gate** — the 1 m³ drum above, the case the
       rejected explicit scheme diverges on, run to a converged bounded state.
       This is the gate that falsifies M5.3's verdict and the one most easily left
@@ -1089,9 +1089,97 @@ relieving quickly, which is the scenario the milestone exists to simulate.
       form re-derived — isothermally the elementary `arctan√((P−P₀)/P₀)` linear
       in `t` — or numerical quadrature of the same ODE inside the test. The
       milestone's only *rate* gate must not depend on an unconfirmed fixture.
-- [ ] I1 gains the vessel's accumulation term. Unlike a reactor against I7, this
+- [x] I1 gains the vessel's accumulation term. Unlike a reactor against I7, this
       is an ordinary accumulation the invariant is *for*, not a term outside its
       frame.
+
+**What building it settled, and the four things the note got wrong.**
+
+**Fork 3's `u = cv·(T − T_REF)` would have killed fork 3's own first integral.**
+The internal-energy rule must be datum-consistent with the enthalpy every
+crossing stream already carries, `h = cp·(T − T_REF)`: thermodynamics fixes
+`h − u = P/ρ = (R/M̄)·T`, and the stated rule gives `(R/M̄)·(T − T_REF)`. The
+correct form is **`u = cv·T − cp·T_REF`**, which reduces to `cp·(T − T_REF)` for
+a liquid (`cv = cp`), so every tank balance is bit-identical. The size of the
+slip on the reference blowdown: a **5.5 K** drop where the consistent rule gives
+**80.3 K**, and both are finite, smooth, mass-conserving and reproducible — the
+"well-posed ≠ correct" failure mode again. The note *derived*
+`m·cv·dT/dt = −ṁ·(R/M̄)·T` with `T` and then wrote the rule with `(T − T_REF)`
+two lines later. The offset is invisible whenever a holdup's mass is constant,
+which is why no tank could ever have surfaced it and why gate (ii) had to be a
+first integral rather than a plausibility check.
+
+**The Simple solver was measuring its residual against pre-sweep coefficients**
+— and shipping flows built from them. Harmless while every free node was
+warm-started at a pressure it barely moved from; a vessel moves ~400 Pa *every
+tick by design*, so the sweep converges in one pass and the density coefficient
+is never refreshed. That put the two fidelities **2.0e-4** apart on the
+blowdown, about four orders above the residual either solver reported. A
+convergence flag can be entirely honest about a fixed point nobody solved.
+
+**"Capacitance is an anchor" is two changes in two crates.** `anchored_set` had
+to seed its walk from the capacitive nodes — but the loader would have refused
+the plant first, because `validate_topology` demanded a pressure-*fixing* node
+per component. The load-time predicate is now `provides_pressure_reference`,
+deliberately distinct from `network::fixed_pressure`, which still answers `None`
+for a vessel. Mutation confirms the two are independent: removing either fails
+`two_vessels_and_no_fixed_node_equalise` and nothing else, so neither covers the
+other and one gate sees both.
+
+**The stability verdict is stronger on the plant than in the table.** Fork 2
+costs `dt·g/C = 4.2` from a single 20 kg/s branch; a knock-out drum has an inlet
+*and* an outlet and `g` sums over branches, so the figure measured at the plant's
+own converged state is **8.35** — an amplification of 7.35 per tick for the
+rejected scheme, which a unit deviation turns into 5e17 over 20 ticks.
+
+**Confirmed rather than assumed, and load-bearing for gate (iii):**
+`m_new = C·P_solved` holds identically, so the discharge edge's `ρ = P·M̄/(R·T)`
+IS the vessel's `m/V` exactly — which is what makes the closed form an anchor
+and not a readback. It holds only because a gas edge takes its temperature from
+the upwind NODE, which is why the M5.2 density defect had to be fixed first, in
+its own commit, before this slice could rest on it.
+
+**Fixture confirmed before it was relied on**, as this slice's own text demanded:
+a `Sink` at `pressure_bar = 0.0` loads and solves. The cold-seed hazard the note
+flagged does not arise — a capacitive node falls back to its own `Pⁿ`, never to
+the mean of the fixed pressures.
+
+**Tolerances derived, then measured.** Gate (iii) is clean first order across the
+whole ladder: 6.06e-4 at `dt = 0.8`, then 3.03e-4, 1.52e-4, **7.61e-5 at the
+gate's own 0.1**, 3.82e-5, 1.92e-5, with ratios 1.997 / 1.997 / 1.996 / 1.993 /
+1.986. The `eps_dp` budget is taken at the run's END pressure (~5.8 bar,
+`eps/2P ≈ 8.6e-7`), three orders under the truncation, so the ladder measures the
+scheme and not the regularisation. Gate (ii) is first order too: 1.48e-4 /
+7.40e-5 / 3.70e-5 at `dt` 0.2 / 0.1 / 0.05.
+
+**One thing the slice could NOT gate, stated rather than dressed up.** Where a
+capacitive node's iterate is *seeded* is unfalsifiable: `Pⁿ` reaches the residual
+through `Capacitance` independently of the seed, so the root — and therefore the
+answer — cannot move. Ten mutations were run and this is the only one the entire
+suite passes under. It is settled by measurement instead of by a gate: warm start
+where there is one, `Pⁿ` as the cold fallback, costing 172 Newton iterations over
+200 ticks of `knockout_drum` against 277 for `Pⁿ` unconditionally.
+
+**Falsified before trusted**, eleven mutations, each caught by the right set:
+`u = cp·(T − T_REF)` (the tank's rule on a gas — isothermal blowdown) fails six
+gates; the **datum slip** `u = cv·(T − T_REF)` fails four, and notably NOT the
+mass balance or the fidelity agreement, which is gate (ii) doing the work it
+exists for; **`cv` without the phase branch** fails `a_liquids_cv_is_its_cp_exactly`
+**alone**, the M3.1 pattern again — no wired plant can carry that rule, because
+no liquid plant has a vessel; the accumulation term dropped from the **Jacobian
+only** fails six and **entirely** fails seven, the extra one being the drum;
+**capacitance not anchoring** and **the loader not counting a vessel as a
+reference** each fail one gate and only that one; the **liquid-vessel guard**
+likewise; and the Simple solver's pre-M5.3 ordering fails
+`both_fidelities_agree_on_the_blowdown` alone.
+
+**Regression anchor measured, not reasoned**, against a worktree at the previous
+commit: eight scenarios × two fidelities × 200 ticks, **15/16 byte-identical**.
+The single difference is `gas_line` under `simple`, and it is not an answer —
+the flows are bit-identical to every digit; what changed is the *reported*
+residual at tick 10, from 1.1e-15 to 9.4e-9, because the solver now measures
+against coefficients it actually solved with instead of flattering itself
+against stale ones.
 
 ### M5.4 — Choked flow, relief valve, flare (the milestone's payoff)
 - [ ] `solvers`: choking, with a **smoothed** transition. `elements.rs` commits in

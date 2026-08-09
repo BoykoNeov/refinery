@@ -4,7 +4,7 @@
 //!   commands → hydraulic solve (quasi-steady) → transport → unit dynamics
 //!   → validation → snapshot available.
 
-use crate::components::{Composition, Slate};
+use crate::components::Slate;
 use crate::energy::{self, T_REF};
 use crate::error::SimError;
 use crate::graph::{NodeKind, PlantGraph};
@@ -443,18 +443,14 @@ impl Engine {
                 // rounding error's worth of drift on every tick a tank merely
                 // drains.
                 if inflow_mass_rate > 0.0 {
-                    let mut weights: Vec<f64> = inflow_component_rate
-                        .iter()
-                        .map(|rate| rate * dt.value())
-                        .collect();
-                    // Clamped for the same reason `mass_new` is: a tank that
-                    // drains past empty within one step must not carry negative
-                    // weight into a composition.
-                    let retained = (mass_old - outflow_mass_rate * dt.value()).max(0.0);
-                    for (weight, fraction) in weights.iter_mut().zip(tank.composition.fractions()) {
-                        *weight += retained * fraction;
-                    }
-                    tank.composition = Composition::from_weights(&weights).map_err(|e| {
+                    tank.composition = energy::blended_holdup_composition(
+                        &tank.composition,
+                        mass_old,
+                        &inflow_component_rate,
+                        outflow_mass_rate,
+                        dt.value(),
+                    )
+                    .map_err(|e| {
                         SimError::Numerical(format!(
                             "tank '{node_name}' blended to no valid composition: {e}"
                         ))
@@ -494,6 +490,68 @@ impl Engine {
                             net_enthalpy + heat_input,
                             (net_enthalpy + heat_input) * dt.value(),
                             energy_old + mass_old * cp_old * T_REF.value(),
+                        )
+                    })?;
+                }
+            } else if let NodeKind::Vessel(vessel) = &mut self.graph.node_mut(nid).kind {
+                // The tank's balance over a compressible substance. Mass,
+                // composition and energy integrate identically — the fluxes above
+                // were accumulated with no idea which kind of holdup they were
+                // for — and exactly one thing differs: the inventory's energy is
+                // its INTERNAL energy, not its enthalpy.
+                //
+                // That single substitution is what makes blowdown cooling emerge
+                // rather than be modelled (docs/DESIGN.md §3a fork 3). Nothing
+                // here computes a temperature drop; the vessel simply loses more
+                // enthalpy through the nozzle than it held as internal energy, and
+                // `T/Tᵢ = (m/mᵢ)^(γ−1)` falls out. See
+                // `energy::specific_internal_energy` for why the datum makes that
+                // integral come out — with `u = cv·(T − T_REF)` it does not.
+                //
+                // The pressure is NOT integrated here. It is the solve's unknown,
+                // and `m_new = C·P_solved` holds identically: the accumulation
+                // term the residual drove to zero IS this mass update, so the two
+                // cannot disagree about how much the vessel took on.
+                let mass_old = vessel.mass.value();
+                let cv_old = vessel.composition.mixture_cv(&self.slate);
+                let cp_old = vessel.composition.mixture_cp(&self.slate);
+                let energy_old = mass_old
+                    * energy::specific_internal_energy(cv_old, cp_old, vessel.temperature).value();
+
+                if inflow_mass_rate > 0.0 {
+                    vessel.composition = energy::blended_holdup_composition(
+                        &vessel.composition,
+                        mass_old,
+                        &inflow_component_rate,
+                        outflow_mass_rate,
+                        dt.value(),
+                    )
+                    .map_err(|e| {
+                        SimError::Numerical(format!(
+                            "vessel '{node_name}' blended to no valid composition: {e}"
+                        ))
+                    })?;
+                }
+                let cv = vessel.composition.mixture_cv(&self.slate);
+                let cp = vessel.composition.mixture_cp(&self.slate);
+
+                let mass_new = (mass_old + net_mass * dt.value()).max(0.0);
+                let energy_new = energy_old + (net_enthalpy + heat_input) * dt.value();
+
+                vessel.mass = Kg(mass_new);
+                if mass_new > MIN_THERMAL_MASS_KG {
+                    let value =
+                        energy::temperature_from_internal_energy(energy_new, mass_new, cv, cp);
+                    vessel.temperature = energy::checked_temperature(value, || {
+                        format!(
+                            "vessel '{node_name}' cools to {value:.2} K, below absolute zero: over \
+                             this tick a net heat load of {:.4e} W removed {:.4e} J from the \
+                             {:.4e} J of internal energy its {mass_old:.4e} kg held above 0 K. A \
+                             vessel blowing down DOES cool — that is the model working — but not \
+                             through zero; check the step size and the discharge resistance.",
+                            net_enthalpy + heat_input,
+                            (net_enthalpy + heat_input) * dt.value(),
+                            mass_old * cv_old.value() * vessel.temperature.value(),
                         )
                     })?;
                 }
@@ -552,6 +610,17 @@ impl Engine {
                 if !tank.mass.is_finite() || !tank.temperature.is_finite() {
                     return Err(SimError::NonFiniteState {
                         location: format!("tank '{}'", node.name),
+                    });
+                }
+            }
+            // A vessel's inventory escapes into the next tick's hydraulics the
+            // same way a tank's does — through `Pⁿ = m/C`, which is BOTH the
+            // accumulation term's datum and the seed. A NaN there would not merely
+            // propagate, it would make the residual meaningless.
+            if let NodeKind::Vessel(vessel) = &node.kind {
+                if !vessel.mass.is_finite() || !vessel.temperature.is_finite() {
+                    return Err(SimError::NonFiniteState {
+                        location: format!("vessel '{}'", node.name),
                     });
                 }
             }

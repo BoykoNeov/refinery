@@ -38,7 +38,8 @@
 //! legitimate, frequent game state (operator closes a valve), not an error.
 
 use crate::network::{
-    compile_edges, edge_flows, finalize, prepare, validate_degrees, CompiledEdge,
+    accumulation, compile_edges, edge_flows, finalize, prepare, validate_degrees, Capacitance,
+    CompiledEdge,
 };
 use refinery_core::components::Slate;
 use refinery_core::error::SimError;
@@ -81,7 +82,7 @@ impl FlowSolver for NewtonFlowSolver {
         &mut self,
         graph: &PlantGraph,
         slate: &Slate,
-        _dt: Seconds,
+        dt: Seconds,
     ) -> Result<HydraulicSolution, SimError> {
         // F6: pumps/valves must have exactly one inlet and one outlet edge.
         validate_degrees(graph)?;
@@ -119,9 +120,19 @@ impl FlowSolver for NewtonFlowSolver {
         }
 
         // Damped Newton.
+        let capacitive = &prep.classes.capacitive;
         let mut history: Vec<f64> = Vec::new();
-        let (mut r, mut jac, mut throughput) =
-            assemble(graph, &compiled, &pressures, &idx, anchored, n, self.eps_dp);
+        let (mut r, mut jac, mut throughput) = assemble(
+            graph,
+            &compiled,
+            &pressures,
+            &idx,
+            anchored,
+            capacitive,
+            n,
+            dt,
+            self.eps_dp,
+        );
         let mut res = inf_norm(&r); // ∞-norm: convergence + reporting (per-node imbalance)
         let mut merit = half_sq_norm(&r); // ½‖R‖₂²: smooth line-search merit
         history.push(res);
@@ -157,8 +168,17 @@ impl FlowSolver for NewtonFlowSolver {
                 // pressure. For an all-liquid network this reproduces the same
                 // `CompiledEdge` bit for bit (M5.2, `compile_edge`).
                 let compiled_t = compile_edges(graph, slate, &trial)?;
-                let (r_t, jac_t, tp_t) =
-                    assemble(graph, &compiled_t, &trial, &idx, anchored, n, self.eps_dp);
+                let (r_t, jac_t, tp_t) = assemble(
+                    graph,
+                    &compiled_t,
+                    &trial,
+                    &idx,
+                    anchored,
+                    capacitive,
+                    n,
+                    dt,
+                    self.eps_dp,
+                );
                 let merit_t = half_sq_norm(&r_t);
                 if merit_t <= (1.0 - 2.0 * ARMIJO_C * t) * merit {
                     pressures = trial;
@@ -217,18 +237,40 @@ fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimEr
 /// Assemble the residual R and Jacobian J = ∂R/∂P over anchored free nodes.
 /// Only ACTIVE edges (both endpoints anchored) contribute; edges touching a
 /// floating node are inert (zero flow). Returns (R, J, throughput = max|ṁ|).
+///
+/// A CAPACITIVE node adds `−C·(P − Pⁿ)/dt` to its own residual and `−C/dt` to its
+/// own diagonal, through the shared `network::accumulation` so the Simple sweep
+/// cannot end up solving a different fixed point. The term touches nothing
+/// off-diagonal: `m(P)` is a function of that node's pressure alone, so `J`
+/// stays the symmetric weighted Laplacian it was, with a strictly more negative
+/// diagonal — better conditioned, not merely still invertible.
+///
+/// This is what makes one solve an implicit-Euler step of a DAE rather than a
+/// steady state (DESIGN §3a fork 2). `throughput` deliberately excludes it: the
+/// convergence scale is the network's mass flow, and a vessel's accumulation is
+/// measured against that, not added to it.
+#[allow(clippy::too_many_arguments)]
 fn assemble(
     graph: &PlantGraph,
     compiled: &BTreeMap<EdgeId, CompiledEdge>,
     pressures: &BTreeMap<NodeId, f64>,
     idx: &BTreeMap<NodeId, usize>,
     anchored: &BTreeSet<NodeId>,
+    capacitive: &BTreeMap<NodeId, Capacitance>,
     n: usize,
+    dt: Seconds,
     eps: f64,
 ) -> (Vec<f64>, Vec<Vec<f64>>, f64) {
     let mut r = vec![0.0; n];
     let mut jac = vec![vec![0.0; n]; n];
     let mut throughput = 0.0f64;
+    for (nid, cap) in capacitive {
+        if let Some(i) = idx.get(nid) {
+            let (term, slope) = accumulation(cap, pressures[nid], dt.value());
+            r[*i] += term;
+            jac[*i][*i] += slope;
+        }
+    }
     for eid in graph.edge_ids() {
         let c = &compiled[&eid];
         if !(anchored.contains(&c.src) && anchored.contains(&c.tgt)) {

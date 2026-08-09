@@ -8,7 +8,7 @@
 //! - Damage is graph surgery: a leak adds an edge to an Atmosphere node,
 //!   a fire adds a heat source term to a node. No special-cased physics.
 
-use crate::components::Composition;
+use crate::components::{Composition, Slate};
 use crate::stream::Stream;
 use crate::units::*;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableDiGraph};
@@ -77,6 +77,42 @@ pub enum NodeKind {
     /// Vertical cylindrical tank, vented (gas blanket pressure = P_ATM for
     /// M1; pressurized vessels are a later fidelity step).
     Tank(TankState),
+    /// Capacitive gas vessel: a holdup whose STATE IS PRESSURE, not level
+    /// (docs/DESIGN.md §3a fork 2). Knock-out drum, receiver, blowdown vessel.
+    ///
+    /// The one node kind that is neither pinned nor zero-volume. Its mass balance
+    /// carries an accumulation term,
+    ///
+    /// ```text
+    /// Σ_e ṁ_e(P) − C·(P − Pⁿ)/dt = 0,   C = V·M̄/(R·T)  [kg/Pa]
+    /// ```
+    ///
+    /// so one hydraulic solve stops being a steady state and becomes one
+    /// implicit-Euler step of a DAE. `C` is EXACT rather than a linearisation:
+    /// `m(P) = P·V·M̄/(R·T)` is linear in `P` at fixed `T` and `M̄`.
+    ///
+    /// **Why not a `Tank` with a gas pressure law**, which would need no solver
+    /// machinery at all: the explicit scheme is stable only while `dt·g/C < 2`,
+    /// and liquid and gas capacitance are five orders apart. `tank_pump_valve`'s
+    /// supply tank sits at 8.2e-7, six orders inside; a 1 m³ drum on a 20 kg/s
+    /// line at 0.2 bar sits at **4.2**, outside, and oscillates. That is ordinary
+    /// plant, so a guard would refuse exactly the scenario — a small vessel
+    /// relieving quickly — that M5 exists to simulate.
+    ///
+    /// **Capacitance is an ANCHOR.** A vessel needs no conducting path to a pinned
+    /// node, because its own equation determines its pressure, so a closed gas
+    /// system with no fixed node at all is well posed (`network::anchored_set`).
+    ///
+    /// GAS ONLY, enforced at load. `C = V·M̄/(R·T)` is the ideal-gas relation;
+    /// a liquid holdup is incompressible and its capacitance is not this number.
+    /// The mirror of the tank's liquid-only guard, and it costs nothing: the two
+    /// kinds partition the holdups by phase.
+    ///
+    /// No `ambient_ua`, deliberately. Nothing in M5.3 reads one, and an
+    /// authoritative-looking field no code consumes is how an author comes to
+    /// believe the model uses something it does not — the argument that keeps a
+    /// "gas Cv" out of M5.4. A fire still reaches it through `Node::heat_input`.
+    Vessel(VesselState),
     /// Centrifugal pump: head curve H(Q) = h0 - a·Q² (Q in m³/s, H in m).
     Pump { h0: Meter, a: f64, on: bool },
     /// Control valve, ISA-style: Q = Cv_eff(opening)·sqrt(dP/SG).
@@ -296,6 +332,43 @@ pub struct TankState {
 /// to set one.
 fn no_ambient_exchange() -> WattPerKelvin {
     WattPerKelvin::ZERO
+}
+
+/// A capacitive gas vessel's inventory. See `NodeKind::Vessel`.
+///
+/// Structurally the `TankState` of the gas world — mass, temperature and
+/// composition integrate the same way — with `volume` in place of `area`/`height`
+/// and no level anywhere, because a gas fills its container.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VesselState {
+    /// Internal volume [m³]. Fixed geometry, never a state.
+    pub volume: CubicMeter,
+    pub mass: Kg,
+    pub temperature: Kelvin,
+    pub composition: Composition,
+}
+
+impl VesselState {
+    /// Capacitance `C = dm/dP = V·M̄/(R·T)` [kg/Pa] at the vessel's current state.
+    ///
+    /// The whole relation, not a local slope: `m(P)` is linear in `P` at fixed
+    /// `T` and `M̄`, so the Jacobian entry this produces is exact even though the
+    /// edge density coefficients around it are frozen.
+    pub fn capacitance(&self, slate: &Slate) -> f64 {
+        self.volume.value() * self.composition.mean_molar_mass(slate).value()
+            / (R_GAS * self.temperature.value())
+    }
+
+    /// Start-of-tick pressure `Pⁿ = m·R·T/(V·M̄)` [Pa].
+    ///
+    /// Written as `m/C` rather than spelled out again, so the pressure the
+    /// residual measures its accumulation FROM and the capacitance that scales it
+    /// are the same relation by construction. Stating the gas law twice would let
+    /// `C·(P − Pⁿ)` mean something other than `m(P) − mⁿ`, which is the one thing
+    /// the accumulation term must not be free to do.
+    pub fn pressure(&self, slate: &Slate) -> Pascal {
+        Pascal(self.mass.value() / self.capacitance(slate))
+    }
 }
 
 impl TankState {

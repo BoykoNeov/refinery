@@ -40,7 +40,7 @@ use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{ColumnDraw, EdgeId, NodeId, NodeKind, PlantGraph};
 use crate::traits::ReactionModel;
-use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
+use crate::units::{JPerKg, JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -62,6 +62,87 @@ pub const T_REF: Kelvin = Kelvin(273.15);
 #[inline]
 pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> Watt {
     Watt(mass_flow.value() * cp.value() * (temperature.value() - T_REF.value()))
+}
+
+/// A holdup's end-of-tick composition: what it retained after the tick's outflow,
+/// blended with what arrived.
+///
+/// ```text
+/// m_c_new = f_c_old·(m_old − ṁ_out·dt) + ṁ_c,in·dt
+/// ```
+///
+/// The outflow term is what makes this close. Fluid LEAVES at the holdup's
+/// START-of-tick composition — that is what the upwind rule put on the outflow
+/// edge, and what the far end was credited with — so the inventory must be
+/// debited at the same one. Blending inflow against the full `m_old` and letting
+/// the total mass update absorb the outflow separately is the natural-looking
+/// alternative, and it debits the outflow at the END-of-tick composition instead:
+/// total mass still balances exactly while the per-component books are off by
+/// `ṁ_out·dt·(f_new − f_old)` every tick. I7 is what catches it.
+///
+/// The weights sum to `m_old + (ṁ_in − ṁ_out)·dt`, which is the new mass — so
+/// normalizing them divides by the very inventory these fractions describe.
+///
+/// Shared by the tank and the capacitive vessel deliberately: it is the same
+/// balance over a different substance, and two copies would be free to drift on
+/// the one subtlety above. Callers skip it entirely when nothing arrived, rather
+/// than passing a zero inflow — the fractions cannot have moved, and
+/// re-normalizing `f·k` would add a rounding error's worth of drift on every tick
+/// a holdup merely drains.
+///
+/// # Errors
+/// `SimError::Numerical` if the weights do not form a valid composition.
+pub fn blended_holdup_composition(
+    current: &Composition,
+    mass_old: f64,
+    inflow_component_rate: &[f64],
+    outflow_mass_rate: f64,
+    dt: f64,
+) -> Result<Composition, SimError> {
+    let mut weights: Vec<f64> = inflow_component_rate.iter().map(|rate| rate * dt).collect();
+    // Clamped for the same reason the new mass is: a holdup that drains past
+    // empty within one step must not carry negative weight into a composition.
+    let retained = (mass_old - outflow_mass_rate * dt).max(0.0);
+    for (weight, fraction) in weights.iter_mut().zip(current.fractions()) {
+        *weight += retained * fraction;
+    }
+    Composition::from_weights(&weights)
+}
+
+/// Specific internal energy [J/kg] on the same datum `enthalpy_flux` uses:
+/// `u = cv·T − cp·T_REF`.
+///
+/// **Not `cv·(T − T_REF)`, and the difference is the whole of blowdown cooling.**
+/// The two must be consistent: a holdup's energy is `m·u` and every stream
+/// crossing its boundary carries `h = cp·(T − T_REF)`, so thermodynamics fixes
+/// their difference at `h − u = P/ρ = (R/M̄)·T`. Writing `u = cv·(T − T_REF)`
+/// gives `h − u = (R/M̄)·(T − T_REF)` instead — an offset of `(R/M̄)·T_REF`, which
+/// is invisible whenever the holdup's mass is constant and load-bearing exactly
+/// when it is not. Solving `u = h − (R/M̄)·T` gives the form above.
+///
+/// The consequence, which is why this is a function with a name rather than an
+/// expression inlined at the one call site: on the reference blowdown the
+/// inconsistent datum predicts a **5.5 K** drop where the consistent one predicts
+/// **80.3 K**, and both are finite, smooth, mass-conserving and reproducible. The
+/// first integral `T/Tᵢ = (m/mᵢ)^(γ−1)` — which docs/DESIGN.md §3a fork 3 derives
+/// with `T`, then states with `(T − T_REF)`, contradicting itself — comes out of
+/// this form and not the other.
+///
+/// A LIQUID is unaffected: `cv = cp` there, so this is `cp·(T − T_REF)`, bit for
+/// bit the expression the tank balance has always used.
+#[inline]
+pub fn specific_internal_energy(cv: JPerKgK, cp: JPerKgK, temperature: Kelvin) -> JPerKg {
+    JPerKg(cv.value() * temperature.value() - cp.value() * T_REF.value())
+}
+
+/// Invert `specific_internal_energy` for the temperature [K] a holdup ends a step
+/// at, given the energy and mass it ends with.
+///
+/// The pair is kept together so the balance cannot integrate on one datum and
+/// read back on another.
+#[inline]
+pub fn temperature_from_internal_energy(energy: f64, mass: f64, cv: JPerKgK, cp: JPerKgK) -> f64 {
+    (energy / mass + cp.value() * T_REF.value()) / cv.value()
 }
 
 /// Heat exchanged with the surroundings [W], SIGNED: positive into the body.
@@ -657,6 +738,9 @@ pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Compositio
         NodeKind::Sink { composition, .. } => Some(composition.clone()),
         NodeKind::Atmosphere => Some(Composition::pure(slate.len(), 0)),
         NodeKind::Tank(tank) => Some(tank.composition.clone()),
+        // A capacitive vessel is inertial in both fields, exactly like a tank:
+        // it holds an inventory whose composition its outflows carry.
+        NodeKind::Vessel(vessel) => Some(vessel.composition.clone()),
         NodeKind::Junction
         | NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
@@ -682,6 +766,10 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         NodeKind::Sink { temperature, .. } => Some(*temperature),
         NodeKind::Atmosphere => Some(T_AMBIENT),
         NodeKind::Tank(tank) => Some(tank.temperature),
+        // Inertial: its start-of-tick temperature, which is also what
+        // `network::compile_edge` evaluates an outflow edge's gas density at and
+        // what `VesselState::capacitance` is stated at. One value, three readers.
+        NodeKind::Vessel(vessel) => Some(vessel.temperature),
         // Furnaces and coolers belong here, with the other zero-volume nodes:
         // `None` is what makes the sweep MIX their inflows and apply
         // `heat_load`. Returning `Some(..)` would compile and quietly make one
