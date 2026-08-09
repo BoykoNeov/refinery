@@ -191,10 +191,23 @@ pub const CHOKE_BLEND: f64 = 0.0;
 ///
 /// A float-tolerance exit makes the iteration count depend on the iterate, which
 /// is a determinism hazard the moment anything about the arithmetic shifts; a
-/// fixed count is bit-reproducible by construction (rule 3). 60 halvings of an
-/// interval bounded by the branch drop takes the bracket below 1e-18 of it, i.e.
-/// to round-off, so this is "exact" rather than "tight enough" — and it costs
-/// nothing anywhere else, because it runs only on a gas VALVE edge.
+/// fixed count is bit-reproducible by construction (rule 3). It costs nothing
+/// anywhere else, because it runs only on a gas VALVE edge.
+///
+/// **This doc used to claim 60 halvings put the bracket "below 1e-18 of it, i.e.
+/// to round-off, so this is exact rather than tight enough". That is true in
+/// ABSOLUTE terms and false in relative ones**, and the correction is worth
+/// keeping because the difference is where the scheme is weakest. The interval
+/// halved is `[0, s_total]`, so the bracket is `s_total·2⁻⁶⁰` regardless of
+/// where the root actually sits — and when `α_pipe ≫ α_valve` the root sits
+/// many decades below `s_total` (at a ratio of 7e11 it is ~1e-12 of it), so the
+/// RELATIVE resolution there is ~1e-6, not 1e-18.
+///
+/// It remains far more than enough, and that is now measured rather than
+/// asserted (`solvers/tests/gas_valve_invariants.rs`): against a root resolved
+/// in log space the shipped coefficient deviates by 3.97e-15 worst case over
+/// the reachable parameter space, and the gates go green at 40 halvings and
+/// fail at 32. The margin on 60 is real; the reasoning offered for it was not.
 pub const GAS_VALVE_BISECTIONS: u32 = 60;
 
 /// Ratio of specific heats to the standard's air datum: `F_k = γ/1.40`.

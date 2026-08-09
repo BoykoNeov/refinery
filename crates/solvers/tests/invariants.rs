@@ -59,30 +59,112 @@
 use proptest::prelude::*;
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
-use refinery_core::components::{Composition, Slate};
+use refinery_core::components::{Composition, PseudoComponent, Slate};
 use refinery_core::error::SimError;
 use refinery_core::graph::{Node, NodeKind, Pipe, PlantGraph};
+use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
 use refinery_core::units::*;
 use refinery_solvers::{NewtonFlowSolver, SimpleFlowSolver};
 
 // ---------------------------------------------------------------------------
+// The plant-level FLUID (M5.4's open box). Phase is a property of the whole
+// plant here, not of a node: `compile_edge` resolves a phase-mixing
+// composition to `Err` through `Composition::phase`, so generating one would
+// manufacture an error rather than exercise a solve. That is the same
+// single-phase-connected-component rule the loader enforces, applied at the
+// only place a directly-built `PlantGraph` can enforce it.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+struct Fluid {
+    slate: Slate,
+    composition: Composition,
+    /// `Some` in gas service, `None` in liquid — the SAME correspondence
+    /// `compile_edge` refuses to see broken. Threading it from one place means
+    /// no generated plant can be the pairing that refusal exists for, and the
+    /// refusal itself keeps its own dedicated (hand-built) gate.
+    x_t: Option<f64>,
+}
+
+impl Fluid {
+    /// Water on the one-component slate: byte-for-byte what every generator in
+    /// this file built before the gas arm, so every liquid case keeps its
+    /// meaning and its history.
+    fn liquid() -> Self {
+        Self {
+            slate: Slate::water_only(),
+            composition: Composition::pure(1, 0),
+            x_t: None,
+        }
+    }
+
+    /// TWO gas cuts, not one, and the second is not decoration.
+    /// `components.rs` records that every gas plant in the repo carries a pure
+    /// single component, where `1/M̄ = Σ(wᵢ/Mᵢ)` and the naive `Σ(wᵢ·Mᵢ)`
+    /// coincide — so the reciprocal rule reaching `γ` (and through `F_k`, the
+    /// choke point) inside `compile_edge` has no wired coverage at all. A
+    /// methane/propane blend separates the two by ~28%.
+    fn gas(propane_weight: f64, x_t: f64) -> Self {
+        let slate = Slate::new(vec![
+            PseudoComponent {
+                name: "methane".into(),
+                tb: Kelvin(111.65),
+                molar_mass: KgPerMol(0.016043),
+                density: None,
+                cp: JPerKgK(2220.0),
+                phase: refinery_core::components::Phase::Gas,
+            },
+            PseudoComponent {
+                name: "propane".into(),
+                tb: Kelvin(231.05),
+                molar_mass: KgPerMol(0.044096),
+                density: None,
+                cp: JPerKgK(1670.0),
+                phase: refinery_core::components::Phase::Gas,
+            },
+        ])
+        .expect("two-component gas slate");
+        Self {
+            slate,
+            composition: Composition::from_weights(&[1.0 - propane_weight, propane_weight])
+                .expect("both weights positive"),
+            x_t: Some(x_t),
+        }
+    }
+
+    fn is_gas(&self) -> bool {
+        self.x_t.is_some()
+    }
+}
+
+/// Liquid and gas at 1:1, so a 400-case run puts ~200 through each. Weights
+/// stay clear of 0 and 1 so both cuts are genuinely present; `x_T` spans the
+/// range IEC 60534-2-1's typical-value table covers for common trim.
+fn fluid_strategy() -> impl Strategy<Value = Fluid> {
+    prop_oneof![
+        1 => Just(Fluid::liquid()),
+        1 => (0.05..0.95f64, 0.1..0.9f64).prop_map(|(w, x_t)| Fluid::gas(w, x_t)),
+    ]
+}
+
+// ---------------------------------------------------------------------------
 // Shared node/pipe/edge builders.
 // ---------------------------------------------------------------------------
 
-fn source(p: f64) -> Node {
+fn source(p: f64, fluid: &Fluid) -> Node {
     Node {
         name: "src".into(),
         kind: NodeKind::Source {
             pressure: Pascal(p),
             temperature: T_AMBIENT,
-            composition: Composition::pure(1, 0),
+            composition: fluid.composition.clone(),
         },
         heat_input: Watt(0.0),
     }
 }
 
-fn sink(p: f64) -> Node {
+fn sink(p: f64, fluid: &Fluid) -> Node {
     Node {
         name: "snk".into(),
         kind: NodeKind::Sink {
@@ -90,15 +172,18 @@ fn sink(p: f64) -> Node {
             // These are hydraulic tests: the solver never reads a temperature,
             // so ambient keeps them isothermal and out of the way. Thermal
             // transport gets its own generators in `energy_invariants.rs`.
+            // A gas edge DOES read one — `ρ = P·M̄/(R·T)` — and takes it from
+            // the upwind node, which is why ambient here is load-bearing for
+            // the gas arm rather than merely tidy.
             temperature: T_AMBIENT,
-            composition: Composition::pure(1, 0),
+            composition: fluid.composition.clone(),
         },
         heat_input: Watt(0.0),
     }
 }
 
 /// (length_m, diameter_m, friction_factor, elevation_change_m).
-fn pipe(p: (f64, f64, f64, f64), name: &str) -> Pipe {
+fn pipe(p: (f64, f64, f64, f64), name: &str, fluid: &Fluid) -> Pipe {
     let (length, diameter, friction_factor, elevation) = p;
     Pipe {
         name: name.into(),
@@ -108,7 +193,10 @@ fn pipe(p: (f64, f64, f64, f64), name: &str) -> Pipe {
         elevation_change: Meter(elevation),
         leak_area: SquareMeter(0.0),
         ambient_ua: WattPerKelvin::ZERO,
-        stream: refinery_core::stream::Stream::stagnant(1, T_AMBIENT, P_ATM),
+        stream: Stream {
+            composition: fluid.composition.clone(),
+            ..Stream::stagnant(fluid.slate.len(), T_AMBIENT, P_ATM)
+        },
     }
 }
 
@@ -142,7 +230,39 @@ fn mid_strategy() -> impl Strategy<Value = Mid> {
     ]
 }
 
-fn mid_node(m: &Mid, i: usize) -> Node {
+/// Factor applied to a generated valve coefficient in GAS service only.
+///
+/// Reachability, not realism, and it was MEASURED rather than guessed. A gas
+/// valve chokes only once it takes `x_choke` of its own inlet pressure — 8–84%
+/// across this file's `x_T` and slate ranges — which cannot happen while the
+/// generated pipes carry most of the drop. At the liquid coefficient range
+/// `α_valve` lands at 48..1.2e5 against an `α_pipe` of 1e3..5e6, and the
+/// measured choked fraction was **0 out of 185 converged gas chains**: the
+/// whole arm was running on the degenerate `Y → 1` tail where the gas fold is
+/// the liquid fold, testing nothing this milestone added.
+///
+/// A 50× smaller coefficient puts `α_valve` at ~3e5..3e9, so the valve
+/// dominates and the plateau is reached. The LIQUID range is deliberately
+/// untouched, so every case that existed before the gas arm keeps its meaning
+/// and `simple_agrees_on_a_healthy_fraction` keeps its measured threshold.
+const GAS_CV_SCALE: f64 = 0.02;
+
+/// The valve coefficient this fluid should see. One function so the chain and
+/// tree generators cannot drift apart on it.
+fn valve_cv(cv: f64, fluid: &Fluid) -> f64 {
+    if fluid.is_gas() {
+        cv * GAS_CV_SCALE
+    } else {
+        cv
+    }
+}
+
+/// A pump on a gas is a weak pressure source, NOT a compressor model: its
+/// rise is `ρ·g·H`, so at 1.2 kg/m³ a 60 m curve is ~700 Pa. It stays in the
+/// gas generator because it is a legal graph the solver must not choke on, and
+/// this note is here so a later reader does not read its presence as a claim
+/// that compression is supported — it is not (DESIGN §3a defers it).
+fn mid_node(m: &Mid, i: usize, fluid: &Fluid) -> Node {
     let kind = match *m {
         Mid::Junction => NodeKind::Junction,
         Mid::Pump { h0, a, on } => NodeKind::Pump {
@@ -151,9 +271,9 @@ fn mid_node(m: &Mid, i: usize) -> Node {
             on,
         },
         Mid::Valve { cv, opening } => NodeKind::Valve {
-            cv_max: cv,
+            cv_max: valve_cv(cv, fluid),
             opening,
-            x_t: None,
+            x_t: fluid.x_t,
         },
     };
     Node {
@@ -169,17 +289,22 @@ fn build_chain(
     pipes: &[(f64, f64, f64, f64)],
     p_src: f64,
     p_snk: f64,
+    fluid: &Fluid,
 ) -> (PlantGraph, Vec<refinery_core::graph::EdgeId>) {
     let mut g = PlantGraph::new();
-    let mut chain = vec![g.add_node(source(p_src))];
+    let mut chain = vec![g.add_node(source(p_src, fluid))];
     for (i, m) in mids.iter().enumerate() {
-        chain.push(g.add_node(mid_node(m, i)));
+        chain.push(g.add_node(mid_node(m, i, fluid)));
     }
-    chain.push(g.add_node(sink(p_snk)));
+    chain.push(g.add_node(sink(p_snk, fluid)));
 
     let mut edges = Vec::new();
     for i in 0..chain.len() - 1 {
-        edges.push(g.add_pipe(chain[i], chain[i + 1], pipe(pipes[i], &format!("pipe{i}"))));
+        edges.push(g.add_pipe(
+            chain[i],
+            chain[i + 1],
+            pipe(pipes[i], &format!("pipe{i}"), fluid),
+        ));
     }
     (g, edges)
 }
@@ -218,18 +343,18 @@ fn device_strategy() -> impl Strategy<Value = MidDevice> {
     ]
 }
 
-fn fixed_node(is_source: bool, p: f64, i: usize) -> Node {
+fn fixed_node(is_source: bool, p: f64, i: usize, fluid: &Fluid) -> Node {
     let kind = if is_source {
         NodeKind::Source {
             pressure: Pascal(p),
             temperature: T_AMBIENT,
-            composition: Composition::pure(1, 0),
+            composition: fluid.composition.clone(),
         }
     } else {
         NodeKind::Sink {
             pressure: Pascal(p),
             temperature: T_AMBIENT,
-            composition: Composition::pure(1, 0),
+            composition: fluid.composition.clone(),
         }
     };
     Node {
@@ -255,6 +380,7 @@ type TreeInputs = (
     Vec<(bool, f64)>,          // fixed_specs[i]: (is_source, pressure) if node i is a leaf
     Vec<MidDevice>,            // devices[j-1]: optional device on edge into child j
     Vec<(f64, f64, f64, f64)>, // pipes: primary edge j-1, subdivided half MAX_K+j-1
+    Fluid,                     // the whole tree's fluid — plant-level, never per-node
 );
 
 fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
@@ -263,6 +389,7 @@ fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
         prop::collection::vec((any::<bool>(), 1.0e5..8.0e5f64), MAX_NODES..=MAX_NODES),
         prop::collection::vec(device_strategy(), MAX_K..=MAX_K),
         prop::collection::vec(pipe_strategy(), (2 * MAX_K)..=(2 * MAX_K)),
+        fluid_strategy(),
     )
 }
 
@@ -271,7 +398,7 @@ fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
 /// hubs. Degree-1 nodes are leaves ⇒ fixed Source/Sink (pressure reference);
 /// higher-degree nodes are Junctions. A selected edge is subdivided by a device.
 fn build_tree(inputs: &TreeInputs) -> PlantGraph {
-    let (raw_parents, fixed_specs, devices, pipes) = inputs;
+    let (raw_parents, fixed_specs, devices, pipes, fluid) = inputs;
     let k = raw_parents.len();
     let n_nodes = k + 1;
 
@@ -294,7 +421,7 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
     for (i, &deg) in degree.iter().enumerate().take(n_nodes) {
         let node = if deg == 1 {
             let (is_source, p) = fixed_specs[i];
-            fixed_node(is_source, p, i)
+            fixed_node(is_source, p, i, fluid)
         } else {
             Node {
                 name: format!("jn{i}"),
@@ -312,7 +439,7 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
         let dst = ids[j];
         match &devices[j - 1] {
             MidDevice::None => {
-                g.add_pipe(src, dst, pipe(pipes[j - 1], &format!("e{j}")));
+                g.add_pipe(src, dst, pipe(pipes[j - 1], &format!("e{j}"), fluid));
             }
             dev => {
                 let kind = match dev {
@@ -322,9 +449,9 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
                         on: *on,
                     },
                     MidDevice::Valve { cv, opening } => NodeKind::Valve {
-                        cv_max: *cv,
+                        cv_max: valve_cv(*cv, fluid),
                         opening: *opening,
-                        x_t: None,
+                        x_t: fluid.x_t,
                     },
                     MidDevice::None => unreachable!("matched above"),
                 };
@@ -333,8 +460,12 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
                     kind,
                     heat_input: Watt(0.0),
                 });
-                g.add_pipe(src, mid, pipe(pipes[j - 1], &format!("e{j}a")));
-                g.add_pipe(mid, dst, pipe(pipes[MAX_K + j - 1], &format!("e{j}b")));
+                g.add_pipe(src, mid, pipe(pipes[j - 1], &format!("e{j}a"), fluid));
+                g.add_pipe(
+                    mid,
+                    dst,
+                    pipe(pipes[MAX_K + j - 1], &format!("e{j}b"), fluid),
+                );
             }
         }
     }
@@ -423,7 +554,7 @@ fn simple_agrees_on_a_healthy_fraction() {
             .new_tree(&mut runner)
             .expect("strategy produces a value")
             .current();
-        let (g, _) = build_chain(&mids, &pipes, p_src, p_snk);
+        let (g, _) = build_chain(&mids, &pipes, p_src, p_snk, &Fluid::liquid());
         let n = match NewtonFlowSolver::default().solve(
             &g,
             &slate,
@@ -471,6 +602,205 @@ fn simple_agrees_on_a_healthy_fraction() {
 }
 
 // ---------------------------------------------------------------------------
+// Non-vacuity guard for the GAS arm, and the one measurement M5.4's fork 6
+// could not make on a fixed plant.
+//
+// Three ways this arm could be silently worthless, each measured rather than
+// argued:
+//   1. gas plants never generated (a `prop_oneof` weight typo);
+//   2. generated but never CHOKED — every valve sitting in the `Y → 1` tail
+//      where the gas fold IS the liquid fold, so `fold_gas_valve`'s clamp,
+//      plateau and inner solve are never touched;
+//   3. generated, choked, and never SOLVED — Newton diverging on all of them,
+//      which I3 accepts as legal and would therefore hide.
+//
+// (3) is also fork 6's open question turned into a number. Choking enters the
+// solve as a frozen `α` recompiled each iteration with no `dα/dp` in the
+// Jacobian, and the note deferred a true-derivative branch on the evidence of
+// ONE plant (`gas_valve.toml`: 8 Newton iterations cold, 0 warm). A generated
+// population is where a limit cycle would show up instead.
+//
+// MEASURED, and the numbers are the point of the test as much as the
+// assertions are: 185/400 gas, Newton converging on 184/185 at a worst 43
+// iterations against a `max_iter` of 50, Simple on 175/185, 101/184 carrying
+// a valve at all and 33/101 of those reaching a choked one.
+//
+// **43 out of 50 reads alarming until it is given a control, which is why the
+// liquid arm is measured alongside it: liquid's worst is 47.** The expensive
+// cases are stiff random chains, and they are stiff whatever flows through
+// them — the frozen `α` is not what costs the iterations. Fork 6's deferral
+// therefore stands, now on a population rather than on one plant, and the
+// honest caveat is about the CAP rather than about gas: a random chain of
+// either fluid can come within a few iterations of `max_iter`.
+// ---------------------------------------------------------------------------
+
+/// Did this valve edge reach its choked plateau at the converged solution?
+///
+/// Measured on the flow, which needs no `α_eff` and therefore no cancellation:
+/// `Q_gas(s)` is capped at `Y·√(x_choke·p₁/α_liquid)` with `Y = 2/3`, and it
+/// attains that cap exactly when `s/p₁ ≥ x_choke`. So "is the flow at its
+/// plateau" and "is the valve choked" are the same question, and the first one
+/// is answerable from quantities the solution already carries.
+///
+/// This is a REACHABILITY measurement, not a correctness gate, which is why
+/// calling the production element functions here is legitimate: the question
+/// is whether the generator visits the branch, not whether the branch is right.
+fn valve_edge_is_choked(
+    graph: &PlantGraph,
+    sol: &HydraulicSolution,
+    fluid: &Fluid,
+    eid: refinery_core::graph::EdgeId,
+) -> bool {
+    let (src, tgt) = graph.endpoints(eid);
+    let (cv_max, opening, x_t) = match graph.node(src).kind {
+        // Fold-at-source: a device folds into the edge LEAVING it, so only an
+        // edge whose `src` is the valve carries one.
+        NodeKind::Valve {
+            cv_max,
+            opening,
+            x_t: Some(x_t),
+        } => (cv_max, opening, x_t),
+        _ => return false,
+    };
+    let pressures: std::collections::BTreeMap<_, _> = sol
+        .node_pressure
+        .iter()
+        .map(|(n, p)| (*n, p.value()))
+        .collect();
+    let Ok(compiled) = refinery_solvers::network::compile_edge(
+        graph,
+        eid,
+        &fluid.slate,
+        &Default::default(),
+        &pressures,
+    ) else {
+        return false;
+    };
+    let p_up = pressures[&src]
+        .max(pressures[&tgt])
+        .max(refinery_solvers::network::RHO_EVAL_P_FLOOR);
+    let alpha_valve =
+        (compiled.rho / refinery_solvers::network::RHO_WATER_REF) / (cv_max * opening).powi(2);
+    let comp = &fluid.composition;
+    let gamma = comp.mixture_cp(&fluid.slate).value() / comp.mixture_cv(&fluid.slate).value();
+    let x_choke = refinery_solvers::elements::specific_heat_ratio_factor(gamma) * x_t;
+    let plateau = (2.0 / 3.0) * (x_choke * p_up / alpha_valve).sqrt();
+    let q = sol.edge_mass_flow[&eid].abs() / compiled.rho;
+    // The 1e-4 is a MEASURED floor, not a fudge. A choked edge does not report
+    // its plateau exactly: `edge_flows` inverts the branch through
+    // `smooth_signed_sqrt(dp − β, eps_dp)`, whose O(eps/Δp) regularization
+    // leaves the flow short by ~3e-6 relative at these drops. The two
+    // populations are nonetheless cleanly separated — choked edges measure
+    // q/plateau ≥ 0.999997 and the closest unchoked one 0.954 — so this
+    // threshold has ~30x margin below the noise and ~460x above the gap.
+    q >= plateau * (1.0 - 1e-4)
+}
+
+#[test]
+fn the_gas_arm_generates_chokes_and_solves() {
+    const SAMPLES: usize = 400;
+    let mut runner = TestRunner::deterministic();
+    let strat = (
+        prop::collection::vec(mid_strategy(), 1..5usize),
+        prop::collection::vec(pipe_strategy(), 6usize..7),
+        1.0e5..8.0e5f64,
+        1.0e5..8.0e5f64,
+        fluid_strategy(),
+    );
+
+    let (mut gas, mut newton_ok, mut simple_ok, mut choked) = (0usize, 0usize, 0usize, 0usize);
+    let mut with_valve = 0usize;
+    let mut worst_iterations = 0u32;
+    let mut liquid_worst = 0u32;
+    for _ in 0..SAMPLES {
+        let (mids, pipes, p_src, p_snk, fluid) = strat
+            .new_tree(&mut runner)
+            .expect("strategy produces a value")
+            .current();
+        if !fluid.is_gas() {
+            // Liquid runs as the CONTROL. Without it, a worst-case gas
+            // iteration count is a number with nothing to compare against:
+            // a stiff random chain is expensive to solve whatever is flowing
+            // through it, and only the difference isolates the frozen `α`.
+            let (g, _) = build_chain(&mids, &pipes, p_src, p_snk, &fluid);
+            if let Ok(n) = NewtonFlowSolver::default().solve(
+                &g,
+                &fluid.slate,
+                &Default::default(),
+                Seconds(0.1),
+            ) {
+                if n.diagnostics.converged {
+                    liquid_worst = liquid_worst.max(n.diagnostics.iterations);
+                }
+            }
+            continue;
+        }
+        gas += 1;
+        let (g, edges) = build_chain(&mids, &pipes, p_src, p_snk, &fluid);
+        let n = match NewtonFlowSolver::default().solve(
+            &g,
+            &fluid.slate,
+            &Default::default(),
+            Seconds(0.1),
+        ) {
+            Ok(n) if n.diagnostics.converged => n,
+            _ => continue,
+        };
+        newton_ok += 1;
+        worst_iterations = worst_iterations.max(n.diagnostics.iterations);
+        // A chain whose mids are all junctions and pumps has no valve to
+        // choke, so it is not evidence either way — the choked fraction is
+        // taken over the chains that actually carry one.
+        if mids.iter().any(|m| matches!(m, Mid::Valve { .. })) {
+            with_valve += 1;
+            if edges
+                .iter()
+                .any(|&e| valve_edge_is_choked(&g, &n, &fluid, e))
+            {
+                choked += 1;
+            }
+        }
+        if let Ok(s) =
+            SimpleFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        {
+            if s.diagnostics.converged {
+                simple_ok += 1;
+            }
+        }
+    }
+
+    println!(
+        "gas chains: {gas}/{SAMPLES}; newton converged {newton_ok}/{gas} \
+         (worst {worst_iterations} iterations); simple converged {simple_ok}/{gas}; \
+         carrying a valve {with_valve}/{newton_ok}; at least one valve choked \
+         {choked}/{with_valve}; worst liquid iterations {liquid_worst} (control)"
+    );
+
+    // (1) Gas must be a substantial share, not a rounding error. The strategy
+    // is 1:1, so ~50%; 25% is a floor that fails loudly on a weight typo.
+    assert!(
+        gas * 4 >= SAMPLES,
+        "only {gas}/{SAMPLES} generated plants were gas — the gas arm is barely sampled"
+    );
+    // (3) Newton must crack most of them. A frozen-`α` limit cycle would show
+    // as a collapse here, and I3 would silently accept it as SolverDiverged.
+    assert!(
+        newton_ok * 2 >= gas,
+        "Newton converged on only {newton_ok}/{gas} gas chains — frozen-alpha \
+         convergence has degraded and DESIGN §3a fork 6's deferral needs revisiting"
+    );
+    // (2) The one that matters most: choking must actually happen. Without it
+    // every gas assertion in this file runs on the degenerate `Y → 1` branch,
+    // where the gas fold and the liquid fold are the same function.
+    assert!(
+        choked * 5 >= with_valve,
+        "only {choked}/{with_valve} converged gas chains carrying a valve reached a \
+         choked one — the generator has drifted off the branch the gas arm exists \
+         to reach"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Property tests.
 // ---------------------------------------------------------------------------
 
@@ -487,11 +817,12 @@ proptest! {
         raw_pipes in prop::collection::vec(pipe_strategy(), 6usize..7),
         p_src in 1.0e5..8.0e5f64,
         p_snk in 1.0e5..8.0e5f64,
+        fluid in fluid_strategy(),
     ) {
-        let (g, edges) = build_chain(&mids, &raw_pipes, p_src, p_snk);
+        let (g, edges) = build_chain(&mids, &raw_pipes, p_src, p_snk, &fluid);
         let mut solver = NewtonFlowSolver::default();
 
-        match solver.solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1)) {
+        match solver.solve(&g, &fluid.slate, &Default::default(), Seconds(0.1)) {
             Ok(sol) => {
                 prop_assert!(sol.diagnostics.converged, "Ok must mean converged");
                 prop_assert!(all_finite(&sol), "no NaN/Inf may escape a solve");
@@ -528,11 +859,11 @@ proptest! {
         raw_pipes in prop::collection::vec(pipe_strategy(), 6usize..7),
         p_src in 1.0e5..8.0e5f64,
         p_snk in 1.0e5..8.0e5f64,
+        fluid in fluid_strategy(),
     ) {
-        let (g, _) = build_chain(&mids, &raw_pipes, p_src, p_snk);
-        let slate = Slate::water_only();
-        let a = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
-        let b = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let (g, _) = build_chain(&mids, &raw_pipes, p_src, p_snk, &fluid);
+        let a = NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
+        let b = NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
         assert_same_solution(a, b)?;
     }
 
@@ -547,7 +878,7 @@ proptest! {
         let g = build_tree(&inputs);
         let mut solver = NewtonFlowSolver::default();
 
-        match solver.solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1)) {
+        match solver.solve(&g, &inputs.4.slate, &Default::default(), Seconds(0.1)) {
             Ok(sol) => {
                 prop_assert!(sol.diagnostics.converged, "Ok must mean converged");
                 prop_assert!(all_finite(&sol), "no NaN/Inf may escape a solve");
@@ -575,9 +906,9 @@ proptest! {
     #[test]
     fn tree_solve_is_deterministic(inputs in tree_inputs_strategy()) {
         let g = build_tree(&inputs);
-        let slate = Slate::water_only();
-        let a = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
-        let b = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let slate = &inputs.4.slate;
+        let a = NewtonFlowSolver::default().solve(&g, slate, &Default::default(), Seconds(0.1));
+        let b = NewtonFlowSolver::default().solve(&g, slate, &Default::default(), Seconds(0.1));
         assert_same_solution(a, b)?;
     }
 
@@ -589,11 +920,11 @@ proptest! {
         raw_pipes in prop::collection::vec(pipe_strategy(), 6usize..7),
         p_src in 1.0e5..8.0e5f64,
         p_snk in 1.0e5..8.0e5f64,
+        fluid in fluid_strategy(),
     ) {
-        let (g, _) = build_chain(&mids, &raw_pipes, p_src, p_snk);
-        let slate = Slate::water_only();
-        let newton = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
-        let simple = SimpleFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let (g, _) = build_chain(&mids, &raw_pipes, p_src, p_snk, &fluid);
+        let newton = NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
+        let simple = SimpleFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
         assert_fidelity_agreement(newton, simple)?;
     }
 
@@ -601,9 +932,9 @@ proptest! {
     #[test]
     fn tree_fidelity_agreement(inputs in tree_inputs_strategy()) {
         let g = build_tree(&inputs);
-        let slate = Slate::water_only();
-        let newton = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
-        let simple = SimpleFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let slate = &inputs.4.slate;
+        let newton = NewtonFlowSolver::default().solve(&g, slate, &Default::default(), Seconds(0.1));
+        let simple = SimpleFlowSolver::default().solve(&g, slate, &Default::default(), Seconds(0.1));
         assert_fidelity_agreement(newton, simple)?;
     }
 
@@ -612,9 +943,9 @@ proptest! {
     #[test]
     fn tree_simple_is_deterministic(inputs in tree_inputs_strategy()) {
         let g = build_tree(&inputs);
-        let slate = Slate::water_only();
-        let a = SimpleFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
-        let b = SimpleFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let slate = &inputs.4.slate;
+        let a = SimpleFlowSolver::default().solve(&g, slate, &Default::default(), Seconds(0.1));
+        let b = SimpleFlowSolver::default().solve(&g, slate, &Default::default(), Seconds(0.1));
         assert_same_solution(a, b)?;
     }
 }

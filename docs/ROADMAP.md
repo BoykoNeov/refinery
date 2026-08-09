@@ -1478,18 +1478,119 @@ unedited so the corrections above can be read against what they corrected.
       next solve), and the gate asserts the MESSAGE, on
       `negative_furnace_duty_is_refused`'s precedent that a refusal for the wrong
       reason passes an `is_err()` check just as well as the right one.
-- [ ] **Deferred, with the reason stated rather than left implicit: no I-series
-      invariant covers a choked valve or a PSV.** Every M5.4 gate is a fixed
-      plant, so `fold_gas_valve`'s bisection has never met adversarial inputs —
-      `p_up` at the 1 Pa floor against a large drop, `x_choke` near zero,
-      `α_pipe` orders away from `α_valve`. Those are argued finite (the bracket
-      is `[0, S]`, `g` is monotone, and the `x_s = 0` and closed-valve cases
-      return early) and the argument is in `fold_gas_valve`'s doc — but argued is
-      not tried. The right shape is a gas-valve arm on the **existing I5
-      generator** rather than a new invariant, because I5 is what would catch a
-      bad inner solve: Newton and Simple would disagree. It is deferred rather
-      than skipped because it needs the generator to build gas slates, which is a
-      change to `invariants.rs`'s plant model and not a test to bolt on.
+- [x] **The I-series gas-valve arm — LANDED**, and it corrected this box's own
+      reasoning twice before any of it earned a tick.
+      **Correction 1: "I5 is what would catch a bad inner solve" is false.** Both
+      fidelities consume the SAME `QuadraticBranch` from the same per-iterate
+      `compile_edges`, so a degraded bisection moves `α(dp)` identically for both
+      and they converge to the same wrong root together — they agree, and I5 stays
+      green. [[a-settled-note-can-have-a-false-premise]] again.
+      **Correction 2, and this one went the other way: "the bisection has never
+      met" its own gate is also false.** Dropping `GAS_VALVE_BISECTIONS` from 60
+      fails `elements`' `the_folded_branch_reproduces_the_inner_solve` at 24
+      halvings and goes green at 32 — that identity is a tautology below the choke
+      but discriminating above it, and its fixture reaches the choked branch. So
+      the honest gap was never the bisection's DEPTH; it was its BREADTH, one
+      `α_pipe` / `α_valve` / `p_up` / `x_choke` over six drops.
+      That reframing is what decided the shape: a **scalar** property test over
+      the parameter space (`solvers/tests/gas_valve_invariants.rs`), plus the
+      generator arm, rather than the generator arm alone.
+      One process lesson, and it changed a recorded result: the FIRST catch set
+      for the bisection mutation read "3 gates" because `cargo test --workspace`
+      stops after the first failing binary. It is 4. Every mutation below is run
+      with **`--no-fail-fast`**, the sibling of M5.4's snapshot-once rule.
+- [x] `solvers/tests/gas_valve_invariants.rs` — the scalar half, over the three
+      adversarial inputs this box named. Ranges derived from what the engine can
+      build (`α_valve = ρ_rel/cv_eff²` ⇒ 1e-2..1e23, `α_pipe` 1e-6..1e10, `p_up`
+      from `RHO_EVAL_P_FLOOR` up, `x_choke` down to 1e-9), log-uniform so
+      "orders away" is the common case and not a tail event.
+      The oracle is a **second root-finder, not a readback**: the same `g(s)`
+      through the production `gas_valve_flow`, bisected in **log `s`**. That
+      difference is the finding — `fold_gas_valve` halves `[0, s_total]`, so its
+      bracket is ABSOLUTE, and where `α_pipe ≫ α_valve` the root sits ~1e-12 of
+      `s_total` and is resolved to only ~1e-6 relative. The doc claiming 60
+      halvings are "exact rather than tight enough" is corrected at the site.
+      Measured: worst deviation **3.97e-15**, budget 1e-11, and the gate fails at
+      32 halvings where the existing one is green — the margin is extended, not
+      duplicated. Two earlier drafts of this gate were **the test's own
+      arithmetic, not the fold's**: recovering `α_eff = α_tot − α_pipe` loses
+      1.4e-4 to cancellation at a ratio of 7e11, and forming `dp = β ± s` destroys
+      a small drop against a large head (20% at `β = 8e4`). Both are recorded in
+      the file, because each read as a defect until it was chased down.
+- [x] `solvers/tests/invariants.rs` — the generator arm. Phase is a **plant-level**
+      choice (`Fluid`), not per-node: a phase-mixing composition resolves to `Err`
+      inside `compile_edge`, so generating one would manufacture an error rather
+      than exercise a solve. The gas slate carries **two** cuts, which is not
+      decoration — `components.rs` records that every gas plant in the repo is a
+      pure single component, where the reciprocal `1/M̄ = Σ(wᵢ/Mᵢ)` and the naive
+      `Σ(wᵢ·Mᵢ)` coincide, so the rule reaching `γ` and through it the choke point
+      had no wired coverage at all. `x_T` is threaded from `Fluid` alone, so no
+      generated plant can be the gas-without-`x_T` pairing `compile_edge` refuses.
+      Liquid is left bit-identical, so every pre-existing case keeps its meaning.
+- [x] **The non-vacuity guard is the most load-bearing test in the arm, and its
+      first run showed the arm was worthless.** `the_gas_arm_generates_chokes_and_solves`
+      measures three ways it could be silently empty, and the first measurement
+      read **0 out of 185 converged gas chains choked**: at the liquid valve
+      coefficient the generated pipes carry the drop, so every gas case sat in the
+      degenerate `Y → 1` tail where the gas fold IS the liquid fold. A 50× smaller
+      coefficient in gas service fixes it. Choking is measured on the valve's OWN
+      share (via its flow reaching the `Y·√(x_choke·p₁/α_liquid)` plateau) rather
+      than on the branch drop, because `s ≤ s_total` and the branch measure would
+      have reported coverage the samples never reach.
+      Final: 185/400 gas, Newton 184/185, Simple 175/185, 101/184 carrying a valve,
+      **33/101 of those reaching a choked one**.
+      A second measured floor sits inside that gate: a choked edge reports
+      `q/plateau = 0.999997`, not 1, because `edge_flows` inverts through
+      `smooth_signed_sqrt`'s `eps_dp`. The threshold is 1e-4, with the nearest
+      unchoked sample at 0.954 — the two populations are cleanly separated, which
+      is why the number is a floor and not a fudge.
+- [x] **Fork 6's escalation trigger, re-measured on a population instead of one
+      plant — and the deferral holds.** Frozen `α` with no `dα/dp` in the Jacobian
+      was deferred on `gas_valve.toml`'s 8 cold iterations. Across generated gas
+      chains Newton's worst is **43 against a `max_iter` of 50**, which reads
+      alarming until it is given the control this gate now runs alongside it:
+      **liquid's worst is 47**. The expensive cases are stiff random chains, and
+      they are stiff whatever flows through them. The honest caveat is therefore
+      about the CAP, not about gas.
+- [x] **Falsified before trusted — nine mutations, `--no-fail-fast` throughout,
+      and the result is not uniformly flattering.**
+      The arm **earns its keep on one mutation and it is the decisive one**:
+      removing `compile_edge`'s `RHO_EVAL_P_FLOOR` clamp fails
+      `chain_conserves_or_diverges` and `tree_conserves_or_diverges`, and the
+      **pre-slice suite is entirely blind to it** (checked directly, by reverting
+      `invariants.rs` and deleting the new file). It cannot be otherwise: a liquid
+      `density_at` ignores pressure, so no liquid plant can see the clamp at all.
+      A free node's pressure does go non-positive mid-solve on generated gas
+      chains, giving `ρ < 0` and `k = −3.139e4`, which is exactly the "`p_up` at
+      the 1 Pa floor" input this box named as untested.
+      Bisection 60→32 fails the two new scalar gates and nothing else.
+      Gas paired with a valve carrying no `x_T` fails three, so the second-door
+      refusal is now genuinely reachable from a generator.
+      Clamp-only-in-`Y` fails **seven pre-existing** gates and the new arm adds
+      nothing — predicted, and recorded rather than dressed up.
+      **Three guards turn out to be unfalsifiable, and that is reported rather
+      than papered over**: the `x_s > 0` division guard and the zero-drop early
+      return each survive removal with the whole suite green, because each makes
+      the other unreachable — removing **both** produces the `0/0` and fails two
+      gates. The closed-valve early return likewise survives alone, since
+      `α = +∞` propagates to `+∞` through the arithmetic anyway. They are
+      defensive, not load-bearing, and no gate was invented to pretend otherwise.
+- [ ] **The PSV half of that box is NOT closed, and saying so is the point.** The
+      deferral read "a choked valve **or a PSV**"; this slice covers the first and
+      leaves the second, because a relief valve is not a drop-in third device in
+      these generators. A normally-shut PSV leaves its node a **dead end**, which
+      breaks the property both generators are built on — "every open branch
+      conducts, so the whole tree is anchored (no floating)" — and it is the exact
+      geometry that stalled `SimpleFlowSolver` in M5.4c. Adding it means teaching
+      the generators about floating subnetworks, which is a change to their plant
+      model rather than one more `prop_oneof` arm. The un-defer is that change;
+      what covers the PSV meanwhile is `relief_valve_reference.rs`'s fixed plants.
+- [x] Regression anchor: **trivially unchanged and stated rather than measured.**
+      The slice is test-only apart from two doc-comment corrections, so no engine
+      behaviour can move; running 20 scenarios × 2 fidelities × 200 ticks would
+      prove a tautology. (Had a fix landed in `elements.rs`/`network.rs` it would
+      have gone in its own commit and then the anchor would be measured —
+      [[separate-the-exposed-defect-from-the-feature]].)
 
 The box below is this slice's ORIGINAL specification, kept unticked so the
 corrections above read against what they corrected.
@@ -1553,10 +1654,17 @@ slice leans on instead is the plateau, `F_k`-from-the-slate, `Y = 2/3` at the
 choke and the `Y → 1` degeneracy. The equation FORM was checked outside the repo
 but the standard itself was not read. And `x_T`'s citation is secondary, which is
 acceptable only because nothing is calibrated to it and the gates run at two
-values. Plus one open box, carried deliberately: no I-series invariant reaches a
-choked valve or a PSV, so `fold_gas_valve`'s inner solve has never met a
-generated input. It is argued finite, not tried, and the un-defer is a gas-valve
-arm on the existing I5 generator. M6 may begin.
+values.
+
+The box M5 carried open — no I-series invariant reaching a choked valve or a PSV
+— is now **half closed and half still open, deliberately**. The choked valve is
+covered (see the gas-valve arm above): `fold_gas_valve`'s inner solve has met
+generated inputs, its "60 halvings are exact" claim is corrected to the measured
+truth, and the arm caught a defect the pre-slice suite provably could not see —
+the `RHO_EVAL_P_FLOOR` clamp, invisible to every liquid plant because a liquid
+density ignores pressure. The PSV is not covered, because a normally-shut relief
+valve is a dead end and the generators are built on every branch conducting;
+that un-defer is a change to their plant model. M6 may begin.
 
 **Deferred from M5, with what would un-defer each** (DESIGN §3a): **two-phase
 flow, flash and condensation** — the reason is *scope, not unfalsifiability*, and
