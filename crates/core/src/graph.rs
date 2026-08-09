@@ -344,11 +344,20 @@ pub struct Pipe {
     /// Transported material state, updated by the engine each tick.
     ///
     /// `stream.temperature` is the pipe's OUTLET temperature — the value the
-    /// downstream node receives. With `ambient_ua = 0` the two ends agree and
-    /// the distinction is invisible; with a nonzero `UA` it is a deliberate
-    /// display choice, taken because nothing in the engine consumes this field
-    /// (only tests and the snapshot do) and the outlet is the one end a snapshot
-    /// reader cannot reconstruct from the upwind node's temperature.
+    /// downstream node receives. With `ambient_ua = 0` and no dissipation the two
+    /// ends agree and the distinction is invisible; otherwise it is a deliberate
+    /// display choice, taken because the outlet is the one end a snapshot reader
+    /// cannot reconstruct from the upwind node's temperature.
+    ///
+    /// That choice was originally justified by "nothing in the engine consumes
+    /// this field", which M5.2 falsified: `network::compile_edge` reads it for a
+    /// gas edge's transport density, and the outlet is the WRONG end for that —
+    /// friction and ambient have already acted on it. The reader was corrected to
+    /// take the upwind NODE's temperature where the node has one, so this field is
+    /// once again display for every edge whose upwind endpoint is inertial. It is
+    /// still consumed as the fallback when the upwind node is zero-volume and has
+    /// no temperature of its own; see `compile_edge` for the size of what that
+    /// costs and for what un-defers it.
     pub stream: Stream,
 }
 

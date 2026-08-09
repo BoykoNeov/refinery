@@ -632,6 +632,109 @@ fn a_gas_line_on_a_mixed_slate_is_seeded_with_gas_not_component_zero() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// E — WHICH END of the edge the transport temperature comes from.
+// ---------------------------------------------------------------------------
+
+/// Two gas reservoirs and one pipe: every boundary of this plant is pinned, so
+/// its flow is a constant of the plant and not a function of tick count.
+///
+/// Deliberately the topology the M5.2 note called useless — `n == 0`, the Newton
+/// loop never runs. That is exactly what makes it the right fixture here: with no
+/// free node there is no iterate, no convergence slack and no thermal state
+/// anywhere, so the ONLY thing that can move the flow between two ticks is which
+/// temperature `compile_edge` evaluated `ρ = P·M̄/(R·T)` at.
+fn two_reservoir_gas_scenario() -> String {
+    format!(
+        r#"{PREAMBLE}{MIXED_SLATE}
+[nodes.gas_header]
+type = "source"
+pressure_bar = 10.0
+temperature_c = 20.0
+composition = {{ fuel_gas = 1.0 }}
+
+[nodes.flare]
+type = "sink"
+pressure_bar = 1.0
+composition = {{ fuel_gas = 1.0 }}
+
+[[pipes]]
+name = "header_run"
+from = "gas_header"
+to = "flare"
+length_m = 100.0
+diameter_m = 0.08
+"#
+    )
+}
+
+/// A gas edge compiles its density at its upwind NODE's temperature, not at its
+/// own stored outlet.
+///
+/// `pipe.stream.temperature` is the edge's OUTLET — the inlet plus its ambient
+/// transform plus its own frictional dissipation. Reading it for the transport
+/// density asks what the gas looks like *after* it has crossed the pipe, which is
+/// the wrong end, and in gas service it is not a small wrong end: expanding an
+/// ideal gas across a branch dissipates `Δp/ρ` per kilogram, so `ΔT/T = (γ−1)/γ`
+/// — here a 61 K rise on a 293 K feed, worth ~17% of the density and ~9% of the
+/// flow.
+///
+/// What makes this a defect rather than an accepted lag, and the reason it is
+/// fixed ahead of M5.3 rather than inside it: the offset contains no `dt`. `Φ`
+/// and `ṁ` are both instantaneous, so `Φ/(ṁ·cp)` is the same at any step size. It
+/// is a different steady model, not a truncation — no tolerance can be derived
+/// around it and no order-of-convergence gate would diagnose it, because it does
+/// not converge to zero. M5.3's blowdown rate gate rests on the identity
+/// `ρ_edge = m_vessel/V`, which holds exactly only once the edge's temperature is
+/// the vessel's own.
+///
+/// The gate is behavioural rather than a readback of the density: this plant has
+/// no state, so **tick 1 and tick 5 must produce the identical flow**, bit for
+/// bit. The stored-outlet reader fails it on tick 2.
+#[test]
+fn a_gas_edges_density_follows_its_upwind_node_not_its_own_outlet() {
+    let mut engine = build(&two_reservoir_gas_scenario()).expect("two-reservoir gas plant builds");
+    let line = edge_by_name(&engine.graph, "header_run");
+
+    // ṁ² = ρ_source·ΔP·K, the same hand calc as every gate above, at the source's
+    // DECLARED temperature — which is the claim under test.
+    let expected =
+        (density_per_pascal() * P_HEADER_PA * (P_HEADER_PA - P_FLARE_PA) * header_group()).sqrt();
+
+    let mut flows = Vec::new();
+    for _ in 0..5 {
+        engine
+            .tick()
+            .expect("a plant of two reservoirs and a pipe ticks");
+        flows.push(engine.graph.pipe(line).stream.mass_flow.value());
+    }
+
+    // Vacuity guard: the two candidate temperatures must actually be far apart,
+    // or a passing run would mean nothing. The stored outlet is the source
+    // temperature plus this edge's own dissipation.
+    let stored = engine.graph.pipe(line).stream.temperature.value();
+    assert!(
+        stored - T_SEED_K > 40.0,
+        "this gate is vacuous unless the pipe's stored outlet is far from its \
+         upwind node: outlet {stored:.2} K vs source {T_SEED_K:.2} K"
+    );
+
+    for (tick, flow) in flows.iter().enumerate() {
+        approx::assert_relative_eq!(*flow, expected, max_relative = HAND_CALC_TOLERANCE);
+        // Bit-identical, not merely close: nothing in this plant is inertial, so
+        // there is no physical reason for any tick to differ from the first.
+        assert_eq!(
+            flow.to_bits(),
+            flows[0].to_bits(),
+            "tick {} flow {flow} differs from tick 1's {}: the only state that \
+             changed between them is the pipe's stored outlet temperature, which \
+             the transport density must not be reading",
+            tick + 1,
+            flows[0]
+        );
+    }
+}
+
 /// The liquid sub-plant in the same file is untouched by its gas neighbour —
 /// the seed is per connected component, not per file.
 #[test]

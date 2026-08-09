@@ -11,6 +11,7 @@
 
 use crate::elements::{pipe_resistance, QuadraticBranch};
 use refinery_core::components::Slate;
+use refinery_core::energy::boundary_temperature;
 use refinery_core::error::SimError;
 use refinery_core::graph::{EdgeId, Node, NodeId, NodeKind, PlantGraph};
 use refinery_core::traits::{HydraulicSolution, SolveDiagnostics};
@@ -167,8 +168,9 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
 /// Compile one edge into its series branch. The device (if any) at the edge's
 /// SOURCE node folds into this outlet edge, per the fold-at-source convention.
 ///
-/// **The transport density is evaluated at the UPWIND node's pressure iterate**
-/// (docs/DESIGN.md §3a). For a liquid this is inert — `density_at` ignores both
+/// **The transport density is evaluated at the UPWIND node's STATE** — its
+/// pressure iterate and its temperature (docs/DESIGN.md §3a). For a liquid this
+/// is inert — `density_at` ignores both
 /// arguments, so every pre-M5.2 network compiles to bit-identical numbers — but
 /// for gas ρ = P·M̄/(R·T) and `P` is the unknown the solve is looking for.
 /// Recompiling each iteration at the current iterate is frozen-coefficient
@@ -190,11 +192,37 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
 /// scenario in this repo can exercise is a guard that cannot be falsified — it
 /// un-defers with the first gas plant carrying a machine.
 ///
-/// Composition and temperature come from the pipe's STORED stream — one tick
-/// stale, the same structural staleness §3 accepts for tank levels feeding the
+/// **The TEMPERATURE is the upwind node's too, not the pipe's stored one**, and
+/// the distinction is not cosmetic. `pipe.stream.temperature` is the edge's
+/// OUTLET (`graph::Pipe::stream`) — its inlet transformed by whatever heat the
+/// pipe traded with ambient AND by its own frictional dissipation. In gas service
+/// that last term is not a footnote: expanding an ideal gas across a branch
+/// dissipates `Δp/ρ` per kilogram, i.e. `ΔT/T = (γ−1)/γ`, ~20% for a light gas at
+/// any pressure ratio worth simulating. Reading it would compile the density of
+/// the gas that has already been through the pipe rather than the gas entering
+/// it, and — the reason this could not be left as an accepted lag — that offset
+/// contains no `dt`. It does not shrink as the step shrinks, so it is a different
+/// steady model, not a staleness.
+///
+/// Composition needs no such correction: `Engine::tick` step 3b writes each
+/// stream's composition as its upwind node's, unchanged, because a pipe trades
+/// heat and never mass. So the stored copy already IS the upwind value, one tick
+/// stale — the same structural staleness §3 accepts for tank levels feeding the
 /// quasi-steady solve, and unavoidable here because the solve opens the tick
-/// before any node state is resolved. Pressure is the one that could not be left
-/// stale: a blowing-down vessel moves it within the tick that is being solved.
+/// before any node state is resolved.
+///
+/// STATED LIMITATION, with the measured size. `energy::boundary_temperature`
+/// answers only for a node that HAS a temperature of its own — Source, Sink,
+/// Atmosphere, Tank, and the capacitive vessel. A zero-volume upwind node
+/// (junction, valve, pump, exchanger side) has none: its temperature is the
+/// sweep's mix, which does not exist when the solve runs and is not stored on the
+/// graph. Those edges keep the stored-outlet fallback and keep the error above.
+/// On `gas_line.toml` at steady state that is the relief line compiling at its
+/// own outlet's **375.0 K** instead of the tee's **297.3 K** — a 21% density
+/// error. It un-defers when the flow solver gains access to the previous tick's
+/// resolved node states, which is a `FlowSolver` signature change and belongs to
+/// the slice that first needs it: M5.4's PSV plant is vessel → valve → relief
+/// line → flare, where the relief line's upwind node is the valve.
 pub fn compile_edge(
     graph: &PlantGraph,
     eid: EdgeId,
@@ -203,11 +231,18 @@ pub fn compile_edge(
 ) -> Result<CompiledEdge, SimError> {
     let (src, tgt) = graph.endpoints(eid);
     let pipe = graph.pipe(eid);
-    let upwind = pressures[&src].max(pressures[&tgt]).max(RHO_EVAL_P_FLOOR);
+    let upwind_node = if pressures[&src] >= pressures[&tgt] {
+        src
+    } else {
+        tgt
+    };
+    let upwind = pressures[&upwind_node].max(RHO_EVAL_P_FLOOR);
+    let temperature =
+        boundary_temperature(&graph.node(upwind_node).kind).unwrap_or(pipe.stream.temperature);
     let rho = pipe
         .stream
         .composition
-        .density_at(slate, Pascal(upwind), pipe.stream.temperature)
+        .density_at(slate, Pascal(upwind), temperature)
         .map_err(|e| SimError::Numerical(format!("pipe {} ({eid:?}): {e}", pipe.name)))?
         .value();
     // Darcy–Weisbach resistance; a valid pipe always contributes k > 0, which

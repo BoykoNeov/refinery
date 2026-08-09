@@ -452,6 +452,50 @@ the temperature is the one the slip hardcodes, the second because the two rules
 coincide on a pure cut. Both are pinned by `core::components` unit tests instead,
 and mutation confirms each fails there and nowhere else.
 
+#### Corrected after landing: the density was evaluated at the wrong END of the edge
+
+Found while scoping M5.3, fixed ahead of it in its own commit, because it is an
+M5.2 defect rather than a cost of the vessel.
+
+`compile_edge` read `pipe.stream.temperature`, which §4a defines as the edge's
+**OUTLET** — the inlet transformed by ambient exchange *and by the edge's own
+frictional dissipation*. So the transport density described the gas that had
+already crossed the pipe, not the gas entering it. In gas service that is not a
+footnote: expanding an ideal gas across a branch dissipates `Δp/ρ` per kilogram,
+i.e. `ΔT/T = (γ−1)/γ`, ~20% for a light gas at any pressure ratio worth
+simulating. Measured on `gas_line`: the relief line stores **375.0 K** while its
+upwind tee sits at **297.3 K**.
+
+What makes it a defect and not another accepted staleness is that **the offset
+contains no `dt`**. `Φ` and `ṁ` are both instantaneous, so `Φ/(ṁ·cp)` is the same
+at any step size — it is a different steady model, which no tolerance can be
+derived around and no order-of-convergence gate would diagnose, because it does
+not shrink toward zero. Fork 2's rate gate depends on the identity
+`ρ_edge = m_vessel/V`, which holds exactly only when the edge's temperature is the
+vessel's own.
+
+The fix: the temperature comes from the upwind NODE via
+`energy::boundary_temperature` where the node has one. Composition needed no
+corresponding change — step 3b writes each stream's composition as its upwind
+node's, since a pipe trades heat and never mass, so the stored copy already *is*
+the upwind value.
+
+**Stated limitation, with its measured size.** A zero-volume upwind node
+(junction, valve, pump, exchanger side) has no temperature of its own: its value
+is the sweep's mix, which does not exist when the solve opens the tick and is not
+stored on the graph. Those edges keep the stored-outlet fallback and keep the
+error. Un-defers when the flow solver gains the previous tick's resolved node
+states — a `FlowSolver` signature change, deferred to the slice that first needs
+it, which is M5.4 (vessel → valve → relief line → flare puts a *valve* upwind of
+the line the milestone reads).
+
+Blast radius, measured rather than predicted: the seven pre-M5.2 scenarios × two
+fidelities × 200 ticks are byte-identical (14/14) — a liquid's `density_at`
+ignores `T`. `gas_line` moves by **+0.10%** on the flow, and the smallness is
+itself the limitation above talking: the edge that was 4 K wrong had an inertial
+upwind node and was corrected, while the edge that is 78 K wrong has the tee
+upwind and was not.
+
 ### Fork 2 — capacitance: how a vessel's pressure enters the solve
 
 This is the central design decision of M5. A gas vessel stores mass, and its
