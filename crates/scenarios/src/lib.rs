@@ -204,6 +204,18 @@ pub enum NodeDef {
         /// `require_gas_valve_x_t`.
         x_t: Option<f64>,
     },
+    /// Spring-loaded pressure safety valve. Set pressure and accumulation band in
+    /// BAR ABSOLUTE and BAR respectively, the units a relief datasheet uses,
+    /// converted at this boundary like every other human-friendly quantity.
+    ReliefValve {
+        kv: f64,
+        set_pressure_bar: f64,
+        /// Band above the set pressure over which the valve reaches full lift.
+        /// Must be > 0: a zero band is a step, and a step is a discontinuous
+        /// characteristic this solver's Jacobian is not entitled to.
+        accumulation_bar: f64,
+        x_t: Option<f64>,
+    },
     /// Fired heater. Duty in MW — the unit refinery heaters are actually
     /// specified in, converted to W at this boundary like every other
     /// human-friendly quantity in the file.
@@ -686,6 +698,29 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             opening: *opening,
             x_t: *x_t,
         },
+        NodeDef::ReliefValve {
+            kv,
+            set_pressure_bar,
+            accumulation_bar,
+            x_t,
+        } => {
+            if !accumulation_bar.is_finite() || *accumulation_bar <= 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "relief valve '{name}' has accumulation_bar = {accumulation_bar}, which                      must be > 0. A zero band makes the opening a STEP in pressure, and a                      discontinuous characteristic is exactly what elements.rs promises not                      to hand the Newton Jacobian."
+                )));
+            }
+            if !set_pressure_bar.is_finite() || *set_pressure_bar <= 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "relief valve '{name}' has set_pressure_bar = {set_pressure_bar}; a set                      pressure is ABSOLUTE and must be positive."
+                )));
+            }
+            NodeKind::ReliefValve {
+                cv_max: kv_to_cv_si(*kv),
+                set_pressure: bar_to_pa(*set_pressure_bar),
+                accumulation: bar_to_pa(*accumulation_bar),
+                x_t: *x_t,
+            }
+        }
         NodeDef::Furnace { duty_mw } => NodeKind::Furnace {
             duty: Watt(*duty_mw * 1e6),
         },
@@ -1203,8 +1238,12 @@ fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(), SimError> 
 fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);
-        let NodeKind::Valve { x_t, .. } = &node.kind else {
-            continue;
+        // Both valve kinds, for one reason: they share `compile_edge`'s arm and
+        // therefore the same compressible law, so they must share the same
+        // requirement or a PSV could reach the gas branch with no `x_T`.
+        let x_t = match &node.kind {
+            NodeKind::Valve { x_t, .. } | NodeKind::ReliefValve { x_t, .. } => x_t,
+            _ => continue,
         };
         match (phases[nid.0 as usize], x_t) {
             (Phase::Gas, None) => {

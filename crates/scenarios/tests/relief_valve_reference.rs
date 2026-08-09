@@ -1,0 +1,253 @@
+//! The relief valve as a pure element characteristic (docs/ROADMAP.md §M5.4c,
+//! docs/DESIGN.md §3a fork 5), and the blowdown demo as wired.
+//!
+//! **What is pinned, and what is structural rather than pinned.**
+//!
+//! Fork 5's headline property is MEMORYLESSNESS: the same inlet pressure gives
+//! the same opening however it was reached. Asserting that on `relief_opening`
+//! directly would be a tautology — it is a pure function of one `f64`, so there
+//! is nothing there to remember with. The gate that is not a tautology is at the
+//! PLANT level: a receiver driven to its relieving state **from below** (building
+//! from 12 bar) and **from above** (blowing down from 30 bar) must settle on the
+//! same pressure. Hysteresis — the property a real PSV has and this one does not
+//! — would give two different settle points, which is exactly what
+//! `a_psv_settles_at_the_same_pressure_from_either_direction` refuses.
+//!
+//! The rest of the file separates cheaply-pinned shape (the opening curve, the
+//! loader's refusals) from the demo's own claims (it builds, it lifts, it
+//! relieves, it settles inside the accumulation band with a PARTIAL opening).
+//! That last word matters: a PSV pinned at full lift is an undersized relief and
+//! would make the "pressure-actuated area" claim untestable, because a saturated
+//! valve behaves exactly like a fixed one.
+
+use refinery_core::graph::NodeKind;
+use refinery_scenarios::NodeDef;
+
+const PLANT: &str = include_str!("../../../scenarios/relief_blowdown.toml");
+
+/// The plant's declared relief spec, restated rather than read back.
+const SET_BAR: f64 = 20.0;
+const ACCUMULATION_BAR: f64 = 1.0;
+
+fn load() -> refinery_scenarios::ScenarioFile {
+    refinery_scenarios::load_str(PLANT).expect("relief_blowdown.toml parses")
+}
+
+/// Run the plant from a given starting receiver pressure and report
+/// `(P_receiver [bar], relief [kg/s], make_up [kg/s])` at the end.
+fn run_from(start_bar: f64, ticks: usize) -> (f64, f64, f64) {
+    let mut file = load();
+    match file.nodes.get_mut("receiver") {
+        Some(NodeDef::Vessel { pressure_bar, .. }) => *pressure_bar = start_bar,
+        other => panic!("relief_blowdown.toml must define receiver as a vessel, got {other:?}"),
+    }
+    let mut engine = refinery_scenarios::build_engine(&file).expect("builds");
+    for i in 0..ticks {
+        engine.tick().unwrap_or_else(|e| panic!("tick {i}: {e}"));
+    }
+    let receiver = engine.graph.find_node("receiver").expect("receiver");
+    let pressure = match &engine.graph.node(receiver).kind {
+        NodeKind::Vessel(v) => v.pressure(&engine.slate).value() / 1e5,
+        other => panic!("receiver must be a vessel, got {other:?}"),
+    };
+    let flow = |name: &str| {
+        let eid = engine
+            .graph
+            .edge_ids()
+            .find(|e| engine.graph.pipe(*e).name == name)
+            .unwrap_or_else(|| panic!("plant must have a '{name}' pipe"));
+        engine.graph.pipe(eid).stream.mass_flow.value()
+    };
+    (pressure, flow("flare_line"), flow("make_up"))
+}
+
+// ---------------------------------------------------------------------------
+// A — memorylessness, the property fork 5 trades hysteresis away for.
+// ---------------------------------------------------------------------------
+
+/// The receiver settles on the same pressure whether it arrives from below or
+/// from above.
+///
+/// This is the non-tautological form of "the opening is a memoryless function of
+/// its own inlet pressure". A spring-loaded PSV with real blowdown hysteresis
+/// recloses BELOW its set pressure, so a vessel arriving from above would sit at
+/// a *lower* equilibrium than one arriving from below — two settle points, one
+/// plant. This model has one, and that is both the simplification fork 5 makes
+/// and the thing it is honest about giving up.
+///
+/// The two runs are also asserted to genuinely approach from opposite sides, so
+/// the gate cannot pass by both starting on the same side of the answer.
+#[test]
+fn a_psv_settles_at_the_same_pressure_from_either_direction() {
+    let (rising, _, _) = run_from(12.0, 1500);
+    let (falling, _, _) = run_from(30.0, 1500);
+
+    assert!(
+        12.0 < rising && 30.0 > falling,
+        "premise: the two runs must approach the settle point from opposite \
+         sides — rising started at 12 bar and reached {rising:.4}, falling \
+         started at 30 bar and reached {falling:.4}"
+    );
+    approx::assert_relative_eq!(rising, falling, max_relative = 1e-3);
+}
+
+// ---------------------------------------------------------------------------
+// B — the demo's own claims.
+// ---------------------------------------------------------------------------
+
+/// Pressure builds, the PSV lifts, the flare takes the relief, and the receiver
+/// settles INSIDE the accumulation band at a partial opening.
+///
+/// Four separate claims, asserted separately because each can fail on its own:
+/// a PSV that never lifts, one that lifts immediately, one that saturates at full
+/// lift (an undersized relief, which would make the whole "pressure-actuated
+/// area" idea untestable — a saturated valve is indistinguishable from a fixed
+/// one), and one whose relief does not balance the make-up at steady state.
+#[test]
+fn the_receiver_builds_lifts_relieves_and_settles_in_band() {
+    // Shut below the set pressure: the plant starts at 12 bar, and after a
+    // single tick it is still far below 20, so nothing may reach the flare.
+    let (early_p, early_relief, early_make_up) = run_from(12.0, 1);
+    assert!(
+        early_p < SET_BAR,
+        "premise: one tick in, the receiver must still be below set pressure, \
+         got {early_p:.3} bar"
+    );
+    assert_eq!(
+        early_relief, 0.0,
+        "a PSV below its set pressure must be shut, got {early_relief} kg/s"
+    );
+    assert!(
+        early_make_up > 0.0,
+        "and the make-up must be filling it, got {early_make_up} kg/s"
+    );
+
+    // Settled: inside the band, strictly — above the set pressure (it has lifted)
+    // and below full lift (it is not saturated).
+    let (settled, relief, make_up) = run_from(12.0, 1500);
+    assert!(
+        settled > SET_BAR,
+        "the receiver must settle ABOVE the set pressure — a PSV that holds \
+         exactly at set is passing nothing. Got {settled:.4} bar"
+    );
+    assert!(
+        settled < SET_BAR + ACCUMULATION_BAR,
+        "the receiver must settle BELOW full lift, or the relief is undersized \
+         and the opening is saturated — which would make the partial-opening \
+         claim untestable. Got {settled:.4} bar against a full-lift point of \
+         {:.4}",
+        SET_BAR + ACCUMULATION_BAR
+    );
+
+    // At steady state the flare takes exactly what the header supplies.
+    approx::assert_relative_eq!(relief, make_up, max_relative = 5e-3);
+    assert!(
+        relief > 0.0,
+        "the flare must be taking relief, got {relief}"
+    );
+}
+
+/// The relieving rate RESPONDS to the set pressure, which is what says the
+/// opening is actuated by pressure rather than fixed.
+///
+/// Raising the set point by half a bar must raise the settle pressure by
+/// approximately the same half bar — the valve finds the same opening at a higher
+/// pressure, because at steady state the opening is fixed by the make-up rate.
+/// A PSV stuck fully open would settle in the same place regardless.
+#[test]
+fn the_settle_point_tracks_the_set_pressure() {
+    let settle_at = |set: f64| {
+        let mut file = load();
+        match file.nodes.get_mut("psv") {
+            Some(NodeDef::ReliefValve {
+                set_pressure_bar, ..
+            }) => *set_pressure_bar = set,
+            other => {
+                panic!("relief_blowdown.toml must define psv as a relief_valve, got {other:?}")
+            }
+        }
+        let mut engine = refinery_scenarios::build_engine(&file).expect("builds");
+        for _ in 0..1500 {
+            engine.tick().expect("ticks");
+        }
+        let receiver = engine.graph.find_node("receiver").expect("receiver");
+        match &engine.graph.node(receiver).kind {
+            NodeKind::Vessel(v) => v.pressure(&engine.slate).value() / 1e5,
+            other => panic!("receiver must be a vessel, got {other:?}"),
+        }
+    };
+    let base = settle_at(SET_BAR);
+    let raised = settle_at(SET_BAR + 0.5);
+    let shift = raised - base;
+    assert!(
+        (0.35..0.65).contains(&shift),
+        "raising the set pressure by 0.5 bar must move the settle point by about \
+         the same amount; got {shift:.4} bar ({base:.4} → {raised:.4})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C — loader refusals.
+// ---------------------------------------------------------------------------
+
+fn expect_refusal(file: &refinery_scenarios::ScenarioFile, what: &str) -> String {
+    match refinery_scenarios::build_engine(file) {
+        Ok(_) => panic!("{what}"),
+        Err(e) => e.to_string(),
+    }
+}
+
+/// A zero accumulation band is refused: it makes the opening a STEP in pressure,
+/// and a discontinuous characteristic is precisely what `elements.rs` promises
+/// not to hand the Newton Jacobian.
+#[test]
+fn a_zero_accumulation_band_is_refused() {
+    for bad in [0.0f64, -1.0] {
+        let mut file = load();
+        match file.nodes.get_mut("psv") {
+            Some(NodeDef::ReliefValve {
+                accumulation_bar, ..
+            }) => *accumulation_bar = bad,
+            other => panic!("expected a relief_valve, got {other:?}"),
+        }
+        let msg = expect_refusal(&file, &format!("accumulation_bar = {bad} must not load"));
+        assert!(
+            msg.contains("accumulation"),
+            "the refusal must name the field, got: {msg}"
+        );
+    }
+}
+
+/// A PSV in gas service needs `x_t` for the same reason an ordinary valve does —
+/// they share `compile_edge`'s arm and therefore the same compressible law, so a
+/// separate requirement could let a PSV reach the gas branch with no choke point.
+#[test]
+fn a_gas_relief_valve_without_x_t_is_refused() {
+    let mut file = load();
+    match file.nodes.get_mut("psv") {
+        Some(NodeDef::ReliefValve { x_t, .. }) => *x_t = None,
+        other => panic!("expected a relief_valve, got {other:?}"),
+    }
+    let msg = expect_refusal(&file, "a gas PSV with no x_t must not load");
+    assert!(
+        msg.contains("x_t") && msg.contains("gas"),
+        "the refusal must name the field and the service: {msg}"
+    );
+}
+
+/// Measurement, not a gate: the trajectory the demo's prose describes.
+/// `cargo test -p refinery-scenarios --test relief_valve_reference -- \
+/// --ignored --nocapture`
+#[test]
+#[ignore = "measurement, not a gate"]
+fn measure_the_relief_trajectory() {
+    for start in [12.0f64, 30.0] {
+        for ticks in [1usize, 100, 200, 400, 800, 1500] {
+            let (p, relief, make_up) = run_from(start, ticks);
+            println!(
+                "start {start:>5.1} bar, {ticks:>5} ticks: P = {p:.4} bar, \
+                 relief = {relief:.5}, make-up = {make_up:.5} kg/s"
+            );
+        }
+    }
+}

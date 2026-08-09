@@ -139,6 +139,39 @@ pub enum NodeKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x_t: Option<f64>,
     },
+    /// Spring-loaded pressure safety valve: a pressure-actuated AREA, not a
+    /// controller (docs/DESIGN.md §3a fork 5).
+    ///
+    /// Its opening is a smooth, **memoryless** function of its own upstream
+    /// pressure — shut at or below `set_pressure`, ramping to full over the
+    /// accumulation band above it — evaluated inside the solve alongside every
+    /// other branch characteristic. No state, no tuning constants, no tick
+    /// history. That is a deliberate scope boundary (a PSV is one short step from
+    /// a controls subsystem, and M5 does not take it) *and* the physically honest
+    /// model at this fidelity.
+    ///
+    /// A separate kind rather than a flag on `Valve`, on the `Cooler`-versus-
+    /// negative-`Furnace` precedent: the intent belongs in the name, not in the
+    /// presence of a field. It hydraulically IS a valve — same `cv_max`, same
+    /// `x_t`, same ISA gas law, same fold-at-source — so it shares every code path
+    /// a valve takes and differs only in where `opening` comes from.
+    ///
+    /// GIVEN UP, and stated rather than discovered: no blowdown hysteresis (a real
+    /// PSV recloses below its set pressure), no chatter, and — inherited from the
+    /// gas valve's symmetry — it passes REVERSE flow, which a real one does not.
+    /// All three need element state, and state is what turns an element into a
+    /// controller.
+    ReliefValve {
+        cv_max: f64,
+        /// Set pressure [Pa] ABSOLUTE: at or below it the valve is shut.
+        set_pressure: Pascal,
+        /// Accumulation band [Pa] above the set pressure over which the opening
+        /// ramps from 0 to 1. Full lift is at `set_pressure + accumulation`.
+        accumulation: Pascal,
+        /// As `Valve::x_t` — required in gas service, refused in liquid.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_t: Option<f64>,
+    },
     /// Zero-volume mixing point.
     Junction,
     /// Fired heater: a duty delivered into the stream passing through it.

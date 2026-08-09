@@ -1,0 +1,112 @@
+# M5.4c demo: a blocked-in vessel, a PSV that lifts, and a flare.
+#
+# THE MILESTONE'S PAYOFF PLANT. A fuel-gas header feeds a receiver whose outlet is
+# blocked in, so the vessel's pressure BUILDS — something no pre-M5 version of
+# this engine could express at all, since pressure was purely algebraic and
+# nothing in the model could store it. As the pressure crosses the PSV's set
+# point the valve lifts, the flare takes the relief, and the vessel settles where
+# the relieving rate equals the make-up rate: a little above set pressure, inside
+# the accumulation band.
+#
+# Four M5 slices have to be simultaneously right for this run to mean anything,
+# which is why it is the demo and not another reference:
+#
+#   M5.1  the gas heats as it throttles across the PSV (dissipation into the stream)
+#   M5.2  every edge's density is P·M̄/(R·T) at its own upwind node
+#   M5.3  the vessel's pressure is a STATE, solved with a capacitance term
+#   M5.4  the PSV chokes on the way to the flare, and its opening is the plant's
+#
+# And one thing emerges rather than being modelled: **the contents cool as they
+# blow down**. Nothing in the code computes a blowdown temperature — it falls out
+# of `u = cv·T − cp·T_REF` on the vessel's holdup against the enthalpy leaving it.
+#
+# The PSV is a pure element characteristic (docs/DESIGN.md §3a fork 5): its
+# opening is a memoryless function of its own inlet pressure, evaluated in-solve
+# like every other branch. No controller, no state, no tick history. What that
+# gives up is stated in `NodeKind::ReliefValve` rather than left to be discovered:
+# no blowdown hysteresis, no chatter, and it would pass reverse flow.
+
+[meta]
+name = "relief_blowdown"
+description = "A blocked-in receiver builds pressure until its PSV lifts and relieves to the flare."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[[components]]
+name = "fuel_gas"
+phase = "gas"
+tb_c = -161.5
+molar_mass_kg_per_mol = 0.016043
+cp_j_per_kg_k = 2220.0
+
+[nodes.header]
+type = "source"
+pressure_bar = 30.0
+temperature_c = 20.0
+
+# The receiver. Starts well BELOW the PSV's set pressure so the run shows the
+# build-up, the lift and the settle rather than starting at the answer — the same
+# discipline `knockout_drum` uses.
+[nodes.receiver]
+type = "vessel"
+volume_m3 = 2.0
+pressure_bar = 12.0
+temperature_c = 20.0
+
+# Set at 20 bar with a 1 bar accumulation band (5%, an ordinary relief spec).
+# `x_t` is required because this valve is in gas service, and carries the same
+# secondary citation `gas_valve.toml` records: 0.72 for a globe valve,
+# single-port, parabolic plug, flow-to-open, widely reproduced from
+# IEC 60534-2-1 Table 2. This workspace has not read the standard.
+[nodes.psv]
+type = "relief_valve"
+kv = 12.0
+set_pressure_bar = 20.0
+accumulation_bar = 1.0
+x_t = 0.72
+
+[nodes.flare]
+type = "sink"
+pressure_bar = 1.1
+temperature_c = 20.0
+
+# The make-up line: restrictive enough that the PSV settles LOW in its band, which
+# is what a correctly sized relief does.
+[[pipes]]
+name = "make_up"
+from = "header"
+to = "receiver"
+length_m = 20.0
+diameter_m = 0.021
+
+# The PSV's inlet line. Sized 5 m x 60 mm rather than the 2 m x 100 mm a relief
+# designer would reach for first, and the reason is NUMERICAL rather than
+# process — recorded here because it is the kind of thing that otherwise looks
+# arbitrary. A normally-shut PSV leaves its valve node a DEAD END: `flare_line`
+# does not conduct, so the node's only branch is this one. The receiver's
+# Gauss-Seidel diagonal is then dominated by a branch carrying no net flow, and
+# each sweep moves the vessel by almost nothing. Newton is unaffected (it solves
+# the linear system exactly, 2-8 iterations); the Simple fidelity stalled at its
+# 5000-sweep cap and failed at tick 91. Lengthening and narrowing the inlet line
+# cuts that branch's conductance and the stall with it: 868 sweeps worst case,
+# 5.7x inside the cap. It is also the more realistic geometry - API 520 limits
+# PSV inlet line pressure drop precisely because the line is not free.
+[[pipes]]
+name = "psv_inlet"
+from = "receiver"
+to = "psv"
+length_m = 5.0
+diameter_m = 0.06
+
+[[pipes]]
+name = "flare_line"
+from = "psv"
+to = "flare"
+length_m = 30.0
+diameter_m = 0.10

@@ -10,7 +10,8 @@
 //! physics or the boundary classification.
 
 use crate::elements::{
-    fold_gas_valve, pipe_resistance, specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND,
+    fold_gas_valve, pipe_resistance, relief_opening, specific_heat_ratio_factor, QuadraticBranch,
+    CHOKE_BLEND,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::{boundary_temperature, NodeStates};
@@ -125,6 +126,10 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
         let expected: Option<(usize, usize)> = match &node.kind {
             NodeKind::Pump { .. }
             | NodeKind::Valve { .. }
+            // A relief valve is hydraulically a valve: its characteristic folds
+            // into its single outlet edge, so exactly one of each is what makes
+            // the fold well defined.
+            | NodeKind::ReliefValve { .. }
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
             // A reactor is the furnace's process constraint too: "the stream it
@@ -176,6 +181,7 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         // distinction this file did not have to make before.
         NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
+        | NodeKind::ReliefValve { .. }
         | NodeKind::Junction
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
@@ -347,11 +353,40 @@ pub fn compile_edge(
             let h0_eff = if *on { h0.value() } else { 0.0 };
             branch = branch.in_series(QuadraticBranch::pump(h0_eff, *a, rho, G));
         }
-        NodeKind::Valve {
-            cv_max,
-            opening,
-            x_t,
-        } => {
+        // A relief valve IS a valve here — same coefficient, same ISA gas law,
+        // same fold — and differs only in where `opening` comes from: the plant
+        // state rather than an operator setpoint (DESIGN §3a fork 5). Sharing one
+        // arm is what guarantees the two cannot drift apart in the element
+        // physics, which is the same reason `Cooler` shares `heat_load` with
+        // `Furnace` rather than owning a second copy of it.
+        //
+        // **The pressure the SPRING senses is not the pressure the GAS LAW uses**,
+        // and the two are deliberately different reads. A PSV's spring is loaded
+        // by the pressure at its own inlet flange — the node's own pressure,
+        // whichever way the flow happens to run — while `x` needs the upwind
+        // THERMODYNAMIC state. They coincide whenever the valve is relieving,
+        // which is the only regime it is designed for; they differ under the
+        // reverse flow this fidelity does not refuse.
+        kind @ (NodeKind::Valve { .. } | NodeKind::ReliefValve { .. }) => {
+            let (cv_max, opening, x_t) = match kind {
+                NodeKind::Valve {
+                    cv_max,
+                    opening,
+                    x_t,
+                } => (cv_max, *opening, x_t),
+                NodeKind::ReliefValve {
+                    cv_max,
+                    set_pressure,
+                    accumulation,
+                    x_t,
+                } => (
+                    cv_max,
+                    relief_opening(pressures[&src], set_pressure.value(), accumulation.value()),
+                    x_t,
+                ),
+                _ => unreachable!("outer pattern admits only the two valve kinds"),
+            };
+            let opening = &opening;
             let op = if *opening < OPEN_EPS { 0.0 } else { *opening };
             let rho_rel = rho / RHO_WATER_REF;
             let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);

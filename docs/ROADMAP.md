@@ -754,7 +754,7 @@ et al. (1989) or Ahari et al. (2008) needs only access to either paper, and woul
 upgrade it from the former to the latter. That is the concrete value of getting
 one of those papers; nothing else about the model would change. M5 may begin.
 
-## M5 — Gas & pressure realism (CURRENT)
+## M5 — Gas & pressure realism (DONE)
 Gas inventory and pressure *dynamics*: a vessel that fills, builds pressure and
 relieves to a flare. Plus the frictional-dissipation debt M2.2 deferred here.
 
@@ -1386,15 +1386,85 @@ unedited so the corrections above can be read against what they corrected.
       M5.3's phase-conditional `cv = cp − R/M̄`, which makes it composition-
       dependent and therefore per-edge at the upwind composition, like `ρ`.
 
-#### M5.4c — The relief valve and the demo
-- [ ] `core`/`solvers`: the relief valve as a **pure element characteristic** —
+#### M5.4c — The relief valve and the demo — **LANDED**
+- [x] `core`/`solvers`: `NodeKind::ReliefValve`, a pure element characteristic —
+      opening `t²(3−2t)` over the accumulation band, a memoryless function of its
+      own inlet pressure, evaluated in-solve. Its own kind rather than a flag on
+      `Valve`, on the `Cooler`-versus-negative-`Furnace` precedent: the intent
+      belongs in the name. Hydraulically it IS a valve and **shares
+      `compile_edge`'s arm**, so the two cannot drift apart in the element physics
+      — the same reason `Cooler` shares `heat_load` with `Furnace`.
+      One distinction the shared arm made explicit and worth keeping: **the
+      pressure the SPRING senses is not the pressure the GAS LAW uses.** A PSV's
+      spring is loaded at its own inlet flange — the node's own pressure, whichever
+      way the flow runs — while `x` needs the upwind thermodynamic state. They
+      coincide whenever it is relieving; they differ under the reverse flow this
+      fidelity does not refuse.
+      It cost no new solver machinery, exactly as fork 5 predicted: an opening
+      read off the current iterate is what M5.2's per-iteration `compile_edges`
+      was already built to carry.
+- [x] Demo: `scenarios/relief_blowdown.toml` — a blocked-in receiver builds from
+      12 bar, the PSV lifts at 20, the flare takes 0.483 kg/s and the vessel
+      settles at **20.5355 bar, ~53% open**, i.e. inside the accumulation band at
+      a genuinely PARTIAL lift. Both fidelities land on the same answer. Four M5
+      slices have to be right at once for the run to mean anything: dissipation
+      heats the gas across the PSV (M5.1), each edge's density is at its own
+      upwind node (M5.2), the vessel's pressure is a solved state (M5.3), and the
+      PSV chokes on the way to the flare (M5.4).
+- [x] **A correction to this box's own demo line.** It promised the contents
+      *cooling* as they blow down. This plant does not show that and the claim is
+      withdrawn rather than quietly restated: a receiver simultaneously fed and
+      relieving is at steady state, not blowing down, and the temperature decline
+      visible in the run is the decay of the initial compression-heating
+      transient. Blowdown cooling is real and is already gated — it is M5.3's
+      first-integral gate (ii), `T/Tᵢ = (m/mᵢ)^(γ−1)`, on a plant that actually
+      blows down. Showing it here would need the make-up blocked mid-run, i.e. a
+      `Command`, which the CLI has no way to issue.
+- [x] Tests: `scenarios/tests/relief_valve_reference.rs`. Memorylessness is
+      pinned at the PLANT level, not on `relief_opening` — asserting that a pure
+      function of one `f64` has no memory is a tautology. The gate that is not:
+      the receiver must settle on the **same pressure from below (12 bar) and from
+      above (30 bar)**, which real blowdown hysteresis would split into two. Plus
+      the demo's own four claims asserted separately (shut below set, lifts,
+      settles in band at a partial opening, relief balances make-up), the settle
+      point tracking the set pressure, and the loader's refusals.
+- [x] **Falsified before trusted**, three mutations. A PSV **stuck fully open**
+      fails four gates; the **opening read from the downstream node** instead of
+      its own inlet fails three. The third earns its place: a **linear ramp
+      instead of the smoothstep** fails the unit curve gate **alone** — every
+      plant gate stays green, because both curves share endpoints, monotonicity
+      and midpoint. What separates them is the SLOPE at the two ends, where a
+      linear ramp puts a kink exactly where the valve cracks and where it
+      saturates, on the one element whose area moves with the iterate. That gate
+      was added because the mutation was run, not the other way round.
+- [x] **A real Simple-fidelity failure, found by running the plant rather than
+      the tests, and fixed rather than documented away.** The first demo geometry
+      diverged under `simple` at tick 91 — 5000 sweeps, residual 5.9e-7 — while
+      Newton took 8. The mechanism: a normally-shut PSV leaves its valve node a
+      **dead end** (`flare_line` does not conduct), so the receiver's Gauss–Seidel
+      diagonal is dominated by a fat inlet branch carrying no net flow, and each
+      sweep moves the vessel by almost nothing. Newton is immune because it solves
+      the linear system exactly. Lengthening and narrowing the PSV inlet line
+      (2 m × 100 mm → 5 m × 60 mm) cuts that branch's conductance and the stall
+      with it: **868 sweeps worst case, 5.7x inside the cap** — and it is the more
+      realistic geometry anyway, since API 520 limits PSV inlet-line drop
+      precisely because the line is not free. The reason is recorded IN the plant
+      file, since a geometry chosen for numerical reasons otherwise reads as
+      arbitrary.
+- [x] Regression anchor: nine pre-existing scenarios × two fidelities × 200 ticks,
+      **18/18 byte-identical**.
+
+The box below is this slice's ORIGINAL specification, kept unticked so the
+corrections above read against what they corrected.
+
+- [~] `core`/`solvers`: the relief valve as a **pure element characteristic** —
       opening a smooth, memoryless function of its own upstream pressure, closed
       below set pressure, ramping to full over the accumulation band, evaluated
       in-solve like every other branch. No state, no tuning, no tick history, and
       no controls subsystem opened. Deliberate scope boundary *and* the honest
       model at this fidelity: a spring-loaded PSV is a pressure-actuated area.
       Given up, and stated: no blowdown hysteresis, no chatter — both need state.
-- [ ] Tests: (i) the **IEC 60534-2-1 gas sizing equation**, run at **two `x_T`
+- [~] Tests: (i) the **IEC 60534-2-1 gas sizing equation**, run at **two `x_T`
       values** so what is pinned is the *dependence* rather than one coincidence,
       the same anti-circularity move M5.2 makes with pressure.
       **This box's original claim — "an independent published anchor, exactly as
@@ -1420,10 +1490,32 @@ unedited so the corrections above can be read against what they corrected.
       parameter and must be shown not to move the answer. (iv) the relief valve's
       **memorylessness**: the same upstream pressure gives the same opening
       however it was approached.
-- [ ] Demo: block in a gas vessel, watch pressure build, the PSV lift, the flare
+- [~] Demo: block in a gas vessel, watch pressure build, the PSV lift, the flare
       take the relief, and the vessel settle at set-plus-accumulation — with the
       contents *cooling* as they blow down, which nothing in the code models
       directly. That is the milestone's physics in one run.
+      (Shipped as `relief_blowdown.toml`; the cooling clause is withdrawn with
+      reasons under M5.4c.)
+
+**M5 acceptance criteria are met.** M5.0 (scoping + design note), M5.1
+(dissipation), M5.2 (gas density), M5.3 (capacitive vessel) and M5.4 (choking,
+relief valve, flare) complete. `cargo test --workspace`,
+`cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
+are green. The runnable-demo criterion is met by
+`cargo run -p refinery-cli -- run scenarios/relief_blowdown.toml --ticks 1500`:
+a blocked-in receiver builds from 12 bar, its PSV lifts at 20, the flare takes
+0.483 kg/s and the vessel settles at 20.5355 bar with the valve ~53% open —
+pressure that BUILDS and RELIEVES, which is the thing §3a said the pre-M5
+architecture could not express at all, and both fidelities land on it.
+
+Three caveats carried forward rather than buried. The ISA magnitude gate is a
+transcription/units/algebra check and **not** an independent published anchor in
+`kv_reference`'s sense — the correction is in DESIGN §3a fork 6, and what the
+slice leans on instead is the plateau, `F_k`-from-the-slate, `Y = 2/3` at the
+choke and the `Y → 1` degeneracy. The equation FORM was checked outside the repo
+but the standard itself was not read. And `x_T`'s citation is secondary, which is
+acceptable only because nothing is calibrated to it and the gates run at two
+values. M6 may begin.
 
 **Deferred from M5, with what would un-defer each** (DESIGN §3a): **two-phase
 flow, flash and condensation** — the reason is *scope, not unfalsifiability*, and
@@ -1437,7 +1529,7 @@ enough to gate, but `η` is a parameter with one possible value in this repo —
 curves); PSV hysteresis and chatter (needs element state); and acoustic /
 pressure-wave dynamics (out of scope since §3, unchanged).
 
-## M6 — Godot frontend + damage
+## M6 — Godot frontend + damage (CURRENT)
 godot-ext adapter, minimal scene reading snapshots; leak/fire commands
 (already supported by the graph model) get game-side visualization.
 Complex column (stage cascade) can proceed in parallel here if desired.

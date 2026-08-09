@@ -699,6 +699,9 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
         NodeKind::Junction
             | NodeKind::Pump { .. }
             | NodeKind::Valve { .. }
+        // A relief valve is hydraulically a valve: zero-volume, 1-in-1-out, and
+        // its temperature is the sweep's mix like any other pass-through.
+        | NodeKind::ReliefValve { .. }
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
             | NodeKind::HeatExchanger
@@ -744,6 +747,9 @@ pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Compositio
         NodeKind::Junction
         | NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
+        // A relief valve is hydraulically a valve: zero-volume, 1-in-1-out, and
+        // its temperature is the sweep's mix like any other pass-through.
+        | NodeKind::ReliefValve { .. }
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::HeatExchanger
@@ -777,6 +783,9 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         NodeKind::Junction
         | NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
+        // A relief valve is hydraulically a valve: zero-volume, 1-in-1-out, and
+        // its temperature is the sweep's mix like any other pass-through.
+        | NodeKind::ReliefValve { .. }
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::HeatExchanger

@@ -266,6 +266,35 @@ pub fn gas_valve_flow(alpha_liquid: f64, s: f64, p_up: f64, x_choke: f64, blend:
     y * (x_s * p_up / alpha_liquid).sqrt()
 }
 
+/// A spring-loaded PSV's opening at inlet pressure `p_inlet` [Pa].
+///
+/// Shut at or below `set_pressure`, fully open at `set_pressure + accumulation`,
+/// and a cubic smoothstep `t²(3 − 2t)` in between — whose derivative vanishes at
+/// both ends, so the characteristic is C¹ where it meets both limits and this
+/// file's contract survives an element whose area moves.
+///
+/// **Memoryless, and that is the whole design** (docs/DESIGN.md §3a fork 5). The
+/// opening is a pure function of one pressure: no state, no tick history, no
+/// tuning constants. A real PSV recloses BELOW its set pressure (blowdown
+/// hysteresis) and can chatter; both need element state, and element state is
+/// what turns a characteristic into a controller — which is the subsystem M5
+/// declines to open. Given up deliberately, not overlooked.
+///
+/// It is the plant state, not the operator, that moves this — which makes it the
+/// first element in the project whose area depends on the solve. It costs no new
+/// machinery: M5.2 already recompiles every edge at every iterate, so an opening
+/// read off the current pressure is exactly what that loop was built to carry.
+#[inline]
+pub fn relief_opening(p_inlet: f64, set_pressure: f64, accumulation: f64) -> f64 {
+    if !accumulation.is_finite() || accumulation <= 0.0 {
+        // Degenerate band: a step at the set pressure. Guarded rather than
+        // permitted — the loader refuses it — so this is a floor, not a mode.
+        return if p_inlet > set_pressure { 1.0 } else { 0.0 };
+    }
+    let t = ((p_inlet - set_pressure) / accumulation).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Fold a gas valve into the pipe it discharges through, as ONE
 /// `QuadraticBranch` whose valve resistance is frozen at the current iterate.
 ///
@@ -618,6 +647,43 @@ mod tests {
         assert!(branch.alpha.is_infinite());
         assert_eq!(branch.flow(9.0e5, 1.0), 0.0);
         assert_eq!(branch.flow_ddp(9.0e5, 1.0), 0.0);
+    }
+
+    /// The PSV's opening curve: shut at set, full at set + accumulation, and a
+    /// cubic smoothstep between — with a VANISHING slope at both ends.
+    ///
+    /// The flat ends are the point, not decoration. A linear ramp would give the
+    /// same endpoints and the same monotone shape, and would put a slope
+    /// discontinuity exactly where the valve cracks and where it saturates — two
+    /// kinks in a characteristic this file promises to keep C¹, on the one element
+    /// whose area moves with the iterate. Asserting the midpoint alone cannot tell
+    /// the two apart (both give ½), so the slopes are what this gate checks.
+    #[test]
+    fn the_relief_opening_is_a_smoothstep_with_flat_ends() {
+        let (set, band) = (20.0e5, 1.0e5);
+        assert_eq!(relief_opening(set, set, band), 0.0);
+        assert_eq!(relief_opening(set - 1.0e5, set, band), 0.0);
+        assert_eq!(relief_opening(set + band, set, band), 1.0);
+        assert_eq!(relief_opening(set + 5.0 * band, set, band), 1.0);
+        // Monotone, and symmetric about the midpoint: t²(3−2t) + (1−t)²(1+2t) = 1.
+        for t in [0.1f64, 0.25, 0.5, 0.75, 0.9] {
+            let up = relief_opening(set + t * band, set, band);
+            let down = relief_opening(set + (1.0 - t) * band, set, band);
+            assert_relative_eq!(up + down, 1.0, max_relative = 1e-12);
+            assert_relative_eq!(up, t * t * (3.0 - 2.0 * t), max_relative = 1e-12);
+        }
+        // Flat where it meets both limits — a linear ramp gives 1/band at both.
+        let h = 1e-4 * band;
+        let scale = 1.0 / band;
+        for edge in [set, set + band] {
+            let slope = (relief_opening(edge + h, set, band) - relief_opening(edge - h, set, band))
+                / (2.0 * h);
+            assert!(
+                slope.abs() < 0.05 * scale,
+                "the opening must meet its limit with a vanishing slope; at \
+                 {edge:.0} Pa it is {slope:.3e} against a linear ramp's {scale:.3e}"
+            );
+        }
     }
 
     /// `F_k = γ/1.40`, and `γ = 1.40` is the air datum the standard normalizes to.

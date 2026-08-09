@@ -915,6 +915,44 @@ until now rested on this document alone. It has been checked against sources
 outside the repo (`Y = 1 − x/(3·F_k·x_T)`, `F_k = γ/1.40`, choke at `x = F_k·x_T`
 where `Y = 2/3`); the standard itself was **not** read, and the gate says so.
 
+#### Corrections from building it (M5.4, landed)
+
+Three things the fork above got wrong, and one it could not have known.
+
+**The smoothstep is not needed, and fork 4's premise was false.** Fork 4 shipped
+choking on the reasoning that "a choke cap is a kink" which would break
+`elements.rs`'s C¹ contract. It is not a kink for this `Y`: the standard's
+expansion factor is constructed so the sizing curve meets the plateau with zero
+slope — `d(Y·√x_s)/dx → −√x_c/(3x_c) + (2/3)/(2√x_c) = 0` — and the frozen
+coefficient inherits it, `dα_eff/dx = 2.25·α/x_c` on *both* sides. Measured, the
+one-sided limits agree to round-off. So the exact clamp is already C¹ for the
+flow AND for the assembled Jacobian entry, which is what fork 4 was protecting; a
+blend would be a fabricated parameter that biases the answer and buys nothing.
+`CHOKE_BLEND = 0`, the parameter survives so the claim stays falsifiable, and only
+the second derivative jumps — which Newton does not need.
+
+**The escalation trigger was not met.** Frozen `α` converges in 8 iterations cold
+and 0 warm on the choked reference plant, 10 worst case on the relief demo, so
+the branch type carrying `flow(dp, p_up)` with a true derivative stays deferred —
+on the measurement this fork asked for, not on the argument.
+
+**`P₁` is the upwind node's, and no forward-flowing plant can see otherwise.**
+Taking it from the edge's `src` — which the fold-at-source convention puts right
+next to the valve — passed the entire suite. It is right only while the flow runs
+forward. A reversed plant, where the two differ tenfold, is what gates it.
+
+**And one the fork could not have known, because it is about the Simple
+fidelity rather than the element.** A normally-shut PSV leaves its valve node a
+DEAD END: its outlet branch does not conduct, so the vessel's Gauss–Seidel
+diagonal is dominated by a fat inlet branch carrying no net flow, and each sweep
+moves the vessel by almost nothing. Newton is immune — it solves the linear
+system exactly. This is a property of relief plants generally, not of one file:
+any normally-shut branch on a low-resistance line will do it. The demo's inlet
+line is sized against it (and is the more realistic geometry for it, per API
+520's limit on PSV inlet drop), and the general statement belongs here: **the
+Simple fidelity's stiffness limit is reached by a dead-ended branch, not only by
+a wide conductance spread between flowing ones.**
+
 **What would escalate this verdict, stated as a measurement rather than an
 argument.** Frozen `α_eff` overstates the branch conductance on a choked valve —
 the truth is `dṁ/d(dp) = 0` and the frozen form reports `ṁ/(2·(dp − β))` — which
