@@ -623,7 +623,9 @@ fn simple_agrees_on_a_healthy_fraction() {
 // MEASURED, and the numbers are the point of the test as much as the
 // assertions are: 185/400 gas, Newton converging on 184/185 at a worst 43
 // iterations against a `max_iter` of 50, Simple on 175/185, 101/184 carrying
-// a valve at all and 33/101 of those reaching a choked one.
+// a valve at all and 33/101 of those reaching a choked one. Trees are counted
+// separately (189/400 gas, 53/189 choked) because a spliced device there faces
+// two pipes rather than one, so the chain's ratio does not carry over.
 //
 // **43 out of 50 reads alarming until it is given a control, which is why the
 // liquid arm is measured alongside it: liquid's worst is 47.** The expensive
@@ -776,6 +778,42 @@ fn the_gas_arm_generates_chokes_and_solves() {
          {choked}/{with_valve}; worst liquid iterations {liquid_worst} (control)"
     );
 
+    // The TREE generator needs its own count, not an inference from the chain's.
+    // It splices a device by SUBDIVIDING an edge, so a valve there faces two
+    // pipes instead of one and the resistance ratio `GAS_CV_SCALE` was sized
+    // against does not carry over. If trees never choke, the one thing the tree
+    // generator exists for — `edge_flows` cross-checked against `assemble` at a
+    // 3+ degree hub — never sees a choked branch, which is the 0/185 failure one
+    // level down.
+    let tree_strat = tree_inputs_strategy();
+    let (mut gas_trees, mut choked_trees) = (0usize, 0usize);
+    for _ in 0..SAMPLES {
+        let inputs = tree_strat
+            .new_tree(&mut runner)
+            .expect("strategy produces a value")
+            .current();
+        if !inputs.4.is_gas() {
+            continue;
+        }
+        gas_trees += 1;
+        let g = build_tree(&inputs);
+        let Ok(n) = NewtonFlowSolver::default().solve(
+            &g,
+            &inputs.4.slate,
+            &Default::default(),
+            Seconds(0.1),
+        ) else {
+            continue;
+        };
+        if n.diagnostics.converged
+            && g.edge_ids()
+                .any(|e| valve_edge_is_choked(&g, &n, &inputs.4, e))
+        {
+            choked_trees += 1;
+        }
+    }
+    println!("gas trees: {gas_trees}/{SAMPLES}; with a choked valve {choked_trees}/{gas_trees}");
+
     // (1) Gas must be a substantial share, not a rounding error. The strategy
     // is 1:1, so ~50%; 25% is a floor that fails loudly on a weight typo.
     assert!(
@@ -797,6 +835,14 @@ fn the_gas_arm_generates_chokes_and_solves() {
         "only {choked}/{with_valve} converged gas chains carrying a valve reached a \
          choked one — the generator has drifted off the branch the gas arm exists \
          to reach"
+    );
+    // The same floor for trees, measured separately at 53/189 (28%). A tree
+    // that never chokes would leave the branching cross-check — the reason the
+    // tree generator exists at all — running only on unchoked branches.
+    assert!(
+        choked_trees * 10 >= gas_trees,
+        "only {choked_trees}/{gas_trees} gas trees reached a choked valve — the \
+         branching cross-check never sees a choked branch"
     );
 }
 

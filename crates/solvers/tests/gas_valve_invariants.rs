@@ -215,7 +215,7 @@ const ALPHA_BUDGET: f64 = 1e-11;
 // ---------------------------------------------------------------------------
 
 #[test]
-fn measure_gas_fold_residual_headroom() {
+fn measure_gas_fold_alpha_headroom() {
     const SAMPLES: usize = 4000;
     let mut runner = TestRunner::deterministic();
     let strat = fold_strategy();

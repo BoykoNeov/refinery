@@ -1538,7 +1538,12 @@ unedited so the corrections above can be read against what they corrected.
       than on the branch drop, because `s ≤ s_total` and the branch measure would
       have reported coverage the samples never reach.
       Final: 185/400 gas, Newton 184/185, Simple 175/185, 101/184 carrying a valve,
-      **33/101 of those reaching a choked one**.
+      **33/101 of those reaching a choked one**. Trees are counted SEPARATELY
+      (189/400 gas, **53/189 choked**) rather than inferred from the chain: a
+      spliced device there faces two pipes instead of one, so the ratio the gas
+      coefficient was sized against does not carry over, and a tree that never
+      chokes would leave the branching `edge_flows`-vs-`assemble` cross-check —
+      the tree generator's whole purpose — running only on unchoked branches.
       A second measured floor sits inside that gate: a choked edge reports
       `q/plateau = 0.999997`, not 1, because `edge_flows` inverts through
       `smooth_signed_sqrt`'s `eps_dp`. The threshold is 1e-4, with the nearest
