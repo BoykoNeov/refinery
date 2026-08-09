@@ -988,6 +988,10 @@ was already large enough, on the reference plant rather than a contrived one.
       per-iteration recompile is bit-identical (blast radius confirmed, not
       assumed: outside `components.rs` there are exactly three callers of
       `mixture_density`).
+      **That count was of the wrong function** — `mixture_density` never changed
+      signature, since the dispatch is the new `density_at` — and after the swap
+      **two** callers remain, both TANK paths (hydrostatic head, loader
+      inventory), which is what put the tank guard where it is.
       **Landed** as `scenarios/gas_line.toml` + `crates/scenarios/tests/
       gas_density_reference.rs` (12 gates) and four `core::components` unit tests.
       **The reference plant is not the one this box describes**, and the reason is
@@ -1006,9 +1010,15 @@ was already large enough, on the reference plant rather than a contrived one.
       regularisation against the smaller ~73 kPa branch drop and measured at
       1.5e-6 / 1.05e-5 for the two fidelities, ~9.5x of headroom; it must not be
       loosened past ~1e-3, since the sharpest mutation moves the flow by only 3.5%.
-      The **1-component regression anchor held**: every M1–M4 golden is
-      bit-identical with no change to any pre-M5.2 scenario file, which is what
-      "for a liquid, `density_at` ignores `P` and `T`" buys.
+      The **1-component regression anchor held, and was MEASURED rather than
+      reasoned** — the lesson M5.1 wrote down and this slice nearly failed to
+      apply. The suite's green run is not the anchor: it is absolute-value gates
+      at their tolerances plus `m1_acceptance`'s *rerun* determinism, which
+      compares one build against itself. The anchor is a build of `HEAD~1` in a
+      second worktree, with all **seven** pre-M5.2 scenarios run 200 ticks under
+      **both** fidelities and the JSON compared byte for byte: 14/14 identical.
+      That is what "for a liquid, `density_at` ignores `P` and `T`" buys, and
+      what the phase-aware pipe seed had to preserve.
       **Falsified before trusted**, nine mutations, each caught by the right set
       and no others: density at the **downwind** endpoint and the coefficient
       **frozen at the seed** each fail the three hand-calc gates while the whole

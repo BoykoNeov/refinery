@@ -1149,16 +1149,19 @@ fn declared_composition(kind: &NodeKind) -> Option<&Composition> {
 /// The slate index a pipe's initial stream composition is seeded with, for a
 /// pipe in an all-`phase` part of the plant.
 ///
-/// The pipe's stored composition has exactly ONE reader — `compile_edge`'s
-/// transport density — since M3.1 moved `cp` to the resolved upwind node, and
-/// transport overwrites it at the end of every tick. So this is a density seed
-/// for tick 1 and nothing more; what it must not be is the WRONG PHASE, which
-/// on a mixed slate is what `pure(0)` would give every gas line (a liquid
-/// density is ~800× a gas one, so tick 1 would not be stale, it would be
-/// nonsense).
+/// Readers of the pipe's stored composition, grepped rather than assumed:
+/// `compile_edge`'s transport density is the only one that reaches the SOLVE
+/// (M3.1 moved `cp` to the resolved upwind node — see `energy::stream_cp_at`),
+/// and `EdgeSnapshot` publishes the whole `Stream`, so it is also frontend-
+/// visible state until transport overwrites it at the end of tick 1. Both make
+/// the same demand of the seed: it must not be the WRONG PHASE, which on a mixed
+/// slate is what `pure(0)` would give every gas line (a liquid density is ~150×
+/// a gas one at 10 bar, so tick 1 would not be stale, it would be nonsense).
 ///
 /// For an all-liquid slate the first liquid component IS index 0, so every
-/// pre-M5.2 scenario keeps the seed it had and its goldens are bit-identical.
+/// pre-M5.2 scenario keeps the seed it had — measured, not reasoned: the seven
+/// repo scenarios run 200 ticks under both fidelities produce byte-identical
+/// JSON against the pre-M5.2 build.
 /// The fallback is index 0 for the same reason: a slate with no component of
 /// the requested phase can only be one the requesting sub-plant never uses.
 fn seed_component_index(slate: &Slate, phase: Phase) -> usize {

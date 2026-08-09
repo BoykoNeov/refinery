@@ -145,13 +145,20 @@ impl Composition {
     /// Mixture liquid density: volume-fraction weighting (1/ρ mass-weighted),
     /// the correct rule for ideal liquid blending.
     ///
-    /// **Liquid only.** A gas-phase component carries no stored density, and the
-    /// single-phase connected-component guard means no composition reaching this
-    /// function can contain one with a nonzero fraction. Should that invariant
-    /// ever be broken, the missing density contributes `f/0 = ∞` to the sum and
-    /// the mixture density comes out as **zero** — which `compile_edge`'s
-    /// existing non-positive-resistance check turns into a named `Err` rather
-    /// than a plausible number. The `debug_assert` catches it earlier in tests.
+    /// **Liquid only, and the LOADER is what makes that true.** Since M5.2 the
+    /// only callers are the two tank paths — `network::fixed_pressure`'s
+    /// hydrostatic head and the scenario loader's `ρ·A·h` inventory — and the
+    /// loader refuses a tank whose composition is gas-phase, which is precisely
+    /// why that guard sits at the tank rather than being left to the
+    /// connected-component check (docs/DESIGN.md §3a). Transport does NOT come
+    /// through here any more; it goes through `density_at`.
+    ///
+    /// There is deliberately no safety net beyond that guard: with it removed, a
+    /// gas component's missing density contributes `f/0 = ∞` and the mixture
+    /// density comes out as **zero**, which on a tank means a 0 kg inventory and
+    /// a bare-atmospheric bottom pressure — silently, in release. The
+    /// `debug_assert` is the only thing that fires, and only in test builds,
+    /// which is exactly how the tank guard's own falsification caught it.
     pub fn mixture_density(&self, slate: &Slate) -> KgPerM3 {
         let inv_rho: f64 = self
             .mass_fractions

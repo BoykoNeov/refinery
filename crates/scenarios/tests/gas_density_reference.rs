@@ -605,12 +605,14 @@ diameter_m = 0.05
 
 /// A gas line on a slate whose first component is a LIQUID still carries gas.
 ///
-/// The pipe's stored composition has one reader — `compile_edge`'s transport
-/// density — and it is seeded at load, before any transport has run. Seeding
-/// every pipe with component 0 (which is what the code did from M3.1 until this
-/// slice) gives a gas line the density of water on its first solve: not stale,
-/// wrong by a factor of ~150, and silent because a plant of two reservoirs and a
-/// pipe converges happily on it.
+/// The pipe's stored composition is seeded at load, before any transport has
+/// run. Its only reader that reaches the SOLVE is `compile_edge`'s transport
+/// density (`EdgeSnapshot` also publishes it, so it is frontend-visible for one
+/// tick, but that cannot move a number). Seeding every pipe with component 0 —
+/// which is what the code did from M3.1 until this slice — gives a gas line the
+/// density of water on its first solve: not stale, wrong by a factor of ~150,
+/// and silent, because a plant of two reservoirs and a pipe converges happily
+/// on it.
 ///
 /// This is the gate for `seed_component_index`, and the only one that can fail
 /// on it: every other plant in the repo has an all-liquid slate, where the first
