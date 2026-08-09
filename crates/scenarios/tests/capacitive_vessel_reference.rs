@@ -822,31 +822,160 @@ diameter_m = 0.05
 }
 
 /// Both fidelities inherit the accumulation term from the same shared residual,
-/// so they solve the same fixed point on a capacitive plant (I5).
+/// so they solve the same fixed point on a capacitive plant (I5) — in BOTH of
+/// the regimes that term can be in.
 ///
 /// Not free, and not implied by the pre-M5.3 agreement tests: the term enters
 /// Newton through the Jacobian diagonal and the Simple sweep through `g_sum`,
 /// which are different pieces of code. They agree because both call
 /// `network::accumulation`; a hand-inlined copy in either would drift here.
+///
+/// **Two fixtures, because `C/dt` and `Σg` trade places between them and the
+/// Simple sweep's step is `imbalance/g_sum`** — which regime dominates that
+/// denominator decides whether the relaxation is being driven by the vessel or
+/// by its branches:
+///
+/// - the lone blowdown is **capacitance-dominated**: `C/dt ≈ 6.6e-5` against a
+///   single branch `g ≈ 1.5e-8`, so the vessel's own term is ~4000x the
+///   conductance and effectively sets the step by itself;
+/// - `knockout_drum` is **branch-dominated**: `C/dt ≈ 1.2e-4` against
+///   `Σg ≈ 1.0e-3`, so the accumulation is ~11% of the denominator and the two
+///   pieces have to cooperate.
+///
+/// Testing only the first would leave the claim standing on the case where the
+/// accumulation term drowns everything else out, which is the easy one.
 #[test]
-fn both_fidelities_agree_on_the_blowdown() {
-    let newton = blowdown_scenario(1.01325, 0.1);
-    let simple = newton.replace(r#"flow = "newton""#, r#"flow = "simple""#);
-
-    let run = |src: &str| {
+fn both_fidelities_agree_on_a_capacitive_plant() {
+    let run = |src: &str, ticks: usize| {
         let mut engine = build(src).expect("builds");
-        for _ in 0..500 {
+        for _ in 0..ticks {
             engine.tick().expect("ticks");
         }
         vessel_state(&engine, "drum")
     };
-    let (m_newton, t_newton) = run(&newton);
-    let (m_simple, t_simple) = run(&simple);
+    let as_simple = |src: &str| src.replace(r#"flow = "newton""#, r#"flow = "simple""#);
 
+    // Capacitance-dominated: the lone vessel blowing down.
+    let blowdown = blowdown_scenario(1.01325, 0.1);
+    let (m_newton, t_newton) = run(&blowdown, 500);
+    let (m_simple, t_simple) = run(&as_simple(&blowdown), 500);
     approx::assert_relative_eq!(m_simple, m_newton, max_relative = 1e-5);
     approx::assert_relative_eq!(t_simple, t_newton, max_relative = 1e-5);
     // Vacuity: the run has to have DONE something for agreement to mean anything.
     assert!(m_newton < 0.95 * blowdown_initial_mass());
+
+    // Branch-dominated: the drum, where the accumulation is a minority of
+    // `g_sum` and the branch conductances drive the relaxation.
+    let (m_newton, t_newton) = run(DRUM_PLANT, 300);
+    let (m_simple, t_simple) = run(&as_simple(DRUM_PLANT), 300);
+    approx::assert_relative_eq!(m_simple, m_newton, max_relative = 1e-5);
+    approx::assert_relative_eq!(t_simple, t_newton, max_relative = 1e-5);
+    // Vacuity: the drum must have moved off its declared 8 bar start, or both
+    // fidelities would be agreeing about the initial condition.
+    assert!(
+        m_newton > 1.2 * 8.0e5 * DRUM_VOLUME_M3 * DRUM_M_BAR / (R * DRUM_T_K),
+        "the drum must have filled substantially, got {m_newton:.5} kg"
+    );
+}
+
+/// `m_new = C·P_solved` — the DAE consistency the closed-form gate rests on,
+/// asserted directly instead of only through its consequences.
+///
+/// The accumulation term the solver drove to zero and the mass update
+/// `Engine::tick` performs are two pieces of code in two crates, and they are
+/// only the same statement if `C` and `Pⁿ` mean the same thing on both sides.
+/// When they do, the vessel's end-of-tick inventory is exactly `C·P*` at the
+/// START-of-tick temperature — which is also what makes the discharge edge's
+/// `ρ = P·M̄/(R·T)` equal `m/V` and the §C closed form an anchor rather than a
+/// readback.
+///
+/// **§C does NOT cover this, which was worth finding out by mutation rather than
+/// assuming either way.** Evaluating `C` at a fixed 293.15 K instead of the
+/// vessel's own temperature — a 12% error by the end of §C's run — fails this
+/// gate and NOTHING else in the workspace, §C included. The reason is structural
+/// rather than lucky: `Pⁿ` is still `m/C_true`, so to leading order in `dt` the
+/// trajectory is `dm/dt = −ṁ(m/C_true)` and `C` only scales the *implicit
+/// correction*, an O(dt) effect on an O(dt) term. A rate gate cannot see that;
+/// only the algebraic identity can. It is also the non-tautological counterpart
+/// of `the_vessels_accumulation_closes_the_mass_balance`, which compares the
+/// inventory change against the very flows the engine computed it from and so
+/// never leaves one crate.
+#[test]
+fn the_solved_pressure_and_the_integrated_mass_are_the_same_statement() {
+    let mut engine = build(&blowdown_scenario(1.01325, 0.1)).expect("builds");
+    for tick in 1..=200 {
+        // `C` is stated at the START-of-tick temperature, so it has to be read
+        // before the tick that consumes it.
+        let (_, t_before) = vessel_state(&engine, "drum");
+        let capacitance = BLOWDOWN_V_M3 * BLOWDOWN_M_BAR / (R * t_before);
+
+        engine.tick().expect("ticks");
+
+        let snapshot = engine.snapshot();
+        let solved = snapshot
+            .nodes
+            .iter()
+            .find(|n| n.name == "drum")
+            .expect("the drum is in the snapshot")
+            .pressure_pa;
+        let (mass, _) = vessel_state(&engine, "drum");
+
+        // The identity is exact in exact arithmetic, so what bounds it here is
+        // the SOLVE, not round-off: the residual is only driven below
+        // `tol_abs + tol_rel·ṁ`, and whatever is left of it is a mass rate that
+        // the tick integrates for `dt`. Hence `|m − C·P| ≤ residual·dt`, which
+        // is checked against the solver's OWN reported residual rather than a
+        // number chosen to pass — the assertion self-scales with however well
+        // the solve actually converged.
+        let slack = snapshot.solver.residual * DRUM_DT_S + f64::EPSILON * mass;
+        assert!(
+            (mass - capacitance * solved).abs() <= 2.0 * slack,
+            "tick {tick}: m = {mass} but C·P = {}, a gap of {:.3e} against the \
+             {:.3e} the reported residual allows — the accumulation term and the \
+             mass update have stopped being the same statement",
+            capacitance * solved,
+            (mass - capacitance * solved).abs(),
+            slack
+        );
+        // And the derived absolute bound, so the gate still says something if
+        // the solver ever reports a residual of zero: tol_abs·dt/m ≈ 1.5e-10.
+        // Measured at 1.7e-11.
+        approx::assert_relative_eq!(mass, capacitance * solved, max_relative = 1e-9);
+        assert!(tick < 200 || mass < blowdown_initial_mass());
+    }
+}
+
+/// I4 for the first new inertial node kind since `Tank`: two fresh engines run
+/// the same capacitive plant to byte-identical snapshots.
+///
+/// A vessel adds serialized state (`VesselState` inside `NodeKind`) and a new
+/// `BTreeMap` in the solve. Neither should be able to break determinism — rule 3
+/// is structural, not incidental — but the regression anchor could not cover
+/// `knockout_drum.toml`, because the plant did not exist at the baseline commit,
+/// so this plant had never been run twice and compared. "Expect" is what rule 3
+/// exists to replace.
+#[test]
+fn a_capacitive_plant_reruns_bit_identically() {
+    let run = || {
+        let mut engine = build(DRUM_PLANT).expect("builds");
+        let mut snapshots = Vec::new();
+        for tick in 1..=200 {
+            engine.tick().expect("ticks");
+            if tick % 20 == 0 {
+                snapshots
+                    .push(serde_json::to_vec(&engine.snapshot()).expect("snapshot must serialize"));
+            }
+        }
+        snapshots
+    };
+    let first = run();
+    assert_eq!(first.len(), 10, "the gate must compare real snapshots");
+    assert_eq!(
+        first,
+        run(),
+        "two fresh engines on the same capacitive plant must produce byte-identical \
+         snapshots (rule 3, I4)"
+    );
 }
 
 /// I1 with accumulation: over a blowdown, everything that left the vessel

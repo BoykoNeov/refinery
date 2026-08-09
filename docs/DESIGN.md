@@ -537,6 +537,11 @@ Everything turns on the size of `C`, and liquid and gas are five orders apart:
 | `tank_pump_valve`'s supply tank (`A/g` = 20/9.81) | **2.04 kg/Pa** | 8.2e-7 |
 | 1 m³ knock-out drum, light gas (M̄ 0.03), 300 K | **1.20e-5 kg/Pa** | **4.2** |
 
+*(Measured by building it: **8.35** on `knockout_drum.toml`. The row below costs a
+single branch; a real knock-out drum has an inlet and an outlet, and `g` sums
+over a vessel's branches. The verdict is stronger on the plant than in the
+table.)*
+
 The drum's row uses a 20 kg/s line at 0.2 bar drop (`g ≈ ṁ/2ΔP = 5e-4`) and
 `dt = 0.1 s` — a small vessel on a fat low-pressure line, which is an
 *unremarkable* piece of plant, not a contrived one. It is a factor of two outside
@@ -589,7 +594,13 @@ as it blows down and one that does not.
 
 For an ideal gas the correction costs no new parameter: `cv = cp − R/M̄`. So the
 rule is `u = cv·(T − T_REF)` with **`cv = cp` for liquid components and
-`cp − R/M̄` for gas ones** — phase-conditional, which is legitimate (it is a
+`cp − R/M̄` for gas ones**
+
+*(Corrected by building it: `u = cv·(T − T_REF)` is **wrong** — it is
+datum-inconsistent with `h = cp·(T − T_REF)` and would suppress the very cooling
+this fork is about, by a factor of 15. The shipped rule is `u = cv·T − cp·T_REF`;
+see "Corrections from building it (M5.3, landed)" below. The `cv` rule itself,
+and the paragraph that follows, are unaffected.)* — phase-conditional, which is legitimate (it is a
 phase branch in a property law, not a fidelity branch), and bit-identical for
 every existing all-liquid scenario. Note the branch must be phase-conditional:
 applying `cp − R/M̄` to water would shift its `cv` by 11% and change every

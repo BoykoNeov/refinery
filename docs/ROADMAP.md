@@ -1173,6 +1173,24 @@ reference** each fail one gate and only that one; the **liquid-vessel guard**
 likewise; and the Simple solver's pre-M5.3 ordering fails
 `both_fidelities_agree_on_the_blowdown` alone.
 
+**Four gaps closed after review, three of them cheap and one not.** The `n == 0`
+comment in `newton_flow` still said a network with no fixed node lands there
+inert, which the two-vessel plant falsifies — corrected at the site, the way M5.2
+corrects `Pipe::stream`. I5 was gated only in the **capacitance-dominated**
+regime (a lone vessel, where `C/dt` is ~4000x the branch conductance); the drum
+is the opposite (~11%), had never been run under `simple` at all, and now is.
+I4 had no vessel case, because the regression anchor structurally could not cover
+a plant that did not exist at the baseline — `knockout_drum` now reruns
+byte-identically. And `m_new = C·P_solved`, stated in four places and asserted in
+none, is asserted directly, bounded by the solver's OWN reported residual rather
+than a chosen number. That last one earned its place: `C` evaluated at a fixed
+293.15 K — a 12% error by the end of the rate gate's run — fails it and nothing
+else in the workspace, **including gate (iii)**. The reason is structural: `Pⁿ`
+is still `m/C_true`, so to leading order the trajectory does not depend on `C` at
+all and the error lives entirely in the implicit correction, an O(dt) effect on
+an O(dt) term. A rate gate cannot see a DAE-consistency break; only the algebraic
+identity can.
+
 **Regression anchor measured, not reasoned**, against a worktree at the previous
 commit: eight scenarios × two fidelities × 200 ticks, **15/16 byte-identical**.
 The single difference is `gas_line` under `simple`, and it is not an answer —

@@ -110,10 +110,18 @@ impl FlowSolver for NewtonFlowSolver {
         let n = unknowns.len();
 
         // Trivial: no unknowns (all pinned, or every free node floating) ⇒
-        // flows are determined directly. A network with NO fixed node
-        // (fixed_cnt == 0) lands here as a benign all-P_ATM, zero-flow Ok; the
-        // scenario loader is responsible for rejecting components that lack a
-        // pressure reference, so the solver stays lenient rather than Err'ing.
+        // flows are determined directly. A network with no pressure reference at
+        // all lands here as a benign all-P_ATM, zero-flow Ok; the scenario loader
+        // is responsible for rejecting components that lack one, so the solver
+        // stays lenient rather than Err'ing.
+        //
+        // "No pressure reference" is NOT "no fixed node" since M5.3, and the
+        // distinction matters exactly here: a closed gas system has
+        // `fixed_cnt == 0` and still reaches the Newton loop with `n > 0`,
+        // because a capacitive vessel is an anchored free unknown carrying its
+        // own equation. Reading this branch as "no fixed node ⇒ nothing to
+        // solve" is how one would conclude such a plant is inert, and it is not
+        // — see `two_vessels_and_no_fixed_node_equalise`.
         if n == 0 {
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
             return finalize(&pressures, edges, 0, 0.0);
