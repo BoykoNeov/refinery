@@ -751,6 +751,147 @@ controller. What it gives up is stated: no blowdown hysteresis (a real PSV
 recloses below its set pressure), and no chatter dynamics. Both need state, and
 state is what turns an element into a controller.
 
+### Fork 6 — how the choked law enters `QuadraticBranch` (M5.4, before building)
+
+Forks 4 and 5 settle *which* equations M5.4 ships. Neither settles the question
+that decides how much of the workspace moves: **the ISA gas law is not affine in
+`Q·|Q|`, and `QuadraticBranch` is.** Every branch in this project is
+`dp = α·Q|Q| + β`, which is what makes the fold-at-source convention compose in
+closed form and what both fidelities and the Jacobian are built on. A law that
+depends on the *absolute* upstream pressure — and that goes flat above the choke
+point — is not of that form. This fork settles how the two meet, and it settles
+reverse flow, which fork 4 does not mention at all.
+
+**The algebra first, because it is better than it looks.** The standard's mass
+form is `W = C·N₆·Y·√(x·p₁·ρ₁)` with `x = Δp/p₁`. Since `x·p₁ = Δp` identically,
+that is `W = C·Y·√(Δp·ρ₁·ρ_ref)` in coherent SI. The repo's liquid valve is
+`Q = cv_si·opening·√(dp/ρ_rel)` with `ρ_rel = ρ/998`, so
+`ṁ = ρ·Q = cv_eff·√(ρ_ref·ρ·dp)` — **the same expression**. Fork 4's "degenerates
+to the liquid branch at `Y = 1`" is therefore literally true, not approximately,
+and the one-coefficient claim is arithmetic rather than an aspiration. The first
+gate of this slice is that identity: at `Y = 1` the gas branch reproduces
+`QuadraticBranch::valve` bit for bit.
+
+**The clamp is inside the square root, not only in `Y`.** The sizing variable is
+`x_s = min(x, F_k·x_T)`, substituted into `√(x_s·p₁·ρ₁)` *as well as* into
+`Y = 1 − x_s/(3·F_k·x_T)`. Scaling `α` by `1/Y²` alone gets `Y` right, leaves
+`√Δp` inside, and therefore has **no plateau at all** — a model that reads as
+choked (`Y` bottoms out at 2/3) and is not. Only fork 4's plateau gate would
+notice. This is why the clamp cannot be an afterthought in the implementation.
+
+**The verdict: a frozen effective `α`, with a bounded inner scalar solve for the
+valve's own share of the branch drop.** Written out, the gas valve is exactly the
+liquid one with
+
+```text
+α_eff = α_liquid · r / Y² ,   r = x/x_s ,   Y = 1 − x_s/(3·F_k·x_T)
+```
+
+so it stays a `QuadraticBranch` and nothing downstream — series composition, the
+Jacobian, `edge_flows`' `Φ = α·Q|Q|·Q`, the Simple sweep, `finalize` — learns that
+gas exists. Unchoked, `r = 1` and this is the `1/Y²` scaling; choked, `x_s` is
+pinned at `F_k·x_T` and `r` grows in proportion to `x`, which *is* the plateau
+expressed as a coefficient. Writing `r = max(1, x/x_c)` rather than `x/min(x,x_c)`
+also disposes of the `x → 0` division: `r` is identically 1 there.
+
+The coefficient is **frozen at the iterate and recompiled every iteration**,
+which is the pattern M5.2 already blessed and measured for `ρ(P,T)`: `dY/dx` and
+`dr/dx` are omitted from the Jacobian, so convergence near the root is linear
+rather than quadratic, and the fixed point reached is the *consistent* one. Both
+fidelities inherit it because both go through `compile_edges`.
+
+**What is genuinely new is the inner solve, and it is new because the fold is.**
+`x` is `Δp_valve/p₁` — the valve's OWN drop — while a compiled edge only knows
+the drop across the whole folded branch (pipe ∘ valve). Attributing the entire
+branch drop to the valve was considered and rejected: it applies a valve's
+`x_T` to a pipe's friction, and it would contaminate the one gate in this slice
+that is supposed to be an independent published anchor. Taking `x` from the
+*unchoked* flow instead — one predictor pass, no iteration — is worse, and
+quietly so: at outer convergence the pressures stop moving, so the coefficient
+stops moving too, and the solver settles on a fixed point that is **not** the ISA
+solution. That is a silent wrong number of exactly the kind this workspace
+refuses.
+
+So `compile_edge` solves, for the valve's share `s = Δp_valve ∈ [0, D]` with
+`D = dp − β` the folded branch's shifted drop,
+
+```text
+g(s) = s + α_pipe·ṁ(s)²/ρ²  =  D ,     ṁ(s) = cv_eff·Y·√(ρ_ref·ρ·x_s·p₁)
+```
+
+`g` is continuous, `g(0) = 0` and `g(D) ≥ D`, and it is strictly increasing —
+the `s` term alone is, and `ṁ(s)` is non-decreasing once the choke is smoothed
+— so the root exists, is unique, and **bisection is unconditionally robust**.
+That is the property that makes an inner solve acceptable here: it is scalar,
+bracketed, monotone, deterministic and local to one edge, not a nested Newton
+whose failure would have to be reported. It costs the closed-form inverse
+`newton_flow`'s header advertises, on gas valve edges only; every other edge in
+the project keeps it.
+
+**Reverse flow, which fork 4 does not mention.** `Y = 1 − x/(3·F_k·x_T)` with
+`x < 0` gives `Y > 1` — an expansion factor that *increases* the flow, which is
+unphysical, and unbounded as the flow reverses harder. `compile_edge` already
+names the higher-pressure endpoint the upwind one, so the resolution is to
+evaluate `x` from `|D|` against the **upwind** node's pressure, leaving the
+branch odd about `β` exactly as `elements.rs`'s shifted-oddness tests assert. A
+gas valve therefore chokes symmetrically in both directions. For a control valve
+that is right. **For a PSV it is a limitation, and it is stated here rather than
+discovered**: a real relief valve does not pass reverse flow at all, and this one
+does — the same register as fork 5's "no blowdown hysteresis, no chatter", and
+un-defers with the same element state those need.
+
+**`x_T` and `F_k` must not invent a second notion of "gas service".** `cv_si` is
+one field for both services, so something has to decide when a valve needs an
+`x_T`. That decision already exists: M5.2's single-phase connected-component
+analysis. The loader reuses it. Building a second, independent test for "this
+valve is in gas service" gives two answers that can disagree, and the failure
+mode is a plant that loads with no `x_T` and silently runs the liquid branch on
+gas. `F_k = γ/1.40` with `γ = cp/(cp − R/M̄)` likewise reuses M5.3's
+phase-conditional `cv`, so it is composition-dependent and evaluated per edge at
+the upwind composition, consistent with `ρ`.
+
+**The upwind TEMPERATURE deferral un-defers here, and it is a prerequisite rather
+than a tidy-up.** `network::compile_edge` states the limitation and names this
+slice as the trigger: a zero-volume upwind node has no temperature of its own, so
+the edge compiles its density at the *pipe's stored outlet* temperature — on
+`gas_line` at steady state, 375.0 K instead of 297.3 K, a 21% density error. M5.4
+is where that stops being tolerable, and the reason is one sentence: **`ρ₁` enters
+the ISA equation under a square root, so a 21% density error is ~10% on `ṁ` — and
+an ISA reference gate cannot be an independent published anchor while the density
+it reads is 21% wrong.** The fix is a `FlowSolver::solve` signature change
+carrying the previous tick's resolved `NodeStates`, which `Engine` already holds
+and already passes to `resolve_node_states`; it is threading, not new state.
+
+Note what changes about the *kind* of error this leaves. The stored-outlet
+fallback is a fixed offset with no `dt` in it — a different steady model, which is
+the M3.1 `cp` lesson's test for a defect rather than a staleness. The previous
+tick's resolved temperature is an honest staleness: it shrinks with the step, and
+it is the same lag §3 already accepts for the tank levels feeding a quasi-steady
+solve. The order of preference is therefore `boundary_temperature` (a node with
+its own temperature is current, not lagged), then the previous tick's resolved
+value, then the stored outlet — which is only reachable on tick 0, before any
+sweep has run.
+
+**This slice ships in three commits**, for the reason CLAUDE.md gives and the
+reason `separate-the-exposed-defect-from-the-feature` gives: (a) the upwind
+temperature un-deferral, which is independent of choking and carries its own
+regression cost; (b) choking — `Y`, the smoothed clamp, `x_T`, `F_k`, and gates
+(i)–(iii) of fork 4's list; (c) the relief valve and the demo. The relief valve is
+its own `NodeKind` rather than a flag on `Valve`, on the `Cooler`-versus-negative-
+`Furnace` precedent: the intent belongs in the name, not in the sign or the
+presence of a number in a TOML file.
+
+**What would escalate this verdict, stated as a measurement rather than an
+argument.** Frozen `α_eff` overstates the branch conductance on a choked valve —
+the truth is `dṁ/d(dp) = 0` and the frozen form reports `ṁ/(2·(dp − β))` — which
+*understates* the Newton step and is therefore slow rather than unstable. If the
+PSV plant converges in tens of iterations, that is the answer and the linear rate
+is documented the way M5.2's was. If it limit-cycles or hits the cap, that is the
+justification for a branch type carrying `flow(dp, p_up)` with a true derivative,
+and it lands in its own commit with the measured iteration counts attached. The
+same measurement covers fork 5's hazard: a relief valve's opening rises with its
+own upstream pressure, which is positive feedback on flow within a single solve.
+
 ### What the tests must pin, per slice
 
 The order matters as much as the content: each gate must pin one thing, and each

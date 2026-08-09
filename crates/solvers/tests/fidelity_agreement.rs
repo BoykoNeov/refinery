@@ -72,10 +72,10 @@ fn pipe(name: &str, l: f64, d: f64) -> Pipe {
 fn assert_agree(g: &PlantGraph, edges: &[EdgeId], max_rel: f64) {
     let slate = Slate::water_only();
     let newton: HydraulicSolution = NewtonFlowSolver::default()
-        .solve(g, &slate, Seconds(0.1))
+        .solve(g, &slate, &Default::default(), Seconds(0.1))
         .expect("newton must converge on a well-posed network");
     let simple: HydraulicSolution = SimpleFlowSolver::default()
-        .solve(g, &slate, Seconds(0.1))
+        .solve(g, &slate, &Default::default(), Seconds(0.1))
         .expect("simple must converge on a well-posed network");
     assert!(newton.diagnostics.converged && simple.diagnostics.converged);
 

@@ -191,7 +191,12 @@ fn gas_flow_matches_the_ideal_gas_hand_calc_at_two_pressures() {
             ("simple", &mut simple as &mut dyn FlowSolver),
         ] {
             let sol = solver
-                .solve(&engine.graph, &engine.slate, Seconds(0.1))
+                .solve(
+                    &engine.graph,
+                    &engine.slate,
+                    &Default::default(),
+                    Seconds(0.1),
+                )
                 .unwrap_or_else(|e| panic!("{fidelity} must converge on the gas plant: {e}"));
 
             let flow = sol.edge_mass_flow[&edge_by_name(&engine.graph, "header_run")];
@@ -227,7 +232,12 @@ fn measure_hand_calc_headroom() {
             ("simple", &mut simple as &mut dyn FlowSolver),
         ] {
             let sol = solver
-                .solve(&engine.graph, &engine.slate, Seconds(0.1))
+                .solve(
+                    &engine.graph,
+                    &engine.slate,
+                    &Default::default(),
+                    Seconds(0.1),
+                )
                 .expect("converges");
             let flow = sol.edge_mass_flow[&edge_by_name(&engine.graph, "header_run")];
             let tee = sol.node_pressure[&node_by_name(&engine.graph, "tee")].value();
@@ -245,7 +255,12 @@ fn measure_hand_calc_headroom() {
 fn both_gas_edges_carry_the_same_mass_flow() {
     let engine = gas_plant_at(10.0);
     let sol = NewtonFlowSolver::default()
-        .solve(&engine.graph, &engine.slate, Seconds(0.1))
+        .solve(
+            &engine.graph,
+            &engine.slate,
+            &Default::default(),
+            Seconds(0.1),
+        )
         .expect("converges");
     approx::assert_relative_eq!(
         sol.edge_mass_flow[&edge_by_name(&engine.graph, "relief_line")],
@@ -269,7 +284,12 @@ fn both_gas_edges_carry_the_same_mass_flow() {
 fn each_edge_takes_the_density_of_its_own_upwind_node() {
     let engine = gas_plant_at(10.0);
     let sol = NewtonFlowSolver::default()
-        .solve(&engine.graph, &engine.slate, Seconds(0.1))
+        .solve(
+            &engine.graph,
+            &engine.slate,
+            &Default::default(),
+            Seconds(0.1),
+        )
         .expect("converges");
     let flow = sol.edge_mass_flow[&edge_by_name(&engine.graph, "header_run")];
 
@@ -621,7 +641,12 @@ diameter_m = 0.05
 fn a_gas_line_on_a_mixed_slate_is_seeded_with_gas_not_component_zero() {
     let engine = build(&two_sub_plant_scenario()).expect("two sub-plants build");
     let sol = NewtonFlowSolver::default()
-        .solve(&engine.graph, &engine.slate, Seconds(0.1))
+        .solve(
+            &engine.graph,
+            &engine.slate,
+            &Default::default(),
+            Seconds(0.1),
+        )
         .expect("converges");
 
     let (_, expected_flow) = upwind_prediction(P_HEADER_PA);
@@ -741,7 +766,12 @@ fn a_gas_edges_density_follows_its_upwind_node_not_its_own_outlet() {
 fn the_liquid_sub_plant_beside_a_gas_one_still_carries_liquid() {
     let engine = build(&two_sub_plant_scenario()).expect("two sub-plants build");
     let sol = NewtonFlowSolver::default()
-        .solve(&engine.graph, &engine.slate, Seconds(0.1))
+        .solve(
+            &engine.graph,
+            &engine.slate,
+            &Default::default(),
+            Seconds(0.1),
+        )
         .expect("converges");
 
     // ṁ² = ρ·ΔP·K with the DECLARED liquid density, no equation of state.

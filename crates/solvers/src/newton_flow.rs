@@ -42,6 +42,7 @@ use crate::network::{
     CompiledEdge,
 };
 use refinery_core::components::Slate;
+use refinery_core::energy::NodeStates;
 use refinery_core::error::SimError;
 use refinery_core::graph::{EdgeId, NodeId, PlantGraph};
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
@@ -82,6 +83,7 @@ impl FlowSolver for NewtonFlowSolver {
         &mut self,
         graph: &PlantGraph,
         slate: &Slate,
+        previous_states: &NodeStates,
         dt: Seconds,
     ) -> Result<HydraulicSolution, SimError> {
         // F6: pumps/valves must have exactly one inlet and one outlet edge.
@@ -91,7 +93,7 @@ impl FlowSolver for NewtonFlowSolver {
         // every edge's series branch (pipe ∘ device-at-source) and derive the
         // anchored set — all shared with SimpleFlowSolver through `prepare`, so
         // the two fidelities agree by construction.
-        let prep = prepare(graph, slate, &self.warm_start)?;
+        let prep = prepare(graph, slate, previous_states, &self.warm_start)?;
         let anchored = &prep.anchored;
         let free = &prep.classes.free;
         let mut pressures = prep.pressures;
@@ -175,7 +177,7 @@ impl FlowSolver for NewtonFlowSolver {
                 // consistent trial, not of the old coefficients at a new
                 // pressure. For an all-liquid network this reproduces the same
                 // `CompiledEdge` bit for bit (M5.2, `compile_edge`).
-                let compiled_t = compile_edges(graph, slate, &trial)?;
+                let compiled_t = compile_edges(graph, slate, previous_states, &trial)?;
                 let (r_t, jac_t, tp_t) = assemble(
                     graph,
                     &compiled_t,

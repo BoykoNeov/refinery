@@ -47,10 +47,28 @@ pub struct SolveDiagnostics {
 /// state. Must be pure w.r.t. the graph (read-only); the engine applies
 /// the solution to streams afterwards.
 pub trait FlowSolver: Send {
+    /// `previous_states` is the PREVIOUS tick's resolved node temperatures and
+    /// compositions — empty on the first tick, before any sweep has run.
+    ///
+    /// It exists for one reason (docs/DESIGN.md §3a fork 6): a gas edge's
+    /// transport density `ρ = P·M̄/(R·T)` is evaluated at its upwind node's
+    /// state, and a ZERO-VOLUME upwind node (junction, valve, exchanger side)
+    /// has no temperature of its own to read. Before M5.4 such an edge fell back
+    /// to the pipe's stored OUTLET temperature — its inlet plus whatever ambient
+    /// exchange and frictional dissipation the pipe added — which on `gas_line`
+    /// is 375.0 K against the tee's real 297.3 K, a 21% density error containing
+    /// no `dt`. That is a different steady model, not a staleness; the previous
+    /// tick's resolved value is an honest staleness that shrinks with the step,
+    /// and is the same lag §3 already accepts for the tank levels feeding a
+    /// quasi-steady solve.
+    ///
+    /// A solve must never MUTATE anything from it: like `graph`, it is read-only
+    /// input, and the engine overwrites it wholesale after the sweep.
     fn solve(
         &mut self,
         graph: &PlantGraph,
         slate: &Slate,
+        previous_states: &crate::energy::NodeStates,
         dt: Seconds,
     ) -> Result<HydraulicSolution, SimError>;
 

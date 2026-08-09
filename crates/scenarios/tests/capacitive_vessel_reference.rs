@@ -222,8 +222,13 @@ fn the_knockout_drum_converges_where_the_explicit_scheme_would_diverge() {
     approx::assert_relative_eq!(c_table, 1.203e-5, max_relative = 1e-3);
 
     // g = Σ_e ρ_e · dQ_e/d(dp) over the drum's branches, at the converged state.
-    let prepared = network::prepare(&engine.graph, &engine.slate, &BTreeMap::new())
-        .expect("the converged plant prepares");
+    let prepared = network::prepare(
+        &engine.graph,
+        &engine.slate,
+        &Default::default(),
+        &BTreeMap::new(),
+    )
+    .expect("the converged plant prepares");
     let mut g = 0.0;
     for (eid, _other, _incoming) in engine.graph.incident(drum) {
         let compiled = &prepared.compiled[&eid];
@@ -277,8 +282,13 @@ fn measure_drum_stability_ratio() {
     let drum = node_by_name(&engine.graph, "drum");
     let (mass, temperature) = vessel_state(&engine, "drum");
     let capacitance = DRUM_VOLUME_M3 * DRUM_M_BAR / (R * temperature);
-    let prepared =
-        network::prepare(&engine.graph, &engine.slate, &BTreeMap::new()).expect("prepares");
+    let prepared = network::prepare(
+        &engine.graph,
+        &engine.slate,
+        &Default::default(),
+        &BTreeMap::new(),
+    )
+    .expect("prepares");
     let mut g = 0.0;
     for (eid, _o, _i) in engine.graph.incident(drum) {
         let c = &prepared.compiled[&eid];

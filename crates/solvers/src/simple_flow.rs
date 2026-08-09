@@ -33,6 +33,7 @@
 
 use crate::network::{accumulation, compile_edges, edge_flows, prepare, validate_degrees};
 use refinery_core::components::Slate;
+use refinery_core::energy::NodeStates;
 use refinery_core::error::SimError;
 use refinery_core::graph::{EdgeId, NodeId, PlantGraph};
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
@@ -78,12 +79,13 @@ impl FlowSolver for SimpleFlowSolver {
         &mut self,
         graph: &PlantGraph,
         slate: &Slate,
+        previous_states: &NodeStates,
         dt: Seconds,
     ) -> Result<HydraulicSolution, SimError> {
         // Same classification + seeding + compilation as Newton (the fidelity
         // seam), through the same `prepare`.
         validate_degrees(graph)?;
-        let prep = prepare(graph, slate, &self.warm_start)?;
+        let prep = prepare(graph, slate, previous_states, &self.warm_start)?;
         let cls = prep.classes;
         let capacitive = &cls.capacitive;
         let anchored = &prep.anchored;
@@ -185,7 +187,7 @@ impl FlowSolver for SimpleFlowSolver {
             // is how a convergence flag can be honest and the answer still
             // wrong. Bit-identical for an all-liquid network, where
             // `density_at` ignores both arguments.
-            compiled = compile_edges(graph, slate, &pressures)?;
+            compiled = compile_edges(graph, slate, previous_states, &pressures)?;
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
             let (flows, throughput) = (&edges.mass_flow, edges.throughput);
             let mut residual = 0.0f64;

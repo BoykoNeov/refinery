@@ -68,7 +68,7 @@ fn source_pipe_sink_hand_calc() {
 
     let mut solver = NewtonFlowSolver::default();
     let sol = solver
-        .solve(&g, &Slate::water_only(), Seconds(0.1))
+        .solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1))
         .expect("well-posed network must converge");
 
     // Hand calc.
@@ -110,7 +110,7 @@ fn symmetric_junction_midpoint_pressure() {
 
     let mut solver = NewtonFlowSolver::default();
     let sol = solver
-        .solve(&g, &Slate::water_only(), Seconds(0.1))
+        .solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1))
         .expect("converges");
 
     let p_jn = sol.node_pressure[&jn].value();
@@ -164,7 +164,7 @@ fn pump_drives_flow_between_equal_pressures() {
 
     let (g_on, in_on, out_on) = build(true);
     let sol_on = NewtonFlowSolver::default()
-        .solve(&g_on, &slate, Seconds(0.1))
+        .solve(&g_on, &slate, &Default::default(), Seconds(0.1))
         .expect("converges");
     // Mass conservation through the pump node (one in, one out).
     approx::assert_relative_eq!(
@@ -180,7 +180,7 @@ fn pump_drives_flow_between_equal_pressures() {
 
     let (g_off, _in_off, out_off) = build(false);
     let sol_off = NewtonFlowSolver::default()
-        .solve(&g_off, &slate, Seconds(0.1))
+        .solve(&g_off, &slate, &Default::default(), Seconds(0.1))
         .expect("converges");
     let flow_off = sol_off.edge_mass_flow[&out_off];
     assert!(
@@ -228,7 +228,7 @@ fn closed_valve_blocks_flow_both_ends_anchored() {
 
     let mut solver = NewtonFlowSolver::default();
     let sol = solver
-        .solve(&g, &Slate::water_only(), Seconds(0.1))
+        .solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1))
         .expect("closed valve is a valid state, not an error");
 
     assert!(sol.diagnostics.converged);
@@ -285,7 +285,7 @@ fn floating_subnetwork_with_pump_reports_zero_flow() {
     let e_pump = g.add_pipe(pmp, dead, pipe("pump_out", 5.0, 0.1)); // pump folds here
 
     let sol = NewtonFlowSolver::default()
-        .solve(&g, &Slate::water_only(), Seconds(0.1))
+        .solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1))
         .expect("a floating subnetwork is pinned, not an error");
 
     assert!(sol.diagnostics.converged);
@@ -343,7 +343,7 @@ fn tee_junction_conserves_mass() {
     let e_c = g.add_pipe(jn, snk2, pipe("c", 10.0, 0.1)); // outlet 2
 
     let sol = NewtonFlowSolver::default()
-        .solve(&g, &Slate::water_only(), Seconds(0.1))
+        .solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1))
         .expect("converges");
 
     let (a, b, c) = (
@@ -383,7 +383,7 @@ fn pump_wrong_degree_is_an_error() {
     g.add_pipe(src, pmp, pipe("in", 5.0, 0.1));
 
     let err = NewtonFlowSolver::default()
-        .solve(&g, &Slate::water_only(), Seconds(0.1))
+        .solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1))
         .expect_err("degree violation must be an error");
     let msg = err.to_string();
     assert!(
@@ -422,7 +422,7 @@ fn tank_hydrostatic_head_drives_flow() {
     let e = g.add_pipe(tank, snk, pipe("drain", 8.0, 0.1));
 
     let sol = NewtonFlowSolver::default()
-        .solve(&g, &Slate::water_only(), Seconds(0.1))
+        .solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1))
         .expect("converges");
 
     // Bottom pressure = P_ATM + ρ·g·h; sink at P_ATM ⇒ ΔP = ρ·g·h drives out.

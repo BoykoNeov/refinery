@@ -422,12 +422,22 @@ fn simple_agrees_on_a_healthy_fraction() {
             .expect("strategy produces a value")
             .current();
         let (g, _) = build_chain(&mids, &pipes, p_src, p_snk);
-        let n = match NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1)) {
+        let n = match NewtonFlowSolver::default().solve(
+            &g,
+            &slate,
+            &Default::default(),
+            Seconds(0.1),
+        ) {
             Ok(n) if n.diagnostics.converged => n,
             _ => continue,
         };
         newton_ok += 1;
-        let s = match SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1)) {
+        let s = match SimpleFlowSolver::default().solve(
+            &g,
+            &slate,
+            &Default::default(),
+            Seconds(0.1),
+        ) {
             Ok(s) if s.diagnostics.converged => s,
             _ => continue,
         };
@@ -479,7 +489,7 @@ proptest! {
         let (g, edges) = build_chain(&mids, &raw_pipes, p_src, p_snk);
         let mut solver = NewtonFlowSolver::default();
 
-        match solver.solve(&g, &Slate::water_only(), Seconds(0.1)) {
+        match solver.solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1)) {
             Ok(sol) => {
                 prop_assert!(sol.diagnostics.converged, "Ok must mean converged");
                 prop_assert!(all_finite(&sol), "no NaN/Inf may escape a solve");
@@ -519,8 +529,8 @@ proptest! {
     ) {
         let (g, _) = build_chain(&mids, &raw_pipes, p_src, p_snk);
         let slate = Slate::water_only();
-        let a = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
-        let b = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        let a = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let b = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
         assert_same_solution(a, b)?;
     }
 
@@ -535,7 +545,7 @@ proptest! {
         let g = build_tree(&inputs);
         let mut solver = NewtonFlowSolver::default();
 
-        match solver.solve(&g, &Slate::water_only(), Seconds(0.1)) {
+        match solver.solve(&g, &Slate::water_only(), &Default::default(), Seconds(0.1)) {
             Ok(sol) => {
                 prop_assert!(sol.diagnostics.converged, "Ok must mean converged");
                 prop_assert!(all_finite(&sol), "no NaN/Inf may escape a solve");
@@ -564,8 +574,8 @@ proptest! {
     fn tree_solve_is_deterministic(inputs in tree_inputs_strategy()) {
         let g = build_tree(&inputs);
         let slate = Slate::water_only();
-        let a = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
-        let b = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        let a = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let b = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
         assert_same_solution(a, b)?;
     }
 
@@ -580,8 +590,8 @@ proptest! {
     ) {
         let (g, _) = build_chain(&mids, &raw_pipes, p_src, p_snk);
         let slate = Slate::water_only();
-        let newton = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
-        let simple = SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        let newton = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let simple = SimpleFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
         assert_fidelity_agreement(newton, simple)?;
     }
 
@@ -590,8 +600,8 @@ proptest! {
     fn tree_fidelity_agreement(inputs in tree_inputs_strategy()) {
         let g = build_tree(&inputs);
         let slate = Slate::water_only();
-        let newton = NewtonFlowSolver::default().solve(&g, &slate, Seconds(0.1));
-        let simple = SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        let newton = NewtonFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let simple = SimpleFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
         assert_fidelity_agreement(newton, simple)?;
     }
 
@@ -601,8 +611,8 @@ proptest! {
     fn tree_simple_is_deterministic(inputs in tree_inputs_strategy()) {
         let g = build_tree(&inputs);
         let slate = Slate::water_only();
-        let a = SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1));
-        let b = SimpleFlowSolver::default().solve(&g, &slate, Seconds(0.1));
+        let a = SimpleFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
+        let b = SimpleFlowSolver::default().solve(&g, &slate, &Default::default(), Seconds(0.1));
         assert_same_solution(a, b)?;
     }
 }

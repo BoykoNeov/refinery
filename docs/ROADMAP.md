@@ -1200,6 +1200,81 @@ against coefficients it actually solved with instead of flattering itself
 against stale ones.
 
 ### M5.4 — Choked flow, relief valve, flare (the milestone's payoff)
+
+Sliced in three, per DESIGN §3a fork 6 — the note this slice needed, because
+forks 4 and 5 settle *which* equations ship and neither settles how a law that is
+not affine in `Q·|Q|` enters a `QuadraticBranch`, nor what happens in reverse
+flow. The verdict: a frozen effective `α = α_liquid·r/Y²` recompiled each
+iteration (M5.2's blessed pattern), with a bounded monotone inner scalar solve for
+the valve's own share of the folded branch drop, and `x` evaluated from `|D|`
+against the upwind node so the branch stays odd about `β`.
+
+#### M5.4a — The upwind temperature un-deferral — **LANDED**
+Independent of choking, and a **prerequisite** rather than a tidy-up:
+`ρ₁` enters the ISA gas sizing equation under a square root, so an ISA reference
+gate cannot be an independent published anchor while the density it reads is 21%
+wrong. `separate-the-exposed-defect-from-the-feature` puts it in its own commit.
+- [x] `core`: `FlowSolver::solve` gains `previous_states: &NodeStates` — the
+      previous tick's resolved node temperatures and compositions, which `Engine`
+      already held and already passed to `resolve_node_states`. Threading, not new
+      state. `network::compile_edge`/`compile_edges`/`prepare` carry it through, so
+      both fidelities inherit it from one definition.
+- [x] `solvers`: the upwind temperature is now a three-way fallback —
+      `boundary_temperature` (a node with its own temperature is CURRENT, not
+      lagged), else the previous tick's resolved value, else the pipe's stored
+      outlet, which is reachable only on tick 0.
+      What the old fallback was is worth stating precisely, because it is the
+      difference between a staleness and a defect: the stored outlet is the edge's
+      INLET plus the ambient exchange and frictional dissipation the pipe added,
+      so it is a fixed offset with **no `dt` in it** — a different steady model,
+      by M3.1's `cp` test. The previous tick's resolved value shrinks with the
+      step, and is the same lag §3 already accepts for tank levels.
+- [x] **Blast radius MEASURED, not predicted** (M5.1's lesson, M5.2's method):
+      a worktree at the previous commit, all nine scenarios × two fidelities ×
+      200 ticks, JSON compared byte for byte — **16/18 identical**. The two that
+      moved are `gas_line`, the only plant in the repo with a gas edge whose
+      upwind node is zero-volume; `knockout_drum`'s two edges are upwind of a
+      `Source` and a `Vessel`, both of which have temperatures of their own, and
+      every liquid plant is untouched by construction (`density_at` ignores `T`).
+      The relief line's steady flow moves **0.885409 → 0.979114 kg/s, +10.6%**,
+      which is the "21% on ρ under a square root ⇒ ~10% on ṁ" argument turned into
+      a measurement on the plant it was made about.
+- [x] **The whole suite stayed green across that 10.6% change**, which is the
+      finding, not a footnote: `gas_density_reference`'s twelve gates all solve the
+      FRESHLY BUILT graph — deliberately, so the hand calc reads declared numbers
+      rather than a thermal history — and that choice left the zero-volume-upwind
+      fallback with no gate anywhere in the workspace. New file
+      `scenarios/tests/upwind_temperature_reference.rs` closes it, with the closed
+      form generalized so the two edges may differ in TEMPERATURE as well as
+      pressure (`ρ/P` no longer cancels from the pressure balance, which is the
+      point).
+      Three premises are asserted rather than assumed, each of which would make
+      the gate vacuous if it failed quietly: the two candidate temperatures are
+      far apart (297 vs 360 K), the tee is stationary tick to tick so the one-tick
+      lag contributes exactly zero, and the measured flow is **7.9% away** from the
+      stored-outlet prediction — ~800x the derived 1e-4 tolerance, so a pass means
+      the two models were told apart.
+- [x] **Falsified before trusted**, and one gap found by falsification rather than
+      by design. The revert mutation (drop the previous-states arm) fails
+      `a_zero_volume_upwind_node_supplies_its_resolved_temperature` **alone** — the
+      demonstration that nothing else in the workspace can see it.
+      The ORDER of the fallback turned out to be a separate, load-bearing claim
+      that the first two gates could not reach: swapping the first two arms changes
+      `knockout_drum`'s trajectory under **both** fidelities and left the entire
+      suite green. It is pinned by the identity M5.3 states in prose and rests gate
+      (iii) on — `m_new = C·P_solved`, so the discharge edge's `ρ = P·M̄/(R·T)` IS
+      the vessel's `m/V` exactly — which holds only while the edge and the
+      capacitance read the SAME temperature. That needed `Engine::node_states()` as
+      a read accessor: a test calling `network::prepare` with an empty `NodeStates`
+      silently takes the tick-0 path and observes nothing.
+      One overclaim in this slice's own test was corrected by running the
+      mutations: the first-tick gate's "without this, an engine that never
+      consulted the resolved states would pass" is false — it passes under the
+      revert mutation, and *should*, because tick 0 is exactly the case the
+      un-deferral does not change. Its honest content is that
+      `gas_density_reference`'s twelve gates still model tick 0 correctly.
+
+#### M5.4b — Choking (`Y`, the smoothed clamp, `x_T`, `F_k`)
 - [ ] `solvers`: choking, with a **smoothed** transition. `elements.rs` commits in
       its header to C¹ characteristics because the Newton Jacobian must stay
       finite; a choke cap is a kink, so "add choking later" would silently break a
@@ -1222,6 +1297,14 @@ against stale ones.
       in gas service with **no default** (a silent default is the invented value
       in disguise), and the reference plant cites a value from IEC 60534-2-1's
       own typical-`x_T`-by-valve-style table.
+      **"Gas service" must be M5.2's topological single-phase analysis, reused,
+      not a second notion of it** (DESIGN §3a fork 6): two independent tests can
+      disagree, and the failure mode is a plant that loads with no `x_T` and
+      silently runs the liquid branch on gas. `F_k = γ/1.40` likewise reuses
+      M5.3's phase-conditional `cv = cp − R/M̄`, which makes it composition-
+      dependent and therefore per-edge at the upwind composition, like `ρ`.
+
+#### M5.4c — The relief valve and the demo
 - [ ] `core`/`solvers`: the relief valve as a **pure element characteristic** —
       opening a smooth, memoryless function of its own upstream pressure, closed
       below set pressure, ramping to full over the accumulation band, evaluated

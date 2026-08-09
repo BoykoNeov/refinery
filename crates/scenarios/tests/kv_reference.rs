@@ -259,10 +259,10 @@ fn tank_pump_valve_flow_matches_hand_calc() {
     let dt = Seconds(0.1);
 
     let newton = NewtonFlowSolver::default()
-        .solve(&graph, &slate, dt)
+        .solve(&graph, &slate, &Default::default(), dt)
         .expect("the reference plant must converge");
     let simple = SimpleFlowSolver::default()
-        .solve(&graph, &slate, dt)
+        .solve(&graph, &slate, &Default::default(), dt)
         .expect("the reference plant must converge under the simple fidelity too");
 
     let discharge = edge_by_name(&graph, "discharge");
@@ -287,7 +287,12 @@ fn tank_pump_valve_flow_matches_hand_calc() {
 fn reference_plant_series_path_carries_one_flow() {
     let graph = reference_graph();
     let sol = NewtonFlowSolver::default()
-        .solve(&graph, &Slate::water_only(), Seconds(0.1))
+        .solve(
+            &graph,
+            &Slate::water_only(),
+            &Default::default(),
+            Seconds(0.1),
+        )
         .expect("converges");
 
     let suction = sol.edge_mass_flow[&edge_by_name(&graph, "suction")];

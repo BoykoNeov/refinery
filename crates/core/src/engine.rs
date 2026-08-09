@@ -165,7 +165,9 @@ impl Engine {
         //    step 2b writes prescribed column draw flows back into it once the
         //    feed composition is known — the solver deliberately leaves those at
         //    zero (see `network::edge_flows`).
-        let mut solution = self.flow_solver.solve(&self.graph, &self.slate, dt)?;
+        let mut solution =
+            self.flow_solver
+                .solve(&self.graph, &self.slate, &self.node_states, dt)?;
 
         // 2. Apply flows to edge streams.
         for eid in self.graph.edge_ids().collect::<Vec<_>>() {
@@ -698,6 +700,20 @@ impl Engine {
 
     pub fn dt(&self) -> Seconds {
         self.config.dt
+    }
+
+    /// The node states the LAST tick's sweep resolved — and therefore exactly
+    /// what the NEXT tick's `FlowSolver::solve` will be handed as
+    /// `previous_states`. Empty before the first tick.
+    ///
+    /// Read-only, and deliberately not part of `Snapshot`: a snapshot is the
+    /// frontend contract and this is engine-internal ordering. It is public so a
+    /// test can reproduce the engine's own `compile_edge` faithfully — without it,
+    /// a test calling `network::prepare` with an empty `NodeStates` silently takes
+    /// the tick-0 path and cannot observe the fallback ORDER at all
+    /// (docs/DESIGN.md §3a fork 6).
+    pub fn node_states(&self) -> &energy::NodeStates {
+        &self.node_states
     }
 }
 

@@ -11,7 +11,7 @@
 
 use crate::elements::{pipe_resistance, QuadraticBranch};
 use refinery_core::components::Slate;
-use refinery_core::energy::boundary_temperature;
+use refinery_core::energy::{boundary_temperature, NodeStates};
 use refinery_core::error::SimError;
 use refinery_core::graph::{EdgeId, Node, NodeId, NodeKind, PlantGraph};
 use refinery_core::traits::{HydraulicSolution, SolveDiagnostics};
@@ -277,22 +277,31 @@ pub fn accumulation(cap: &Capacitance, pressure: f64, dt: f64) -> (f64, f64) {
 /// quasi-steady solve, and unavoidable here because the solve opens the tick
 /// before any node state is resolved.
 ///
-/// STATED LIMITATION, with the measured size. `energy::boundary_temperature`
-/// answers only for a node that HAS a temperature of its own — Source, Sink,
-/// Atmosphere, Tank, and the capacitive vessel. A zero-volume upwind node
-/// (junction, valve, pump, exchanger side) has none: its temperature is the
-/// sweep's mix, which does not exist when the solve runs and is not stored on the
-/// graph. Those edges keep the stored-outlet fallback and keep the error above.
-/// On `gas_line.toml` at steady state that is the relief line compiling at its
-/// own outlet's **375.0 K** instead of the tee's **297.3 K** — a 21% density
-/// error. It un-defers when the flow solver gains access to the previous tick's
-/// resolved node states, which is a `FlowSolver` signature change and belongs to
-/// the slice that first needs it: M5.4's PSV plant is vessel → valve → relief
-/// line → flare, where the relief line's upwind node is the valve.
+/// **The zero-volume upwind node was the limitation this function used to state,
+/// and M5.4 un-defers it** (docs/DESIGN.md §3a fork 6).
+/// `energy::boundary_temperature` answers only for a node that HAS a temperature
+/// of its own — Source, Sink, Atmosphere, Tank, and the capacitive vessel. A
+/// zero-volume upwind node (junction, valve, pump, exchanger side) has none: its
+/// temperature is the sweep's mix, which does not exist when the solve runs and
+/// is not stored on the graph. Such an edge used to fall back to the pipe's
+/// stored OUTLET temperature, which on `gas_line.toml` at steady state compiled
+/// the relief line at its own outlet's **375.0 K** instead of the tee's
+/// **297.3 K** — a 21% density error, and one containing no `dt`, so it was a
+/// different steady model rather than a staleness.
+///
+/// It un-deferred here because `ρ₁` enters the ISA gas sizing equation under a
+/// square root: 21% on ρ is ~10% on ṁ, and an ISA reference gate cannot be an
+/// independent published anchor while the density it reads is 21% wrong.
+///
+/// The order of preference is therefore: the node's OWN temperature where it has
+/// one (current, not lagged); else the PREVIOUS tick's resolved value from the
+/// sweep (an honest staleness — it shrinks with `dt`); else the stored outlet,
+/// which is now reachable only on tick 0, before any sweep has run.
 pub fn compile_edge(
     graph: &PlantGraph,
     eid: EdgeId,
     slate: &Slate,
+    previous_states: &NodeStates,
     pressures: &BTreeMap<NodeId, f64>,
 ) -> Result<CompiledEdge, SimError> {
     let (src, tgt) = graph.endpoints(eid);
@@ -303,8 +312,9 @@ pub fn compile_edge(
         tgt
     };
     let upwind = pressures[&upwind_node].max(RHO_EVAL_P_FLOOR);
-    let temperature =
-        boundary_temperature(&graph.node(upwind_node).kind).unwrap_or(pipe.stream.temperature);
+    let temperature = boundary_temperature(&graph.node(upwind_node).kind)
+        .or_else(|| previous_states.temperature.get(&upwind_node).copied())
+        .unwrap_or(pipe.stream.temperature);
     let rho = pipe
         .stream
         .composition
@@ -358,11 +368,15 @@ pub fn compile_edge(
 pub fn compile_edges(
     graph: &PlantGraph,
     slate: &Slate,
+    previous_states: &NodeStates,
     pressures: &BTreeMap<NodeId, f64>,
 ) -> Result<BTreeMap<EdgeId, CompiledEdge>, SimError> {
     let mut compiled = BTreeMap::new();
     for eid in graph.edge_ids() {
-        compiled.insert(eid, compile_edge(graph, eid, slate, pressures)?);
+        compiled.insert(
+            eid,
+            compile_edge(graph, eid, slate, previous_states, pressures)?,
+        );
     }
     Ok(compiled)
 }
@@ -372,6 +386,7 @@ pub fn compile_edges(
 pub fn prepare(
     graph: &PlantGraph,
     slate: &Slate,
+    previous_states: &NodeStates,
     warm_start: &BTreeMap<NodeId, f64>,
 ) -> Result<Prepared, SimError> {
     let classes = classify(graph, slate);
@@ -413,7 +428,7 @@ pub fn prepare(
         pressures.insert(nid, seed);
     }
 
-    let compiled = compile_edges(graph, slate, &pressures)?;
+    let compiled = compile_edges(graph, slate, previous_states, &pressures)?;
     // Anchors are the pinned nodes AND the capacitive ones: a vessel's own
     // equation determines its pressure, so it needs no conducting path to a
     // reservoir (DESIGN §3a fork 2). This is what makes a closed gas system well
