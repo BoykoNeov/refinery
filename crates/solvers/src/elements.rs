@@ -149,6 +149,200 @@ impl QuadraticBranch {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Compressible (gas) valve sizing — IEC 60534-2-1 / ISA-75.01. See
+// docs/DESIGN.md §3a forks 4 and 6.
+// ---------------------------------------------------------------------------
+
+/// Width of the smoothstep band around the choke point, as a FRACTION of the
+/// critical ratio `x_choke`. **Zero, and that is a finding rather than an
+/// omission.**
+///
+/// DESIGN §3a fork 4 shipped choking on the premise that "a choke cap is a kink",
+/// which would break this file's C¹ contract, and specified a smoothstep to
+/// repair it. **The premise is false for this particular `Y`.** The standard's
+/// expansion factor is built so the sizing curve meets the plateau with zero
+/// slope: with `Y = 1 − x/(3·x_c)` and `x_s = x` below the choke,
+///
+/// ```text
+/// d(Y·√x_s)/dx |_(x→x_c⁻)  =  −√x_c/(3x_c) + (1 − 1/3)/(2√x_c)  =  0
+/// ```
+///
+/// and above the choke both factors are constant, so the derivative is 0 on that
+/// side too. The frozen coefficient inherits it: `α_eff = α·x/(Y²·x_s)` has
+/// `dα_eff/dx = 2.25·α/x_c` on **both** sides. Measured: the two one-sided limits
+/// agree to round-off (5.6e-17 and 0.0 for the flow; equal to 1e-12 for `α`).
+/// So the exact clamp is already C¹ — for the flow *and* for the assembled
+/// Jacobian entry, which is the thing fork 4 was actually protecting.
+///
+/// A blend would therefore buy no continuity while introducing a fabricated
+/// numerical parameter that biases the answer (`smooth_min` sits slightly BELOW
+/// both arguments inside the band). That is the `cat_oil_ratio` argument, so the
+/// shipped value is 0 and the model is exactly the published equation. The
+/// parameter survives in the signatures because it is what makes the claim
+/// falsifiable: a nonzero band must not move the answer, and C¹ must hold at
+/// zero band.
+///
+/// Only the SECOND derivative jumps at the choke, and Newton needs C¹.
+pub const CHOKE_BLEND: f64 = 0.0;
+
+/// Bisection steps in `fold_gas_valve`'s inner solve — a FIXED COUNT, not a
+/// tolerance.
+///
+/// A float-tolerance exit makes the iteration count depend on the iterate, which
+/// is a determinism hazard the moment anything about the arithmetic shifts; a
+/// fixed count is bit-reproducible by construction (rule 3). 60 halvings of an
+/// interval bounded by the branch drop takes the bracket below 1e-18 of it, i.e.
+/// to round-off, so this is "exact" rather than "tight enough" — and it costs
+/// nothing anywhere else, because it runs only on a gas VALVE edge.
+pub const GAS_VALVE_BISECTIONS: u32 = 60;
+
+/// Ratio of specific heats to the standard's air datum: `F_k = γ/1.40`.
+///
+/// DERIVED from the slate rather than declared — `γ = cp/cv` with `cv` from
+/// `Composition::mixture_cv`, which M5.3 already made phase-conditional. Nothing
+/// to invent and nothing to put in a TOML file (DESIGN §3a fork 4).
+#[inline]
+pub fn specific_heat_ratio_factor(gamma: f64) -> f64 {
+    gamma / 1.40
+}
+
+/// C¹ smooth minimum: exactly `min(a, b)` outside a band of half-width `w`, and
+/// a quadratic blend inside it.
+///
+/// `min(a,b) − (w − |a−b|)²/(4w)`. Value and slope both match `min` at
+/// `|a−b| = w` (the correction and its derivative vanish there), and the slope
+/// passes smoothly through ½ at `a = b` instead of jumping 1 → 0. The blend is
+/// one-sided-conservative: inside the band the result is slightly BELOW both
+/// arguments, never above.
+#[inline]
+pub fn smooth_min(a: f64, b: f64, w: f64) -> f64 {
+    let d = (a - b).abs();
+    if d >= w || w <= 0.0 {
+        a.min(b)
+    } else {
+        let slack = w - d;
+        a.min(b) - slack * slack / (4.0 * w)
+    }
+}
+
+/// The sizing pressure-drop ratio and the expansion factor at ratio `x`.
+///
+/// `x_s = smooth_min(x, x_choke)` and `Y = 1 − x_s/(3·x_choke)`, so `Y` runs from
+/// 1 at zero drop to exactly **2/3** at and beyond the choke — the standard's
+/// value, and independent of whatever `x_T` produced `x_choke`.
+///
+/// **The clamp is on `x_s`, which the sizing equation uses INSIDE the square root
+/// as well as inside `Y`.** Scaling only `Y` would leave `√Δp` in the flow and
+/// produce a model that reads as choked while having no plateau at all
+/// (DESIGN §3a fork 6).
+#[inline]
+pub fn expansion(x: f64, x_choke: f64, blend: f64) -> (f64, f64) {
+    // `x >= 0` always (callers pass the magnitude of a drop) and `blend < 1`, so
+    // `|x − x_choke| >= x_choke > w` near zero and `x_s = x`: the band is never
+    // straddled there and `x_s` cannot go negative.
+    let x_s = smooth_min(x, x_choke, blend * x_choke);
+    (x_s, 1.0 - x_s / (3.0 * x_choke))
+}
+
+/// Volumetric flow [m³/s] through a gas valve ALONE at its own pressure drop `s`
+/// [Pa] ≥ 0, from the liquid branch that valve compiles to.
+///
+/// The standard's mass form is `W = C·N₆·Y·√(x·p₁·ρ₁)`, and `x·p₁ = Δp`
+/// identically, so in this workspace's coherent-SI convention it is exactly the
+/// liquid valve equation with `Δp` replaced by `x_s·p₁` and multiplied by `Y`:
+///
+/// ```text
+/// Q_gas(s) = Y · Q_liquid(x_s·p_up) = Y · √(x_s·p_up / α_liquid)
+/// ```
+///
+/// **This is why the parameter count stays at one.** `Cv` is the SAME coefficient
+/// the standard uses for liquid sizing, so `α_liquid` here is `QuadraticBranch::
+/// valve`'s, unchanged, and at `Y = 1` the two expressions coincide bit for bit.
+/// A separate "gas Cv" field must not appear (DESIGN §3a fork 4).
+#[inline]
+pub fn gas_valve_flow(alpha_liquid: f64, s: f64, p_up: f64, x_choke: f64, blend: f64) -> f64 {
+    let (x_s, y) = expansion(s / p_up, x_choke, blend);
+    y * (x_s * p_up / alpha_liquid).sqrt()
+}
+
+/// Fold a gas valve into the pipe it discharges through, as ONE
+/// `QuadraticBranch` whose valve resistance is frozen at the current iterate.
+///
+/// **Why a fold needs an inner solve here and nowhere else in this project.**
+/// Every other element is affine in `Q·|Q|`, so a series composition is `Σα, Σβ`
+/// and inverts in closed form. The gas valve is not: `Y` and the choke clamp
+/// depend on `x = Δp_valve/p₁`, the valve's OWN share of the drop, and a compiled
+/// edge only knows the drop across the whole folded branch. The valve's share is
+/// therefore the root of
+///
+/// ```text
+/// g(s) = s + α_pipe·Q_gas(s)²  =  |dp − β| ,     s ∈ [0, |dp − β|]
+/// ```
+///
+/// `g(0) = 0`, `g(S) ≥ S`, and `g` is strictly increasing (the `s` term alone is,
+/// and `Q_gas` is non-decreasing once the choke is smoothed), so the root exists,
+/// is unique, and bisection is unconditionally robust — no failure mode to report
+/// and no divergence to diagnose. That is what makes an inner solve acceptable
+/// here (DESIGN §3a fork 6).
+///
+/// Two alternatives were rejected in the note rather than discovered in code:
+/// attributing the WHOLE branch drop to the valve applies a valve's `x_T` to a
+/// pipe's friction, and taking `x` from one unchoked predictor pass converges to
+/// a fixed point that is not the ISA solution at all — silently, since the
+/// pressures stop moving and the solver reports convergence.
+///
+/// The result is exact rather than a secant fit: with
+/// `α_eff = α_liquid·x/(Y²·x_s)` one has `α_eff·Q_gas(s)² = s` identically, so
+/// `(α_pipe + α_eff)·Q² = s + α_pipe·Q² = S` and the returned branch's own
+/// `flow(dp)` reproduces `Q_gas` — modulo `eps_dp`, which every branch in the
+/// project already carries. That identity is asserted rather than trusted, since
+/// every downstream reader consumes the BRANCH and not this function.
+pub fn fold_gas_valve(
+    pipe: QuadraticBranch,
+    valve: QuadraticBranch,
+    dp: f64,
+    p_up: f64,
+    x_choke: f64,
+    blend: f64,
+) -> QuadraticBranch {
+    // A closed valve is α = +∞ and stays that way: `flow` yields exactly 0 by
+    // IEEE arithmetic, and there is no drop to split.
+    if !valve.alpha.is_finite() || valve.alpha <= 0.0 || !p_up.is_finite() || p_up <= 0.0 {
+        return pipe.in_series(valve);
+    }
+    let s_total = (dp - pipe.beta).abs();
+    if !s_total.is_finite() || s_total <= 0.0 {
+        // Zero net drop: `x → 0`, so `x_s = x`, `Y = 1` and the valve degenerates
+        // to its liquid self. Taking the limit rather than bisecting on an empty
+        // interval also keeps the `x_s = 0` division below unreachable.
+        return pipe.in_series(valve);
+    }
+
+    let g = |s: f64| s + pipe.alpha * gas_valve_flow(valve.alpha, s, p_up, x_choke, blend).powi(2);
+    let (mut lo, mut hi) = (0.0f64, s_total);
+    for _ in 0..GAS_VALVE_BISECTIONS {
+        let mid = 0.5 * (lo + hi);
+        if g(mid) < s_total {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let s = 0.5 * (lo + hi);
+
+    let (x_s, y) = expansion(s / p_up, x_choke, blend);
+    // `x/x_s = s/(x_s·p_up)`, which is exactly 1 below the choke and grows in
+    // proportion to the drop above it — the plateau, written as a coefficient.
+    // Guarded at `x_s = 0` only for completeness: `s > 0` there implies `x_s > 0`.
+    let ratio = if x_s > 0.0 { s / (x_s * p_up) } else { 1.0 };
+    let alpha_eff = valve.alpha * ratio / (y * y);
+    pipe.in_series(QuadraticBranch {
+        alpha: alpha_eff,
+        beta: 0.0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,6 +418,217 @@ mod tests {
                 max_relative = 1e-12
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Gas valve sizing (M5.4b). What each of these pins is stated, because the
+    // magnitude gates are restatements of the formula and the others are not
+    // (DESIGN §3a fork 6).
+    // -----------------------------------------------------------------------
+
+    /// A test fixture roughly at `gas_valve.toml`'s state: methane at 10 bar.
+    fn gas_fixture() -> (QuadraticBranch, QuadraticBranch, f64, f64) {
+        let rho = 6.582; // P·M̄/(R·T) at 10 bar, 293.15 K
+        let cv_si = 25.0 / (3600.0 * 1e5_f64.sqrt());
+        let valve = QuadraticBranch::valve(cv_si, 1.0, rho / 998.0);
+        let pipe = QuadraticBranch::pipe(pipe_resistance(0.02, 10.0, 0.15, rho), 0.0);
+        let x_choke = 0.670_91; // F_k·x_T for γ = 1.30455, x_T = 0.72
+        (pipe, valve, x_choke, 1.0e6)
+    }
+
+    /// `Y` is exactly 2/3 at the choke and stays there beyond it.
+    ///
+    /// A specific number from the standard, and independent of whatever `x_T`
+    /// produced `x_choke` — which is what makes it worth asserting separately
+    /// from any magnitude.
+    #[test]
+    fn expansion_is_two_thirds_at_and_beyond_the_choke() {
+        for x_choke in [0.14f64, 0.354, 0.671] {
+            for x in [x_choke, 1.3 * x_choke, 10.0 * x_choke] {
+                let (x_s, y) = expansion(x, x_choke, 0.0);
+                assert_relative_eq!(y, 2.0 / 3.0, max_relative = 1e-12);
+                // And the clamp is on `x_s` too, which is what gives a plateau
+                // rather than merely a reduced coefficient.
+                assert_relative_eq!(x_s, x_choke, max_relative = 1e-12);
+            }
+            // Below the choke nothing is clamped and Y < 1 strictly.
+            let (x_s, y) = expansion(0.5 * x_choke, x_choke, 0.0);
+            assert_relative_eq!(x_s, 0.5 * x_choke, max_relative = 1e-12);
+            assert_relative_eq!(y, 1.0 - 1.0 / 6.0, max_relative = 1e-12);
+        }
+    }
+
+    /// The exact clamp is C¹ — the property `CHOKE_BLEND = 0` rests on.
+    ///
+    /// Both the flow and the frozen `α_eff` meet the plateau with matching
+    /// one-sided slopes, because the standard's `Y` is constructed that way. This
+    /// is the gate DESIGN §3a fork 4 asked for under the name "Jacobian
+    /// continuity across the choke point"; what changed is that no smoothing is
+    /// needed to obtain it.
+    #[test]
+    fn the_exact_choke_clamp_is_c1_in_both_the_flow_and_the_coefficient() {
+        let (pipe, valve, x_choke, p_up) = gas_fixture();
+        let s_choke = x_choke * p_up;
+        let h = 1e-6 * s_choke;
+
+        let flow = |s: f64| gas_valve_flow(valve.alpha, s, p_up, x_choke, 0.0);
+        let slope_below = (flow(s_choke - h) - flow(s_choke - 2.0 * h)) / h;
+        let slope_above = (flow(s_choke + 2.0 * h) - flow(s_choke + h)) / h;
+        // Both limits are ZERO, so compare against the curve's own scale rather
+        // than to each other: a relative test on two near-zero numbers is noise.
+        let scale = flow(s_choke) / s_choke;
+        assert!(
+            slope_below.abs() < 1e-4 * scale && slope_above.abs() < 1e-4 * scale,
+            "flow slopes at the choke must both vanish: below {slope_below:.3e}, \
+             above {slope_above:.3e}, scale {scale:.3e}"
+        );
+
+        // The coefficient's slope is NOT zero — it is 2.25·α/x_choke on both
+        // sides, which is the stronger statement: the two branches happen to have
+        // the same nonzero derivative rather than both being flat.
+        let alpha_of = |dp: f64| fold_gas_valve(pipe, valve, dp, p_up, x_choke, 0.0).alpha;
+        let below = (alpha_of(s_choke - h) - alpha_of(s_choke - 2.0 * h)) / h;
+        let above = (alpha_of(s_choke + 2.0 * h) - alpha_of(s_choke + h)) / h;
+        assert!(above > 0.0, "the coefficient must be rising past the choke");
+        assert_relative_eq!(below, above, max_relative = 1e-3);
+    }
+
+    /// A nonzero blend band does not move the answer.
+    ///
+    /// The band-insensitivity gate DESIGN §3a fork 4 asks for, at two widths an
+    /// order apart — and now with a stronger reading than it was written with:
+    /// since the exact clamp is already C¹, the band is a perturbation that buys
+    /// nothing, and this gate is what says so quantitatively.
+    #[test]
+    fn the_blend_band_does_not_move_the_answer() {
+        let (pipe, valve, x_choke, p_up) = gas_fixture();
+        for x in [0.3f64, 0.99, 1.05, 1.4] {
+            let dp = x * x_choke * p_up;
+            let exact = fold_gas_valve(pipe, valve, dp, p_up, x_choke, 0.0).alpha;
+            for blend in [0.002f64, 0.02] {
+                let blended = fold_gas_valve(pipe, valve, dp, p_up, x_choke, blend).alpha;
+                let moved = (blended - exact).abs() / exact;
+                assert!(
+                    moved < 1e-4,
+                    "blend {blend} at x/x_choke = {x} moved α by {moved:.3e}"
+                );
+            }
+        }
+    }
+
+    /// The folded branch reproduces the inner solve's own flow.
+    ///
+    /// `α_eff = α_liquid·x/(Y²·x_s)` is constructed so that
+    /// `α_eff·Q_gas(s)² = s` identically, hence `(α_pipe + α_eff)·Q² = S` and
+    /// `branch.flow(dp)` IS `Q_gas`. **Every downstream reader consumes the
+    /// branch and not `gas_valve_flow`**, so if these two ever part company the
+    /// solver is running a different law from the one this file documents and
+    /// nothing else would notice. Agreement to ~1e-12 is also what says the
+    /// bisection ran to round-off, which is why no iteration-count sweep is
+    /// needed.
+    #[test]
+    fn the_folded_branch_reproduces_the_inner_solve() {
+        let (pipe, valve, x_choke, p_up) = gas_fixture();
+        for x in [0.05f64, 0.5, 0.999, 1.0, 1.2, 1.34] {
+            let dp = x * x_choke * p_up;
+            let branch = fold_gas_valve(pipe, valve, dp, p_up, x_choke, 0.0);
+            let q_branch = branch.flow(dp, 1e-9);
+            // The valve's own share, recovered from the coefficient the fold
+            // returned, then fed back through the sizing law.
+            let s = (branch.alpha - pipe.alpha) * q_branch * q_branch;
+            let q_law = gas_valve_flow(valve.alpha, s, p_up, x_choke, 0.0);
+            assert_relative_eq!(q_branch, q_law, max_relative = 1e-10);
+            // And the split it found actually balances the series.
+            assert_relative_eq!(
+                s + pipe.alpha * q_branch * q_branch,
+                dp,
+                max_relative = 1e-9
+            );
+        }
+    }
+
+    /// The gas fold degenerates to the ordinary liquid fold as `x → 0`, and does
+    /// so at FIRST order in `x` — which is `Y`'s leading term.
+    ///
+    /// Two code paths agreeing, not either one read back, and the reason a "gas
+    /// Cv" field must not exist: the standard uses one coefficient for both
+    /// services, so the incompressible limit has to come out exactly.
+    #[test]
+    fn the_gas_fold_degenerates_to_the_liquid_fold_as_x_vanishes() {
+        let (pipe, valve, x_choke, p_up) = gas_fixture();
+        let liquid = pipe.in_series(valve).alpha;
+        let mut previous: Option<(f64, f64)> = None;
+        for x in [1e-2f64, 1e-3, 1e-4] {
+            let dp = x * x_choke * p_up;
+            let gas = fold_gas_valve(pipe, valve, dp, p_up, x_choke, 0.0).alpha;
+            let deviation = (gas - liquid).abs() / liquid;
+            assert!(
+                deviation < 3.0 * x,
+                "at x/x_choke = {x} the gas fold deviates from the liquid one by \
+                 {deviation:.3e}, which is not first order"
+            );
+            if let Some((x_prev, dev_prev)) = previous {
+                // Tenfold smaller x ⇒ tenfold smaller deviation, within 20%.
+                let order = (dev_prev / deviation) / (x_prev / x);
+                assert!(
+                    (0.8..1.25).contains(&order),
+                    "the degeneracy must be first order in x; measured ratio {order:.3}"
+                );
+            }
+            previous = Some((x, deviation));
+        }
+    }
+
+    /// A gas valve branch stays odd about `β`, so reverse flow is the mirror of
+    /// forward flow rather than an unphysical `Y > 1`.
+    ///
+    /// The standard's equation is written for forward flow, and `x < 0` would
+    /// give `Y > 1` — an expansion factor that INCREASES the flow, unbounded as
+    /// the reversal deepens. `fold_gas_valve` evaluates `x` from `|dp − β|`, so
+    /// the shifted oddness `elements.rs` has asserted since M1 survives.
+    ///
+    /// STATED LIMITATION, not an omission (DESIGN §3a fork 6): this means a gas
+    /// valve chokes symmetrically in both directions. Right for a control valve;
+    /// wrong for a PSV, which passes no reverse flow at all. Same register as
+    /// fork 5's "no blowdown hysteresis".
+    #[test]
+    fn a_gas_valve_branch_is_odd_about_beta() {
+        let (pipe_flat, valve, x_choke, p_up) = gas_fixture();
+        let pipe = QuadraticBranch::pipe(pipe_flat.alpha, 2.0e4); // a real β
+        for d in [1.0e5f64, 4.0e5, 9.0e5] {
+            let fwd = fold_gas_valve(pipe, valve, pipe.beta + d, p_up, x_choke, 0.0);
+            let rev = fold_gas_valve(pipe, valve, pipe.beta - d, p_up, x_choke, 0.0);
+            assert_relative_eq!(fwd.alpha, rev.alpha, max_relative = 1e-12);
+            assert_relative_eq!(
+                fwd.flow(pipe.beta + d, 1e-9),
+                -rev.flow(pipe.beta - d, 1e-9),
+                max_relative = 1e-10
+            );
+        }
+    }
+
+    /// A closed gas valve is still exactly zero, never NaN — the M1 guarantee,
+    /// re-asserted because the gas path adds a division by `Y²` and a bisection
+    /// that a closed valve must not enter.
+    #[test]
+    fn a_closed_gas_valve_is_zero_not_nan() {
+        let (pipe, _, x_choke, p_up) = gas_fixture();
+        let shut = QuadraticBranch::valve(1e-3, 0.0, 1.0);
+        let branch = fold_gas_valve(pipe, shut, 9.0e5, p_up, x_choke, 0.0);
+        assert!(branch.alpha.is_infinite());
+        assert_eq!(branch.flow(9.0e5, 1.0), 0.0);
+        assert_eq!(branch.flow_ddp(9.0e5, 1.0), 0.0);
+    }
+
+    /// `F_k = γ/1.40`, and `γ = 1.40` is the air datum the standard normalizes to.
+    #[test]
+    fn the_specific_heat_ratio_factor_is_unity_for_air() {
+        assert_relative_eq!(specific_heat_ratio_factor(1.40), 1.0, max_relative = 1e-15);
+        assert_relative_eq!(
+            specific_heat_ratio_factor(1.30),
+            1.30 / 1.40,
+            max_relative = 1e-15
+        );
     }
 
     #[test]

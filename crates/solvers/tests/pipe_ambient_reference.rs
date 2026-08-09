@@ -498,6 +498,7 @@ fn a_closed_valve_leaves_finite_temperatures() {
         NodeKind::Valve {
             cv_max: 1e-3,
             opening: 0.0,
+            x_t: None,
         },
     ));
     let drain = graph.add_node(sink("drain", 1.0e5, T_AMBIENT));

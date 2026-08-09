@@ -881,6 +881,40 @@ its own `NodeKind` rather than a flag on `Valve`, on the `Cooler`-versus-negativ
 `Furnace` precedent: the intent belongs in the name, not in the sign or the
 presence of a number in a TOML file.
 
+**Correction to fork 4's own claim about its anchor, made before writing the
+gate rather than after.** Fork 4 and the per-slice test list below both say the
+ISA gate is "an independent published anchor, exactly as `kv_reference` anchors
+M1 — its expected value comes from the standard, not from any formula in the
+workspace." **That is an overclaim, and it does not survive contact with the
+implementation.** `kv_reference` earns its status because the `Kv` *definition*
+is a physical statement — a `Kv` valve passes `Kv` m³/h of water at 1 bar, SG 1 —
+from which the test derives `cv_si` by a route the workspace does not contain.
+There is no analogous non-formula statement behind `Y = 1 − x/(3·F_k·x_T)`. A
+gate that computes an expected `ṁ` from that expression is checking
+transcription, units and algebra: `kv_reference`'s *network hand calc* ceiling,
+not its `Kv`-definition ceiling.
+
+What does carry content independent of the implementation, and is what the slice
+should lean on:
+
+- **the `Y → 1` limit** — the gas branch reproduces `QuadraticBranch::valve`. Two
+  code paths agreeing, not either one read back;
+- **the plateau** — `dṁ/dP_downstream = 0` below the critical ratio, a *property*
+  no unchoked law has, asserted at the folded branch and not only at the valve;
+- **`Y = 2/3` exactly at and beyond the choke point** — a specific number, and
+  independent of whatever `x_T` the scenario declares;
+- **`F_k = γ/1.40` derived from the slate** through `Composition::mixture_cv`,
+  rather than declared anywhere.
+
+The intermediate-`x` magnitude is a restatement of the formula and is labelled as
+one. `x_T`'s own provenance is a smaller matter than it looks: it is a *declared
+input*, the two-`x_T` design pins the dependence rather than the value, and
+nothing here is calibrated to it — so a secondary citation, marked as secondary,
+is the honest treatment. The high-stakes half is the **equation form**, which
+until now rested on this document alone. It has been checked against sources
+outside the repo (`Y = 1 − x/(3·F_k·x_T)`, `F_k = γ/1.40`, choke at `x = F_k·x_T`
+where `Y = 2/3`); the standard itself was **not** read, and the gate says so.
+
 **What would escalate this verdict, stated as a measurement rather than an
 argument.** Frozen `α_eff` overstates the branch conductance on a choked valve —
 the truth is `dṁ/d(dp) = 0` and the frozen form reports `ṁ/(2·(dp − β))` — which
@@ -960,9 +994,12 @@ M5.4 is for, and it is why the two slices are ordered this way rather than merge
   quadrature of the same ODE inside the test. What must not happen is the
   milestone's only *rate* gate quietly depending on a fixture nobody confirmed.
 
-**Choking and relief.** (i) The IEC 60534-2-1 gas sizing equation as an
-independent published anchor, exactly as `kv_reference` anchors M1 — its expected
-value comes from the standard, not from any formula in the workspace. (ii) The
+**Choking and relief.** (i) The IEC 60534-2-1 gas sizing equation — *and see the
+correction under fork 6: this is NOT an independent published anchor in
+`kv_reference`'s sense, because the expansion factor has no non-formula
+definition to derive an expected value from. It is the network-hand-calc
+ceiling. The gates that carry independent content are the `Y → 1` degeneracy, the
+plateau, `Y = 2/3` at the choke, and `F_k` derived from the slate.* (ii) The
 choked *plateau*: below the critical ratio, `dṁ/dP_downstream = 0`, a property no
 unchoked law has and which a Y-factor implemented without the clamp would fail.
 (iii) Jacobian continuity across the choke point, and band-width insensitivity.

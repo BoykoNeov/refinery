@@ -198,6 +198,11 @@ pub enum NodeDef {
     Valve {
         kv: f64,
         opening: f64,
+        /// IEC 60534-2-1's pressure differential ratio factor. REQUIRED in gas
+        /// service and REFUSED in liquid service, both decided by the
+        /// topological single-phase analysis M5.2 already builds — see
+        /// `require_gas_valve_x_t`.
+        x_t: Option<f64>,
     },
     /// Fired heater. Duty in MW — the unit refinery heaters are actually
     /// specified in, converted to W at this boundary like every other
@@ -383,6 +388,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // topology, so it happens here rather than in the pipe loop above; the value
     // is a tick-1 density seed only (see `seed_component_index`).
     let phases = plant_phases(&graph, &slate)?;
+    require_gas_valve_x_t(&graph, &phases)?;
     for eid in graph.edge_ids().collect::<Vec<_>>() {
         let (src, _) = graph.endpoints(eid);
         let index = seed_component_index(&slate, phases[src.0 as usize]);
@@ -671,9 +677,14 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             a: *a,
             on: *on,
         },
-        NodeDef::Valve { kv, opening } => NodeKind::Valve {
+        // `x_t` is carried through unvalidated HERE and checked in
+        // `require_gas_valve_x_t` instead: whether a valve is in gas service is a
+        // TOPOLOGICAL fact, and the topology does not exist yet at this point in
+        // the load.
+        NodeDef::Valve { kv, opening, x_t } => NodeKind::Valve {
             cv_max: kv_to_cv_si(*kv),
             opening: *opening,
+            x_t: *x_t,
         },
         NodeDef::Furnace { duty_mw } => NodeKind::Furnace {
             duty: Watt(*duty_mw * 1e6),
@@ -1170,6 +1181,65 @@ fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(), SimError> 
 /// carry whatever reaches them. A component in which nothing votes has no phase,
 /// and `Liquid` is then the answer that changes nothing.
 ///
+/// Every valve in GAS service must declare `x_t`, and every valve in LIQUID
+/// service must not (docs/DESIGN.md §3a forks 4 and 6).
+///
+/// **The definition of "gas service" is `plant_phases`, reused — not a second
+/// test of the same thing.** `cv_si` is one field for both services, so something
+/// has to decide when the compressible law applies; building an independent
+/// notion here would give two answers that can disagree, and the failure mode is
+/// a plant that loads with no `x_T` and silently runs the liquid branch on gas.
+/// That is why this runs after `plant_phases` and takes its verdict verbatim.
+///
+/// Enforced in BOTH directions, exactly as `PseudoComponent::density` is: a
+/// liquid valve carrying an `x_t` is refused, because a number nothing reads is
+/// how an author comes to believe the model uses something it does not — the
+/// argument that kept a "gas Cv" out of this milestone in the first place.
+///
+/// No default, deliberately. `x_T` is the one genuinely new coefficient here, and
+/// a silent default would be an invented value in disguise: the sizing gate and
+/// the choked-plateau gate would both pass for whatever it was, which is the
+/// circularity that defers pump `η`.
+fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Result<(), SimError> {
+    for nid in graph.node_ids() {
+        let node = graph.node(nid);
+        let NodeKind::Valve { x_t, .. } = &node.kind else {
+            continue;
+        };
+        match (phases[nid.0 as usize], x_t) {
+            (Phase::Gas, None) => {
+                return Err(SimError::Scenario(format!(
+                    "valve '{}' is in gas service and must declare `x_t`, the IEC \
+                     60534-2-1 pressure differential ratio factor. There is no default: \
+                     it is per-valve manufacturer data, and a silent one would make the \
+                     choke point an invented number. Typical values are tabulated by \
+                     valve style in the standard.",
+                    node.name
+                )));
+            }
+            (Phase::Liquid, Some(x)) => {
+                return Err(SimError::Scenario(format!(
+                    "valve '{}' is in liquid service and declares `x_t = {x}`, which \
+                     nothing reads: the expansion factor applies to compressible flow \
+                     only. Remove it, or the file claims a model the engine does not run.",
+                    node.name
+                )));
+            }
+            _ => {}
+        }
+        if let Some(x) = x_t {
+            if !(*x > 0.0 && *x < 1.0) {
+                return Err(SimError::Scenario(format!(
+                    "valve '{}' has x_t = {x}, outside (0, 1). The pressure differential \
+                     ratio factor is a fraction of the inlet absolute pressure.",
+                    node.name
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Returns the phase per node, indexed by `NodeId.0` — the seed `build_engine`
 /// needs for each pipe's initial stream.
 fn plant_phases(graph: &PlantGraph, slate: &Slate) -> Result<Vec<Phase>, SimError> {

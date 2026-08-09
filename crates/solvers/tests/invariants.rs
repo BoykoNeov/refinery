@@ -153,6 +153,7 @@ fn mid_node(m: &Mid, i: usize) -> Node {
         Mid::Valve { cv, opening } => NodeKind::Valve {
             cv_max: cv,
             opening,
+            x_t: None,
         },
     };
     Node {
@@ -323,6 +324,7 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
                     MidDevice::Valve { cv, opening } => NodeKind::Valve {
                         cv_max: *cv,
                         opening: *opening,
+                        x_t: None,
                     },
                     MidDevice::None => unreachable!("matched above"),
                 };

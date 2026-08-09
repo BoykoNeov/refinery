@@ -9,7 +9,9 @@
 //! to zero (dense Newton vs conductance-scaled relaxation), never the element
 //! physics or the boundary classification.
 
-use crate::elements::{pipe_resistance, QuadraticBranch};
+use crate::elements::{
+    fold_gas_valve, pipe_resistance, specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND,
+};
 use refinery_core::components::Slate;
 use refinery_core::energy::{boundary_temperature, NodeStates};
 use refinery_core::error::SimError;
@@ -337,6 +339,7 @@ pub fn compile_edge(
     }
     // Static head β = ρ·g·Δz (Δz = downstream − upstream elevation).
     let elev_head = rho * G * pipe.elevation_change.value();
+    let dp = pressures[&src] - pressures[&tgt];
     let mut branch = QuadraticBranch::pipe(k, elev_head);
 
     match &graph.node(src).kind {
@@ -344,10 +347,39 @@ pub fn compile_edge(
             let h0_eff = if *on { h0.value() } else { 0.0 };
             branch = branch.in_series(QuadraticBranch::pump(h0_eff, *a, rho, G));
         }
-        NodeKind::Valve { cv_max, opening } => {
+        NodeKind::Valve {
+            cv_max,
+            opening,
+            x_t,
+        } => {
             let op = if *opening < OPEN_EPS { 0.0 } else { *opening };
             let rho_rel = rho / RHO_WATER_REF;
-            branch = branch.in_series(QuadraticBranch::valve(*cv_max, op, rho_rel));
+            let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);
+            branch = match x_t {
+                // Gas service: fold through the ISA compressible law instead of
+                // composing in closed form. `p_up` is the UPWIND node's pressure,
+                // deliberately not `src`'s — the fold-at-source convention puts
+                // `src` right here, and it is the valve's inlet only while the
+                // flow runs forward. In reverse the inlet is `tgt`, and `x` is
+                // taken from `|dp − β|` against whichever end is upwind so the
+                // branch stays odd about `β` (DESIGN §3a fork 6). `ρ` needs no
+                // such care: it is already the upwind value by construction.
+                Some(x_t) => {
+                    let comp = &pipe.stream.composition;
+                    let gamma = comp.mixture_cp(slate).value() / comp.mixture_cv(slate).value();
+                    let x_choke = specific_heat_ratio_factor(gamma) * x_t;
+                    if !x_choke.is_finite() || x_choke <= 0.0 {
+                        return Err(SimError::Numerical(format!(
+                            "valve '{}' has a non-positive critical pressure-drop ratio \
+                             F_k·x_T = {x_choke:.3e} (γ = {gamma:.4}, x_T = {x_t})",
+                            graph.node(src).name
+                        )));
+                    }
+                    fold_gas_valve(branch, liquid, dp, upwind, x_choke, CHOKE_BLEND)
+                }
+                // Liquid service: unchanged, and bit-identical to pre-M5.4.
+                None => branch.in_series(liquid),
+            };
         }
         _ => {}
     }

@@ -212,6 +212,7 @@ fn agree_tank_pump_valve() {
         NodeKind::Valve {
             cv_max: 3.0e-3,
             opening: 0.6,
+            x_t: None,
         },
     ));
     let snk = g.add_node(node("delivery", sink(1.2e5)));

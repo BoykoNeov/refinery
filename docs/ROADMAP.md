@@ -1274,8 +1274,90 @@ wrong. `separate-the-exposed-defect-from-the-feature` puts it in its own commit.
       un-deferral does not change. Its honest content is that
       `gas_density_reference`'s twelve gates still model tick 0 correctly.
 
-#### M5.4b — Choking (`Y`, the smoothed clamp, `x_T`, `F_k`)
-- [ ] `solvers`: choking, with a **smoothed** transition. `elements.rs` commits in
+#### M5.4b — Choking (`Y`, the clamp, `x_T`, `F_k`) — **LANDED**
+- [x] `solvers`: choking, as `elements::fold_gas_valve` — `α_eff = α_liquid·r/Y²`
+      with `r = x/x_s`, frozen at the iterate and recompiled every iteration, so
+      it stays a `QuadraticBranch` and nothing downstream (series composition, the
+      Jacobian, `edge_flows`' `Φ`, the Simple sweep, `finalize`) learns that gas
+      exists. **The clamp is on `x_s`, which the sizing equation uses inside the
+      square root as well as inside `Y`** — scaling only `Y` gives a model that
+      reads as choked and has no plateau at all, which is the mutation the
+      plateau gate exists for.
+      The inner scalar solve fork 6 specifies is there and is the one genuinely
+      new piece of machinery: `x` is the valve's OWN share of a FOLDED drop, so it
+      is the root of `g(s) = s + α_pipe·Q_gas(s)² = |dp − β|`, which is monotone
+      with `g(0) = 0 ≤ S ≤ g(S)` — bracketed, unique, unconditionally robust
+      bisection, at a **fixed count** rather than a float tolerance so it is
+      bit-reproducible by construction.
+- [x] **The smoothstep is NOT shipped, and that is a finding that corrects fork
+      4's own premise.** Fork 4 argued a choke cap is a kink and specified a
+      smoothed transition to protect `elements.rs`'s C¹ contract. The premise is
+      false for this `Y`: the standard's expansion factor is built so the sizing
+      curve meets the plateau with **zero slope**,
+      `d(Y·√x_s)/dx → −√x_c/(3x_c) + (2/3)/(2√x_c) = 0`, and the frozen
+      coefficient inherits it — `dα_eff/dx = 2.25·α/x_c` on *both* sides.
+      Measured: the one-sided limits agree to round-off (5.6e-17 vs 0.0 for the
+      flow, equal to 1e-12 for `α`). So the exact clamp is already C¹ for the flow
+      AND for the assembled Jacobian entry, which is what fork 4 was protecting.
+      A band would then be a fabricated numerical parameter that biases the answer
+      and buys nothing — the `cat_oil_ratio` argument — so `CHOKE_BLEND = 0` and
+      the model is exactly the published equation. The parameter survives in the
+      signatures because that is what makes the claim falsifiable, and the
+      band-insensitivity gate fork 4 asked for now reads as "a band does not move
+      the answer" rather than "which band restores continuity". Only the SECOND
+      derivative jumps, and Newton needs C¹.
+- [x] `core`/`scenarios`: `x_t` on `NodeKind::Valve`, `Option<f64>`, required in
+      gas service and REFUSED in liquid service — both decided by
+      `plant_phases`, M5.2's topological single-phase analysis, **reused rather
+      than re-derived**, so no second notion of "gas service" exists to disagree
+      with it. `F_k = γ/1.40` likewise comes from `Composition::mixture_cv`, so it
+      is per-edge at the upwind composition. `Cv` is NOT duplicated.
+      `#[serde(skip_serializing_if)]` keeps a liquid valve's serialization
+      unchanged, which is what held the regression anchor.
+- [x] Demo/reference: `scenarios/gas_valve.toml` — header → control valve → flare
+      at `x ≈ 0.90` against a choke at `F_k·x_T = 0.671`, deeply past it, with
+      real pipe either side so the inner solve is exercised rather than assumed
+      away. Newton converges in **8 iterations cold and 0 warm** over 200 ticks
+      (Simple: 459 cold, 1 warm), so **fork 6's escalation trigger is not met**:
+      frozen `α` does not limit-cycle here and the branch type with a true
+      derivative stays deferred, on the measurement rather than the argument.
+- [x] **The anchor-strength claim was corrected BEFORE the gate was written**, not
+      after — see the box under (i) below. The magnitude gate is labelled a
+      transcription/units/algebra check; the gates leaned on are the plateau,
+      `F_k`-from-the-slate, `Y = 2/3` at the choke, and the `Y → 1` degeneracy.
+- [x] **Falsified before trusted**, five mutations, each caught by the right set:
+      the **clamp only in `Y`** fails five gates including the plateau, which is
+      its signature; **`F_k` hardcoded to 1** ("every gas is air") fails three and
+      notably **not** the plateau — correct, since it is still choked, just at the
+      wrong point; the **whole branch drop attributed to the valve** (fork 6's
+      rejected alternative) fails three including
+      `the_folded_branch_reproduces_the_inner_solve`, the unit identity that
+      exists because every downstream reader consumes the BRANCH and not the law;
+      and **choking removed entirely** fails three including the plateau.
+      The fifth found a real hole. **`P₁` taken from the edge's `src` instead of
+      the upwind node passed the ENTIRE suite** — the fold-at-source convention
+      puts `src` in the same lines as the valve, and `src` is the inlet only while
+      the flow runs forward, so no forward-flowing plant can tell them apart. It
+      is now gated by a reversed plant (header 1 bar, flare 10) where the two
+      differ tenfold, with the expected magnitude `A·10 bar` needing no readback
+      because in reverse the upwind end is a pinned reservoir. That gate also
+      exercises fork 6's stated limitation: a gas valve chokes symmetrically, so
+      it passes reverse flow as readily as forward — right for a control valve,
+      wrong for a PSV, and recorded in the same register as fork 5's "no blowdown
+      hysteresis".
+      One process note worth keeping: the first mutation run was **contaminated**
+      by a harness bug — a mutation touching one file twice backed up the
+      already-mutated copy, so the "restore" reinstated it and every later
+      mutation ran on a corrupted base. The counts above are from the re-run.
+- [x] **Regression anchor measured, not reasoned**: nine pre-existing scenarios ×
+      two fidelities × 200 ticks against the previous commit, **18/18
+      byte-identical**. `skip_serializing_if` on `x_t` is what makes the claim
+      true at the serialization level as well as the physics level, and those are
+      different claims.
+The two boxes below are this slice's ORIGINAL specification, kept unticked and
+unedited so the corrections above can be read against what they corrected.
+
+- [~] `solvers`: choking, with a **smoothed** transition. `elements.rs` commits in
       its header to C¹ characteristics because the Newton Jacobian must stay
       finite; a choke cap is a kink, so "add choking later" would silently break a
       stated contract. It ships now because relief cannot be honest without it — a
@@ -1284,7 +1366,7 @@ wrong. `separate-the-exposed-defect-from-the-feature` puts it in its own commit.
       reads it. Form: IEC 60534-2-1 / ISA-75.01 gas sizing,
       `ṁ = Cv·Y·√(x·P₁·ρ₁)`, `Y = 1 − x/(3·F_k·x_T)`, with the clamp at
       `x = F_k·x_T` replaced by a smoothstep over a narrow band.
-- [ ] The parameter count, which is where a published anchor can quietly stop
+- [~] The parameter count, which is where a published anchor can quietly stop
       being one. **`Cv` is not new** — the standard uses the same coefficient for
       liquid and gas sizing, so this reuses `cv_si` as loaded from metric `Kv`
       today and degenerates to the liquid branch at `Y = 1`; that line is what
@@ -1312,14 +1394,25 @@ wrong. `separate-the-exposed-defect-from-the-feature` puts it in its own commit.
       no controls subsystem opened. Deliberate scope boundary *and* the honest
       model at this fidelity: a spring-loaded PSV is a pressure-actuated area.
       Given up, and stated: no blowdown hysteresis, no chatter — both need state.
-- [ ] Tests: (i) the **IEC 60534-2-1 gas sizing equation** as an independent
-      published anchor, exactly as `kv_reference` anchors M1 — its expected value
-      comes from the standard, not from any formula in the workspace — run at
-      **two `x_T` values** so what is pinned is the *dependence* rather than one
-      coincidence, the same anti-circularity move M5.2 makes with pressure. Its
-      ceiling, stated: this anchors the equation given inputs the scenario
-      declares; nothing here validates that a particular valve's `x_T` is right,
-      and a citation is the honest substitute for a measurement. (ii) the
+- [ ] Tests: (i) the **IEC 60534-2-1 gas sizing equation**, run at **two `x_T`
+      values** so what is pinned is the *dependence* rather than one coincidence,
+      the same anti-circularity move M5.2 makes with pressure.
+      **This box's original claim — "an independent published anchor, exactly as
+      `kv_reference` anchors M1" — is an OVERCLAIM and is corrected here before
+      the gate is written** (DESIGN §3a fork 6). `kv_reference` earns that status
+      because the `Kv` *definition* is a physical statement the test can derive
+      from; `Y = 1 − x/(3·F_k·x_T)` has no non-formula definition behind it, so a
+      magnitude gate built from it checks transcription, units and algebra — the
+      *network hand calc* ceiling, not the `Kv`-definition one. What carries
+      genuinely independent content, and what the slice leans on instead: the
+      **`Y → 1` degeneracy** onto `QuadraticBranch::valve` (two code paths
+      agreeing), the **plateau**, **`Y = 2/3` exactly at the choke** (a specific
+      number, independent of `x_T`), and **`F_k` derived from the slate**.
+      `x_T`'s provenance is the smaller worry — it is a declared input, the
+      two-value design pins the dependence, and nothing is calibrated to it — so
+      a citation marked as SECONDARY is honest. The equation FORM is the
+      high-stakes half and has been checked outside the repo; the standard itself
+      was not read, and the gate says so. (ii) the
       **choked plateau**: below the critical ratio `dṁ/dP_downstream = 0`, which a
       Y-factor without the clamp fails. (iii) Jacobian continuity across the choke
       point, and insensitivity to the blend band width (two widths an order apart

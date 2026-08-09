@@ -118,7 +118,27 @@ pub enum NodeKind {
     /// Control valve, ISA-style: Q = Cv_eff(opening)·sqrt(dP/SG).
     /// `cv_max` in SI-consistent form (m³/s at 1 Pa dP for SG=1) — the
     /// scenario loader converts from customary Cv units.
-    Valve { cv_max: f64, opening: f64 },
+    ///
+    /// `x_t` is the pressure differential ratio factor of IEC 60534-2-1's gas
+    /// sizing equation: the choke sits at `x = F_k·x_T`, with `F_k = γ/1.40`
+    /// DERIVED from the slate. Present exactly when the valve is in GAS service
+    /// and absent otherwise — the loader enforces both directions off M5.2's
+    /// topological single-phase analysis, so no second notion of "gas service"
+    /// exists to disagree with it (docs/DESIGN.md §3a forks 4 and 6).
+    ///
+    /// It is the one genuinely new coefficient in M5.4 and it has NO DEFAULT, for
+    /// the reason that defers pump `η`: a silent default is an invented value in
+    /// disguise, and both the sizing gate and the choked-plateau gate would then
+    /// pass for whatever was chosen. `Cv` is deliberately NOT duplicated — the
+    /// standard uses one coefficient for both services.
+    Valve {
+        cv_max: f64,
+        opening: f64,
+        /// Absent for a liquid valve, so an all-liquid plant serializes exactly
+        /// as it did before M5.4 and the regression anchor is untouched.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_t: Option<f64>,
+    },
     /// Zero-volume mixing point.
     Junction,
     /// Fired heater: a duty delivered into the stream passing through it.

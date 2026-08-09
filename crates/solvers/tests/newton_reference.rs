@@ -211,6 +211,7 @@ fn closed_valve_blocks_flow_both_ends_anchored() {
         NodeKind::Valve {
             cv_max: 1e-3,
             opening: 0.0,
+            x_t: None,
         },
     ));
     let jn = g.add_node(node("jn", NodeKind::Junction));
@@ -268,7 +269,8 @@ fn floating_subnetwork_with_pump_reports_zero_flow() {
         "vlv",
         NodeKind::Valve {
             cv_max: 1e-3,
-            opening: 0.0, // closed → severs everything below it
+            opening: 0.0, // closed → severs everything below it,
+            x_t: None,
         },
     ));
     let pmp = g.add_node(node(

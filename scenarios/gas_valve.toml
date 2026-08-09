@@ -1,0 +1,85 @@
+# M5.4b reference plant: a control valve choking on fuel gas.
+#
+# Fuel-gas header → control valve → short run → low-pressure flare. The plant
+# exists to put a valve DEEPLY past its critical pressure-drop ratio: at 10 bar
+# in and 1 bar out the ratio is x ≈ 0.90 against a choke point of
+# F_k·x_T ≈ 0.671, so the incompressible orifice law is wrong here by a wide
+# margin and in a known direction (it overpredicts). That is the regime M5.4
+# exists for — a PSV discharging to a flare lives in it — and `gas_line.toml`
+# deliberately does not reach it, which is why the two plants are separate.
+#
+# Sized so the VALVE dominates: 10 m of 150 mm pipe either side drops ~300 Pa at
+# the choked rate against the valve's ~900 kPa. The pipes are not decoration —
+# they are what makes the inner solve in `elements::fold_gas_valve` necessary at
+# all, since the valve's own share of the folded branch drop is what `x` means.
+# A plant with no pipe resistance would let the whole thing pass with the drop
+# attributed to the valve by assumption.
+#
+# `x_t` is DECLARED, with no default (docs/DESIGN.md §3a fork 4): it is the one
+# genuinely new coefficient in this slice, and a silent default would make both
+# the sizing gate and the choked-plateau gate pass for whatever was invented.
+# 0.72 is the value widely reproduced from IEC 60534-2-1 Table 2 for a globe
+# valve, single-port, parabolic plug, flow-to-open.
+#
+# **That citation is SECONDARY and is marked as such** — this workspace has not
+# read the standard, whose text is paywalled. It is the honest treatment because
+# nothing here is CALIBRATED to it: `x_t` is a declared input, and
+# `choked_flow_reference.rs` runs the plant at two different values so what is
+# pinned is the DEPENDENCE rather than one number. The M4.2 failure mode — fit
+# constants to a summary, then call the fit a validation — does not apply.
+#
+# `cv` is NOT duplicated for gas service. The standard uses the same valve flow
+# coefficient for both, so this file's `kv` is the ordinary metric Kv and the gas
+# branch degenerates to the liquid one as x → 0. A "gas Cv" field must not appear.
+
+[meta]
+name = "gas_valve"
+description = "Fuel gas chokes across a control valve on its way to a flare."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+# Methane, as in `gas_line.toml`: γ = cp/cv = 2220/(2220 − R/M̄) = 1.3046, so
+# F_k = γ/1.40 = 0.9318 and the choke sits at x = 0.6709 for x_t = 0.72. Both are
+# DERIVED — F_k from this slate through `Composition::mixture_cv`, never declared.
+[[components]]
+name = "fuel_gas"
+phase = "gas"
+tb_c = -161.5
+molar_mass_kg_per_mol = 0.016043
+cp_j_per_kg_k = 2220.0
+
+[nodes.header]
+type = "source"
+pressure_bar = 10.0
+temperature_c = 20.0
+
+[nodes.control_valve]
+type = "valve"
+kv = 25.0
+opening = 1.0
+x_t = 0.72
+
+[nodes.flare]
+type = "sink"
+pressure_bar = 1.0
+temperature_c = 20.0
+
+[[pipes]]
+name = "inlet_run"
+from = "header"
+to = "control_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "outlet_run"
+from = "control_valve"
+to = "flare"
+length_m = 10.0
+diameter_m = 0.15
