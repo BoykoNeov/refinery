@@ -578,7 +578,7 @@ bit-identical), and the runnable-demo criterion is met by `crude_column.toml`
 above — the split is visible physics (three products, distinct compositions,
 mass-neutral to round-off), not a zero exit. M4 may begin.
 
-## M4 — Reactor (CURRENT)
+## M4 — Reactor (DONE)
 FCC 4-lump complex reactor + lookup-table simple reactor behind
 ReactionModel. Reference test against published lump yields.
 
@@ -745,18 +745,233 @@ et al. (1989) or Ahari et al. (2008) needs only access to either paper, and woul
 upgrade it from the former to the latter. That is the concrete value of getting
 one of those papers; nothing else about the model would change. M5 may begin.
 
-## M5 — Gas & pressure realism (scoped design note first)
-Compressible/two-phase approximations where needed (column overheads, flare).
-May be simplified or deferred — decide with a written note in docs/.
-- [ ] Pump work / valve throttling heat into the stream, deferred here from M2.2.
-      It belongs with this milestone rather than with M2's heat work because the
-      quantity that makes it worth modelling is ΔP-driven dissipation in a
-      heavily throttled high-head service, and judging it needs real enthalpy —
-      at M2's fidelity the reference pump's rise was ~0.02 K, below the model's
-      own accuracy and below any tolerance a test could falsify against.
-      Decide it the same way: measure the rise on a plant where it should be
-      largest, and only build it if a gate on that number can be made to fail
-      for the right reason.
+## M5 — Gas & pressure realism (CURRENT)
+Gas inventory and pressure *dynamics*: a vessel that fills, builds pressure and
+relieves to a flare. Plus the frictional-dissipation debt M2.2 deferred here.
+
+M5 opened with a licence no other milestone got — "may be simplified or deferred,
+decide with a written note" — so the note's first output is a **scoping verdict**,
+and that verdict is the milestone's shape. It has landed (DESIGN §3a).
+
+**The scoping verdict.** "Gas" breaks three *independent* assumptions, and
+bundling them is what would make this milestone unbounded: (1) density is a
+per-edge constant for the tick; (2) pressure is purely algebraic — nothing in the
+model can store it; (3) phase is not in the state vector at all. **M5 buys (2)
+and a restricted (1), and defers (3) entirely.** (2) is where the milestone's
+point lives — pressure that builds and relieves is what the game and the damage
+model need, and the current architecture cannot express it at all — while (3) is a
+change to `Stream`/`Composition` and every reader of them, made safe by one
+load-time guard rather than by hope.
+
+**A correction to this heading's own original line**, stated rather than quietly
+dropped: **"column overheads" is not reachable in M5**. An overhead is a
+*condensing* stream, which is assumption (3). The other half of that line — the
+flare, and the vessel that relieves into it — is what M5 delivers.
+
+### M5.0 — Scoping + design note — **LANDED**
+- [x] DESIGN §3a, "Gas & pressure realism (M5) — specified before building".
+      Settles the scoping verdict above and five forks: gas-ness lives on the
+      **pseudo-component** (not the stream), with a single-phase
+      connected-component guard making the two-phase deferral loud; capacitance
+      enters the solve **semi-implicitly**; a gas holdup uses **`cv = cp − R/M̄`**;
+      **choking ships** with a smoothed transition; and a relief valve is an
+      **element characteristic, not a controller**.
+
+### M5.1 — Frictional dissipation into the stream (the M2.2 debt)
+Independent of everything else in M5, so it lands first. M2.2 deferred it with an
+explicit re-opening condition — *measure it on a plant where it should be largest,
+and build it only if a gate on that number can fail for the right reason* — and
+the measurement re-opens it: on `tank_pump_valve` at its reference state the
+**valve** term is **0.094309 K**, 94× the 1e-3 K tolerance the ambient tests
+already carry. The pipes add 0.003776 K and the pump's curve droop 0.000356 K.
+M2.2 was right that pumping was too small and wrong that the plant was: throttling
+was already large enough, on the reference plant rather than a contrived one.
+- [ ] `solvers`: `HydraulicSolution` gains per-edge dissipated power. The rule
+      needs **no new parameter** — `QuadraticBranch` already splits the two kinds
+      of term along exactly the physical line: **`α` is dissipative, `β` is not**
+      (elevation is reversible potential, the pump jump is shaft work in), so the
+      dissipation is `α·Q|Q|·Q` [W]. `core` must not recompute it as
+      `(P_up − P_down) − β`: `β` is solver-side knowledge, and a `core` that knows
+      it knows the element physics (rule 2).
+- [ ] `core`: one more term in the per-edge outlet transform `energy::
+      pipe_outlet_temperature` / `edge_temperature_at` already own for ambient
+      exchange — same structure, same **two** readers (`inflow_totals` and the
+      tank loop), and the same trap if only one is updated (M2.2's pipe-ambient
+      lesson, where the second reader needed its own mutation to prove its gate).
+- [ ] `core`: I6 gains the dissipation budget rather than excluding reactors'
+      way. Unlike `Δh_rxn`, this is sensible heat and exactly computable;
+      excluding it would widen an invariant to tolerate a term the model knows.
+- [ ] Tests: the absolute **0.094309 K** valve hand calc; the **mechanical-energy
+      closure** `Σ dissipation = pump β − elevation β − net ΔP`, derived
+      independently of the term under test and closing to 3 Pa in 411 052 (the
+      regularisation floor); I6 with the new budget.
+      Mutations, each to fail its own gate and no other: booking the *total*
+      branch drop instead of `α·Q|Q|` (elevation credited as heat, 12% high);
+      dropping the pump's `α`; writing the heat to the edge's **inlet**.
+- [ ] **This slice deliberately breaks the bit-identical regression anchor** —
+      the first time in the project, and it is a cost, not an oversight. M3.1 and
+      M4 both held it; dissipation cannot, because it has no free parameter and
+      therefore no honest "off" default. `scenarios/tests/isothermal_plant.rs`
+      must change and the goldens must be re-recorded. A `dissipation = false`
+      scenario flag was considered and rejected: it preserves the anchor by making
+      a physics term optional, which is a fidelity `if` in a config file. The
+      replacement is stronger than what it retires — the same plant, the same
+      spurious-offset trap, asserted against a *predicted* 0.094309 K instead of
+      against zero.
+
+### M5.2 — Gas as a component phase (`ρ(P,T)`)
+- [ ] `core`: `PseudoComponent` gains a phase, defaulting to `liquid` so every
+      existing slate is untouched. Gas density is `ρ = P·M̄/(R·T)` with
+      `1/M̄ = Σ(wᵢ/Mᵢ)`; `molar_mass` already exists on the component and has had
+      no reader until now — this is what it was reserved for.
+- [ ] `scenarios`: the **single-phase connected-component** load-time guard. A
+      model with no phase equilibrium must not be handed a two-phase mixture and
+      quietly volume-average it, and because streams mix wherever two lines join,
+      the check has to be topological rather than per-composition. Consequences
+      stated rather than discovered: the FCC slate is **unchanged** (its "light
+      gases" lump stays liquid-phase, which is exactly what two-phase would fix),
+      a gas system is a separate sub-plant, and a flare needs **no new node kind**
+      — it is a `Sink` at `P_ATM` with a gas composition.
+- [ ] `solvers`: the density circularity — `ρ` depends on `P`, the unknown.
+      Transport density is evaluated at the **upwind node's current pressure
+      iterate**, recompiled each solver iteration (frozen-coefficient Newton:
+      `dρ/dP` omitted from the Jacobian, so linear convergence to the *consistent*
+      fixed point). A previous-*tick* density is rejected: a blowing-down vessel
+      changes density fast enough that the lag is a defect, not staleness — the
+      M3.1 `cp` lesson. Structurally this moves `compile_edges` inside the
+      iteration loop in `network.rs`, shared by both fidelities.
+- [ ] Tests: a gas source → pipe → sink plant pinned against
+      `ṁ = √(2DA²ρP/(fL))` with `ρ = P·M̄/(R·T)` by hand, at **two** source
+      pressures so the P-dependence is pinned and not just one number — noting
+      that this hand calc carries ONE `ρ`, the upwind node's, while a real gas
+      expands along the edge, so it pins the **upwind-density convention as
+      implemented** and is not a physics anchor; the error it accepts grows with
+      the edge's pressure ratio, in the same direction and for the same reason as
+      an unchoked orifice law's, which is what M5.4 is for and why these two
+      slices are ordered rather than merged. Plus the
+      mixed-phase refusal; and a water regression run confirming the
+      per-iteration recompile is bit-identical (blast radius confirmed, not
+      assumed: outside `components.rs` there are exactly three callers of
+      `mixture_density`).
+
+### M5.3 — Capacitive vessel (the central design decision)
+A gas vessel's residual is `Σ_e ṁ_e(P) − (m(P) − mⁿ)/dt` with
+`m(P) = P·V·M̄/(R·T)`, i.e. an accumulation term `C·(P − Pⁿ)/dt` with
+**`C = V·M̄/(R·T)` [kg/Pa]**. The rejected alternative — a `Tank` with an
+ideal-gas pressure law, pinned from the start-of-tick inventory, zero solver
+machinery — loses on a **stability bound that ordinary plant reaches**:
+`dt·g/C < 2`, where the reference tank sits at 8.2e-7 (six orders inside) and a
+1 m³ knock-out drum on a 20 kg/s line at 0.2 bar sits at **4.2** (outside, so it
+oscillates and diverges). Liquid and gas capacitance are five orders apart —
+2.04 kg/Pa versus 1.2e-5 — which is also why M1 was right to do the simple thing.
+A guard is worse than useless here: the regime it would refuse is a small vessel
+relieving quickly, which is the scenario the milestone exists to simulate.
+- [ ] `core`/`solvers`: the capacitance term in the **shared** residual
+      (`network.rs`), so both fidelities inherit it — `SimpleFlowSolver`'s
+      per-node update gains `C/dt` in the denominator, which is the diagonal
+      preconditioning it already does. `FlowSolver::solve` already takes `dt`, so
+      the trait does not change. `C` is **exact, not a linearisation** (`m(P)` is
+      linear in `P` at fixed `T`, `M̄`). Capacitance is an **anchor**:
+      `anchored_set` must stop calling a capacitive node floating, which makes a
+      closed gas system with no fixed node well-posed for the first time.
+- [ ] `core`: the vessel is inertial — it integrates mass, temperature and
+      composition like a tank — with `u = cv·(T − T_REF)`, `cv = cp − R/M̄` for
+      gas components and `cv = cp` for liquid ones. The branch must be
+      phase-conditional: applying `cp − R/M̄` to water shifts its `cv` by 11% and
+      changes every golden. Blowdown cooling then **emerges** rather than being
+      modelled.
+- [ ] Docs: §3 says the solve is a steady state. With a capacitive node it is one
+      **implicit-Euler step of a DAE**. Pressure waves stay out of scope; what
+      changed is that accumulation is now inside the solve.
+- [ ] Tests, three gates because no one of them covers it:
+      (i) **the design-decision gate** — the 1 m³ drum above, the case the
+      rejected explicit scheme diverges on, run to a converged bounded state.
+      This is the gate that falsifies M5.3's verdict and the one most easily left
+      out. (ii) **the thermodynamic first integral** `T/Tᵢ = (m/mᵢ)^(γ−1)` on an
+      ordinary blowdown to atmosphere — path-independent, so it pins the `cv`
+      balance without pinning the time integration. (iii) **the time coupling**,
+      which (ii) is blind to (it has no `t` in it): discharge to a zero-pressure
+      sink makes the ODE elementary,
+      `m/mᵢ = (1 + ½(γ−1)·A₀·mᵢ^((γ−1)/2)·t)^(−2/(γ−1))`.
+      Its ceiling is named, in the manner of M4.2's envelope: a vacuum sink drives
+      the incompressible orifice law far outside where it is physical, so it pins
+      the **numerics** of the capacitance/energy coupling and not the fidelity of
+      the flow law (that is M5.4's ISA anchor). Tolerance **derived** from
+      implicit Euler's O(dt) truncation, not tuned, and backed by an
+      order-of-convergence gate — the only gate that catches a degraded scheme
+      that still converges (M4.2's RK4 lesson).
+      **Confirm the fixture before relying on it:** a `Sink` at 0 Pa may be
+      refused at load, and it certainly drags `classify`'s cold seed (the mean of
+      the fixed pressures) toward zero on a plant whose vessel starts at 10 bar.
+      Fallback if it does not load cleanly: a small finite `P₀` with the closed
+      form re-derived — isothermally the elementary `arctan√((P−P₀)/P₀)` linear
+      in `t` — or numerical quadrature of the same ODE inside the test. The
+      milestone's only *rate* gate must not depend on an unconfirmed fixture.
+- [ ] I1 gains the vessel's accumulation term. Unlike a reactor against I7, this
+      is an ordinary accumulation the invariant is *for*, not a term outside its
+      frame.
+
+### M5.4 — Choked flow, relief valve, flare (the milestone's payoff)
+- [ ] `solvers`: choking, with a **smoothed** transition. `elements.rs` commits in
+      its header to C¹ characteristics because the Newton Jacobian must stay
+      finite; a choke cap is a kink, so "add choking later" would silently break a
+      stated contract. It ships now because relief cannot be honest without it — a
+      PSV discharging 10 bar to a 1 bar flare sits at a pressure ratio of 0.1, and
+      an incompressible orifice law overpredicts there exactly where the milestone
+      reads it. Form: IEC 60534-2-1 / ISA-75.01 gas sizing,
+      `ṁ = Cv·Y·√(x·P₁·ρ₁)`, `Y = 1 − x/(3·F_k·x_T)`, with the clamp at
+      `x = F_k·x_T` replaced by a smoothstep over a narrow band.
+- [ ] The parameter count, which is where a published anchor can quietly stop
+      being one. **`Cv` is not new** — the standard uses the same coefficient for
+      liquid and gas sizing, so this reuses `cv_si` as loaded from metric `Kv`
+      today and degenerates to the liquid branch at `Y = 1`; that line is what
+      keeps the count at one, and a "gas Cv" field must not appear.
+      **`F_k = γ/1.40` is derived** from the slate. **`x_T` is genuinely new**
+      and per-valve, and it is the one that could turn the ISA gate into M4.2's
+      envelope circularity — hardcode an invented value and both it and the
+      choked-plateau gate pass for whatever was chosen, which is exactly the
+      argument that defers pump `η`. So `x_T` is a **declared field**, required
+      in gas service with **no default** (a silent default is the invented value
+      in disguise), and the reference plant cites a value from IEC 60534-2-1's
+      own typical-`x_T`-by-valve-style table.
+- [ ] `core`/`solvers`: the relief valve as a **pure element characteristic** —
+      opening a smooth, memoryless function of its own upstream pressure, closed
+      below set pressure, ramping to full over the accumulation band, evaluated
+      in-solve like every other branch. No state, no tuning, no tick history, and
+      no controls subsystem opened. Deliberate scope boundary *and* the honest
+      model at this fidelity: a spring-loaded PSV is a pressure-actuated area.
+      Given up, and stated: no blowdown hysteresis, no chatter — both need state.
+- [ ] Tests: (i) the **IEC 60534-2-1 gas sizing equation** as an independent
+      published anchor, exactly as `kv_reference` anchors M1 — its expected value
+      comes from the standard, not from any formula in the workspace — run at
+      **two `x_T` values** so what is pinned is the *dependence* rather than one
+      coincidence, the same anti-circularity move M5.2 makes with pressure. Its
+      ceiling, stated: this anchors the equation given inputs the scenario
+      declares; nothing here validates that a particular valve's `x_T` is right,
+      and a citation is the honest substitute for a measurement. (ii) the
+      **choked plateau**: below the critical ratio `dṁ/dP_downstream = 0`, which a
+      Y-factor without the clamp fails. (iii) Jacobian continuity across the choke
+      point, and insensitivity to the blend band width (two widths an order apart
+      agreeing well inside the reference tolerance) — the band is a numerical
+      parameter and must be shown not to move the answer. (iv) the relief valve's
+      **memorylessness**: the same upstream pressure gives the same opening
+      however it was approached.
+- [ ] Demo: block in a gas vessel, watch pressure build, the PSV lift, the flare
+      take the relief, and the vessel settle at set-plus-accumulation — with the
+      contents *cooling* as they blow down, which nothing in the code models
+      directly. That is the milestone's physics in one run.
+
+**Deferred from M5, with what would un-defer each** (DESIGN §3a): **two-phase
+flow, flash and condensation** — the reason is *scope, not unfalsifiability*, and
+that distinction matters: a Tb-derived Raoult/Antoine flash could be pinned
+against a published binary, so M4's "invented parameters with no gate" argument
+does not apply and must not be borrowed. Phase is simply absent from the state
+vector. Un-defers with the complex column. Also deferred: real-gas `Z` and gas
+`cp(T)` (additive to the density law); **pump efficiency heating** (~0.03 K, big
+enough to gate, but `η` is a parameter with one possible value in this repo — the
+`cat_oil_ratio` argument — so it un-defers with a scenario carrying real pump
+curves); PSV hysteresis and chatter (needs element state); and acoustic /
+pressure-wave dynamics (out of scope since §3, unchanged).
 
 ## M6 — Godot frontend + damage
 godot-ext adapter, minimal scene reading snapshots; leak/fire commands
