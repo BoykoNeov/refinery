@@ -287,11 +287,18 @@ pressure drop and booking it would invent heat — the same argument that makes
 "draws leave at the feed temperature" an exact equality rather than three
 different temperatures, and it is gated there.
 
-**And a small guard that earned itself:** `finalize` scans `Φ` for finiteness and
-sign separately from the flows. `Φ` is a CUBE of the flow, so an edge whose `ṁ`
-is merely large yields a `Φ` that overflows to `+∞` while the flow stays finite;
-and a negative `Φ` is a sign error that would show up as a stream cooling itself
-by friction.
+**One guard, and an honest account of it.** `finalize` scans `Φ` for finiteness
+and sign separately from the flows. The finiteness half follows the existing
+convention — rule 5's "nothing non-finite escapes a solve", the same reason the
+pressures and flows are scanned — and it is not redundant with them, because `Φ`
+is a CUBE of the flow and can overflow to `+∞` while the flow itself stays
+finite. **The sign half is cover held in advance and is unreachable today**,
+stated in the manner `checked_temperature` states its own tank arm rather than
+claimed to have earned its place: `Φ = α·|Q|³` and `α < 0` would make
+`conducts` false, which zeroes the flow before `Φ` is ever formed — so no input,
+including an unguarded negative pump curve coefficient, reaches it. It is there
+for the fidelity that gives an element a genuinely signed characteristic, and
+this note says so rather than letting a future reader infer it is falsifiable.
 
 ### Fork 1 — how does gas-ness enter the model?
 
@@ -1011,20 +1018,24 @@ runs, the guard is being reached by some other path and the test is vacuous).
 
 **Known limitations at this fidelity** (each deliberate, none accidental):
 
-- **No pump work or valve throttling heat.** Both dissipate into the stream in
-  reality; a pass-through device currently copies its inlet temperature to its
-  outlet. The reference pump's rise is ~0.02 K — far below the model's accuracy,
-  and below any tolerance a reference test could be falsified against, so
-  building it in M2 would have meant a feature with no gate that earns its
-  place. Deferred to M5 (ROADMAP), where ΔP-driven throttling in a high-head
-  service and real enthalpy make the quantity large enough to be worth pinning.
-  **Re-opened and settled in §3a**, on this bullet's own terms: the deferral
-  named a measurement as its re-opening condition, the measurement was taken on
-  `tank_pump_valve` itself, and the *valve* term is **0.094309 K** — 94× the
-  1e-3 K tolerance the ambient tests carry, on the reference plant rather than a
-  contrived one. The bullet was right about the pump and wrong about the plant:
-  throttling was already large enough here. M5 builds it; pump *efficiency*
-  heating stays deferred, for a different reason (§3a).
+- ~~**No pump work or valve throttling heat.**~~ **RETIRED — built in M5.1.**
+  Kept here rather than deleted, because the deferral→measurement→build loop is
+  the point. At M2 both dissipated into the stream in reality while a
+  pass-through device copied its inlet temperature to its outlet; the reference
+  pump's rise is ~0.02 K, far below the model's accuracy and below any tolerance
+  a reference test could be falsified against, so building it in M2 would have
+  meant a feature with no gate that earns its place. The deferral named a
+  MEASUREMENT as its re-opening condition, and that measurement — taken on
+  `tank_pump_valve` itself in §3a — put the *valve* term at **0.094309 K**, 94×
+  the 1e-3 K tolerance the ambient tests carry, on the reference plant rather
+  than a contrived one. The bullet was right about the pump and wrong about the
+  plant: throttling was already large enough here.
+  Friction now lands as `Φ = α·Q|Q|·Q` on each edge's outlet transform (§3a). A
+  pass-through device consequently still reports its INLET temperature — its
+  heat appears on the edge leaving it, by fold-at-source — which is a display
+  choice, not the old omission. Pump *efficiency* heating stays deferred, for a
+  different reason (§3a): `η` is a parameter with one possible value in this
+  repo, so no gate could tell a right value from a wrong one.
 - **Heat into a zero-volume node with no throughput is dropped.** It has no
   thermal mass to store it and no stream to carry it away. A fire against
   stagnant inventory belongs on a `Tank`; this is the one case where the engine

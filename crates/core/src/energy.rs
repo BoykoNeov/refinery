@@ -603,10 +603,15 @@ pub fn checked_temperature(
 /// Pumps, valves, furnaces and coolers are zero-volume *pass-throughs*: with
 /// exactly one inlet and one outlet (enforced by `validate_degrees`) the mixing
 /// formula degenerates to "outlet temperature = inlet temperature", plus
-/// whatever heat `heat_load` adds. Pump work and valve throttling both dissipate into the
-/// stream as heat; at M2 fidelity that rise is neglected (~0.02 K for the
-/// reference pump — far below the model's accuracy) and is a documented
-/// DESIGN §4a limitation, not an oversight.
+/// whatever heat `heat_load` adds.
+///
+/// Pump work and valve throttling both dissipate into the stream as heat, and
+/// since M5.1 they are MODELLED — but not here. A device folds into its outlet
+/// EDGE (fold-at-source), so its friction is a term of that edge's outlet
+/// transform (`pipe_outlet_temperature`), not of the node's mix. The visible
+/// consequence, stated rather than papered over: a valve reports its INLET
+/// temperature and its throttling heat appears on the pipe leaving it — the same
+/// display choice §4a made for a pipe's two ends (docs/DESIGN.md §3a).
 pub fn is_zero_volume(kind: &NodeKind) -> bool {
     matches!(
         kind,

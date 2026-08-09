@@ -283,20 +283,29 @@ and the unit models are additive once it is right (CLAUDE.md: PR-sized changes).
       start-of-tick boundary value and never moves within the tick, so it
       passed under its own mutation until it was pointed at the tank's
       integrated state instead.
-- [~] Pump work / valve throttling into the stream — **deferred to M5**, not
-      dropped. It did not earn its keep here: the reference pump's rise is
+- [x] Pump work / valve throttling into the stream — **deferred to M5, and built
+      there (M5.1)**. It did not earn its keep here: the reference pump's rise is
       ~0.02 K, far below this fidelity's accuracy, and a gate at that magnitude
       could not be falsified against the 1e-3 K Euler tolerance the ambient
       tests already carry — it would be a feature with no test that earns its
-      place, which is the one thing M2 has consistently refused to ship. It is
+      place, which is the one thing M2 has consistently refused to ship. It was
       recorded as a deliberate limitation in DESIGN §4a rather than as an
       omission. The case for revisiting is throttling, not pumping: dissipation
       scales with ΔP, so a heavily throttled high-head service is not 0.02 K.
-      That is a fidelity step needing real enthalpy, which is why it moves to
+      That is a fidelity step needing real enthalpy, which is why it moved to
       M5 and not M3.
+      **The re-opening condition this box named was a MEASUREMENT, and that is
+      what closed it.** Measured on `tank_pump_valve` at its reference state, the
+      *valve* term is 0.094309 K — 94× the tolerance above, on this very plant.
+      The box was right about pumping and wrong about the plant: throttling was
+      already large enough here, without a contrived high-head service and
+      without real enthalpy. See M5.1, which ships it and re-records the goldens
+      this box's deferral was protecting.
 
-**M2 acceptance criteria are met.** M2.1 and M2.2 complete; the one remaining
-box is deferred with reasons above, not outstanding. `cargo test --workspace`,
+**M2 acceptance criteria are met.** M2.1 and M2.2 complete. The one box left open
+at the time was deferred with reasons above rather than outstanding, and it has
+since been **closed by M5.1** on exactly the terms it set itself — which is the
+strongest thing that can be said for a deferral. `cargo test --workspace`,
 `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
 are green, and the runnable-demo criterion is met by
 `cargo run -p refinery-cli -- run scenarios/heat_recovery.toml --ticks 200`:
