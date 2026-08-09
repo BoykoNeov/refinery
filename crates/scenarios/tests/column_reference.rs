@@ -301,8 +301,17 @@ initial_level_m = 10.0"#,
 
 /// Draws leave at the FEED temperature (DESIGN §5 — representing tray
 /// temperatures needs the complex column). With insulated pipes every draw
-/// stream is the column's feed-mix temperature, whatever the split. The feed
-/// enters at 250 °C = 523.15 K and no unit heats it, so every draw reads 523.15.
+/// stream is the column's feed-mix temperature, whatever the split.
+///
+/// **Since M5.1 this gate carries a second decision.** Every edge now dissipates
+/// friction into its own stream — except a column draw, which reports `Φ = 0`
+/// because its flow is *prescribed* (`splitᵢ·ṁ_feed`) rather than pressure-driven,
+/// so `α·Q|Q|` is not its pressure drop and booking it would invent heat
+/// (`network::edge_flows`). That choice is exactly what keeps the equality below
+/// exact: give a draw a nonzero `Φ` and the three draws leave at three different
+/// temperatures, none of them the feed's, and this fails. The feed LINE is an
+/// ordinary pressure-driven edge and does warm itself, which is why the absolute
+/// check below is a bound rather than an equality.
 #[test]
 fn draws_leave_at_the_feed_temperature() {
     let mut engine = build(&source_column_plant(0.0, 0.10)).expect("plant should build");
@@ -316,10 +325,30 @@ fn draws_leave_at_the_feed_temperature() {
             "{draw} should leave at the feed temperature {feed_t} K, got {t}"
         );
     }
+    // The source declares 250 °C and nothing HEATS the stream; the feed line adds
+    // only its own friction, two orders below anything a unit would do.
     assert!(
-        (feed_t - 523.15).abs() < 1e-9,
-        "the feed enters at 250 °C and nothing heats it, expected 523.15 K, got {feed_t}"
+        feed_t > 523.15 && feed_t - 523.15 < 0.5,
+        "the feed enters at 250 °C and only its own pipe friction is added, expected \
+         just above 523.15 K, got {feed_t}"
     );
+    // A draw books no friction of its own, which is what makes the equality above
+    // exact rather than approximate — asserted directly so the reason is gated and
+    // not merely commented.
+    for draw in ["light_draw", "middle_draw", "heavy_draw"] {
+        let phi = engine
+            .snapshot()
+            .edges
+            .into_iter()
+            .find(|e| e.name == draw)
+            .expect("every draw must appear in the snapshot")
+            .dissipation_w;
+        assert_eq!(
+            phi, 0.0,
+            "a column draw's flow is prescribed, not pressure-driven, so it must book \
+             no frictional dissipation; '{draw}' reports {phi} W"
+        );
+    }
 }
 
 /// Reverse feed flow is refused, not silently split. "The feed splits by boiling

@@ -777,7 +777,7 @@ flare, and the vessel that relieves into it — is what M5 delivers.
       **choking ships** with a smoothed transition; and a relief valve is an
       **element characteristic, not a controller**.
 
-### M5.1 — Frictional dissipation into the stream (the M2.2 debt)
+### M5.1 — Frictional dissipation into the stream (the M2.2 debt) — **LANDED**
 Independent of everything else in M5, so it lands first. M2.2 deferred it with an
 explicit re-opening condition — *measure it on a plant where it should be largest,
 and build it only if a gate on that number can fail for the right reason* — and
@@ -786,29 +786,93 @@ the measurement re-opens it: on `tank_pump_valve` at its reference state the
 already carry. The pipes add 0.003776 K and the pump's curve droop 0.000356 K.
 M2.2 was right that pumping was too small and wrong that the plant was: throttling
 was already large enough, on the reference plant rather than a contrived one.
-- [ ] `solvers`: `HydraulicSolution` gains per-edge dissipated power. The rule
+- [x] `solvers`: `HydraulicSolution` gains per-edge dissipated power. The rule
       needs **no new parameter** — `QuadraticBranch` already splits the two kinds
       of term along exactly the physical line: **`α` is dissipative, `β` is not**
       (elevation is reversible potential, the pump jump is shaft work in), so the
       dissipation is `α·Q|Q|·Q` [W]. `core` must not recompute it as
       `(P_up − P_down) − β`: `β` is solver-side knowledge, and a `core` that knows
       it knows the element physics (rule 2).
-- [ ] `core`: one more term in the per-edge outlet transform `energy::
+      Landed in `network::edge_flows`, which now returns an `EdgeResults` carrying
+      flows, dissipation and throughput together. `Q` is recovered as `ṁ/ρ` from
+      the flow this function *reports*, not re-evaluated from `branch.flow(dp)`,
+      so the two cases where those differ carry `Φ = 0` honestly: an inert edge is
+      stagnant, and a **column draw's flow is prescribed** (`splitᵢ·ṁ_feed`), so
+      `α·Q|Q|` is not its pressure drop and booking it would invent heat. That
+      second one was not anticipated by the design note and is what keeps "draws
+      leave at the feed temperature" an exact equality. `finalize` scans `Φ` for
+      finiteness and sign separately from the flows — it is a CUBE of the flow, so
+      it can overflow while the flow stays finite.
+- [x] `core`: one more term in the per-edge outlet transform `energy::
       pipe_outlet_temperature` / `edge_temperature_at` already own for ambient
       exchange — same structure, same **two** readers (`inflow_totals` and the
       tank loop), and the same trap if only one is updated (M2.2's pipe-ambient
       lesson, where the second reader needed its own mutation to prove its gate).
-- [ ] `core`: I6 gains the dissipation budget rather than excluding reactors'
+      **The note was right about where it lives and wrong about how it composes**
+      (DESIGN §3a, "Corrections from building it"). It is not one more term added
+      on: heat released partway along a pipe has only the remainder of the pipe to
+      leak back out through, so the transform is the COUPLED analytic solution
+      `T_out = T_amb + (T_in − T_amb)·e^{−β} + (Φ/C)·ψ(β)` with
+      `ψ(β) = (1−e^{−β})/β`. Adding `Φ/C` on top of the exponential is wrong by
+      `(Φ/C)(1−ψ)` — first order in `β`, so exactly zero at `UA = 0` and wrong
+      above it. The two-reader trap itself was avoided structurally rather than
+      gated after the fact: both readers take the value through the same helper,
+      and the mutation that starves only the tank loop is caught (see below).
+- [x] `core`: I6 gains the dissipation budget rather than excluding reactors'
       way. Unlike `Δh_rxn`, this is sensible heat and exactly computable;
       excluding it would widen an invariant to tolerate a term the model knows.
-- [ ] Tests: the absolute **0.094309 K** valve hand calc; the **mechanical-energy
+      **Necessary but not sufficient**, and the missing half is the M2.2 lesson
+      arriving a second time: the boundary flux also had to move to the
+      temperature at which fluid crosses the **reservoir's own** boundary,
+      selected by FLOW SIGN (the generator's sink range back-feeds, so the drain
+      line reverses). A reservoir that is upwind supplies its own temperature and
+      the pipe's friction is picked up inside the control volume; reading the
+      edge's outlet there credits it twice. Invisible before M5.1 because a
+      `UA = 0` edge was isothermal and either end read the same.
+- [x] Tests: the absolute **0.094309 K** valve hand calc; the **mechanical-energy
       closure** `Σ dissipation = pump β − elevation β − net ΔP`, derived
       independently of the term under test and closing to 3 Pa in 411 052 (the
       regularisation floor); I6 with the new budget.
-      Mutations, each to fail its own gate and no other: booking the *total*
-      branch drop instead of `α·Q|Q|` (elevation credited as heat, 12% high);
-      dropping the pump's `α`; writing the heat to the edge's **inlet**.
-- [ ] **This slice deliberately breaks the bit-identical regression anchor** —
+      **Landed** as `scenarios/tests/dissipation_reference.rs`. The hand calc runs
+      per EDGE — 9.7e-5 K on the suction line, 2.6e-3 across the pump, 9.578e-2
+      across the valve — three numbers spanning three orders of magnitude, which
+      also pins the fold-at-source convention deciding which edge a device's
+      friction lands on; the valve's own share reproduces DESIGN's 0.094309 K to
+      1e-6 and the plant total its 0.098442 K. Every expected value is built from
+      `kv_reference`'s independently derived **13.753287 kg/s**, never a snapshot
+      readback, and the 5e-6 K tolerance is **derived** from the `eps_dp = 1.0` Pa
+      regularisation (~3 Pa ⇒ 7e-7 K), not tuned. The closure gate's right-hand
+      side is the solved pressure field plus the two `β` the TOML declares, so it
+      never evaluates `α`; the corrected sign is
+      `Σ α·Q|Q| = ΔP_net + ρ·g·h0 − ρ·g·Δz`, and it closes to 3 Pa in 411 055
+      exactly as the note predicted.
+      **Falsified before trusted**, six mutations, each caught by the right set:
+      **elevation credited as heat** (DESIGN's "total branch drop" mutation, 12%
+      high) fails both dissipation gates and `isothermal_plant`, while I6 stays
+      green — correct discrimination, since I6 pins CONSISTENCY and a wrong `Φ`
+      appears on both sides of it; **the pump's own `α` dropped** fails the same
+      set on a 3.6e-4 K difference, which is what the derived tolerance buys;
+      **friction written to the edge's INLET** fails 14 gates; **`ψ(β) → 1`**
+      (friction and ambient applied sequentially instead of coupled) fails the
+      pipe-ambient log-mean gate **alone**; **a pressure-driven `Φ` on column
+      draws** fails `draws_leave_at_the_feed_temperature` **alone**; and **the
+      tank-loop reader left un-updated while the sweep's is correct** — the M2.2
+      two-reader trap in its purest form — fails I6 (both the proptest and the
+      headroom measurement) and the multi-component tank cp reference, and nothing
+      else. That last one is the evidence I6's new budget is load-bearing rather
+      than decorative: `isothermal_plant`'s flat line cannot see it, because the
+      supply tank's only edge is an outflow where the tank is upwind and no
+      transform applies either way.
+      One correction to this box's own original claim: writing the heat to the
+      inlet is **not** "reachable only through the tank-loop reader". It is caught
+      almost everywhere, because the restated gates below assert exact
+      pass-through identities across each unit. The genuinely tank-loop-only fault
+      is the sixth mutation, and I6 is what catches it.
+      The pipe-ambient LMTD gate needed generalizing rather than loosening: with a
+      frictional source the profile decays toward `T* = T_amb + Φ/UA`, so the
+      log-mean is taken about `T*` and remains an identity at 1e-12. `UA·LMTD − Φ`
+      is the obvious patch and is simply not true.
+- [x] **This slice deliberately breaks the bit-identical regression anchor** —
       the first time in the project, and it is a cost, not an oversight. M3.1 and
       M4 both held it; dissipation cannot, because it has no free parameter and
       therefore no honest "off" default. `scenarios/tests/isothermal_plant.rs`
@@ -818,6 +882,22 @@ was already large enough, on the reference plant rather than a contrived one.
       replacement is stronger than what it retires — the same plant, the same
       spurious-offset trap, asserted against a *predicted* 0.094309 K instead of
       against zero.
+      **The cost was 18 gates across 8 files, not the one this box named**, and
+      that number is worth carrying forward: every absolute-temperature assertion
+      downstream of a flowing pipe moved. The pattern that kept them sharp is
+      general — an exact identity is re-stated **across the unit**, from what
+      ARRIVES on its inlet edge to what its NODE resolves to, which leaves both
+      frictional terms outside the claim instead of widening a tolerance to
+      swallow them. The furnace's first law, the cooler's signed first law, the
+      exchanger's `ε·C_min` relation and its energy closure are all stated that
+      way now, and several got *sharper*: the furnace's "doubling the duty doubles
+      the rise" became "each extra MW adds exactly the same rise", which pins the
+      intercept as well as the slope. `isothermal_plant.rs` keeps an EXACT flat
+      line on `supply_tank` — upwind of every source of friction, with no inflow,
+      so `dE/dt = −ṁ·h(T)` against `dm/dt = −ṁ` leaves `T` constant identically —
+      and asserts the predicted rise everywhere downstream.
+- [x] `EdgeSnapshot::dissipation_w` [W], so a frontend and the gates read the term
+      the same way rather than the tests reaching into the solver's structure.
 
 ### M5.2 — Gas as a component phase (`ρ(P,T)`)
 - [ ] `core`: `PseudoComponent` gains a phase, defaulting to `liquid` so every

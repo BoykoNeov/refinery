@@ -120,8 +120,8 @@ impl FlowSolver for NewtonFlowSolver {
         // scenario loader is responsible for rejecting components that lack a
         // pressure reference, so the solver stays lenient rather than Err'ing.
         if n == 0 {
-            let (flows, _) = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-            return finalize(&pressures, flows, 0, 0.0);
+            let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
+            return finalize(&pressures, edges, 0, 0.0);
         }
 
         // Damped Newton.
@@ -191,8 +191,8 @@ impl FlowSolver for NewtonFlowSolver {
                 self.warm_start.insert(nid, p);
             }
         }
-        let (flows, _) = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-        finalize(&pressures, flows, iterations, res)
+        let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
+        finalize(&pressures, edges, iterations, res)
     }
 
     fn name(&self) -> &'static str {

@@ -89,15 +89,58 @@ pub fn ambient_exchange(ua: WattPerKelvin, body_temperature: Kelvin) -> Watt {
     Watt(ua.value() * (T_AMBIENT.value() - body_temperature.value()))
 }
 
-/// Outlet temperature of a pipe exchanging heat with ambient [K].
+/// `(1 − e^{−x})/x`, the mean of `e^{−xξ}` over `ξ ∈ [0,1]`, continuous at 0.
 ///
-/// The analytic plug-flow solution — integrating `ṁ·cp·dT/dx = ua'·(T_AMBIENT −
-/// T)` along the pipe, the same Newton's-law driving force as
-/// `ambient_exchange` but applied to a body with throughput and no inventory:
+/// The weight the dissipation term carries in `pipe_outlet_temperature`: heat
+/// released a fraction `ξ` along the pipe only gets `(1 − ξ)` of the pipe left to
+/// leak back out to ambient, and averaging that over a uniform release is exactly
+/// this function. `ψ(0) = 1` is the limit, not a special case — with no ambient
+/// coupling every watt released reaches the outlet.
+///
+/// `expm1` rather than `1.0 - x.exp()`: at small `x` the latter cancels to a few
+/// significant digits, and small `x` is the ordinary case (`UA = 0` on every
+/// scenario shipped today).
+#[inline]
+fn exp_decay_mean(x: f64) -> f64 {
+    if x == 0.0 {
+        1.0
+    } else {
+        -(-x).exp_m1() / x
+    }
+}
+
+/// Outlet temperature of a pipe that exchanges heat with ambient and dissipates
+/// friction into its own stream [K].
+///
+/// The analytic plug-flow solution — integrating
+/// `ṁ·cp·dT/dx = ua'·(T_AMBIENT − T) + φ'` along the pipe, the same Newton's-law
+/// driving force as `ambient_exchange` plus a uniform frictional source, applied
+/// to a body with throughput and no inventory. With `C = |ṁ|·cp` [W/K] the
+/// capacity rate and `β = UA/C`:
 ///
 /// ```text
-/// T_out = T_AMBIENT + (T_in − T_AMBIENT)·exp(−UA/(|ṁ|·cp))
+/// T_out = T_AMBIENT + (T_in − T_AMBIENT)·exp(−β) + (Φ/C)·ψ(β),   ψ(β) = (1−e^{−β})/β
 /// ```
+///
+/// The two terms are **coupled, not applied in sequence**: heat released partway
+/// along the pipe has only the remainder of the pipe to leak back out through, so
+/// it arrives weighted by `ψ(β) ≤ 1` rather than in full. Adding `Φ/C` on top of
+/// the pure exponential would over-credit it, by `(Φ/C)(1 − ψ)` — first order in
+/// `β`, hence exactly zero wherever `UA = 0` but not in general.
+///
+/// **Φ is assumed uniform along the edge, and that is a stated limitation.** A
+/// valve's dissipation is really concentrated at its trim, which the
+/// fold-at-source convention puts at this edge's INLET, where the fluid then has
+/// the whole pipe to shed it: the concentrated-inlet answer is `(Φ/C)·e^{−β}`
+/// against this uniform `(Φ/C)·ψ(β)`, a difference of `≈ (Φ/C)·β/2`. This cannot
+/// be resolved at the seam as it stands — the solver reports ONE `Φ` per edge
+/// (`HydraulicSolution::edge_dissipation`), so `core` cannot tell a valve's share
+/// from the pipe wall's without a second field. The error is zero at `UA = 0`,
+/// which is every scenario in the workspace today (docs/DESIGN.md §3a).
+///
+/// `Φ ≥ 0` always (it is `α·|Q|³`), so this term only ever HEATS, whichever way
+/// the flow runs — friction has no direction to get wrong, unlike the ambient
+/// term's driving difference.
 ///
 /// Three details are load bearing (docs/DESIGN.md §4a):
 ///
@@ -131,20 +174,25 @@ pub fn ambient_exchange(ua: WattPerKelvin, body_temperature: Kelvin) -> Watt {
 /// convenient one: a stagnant pipe carries no enthalpy either way, the same
 /// reasoning that lets transport pick an arbitrary upwind end at exactly zero
 /// flow. Modelling a stagnant pipe warming toward ambient needs pipe-wall
-/// thermal mass, which is a fidelity step, not a guard.
+/// thermal mass, which is a fidelity step, not a guard. A stagnant edge also
+/// dissipates nothing (`Φ = α·|Q|³ = 0`), so the guard cannot swallow a real
+/// heat term.
 #[inline]
 pub fn pipe_outlet_temperature(
     inlet: Kelvin,
     ua: WattPerKelvin,
     mass_flow: KgPerSec,
     cp: JPerKgK,
+    dissipation: Watt,
 ) -> Kelvin {
     let capacity_rate = mass_flow.value().abs() * cp.value(); // [W/K]
     if capacity_rate == 0.0 {
         return inlet;
     }
-    let decay = (-ua.value() / capacity_rate).exp();
-    Kelvin(T_AMBIENT.value() + (inlet.value() - T_AMBIENT.value()) * decay)
+    let beta = ua.value() / capacity_rate;
+    let decay = (-beta).exp();
+    let friction_rise = dissipation.value() / capacity_rate * exp_decay_mean(beta);
+    Kelvin(T_AMBIENT.value() + (inlet.value() - T_AMBIENT.value()) * decay + friction_rise)
 }
 
 /// The end of `edge` the fluid comes FROM, given a signed mass flow.
@@ -397,9 +445,17 @@ pub fn column_separation(
 /// is bit-identical to its predecessor by construction rather than by
 /// measurement.
 ///
+/// `dissipation` is that edge's frictional heat [W] from the solve, and it lands
+/// on the same side of the same split: the upwind node is still at its own
+/// temperature (the fluid has not been through the trim yet), and the downstream
+/// end sees it. A valve therefore *reports* its inlet temperature, with its own
+/// throttling heat appearing on the edge leaving it — the display consequence of
+/// fold-at-source, stated rather than papered over (docs/DESIGN.md §3a).
+///
 /// # Errors
 /// `SimError::Numerical` if the upwind node's temperature is not yet resolved —
 /// returned rather than indexed so a sweep-ordering bug cannot panic (rule 5).
+#[allow(clippy::too_many_arguments)]
 pub fn edge_temperature_at(
     graph: &PlantGraph,
     slate: &Slate,
@@ -407,6 +463,7 @@ pub fn edge_temperature_at(
     composition: &BTreeMap<NodeId, Composition>,
     edge: EdgeId,
     mass_flow: f64,
+    dissipation: Watt,
     node: NodeId,
 ) -> Result<Kelvin, SimError> {
     let upwind = upwind_end(graph, edge, mass_flow);
@@ -430,6 +487,7 @@ pub fn edge_temperature_at(
         pipe.ambient_ua,
         KgPerSec(mass_flow),
         cp,
+        dissipation,
     ))
 }
 
@@ -643,6 +701,19 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
     }
 }
 
+/// The friction power [W] the solve reported for `edge`.
+///
+/// Mirrors how every reader here takes `edge_mass_flow` — `.get().unwrap_or(0)`
+/// — so the two per-edge fields of one solve are looked up the same way and
+/// cannot disagree about an edge the solve did not name. In practice neither
+/// fallback is reachable: `Engine::tick` refuses a solution that omits any edge
+/// from either map, so a missing key is a solver bug caught with the edge named,
+/// not a silently zeroed heat term.
+#[inline]
+fn dissipation_on(edge_dissipation: &BTreeMap<EdgeId, Watt>, edge: EdgeId) -> Watt {
+    edge_dissipation.get(&edge).copied().unwrap_or(Watt::ZERO)
+}
+
 /// Edges carrying flow *into* `node`, as `(edge, upstream node, ṁ into node)`.
 ///
 /// The single definition of "inflow" — the dependency count and the mixing sum
@@ -751,6 +822,7 @@ pub fn resolve_node_states(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    edge_dissipation: &BTreeMap<EdgeId, Watt>,
     reactions: &dyn ReactionModel,
     previous: &NodeStates,
 ) -> Result<NodeStates, SimError> {
@@ -865,6 +937,7 @@ pub fn resolve_node_states(
                     graph,
                     slate,
                     edge_mass_flow,
+                    edge_dissipation,
                     &temperature,
                     &composition,
                     &previous.temperature,
@@ -892,6 +965,7 @@ pub fn resolve_node_states(
                             graph,
                             slate,
                             edge_mass_flow,
+                            edge_dissipation,
                             &temperature,
                             &composition,
                             id,
@@ -908,6 +982,7 @@ pub fn resolve_node_states(
                             graph,
                             slate,
                             edge_mass_flow,
+                            edge_dissipation,
                             &temperature,
                             &composition,
                             &previous.temperature,
@@ -994,6 +1069,7 @@ fn reactor_duty(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
     node: NodeId,
@@ -1014,15 +1090,22 @@ fn reactor_duty(
     // Σ ṁ_in·cp_in·(T_in − T_REF) [W] — the inlet enthalpy above the datum, the
     // same sum `mix_inflows` divides to get a mixed temperature. `None` = no
     // inflow, so no duty.
-    let sensible =
-        match inflow_totals(graph, slate, edge_mass_flow, temperature, composition, node)? {
-            Some((inlet_enthalpy, _capacity)) => {
-                let cp_out = reaction.products.mixture_cp(slate).value();
-                let outlet_enthalpy = mass_in * cp_out * (t_set.value() - T_REF.value());
-                outlet_enthalpy - inlet_enthalpy
-            }
-            None => 0.0,
-        };
+    let sensible = match inflow_totals(
+        graph,
+        slate,
+        edge_mass_flow,
+        edge_dissipation,
+        temperature,
+        composition,
+        node,
+    )? {
+        Some((inlet_enthalpy, _capacity)) => {
+            let cp_out = reaction.products.mixture_cp(slate).value();
+            let outlet_enthalpy = mass_in * cp_out * (t_set.value() - T_REF.value());
+            outlet_enthalpy - inlet_enthalpy
+        }
+        None => 0.0,
+    };
     let reported = sensible + mass_in * reaction.dh_rxn.value();
 
     Ok((
@@ -1118,10 +1201,12 @@ fn mix_compositions(
 /// have mixed to.
 type InflowTotals = Option<(f64, f64)>;
 
+#[allow(clippy::too_many_arguments)]
 fn inflow_totals(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
     node: NodeId,
@@ -1146,8 +1231,16 @@ fn inflow_totals(
         // seeded — but the helper returns an error rather than indexing, so a
         // sort bug can never panic (rule 5).
         let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
-        let inlet_t =
-            edge_temperature_at(graph, slate, temperature, composition, edge, flow, node)?;
+        let inlet_t = edge_temperature_at(
+            graph,
+            slate,
+            temperature,
+            composition,
+            edge,
+            flow,
+            dissipation_on(edge_dissipation, edge),
+            node,
+        )?;
         // The same resolved-upwind cp the transform above used, through the same
         // helper: an inlet transformed at one heat capacity and mixed at another
         // would not conserve enthalpy across the pipe.
@@ -1160,10 +1253,12 @@ fn inflow_totals(
 }
 
 /// Enthalpy-weighted mix of a zero-volume node's inflows [K].
+#[allow(clippy::too_many_arguments)]
 fn mix_inflows(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
     previous: &BTreeMap<NodeId, Kelvin>,
@@ -1176,9 +1271,15 @@ fn mix_inflows(
     // all) and a furnace would be an inert pass-through.
     let heat_input = heat_load(graph.node(node)).value();
 
-    if let Some((enthalpy, capacity)) =
-        inflow_totals(graph, slate, edge_mass_flow, temperature, composition, node)?
-    {
+    if let Some((enthalpy, capacity)) = inflow_totals(
+        graph,
+        slate,
+        edge_mass_flow,
+        edge_dissipation,
+        temperature,
+        composition,
+        node,
+    )? {
         let mixed = T_REF.value() + (enthalpy + heat_input) / capacity;
         // A duty that exceeds the sensible heat available in the stream drives
         // the mix below absolute zero; `checked_temperature` owns that rule for
@@ -1235,10 +1336,12 @@ fn mix_inflows(
 /// A side with no throughput exchanges nothing: `Q` is zero and each side falls
 /// back to the ordinary zero-volume rules. That is physics, not a guard — an
 /// exchanger with one stream stopped is a pipe.
+#[allow(clippy::too_many_arguments)]
 fn exchange_pair(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
     previous: &BTreeMap<NodeId, Kelvin>,
@@ -1255,6 +1358,7 @@ fn exchange_pair(
         graph,
         slate,
         edge_mass_flow,
+        edge_dissipation,
         temperature,
         composition,
         side_a,
@@ -1263,6 +1367,7 @@ fn exchange_pair(
         graph,
         slate,
         edge_mass_flow,
+        edge_dissipation,
         temperature,
         composition,
         side_b,
@@ -1397,6 +1502,25 @@ mod tests {
         }
     }
 
+    /// No frictional dissipation on any edge.
+    ///
+    /// The right input for every test in this module: they hand-build a flow map
+    /// to exercise the sweep's TOPOLOGY — upwind direction, Kahn ordering, the
+    /// exchanger merge, the recycle rejection — none of which friction touches,
+    /// and none of which has a `QuadraticBranch` behind it to compute an honest
+    /// `Φ` from anyway. Dissipation is pinned where it is produced, on a real
+    /// solve, by `scenarios/tests/dissipation_reference.rs`; the transform itself
+    /// is pinned by the `pipe_outlet_temperature` cases below, which pass `Φ`
+    /// explicitly.
+    ///
+    /// Deliberately a test fixture and NOT a constructor on the production API.
+    /// DESIGN §3a's whole argument for this term is that it has no free parameter
+    /// and therefore no honest "off" switch; an `EdgeSolution::frictionless()` in
+    /// `core` would be exactly that switch wearing a helper's clothes.
+    fn no_friction() -> BTreeMap<EdgeId, Watt> {
+        BTreeMap::new()
+    }
+
     fn resolve(
         graph: &PlantGraph,
         flows: &BTreeMap<EdgeId, f64>,
@@ -1405,6 +1529,7 @@ mod tests {
             graph,
             &Slate::water_only(),
             flows,
+            &no_friction(),
             &NoRxn,
             &NodeStates::default(),
         )
@@ -1417,8 +1542,15 @@ mod tests {
         slate: &Slate,
         flows: &BTreeMap<EdgeId, f64>,
     ) -> Result<BTreeMap<NodeId, Composition>, SimError> {
-        resolve_node_states(graph, slate, flows, &NoRxn, &NodeStates::default())
-            .map(|states| states.composition)
+        resolve_node_states(
+            graph,
+            slate,
+            flows,
+            &no_friction(),
+            &NoRxn,
+            &NodeStates::default(),
+        )
+        .map(|states| states.composition)
     }
 
     /// The composition sweep, on a slate whose two cuts have DELIBERATELY
@@ -1586,7 +1718,7 @@ mod tests {
                 )]),
                 ..Default::default()
             };
-            let held = resolve_node_states(&g, &slate, &flows, &NoRxn, &previous)
+            let held = resolve_node_states(&g, &slate, &flows, &no_friction(), &NoRxn, &previous)
                 .unwrap()
                 .composition;
             assert_eq!(held[&idle].fractions(), &[0.2, 0.8]);
@@ -2095,9 +2227,16 @@ mod tests {
             composition: BTreeMap::new(),
             ..Default::default()
         };
-        let temperature = resolve_node_states(&g, &Slate::water_only(), &flows, &NoRxn, &previous)
-            .unwrap()
-            .temperature;
+        let temperature = resolve_node_states(
+            &g,
+            &Slate::water_only(),
+            &flows,
+            &no_friction(),
+            &NoRxn,
+            &previous,
+        )
+        .unwrap()
+        .temperature;
         assert_eq!(
             temperature[&idle].value(),
             311.0,
@@ -2146,8 +2285,13 @@ mod tests {
         /// has no truncation error to budget for (contrast the tank's 1e-3).
         #[test]
         fn one_transfer_unit_decays_by_exactly_e_inverse() {
-            let out =
-                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin(4184.0), KgPerSec(1.0), CP);
+            let out = pipe_outlet_temperature(
+                Kelvin(373.15),
+                WattPerKelvin(4184.0),
+                KgPerSec(1.0),
+                CP,
+                Watt::ZERO,
+            );
             // The hand computation above gives 322.580355293715387; this is
             // that value truncated to what an f64 can actually hold. The
             // difference is ~1e-13, well inside the 1e-9 tolerance, so the
@@ -2166,7 +2310,8 @@ mod tests {
         #[test]
         fn no_ua_is_exactly_the_identity() {
             let inlet = Kelvin(373.15);
-            let out = pipe_outlet_temperature(inlet, WattPerKelvin::ZERO, KgPerSec(2.5), CP);
+            let out =
+                pipe_outlet_temperature(inlet, WattPerKelvin::ZERO, KgPerSec(2.5), CP, Watt::ZERO);
             assert_eq!(out.value(), inlet.value());
         }
 
@@ -2181,10 +2326,20 @@ mod tests {
         /// scenario happening to reverse a flow.
         #[test]
         fn reverse_flow_decays_identically() {
-            let forward =
-                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin(4184.0), KgPerSec(1.0), CP);
-            let reverse =
-                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin(4184.0), KgPerSec(-1.0), CP);
+            let forward = pipe_outlet_temperature(
+                Kelvin(373.15),
+                WattPerKelvin(4184.0),
+                KgPerSec(1.0),
+                CP,
+                Watt::ZERO,
+            );
+            let reverse = pipe_outlet_temperature(
+                Kelvin(373.15),
+                WattPerKelvin(4184.0),
+                KgPerSec(-1.0),
+                CP,
+                Watt::ZERO,
+            );
             assert_eq!(
                 forward.value(),
                 reverse.value(),
@@ -2207,6 +2362,7 @@ mod tests {
                 WattPerKelvin(418_400.0), // 100 transfer units
                 KgPerSec(1.0),
                 CP,
+                Watt::ZERO,
             );
             assert!(
                 out.value() >= T_AMBIENT.value() && out.value() <= 373.15,
@@ -2228,8 +2384,13 @@ mod tests {
         /// is the reachable case, not a contrived one.
         #[test]
         fn a_stagnant_uninsulated_pipe_is_finite_not_nan() {
-            let out =
-                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin::ZERO, KgPerSec::ZERO, CP);
+            let out = pipe_outlet_temperature(
+                Kelvin(373.15),
+                WattPerKelvin::ZERO,
+                KgPerSec::ZERO,
+                CP,
+                Watt::ZERO,
+            );
             assert!(
                 out.value().is_finite(),
                 "a stagnant pipe must not produce a NaN temperature, got {}",
@@ -2247,8 +2408,13 @@ mod tests {
         /// mass the engine does not have.
         #[test]
         fn a_stagnant_insulated_pipe_holds_its_inlet_rather_than_snapping_to_ambient() {
-            let out =
-                pipe_outlet_temperature(Kelvin(373.15), WattPerKelvin(4184.0), KgPerSec::ZERO, CP);
+            let out = pipe_outlet_temperature(
+                Kelvin(373.15),
+                WattPerKelvin(4184.0),
+                KgPerSec::ZERO,
+                CP,
+                Watt::ZERO,
+            );
             assert_eq!(
                 out.value(),
                 373.15,
@@ -2263,8 +2429,13 @@ mod tests {
         /// a plant with a `Cooler` upstream.
         #[test]
         fn a_cold_stream_warms_toward_ambient() {
-            let out =
-                pipe_outlet_temperature(Kelvin(273.15), WattPerKelvin(4184.0), KgPerSec(1.0), CP);
+            let out = pipe_outlet_temperature(
+                Kelvin(273.15),
+                WattPerKelvin(4184.0),
+                KgPerSec(1.0),
+                CP,
+                Watt::ZERO,
+            );
             assert!(
                 out.value() > 273.15 && out.value() < T_AMBIENT.value(),
                 "a stream below ambient must warm toward it, got {}",
@@ -2541,9 +2712,15 @@ mod tests {
                 products: products.clone(),
                 dh_rxn,
             };
-            let states =
-                resolve_node_states(&g, &slate, &flows, &reactions, &NodeStates::default())
-                    .unwrap();
+            let states = resolve_node_states(
+                &g,
+                &slate,
+                &flows,
+                &no_friction(),
+                &reactions,
+                &NodeStates::default(),
+            )
+            .unwrap();
 
             // The reactor imposes t_set and carries the PRODUCTS downstream.
             assert_eq!(states.temperature[&rx], t_set);
@@ -2618,9 +2795,15 @@ mod tests {
                 products,
                 dh_rxn: JPerKg(1.0e5),
             };
-            let states =
-                resolve_node_states(&g, &slate, &flows, &reactions, &NodeStates::default())
-                    .unwrap();
+            let states = resolve_node_states(
+                &g,
+                &slate,
+                &flows,
+                &no_friction(),
+                &reactions,
+                &NodeStates::default(),
+            )
+            .unwrap();
 
             assert_eq!(states.temperature[&rx], Kelvin(800.0));
             let duty = states.reactor_duty[&rx];

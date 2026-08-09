@@ -14,7 +14,7 @@ use refinery_core::components::Slate;
 use refinery_core::error::SimError;
 use refinery_core::graph::{EdgeId, Node, NodeId, NodeKind, PlantGraph};
 use refinery_core::traits::{HydraulicSolution, SolveDiagnostics};
-use refinery_core::units::{Pascal, G, P_ATM};
+use refinery_core::units::{Pascal, Watt, G, P_ATM};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Valve openings below this snap to fully closed, so a valve "cracked to
@@ -263,8 +263,47 @@ pub fn anchored_set(
     anchored
 }
 
-/// Mass flow (kg/s) per edge in graph direction; inert edges (either endpoint
-/// unanchored) report 0. Returns (flows, throughput = max|ṁ|).
+/// What one solve reports per edge: the signed mass flow, the power friction
+/// dissipates into the stream, and the largest flow magnitude anywhere.
+pub struct EdgeResults {
+    /// Mass flow [kg/s] in graph direction (positive = source → target).
+    pub mass_flow: BTreeMap<EdgeId, f64>,
+    /// Friction power [W] into the stream, always ≥ 0. See `edge_flows`.
+    pub dissipation: BTreeMap<EdgeId, Watt>,
+    /// `max |ṁ|` over all edges [kg/s] — the scale the relative convergence
+    /// tolerance is measured against.
+    pub throughput: f64,
+}
+
+/// Mass flow (kg/s) and frictional dissipation (W) per edge in graph direction;
+/// inert edges (either endpoint unanchored) report 0 for both.
+///
+/// **The dissipation rule needs no new parameter** (docs/DESIGN.md §3a).
+/// `QuadraticBranch` already separates the two kinds of pressure term along
+/// exactly the physical line: `α·Q|Q|` is friction — pipe wall, valve trim, pump
+/// curve droop — and becomes heat in the fluid, while `β` is elevation head
+/// (reversible potential) and the pump's pressure jump (shaft work in). So the
+/// dissipated power on a branch is
+///
+/// ```text
+/// Φ = α·Q|Q| · Q   [W]
+/// ```
+///
+/// which is ≥ 0 for either flow direction because `α ≥ 0` and `Q|Q|·Q = |Q|³`.
+/// It is computed HERE, where `α` and `Q` are both already in hand, rather than
+/// recovered downstream from the pressure drop: `(P_up − P_down) − β` would give
+/// the same number and would require `core` to know `β`, which is element
+/// physics (rule 2).
+///
+/// Note `Q` is recovered as `ṁ/ρ` rather than re-evaluated from `branch.flow`,
+/// so the reported dissipation belongs to the very flow this function reports —
+/// including the two cases where that flow is NOT `ρ·branch.flow(dp)`: an inert
+/// edge and a column draw. Both then carry `Φ = 0`, which is the honest answer
+/// for each. An inert edge is stagnant. A column draw's flow is *prescribed*
+/// (`splitᵢ·ṁ_feed`) and is not pressure-driven at all, so `α·Q|Q|` is not its
+/// pressure drop and booking it would invent heat; a draw consequently leaves
+/// the column at exactly the feed temperature, which is the limitation DESIGN §5
+/// already states and `column_reference` already gates.
 ///
 /// **Column draw edges are guarded to zero here, not computed.** A draw's flow is
 /// `splitᵢ · ṁ_feed`, prescribed by the feed's composition, and both endpoints
@@ -283,8 +322,9 @@ pub fn edge_flows(
     pressures: &BTreeMap<NodeId, f64>,
     anchored: &BTreeSet<NodeId>,
     eps: f64,
-) -> (BTreeMap<EdgeId, f64>, f64) {
-    let mut flows = BTreeMap::new();
+) -> EdgeResults {
+    let mut mass_flow = BTreeMap::new();
+    let mut dissipation = BTreeMap::new();
     let mut throughput = 0.0f64;
     for eid in graph.edge_ids() {
         let c = &compiled[&eid];
@@ -296,10 +336,24 @@ pub fn edge_flows(
         } else {
             0.0
         };
+        // Φ = α·Q|Q|·Q with Q = ṁ/ρ. A closed branch has α = +∞ and ṁ = 0, so
+        // the product would be ∞·0 = NaN; it is exactly the case with no flow to
+        // heat, so it is zero by the same test that makes `flow` return zero.
+        let q = mdot / c.rho;
+        let phi = if q == 0.0 {
+            0.0
+        } else {
+            c.branch.alpha * q * q.abs() * q
+        };
         throughput = throughput.max(mdot.abs());
-        flows.insert(eid, mdot);
+        mass_flow.insert(eid, mdot);
+        dissipation.insert(eid, Watt(phi));
     }
-    (flows, throughput)
+    EdgeResults {
+        mass_flow,
+        dissipation,
+        throughput,
+    }
 }
 
 /// True if `edge` is a column draw: one of its endpoints is a `Column` and the
@@ -322,7 +376,7 @@ pub fn is_column_draw_edge(graph: &PlantGraph, edge: EdgeId) -> bool {
 /// escapes a solve). Only called on a converged solve, hence `converged: true`.
 pub fn finalize(
     pressures: &BTreeMap<NodeId, f64>,
-    flows: BTreeMap<EdgeId, f64>,
+    edges: EdgeResults,
     iterations: u32,
     residual: f64,
 ) -> Result<HydraulicSolution, SimError> {
@@ -335,16 +389,29 @@ pub fn finalize(
         }
         node_pressure.insert(*nid, Pascal(*p));
     }
-    for (eid, f) in &flows {
+    for (eid, f) in &edges.mass_flow {
         if !f.is_finite() {
             return Err(SimError::NonFiniteState {
                 location: format!("{eid:?} mass flow"),
             });
         }
     }
+    // Dissipation is scanned separately rather than trusted to follow the flow:
+    // it is a CUBE of the flow, so an edge whose ṁ is merely large produces a Φ
+    // that overflows to +∞ while the flow itself stays finite. It also feeds a
+    // temperature directly, where an infinity would surface as a bare
+    // non-finite with no edge named.
+    for (eid, phi) in &edges.dissipation {
+        if !phi.value().is_finite() || phi.value() < 0.0 {
+            return Err(SimError::NonFiniteState {
+                location: format!("{eid:?} frictional dissipation ({} W)", phi.value()),
+            });
+        }
+    }
     Ok(HydraulicSolution {
         node_pressure,
-        edge_mass_flow: flows,
+        edge_mass_flow: edges.mass_flow,
+        edge_dissipation: edges.dissipation,
         diagnostics: SolveDiagnostics {
             iterations,
             residual,

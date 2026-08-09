@@ -213,6 +213,86 @@ physics term optional, which is a fidelity `if` wearing a config file's clothes.
 The replacement is strictly stronger than what it retires: the same plant, the
 same trap, asserted against a *predicted* 0.094309 K instead of against zero.
 
+#### Corrections from building it (M5.1, landed)
+
+The note above got the seam, the rule and the cost right. Building it corrected
+it on four points, each recorded rather than quietly absorbed.
+
+**1. The transform is COUPLED, not one more term added on.** The note says
+dissipation is "one more term in the per-edge outlet transform", which is true of
+where it lives and wrong about how it composes. Heat released a fraction `ξ`
+along a pipe has only `(1 − ξ)` of the pipe left to leak back out to ambient
+through, so it does not arrive in full. Integrating
+`ṁ·cp·dT/dx = ua'·(T_AMBIENT − T) + φ'` gives, with `C = |ṁ|·cp` and `β = UA/C`,
+
+```text
+T_out = T_AMBIENT + (T_in − T_AMBIENT)·e^{−β} + (Φ/C)·ψ(β),   ψ(β) = (1 − e^{−β})/β
+```
+
+Adding `Φ/C` on top of the pure exponential over-credits it by `(Φ/C)(1 − ψ)`,
+which is **first order in `β`** — hence exactly zero wherever `UA = 0`, which is
+every scenario shipped today, and wrong the moment one is not. `ψ` is evaluated
+through `expm1` because small `β` is the ordinary case and `1 − e^{−β}` cancels
+there. That mutation (`ψ → 1`) fails exactly one gate in the workspace and no
+others, which is what makes the coupling a tested claim rather than a nicety.
+
+**2. `Φ` is assumed UNIFORM along the edge, and that is a limitation the seam
+forces.** A valve's dissipation is really concentrated at its trim, which
+fold-at-source puts at the edge's *inlet*, where the fluid then has the whole
+pipe to shed it: `(Φ/C)·e^{−β}` rather than `(Φ/C)·ψ(β)`, a difference of
+`≈ (Φ/C)·β/2`. It cannot be resolved as specified — the solver reports ONE `Φ`
+per edge, so `core` cannot separate device friction from pipe-wall friction
+without a second seam field. Zero at `UA = 0`; stated rather than discovered.
+
+**3. The pipe-ambient LMTD identity GENERALIZES rather than breaking.** The
+obvious patch — `ṁ·cp·ΔT == UA·LMTD − Φ` — is not an identity: with a frictional
+source the profile decays toward `T* = T_AMBIENT + Φ/UA`, not toward ambient, so
+the log-mean of the endpoint `(T − T_AMBIENT)` values is no longer the integral
+mean. Taken about `T*` instead it is exact again, because the `−Φ` from the
+source and the `+Φ` from integrating `UA·(T − T_AMBIENT)` over the offset cancel:
+
+```text
+ṁ·cp·(T_in − T_out) = UA · logmean(T_in − T*, T_out − T*)
+```
+
+`pipe_ambient_reference.rs` still checks it at 1e-12 relative. Relaxing the old
+form's tolerance to admit `Φ` would have kept the test green while it stopped
+discriminating — the failure mode M4.2's envelope note warns about, in a
+different costume.
+
+**4. I6 needed more than the budget line above.** Adding `Σ_e Φ_e` is necessary
+and not sufficient: the boundary flux also had to move to the temperature at
+which fluid crosses the **reservoir's own** boundary, selected by FLOW SIGN. A
+reservoir that is upwind supplies its own temperature and the pipe's friction is
+picked up afterwards, inside the control volume; reading the edge's outlet there
+credits that friction twice. This was invisible before M5.1 for exactly the
+reason M2.2's tank loop was: an edge with `UA = 0` was ISOTHERMAL, so both ends
+were the same number and either read was right. Same lesson, second arrival.
+
+**5. The blast radius was 18 gates across 8 files, not the one the roadmap
+named.** Every absolute-temperature assertion downstream of a flowing pipe moved.
+The fix that kept them sharp is worth stating as a pattern: an exact identity was
+re-stated **across the unit** — from what ARRIVES on the inlet edge to what the
+unit's NODE resolves to — which leaves both frictional terms outside the claim
+and keeps it exact, instead of widening a tolerance to swallow them. A furnace's
+first law, a cooler's signed first law, the exchanger's `ε·C_min` relation and its
+energy closure are all stated that way now. Only claims that are really about
+DIRECTION ("the inlet must not carry the duty") became bounds, and those still
+discriminate by two orders of magnitude.
+
+**One decision the note did not anticipate: a column draw reports `Φ = 0`.** Its
+flow is prescribed (`splitᵢ·ṁ_feed`), not pressure-driven, so `α·Q|Q|` is not its
+pressure drop and booking it would invent heat — the same argument that makes
+`edge_flows` refuse to report a draw's flow at all (§5). That is what keeps
+"draws leave at the feed temperature" an exact equality rather than three
+different temperatures, and it is gated there.
+
+**And a small guard that earned itself:** `finalize` scans `Φ` for finiteness and
+sign separately from the flows. `Φ` is a CUBE of the flow, so an edge whose `ṁ`
+is merely large yields a `Φ` that overflows to `+∞` while the flow stays finite;
+and a negative `Φ` is a sign error that would show up as a stream cooling itself
+by friction.
+
 ### Fork 1 — how does gas-ness enter the model?
 
 **Phase is a property of the pseudo-component, not of the stream.** A component

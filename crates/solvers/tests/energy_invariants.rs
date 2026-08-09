@@ -38,7 +38,7 @@ use proptest::test_runner::TestRunner;
 use refinery_core::components::{Composition, Slate};
 use refinery_core::energy::{enthalpy_flux, T_REF};
 use refinery_core::engine::{Engine, EngineConfig};
-use refinery_core::graph::{Node, NodeKind, Pipe, PlantGraph, TankState};
+use refinery_core::graph::{EdgeId, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::units::*;
 use refinery_solvers::{ConstantThermo, NewtonFlowSolver, NoReactions};
 
@@ -452,13 +452,24 @@ fn a_tank_approaches_ambient_on_newtons_law_of_cooling() {
 
 /// REFERENCE — a mixing tee, predicted from SYMMETRY rather than from the
 /// mixing formula: two supply legs identical in every respect except
-/// temperature must, by symmetry, carry identical flows, so the mixed stream
-/// sits at the plain arithmetic mean. 80 °C and 20 °C ⇒ exactly 50 °C.
+/// temperature must, by symmetry, carry identical flows and pick up identical
+/// friction, so the mixed stream sits at the plain arithmetic mean of what
+/// ARRIVES at the tee. 80 °C and 20 °C ⇒ dead centre.
 ///
 /// This is what makes it a real reference and not a restatement of the code:
-/// the expected value is fixed by the plant's symmetry before any code runs. A
-/// mix weighted by the wrong quantity, or upwinded from the wrong end, lands
+/// the centring is fixed by the plant's symmetry before any code runs. A mix
+/// weighted by the wrong quantity, or upwinded from the wrong end, lands
 /// somewhere other than dead centre.
+///
+/// **What M5.1 changed, and what it did not.** The legs now dissipate friction
+/// into themselves, so the mix is no longer the 323.15 K the two SOURCES sit at
+/// — it is that plus the common leg rise. The symmetry argument is untouched and
+/// in fact gains a second edge to cut on: two identical legs must warm by
+/// identical amounts, which is now asserted directly. Only the claim that the
+/// answer is *also* the sources' plain mean is gone, and it is replaced by the
+/// sources' mean plus one measured rise, which is a sharper statement, not a
+/// looser one. The MAGNITUDE of friction is pinned by
+/// `scenarios/tests/dissipation_reference.rs`, not here.
 ///
 /// (Symmetry is exact only because M1/M2 water has constant properties — a
 /// T-dependent density would perturb the two legs apart. When `ThermoModel`
@@ -479,17 +490,46 @@ fn symmetric_mixing_lands_on_the_arithmetic_mean() {
     let mut engine = engine(graph);
     engine.tick().expect("tick must converge");
 
-    let expected = 323.15; // 50 °C
+    // The symmetry itself, now that there is something for it to say about
+    // friction: byte-identical legs must warm by identical amounts.
+    let hot_arriving = edge_temperature(&engine, "hot_leg");
+    let cold_arriving = edge_temperature(&engine, "cold_leg");
+    let hot_rise = hot_arriving - 353.15;
+    let cold_rise = cold_arriving - 293.15;
+    assert!(
+        (hot_rise - cold_rise).abs() < 1e-9,
+        "two byte-identical legs must dissipate identically; the hot one warmed by \
+         {hot_rise} K and the cold one by {cold_rise} K"
+    );
+    assert!(
+        hot_rise > 0.0 && hot_rise < 0.5,
+        "each leg must warm a little from friction and no more; got {hot_rise} K"
+    );
+
+    // Dead centre between what actually ARRIVES — the mixing claim, undiminished:
+    // a mix weighted by ṁ·cp instead of ṁ, or upwinded from the far end, lands
+    // tens of kelvin off centre, not hundredths.
+    let expected = (hot_arriving + cold_arriving) / 2.0;
     let mixed = node_temperature(&engine, "tee");
     assert!(
         (mixed - expected).abs() < 1e-6,
-        "equal flows of 80 °C and 20 °C water must mix to {expected} K, got {mixed}"
+        "equal flows of 80 °C and 20 °C water must mix dead centre, at {expected} K, \
+         got {mixed}"
     );
-    // ...and the mixed temperature must actually be transported downstream.
+    // Stated the other way round, so the sources' own 50 °C still appears: the mix
+    // is their mean plus the one common leg rise, and nothing else.
+    assert!(
+        (mixed - (323.15 + hot_rise)).abs() < 1e-6,
+        "the mix must be the sources' 323.15 K mean plus the common {hot_rise} K leg \
+         rise, got {mixed}"
+    );
+    // ...and the mixed temperature must actually be transported downstream, where
+    // the outlet pipe adds its OWN friction on top.
     let outlet = edge_temperature(&engine, "outlet");
     assert!(
-        (outlet - expected).abs() < 1e-6,
-        "the outlet stream must carry the mixed {expected} K, got {outlet}"
+        outlet > mixed && outlet - mixed < 0.5,
+        "the outlet stream must carry the mixed {mixed} K plus its own friction, \
+         got {outlet}"
     );
 
     // Non-vacuity: the legs must really be flowing. A plant where both legs sat
@@ -543,10 +583,23 @@ fn a_back_fed_sink_supplies_its_own_temperature() {
         "the 9 bar sink must drive flow backwards up the outlet, got {outlet_flow} kg/s"
     );
 
+    // The tee's ONLY inflow is the back-fed outlet pipe, so a one-inflow mix is
+    // exactly what that pipe delivers — an identity that holds whatever the pipe
+    // did to the fluid on the way, and so still exact now that it adds friction.
     let mixed = node_temperature(&engine, "tee");
+    let arriving = edge_temperature(&engine, "outlet");
     assert!(
-        (mixed - 353.15).abs() < 1e-9,
-        "the back-feeding sink must supply its own 353.15 K, got {mixed}"
+        (mixed - arriving).abs() < 1e-12,
+        "a junction with one inflow must sit at exactly what that inflow delivers \
+         ({arriving} K), got {mixed}"
+    );
+    // ...and what it delivers is the SINK's 80 °C, plus the friction the reversed
+    // pipe added. Nowhere near the 20 °C source the edge's arrow points away from,
+    // which is the failure this test exists for: 60 K away, not 0.1 K.
+    assert!(
+        mixed > 353.15 && mixed - 353.15 < 0.5,
+        "the back-feeding sink must supply its own 353.15 K (plus a little friction), \
+         got {mixed}"
     );
 
     // The STREAM on the inlet must carry 353.15 K too, and asserting it is not
@@ -558,9 +611,9 @@ fn a_back_fed_sink_supplies_its_own_temperature() {
     // `tee`; a model reading the edge's declared direction reports 293.15.
     let inlet = edge_temperature(&engine, "inlet");
     assert!(
-        (inlet - 353.15).abs() < 1e-9,
-        "the back-fed inlet stream must carry the upwind 353.15 K, not the 293.15 K \
-         of the node its arrow points away from; got {inlet}"
+        inlet > mixed && inlet - 353.15 < 0.5,
+        "the back-fed inlet stream must carry the upwind tee's {mixed} K plus its own \
+         friction, not the 293.15 K of the node its arrow points away from; got {inlet}"
     );
 }
 
@@ -655,12 +708,62 @@ fn tank_energy(engine: &Engine) -> f64 {
         .sum()
 }
 
+/// The temperature at which fluid crosses a reservoir's own boundary [K].
+///
+/// **Which END of the edge, and it is now a real question.** `stream.temperature`
+/// is the edge's OUTLET, so it is the crossing temperature only when the fluid is
+/// arriving at the reservoir. When the reservoir is UPWIND the fluid leaves at
+/// the reservoir's own temperature and picks the pipe's friction up afterwards,
+/// inside the plant — booking it at the outlet would credit the plant with heat
+/// at the boundary and again in `Σ Φ` below.
+///
+/// This was invisible before M5.1 because an edge with `ambient_ua = 0` was
+/// ISOTHERMAL: both ends were the same number and either read gave the right
+/// answer. It is the same lesson M2.2's pipe-ambient work learned about the tank
+/// loop, arriving here.
+///
+/// Selected by FLOW SIGN, not by graph direction: the generator's sink pressure
+/// range reaches above the tank's bottom pressure, so `drain_line` reverses and
+/// the sink becomes the upwind end of an edge drawn pointing at it.
+fn reservoir_crossing_temperature(engine: &Engine, reservoir: NodeId, edge: EdgeId) -> Kelvin {
+    let stream = &engine.graph.pipe(edge).stream;
+    let (from, to) = engine.graph.endpoints(edge);
+    let upwind = if stream.mass_flow.value() >= 0.0 {
+        from
+    } else {
+        to
+    };
+    if upwind == reservoir {
+        // Leaving the reservoir: its own temperature, before the pipe touches it.
+        match &engine.graph.node(reservoir).kind {
+            NodeKind::Source { temperature, .. } | NodeKind::Sink { temperature, .. } => {
+                *temperature
+            }
+            NodeKind::Atmosphere => T_AMBIENT,
+            other => panic!("'{other:?}' is not a reservoir"),
+        }
+    } else {
+        // Arriving at the reservoir: the edge's outlet, friction included.
+        stream.temperature
+    }
+}
+
 /// Net enthalpy entering the plant across its reservoir boundary [W], plus the
-/// external heat applied to tanks.
+/// external heat applied to tanks, plus the friction the plant dissipates into
+/// its own streams.
 ///
 /// Computed ONLY from reservoir-incident edges — never from the tanks' own
 /// fluxes. That is the whole point: routing the accounting around the interior
 /// is what forces the junction's enthalpy to cancel for the books to balance.
+///
+/// **`Σ_e Φ_e` is a term of this budget, not an exclusion.** M4 put a reactor
+/// OUTSIDE I6 because `Δh_rxn` is chemical energy the sensible-only datum
+/// (`cp·(T − T_REF)`) does not track. Frictional dissipation is the opposite
+/// case: it IS sensible heat, and the solver reports it exactly, so excluding it
+/// would be widening an invariant to tolerate a term the model knows precisely
+/// (docs/DESIGN.md §3a). Every edge counts, including the ones leaving the plant:
+/// their heat is released inside the control volume and then carried out at the
+/// boundary, and the two appear on opposite sides and cancel.
 fn boundary_power(engine: &Engine) -> f64 {
     let mut power = 0.0;
     for id in engine.graph.node_ids() {
@@ -668,14 +771,13 @@ fn boundary_power(engine: &Engine) -> f64 {
         match node.kind {
             NodeKind::Source { .. } | NodeKind::Sink { .. } | NodeKind::Atmosphere => {
                 for (edge, _other, incoming) in engine.graph.incident(id) {
-                    let stream = &engine.graph.pipe(edge).stream;
-                    let flow = stream.mass_flow.value();
+                    let flow = engine.graph.pipe(edge).stream.mass_flow.value();
                     let into_reservoir = if incoming { flow } else { -flow };
                     // Into the reservoir is out of the plant, hence the minus.
                     power -= enthalpy_flux(
                         KgPerSec(into_reservoir),
                         JPerKgK(CP_WATER),
-                        stream.temperature,
+                        reservoir_crossing_temperature(engine, id, edge),
                     )
                     .value();
                 }
@@ -684,6 +786,12 @@ fn boundary_power(engine: &Engine) -> f64 {
             _ => {}
         }
     }
+    power += engine
+        .snapshot()
+        .edges
+        .iter()
+        .map(|e| e.dissipation_w)
+        .sum::<f64>();
     power
 }
 
@@ -802,6 +910,15 @@ proptest! {
     /// mixed temperature must land within the range of what feeds it — mixing
     /// can never produce a stream hotter than its hottest input, and the
     /// generated bounds are 280..360 K.
+    ///
+    /// **The 1 K of slack either side is now load-bearing, and it is not
+    /// round-off.** Since M5.1 friction genuinely can push a stream above its
+    /// hottest feed, so "hotter than its hottest input ⇒ transport invented
+    /// energy" is no longer true in principle. It stays true at this scale: the
+    /// generator's widest pressure span is ~7 bar, worth `ΔP/(ρ·cp)` ≈ 0.17 K
+    /// against the 1 K of slack. This is a bound on TRANSPORT gone wrong by
+    /// O(10 K), not a statement that streams cannot warm — the frictional rise is
+    /// pinned to round-off in `scenarios/tests/dissipation_reference.rs`.
     #[test]
     fn temperatures_stay_within_their_inputs(inputs in plant_inputs_strategy()) {
         // Heat input would legitimately push a tank outside its feed range, so

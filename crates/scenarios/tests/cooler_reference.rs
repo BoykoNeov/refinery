@@ -78,6 +78,26 @@ fn edge(engine: &Engine, name: &str) -> EdgeSnapshot {
         .unwrap_or_else(|| panic!("the cooler plant must have a '{name}' pipe"))
 }
 
+fn node_temperature(engine: &Engine, name: &str) -> f64 {
+    engine
+        .snapshot()
+        .nodes
+        .into_iter()
+        .find(|n| n.name == name)
+        .unwrap_or_else(|| panic!("the cooler plant must have a '{name}' node"))
+        .temperature_k
+}
+
+/// The most any edge in this plant can warm itself by friction [K].
+///
+/// Since M5.1 every edge dissipates `α·Q|Q|·Q` into its own stream. That is a
+/// nuisance term for this file, whose subject is the cooler's SIGN, and it is
+/// handled two ways: the exact identities below are restated across the cooler
+/// node (where both frictional terms fall outside the claim), and the remaining
+/// direction checks use this bound, which discriminates by two orders of
+/// magnitude against the ~4.3 K the duty moves.
+const FRICTION_BOUND_K: f64 = 0.5;
+
 /// First law across the cooler, with the sign that makes it a cooler:
 /// `T_out = T_in − Q/(ṁ·cp)`.
 ///
@@ -99,16 +119,32 @@ fn the_cooler_removes_its_duty_from_the_stream() {
         "the plant must actually be flowing for the duty to land anywhere, got {mass_flow} kg/s"
     );
     let cp = inlet.stream.composition.mixture_cp(&engine.slate).value();
-    let expected = FEED_K - DUTY_W / (mass_flow * cp);
 
+    // Stated across the COOLER — from what arrives to what the node resolves to
+    // — so the two pipes' frictional rises fall outside the claim and this stays
+    // an exact signed first law rather than one carrying slack. Slack is exactly
+    // what this gate must not have: the mutation it exists for is a one-character
+    // sign slip, and a tolerance wide enough to absorb friction is still four
+    // orders too narrow to absorb that, but the principle matters more than the
+    // arithmetic here.
+    let arriving = inlet.stream.temperature.value();
+    let expected = arriving - DUTY_W / (mass_flow * cp);
+    let chilled = node_temperature(&engine, "chiller");
     assert!(
-        (outlet.stream.temperature.value() - expected).abs() < TOLERANCE_K,
-        "outlet stream must leave at {expected} K (= {FEED_K} − {DUTY_W}/({mass_flow}·{cp})), \
-         got {} — if it came out ABOVE the feed, the cooler is heating",
-        outlet.stream.temperature.value()
+        (chilled - expected).abs() < TOLERANCE_K,
+        "the chiller must resolve to {expected} K (= {arriving} arriving − \
+         {DUTY_W}/({mass_flow}·{cp})), got {chilled} — if it came out ABOVE what \
+         arrived, the cooler is heating"
     );
     assert!(
-        outlet.stream.temperature.value() < FEED_K,
+        chilled < arriving - 1.0,
+        "a cooler must lower the temperature by a real margin; got {chilled} K against \
+         a {arriving} K arriving stream"
+    );
+    // The outlet stream must still be far below the feed: friction adds hundredths
+    // of a kelvin back, against ~4.3 K removed.
+    assert!(
+        outlet.stream.temperature.value() < FEED_K - 1.0,
         "a cooler must lower the temperature; got {} K against a {FEED_K} K feed",
         outlet.stream.temperature.value()
     );
@@ -122,6 +158,13 @@ fn the_cooler_removes_its_duty_from_the_stream() {
 /// holds only if `heat_load` sums `heat_input − duty` with genuinely opposite
 /// signs — a cooler whose duty ADDED would show 2Q of heating here, and one
 /// whose duty REPLACED `heat_input` would show Q of it.
+///
+/// **The flat line moved rather than being lost.** Since M5.1 the transfer line
+/// warms itself by friction, so "the stream leaves at exactly its feed
+/// temperature" is no longer the right statement. What is exact — and is the same
+/// claim — is that a cooler whose duty is exactly cancelled becomes a PASS-THROUGH:
+/// its resolved temperature must equal what its inflow delivers, to 1e-12,
+/// whatever the pipes did on either side of it.
 #[test]
 fn a_fire_on_a_cooler_cancels_its_duty() {
     let mut engine = build(1.0);
@@ -153,11 +196,20 @@ fn a_fire_on_a_cooler_cancels_its_duty() {
         .expect("a fire on a cooler is a valid command");
     run(&mut engine).expect("the cooler plant must run with a fire on it");
 
+    let arriving = edge(&engine, "feed_line").stream.temperature.value();
+    let chilled = node_temperature(&engine, "chiller");
+    assert!(
+        (chilled - arriving).abs() < 1e-12,
+        "a fire of Q on a cooler removing Q leaves it a pass-through: it must sit at \
+         exactly the {arriving} K that arrives, got {chilled} K"
+    );
+    // And the stream leaving is that same temperature plus only its own friction —
+    // which bounds any residual net duty two orders below the ~4.3 K one would be.
     let outlet = edge(&engine, "transfer_line").stream.temperature.value();
     assert!(
-        (outlet - FEED_K).abs() < TOLERANCE_K,
-        "a fire of Q on a cooler removing Q must leave the stream at its {FEED_K} K \
-         feed temperature, got {outlet} K"
+        outlet > FEED_K && outlet - FEED_K < FRICTION_BOUND_K,
+        "with the duty cancelled the stream must leave within its own friction of the \
+         {FEED_K} K feed, got {outlet} K"
     );
 }
 

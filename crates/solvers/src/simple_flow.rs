@@ -127,8 +127,8 @@ impl FlowSolver for SimpleFlowSolver {
         // Trivial: no unknowns (all pinned, or every free node floating) ⇒
         // flows follow directly. Mirrors Newton's n == 0 branch.
         if unknowns.is_empty() {
-            let (flows, _) = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-            return crate::network::finalize(&pressures, flows, 0, 0.0);
+            let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
+            return crate::network::finalize(&pressures, edges, 0, 0.0);
         }
 
         // Nonlinear Gauss–Seidel: sweep, then measure the residual on the exact
@@ -162,8 +162,8 @@ impl FlowSolver for SimpleFlowSolver {
 
             // Residual on the post-sweep flows (throughput = max|ṁ| over all
             // active edges, so the relative tolerance matches Newton's).
-            let (flows, throughput) =
-                edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
+            let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
+            let (flows, throughput) = (&edges.mass_flow, edges.throughput);
             let mut residual = 0.0f64;
             for &nid in &unknowns {
                 let bal: f64 = incident[&nid]
@@ -189,7 +189,7 @@ impl FlowSolver for SimpleFlowSolver {
                         self.warm_start.insert(nid, p);
                     }
                 }
-                return crate::network::finalize(&pressures, flows, iterations, residual);
+                return crate::network::finalize(&pressures, edges, iterations, residual);
             }
             if pressures.values().any(|p| !p.is_finite()) {
                 return Err(diverged(iterations, residual, history));

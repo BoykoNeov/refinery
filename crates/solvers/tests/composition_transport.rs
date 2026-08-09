@@ -152,6 +152,17 @@ fn flow_through(engine: &Engine, pipe_name: &str) -> f64 {
         .value()
 }
 
+/// The friction power a pipe put into its own stream [W] (M5.1).
+fn dissipation_in(engine: &Engine, pipe_name: &str) -> f64 {
+    engine
+        .snapshot()
+        .edges
+        .into_iter()
+        .find(|e| e.name == pipe_name)
+        .expect("snapshot must include every edge")
+        .dissipation_w
+}
+
 // ---------------------------------------------------------------------------
 // Reference — the tank blend, predicted from measured MASS RATIOS.
 // ---------------------------------------------------------------------------
@@ -353,7 +364,18 @@ fn a_tank_changing_composition_while_heating_lands_on_its_new_heat_capacity() {
     );
 
     let energy_old = 1_000.0 * CP_LIGHT * (T_AMBIENT.value() - T_REF_K);
-    let energy_in = arrived * CP_HEAVY * (FEED_T - T_REF_K);
+    // The feed's own enthalpy, PLUS the work the fill line dissipated into it on
+    // the way (M5.1). Written as an explicit additive term rather than folded
+    // into an "arriving temperature" read back from the engine: the tank gains
+    // `ṁ·h(T_feed)` from the reservoir and `Φ` from the pipe, and stating them
+    // separately keeps the cp claim below — which is what this test is for —
+    // exact instead of routed through the transform it does not mean to test.
+    let friction_in = dissipation_in(&engine, "fill") * DT.value();
+    assert!(
+        friction_in > 0.0,
+        "the fill line must dissipate something for this term to be under test"
+    );
+    let energy_in = arrived * CP_HEAVY * (FEED_T - T_REF_K) + friction_in;
     let mass_new = 1_000.0 + arrived;
     let capacity_new = 1_000.0 * CP_LIGHT + arrived * CP_HEAVY;
     let expected = T_REF_K + (energy_old + energy_in) / capacity_new;

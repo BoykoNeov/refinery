@@ -62,6 +62,25 @@ fn refuse(file: &ScenarioFile, why: &str) -> SimError {
     }
 }
 
+/// The most any pipe in this plant can warm itself by friction [K].
+///
+/// The exchange moves ~108 K on the hot side and ~17 K on the cold one, so this
+/// bound separates "carries its feed's temperature" from "carries the exchanged
+/// temperature" by two orders of magnitude. Every claim that is an exact identity
+/// is stated across the exchanger's own ends instead, where friction is not part
+/// of the claim at all.
+const FRICTION_BOUND_K: f64 = 0.5;
+
+fn node_temperature(engine: &Engine, name: &str) -> f64 {
+    engine
+        .snapshot()
+        .nodes
+        .into_iter()
+        .find(|n| n.name == name)
+        .unwrap_or_else(|| panic!("the heat recovery plant must have a '{name}' node"))
+        .temperature_k
+}
+
 fn edge(engine: &Engine, name: &str) -> EdgeSnapshot {
     engine
         .snapshot()
@@ -117,30 +136,60 @@ fn the_exchanger_transfers_effectiveness_times_c_min() {
          far apart: hot {capacity_hot} W/K, cold {capacity_cold} W/K"
     );
 
-    let duty = EFFECTIVENESS * capacity_hot.min(capacity_cold) * (HOT_IN_K - COLD_IN_K);
-    let expected_hot = HOT_IN_K - duty / capacity_hot;
-    let expected_cold = COLD_IN_K + duty / capacity_cold;
+    // The ΔT-effectiveness relation is stated between the exchanger's OWN two
+    // ends — what arrives on each side, and what each side resolves to — never
+    // between the two sources and the two product streams. Since M5.1 all four
+    // pipes warm themselves by friction, and none of that is the exchanger's
+    // doing; taking the sides' own inlets and outlets leaves the claim exact
+    // rather than approximate, which matters here because `C_max`-for-`C_min` is
+    // a 60% error this tolerance would catch either way but the arithmetic below
+    // is the reference and must not carry unexplained slack.
+    let hot_arriving = hot_in.stream.temperature.value();
+    let cold_arriving = cold_in.stream.temperature.value();
+    let duty = EFFECTIVENESS * capacity_hot.min(capacity_cold) * (hot_arriving - cold_arriving);
+    let expected_hot = hot_arriving - duty / capacity_hot;
+    let expected_cold = cold_arriving + duty / capacity_cold;
 
+    let hot_side = node_temperature(&engine, "hx_hot");
+    let cold_side = node_temperature(&engine, "hx_cold");
     assert!(
-        (hot_out.stream.temperature.value() - expected_hot).abs() < TOLERANCE_K,
-        "hot outlet must be {expected_hot} K, got {}",
+        (hot_side - expected_hot).abs() < TOLERANCE_K,
+        "the hot side must resolve to {expected_hot} K, got {hot_side}"
+    );
+    assert!(
+        (cold_side - expected_cold).abs() < TOLERANCE_K,
+        "the cold side must resolve to {expected_cold} K, got {cold_side}"
+    );
+
+    // ...and each side's result is what leaves on its product line, plus that
+    // line's own friction and nothing else.
+    assert!(
+        hot_out.stream.temperature.value() > hot_side
+            && hot_out.stream.temperature.value() - hot_side < FRICTION_BOUND_K,
+        "the hot product line must carry the hot side's {hot_side} K onward, got {}",
         hot_out.stream.temperature.value()
     );
     assert!(
-        (cold_out.stream.temperature.value() - expected_cold).abs() < TOLERANCE_K,
-        "cold outlet must be {expected_cold} K, got {}",
+        cold_out.stream.temperature.value() > cold_side
+            && cold_out.stream.temperature.value() - cold_side < FRICTION_BOUND_K,
+        "the cold product line must carry the cold side's {cold_side} K onward, got {}",
         cold_out.stream.temperature.value()
     );
 
-    // The inlets must be untouched: the exchanger writes its result onto the
+    // The inlets must be untouched by the EXCHANGE: it writes its result onto the
     // OUTLET streams. Heating the inlet instead is a transport bug that the
-    // outlet assertions alone would not distinguish from a correct plant.
+    // outlet assertions alone would not distinguish from a correct plant. The
+    // exchange moves ~108 K on the hot side and ~17 K on the cold one, so a
+    // frictional bound of a fraction of a kelvin still separates the two cleanly.
     assert!(
-        (hot_in.stream.temperature.value() - HOT_IN_K).abs() < TOLERANCE_K
-            && (cold_in.stream.temperature.value() - COLD_IN_K).abs() < TOLERANCE_K,
-        "the feed lines must still carry their source temperatures, got hot {} / cold {}",
-        hot_in.stream.temperature.value(),
-        cold_in.stream.temperature.value()
+        hot_arriving > HOT_IN_K && hot_arriving - HOT_IN_K < FRICTION_BOUND_K,
+        "the hot feed line must still carry its source's {HOT_IN_K} K plus only its \
+         own friction, got {hot_arriving}"
+    );
+    assert!(
+        cold_arriving > COLD_IN_K && cold_arriving - COLD_IN_K < FRICTION_BOUND_K,
+        "the cold feed line must still carry its source's {COLD_IN_K} K plus only its \
+         own friction, got {cold_arriving}"
     );
 }
 
@@ -150,23 +199,27 @@ fn the_exchanger_transfers_effectiveness_times_c_min() {
 /// assertion of its own because it holds for any ε and any capacity rates —
 /// including ones this scenario does not produce. An implementation that gave
 /// each side its own effectiveness term would match neither.
+///
+/// Measured across the exchanger's own two ends, not from feed stream to product
+/// stream: the four pipes each dissipate friction into themselves, which is real
+/// energy entering the plant but is not energy the COUPLING moved. Booking it
+/// here would make the two sides disagree by the difference of two frictional
+/// terms — a real number, for a reason that has nothing to do with the exchanger.
 #[test]
 fn the_exchanger_neither_creates_nor_destroys_heat() {
     let mut engine = build();
     run(&mut engine);
 
     let hot_in = edge(&engine, "hot_feed_line");
-    let hot_out = edge(&engine, "hot_product_line");
     let cold_in = edge(&engine, "cold_feed_line");
-    let cold_out = edge(&engine, "cold_product_line");
     let cp = hot_in.stream.composition.mixture_cp(&engine.slate).value();
 
     let given = hot_in.stream.mass_flow.value()
         * cp
-        * (hot_in.stream.temperature.value() - hot_out.stream.temperature.value());
+        * (hot_in.stream.temperature.value() - node_temperature(&engine, "hx_hot"));
     let taken = cold_in.stream.mass_flow.value()
         * cp
-        * (cold_out.stream.temperature.value() - cold_in.stream.temperature.value());
+        * (node_temperature(&engine, "hx_cold") - cold_in.stream.temperature.value());
 
     assert!(
         given > 1.0e5,

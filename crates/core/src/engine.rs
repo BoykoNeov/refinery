@@ -173,6 +173,15 @@ impl Engine {
                 .edge_mass_flow
                 .get(&eid)
                 .ok_or_else(|| SimError::Numerical(format!("solver omitted edge {eid:?}")))?;
+            // Checked here, not where it is consumed. Dissipation feeds a
+            // temperature through `energy::dissipation_on`, whose missing-key
+            // fallback is zero — an omitted edge would otherwise be a silently
+            // unheated stream rather than a solver bug with a name on it.
+            if !solution.edge_dissipation.contains_key(&eid) {
+                return Err(SimError::Numerical(format!(
+                    "solver omitted the frictional dissipation of edge {eid:?}"
+                )));
+            }
             let pipe = self.graph.pipe_mut(eid);
             pipe.stream.mass_flow = KgPerSec(flow);
         }
@@ -184,6 +193,7 @@ impl Engine {
             &self.graph,
             &self.slate,
             &solution.edge_mass_flow,
+            &solution.edge_dissipation,
             self.reactions.as_ref(),
             &self.node_states,
         )?;
@@ -282,6 +292,7 @@ impl Engine {
                 &node_states.composition,
                 eid,
                 flow,
+                dissipation_of(&solution, eid),
                 downstream,
             )?;
             self.graph.pipe_mut(eid).stream.temperature = outlet;
@@ -367,6 +378,7 @@ impl Engine {
                     &node_states.composition,
                     eid,
                     flow,
+                    dissipation_of(&solution, eid),
                     nid,
                 )?;
                 net_mass += into_node;
@@ -590,6 +602,9 @@ impl Engine {
                     from,
                     to,
                     stream: p.stream.clone(),
+                    dissipation_w: sol
+                        .and_then(|s| s.edge_dissipation.get(&id))
+                        .map_or(f64::NAN, |w| w.value()),
                     leak_mass_flow: 0.0, // populated when leak paths land
                 }
             })
@@ -615,6 +630,19 @@ impl Engine {
     pub fn dt(&self) -> Seconds {
         self.config.dt
     }
+}
+
+/// The friction power [W] this solve put into `edge`'s stream.
+///
+/// Every edge is present by the check at the top of `tick`, so the fallback is
+/// unreachable; it exists so the three readers below share one lookup instead of
+/// three copies of the same `get`.
+fn dissipation_of(solution: &HydraulicSolution, edge: crate::graph::EdgeId) -> Watt {
+    solution
+        .edge_dissipation
+        .get(&edge)
+        .copied()
+        .unwrap_or(Watt::ZERO)
 }
 
 /// Validate a heater/cooler duty setpoint: finite and non-negative.

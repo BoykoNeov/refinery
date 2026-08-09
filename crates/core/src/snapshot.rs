@@ -69,6 +69,15 @@ pub struct EdgeSnapshot {
     pub from: NodeId,
     pub to: NodeId,
     pub stream: Stream,
+    /// Power friction dissipated into this stream [W], from the last solve;
+    /// NaN before the first tick, like `NodeSnapshot::pressure_pa`.
+    ///
+    /// `Φ = α·Q|Q|·Q` — pipe wall, valve trim and pump curve droop, but never
+    /// elevation head or the pump's own jump, which are reversible (DESIGN §3a).
+    /// A device folds into its outlet edge, so a valve's throttling heat appears
+    /// on the edge LEAVING it, and `stream.temperature` (the edge's outlet)
+    /// already carries the rise it causes.
+    pub dissipation_w: f64,
     pub leak_mass_flow: f64,
 }
 

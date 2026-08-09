@@ -23,12 +23,24 @@
 //! with `N = UA/(ṁ·cp)` collapses `UA·LMTD` to `ṁ·cp·ΔT_in·(1 − e⁻ᴺ)` exactly.
 //! An Euler step, a signed `ṁ`, or a `C_max`-style capacity slip all break it.
 //!
+//! **M5.1 generalized that log-mean rather than loosening it.** A pipe now also
+//! dissipates friction into its own stream, so its profile decays toward
+//! `T* = T_ambient + Φ/UA` — where the friction it makes balances the heat it
+//! sheds — instead of toward ambient. The identity survives verbatim with `T_amb`
+//! replaced by `T*`, because the `Φ` the source adds and the `Φ` that
+//! integrating `UA·(T − T_amb)` over the offset produces cancel exactly. It is
+//! still checked at 1e-12 relative, and it still degenerates to the line above
+//! when `Φ = 0`. Adding slack for the new term instead would have left the test
+//! passing for a transform that got the coupling wrong.
+//!
 //! Deliberately NOT covered here: I6. A pipe with a nonzero `UA` breaks that
 //! invariant's telescoping sum by construction — the enthalpy leaving one node
 //! is not the enthalpy arriving at the next, and the difference went to ambient,
 //! which sits on no node. `energy_invariants.rs` keeps its generated pipes at
 //! `UA = 0` for that reason, and the closure case below is what covers the same
 //! ground for a single pipe until an ambient term is added to the invariant.
+//! (Its `Φ` term, by contrast, IS in I6's budget — friction is sensible heat the
+//! model computes exactly, so it is accounted rather than excluded.)
 
 use refinery_core::components::{Composition, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
@@ -155,6 +167,17 @@ fn edge_temperature(engine: &Engine, name: &str) -> f64 {
         .value()
 }
 
+/// The friction power the solve booked into an edge's stream [W].
+fn edge_dissipation(engine: &Engine, name: &str) -> f64 {
+    engine
+        .snapshot()
+        .edges
+        .into_iter()
+        .find(|e| e.name == name)
+        .expect("snapshot must include every edge")
+        .dissipation_w
+}
+
 // ---------------------------------------------------------------------------
 
 /// REFERENCE — the enthalpy a pipe loses equals the heat it gives to ambient,
@@ -207,10 +230,35 @@ fn the_enthalpy_a_pipe_loses_equals_the_heat_it_gives_to_ambient() {
 
     let duty_from_enthalpy = flow * CP_WATER * (inlet_t - outlet_t); // [W]
 
-    let delta_in = inlet_t - T_AMBIENT.value();
-    let delta_out = outlet_t - T_AMBIENT.value();
+    // The log-mean is taken about the pipe's ASYMPTOTE, not about ambient.
+    //
+    // Since M5.1 the pipe also dissipates friction into its own stream, so the
+    // profile decays toward `T* = T_ambient + Φ/UA` — the temperature at which
+    // the friction it generates exactly balances the heat it sheds — rather than
+    // toward ambient. Substituting `T(ξ) − T* = (T_in − T*)·e^{−βξ}` into the
+    // energy balance leaves
+    //
+    //     ṁ·cp·(T_in − T_out) = UA·logmean(T_in − T*, T_out − T*)
+    //
+    // where the `−Φ` from the friction source and the `+Φ` from integrating
+    // `UA·(T − T_ambient)` over the offset cancel identically. So this is STILL an
+    // identity and still checked at round-off — it is not the old statement with
+    // slack added for a new term, which would have quietly stopped discriminating.
+    // At `Φ = 0` it degenerates to the pure-ambient LMTD it replaces.
+    let dissipation = edge_dissipation(&engine, "hot_line");
+    let asymptote = T_AMBIENT.value() + dissipation / UA;
+    let delta_in = inlet_t - asymptote;
+    let delta_out = outlet_t - asymptote;
     let lmtd = (delta_in - delta_out) / (delta_in / delta_out).ln();
     let duty_from_lmtd = UA * lmtd; // [W]
+
+    // Non-vacuity for the generalization: if Φ were zero this would be the old
+    // test, and the new algebra would be untested.
+    assert!(
+        dissipation > 0.0,
+        "the pipe must actually dissipate for the T* form to be under test, got \
+         {dissipation} W"
+    );
 
     // Round-off, not a physical tolerance: the two forms are algebraically
     // identical, so the only difference is float evaluation order. Relative,
@@ -219,8 +267,8 @@ fn the_enthalpy_a_pipe_loses_equals_the_heat_it_gives_to_ambient() {
     let relative = (duty_from_enthalpy - duty_from_lmtd).abs() / duty_from_lmtd.abs();
     assert!(
         relative < 1e-12,
-        "the enthalpy drop ({duty_from_enthalpy:.6} W) must equal UA·LMTD \
-         ({duty_from_lmtd:.6} W); relative difference {relative:.3e}"
+        "the enthalpy drop ({duty_from_enthalpy:.6} W) must equal UA·logmean about \
+         T* = {asymptote:.6} K ({duty_from_lmtd:.6} W); relative difference {relative:.3e}"
     );
 }
 
@@ -271,11 +319,16 @@ fn a_ua_pipe_between_two_zero_volume_nodes_cools_the_downstream_one() {
         "the downstream junction must stay above ambient, got {downstream} K"
     );
 
-    // The insulated feed pipe must NOT have cooled anything — otherwise this
-    // test would pass on a plant that cooled every pipe regardless of `UA`.
+    // The insulated feed pipe must NOT have COOLED anything — otherwise this test
+    // would pass on a plant that cooled every pipe regardless of `UA`. It does
+    // warm it very slightly, by its own friction, which is a different term with
+    // the opposite sign and its own gates; the discrimination this line needs is
+    // the direction, and a couple of hundredths of a kelvin up is unmistakably
+    // not the ~10 K down the lagged run produces.
     assert!(
-        (upstream - 373.15).abs() < 1e-9,
-        "the UA = 0 feed pipe must be isothermal, got {upstream} K"
+        upstream > 373.15 && upstream - 373.15 < 0.5,
+        "the UA = 0 feed pipe must not cool its stream (it may warm a little from \
+         friction), got {upstream} K"
     );
 }
 
@@ -398,11 +451,14 @@ fn a_tank_fed_through_a_ua_pipe_is_credited_at_the_pipes_outlet() {
     let (insulated, insulated_outlet) = fill_tank_through(0.0);
     let (lagged, lagged_outlet) = fill_tank_through(40_000.0);
 
-    // Non-vacuity: the insulated case must deliver the source's own temperature,
-    // and the lagged case must actually have cooled on the way.
+    // Non-vacuity: the insulated case must deliver essentially the source's own
+    // temperature (its own friction warms it by a few hundredths of a kelvin —
+    // a different term, pinned elsewhere, and two orders below the ~10 K the
+    // lagging removes), and the lagged case must actually have cooled on the way.
     assert!(
-        (insulated_outlet - 373.15).abs() < 1e-9,
-        "the UA = 0 pipe must deliver the source's 373.15 K, got {insulated_outlet} K"
+        insulated_outlet > 373.15 && insulated_outlet - 373.15 < 0.5,
+        "the UA = 0 pipe must deliver the source's 373.15 K, give or take its own \
+         friction, got {insulated_outlet} K"
     );
     assert!(
         insulated_outlet - lagged_outlet > 1.0,

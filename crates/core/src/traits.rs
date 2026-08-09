@@ -8,7 +8,7 @@
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{EdgeId, NodeId, PlantGraph};
-use crate::units::{JPerKg, Kelvin, Pascal, Seconds};
+use crate::units::{JPerKg, Kelvin, Pascal, Seconds, Watt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -19,6 +19,20 @@ pub struct HydraulicSolution {
     pub node_pressure: BTreeMap<NodeId, Pascal>,
     /// Positive = flow in edge direction (source → target), kg/s.
     pub edge_mass_flow: BTreeMap<EdgeId, f64>,
+    /// Power friction dissipates into the stream on each edge [W], always ≥ 0.
+    ///
+    /// **The solver reports this because `core` must not compute it.** The rule
+    /// is `Φ = α·Q|Q|·Q`, and the split it rests on — `α` is dissipative, `β`
+    /// (elevation head, pump jump) is not — is a fact about `QuadraticBranch`,
+    /// which lives in `solvers`. Re-deriving `ΔP_fric` here as
+    /// `(P_up − P_down) − β` would put element physics in `core` as plainly as a
+    /// fidelity `if` would (CLAUDE.md rule 2, docs/DESIGN.md §3a). So it crosses
+    /// the seam as data, and `core` consumes it exactly as it consumes
+    /// `edge_mass_flow`.
+    ///
+    /// A device folds into its outlet edge (fold-at-source), so a valve's or a
+    /// pump's own friction appears on the edge LEAVING it, not on the node.
+    pub edge_dissipation: BTreeMap<EdgeId, Watt>,
     pub diagnostics: SolveDiagnostics,
 }
 

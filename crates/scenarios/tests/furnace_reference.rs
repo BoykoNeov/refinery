@@ -77,6 +77,28 @@ fn edge(engine: &Engine, name: &str) -> EdgeSnapshot {
         .unwrap_or_else(|| panic!("the furnace plant must have a '{name}' pipe"))
 }
 
+fn node_temperature(engine: &Engine, name: &str) -> f64 {
+    engine
+        .snapshot()
+        .nodes
+        .into_iter()
+        .find(|n| n.name == name)
+        .unwrap_or_else(|| panic!("the furnace plant must have a '{name}' node"))
+        .temperature_k
+}
+
+/// The most any edge in this plant can warm itself by friction [K].
+///
+/// Since M5.1 every edge dissipates `α·Q|Q|·Q` into its own stream, so no gate
+/// here can assert an exact 293.15 K downstream of a flowing pipe any more. Where
+/// a gate's claim is really about DIRECTION — which end of a pipe a term reached
+/// — this bound stands in for the old exact equality, and it still discriminates
+/// by two orders of magnitude: the frictional rises here are hundredths of a
+/// kelvin against a duty rise of ~4.3 K. Where a gate's claim is an exact
+/// identity, it is restated below in a form friction cancels out of rather than
+/// relaxed to a bound.
+const FRICTION_BOUND_K: f64 = 0.5;
+
 /// First law across the heater: `T_out = T_in + Q/(ṁ·cp)`.
 ///
 /// The flow is read from the solution rather than predicted — this plant's
@@ -96,13 +118,21 @@ fn the_furnace_delivers_its_duty_to_the_stream() {
         "the plant must actually be flowing for the duty to land anywhere, got {mass_flow} kg/s"
     );
     let cp = inlet.stream.composition.mixture_cp(&engine.slate).value();
-    let expected = FEED_K + DUTY_W / (mass_flow * cp);
 
+    // Stated across the FURNACE — from what arrives to what the node resolves to
+    // — rather than from the source's 293.15 K to the outlet stream. Both of
+    // those ends move once friction exists (the feed line warms on the way in,
+    // the transfer line on the way out) and neither movement belongs to the duty.
+    // Written this way the two frictional terms are simply not inside the claim,
+    // so this stays an EXACT first law instead of an approximate one carrying
+    // slack for a nuisance term.
+    let arriving = inlet.stream.temperature.value();
+    let expected = arriving + DUTY_W / (mass_flow * cp);
+    let heated = node_temperature(&engine, "heater");
     assert!(
-        (outlet.stream.temperature.value() - expected).abs() < TOLERANCE_K,
-        "outlet stream must leave at {expected} K (= {FEED_K} + {DUTY_W}/({mass_flow}·{cp})), \
-         got {}",
-        outlet.stream.temperature.value()
+        (heated - expected).abs() < TOLERANCE_K,
+        "the heater must resolve to {expected} K (= {arriving} arriving + \
+         {DUTY_W}/({mass_flow}·{cp})), got {heated}"
     );
 
     // Direction: heat goes DOWNSTREAM. The upwind pick writes the furnace's
@@ -110,75 +140,120 @@ fn the_furnace_delivers_its_duty_to_the_stream() {
     // would mean the transport step read the wrong end of the pipe, which the
     // ΔT check above cannot distinguish on its own.
     assert!(
-        (inlet.stream.temperature.value() - FEED_K).abs() < TOLERANCE_K,
-        "the feed line is upstream of the heater and must stay at {FEED_K} K, got {}",
-        inlet.stream.temperature.value()
+        arriving > FEED_K && arriving - FEED_K < FRICTION_BOUND_K,
+        "the feed line is upstream of the heater and must carry only its own \
+         friction above {FEED_K} K, not any part of the ~4 K duty rise; got {arriving}"
+    );
+    // ...and the outlet stream really does carry the heated temperature on, plus
+    // its own friction and nothing else.
+    let leaving = outlet.stream.temperature.value();
+    assert!(
+        leaving > heated && leaving - heated < FRICTION_BOUND_K,
+        "the transfer line must carry the heater's {heated} K downstream, got {leaving}"
     );
 }
 
-/// ΔT must be exactly proportional to duty.
+/// ΔT must be exactly AFFINE in duty, with the intercept being friction alone.
 ///
-/// This is the gate that needs no flow reading at all, and so has no shared
-/// term with the test above. The hydraulics here are temperature-independent
-/// (constant density and viscosity at M2), so ṁ and cp are bit-identical
-/// across the three runs and cancel exactly in the ratio: the first law then
-/// predicts ΔT(2 MW) = 2·ΔT(1 MW) as an exact float identity, not an
-/// approximation. A duty that leaked in through some path proportional to
-/// something else — a fixed offset, a squared term, a unit slip that is only
-/// *linear* — would break the ratio while still producing a plausible number.
+/// This is the gate that needs no flow reading at all, and so has no shared term
+/// with the test above. The hydraulics here are temperature-independent (constant
+/// density and viscosity at M2), so ṁ, cp and every edge's `Φ` are bit-identical
+/// across the three runs: the frictional part of the rise is the SAME number in
+/// each and cancels out of a second difference.
+///
+/// Before M5.1 this was `ΔT(2 MW) = 2·ΔT(1 MW)`, which friction breaks — it adds
+/// a duty-independent intercept. The equal-second-difference form below is that
+/// claim with the intercept divided out, and it is strictly stronger: it pins
+/// linearity AND identifies the intercept as exactly the unlit rise, so a term
+/// that scaled with duty while also leaking a constant fails here where the old
+/// ratio could absorb it. A duty proportional to something else — a squared term,
+/// a unit slip that is only *linear* — still breaks it while producing a
+/// plausible number.
 #[test]
-fn outlet_temperature_rise_is_linear_in_duty() {
+fn outlet_temperature_rise_is_affine_in_duty() {
     let flow_of = |e: &Engine| edge(e, "feed_line").stream.mass_flow.value();
     let rise_of = |e: &Engine| edge(e, "transfer_line").stream.temperature.value() - FEED_K;
 
+    let zero = run(0.0);
     let one = run(1.0);
     let two = run(2.0);
     assert_eq!(
         flow_of(&one),
         flow_of(&two),
-        "hydraulics must be temperature-independent at M2, or the ratio below \
-         is not a clean test of the energy balance"
+        "hydraulics must be temperature-independent at M2, or the differences below \
+         are not a clean test of the energy balance"
+    );
+    assert_eq!(
+        flow_of(&zero),
+        flow_of(&one),
+        "the unlit run must be hydraulically identical too, or its rise is not the \
+         same intercept the other two carry"
     );
 
-    let (rise_one, rise_two) = (rise_of(&one), rise_of(&two));
+    let (rise_zero, rise_one, rise_two) = (rise_of(&zero), rise_of(&one), rise_of(&two));
     assert!(
-        rise_one > 1.0,
-        "1 MW must produce a rise big enough to be worth halving, got {rise_one} K"
+        rise_one - rise_zero > 1.0,
+        "1 MW must produce a rise big enough to be worth differencing, got {} K",
+        rise_one - rise_zero
     );
     assert!(
-        (rise_two - 2.0 * rise_one).abs() < TOLERANCE_K,
-        "doubling the duty must exactly double the rise: {rise_one} K → {rise_two} K"
+        (rise_two - rise_one - (rise_one - rise_zero)).abs() < TOLERANCE_K,
+        "each extra MW must add exactly the same rise: {rise_zero} K unlit, \
+         {rise_one} K at 1 MW, {rise_two} K at 2 MW"
+    );
+    // The intercept is this plant's own friction — named, rather than left as an
+    // unexplained constant the test quietly tolerates.
+    assert!(
+        rise_zero > 0.0 && rise_zero < FRICTION_BOUND_K,
+        "the unlit intercept must be friction and nothing else, got {rise_zero} K"
     );
 }
 
 /// An unlit furnace is a pass-through, exactly.
 ///
-/// The flat-line counterpart to the tests above, and the same trap
-/// `isothermal_plant.rs` sets for the reference plant: every gate here that
-/// measures a temperature *difference* would still pass if the furnace added a
-/// constant offset, or if `heat_load` picked up a stray term. At duty 0 the
-/// whole plant is 20 °C and any such term shows up immediately.
+/// The trap `isothermal_plant.rs` sets for the reference plant: every gate here
+/// that measures a temperature *difference* would still pass if the furnace added
+/// a constant offset, or if `heat_load` picked up a stray term.
+///
+/// Since M5.1 the plant is no longer 20 °C throughout — the two pipes warm
+/// themselves by friction — so the trap moves to the one relation friction cannot
+/// reach: an unlit furnace mixes its single inflow and adds nothing, so it must
+/// resolve to EXACTLY what that inflow delivers. A stray term in `heat_load`
+/// breaks that identity at 1e-12 whatever the pipes are doing, which is a tighter
+/// statement than the old flat line rather than a looser one.
 #[test]
-fn a_furnace_at_zero_duty_is_exactly_isothermal() {
+fn a_furnace_at_zero_duty_is_an_exact_pass_through() {
     let engine = run(0.0);
+    let arriving = edge(&engine, "feed_line").stream.temperature.value();
+    let heated = node_temperature(&engine, "heater");
+    assert!(
+        (heated - arriving).abs() < 1e-12,
+        "an unlit furnace mixes one inflow and adds nothing: it must sit at exactly \
+         the {arriving} K that arrives, got {heated}"
+    );
+
     let snapshot = engine.snapshot();
     assert_eq!(
         snapshot.edges.len(),
         2,
         "the furnace plant has two pipes; a vacuous loop would prove nothing"
     );
+    // And nothing anywhere may move by more than the plant's own friction, which
+    // bounds any stray term two orders below the duty this plant normally carries.
     for edge in snapshot.edges {
+        let t = edge.stream.temperature.value();
         assert!(
-            (edge.stream.temperature.value() - FEED_K).abs() < TOLERANCE_K,
-            "with the heater shut down, stream '{}' must stay at {FEED_K} K, got {}",
-            edge.name,
-            edge.stream.temperature.value()
+            t > FEED_K && t - FEED_K < FRICTION_BOUND_K,
+            "with the heater shut down, stream '{}' must carry only its own friction \
+             above {FEED_K} K, got {t}",
+            edge.name
         );
     }
     for node in snapshot.nodes {
         assert!(
-            (node.temperature_k - FEED_K).abs() < TOLERANCE_K,
-            "with the heater shut down, node '{}' must stay at {FEED_K} K, got {}",
+            node.temperature_k >= FEED_K && node.temperature_k - FEED_K < FRICTION_BOUND_K,
+            "with the heater shut down, node '{}' must carry only friction above \
+             {FEED_K} K, got {}",
             node.name,
             node.temperature_k
         );
@@ -260,8 +335,15 @@ fn a_fire_stacks_on_top_of_the_operating_duty() {
     use refinery_core::snapshot::Command;
     use refinery_core::units::Watt;
 
+    // Measured against the UNLIT plant rather than against the feed temperature.
+    // Since M5.1 the transfer line carries its own friction too, and that
+    // intercept is duty-independent, so leaving it in would make "double the
+    // rise" false for entirely correct physics. The three runs are hydraulically
+    // identical, so subtracting the unlit run removes it exactly.
+    let unlit = run(0.0);
+    let friction = edge(&unlit, "transfer_line").stream.temperature.value() - FEED_K;
     let lit = run(1.0);
-    let rise_from_duty = edge(&lit, "transfer_line").stream.temperature.value() - FEED_K;
+    let rise_from_duty = edge(&lit, "transfer_line").stream.temperature.value() - FEED_K - friction;
     // Without this the test is vacuous under any mutation that stops the duty
     // reaching the stream at all: 0 K doubles to 0 K and the ratio holds.
     assert!(
@@ -288,7 +370,8 @@ fn a_fire_stacks_on_top_of_the_operating_duty() {
             .unwrap_or_else(|e| panic!("tick {tick} with a fire failed: {e:?}"));
     }
 
-    let rise_with_fire = edge(&burning, "transfer_line").stream.temperature.value() - FEED_K;
+    let rise_with_fire =
+        edge(&burning, "transfer_line").stream.temperature.value() - FEED_K - friction;
     assert!(
         (rise_with_fire - 2.0 * rise_from_duty).abs() < TOLERANCE_K,
         "a fire of Q on a furnace already firing Q must double the rise \
