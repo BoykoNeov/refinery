@@ -414,7 +414,7 @@ impl ReactionModel for FourLump {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use refinery_core::components::PseudoComponent;
+    use refinery_core::components::{Phase, PseudoComponent};
     use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol};
 
     /// Slate order deliberately differs from the model's lump order, so a
@@ -431,7 +431,8 @@ mod tests {
                     name: (*n).into(),
                     tb: Kelvin(500.0),
                     molar_mass: KgPerMol(0.1),
-                    density: KgPerM3(800.0),
+                    density: Some(KgPerM3(800.0)),
+                    phase: Phase::Liquid,
                     cp: JPerKgK(2000.0),
                 })
                 .collect(),

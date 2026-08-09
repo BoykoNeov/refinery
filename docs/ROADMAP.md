@@ -908,20 +908,48 @@ was already large enough, on the reference plant rather than a contrived one.
 - [x] `EdgeSnapshot::dissipation_w` [W], so a frontend and the gates read the term
       the same way rather than the tests reaching into the solver's structure.
 
-### M5.2 — Gas as a component phase (`ρ(P,T)`)
-- [ ] `core`: `PseudoComponent` gains a phase, defaulting to `liquid` so every
+### M5.2 — Gas as a component phase (`ρ(P,T)`) — **LANDED**
+- [x] `core`: `PseudoComponent` gains a phase, defaulting to `liquid` so every
       existing slate is untouched. Gas density is `ρ = P·M̄/(R·T)` with
       `1/M̄ = Σ(wᵢ/Mᵢ)`; `molar_mass` already exists on the component and has had
       no reader until now — this is what it was reserved for.
-- [ ] `scenarios`: the **single-phase connected-component** load-time guard. A
+      **The dispatch is a new method, not a change to `mixture_density`**:
+      `Composition::density_at(slate, P, T)` branches on phase and calls the
+      existing liquid rule for the liquid arm, so `mixture_density` keeps its
+      signature and becomes, by name, the liquid rule. It is a material property
+      branching on a material property, not a fidelity `if`: a gas and a liquid
+      are different substances, and the fidelity knobs here would be real-gas `Z`
+      and `cp(T)`, both deferred.
+      `PseudoComponent::density` is now `Option<KgPerM3>` — absent for a gas, and
+      **refused at the loader if declared**, on the grounds that keep a "gas Cv"
+      out of M5.4: a number nothing reads is how an author comes to believe the
+      model uses something it does not. A liquid with no density is refused too;
+      the correspondence is enforced in both directions.
+- [x] `scenarios`: the **single-phase connected-component** load-time guard. A
       model with no phase equilibrium must not be handed a two-phase mixture and
       quietly volume-average it, and because streams mix wherever two lines join,
       the check has to be topological rather than per-composition. Consequences
       stated rather than discovered: the FCC slate is **unchanged** (its "light
       gases" lump stays liquid-phase, which is exactly what two-phase would fix),
       a gas system is a separate sub-plant, and a flare needs **no new node kind**
-      — it is a `Sink` at `P_ATM` with a gas composition.
-- [ ] `solvers`: the density circularity — `ρ` depends on `P`, the unknown.
+      — it is a `Sink` at `P_ATM` with a gas composition. All three held.
+      **Two guards the design note did not have, both from building it**
+      (DESIGN §3a, "Corrections from building it (M5.2)"):
+      **(a) a tank's composition must be LIQUID.** The topological guard does not
+      protect the two remaining `mixture_density` callers, because both are tanks
+      and a gas tank is single-phase — perfectly legal under the connected-
+      component rule while `ρ·A·h` and `ρgh` read a stored density a gas does not
+      have. Costs the milestone nothing: a gas holdup is M5.3's capacitive vessel,
+      whose state is pressure and not level.
+      **(b) a pipe's initial composition is seeded by its component's PHASE.** The
+      seed is written at load, before any transport, and was `pure(slate_len, 0)`
+      from M3.1 onward — which on exactly the slates this guard exists to permit
+      (one liquid sub-plant, one gas sub-plant, one file) is a LIQUID on every gas
+      line: wrong by ~150x on the first solve, and silent. It is now the first
+      component of that phase, which for an all-liquid slate *is* index 0, so the
+      fix is invisible by construction on every pre-M5.2 scenario and needs a
+      mixed-slate two-sub-plant case to be falsifiable at all.
+- [x] `solvers`: the density circularity — `ρ` depends on `P`, the unknown.
       Transport density is evaluated at the **upwind node's current pressure
       iterate**, recompiled each solver iteration (frozen-coefficient Newton:
       `dρ/dP` omitted from the Jacobian, so linear convergence to the *consistent*
@@ -929,7 +957,25 @@ was already large enough, on the reference plant rather than a contrived one.
       changes density fast enough that the lag is a defect, not staleness — the
       M3.1 `cp` lesson. Structurally this moves `compile_edges` inside the
       iteration loop in `network.rs`, shared by both fidelities.
-- [ ] Tests: a gas source → pipe → sink plant pinned against
+      **Landed, and the note's "move it inside the loop" was not the whole
+      change.** `classify` used to compute the anchored set, which needs the
+      compiled edges, which now need a pressure to evaluate `ρ(P,T)` at, which is
+      the cold seed `classify` produces — a cycle. `network::prepare` owns the
+      split (classify → seed → compile → anchor → re-pin floating) so neither
+      fidelity can get the order wrong; the anchored set is still computed once,
+      from the seed compile, so it cannot flap mid-solve.
+      Two decisions with reasons, both in DESIGN §3a: **upwind is the
+      higher-pressure endpoint**, which is well-conditioned rather than merely
+      convenient — the two candidates are only ambiguous when the pressures are
+      close, and then the two densities are close too — with a pump in gas service
+      the stated exception and deliberately UNGUARDED, since no repo scenario can
+      exercise it; and `RHO_EVAL_P_FLOOR = 1 Pa` on the evaluation pressure, so a
+      Newton trial that overshoots to a non-positive pressure is rejected by the
+      line search instead of turning a transient into an `Err`.
+      Measured, since the note predicted the shape and not the size: **8–9
+      iterations cold, 0–1 warm** on the reference gas plant against a 50 cap, and
+      the two fidelities agree to 1e-8. Linear convergence is free at this scale.
+- [x] Tests: a gas source → pipe → sink plant pinned against
       `ṁ = √(2DA²ρP/(fL))` with `ρ = P·M̄/(R·T)` by hand, at **two** source
       pressures so the P-dependence is pinned and not just one number — noting
       that this hand calc carries ONE `ρ`, the upwind node's, while a real gas
@@ -942,6 +988,43 @@ was already large enough, on the reference plant rather than a contrived one.
       per-iteration recompile is bit-identical (blast radius confirmed, not
       assumed: outside `components.rs` there are exactly three callers of
       `mixture_density`).
+      **Landed** as `scenarios/gas_line.toml` + `crates/scenarios/tests/
+      gas_density_reference.rs` (12 gates) and four `core::components` unit tests.
+      **The reference plant is not the one this box describes**, and the reason is
+      worth carrying: *source → pipe → sink has no free node*, so `n == 0` and the
+      Newton loop never runs — the obvious plant would have tested the density law
+      and none of the frozen-coefficient machinery the slice is about. `gas_line`
+      is source → **tee** → sink with two pipes of different diameter, which also
+      gives the two edges genuinely different upwind densities (6.58 vs 6.10
+      kg/m³) and makes "each edge takes its own upwind" a claim with a 3.5%
+      consequence. The closed form is then a quadratic in the tee pressure; note
+      the gas constant CANCELS from it, so the tee pressure pins the convention
+      and the flow pins the magnitude of `ρ`, independently.
+      Every gate solves the **freshly built graph** rather than ticking, because
+      M5.1's dissipation puts 130 kW into 0.9 kg/s of gas here — an 80 K rise that
+      feeds back into `ρ`. Tolerance **derived** (1e-4) from the `eps_dp = 1.0` Pa
+      regularisation against the smaller ~73 kPa branch drop and measured at
+      1.5e-6 / 1.05e-5 for the two fidelities, ~9.5x of headroom; it must not be
+      loosened past ~1e-3, since the sharpest mutation moves the flow by only 3.5%.
+      The **1-component regression anchor held**: every M1–M4 golden is
+      bit-identical with no change to any pre-M5.2 scenario file, which is what
+      "for a liquid, `density_at` ignores `P` and `T`" buys.
+      **Falsified before trusted**, nine mutations, each caught by the right set
+      and no others: density at the **downwind** endpoint and the coefficient
+      **frozen at the seed** each fail the three hand-calc gates while the whole
+      rest of the workspace stays green; the **pipe seed back to component 0**
+      fails the mixed-slate gate ALONE — the demonstration that no other plant in
+      the repo can see it; **`M̄ = Σ(wᵢ·Mᵢ)`** and **`T` hardcoded at 293.15 K**
+      each fail one `core::components` unit test alone, which is the evidence
+      those two rules cannot be carried by the wired plant (a pure cut makes the
+      two molar-mass rules coincide, and the plant runs at exactly the temperature
+      the slip assumes); **zero fractions voting on phase** fails six gates,
+      because it makes every mixed slate two-phase and the sub-plant case
+      unrepresentable; the **tank-holds-liquid** and **topological** guards each
+      fail their own gate and nothing else, so neither covers the other; and
+      **`ρ` frozen at the reference plant's 10 bar state** — the coincidence the
+      second pressure point exists to catch — is 3.5% off at 10 bar and **26.7%**
+      off at 20, which is that design choice paying for itself.
 
 ### M5.3 — Capacitive vessel (the central design decision)
 A gas vessel's residual is `Σ_e ṁ_e(P) − (m(P) − mⁿ)/dt` with

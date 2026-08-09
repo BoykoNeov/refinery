@@ -87,6 +87,13 @@ unit!(/// Molar mass [kg/mol].
 
 /// Standard gravity [m/s²].
 pub const G: f64 = 9.806_65;
+/// Universal gas constant [J/(mol·K)] (CODATA, exact since the 2019 SI).
+///
+/// Used only by the ideal-gas density law `ρ = P·M̄/(R·T)` (docs/DESIGN.md §3a).
+/// `M̄` is the mixture's mean molar mass in kg/mol, so `R` is per MOLE and not
+/// per kilogram — a specific gas constant `R/M̄` would have to be recomputed per
+/// composition, which is exactly the slip this constant's units make loud.
+pub const R_GAS: f64 = 8.314_462_618_153_24;
 /// Standard atmospheric pressure.
 pub const P_ATM: Pascal = Pascal(101_325.0);
 /// Ambient default temperature.

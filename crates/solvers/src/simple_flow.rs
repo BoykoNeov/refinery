@@ -31,12 +31,12 @@
 //! a NaN escape (rule 5). Cross-fidelity agreement with Newton on well-posed
 //! networks is the I5 property test.
 
-use crate::network::{classify, compile_edges, edge_flows, validate_degrees};
+use crate::network::{compile_edges, edge_flows, prepare, validate_degrees};
 use refinery_core::components::Slate;
 use refinery_core::error::SimError;
 use refinery_core::graph::{EdgeId, NodeId, PlantGraph};
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
-use refinery_core::units::{Seconds, P_ATM};
+use refinery_core::units::Seconds;
 use std::collections::BTreeMap;
 
 pub struct SimpleFlowSolver {
@@ -80,24 +80,14 @@ impl FlowSolver for SimpleFlowSolver {
         slate: &Slate,
         _dt: Seconds,
     ) -> Result<HydraulicSolution, SimError> {
-        // Same compilation + classification as Newton (the fidelity seam).
+        // Same classification + seeding + compilation as Newton (the fidelity
+        // seam), through the same `prepare`.
         validate_degrees(graph)?;
-        let compiled = compile_edges(graph, slate)?;
-        let cls = classify(graph, slate, &compiled);
-        let anchored = &cls.anchored;
-
-        // Seed pressures: fixed pinned; anchored free warm/cold; floating free
-        // pinned at P_ATM (its incident edges report zero flow via edge_flows).
-        let mut pressures = cls.fixed.clone();
-        for &nid in &cls.free {
-            let cold = if anchored.contains(&nid) {
-                cls.cold
-            } else {
-                P_ATM.value()
-            };
-            let seed = self.warm_start.get(&nid).copied().unwrap_or(cold);
-            pressures.insert(nid, seed);
-        }
+        let prep = prepare(graph, slate, &self.warm_start)?;
+        let cls = prep.classes;
+        let anchored = &prep.anchored;
+        let mut compiled = prep.compiled;
+        let mut pressures = prep.pressures;
 
         // Unknowns = anchored free nodes (ascending, deterministic). Precompute
         // each unknown's incident ACTIVE edges (both endpoints anchored) with
@@ -139,6 +129,14 @@ impl FlowSolver for SimpleFlowSolver {
         let mut iterations = 0u32;
         while iterations < self.max_iter {
             iterations += 1;
+
+            // Refresh the frozen density coefficients at the current iterate,
+            // once per sweep rather than once per node: within a sweep the
+            // node-wise Newton step already treats its neighbours as fixed, so
+            // per-node recompilation would refresh coefficients the step is not
+            // differentiating anyway. All-liquid networks recompile to identical
+            // numbers (M5.2, `network::compile_edge`).
+            compiled = compile_edges(graph, slate, &pressures)?;
 
             // In-place update sweep.
             for &nid in &unknowns {

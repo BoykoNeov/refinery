@@ -27,7 +27,7 @@
 //! Neither alone is sufficient; the first pins the physics to reality at coarse
 //! resolution, the second pins the arithmetic to the model at fine resolution.
 
-use refinery_core::components::{Composition, PseudoComponent, Slate};
+use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::traits::ReactionModel;
 use refinery_core::units::{JPerKgK, Kelvin, KgPerM3, KgPerMol, Seconds};
 use refinery_solvers::four_lump::{FourLump, FourLumpParams, RK4_SUBSTEPS, T_REF_K};
@@ -45,7 +45,8 @@ fn fcc_slate() -> Slate {
         name: name.into(),
         tb: Kelvin(tb),
         molar_mass: KgPerMol(mm),
-        density: KgPerM3(rho),
+        density: Some(KgPerM3(rho)),
+        phase: Phase::Liquid,
         cp: JPerKgK(cp),
     };
     Slate::new(vec![

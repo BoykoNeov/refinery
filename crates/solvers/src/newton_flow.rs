@@ -38,13 +38,13 @@
 //! legitimate, frequent game state (operator closes a valve), not an error.
 
 use crate::network::{
-    classify, compile_edges, edge_flows, finalize, validate_degrees, CompiledEdge,
+    compile_edges, edge_flows, finalize, prepare, validate_degrees, CompiledEdge,
 };
 use refinery_core::components::Slate;
 use refinery_core::error::SimError;
 use refinery_core::graph::{EdgeId, NodeId, PlantGraph};
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
-use refinery_core::units::{Seconds, P_ATM};
+use refinery_core::units::Seconds;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Max damped-halvings per Newton step (min step 1/256).
@@ -86,31 +86,25 @@ impl FlowSolver for NewtonFlowSolver {
         // F6: pumps/valves must have exactly one inlet and one outlet edge.
         validate_degrees(graph)?;
 
-        // Compile every edge's series branch (pipe ∘ device-at-source) and
-        // classify the nodes (fixed/free, anchored set, cold-start seed) — both
-        // shared with SimpleFlowSolver so the two fidelities agree by construction.
-        let compiled = compile_edges(graph, slate)?;
-        let cls = classify(graph, slate, &compiled);
-        let anchored = &cls.anchored;
-        let free = &cls.free;
-        let cold = cls.cold;
-
-        // Pin fixed pressures; free nodes seeded below.
-        let mut pressures: BTreeMap<NodeId, f64> = cls.fixed.clone();
+        // Classify the nodes (fixed/free, cold seed), seed the pressures, compile
+        // every edge's series branch (pipe ∘ device-at-source) and derive the
+        // anchored set — all shared with SimpleFlowSolver through `prepare`, so
+        // the two fidelities agree by construction.
+        let prep = prepare(graph, slate, &self.warm_start)?;
+        let anchored = &prep.anchored;
+        let free = &prep.classes.free;
+        let mut pressures = prep.pressures;
+        let mut compiled = prep.compiled;
 
         // Newton unknowns = anchored free nodes, ascending (deterministic).
+        // Floating free nodes are pinned at their seed; their edges report zero.
         let mut idx: BTreeMap<NodeId, usize> = BTreeMap::new();
         let mut unknowns: Vec<NodeId> = Vec::new();
         for &nid in free {
-            let seed = if anchored.contains(&nid) {
+            if anchored.contains(&nid) {
                 idx.insert(nid, unknowns.len());
                 unknowns.push(nid);
-                self.warm_start.get(&nid).copied().unwrap_or(cold)
-            } else {
-                // Floating: pinned; its incident edges report zero flow.
-                self.warm_start.get(&nid).copied().unwrap_or(P_ATM.value())
-            };
-            pressures.insert(nid, seed);
+            }
         }
         let n = unknowns.len();
 
@@ -156,11 +150,19 @@ impl FlowSolver for NewtonFlowSolver {
             let mut accepted = false;
             for _ in 0..=MAX_HALVINGS {
                 let trial = apply_step(&pressures, &unknowns, &idx, &dp, t);
+                // Recompile at the trial iterate: a gas edge's frozen density
+                // coefficient follows the pressure it is evaluated at, so the
+                // merit the line search compares must be the merit of the fully
+                // consistent trial, not of the old coefficients at a new
+                // pressure. For an all-liquid network this reproduces the same
+                // `CompiledEdge` bit for bit (M5.2, `compile_edge`).
+                let compiled_t = compile_edges(graph, slate, &trial)?;
                 let (r_t, jac_t, tp_t) =
-                    assemble(graph, &compiled, &trial, &idx, anchored, n, self.eps_dp);
+                    assemble(graph, &compiled_t, &trial, &idx, anchored, n, self.eps_dp);
                 let merit_t = half_sq_norm(&r_t);
                 if merit_t <= (1.0 - 2.0 * ARMIJO_C * t) * merit {
                     pressures = trial;
+                    compiled = compiled_t;
                     res = inf_norm(&r_t);
                     merit = merit_t;
                     r = r_t;

@@ -1,0 +1,77 @@
+# M5.2 reference plant: a gas line. Fuel-gas header → tee → low-pressure flare.
+#
+# The simplest plant that exercises the gas density law `ρ = P·M̄/(R·T)` where it
+# is actually hard. Two pipes and a FREE node between them, deliberately, not one
+# pipe between two reservoirs: with both endpoints pinned the density coefficient
+# is evaluated once at pressures the file states and the Newton loop never runs,
+# so the frozen-coefficient iteration this slice is about would go untested. Here
+# the tee's pressure is an unknown, the second pipe's density depends on it, and
+# the solve has to find the pair consistently.
+#
+# The two runs also differ in diameter, so the two edges carry DIFFERENT upwind
+# densities (6.58 and 6.10 kg/m³ at the 10 bar case) — which is what makes "each
+# edge takes its own upwind node" a claim the reference can falsify, rather than
+# a distinction with no consequence.
+#
+# Gated by crates/scenarios/tests/gas_density_reference.rs at TWO source
+# pressures, which is what pins ρ's dependence on P rather than one coincidental
+# number.
+#
+# A flare needs no new node kind (docs/DESIGN.md §3a): it is an ordinary `sink`
+# at near-atmospheric pressure carrying a gas composition. The stack, the flame
+# and the smoke are presentation (M6).
+#
+# Stated limitation, the same one the roadmap orders M5.4 after this slice: the
+# branch law here is the INCOMPRESSIBLE Darcy–Weisbach one evaluated at a single
+# density, while a real gas expands along the pipe. The error grows with the
+# pressure ratio across the edge — which is exactly what choked-flow sizing
+# (M5.4) is for. This plant pins the density law and the upwind convention, not
+# the fidelity of the flow law.
+
+[meta]
+name = "gas_line"
+description = "Fuel gas blows down a header through a line to a low-pressure flare."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+# One gas-phase cut. `density_kg_per_m3` is absent and would be REFUSED: a gas
+# has no stored density, it has a molar mass and an equation of state.
+[[components]]
+name = "fuel_gas"
+phase = "gas"
+tb_c = -161.5           # methane's normal boiling point
+molar_mass_kg_per_mol = 0.016043
+cp_j_per_kg_k = 2220.0
+
+[nodes.gas_header]
+type = "source"
+pressure_bar = 10.0
+temperature_c = 20.0
+
+[nodes.tee]
+type = "junction"
+
+[nodes.flare]
+type = "sink"
+pressure_bar = 1.0
+temperature_c = 20.0
+
+[[pipes]]
+name = "header_run"
+from = "gas_header"
+to = "tee"
+length_m = 100.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "relief_line"
+from = "tee"
+to = "flare"
+length_m = 100.0
+diameter_m = 0.05

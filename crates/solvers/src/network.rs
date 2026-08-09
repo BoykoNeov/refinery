@@ -24,6 +24,18 @@ pub const OPEN_EPS: f64 = 1e-6;
 /// Reference density for valve SG (ρ_rel). Matches `PseudoComponent::water`
 /// so water gives ρ_rel = 1.0.
 pub const RHO_WATER_REF: f64 = 998.0;
+/// Floor [Pa] on the pressure at which a gas edge's transport density is
+/// evaluated.
+///
+/// A Newton iterate can overshoot to a non-positive pressure on its way to the
+/// root; `rho = P*M/(R*T)` would then be zero or negative and `compile_edge`
+/// would `Err` out of a *transient* rather than letting the line search reject
+/// the step. Flooring the evaluation pressure keeps the coefficient finite and
+/// tiny, so the trial's residual is enormous and Armijo discards it - which is
+/// the mechanism that already handles every other bad step. At any converged
+/// physical solution `P >> 1 Pa`, so the floor never touches an answer; it is a
+/// regularisation of the ITERATE, the same role `eps_dp` plays for `sqrt(dp)`.
+pub const RHO_EVAL_P_FLOOR: f64 = 1.0;
 
 /// One edge compiled for the solve: its series branch, transport density, and
 /// whether it conducts (open path) for connectivity.
@@ -38,19 +50,37 @@ pub struct CompiledEdge {
 }
 
 /// Boundary classification of the graph's nodes for one solve: which nodes pin
-/// pressure, which are free unknowns, which are anchored (reachable from a fixed
-/// node through conducting edges), and the deterministic cold-start seed.
+/// pressure, which are free unknowns, and the deterministic cold-start seed.
+///
+/// The anchored set is NOT here, and that ordering is load-bearing since M5.2:
+/// anchoring needs the compiled edges, compiling a gas edge needs a pressure to
+/// evaluate ρ(P,T) at, and that pressure needs the cold seed. `prepare` owns
+/// the resulting three-step order so neither solver can get it wrong.
 pub struct Classification {
     /// Pinned pressures [Pa] for fixed nodes (Source/Sink/Atmosphere/Tank).
     pub fixed: BTreeMap<NodeId, f64>,
     /// Free node ids (Junction/Pump/Valve), ascending — deterministic order.
     pub free: Vec<NodeId>,
-    /// Fixed ∪ free-reachable-via-conducting-edges. Free nodes NOT in this set
-    /// are floating (indeterminate pressure); their incident edges carry zero.
-    pub anchored: BTreeSet<NodeId>,
     /// Deterministic cold-start pressure seed: mean of the fixed pressures, or
     /// P_ATM when the network has no fixed node at all.
     pub cold: f64,
+}
+
+/// Everything both solvers need before their first iteration, built in the one
+/// order that is consistent (see `Classification`).
+pub struct Prepared {
+    pub classes: Classification,
+    /// Edges compiled at the seeded pressures. Both solvers RECOMPILE this each
+    /// iteration (`compile_edges`) so a gas edge's frozen density coefficient
+    /// tracks the pressure iterate; only `anchored` is computed once, from this
+    /// first compile, so the anchored set cannot flap mid-solve.
+    pub compiled: BTreeMap<EdgeId, CompiledEdge>,
+    /// Fixed ∪ free-reachable-via-conducting-edges. Free nodes NOT in this set
+    /// are floating (indeterminate pressure); their incident edges carry zero.
+    pub anchored: BTreeSet<NodeId>,
+    /// Seeded pressures: fixed pinned, anchored free warm-started or cold,
+    /// floating free warm-started or at `P_ATM`.
+    pub pressures: BTreeMap<NodeId, f64>,
 }
 
 /// Every Pump/Valve/Furnace/Cooler/HeatExchanger node must have one inlet and
@@ -136,14 +166,50 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
 
 /// Compile one edge into its series branch. The device (if any) at the edge's
 /// SOURCE node folds into this outlet edge, per the fold-at-source convention.
+///
+/// **The transport density is evaluated at the UPWIND node's pressure iterate**
+/// (docs/DESIGN.md §3a). For a liquid this is inert — `density_at` ignores both
+/// arguments, so every pre-M5.2 network compiles to bit-identical numbers — but
+/// for gas ρ = P·M̄/(R·T) and `P` is the unknown the solve is looking for.
+/// Recompiling each iteration at the current iterate is frozen-coefficient
+/// Newton: dρ/dP is omitted from the Jacobian, so convergence near the root is
+/// linear rather than quadratic, but the fixed point reached is the *consistent*
+/// one, which a previous-tick density would not be.
+///
+/// **Upwind is the higher-pressure endpoint**, and the convention is
+/// well-conditioned rather than merely convenient: when the two endpoint
+/// pressures are close enough for the flow DIRECTION to be in doubt, the two
+/// candidate densities are correspondingly close, so the choice cannot matter
+/// much exactly where it is hardest to make. It is exact whenever the branch's
+/// `beta` is small against its drop — true for every gas line, where elevation
+/// head ρ·g·Δz is ~1e-3 of a liquid's.
+/// The stated exception is a PUMP folded into a gas edge, whose β = ρ·g·h0 can
+/// make the higher-pressure endpoint the downstream one. No M5 plant has one: a
+/// compressor is not a pump, and ΔP = ρ·g·H is the wrong law for a fluid whose
+/// density changes through the machine. It is not guarded, because a guard no
+/// scenario in this repo can exercise is a guard that cannot be falsified — it
+/// un-defers with the first gas plant carrying a machine.
+///
+/// Composition and temperature come from the pipe's STORED stream — one tick
+/// stale, the same structural staleness §3 accepts for tank levels feeding the
+/// quasi-steady solve, and unavoidable here because the solve opens the tick
+/// before any node state is resolved. Pressure is the one that could not be left
+/// stale: a blowing-down vessel moves it within the tick that is being solved.
 pub fn compile_edge(
     graph: &PlantGraph,
     eid: EdgeId,
     slate: &Slate,
+    pressures: &BTreeMap<NodeId, f64>,
 ) -> Result<CompiledEdge, SimError> {
     let (src, tgt) = graph.endpoints(eid);
     let pipe = graph.pipe(eid);
-    let rho = pipe.stream.composition.mixture_density(slate).value();
+    let upwind = pressures[&src].max(pressures[&tgt]).max(RHO_EVAL_P_FLOOR);
+    let rho = pipe
+        .stream
+        .composition
+        .density_at(slate, Pascal(upwind), pipe.stream.temperature)
+        .map_err(|e| SimError::Numerical(format!("pipe {} ({eid:?}): {e}", pipe.name)))?
+        .value();
     // Darcy–Weisbach resistance; a valid pipe always contributes k > 0, which
     // keeps α_tot > 0 so the closed-form inverse never divides by zero.
     let k = pipe_resistance(
@@ -185,26 +251,67 @@ pub fn compile_edge(
     })
 }
 
-/// Compile every edge's series branch (pipe ∘ device-at-source), keyed by edge.
+/// Compile every edge's series branch (pipe ∘ device-at-source), keyed by edge,
+/// at the given pressure iterate. Called once per solver iteration since M5.2 —
+/// see `compile_edge` for why, and why an all-liquid network is unaffected.
 pub fn compile_edges(
     graph: &PlantGraph,
     slate: &Slate,
+    pressures: &BTreeMap<NodeId, f64>,
 ) -> Result<BTreeMap<EdgeId, CompiledEdge>, SimError> {
     let mut compiled = BTreeMap::new();
     for eid in graph.edge_ids() {
-        compiled.insert(eid, compile_edge(graph, eid, slate)?);
+        compiled.insert(eid, compile_edge(graph, eid, slate, pressures)?);
     }
     Ok(compiled)
 }
 
-/// Classify nodes into fixed/free, compute the anchored set and the cold-start
-/// seed. Deterministic: node ids iterate ascending, `free` is ascending, and
-/// the seed is a pure function of the pinned pressures.
-pub fn classify(
+/// The shared solve prologue: classify, seed, compile, anchor, pin floating —
+/// in the one order that is self-consistent, and identical for both fidelities.
+pub fn prepare(
     graph: &PlantGraph,
     slate: &Slate,
-    compiled: &BTreeMap<EdgeId, CompiledEdge>,
-) -> Classification {
+    warm_start: &BTreeMap<NodeId, f64>,
+) -> Result<Prepared, SimError> {
+    let classes = classify(graph, slate);
+
+    // Seed every free node before compiling, because a gas edge's density is
+    // evaluated at a node pressure. Floating nodes are re-pinned below, once
+    // there is an anchored set to tell them apart; the intermediate value
+    // reaches only `conducts`, which is sign-of-alpha and cannot differ, and the
+    // edges it reaches are inert either way.
+    let mut pressures = classes.fixed.clone();
+    for &nid in &classes.free {
+        let seed = warm_start.get(&nid).copied().unwrap_or(classes.cold);
+        pressures.insert(nid, seed);
+    }
+
+    let compiled = compile_edges(graph, slate, &pressures)?;
+    let fixed_set: BTreeSet<NodeId> = classes.fixed.keys().copied().collect();
+    let anchored = anchored_set(graph, &compiled, &fixed_set);
+
+    // A floating free node's pressure is indeterminate and its edges are inert,
+    // so it is parked at its warm-start value or at P_ATM rather than at the
+    // cold seed, which means nothing for it.
+    for &nid in &classes.free {
+        if !anchored.contains(&nid) {
+            let seed = warm_start.get(&nid).copied().unwrap_or(P_ATM.value());
+            pressures.insert(nid, seed);
+        }
+    }
+
+    Ok(Prepared {
+        classes,
+        compiled,
+        anchored,
+        pressures,
+    })
+}
+
+/// Classify nodes into fixed/free and compute the cold-start seed.
+/// Deterministic: node ids iterate ascending, `free` is ascending, and the seed
+/// is a pure function of the pinned pressures.
+pub fn classify(graph: &PlantGraph, slate: &Slate) -> Classification {
     let mut fixed: BTreeMap<NodeId, f64> = BTreeMap::new();
     let mut free: Vec<NodeId> = Vec::new();
     let (mut fixed_sum, mut fixed_cnt) = (0.0, 0usize);
@@ -224,14 +331,7 @@ pub fn classify(
     } else {
         P_ATM.value()
     };
-    let fixed_set: BTreeSet<NodeId> = fixed.keys().copied().collect();
-    let anchored = anchored_set(graph, compiled, &fixed_set);
-    Classification {
-        fixed,
-        free,
-        anchored,
-        cold,
-    }
+    Classification { fixed, free, cold }
 }
 
 /// Nodes reachable from any fixed node through conducting edges (undirected).

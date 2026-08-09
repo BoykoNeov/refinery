@@ -21,7 +21,7 @@
 //! I7 is arithmetically identical to I1 and proves nothing.
 
 use proptest::prelude::*;
-use refinery_core::components::{Composition, PseudoComponent, Slate};
+use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::graph::{Node, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::units::*;
@@ -39,14 +39,16 @@ fn two_cut_slate() -> Slate {
             name: "light".into(),
             tb: Kelvin(338.15),
             molar_mass: KgPerMol(0.1),
-            density: KgPerM3(700.0),
+            density: Some(KgPerM3(700.0)),
+            phase: Phase::Liquid,
             cp: JPerKgK(1000.0),
         },
         PseudoComponent {
             name: "heavy".into(),
             tb: Kelvin(613.15),
             molar_mass: KgPerMol(0.4),
-            density: KgPerM3(900.0),
+            density: Some(KgPerM3(900.0)),
+            phase: Phase::Liquid,
             cp: JPerKgK(4000.0),
         },
     ])

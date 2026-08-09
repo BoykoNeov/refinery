@@ -1563,15 +1563,16 @@ mod tests {
     /// capacity-rate-weighted one.
     mod composition_mixing {
         use super::*;
-        use crate::components::PseudoComponent;
+        use crate::components::{Phase, PseudoComponent};
 
         fn cut(name: &str, cp: f64) -> PseudoComponent {
             PseudoComponent {
                 name: name.into(),
                 tb: Kelvin(400.0),
                 molar_mass: KgPerMol(0.1),
-                density: KgPerM3(800.0),
+                density: Some(KgPerM3(800.0)),
                 cp: JPerKgK(cp),
+                phase: Phase::Liquid,
             }
         }
 
@@ -2457,7 +2458,7 @@ mod tests {
     /// vector against a hand calc can.
     mod column_separation_tests {
         use super::*;
-        use crate::components::{Composition, PseudoComponent, Slate};
+        use crate::components::{Composition, Phase, PseudoComponent, Slate};
         use crate::graph::{ColumnDraw, NodeId};
         use crate::units::{JPerKgK, KgPerM3, KgPerMol};
 
@@ -2472,8 +2473,9 @@ mod tests {
                         name: format!("cut{i}"),
                         tb: Kelvin(tb),
                         molar_mass: KgPerMol(0.1),
-                        density: KgPerM3(800.0),
+                        density: Some(KgPerM3(800.0)),
                         cp: JPerKgK(2000.0),
+                        phase: Phase::Liquid,
                     })
                     .collect(),
             )
@@ -2624,7 +2626,7 @@ mod tests {
     /// reaction, so the numbers are all traceable to arithmetic.
     mod reactor_tests {
         use super::*;
-        use crate::components::PseudoComponent;
+        use crate::components::{Phase, PseudoComponent};
 
         /// A two-cut slate whose components have DELIBERATELY different `cp`, so a
         /// composition change shifts the mixture `cp` — the property the reactor's
@@ -2634,8 +2636,9 @@ mod tests {
                 name: name.into(),
                 tb: Kelvin(400.0),
                 molar_mass: KgPerMol(0.1),
-                density: KgPerM3(800.0),
+                density: Some(KgPerM3(800.0)),
                 cp: JPerKgK(cp),
+                phase: Phase::Liquid,
             };
             Slate::new(vec![cut("feed_lump", 2000.0), cut("product_lump", 3000.0)]).unwrap()
         }

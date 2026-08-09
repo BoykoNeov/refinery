@@ -10,7 +10,7 @@
 //!   volumes in m³, flow coefficients as customary metric Kv (m³/h at 1 bar)
 //!   — human-friendly at the boundary, SI inside, per CLAUDE.md rule 4.
 
-use refinery_core::components::{Composition, PseudoComponent, Slate};
+use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
@@ -60,8 +60,19 @@ pub struct ComponentDef {
     pub tb_c: f64,
     pub molar_mass_kg_per_mol: f64,
     /// Liquid density at reference conditions [kg/m³].
-    pub density_kg_per_m3: f64,
+    ///
+    /// Required for a liquid-phase component and REFUSED for a gas-phase one,
+    /// whose density is `P·M̄/(R·T)`: a declared constant there would be an
+    /// authoritative-looking number no code reads, which is the same failure
+    /// mode as an invented kinetic constant (docs/DESIGN.md §3a).
+    #[serde(default)]
+    pub density_kg_per_m3: Option<f64>,
     pub cp_j_per_kg_k: f64,
+    /// `"liquid"` (default) or `"gas"`. Absent means liquid, which is what
+    /// every slate written before M5.2 meant — the default that keeps those
+    /// files bit-identical rather than merely still-loading.
+    #[serde(default)]
+    pub phase: Option<String>,
 }
 
 /// One `[[exchangers]]` entry: which two sides are thermally coupled, and how
@@ -349,6 +360,17 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // divergence for the same structural fault.
     validate_topology(&graph, &slate)?;
 
+    // Step 3a: the single-phase connected-component guard, which also tells each
+    // pipe which phase it carries. Seeding the stream's composition needs the
+    // topology, so it happens here rather than in the pipe loop above; the value
+    // is a tick-1 density seed only (see `seed_component_index`).
+    let phases = plant_phases(&graph, &slate)?;
+    for eid in graph.edge_ids().collect::<Vec<_>>() {
+        let (src, _) = graph.endpoints(eid);
+        let index = seed_component_index(&slate, phases[src.0 as usize]);
+        graph.pipe_mut(eid).stream.composition = Composition::pure(slate.len(), index);
+    }
+
     // Step 4: select solver impls from [fidelity]; unknown names are errors
     // listing the valid options.
     let flow: Box<dyn FlowSolver> = match scenario.fidelity.flow.as_str() {
@@ -408,9 +430,11 @@ fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
         for (field, value) in [
             ("tb_c", def.tb_c + 273.15),
             ("molar_mass_kg_per_mol", def.molar_mass_kg_per_mol),
-            ("density_kg_per_m3", def.density_kg_per_m3),
             ("cp_j_per_kg_k", def.cp_j_per_kg_k),
-        ] {
+        ]
+        .into_iter()
+        .chain(def.density_kg_per_m3.map(|d| ("density_kg_per_m3", d)))
+        {
             if !value.is_finite() || value <= 0.0 {
                 return Err(SimError::Scenario(format!(
                     "component '{}' has a non-positive or non-finite {field} \
@@ -419,18 +443,55 @@ fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
                 )));
             }
         }
+        // Phase ↔ density correspondence, refused in BOTH directions so neither
+        // mistake can produce a plant that loads: a liquid with no density has
+        // no density law at all, and a gas with one carries a number nothing
+        // reads (docs/DESIGN.md §3a).
+        match (component_phase(def)?, def.density_kg_per_m3) {
+            (Phase::Liquid, None) => {
+                return Err(SimError::Scenario(format!(
+                    "liquid component '{}' has no density_kg_per_m3; a liquid's \
+                     density is a declared constant at this fidelity",
+                    def.name
+                )))
+            }
+            (Phase::Gas, Some(rho)) => {
+                return Err(SimError::Scenario(format!(
+                    "gas component '{}' declares density_kg_per_m3 = {rho}, which \
+                     nothing reads: a gas density is P·M̄/(R·T), computed from \
+                     molar_mass_kg_per_mol and the solved pressure. Remove the field.",
+                    def.name
+                )))
+            }
+            _ => {}
+        }
     }
     Slate::new(
         defs.iter()
-            .map(|d| PseudoComponent {
-                name: d.name.clone(),
-                tb: c_to_k(d.tb_c),
-                molar_mass: KgPerMol(d.molar_mass_kg_per_mol),
-                density: KgPerM3(d.density_kg_per_m3),
-                cp: JPerKgK(d.cp_j_per_kg_k),
+            .map(|d| {
+                Ok(PseudoComponent {
+                    name: d.name.clone(),
+                    tb: c_to_k(d.tb_c),
+                    molar_mass: KgPerMol(d.molar_mass_kg_per_mol),
+                    density: d.density_kg_per_m3.map(KgPerM3),
+                    cp: JPerKgK(d.cp_j_per_kg_k),
+                    phase: component_phase(d)?,
+                })
             })
-            .collect(),
+            .collect::<Result<Vec<_>, SimError>>()?,
     )
+}
+
+/// Parse a component's `phase = "..."` field. Absent is liquid.
+fn component_phase(def: &ComponentDef) -> Result<Phase, SimError> {
+    match def.phase.as_deref() {
+        None | Some("liquid") => Ok(Phase::Liquid),
+        Some("gas") => Ok(Phase::Gas),
+        Some(other) => Err(SimError::Scenario(format!(
+            "component '{}' has unknown phase '{other}' (valid: liquid, gas)",
+            def.name
+        ))),
+    }
 }
 
 /// Resolve a node's `composition = { name = weight, ... }` against the slate.
@@ -526,6 +587,20 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
         } => {
             let area = SquareMeter(*area_m2);
             let composition = resolve_composition(name, composition, slate)?;
+            // A tank holds a LIQUID, and the two lines below are why the guard
+            // is here rather than left to the connected-component check: both
+            // `ρ·A·h` and `bottom_pressure`'s `ρgh` read a stored liquid density,
+            // and on a gas composition there is none — an inventory and a
+            // hydrostatic head computed from a level are not merely inaccurate
+            // for a gas, they name nothing. A gas holdup is the capacitive
+            // vessel (M5.3), whose state is pressure, not level.
+            if composition.phase(slate)? == Phase::Gas {
+                return Err(SimError::Scenario(format!(
+                    "tank '{name}' holds a gas-phase composition. A tank's inventory \
+                     (ρ·A·h) and head (ρgh) are liquid-level quantities; a gas holdup \
+                     is a capacitive vessel, whose state is pressure (docs/DESIGN.md §3a)"
+                )));
+            }
             // m = ρ·A·h, at the density of the tank's own contents.
             let density = composition.mixture_density(slate);
             let mass = Kg(density.value() * area.value() * initial_level_m);
@@ -990,6 +1065,107 @@ fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(), SimError> 
         }
     }
     Ok(())
+}
+
+/// The phase of every node's connected component — the load-time guard that
+/// makes M5's two-phase deferral loud instead of silent (docs/DESIGN.md §3a).
+///
+/// A model with no phase equilibrium must never be handed a two-phase mixture,
+/// because it would volume-average it into a fluid that is neither. Refusing
+/// two-phase *compositions* is not enough on its own: streams mix at runtime
+/// wherever two lines join, so a gas source and a liquid source that share a
+/// junction would produce one by blending. The check is therefore TOPOLOGICAL —
+/// every connected component of the plant graph is all-gas or all-liquid.
+///
+/// Connectivity walks ALL pipes, exactly like the pressure-reference check, so a
+/// valve closed at t=0 cannot make an illegal plant legal by severing it.
+///
+/// Nodes that declare no composition (`Atmosphere`, junctions, valves, pumps,
+/// furnaces, coolers, exchanger sides, columns, reactors) do not vote: they
+/// carry whatever reaches them. A component in which nothing votes has no phase,
+/// and `Liquid` is then the answer that changes nothing.
+///
+/// Returns the phase per node, indexed by `NodeId.0` — the seed `build_engine`
+/// needs for each pipe's initial stream.
+fn plant_phases(graph: &PlantGraph, slate: &Slate) -> Result<Vec<Phase>, SimError> {
+    let ids: Vec<NodeId> = graph.node_ids().collect();
+    let mut parent: Vec<usize> = (0..ids.len()).collect();
+    for eid in graph.edge_ids() {
+        let (a, b) = graph.endpoints(eid);
+        uf_union(&mut parent, a.0 as usize, b.0 as usize);
+    }
+    // Per component root: the phase voted so far, and the node that voted it —
+    // so a conflict names BOTH offenders rather than one and "something else".
+    let mut voted: BTreeMap<usize, (Phase, NodeId)> = BTreeMap::new();
+    for &id in &ids {
+        let Some(composition) = declared_composition(&graph.node(id).kind) else {
+            continue;
+        };
+        // A single node's composition mixing phases is caught here, by the same
+        // call, and reported against the node that declares it.
+        let phase = composition
+            .phase(slate)
+            .map_err(|e| SimError::Scenario(format!("node '{}': {e}", graph.node(id).name)))?;
+        let root = uf_find(&mut parent, id.0 as usize);
+        match voted.get(&root) {
+            None => {
+                voted.insert(root, (phase, id));
+            }
+            Some((seen, by)) if *seen == phase => {}
+            Some((seen, by)) => {
+                return Err(SimError::Scenario(format!(
+                    "nodes '{}' ({phase:?}) and '{}' ({seen:?}) are connected, so their \
+                     streams can mix — but this model has no phase equilibrium and would \
+                     volume-average the result into a fluid that is neither. Every \
+                     connected component of the plant must be all-gas or all-liquid; a \
+                     gas system is a separate sub-plant (docs/DESIGN.md §3a)",
+                    graph.node(id).name,
+                    graph.node(*by).name
+                )))
+            }
+        }
+    }
+    Ok(ids
+        .iter()
+        .map(|&id| {
+            let root = uf_find(&mut parent, id.0 as usize);
+            voted.get(&root).map_or(Phase::Liquid, |(p, _)| *p)
+        })
+        .collect())
+}
+
+/// The composition a node DECLARES, if any. Only these vote on their
+/// component's phase; everything else carries whatever reaches it.
+fn declared_composition(kind: &NodeKind) -> Option<&Composition> {
+    match kind {
+        NodeKind::Source { composition, .. } | NodeKind::Sink { composition, .. } => {
+            Some(composition)
+        }
+        NodeKind::Tank(t) => Some(&t.composition),
+        _ => None,
+    }
+}
+
+/// The slate index a pipe's initial stream composition is seeded with, for a
+/// pipe in an all-`phase` part of the plant.
+///
+/// The pipe's stored composition has exactly ONE reader — `compile_edge`'s
+/// transport density — since M3.1 moved `cp` to the resolved upwind node, and
+/// transport overwrites it at the end of every tick. So this is a density seed
+/// for tick 1 and nothing more; what it must not be is the WRONG PHASE, which
+/// on a mixed slate is what `pure(0)` would give every gas line (a liquid
+/// density is ~800× a gas one, so tick 1 would not be stale, it would be
+/// nonsense).
+///
+/// For an all-liquid slate the first liquid component IS index 0, so every
+/// pre-M5.2 scenario keeps the seed it had and its goldens are bit-identical.
+/// The fallback is index 0 for the same reason: a slate with no component of
+/// the requested phase can only be one the requesting sub-plant never uses.
+fn seed_component_index(slate: &Slate, phase: Phase) -> usize {
+    slate
+        .iter()
+        .position(|c| c.phase == phase)
+        .unwrap_or_default()
 }
 
 /// True if the node pins a pressure (Source/Sink/Atmosphere/Tank). Delegates to
