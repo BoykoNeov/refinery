@@ -89,6 +89,17 @@ impl Engine {
                         *o = opening;
                         Ok(())
                     }
+                    // Refused with its OWN reason rather than falling into "not a
+                    // valve", which would be both wrong and confusing: a relief
+                    // valve IS a valve, and the point is that its opening is not
+                    // an operator setpoint at all. It is a memoryless function of
+                    // its own inlet pressure, recomputed every solve
+                    // (docs/DESIGN.md §3a fork 5) — so a command that appeared to
+                    // set it would be silently overwritten on the next tick.
+                    NodeKind::ReliefValve { .. } => Err(SimError::InvalidCommand(format!(
+                        "{node:?} is a relief valve: its opening is actuated by its own inlet \
+                         pressure, not by command, and would be recomputed on the next solve"
+                    ))),
                     _ => Err(SimError::InvalidCommand(format!("{node:?} is not a valve"))),
                 }
             }

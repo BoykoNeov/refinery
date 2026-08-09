@@ -187,7 +187,191 @@ fn the_settle_point_tracks_the_set_pressure() {
 }
 
 // ---------------------------------------------------------------------------
-// C — loader refusals.
+// B′ — the demo under BOTH fidelities.
+// ---------------------------------------------------------------------------
+
+/// Both fidelities run the demo to the same settle point, and the Simple sweep
+/// count stays well inside its cap.
+///
+/// **This gate exists because its absence let a real failure through.** The first
+/// demo geometry diverged under `simple` at tick 91 — 5000 Gauss–Seidel sweeps,
+/// residual 5.9e-7 — while Newton took 8, and it was found by running the CLI, not
+/// by running the suite: every other gate in this file builds from the scenario
+/// file, whose `[fidelity] flow` is `newton`. So the geometry fix that cured it
+/// was protected by nothing. This is M5.3's own finding restated — the drum "had
+/// never been run under `simple` at all, and now is".
+///
+/// The mechanism is worth keeping with the gate, because it generalises past this
+/// plant: a normally-shut PSV leaves its valve node a DEAD END (`flare_line` does
+/// not conduct), so the receiver's Gauss–Seidel diagonal is dominated by a fat
+/// inlet branch carrying no net flow, and each sweep moves the vessel by almost
+/// nothing. Newton is immune — it solves the linear system exactly. Any
+/// normally-shut branch on a low-resistance line will do the same.
+///
+/// The sweep budget is asserted at half the solver's 5000 cap. Measured: 868.
+/// A margin gate rather than an exact count, because the number is a property of
+/// the geometry and would move with any legitimate re-sizing — what must not move
+/// is that it stays far from the cliff.
+#[test]
+fn both_fidelities_settle_the_relief_and_simple_stays_clear_of_its_cap() {
+    let run = |fidelity: &str| {
+        let mut file = load();
+        file.fidelity.flow = fidelity.to_string();
+        let mut engine = refinery_scenarios::build_engine(&file).expect("builds");
+        let mut worst = 0u32;
+        for i in 0..1500 {
+            engine
+                .tick()
+                .unwrap_or_else(|e| panic!("{fidelity} tick {i}: {e}"));
+            worst = worst.max(engine.snapshot().solver.iterations);
+        }
+        let receiver = engine.graph.find_node("receiver").expect("receiver");
+        let pressure = match &engine.graph.node(receiver).kind {
+            NodeKind::Vessel(v) => v.pressure(&engine.slate).value() / 1e5,
+            other => panic!("receiver must be a vessel, got {other:?}"),
+        };
+        (pressure, worst)
+    };
+
+    let (newton_p, newton_iters) = run("newton");
+    let (simple_p, simple_iters) = run("simple");
+
+    approx::assert_relative_eq!(newton_p, simple_p, max_relative = 1e-4);
+    assert!(
+        newton_iters < 25,
+        "Newton must crack this plant easily; took {newton_iters} iterations"
+    );
+    assert!(
+        simple_iters < 2500,
+        "the Simple sweep count must stay well inside its 5000 cap, or a \
+         normally-shut PSV has put its vessel back into the dead-end stall this \
+         plant's inlet line is sized to avoid. Took {simple_iters} sweeps"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C — refusals, at both doors.
+// ---------------------------------------------------------------------------
+
+/// A gas valve with no `x_T` is refused by the SOLVER as well as the loader.
+///
+/// `require_gas_valve_x_t` runs inside `build_engine`, and `build_engine` is not
+/// the only way to a `PlantGraph` — the invariant proptests construct one
+/// directly. Every generator uses `Slate::water_only()` today, so none can reach
+/// the gas branch; that is a fact about the current generators rather than about
+/// the type, and this second door is what stops a gas-valve arm added to one of
+/// them later from silently running the incompressible law on a compressible
+/// fluid.
+///
+/// Built here by hand for exactly that reason: going through the loader would
+/// test the loader's guard again instead of this one.
+#[test]
+fn the_solver_refuses_a_gas_valve_with_no_x_t_even_bypassing_the_loader() {
+    use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
+    use refinery_core::graph::{Node, Pipe, PlantGraph};
+    use refinery_core::traits::FlowSolver;
+    use refinery_core::units::*;
+
+    let slate = Slate::new(vec![PseudoComponent {
+        name: "gas".into(),
+        tb: Kelvin(111.0),
+        molar_mass: KgPerMol(0.016_043),
+        density: None,
+        cp: JPerKgK(2220.0),
+        phase: Phase::Gas,
+    }])
+    .expect("a single gas cut is a valid slate");
+    let pure = Composition::pure(1, 0);
+    let node = |name: &str, kind| Node {
+        name: name.into(),
+        kind,
+        heat_input: Watt(0.0),
+    };
+
+    let mut graph = PlantGraph::new();
+    let src = graph.add_node(node(
+        "header",
+        NodeKind::Source {
+            pressure: Pascal(10.0e5),
+            temperature: Kelvin(293.15),
+            composition: pure.clone(),
+        },
+    ));
+    // `x_t: None` on a gas stream — the pairing the loader refuses.
+    let valve = graph.add_node(node(
+        "v",
+        NodeKind::Valve {
+            cv_max: 2.0e-5,
+            opening: 1.0,
+            x_t: None,
+        },
+    ));
+    let sink = graph.add_node(node(
+        "flare",
+        NodeKind::Sink {
+            pressure: Pascal(1.0e5),
+            temperature: Kelvin(293.15),
+            composition: pure.clone(),
+        },
+    ));
+    let mut pipe = |name: &str, a, b| {
+        graph.add_pipe(
+            a,
+            b,
+            Pipe {
+                name: name.into(),
+                length: Meter(10.0),
+                diameter: Meter(0.1),
+                friction_factor: 0.02,
+                elevation_change: Meter(0.0),
+                leak_area: SquareMeter(0.0),
+                ambient_ua: WattPerKelvin::ZERO,
+                stream: refinery_core::stream::Stream::stagnant(1, Kelvin(293.15), P_ATM),
+            },
+        );
+    };
+    pipe("in", src, valve);
+    pipe("out", valve, sink);
+
+    let err = refinery_solvers::NewtonFlowSolver::default()
+        .solve(&graph, &slate, &Default::default(), Seconds(0.1))
+        .expect_err("a gas valve with no x_T must not compile");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("x_T") && msg.contains("gas"),
+        "the refusal must name the missing factor and the phase: {msg}"
+    );
+}
+
+/// `SetValveOpening` on a relief valve is refused **for its own reason**.
+///
+/// Not a silent no-op, and not the generic "is not a valve" — a relief valve IS a
+/// valve, and the point is that its opening is not an operator setpoint at all.
+/// A command that appeared to take effect would be overwritten by the very next
+/// solve, which is worse than a refusal. The message is asserted rather than just
+/// the `Err`, on `negative_furnace_duty_is_refused`'s precedent: a refusal for
+/// the wrong reason passes an `is_err()` check just as well as the right one.
+#[test]
+fn setting_a_relief_valves_opening_by_command_is_refused_naming_the_kind() {
+    use refinery_core::snapshot::Command;
+
+    let mut engine = refinery_scenarios::build_engine(&load()).expect("builds");
+    let psv = engine.graph.find_node("psv").expect("plant has a psv");
+    let err = engine
+        .apply(Command::SetValveOpening {
+            node: psv,
+            opening: 0.5,
+        })
+        .expect_err("a relief valve's opening must not be commandable");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("relief valve") && msg.contains("inlet pressure"),
+        "the refusal must say WHY, not merely that it is not a valve: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// C′ — loader refusals.
 // ---------------------------------------------------------------------------
 
 fn expect_refusal(file: &refinery_scenarios::ScenarioFile, what: &str) -> String {

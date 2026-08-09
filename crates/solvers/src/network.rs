@@ -13,7 +13,7 @@ use crate::elements::{
     fold_gas_valve, pipe_resistance, relief_opening, specific_heat_ratio_factor, QuadraticBranch,
     CHOKE_BLEND,
 };
-use refinery_core::components::Slate;
+use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
 use refinery_core::error::SimError;
 use refinery_core::graph::{EdgeId, Node, NodeId, NodeKind, PlantGraph};
@@ -412,8 +412,33 @@ pub fn compile_edge(
                     }
                     fold_gas_valve(branch, liquid, dp, upwind, x_choke, CHOKE_BLEND)
                 }
-                // Liquid service: unchanged, and bit-identical to pre-M5.4.
-                None => branch.in_series(liquid),
+                // No `x_T`. For a LIQUID stream that is correct and the branch is
+                // bit-identical to pre-M5.4. For a GAS stream it is the silent
+                // wrong number this milestone exists to refuse — the
+                // incompressible law on a compressible fluid, finite,
+                // deterministic, mass-conserving and overpredicting exactly where
+                // a relief is read.
+                //
+                // The loader already refuses that pairing (`require_gas_valve_x_t`,
+                // off M5.2's topological analysis), so this is a SECOND door on the
+                // same correspondence — and it exists because the loader is not the
+                // only way in: the invariant proptests build a `PlantGraph`
+                // directly and never call `build_engine`. Every generator uses
+                // `Slate::water_only()` today, so no generated plant can reach
+                // this arm; that is a fact about the current generators, not about
+                // the type, and a gas-valve arm added to one of them later must
+                // not be able to slip through.
+                None => {
+                    if pipe.stream.composition.phase(slate)? == Phase::Gas {
+                        return Err(SimError::Numerical(format!(
+                            "valve '{}' carries a gas-phase stream but has no x_T, so the \
+                             incompressible sizing law would be applied to a compressible \
+                             fluid (docs/DESIGN.md §3a fork 4)",
+                            graph.node(src).name
+                        )));
+                    }
+                    branch.in_series(liquid)
+                }
             };
         }
         _ => {}

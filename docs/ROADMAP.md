@@ -1453,6 +1453,43 @@ unedited so the corrections above can be read against what they corrected.
       arbitrary.
 - [x] Regression anchor: nine pre-existing scenarios × two fidelities × 200 ticks,
       **18/18 byte-identical**.
+- [x] **Three gaps closed after review, and the pattern in them is the same one
+      M5.3 recorded: every M5.4 gate is a FIXED PLANT, so anything reachable by a
+      second door went unwatched.**
+      (a) The Simple-fidelity stall above was found by running the CLI, not the
+      suite — every gate in `relief_valve_reference.rs` builds from the scenario
+      file, whose fidelity is `newton`, so the geometry fix that cured it was
+      protected by nothing and a later re-sizing would have re-stalled it
+      silently. `both_fidelities_settle_the_relief_and_simple_stays_clear_of_its_cap`
+      now runs both and asserts the sweep count stays inside **half** the 5000
+      cap (measured 868) — a margin gate rather than an exact count, since the
+      number moves with any legitimate re-sizing and what must not move is the
+      distance from the cliff. Reverting the geometry fails it and nothing else.
+      (b) The `x_T` ↔ gas-service correspondence was enforced at the LOADER only,
+      and `build_engine` is not the only way to a `PlantGraph` — the invariant
+      proptests build one directly. Every generator uses `Slate::water_only()`
+      today, so none can reach the gas branch; that is a fact about the current
+      generators, not about the type. `compile_edge` now refuses the pairing
+      itself, gated by a hand-built graph that bypasses the loader deliberately.
+      (c) `SetValveOpening` on a relief valve fell through to the generic
+      `"is not a valve"` — a refusal, but for the wrong reason and a confusing
+      one, since a relief valve IS a valve. It now refuses with its own reason
+      (the opening is actuated by inlet pressure and would be overwritten by the
+      next solve), and the gate asserts the MESSAGE, on
+      `negative_furnace_duty_is_refused`'s precedent that a refusal for the wrong
+      reason passes an `is_err()` check just as well as the right one.
+- [ ] **Deferred, with the reason stated rather than left implicit: no I-series
+      invariant covers a choked valve or a PSV.** Every M5.4 gate is a fixed
+      plant, so `fold_gas_valve`'s bisection has never met adversarial inputs —
+      `p_up` at the 1 Pa floor against a large drop, `x_choke` near zero,
+      `α_pipe` orders away from `α_valve`. Those are argued finite (the bracket
+      is `[0, S]`, `g` is monotone, and the `x_s = 0` and closed-valve cases
+      return early) and the argument is in `fold_gas_valve`'s doc — but argued is
+      not tried. The right shape is a gas-valve arm on the **existing I5
+      generator** rather than a new invariant, because I5 is what would catch a
+      bad inner solve: Newton and Simple would disagree. It is deferred rather
+      than skipped because it needs the generator to build gas slates, which is a
+      change to `invariants.rs`'s plant model and not a test to bolt on.
 
 The box below is this slice's ORIGINAL specification, kept unticked so the
 corrections above read against what they corrected.
@@ -1497,7 +1534,8 @@ corrections above read against what they corrected.
       (Shipped as `relief_blowdown.toml`; the cooling clause is withdrawn with
       reasons under M5.4c.)
 
-**M5 acceptance criteria are met.** M5.0 (scoping + design note), M5.1
+**M5 acceptance criteria are met.** The demo is gated under **both** fidelities
+(see M5.4c (a) — it was not, and that is what closing the gap fixed). M5.0 (scoping + design note), M5.1
 (dissipation), M5.2 (gas density), M5.3 (capacitive vessel) and M5.4 (choking,
 relief valve, flare) complete. `cargo test --workspace`,
 `cargo clippy --workspace --all-targets -- -D warnings` and `cargo fmt --check`
@@ -1515,7 +1553,10 @@ slice leans on instead is the plateau, `F_k`-from-the-slate, `Y = 2/3` at the
 choke and the `Y → 1` degeneracy. The equation FORM was checked outside the repo
 but the standard itself was not read. And `x_T`'s citation is secondary, which is
 acceptable only because nothing is calibrated to it and the gates run at two
-values. M6 may begin.
+values. Plus one open box, carried deliberately: no I-series invariant reaches a
+choked valve or a PSV, so `fold_gas_valve`'s inner solve has never met a
+generated input. It is argued finite, not tried, and the un-defer is a gas-valve
+arm on the existing I5 generator. M6 may begin.
 
 **Deferred from M5, with what would un-defer each** (DESIGN §3a): **two-phase
 flow, flash and condensation** — the reason is *scope, not unfalsifiability*, and
