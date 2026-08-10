@@ -1096,6 +1096,159 @@ adds hysteresis without saying so.
 - **PSV hysteresis and chatter** — needs element state; see fork 5.
 - **Acoustic / pressure-wave dynamics** — out of scope since §3 and unchanged.
 
+## 3b. Damage: the leak (M6) — specified before building
+
+M6's ROADMAP stub said the damage commands were "already supported by the graph
+model". Half of that is true, and the false half is the reason this section
+exists.
+
+### The finding: `PuncturePipe` is a command that does nothing
+
+**Fire is real.** `Command::SetHeatInput` reaches the energy balance at
+`energy.rs:1369` and `energy.rs:1496`, stacking on a unit's own duty rather than
+replacing it, exactly as `snapshot.rs:26` promises.
+
+**The leak is not.** Three independent checks, each of which alone would be
+suggestive and which together are conclusive:
+
+1. `Pipe::leak_area` (`graph.rs:451`) is **written** at `engine.rs:119` and
+   **read by no solver**. Every other occurrence in the workspace is a test or
+   loader fixture initialising it to `ZERO`.
+2. `EdgeSnapshot::leak_mass_flow` is the literal `0.0`, carrying the comment
+   *"populated when leak paths land"* (`engine.rs:690`).
+3. **No test anywhere constructs `Command::PuncturePipe`.** The enum variant and
+   the engine's match arm are its only two occurrences in the repo.
+
+And there is no TOML surface for it either: `scenarios/src/lib.rs:380` hardcodes
+`leak_area: ZERO`, so neither a command nor a config file can reach a nonzero
+value. The field is unreachable, unread and unreported.
+
+This is the failure mode this project has now recorded twice — a stored number
+that nothing consumes is how an author comes to believe the model has a feature
+it does not have (M5.2), and a fixture that pins a field to its identity value
+disables the code path meant to be under test (M5.2 again). Here it went one
+step further than either: the *command* existed, so the feature looked shipped
+from the frontend contract inward.
+
+**A related gap, found while checking the first.** `NodeKind::Atmosphere` is
+expressible in TOML (`NodeDef::Atmosphere`, `scenarios/src/lib.rs:615`) and is
+handled in four places — `P_ATM` (`network.rs:163`), `T_AMBIENT`
+(`energy.rs:773`), a first-component composition (`energy.rs:742`), and the
+degree rules. **No scenario and no test in the repo builds one.** So the leak's
+destination is itself an untested degenerate, and M6's first gate will be
+exercising those arms for the first time.
+
+### Fork A — a scalar sink inside the pipe's own equation. **Rejected.**
+
+The shape `Pipe::leak_area` currently implies: the pipe keeps its two endpoints
+and loses mass somewhere along its length. It is rejected on evidence rather
+than taste. `network::edge_flows` returns **one** `ṁ` per edge, and every
+I-series mass balance sums exactly those. A mid-pipe sink makes one edge deliver
+different mass at its two ends, which is not a local change: it propagates into
+the mass balance, energy transport, composition transport, and dissipation —
+`Φ = α·Q|Q|·Q` is computed from that single `q` at `network.rs:696`, and there
+would no longer be a single `q` to compute it from. It also contradicts what
+`graph.rs:8` and `snapshot.rs:21` already promise in prose ("a leak adds an edge
+to an `Atmosphere` node"). The field's shape is the outlier; the comments are
+the design.
+
+### Fork B — graph surgery at puncture time. **Rejected, for the frontend.**
+
+Split the punctured pipe into two, insert a junction, hang an orifice edge from
+it to `Atmosphere`. The solver would not notice: `network::prepare` is called
+per tick from inside both fidelities (`newton_flow.rs:96`, `simple_flow.rs:88`),
+so a topology change *between* ticks is recompiled cleanly, and `PlantGraph`
+wraps a `StableDiGraph` (`graph.rs:496`), so existing `NodeId`s and `EdgeId`s
+survive an insertion.
+
+It is rejected because the **snapshot changes shape mid-run**. Frontends consume
+snapshots (rule 6), and a node list that grows during play is a contract problem
+for every consumer, not just Godot. Repair has no story either: undoing damage
+would mean removing nodes, and a `StableDiGraph` that keeps indices stable
+across insertions does not promise anything as pleasant across removals.
+
+### Fork C — a dormant leak path, decided at load. **Chosen.**
+
+A leak is an **edge to an `Atmosphere` node, created when the scenario is
+loaded, and inert until damaged**. Its conductance comes from an orifice area;
+zero area means it does not conduct, and `network::compile_edge`'s existing
+`conducts = alpha.is_finite() && alpha > 0.0` test already expresses exactly
+that. The topology is fixed for the run, so the snapshot's shape is fixed too,
+and repair is `area = 0` rather than graph surgery.
+
+**The frozen-anchoring interaction is checked and clean, not open.** M5 left a
+live defect: `network::prepare` freezes the anchored set at the seed compile,
+which is stale for a PSV because its opening depends on the pressure iterate.
+The discriminating question for a leak is the same one: *does the leak element's
+`conducts` ever depend on the pressure iterate?* It does not — a leak's `alpha`
+is a function of its **area**, which is a commanded quantity constant across a
+solve. Even if the orifice reuses M5.4's choked law, so that `alpha` is
+recompiled each iteration, `conducts` is sign-of-alpha and cannot flip. The seed
+classification is therefore exact for a leak, and M6 does not drag the
+frozen-anchoring un-defer along with it. **This must be re-checked, not
+inherited, if a leak ever becomes pressure-actuated.**
+
+**The sub-decision this section does NOT settle: which pipes get a dormant leak
+path.** Two candidates — one auto-created per pipe at load (uniform, any pipe
+can be punctured, `N` extra inert edges of per-tick cost), or only where the
+TOML declares one (cheap, but the scenario author decides in advance where the
+game may be damaged). The cost of the first is **to be measured on an existing
+scenario, not predicted**, and `network::validate_degrees` must be confirmed to
+tolerate the extra edges. That measurement is M6.1's first task.
+
+### The blocker: `Atmosphere` back-feeds, and its composition is arbitrary
+
+`energy.rs:733–737` gives an `Atmosphere` node the **first slate component** as
+its composition, and says so honestly: nothing draws mass out of an atmosphere,
+because leak edges run *into* it, so no gate can falsify the choice. The comment
+names its own expiry — *"a decision the milestone that back-feeds from a leak
+will have to make properly"*. **M6 is that milestone.**
+
+A leak edge is pressure-driven like any other. Whenever the plant side falls
+below `P_ATM`, the edge back-feeds, and that regime is reachable in this repo
+today — `capacitive_vessel_reference.rs:310` blows a vessel down toward vacuum.
+The arbitrary first component would then flow *into* the plant: mass-conserving,
+finite, deterministic, and wrong — DESIGN §5's silent hazard, in the one place
+the code already warned it would appear.
+
+**This blocks shipping the leak, and one of three must be chosen with a gate
+that runs in the back-feed direction:**
+
+1. **Pin `Atmosphere` to a real air composition on the slate.** Honest, but
+   requires every slate to name an air-like component, which the FCC slate does
+   not have.
+2. **Make the leak a one-way orifice** — refuse reverse flow on a leak edge.
+   Physically defensible (a punctured pipe below atmospheric does draw air, but
+   modelling that is a two-phase-adjacent decision), and cheap. The refusal is
+   what gets gated.
+3. **`Err` on sub-atmospheric back-feed through a leak.** Loudest, and consistent
+   with rule 5's "a wrong answer is an `Err`, not a NaN and not a quiet number".
+
+Whichever is picked, a gate that only ever runs the leak in the *outward*
+direction reproduces exactly the defect `energy.rs:735` predicted. The gate must
+drive the plant below `P_ATM` with a leak open.
+
+### Two contract decisions, stated once
+
+- **`Command::PuncturePipe { edge, area }` keeps its exact JSON shape.**
+  `Command` is `#[serde(tag = "cmd")]` (`snapshot.rs:11`) and therefore a
+  frontend contract. Under fork C, `edge` names the **pipe** and the engine
+  routes the area onto that pipe's dormant leak path. Renaming it to
+  `SetLeakArea` would break the contract to describe an implementation detail;
+  "puncture pipe" still names the physical act correctly.
+- **`leak_mass_flow` is reported on the punctured pipe, not on the leak edge.**
+  It is a translation decision, and the pipe is the thing a frontend draws a
+  spray from. The leak edge remains in the snapshot as an ordinary edge with its
+  own flow; the field on the pipe is the convenience view.
+
+### What M6 does not attempt here
+
+Back-feeding **composition** from the atmosphere into the plant is out of scope
+under all three options above — option 1 makes it well-defined, options 2 and 3
+make it impossible. Air ingress as a modelled phenomenon (and therefore
+combustion) un-defers with a slate carrying air and a reason to burn it. Fire
+remains a heat source on a node, as §2 has said since M1.
+
 ## 4. Streams and pseudo-components
 
 ```
@@ -2166,9 +2319,12 @@ not have); feed-quality dependence of the constants; and any second lump slate �
   unit-specific extras as tagged enums), per-edge stream state, solver
   diagnostics (iterations, residual). Serde: JSON for humans, bincode later
   if profiling demands.
-- `Command`: `SetValveOpening{id, frac}`, `SetPumpOn{id, bool}`,
-  `PuncturePipe{edge, area}`, `IgniteNode{id}`, `SetFeed{...}` — applied
-  between ticks, validated, invalid commands return Err without mutating.
+- `Command`: `SetValveOpening{node, opening}`, `SetPumpOn{node, on}`,
+  `PuncturePipe{edge, area}`, `SetHeatInput{node, power}` (the fire — this is
+  what the older sketch called `IgniteNode`), `SetFurnaceDuty{node, duty}`,
+  `SetCoolerDuty{node, duty}` — applied between ticks, validated, invalid
+  commands return Err without mutating. `#[serde(tag = "cmd")]`, so the variant
+  names and field names are a frontend contract: see §3b before renaming one.
 
 ## 8. Godot integration (M6)
 
@@ -2177,6 +2333,18 @@ not have); feed-quality dependence of the constants; and any second lump slate �
 for hot paths), `send_command(...)`. Sync single-threaded first; move the
 engine to its own thread behind a snapshot channel only if profiling shows
 tick time threatening the frame budget.
+
+**What is gateable here and what is only demonstrated.** M6 bundles two unlike
+things, and conflating them is how a milestone comes to believe it is tested.
+The adapter's **translation layer** — command JSON → `Command`, `Snapshot` →
+JSON or `Dictionary`, `SimError` → a signal — is ordinary Rust and is
+unit-tested like anything else, including the round-trips that a typo in a
+`#[serde]` tag would break. A **scene** is not gateable by this repo's
+standards: no `cargo test` can assert that a tank looks like a tank. The scene
+is therefore a **demonstrated** acceptance criterion, in the sense
+`relief_blowdown.toml` was for M5 — a named thing that is run and observed, with
+the observation written down. Stating this up front is cheaper than discovering
+at the end of M6 that half the milestone has no gate and pretending otherwise.
 
 ## 9. Error handling & diagnostics
 

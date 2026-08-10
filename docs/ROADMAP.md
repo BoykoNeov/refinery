@@ -1895,7 +1895,92 @@ carry. Held meanwhile by `known_defect_frozen_anchoring_*`, which are written to
 FAIL when it is fixed, and by floors on the generated rates so it cannot quietly
 worsen. See FINDING 2 under M5.4 and DESIGN §3a.
 
-## M6 — Godot frontend + damage (CURRENT)
-godot-ext adapter, minimal scene reading snapshots; leak/fire commands
-(already supported by the graph model) get game-side visualization.
+## M6 — Damage + Godot frontend (CURRENT)
+
+The stub this section replaces said "leak/fire commands (already supported by
+the graph model) get game-side visualization." **Half of that premise is false,
+and finding out which half is what M6.0 did.** Fire is supported. The leak is a
+command that does nothing: `Pipe::leak_area` is written by `Engine::apply` and
+read by no solver, `EdgeSnapshot::leak_mass_flow` is the literal `0.0`, no TOML
+field can set an area, and no test in the repo constructs
+`Command::PuncturePipe`. See DESIGN §3b for the three checks and their evidence.
+
+M6 is therefore **damage first, Godot second**. That ordering is not
+preference: the damage half is engine physics with a falsifiable gate (mass in =
+mass out + accumulation, with a leak path carrying mass), while a Godot scene is
+not gateable by this repo's standards at all. Building the frontend first would
+mean visualizing a command that lies.
+
+### M6.0 — Scoping + design note — **LANDED**
+- [x] DESIGN §3b, "Damage: the leak (M6) — specified before building".
+- [x] **The finding, established three ways** — unread field, hardcoded
+      snapshot value, zero test callers — rather than asserted from one grep.
+      This is M5.2's lesson recurring one level up: a stored number nothing
+      consumes is how an author comes to believe the model has a feature it does
+      not have. Here the *command* existed too, so it looked shipped from the
+      frontend contract inward.
+- [x] **A second degenerate found on the way in.** `NodeKind::Atmosphere` is
+      expressible in TOML and handled in four places, and **no scenario or test
+      in the repo builds one**. M6's first gate exercises those arms for the
+      first time; expect to find something there.
+- [x] **Fork A (scalar sink inside the pipe's equation) rejected on evidence.**
+      `network::edge_flows` returns one `ṁ` per edge and every I-series balance
+      sums exactly those; a mid-pipe sink makes one edge deliver different mass
+      at its two ends, propagating into mass balance, energy transport,
+      composition transport and dissipation (`Φ` is computed from that single
+      `q`). The field's shape is the outlier — `graph.rs:8` and `snapshot.rs:21`
+      already promise "a leak adds an edge to an `Atmosphere` node".
+- [x] **Fork B (graph surgery at puncture time) rejected for the frontend, not
+      the solver.** The solver would not notice: `prepare` runs per tick from
+      inside both fidelities and `PlantGraph` wraps a `StableDiGraph`, so ids
+      survive insertion. It loses because the **snapshot changes shape mid-run**,
+      which is a rule-6 contract problem for every consumer, and because repair
+      would mean node removal, which has no story.
+- [x] **Fork C chosen: a dormant leak edge to `Atmosphere`, created at load,
+      inert until damaged.** Zero area ⇒ does not conduct, which
+      `compile_edge`'s existing `conducts` test already expresses. Fixed
+      topology, fixed snapshot shape, and repair is `area = 0`.
+- [x] **The frozen-anchoring interaction CHECKED, and recorded as clean rather
+      than left open.** M5's newest deferral is staleness *within* a solve, for a
+      PSV whose opening depends on the pressure iterate. A leak's `alpha` depends
+      on its **area**, a commanded quantity constant across a solve, so
+      `conducts` cannot flip mid-solve even if `alpha` is recompiled per
+      iteration under a choked law. M6 does not drag that un-defer along with it.
+      Re-check rather than inherit this if a leak ever becomes pressure-actuated.
+
+**The blocker M6.0 surfaced and deliberately did not resolve.** `energy.rs:733`
+gives an `Atmosphere` node the first slate component as its composition and
+justifies it by "leak edges run *into* it, so no gate can falsify this choice —
+a decision the milestone that back-feeds from a leak will have to make
+properly." **M6 is that milestone and the premise expires the moment a leak edge
+exists**: the edge is pressure-driven, so a plant below `P_ATM` back-feeds, and
+blowdown toward vacuum is already reachable here (`capacitive_vessel_reference`
+§C). The arbitrary component would flow into the plant — mass-conserving,
+finite, deterministic and wrong. Three candidates in DESIGN §3b (pin a real air
+composition; make the leak one-way and gate the refusal; `Err` on back-feed).
+**Whichever is chosen, the gate must drive the plant below `P_ATM` with a leak
+open** — an outward-only gate reproduces exactly the defect the comment
+predicted.
+
+### M6.1 — The leak, made real — **NEXT**
+- [ ] **First task is a MEASUREMENT, not a decision**: the per-tick cost of
+      auto-creating one dormant leak edge per pipe at load, taken on an existing
+      scenario, versus declaring leak paths in TOML. Measured, not predicted —
+      and `network::validate_degrees` confirmed to tolerate the extra edges.
+- [ ] Resolve the `Atmosphere` back-feed blocker above, with its back-feed gate.
+- [ ] Orifice conductance from area; `leak_mass_flow` populated on the punctured
+      **pipe** (the frontend draws the spray there), with the leak edge carrying
+      its own flow as an ordinary edge.
+- [ ] `Command::PuncturePipe { edge, area }` keeps its exact JSON shape — it is a
+      `#[serde(tag = "cmd")]` frontend contract; `edge` names the pipe and the
+      engine routes to that pipe's dormant path.
+- [ ] Mass-balance invariant with a leak open, in the I-series, and a demo
+      scenario where a punctured line actually drains.
+
+### M6.2 — godot-ext adapter + minimal scene
+- [ ] Translation layer (command JSON → `Command`, `Snapshot` → `Dictionary`,
+      `SimError` → signal) unit-tested in Rust — this half **is** gateable.
+- [ ] Minimal scene reading snapshots; leak and fire get visualization. The scene
+      is a **demonstrated** criterion, not a gate (DESIGN §8).
+
 Complex column (stage cascade) can proceed in parallel here if desired.
