@@ -9,6 +9,26 @@
 //!   the Newton Jacobian must stay finite. sqrt-law devices use the
 //!   regularization  x/sqrt(|x|+eps)  instead of  sign(x)·sqrt(|x|).
 
+/// Discharge coefficient of a leak orifice — the vena-contracta loss in
+/// `Q = Cd·A·√(2·dp/ρ)`.
+///
+/// 0.61 is the textbook sharp-edged-orifice value for fully turbulent
+/// incompressible flow, where `Cd` is essentially Reynolds-independent and every
+/// standard treatment lands in 0.60–0.62 (the contraction coefficient ~0.62
+/// times a velocity coefficient ~0.98). It is quoted here as a **modelling
+/// constant with a bracket**, not transcribed from a table this repo has read:
+/// a hole punched in a pipe by damage has no defined edge geometry, so a `Cd`
+/// carried to three figures would be false precision about the damage, not about
+/// the arithmetic.
+///
+/// It is deliberately NOT a scenario parameter yet. Nothing in the model can
+/// currently tell 0.60 from 0.62 — the leak rate scales linearly in `Cd`, so the
+/// choice is exactly a ±2% statement about a hole whose size is itself commanded
+/// by a game — and a knob no gate can discriminate is a knob that invites tuning
+/// the plant through it. It un-defers with a scenario that needs two leaks of
+/// *different* geometry in one plant.
+pub const ORIFICE_CD: f64 = 0.61;
+
 /// Regularized signed square root: ≈ sign(x)·sqrt(|x|) away from 0, linear
 /// near 0 with finite slope. eps in the units of x.
 #[inline]
@@ -121,6 +141,32 @@ impl QuadraticBranch {
         Self {
             alpha: rho * g * a,
             beta: -rho * g * h0,
+        }
+    }
+
+    /// Sharp-edged orifice discharging through an area `a` [m²] into a fluid of
+    /// density `rho` [kg/m³] — the leak path's whole characteristic.
+    ///
+    /// Torricelli through a vena contracta: `Q = Cd·A·√(2·dp/ρ)`, so inverting
+    /// to this file's form gives `alpha = ρ/(2·Cd²·A²)` and `beta = 0`.
+    ///
+    /// **`beta = 0` is structural here, and something depends on it.** The
+    /// back-feed refusal (`network::finalize`) needs no tolerance precisely
+    /// because `flow`'s sign is `sign(dp − beta)`: with `beta = 0` a leak edge
+    /// carries mass inward *iff* the plant side is strictly below `P_ATM`, which
+    /// is the physical condition itself rather than a threshold someone picked.
+    /// An orifice given an elevation head, or composed in series with a pipe,
+    /// would keep that refusal compiling and quietly make it fire at the wrong
+    /// pressure — so the orifice edge is this branch ALONE, and
+    /// `network::compile_edge` asserts the loader gave it no geometry to fold.
+    ///
+    /// `a = 0` (a dormant, undamaged leak) ⇒ `alpha = +∞`, which `flow` already
+    /// reads as exactly zero flow and `compile_edge`'s `conducts` already reads
+    /// as closed. A dormant leak needs no special case anywhere.
+    pub fn orifice(a: f64, cd: f64, rho: f64) -> Self {
+        Self {
+            alpha: rho / (2.0 * cd * cd * a * a),
+            beta: 0.0,
         }
     }
 

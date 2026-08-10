@@ -14,8 +14,8 @@ use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    ColumnDraw, HeatExchangerCoupling, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState,
-    VesselState,
+    ColumnDraw, HeatExchangerCoupling, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph,
+    TankState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, ReactionModel, ThermoModel};
@@ -308,6 +308,24 @@ pub struct PipeDef {
     /// `Pipe::ambient_ua` for why this drives a transform and not a heat term.
     #[serde(default)]
     pub ambient_ua_w_per_k: f64,
+    /// Declares this pipe punctureable, naming the `Atmosphere` node its leak
+    /// vents to. Absent (the default) = a pipe that cannot be damaged.
+    ///
+    /// **Declared rather than automatic, and the discriminator is not CPU.** A
+    /// leak path is built at LOAD (docs/DESIGN.md §3b): the pipe is split in
+    /// half, a `Junction` joins the halves, and a dormant orifice hangs off that
+    /// junction. Auto-creating one for every pipe would therefore double every
+    /// pipe and add a junction per pipe in every scenario ever written — every
+    /// reference plant would become a different plant, which is large in meaning
+    /// even though it is small in test count. A game that wants
+    /// puncture-anywhere declares a path on every pipe in its own file instead of
+    /// imposing one on the reference plants.
+    ///
+    /// The node is named rather than found, so a plant with two atmospheres (an
+    /// enclosure and the outside, say) stays expressible and no scenario acquires
+    /// an implicit one it did not write.
+    #[serde(default)]
+    pub leak_to: Option<String>,
 }
 fn default_friction() -> f64 {
     0.02
@@ -368,23 +386,25 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
                 pipe.name, pipe.to
             ))
         })?;
-        graph.add_pipe(
-            from,
-            to,
-            Pipe {
-                name: pipe.name.clone(),
-                length: Meter(pipe.length_m),
-                diameter: Meter(pipe.diameter_m),
-                friction_factor: pipe.friction_factor,
-                elevation_change: Meter(pipe.elevation_change_m),
-                leak_area: SquareMeter::ZERO,
-                ambient_ua: WattPerKelvin(pipe.ambient_ua_w_per_k),
-                // The solver overwrites mass_flow each tick, and transport
-                // overwrites the temperature. Seed representative T/P at
-                // ambient / atmospheric.
-                stream: Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
-            },
-        );
+        let whole = Pipe {
+            name: pipe.name.clone(),
+            length: Meter(pipe.length_m),
+            diameter: Meter(pipe.diameter_m),
+            friction_factor: pipe.friction_factor,
+            elevation_change: Meter(pipe.elevation_change_m),
+            leak: LeakRole::None,
+            ambient_ua: WattPerKelvin(pipe.ambient_ua_w_per_k),
+            // The solver overwrites mass_flow each tick, and transport
+            // overwrites the temperature. Seed representative T/P at
+            // ambient / atmospheric.
+            stream: Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
+        };
+        match &pipe.leak_to {
+            None => {
+                graph.add_pipe(from, to, whole);
+            }
+            Some(atmosphere) => split_for_leak(&mut graph, pipe, from, to, whole, atmosphere)?,
+        }
     }
 
     // Step 2b: thermally pair the exchanger sides, after every node exists so
@@ -401,6 +421,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // is a tick-1 density seed only (see `seed_component_index`).
     let phases = plant_phases(&graph, &slate)?;
     require_gas_valve_x_t(&graph, &phases)?;
+    refuse_gas_leak(&graph, &phases)?;
     for eid in graph.edge_ids().collect::<Vec<_>>() {
         let (src, _) = graph.endpoints(eid);
         let index = seed_component_index(&slate, phases[src.0 as usize]);
@@ -771,6 +792,133 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
 /// the temperature difference from ambient every time the fluid crosses the
 /// pipe, and a loop of such pipes diverges to infinity within a few ticks. Same
 /// conceptual error, a much shorter fuse.
+/// Build a declared pipe as a LEAK PATH: two halves joined by a `Junction`, with
+/// a dormant orifice edge from that junction to `atmosphere`.
+///
+/// **Split at LOAD, not at puncture** (docs/DESIGN.md §3b). Splitting when the
+/// damage happens would change the snapshot's shape mid-run, which is a rule-6
+/// contract problem for every frontend; splitting at load fixes the topology
+/// before tick 0, so a punctured plant and an intact one have the same shape and
+/// differ only in one commanded number.
+///
+/// **Hanging the orifice off an ENDPOINT was not merely inelegant, it was
+/// illegal.** `validate_degrees` requires exactly 1-in-1-out of a pump, valve,
+/// PSV, furnace, cooler, reactor and exchanger side, so a third edge leaving any
+/// of them is a load-time `Err` — and a pipe's upstream endpoint is a pump or a
+/// valve constantly (`tank_pump_valve.toml` is nothing but). An endpoint rule
+/// would therefore have forbidden leaks on exactly the lines a game most wants
+/// to puncture. The midpoint junction has no degree rule on it, and it carries
+/// the physically right pressure for a mid-pipe hole into the bargain: neither
+/// endpoint's, but the one between them.
+///
+/// The halves split the length, the elevation and the `UA` evenly and keep the
+/// diameter and friction factor, so the two in series are hydraulically the
+/// declared pipe: `k ∝ L` adds back to the original, `β = ρ·g·Δz` adds back, and
+/// the ambient transform composes over the two halves. **The upstream half keeps
+/// the declared NAME** — it is what `PuncturePipe` addresses and where
+/// `leak_mass_flow` is reported.
+fn split_for_leak(
+    graph: &mut PlantGraph,
+    def: &PipeDef,
+    from: NodeId,
+    to: NodeId,
+    whole: Pipe,
+    atmosphere: &str,
+) -> Result<(), SimError> {
+    let vent = graph.find_node(atmosphere).ok_or_else(|| {
+        SimError::Scenario(format!(
+            "pipe '{}' declares leak_to = '{atmosphere}', which is not a node in this plant",
+            def.name
+        ))
+    })?;
+    if !matches!(graph.node(vent).kind, NodeKind::Atmosphere) {
+        return Err(SimError::Scenario(format!(
+            "pipe '{}' declares leak_to = '{atmosphere}', which is a {:?}, not an atmosphere. \
+             A leak vents to the outside world; venting it into the plant would be an \
+             ordinary pipe, and the scenario should say so",
+            def.name,
+            graph.node(vent).kind
+        )));
+    }
+    // A COLUMN's pipes cannot be split, and this refusal is here because the
+    // failure it prevents is silent. `network::is_column_draw_edge` recognises a
+    // draw by its two endpoints — column at one end, one of that column's
+    // declared outlets at the other — and `edge_flows` guards a draw's flow to
+    // zero on the strength of it, because a draw's flow is PRESCRIBED
+    // (`splitᵢ·ṁ_feed`, written post-sweep) and not pressure-driven at all.
+    // Split that edge and neither half matches any more, so the guard silently
+    // stops applying and the draw becomes a pressure-driven number that is
+    // finite, deterministic, mass-conserving and wrong — DESIGN §5's silent
+    // hazard, reached by a scenario line that looks entirely reasonable. The feed
+    // is refused with it: a column is 1-in-N-out by `validate_degrees`, so a
+    // split feed would fail there anyway, but with a message about degrees that
+    // names the wrong cause.
+    for end in [from, to] {
+        if matches!(graph.node(end).kind, NodeKind::Column { .. }) {
+            return Err(SimError::Scenario(format!(
+                "pipe '{}' declares a leak path but connects to column '{}'. A column's \
+                 feed and draw pipes cannot be split: a draw's flow is prescribed by the \
+                 feed split, not by pressure, and splitting it would silently turn it \
+                 into a pressure-driven flow (docs/DESIGN.md §3b, §5)",
+                def.name,
+                graph.node(end).name
+            )));
+        }
+    }
+
+    let junction = format!("{}__leak_point", def.name);
+    if graph.find_node(&junction).is_some() {
+        return Err(SimError::Scenario(format!(
+            "pipe '{}' declares a leak path, whose midpoint junction would be named \
+             '{junction}' — and this plant already has a node by that name. Rename one",
+            def.name
+        )));
+    }
+    let mid = graph.add_node(Node {
+        name: junction,
+        kind: NodeKind::Junction,
+        heat_input: Watt::ZERO,
+    });
+
+    // Half a pipe each: k ∝ L and β = ρ·g·Δz both add back to the declared pipe,
+    // and UA ∝ exposed area does too.
+    let half = |name: String| Pipe {
+        name,
+        length: Meter(def.length_m / 2.0),
+        elevation_change: Meter(def.elevation_change_m / 2.0),
+        ambient_ua: WattPerKelvin(def.ambient_ua_w_per_k / 2.0),
+        ..whole.clone()
+    };
+    let upstream = graph.add_pipe(from, mid, half(def.name.clone()));
+    graph.add_pipe(mid, to, half(format!("{}__downstream", def.name)));
+
+    // The orifice runs junction → atmosphere, so positive graph direction is
+    // OUTWARD and `leak_mass_flow` needs no sign flip. Its geometry is ZERO on
+    // purpose: an orifice has no length to resist with and no bore that means
+    // anything (its area is commanded), and `compile_edge` returns before reading
+    // either. Should that early return ever be removed, `pipe_resistance` on a
+    // zero length and a zero diameter is non-finite and the edge fails loudly at
+    // the first solve — which is the point of writing zeros rather than plausible
+    // numbers that would quietly become a second resistance in the leak path.
+    let orifice = graph.add_pipe(
+        mid,
+        vent,
+        Pipe {
+            name: format!("{}__leak", def.name),
+            length: Meter(0.0),
+            diameter: Meter(0.0),
+            elevation_change: Meter(0.0),
+            ambient_ua: WattPerKelvin(0.0),
+            leak: LeakRole::Orifice {
+                area: SquareMeter::ZERO,
+            },
+            ..whole
+        },
+    );
+    graph.pipe_mut(upstream).leak = LeakRole::Punctureable { orifice };
+    Ok(())
+}
+
 fn validate_pipe_def(def: &PipeDef) -> Result<(), SimError> {
     if !def.ambient_ua_w_per_k.is_finite() || def.ambient_ua_w_per_k < 0.0 {
         return Err(SimError::Scenario(format!(
@@ -1235,6 +1383,48 @@ fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(), SimError> 
 /// a silent default would be an invented value in disguise: the sizing gate and
 /// the choked-plateau gate would both pass for whatever it was, which is the
 /// circularity that defers pump `η`.
+/// Refuse a leak path declared on a gas line, naming the file that declared it.
+///
+/// The orifice law this milestone ships is Torricelli, `Q = Cd·A·√(2·dp/ρ)`,
+/// which is the incompressible one. A hole venting a pressurised gas line to
+/// atmosphere is choked over essentially its entire useful range — the critical
+/// ratio is ~0.53 of absolute inlet pressure for a diatomic gas, so anything
+/// above ~1.9 bara chokes — and applying the incompressible law there
+/// overpredicts the escape rate: finite, deterministic and wrong, in the one
+/// number a damage model exists to report. It is refused rather than
+/// approximated for exactly the reason M5.4 refused an incompressible gas VALVE.
+///
+/// This is the FIRST of two doors. `network::compile_edge` re-refuses it, because
+/// the loader is not the only way in: the invariant proptests build a
+/// `PlantGraph` directly and never call `build_engine`. This one exists to name
+/// the scenario file; that one exists to catch a generator.
+///
+/// It un-defers with an orifice `x_T` and a published anchor to size it against.
+fn refuse_gas_leak(graph: &PlantGraph, phases: &[Phase]) -> Result<(), SimError> {
+    for eid in graph.edge_ids() {
+        let pipe = graph.pipe(eid);
+        if !matches!(pipe.leak, LeakRole::Orifice { .. }) {
+            continue;
+        }
+        // The orifice's SOURCE is the midpoint junction, i.e. the plant side —
+        // the phase of the line being punctured, which is what the law has to
+        // suit. Its target is the Atmosphere, which declares no composition and
+        // votes on nothing.
+        let (plant_side, _) = graph.endpoints(eid);
+        if phases[plant_side.0 as usize] == Phase::Gas {
+            return Err(SimError::Scenario(format!(
+                "leak path '{}' is on a gas line. The orifice law is incompressible \
+                 (Q = Cd·A·√(2·dp/ρ)), and a hole venting gas to atmosphere is choked \
+                 over its whole useful range, so it would report a leak rate that is \
+                 too high — the compressible-law-on-a-compressible-fluid refusal M5.4 \
+                 made for valves (docs/DESIGN.md §3b)",
+                pipe.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);

@@ -731,10 +731,23 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
 /// would be swept in an order its own dependencies do not justify.
 ///
 /// `Atmosphere` is the one node with no composition to state. It is given the
-/// first slate component — arbitrary, and honestly so: nothing in M3.1 draws
-/// mass out of an Atmosphere node (leak edges run *into* it), so no gate can
-/// falsify this choice. It is a compile-time default standing in for a decision
-/// the milestone that back-feeds from a leak will have to make properly.
+/// first slate component — arbitrary, and honestly so.
+///
+/// **That arbitrariness named its own expiry — "a decision the milestone that
+/// back-feeds from a leak will have to make properly" — and M6.1 is that
+/// milestone.** The decision made there was to REFUSE the back-feed rather than
+/// to define the composition: `network::finalize` errors if a leak edge with a
+/// nonzero area carries mass inward, which happens exactly when its junction is
+/// below `P_ATM`. So this value is unreachable by construction rather than
+/// merely untested, and the four options weighed to get there are priced in
+/// docs/DESIGN.md §3b.
+///
+/// It stays a value and does not become an `Err` or an `unreachable!()`, which
+/// would be a rule-5 violation reachable by the *undamaged* case: this function
+/// runs for every inertial node on every tick, including in a plant whose
+/// declared leak path is dormant and where nothing back-feeds at all. What
+/// un-defers it properly is a slate carrying an air-like component and a reason
+/// to burn it (DESIGN §3b, "what M6 does not attempt").
 pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Composition> {
     match kind {
         NodeKind::Source { composition, .. } => Some(composition.clone()),
@@ -1530,7 +1543,7 @@ mod tests {
 
     use super::*;
     use crate::components::{Composition, Slate};
-    use crate::graph::{HeatExchangerCoupling, Node, Pipe, TankState};
+    use crate::graph::{HeatExchangerCoupling, LeakRole, Node, Pipe, TankState};
     use crate::stream::Stream;
     use crate::traits::Reaction;
     use crate::units::*;
@@ -1598,7 +1611,7 @@ mod tests {
             diameter: Meter(0.1),
             friction_factor: 0.02,
             elevation_change: Meter(0.0),
-            leak_area: SquareMeter::ZERO,
+            leak: LeakRole::None,
             ambient_ua: WattPerKelvin::ZERO,
             stream: Stream::stagnant(1, T_AMBIENT, P_ATM),
         }

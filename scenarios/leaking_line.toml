@@ -1,0 +1,86 @@
+# M6 damage reference plant: tank_pump_valve with a punctureable fill line.
+#
+# Deliberately `tank_pump_valve.toml` plus one line — `leak_to` on the fill
+# line — so the difference between an intact plant and a damageable one is
+# exactly the leak path and nothing else. That is what makes the loader's
+# no-churn claim checkable rather than asserted: load both files and the only
+# structural difference is one junction and two edges (docs/DESIGN.md §3b).
+#
+# The leak is DORMANT here. A scenario file cannot open one: area arrives
+# through `Command::PuncturePipe`, which is the frontend's act, not the plant's
+# description. Run this file untouched and it transfers water exactly as
+# `tank_pump_valve` does.
+
+[meta]
+name = "leaking_line"
+description = "Pump transfer between two tanks, with the fill line declared punctureable."
+
+[simulation]
+dt = 0.1            # seconds per tick
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.supply_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 20.0
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0           # metric Kv [m^3/h at 1 bar], converted to SI on load
+opening = 0.5
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 1.0
+temperature_c = 20.0
+
+# The outside world. Pinned at P_ATM and T_AMBIENT; every leak in this plant
+# vents here. Named rather than implicit, so a plant can have two (an enclosure
+# and the open air) and no scenario acquires one it did not write.
+[nodes.outside]
+type = "atmosphere"
+
+[[pipes]]
+name = "suction"
+from = "supply_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "discharge_valve"
+length_m = 30.0
+diameter_m = 0.10
+
+# The punctureable line. The loader splits it at its midpoint: the upstream half
+# keeps this name (and this is the edge `PuncturePipe` addresses), a junction
+# named `fill_line__leak_point` joins the halves, and a dormant orifice
+# `fill_line__leak` runs from that junction to `outside`.
+#
+# It is the right line to damage in this plant: it sits downstream of the valve
+# and rises 5 m, so a hole in it is above atmospheric while the pump runs and
+# the leak flows OUT — the direction a game wants to draw.
+[[pipes]]
+name = "fill_line"
+from = "discharge_valve"
+to = "receiving_tank"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = 5.0
+leak_to = "outside"

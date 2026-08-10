@@ -121,7 +121,7 @@ impl FlowSolver for SimpleFlowSolver {
         // flows follow directly. Mirrors Newton's n == 0 branch.
         if unknowns.is_empty() {
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-            return crate::network::finalize(&pressures, edges, 0, 0.0);
+            return crate::network::finalize(graph, &pressures, edges, 0, 0.0);
         }
 
         // Nonlinear Gauss–Seidel: sweep, then measure the residual on the exact
@@ -223,7 +223,7 @@ impl FlowSolver for SimpleFlowSolver {
                         self.warm_start.insert(nid, p);
                     }
                 }
-                return crate::network::finalize(&pressures, edges, iterations, residual);
+                return crate::network::finalize(graph, &pressures, edges, iterations, residual);
             }
             if pressures.values().any(|p| !p.is_finite()) {
                 return Err(diverged(iterations, residual, history));

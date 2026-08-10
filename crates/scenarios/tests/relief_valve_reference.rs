@@ -268,7 +268,7 @@ fn both_fidelities_settle_the_relief_and_simple_stays_clear_of_its_cap() {
 #[test]
 fn the_solver_refuses_a_gas_valve_with_no_x_t_even_bypassing_the_loader() {
     use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
-    use refinery_core::graph::{Node, Pipe, PlantGraph};
+    use refinery_core::graph::{LeakRole, Node, Pipe, PlantGraph};
     use refinery_core::traits::FlowSolver;
     use refinery_core::units::*;
 
@@ -324,7 +324,7 @@ fn the_solver_refuses_a_gas_valve_with_no_x_t_even_bypassing_the_loader() {
                 diameter: Meter(0.1),
                 friction_factor: 0.02,
                 elevation_change: Meter(0.0),
-                leak_area: SquareMeter(0.0),
+                leak: LeakRole::None,
                 ambient_ua: WattPerKelvin::ZERO,
                 stream: refinery_core::stream::Stream::stagnant(1, Kelvin(293.15), P_ATM),
             },

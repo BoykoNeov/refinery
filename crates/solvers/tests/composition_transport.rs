@@ -23,7 +23,7 @@
 use proptest::prelude::*;
 use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
-use refinery_core::graph::{Node, NodeKind, Pipe, PlantGraph, TankState};
+use refinery_core::graph::{LeakRole, Node, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::units::*;
 use refinery_solvers::{ConstantThermo, NewtonFlowSolver, NoReactions};
 
@@ -128,7 +128,7 @@ fn pipe(name: &str, length_m: f64, diameter_m: f64) -> Pipe {
         diameter: Meter(diameter_m),
         friction_factor: 0.02,
         elevation_change: Meter(0.0),
-        leak_area: SquareMeter::ZERO,
+        leak: LeakRole::None,
         ambient_ua: WattPerKelvin::ZERO,
         stream: refinery_core::stream::Stream::stagnant(2, T_AMBIENT, P_ATM),
     }

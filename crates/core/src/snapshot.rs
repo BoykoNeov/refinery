@@ -78,6 +78,21 @@ pub struct EdgeSnapshot {
     /// on the edge LEAVING it, and `stream.temperature` (the edge's outlet)
     /// already carries the rise it causes.
     pub dissipation_w: f64,
+    /// Mass escaping through this pipe's leak path [kg/s], ≥ 0 outward.
+    ///
+    /// Nonzero only on a pipe the scenario declared punctureable — specifically
+    /// the UPSTREAM half of it, which keeps the declared pipe's name and is the
+    /// end a frontend draws a spray from. Every other edge reports 0.0,
+    /// including the orifice edge itself: it is in `edges` as an ordinary edge
+    /// carrying this same mass as its own `stream.mass_flow`, and reporting the
+    /// number twice on the same edge would say the plant lost it twice.
+    ///
+    /// **This is a convenience VIEW of the orifice edge's flow, and two fields
+    /// carrying one quantity is how they drift** — so their agreement is a gate
+    /// (`leak_reference::snapshot_leak_flow_matches_the_orifice_edge`), not an
+    /// assumption. 0.0 before the first solve, where the orifice has no flow yet;
+    /// unlike `dissipation_w` this is not NaN there, because "no leak has flowed"
+    /// is a true statement about a plant that has not run, not a missing one.
     pub leak_mass_flow: f64,
 }
 

@@ -126,7 +126,7 @@ impl FlowSolver for NewtonFlowSolver {
         // — see `two_vessels_and_no_fixed_node_equalise`.
         if n == 0 {
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-            return finalize(&pressures, edges, 0, 0.0);
+            return finalize(graph, &pressures, edges, 0, 0.0);
         }
 
         // Damped Newton.
@@ -224,7 +224,7 @@ impl FlowSolver for NewtonFlowSolver {
             }
         }
         let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-        finalize(&pressures, edges, iterations, res)
+        finalize(graph, &pressures, edges, iterations, res)
     }
 
     fn name(&self) -> &'static str {

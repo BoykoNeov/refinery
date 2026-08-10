@@ -439,6 +439,40 @@ impl TankState {
 // Edges (pipes)
 // ---------------------------------------------------------------------------
 
+/// An edge's role in a declared leak path (docs/DESIGN.md §3b).
+///
+/// A leak is **not** a scalar sink inside a pipe's own equation — that shape was
+/// rejected because `network::edge_flows` returns one `ṁ` per edge and every
+/// mass balance, energy transport and dissipation term reads exactly that one
+/// number. A leak is an EDGE to an `Atmosphere` node, created by the loader when
+/// the scenario declares one, and inert until damaged.
+///
+/// The three states are one field rather than two `Option`s so that "this edge
+/// is an orifice AND points at another orifice" is a state the type cannot
+/// represent. Only the loader constructs the non-`None` variants; the pairing
+/// they encode (upstream half ↔ its orifice) is what `Command::PuncturePipe`
+/// routes through, so a hand-built graph that invents one is inventing a plant.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "role", rename_all = "snake_case")]
+pub enum LeakRole {
+    /// An ordinary pipe. Every edge in a scenario that declares no leak.
+    #[default]
+    None,
+    /// The UPSTREAM half of a pipe the scenario declared punctureable, carrying
+    /// the id of the orifice edge hanging off the junction between the halves.
+    ///
+    /// The upstream half keeps the declared pipe's NAME and is what
+    /// `PuncturePipe { edge }` addresses, so the frontend contract still names
+    /// the pipe the scenario author wrote. It is also where `leak_mass_flow` is
+    /// reported — the end a frontend draws a spray from.
+    Punctureable { orifice: EdgeId },
+    /// The orifice edge itself: junction → `Atmosphere`, with the commanded
+    /// area. `ZERO` is dormant — it compiles to `alpha = +∞`, which
+    /// `network::compile_edge`'s existing `conducts` test already reads as
+    /// "closed", so a dormant leak conducts nothing and needs no special case.
+    Orifice { area: SquareMeter },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pipe {
     pub name: String,
@@ -448,8 +482,10 @@ pub struct Pipe {
     pub friction_factor: f64,
     /// Elevation change target-minus-source [m], for the static head term.
     pub elevation_change: Meter,
-    /// Leak orifice area (damage model); 0 = intact.
-    pub leak_area: SquareMeter,
+    /// This edge's role in a declared leak path; `None` for an ordinary pipe.
+    /// See `LeakRole` and docs/DESIGN.md §3b.
+    #[serde(default)]
+    pub leak: LeakRole,
     /// Ambient heat transfer coefficient × exposed area, `UA` [W/K].
     ///
     /// Spelled like `TankState::ambient_ua` and defaulting to ZERO for the same

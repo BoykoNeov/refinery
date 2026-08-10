@@ -38,7 +38,7 @@ use proptest::test_runner::TestRunner;
 use refinery_core::components::{Composition, Slate};
 use refinery_core::energy::{enthalpy_flux, T_REF};
 use refinery_core::engine::{Engine, EngineConfig};
-use refinery_core::graph::{EdgeId, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState};
+use refinery_core::graph::{EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::units::*;
 use refinery_solvers::{ConstantThermo, NewtonFlowSolver, NoReactions};
 
@@ -125,7 +125,7 @@ fn pipe(name: &str, length_m: f64, diameter_m: f64) -> Pipe {
         diameter: Meter(diameter_m),
         friction_factor: 0.02,
         elevation_change: Meter(0.0),
-        leak_area: SquareMeter::ZERO,
+        leak: LeakRole::None,
         // ZERO, and NOT a knob for the generators to vary. I6 checks that the
         // plant's enthalpy telescopes: every edge's contribution appears twice,
         // debited from its upwind node and credited to its downstream one, and

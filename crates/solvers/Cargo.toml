@@ -20,3 +20,7 @@ proptest.workspace = true
 [[test]]
 name = "four_lump_reference"
 path = "tests/reference/four_lump.rs"
+
+[[test]]
+name = "orifice_reference"
+path = "tests/reference/orifice.rs"

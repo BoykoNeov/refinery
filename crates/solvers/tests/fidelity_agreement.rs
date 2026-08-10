@@ -17,7 +17,7 @@
 //! drift, not a claim the methods only agree to 1%.
 
 use refinery_core::components::{Composition, Slate};
-use refinery_core::graph::{EdgeId, Node, NodeKind, Pipe, PlantGraph, TankState};
+use refinery_core::graph::{EdgeId, LeakRole, Node, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
 use refinery_core::units::*;
 use refinery_solvers::{NewtonFlowSolver, SimpleFlowSolver};
@@ -56,7 +56,7 @@ fn pipe_ez(name: &str, l: f64, d: f64, elev: f64) -> Pipe {
         diameter: Meter(d),
         friction_factor: 0.02,
         elevation_change: Meter(elev),
-        leak_area: SquareMeter(0.0),
+        leak: LeakRole::None,
         ambient_ua: WattPerKelvin::ZERO,
         stream: water_stream(),
     }

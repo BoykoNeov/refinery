@@ -44,7 +44,7 @@
 
 use refinery_core::components::{Composition, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
-use refinery_core::graph::{Node, NodeKind, Pipe, PlantGraph, TankState};
+use refinery_core::graph::{LeakRole, Node, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::units::*;
 use refinery_solvers::{ConstantThermo, NewtonFlowSolver, NoReactions};
 
@@ -126,7 +126,7 @@ fn pipe_with_ambient(
         diameter: Meter(diameter_m),
         friction_factor: 0.02,
         elevation_change: Meter(0.0),
-        leak_area: SquareMeter::ZERO,
+        leak: LeakRole::None,
         ambient_ua,
         stream: refinery_core::stream::Stream::stagnant(1, T_AMBIENT, P_ATM),
     }

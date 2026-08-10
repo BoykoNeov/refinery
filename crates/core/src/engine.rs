@@ -7,7 +7,7 @@
 use crate::components::Slate;
 use crate::energy::{self, T_REF};
 use crate::error::SimError;
-use crate::graph::{NodeKind, PlantGraph};
+use crate::graph::{LeakRole, NodeKind, PlantGraph};
 use crate::snapshot::{Command, EdgeSnapshot, NodeSnapshot, Snapshot};
 use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, ThermoModel};
 use crate::units::*;
@@ -110,14 +110,43 @@ impl Engine {
                 }
                 _ => Err(SimError::InvalidCommand(format!("{node:?} is not a pump"))),
             },
+            // `edge` names the PIPE the scenario declared, exactly as the JSON
+            // contract has always said, and the engine routes the area onto that
+            // pipe's dormant orifice. The indirection is the whole of fork C: the
+            // loader split the declared pipe in two and hung the orifice off the
+            // junction between the halves, so the thing that conducts is not the
+            // thing the frontend names (docs/DESIGN.md §3b). `area = 0` is repair,
+            // which is why it stays legal.
             Command::PuncturePipe { edge, area } => {
                 if area.value() < 0.0 || !area.value().is_finite() {
                     return Err(SimError::InvalidCommand(
                         "leak area must be finite, >= 0".into(),
                     ));
                 }
-                self.graph.pipe_mut(edge).leak_area = area;
-                Ok(())
+                match self.graph.pipe(edge).leak {
+                    LeakRole::Punctureable { orifice } => {
+                        self.graph.pipe_mut(orifice).leak = LeakRole::Orifice { area };
+                        Ok(())
+                    }
+                    // Refused rather than silently accepted, because the failure
+                    // it prevents is invisible: writing an area onto a pipe with
+                    // no leak path stores a number no solver reads, which is the
+                    // precise defect M6.0 found this command already had.
+                    LeakRole::None => Err(SimError::InvalidCommand(format!(
+                        "pipe '{}' ({edge:?}) declares no leak path, so it cannot be \
+                         punctured. A pipe is punctureable only where its scenario says \
+                         so (`leak_to = \"<atmosphere node>\"`); the leak path is built \
+                         at LOAD, because puncturing one at runtime would change the \
+                         snapshot's shape mid-run (docs/DESIGN.md §3b)",
+                        self.graph.pipe(edge).name
+                    ))),
+                    LeakRole::Orifice { .. } => Err(SimError::InvalidCommand(format!(
+                        "'{}' ({edge:?}) IS a leak orifice, not a pipe that has one. \
+                         Puncture the pipe the scenario declared; the engine routes the \
+                         area onto its orifice",
+                        self.graph.pipe(edge).name
+                    ))),
+                }
             }
             // A heat SOURCE, and only a source. This is the damage model's hook
             // — a fire, applied heating — and there is no such thing as a fire
@@ -687,7 +716,21 @@ impl Engine {
                     dissipation_w: sol
                         .and_then(|s| s.edge_dissipation.get(&id))
                         .map_or(f64::NAN, |w| w.value()),
-                    leak_mass_flow: 0.0, // populated when leak paths land
+                    // The punctured pipe's convenience view of ITS OWN orifice
+                    // edge's flow, read from the solution rather than recomputed
+                    // — one number, published twice, so it cannot drift from the
+                    // edge the balance is actually built on. Outward is positive:
+                    // the loader builds the orifice junction → Atmosphere, so
+                    // graph direction already IS outward and no sign flip is
+                    // needed (a back-feeding leak is refused by the solve before
+                    // it can reach here — docs/DESIGN.md §3b).
+                    leak_mass_flow: match p.leak {
+                        LeakRole::Punctureable { orifice } => sol
+                            .and_then(|s| s.edge_mass_flow.get(&orifice))
+                            .copied()
+                            .unwrap_or(0.0),
+                        LeakRole::None | LeakRole::Orifice { .. } => 0.0,
+                    },
                 }
             })
             .collect();

@@ -100,7 +100,7 @@ use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
 use refinery_core::components::{Composition, PseudoComponent, Slate};
 use refinery_core::error::SimError;
-use refinery_core::graph::{Node, NodeId, NodeKind, Pipe, PlantGraph};
+use refinery_core::graph::{LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph};
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
 use refinery_core::units::*;
@@ -231,7 +231,7 @@ fn pipe(p: (f64, f64, f64, f64), name: &str, fluid: &Fluid) -> Pipe {
         diameter: Meter(diameter),
         friction_factor,
         elevation_change: Meter(elevation),
-        leak_area: SquareMeter(0.0),
+        leak: LeakRole::None,
         ambient_ua: WattPerKelvin::ZERO,
         stream: Stream {
             composition: fluid.composition.clone(),

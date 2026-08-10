@@ -11,12 +11,12 @@
 
 use crate::elements::{
     fold_gas_valve, pipe_resistance, relief_opening, specific_heat_ratio_factor, QuadraticBranch,
-    CHOKE_BLEND,
+    CHOKE_BLEND, ORIFICE_CD,
 };
 use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
 use refinery_core::error::SimError;
-use refinery_core::graph::{EdgeId, Node, NodeId, NodeKind, PlantGraph};
+use refinery_core::graph::{EdgeId, LeakRole, Node, NodeId, NodeKind, PlantGraph};
 use refinery_core::traits::{HydraulicSolution, SolveDiagnostics};
 use refinery_core::units::{Pascal, Watt, G, P_ATM};
 use std::collections::{BTreeMap, BTreeSet};
@@ -329,6 +329,45 @@ pub fn compile_edge(
         .density_at(slate, Pascal(upwind), temperature)
         .map_err(|e| SimError::Numerical(format!("pipe {} ({eid:?}): {e}", pipe.name)))?
         .value();
+
+    // A LEAK ORIFICE compiles to its own characteristic and nothing else, and
+    // returns here rather than falling through: it has no pipe geometry to
+    // resist with, no elevation to offset by, and no device at its source to
+    // fold in (its source is the junction the loader split the pipe at). The
+    // early return is what makes `beta = 0` structural — see
+    // `QuadraticBranch::orifice` for what depends on that, and
+    // `finalize`'s back-feed refusal for who.
+    if let LeakRole::Orifice { area } = pipe.leak {
+        // The SECOND door on the gas refusal. The loader refuses a leak declared
+        // on a gas line, but the loader is not the only way in — the invariant
+        // proptests build a `PlantGraph` directly and never call `build_engine`
+        // (the same reason `compile_edge` re-refuses a gas valve with no `x_T`
+        // below). A leak arm added to a generator later must not be able to size
+        // an orifice with the incompressible law: an orifice venting a
+        // pressurised gas line to atmosphere is choked over essentially its whole
+        // operating range, so Torricelli would overpredict exactly where a leak
+        // is read. Un-defers with an orifice `x_T` and a published anchor.
+        if pipe.stream.composition.phase(slate)? == Phase::Gas {
+            return Err(SimError::Numerical(format!(
+                "leak orifice '{}' ({eid:?}) carries a gas-phase stream: the \
+                 incompressible orifice law Q = Cd·A·√(2·dp/ρ) would be applied to a \
+                 compressible fluid venting to atmosphere, which is choked over its \
+                 whole useful range (docs/DESIGN.md §3b)",
+                pipe.name
+            )));
+        }
+        let branch = QuadraticBranch::orifice(area.value(), ORIFICE_CD, rho);
+        debug_assert_eq!(branch.beta, 0.0, "an orifice branch must carry no offset");
+        let conducts = branch.alpha.is_finite() && branch.alpha > 0.0;
+        return Ok(CompiledEdge {
+            src,
+            tgt,
+            branch,
+            rho,
+            conducts,
+        });
+    }
+
     // Darcy–Weisbach resistance; a valid pipe always contributes k > 0, which
     // keeps α_tot > 0 so the closed-form inverse never divides by zero.
     let k = pipe_resistance(
@@ -727,13 +766,69 @@ pub fn is_column_draw_edge(graph: &PlantGraph, edge: EdgeId) -> bool {
 }
 
 /// Build the solution with a final NaN/Inf scan (rule 5: nothing non-finite
-/// escapes a solve). Only called on a converged solve, hence `converged: true`.
+/// escapes a solve) and the leak back-feed refusal. Only called on a converged
+/// solve, hence `converged: true`.
+///
+/// **The back-feed refusal is here, in the shared epilogue, for the reason every
+/// other shared rule is** — both fidelities must inherit it from one definition
+/// or I5 stops meaning anything, and the compiler enforces that by making
+/// `graph` a parameter of the one function all four solver exits already go
+/// through.
+///
+/// *What it refuses, and why an `Err`.* An `Atmosphere` node's composition is
+/// the first slate component — arbitrary, and honestly labelled so at
+/// `energy::boundary_composition`, on the premise that leak edges run only
+/// *into* it. A leak edge is pressure-driven like any other, so the premise
+/// expires the moment one exists: a plant below `P_ATM` draws that arbitrary
+/// component back in, and the result is mass-conserving, finite, deterministic
+/// and wrong — DESIGN §5's silent hazard in the one place the code predicted it.
+/// Of the four resolutions DESIGN §3b prices, this is the cheap one. Pinning a
+/// real air composition is a change to every slate that owns an Atmosphere
+/// (the FCC slate has no air-like cut); a one-way orifice is a check valve,
+/// hence a C¹ break at `dp = 0` and a `conducts` that depends on the sign of the
+/// pressure iterate, which would drag in M5's frozen-anchoring deferral; and
+/// back-feeding the plant's own composition models air ingress as nothing
+/// happening. Refusing costs a game that pulls a leaking line below atmospheric
+/// a hard error instead of a plausible picture, and buys the guarantee that no
+/// invented composition ever enters the plant.
+///
+/// *Why the test needs no tolerance.* The refusal is `ṁ < 0` on the nose, and
+/// that is exact rather than tight: an orifice branch is built with `beta = 0`
+/// (`QuadraticBranch::orifice`, where the early return in `compile_edge` keeps
+/// it structural), and `QuadraticBranch::flow`'s sign is `sign(dp − beta)`. So a
+/// leak edge carries mass inward **iff** its junction is strictly below `P_ATM`,
+/// which is the physical condition itself. There is no band of near-zero flows
+/// to argue about: at `dp = 0` the flow is exactly 0 and this does not fire.
 pub fn finalize(
+    graph: &PlantGraph,
     pressures: &BTreeMap<NodeId, f64>,
     edges: EdgeResults,
     iterations: u32,
     residual: f64,
 ) -> Result<HydraulicSolution, SimError> {
+    for eid in graph.edge_ids() {
+        let pipe = graph.pipe(eid);
+        let LeakRole::Orifice { area } = pipe.leak else {
+            continue;
+        };
+        // A dormant leak cannot back-feed — it conducts nothing in either
+        // direction — so this reads the AREA rather than trusting the flow to be
+        // zero, and every reference plant with an undamaged declared leak path
+        // stays on the same arm as a plant with no leak path at all.
+        if area.value() > 0.0 && edges.mass_flow.get(&eid).copied().unwrap_or(0.0) < 0.0 {
+            return Err(SimError::Numerical(format!(
+                "leak '{}' ({eid:?}) back-feeds: the plant side is below atmospheric, so \
+                 the solve draws {:.4e} kg/s of ATMOSPHERE into the plant. An Atmosphere \
+                 node's composition is an arbitrary stand-in (the slate's first \
+                 component), so continuing would inject a fluid nobody chose — \
+                 mass-conserving, finite and wrong. Close the leak, or keep the line \
+                 above {:.0} Pa (docs/DESIGN.md §3b)",
+                pipe.name,
+                -edges.mass_flow[&eid],
+                P_ATM.value()
+            )));
+        }
+    }
     let mut node_pressure = BTreeMap::new();
     for (nid, p) in pressures {
         if !p.is_finite() {
