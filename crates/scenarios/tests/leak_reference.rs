@@ -125,11 +125,19 @@ fn a_declared_leak_splits_its_pipe_at_the_midpoint() {
 /// back over two halves, so the flow through the intact plant and through the
 /// declared-but-undamaged one must agree.
 ///
-/// This is the gate that catches a half that was not halved. Forget to divide
-/// the length and the fill line carries twice its resistance — 29% less flow.
-/// Forget the elevation and it loses 2.5 m of static head — 6%. Either is a
-/// plausible-looking plant that quietly is not the one the file describes, and
-/// neither shows up in the shape assertions above.
+/// This is the gate that catches a half that was not halved, and both halves of
+/// that claim are MEASURED rather than reasoned — the first estimate of one of
+/// them was wrong by a factor of forty. Mutating the loader to skip the length
+/// halving moves this plant's flow by **0.74%** (13.753 → 13.652 kg/s), not by
+/// the 29% that doubling a pipe's resistance suggests: the control valve
+/// dominates the series resistance here, so twice the pipe's `k` is a small
+/// change to the total. Skipping the ELEVATION halving moves it by **6.1%**
+/// (13.753 → 12.909), because `β` is a driving head and enters undiluted.
+/// Against a 3e-6 tolerance both are caught with room to spare, and it is worth
+/// knowing that the smaller one is the length — the opposite of the intuition.
+///
+/// Either mutation is a plausible-looking plant that quietly is not the one the
+/// file describes, and neither shows up in the shape assertions above.
 ///
 /// **The agreement is NOT exact, and the gap is derived rather than tolerated.**
 /// In real arithmetic the split is identity: `k ∝ L` and `β = ρ·g·Δz` both add

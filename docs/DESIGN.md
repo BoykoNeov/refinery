@@ -1263,9 +1263,10 @@ The arbitrary first component would then flow *into* the plant: mass-conserving,
 finite, deterministic, and wrong — DESIGN §5's silent hazard, in the one place
 the code already warned it would appear.
 
-**This blocks shipping the leak, and one of four must be chosen with a gate that
-runs in the back-feed direction. They are listed with their real prices, one of
-which is not what it first looks like:**
+**This blocked shipping the leak until M6.1 chose among four, each with a gate
+that runs in the back-feed direction. They are listed with their real prices —
+one of which is not what it first looks like — and the choice is recorded after
+the list:**
 
 1. **Pin `Atmosphere` to a real air composition on the slate.** The honest
    model, and the only one under which air ingress means anything. It requires
@@ -1299,6 +1300,98 @@ which is not what it first looks like:**
 Whichever is picked, **a gate that only ever runs the leak in the *outward*
 direction reproduces exactly the defect `energy.rs:735` predicted.** The gate
 must drive the plant below `P_ATM` with a leak open.
+
+#### Chosen (M6.1): option 3, `Err` on back-feed
+
+The refusal lives in `network::finalize` — the one epilogue *both* fidelities
+already go through, so the compiler enforces that neither can drift from it,
+the same reasoning that puts `accumulation` and `heat_load` in single homes.
+
+**It needs no tolerance, and that is a consequence of the element rather than a
+choice.** An orifice branch is built with `beta = 0`, and
+`QuadraticBranch::flow`'s sign is `sign(dp − beta)`, so a leak edge carries mass
+inward **iff** its junction is strictly below `P_ATM` — the physical condition
+itself, with no band of near-zero flows to argue about. That is why the early
+return in `compile_edge` builds the orifice ALONE: give it an elevation head, or
+compose it in series with a pipe, and the refusal keeps compiling while quietly
+firing at the wrong pressure.
+
+**The note's own reachability example expired while M6.1 was building on it.**
+§3b argued sub-atmospheric was reachable by citing
+`capacitive_vessel_reference`'s blowdown toward vacuum — but that plant is GAS,
+and M6.1 refuses gas leaks (below), so the cited evidence no longer supports the
+claim it was cited for. A liquid replacement (a sub-atmospheric sink pulling a
+junction under `P_ATM`) was **built and its junction pressure read** before this
+paragraph was written; the gate asserts that pressure is sub-atmospheric before
+opening the hole, so it cannot go vacuous later. It also runs the plant with the
+leak DORMANT first, which is what distinguishes "the refusal fires on the
+damage" from "the refusal fires on this plant".
+
+`energy::boundary_composition`'s `Atmosphere` arm keeps its arbitrary value and
+does **not** become an `Err` or an `unreachable!()`. It is called for every
+inertial node on every tick, including in a plant whose declared leak path is
+dormant and where nothing back-feeds at all, so a panic there would be a rule-5
+violation reachable by the *undamaged* case. The value is now unreachable by
+construction rather than merely untested, and the comment says so.
+
+### The split changes the answer — by the regularization (M6.1, measured)
+
+**"Declared-in-TOML wins at zero churn" is true of every scenario in this repo
+and false of any scenario that adds a declaration**, and the difference is worth
+stating because the argument above does not imply it.
+
+The split is exact in real arithmetic: `k ∝ L` and `β = ρ·g·Δz` both add back
+over two halves, and halving is exact in binary. What does *not* compose is the
+**regularization**. A single branch computes `Δ/√(Δ + ε)`; two identical halves
+in series each see `Δ/2` and give `Δ/(√k·√(Δ + 2ε))`, so a split plant behaves
+as though `ε` were doubled and runs slightly slower:
+
+```text
+1 − √((Δ + ε)/(Δ + 2ε))  ≈  ε/(2·Δ)  =  1.25e-6   at leaking_line's ~4.0 bar
+```
+
+Measured 1.216e-6 after 50 ticks. So **declaring a leak moves that pipe's flow
+in the seventh significant figure even while the leak is dormant** — far below
+any fidelity this model claims, and far above bit-identity, which is the part
+that matters: a golden snapshot taken before a declaration will not reproduce
+after one. `splitting_a_pipe_does_not_change_the_plant_it_describes` asserts the
+gap's sign and size against the derivation rather than hiding it in a tolerance.
+
+### Two hazards this note did not identify, found while building
+
+**A leak on a COLUMN's feed or draw — refused at load.**
+`network::is_column_draw_edge` recognises a draw by its two endpoints, and
+`edge_flows` guards a draw's flow to zero on the strength of it, because a
+draw's flow is *prescribed* (`splitᵢ·ṁ_feed`, written post-sweep) and not
+pressure-driven at all. Split that edge and neither half matches any more, so
+the guard silently stops applying and the draw becomes a pressure-driven number
+— §5's silent hazard, reached by a scenario line that reads perfectly
+reasonably. The feed is refused alongside it: `validate_degrees` would reject a
+split feed anyway (a column is 1-in-N-out), but with a message about edge
+degrees that names the wrong cause, so the gate checks *which* refusal fires.
+
+**A leak on a GAS line — refused, at two doors.** The orifice law shipped here
+is incompressible, and a hole venting a pressurised gas line to atmosphere is
+choked over essentially its whole useful range (~0.53 of absolute inlet pressure
+for a diatomic gas), so Torricelli would overpredict the escape rate — finite,
+deterministic and wrong, in the one number a damage model exists to report.
+This is M5.4's refusal of the incompressible law on a compressible fluid,
+recurring one unit along. Two doors, per the `require_gas_valve_x_t` precedent:
+the loader names the scenario file, and `compile_edge` catches a plant built
+directly — which is not hypothetical, since M6.1 added a leak arm to the
+invariant generators (they build a `PlantGraph` and never call `build_engine`)
+and the compile-time door now fires on 81 of 400 generated samples. It un-defers
+with an orifice `x_T` and a published anchor to size it against.
+
+**`ORIFICE_CD = 0.61` is a bracket, not a transcription.** Every standard
+treatment of a sharp-edged orifice lands in 0.60–0.62, and it is quoted at that
+confidence rather than to three figures from a table this repo has read: a hole
+punched by damage has no defined edge geometry, so more precision would be false
+precision about the damage rather than about the arithmetic. It is deliberately
+not a scenario parameter — the leak rate is linear in `Cd`, so nothing in the
+model can discriminate 0.60 from 0.62, and a knob no gate can settle invites
+tuning the plant through it. Un-defers with a plant needing two leaks of
+different geometry.
 
 ### Two contract decisions, stated once
 

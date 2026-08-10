@@ -1899,11 +1899,13 @@ worsen. See FINDING 2 under M5.4 and DESIGN §3a.
 
 The stub this section replaces said "leak/fire commands (already supported by
 the graph model) get game-side visualization." **Half of that premise is false,
-and finding out which half is what M6.0 did.** Fire is supported. The leak is a
-command that does nothing: `Pipe::leak_area` is written by `Engine::apply` and
-read by no solver, `EdgeSnapshot::leak_mass_flow` is the literal `0.0`, no TOML
-field can set an area, and no test in the repo constructs
-`Command::PuncturePipe`. See DESIGN §3b for the three checks and their evidence.
+and finding out which half is what M6.0 did.** Fire is supported. The leak
+**was** a command that did nothing: `Pipe::leak_area` was written by
+`Engine::apply` and read by no solver, `EdgeSnapshot::leak_mass_flow` was the
+literal `0.0`, no TOML field could set an area, and no test in the repo
+constructed `Command::PuncturePipe`. See DESIGN §3b for the three checks and
+their evidence — and M6.1 below, which built the leak fork C specified and
+pinned the old defect with a mutation so it cannot return silently.
 
 M6 is therefore **damage first, Godot second**. That ordering is not
 preference: the damage half is engine physics with a falsifiable gate (mass in =
@@ -1976,7 +1978,7 @@ composition; make the leak one-way and gate the refusal; `Err` on back-feed).
 open** — an outward-only gate reproduces exactly the defect the comment
 predicted.
 
-### M6.1 — The leak, made real — **NEXT**
+### M6.1 — The leak, made real — **LANDED**
 Two things M6.0 settled *after* its first draft, both because a claim in the note
 would have sent this slice down a wrong branch. They change its task order:
 
@@ -2000,27 +2002,90 @@ would have sent this slice down a wrong branch. They change its task order:
   puncture-anywhere game declares a path per pipe in its own scenario file
   instead of imposing one on the reference plants.
 
-- [ ] Loader: a declared leak path splits its pipe and creates the dormant
-      orifice edge to `Atmosphere`, keeping the original pipe's name mapped to
-      it. Confirmed by construction — a scenario declaring no leak has a snapshot
-      **unchanged from today's**.
-- [ ] Resolve the `Atmosphere` back-feed blocker above, with its back-feed gate.
-      Note the re-pricing DESIGN §3b now carries: the one-way orifice is **not**
-      the cheap option — it is a check valve, so it breaks C¹ at `dp = 0` (§3a
-      fork 4's hazard) and makes `conducts` depend on the sign of the pressure
-      iterate, firing the exact re-check trigger M6.0 wrote into its
-      frozen-anchoring exemption. `Err`-on-back-feed is the cheap one.
-- [ ] Orifice conductance from area; `leak_mass_flow` populated on the punctured
-      **pipe** (the frontend draws the spray there), with the leak edge carrying
-      its own flow as an ordinary edge — **and a one-line gate that the two
-      agree**, since two fields for one quantity is how they drift.
-- [ ] `Command::PuncturePipe { edge, area }` keeps its exact JSON shape — it is a
-      `#[serde(tag = "cmd")]` frontend contract; `edge` names the pipe as the
-      scenario declared it, and the engine routes to that pipe's dormant path.
-- [ ] Mass-balance invariant with a leak open, in the I-series, and a demo
-      scenario where a punctured line actually drains.
+- [x] Loader: `leak_to = "<atmosphere node>"` splits its pipe at the midpoint
+      into two halves joined by a `Junction`, with the dormant orifice hanging
+      off it; the upstream half keeps the declared name. `LeakRole` replaces
+      `Pipe::leak_area` with three mutually exclusive states in one field, so
+      "an orifice that points at another orifice" is unrepresentable.
+- [x] The `Atmosphere` back-feed blocker resolved as **option 3, `Err` on
+      back-feed**, in `network::finalize` — the one epilogue both fidelities go
+      through, so the compiler enforces the sharing. No tolerance is needed and
+      that is structural, not lucky: `beta = 0` on an orifice branch makes the
+      flow's sign `sign(dp)`, so the refusal fires iff the junction is strictly
+      below `P_ATM`.
+- [x] Orifice conductance from area (Torricelli, `Q = Cd·A·√(2·Δp/ρ)`);
+      `leak_mass_flow` on the punctured pipe, asserted **bit-equal** to the
+      orifice edge's own flow.
+- [x] `Command::PuncturePipe` keeps its exact JSON shape and routes the area to
+      the named pipe's dormant orifice; puncturing an undeclared pipe, or the
+      orifice itself, is refused rather than silently stored.
+- [x] Mass balance with a leak open — in the I-series (a leak arm on the tree
+      generator) and in `leaking_line.toml`, where 37% of the transfer leaves
+      through the hole over 500 ticks and the balance closes to 1e-9 of the mass
+      moved.
 
-### M6.2 — godot-ext adapter + minimal scene
+**Three findings, each of which would have misled the next reader.**
+
+1. **The split is NOT answer-preserving, and this note said it was.** "Zero
+   churn" holds for every scenario in the repo (none declares a leak) and fails
+   for any scenario that adds one: the regularization does not compose across a
+   split, so a plant with a **dormant** leak runs slower by `ε/(2·Δ)` ≈ 1.25e-6
+   (measured 1.216e-6). Far below any fidelity claim, far above bit-identity —
+   a golden snapshot taken before a declaration will not reproduce after one.
+   DESIGN §3b now carries it, and the gate asserts the gap's sign and size
+   against the derivation instead of tolerating it.
+2. **A leak on a column pipe fails SILENTLY**, and §3b did not identify the
+   hazard. Splitting a draw stops `is_column_draw_edge` matching, so
+   `edge_flows`' guard-to-zero drops and a *prescribed* flow quietly becomes
+   pressure-driven. Refused at load — and the gate checks **which** refusal
+   fires, because `validate_degrees` would reject a split feed anyway with a
+   message naming the wrong cause.
+3. **§3b's own reachability evidence for the blocker expired as M6.1 built on
+   it.** The note cited `capacitive_vessel_reference`'s blowdown toward vacuum
+   as proof that sub-atmospheric is reachable; that plant is GAS, and M6.1
+   refuses gas leaks, so the citation no longer supports the claim. A liquid
+   sub-atmospheric plant was BUILT and its junction pressure READ before the
+   prose asserting reachability was written. Same class as M5.4's "a settled
+   note can have a false premise", one level up.
+
+**The quadrature trap, recurring.** The drain gate first failed by 0.257 kg in
+689 — exactly half of the first tick's leak. The engine integrates inventories
+rectangularly at each tick's own solved flow; the gate had used a trapezoid,
+which is *more accurate* and therefore wrong for a conservation check. Integrate
+with the engine's rule, not a better one — accuracy is a different gate's job
+(cf. `integrator-order-of-convergence`).
+
+**Mutation evidence — 6 mutations, 6 caught, 0 void.** Each was checked to have
+COMPILED and RUN (`test … FAILED`, never `could not compile`): a mutation that
+does not build never ran, and reads as a catch in exactly the same shape.
+- `edge_flows` drops the orifice's mass → **8 gates**, including
+  `tree_conserves_or_diverges`. That one matters most: it is what makes the leak
+  arm's 67 "discriminating" samples a claim about the *gate* rather than about
+  the generator.
+- Orifice loses its factor of 2 → the Torricelli hand calc.
+- `Cd` nudged 0.61 → 0.65 (the subtle one) → the same hand calc, cleanly.
+- Back-feed refusal removed → `a_leak_below_atmospheric_is_refused` **alone**
+  (13 pass, 1 fails), which is the designed outcome: `back_fed` is 3/400 and
+  deliberately unfloored, so the generated population is not where that claim
+  rests.
+- Loader skips the length halving → the split gate, at the loop assertion rather
+  than the derivation's reconciliation (checked — the reverse would mean the
+  derivation had become entangled with the geometry). **Measured 0.74%, not the
+  29% first predicted**: the control valve dominates the series resistance, so
+  doubling the pipe's `k` is a small change. Skipping the ELEVATION halving is
+  6.1%, because `β` is a driving head and enters undiluted. The smaller effect
+  is the length — the opposite of the intuition, and now written down.
+- `PuncturePipe` made a no-op again (M6.0's original defect, reinstated) → 4
+  gates. The defect that started this milestone cannot return silently.
+
+**Deferred, with triggers:**
+- **Gas leaks** — needs an orifice `x_T` and a published anchor to size it.
+- **`Cd` as a scenario parameter** — nothing in the model discriminates 0.60
+  from 0.62; un-defers with a plant needing two leaks of different geometry.
+- **Air ingress as a modelled phenomenon** (and therefore combustion) — needs a
+  slate carrying air and a reason to burn it.
+
+### M6.2 — godot-ext adapter + minimal scene — **NEXT**
 - [ ] Translation layer (command JSON → `Command`, `Snapshot` → `Dictionary`,
       `SimError` → signal) unit-tested in Rust — this half **is** gateable.
 - [ ] Minimal scene reading snapshots; leak and fire get visualization. The scene
