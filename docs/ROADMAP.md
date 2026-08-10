@@ -1947,6 +1947,20 @@ mean visualizing a command that lies.
       `conducts` cannot flip mid-solve even if `alpha` is recompiled per
       iteration under a choked law. M6 does not drag that un-defer along with it.
       Re-check rather than inherit this if a leak ever becomes pressure-actuated.
+      **That trigger fires immediately on one of the back-feed options** — see
+      M6.1.
+- [x] **Three corrections to the note's own first draft**, each a claim that
+      would have misdirected M6.1 rather than merely read badly: fork C did not
+      say *where* the leak edge attaches and both obvious answers turned out to
+      be forbidden by `validate_degrees`; the auto-create sub-decision was framed
+      as per-tick CPU when the real discriminator is what it does to every
+      reference plant; and the one-way orifice was priced as "cheap" when it is a
+      check valve, hence a C¹ break and an iterate-dependent `conducts`. The
+      first two are written up under M6.1; the third re-ranks the options in
+      DESIGN §3b. Also corrected: `scenarios/src/lib.rs:1070` is the column-draw
+      outlet whitelist, not a degree rule, and the FCC slate really does lack an
+      air-like component (`gas`, `gasoline`, `gasoil`, `coke`), which is what
+      makes option 1 a slate change rather than a code change.
 
 **The blocker M6.0 surfaced and deliberately did not resolve.** `energy.rs:733`
 gives an `Atmosphere` node the first slate component as its composition and
@@ -1963,17 +1977,46 @@ open** — an outward-only gate reproduces exactly the defect the comment
 predicted.
 
 ### M6.1 — The leak, made real — **NEXT**
-- [ ] **First task is a MEASUREMENT, not a decision**: the per-tick cost of
-      auto-creating one dormant leak edge per pipe at load, taken on an existing
-      scenario, versus declaring leak paths in TOML. Measured, not predicted —
-      and `network::validate_degrees` confirmed to tolerate the extra edges.
+Two things M6.0 settled *after* its first draft, both because a claim in the note
+would have sent this slice down a wrong branch. They change its task order:
+
+- **Where the leak attaches was unanswered, and neither endpoint works.**
+  `validate_degrees` requires exactly 1-in-1-out for pump, valve, PSV, furnace,
+  cooler, reactor and heat exchanger (`network.rs:126–144`), so a leak edge
+  leaving any of them is a load-time `Err` — and a pipe's upstream endpoint is a
+  pump or a valve constantly. Resolved as **split at LOAD, not at puncture**:
+  the declared pipe becomes two halves joined by a `Junction`, with the dormant
+  orifice hanging off that junction. Fork B's geometry, fork C's timing — fixed
+  snapshot shape, no degree-rule conflict, and the midpoint pressure for free.
+  The endpoint rules were not merely inelegant; they were *illegal*, which is why
+  the measurement below could not have come first.
+- **The auto-create-vs-declared question is not about CPU**, as the first draft
+  framed it. Under split-at-load it doubles every pipe and adds a junction per
+  pipe — every reference plant becomes a different plant. Measured, not
+  predicted: only **two** tests assert `snapshot.edges.len()`
+  (`furnace_reference.rs:237`, `isothermal_plant.rs:118`) and the determinism
+  gate is rerun-vs-rerun (`m1_acceptance.rs:160`), so it is immune. Small in test
+  count, large in meaning. **Declared-in-TOML wins**, at zero churn; a
+  puncture-anywhere game declares a path per pipe in its own scenario file
+  instead of imposing one on the reference plants.
+
+- [ ] Loader: a declared leak path splits its pipe and creates the dormant
+      orifice edge to `Atmosphere`, keeping the original pipe's name mapped to
+      it. Confirmed by construction — a scenario declaring no leak has a snapshot
+      **unchanged from today's**.
 - [ ] Resolve the `Atmosphere` back-feed blocker above, with its back-feed gate.
+      Note the re-pricing DESIGN §3b now carries: the one-way orifice is **not**
+      the cheap option — it is a check valve, so it breaks C¹ at `dp = 0` (§3a
+      fork 4's hazard) and makes `conducts` depend on the sign of the pressure
+      iterate, firing the exact re-check trigger M6.0 wrote into its
+      frozen-anchoring exemption. `Err`-on-back-feed is the cheap one.
 - [ ] Orifice conductance from area; `leak_mass_flow` populated on the punctured
       **pipe** (the frontend draws the spray there), with the leak edge carrying
-      its own flow as an ordinary edge.
+      its own flow as an ordinary edge — **and a one-line gate that the two
+      agree**, since two fields for one quantity is how they drift.
 - [ ] `Command::PuncturePipe { edge, area }` keeps its exact JSON shape — it is a
-      `#[serde(tag = "cmd")]` frontend contract; `edge` names the pipe and the
-      engine routes to that pipe's dormant path.
+      `#[serde(tag = "cmd")]` frontend contract; `edge` names the pipe as the
+      scenario declared it, and the engine routes to that pipe's dormant path.
 - [ ] Mass-balance invariant with a leak open, in the I-series, and a demo
       scenario where a punctured line actually drains.
 
