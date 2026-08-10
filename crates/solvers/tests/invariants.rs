@@ -244,6 +244,62 @@ fn pipe_strategy() -> impl Strategy<Value = (f64, f64, f64, f64)> {
     (1.0..50.0f64, 0.05..0.3f64, 0.01..0.05f64, -5.0..5.0f64)
 }
 
+/// A leak orifice edge (M6.1): zero geometry, an `Orifice` role carrying the
+/// commanded area, and the plant's own fluid.
+///
+/// Zero length and diameter are what the loader writes and what `compile_edge`
+/// never reads — it returns on the `Orifice` role before touching either. They
+/// are a tripwire rather than a value: if that early return were removed,
+/// `pipe_resistance` on zeros is non-finite and the edge fails loudly instead of
+/// quietly acquiring a second resistance in series with the hole.
+fn leak_pipe(bore: f64, name: &str, fluid: &Fluid) -> Pipe {
+    Pipe {
+        leak: LeakRole::Orifice {
+            area: SquareMeter(std::f64::consts::PI * bore * bore / 4.0),
+        },
+        ..pipe((0.0, 0.0, 0.02, 0.0), name, fluid)
+    }
+}
+
+/// Bore [m] of the hole punched in one junction, or `None` for an intact node.
+///
+/// **One in four, and the range is sized from the resistances rather than
+/// picked.** A leak that cannot compete with the pipes around it is generated
+/// and tests nothing — the failure mode this file has now recorded twice (a
+/// generated arm born vacuous). At the middle of `pipe_strategy`'s range a pipe
+/// contributes `α ≈ 8e6`, while an orifice contributes `α = ρ/(2·Cd²·A²)`, so a
+/// 0.15 m bore gives `α ≈ 4e6` (the leak dominates), 0.05 m gives `α ≈ 3.5e8`
+/// (a trickle) and 0.01 m gives `α ≈ 2e11` (effectively intact). The range
+/// therefore spans dominant to negligible, and
+/// `the_leak_arm_conducts_and_is_refused_both_ways` measures how many samples
+/// land where the balance gate can actually see the difference.
+///
+/// A leak is generated WITHOUT regard to phase, deliberately. Half of
+/// `fluid_strategy`'s plants are gas, and a hole in one is refused by
+/// `compile_edge`'s second door — the door that exists precisely because
+/// generators build a `PlantGraph` and never call `build_engine`. Suppressing
+/// gas leaks here would leave that door untested by the only kind of plant it
+/// guards against.
+fn leak_strategy() -> impl Strategy<Value = Option<f64>> {
+    prop_oneof![
+        3 => Just(None),
+        1 => (0.01..0.15f64).prop_map(Some),
+    ]
+}
+
+/// The refusals a LEAK makes legal, and they are two different kinds of legal.
+///
+/// A back-feed refusal is an ASSERTION that fired: the plant went below
+/// atmospheric with a hole open, and `finalize` refused to draw an arbitrary
+/// composition into it rather than reporting a plausible number (DESIGN §3b). A
+/// gas refusal is the second door on the incompressible orifice law. Neither is
+/// a divergence, so neither may be swallowed by the `SolverDiverged` arm; both
+/// are counted in the meta-test below so they cannot quietly become the *only*
+/// thing the leak arm produces.
+fn is_legal_leak_refusal(e: &SimError) -> bool {
+    matches!(e, SimError::Numerical(m) if m.contains("back-feeds") || m.contains("gas-phase"))
+}
+
 fn all_finite(sol: &HydraulicSolution) -> bool {
     sol.node_pressure.values().all(|p| p.value().is_finite())
         && sol.edge_mass_flow.values().all(|f| f.is_finite())
@@ -522,6 +578,7 @@ type TreeInputs = (
     Vec<(f64, f64, f64, f64)>, // pipes: primary edge j-1, subdivided half MAX_K+j-1
     Fluid,                     // the whole tree's fluid — plant-level, never per-node
     Vec<Option<Spur>>,         // spurs[i]: a relief branch hung off primary node i
+    Vec<Option<f64>>,          // leaks[i]: orifice bore [m] punched in junction i
 );
 
 fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
@@ -532,6 +589,7 @@ fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
         prop::collection::vec(pipe_strategy(), (2 * MAX_K)..=(2 * MAX_K)),
         fluid_strategy(),
         prop::collection::vec(spur_strategy(), MAX_NODES..=MAX_NODES),
+        prop::collection::vec(leak_strategy(), MAX_NODES..=MAX_NODES),
     )
 }
 
@@ -540,7 +598,7 @@ fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
 /// hubs. Degree-1 nodes are leaves ⇒ fixed Source/Sink (pressure reference);
 /// higher-degree nodes are Junctions. A selected edge is subdivided by a device.
 fn build_tree(inputs: &TreeInputs) -> PlantGraph {
-    let (raw_parents, fixed_specs, devices, pipes, fluid, spurs) = inputs;
+    let (raw_parents, fixed_specs, devices, pipes, fluid, spurs, leaks) = inputs;
     let k = raw_parents.len();
     let n_nodes = k + 1;
 
@@ -658,6 +716,45 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
         g.add_pipe(ids[i], psv, pipe(spur.inlet, &format!("s{i}a"), fluid));
         g.add_pipe(psv, end, pipe(spur.outlet, &format!("s{i}b"), fluid));
     }
+
+    // LEAKS, last, and hung only off JUNCTIONS. Three choices here are load
+    // bearing:
+    //
+    // - **Only junctions.** That is where the loader puts one — a declared leak
+    //   splits its pipe and hangs the orifice off the new midpoint junction — and
+    //   it is also the only place a leak has anything to say about I1. A hole in
+    //   a leaf would run reservoir → Atmosphere, both pressures pinned, and
+    //   contribute to no free node's balance at all: generated, conducting, and
+    //   testing nothing.
+    // - **One shared Atmosphere, created only if some leak exists.** A tree with
+    //   no leak is then EXACTLY the tree it was before this arm, which is what
+    //   keeps every pre-existing case meaning what it meant. The same reasoning
+    //   the spur arm above is built on.
+    // - **After the spurs.** A leak adds an edge to its junction, and the spur
+    //   loop reads primary node kinds; ordering it last means neither arm can
+    //   change what the other sees.
+    let mut vent: Option<refinery_core::graph::NodeId> = None;
+    for (i, leak) in leaks.iter().enumerate().take(n_nodes) {
+        let Some(bore) = leak else { continue };
+        if !matches!(g.node(ids[i]).kind, NodeKind::Junction) {
+            continue;
+        }
+        let air = match vent {
+            Some(existing) => existing,
+            None => {
+                let created = g.add_node(Node {
+                    name: "atmosphere".into(),
+                    kind: NodeKind::Atmosphere,
+                    heat_input: Watt(0.0),
+                });
+                vent = Some(created);
+                created
+            }
+        };
+        // Junction → Atmosphere, so positive graph direction is OUTWARD and a
+        // negative flow is unambiguously the back-feed `finalize` refuses.
+        g.add_pipe(ids[i], air, leak_pipe(*bore, &format!("leak{i}"), fluid));
+    }
     g
 }
 
@@ -703,6 +800,12 @@ fn strategy_actually_branches() {
         // branching in that sense. Stripping them keeps the measurement's
         // historical meaning (≈60% branch) comparable across this slice.
         inputs.5.iter_mut().for_each(|s| *s = None);
+        // And the LEAKS, for the same reason and one more. A leak also adds an
+        // edge to its junction, so it would inflate this count exactly as a spur
+        // would; and it is not branching in the sense this number exists to
+        // measure. Stripping keeps the ≈60% historical figure comparable across
+        // both slices.
+        inputs.6.iter_mut().for_each(|l| *l = None);
         let g = build_tree(&inputs);
         let md = g.node_ids().map(|n| g.incident(n).len()).max().unwrap_or(0);
         max_seen = max_seen.max(md);
@@ -1208,6 +1311,13 @@ proptest! {
                 }
             }
             Err(SimError::SolverDiverged { .. }) => { /* acceptable per I3 */ }
+            // A leak's two refusals are legal outcomes but NOT divergences, so
+            // they are admitted by name rather than folded into the arm above —
+            // and their rate is floored in
+            // `the_leak_arm_conducts_and_is_refused_both_ways`, so a change that
+            // made every leaky tree refuse would fail there instead of quietly
+            // emptying this gate.
+            Err(ref other) if is_legal_leak_refusal(other) => {}
             Err(other) => prop_assert!(false, "unexpected error: {other}"),
         }
     }
@@ -1656,7 +1766,7 @@ fn the_relief_arm_lifts_relieves_and_floats() {
     // out of step with the cap it is measuring against.
     let newton_max_iter = NewtonFlowSolver::default().max_iter;
     for _ in 0..SAMPLES {
-        let inputs = tree_strat
+        let mut inputs = tree_strat
             .new_tree(&mut runner)
             .expect("strategy produces a value")
             .current();
@@ -1664,6 +1774,13 @@ fn the_relief_arm_lifts_relieves_and_floats() {
         if !inputs.5.iter().take(n_primary).any(|s| s.is_some()) {
             continue;
         }
+        // STRIP THE LEAKS. This test measures the RELIEF arm's reachability, and
+        // a leak can only interfere: on a gas plant it makes `prepare` refuse
+        // outright (the incompressible-orifice door), and on a liquid one it
+        // draws flow away from the spur and perturbs the very openings being
+        // counted. Neither is a fact about the relief arm. The leak arm has its
+        // own reachability test and measures itself there.
+        inputs.6.iter_mut().for_each(|l| *l = None);
         spur_trees += 1;
         let g = build_tree(&inputs);
         let fluid = &inputs.4;
@@ -1987,5 +2104,146 @@ fn known_defect_frozen_anchoring_seed_shut_converged_open_reports_a_parked_press
         (p_leg - p_psv).abs() > 1.0e5,
         "if the parked pressure now agrees with the PSV's inlet ({p_psv:.0} Pa), the \
          frozen-anchoring defect has been fixed and this test should assert equality instead"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Non-vacuity for the LEAK arm (M6.1) — and the extra question a leak forces
+// that the gas and relief arms did not.
+//
+// A leak can be generated and still test nothing, in the ways those arms
+// already record: never generated (a weight typo), or generated so small that
+// its orifice is effectively closed and every balance passes on a plant that is
+// hydraulically intact. It adds a third: a leak has two REFUSAL paths, and if
+// they consumed every sample the arm would look busy while never once solving a
+// plant with a hole in it.
+//
+// What makes this test a gate rather than a tally is `discriminating`. Counting
+// leaks that conduct proves the GENERATOR works; it does not prove the balance
+// assertion in `tree_conserves_or_diverges` would notice a broken one. So each
+// conducting leak is checked against the exact tolerance that gate uses, twice:
+// the junction must balance WITH the leak edge counted, and must FAIL to balance
+// without it. A sample passing both is one where dropping the leak from
+// `edge_flows` — the whole failure mode M6.0 found the old `leak_area` in —
+// would turn `tree_conserves_or_diverges` red.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_leak_arm_conducts_and_is_refused_both_ways() {
+    const SAMPLES: usize = 400;
+    let mut runner = TestRunner::deterministic();
+    let strat = tree_inputs_strategy();
+
+    let (mut leaky_trees, mut gas_refused, mut back_fed) = (0usize, 0usize, 0usize);
+    let (mut diverged, mut solved) = (0usize, 0usize);
+    let (mut leaks_seen, mut conducting, mut discriminating) = (0usize, 0usize, 0usize);
+
+    for _ in 0..SAMPLES {
+        let inputs = strat
+            .new_tree(&mut runner)
+            .expect("strategy produces a value")
+            .current();
+        let g = build_tree(&inputs);
+        let fluid = &inputs.4;
+        let holes: Vec<_> = g
+            .edge_ids()
+            .filter(|e| matches!(g.pipe(*e).leak, LeakRole::Orifice { .. }))
+            .collect();
+        if holes.is_empty() {
+            continue;
+        }
+        leaky_trees += 1;
+
+        match NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        {
+            Err(SimError::Numerical(m)) if m.contains("gas-phase") => gas_refused += 1,
+            Err(SimError::Numerical(m)) if m.contains("back-feeds") => back_fed += 1,
+            Ok(sol) if sol.diagnostics.converged => {
+                solved += 1;
+                let throughput = sol
+                    .edge_mass_flow
+                    .values()
+                    .fold(0.0f64, |m, &f| m.max(f.abs()));
+                // The very tolerance `tree_conserves_or_diverges` applies. Read
+                // from one place so this test cannot certify a discrimination
+                // the gate would not actually make.
+                let tol = 1e-5 + 1e-6 * throughput;
+                for hole in holes {
+                    leaks_seen += 1;
+                    let flow = sol.edge_mass_flow[&hole];
+                    if flow.abs() <= 0.01 * throughput || flow.abs() <= 1e-6 {
+                        continue; // a trickle: generated, but nothing to see
+                    }
+                    conducting += 1;
+                    // The junction the hole hangs off. The leak edge leaves it,
+                    // so `node_imbalance` books it as `−flow`; dropping the edge
+                    // adds that back.
+                    let (junction, _) = g.endpoints(hole);
+                    let with = node_imbalance(&g, &sol, junction);
+                    let without = with + flow;
+                    if with.abs() <= tol && without.abs() > tol {
+                        discriminating += 1;
+                    }
+                }
+            }
+            _ => diverged += 1,
+        }
+    }
+
+    println!(
+        "leaky trees {leaky_trees}/{SAMPLES}: solved {solved}, refused gas {gas_refused}, \
+         refused back-feed {back_fed}, diverged {diverged}; of {leaks_seen} holes on solved \
+         plants {conducting} conduct >1% of throughput, {discriminating} of them decisively \
+         (the balance gate fails without the leak edge)"
+    );
+
+    // (1) The arm is sampled at all.
+    assert!(
+        leaky_trees * 4 >= SAMPLES,
+        "only {leaky_trees}/{SAMPLES} trees carried a leak"
+    );
+    // (2) The refusals do not eat the arm. A leak that is ALWAYS refused is a
+    // leak the mass balance never sees, which is precisely the state M6.0 found
+    // the feature in — present, reachable-looking, and never exercised.
+    //
+    // Set at a quarter against a measured 36%, and the ceiling is why: half of
+    // `fluid_strategy`'s plants are gas and every leak on one is refused, so ~50%
+    // is the most this can ever be. A quarter is two thirds of what is reachable,
+    // which leaves room for an honest generator change without leaving room for
+    // the arm to hollow out.
+    assert!(
+        solved * 4 >= leaky_trees,
+        "only {solved}/{leaky_trees} leaky trees actually SOLVED ({gas_refused} refused for \
+         gas, {back_fed} for back-feed, {diverged} diverged) — the arm is generating holes \
+         nothing ever flows through"
+    );
+    // (3) The gas door fires on GENERATED plants, not merely on the hand case in
+    // `orifice.rs`. It exists because generators build a `PlantGraph` directly
+    // and never call `build_engine`, so a zero here means it is guarding nothing
+    // this file can reach.
+    assert!(
+        gas_refused >= 20,
+        "the compile-time gas refusal fired on only {gas_refused} generated plants — the \
+         second door is not being reached by the kind of plant it exists for"
+    );
+    // `back_fed` is REPORTED and deliberately not floored. It is 3 of 400 — the
+    // generator does reach a junction below `P_ATM` (a relief spur's flare may
+    // sit at 0.9e5, under atmospheric, and pull one there), so the path is
+    // demonstrably live, but a floor on a number that small would be a tripwire
+    // on luck rather than a gate on behaviour. What actually pins that refusal is
+    // `leak_reference::a_leak_below_atmospheric_is_refused`, a hand-built plant
+    // whose junction pressure is MEASURED sub-atmospheric before the leak is
+    // opened. This line exists so a reader knows the generated population is not
+    // where that claim rests.
+    //
+    // (4) THE GATE, not a statistic. Each of these samples is one where the
+    // balance assertion in `tree_conserves_or_diverges` holds with the leak's
+    // flow counted and BREAKS without it — so at this rate that assertion really
+    // is what stands between the repo and a leak edge whose mass goes unbooked.
+    assert!(
+        discriminating >= 20,
+        "only {discriminating} generated leaks are large enough that the mass-balance gate \
+         would notice them going unbooked (of {conducting} that conduct at all). Below this \
+         the leak arm proves the GENERATOR works and proves nothing about the gate"
     );
 }
