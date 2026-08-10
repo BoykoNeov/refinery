@@ -411,6 +411,36 @@ classify → seed → compile → anchor → re-pin floating, owned by one share
 is still computed ONCE, from the seed compile, so it cannot flap mid-solve;
 `conducts` is a sign-of-`α` test and cannot differ between iterates anyway.
 
+**That last clause was true when it was written and M5.4's relief valve made it
+false.** It holds for every element whose conductance is fixed for the duration
+of a solve — a valve at an operator setpoint, a pipe, a pump. A PSV's opening is
+a function of the pressure **iterate**, so the sign of its `α` genuinely can
+differ between iterates, and a set computed once from the seed compile can be
+STALE. Both directions are reachable from the I5 generators, and neither is
+exotic:
+
+- **seed-open, converged-shut — the solve fails outright, on both fidelities.**
+  A dead-leg terminal behind the PSV enters the solve as an unknown because the
+  seed says its edge conducts; at the answer the PSV is shut, the edge is inert,
+  and that node's residual row and column are identically zero — a singular
+  Jacobian. Newton diverges, Simple reports an infinite residual. Measured on
+  83 of 306 generated spur trees.
+- **seed-shut, converged-open — the benign half.** Every flow is right and one
+  reported PRESSURE is wrong: the terminal stays parked at `P_ATM` though behind
+  an open PSV it is perfectly determinate (a dead end carries no flow, so it
+  sits at its neighbour's less the static head).
+
+Deliberately NOT fixed in the slice that found it. The fix is either an outer
+loop over the classification or a per-iteration anchored set whose dimension
+changes mid-solve — and the freeze above was a considered choice against exactly
+that flapping, so reversing it is a design decision with its own slice and its
+own measured regression anchor, not a test-only patch. What holds the line
+meanwhile: `known_defect_frozen_anchoring_*` in `crates/solvers/tests/
+invariants.rs` pin both halves as characterization tests written to FAIL when the
+defect is fixed, at which point their assertions become the description of the
+fix; and the generated rates are floored in the arm so the deferral cannot
+quietly worsen.
+
 **The iterate needs a pressure floor that the converged answer does not.** A
 Newton trial can overshoot to a non-positive pressure on its way to the root,
 where `ρ = P·M̄/(R·T) ≤ 0` makes the pipe resistance non-positive and

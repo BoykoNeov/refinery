@@ -19,19 +19,45 @@
 //!
 //! Two generators, complementary:
 //!
-//!   * CHAIN — Source → (Junction | Pump | Valve)* → Sink joined by pipes.
-//!     Every node is 1-in/1-out, so it is a targeted reverse-flow-through-device
-//!     path (randomized end pressures exercise both flow directions, hence the
-//!     combined-branch's shifted-oddness reverse path). It does NOT branch.
+//!   * CHAIN — Source → (Junction | Pump | Valve | ReliefValve)* → Sink joined
+//!     by pipes. Every node is 1-in/1-out, so it is a targeted
+//!     reverse-flow-through-device path (randomized end pressures exercise both
+//!     flow directions, hence the combined-branch's shifted-oddness reverse
+//!     path). It does NOT branch.
 //!
 //!   * TREE — a hub-biased random tree: interior Junctions with 3+ incident
 //!     edges (parents drawn from the first `HUB_SPAN` nodes so branching is
 //!     structural, not a full-size-only fluke that shrinking erases — see
 //!     `strategy_actually_branches`, which is the guard that this generator
-//!     earns its keep). Pumps/valves are inserted by SUBDIVIDING an edge, which
-//!     gives the device exactly one inlet + one outlet edge (F6 by
-//!     construction). Leaves are fixed Source/Sink at random pressures; every
-//!     open branch conducts, so the whole tree is anchored (no floating).
+//!     earns its keep). Pumps/valves/PSVs are inserted by SUBDIVIDING an edge,
+//!     which gives the device exactly one inlet + one outlet edge (F6 by
+//!     construction). Leaves are fixed Source/Sink at random pressures.
+//!     A tree may additionally carry RELIEF SPURS — see below.
+//!
+//! FLOATING SUBNETWORKS ARE NOW GENERATED, and that is a change to the plant
+//! model rather than one more `prop_oneof` arm. Every device before the PSV had
+//! a conductance fixed for the whole solve, so "every open branch conducts ⇒ the
+//! whole graph is anchored" held by construction and this file delegated
+//! floating entirely to `newton_reference.rs`'s hand cases. A PSV's conductance
+//! is a function of the pressure ITERATE, so it does not.
+//!
+//! Note the distinction the spur exists for: DEAD END is not FLOATING. A PSV
+//! spliced into a chain or a tree edge never floats anything — cut either at one
+//! edge and both components still contain a fixed leaf. Only a spur reaches it:
+//! `parent → pipe → PSV → pipe → end`, where `end` is either a flare (a fixed
+//! low-pressure Sink — the load-bearing case, a PSV that genuinely relieves and
+//! in gas service can choke) or a blocked-in DEAD LEG (a free Junction, which
+//! has no conducting path to any anchor while the PSV is shut).
+//!
+//! **A KNOWN DEFECT lives in that second case, and it is pinned, not hidden.**
+//! `network::prepare` computes the anchored set ONCE from the seed compile, on
+//! purpose, so it cannot flap mid-solve. That is exact for a constant-conductance
+//! element and stale for a PSV, both ways round — see
+//! `known_defect_frozen_anchoring_*` below, two hand-checkable plants, and
+//! docs/ROADMAP.md M5.4 for the measured reachability. The generators here
+//! REACH it (the tree gates accept the resulting `SolverDiverged` as legal per
+//! I3), which is why the rate is measured in
+//! `the_relief_arm_lifts_relieves_and_floats` rather than left to chance.
 //!
 //! WHAT THE TREE TEST ACTUALLY CATCHES (be honest — it is NOT a correctness
 //! oracle). The per-node balance recomputes each residual R_i from the RETURNED
@@ -51,21 +77,35 @@
 //! random networks is I5's job (Newton vs SimpleFlowSolver agreement, landing
 //! with the Simple solver); this generator does not attempt it.
 //!
-//! Floating-subnetwork pinning (a closed valve severing part of the graph) is a
-//! separate path, covered by hand-checkable cases in `newton_reference.rs`
-//! (`floating_subnetwork_with_pump_reports_zero_flow`, `closed_valve_*`); the
-//! generators here keep every branch conducting on purpose.
+//! Floating-subnetwork pinning by a CLOSED VALVE — an opening an operator set,
+//! constant for the whole solve — keeps its hand-checkable cases in
+//! `newton_reference.rs` (`floating_subnetwork_with_pump_reports_zero_flow`,
+//! `closed_valve_*`). What the generators here add is the case those cannot
+//! express: an opening the SOLVE determines, so that whether a subnetwork floats
+//! is a property of the answer and not of the graph.
+//!
+//! I5 HAS A NEW BOUNDARY, and it is asserted rather than skipped. A PSV in
+//! REVERSE flow makes the network genuinely multi-rooted: its spring senses its
+//! own inlet flange, so in reverse the pressure that opens it is the one the
+//! flow arrives at — opening it RAISES its own sensed pressure, positive
+//! feedback, and shut-with-no-flow and open-with-flow are both exact roots.
+//! (Relieving forward the feedback is negative and the root is unique.) So the
+//! two fidelities may legitimately land on different answers, and
+//! `chain_fidelity_agreement` responds by PROVING both are roots rather than
+//! declining to compare — a skip would have masked any real Simple bug that
+//! happened to produce reverse flow through a PSV.
 
 use proptest::prelude::*;
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
 use refinery_core::components::{Composition, PseudoComponent, Slate};
 use refinery_core::error::SimError;
-use refinery_core::graph::{Node, NodeKind, Pipe, PlantGraph};
+use refinery_core::graph::{Node, NodeId, NodeKind, Pipe, PlantGraph};
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
 use refinery_core::units::*;
 use refinery_solvers::{NewtonFlowSolver, SimpleFlowSolver};
+use std::collections::BTreeMap;
 
 // ---------------------------------------------------------------------------
 // The plant-level FLUID (M5.4's open box). Phase is a property of the whole
@@ -218,6 +258,7 @@ enum Mid {
     Junction,
     Pump { h0: f64, a: f64, on: bool },
     Valve { cv: f64, opening: f64 },
+    Relief { cv: f64, set: f64, band: f64 },
 }
 
 fn mid_strategy() -> impl Strategy<Value = Mid> {
@@ -227,7 +268,25 @@ fn mid_strategy() -> impl Strategy<Value = Mid> {
         // opening ≥ 0.05 keeps the chain conducting (closed-valve floating is
         // covered by a dedicated unit test, not here).
         (1e-4..5e-3f64, 0.05..1.0f64).prop_map(|(cv, opening)| Mid::Valve { cv, opening }),
+        relief_strategy().prop_map(|(cv, set, band)| Mid::Relief { cv, set, band }),
     ]
+}
+
+/// `(cv_max, set_pressure, accumulation)` for a generated PSV.
+///
+/// The set pressure spans the INTERIOR of the end-pressure range
+/// (`1.0e5..8.0e5`) rather than sitting under it or over it, and that is the one
+/// tuning decision in this arm: it is what makes shut / partially lifted / fully
+/// lifted all common. A band of 0.2–1.5 bar against that range keeps the
+/// partial-lift window wide enough to land in — a 1 mbar band would be a step in
+/// all but name and the smoothstep would go untested — while staying inside the
+/// 10–21% of set pressure real accumulation allows (API 520).
+///
+/// Unlike a plain valve there is no `opening` to generate: that is the whole
+/// point of the device, and where it comes from — the node's OWN pressure, read
+/// inside the solve — is what the arm exists to exercise.
+fn relief_strategy() -> impl Strategy<Value = (f64, f64, f64)> {
+    (1e-4..5e-3f64, 1.5e5..7.5e5f64, 0.2e5..1.5e5f64)
 }
 
 /// Factor applied to a generated valve coefficient in GAS service only.
@@ -273,6 +332,12 @@ fn mid_node(m: &Mid, i: usize, fluid: &Fluid) -> Node {
         Mid::Valve { cv, opening } => NodeKind::Valve {
             cv_max: valve_cv(cv, fluid),
             opening,
+            x_t: fluid.x_t,
+        },
+        Mid::Relief { cv, set, band } => NodeKind::ReliefValve {
+            cv_max: valve_cv(cv, fluid),
+            set_pressure: Pascal(set),
+            accumulation: Pascal(band),
             x_t: fluid.x_t,
         },
     };
@@ -331,6 +396,7 @@ enum MidDevice {
     None,
     Pump { h0: f64, a: f64, on: bool },
     Valve { cv: f64, opening: f64 },
+    Relief { cv: f64, set: f64, band: f64 },
 }
 
 fn device_strategy() -> impl Strategy<Value = MidDevice> {
@@ -340,6 +406,72 @@ fn device_strategy() -> impl Strategy<Value = MidDevice> {
             .prop_map(|(h0, a, on)| MidDevice::Pump { h0, a, on }),
         1 => (1e-4..5e-3f64, 0.05..1.0f64)
             .prop_map(|(cv, opening)| MidDevice::Valve { cv, opening }),
+        1 => relief_strategy().prop_map(|(cv, set, band)| MidDevice::Relief { cv, set, band }),
+    ]
+}
+
+/// Where a relief SPUR discharges — and the reason the spur exists at all.
+///
+/// A PSV spliced INTO a chain or a tree edge, like the arms above, never floats
+/// anything: cut a chain or a tree at one edge and each of the two components
+/// still contains a fixed leaf, so both stay anchored. Dead end is not the same
+/// property as floating, and only a spur — a branch hanging off the network,
+/// which neither generator could previously build — reaches the second one.
+#[derive(Debug, Clone)]
+enum SpurEnd {
+    /// A flare header: a FIXED low-pressure sink, and the load-bearing case. A
+    /// PSV here actually relieves — real flow, into a hub that must still
+    /// balance, and in gas service a branch that can choke. This is
+    /// `relief_blowdown.toml`'s geometry with the numbers generated.
+    Flare(f64),
+    /// A blocked-in dead leg: a FREE junction, no reservoir behind it. Carries
+    /// zero flow whether the PSV is shut or open (nothing downstream to take
+    /// any), so it has no physics content and is not pretended to have one. Its
+    /// single purpose: while the PSV is shut its outlet edge does not conduct,
+    /// so the terminal has no conducting path to ANY anchor and `prepare` must
+    /// pin it as floating. That is the path this file's header used to delegate
+    /// entirely to `newton_reference.rs`'s hand-built cases.
+    DeadLeg,
+}
+
+/// A relief branch hung off a primary tree node: `parent → pipe → PSV → pipe →
+/// end`. It carries its own two pipes rather than indexing a shared vec, which
+/// keeps `TreeInputs` at six fields and every length fixed (shrink-safe).
+#[derive(Debug, Clone)]
+struct Spur {
+    cv: f64,
+    set: f64,
+    band: f64,
+    end: SpurEnd,
+    inlet: (f64, f64, f64, f64),
+    outlet: (f64, f64, f64, f64),
+}
+
+/// One in four primary nodes gets a spur, so a typical tree carries one or two
+/// and a fair number carry none — the no-spur tree must stay common, since it is
+/// every pre-existing case. The flare pressure sits BELOW the primary tree's
+/// range (`1.0e5..8.0e5`), because a flare header at receiver pressure would
+/// take nothing and the relieving case would be generated but never reached.
+fn spur_strategy() -> impl Strategy<Value = Option<Spur>> {
+    prop_oneof![
+        3 => Just(None),
+        1 => (
+            relief_strategy(),
+            prop_oneof![
+                1 => (0.9e5..1.6e5f64).prop_map(SpurEnd::Flare),
+                1 => Just(SpurEnd::DeadLeg),
+            ],
+            pipe_strategy(),
+            pipe_strategy(),
+        )
+            .prop_map(|((cv, set, band), end, inlet, outlet)| Some(Spur {
+                cv,
+                set,
+                band,
+                end,
+                inlet,
+                outlet,
+            })),
     ]
 }
 
@@ -367,7 +499,15 @@ fn fixed_node(is_source: bool, p: f64, i: usize, fluid: &Fluid) -> Node {
 fn is_free(k: &NodeKind) -> bool {
     matches!(
         k,
-        NodeKind::Junction | NodeKind::Pump { .. } | NodeKind::Valve { .. }
+        NodeKind::Junction
+            | NodeKind::Pump { .. }
+            | NodeKind::Valve { .. }
+            // A relief valve is free (it pins no pressure) and it is checked
+            // like every other free node. Two of them are worth naming: a PSV
+            // node is a DEAD END whenever it is shut, and a floating dead-leg
+            // terminal balances trivially because all its edges report zero —
+            // which is the correct answer and is asserted, not skipped.
+            | NodeKind::ReliefValve { .. }
     )
 }
 
@@ -381,6 +521,7 @@ type TreeInputs = (
     Vec<MidDevice>,            // devices[j-1]: optional device on edge into child j
     Vec<(f64, f64, f64, f64)>, // pipes: primary edge j-1, subdivided half MAX_K+j-1
     Fluid,                     // the whole tree's fluid — plant-level, never per-node
+    Vec<Option<Spur>>,         // spurs[i]: a relief branch hung off primary node i
 );
 
 fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
@@ -390,6 +531,7 @@ fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
         prop::collection::vec(device_strategy(), MAX_K..=MAX_K),
         prop::collection::vec(pipe_strategy(), (2 * MAX_K)..=(2 * MAX_K)),
         fluid_strategy(),
+        prop::collection::vec(spur_strategy(), MAX_NODES..=MAX_NODES),
     )
 }
 
@@ -398,7 +540,7 @@ fn tree_inputs_strategy() -> impl Strategy<Value = TreeInputs> {
 /// hubs. Degree-1 nodes are leaves ⇒ fixed Source/Sink (pressure reference);
 /// higher-degree nodes are Junctions. A selected edge is subdivided by a device.
 fn build_tree(inputs: &TreeInputs) -> PlantGraph {
-    let (raw_parents, fixed_specs, devices, pipes, fluid) = inputs;
+    let (raw_parents, fixed_specs, devices, pipes, fluid, spurs) = inputs;
     let k = raw_parents.len();
     let n_nodes = k + 1;
 
@@ -453,6 +595,12 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
                         opening: *opening,
                         x_t: fluid.x_t,
                     },
+                    MidDevice::Relief { cv, set, band } => NodeKind::ReliefValve {
+                        cv_max: valve_cv(*cv, fluid),
+                        set_pressure: Pascal(*set),
+                        accumulation: Pascal(*band),
+                        x_t: fluid.x_t,
+                    },
                     MidDevice::None => unreachable!("matched above"),
                 };
                 let mid = g.add_node(Node {
@@ -468,6 +616,47 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
                 );
             }
         }
+    }
+
+    // Relief spurs, hung off the finished tree rather than woven into it. The
+    // order matters for what stays true: every primary node's kind was already
+    // decided by its PRIMARY degree, so a spur off a degree-1 node leaves that
+    // node the fixed Source/Sink it was and simply gives it a second edge (legal
+    // — only devices are degree-constrained). A spurless tree is therefore built
+    // exactly as before, which is what keeps every pre-existing case meaningful.
+    for (i, spur) in spurs.iter().enumerate().take(n_nodes) {
+        let Some(spur) = spur else { continue };
+        let psv = g.add_node(Node {
+            name: format!("psv{i}"),
+            kind: NodeKind::ReliefValve {
+                cv_max: valve_cv(spur.cv, fluid),
+                set_pressure: Pascal(spur.set),
+                accumulation: Pascal(spur.band),
+                x_t: fluid.x_t,
+            },
+            heat_input: Watt(0.0),
+        });
+        let end = match spur.end {
+            SpurEnd::Flare(p) => g.add_node(Node {
+                name: format!("flare{i}"),
+                kind: NodeKind::Sink {
+                    pressure: Pascal(p),
+                    temperature: T_AMBIENT,
+                    composition: fluid.composition.clone(),
+                },
+                heat_input: Watt(0.0),
+            }),
+            SpurEnd::DeadLeg => g.add_node(Node {
+                name: format!("deadleg{i}"),
+                kind: NodeKind::Junction,
+                heat_input: Watt(0.0),
+            }),
+        };
+        // Oriented parent → PSV → end, so the PSV folds into its OUTLET edge and
+        // its own node pressure is the one the spring senses — the same
+        // fold-at-source convention every other device here follows.
+        g.add_pipe(ids[i], psv, pipe(spur.inlet, &format!("s{i}a"), fluid));
+        g.add_pipe(psv, end, pipe(spur.outlet, &format!("s{i}b"), fluid));
     }
     g
 }
@@ -502,10 +691,18 @@ fn strategy_actually_branches() {
     let mut max_seen = 0usize;
     let mut branched = 0usize;
     for _ in 0..SAMPLES {
-        let inputs = strat
+        let mut inputs = strat
             .new_tree(&mut runner)
             .expect("strategy produces a value")
             .current();
+        // STRIP THE SPURS before measuring, or this guard passes for the wrong
+        // reason. A spur adds an edge to its primary parent, so a degree-2
+        // interior node carrying one would count as a 3+ degree "hub" — and the
+        // whole purpose of this number is that the TREE strategy branches, i.e.
+        // that it earns its keep over `build_chain`. A relief branch is not
+        // branching in that sense. Stripping them keeps the measurement's
+        // historical meaning (≈60% branch) comparable across this slice.
+        inputs.5.iter_mut().for_each(|s| *s = None);
         let g = build_tree(&inputs);
         let md = g.node_ids().map(|n| g.incident(n).len()).max().unwrap_or(0);
         max_seen = max_seen.max(md);
@@ -549,6 +746,7 @@ fn simple_agrees_on_a_healthy_fraction() {
 
     let mut newton_ok = 0usize;
     let mut agreed = 0usize;
+    let mut dead = 0usize;
     for _ in 0..SAMPLES {
         let (mids, pipes, p_src, p_snk) = strat
             .new_tree(&mut runner)
@@ -564,6 +762,19 @@ fn simple_agrees_on_a_healthy_fraction() {
             Ok(n) if n.diagnostics.converged => n,
             _ => continue,
         };
+        // A chain carrying a SHUT PSV is dead end to end — every flow is zero,
+        // so every edge falls under the floor below and `ok` would be trivially
+        // true. Counting those as agreement is exactly the vacuity this test
+        // exists to detect, one level down, so they are excluded from BOTH
+        // counters and reported separately.
+        let throughput = n
+            .edge_mass_flow
+            .values()
+            .fold(0.0f64, |m, &f| m.max(f.abs()));
+        if throughput <= 1e-9 {
+            dead += 1;
+            continue;
+        }
         newton_ok += 1;
         let s = match SimpleFlowSolver::default().solve(
             &g,
@@ -575,10 +786,6 @@ fn simple_agrees_on_a_healthy_fraction() {
             _ => continue,
         };
         // Both converged: require flow agreement within 5% on non-tiny edges.
-        let throughput = n
-            .edge_mass_flow
-            .values()
-            .fold(0.0f64, |m, &f| m.max(f.abs()));
         let floor = 1e-6 + 1e-3 * throughput;
         let ok = n.edge_mass_flow.iter().all(|(eid, &fa)| {
             let fb = s.edge_mass_flow[eid];
@@ -590,7 +797,17 @@ fn simple_agrees_on_a_healthy_fraction() {
         }
     }
 
+    println!(
+        "simple-vs-newton on chains: newton converged with flow {newton_ok}/{SAMPLES}; \
+         agreed {agreed}; excluded as dead (a shut PSV zeroes the chain) {dead}"
+    );
     assert!(newton_ok > 0, "Newton converged on no chain samples");
+    // The PSV arm must not have eaten the population this guard measures.
+    assert!(
+        newton_ok * 4 >= SAMPLES,
+        "only {newton_ok}/{SAMPLES} chains carried any flow at all ({dead} were dead) — \
+         the relief arm has crowded out the live chains this guard is about"
+    );
     // Empirically Simple converges+agrees on ≈100% of Newton-converged chains
     // (295/296 at time of writing); 50% is a safe floor that still fails loudly
     // if Simple silently stops converging.
@@ -654,6 +871,11 @@ fn valve_edge_is_choked(
     eid: refinery_core::graph::EdgeId,
 ) -> bool {
     let (src, tgt) = graph.endpoints(eid);
+    let pressures: std::collections::BTreeMap<_, _> = sol
+        .node_pressure
+        .iter()
+        .map(|(n, p)| (*n, p.value()))
+        .collect();
     let (cv_max, opening, x_t) = match graph.node(src).kind {
         // Fold-at-source: a device folds into the edge LEAVING it, so only an
         // edge whose `src` is the valve carries one.
@@ -662,13 +884,33 @@ fn valve_edge_is_choked(
             opening,
             x_t: Some(x_t),
         } => (cv_max, opening, x_t),
+        // A PSV chokes on exactly the same law; its opening is just read from
+        // the plant instead of set by an operator.
+        NodeKind::ReliefValve {
+            cv_max,
+            set_pressure,
+            accumulation,
+            x_t: Some(x_t),
+        } => (
+            cv_max,
+            refinery_solvers::elements::relief_opening(
+                pressures[&src],
+                set_pressure.value(),
+                accumulation.value(),
+            ),
+            x_t,
+        ),
         _ => return false,
     };
-    let pressures: std::collections::BTreeMap<_, _> = sol
-        .node_pressure
-        .iter()
-        .map(|(n, p)| (*n, p.value()))
-        .collect();
+    // A SHUT valve must be rejected before the plateau is computed, or it counts
+    // as choked and the measurement inflates in the flattering direction:
+    // `α_valve = ρ_rel/0² = +∞` gives `plateau = 0` against a flow of `0`, and
+    // `0 ≥ 0` is true. Only a PSV can reach this — a generated `Valve` has
+    // `opening ≥ 0.05` by construction — which is precisely why the guard had to
+    // arrive with this arm.
+    if opening < refinery_solvers::network::OPEN_EPS {
+        return false;
+    }
     let Ok(compiled) = refinery_solvers::network::compile_edge(
         graph,
         eid,
@@ -786,7 +1028,7 @@ fn the_gas_arm_generates_chokes_and_solves() {
     // 3+ degree hub — never sees a choked branch, which is the 0/185 failure one
     // level down.
     let tree_strat = tree_inputs_strategy();
-    let (mut gas_trees, mut choked_trees) = (0usize, 0usize);
+    let (mut gas_trees, mut choked_trees, mut choked_spurs) = (0usize, 0usize, 0usize);
     for _ in 0..SAMPLES {
         let inputs = tree_strat
             .new_tree(&mut runner)
@@ -805,14 +1047,37 @@ fn the_gas_arm_generates_chokes_and_solves() {
         ) else {
             continue;
         };
-        if n.diagnostics.converged
-            && g.edge_ids()
-                .any(|e| valve_edge_is_choked(&g, &n, &inputs.4, e))
-        {
-            choked_trees += 1;
+        if !n.diagnostics.converged {
+            continue;
         }
+        // SPUR chokes are counted apart from SPLICED-device chokes, for the same
+        // reason trees are counted apart from chains one paragraph up: this
+        // counter's job is to protect the branching `edge_flows`-vs-`assemble`
+        // cross-check, and a PSV choking on a dead-end relief branch is not that
+        // check. Folding the two together inflated it from 53/189 to 83/179 —
+        // the guard would then have been satisfied by the arm that has nothing
+        // to do with what it guards.
+        let mut spliced = false;
+        let mut spur = false;
+        for e in g.edge_ids() {
+            if !valve_edge_is_choked(&g, &n, &inputs.4, e) {
+                continue;
+            }
+            // `build_tree` owns every name here: `dev{j}` is spliced into a
+            // primary edge, `psv{i}` hangs off a spur.
+            if g.node(g.endpoints(e).0).name.starts_with("psv") {
+                spur = true;
+            } else {
+                spliced = true;
+            }
+        }
+        choked_trees += usize::from(spliced);
+        choked_spurs += usize::from(spur);
     }
-    println!("gas trees: {gas_trees}/{SAMPLES}; with a choked valve {choked_trees}/{gas_trees}");
+    println!(
+        "gas trees: {gas_trees}/{SAMPLES}; with a choked SPLICED valve {choked_trees}/{gas_trees}; \
+         with a choked SPUR psv {choked_spurs}/{gas_trees}"
+    );
 
     // (1) Gas must be a substantial share, not a rounding error. The strategy
     // is 1:1, so ~50%; 25% is a floor that fails loudly on a weight typo.
@@ -971,17 +1236,20 @@ proptest! {
         let (g, _) = build_chain(&mids, &raw_pipes, p_src, p_snk, &fluid);
         let newton = NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
         let simple = SimpleFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
-        assert_fidelity_agreement(newton, simple)?;
+        assert_fidelity_agreement(&g, &fluid, newton, simple, true)?;
     }
 
     /// TREE — I5 breadth over branching topologies (same both-converged rule).
     #[test]
     fn tree_fidelity_agreement(inputs in tree_inputs_strategy()) {
         let g = build_tree(&inputs);
-        let slate = &inputs.4.slate;
-        let newton = NewtonFlowSolver::default().solve(&g, slate, &Default::default(), Seconds(0.1));
-        let simple = SimpleFlowSolver::default().solve(&g, slate, &Default::default(), Seconds(0.1));
-        assert_fidelity_agreement(newton, simple)?;
+        let fluid = &inputs.4;
+        let newton = NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
+        let simple = SimpleFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
+        // `prove_roots: false` — a tree can carry the frozen-anchoring defect,
+        // which makes a re-derived anchored set legitimately disagree with the
+        // one the solve used. See `assert_fidelity_agreement`.
+        assert_fidelity_agreement(&g, fluid, newton, simple, false)?;
     }
 
     /// I4 for the Simple solver: two fresh instances (empty warm-start) on the
@@ -996,14 +1264,131 @@ proptest! {
     }
 }
 
+/// The `eps_dp` both solvers carry in `Default` (`newton_flow.rs`,
+/// `simple_flow.rs`). Recomputing a residual at any OTHER value measures the
+/// difference between two regularizations instead of the residual, and the
+/// number is not small: `smooth_signed_sqrt` deviates by O(eps/Δp), so on the
+/// 44.7 Pa drop of the very case that motivated this helper, 1e-6 against this
+/// 1.0 reports a 1.1% imbalance on a root that is exact to 7e-7 kg/s.
+const SOLVER_EPS_DP: f64 = 1.0;
+
+/// Node pressures as plain f64, the form every `network` entry point takes.
+fn pressures_of(sol: &HydraulicSolution) -> BTreeMap<NodeId, f64> {
+    sol.node_pressure
+        .iter()
+        .map(|(n, p)| (*n, p.value()))
+        .collect()
+}
+
+/// Every relief valve's opening under a given pressure assignment — the
+/// signature that says WHICH branch of the pressure-actuated characteristic a
+/// solution sits on.
+fn relief_openings(graph: &PlantGraph, pressures: &BTreeMap<NodeId, f64>) -> BTreeMap<NodeId, f64> {
+    let mut out = BTreeMap::new();
+    for nid in graph.node_ids() {
+        if let NodeKind::ReliefValve {
+            set_pressure,
+            accumulation,
+            ..
+        } = graph.node(nid).kind
+        {
+            out.insert(
+                nid,
+                refinery_solvers::elements::relief_opening(
+                    pressures[&nid],
+                    set_pressure.value(),
+                    accumulation.value(),
+                ),
+            );
+        }
+    }
+    out
+}
+
+/// Is this pressure assignment an exact root of the network? Returns
+/// `(worst |node imbalance| [kg/s], throughput [kg/s])`.
+///
+/// Judged FROM SCRATCH: nothing is read back from the solution except the
+/// pressures themselves. The edges are recompiled at them, the anchored set is
+/// re-derived from those edges, and the flows come out of `edge_flows`. That
+/// independence is the whole point — it is what turns "the two fidelities
+/// disagree, so skip the comparison" into "this plant has two roots, and here is
+/// the proof", and a genuine solver bug cannot satisfy the second one.
+///
+/// `anchors` is the fixed set: these generators build no capacitive node, so
+/// `!is_free` is exactly Source ∪ Sink (a Vessel would have to be added here).
+fn worst_recomputed_imbalance(
+    graph: &PlantGraph,
+    fluid: &Fluid,
+    pressures: &BTreeMap<NodeId, f64>,
+) -> Result<(f64, f64), SimError> {
+    let compiled = refinery_solvers::network::compile_edges(
+        graph,
+        &fluid.slate,
+        &Default::default(),
+        pressures,
+    )?;
+    let anchors: std::collections::BTreeSet<NodeId> = graph
+        .node_ids()
+        .filter(|&n| !is_free(&graph.node(n).kind))
+        .collect();
+    let anchored = refinery_solvers::network::anchored_set(graph, &compiled, &anchors);
+    let res = refinery_solvers::network::edge_flows(
+        graph,
+        &compiled,
+        pressures,
+        &anchored,
+        SOLVER_EPS_DP,
+    );
+    let mut worst = 0.0f64;
+    for nid in graph.node_ids() {
+        if !is_free(&graph.node(nid).kind) {
+            continue;
+        }
+        let mut bal = 0.0;
+        for (e, _other, incoming) in graph.incident(nid) {
+            bal += if incoming {
+                res.mass_flow[&e]
+            } else {
+                -res.mass_flow[&e]
+            };
+        }
+        worst = worst.max(bal.abs());
+    }
+    Ok((worst, res.throughput))
+}
+
 /// I5 comparison: if BOTH solvers return Ok(converged), every non-negligible
 /// edge flow must agree within 5% (the I5 contract). Otherwise skip — a network
 /// only one solver cracks is legal (I3). An absolute floor (0.1% of Newton
 /// throughput + 1e-6 kg/s) ignores near-zero edges, where relative error is
 /// meaningless.
+///
+/// **A disagreement is not automatically a failure any more, and the escape is
+/// an ASSERTION rather than a skip.** A PSV in reverse flow leaves the network
+/// genuinely multi-rooted (see the module header), so the two fidelities can
+/// each be exactly right and differ. Declining to compare there would have
+/// weakened I5 by exactly the amount needed to hide a real Simple bug that
+/// happened to produce reverse flow through a PSV. Instead a disagreement must
+/// clear two bars: the two solutions put some PSV on DIFFERENT branches of its
+/// characteristic (the only mechanism in this model that can multiply roots),
+/// and — where `prove_roots` — each is independently verified to be an exact
+/// root. Neither is satisfiable by a solver that is simply wrong.
+///
+/// `prove_roots` is false for TREES, and the reason is a defect rather than a
+/// principle: `worst_recomputed_imbalance` re-derives the anchored set at the
+/// solution, which is precisely what `network::prepare` does NOT do, so on a
+/// tree carrying the frozen-anchoring defect (`known_defect_frozen_anchoring_*`)
+/// the proof would fail for a reason that has nothing to do with multiplicity.
+/// Chains cannot reach that: their free nodes lose their anchor only when a
+/// whole segment is sealed off between two shut PSVs, and a sealed segment parks
+/// at a pressure that keeps those PSVs shut, so seed and solution agree.
 fn assert_fidelity_agreement(
+    graph: &PlantGraph,
+    fluid: &Fluid,
     newton: Result<HydraulicSolution, SimError>,
     simple: Result<HydraulicSolution, SimError>,
+    prove_roots: bool,
 ) -> Result<(), TestCaseError> {
     let (n, s) = match (newton, simple) {
         (Ok(n), Ok(s)) if n.diagnostics.converged && s.diagnostics.converged => (n, s),
@@ -1014,6 +1399,7 @@ fn assert_fidelity_agreement(
         .values()
         .fold(0.0f64, |m, &f| m.max(f.abs()));
     let floor = 1e-6 + 1e-3 * throughput;
+    let mut mismatch: Option<(refinery_core::graph::EdgeId, f64, f64, f64)> = None;
     for (eid, &fa) in &n.edge_mass_flow {
         let fb = s.edge_mass_flow[eid];
         let scale = fa.abs().max(fb.abs());
@@ -1021,10 +1407,38 @@ fn assert_fidelity_agreement(
             continue;
         }
         let rel = (fa - fb).abs() / scale;
+        if rel > 0.05 && mismatch.is_none_or(|(_, _, _, w)| rel > w) {
+            mismatch = Some((*eid, fa, fb, rel));
+        }
+    }
+    let Some((eid, fa, fb, rel)) = mismatch else {
+        return Ok(());
+    };
+
+    let (pn, ps) = (pressures_of(&n), pressures_of(&s));
+    let (open_n, open_s) = (relief_openings(graph, &pn), relief_openings(graph, &ps));
+    let split = open_n.iter().any(|(nid, a)| (a - open_s[nid]).abs() > 1e-6);
+    prop_assert!(
+        split,
+        "fidelity flow mismatch at {eid:?}: newton={fa}, simple={fb} (rel {rel}) — and NOT \
+         explained by relief-valve multiplicity: every PSV (if any) sits on the same branch \
+         of its characteristic in both solutions, so the two solvers disagree about a network \
+         with a unique steady state"
+    );
+    if !prove_roots {
+        return Ok(());
+    }
+    for (label, pressures) in [("newton", &pn), ("simple", &ps)] {
+        let (worst, tp) = worst_recomputed_imbalance(graph, fluid, pressures)
+            .map_err(|e| TestCaseError::fail(format!("recompiling {label}'s solution: {e}")))?;
+        // 10x the loosest convergence criterion either solver grades itself
+        // against (Simple: 1e-8 + 1e-6·throughput).
         prop_assert!(
-            rel <= 0.05,
-            "fidelity flow mismatch at {:?}: newton={fa}, simple={fb} (rel {rel})",
-            eid
+            worst <= 1e-7 + 1e-5 * tp,
+            "the two fidelities disagree at {eid:?} (newton={fa}, simple={fb}, rel {rel}) and \
+             put a PSV on different branches, but {label}'s answer is NOT a root: worst \
+             recomputed node imbalance {worst:.3e} kg/s against a throughput of {tp:.3e}. \
+             Multiplicity would make BOTH exact; one of them is simply wrong"
         );
     }
     Ok(())
@@ -1048,4 +1462,530 @@ fn assert_same_solution(
         _ => prop_assert!(false, "determinism: one solve converged, the other did not"),
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Non-vacuity for the RELIEF arm — the same three questions the gas arm asks,
+// re-asked for a device whose opening the SOLVE determines.
+//
+// A PSV can be generated and still test nothing, in more ways than a valve can:
+//   1. never generated at all (a `prop_oneof` weight typo);
+//   2. generated but always on ONE branch of its characteristic — all shut (the
+//      chain is then dead end to end and every gate passes on zeros) or all
+//      fully lifted (the smoothstep's interior, the only part of it that is not
+//      a constant, then goes untouched);
+//   3. spurs generated but never RELIEVING — a flare branch that never carries
+//      flow is a plain dead end, and the load-bearing case is gone;
+//   4. dead legs generated but never FLOATING, which would leave the whole
+//      point of the spur — a subnetwork whose anchoring the ANSWER decides —
+//      unreached;
+//   5. the configuration where the spring's own inlet reading is
+//      DISTINGUISHABLE from the upwind one never occurring. That last is not an
+//      abstract worry: it is the single configuration separating the shipped
+//      model from the most plausible mutation of it, so a catch resting on it
+//      must not rest on luck. It is now the reachability floor under an
+//      ASSERTION — a PSV shut at its own flange must carry nothing — rather than
+//      a number reported next to one. It was the latter first, and the mutation
+//      run is what exposed the difference: `pressures[&src]` → `upwind` in
+//      `compile_edge` was caught by nothing in the workspace while this counter
+//      stood at well over its floor, because every conservation and determinism
+//      invariant holds just as well for a wrongly-lifted valve.
+//
+// Two numbers here are DEFERRAL EVIDENCE rather than health checks, and they are
+// bounded so the deferral cannot quietly worsen: Newton's divergence rate on
+// spur trees, and Simple's convergence rate on them. See docs/ROADMAP.md M5.4
+// and `known_defect_frozen_anchoring_*` below.
+// ---------------------------------------------------------------------------
+
+/// How far below its set pressure a PSV's flange must sit before the arm will
+/// hold the shipped model to "shut, therefore carrying nothing" [Pa].
+///
+/// Not a tolerance on the physics but on the REPORTING path: `edge_flows` uses
+/// the branch compiled at the last Newton iterate, so a flange within
+/// convergence distance of the set pressure may have been compiled on the other
+/// side of it. 1 kPa is AT MOST 5% of the accumulation band — the bound is taken
+/// against the narrowest band `relief_strategy` draws, and it spans 0.2–1.5 bar,
+/// so most samples see well under that. Wide enough to be robust, narrow enough
+/// that the discriminating population survives it: 21 configurations do, against
+/// the floor of 10 below. Both numbers measured, neither inferred.
+const SPRING_MARGIN: f64 = 1.0e3;
+
+/// The outlet edge a device at `nid` folds into (fold-at-source), and its far
+/// end. `None` for a node with no outgoing edge.
+fn outlet_of(graph: &PlantGraph, nid: NodeId) -> Option<(refinery_core::graph::EdgeId, NodeId)> {
+    graph
+        .incident(nid)
+        .into_iter()
+        .find(|(_, _, incoming)| !incoming)
+        .map(|(e, other, _)| (e, other))
+}
+
+#[test]
+fn the_relief_arm_lifts_relieves_and_floats() {
+    const SAMPLES: usize = 400;
+    let mut runner = TestRunner::deterministic();
+
+    // ---- chains -----------------------------------------------------------
+    let chain_strat = (
+        prop::collection::vec(mid_strategy(), 1..5usize),
+        prop::collection::vec(pipe_strategy(), 6usize..7),
+        1.0e5..8.0e5f64,
+        1.0e5..8.0e5f64,
+        fluid_strategy(),
+    );
+    let (mut psv_chains, mut shut, mut partial, mut full) = (0usize, 0usize, 0usize, 0usize);
+    let (mut discriminating, mut reverse_open) = (0usize, 0usize);
+    for _ in 0..SAMPLES {
+        let (mids, pipes, p_src, p_snk, fluid) = chain_strat
+            .new_tree(&mut runner)
+            .expect("strategy produces a value")
+            .current();
+        if !mids.iter().any(|m| matches!(m, Mid::Relief { .. })) {
+            continue;
+        }
+        psv_chains += 1;
+        let (g, _) = build_chain(&mids, &pipes, p_src, p_snk, &fluid);
+        let Ok(sol) =
+            NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        else {
+            continue;
+        };
+        if !sol.diagnostics.converged {
+            continue;
+        }
+        let pressures = pressures_of(&sol);
+        for (nid, opening) in relief_openings(&g, &pressures) {
+            if opening < refinery_solvers::network::OPEN_EPS {
+                shut += 1;
+            } else if opening > 1.0 - 1e-9 {
+                full += 1;
+            } else {
+                partial += 1;
+            }
+            let NodeKind::ReliefValve {
+                set_pressure,
+                accumulation,
+                ..
+            } = g.node(nid).kind
+            else {
+                unreachable!("relief_openings yields only relief valves")
+            };
+            let Some((eid, other)) = outlet_of(&g, nid) else {
+                continue;
+            };
+            // The configuration that tells the SPRING's reading apart from the
+            // UPWIND one: this PSV's own flange is below set (so the shipped
+            // model holds it shut) while the far end of its outlet edge is high
+            // enough that a model reading the upwind end would lift it WIDE.
+            //
+            // Both sides carry a margin, and neither is cosmetic. The flange
+            // needs one because `edge_flows` reports flows from the branch
+            // compiled at the LAST iterate rather than re-compiled at the
+            // converged pressures: a sample whose flange lands a hair below set
+            // could have been compiled a hair above it, and the shipped model
+            // would then legitimately report a whisker of flow. The far end
+            // needs one so the mutation's opening is substantial rather than
+            // infinitesimal — a discriminating configuration that separates the
+            // two readings by 1e-9 of opening is not one a gate can stand on.
+            let shut_at_its_own_flange = pressures[&nid] <= set_pressure.value() - SPRING_MARGIN;
+            let upwind_reading_would_lift_it = refinery_solvers::elements::relief_opening(
+                pressures[&other],
+                set_pressure.value(),
+                accumulation.value(),
+            ) > 0.1;
+            if shut_at_its_own_flange && upwind_reading_would_lift_it {
+                discriminating += 1;
+                // THE GATE, and the reason this is no longer merely counted.
+                // `discriminating` was a reachability floor: it proved the
+                // generator VISITS the one configuration separating the shipped
+                // spring from its most plausible mutation, and then asserted
+                // nothing about the answer there. Mutating `pressures[&src]` to
+                // `upwind` in `compile_edge` was caught by ZERO gates in the
+                // whole workspace — the conservation and determinism invariants
+                // all hold for a wrongly-lifted valve, because a wrong opening
+                // still yields a perfectly conservative solve. Reachability is
+                // not sensitivity ([[a-counter-is-not-a-gate]]).
+                //
+                // What makes this non-tautological: it reads the SOLVED FLOW,
+                // not the opening. Re-deriving the opening from `pressures[&nid]`
+                // and asserting it is zero would only restate `relief_opening`'s
+                // own algebra. A shut valve has zero conductance, so the edge it
+                // folds into must carry NOTHING; the upwind reading lifts it
+                // against a strictly positive Δp (the far end is above set and
+                // the flange below it) and this flow becomes nonzero.
+                //
+                // And this is why FINDING 1's non-uniqueness does not destabilize
+                // it. The configuration selected here IS the multi-root geometry —
+                // driven backwards, shut-and-dead and open-with-reverse-flow can
+                // both be self-consistent — but the predicate reads the CONVERGED
+                // state, so it only ever asserts about the root the solve actually
+                // reported. A solve that landed on the open root converges with
+                // its flange ABOVE set and is excluded rather than failed. What is
+                // asserted is internal consistency of one reported answer, not a
+                // choice between two ([[prove-the-exception-dont-skip-it]]).
+                let carried = sol.edge_mass_flow[&eid];
+                assert!(
+                    carried.abs() < 1e-12,
+                    "a PSV whose own inlet flange is at {:.0} Pa, below its {:.0} Pa set \
+                     pressure, must be SHUT and its outlet edge must carry nothing — it \
+                     carries {carried:.6e} kg/s. The far end of that edge is at {:.0} Pa, \
+                     which is exactly the pressure a model reading the UPWIND end instead \
+                     of the valve's own flange would have opened on",
+                    pressures[&nid],
+                    set_pressure.value(),
+                    pressures[&other]
+                );
+            }
+            if opening >= refinery_solvers::network::OPEN_EPS && sol.edge_mass_flow[&eid] < 0.0 {
+                reverse_open += 1;
+            }
+        }
+    }
+    println!(
+        "psv chains {psv_chains}/{SAMPLES}; openings shut {shut} / partial {partial} / full \
+         {full}; spring-vs-upwind discriminating configurations {discriminating}; open psv \
+         passing REVERSE flow {reverse_open}"
+    );
+
+    // ---- trees ------------------------------------------------------------
+    let tree_strat = tree_inputs_strategy();
+    let (mut spur_trees, mut relieving, mut floating_legs) = (0usize, 0usize, 0usize);
+    let (mut newton_diverged, mut simple_ok) = (0usize, 0usize);
+    let mut newton_hit_the_cap = 0usize;
+    // Read from the solver rather than restated, so the split below cannot drift
+    // out of step with the cap it is measuring against.
+    let newton_max_iter = NewtonFlowSolver::default().max_iter;
+    for _ in 0..SAMPLES {
+        let inputs = tree_strat
+            .new_tree(&mut runner)
+            .expect("strategy produces a value")
+            .current();
+        let n_primary = inputs.0.len() + 1;
+        if !inputs.5.iter().take(n_primary).any(|s| s.is_some()) {
+            continue;
+        }
+        spur_trees += 1;
+        let g = build_tree(&inputs);
+        let fluid = &inputs.4;
+
+        // Which nodes the SOLVER treats as floating — read from `prepare`, the
+        // very call both solvers make, rather than recomputed by this test.
+        let prep = refinery_solvers::network::prepare(
+            &g,
+            &fluid.slate,
+            &Default::default(),
+            &Default::default(),
+        )
+        .expect("a generated tree compiles");
+        floating_legs += g
+            .node_ids()
+            .filter(|nid| g.node(*nid).name.starts_with("deadleg") && !prep.anchored.contains(nid))
+            .count();
+
+        match NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        {
+            Ok(sol) if sol.diagnostics.converged => {
+                for nid in g.node_ids() {
+                    if !g.node(nid).name.starts_with("psv") {
+                        continue;
+                    }
+                    let Some((eid, other)) = outlet_of(&g, nid) else {
+                        continue;
+                    };
+                    if g.node(other).name.starts_with("flare")
+                        && sol.edge_mass_flow[&eid].abs() > 1e-9
+                    {
+                        relieving += 1;
+                    }
+                }
+            }
+            // Split the failures by MECHANISM rather than counting them together.
+            // The frozen-anchoring defect leaves a residual row and column
+            // identically zero, so Newton gives up almost immediately; running out
+            // of iterations on an ordinary stiff plant is a different event that
+            // happens to produce the same `Err`. Worth separating because the
+            // liquid/gas control in this file measures a worst case of 48 against
+            // `max_iter = 50` — a two-iteration margin — so "diverged" can no
+            // longer be read as "hit the singular Jacobian" without checking.
+            Err(SimError::SolverDiverged { iterations, .. }) => {
+                newton_diverged += 1;
+                if iterations >= newton_max_iter {
+                    newton_hit_the_cap += 1;
+                }
+            }
+            _ => newton_diverged += 1,
+        }
+        if let Ok(s) =
+            SimpleFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        {
+            if s.diagnostics.converged {
+                simple_ok += 1;
+            }
+        }
+    }
+    println!(
+        "spur trees {spur_trees}/{SAMPLES}; flare spurs RELIEVING {relieving}; dead legs FLOATING \
+         at the seed {floating_legs}; newton diverged {newton_diverged}/{spur_trees} \
+         (frozen-anchoring deferral), of which {newton_hit_the_cap} exhausted the \
+         {newton_max_iter}-iteration cap rather than hitting the singular Jacobian; \
+         simple converged {simple_ok}/{spur_trees}"
+    );
+
+    // (1) The arm is sampled at all.
+    assert!(
+        psv_chains * 4 >= SAMPLES,
+        "only {psv_chains}/{SAMPLES} chains carried a relief valve"
+    );
+    // (2) All THREE branches of the characteristic are visited. `partial` is the
+    // one that matters most — it is the only region where the smoothstep is not
+    // a constant, so a linear ramp, a step, or a clamp bug can show only there.
+    assert!(
+        shut > 0 && partial > 0 && full > 0,
+        "the relief characteristic is not fully exercised: shut {shut}, partial {partial}, full \
+         {full} — a zero in any bucket means one branch of the smoothstep is untested"
+    );
+    assert!(
+        partial * 10 >= shut + partial + full,
+        "only {partial} of {} generated openings are PARTIAL lifts — the interior of the \
+         smoothstep, the only part of it that is not a constant, is barely sampled",
+        shut + partial + full
+    );
+    // (5) The mutation-discriminating configuration must be COMMON — this is the
+    // reachability floor under the zero-flow GATE asserted above, not a statistic
+    // beside it. A catch that rests on one lucky sample is not a catch, and a
+    // floor with no assertion behind it was the hole this number used to have.
+    //
+    // It is therefore load-bearing in a way it was not before: the gate above is
+    // the ONLY thing in the workspace that catches `pressures[&src]` → `upwind`
+    // (measured: 1 gate with this arm, 0 without), and it runs only on the
+    // samples this floor counts. A generator drift that halves the population
+    // would disarm that catch rather than merely thin a statistic. Left at 10
+    // against a measured 21 rather than raised to hug the measurement, so an
+    // honest change in the generators is not fought by a tripwire — but the
+    // consequence is written down here rather than left to be rediscovered.
+    assert!(
+        discriminating >= 10,
+        "only {discriminating} generated configurations put a PSV's own flange below its set \
+         pressure while the far end of its outlet edge sits above it — the one configuration \
+         where sensing the flange and sensing the upwind end give different answers. The \
+         shut-therefore-carrying-nothing gate above runs only on these, so at this rate the \
+         arm cannot claim to pin WHICH pressure a PSV senses"
+    );
+    // (3) The load-bearing spur actually relieves.
+    assert!(
+        relieving >= 20,
+        "only {relieving} flare spurs carried any relief flow — the spur arm has degenerated into \
+         a dead end and the case it exists for is gone"
+    );
+    // (4) And the dead leg actually floats.
+    assert!(
+        floating_legs >= 20,
+        "only {floating_legs} dead legs were floating — the floating-subnetwork path this slice \
+         added is not being reached"
+    );
+    // Deferral evidence, bounded so it cannot silently worsen. Both numbers record
+    // the CURRENT behaviour rather than approving of it (ROADMAP M5.4).
+    //
+    // **`newton_diverged` is NOT purely the frozen anchored set, and the split
+    // above is what corrected that.** It counts every Newton failure. 42 of the 83
+    // ran the 50-iteration cap out; the hand-built `known_defect_*` plant gives up
+    // after 2, so only the ~41 fast failures carry the singular-Jacobian
+    // signature. A stalled singular solve and an ordinary stiff one are NOT
+    // separable by iteration count alone, so the honest reading is an upper bound
+    // on the defect's reach, not a measurement of it — and it matters because the
+    // liquid/gas control in this file peaks at 48 against that same cap of 50.
+    // What pins the MECHANISM is the two hand-built plants below, where there is
+    // nothing else it could be; this number only bounds how often something goes
+    // wrong on spur geometry.
+    assert!(
+        newton_diverged * 2 <= spur_trees,
+        "Newton now fails on {newton_diverged}/{spur_trees} spur trees ({newton_hit_the_cap} of \
+         them by exhausting the {newton_max_iter}-iteration cap) — past what the deferral \
+         recorded. Either the frozen-anchoring defect has worsened or the iteration cap has \
+         become the binding constraint; the split says which"
+    );
+    assert!(
+        simple_ok * 10 >= spur_trees,
+        "Simple converged on only {simple_ok}/{spur_trees} spur trees — `tree_fidelity_agreement` \
+         has no non-vacuity guard of its own, so this is where a collapse would be seen"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// KNOWN DEFECT — the frozen anchored set, pinned by two hand-checkable plants.
+//
+// `network::prepare` derives the anchored set ONCE, from the seed compile, so it
+// cannot flap mid-solve. Every element before the PSV had a conductance that was
+// constant for the whole solve, which made that exact. A PSV's conductance is a
+// function of the pressure ITERATE, so the classification can be stale in either
+// direction, and both are reachable from the generators above.
+//
+// These two tests assert the behaviour as it IS. They are characterization
+// tests and they are MEANT to fail when the defect is fixed, at which point the
+// assertions below become the description of the fix. Nothing here should be
+// read as endorsing the current answer.
+// ---------------------------------------------------------------------------
+
+/// Seed-OPEN, converged-SHUT: the whole solve fails, on both fidelities.
+///
+/// A(8 bar) —thin, long→ J —fat, short→ B(1 bar), with a blocked-in relief leg
+/// off J. The cold seed is the mean of the fixed pressures, 4.5 bar, above the
+/// 4.0 bar set — so at the seed the PSV conducts, the dead-leg terminal is
+/// anchored, and it enters the solve as an unknown. At the answer J sits near
+/// 1 bar, the PSV is shut, and the terminal's only edge stops conducting: its
+/// residual row and column are then identically zero and the Jacobian is
+/// singular.
+///
+/// The plant itself is entirely ordinary — A feeds B, the relief stays shut, the
+/// sealed leg has no pressure of its own. There is nothing here a solver should
+/// be unable to manage, and I3 accepts the failure as legal, which is what makes
+/// it worth pinning rather than leaving to a divergence statistic.
+#[test]
+fn known_defect_frozen_anchoring_seed_open_converged_shut_defeats_both_solvers() {
+    let fluid = Fluid::liquid();
+    let mut g = PlantGraph::new();
+    let a = g.add_node(source(8.0e5, &fluid));
+    let j = g.add_node(Node {
+        name: "j".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    let b = g.add_node(sink(1.0e5, &fluid));
+    let psv = g.add_node(Node {
+        name: "psv".into(),
+        kind: NodeKind::ReliefValve {
+            cv_max: 1e-3,
+            set_pressure: Pascal(4.0e5),
+            accumulation: Pascal(0.5e5),
+            x_t: None,
+        },
+        heat_input: Watt(0.0),
+    });
+    let leg = g.add_node(Node {
+        name: "deadleg".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    g.add_pipe(a, j, pipe((50.0, 0.05, 0.05, 0.0), "a_j", &fluid));
+    g.add_pipe(j, b, pipe((1.0, 0.30, 0.01, 0.0), "j_b", &fluid));
+    g.add_pipe(j, psv, pipe((5.0, 0.06, 0.02, 0.0), "j_psv", &fluid));
+    g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", &fluid));
+
+    // The premise, asserted rather than assumed: the seed really does classify
+    // the terminal as anchored. Without this the test could pass for some other
+    // reason while still being named after this one.
+    let prep = refinery_solvers::network::prepare(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &Default::default(),
+    )
+    .expect("the plant compiles");
+    approx::assert_relative_eq!(prep.pressures[&j], 4.5e5, max_relative = 1e-12);
+    assert!(
+        prep.anchored.contains(&leg),
+        "premise failed: the dead leg must be ANCHORED at the seed for this to be the \
+         seed-open/converged-shut case"
+    );
+
+    for (name, result) in [
+        (
+            "newton",
+            NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1)),
+        ),
+        (
+            "simple",
+            SimpleFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1)),
+        ),
+    ] {
+        assert!(
+            matches!(result, Err(SimError::SolverDiverged { .. })),
+            "{name} solved a plant the frozen anchored set is expected to defeat. If the \
+             frozen-anchoring defect has been FIXED, this test has done its job and should now \
+             assert the answer instead: A feeds B, the relief stays shut, and the sealed leg's \
+             pressure is indeterminate"
+        );
+    }
+}
+
+/// Seed-SHUT, converged-OPEN: the benign half. The solve succeeds and every flow
+/// is right; what is wrong is one reported PRESSURE.
+///
+/// The same skeleton with the resistances swapped so J settles HIGH, and a set
+/// pressure above the 4.5 bar seed. At the seed the PSV is shut, so the terminal
+/// has no conducting path to any anchor and is parked at `P_ATM`. At the answer
+/// the PSV is open, which makes the terminal's pressure perfectly determinate —
+/// a dead end carries no flow, so it sits at its neighbour's pressure less the
+/// static head — but the classification was frozen and it is still reported at
+/// atmospheric.
+#[test]
+fn known_defect_frozen_anchoring_seed_shut_converged_open_reports_a_parked_pressure() {
+    let fluid = Fluid::liquid();
+    let mut g = PlantGraph::new();
+    let a = g.add_node(source(8.0e5, &fluid));
+    let j = g.add_node(Node {
+        name: "j".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    let b = g.add_node(sink(1.0e5, &fluid));
+    let psv = g.add_node(Node {
+        name: "psv".into(),
+        kind: NodeKind::ReliefValve {
+            cv_max: 1e-3,
+            set_pressure: Pascal(5.0e5),
+            accumulation: Pascal(0.5e5),
+            x_t: None,
+        },
+        heat_input: Watt(0.0),
+    });
+    let leg = g.add_node(Node {
+        name: "deadleg".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    // Fat and short from A, thin and long to B ⇒ J settles near A's 8 bar.
+    g.add_pipe(a, j, pipe((1.0, 0.30, 0.01, 0.0), "a_j", &fluid));
+    g.add_pipe(j, b, pipe((50.0, 0.05, 0.05, 0.0), "j_b", &fluid));
+    g.add_pipe(j, psv, pipe((5.0, 0.06, 0.02, 0.0), "j_psv", &fluid));
+    // Level, so a dead end's correct pressure is exactly its neighbour's: with
+    // no flow there is no friction drop, and with no elevation there is no head.
+    g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", &fluid));
+
+    let prep = refinery_solvers::network::prepare(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &Default::default(),
+    )
+    .expect("the plant compiles");
+    assert!(
+        !prep.anchored.contains(&leg),
+        "premise failed: the dead leg must be FLOATING at the seed for this to be the \
+         seed-shut/converged-open case"
+    );
+
+    let sol = NewtonFlowSolver::default()
+        .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        .expect("this half converges — only a reported pressure is wrong");
+    assert!(sol.diagnostics.converged);
+
+    let p_psv = sol.node_pressure[&psv].value();
+    let opening = refinery_solvers::elements::relief_opening(p_psv, 5.0e5, 0.5e5);
+    assert!(
+        opening > refinery_solvers::network::OPEN_EPS,
+        "premise failed: the PSV must end OPEN (inlet {p_psv:.0} Pa against a 5.0 bar set)"
+    );
+    // The leg carries no flow, which is correct and is NOT the defect.
+    let (leg_edge, _) = outlet_of(&g, psv).expect("the PSV has an outlet");
+    approx::assert_relative_eq!(sol.edge_mass_flow[&leg_edge], 0.0, epsilon = 1e-12);
+
+    // The defect: the pressure is determinate and is reported as atmospheric.
+    let p_leg = sol.node_pressure[&leg].value();
+    approx::assert_relative_eq!(p_leg, P_ATM.value(), max_relative = 1e-12);
+    assert!(
+        (p_leg - p_psv).abs() > 1.0e5,
+        "if the parked pressure now agrees with the PSV's inlet ({p_psv:.0} Pa), the \
+         frozen-anchoring defect has been fixed and this test should assert equality instead"
+    );
 }

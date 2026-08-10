@@ -1580,16 +1580,209 @@ unedited so the corrections above can be read against what they corrected.
       gates. The closed-valve early return likewise survives alone, since
       `α = +∞` propagates to `+∞` through the arithmetic anyway. They are
       defensive, not load-bearing, and no gate was invented to pretend otherwise.
-- [ ] **The PSV half of that box is NOT closed, and saying so is the point.** The
-      deferral read "a choked valve **or a PSV**"; this slice covers the first and
-      leaves the second, because a relief valve is not a drop-in third device in
-      these generators. A normally-shut PSV leaves its node a **dead end**, which
-      breaks the property both generators are built on — "every open branch
-      conducts, so the whole tree is anchored (no floating)" — and it is the exact
-      geometry that stalled `SimpleFlowSolver` in M5.4c. Adding it means teaching
-      the generators about floating subnetworks, which is a change to their plant
-      model rather than one more `prop_oneof` arm. The un-defer is that change;
-      what covers the PSV meanwhile is `relief_valve_reference.rs`'s fixed plants.
+- [x] **The PSV half of that box is now CLOSED, and it was a change to the
+      generators' plant model exactly as the deferral predicted.** `Mid::Relief`
+      inline in a chain, `MidDevice::Relief` spliced into a tree edge, and — the
+      part that is not one more `prop_oneof` arm — RELIEF SPURS: `parent → pipe →
+      PSV → pipe → end`, hung off a primary tree node.
+      **One step of the deferral's own reasoning was wrong, and correcting it was
+      the precondition for acting on it: a dead end is not a floating
+      subnetwork.** A PSV spliced into a chain or into a tree edge never floats
+      anything — cut either at one edge and both components still contain a fixed
+      leaf. Only a SPUR reaches floating, and only when it terminates in a FREE
+      node (a blocked-in dead leg) rather than in a flare. Both terminations ship:
+      the flare — a fixed low-pressure sink — is the load-bearing one, since it is
+      the only one that carries relief flow and can choke in gas; the dead leg
+      carries zero flow either way and exists solely to reach the floating path.
+      The deferral named the right work and the wrong reason
+      ([[dead-end-is-not-floating]]).
+      Measured: 196/400 chains carry a PSV; openings 105 shut / 24 partial / 78
+      fully lifted; 306/400 trees carry a spur, 106 flare spurs actually relieve,
+      and 146 dead legs actually float.
+      What the partial-lift floor does and does NOT prove: it establishes that the
+      arm REACHES the smoothstep's interior, not that anything downstream is
+      SENSITIVE to its shape. Mutation m4 (a linear ramp in place of the
+      smoothstep) is caught only by `elements`' own unit test, and the arm adds no
+      catch — so the 24 is reachability evidence, and calling it more would be the
+      same conflation [[a-counter-is-not-a-gate]] names.
+
+- [x] **FINDING 1 — a PSV in reverse flow leaves the network with no unique
+      steady state, and I5's escape from it is an ASSERTION rather than a skip.**
+      Found by the arm on its first run, as a `chain_fidelity_agreement` failure on
+      a LIQUID chain: Newton returned zero flow, Simple returned 12.43 kg/s.
+      Neither is wrong. Both were recompiled at their own pressures and every node
+      imbalance recomputed from scratch — Newton's worst is 5e-12, Simple's 7.4e-7
+      against a throughput of 12.4. **Two exact roots.**
+      The mechanism is the one `compile_edge`'s own comment names without following
+      through: the spring is loaded at the valve's own inlet flange, so in reverse
+      flow the pressure that opens it is the pressure the flow ARRIVES at. Opening
+      then raises its own sensed pressure — positive feedback — and
+      shut-with-no-flow and open-with-flow are both self-consistent. Relieving
+      forward the feedback is negative and the root is unique, which is why no
+      fixed plant in the repo could see this.
+      A skip predicate was rejected: it would have weakened I5 by exactly the
+      amount needed to hide a real Simple bug that happened to produce reverse flow
+      through a PSV. `assert_fidelity_agreement` instead makes a disagreement clear
+      two bars — the two solutions must put some PSV on DIFFERENT branches of its
+      characteristic, and each must be independently verified an exact root. A
+      solver that is simply wrong satisfies neither
+      ([[prove-the-exception-dont-skip-it]]).
+      This extends M5.4c's given-up list rather than contradicting it: "it passes
+      reverse flow, which a real one does not" was recorded as an unphysical
+      device. It is worse than that — in reverse the plant has no answer to be
+      right about.
+
+- [x] **FINDING 2 — a NEW DEFERRAL, and the first defect in `network::prepare`
+      that a pressure-actuated element makes reachable.** The anchored set is
+      derived ONCE, from the seed compile, deliberately, "so the anchored set
+      cannot flap mid-solve". That is exact for every element whose conductance is
+      constant through a solve. **A PSV's conductance is a function of the pressure
+      ITERATE**, so the classification can be stale, and both directions are
+      reachable from these generators:
+      (a) **seed-OPEN, converged-SHUT — the whole solve fails, on both
+      fidelities.** The dead-leg terminal enters the solve as an unknown, then its
+      only edge stops conducting, leaving its residual row and column identically
+      zero and the Jacobian singular. Newton diverges after 2 iterations; Simple
+      returns residual `inf`. The plant is entirely ordinary — a source feeds a
+      sink, the relief stays shut, a sealed leg has no pressure of its own — and I3
+      accepts the failure as legal, which is what makes it dangerous rather than
+      merely wrong. Newton fails on **83/306** generated spur trees — **and that
+      number is an UPPER BOUND on the defect's reach rather than a measurement of
+      it, which is a correction to what this box first claimed.** Splitting the
+      failures by iteration count (the `Err` carries it) shows **42 of the 83 ran
+      the 50-iteration cap out**, while the hand-built plant below gives up after
+      2. Only the ~41 fast failures carry the singular-Jacobian signature; a
+      stalled singular solve and an ordinary stiff one are not separable by
+      iteration count alone. The distinction was worth measuring rather than
+      assuming because the same file's liquid/gas control peaks at 48 against that
+      very cap of 50 — so "diverged" could no longer be read as "hit the singular
+      Jacobian". What pins the MECHANISM is the hand-built plants, where there is
+      nothing else it could be.
+      (b) **seed-SHUT, converged-OPEN — the benign half.** The solve succeeds and
+      every flow is right; one reported PRESSURE is wrong. The terminal is parked at
+      `P_ATM` though its pressure is perfectly determinate behind an open PSV (a
+      dead end carries no flow, so it sits at its neighbour's less the static head).
+      Both are pinned by hand-checkable plants — `known_defect_frozen_anchoring_*`
+      in `invariants.rs` — written as characterization tests that are MEANT to fail
+      when the defect is fixed, at which point their assertions become the
+      description of the fix. The generated rates are bounded in
+      `the_relief_arm_lifts_relieves_and_floats` so the deferral cannot quietly
+      worsen. DESIGN §3a's claim that `conducts` "cannot differ between iterates
+      anyway" is corrected in place rather than left standing
+      ([[a-cached-classification-expires]]).
+      **Not fixed here, and the reason is a fork rather than laziness**
+      ([[separate-the-exposed-defect-from-the-feature]]): the fix is either an
+      outer loop over the anchoring classification or a per-iteration anchored set
+      that changes the Jacobian's dimension mid-solve, and the current freeze was a
+      deliberate choice against exactly that flapping. It needs its own slice with
+      a measured regression anchor, which a test-only commit cannot honestly carry.
+
+- [x] **FINDING 3 — Simple's convergence on spur geometry, measured on a
+      population.** M5.4c found the dead-end stall on ONE plant and cured it by
+      re-sizing that plant's PSV inlet line. Across generated spur trees Simple
+      converges on **59/306**. That is documented behaviour, not a new defect — a
+      normally-shut PSV leaves a fat branch carrying no net flow, which is what
+      starves the Gauss–Seidel diagonal — but `tree_fidelity_agreement` has no
+      non-vacuity guard of its own, so a further collapse would have gone unseen.
+      It now has a floor.
+
+- [x] **FINDING 4 — the arm shipped with a COUNTER where it needed a GATE, and the
+      mutation run is what told them apart.** `discriminating` counted the one
+      configuration that separates the shipped spring from its most plausible
+      mutation — a PSV's own flange below set pressure while the far end of its
+      outlet edge is above it — and floored it at 10 so the case could not silently
+      vanish. It stood at 21. And mutating `pressures[&src]` to `upwind` in
+      `compile_edge` was caught by **ZERO gates in the entire workspace**: not one
+      conservation, determinism, fidelity-agreement or reference gate, because a
+      wrongly-lifted valve still yields a perfectly conservative, perfectly
+      reproducible solve. Reachability was proven and sensitivity was never
+      asserted — a floor with nothing behind it ([[a-counter-is-not-a-gate]], now
+      twice in one milestone, which is why it is written down here as a pattern and
+      not an incident).
+      The fix is one assertion at the counter: a PSV shut at its own flange must
+      have its outlet edge carry **nothing**. It reads the SOLVED FLOW, not the
+      opening — re-deriving the opening from the same pressure and asserting it is
+      zero would restate `relief_opening`'s own algebra and pin nothing
+      ([[kv-handcalc-reference]]'s tautology trap). m1 now fails it on generated
+      input, and what is pinned is the device's DEFINING semantics: which pressure
+      lifts the valve.
+      Two details make it stand up. It asserts about the root the solve actually
+      REPORTED — the selected configuration is exactly FINDING 1's multi-root
+      geometry, so a solve landing on the open root converges with its flange ABOVE
+      set and is excluded rather than failed; what is checked is one answer's
+      internal consistency, not a choice between two. And both sides of the
+      predicate carry a margin: the flange because `edge_flows` reports from the
+      branch compiled at the LAST iterate rather than recompiled at the converged
+      pressures, so a sample landing a hair below set may have been compiled a hair
+      above it; the far end so the mutation's opening is substantial rather than
+      infinitesimal. 1 kPa is at most 5% of the accumulation band, bounded against
+      the narrowest `relief_strategy` draws (0.2–1.5 bar). The margins cost
+      population — 21 survive them, against a floor of 10 that is now load-bearing
+      in a way it was not: it guards a GATE's reachability, so a generator drift
+      halving it would disarm m1's only catch rather than merely thin a statistic.
+      Left at 10 against a measured 21 rather than raised to hug the measurement,
+      with the consequence written at the floor instead of left to be rediscovered.
+
+- [x] **Two existing measurements were passing for the wrong reason once spurs
+      existed, and both are corrected rather than left flattering.**
+      `strategy_actually_branches` counts a node's incident edges, and a spur adds
+      one to its parent — so a degree-2 interior node carrying a spur would have
+      counted as a 3+ degree "hub", inflating the one number that certifies the tree
+      generator earns its keep over the chain. It now strips spurs before measuring.
+      Likewise `choked_trees` went 53/189 → 83/179 when spur PSVs were folded in; a
+      PSV choking on a dead-end relief branch is not the branching
+      `edge_flows`-vs-`assemble` cross-check that counter protects, so spur chokes
+      are counted separately — the same argument the file already makes for why
+      trees are not inferred from chains.
+      Recorded numbers that drifted with the new arm are restated rather than left
+      stale: gas chains 185 → **205/400**, worst Newton iterations 43 → **48**
+      against a cap of **50**, liquid control 47 → **46**. The conclusion survives
+      — the expensive cases are stiff whatever flows through them — but **the
+      margin on the CAP is now two iterations, and that is a finding rather than a
+      restatement.** It is what forced the divergence split in FINDING 2, since a
+      four-percent margin means "Newton returned `Err`" can no longer be read as
+      "Newton hit the singular Jacobian".
+      **The cap is deliberately NOT raised here.** `max_iter` is engine code, so
+      touching it would forfeit this slice's test-only regression-anchor argument
+      and would need its own measured anchor
+      ([[separate-the-exposed-defect-from-the-feature]]). It is also not obviously
+      the right fix: 48 iterations on a plant this small may be the stiffness
+      itself asking for attention rather than a budget that is too small. Recorded
+      with the number that provoked it, deferred as its own decision.
+
+- [x] **A vacuity hole in `simple_agrees_on_a_healthy_fraction`, opened by this arm
+      and closed with it.** A chain carrying a shut PSV is dead end to end, so every
+      edge falls under the comparison floor and the case counts as "agreed" while
+      verifying nothing — the exact failure the test exists to detect, one level
+      down. Dead chains are now excluded from both counters and reported separately.
+
+- [x] **Falsified before trusted — 5 mutations, each run TWICE (against this arm
+      and against HEAD's `invariants.rs`), `--no-fail-fast` throughout, every
+      restore from a single snapshot.**
+      m1 `pressures[&src]` → `upwind`: **0 gates pre-slice → 1 with the arm** (see
+      FINDING 4 — the whole reason that finding exists).
+      m2 opening unclamped above the band: 2 → 4.
+      m5 inert edges carry flow: 1 → 4.
+      m4 linear ramp for the smoothstep: 1 → 1 — **the arm adds nothing**, and that
+      is reported rather than dressed up; `elements`' unit test already owns the
+      curve's shape.
+      m3 `OPEN_EPS` snap removed: **0 → 0, and it is UNREACHABLE rather than
+      ungated.** `relief_opening` returns exactly 0.0 at or below set pressure, so
+      the snap can only fire where the smoothstep is in `(0, 1e-6)` — about 0.06%
+      of the accumulation band — and for a plain valve it needs a commanded opening
+      below 1e-6, which no scenario or generator sets. It is not dead code: it
+      decides whether a branch conducts, hence the anchoring classification. It is
+      simply unhit, and no gate was invented to pretend otherwise — the same
+      verdict, on the same evidence standard, that three guards got in the sibling
+      gas-valve arm.
+      The harness needed a THIRD rule this round, alongside snapshot-once and
+      `--no-fail-fast`. A restore that preserves the snapshot's TIMESTAMP puts the
+      right bytes back and leaves cargo's mtime comparison satisfied, so a mutated
+      binary is silently reused: `git status` clean, `git diff` empty, three tests
+      failing, every signal pointing at the slice rather than at the build. The
+      shape of the numbers is what gave it away — `spread == throughput` to all
+      digits is mass appearing from nowhere, a mutation's signature and not a
+      plausible imbalance ([[a-restore-must-move-the-mtime]]).
 - [x] Regression anchor: **trivially unchanged and stated rather than measured.**
       The slice is test-only apart from two doc-comment corrections, so no engine
       behaviour can move; running 20 scenarios × 2 fidelities × 200 ticks would
@@ -1667,9 +1860,14 @@ covered (see the gas-valve arm above): `fold_gas_valve`'s inner solve has met
 generated inputs, its "60 halvings are exact" claim is corrected to the measured
 truth, and the arm caught a defect the pre-slice suite provably could not see —
 the `RHO_EVAL_P_FLOOR` clamp, invisible to every liquid plant because a liquid
-density ignores pressure. The PSV is not covered, because a normally-shut relief
-valve is a dead end and the generators are built on every branch conducting;
-that un-defer is a change to their plant model. M6 may begin.
+density ignores pressure. **The PSV half is now closed too, and the box is fully
+shut** (see the PSV arm above): the un-defer was the predicted change to the
+generators' plant model — relief spurs, and terminals that genuinely float — and
+one step of the deferral's stated reasoning turned out to be wrong on the way in,
+since a dead end is not a floating subnetwork. It cost more than the arm: two
+findings deferred with characterization tests (a PSV in reverse flow has no unique
+root; the frozen anchored set goes stale for a pressure-actuated element) and one
+gate that existed only as a counter. M6 may begin.
 
 **Deferred from M5, with what would un-defer each** (DESIGN §3a): **two-phase
 flow, flash and condensation** — the reason is *scope, not unfalsifiability*, and
@@ -1682,6 +1880,20 @@ enough to gate, but `η` is a parameter with one possible value in this repo —
 `cat_oil_ratio` argument — so it un-defers with a scenario carrying real pump
 curves); PSV hysteresis and chatter (needs element state); and acoustic /
 pressure-wave dynamics (out of scope since §3, unchanged).
+
+**One deferral is NEW and is engine code rather than scope** — the first on this
+list that is a known defect rather than an absent feature. `network::prepare`
+freezes the anchored set at the seed compile, which is exact for every constant-
+conductance element and stale for a PSV, whose opening depends on the pressure
+iterate. Seed-open/converged-shut fails the solve outright on both fidelities
+(83/306 generated spur trees); seed-shut/converged-open reports one determinate
+pressure as atmospheric. It un-defers with a slice that either loops over the
+classification or lets the anchored set change the Jacobian's dimension
+mid-solve — reversing a deliberate anti-flapping choice, so it needs a design
+decision and a MEASURED regression anchor, neither of which a test-only commit can
+carry. Held meanwhile by `known_defect_frozen_anchoring_*`, which are written to
+FAIL when it is fixed, and by floors on the generated rates so it cannot quietly
+worsen. See FINDING 2 under M5.4 and DESIGN §3a.
 
 ## M6 — Godot frontend + damage (CURRENT)
 godot-ext adapter, minimal scene reading snapshots; leak/fire commands
