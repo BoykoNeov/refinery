@@ -2432,8 +2432,13 @@ The verdicts, in plain terms:
 Move the cut-point math out of `core::energy` behind the trait, with the
 signature fork 2 settles. Nothing physical changes.
 
-- [ ] `core`: `SeparationModel` trait; `Engine` holds a `Box<dyn SeparationModel>`
-      threaded to the sweep the way `reactions` already is.
+- [ ] `core`: `SeparationModel` trait, taking `&dyn ThermoModel` from the start
+      (note correction 2 — without it M7.3 churns the trait, which is the outcome
+      fork 2 claims to avoid); `Engine` holds a `Box<dyn SeparationModel>`
+      threaded to the sweep the way `reactions` already is. **This is the commit
+      that first makes `thermo` a live dependency**: the slot has been
+      `#[allow(dead_code)]` with zero call sites since M1, so the threading is
+      real work, not a parameter rename.
 - [ ] `solvers`: `CutPointSplitter` — `column_separation` moved verbatim.
 - [ ] `scenarios`: `[fidelity] separation = "cut_point"`, defaulting to the
       value every pre-M7 file means, so those files stay bit-identical rather
@@ -2447,10 +2452,12 @@ signature fork 2 settles. Nothing physical changes.
 - [ ] `core`: `ThermoModel` gains `k_value(component, T, P)`; the stub's own
       docstring condition ("when a consumer actually needs a property") is now met.
 - [ ] `solvers`: Raoult + a Clausius–Clapeyron form whose `Δh_vap` comes from
-      `tb` via Trouton — **derived from data the slate already carries**, not
-      invented parameters, which is why M4's "no gate for an invented constant"
-      argument does not apply. Constant-`α` implementation alongside it, for the
-      cascade gates to run against.
+      `tb` via Trouton — **one empirical constant on top of slate data** (note
+      correction 6; the first framing of this line overclaimed), carrying a
+      published envelope and an exact identity that does not depend on it. That
+      is what distinguishes it from M4's refused case, which had a gate of
+      neither kind. Constant-`α` implementation alongside it, for the cascade
+      gates to run against.
 - [ ] `solvers`: isothermal flash (Rachford–Rice) on one stage.
 - [ ] Gates, kept apart (one test covering both proves neither): the **exact**
       identities — `K = 1` at `T = tb` and reference pressure, monotone in `T`,
@@ -2464,7 +2471,12 @@ signature fork 2 settles. Nothing physical changes.
 
 - [ ] `solvers`: `StageCascade` — N equilibrium stages, feed stage, total
       condenser, reboiler; constant molar overflow first, so the *profile* needs
-      K-values only and no enthalpy. Specified by `R` and `D/F` (fork 3).
+      K-values only and no enthalpy. **`N` counts the reboiler and excludes the
+      total condenser** (note correction 3 — the convention the Fenske gate's
+      exponent rests on). Specified by `R` (molar, internal) and `D/F` (a **mass**
+      ratio at the boundary, note correction 1), with a **saturated-liquid feed
+      only** (correction 5: under constant molar overflow, feed quality changes
+      the internal flows, not just an enthalpy term).
 - [ ] `core`/`scenarios`: cascade config on `NodeKind::Column` under the
       declared-iff-used correspondence; `ColumnDraw` located by **stage** for
       this fidelity and by `upper_cut` for the splitter, each refused for the
@@ -2474,7 +2486,9 @@ signature fork 2 settles. Nothing physical changes.
       exact, derivable — no published table needed), one stage reducing to the
       M7.2 flash, `α = 1` producing no separation at any `N` (the null gate), the
       per-component residual `Err` reached deliberately, and start-insensitivity
-      from a perturbed seed.
+      from a perturbed seed. The exact identities in M7.2 **cannot** detect a
+      wrong Trouton constant even in principle (note correction 4), so the
+      envelope is the only gate that can — they stay separate tests.
 
 ### M7.4 — Duties, tray temperatures, and the demo
 
@@ -2494,3 +2508,17 @@ signature fork 2 settles. Nothing physical changes.
 **Open until the note is falsified by building it.** Every milestone in this file
 has had its design note corrected by the code — M3.2's draw-flow location, M5.2's
 density end, M6.1's regularization. The forks above are decisions, not results.
+
+**Six corrections already, from reviewing the note rather than building it**
+(DESIGN §5, "Corrections to this note"). No verdict moved; two change what M7.1
+builds. In short: `D/F` is a **mass** ratio, without which fork 3's "total mass
+stays exact" had no mechanism and would have silently inherited fork 4's
+tolerance; `SeparationModel` must take `&dyn ThermoModel` at M7.1 or M7.3 churns
+the trait, and that is a threading change because `thermo` has been a reserved,
+unread slot since M1; `N` counts the reboiler and not the condenser, or the
+"exact" Fenske gate turns on an off-by-one; the exact K identities are
+*structurally incapable* of catching a wrong Trouton constant, which is a
+stronger reason to split those gates than coverage; the feed is
+saturated-liquid-only under constant molar overflow; and the Trouton framing
+overclaimed — one fitted constant is not slate data. One claim was checked and
+survived: no I-series arm anywhere in `crates/solvers/tests/` reaches a column.

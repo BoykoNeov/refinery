@@ -2639,7 +2639,8 @@ column) or creates mass in a zero-volume node (fixed-pressure column), and it
 does it while converging, conserving and rerunning bit-identically.
 
 So the admissible specification set is **dimensionless**: reflux ratio `R = L/D`
-and distillate-to-feed ratio `D/F`, plus one `S_i/F` per side draw. Bottoms is
+(molar, internal) and distillate-to-feed ratio `D/F` (**mass**, at the boundary —
+correction 1), plus one `S_i/F` per side draw. Bottoms is
 then `1 − D/F − Σ S_i/F` and never specified. `Σ splitᵢ = 1` survives as an
 identity of the *specification* rather than of the arithmetic, which is what
 keeps the column mass-neutral every tick under a feed that moves — the property
@@ -2663,8 +2664,9 @@ does not balance at all. The options:
   least about checking. Rejected.
 - **Bound it.** Take the cascade's compositions as computed, normalize each draw
   to `Σ_c = 1`, take the draw flows from the ratio spec (so *total* mass stays
-  exact, per fork 3), and make the per-component residual a **gated `Err`** with
-  the residual in the message.
+  exact — see correction 1, which supplies the mechanism this line originally
+  only asserted), and make the per-component residual a **gated `Err`** with the
+  residual in the message.
 
 **Bound it, and the bound is not free to choose.** I7's own tolerance is
 `COMPONENT_MASS_TOLERANCE_KG = 1e-6` kg over a 0.1 s tick — 1e-5 kg/s — chosen
@@ -2776,6 +2778,95 @@ And the seam's own gate is a *regression anchor*, not a reference: moving
 **bit-identical**, which is the standard this workspace has held since M3.1's
 1-component anchor.
 
+#### Corrections to this note, before a line of cascade code
+
+Every earlier note in this file was corrected by building it. Six of these were
+found by review of the note itself, which is cheaper, so they are recorded the
+same way rather than folded in silently. **No verdict moves; two of them change
+what M7.1 builds.**
+
+**1. Fork 3 asserted an exactness it did not supply a mechanism for — and the
+hole is at the mass ⇄ mole boundary fork 1 flags.** "Total mass stays exact" is
+only true once the *basis* of `D/F` is stated. A reflux ratio is conventionally
+**molar**, and if `D/F` were molar too, then `D_mass = F_mass·(D/F)·(M̄_D/M̄_F)` —
+the mass split would depend on the distillate composition still being solved
+for, so total mass would close only *at convergence*, silently inheriting fork
+4's tolerance instead of being exact. **`D/F` and every `S_i/F` are MASS ratios**,
+declared at the boundary where SI mass is the workspace's basis (rule 4); bottoms
+is `1 − D/F − Σ S_i/F` by subtraction, so the splits sum to 1 by construction and
+`Σ ṁ_draw = ṁ_feed` exactly, from the same defensive normalization M3.2 already
+names. `R` stays molar and stays **internal** — it never crosses the trait
+boundary. The cascade's own molar distillate rate is then not an input but part
+of its fixed point, which is a real inner coupling and is stated here rather than
+discovered in M7.3.
+
+The asymmetry that makes this safe is worth keeping next to fork 4's verdict:
+normalizing *total* splits is benign, because every split is ≥ 0 and it is
+exactly what `column_separation` already does defensively — whereas forcing
+*per-component* exactness by residual assignment can go negative, which is why
+fork 4 rejected it. Same instinct, opposite answer, for a reason.
+
+**2. Fork 2's trait signature could not reach a K-value — and `thermo` reaches
+nothing today.** The signature specified there (feed flow, temperature, pressure
+in; split, composition, temperature, duties out) gives the cascade no way to call
+the `ThermoModel` that fork 2 just put the K-value on. By fork 2's own `tau`
+argument that parameter belongs in the signature at **M7.1**, or M7.3 churns the
+trait — the outcome fork 2 claims to avoid. So `SeparationModel` takes
+`&dyn ThermoModel`, which the cut-point splitter ignores exactly as it ignores
+the feed flow.
+
+That is a **threading** change and not only a signature one, which is the part
+worth checking before M7.1 starts: `Engine` holds `thermo: Box<dyn ThermoModel>`
+carrying `#[allow(dead_code)]` and it has **zero call sites** in the workspace —
+the slot has been reserved and unread since M1. `reactions` was reserved the same
+way and is threaded to the sweep, so the path is proven; but M7.1 is the commit
+that first makes `thermo` a live dependency, and it must say so.
+
+**3. The Fenske gate has an off-by-one hiding in a convention.** `α^N` is exact
+at total reflux only once `N` is defined, and the textbook `N_min` **counts the
+reboiler as an equilibrium stage and does not count a total condenser** — so a
+column of `N` trays plus a reboiler gives the exponent `N+1`. A gate called
+"exact, derivable" that passes or fails for an off-by-one is worse than no gate,
+so **`N` in this workspace counts equilibrium stages including the reboiler and
+excluding the total condenser**, stated here, asserted in the test, and named in
+the `NodeKind::Column` field doc.
+
+**4. Two gates in family 2 must stay apart, and here is the sharp reason.**
+"Separate the correlation gate from the cascade gate" was argued from coverage;
+the stronger form is that `K = 1` at `(tb, P_ref)` is exact **and independent of
+the Trouton constant** — a Clausius–Clapeyron form integrates *from* that anchor,
+so the identity holds for any value of it. Same for the ordering property: under
+`Psat = P_ref·exp[(C/R)(1 − tb/T)]`, `K` is monotone decreasing in `tb` for every
+`C > 0`. So the exact identities cannot detect a wrong `C` **even in principle**,
+and only the envelope can. One test covering both would not merely be weak; it
+would be structurally incapable of the catch.
+
+**5. "Superheated feed — allowed, they are sensible terms" is too glib under
+constant molar overflow.** Feed quality `q` sets the internal flows
+(`L' = L + q·F`), so a subcooled or partly-vaporized feed changes the *cascade*,
+not just an enthalpy term. **M7.3 takes a saturated-liquid feed only** and
+refuses the rest at load; `q` as a parameter is deferred with the rest of the
+list below. The tension a reader will trip on, resolved in one line: a
+*superheated* feed flashes at the feed stage, which is inside the unit and
+therefore fine under fork 1 — what is refused is a feed line carrying two phases
+in a `Pipe`, which is on the graph.
+
+**6. The Trouton framing overclaimed, in exactly the shape this repo hunts.**
+M7.2 said `Δh_vap` from `tb` is "derived from data the slate already carries, not
+invented parameters". Half true: `tb` is slate data, but **Trouton's constant is
+one empirical fitted number and is not**. The gate structure already concedes it
+(exact identities plus an envelope for magnitude), so the framing must too. The
+honest claim is narrower and still enough to distinguish this from M4's refused
+case: **one constant, carrying a published envelope and an exact identity that
+does not depend on it** — where M4's refusal was of parameters with *no* gate of
+either kind.
+
+**And one committed claim that survived checking.** "No I-series invariant has
+ever reached a column of either fidelity" was written from `composition_transport.rs`
+alone and generalized. It is true: `Column` appears nowhere in
+`crates/solvers/tests/` at all — not in `invariants.rs`, the gas-valve arm, or
+any other. Fork 4's framing stands.
+
 #### Deferred from M7, with what would un-defer each
 
 - **Tray hydraulics** — pressure drop per tray, weeping, flooding. Un-defers the
@@ -2792,6 +2883,10 @@ And the seam's own gate is a *regression anchor*, not a reference: moving
 - **Efficiency (Murphree) per tray** — a real column's stages are not
   equilibrium stages. Additive to the cascade once a case can tell 20 real trays
   from 14 ideal ones; deferring it keeps `N` meaning one thing.
+- **Feed quality `q`** (correction 5) — M7.3 takes a saturated-liquid feed and
+  refuses the rest at load. Un-defers when a plant preheats its feed past the
+  bubble point on purpose, which is the case where `q` is distinguishable from
+  the assumption rather than a second name for it.
 
 ## 6. Time
 
