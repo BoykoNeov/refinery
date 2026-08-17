@@ -156,6 +156,9 @@ impl StageCascade {
     /// the condenser to the reboiler in order, a draw carrying the cut-point
     /// fidelity's `upper_cut`, and a mis-declared set of draw ratios.
     pub fn validate(spec: &CascadeSpec, draws: &[ColumnDraw]) -> Result<(), SimError> {
+        // The component count is not part of a column's geometry and nothing on
+        // this path reads it — `CascadePlan::components` is for the solve. Passed
+        // as 0 rather than invented, and the plan is discarded immediately.
         CascadePlan::new(spec, draws, 0).map(|_| ())
     }
 }
@@ -186,26 +189,57 @@ impl SeparationModel for StageCascade {
             )
         })?;
 
-        // The feed FLOW, which the splitter never read. `ColumnPass::feed_flow` is
-        // the sweep's inflow SUM, so a column running backwards arrives here as a
-        // zero rather than a negative number, and `Engine::tick`'s reverse-feed
-        // refusal fires only AFTER the sweep — this call is inside it. M7.1's
-        // correction 4 predicted exactly this: without the guard below, a zero feed
-        // makes every internal molar flow zero and the first stage row singular, so
-        // the column would fail on linear algebra before the guard that names the
-        // cause is ever reached. This is that revisit.
         let feed_flow = pass.feed_flow.value();
-        if !feed_flow.is_finite() || feed_flow <= 0.0 {
+        if !feed_flow.is_finite() || feed_flow < 0.0 {
             return Err(SimError::Numerical(format!(
-                "stage cascade has a non-positive column feed ({feed_flow:.4e} kg/s): the \
-                 cascade's internal flows are all proportional to it, so there is no profile \
-                 to solve. A zero here is what the sweep reports for a column whose feed runs \
-                 BACKWARDS; the engine's own reverse-feed refusal names that case, and it \
-                 fires after the sweep this call is inside."
+                "stage cascade has a negative or non-finite column feed ({feed_flow:.4e} \
+                 kg/s): every internal flow is proportional to it, so there is no profile to \
+                 solve. `ColumnPass::feed_flow` is the sweep's INFLOW SUM and cannot be \
+                 negative, so this is a caller constructing a pass by hand."
             )));
         }
 
+        // The geometry is validated before the flow is looked at, so which plants
+        // are legal never depends on how much is flowing through them.
         let plan = CascadePlan::new(spec, pass.draws, slate.len())?;
+
+        // **M7.1's correction 4, and it is a convention rather than a refusal.**
+        // That correction predicted a cascade would "solve on the zero and fail
+        // with a worse message before the guard that names the cause is ever
+        // reached" — true, because `separate` runs INSIDE the sweep while
+        // `Engine::tick`'s reverse-feed refusal runs after it, and at zero feed
+        // every internal molar flow is zero and the first stage row is singular.
+        //
+        // The fix is not to refuse. `column_feed_flow` reports a zero for two
+        // different states — a column running BACKWARDS, and a column with nothing
+        // flowing at all — and only the first is an error. Refusing both would kill
+        // a tick the moment an operator shut a feed valve, and would make the two
+        // separation fidelities disagree about which plants are legal: the splitter
+        // handles an idle column perfectly well, since a fraction of nothing is
+        // nothing. So an idle cascade returns its DECLARED splits, and the reverse-
+        // feed case falls through to the engine's own guard, which is what
+        // correction 4 wanted reached.
+        //
+        // Nothing is carried anywhere at zero flow, so the compositions and
+        // temperature here are inert placeholders — the same move the splitter
+        // makes for a draw whose band catches no component, and the same "decided,
+        // not discovered" move `flash_isothermal` makes for its all-`K = 1` case.
+        if feed_flow == 0.0 {
+            return Ok(Separation {
+                draws: plan
+                    .mass_ratios
+                    .iter()
+                    .map(|split| DrawSeparation {
+                        split: *split,
+                        composition: pass.feed.clone(),
+                        temperature: pass.temperature,
+                    })
+                    .collect(),
+                condenser_duty: Watt::ZERO,
+                reboiler_duty: Watt::ZERO,
+            });
+        }
+
         let feed = MoleFractions::from_mass(pass.feed, slate)?;
         let feed_molar = feed_flow / feed.mean_molar_mass(slate).value();
 
@@ -1069,21 +1103,88 @@ mod tests {
         );
     }
 
-    /// **M7.1's correction 4, discharged.** The sweep reports a reversed column
-    /// feed as a ZERO, and `Engine::tick`'s reverse-feed refusal fires only after
-    /// the sweep this call sits inside — so without this guard the cascade would
-    /// reach a singular first stage and fail on linear algebra before the engine's
-    /// diagnostic is ever produced. The message names the cause and points at the
-    /// engine's own guard.
+    /// A negative or non-finite feed is refused. It cannot come from the sweep —
+    /// `column_feed_flow` sums INFLOWS — so the only caller who can produce one is
+    /// a hand-built pass, which is exactly what this test is.
     #[test]
-    fn a_non_positive_feed_is_refused_before_the_algebra() {
-        for feed_flow in [0.0, -3.0, f64::NAN] {
+    fn a_negative_feed_is_refused() {
+        for feed_flow in [-3.0, f64::NAN] {
             let message = refusal(Some(&spec(4, 2, 2.0)), &healthy_draws(4), feed_flow);
             assert!(
-                message.contains("non-positive column feed") && message.contains("BACKWARDS"),
+                message.contains("negative or non-finite column feed"),
                 "a feed of {feed_flow} must be refused by cause, got: {message}"
             );
         }
+    }
+
+    /// **M7.1's correction 4, discharged — and the discharge is a convention, not
+    /// a refusal.**
+    ///
+    /// An idle column returns its declared splits rather than an `Err`, for two
+    /// reasons that point the same way. `column_feed_flow` reports a zero for a
+    /// column running BACKWARDS *and* for one with nothing flowing at all, and
+    /// only the first is a fault — the engine's own post-sweep guard is what names
+    /// it, and correction 4's whole complaint was that a cascade would fail before
+    /// that guard was reached. And the cut-point splitter handles an idle column
+    /// perfectly well, so refusing here would make the two fidelities disagree
+    /// about which plants are legal — the hazard `ConstantAlphaThermo::k_value`'s
+    /// own comment names, in the other direction.
+    ///
+    /// Asserted against the SPLITTER rather than against a literal, so the parity
+    /// is the claim rather than a number that happens to match today.
+    #[test]
+    fn an_idle_column_matches_the_splitter_instead_of_failing() {
+        let slate = slate();
+        let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+        let cascade_draws = healthy_draws(4);
+        let spec = spec(4, 2, 2.0);
+        let idle = attempt(Some(&spec), &cascade_draws, 0.0)
+            .expect("an idle cascade column is idle, not broken");
+
+        let split_draws = [
+            ColumnDraw::by_cut(NodeId(1), Some(Kelvin(400.0))),
+            ColumnDraw::by_cut(NodeId(2), None),
+        ];
+        let splitter = crate::CutPointSplitter
+            .separate(
+                &ColumnPass {
+                    slate: &slate,
+                    draws: &split_draws,
+                    smearing: Kelvin(0.0),
+                    pressure: P_ATM,
+                    feed: &feed,
+                    feed_flow: KgPerSec(0.0),
+                    temperature: Kelvin(400.0),
+                    cascade: None,
+                },
+                &thermo(&slate),
+            )
+            .expect("the splitter has always been fine with an idle column");
+
+        assert_eq!(idle.draws.len(), splitter.draws.len());
+        let total: f64 = idle.draws.iter().map(|d| d.split).sum();
+        approx::assert_abs_diff_eq!(total, 1.0, epsilon = 1e-15);
+        assert_eq!(idle.draws[0].split, 0.3, "the declared distillate ratio");
+        for d in &idle.draws {
+            assert_eq!(
+                d.composition.fractions(),
+                feed.fractions(),
+                "nothing flows, so a draw carries the feed as an inert placeholder"
+            );
+            assert_eq!(d.temperature, Kelvin(400.0));
+        }
+    }
+
+    /// A malformed cascade is refused whether or not anything is flowing: the
+    /// geometry is validated before the feed rate is looked at, so which plants
+    /// are legal never depends on how much is going through them.
+    #[test]
+    fn an_idle_column_is_still_validated() {
+        let broken = vec![
+            ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
+            ColumnDraw::by_stage(NodeId(2), 3, None),
+        ];
+        assert!(refusal(Some(&spec(4, 2, 2.0)), &broken, 0.0).contains("not 4"));
     }
 
     /// The geometry: a stage count, a feed stage inside it, and a reflux ratio that

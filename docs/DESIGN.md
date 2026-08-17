@@ -3143,14 +3143,36 @@ moles. Found by search after the first version of its test failed to fire, which
 is `a-void-mutation-looks-like-a-catch` in the shape of a guard rather than a
 mutation.
 
-**5. M7.1's correction 4 is discharged in `solvers`, not in `core`.** That
-correction predicted a cascade would "solve on the zero and fail with a worse
-message before the guard that names the cause is ever reached", and it is exactly
-right: `separate` is called *inside* `resolve_node_states`, while
-`Engine::tick`'s reverse-feed refusal fires after the sweep. The fix is a guard in
-the cascade whose message names the cause and points at the engine's own. Nothing
-in `core` moved — the same reachability argument `reachability-decides-which-rule-wins`
-records, applied to a message rather than a panic.
+**5. M7.1's correction 4 is discharged in `solvers`, not in `core` — and the
+discharge is a CONVENTION, not a refusal.** That correction predicted a cascade
+would "solve on the zero and fail with a worse message before the guard that names
+the cause is ever reached", and it is exactly right: `separate` is called *inside*
+`resolve_node_states`, while `Engine::tick`'s reverse-feed refusal fires after the
+sweep, and at zero feed every internal molar flow is zero and the first stage row
+is singular.
+
+The first fix was to refuse a non-positive feed, and it was wrong in a way worth
+recording. `column_feed_flow` reports a zero for **two** different states — a
+column running backwards, and a column with nothing flowing at all — and only the
+first is a fault. Refusing both kills a tick the moment an operator shuts a feed
+valve, and it makes the two separation fidelities **disagree about which plants are
+legal**: the cut-point splitter has always handled an idle column, since a fraction
+of nothing is nothing. That is the hazard `ConstantAlphaThermo::k_value`'s own
+comment names ("a model that silently accepts a state its sibling refuses…"), met
+in the other direction.
+
+So an idle cascade returns its declared splits, with the feed composition and
+temperature as inert placeholders — nothing is carried anywhere at zero flow, which
+is the same move the splitter makes for a draw whose band catches no component and
+the same "decided, not discovered" move the flash makes for its all-`K = 1` case.
+The genuinely reversed case then falls through to the engine's own guard, which is
+precisely what correction 4 wanted reached. A negative or non-finite feed is still
+refused; it cannot come from the sweep, so the only caller who can produce one is a
+hand-built pass. The geometry is validated **before** the flow is looked at, so
+which plants are legal never depends on how much is going through them. Nothing in
+`core` moved — the same reachability argument
+`reachability-decides-which-rule-wins` records, applied to a message rather than a
+panic.
 
 **6. The per-component residual had to be made *visibly* binding, or fork 4's
 "gate, not a counter" would have been unearned.** The convergence test is a

@@ -445,6 +445,13 @@ fn a_malformed_cascade_geometry_is_refused_at_load() {
             HEALTHY_COLUMN.replace(", draw_ratio = 0.4", ""),
             "declares no draw_ratio",
         ),
+        // Not delegated: an omitted `stage` would otherwise be read as an
+        // authoritative 0 and complain about the ORDERING instead.
+        (
+            "a draw declares no stage",
+            HEALTHY_COLUMN.replace("stage = 0, ", ""),
+            "declares no stage",
+        ),
     ];
     for (what, body, expected) in cases {
         let m = build_err(&cascade_plant("thermo = \"trouton\"", &body), what);

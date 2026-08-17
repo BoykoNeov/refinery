@@ -1485,6 +1485,22 @@ fn require_declared_iff_used(
             )));
         }
         for d in draws {
+            // Presence, not just exclusion. Without this the loader's
+            // `stage.unwrap_or(0)` below would turn an omitted key into an
+            // authoritative stage 0, `StageCascade::validate`'s "declares no
+            // stage" arm would be unreachable from any FILE, and what the author
+            // would see instead is a stage-ordering complaint pointing at the
+            // wrong mistake. `draw_ratio` needs no equivalent — its `Option` is
+            // passed straight through, so the model's own arm is reached.
+            if d.stage.is_none() {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' draw '{}' declares no stage. Under [fidelity] separation = \
+                     \"cascade\" every draw needs one: 0 is the total condenser (the \
+                     distillate), {} is the reboiler (the bottoms), and 1..{} are liquid side \
+                     draws.",
+                    d.outlet, def.stages, def.stages
+                )));
+            }
             if d.up_to_c.is_some() {
                 return Err(SimError::Scenario(format!(
                     "column '{name}' draw '{}' declares up_to_c under [fidelity] separation = \
