@@ -2579,7 +2579,8 @@ because fork 5's claim is that the start cannot change the fixed point.
 
 Sliced while building, because the two halves are separate physics and the first
 needs nothing from the second: **M7.4a** wires the temperatures (done), **M7.4b**
-adds `Δh_vap` and the duties, **M7.4c** the I-series arm and the demo file.
+adds `Δh_vap`, the duties and the saturated-liquid feed guard (done), **M7.4c**
+the I-series arm and the demo file (open).
 
 - [x] `core`: per-draw temperatures through `edge_temperature_at`'s new column
       arm. **Landed as M7.4a.** `column_draw_at` is the single owner of "which
@@ -2588,25 +2589,42 @@ adds `Δh_vap` and the duties, **M7.4c** the I-series arm and the demo file.
       arm sits at the inlet resolution, *above* the `node == upwind` return, or the
       downstream branch would run its ambient transform from the column's mixed
       feed temperature.
-- [ ] `core`: reboiler/condenser duties as emergent snapshot diagnostics.
-- [ ] `solvers`: `Δh_vap` into the duty calculation (the profile does not need it;
+- [x] `core`: reboiler/condenser duties as emergent snapshot diagnostics.
+      **Landed as M7.4b.** `NodeSnapshot::column_duty`, an `Option` with
+      `skip_serializing_if` — absent on every node that is not a column, on a
+      column before its first tick, and on a **cut-point** column, whose fidelity
+      has no such equipment. `Separation`'s own duty fields became `Option<Watt>`
+      in the same move, so the splitter's gap and the cascade's answer stopped
+      sharing a zero.
+- [x] `solvers`: `Δh_vap` into the duty calculation (the profile does not need it;
       the duties do — which is why this is a separate slice).
+      **Landed as M7.4b**, as `ThermoModel::dh_vap` returning a new `JPerMol`
+      newtype. It brought an exact identity with it that M7.2's three could not
+      supply: `d ln K/d(1/T) = −Δh_vap/R`, which binds the latent heat to the
+      vapour pressure the same model integrated.
 - [x] Gate (temperatures): per-draw temperatures **strictly** ordered, neither
       equal to the column's mixed feed, and each equal to the **bubble point of the
       composition it carries** — recomputed in the test from the published
       `k_value` rather than by calling the cascade's own private routine. Plus a
       draw pipe with a live `ambient_ua`, the only one in the workspace, so the arm
       and the transform are gated as composing rather than merely coexisting.
-- [ ] Gate (duties): the **duty difference** against the sensible external balance
-      (M4's two-duty lesson).
-      **Known open by M7.4a, and nothing goes red:** once the draws leave at
-      differing tray temperatures the column stops being enthalpy-neutral by
-      construction — `Σ ṁᵢ·cpᵢ = ṁ·cp_feed` held only while every draw shared one
-      temperature — and the residual **is** the reboiler-minus-condenser duty this
-      box adds. No gate reaches it in between: I6's generator builds only
-      Source/Junction/Tank/Sink, and no scenario file selects the cascade until
-      M7.4c. Stated rather than discovered.
-- [ ] **Saturated-liquid feed becomes a guard, not an assumption.** Found while
+- [x] Gate (duties): ~~the **duty difference** against the sensible external
+      balance (M4's two-duty lesson).~~ **This gate cannot exist, and M7.4b is
+      where that was found.** Constant molar overflow leaves every interior stage
+      with an energy residual, so two locally-exact duty envelopes disagree with
+      the column's own external balance by 4.9× the quantity that balance measures
+      (measured: 0.45 MW against 0.09 MW). The reboiler duty is therefore *defined*
+      as the one that closes the balance — which makes "the difference against the
+      balance" a tautology. What landed instead: the `α = 1` case, where the whole
+      pair reduces to one hand-computed `V·λ̄(z)` with no sensible term; the
+      condenser's own envelope reconstructed from the public return and a published
+      `k_value`; an envelope on the reboiler; and the difference kept as an
+      explicitly-labelled **wiring** gate against the engine's own edges. DESIGN §5,
+      "Corrections from building it (M7.4b, landed)", correction 1.
+      **The M7.4a open box is closed:** the column's external energy books now
+      balance, and nothing had gone red in between because I6's generator builds no
+      column and no scenario file selects the cascade until M7.4c.
+- [x] **Saturated-liquid feed becomes a guard, not an assumption.** Found while
       building M7.4a: the wired M7.3 fixture feeds its column 20-odd K *above* the
       bubble point of its own mix, and constant molar overflow admits only a
       saturated-liquid feed. `separate` gains an `Err` outside a derived bound, and
@@ -2616,9 +2634,26 @@ adds `Δh_vap` and the duties, **M7.4c** the I-series arm and the demo file.
       formulation does not admit. The asymmetry it creates is deliberate and is
       argued in DESIGN §5: refuse what the model cannot answer (a superheated
       feed), never what it can (an idle column, M7.3 correction 5).
+      **Landed as M7.4b, and it is two-sided** — a subcooled feed is equally
+      inadmissible, and refusing only superheat would let half the violation
+      through. The window is `ε·Δh_vap/c̄p` at `ε = 1%`, so it is derived per feed
+      rather than a constant in Kelvin (≈ ±1.2 K on the M7.3 slate, wider on a
+      heavier one — gated by running one offset against doubled latent heats for
+      opposite verdicts), and the fixture is run at both edges of it to measure
+      what admitting a feed there costs. It was 34 K off, not 20-odd.
 - [ ] I-series: extend the generator to reach a cascade column, with a
       **reachability count before the arm is believed** — a generated arm can be
       born vacuous.
+      **What M7.4b leaves this box, stated while it is known:** the duties are
+      diagnostics, and `energy::heat_load` does **not** include them — nothing in
+      the forward solve applies `Q_reb − Q_cond` at the column node. So an energy
+      invariant that reaches a cascade column will NOT close unless it reads
+      `NodeStates::column_separation` and counts that difference as a node heat
+      term. M7.4b's claim is the narrower one: the residual now has a named,
+      gated value instead of being an unexplained gap.
+      The generator also has to build a feed on the mix's bubble point at the
+      column's pressure, or `separate` refuses it — which makes a generated
+      cascade arm meaningfully harder to produce than a generated tank.
 - [ ] Demo: `scenarios/crude_column_cascade.toml` — the same plant as
       `crude_column.toml` on the other fidelity, so the two are directly
       comparable and the swap is visible physics rather than a passing test.
@@ -2626,6 +2661,9 @@ adds `Δh_vap` and the duties, **M7.4c** the I-series arm and the demo file.
       component boils inside a ramp anywhere in this repo, so the demo column is
       a sharp splitter today and `smearing_k` changes nothing) — that is also
       where the two fidelities differ most and are most worth comparing.
+      **M7.4b adds a constraint the note did not have**: the demo's feed must
+      reach its column within `±ε·λ̄/c̄p` of the mix's bubble point, or the cascade
+      refuses it. That is a real design input for the file, not a tuning step.
 
 **M7.4a landed 2026-08-17.** The note's shape for this half survived unchanged —
 DESIGN §5 specified "a column arm, mirroring exactly what `edge_composition_at`
@@ -2637,6 +2675,40 @@ pre-change tree**, which is what proves the field was dead and is now live. Four
 mutations, four caught — and the new bubble-point identity was the sole catcher of
 none of them, so it is recorded as an independent second derivation rather than as
 unique coverage.
+
+**M7.4b landed 2026-08-17, and the note's shape for this half did NOT survive.**
+The box specified its own gate — "the duty difference against the sensible external
+balance" — and that gate cannot exist. Constant molar overflow fixes `L` and `V`
+instead of solving each stage's energy balance, so two locally-exact duty envelopes
+disagree with the column's own external balance by **4.9x the quantity that balance
+measures** (0.45 MW of inconsistency against a 0.09 MW balance, measured on the
+reference binary). The reboiler duty is therefore *defined* as the one that closes
+the balance, which makes checking it against the balance a tautology. Four gates
+replaced it, ranked by how much physics each carries, and the `alpha = 1` case —
+where the whole pair collapses to one hand-computed `V*lambda(z)` with no sensible
+term — is the top of that list. DESIGN §5, "Corrections from building it (M7.4b,
+landed)".
+
+Three further measurements, two of which corrected something written down here.
+The telescoping term this argument was first justified with accounts for only a
+**quarter** of the inconsistency — the interior *sensible* terms dominate, not the
+unequal molar latent heats. A tight assertion tying the reboiler duty to
+`V*lambda(y_N)` was written, passed at 0.2%, and was then deleted as a coincidence
+of the fixture rather than a property of the model. And M7.4a's ambient-transform
+"control" turned out to have been **vacuous since it was written** — it compared
+the outlet against a midpoint that `outlet < tray` already implied, so it could not
+have failed for any `UA`; it is a counterfactual now, and the `UA` went from 40 to
+10 000 W/K because at 40 the workspace's only live ambient transform moved its
+stream by 0.019 K.
+
+Nine mutations, **all nine caught**, each verified to compile. The condenser
+envelope was the sole catcher of two of them, which is real unique coverage; the
+`alpha = 1` hand calculation was the sole catcher of none and is held for
+independence, exactly as M7.4a holds its bubble-point identity. Two of the new
+tests caught nothing and say so in their own docstrings — one is true by
+construction, the other a wiring check. All twelve scenarios byte-identical over
+300 ticks against `37e9137`, which is what the `Option` duties plus
+`skip_serializing_if` buy.
 
 **Open until the note is falsified by building it.** Every milestone in this file
 has had its design note corrected by the code — M3.2's draw-flow location, M5.2's

@@ -3324,6 +3324,240 @@ rule for that is already in this workspace: `ConstantThermo::k_value` errs rathe
 than returning a plausible number. Refuse what you cannot answer; never refuse what
 you can.
 
+#### Corrections from building it (M7.4b, landed)
+
+The duties are in, `Δh_vap` is on `ThermoModel`, and a feed off its bubble point is
+refused. **The note's shape for this half did not survive**, and the correction is
+the largest one M7 has taken: the gate this box was specified with cannot exist.
+
+**1. Two locally-exact duty envelopes are not available, and the note asked for
+them.** The box says the gate is "the **duty difference** against the sensible
+external balance (M4's two-duty lesson)". That reads as: compute each duty from
+its own envelope, then check that their difference is the external balance. The
+condenser end works — one stream in, one stream out, same composition, both
+endpoints on the profile. The reboiler end does not, and neither does any interior
+stage, because **constant molar overflow fixes `L` and `V` instead of solving each
+stage's energy balance**. Every interior stage therefore carries an energy
+residual, and those residuals accumulate down the column rather than cancelling.
+
+Measured on the reference binary (`N = 6`, `R = 2`, `D/F = 0.35`), which is the
+part worth having rather than the argument:
+
+| | W |
+|---|---|
+| `Q_cond`, its own envelope (exact) | 3.141e6 |
+| `Q_reb`, closing the external balance | 3.232e6 |
+| the external sensible balance — their difference | 9.1e4 |
+| `Q_reb` from its OWN full envelope | 3.681e6 |
+| the formulation's inconsistency | 4.5e5 |
+
+A locally-exact pair would have reported this column absorbing **0.54 MW** net
+when its streams carry **0.09 MW** — wrong by 4.9× the quantity the balance
+measures, and wrong in the direction that reads as a plant creating energy. That
+is a worse diagnostic than a coarse one, so the pair is built the other way round:
+
+```text
+Q_cond = V·λ̄(y₁) + V·c̄p(y₁)·(T₁ − T_cond)          exact, local
+Q_reb  = Q_cond + [Σᵢ ṁᵢ·cpᵢ·(Tᵢ − T_REF) − ṁ_F·cp_F·(T_F − T_REF)]
+```
+
+The condenser is determined by physics; **the reboiler is the duty that closes the
+column's external energy balance**, which is the property a plant-level balance
+needs and a locally-exact pair would not have. The cost is stated rather than
+hidden: the reboiler duty carries the formulation's error and the condenser duty
+does not.
+
+**And that is why the box's own gate had to be replaced.** `Q_reb − Q_cond` is now
+the external sensible balance *by construction*, so asserting that it equals the
+external sensible balance is exactly the tautology M4's two-duty lesson warns
+about, one level up — computing a quantity by a formula and asserting it satisfies
+the formula. What replaced it, in order of how much physics each carries:
+
+- **`α = 1`.** Give every cut the same K and everything collapses: one uniform
+  temperature, so stage 1's dew point *is* the distillate's bubble point and the
+  condenser's sensible term vanishes; every draw at that temperature with the
+  feed's composition, so the external balance is identically zero and the two
+  duties must be **equal**. What is left is `Q_reb = Q_cond = V·λ̄(z)` with
+  `V = (R+1)·(D/F)·ṁ_F/M̄(z)` — every factor from the fixture, nothing read back
+  off the solver. It pins the latent basis, the boilup, the mass ⇄ mole conversion
+  in `D`, and the equality, in one hand calculation.
+- **The condenser envelope in the general case**, reconstructed from the public
+  return plus the published `k_value`: `T₁` as the dew point of the distillate by
+  the test's own bisection, `T_cond` as its bubble point, `V` from the reflux
+  ratio and the declared mass ratio. This is the gate with the general-case
+  physics in it.
+- **An envelope on the reboiler**: `V·min_c λ_c ≤ Q_reb ≤ V·max_c λ_c`. Loose, and
+  it is the only thing available for the duty that closes the balance — but it
+  catches the errors that actually threaten a duty (a boilup taken as `R·D`, a
+  latent heat applied per kilogram, a duty counted twice).
+- **The difference, as a WIRING gate**, against the enthalpy the engine's own
+  edges carry. Labelled as such in its own docstring: it exercises the draw write,
+  M7.4a's column arm and `cp` mixing end to end, and it proves nothing about
+  whether either duty is right.
+
+**2. The telescoping term is not what dominates the inconsistency — the interior
+SENSIBLE terms are.** The argument above was first written as "the unequal molar
+latent heats accumulate": `V·[λ̄(y₁) − λ̄(y_N)]`, which on this fixture is 1.2e5 W.
+The measured inconsistency is 4.5e5 W, four times that. The latent spread is real
+and is part of it; the larger part is the tray-to-tray sensible enthalpy CMO
+drops. Recorded because the verdict survived on a reason that was only a quarter
+right, and a future slice that revisits this (feed quality `q`, or an energy
+balance per stage) needs the true dominant term rather than the plausible one.
+
+**3. One coincidence, caught before it became a gate.** `Q_reb` happens to sit
+within **0.2%** of `V·λ̄(y_N)` on the reference fixture — the reboiler's own
+sensible term nearly cancels the CMO inconsistency. A tight assertion against
+that number was written, passed, and was then removed: it is a property of these
+particular numbers, not of the model, and gating it would have been fitting to a
+cancellation. `a-cached-classification-expires` in miniature — a green assertion
+whose reason expires with the fixture.
+
+**4. `Δh_vap` on `ThermoModel` brought a new SHAPE of gate with it, and it is the
+first identity here that can see the Trouton constant.** `TroutonThermo::k_value`
+integrates Clausius–Clapeyron with `Δh_vap` held constant — that is the only
+reason it has a closed form — so the model is *already committed* to a latent
+heat, and the vapour pressure's own slope recovers it:
+
+```text
+d ln K / d(1/T) = −Δh_vap / R          (at fixed P)
+```
+
+`ln K` is exactly linear in `1/T` for this form, so a two-point secant is not an
+approximation of the derivative; it **is** the derivative, and the check is to
+machine precision. Correction 4 to the note said the exact identities are
+"structurally incapable" of policing the empirical constant, and that stays true
+of the three M7.2 shipped — but this one is different in kind: the quantity it
+pins is `C·tb`, so it moves with `C`. It still does not catch a wrong `C` (both
+sides move together — that is the envelope's job); what it catches is **the two
+halves of one model disagreeing**, which is the failure that would let a cascade
+solve its profile on one latent heat and its duties on another. That failure had
+no gate at all before this slice, and it is a plausible one: `Δh_vap` is *linear*
+in `C` where `K` buries it in an exponent, so a duty is the most `C`-sensitive
+number this model produces.
+
+**5. A duty this model cannot compute is a refusal, and the two zeros had to stop
+sharing a type.** Through M7.3 both fidelities returned `Watt::ZERO`, documented
+as meaning different things — the splitter's a gap, the cascade's a placeholder.
+Once the cascade computes real numbers, keeping the splitter's zero would make it
+the only duty a cut-point column ever reports, and a frontend sizing cooling water
+off `0 W` is the finite-deterministic-plausible-wrong shape this workspace keeps
+catching. So `Separation`'s duties are `Option<Watt>`: `None` from the splitter
+(there is no such equipment to report on), `Some` from the cascade — including
+`Some(ZERO)` for an **idle** column, because a condenser with nothing to do really
+does have zero duty and that is an answer. `NodeSnapshot::column_duty` carries the
+same distinction outward with `skip_serializing_if`, which is what keeps the
+twelve scenarios byte-identical: they are, over 300 ticks, every snapshot.
+
+This is `Command::SetHeatInput`'s lesson run in reverse. There, a consequence
+nothing reported. Here, the risk was a report nothing computed.
+
+**6. The saturated-liquid feed guard, and the fixture that had never satisfied
+it.** M7.4a found the wired fixture feeding its column 34 K above the bubble point
+of its own mix — 28% of the feed off-phase, a plant constant molar overflow does
+not admit. `separate` now refuses it, **two-sided**: a subcooled feed condenses
+extra reflux (`q > 1`) exactly as a superheated one flashes, and refusing only the
+first would let half the violation through silently.
+
+The bound is derived, and then measured. A liquid `ΔT` off its bubble point
+carries `c̄p·ΔT` J/mol of excess enthalpy, which flashes `c̄p·ΔT/λ̄` of the feed, so
+the admissible window is `ΔT_max = ε·λ̄/c̄p` — **not a constant in Kelvin**: about
+±1.2 K on the M7.3 slate and wider on a heavier one, which is gated by running the
+same offset against doubled latent heats and getting opposite verdicts. The
+refusal quotes the bubble point, the window and the off-phase percentage, so an
+author can act on it rather than guess.
+
+**And calibrating `ε` turned up the sharpest argument for the guard existing at
+all.** The first version of that measurement ran the fixture at both edges of its
+window and asserted the draw compositions moved by less than `ε`. That assertion
+could not fail. Trace the feed temperature through `separate` and it reaches three
+places — this guard, the idle placeholder, and the feed-enthalpy term of the
+duties. It does **not** reach the seed (that is the feed's *bubble point*, not its
+resolved temperature), the flow profile, the stage balances or the K-values,
+because there is no `q` in this formulation. The compositions are therefore
+bit-identical across the whole window, and `moved < 2ε` was asserting `0 < 0.02` —
+the same vacuous shape correction 7 below records for M7.4a's control, found the
+same way and in the same slice.
+
+The fix makes the gate stronger and the reasoning better. Compositions and the
+condenser duty are now asserted **exactly equal**; the reboiler duty is the one
+thing that moves, by exactly `−ṁ_F·cp_F·ΔT`, asserted against that closed form;
+and `ε` is calibrated against the resulting shift, `ε·(F/V)·(λ̄(z)/λ̄(y₁))` ≈ `0.93ε`.
+What the vacuity revealed is the real justification: **a feed off its bubble point
+does not make this cascade produce a slightly wrong answer — it makes it produce
+the same answer to a different question.** No amount of running the model can
+surface that, which is precisely why the precondition has to be checked rather
+than observed. It also means M7.3's anchors did not move when the reference
+fixtures went from a fixed `T_REF` to each feed's own bubble point: Fenske, the
+null case and the flash reduction are numerically untouched. What had been
+off-model since M7.3 was the enthalpy bookkeeping — draw temperatures, and now
+duties — never the separation.
+
+The asymmetry against M7.3's correction 5 is deliberate and both halves are now
+built: an **idle** column is a state this model can answer, so it is not refused;
+a feed off its bubble point is one it cannot, so it is. Refuse what you cannot
+answer; never refuse what you can.
+
+**7. The blast radius was in the REASONING of two landed gates, not their
+numbers.** Moving the fixture's feed onto its bubble point moved
+`each_draw_leaves_at_its_own_tray_temperature`'s justification out from under it:
+that test asserted both draws sit clear of the column's mixed feed temperature and
+explained it by the feed being superheated. With a saturated feed the draws
+**straddle** it — 345.98 K, feed 359.40 K, 387.89 K — which is a property of
+columns rather than of a fixture, so the assertion was rewritten as the straddle
+rather than retuned. M7.4a predicted this in as many words; it is recorded here
+because the prediction was about the numbers and the real work was the reason.
+
+And a fault that had been there since M7.4a surfaced with it. That slice's ambient
+-transform test carried a "control" comparing the outlet against the midpoint
+between the tray and the feed — but the feed was hotter than the tray, so
+`outlet < tray` already implied it, and **it could not have failed for any `UA`**.
+Exactly `a-conjunctive-gate-hides-which-criterion-bound`: a second assertion that
+fires with the first and was never shown to bind. It is a counterfactual now —
+recover the pipe's own decay from the result and apply it to the inlet a misplaced
+arm would have used, which really can fail when the `UA` is large enough to swamp
+the difference. The `UA` also went from 40 to 10 000 W/K: at 40 the workspace's
+only live ambient transform moved its stream by **0.019 K**, which is a thin thing
+for the only instance of it to be.
+
+**What the mutation pass found.** Nine mutations, each verified to compile before
+its result was believed (`a-void-mutation-looks-like-a-catch`), run with
+`--no-fail-fast` so a catch in one binary could not hide the rest
+(`mutation-harness-needs-no-fail-fast`). **All nine caught**, and the pattern of
+*which* gate caught what is the part worth keeping:
+
+- The **condenser envelope** caught five of the nine, and was the SOLE catcher of
+  two: reading a total condenser as pure latent heat, and taking its latent heat
+  at the bottoms composition instead of the distillate's. Nothing else in the
+  workspace sees either. That is genuine unique coverage, stated because M7.4a's
+  equivalent paragraph had to retract exactly this claim about a different gate.
+- The **`α = 1` hand calculation** caught the latent basis (per kilogram instead
+  of per mole) and the boilup (`R·D` instead of `(R+1)·D`) — and was the sole
+  catcher of neither, since the condenser envelope sees both too. It is held for
+  the same reason M7.4a holds its bubble-point identity: independence, not unique
+  coverage. It is the only gate here with no solver output in it at all.
+- The **two feed-guard mutations** — refusing superheat only, and a window fixed
+  in Kelvin rather than `ε·λ̄/c̄p` — were each caught by exactly one gate, their
+  own. Both of those gates exist because a one-sided guard and a magic constant
+  are the two ways this box could have been half-built.
+- Factoring the mean molar mass out of `Σ x·M·cp` was caught by the condenser
+  envelope and by the feed window's own measurement — the second because a molar
+  heat capacity is what converts a temperature offset into a phase error. (That
+  window test was rewritten after the pass, once its composition assertion turned
+  out to be vacuous; the mutation was re-run against the replacement and is still
+  caught by both.)
+- `Δh_vap = C·T` instead of `C·tb` was caught by both new thermo identities,
+  including the Clausius–Clapeyron slope, which is the identity added *for* this
+  class.
+
+**And two of the new tests caught nothing, which is what they said they would.**
+`the_duty_difference_is_the_external_sensible_balance` and
+`the_reported_duties_bracket_the_enthalpy_the_plants_own_edges_carry` fired on no
+mutation. Both docstrings say in advance that they are not duty gates — one is an
+identity true by construction, the other a wiring check — so the empty result
+confirms the labelling rather than exposing dead tests. Recorded rather than
+quietly deleted: they cover the draw write, the M7.4a column arm and `cp` mixing
+end to end, which no mutation in this pass touched.
+
 #### Deferred from M7, with what would un-defer each
 
 - **Tray hydraulics** — pressure drop per tray, weeping, flooding. Un-defers the
@@ -3340,10 +3574,14 @@ you can.
 - **Efficiency (Murphree) per tray** — a real column's stages are not
   equilibrium stages. Additive to the cascade once a case can tell 20 real trays
   from 14 ideal ones; deferring it keeps `N` meaning one thing.
-- **Feed quality `q`** (correction 5) — M7.3 takes a saturated-liquid feed and
-  refuses the rest at load. Un-defers when a plant preheats its feed past the
-  bubble point on purpose, which is the case where `q` is distinguishable from
-  the assumption rather than a second name for it.
+- **Feed quality `q`** (correction 5) — the cascade takes a saturated-liquid feed
+  and **refuses the rest at runtime** as of M7.4b, two-sided, outside a window of
+  `ε·λ̄/c̄p`. (The note said "at load", which was never possible: a column's feed
+  temperature is solved, not declared, so nothing at load time knows it.)
+  Un-defers when a plant preheats its feed past the bubble point on purpose, which
+  is the case where `q` is distinguishable from the assumption rather than a
+  second name for it — and the guard is what makes that case visible instead of
+  silently mis-solved.
 
 ## 6. Time
 

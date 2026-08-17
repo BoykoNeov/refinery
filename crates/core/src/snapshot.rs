@@ -74,6 +74,42 @@ pub struct NodeSnapshot {
     /// Real from load, not NaN before the first tick: it is a *stored*
     /// quantity, like a tank's temperature, not a *solved* one.
     pub heat_input_w: f64,
+    /// A column's condenser and reboiler heat duties [W], when its separation
+    /// fidelity computes them (M7.4b).
+    ///
+    /// **Absent, not zero, wherever there is nothing to report** — on every node
+    /// that is not a column, on a column before its first tick, and on a
+    /// cut-point column, whose fidelity has no such equipment at all
+    /// (`traits::Separation::condenser_duty`). Reporting `0.0` there would be a
+    /// number no model produced, and `Command::SetHeatInput`'s own lesson runs
+    /// the other way round: a field nothing reports is an oversight, a field
+    /// reporting what nothing computed is worse.
+    ///
+    /// `skip_serializing_if` is what keeps the twelve existing scenarios
+    /// byte-identical — the same move `ColumnDraw`'s M7.3 fields made, and the
+    /// reason this is an added field rather than a widened one.
+    ///
+    /// An emergent DIAGNOSTIC: nothing in the forward solve is driven by it. It
+    /// is here because a game reads fuel off a reboiler and cooling water off a
+    /// condenser, and because a plant-level energy balance at a cascade column
+    /// does not close without it — the draws leave at differing tray
+    /// temperatures, so the difference of these two IS the column's net external
+    /// heat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_duty: Option<ColumnDuty>,
+}
+
+/// A column's two emergent heat duties [W] — see `NodeSnapshot::column_duty`.
+///
+/// Both are non-negative MAGNITUDES with the direction in the name, the
+/// `Furnace`/`Cooler` convention: a condenser removes heat, a reboiler adds it,
+/// and a signed pair would make a condenser that heats representable.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ColumnDuty {
+    /// Heat REMOVED at the total condenser [W], ≥ 0.
+    pub condenser_w: f64,
+    /// Heat ADDED at the reboiler [W], ≥ 0.
+    pub reboiler_w: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

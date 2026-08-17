@@ -8,7 +8,7 @@
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{CascadeSpec, ColumnDraw, EdgeId, NodeId, PlantGraph};
-use crate::units::{JPerKg, Kelvin, KgPerSec, Pascal, Seconds, Watt};
+use crate::units::{JPerKg, JPerMol, Kelvin, KgPerSec, Pascal, Seconds, Watt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -133,6 +133,46 @@ pub trait ThermoModel: Send {
         pressure: Pascal,
     ) -> Result<f64, SimError>;
 
+    /// The heat of vaporization of one component [J/mol] — the latent heat a
+    /// condenser removes and a reboiler supplies.
+    ///
+    /// **Per MOLE, and `temperature` is here for a fidelity that does not exist
+    /// yet.** The molar basis is fork 1's mass ⇄ mole boundary (a duty multiplies
+    /// a molar flow); the parameter is the `ReactionModel::react`/`tau`
+    /// precedent, so a Watson-style `Δh_vap(T)` is an additive swap rather than
+    /// trait churn.
+    ///
+    /// **The identity that binds this to `k_value`, and it is not optional for a
+    /// correlation.** A model whose `k_value` integrates Clausius–Clapeyron is
+    /// *already committed* to a `Δh_vap`, because that constant is what it
+    /// integrated:
+    ///
+    /// ```text
+    /// d ln K / d(1/T) = −Δh_vap / R          (at fixed P)
+    /// ```
+    ///
+    /// So `dh_vap` returning anything else would make one model contradict
+    /// itself, and a cascade would compute its profile on one latent heat and its
+    /// duties on another. This is the gate M7.4b adds, and unlike the `K = 1` at
+    /// `(tb, P_ATM)` anchor it **does** see an empirical constant — which is what
+    /// DESIGN §5 correction 4 says the identities could not do.
+    ///
+    /// As with `k_value`, a model handed its numbers by a test
+    /// (`ConstantAlphaThermo`) is not held to the identity: it has no correlation
+    /// to be consistent with. It is held to something narrower — it must `Err`
+    /// rather than invent a latent heat it was never given.
+    ///
+    /// # Errors
+    /// `SimError` as `k_value`: a non-positive or non-finite `T`, a component
+    /// index off the end of the slate, or a fidelity with no latent heat at all
+    /// (`ConstantThermo`). Rule 5: never a plausible number.
+    fn dh_vap(
+        &self,
+        slate: &Slate,
+        component: usize,
+        temperature: Kelvin,
+    ) -> Result<JPerMol, SimError>;
+
     // Density/cp currently live on Composition (ideal mixing). This trait
     // takes over when non-ideal or T-dependent behavior arrives, at which
     // point Composition's mixture_* helpers delegate here.
@@ -154,12 +194,16 @@ pub struct DrawSeparation {
     /// node and every draw reads it as their upwind end. A cascade's draws leave
     /// at their **tray** temperatures instead, which differ per draw.
     ///
-    /// **Nothing reads this field yet** (M7.1 changes no physics): the value is
-    /// carried so that M7.4 can wire `energy::edge_temperature_at`'s column arm
-    /// without churning the trait. Until then the splitter's copy and the sweep's
-    /// mixed value are the same number by construction, and
-    /// `a_draw_leaves_at_the_feed_temperature_it_was_handed` is the test that
-    /// pins that agreement.
+    /// **Read since M7.4a**, by `energy::edge_temperature_at`'s column arm — the
+    /// field was carried unread from M7.1 so that arm needed no trait churn. On
+    /// the splitter path the value and the sweep's mixed temperature are still
+    /// the same number by construction, which is why wiring the reader left every
+    /// scenario byte-identical; `a_draw_leaves_at_the_feed_temperature_it_was_
+    /// handed` is what pins that agreement.
+    ///
+    /// One lookup serves this field and `composition` both
+    /// (`energy::column_draw_at`), so a draw can never be handed its own
+    /// composition at another draw's temperature.
     pub temperature: Kelvin,
 }
 
@@ -169,19 +213,36 @@ pub struct DrawSeparation {
 pub struct Separation {
     /// One entry per `ColumnDraw`, in the same order.
     pub draws: Vec<DrawSeparation>,
-    /// Heat REMOVED at the condenser [W], a non-negative magnitude.
+    /// Heat REMOVED at the condenser [W], a non-negative magnitude, or `None`
+    /// from a fidelity that has no condenser to speak of.
     ///
     /// The `Furnace`/`Cooler` convention, not a signed duty: which way a named
     /// piece of equipment moves heat is a property of the equipment, so storing
     /// it signed would make a condenser that heats representable. Both duties are
     /// emergent DIAGNOSTICS like `energy::ReactorDuty` — nothing in the forward
-    /// solve is driven by them — and the energy gate M7.4 owes is their
-    /// DIFFERENCE against the sensible external balance, never either alone
-    /// (M4's two-duty lesson, DESIGN §5).
-    pub condenser_duty: Watt,
-    /// Heat ADDED at the reboiler [W], a non-negative magnitude. See
+    /// solve is driven by them.
+    ///
+    /// **`Option` rather than a zero, and M7.4b is when that stopped being a
+    /// comment.** Through M7.3 both fidelities returned `Watt::ZERO` and the two
+    /// zeros meant different things: for `CutPointSplitter` it is a gap (a
+    /// boiling-range split has no trays, no boilup, nothing to compute a duty
+    /// from), for the cascade it was "M7.4 has not landed yet". Once the cascade
+    /// computes real duties, keeping the splitter's zero would publish a number
+    /// no model produced — and a frontend sizing cooling water off a reported
+    /// `0 W` is the finite-deterministic-plausible-wrong shape this workspace
+    /// keeps catching. `None` says "this fidelity does not answer that", which
+    /// is what `NodeSnapshot::column_duty` then does not serialize.
+    ///
+    /// A cascade with nothing flowing reports `Some(ZERO)`, not `None`: an idle
+    /// column really does have zero duty, and that is an answer.
+    pub condenser_duty: Option<Watt>,
+    /// Heat ADDED at the reboiler [W], a non-negative magnitude, or `None`. See
     /// `condenser_duty`.
-    pub reboiler_duty: Watt,
+    ///
+    /// The two are always `Some` together or `None` together — a model that
+    /// knows one knows both, since M7.4b derives this one from the other plus
+    /// the column's external sensible balance (`StageCascade::duties`).
+    pub reboiler_duty: Option<Watt>,
 }
 
 /// Everything one column pass is a function of: the equipment, and the feed

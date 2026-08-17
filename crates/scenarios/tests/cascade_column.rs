@@ -79,6 +79,20 @@ fn edge_composition(engine: &Engine, name: &str) -> Vec<f64> {
 /// A source → cascade column → two-tank plant. The pressure is above atmospheric
 /// so the K-values are not all pinned at the cuts' own boiling points, and the
 /// feed is hot enough for the light cut to be genuinely volatile.
+///
+/// **The feed temperature is not free** (M7.4b). Constant molar overflow admits a
+/// saturated-liquid feed only, and `StageCascade` now refuses anything more than
+/// `1%` of the feed off-phase — about `±1.2 K` on this slate. The bubble point of
+/// a 50/50 mass mix of these two cuts at 1.5 bar is **359.36 K = 86.21 °C**, and
+/// `86.0` is what the file carries: the feed line's own frictional dissipation
+/// adds about `0.25 K` on the way in, so the column sees `359.40 K`, four
+/// hundredths of a Kelvin off saturation.
+///
+/// It was `120.0` through M7.3 and M7.4a, which is `34 K` superheated — 28% of the
+/// feed off-phase, a plant the formulation never admitted. Nothing caught it
+/// because nothing enforced it (DESIGN §5, "A precondition violation surfaced with
+/// it"); the guard and this number landed in the same slice on purpose, so the
+/// wired gates measure an admissible column.
 fn cascade_plant(extra_fidelity: &str, column_body: &str) -> String {
     format!(
         r#"
@@ -97,7 +111,7 @@ separation = "cascade"
 [nodes.feed]
 type = "source"
 pressure_bar = 5.0
-temperature_c = 120.0
+temperature_c = 86.0
 composition = {{ light = 0.5, heavy = 0.5 }}
 
 [nodes.column]
@@ -368,11 +382,11 @@ fn edge_temperature(engine: &Engine, name: &str) -> f64 {
 /// 1. **Ordered, strictly.** The overhead draw is colder than the bottoms. An
 ///    unwired column arm hands every draw the column's single mixed temperature, so
 ///    a non-strict comparison would pass on the very bug this slice fixes.
-/// 2. **Neither is the feed's.** The feed enters at 120 °C and the column has no
-///    other inflow, so its mixed temperature IS the feed's, and that is the exact
-///    number an unwired arm returns for every draw. Both must land clear of it.
-///    They land clear on the SAME side, which is a property of this fixture rather
-///    than of columns and is worth knowing before M7.4b: see the assertion.
+/// 2. **Neither is the feed's.** The column has no inflow but the feed line, so its
+///    mixed temperature IS the feed's, and that is the exact number an unwired arm
+///    returns for every draw. Both must land clear of it — and they now land on
+///    OPPOSITE sides of it, which is the stronger version of this check and is what
+///    M7.4b's feed guard bought: see the assertion.
 /// 3. **Each equals the bubble point of its own composition**, recomputed here from
 ///    the published K-values rather than by calling the cascade's own (private)
 ///    routine. This is the assertion with real physics in it: an off-by-one in the
@@ -418,18 +432,20 @@ fn each_draw_leaves_at_its_own_tray_temperature() {
     //     mixed temperature IS the feed's, and a draw still reading the node rather
     //     than the tray would sit exactly on this number.
     //
-    //     Both land BELOW it, and that is a fault in this FIXTURE rather than a
-    //     property of columns. The feed enters at 120 °C, above the bubble point of
-    //     a 50/50 mix at 1.5 bar, so it is superheated relative to the column it
-    //     feeds — and constant molar overflow admits only a saturated-liquid feed
-    //     (DESIGN §5, M7.3 correction 5). Nothing enforces that today, so this
-    //     plant has always been off-model. **M7.4b makes it an `Err` and moves this
-    //     fixture's feed onto its bubble point**; when it does, this assertion is
-    //     expected to keep holding with the two draws straddling the feed instead.
+    //     They STRADDLE it — top 345.98 K, feed 359.40 K, bottom 387.89 K — and
+    //     that is M7.4b's doing. Through M7.3 and M7.4a both draws sat below the
+    //     feed, because the fixture fed its column 34 K above the bubble point of
+    //     its own mix; the assertion held for a reason that was really a fixture
+    //     fault (DESIGN §5, "A precondition violation surfaced with it"). Now the
+    //     feed is a saturated liquid, so it necessarily sits inside the column's
+    //     own temperature profile, and the straddle is a property of COLUMNS
+    //     rather than of this plant. Asserted as such: the old one-sided version
+    //     would pass on a fixture that had drifted back off-model.
     assert!(
-        (feed - top).abs() > 1.0 && (feed - bottom).abs() > 1.0,
-        "neither draw may sit on the column's mixed feed temperature ({feed} K), which is \
-         what an unwired arm returns; got top {top} K and bottom {bottom} K"
+        top < feed - 1.0 && bottom > feed + 1.0,
+        "a saturated-liquid feed must sit strictly inside the column's profile: the overhead \
+         draw below it and the bottoms above it. Got top {top} K, feed {feed} K, bottom \
+         {bottom} K — a draw sitting ON the feed temperature is what an unwired arm returns"
     );
 
     // (3) Each against the bubble point of the composition it actually carries.
@@ -459,18 +475,34 @@ fn each_draw_leaves_at_its_own_tray_temperature() {
 /// identity; this is the ONLY place a column's draw pipe carries a live one. So it
 /// is the only gate that the arm and the transform **compose** — that the number
 /// the arm resolves is the number the transform starts from, rather than one it
-/// resolves and then drops. From the tray (~346 K here) a mild heat loss lands just
-/// below it; from the column's mixed ~393 K it lands just below THAT.
+/// resolves and then drops. From the tray (345.98 K here) the loss lands at
+/// 341.37 K; from the column's mixed 359.40 K the same loss lands at 353.63 K,
+/// which is above the tray and fails.
 ///
-/// The `UA` is deliberately small. A large one drives the outlet toward ambient
-/// from either inlet, which would make a wrong placement pass — the bound has to
-/// be reached because the arm read the right inlet, not because the exponential
-/// swamped the difference. The control below measures that directly.
+/// **Two things about it changed in M7.4b, and one of them is a fault this test
+/// had from the start.**
+///
+/// The control was **vacuous**. It compared the outlet against the midpoint
+/// between the tray and the feed — but the feed was hotter than the tray, so
+/// `outlet < tray` (the assertion above) already implied it, and it could not have
+/// failed for any `UA`. Exactly the shape `a-conjunctive-gate-hides-which-
+/// criterion-bound` records: a second assertion that fires with the first and was
+/// never shown to bind. What it was *trying* to say is a counterfactual, and that
+/// is what it says now — apply the pipe's own measured decay to the WRONG inlet
+/// and show the result would still be above the tray. That one really can fail: a
+/// large enough `UA` drives both inlets to ambient and a wrong placement would
+/// pass.
+///
+/// And the `UA` went from `40` to `10 000` W/K. At `40` the draw pipe cooled by
+/// **0.019 K** against a 54.8 kg/s stream at `cp = 2000` — the transform was live
+/// only in the sense of being non-zero, which is a thin thing for the workspace's
+/// only live instance of it to be. `10 000` gives a 4.6 K drop and still leaves the
+/// counterfactual 7.7 K clear of the tray.
 #[test]
 fn a_draw_pipes_ambient_transform_starts_from_the_tray() {
     let with_ua = healthy().replace(
         "name = \"top_draw\"\nfrom = \"column\"\nto = \"top_tank\"\nlength_m = 20.0\ndiameter_m = 0.10",
-        "name = \"top_draw\"\nfrom = \"column\"\nto = \"top_tank\"\nlength_m = 20.0\ndiameter_m = 0.10\nambient_ua_w_per_k = 40.0",
+        "name = \"top_draw\"\nfrom = \"column\"\nto = \"top_tank\"\nlength_m = 20.0\ndiameter_m = 0.10\nambient_ua_w_per_k = 10000.0",
     );
     assert!(
         with_ua.contains("ambient_ua_w_per_k"),
@@ -501,16 +533,22 @@ fn a_draw_pipes_ambient_transform_starts_from_the_tray() {
         "a draw pipe losing heat must leave below its tray temperature; got outlet \
          {outlet} K against a tray at {tray} K"
     );
-    // The control: this `UA` is mild enough that starting from the column's mixed
-    // temperature would NOT have decayed past the tray. Without this the assertion
-    // above could be satisfied by a large-enough UA regardless of the inlet, which
-    // is the "green for the wrong reason" trap.
-    let ua_ok = tray + (feed - tray) * 0.5;
+    // The control, as a COUNTERFACTUAL rather than a midpoint. Recover this pipe's
+    // own decay factor from the result — the analytic transform is
+    // `T_out = T_amb + (T_in − T_amb)·exp(−UA/(ṁ·cp))`, so the exponential is
+    // `(outlet − T_amb)/(tray − T_amb)` — and apply it to the inlet a MISPLACED arm
+    // would have used. If that lands above the tray, then the assertion above is
+    // discriminating; if it lands below, the UA has swamped the difference and the
+    // test is green for the wrong reason. The factor is the same either way, since
+    // the mass flow and cp do not depend on which inlet was read.
+    let decay = (outlet - T_AMBIENT.value()) / (tray - T_AMBIENT.value());
+    let from_the_feed = T_AMBIENT.value() + (feed - T_AMBIENT.value()) * decay;
     assert!(
-        outlet < ua_ok,
-        "the UA must be mild enough that a wrong inlet would be visible: an outlet at \
-         {outlet} K is not clear of the {ua_ok} K midpoint between the tray ({tray} K) \
-         and the feed ({feed} K)"
+        from_the_feed > tray,
+        "the UA must be mild enough that a wrong inlet would be visible: starting the same \
+         decay ({decay}) from the column's mixed {feed} K lands at {from_the_feed} K, which \
+         is not above the tray at {tray} K — so this pipe would have cooled past the tray \
+         from either inlet and the assertion above proves nothing"
     );
     assert!(
         outlet > T_AMBIENT.value(),
@@ -679,4 +717,201 @@ fn a_malformed_cascade_geometry_is_refused_at_load() {
              node name, got: {m}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// M7.4b — the duties, as wired.
+// ---------------------------------------------------------------------------
+
+/// **The WIRING gate for the duties, and it is labelled that on purpose.**
+///
+/// The duty physics is gated in isolation in
+/// `refinery-solvers/tests/reference/cascade.rs` — the `α = 1` hand calculation
+/// and the condenser's own envelope. What that file cannot see, and this does, is
+/// the column as a plant: the difference of the two reported duties against the
+/// enthalpy the engine's own EDGES carry, computed from the pipes' mass flows,
+/// stream temperatures and mixed `cp`s rather than from anything the separation
+/// model returned.
+///
+/// So it exercises the draw-flow write, `edge_temperature_at`'s column arm from
+/// M7.4a, and `cp` mixing, end to end. It does **not** check that either duty is
+/// physically right: `Q_reb` is defined as `Q_cond` plus this balance
+/// (`StageCascade::duties`), so a pair of duties both wrong by the same amount
+/// would pass here. Said explicitly per `a-conjunctive-gate-hides-which-
+/// criterion-bound`, because a reader would otherwise take a green energy
+/// balance for a green duty.
+#[test]
+fn the_reported_duties_bracket_the_enthalpy_the_plants_own_edges_carry() {
+    let mut engine = build(&healthy()).expect("the cascade plant should build");
+    engine.tick().expect("tick should converge");
+
+    let column = engine.graph.find_node("column").unwrap();
+    let separation = &engine.node_states().column_separation[&column];
+    let condenser = separation
+        .condenser_duty
+        .expect("the cascade fidelity computes duties")
+        .value();
+    let reboiler = separation
+        .reboiler_duty
+        .expect("the cascade fidelity computes duties")
+        .value();
+
+    // `energy::T_REF`. The engine's datum, spelled out, because the whole point
+    // of this assertion is that the duties are comparable with the enthalpy flux
+    // the rest of the engine computes — a second datum here would hide exactly
+    // the drift `datum-consistency-in-a-holdup-balance` records.
+    let datum = 273.15;
+    let flux = |name: &str| -> f64 {
+        let eid = engine
+            .graph
+            .edge_ids()
+            .find(|e| engine.graph.pipe(*e).name == name)
+            .unwrap();
+        let stream = &engine.graph.pipe(eid).stream;
+        stream.mass_flow.value()
+            * stream.composition.mixture_cp(&engine.slate).value()
+            * (stream.temperature.value() - datum)
+    };
+
+    let balance = flux("top_draw") + flux("bottom_draw") - flux("feed_line");
+    approx::assert_relative_eq!(reboiler - condenser, balance, max_relative = 1e-6);
+
+    // Non-vacuous in two ways that both have to hold. The balance must be a real
+    // number rather than the zero a single-temperature column would give — that
+    // zero is what M7.4a's column was, and it is what M7.4b's draws ended.
+    assert!(
+        balance.abs() > 1e-3 * condenser,
+        "the external balance is {balance:.4e} W against a condenser duty of \
+         {condenser:.4e} W. At that ratio this identity would hold for any two equal duties, \
+         and the column would still be the enthalpy-neutral one M7.4a left behind."
+    );
+    // And both duties must be real loads rather than the sensible balance twice.
+    assert!(
+        condenser > 10.0 * balance.abs() && reboiler > 10.0 * balance.abs(),
+        "a column's duties are mostly LATENT — got a condenser at {condenser:.4e} W and a \
+         reboiler at {reboiler:.4e} W against a sensible balance of {balance:.4e} W. Duties \
+         of the balance's own size would mean the latent term was dropped."
+    );
+}
+
+/// The duties reach a frontend, and only where a model computed them.
+///
+/// `NodeSnapshot::column_duty` is `Some` on the cascade column and absent on
+/// everything else — including, in the mirror plant below, on a cut-point column,
+/// whose fidelity has no condenser or reboiler to report on. That asymmetry is
+/// the reason the field is an `Option` rather than two `f64`s defaulting to zero:
+/// a frontend sizing cooling water off a reported `0 W` is the shape rule 5
+/// forbids, and it is `Command::SetHeatInput`'s lesson run the other way — there,
+/// a consequence nothing reported; here, a report nothing computed.
+///
+/// It is also what keeps the twelve shipped scenarios byte-identical, since
+/// `skip_serializing_if` drops the key entirely on every one of them.
+#[test]
+fn only_a_fidelity_that_computes_duties_reports_them() {
+    let mut engine = build(&healthy()).expect("the cascade plant should build");
+    engine.tick().expect("tick should converge");
+    let snapshot = engine.snapshot();
+
+    let column = snapshot
+        .nodes
+        .iter()
+        .find(|n| n.name == "column")
+        .expect("the plant has a column");
+    let duty = column
+        .column_duty
+        .expect("a cascade column reports its duties");
+    assert!(
+        duty.condenser_w > 0.0 && duty.reboiler_w > 0.0,
+        "both duties are non-negative magnitudes and this column is running: got {duty:?}"
+    );
+    for node in &snapshot.nodes {
+        if node.name != "column" {
+            assert!(
+                node.column_duty.is_none(),
+                "'{}' is not a column and must report no duties",
+                node.name
+            );
+        }
+    }
+
+    // The JSON a frontend actually receives omits the key where there is nothing
+    // to say — asserted on the serialized form, because a `None` that still
+    // serialized as `null` would change every existing scenario's bytes.
+    let json = serde_json::to_string(&snapshot).unwrap();
+    assert_eq!(
+        json.matches("column_duty").count(),
+        1,
+        "exactly one node in this plant may carry the key"
+    );
+
+    // The mirror: the same plant on the other separation fidelity reports
+    // nothing, because a boiling-range split has no such equipment.
+    let splitter_column = r#"smearing_k = 0.0
+draws = [
+    { outlet = "top_tank", up_to_c = 100.0 },
+    { outlet = "bottom_tank" },
+]
+"#;
+    let plant = cascade_plant("", splitter_column)
+        .replace("separation = \"cascade\"", "separation = \"cut_point\"");
+    let mut engine = build(&plant).expect("the same plant on the splitter fidelity");
+    engine.tick().expect("tick should converge");
+    let json = serde_json::to_string(&engine.snapshot()).unwrap();
+    assert!(
+        !json.contains("column_duty"),
+        "a cut-point column has no duties to report, not zero ones"
+    );
+}
+
+/// **The feed guard runs every tick, so the fixture is run for 300 of them.**
+///
+/// Every other cascade test in this file ticks once, and no scenario file selects
+/// the cascade — so until this test the guard's window had only ever been checked
+/// against a first-tick feed temperature. That is not enough: the window is
+/// ±1.2 K, the fixture sits 0.04 K above saturation, and 0.25 K of that margin is
+/// the feed line's own frictional dissipation, which is a function of the flow.
+/// The tanks fill over 300 ticks, so back pressure moves, the flow moves, the
+/// dissipation moves with it — and a guard that tripped on tick 200 would be an
+/// `Err` that kills a run rather than a number that drifts.
+///
+/// Measured rather than assumed, per `a-cached-classification-expires`: a plant
+/// classified admissible at `t = 0` has not been shown to stay admissible.
+#[test]
+fn the_cascade_column_stays_admissible_for_a_long_run() {
+    let mut engine = build(&healthy()).expect("the cascade plant should build");
+    let mut worst_offset: f64 = 0.0;
+    let column = engine.graph.find_node("column").unwrap();
+    let pressure = match &engine.graph.node(column).kind {
+        NodeKind::Column { pressure, .. } => *pressure,
+        other => panic!("expected a column, got {other:?}"),
+    };
+    let feed_mix = Composition::from_weights(&[0.5, 0.5]).unwrap();
+    let bubble = bubble_point_of(&engine.slate, &feed_mix, pressure);
+
+    for tick in 0..300 {
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("tick {tick} must converge, not refuse the feed: {e}"));
+        let offset = edge_temperature(&engine, "feed_line") - bubble;
+        worst_offset = worst_offset.max(offset.abs());
+    }
+
+    // The margin actually used, so a future edit that eats it is visible as a
+    // number rather than as a run that dies 200 ticks in. The window here is
+    // ε·Δh_vap/c̄p ≈ 1.2 K.
+    assert!(
+        worst_offset < 0.3,
+        "over 300 ticks the feed drifted {worst_offset} K from its bubble point ({bubble} K), \
+         which is most of the ~1.2 K window. The fixture's declared feed temperature needs \
+         re-deriving against the dissipation this plant actually produces."
+    );
+
+    // And the duties are still real at the end — a long run must not quietly
+    // arrive at a column doing nothing.
+    let separation = &engine.node_states().column_separation[&column];
+    assert!(
+        separation.condenser_duty.unwrap().value() > 0.0
+            && separation.reboiler_duty.unwrap().value() > 0.0,
+        "after 300 ticks the column must still be running: got {separation:?}"
+    );
 }

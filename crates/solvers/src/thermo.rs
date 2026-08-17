@@ -10,7 +10,7 @@
 use refinery_core::components::Slate;
 use refinery_core::error::SimError;
 use refinery_core::traits::ThermoModel;
-use refinery_core::units::{Kelvin, Pascal, P_ATM, R_GAS};
+use refinery_core::units::{JPerMol, Kelvin, Pascal, P_ATM, R_GAS};
 
 /// Validate the state a K-value is asked for, shared by both implementations so
 /// neither can be the one that lets a NaN through (rule 5).
@@ -154,6 +154,53 @@ impl ThermoModel for TroutonThermo {
         }
         Ok(k)
     }
+
+    /// Trouton's rule: `Δh_vap = C·tb` [J/mol].
+    ///
+    /// **`temperature` is ignored, and that is a consistency requirement rather
+    /// than a simplification.** The vapour pressure above integrates
+    /// Clausius–Clapeyron with `Δh_vap` held CONSTANT — that is the only reason
+    /// it comes out as a closed form — so this method returning a `T`-dependent
+    /// latent heat would contradict the `k_value` the same model hands out one
+    /// line up. The two are the same number seen twice, which is what makes
+    /// `d ln K/d(1/T) = −Δh_vap/R` an exact identity here and not an
+    /// approximation (`ThermoModel::dh_vap`).
+    ///
+    /// A `T`-dependent form (Watson) un-defers by changing BOTH methods
+    /// together; the parameter is in the signature so that swap needs no trait
+    /// churn.
+    ///
+    /// The magnitude rests on the same single fitted constant `k_value` does,
+    /// with the same honesty about it (DESIGN §5, correction 6): `tb` is slate
+    /// data, `C` is one empirical number. Here it is not even attenuated —
+    /// `Δh_vap` is *linear* in `C`, where `K` buries it in an exponent — so a
+    /// duty is the most `C`-sensitive quantity this model produces, and the
+    /// envelope gate `vapour_pressure.rs` carries is what bounds it.
+    fn dh_vap(
+        &self,
+        slate: &Slate,
+        component: usize,
+        temperature: Kelvin,
+    ) -> Result<JPerMol, SimError> {
+        // `P_ATM` rather than a caller's pressure: `check_state` needs one and a
+        // latent heat is not a function of it here. Passing the anchor the
+        // correlation is integrated from keeps the guard honest without
+        // implying a dependence.
+        check_state(slate, component, temperature, P_ATM, "trouton")?;
+        // Trouton's rule: Δs_vap(tb) ≈ C, so Δh_vap = C·tb.
+        let dh = self.trouton_constant * slate.get(component).tb.value();
+        if !dh.is_finite() || dh <= 0.0 {
+            return Err(SimError::NonFiniteState {
+                location: format!(
+                    "trouton dh_vap for '{}' (tb = {} K, C = {})",
+                    slate.get(component).name,
+                    slate.get(component).tb.value(),
+                    self.trouton_constant
+                ),
+            });
+        }
+        Ok(JPerMol(dh))
+    }
 }
 
 /// K-values supplied per component, times an optional power of temperature:
@@ -194,6 +241,10 @@ pub struct ConstantAlphaThermo {
     t_ref: Kelvin,
     /// `n` in `K_c = k_c·(T/T_ref)^n`. `0` is the constant model.
     exponent: f64,
+    /// One `Δh_vap` per slate position [J/mol], or `None` if the test did not
+    /// supply any. `None` is an `Err` from `dh_vap`, never a default — see
+    /// `with_dh_vap`.
+    dh_vap: Option<Vec<f64>>,
 }
 
 impl ConstantAlphaThermo {
@@ -254,7 +305,52 @@ impl ConstantAlphaThermo {
             k_values,
             t_ref,
             exponent,
+            dh_vap: None,
         })
+    }
+
+    /// The same model, additionally handed one `Δh_vap` per slate position
+    /// [J/mol] — what a **duty** gate needs, and what a profile gate does not.
+    ///
+    /// Parallel to the K-values in every respect, and for the same reason: a
+    /// cascade's duties are `V·λ̄` plus sensible terms, so a gate that wants to
+    /// pin a duty against a hand calculation must be able to supply `λ` with no
+    /// correlation in the loop, exactly as it supplies `K`. Trouton's constant
+    /// is then held out of the duty algebra the way it is already held out of
+    /// the Fenske algebra.
+    ///
+    /// **Separate from the constructor, so that not supplying one is a refusal
+    /// rather than a default.** A `Δh_vap` this model was never given has no
+    /// value it could invent — unlike `K`, there is not even a wrong-but-
+    /// tempting answer to reach for — so `dh_vap` errs, and a cascade asked for
+    /// duties on such a model fails loudly instead of reporting a plausible
+    /// zero.
+    ///
+    /// # Errors
+    /// `SimError` if the vector does not match the slate length or carries a
+    /// non-finite or non-positive latent heat. Zero is refused with the rest:
+    /// a component that condenses with no heat released is the "finite,
+    /// deterministic, plausible, wrong" shape, not a modelling choice.
+    pub fn with_dh_vap(mut self, slate: &Slate, dh_vap: Vec<f64>) -> Result<Self, SimError> {
+        if dh_vap.len() != slate.len() {
+            return Err(SimError::Scenario(format!(
+                "constant-alpha thermo has {} heats of vaporization for a {}-component slate",
+                dh_vap.len(),
+                slate.len()
+            )));
+        }
+        if let Some((i, dh)) = dh_vap
+            .iter()
+            .enumerate()
+            .find(|(_, dh)| !dh.is_finite() || **dh <= 0.0)
+        {
+            return Err(SimError::Scenario(format!(
+                "constant-alpha dh_vap for '{}' must be finite and > 0, got {dh} J/mol",
+                slate.get(i).name
+            )));
+        }
+        self.dh_vap = Some(dh_vap);
+        Ok(self)
     }
 }
 
@@ -296,6 +392,31 @@ impl ThermoModel for ConstantAlphaThermo {
             });
         }
         Ok(scaled)
+    }
+
+    /// The supplied latent heat, or an `Err` if none was supplied.
+    ///
+    /// Constant in `T` like the K-values are constant in `P`: this model does
+    /// not correlate anything, it reports what it was handed. It is therefore
+    /// held to no identity against `k_value` — there is no integrated vapour
+    /// pressure for one to be consistent with (`ThermoModel::dh_vap`).
+    fn dh_vap(
+        &self,
+        slate: &Slate,
+        component: usize,
+        temperature: Kelvin,
+    ) -> Result<JPerMol, SimError> {
+        check_state(slate, component, temperature, P_ATM, "constant_alpha")?;
+        match &self.dh_vap {
+            Some(dh) => Ok(JPerMol(dh[component])),
+            None => Err(SimError::Scenario(format!(
+                "constant-alpha thermo was given K-values but no heats of vaporization, so it \
+                 cannot answer for '{}'. A duty needs a latent heat; build the model with \
+                 `with_dh_vap` (a gate that only needs a PROFILE does not, which is why the \
+                 two are separate).",
+                slate.get(component).name
+            ))),
+        }
     }
 }
 
@@ -513,6 +634,167 @@ mod tests {
             4.0,
             max_relative = 1e-14
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // M7.4b — `Δh_vap`, and the identity that ties it to the vapour pressure.
+    // -----------------------------------------------------------------------
+
+    /// **The Clausius–Clapeyron identity, and it is a NEW SHAPE of gate here.**
+    ///
+    /// A model whose `k_value` integrates Clausius–Clapeyron has already
+    /// committed to a heat of vaporization — the constant it integrated — so the
+    /// two methods are not independent and the slope of the vapour pressure
+    /// recovers it:
+    ///
+    /// ```text
+    /// d ln K / d(1/T) = −Δh_vap / R          (at fixed P)
+    /// ```
+    ///
+    /// `ln K` is EXACTLY linear in `1/T` for this form, so a two-point secant is
+    /// not an approximation of the derivative — it *is* the derivative, and the
+    /// comparison is to machine precision rather than to a truncation tolerance.
+    ///
+    /// **What separates it from the three identities above.** Those hold for any
+    /// Trouton constant, which is DESIGN §5 correction 4's point — they are
+    /// structurally incapable of policing one. This one is not: the quantity it
+    /// pins is `C·tb`, so it MOVES with `C`. It still does not catch a wrong `C`
+    /// (both sides move together, which is what the envelope in
+    /// `tests/reference/vapour_pressure.rs` is for) — what it catches is the two
+    /// halves of one model **disagreeing**, which is the failure that would let a
+    /// cascade solve its profile on one latent heat and its duties on another.
+    /// The last assertion measures that distinction rather than asserting it.
+    #[test]
+    fn the_latent_heat_is_the_slope_of_the_vapour_pressure() {
+        let slate = slate_with_tbs(&[300.0, 420.0, 600.0]);
+        for c in CONSTANTS {
+            let thermo = TroutonThermo::with_trouton_constant(c);
+            for i in 0..slate.len() {
+                for pressure in [P_ATM, P_ATM * 7.0] {
+                    let (t1, t2) = (Kelvin(350.0), Kelvin(500.0));
+                    let ln_k1 = thermo.k_value(&slate, i, t1, pressure).unwrap().ln();
+                    let ln_k2 = thermo.k_value(&slate, i, t2, pressure).unwrap().ln();
+                    let slope = (ln_k2 - ln_k1) / (1.0 / t2.value() - 1.0 / t1.value());
+                    let recovered = -R_GAS * slope;
+                    let published = thermo.dh_vap(&slate, i, t1).unwrap().value();
+                    approx::assert_relative_eq!(recovered, published, max_relative = 1e-10);
+                }
+            }
+        }
+
+        // **The identity is not blind to the constant**, which is the whole
+        // reason it is worth having next to `K = 1 at tb`. A Δh_vap taken from a
+        // DIFFERENT constant than the vapour pressure was integrated with fails
+        // it by exactly the ratio of the two — measured here rather than
+        // asserted, so a future change that made `dh_vap` ignore `C` would show
+        // up as this assertion going quiet.
+        let shipped = TroutonThermo::new();
+        let wrong = TroutonThermo::with_trouton_constant(61.6);
+        let from_shipped = shipped.dh_vap(&slate, 0, Kelvin(350.0)).unwrap().value();
+        let from_wrong = wrong.dh_vap(&slate, 0, Kelvin(350.0)).unwrap().value();
+        approx::assert_relative_eq!(
+            from_shipped / from_wrong,
+            TroutonThermo::TROUTON_CONSTANT / 61.6,
+            max_relative = 1e-12
+        );
+    }
+
+    /// `Δh_vap` is `C·tb` and is INDEPENDENT of temperature — which is not a
+    /// simplification but the consistency requirement the identity above rests
+    /// on. The closed-form vapour pressure exists only because the integration
+    /// held `Δh_vap` constant; a `T`-dependent value here would contradict the
+    /// `K` the same model returns.
+    ///
+    /// The `tb` proportionality is asserted separately, because temperature
+    /// independence alone would also hold for a model that returned one constant
+    /// for every cut — and that model would give a three-cut column one latent
+    /// heat, which is the mistake a duty is most sensitive to.
+    #[test]
+    fn the_latent_heat_is_proportional_to_tb_and_flat_in_temperature() {
+        let slate = slate_with_tbs(&[300.0, 450.0]);
+        let thermo = TroutonThermo::new();
+        for t in [200.0, 350.0, 700.0, 1200.0] {
+            assert_eq!(
+                thermo.dh_vap(&slate, 0, Kelvin(t)).unwrap(),
+                JPerMol(TroutonThermo::TROUTON_CONSTANT * 300.0)
+            );
+        }
+        let light = thermo.dh_vap(&slate, 0, Kelvin(350.0)).unwrap().value();
+        let heavy = thermo.dh_vap(&slate, 1, Kelvin(350.0)).unwrap().value();
+        approx::assert_relative_eq!(heavy / light, 450.0 / 300.0, max_relative = 1e-14);
+    }
+
+    /// The states a latent heat is refused at, on every model — the same
+    /// two-implementation coverage `an_impossible_state_is_refused_by_both_models`
+    /// insists on for `k_value`, plus the two fidelities that have no latent heat
+    /// to give at all.
+    #[test]
+    fn a_latent_heat_is_refused_rather_than_invented() {
+        let slate = slate_with_tbs(&[400.0, 500.0]);
+        let supplied = ConstantAlphaThermo::new(&slate, vec![2.0, 0.5])
+            .unwrap()
+            .with_dh_vap(&slate, vec![30_000.0, 40_000.0])
+            .unwrap();
+        let models: [&dyn ThermoModel; 2] = [&TroutonThermo::new(), &supplied];
+        for m in models {
+            let n = m.name();
+            assert!(
+                m.dh_vap(&slate, 2, Kelvin(400.0)).is_err(),
+                "{n}: a component index off the slate must be refused"
+            );
+            assert!(
+                m.dh_vap(&slate, 0, Kelvin(0.0)).is_err(),
+                "{n}: a zero temperature must be refused"
+            );
+            assert!(
+                m.dh_vap(&slate, 0, Kelvin(f64::NAN)).is_err(),
+                "{n}: a NaN temperature must be refused"
+            );
+        }
+        assert_eq!(
+            supplied.dh_vap(&slate, 0, Kelvin(400.0)).unwrap().value(),
+            30_000.0
+        );
+
+        // A constant-α model given no latent heats says so. There is no
+        // tempting-but-wrong answer to reach for here — unlike `K`, where `1`
+        // would have looked plausible — so the only failure available is a zero,
+        // and a zero duty is exactly what a frontend would size equipment from.
+        let unsupplied = ConstantAlphaThermo::new(&slate, vec![2.0, 0.5]).unwrap();
+        let message = unsupplied
+            .dh_vap(&slate, 0, Kelvin(400.0))
+            .expect_err("a model handed no latent heats cannot supply one")
+            .to_string();
+        assert!(
+            message.contains("with_dh_vap"),
+            "the refusal must name the constructor that fixes it, got: {message}"
+        );
+
+        // And the fidelity every pre-M7.2 scenario selects has no vapour phase at
+        // all — the arm's only reader, exactly as for its `k_value` twin.
+        let message = crate::ConstantThermo
+            .dh_vap(&slate, 0, Kelvin(400.0))
+            .expect_err("the constant fidelity has no vapour phase")
+            .to_string();
+        assert!(
+            message.contains("trouton"),
+            "the refusal must name a fidelity that CAN answer, got: {message}"
+        );
+
+        // Supplied vectors are validated like the K-values are.
+        assert!(ConstantAlphaThermo::new(&slate, vec![2.0, 0.5])
+            .unwrap()
+            .with_dh_vap(&slate, vec![30_000.0])
+            .is_err());
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            assert!(
+                ConstantAlphaThermo::new(&slate, vec![2.0, 0.5])
+                    .unwrap()
+                    .with_dh_vap(&slate, vec![30_000.0, bad])
+                    .is_err(),
+                "a latent heat of {bad} J/mol must be refused"
+            );
+        }
     }
 
     /// `new` is the `exponent = 0` case bit-for-bit, so every M7.2 flash gate

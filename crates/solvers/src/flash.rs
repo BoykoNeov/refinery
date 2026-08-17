@@ -177,7 +177,7 @@ mod tests {
     use super::*;
     use crate::{ConstantAlphaThermo, ConstantThermo};
     use refinery_core::components::{Phase, PseudoComponent, Slate};
-    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, P_ATM};
+    use refinery_core::units::{JPerKgK, JPerMol, KgPerM3, KgPerMol, P_ATM};
 
     fn slate(n: usize) -> Slate {
         Slate::new(
@@ -296,6 +296,16 @@ mod tests {
                 _pressure: Pascal,
             ) -> Result<f64, SimError> {
                 Ok(self.0)
+            }
+            fn dh_vap(
+                &self,
+                _slate: &Slate,
+                _component: usize,
+                _temperature: Kelvin,
+            ) -> Result<JPerMol, SimError> {
+                // A flash is isothermal and reads no latent heat; this arm is
+                // here to satisfy the trait, not to be reached.
+                Err(SimError::Numerical("the broken stub has no Δh_vap".into()))
             }
         }
 

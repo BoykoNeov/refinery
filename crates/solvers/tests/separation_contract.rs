@@ -43,8 +43,8 @@ impl SeparationModel for ShortSplitter {
                 composition: pass.feed.clone(),
                 temperature: pass.temperature,
             }],
-            condenser_duty: Watt::ZERO,
-            reboiler_duty: Watt::ZERO,
+            condenser_duty: None,
+            reboiler_duty: None,
         })
     }
 }
@@ -212,8 +212,8 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
                 composition: feed,
                 temperature: Kelvin(523.15),
             }],
-            condenser_duty: Watt::ZERO,
-            reboiler_duty: Watt::ZERO,
+            condenser_duty: None,
+            reboiler_duty: None,
         },
     );
 

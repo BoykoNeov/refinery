@@ -24,6 +24,7 @@
 //! number.
 
 use refinery_core::components::{Composition, Slate};
+use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
 use refinery_core::graph::{CascadeSpec, ColumnDraw};
 use refinery_core::traits::{ColumnPass, DrawSeparation, Separation, SeparationModel, ThermoModel};
@@ -140,6 +141,129 @@ impl StageCascade {
         }
     }
 
+    /// The column's two heat duties [W], as emergent diagnostics.
+    ///
+    /// **Why they are not two symmetric envelope balances, which is what M7.4b
+    /// set out to build.** The condenser's envelope is exact and needs nothing
+    /// from the column's interior; the reboiler's does not have that property,
+    /// and neither does any interior stage. Constant molar overflow fixes `L`
+    /// and `V` instead of solving each stage's energy balance, so every interior
+    /// stage carries an energy residual, and summing them **telescopes** to
+    /// roughly `V·[λ̄(y_1) − λ̄(y_N)]` rather than cancelling. On this
+    /// workspace's own two-cut fixture the molar latent heats differ by 30%
+    /// (`88·333` against `88·433` J/mol), while the sensible external balance
+    /// the pair is supposed to bracket is about 9% of a duty. Two locally-exact
+    /// envelopes would therefore disagree with the column's own external balance
+    /// by three times the quantity that balance measures — a diagnostic pair
+    /// that reports a plant creating or destroying energy, which is worse than a
+    /// coarse one.
+    ///
+    /// So the pair is built the other way round:
+    ///
+    /// ```text
+    /// Q_cond = V·λ̄(y₁) + V·c̄p(y₁)·(T₁ − T_cond)          exact, local
+    /// Q_reb  = Q_cond + [Σᵢ ṁᵢ·cpᵢ·(Tᵢ − T_REF) − ṁ_F·cp_F·(T_F − T_REF)]
+    /// ```
+    ///
+    /// The condenser is determined by physics; the reboiler is the duty that
+    /// **closes the column's external energy balance**, which is the property a
+    /// plant-level energy invariant needs and the one a locally-exact pair would
+    /// not have. What it costs is stated rather than hidden: `Q_reb` differs
+    /// from its own local envelope `≈ V·λ̄(y_N)` by that same CMO telescoping
+    /// term, so the reboiler duty carries the formulation's error and the
+    /// condenser duty does not.
+    ///
+    /// **And that is why the roadmap's "duty difference" box cannot be its own
+    /// gate.** `Q_reb − Q_cond` is the external sensible balance *by
+    /// construction* here, so asserting it equals the external sensible balance
+    /// is the tautology M4's two-duty lesson warns about, one level up. The real
+    /// gates are: the condenser duty reconstructed independently from the public
+    /// return and a published `k_value` (`tests/reference/cascade.rs`), the
+    /// `α = 1` case where the whole pair reduces to one hand-computed `V·λ̄(z)`
+    /// with no sensible term at all, and an envelope on the reboiler.
+    ///
+    /// **The second condenser term is real physics, not a CMO artifact.** A
+    /// total condenser takes saturated VAPOUR in at `y₁` and puts saturated
+    /// LIQUID out at the same composition, and those two states are at different
+    /// temperatures: `T₁` is the dew point of `y₁` (which is exactly what
+    /// `Σ_c K_c(T₁)·x₁_c = 1` makes stage 1's bubble point) and `T_cond` is its
+    /// bubble point, which is lower. Reading a total condenser as pure latent
+    /// heat is wrong by `V·c̄p·(T₁ − T_cond)`, and on a wide-boiling cut that is
+    /// not small.
+    #[allow(clippy::too_many_arguments)]
+    fn duties(
+        &self,
+        slate: &Slate,
+        thermo: &dyn ThermoModel,
+        flows: &Flows,
+        distillate: &DrawState,
+        stage_one_t: Kelvin,
+        condenser_t: Kelvin,
+        draws: &[DrawSeparation],
+        pass: &ColumnPass<'_>,
+    ) -> Result<(Watt, Watt), SimError> {
+        let vapour = flows.vapour;
+        let y_one = distillate.moles.fractions();
+
+        // Latent: the whole uniform vapour rate condenses, at the composition it
+        // condenses AT. Evaluated at `condenser_t` because that is the state the
+        // latent heat is released into; `TroutonThermo` ignores the argument, and
+        // a `T`-dependent Δh_vap would want exactly this one.
+        let latent = vapour * mixture_dh_vap(slate, thermo, y_one, condenser_t)?;
+        // Sensible: dew point down to bubble point, same composition, all of it
+        // as liquid once condensed.
+        let sensible =
+            vapour * mixture_molar_cp(slate, y_one) * (stage_one_t.value() - condenser_t.value());
+        let condenser_duty = latent + sensible;
+
+        // The external sensible balance, in the ENGINE's datum (`energy::T_REF`)
+        // rather than a datum local to this function — `datum-consistency-in-a-
+        // holdup-balance`. It cancels out of the difference analytically, but the
+        // number these duties must be comparable with is `energy::enthalpy_flux`,
+        // and a second datum is how the two drift.
+        let feed_flux = pass.feed_flow.value()
+            * pass.feed.mixture_cp(slate).value()
+            * (pass.temperature.value() - T_REF.value());
+        let mut draw_flux = 0.0;
+        for draw in draws {
+            draw_flux += draw.split
+                * pass.feed_flow.value()
+                * draw.composition.mixture_cp(slate).value()
+                * (draw.temperature.value() - T_REF.value());
+        }
+        let reboiler_duty = condenser_duty + (draw_flux - feed_flux);
+
+        for (name, duty) in [("condenser", condenser_duty), ("reboiler", reboiler_duty)] {
+            // Two checks with different standing, and it is worth not conflating
+            // them.
+            //
+            // The FINITENESS half is rule 5's mandated post-solve check ("check
+            // for NaN/Inf after every solve"), and it needs no reachability
+            // argument to earn its place.
+            //
+            // The NON-NEGATIVE half is the sign convention: `Separation`'s fields
+            // are magnitudes with the direction in the name (the
+            // `Furnace`/`Cooler` convention), so a condenser that heats is not
+            // representable and a negative number here would be a solve that has
+            // left the physical region. **Nothing has been shown to reach it** —
+            // `the_duties_stay_non_negative_where_it_is_hardest` pushes five
+            // adversarial configurations at it and the closest comes within 3.7 kW
+            // on a 311 kW duty. That is deliberately weaker than the claim
+            // `flash.rs` makes when it DELETES an unreachable guard, which rests
+            // on a proof ("beta is 0.0, 1.0, or a midpoint"). No such proof exists
+            // here, so the check stays and the margin is gated instead.
+            if !duty.is_finite() || duty < 0.0 {
+                return Err(SimError::Numerical(format!(
+                    "stage cascade: the {name} duty came out as {duty:.4e} W. Both duties are \
+                     non-negative magnitudes — a condenser removes heat and a reboiler adds it \
+                     — so a negative one is a profile that has left the physical region rather \
+                     than a column running backwards."
+                )));
+            }
+        }
+        Ok((Watt(condenser_duty), Watt(reboiler_duty)))
+    }
+
     /// Check a column's cascade geometry without solving it — what the LOADER
     /// calls so a malformed cascade column is refused when the file is read
     /// rather than on its first tick.
@@ -235,8 +359,12 @@ impl SeparationModel for StageCascade {
                         temperature: pass.temperature,
                     })
                     .collect(),
-                condenser_duty: Watt::ZERO,
-                reboiler_duty: Watt::ZERO,
+                // `Some(ZERO)`, not `None`: an idle column really does have zero
+                // duty, and that is an ANSWER — this fidelity has a condenser and
+                // a reboiler, they just have nothing to do. `None` is the
+                // splitter's claim, that there is no such equipment to report on.
+                condenser_duty: Some(Watt::ZERO),
+                reboiler_duty: Some(Watt::ZERO),
             });
         }
 
@@ -258,6 +386,11 @@ impl SeparationModel for StageCascade {
         // cascade seeded at a temperature far off its own profile wastes iterations
         // for no gain.
         let seed = bubble_point(slate, thermo, feed.fractions(), pass.pressure, "the feed")?;
+
+        // The saturated-liquid precondition, enforced rather than assumed. The
+        // seed IS the feed's bubble point, so this costs one comparison.
+        check_saturated_liquid_feed(slate, thermo, feed.fractions(), seed, pass)?;
+
         let mut stage_t = vec![seed.value() + self.seed_offset.value(); plan.stages];
         let mut liquid: Vec<Vec<f64>> = vec![feed.fractions().to_vec(); plan.stages];
 
@@ -419,11 +552,26 @@ impl SeparationModel for StageCascade {
             });
         }
 
+        // The converged flow profile. Recomputed from the CONVERGED draw states
+        // rather than reusing the loop's last `flows`, which was built from the
+        // iterate before it — one iteration stale, which is inside tolerance but
+        // is not the number this solve settled on.
+        let flows = plan.flows(spec, &draws, feed_flow, feed_molar)?;
+        let (condenser_duty, reboiler_duty) = self.duties(
+            slate,
+            thermo,
+            &flows,
+            &draws[0],
+            Kelvin(stage_t[0]),
+            condenser_t,
+            &result,
+            pass,
+        )?;
+
         Ok(Separation {
             draws: result,
-            // See the type's docs: both need `Δh_vap`, which is M7.4.
-            condenser_duty: Watt::ZERO,
-            reboiler_duty: Watt::ZERO,
+            condenser_duty: Some(condenser_duty),
+            reboiler_duty: Some(reboiler_duty),
         })
     }
 }
@@ -881,6 +1029,145 @@ impl CascadePlan {
     }
 }
 
+/// The largest fraction of the feed that may be off-phase before the constant-
+/// molar-overflow formulation is refused.
+///
+/// **This is the model's own admissibility bound, and it is one number with a
+/// stated basis rather than a tolerance picked to pass** (`euler-truncation-
+/// tolerance`). Constant molar overflow admits a **saturated-liquid** feed only:
+/// feed quality `q` sets the stripping-section liquid rate through
+/// `L' = L + q·F`, so a feed off its bubble point does not merely carry a
+/// different enthalpy — it changes the cascade the profile is solved on
+/// (DESIGN §5, correction 5). `q` as a parameter is deferred with tray
+/// hydraulics and Murphree efficiency.
+///
+/// The mapping from a temperature offset to a quality error is the flash it
+/// represents: a liquid `ΔT` above its bubble point carries `c̄p·ΔT` J/mol of
+/// excess enthalpy, which vaporizes `c̄p·ΔT/λ̄` of it at the feed stage. So the
+/// admissible window is `ΔT_max = ε·λ̄/c̄p`, which is a *derived* number that
+/// differs per feed rather than a constant in Kelvin — on the M7.3 fixture's
+/// slate it is about 1.2 K, on a slate of heavier cuts it is wider.
+///
+/// `ε = 1%` is the chosen half of it, and what makes it a measurement rather than
+/// a preference is `the_window_bounds_an_error_the_model_cannot_show_you`. That
+/// test also names the uncomfortable fact about this guard: the feed temperature
+/// reaches **nothing** in this formulation except the duties' feed-enthalpy term
+/// — there is no `q`, so the profile, the splits and every draw composition are
+/// bit-identical across the whole window. The violation is therefore invisible to
+/// the model, which is exactly why it must be *checked* rather than observed, and
+/// why the only quantity `ε` can be calibrated against is the reboiler duty (it
+/// shifts by `ε·(F/V)·(λ̄(z)/λ̄(y₁))`, about `0.93·ε` on that fixture). The number
+/// is quoted in the refusal so an operator can act on it.
+///
+/// **Two-sided.** A SUBCOOLED feed is equally inadmissible and for the mirror
+/// reason — it condenses extra reflux at the feed stage, `q > 1` — so the same
+/// window applies below the bubble point. Refusing only superheat would let
+/// half the violation through silently.
+const MAX_FEED_PHASE_ERROR: f64 = 0.01;
+
+/// Refuse a feed that is not a saturated liquid.
+///
+/// This is the asymmetry DESIGN §5 argues for next to M7.3's correction 5: an
+/// **idle** column is a state the cascade *can* answer, so refusing it would
+/// make fidelity change legality for nothing; a feed off its bubble point is a
+/// state it *cannot* answer, and the rule for that is already this workspace's
+/// (`ConstantThermo::k_value` errs rather than returning a plausible number).
+/// Refuse what you cannot answer; never refuse what you can.
+fn check_saturated_liquid_feed(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    feed: &[f64],
+    bubble: Kelvin,
+    pass: &ColumnPass<'_>,
+) -> Result<(), SimError> {
+    let latent = mixture_dh_vap(slate, thermo, feed, bubble)?;
+    let heat_capacity = mixture_molar_cp(slate, feed);
+    if !heat_capacity.is_finite() || heat_capacity <= 0.0 {
+        return Err(SimError::Numerical(format!(
+            "stage cascade: the feed's molar heat capacity is {heat_capacity:.4e} J/(mol·K), so \
+             there is no window in which it counts as a saturated liquid."
+        )));
+    }
+    let window = MAX_FEED_PHASE_ERROR * latent / heat_capacity;
+    let offset = pass.temperature.value() - bubble.value();
+    if !offset.is_finite() || offset.abs() > window {
+        let (word, consequence) = if offset > 0.0 {
+            (
+                "superheated",
+                "it would flash at the feed stage, so part of the feed arrives as vapour",
+            )
+        } else {
+            (
+                "subcooled",
+                "it would condense extra reflux at the feed stage",
+            )
+        };
+        let fraction = (heat_capacity * offset / latent).abs();
+        return Err(SimError::Scenario(format!(
+            "stage cascade: the feed reaches this column at {:.2} K, which is {:.2} K {word} \
+             against its own bubble point of {:.2} K at {:.4e} Pa. Constant molar overflow \
+             admits a SATURATED-LIQUID feed only — feed quality q sets the internal liquid rate \
+             through L' = L + q·F, so {consequence}, and that changes the cascade rather than \
+             just an enthalpy term. About {:.1}% of the feed is off-phase against an admissible \
+             {:.1}%, which is a window of ±{window:.2} K here (ε·Δh_vap/cp, so it is wider on a \
+             heavier slate). Bring the feed to {:.2} K, or wait for feed quality q — deferred \
+             with tray hydraulics and Murphree efficiency (DESIGN §5, \"Deferred from M7\").",
+            pass.temperature.value(),
+            offset.abs(),
+            bubble.value(),
+            pass.pressure.value(),
+            fraction * 100.0,
+            MAX_FEED_PHASE_ERROR * 100.0,
+            bubble.value(),
+        )));
+    }
+    Ok(())
+}
+
+/// The molar latent heat of a mixture [J/mol]: `Σ_c x_c·Δh_vap_c`.
+///
+/// Linear in MOLE fraction — an ideal solution has no excess enthalpy of mixing,
+/// which is the same assumption Raoult's law already makes in `k_value`. Mixing
+/// on mass fractions instead would be the M4.2 slip (units, not the ODE) with
+/// the two bases swapped.
+fn mixture_dh_vap(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    fractions: &[f64],
+    temperature: Kelvin,
+) -> Result<f64, SimError> {
+    let mut total = 0.0;
+    for (c, x) in fractions.iter().enumerate() {
+        total += x * thermo.dh_vap(slate, c, temperature)?.value();
+    }
+    if !total.is_finite() || total <= 0.0 {
+        return Err(SimError::Numerical(format!(
+            "stage cascade: a mixture's heat of vaporization came out as {total:.4e} J/mol"
+        )));
+    }
+    Ok(total)
+}
+
+/// The molar heat capacity of a LIQUID mixture [J/(mol·K)]: `Σ_c x_c·M_c·cp_c`.
+///
+/// `PseudoComponent::cp` is per KILOGRAM, so the molar mass is the bridge and it
+/// is inside the sum rather than applied to the result — `Σ x_c M_c cp_c` is not
+/// `M̄·Σ x_c cp_c` unless every cut has the same molar mass, and the M7.3 fixture
+/// exists precisely because they do not.
+///
+/// Liquid only, which is all this needs: every draw is a liquid and the internal
+/// vapour is only ever *condensed* here, never carried as a sensible stream.
+fn mixture_molar_cp(slate: &Slate, fractions: &[f64]) -> f64 {
+    fractions
+        .iter()
+        .enumerate()
+        .map(|(c, x)| {
+            let component = slate.get(c);
+            x * component.molar_mass.value() * component.cp.value()
+        })
+        .sum()
+}
+
 /// Every component's K at every stage of a temperature profile.
 fn stage_k_values_profile(
     slate: &Slate,
@@ -1033,9 +1320,61 @@ mod tests {
         .unwrap()
     }
 
+    /// The bubble point of this fixture's 50/50 mass feed at `P_ATM` [K].
+    ///
+    /// **Hand-computed, and it is the fixture's feed temperature** — from M7.4b a
+    /// cascade refuses a feed off its bubble point, so `400.0` (which these tests
+    /// used through M7.4a, and which is 16 K superheated) is no longer a plant
+    /// this model admits. Written out rather than bisected for, so the constant is
+    /// a second derivation and not a copy of the solver's:
+    ///
+    /// ```text
+    ///   mole fractions of a 50/50 MASS mix at M = 0.1, 0.2:  x = [2/3, 1/3]
+    ///   Σ K_c(T)·x_c = (T/400)^10 · [2·(2/3) + 0.5·(1/3)] = 1.5·(T/400)^10
+    ///   = 1  ⇒  T = 400·(2/3)^0.1 = 384.1056 K
+    /// ```
+    const FEED_BUBBLE_K: f64 = 384.105_6;
+
     fn thermo(slate: &Slate) -> ConstantAlphaThermo {
         ConstantAlphaThermo::with_temperature_exponent(slate, vec![2.0, 0.5], Kelvin(400.0), 10.0)
             .unwrap()
+            // A duty needs a latent heat, and these refusal fixtures reach the
+            // duty calculation on the healthy path.
+            .with_dh_vap(slate, vec![30_000.0, 40_000.0])
+            .unwrap()
+    }
+
+    /// The bubble point of a mass composition, by bisection on the published
+    /// `k_value` — for the bespoke fixtures below, whose slates and K vectors
+    /// differ from `slate()`'s and so cannot share `FEED_BUBBLE_K`.
+    ///
+    /// A cascade refuses a feed off its bubble point (M7.4b), so a refusal test
+    /// that wants to reach some *other* guard has to get past this one first.
+    /// That ordering is deliberate — the feed's admissibility is checked before
+    /// anything is solved — and it means these fixtures now assert their guard
+    /// fires on a plant the formulation actually admits, which is strictly more
+    /// than they asserted before.
+    fn saturated_feed(slate: &Slate, thermo: &dyn ThermoModel, feed: &Composition) -> Kelvin {
+        let moles = MoleFractions::from_mass(feed, slate).unwrap();
+        let sum_kx = |t: f64| -> f64 {
+            moles
+                .fractions()
+                .iter()
+                .enumerate()
+                .map(|(c, x)| x * thermo.k_value(slate, c, Kelvin(t), P_ATM).unwrap())
+                .sum()
+        };
+        let (mut low, mut high) = (100.0_f64, 1500.0_f64);
+        assert!(sum_kx(low) < 1.0 && sum_kx(high) > 1.0);
+        for _ in 0..200 {
+            let mid = 0.5 * (low + high);
+            if sum_kx(mid) < 1.0 {
+                low = mid;
+            } else {
+                high = mid;
+            }
+        }
+        Kelvin(0.5 * (low + high))
     }
 
     fn spec(stages: u32, feed_stage: u32, reflux_ratio: f64) -> CascadeSpec {
@@ -1071,7 +1410,7 @@ mod tests {
                 pressure: P_ATM,
                 feed: &feed,
                 feed_flow: KgPerSec(feed_flow),
-                temperature: Kelvin(400.0),
+                temperature: Kelvin(FEED_BUBBLE_K),
                 cascade: spec,
             },
             &thermo,
@@ -1171,8 +1510,16 @@ mod tests {
                 feed.fractions(),
                 "nothing flows, so a draw carries the feed as an inert placeholder"
             );
-            assert_eq!(d.temperature, Kelvin(400.0));
+            assert_eq!(d.temperature, Kelvin(FEED_BUBBLE_K));
         }
+        // M7.4b: `Some(ZERO)`, not `None`. An idle cascade column HAS a condenser
+        // and a reboiler with nothing to do, which is a different statement from
+        // the splitter's "there is no such equipment here" — and the two would be
+        // indistinguishable if this fidelity reported an absence.
+        assert_eq!(idle.condenser_duty, Some(Watt::ZERO));
+        assert_eq!(idle.reboiler_duty, Some(Watt::ZERO));
+        assert_eq!(splitter.condenser_duty, None);
+        assert_eq!(splitter.reboiler_duty, None);
     }
 
     /// A malformed cascade is refused whether or not anything is flowing: the
@@ -1342,6 +1689,8 @@ mod tests {
             Kelvin(400.0),
             10.0,
         )
+        .unwrap()
+        .with_dh_vap(&wide_slate, vec![30_000.0, 40_000.0])
         .unwrap();
         let draws = vec![
             ColumnDraw::by_stage(NodeId(1), 0, Some(0.5)),
@@ -1358,7 +1707,7 @@ mod tests {
                     pressure: P_ATM,
                     feed: &feed,
                     feed_flow: KgPerSec(10.0),
-                    temperature: Kelvin(400.0),
+                    temperature: saturated_feed(&wide_slate, &wide_thermo, &feed),
                     cascade: Some(&spec),
                 },
                 &wide_thermo,
@@ -1415,6 +1764,314 @@ mod tests {
         assert!(
             result.is_err(),
             "a cascade on a fidelity with no vapour-liquid equilibrium must fail"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // M7.4b — the saturated-liquid feed becomes a guard.
+    // -----------------------------------------------------------------------
+
+    /// A pass at `offset` Kelvin from this fixture's feed bubble point.
+    fn at_feed_offset(offset: f64) -> Result<Separation, SimError> {
+        let slate = slate();
+        let thermo = thermo(&slate);
+        let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+        let draws = healthy_draws(4);
+        let spec = spec(4, 2, 2.0);
+        StageCascade::new().separate(
+            &ColumnPass {
+                slate: &slate,
+                draws: &draws,
+                smearing: Kelvin(0.0),
+                pressure: P_ATM,
+                feed: &feed,
+                feed_flow: KgPerSec(10.0),
+                temperature: Kelvin(FEED_BUBBLE_K + offset),
+                cascade: Some(&spec),
+            },
+            &thermo,
+        )
+    }
+
+    /// **The saturated-liquid feed is a precondition, and from M7.4b it is
+    /// enforced.**
+    ///
+    /// Constant molar overflow admits a saturated liquid only: feed quality `q`
+    /// sets the stripping-section liquid rate through `L' = L + q·F`, so a feed
+    /// off its bubble point changes the *cascade*, not just an enthalpy term. Both
+    /// directions are refused — a superheated feed flashes at the feed stage, a
+    /// subcooled one condenses extra reflux — and refusing only the first would
+    /// let half the violation through.
+    ///
+    /// This is the asymmetry DESIGN §5 argues next to M7.3's correction 5: an
+    /// idle column is a state this model CAN answer and so is not refused; a feed
+    /// it cannot answer for is. Refuse what you cannot answer; never refuse what
+    /// you can.
+    #[test]
+    fn a_feed_off_its_bubble_point_is_refused_in_both_directions() {
+        for (offset, word) in [(20.0, "superheated"), (-20.0, "subcooled")] {
+            let message = at_feed_offset(offset)
+                .expect_err("constant molar overflow admits a saturated-liquid feed only")
+                .to_string();
+            assert!(
+                message.contains(word),
+                "the refusal must name which way the feed is off, got: {message}"
+            );
+            assert!(
+                message.contains("bubble point") && message.contains("384."),
+                "the refusal must report the bubble point the feed should be at, got: {message}"
+            );
+            assert!(
+                message.contains("quality q"),
+                "the refusal must name the deferral that would un-defer it (DESIGN §5, \
+                 \"Deferred from M7\"), got: {message}"
+            );
+        }
+        // The window is a WINDOW, not a demand for the exact float: a scenario
+        // author cannot be expected to type a bubble point to sixteen digits, and
+        // a guard that required it would be unusable rather than strict.
+        at_feed_offset(0.5).expect("a feed a half-kelvin off saturation is still admissible");
+        at_feed_offset(-0.5).expect("and the same below");
+    }
+
+    /// **What the window bounds is an error this model does not represent at all
+    /// — which is the sharpest possible reason for it to be a refusal.**
+    ///
+    /// Trace the feed temperature through `separate` and it reaches exactly three
+    /// places: this guard, the idle placeholder, and the feed enthalpy term of the
+    /// duties. It does **not** reach the seed (that is the feed's bubble point,
+    /// not its resolved temperature), the flow profile, the stage balances or the
+    /// K-values — because there is no `q` in this formulation. So a superheated
+    /// feed does not make the cascade produce a slightly different answer; it
+    /// makes it produce the *same* answer to a different question.
+    ///
+    /// That is measured here rather than argued, and it is the whole shape of the
+    /// gate:
+    ///
+    /// 1. Every draw composition is **bit-identical** across the window, and so is
+    ///    the condenser duty. `assert_eq!`, not a tolerance — a tolerance here
+    ///    would be the vacuous-control shape (`a-control-can-be-implied-by-its-
+    ///    assertion`), since these numbers cannot move at all.
+    /// 2. The reboiler duty is the one thing that does move, by exactly
+    ///    `−ṁ_F·cp_F·ΔT` — it carries the feed enthalpy. Asserted against that
+    ///    closed form, not a bound.
+    /// 3. At the edge of the window that shift is `ε·(F/V)·(λ̄(z)/λ̄(y₁))` ≈ 0.93%
+    ///    of the duty for `ε = 1%`. **This is what makes `ε` a measured number
+    ///    rather than a preference**: the one quantity the violation is visible in
+    ///    moves by about `ε`, so the knob means what its name says.
+    ///
+    /// The first point is the reason for the third. Because the model is blind to
+    /// the violation everywhere else, no amount of running it can reveal a feed
+    /// that is off-model — which is precisely why the precondition has to be
+    /// checked rather than observed.
+    #[test]
+    fn the_window_bounds_an_error_the_model_cannot_show_you() {
+        let slate = slate();
+        let saturated = at_feed_offset(0.0).expect("the fixture is admissible on its bubble point");
+
+        // ε·Δh_vap/c̄p for this fixture's feed — the guard's own derivation,
+        // written out here so the two are independent:
+        //   z = [2/3, 1/3];  Δh_vap = [30 000, 40 000];  M·cp = [200, 400] J/(mol·K)
+        //   λ̄  = (2/3)·30 000 + (1/3)·40 000 = 33 333.3 J/mol
+        //   c̄p = (2/3)·200    + (1/3)·400    =    266.67 J/(mol·K)
+        //   window = 0.01·33 333.3/266.67 = 1.25 K
+        let window = 1.25;
+        let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+        let feed_heat_capacity = 10.0 * feed.mixture_cp(&slate).value(); // ṁ_F·cp_F [W/K]
+
+        for offset in [window * 0.98, -window * 0.98, 0.5, -0.5] {
+            let moved = at_feed_offset(offset)
+                .unwrap_or_else(|e| panic!("{offset} K is inside the window: {e}"));
+
+            // (1) The profile cannot see the feed temperature.
+            for (i, (a, b)) in saturated.draws.iter().zip(&moved.draws).enumerate() {
+                assert_eq!(
+                    a.composition.fractions(),
+                    b.composition.fractions(),
+                    "draw {i}'s composition moved with the feed temperature ({offset:+} K). \
+                     Nothing in the stage balances reads it, so this can only mean feed \
+                     quality has been wired in — at which point the guard is the wrong \
+                     mechanism and `q` is the right one."
+                );
+                assert_eq!(a.temperature, b.temperature, "draw {i}'s tray temperature");
+            }
+            assert_eq!(
+                saturated.condenser_duty, moved.condenser_duty,
+                "the condenser duty is a function of the profile alone"
+            );
+
+            // (2) The reboiler duty carries the feed enthalpy, exactly.
+            let expected = saturated.reboiler_duty.unwrap().value() - feed_heat_capacity * offset;
+            approx::assert_relative_eq!(
+                moved.reboiler_duty.unwrap().value(),
+                expected,
+                max_relative = 1e-12
+            );
+        }
+
+        // (3) And at the edge, that shift is about ε — which is what the knob
+        //     claims to mean. Bracketed rather than pinned: the ratio is
+        //     `ε·(F/V)·(λ̄(z)/λ̄(y₁))`, near 1 for an ordinary column but not equal
+        //     to it, and pinning it would be pinning this fixture's reflux ratio.
+        let shift = feed_heat_capacity * window / saturated.reboiler_duty.unwrap().value();
+        assert!(
+            (0.5 * MAX_FEED_PHASE_ERROR..2.0 * MAX_FEED_PHASE_ERROR).contains(&shift),
+            "at the edge of the window the reboiler duty moves by {shift:.4e}, which is not \
+             the same order as the {:.1}% the window admits being off-phase. Either the \
+             window derivation or the duty has drifted from what ε names.",
+            MAX_FEED_PHASE_ERROR * 100.0
+        );
+    }
+
+    /// The window is **derived per feed**, not a constant in Kelvin: it is
+    /// `ε·Δh_vap/c̄p`, so a slate of heavier cuts (more latent heat per mole for
+    /// the same heat capacity) admits a wider temperature band.
+    ///
+    /// This is what stops the bound from being a magic number. A fixed `±1.2 K`
+    /// would mean something quite different on a slate whose latent heat is twice
+    /// as large, and the guard would be strict in one plant and loose in another
+    /// for no physical reason.
+    #[test]
+    fn the_admissible_window_scales_with_the_feeds_own_latent_heat() {
+        let slate = slate();
+        let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+        let draws = healthy_draws(4);
+        let spec = spec(4, 2, 2.0);
+
+        // The same K-values, so the same bubble point and the same profile — only
+        // the latent heats are doubled.
+        let attempt = |dh: Vec<f64>, offset: f64| {
+            let thermo = ConstantAlphaThermo::with_temperature_exponent(
+                &slate,
+                vec![2.0, 0.5],
+                Kelvin(400.0),
+                10.0,
+            )
+            .unwrap()
+            .with_dh_vap(&slate, dh)
+            .unwrap();
+            StageCascade::new()
+                .separate(
+                    &ColumnPass {
+                        slate: &slate,
+                        draws: &draws,
+                        smearing: Kelvin(0.0),
+                        pressure: P_ATM,
+                        feed: &feed,
+                        feed_flow: KgPerSec(10.0),
+                        temperature: Kelvin(FEED_BUBBLE_K + offset),
+                        cascade: Some(&spec),
+                    },
+                    &thermo,
+                )
+                .is_ok()
+        };
+
+        // 2.0 K is outside the ~1.25 K window of the shipped latent heats and
+        // inside the ~2.5 K window of doubled ones. One offset, two verdicts —
+        // which is the whole claim, and neither half alone would make it.
+        assert!(
+            !attempt(vec![30_000.0, 40_000.0], 2.0),
+            "2 K must be outside the window a 33 kJ/mol feed admits"
+        );
+        assert!(
+            attempt(vec![60_000.0, 80_000.0], 2.0),
+            "2 K must be inside the window a 67 kJ/mol feed admits"
+        );
+    }
+
+    /// **The duty sign convention, pushed at rather than asserted.**
+    ///
+    /// `Separation`'s duties are non-negative MAGNITUDES with the direction in the
+    /// name (the `Furnace`/`Cooler` convention), so `duties` refuses a negative
+    /// one. That refusal is not reachable by anything here, and this test is the
+    /// record of trying: five configurations chosen to drive the reboiler duty
+    /// below zero — inverted relative volatility so the distillate is the HEAVY
+    /// cut, a near-total distillate at `D/F = 0.95`, zero reflux, and a latent
+    /// heat of 1 J/mol to shrink the term the sensible balance is added to.
+    ///
+    /// All five stay positive. The closest is `D/F = 0.9` at `R = 0`, where the
+    /// reboiler exceeds the condenser by 3.7 kW on a 311 kW duty. The reason is
+    /// structural rather than lucky: the feed is a saturated liquid, so it sits
+    /// *inside* the column's own temperature profile, and no split of it across
+    /// draws that straddle it has made the mass-weighted draw enthalpy fall below
+    /// the feed's by more than the boilup carries.
+    ///
+    /// So the guard stays and its docstring claims only what this measured —
+    /// **not shown reachable**, which is a weaker statement than `flash.rs` makes
+    /// when it deletes an unreachable check ("`beta` is 0.0, 1.0, or a midpoint,
+    /// so there is no path on which it is not finite" — a proof, which this is
+    /// not). What the test itself gates is the positive claim: this sign
+    /// convention holds where it is hardest to hold.
+    #[test]
+    fn the_duties_stay_non_negative_where_it_is_hardest() {
+        let slate = slate();
+        let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+        let mut closest = f64::INFINITY;
+
+        for (dh, d_over_f, reflux) in [
+            (1.0, 0.9, 2.0),
+            (1.0, 0.9, 0.0),
+            (1.0, 0.8, 0.0),
+            (10.0, 0.9, 0.0),
+            (1.0, 0.95, 0.0),
+        ] {
+            // Inverted volatility: the heavier cut is the volatile one, so the
+            // distillate is heavy and its MOLAR rate stays under the feed's even
+            // at `D/F = 0.95` — which is what lets the mass ratio go this high
+            // without the bottoms guard firing first.
+            let thermo = ConstantAlphaThermo::with_temperature_exponent(
+                &slate,
+                vec![0.5, 2.0],
+                Kelvin(400.0),
+                10.0,
+            )
+            .unwrap()
+            .with_dh_vap(&slate, vec![dh, dh])
+            .unwrap();
+            let draws = vec![
+                ColumnDraw::by_stage(NodeId(1), 0, Some(d_over_f)),
+                ColumnDraw::by_stage(NodeId(2), 4, None),
+            ];
+            let spec = spec(4, 2, reflux);
+            let separation = StageCascade::new()
+                .separate(
+                    &ColumnPass {
+                        slate: &slate,
+                        draws: &draws,
+                        smearing: Kelvin(0.0),
+                        pressure: P_ATM,
+                        feed: &feed,
+                        feed_flow: KgPerSec(10.0),
+                        temperature: saturated_feed(&slate, &thermo, &feed),
+                        cascade: Some(&spec),
+                    },
+                    &thermo,
+                )
+                .unwrap_or_else(|e| {
+                    panic!("Δh_vap = {dh}, D/F = {d_over_f}, R = {reflux} must solve: {e}")
+                });
+
+            let condenser = separation.condenser_duty.unwrap().value();
+            let reboiler = separation.reboiler_duty.unwrap().value();
+            assert!(
+                condenser >= 0.0 && reboiler >= 0.0,
+                "Δh_vap = {dh}, D/F = {d_over_f}, R = {reflux}: got a condenser at \
+                 {condenser} W and a reboiler at {reboiler} W"
+            );
+            closest = closest.min(reboiler - condenser);
+        }
+
+        // The margin, so that a change which makes the refusal REACHABLE shows up
+        // here as a number closing rather than as a guard quietly gaining its
+        // first caller. `a-counter-is-not-a-gate` in the other direction: this
+        // records how far the threshold is from being crossed.
+        assert!(
+            closest > 0.0 && closest < 1.0e4,
+            "the closest this slate comes to a negative reboiler duty is {closest} W. If that \
+             has gone far positive the configurations above have stopped being adversarial; \
+             if it has gone negative, `duties`' refusal is now reachable and owes a test that \
+             reaches it deliberately."
         );
     }
 }

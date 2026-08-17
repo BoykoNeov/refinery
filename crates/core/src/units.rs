@@ -84,6 +84,22 @@ unit!(/// Overall heat transfer coefficient times area, `UA` [W/K].
     WattPerKelvin);
 unit!(/// Molar mass [kg/mol].
     KgPerMol);
+unit!(/// Molar enthalpy [J/mol]. Used for a component's heat of vaporization
+    /// `Δh_vap` (`ThermoModel::dh_vap`, M7.4b).
+    ///
+    /// PER MOLE rather than per kilogram, and that is the mass ⇄ mole boundary
+    /// showing up in the type system exactly as `MoleFractions` does inside the
+    /// cascade (docs/DESIGN.md §5, fork 1). Vapour–liquid equilibrium is molar:
+    /// the quantity a condenser duty multiplies is a molar flow, so a `JPerKg`
+    /// here would be converted at every call site and the conversion would be a
+    /// thing to remember rather than a thing that typechecks. `KgPerMol` is the
+    /// only bridge between this and `JPerKg`.
+    ///
+    /// SIGN CONVENTION: positive, always — it is the heat ABSORBED turning one
+    /// mole of saturated liquid into saturated vapour. Unlike `JPerKg`'s
+    /// `Δh_rxn`, whose sign says which way a reaction runs, a vaporization has
+    /// only one direction and a negative value would mean nothing.
+    JPerMol);
 
 /// Standard gravity [m/s²].
 pub const G: f64 = 9.806_65;

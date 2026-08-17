@@ -8,7 +8,7 @@ use crate::components::Slate;
 use crate::energy::{self, T_REF};
 use crate::error::SimError;
 use crate::graph::{LeakRole, NodeKind, PlantGraph};
-use crate::snapshot::{Command, EdgeSnapshot, NodeSnapshot, Snapshot};
+use crate::snapshot::{ColumnDuty, Command, EdgeSnapshot, NodeSnapshot, Snapshot};
 use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, SeparationModel, ThermoModel};
 use crate::units::*;
 
@@ -732,6 +732,18 @@ impl Engine {
                     // `NodeSnapshot::heat_input_w` for why the sum would be
                     // the wrong number to report.
                     heat_input_w: n.heat_input.value(),
+                    // Both-or-neither: `Separation` documents them as always
+                    // `Some` together, and `zip` states that here rather than
+                    // letting a half-filled pair reach a frontend as a duty of 0.
+                    column_duty: self
+                        .node_states
+                        .column_separation
+                        .get(&id)
+                        .and_then(|s| s.condenser_duty.zip(s.reboiler_duty))
+                        .map(|(condenser, reboiler)| ColumnDuty {
+                            condenser_w: condenser.value(),
+                            reboiler_w: reboiler.value(),
+                        }),
                 }
             })
             .collect();

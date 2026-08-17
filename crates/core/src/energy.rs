@@ -1671,6 +1671,16 @@ mod tests {
                 "this sweep test has no phase equilibrium; K-values belong to `solvers`".into(),
             ))
         }
+        fn dh_vap(
+            &self,
+            _slate: &Slate,
+            _component: usize,
+            _temperature: Kelvin,
+        ) -> Result<JPerMol, SimError> {
+            Err(SimError::Numerical(
+                "this sweep test has no vapour phase; latent heats belong to `solvers`".into(),
+            ))
+        }
     }
 
     fn node(name: &str, kind: NodeKind) -> Node {

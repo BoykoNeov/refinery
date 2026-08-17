@@ -40,7 +40,7 @@ pub use thermo::{ConstantAlphaThermo, TroutonThermo};
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
 use refinery_core::traits::{Reaction, ReactionModel, ThermoModel};
-use refinery_core::units::{JPerKg, Kelvin, Pascal, Seconds};
+use refinery_core::units::{JPerKg, JPerMol, Kelvin, Pascal, Seconds};
 
 /// M1 placeholder: constant-property water; Composition's ideal-mixing
 /// helpers carry properties.
@@ -76,6 +76,26 @@ impl ThermoModel for ConstantThermo {
         Err(SimError::Scenario(
             "the 'constant' thermo fidelity has no vapour-liquid equilibrium, so it has \
              no K-value; select thermo = \"trouton\" for a model that does"
+                .into(),
+        ))
+    }
+
+    /// Refused, for `k_value`'s reason exactly.
+    ///
+    /// A model with no vapour phase has no heat of vaporization either, and the
+    /// tempting answer here is worse than `K = 1`: a zero latent heat makes a
+    /// column's condenser duty come out as pure sensible desuperheating —
+    /// small, finite, and off by an order of magnitude, which is the number a
+    /// game would size a cooling-water pump from.
+    fn dh_vap(
+        &self,
+        _slate: &Slate,
+        _component: usize,
+        _temperature: Kelvin,
+    ) -> Result<JPerMol, SimError> {
+        Err(SimError::Scenario(
+            "the 'constant' thermo fidelity has no vapour phase, so it has no heat of \
+             vaporization; select thermo = \"trouton\" for a model that does"
                 .into(),
         ))
     }

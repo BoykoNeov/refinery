@@ -158,14 +158,16 @@ cascade) is in progress**: the design note is landed (DESIGN §5, "Complex colum
 `MoleFractions` boundary, and the Rachford–Rice single-stage flash), and **M7.3
 is done** — `StageCascade` in `solvers`, `CascadeSpec` and stage-located
 `ColumnDraw`s on `NodeKind::Column`, and `thermo = "trouton"` /
-`separation = "cascade"` selectable from a scenario. **M7.4 is sliced in three and
-M7.4a is done** — `edge_temperature_at`'s column arm, so a draw now leaves at its
-own tray temperature. **M7.4b (duties, `Δh_vap`) and M7.4c (the I-series arm and
-the demo file) are the open boxes.**
+`separation = "cascade"` selectable from a scenario. **M7.4 is sliced in three,
+M7.4a is done** — `edge_temperature_at`'s column arm, so a draw leaves at its own
+tray temperature — **and M7.4b is done**: `ThermoModel::dh_vap`, both column
+duties, and a saturated-liquid feed that is now enforced rather than assumed.
+**M7.4c (the I-series arm and the demo file) is the open box.**
 The note's verdicts are decisions, not results — M7.1 corrected its call shape,
 M7.2 its signature and gate structure, M7.3 found that the constant-α model
-M7.2 shipped *for* the cascade could not have driven one stage of it, and M7.4a
-falsified its own gate's justification with a mutation.
+M7.2 shipped *for* the cascade could not have driven one stage of it, M7.4a
+falsified its own gate's justification with a mutation, and M7.4b found that the
+gate its own box specified **cannot exist**.
 
 A cascade column is specified by ratios only: `reflux_ratio` (molar, internal)
 plus one `draw_ratio` per draw (a **mass** fraction of the feed, with the bottoms
@@ -178,13 +180,29 @@ both directions: `up_to_c` + `smearing_k` are the splitter's, `stage` +
 `draw_ratio` + `phase` + `[cascade]` are the cascade's. Adding a knob to one means
 refusing it on the other.
 
-Duties are still `Watt::ZERO` at the cascade fidelity — they need `Δh_vap`, which
-is M7.4b. Draw temperatures are real tray temperatures and are now **read**:
+Draw temperatures are real tray temperatures and are **read**:
 `energy::column_draw_at` is the single owner of "which draw is this edge" for both
 composition and temperature, so the two fields of a draw always come from the same
-draw.
+draw. A cascade column is therefore not enthalpy-neutral, and M7.4b's duties are
+what close its external energy books.
 
-Because of that, a cascade column is **no longer enthalpy-neutral** and its
-external energy books do not close until M7.4b lands the duties. Nothing gates the
-gap — the I-series generator never builds a column and no scenario file selects the
-cascade — so do not read a green suite as the balance closing.
+**The two duties are not symmetric, and treating them as if they were is the
+mistake to avoid.** The condenser duty is its own exact envelope; the reboiler
+duty is *defined* as the condenser duty plus the column's external sensible
+balance. That asymmetry is forced: constant molar overflow leaves every interior
+stage with an energy residual, so a locally-exact reboiler duty would disagree with
+the column's own balance by several times the quantity that balance measures. Two
+consequences to hold on to — the reboiler duty carries the formulation's error and
+the condenser duty does not, and **"the difference equals the external balance" is
+a tautology, not a gate** (DESIGN §5, M7.4b correction 1).
+
+Both duties are `Option<Watt>`: `None` from the cut-point splitter, which has no
+such equipment, and `Some` from the cascade — including `Some(ZERO)` for an idle
+column, which is an answer rather than an absence. `NodeSnapshot::column_duty`
+carries that outward and is skipped when `None`.
+
+A cascade's feed must be a **saturated liquid** and this is now refused rather than
+assumed, in both directions, outside a window of `ε·Δh_vap/c̄p` at `ε = 1%` — about
+±1.2 K on the M7.3 slate, wider on a heavier one. Any new cascade scenario has to
+be built with its feed on the mix's bubble point at the column's pressure; that is
+a design input for the file, not something to tune afterwards.

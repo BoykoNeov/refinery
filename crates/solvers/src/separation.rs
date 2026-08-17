@@ -7,7 +7,6 @@
 use refinery_core::components::Composition;
 use refinery_core::error::SimError;
 use refinery_core::traits::{ColumnPass, DrawSeparation, Separation, SeparationModel, ThermoModel};
-use refinery_core::units::Watt;
 
 /// Split a column feed into its draws by boiling range (DESIGN §5) — the simple
 /// (game) separation fidelity, and the default every pre-M7 scenario means.
@@ -122,11 +121,15 @@ impl SeparationModel for CutPointSplitter {
             draws: result,
             // A fixed-cut split has no condenser and no reboiler: it is a
             // stoichiometric bookkeeping rule, not an energy-driven separation.
-            // Zero is therefore the honest value and not a stub — the column's
-            // ONLY energy statement at this fidelity is the one M3.2 proved, that
-            // `Σᵢ splitᵢ·cpᵢ = cp_feed` makes it energy-neutral.
-            condenser_duty: Watt::ZERO,
-            reboiler_duty: Watt::ZERO,
+            // `None` rather than the `Watt::ZERO` this returned through M7.3 —
+            // the two are not the same claim, and once the cascade started
+            // computing real duties the zero would have been the only number a
+            // frontend ever saw for a cut-point column. There is no duty here to
+            // be zero; the column's ONLY energy statement at this fidelity is the
+            // one M3.2 proved, that `Σᵢ splitᵢ·cpᵢ = cp_feed` makes it
+            // energy-neutral, and that needs no duty to hold.
+            condenser_duty: None,
+            reboiler_duty: None,
         })
     }
 }
@@ -373,10 +376,16 @@ mod tests {
         }
     }
 
-    /// The two duties are zero at this fidelity, and an all-liquid cut-point
-    /// split is exactly the case where that is the honest answer rather than a
-    /// missing feature. M7.4's duty gate is the DIFFERENCE of these two against
-    /// the sensible external balance; here both terms and the balance are zero.
+    /// This fidelity reports **no** duties — `None`, not zero.
+    ///
+    /// A boiling-range split has no condenser and no reboiler to have a duty, so
+    /// the honest answer is the absence of one. Through M7.3 this asserted
+    /// `Watt::ZERO`, which was the same assertion the cascade's own stub then
+    /// satisfied for an entirely different reason ("M7.4 has not landed"); M7.4b
+    /// separates them in the type, so the two fidelities can no longer be
+    /// confused by a reader OR by a frontend. `NodeSnapshot::column_duty` omits
+    /// the field entirely on this path, which is what keeps the twelve scenarios
+    /// byte-identical.
     #[test]
     fn the_splitter_reports_no_condenser_or_reboiler_duty() {
         let slate = slate_with_tbs(&[100.0, 400.0]);
@@ -399,7 +408,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(sep.condenser_duty, Watt::ZERO);
-        assert_eq!(sep.reboiler_duty, Watt::ZERO);
+        assert_eq!(sep.condenser_duty, None);
+        assert_eq!(sep.reboiler_duty, None);
     }
 }

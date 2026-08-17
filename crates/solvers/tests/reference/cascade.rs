@@ -72,10 +72,65 @@ fn binary() -> Slate {
     slate(&[("light", 350.0, 0.100), ("heavy", 450.0, 0.200)])
 }
 
-/// K-values supplied by the test, scaled by a power of temperature. See
-/// `EXPONENT`.
+/// Per-component heats of vaporization [J/mol], supplied by the test in slate
+/// order, for the same reason the K-values are (M7.4b).
+///
+/// A duty is `V·λ̄` plus sensible terms, so a gate that pins one has to be able
+/// to hand the model a `λ` with no correlation in the loop — otherwise the duty
+/// gates would be testing Trouton's constant and the cascade's arithmetic at
+/// once, which is the conflation the header of this file exists to prevent.
+///
+/// **Deliberately not proportional to `tb`.** Trouton's rule says `λ = C·tb`,
+/// so a vector in that ratio would let a cascade that used the wrong component's
+/// `λ` land close enough to pass. `350/400/450` against `30/34/40` kJ/mol is
+/// close enough to be physical and far enough off the straight line that a
+/// mix-up shows.
+const DH_VAP: [f64; 3] = [30_000.0, 34_000.0, 40_000.0];
+
+/// K-values and latent heats supplied by the test, the K-values scaled by a
+/// power of temperature. See `EXPONENT` and `DH_VAP`.
 fn thermo(slate: &Slate, k: Vec<f64>) -> ConstantAlphaThermo {
-    ConstantAlphaThermo::with_temperature_exponent(slate, k, T_REF, EXPONENT).unwrap()
+    ConstantAlphaThermo::with_temperature_exponent(slate, k, T_REF, EXPONENT)
+        .unwrap()
+        .with_dh_vap(slate, DH_VAP[..slate.len()].to_vec())
+        .unwrap()
+}
+
+/// The bubble point of a MASS composition at `P_ATM` [K], by bisection on
+/// `Σ_c K_c(T)·x_c = 1` over mole fractions.
+///
+/// **Every column in this file is fed at this temperature, and from M7.4b that is
+/// a requirement rather than a tidiness.** Constant molar overflow admits a
+/// saturated-liquid feed only and `StageCascade` now refuses anything else, so a
+/// fixed `T_REF` — which these cases used through M7.3, and which is off the
+/// bubble point by 16 K on the binary — is a plant the formulation does not
+/// admit. It is computed here from the published `k_value` rather than written
+/// down, because each case has a different feed and a different K vector and so a
+/// different bubble point.
+fn feed_bubble_point(slate: &Slate, thermo: &ConstantAlphaThermo, feed: &Composition) -> Kelvin {
+    let moles = MoleFractions::from_mass(feed, slate).unwrap();
+    let sum_kx = |t: f64| -> f64 {
+        moles
+            .fractions()
+            .iter()
+            .enumerate()
+            .map(|(c, x)| x * thermo.k_value(slate, c, Kelvin(t), P_ATM).unwrap())
+            .sum()
+    };
+    let (mut low, mut high) = (100.0_f64, 1500.0_f64);
+    assert!(
+        sum_kx(low) < 1.0 && sum_kx(high) > 1.0,
+        "the bracket must straddle the feed's bubble point"
+    );
+    for _ in 0..200 {
+        let mid = 0.5 * (low + high);
+        if sum_kx(mid) < 1.0 {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    Kelvin(0.5 * (low + high))
 }
 
 struct Column {
@@ -114,7 +169,7 @@ fn try_run(
             pressure: P_ATM,
             feed: &feed,
             feed_flow: KgPerSec(FEED_FLOW),
-            temperature: T_REF,
+            temperature: feed_bubble_point(slate, thermo, &feed),
             cascade: Some(&column.spec),
         },
         thermo,
@@ -604,5 +659,308 @@ fn a_temperature_independent_k_has_no_bubble_point_and_is_refused() {
         message.contains("bubble point") && message.contains("constant_alpha"),
         "the refusal must say what could not be found and which model could not supply it, \
          got: {message}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M7.4b — the two duties.
+// ---------------------------------------------------------------------------
+
+/// The dew point of a MOLE composition at `P_ATM` [K]: the `T` solving
+/// `Σ_c y_c/K_c(T) = 1`.
+///
+/// This is the temperature saturated vapour of composition `y` arrives at the
+/// total condenser at, and it is stage 1's own temperature — because
+/// `y₁ = K(T₁)·x₁` with `Σ K x = 1` at stage 1's bubble point makes `Σ y/K` equal
+/// `Σ x`, which is 1. The condenser duty gate needs it and the cascade never
+/// returns it, so it is recomputed here from the published `k_value` alone.
+fn dew_point(slate: &Slate, thermo: &ConstantAlphaThermo, y: &MoleFractions) -> f64 {
+    let sum_y_over_k = |t: f64| -> f64 {
+        y.fractions()
+            .iter()
+            .enumerate()
+            .map(|(c, y)| y / thermo.k_value(slate, c, Kelvin(t), P_ATM).unwrap())
+            .sum()
+    };
+    // `Σ y/K` FALLS as `T` rises (every `K` rises), so the bracket test runs the
+    // other way round from the bubble point's.
+    let (mut low, mut high) = (100.0_f64, 1500.0_f64);
+    assert!(sum_y_over_k(low) > 1.0 && sum_y_over_k(high) < 1.0);
+    for _ in 0..200 {
+        let mid = 0.5 * (low + high);
+        if sum_y_over_k(mid) > 1.0 {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    0.5 * (low + high)
+}
+
+/// `Σ_c x_c·Δh_vap_c` [J/mol] over MOLE fractions, read from `DH_VAP` directly
+/// rather than through the model — the gate's own side of the calculation.
+fn latent(x: &MoleFractions) -> f64 {
+    x.fractions()
+        .iter()
+        .enumerate()
+        .map(|(c, x)| x * DH_VAP[c])
+        .sum()
+}
+
+/// `Σ_c x_c·M_c·cp_c` [J/(mol·K)] over MOLE fractions — a liquid mixture's molar
+/// heat capacity. The molar mass is inside the sum, because `Σ x M cp` is not
+/// `M̄·Σ x cp` unless every cut weighs the same.
+fn molar_cp(slate: &Slate, x: &MoleFractions) -> f64 {
+    x.fractions()
+        .iter()
+        .enumerate()
+        .map(|(c, x)| x * slate.get(c).molar_mass.value() * slate.get(c).cp.value())
+        .sum()
+}
+
+/// **The α = 1 duty gate — the whole pair against one hand calculation, with no
+/// sensible term anywhere in it.**
+///
+/// This is the strongest duty gate available here, and the reason is that every
+/// complication vanishes at once when nothing separates. Every stage carries the
+/// feed, so the profile is one uniform temperature; stage 1's dew point and the
+/// distillate's bubble point are then the same number, killing the condenser's
+/// sensible term; and every draw leaves at that same temperature with the feed's
+/// own composition, so the external sensible balance is identically zero and the
+/// two duties must be EQUAL. What is left is
+///
+/// ```text
+///   Q_reb = Q_cond = V·λ̄(z),   V = (R+1)·(D/F)·ṁ_F / M̄(z)
+/// ```
+///
+/// — every factor of which comes from the fixture: the reflux ratio, the declared
+/// distillate mass ratio, the feed rate, and the slate's molar masses and
+/// `DH_VAP`. Nothing is read back off the solver except the answer being checked.
+///
+/// It pins the latent basis (a duty computed per kilogram instead of per mole
+/// misses by the mean molar mass), the boilup (`V = (R+1)·D`, not `R·D` and not
+/// `D`), the mass ⇄ mole conversion inside `D`, and the equality of the pair.
+#[test]
+fn equal_volatility_makes_both_duties_one_hand_computed_latent_load() {
+    let slate = slate(&[
+        ("light", 350.0, 0.100),
+        ("middle", 400.0, 0.150),
+        ("heavy", 450.0, 0.200),
+    ]);
+    let thermo = thermo(&slate, vec![1.5, 1.5, 1.5]);
+    let feed_mass = [0.2, 0.3, 0.5];
+    let feed = Composition::from_weights(&feed_mass).unwrap();
+    let z = MoleFractions::from_mass(&feed, &slate).unwrap();
+
+    for (stages, feed_stage, reflux, d_over_f) in
+        [(1u32, 1u32, 0.0, 0.3), (5, 3, 2.0, 0.3), (9, 4, 0.75, 0.45)]
+    {
+        let column = two_product(stages, feed_stage, reflux, d_over_f);
+        let separation = run(&StageCascade::new(), &slate, &thermo, &column, &feed_mass);
+
+        let mean_molar_mass = z.mean_molar_mass(&slate).value();
+        let distillate_molar = d_over_f * FEED_FLOW / mean_molar_mass;
+        let boilup = (reflux + 1.0) * distillate_molar;
+        let expected = boilup * latent(&z);
+
+        let condenser = separation
+            .condenser_duty
+            .expect("this fidelity computes duties");
+        let reboiler = separation
+            .reboiler_duty
+            .expect("this fidelity computes duties");
+        approx::assert_relative_eq!(condenser.value(), expected, max_relative = 1e-9);
+        // Equal, not merely close: with nothing separating there is nothing for
+        // the external sensible balance to be, so the two duties are one number.
+        approx::assert_relative_eq!(reboiler.value(), expected, max_relative = 1e-9);
+        assert!(
+            expected > 0.0,
+            "N = {stages}: a zero expected duty would make both assertions vacuous"
+        );
+    }
+}
+
+/// **The condenser duty, reconstructed independently in the general case.**
+///
+/// `Q_cond = V·λ̄(y₁) + V·c̄p(y₁)·(T₁ − T_cond)` — a total condenser takes
+/// saturated vapour in and puts saturated liquid out at the same composition, so
+/// its envelope is exact and needs nothing from the column's interior. That is
+/// what makes it, and not the reboiler, the duty this gate can pin: the reboiler
+/// is the one that closes the external balance, so checking it against that
+/// balance would be a tautology (`StageCascade::duties`).
+///
+/// Everything on the right is recomputed here from the PUBLIC return and the
+/// published `k_value`: `V` from the reflux ratio, the declared mass ratio and
+/// the distillate's own mean molar mass; `T₁` as the dew point of the distillate
+/// composition, by this file's own bisection; `T_cond` likewise as its bubble
+/// point, which is additionally checked against the temperature the cascade
+/// reported — the M7.4a contract seen from a second angle.
+///
+/// **The sensible term is asserted to matter.** Reading a total condenser as pure
+/// latent heat is a real and tempting error, so the test measures the term's size
+/// and fails if it has shrunk to where dropping it would pass anyway.
+#[test]
+fn the_condenser_duty_is_a_total_condensers_own_envelope() {
+    let slate = binary();
+    let thermo = thermo(&slate, vec![2.0, 0.5]);
+    let column = two_product(6, 3, 2.0, 0.35);
+    let feed_mass = [0.5, 0.5];
+    let separation = run(&StageCascade::new(), &slate, &thermo, &column, &feed_mass);
+
+    let distillate = MoleFractions::from_mass(&separation.draws[0].composition, &slate).unwrap();
+    let boilup = (column.spec.reflux_ratio + 1.0) * separation.draws[0].split * FEED_FLOW
+        / distillate.mean_molar_mass(&slate).value();
+
+    let stage_one = dew_point(&slate, &thermo, &distillate);
+    let condenser_t = feed_bubble_point(&slate, &thermo, &separation.draws[0].composition).value();
+    approx::assert_relative_eq!(
+        separation.draws[0].temperature.value(),
+        condenser_t,
+        max_relative = CONVERGED_TOLERANCE
+    );
+
+    let sensible = boilup * molar_cp(&slate, &distillate) * (stage_one - condenser_t);
+    let expected = boilup * latent(&distillate) + sensible;
+    let reported = separation
+        .condenser_duty
+        .expect("this fidelity computes duties");
+    approx::assert_relative_eq!(
+        reported.value(),
+        expected,
+        max_relative = CONVERGED_TOLERANCE
+    );
+
+    assert!(
+        stage_one > condenser_t,
+        "a composition's dew point is above its bubble point, so the condensate leaves \
+         cooler than the vapour arrived: got a dew point of {stage_one} K against a bubble \
+         point of {condenser_t} K"
+    );
+    assert!(
+        sensible / reported.value() > 10.0 * CONVERGED_TOLERANCE,
+        "the desuperheating term is {:.3e} of this duty, which is inside the tolerance the \
+         assertion above compares at — so dropping it entirely would still pass and this \
+         gate would not be checking it. Widen the split or the boiling range.",
+        sensible / reported.value()
+    );
+}
+
+/// **The reboiler duty is one boilup's worth of latent heat** — the envelope that
+/// bounds the duty nothing else in this file pins.
+///
+/// The condenser gate above reconstructs its subject exactly; the reboiler cannot
+/// be gated that way, because it is the duty that CLOSES the external balance and
+/// checking it against that balance is a tautology (`StageCascade::duties`). What
+/// is left is an envelope, and it is a real one: whatever the profile, the
+/// reboiler boils `V` mol/s of *something on this slate*, so
+///
+/// ```text
+///   V·min_c Δh_vap,c  ≤  Q_reb  ≤  V·max_c Δh_vap,c
+/// ```
+///
+/// with `V = (R+1)·D` recomputed here from the file's reflux ratio, the declared
+/// mass ratio and the distillate's own mean molar mass. It catches the errors
+/// that actually threaten a duty: a boilup taken as `R·D` or `D` instead of
+/// `(R+1)·D` misses by a factor of 3 or 1.5, a latent heat applied per kilogram
+/// rather than per mole misses by the mean molar mass, and a duty double-counted
+/// misses by 2. It is the same envelope-plus-exact-identity pairing
+/// `TroutonThermo` already carries, one level up.
+///
+/// **What it deliberately does NOT claim.** `Q_reb` is close to `V·λ̄(y_N)` on
+/// this fixture — within 0.2% — and that is a coincidence of these numbers, not a
+/// property. The reboiler's own full envelope (which needs interior stage data
+/// this return does not carry) is 3.68 MW against the 3.23 MW reported: the
+/// formulation's inconsistency is 13.9% of a duty, and it happens to be cancelled
+/// here by the reboiler's own sensible term. Asserting the 0.2% would be fitting
+/// to that cancellation. See DESIGN §5 for the measurement.
+#[test]
+fn the_reboiler_duty_is_one_boilups_worth_of_latent_heat() {
+    let slate = binary();
+    let thermo = thermo(&slate, vec![2.0, 0.5]);
+    let column = two_product(6, 3, 2.0, 0.35);
+    let feed_mass = [0.5, 0.5];
+    let separation = run(&StageCascade::new(), &slate, &thermo, &column, &feed_mass);
+
+    let distillate = MoleFractions::from_mass(&separation.draws[0].composition, &slate).unwrap();
+    let boilup = (column.spec.reflux_ratio + 1.0) * separation.draws[0].split * FEED_FLOW
+        / distillate.mean_molar_mass(&slate).value();
+
+    let lightest = DH_VAP[..slate.len()]
+        .iter()
+        .cloned()
+        .fold(f64::INFINITY, f64::min);
+    let heaviest = DH_VAP[..slate.len()].iter().cloned().fold(0.0f64, f64::max);
+    let reported = separation
+        .reboiler_duty
+        .expect("this fidelity computes duties")
+        .value();
+    assert!(
+        reported >= boilup * lightest && reported <= boilup * heaviest,
+        "the reboiler duty is {reported:.4e} W, outside the {:.4e}..{:.4e} W a boilup of \
+         {boilup:.4e} mol/s can represent on this slate",
+        boilup * lightest,
+        boilup * heaviest
+    );
+
+    // The envelope has to be narrow enough to catch something. A slate whose cuts
+    // shared one latent heat would collapse it to a point and a slate with a huge
+    // spread would admit anything, so the width is measured rather than assumed.
+    assert!(
+        heaviest / lightest < 2.0,
+        "this envelope spans a factor of {:.2}, which is wide enough to admit a boilup taken \
+         as R·D instead of (R+1)·D — the error it exists to catch",
+        heaviest / lightest
+    );
+
+    // And the column absorbs net heat: its draws leave hotter, on average, than
+    // the saturated-liquid feed arrived, so the reboiler must out-supply the
+    // condenser. A pair computed with the two ends swapped fails here.
+    assert!(
+        reported > separation.condenser_duty.unwrap().value(),
+        "a column whose draws straddle a saturated feed absorbs net heat: got a reboiler at \
+         {reported:.4e} W against a condenser at {:.4e} W",
+        separation.condenser_duty.unwrap().value()
+    );
+}
+
+/// **The pair's difference IS the column's external sensible balance** — asserted
+/// from the PUBLIC draw data, because it is the property a plant-level energy
+/// balance leans on and the construction must not change without this going red.
+///
+/// **Not a duty gate, and must not be read as one.** `Q_reb` is *defined* as
+/// `Q_cond` plus this balance (`StageCascade::duties`), so the identity holds by
+/// construction; what the test adds is that the balance the solver used is the
+/// one computable from the splits, compositions and temperatures it returned, in
+/// the datum `energy::enthalpy_flux` uses. The gates with physics in them are the
+/// two above. Recorded this way per `a-conjunctive-gate-hides-which-criterion-
+/// bound` — a test that cannot fail for a physics reason should say so.
+#[test]
+fn the_duty_difference_is_the_external_sensible_balance() {
+    let slate = binary();
+    let thermo = thermo(&slate, vec![2.0, 0.5]);
+    let column = two_product(6, 3, 2.0, 0.35);
+    let feed_mass = [0.5, 0.5];
+    let feed = Composition::from_weights(&feed_mass).unwrap();
+    let separation = run(&StageCascade::new(), &slate, &thermo, &column, &feed_mass);
+
+    // `energy::T_REF`, spelled out rather than imported: `solvers` tests may not
+    // reach for `core`'s private-ish constants, and a second literal that must
+    // match is exactly the kind of thing worth stating out loud.
+    let datum = 273.15;
+    let feed_t = feed_bubble_point(&slate, &thermo, &feed).value();
+    let mut balance = -FEED_FLOW * feed.mixture_cp(&slate).value() * (feed_t - datum);
+    for draw in &separation.draws {
+        balance += draw.split
+            * FEED_FLOW
+            * draw.composition.mixture_cp(&slate).value()
+            * (draw.temperature.value() - datum);
+    }
+
+    let difference =
+        separation.reboiler_duty.unwrap().value() - separation.condenser_duty.unwrap().value();
+    approx::assert_relative_eq!(difference, balance, max_relative = CONVERGED_TOLERANCE);
+    assert!(
+        balance.abs() > 0.0,
+        "a zero balance would make this identity hold for any pair of equal duties"
     );
 }
