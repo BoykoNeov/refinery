@@ -150,5 +150,8 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 M1–M6 are closed: flow network, heat, crude + simple column, reactor, gas and
-pressure realism, and damage + the Godot frontend. The complex column (stage
-cascade) is the next milestone and has not been scoped yet.
+pressure realism, and damage + the Godot frontend. **M7 (complex column, stage
+cascade) is scoped**: the design note is landed (DESIGN §5, "Complex column
+(M7)") and M7.1–M7.4 are open boxes in ROADMAP. The note's verdicts are
+decisions, not results — expect building it to correct them, as every earlier
+milestone's note was corrected.

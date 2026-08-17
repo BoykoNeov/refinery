@@ -1874,7 +1874,10 @@ flow, flash and condensation** — the reason is *scope, not unfalsifiability*, 
 that distinction matters: a Tb-derived Raoult/Antoine flash could be pinned
 against a published binary, so M4's "invented parameters with no gate" argument
 does not apply and must not be borrowed. Phase is simply absent from the state
-vector. Un-defers with the complex column. Also deferred: real-gas `Z` and gas
+vector. ~~Un-defers with the complex column.~~ **Narrowed by M7.0, which argued
+against this sentence rather than past it** — a condensing overhead needs no
+two-phase stream, so what stays deferred is the flashing feed line, the partial
+condenser and the vapour side draw (DESIGN §3a and §5, fork 0). Also deferred: real-gas `Z` and gas
 `cp(T)` (additive to the density law); **pump efficiency heating** (~0.03 K, big
 enough to gate, but `η` is a parameter with one possible value in this repo — the
 `cat_oil_ratio` argument — so it un-defers with a scenario carrying real pump
@@ -2338,3 +2341,156 @@ not a product.
 
 Complex column (stage cascade) is the obvious next milestone and was already
 noted as parallelizable with this one.
+
+## M7 — Complex column (stage cascade)
+
+The fidelity swap DESIGN §5 has named since its opening line: "stage-by-stage
+flash cascade at quasi-steady state, solved per tick, needs K-values". The simple
+column is a splitter — cut points in, mass fractions out, no vapour, no trays, no
+duties. This milestone makes the separation *emerge* from equilibrium instead of
+being declared by a cut temperature.
+
+**The milestone's premise, and why it needs a note before code.** M4's swap was
+additive: `FourLump` slotted into a `ReactionModel` trait that already existed,
+with a signature already carrying the `tau` it needed. Nothing here is additive.
+There is no separation trait — `column_separation` is a free function in
+`core::energy` called from two places — and the unit's central physics is a
+phase this model does not have in its state vector, guarded at load precisely so
+it cannot arrive by accident. Five of the six forks change the shape of `core`.
+
+### M7.0 — Scoping + design note — **LANDED**
+
+- [x] Design note in DESIGN.md (§5, "Complex column (M7)") settling every fork
+      below before any cascade code.
+
+The verdicts, in plain terms:
+
+- **Fork 0 — the two-phase deferral names this milestone by name, and its
+  premise was too broad.** §3a says two-phase flow "un-defers with the complex
+  column", so the note argues against that sentence rather than past it. A
+  condensing overhead does *not* imply a two-phase stream: under a total
+  condenser the vapour lives entirely between the reboiler and the condenser and
+  never crosses a pipe. The deferral **narrows** rather than dies, with a new
+  trigger naming the cases that genuinely put two phases in a `Stream` (flashing
+  feed line, partial condenser, vapour side draw) — all three refused at load
+  here. What M7 retires is the belief that a cascade cannot be built without them.
+- **Fork 1 — the two phases live inside the unit, and structurally so.** The
+  plant graph keeps `NodeKind::Column` exactly as M3.2 built it, so every
+  hydraulic argument in that note survives untouched: **the complex column is a
+  different `SeparationModel`, not a different plant unit.** The hazard this
+  hides is the reason the fork is written down: an internal vapour built as a
+  `Composition` on an all-liquid slate returns `Ok(Liquid)` from `phase()` with
+  no error, and then hands back the stored **liquid** density and `cp` — a
+  finite, plausible, wrong number, and the graph-level single-phase guard cannot
+  see it because this vapour is not on the graph. Fix: cascade state is a
+  solvers-local **molar** type, so handing it to a liquid property function does
+  not typecheck. That is affordable only because the cascade needs no vapour
+  density and no vapour `cv` — which is exactly the condition tray hydraulics
+  would break, so flooding must revisit *this fork*, not add a correlation.
+- **Fork 2 — the K-value fills the reserved `ThermoModel` stub; the cascade gets
+  a new `SeparationModel`.** A K-value is a thermophysical property; a reflux
+  ratio is separation policy. Two seams claiming the same physics is the thing to
+  avoid. The trait signature is designed for the complex fidelity *now* (feed
+  flow, temperature, pressure in; per-draw split, composition, temperature and
+  duties out), the `tau` precedent applied so the swap needs no trait churn.
+  Per-column equipment config rides the **declared-iff-used** loader
+  correspondence this workspace already uses twice (density iff liquid, `x_T` iff
+  gas service), so neither fidelity carries a field the other ignores.
+- **Fork 3 — ratios only, and it is M3.2's argument again.** A specified
+  distillate *rate* (kg/s) re-runs the failure that killed the prescribed-draw
+  column: the total through a column must stay hydraulically determined and only
+  the split may be composition-determined. So the spec set is dimensionless —
+  reflux ratio and distillate-to-feed ratio — which also settles that an operator
+  command may touch `R` and `D/F` and never a product rate.
+- **Fork 4 — I7 stops being free.** M3.2's "green by construction, no
+  discriminating power over a column at all" is fidelity-specific and expires
+  here: a converged cascade balances per-component only to tolerance. Forcing it
+  exact by assigning the last draw the residual is rejected — it can produce a
+  negative mass fraction, trading a visible tolerance for an invisible
+  corruption. The residual is **bounded and gated as an `Err`**, and the bound is
+  *derived* from I7's own `1e-6` kg (1e-5 kg/s) rather than picked to pass. It
+  must be a gate and not a counter, so the threshold needs a test that reaches it
+  on purpose. Note no I-series invariant has ever reached a column of either
+  fidelity — the generator builds only Source/Junction/Tank/Sink.
+- **Fork 5 — a non-converged cascade is an `Err`, not a held profile.** Holding
+  the previous profile makes the output history-dependent and destroys the
+  property that makes the reference a clean hand calc. Warm-starting from the
+  previous profile is still fine and is not the same thing: **it changes the
+  iteration count, not the fixed point** — which the reference must show by
+  running cold and again from a perturbed seed.
+- **Energy — latent heat cancels, and that is what buys the scope boundary.**
+  Under a total condenser with all-liquid draws, every kilogram vaporized inside
+  is condensed inside, so the external balance stays sensible-only against the
+  existing datum and M4's datum lesson is not re-run. The duties are large and
+  mostly latent, and they are **emergent diagnostics** like `reactor_duty`; the
+  energy gate is their **difference**, not either one. Draws now leave at their
+  tray temperatures, so `edge_temperature_at` gains a column arm mirroring the
+  one `edge_composition_at` already has.
+
+### M7.1 — The `SeparationModel` seam (bit-identical)
+
+Move the cut-point math out of `core::energy` behind the trait, with the
+signature fork 2 settles. Nothing physical changes.
+
+- [ ] `core`: `SeparationModel` trait; `Engine` holds a `Box<dyn SeparationModel>`
+      threaded to the sweep the way `reactions` already is.
+- [ ] `solvers`: `CutPointSplitter` — `column_separation` moved verbatim.
+- [ ] `scenarios`: `[fidelity] separation = "cut_point"`, defaulting to the
+      value every pre-M7 file means, so those files stay bit-identical rather
+      than merely still-loading (the M5.2 `phase` default precedent).
+- [ ] Gate: **regression anchor** — every existing golden bit-identical,
+      `crude_column.toml` included. This slice has no reference of its own; a new
+      number here would mean the move was not a move.
+
+### M7.2 — K-values on `ThermoModel`, and the single-stage flash
+
+- [ ] `core`: `ThermoModel` gains `k_value(component, T, P)`; the stub's own
+      docstring condition ("when a consumer actually needs a property") is now met.
+- [ ] `solvers`: Raoult + a Clausius–Clapeyron form whose `Δh_vap` comes from
+      `tb` via Trouton — **derived from data the slate already carries**, not
+      invented parameters, which is why M4's "no gate for an invented constant"
+      argument does not apply. Constant-`α` implementation alongside it, for the
+      cascade gates to run against.
+- [ ] `solvers`: isothermal flash (Rachford–Rice) on one stage.
+- [ ] Gates, kept apart (one test covering both proves neither): the **exact**
+      identities — `K = 1` at `T = tb` and reference pressure, monotone in `T`,
+      heavier cut lower at fixed `T` — and separately the **magnitude**, an
+      envelope against a vapour pressure actually read and labelled a regression
+      lock, not validation. Plus the flash against a hand calc, and the
+      **mass ⇄ mole round trip**, which is where M4.2's real crux (units, not the
+      ODE) says the bug will be.
+
+### M7.3 — The cascade
+
+- [ ] `solvers`: `StageCascade` — N equilibrium stages, feed stage, total
+      condenser, reboiler; constant molar overflow first, so the *profile* needs
+      K-values only and no enthalpy. Specified by `R` and `D/F` (fork 3).
+- [ ] `core`/`scenarios`: cascade config on `NodeKind::Column` under the
+      declared-iff-used correspondence; `ColumnDraw` located by **stage** for
+      this fidelity and by `upper_cut` for the splitter, each refused for the
+      other. Load-time refusal of partial condenser and vapour side draw, each
+      message naming fork 0's narrowed deferral.
+- [ ] Gates: **Fenske at total reflux** (`(x_D/(1−x_D))·((1−x_B)/x_B) = α^N`,
+      exact, derivable — no published table needed), one stage reducing to the
+      M7.2 flash, `α = 1` producing no separation at any `N` (the null gate), the
+      per-component residual `Err` reached deliberately, and start-insensitivity
+      from a perturbed seed.
+
+### M7.4 — Duties, tray temperatures, and the demo
+
+- [ ] `core`: per-draw temperatures through `edge_temperature_at`'s new column
+      arm; reboiler/condenser duties as emergent snapshot diagnostics.
+- [ ] `solvers`: `Δh_vap` into the duty calculation (the profile does not need it;
+      the duties do — which is why this is a separate slice).
+- [ ] Gate: the **duty difference** against the sensible external balance (M4's
+      two-duty lesson), and per-draw temperatures ordered top-to-bottom.
+- [ ] I-series: extend the generator to reach a cascade column, with a
+      **reachability count before the arm is believed** — a generated arm can be
+      born vacuous.
+- [ ] Demo: `scenarios/crude_column_cascade.toml` — the same plant as
+      `crude_column.toml` on the other fidelity, so the two are directly
+      comparable and the swap is visible physics rather than a passing test.
+
+**Open until the note is falsified by building it.** Every milestone in this file
+has had its design note corrected by the code — M3.2's draw-flow location, M5.2's
+density end, M6.1's regularization. The forks above are decisions, not results.

@@ -1084,8 +1084,15 @@ adds hysteresis without saying so.
   phase is absent from the state vector, so it changes `Stream`, `Composition`
   and every reader of them — a milestone, not a slice. It is made safe by the
   single-phase connected-component guard, so the model refuses two-phase input
-  loudly instead of averaging it. Un-defers when a plant needs a condensing
-  overhead or a flashing feed, i.e. the complex column (M6+).
+  loudly instead of averaging it. ~~Un-defers when a plant needs a condensing
+  overhead or a flashing feed, i.e. the complex column (M6+).~~ **Trigger
+  narrowed by M7.0** (§5, "Complex column", fork 0): a condensing overhead does
+  not need a two-phase *stream*, because under a total condenser the vapour never
+  crosses a pipe — vapour-ness inside a cascade is a per-stage flow variable, not
+  a component property. What remains deferred is the set that genuinely puts two
+  phases in a `Stream`: a **flashing feed line**, a **partial condenser** (vapour
+  distillate), and a **vapour side draw**. M7 refuses all three at load rather
+  than approximating them, and each refusal message names this bullet.
 - **Real-gas compressibility (Z), and gas `cp(T)`.** Ideal gas is adequate well
   away from the critical point, and both are additive to the density law once a
   case needs them.
@@ -1900,8 +1907,10 @@ to it, and the symmetry premise of the mixing reference test needs rechecking
 - **Reactor (simple):** fixed conversion table per (T-band, feed cut) —
   a lookup, no ODEs.
 - **Column (complex):** stage-by-stage flash cascade at quasi-steady state,
-  solved per tick (later milestone; needs K-values — start with Raoult +
-  Antoine per pseudo-component derived from Tb).
+  solved per tick (M7; needs K-values — start with Raoult + a vapour-pressure
+  law per pseudo-component derived from Tb). Scoped in "Complex column (M7)"
+  below; the Antoine form named here is refined there to a Clausius–Clapeyron /
+  Trouton one, because Antoine constants are data this slate does not carry.
 - **Column (simple):** fixed cut-point splitter: assigns each
   pseudo-component to a draw by boiling range, with a smearing parameter for
   imperfect separation.
@@ -2473,6 +2482,316 @@ a genuinely free quantity.
 the coke the pass itself makes and so needs a catalyst inventory this reactor does
 not have); feed-quality dependence of the constants; and any second lump slate —
 `FourLump` names its four lumps and refuses a slate without them.
+
+### Complex column (M7) — specified before building
+
+The simple column is a splitter: cut points in, mass fractions out, no vapour,
+no trays, no duties. The complex column is the fidelity swap named since §5's
+opening line — "stage-by-stage flash cascade at quasi-steady state, solved per
+tick, needs K-values". This note settles what that costs *before* any cascade
+code, because five of the six forks below change the shape of `core`, not just
+the arithmetic inside a solver.
+
+The verdicts, up front: the two phases live **inside the unit** and the plant
+graph never sees one; the K-value fills the `ThermoModel` stub and the cascade
+gets a new `SeparationModel`; the column is specified by **ratios only**; the
+per-component balance becomes **tolerance-bounded for the first time in this
+workspace**; a non-converged cascade is an **`Err`**, not a held profile; and
+latent heat stays internal, which buys a scope boundary that must be refused at
+load rather than half-supported.
+
+#### Fork 0 — the deferral names this milestone, and its premise was too broad
+
+§3a says of two-phase flow, flash and condensation: *"Un-defers when a plant
+needs a condensing overhead or a flashing feed, i.e. the complex column (M6+)."*
+ROADMAP repeats it. A note that quietly narrows a deferral whose stated trigger
+is *this milestone* leaves a future reader holding a promise nobody kept, so the
+premise gets argued rather than stepped around.
+
+The premise is that a condensing overhead implies a two-phase **stream**. Under
+a total condenser it does not. Phase in this model is a property of the
+*component* (`PseudoComponent::phase`), and vapour-ness inside a cascade is not
+a component property at all — it is a per-stage **flow variable**, `V_j` and
+`y_j`, which exists only between tray `j` and tray `j+1`. Nothing on the plant
+graph is ever two-phase: the feed edge carries liquid, every draw edge carries
+liquid, and the vapour that separates them lives and dies between the reboiler
+and the condenser without crossing a `Pipe`.
+
+So the deferral does not die here; it **narrows**, and its trigger is rewritten
+to the cases that genuinely put two phases in a `Stream`: a flashing feed *line*
+(vapour appearing in a pipe upstream of the column), a **partial** condenser
+(vapour distillate), and a vapour side draw. Those still change `Stream`,
+`Composition` and every reader of them, exactly as §3a says — and this milestone
+refuses all three at load (below) rather than approximating them. What M7 does
+retire is the *reason* the trigger named the complex column: the belief that a
+stage cascade cannot be built without them.
+
+#### Fork 1 — where the two phases live. **Internal, and structurally so.**
+
+- **(a) Internal to the unit.** The cascade is state private to the separation
+  model. The plant graph keeps `NodeKind::Column` exactly as M3.2 built it:
+  fixed-pressure, zero-volume, one feed in, N draws out, draw edges fixed→fixed,
+  draw flows written post-sweep. Every hydraulic argument in the M3.2 note above
+  survives untouched — no Jacobian change, no prescribed-flow branch, no new
+  solver machinery. The complex column is **a different `SeparationModel`, not a
+  different plant unit.**
+- **(b) Phase in the state vector.** A vapour fraction on `Stream`, `Composition`
+  carrying both phases, every reader updated. This is §3a's deferred milestone,
+  and it is what the three refused cases above would need.
+
+**(a) wins, and the reason to write it down is the hazard it hides.** The
+tempting implementation of an internal vapour stream is a `Composition` — the
+type already exists, already normalizes, already blends. It is the wrong
+carrier, and it fails *silently*: on the all-liquid slate a crude column has,
+`Composition::phase()` sees only `Phase::Liquid` components and returns
+`Ok(Liquid)` with no error, after which `density_at` hands back the stored
+**liquid** density and `mixture_cv` the liquid `cp`. Not a refusal — a finite,
+deterministic, plausible, wrong number, which is the failure shape this
+workspace keeps catching (`a-command-can-be-a-no-op`, and the gas-density clamp
+M5.4 found). The single-phase connected-component guard cannot help: it guards
+the *graph*, and this vapour is not on the graph.
+
+The fix is structural rather than a comment. Cascade-internal state is a
+**solvers-local type in molar units** — stage molar flows `L_j`, `V_j` and mole
+fractions `x_j`, `y_j` — not a `core::Composition`. Then handing an internal
+vapour to a liquid property function is not a mistake to remember; it does not
+typecheck. Mass-fraction `Composition` appears only at the unit's boundary,
+where the draws are handed back to the sweep.
+
+That choice is affordable only because of what the cascade **reads**, which is
+worth enumerating rather than discovering:
+
+| needs | from | have it? |
+|---|---|---|
+| `K_c(T, P)` | vapour-pressure law over `tb` | fork 2 |
+| molar mass (mass ⇄ mole) | `PseudoComponent::molar_mass` | yes |
+| liquid `cp` (tray enthalpy) | `PseudoComponent::cp` | yes |
+| `Δh_vap` (duties only) | derived from `tb`, M7.4 | fork 5 |
+| **vapour density** | — | **not needed** |
+| **vapour `cv`** | — | **not needed** |
+
+The last two rows are the load-bearing ones: they are the only reasons the
+internal vapour would need `core`'s property functions, and they are needed only
+by **tray hydraulics** — pressure drop per tray, weeping, flooding. Deferring
+tray hydraulics (uniform pressure across the column, which is what "fixed
+operating pressure" already asserts) is therefore not a convenience; it is the
+condition under which fork 1's verdict is safe. If a later slice wants flooding,
+it must revisit **this fork**, not just add a correlation.
+
+Mass ⇄ mole conversion at the boundary deserves its own line, because M4.2's
+real crux turned out to be units rather than the ODE. Compositions in this
+workspace are **mass** fractions; vapour–liquid equilibrium is **molar**. The
+conversion `n_c ∝ w_c / M_c` runs at exactly two points (feed in, draws out) and
+is a gate of its own (below), not a step trusted to review.
+
+#### Fork 2 — which seam owns the K-value. **`ThermoModel`, as reserved.**
+
+`traits.rs` carries `ThermoModel` with no methods and a docstring saying to
+extend it "when a consumer actually needs a property, not before". A K-value is
+a thermophysical property of a component at `(T, P)` — not a separation policy —
+so it is that consumer, and putting it anywhere else would create two seams both
+claiming the same physics. The cascade itself (how many stages, which is the
+feed stage, what a reflux ratio means) is separation policy and gets a new
+`SeparationModel` in `core`, implemented in `solvers`, selected by
+`[fidelity] separation = "cut_point" | "cascade"` alongside the existing `flow` /
+`thermo` / `reactions` strings.
+
+Two consequences follow from the `ReactionModel` precedent and should be built
+in from the start rather than churned later:
+
+- **The trait signature is designed for the complex fidelity now.**
+  `ReactionModel::react` carries `tau`, which the lookup fidelity ignores
+  entirely, precisely so M4.2's swap needed no trait churn. `SeparationModel`
+  does the same: it takes the feed *flow*, *temperature* and the column's
+  pressure — all three ignored by the cut-point splitter, all three load-bearing
+  for the cascade — and returns per-draw split, composition, **temperature** and
+  the column's duties. The simple impl returns the feed temperature for every
+  draw and zero duties, which is exactly what it means today.
+- **The threading is already proven.** `reactions` reaches the sweep as
+  `&dyn ReactionModel` through `energy::resolve_node_states`; `SeparationModel`
+  follows the same path to the two call sites that matter —
+  `energy::edge_composition_at` (four callers) and the post-sweep draw write in
+  `Engine::tick`. `column_separation` has exactly those two callers today, which
+  is what makes the seam a small, bit-identical move rather than a refactor.
+
+Per-column *equipment* (stage count, feed stage, reflux ratio, condenser type)
+is per-node config, not per-engine, so it lands on `NodeKind::Column` — and the
+"authoritative number nothing reads" problem it raises already has this
+workspace's answer twice over. `PseudoComponent::density` is required iff the
+component is liquid; a gas valve's `x_T` is required iff it is in gas service
+(`require_gas_valve_x_t`). The same **declared-iff-used** loader correspondence
+applies here: cascade fields required iff `separation = "cascade"` and refused
+otherwise, and `ColumnDraw::upper_cut` inverted — required by the splitter,
+refused by the cascade, which locates a draw by **stage** instead. Neither
+fidelity can then carry a field the other silently ignores.
+
+#### Fork 3 — what specifies the column. **Ratios only, and this is M3.2's argument again.**
+
+A column with fixed pressure, a known feed, N stages and a known feed stage has
+two remaining degrees of freedom. The textbook pairs are `(R, D)` — reflux ratio
+and distillate **rate** — or `(R, V)` — reflux and boilup rate. **Any spec
+containing an absolute flow is inadmissible here, and the reason is already
+written above.** M3.2 killed the column whose draws were prescribed from the
+previous tick's feed: the total through a column must stay *hydraulically*
+determined, and only the *split* may be composition-determined. A specified
+`D = 3.0 kg/s` re-runs that failure exactly — it either freezes the feed (free
+column) or creates mass in a zero-volume node (fixed-pressure column), and it
+does it while converging, conserving and rerunning bit-identically.
+
+So the admissible specification set is **dimensionless**: reflux ratio `R = L/D`
+and distillate-to-feed ratio `D/F`, plus one `S_i/F` per side draw. Bottoms is
+then `1 − D/F − Σ S_i/F` and never specified. `Σ splitᵢ = 1` survives as an
+identity of the *specification* rather than of the arithmetic, which is what
+keeps the column mass-neutral every tick under a feed that moves — the property
+the M3.2 note calls out as needing a moving-feed gate to earn.
+
+This also settles what an operator command can touch: `R` and `D/F`, which are
+real control-room handles, and never a product rate in kg/s.
+
+#### Fork 4 — I7 stops being free, for the first time in this workspace
+
+M3.2's note states that a splitter conserves every component identically, so I7
+is **green by construction and has no discriminating power over a column at
+all**. That claim is fidelity-specific and it expires here. A converged cascade
+balances per-component only to its convergence tolerance; an unconverged one
+does not balance at all. The options:
+
+- **Force it exact** by assigning the last draw the residual (`bottoms = feed −
+  Σ others`, per component). Exact by construction, and it can hand back a
+  **negative** mass fraction when the cascade is off — trading a visible
+  tolerance for an invisible corruption in the one product a refinery cares
+  least about checking. Rejected.
+- **Bound it.** Take the cascade's compositions as computed, normalize each draw
+  to `Σ_c = 1`, take the draw flows from the ratio spec (so *total* mass stays
+  exact, per fork 3), and make the per-component residual a **gated `Err`** with
+  the residual in the message.
+
+**Bound it, and the bound is not free to choose.** I7's own tolerance is
+`COMPONENT_MASS_TOLERANCE_KG = 1e-6` kg over a 0.1 s tick — 1e-5 kg/s — chosen
+absolute for the M1 acceptance-gate reason, with the stated rationale that
+"per-component balance can never be tighter than the total mass balance it
+partitions". The cascade's convergence tolerance is therefore **derived from
+that number and the column's feed rate**, not picked to make a test pass. And
+the residual must be a *gate*, not a diagnostic: a reported number nobody
+asserts on is the shape `a-counter-is-not-a-gate` records, so the threshold
+needs a test that reaches it deliberately (a cascade capped at too few
+iterations must `Err`, and must be shown to).
+
+Note also what this un-blocks: I7's generator builds only
+Source/Junction/Tank/Sink today, so no I-series invariant has ever reached a
+column of either fidelity. Extending it to reach a cascade is a real arm with
+real discriminating power — and per `a-generated-arm-can-be-born-vacuous`, it
+needs a reachability count before it is believed.
+
+#### Fork 5 — a solver inside the tick loop can fail. **`Err`, and warm start is not state.**
+
+The simple column cannot fail; a Newton cascade can. Rule 5 says a diverging
+solver returns an `Err` with diagnostics, and the flow solver already does
+exactly that (I3: divergence is legal). The alternative — hold the previous
+tick's converged profile and carry on — is worse than it looks: it makes the
+column's output depend on tick history, which destroys the property M3.2 leans
+on ("zero-volume is what makes that hand calculation clean — no tick history in
+it") and turns every reference gate into a run-length-dependent number.
+
+`Err` it is. What is *not* forbidden is seeding the cascade from the previous
+tick's profile: a **warm start changes the iteration count, not the fixed
+point**. That distinction is the whole of it — a converged answer is the same
+answer within tolerance from any admissible start, so the reference gate must be
+run cold and additionally shown to be start-insensitive (same answer within
+tolerance from a perturbed seed). Determinism is unaffected either way: the warm
+start is itself deterministic.
+
+#### Energy — latent heat cancels, and that is what buys the scope boundary
+
+Every enthalpy in this workspace is **sensible-only** against a shared datum, and
+M4's lesson (`datum-consistency-in-a-holdup-balance`) is that mixing datums hides
+until a first integral catches it. A column vaporizes and condenses, so the
+question is whether latent heat forces a datum change.
+
+It does not, under one condition. With a **total** condenser and all-liquid
+draws, every kilogram vaporized inside the column is condensed inside the
+column. The internal latent flows cancel identically, and the external balance
+is purely sensible:
+
+```
+Q_reb − Q_cond = Σᵢ ṁ_drawᵢ·h(T_i) − ṁ_feed·h(T_feed)      (sensible, one datum)
+```
+
+The individual duties are *not* sensible — `Q_reb ≈ V̄·Δh_vap` is mostly latent,
+and it is the number a game cares about (fuel, cooling water). They are
+**emergent diagnostics**, exactly as `energy::reactor_duty` is emergent rather
+than a configured field, and per M4's lesson the energy gate is the **difference
+of the two duties**, not either one alone.
+
+The condition is the scope boundary, and it is refused at load rather than
+half-supported — the same move M3.2 made for a valve on a draw line and for
+chained columns:
+
+- **partial condenser** (vapour distillate) — refused;
+- **vapour side draw** — refused;
+- **flashing feed line** — refused by the existing single-phase
+  connected-component guard, unchanged;
+- **subcooled reflux / superheated feed** — allowed, they are sensible terms.
+
+Each refusal names fork 0's narrowed deferral in its message, so the trigger and
+the guard cannot drift apart.
+
+One further `core` change follows: the draws now leave at **their tray
+temperatures**, not the feed temperature. M3.2's note already flags this as the
+gap ("a real column's draws sit at their tray temperatures; representing that
+needs the reboiler/condenser duties and a tray cascade, which is the complex
+column"). `edge_temperature_at` today reads one resolved temperature for the
+upwind node and returns it unchanged at the upwind end — so it gains a column
+arm, mirroring exactly what `edge_composition_at` already does for "which draw
+am I". The rule stays in one place, which is why that function exists.
+
+#### What the tests must pin — three families, and conflating them proves neither
+
+The strongest gates here are derivable from first principles, so none of them
+needs a transcription from a paywalled table (`published-anchor-envelope`).
+
+1. **The cascade algebra**, through a relative volatility supplied by the test.
+   At **total reflux** a binary with constant `α` over `N` stages must satisfy
+   **Fenske** exactly: `(x_D/(1−x_D))·((1−x_B)/x_B) = α^N`. A single stage must
+   reproduce a hand-computed **Rachford–Rice** flash. `α = 1` must produce no
+   separation at any `N` — the null gate. All three are green under a *wrong
+   vapour-pressure correlation*, which is the point of separating them.
+2. **The K-value correlation** on its own. Two parts, and they must not be one
+   test: the **exact** identities (`K = 1` at `T = tb` and reference pressure;
+   `K` monotone in `T`; a heavier cut has the lower `K` at fixed `T`), and the
+   **magnitude**, which — since the slate carries only `tb` and a
+   Clausius–Clapeyron/Trouton form derives `Δh_vap` from it — can only be an
+   **envelope** against a vapour pressure actually read, labelled a regression
+   lock rather than validation, per the ceiling M4.2 already set.
+3. **The unit as wired**: the loader building a cascade column, a real solve
+   handing it a feed flow the file never states, `Σ draws = feed`, the duty
+   *difference* against the sensible balance, per-draw temperatures ordered
+   top-to-bottom, and every refusal above actually refusing.
+
+Plus the two that are neither: the **mass ⇄ mole round trip** at the boundary
+(fork 1), and the **non-convergence `Err`** (fork 4), each reachable on purpose.
+
+And the seam's own gate is a *regression anchor*, not a reference: moving
+`column_separation` behind `SeparationModel` must leave every existing golden
+**bit-identical**, which is the standard this workspace has held since M3.1's
+1-component anchor.
+
+#### Deferred from M7, with what would un-defer each
+
+- **Tray hydraulics** — pressure drop per tray, weeping, flooding. Un-defers the
+  moment a stage needs a vapour *density*, which is fork 1's verdict boundary,
+  not an additive correlation.
+- **Partial condenser, vapour side draw, flashing feed** — fork 0's narrowed
+  two-phase deferral. Un-defers with phase in the state vector.
+- **Column holdup and tray dynamics** — the cascade is quasi-steady per tick, the
+  same assumption §3 makes for hydraulics. Un-defers if a startup or a
+  composition-front transient needs to be *watched* rather than stepped over.
+- **Non-ideal K (activity coefficients)** — Raoult is adequate for hydrocarbon
+  cuts, which are the only thing this slate describes. Un-defers with a slate
+  carrying a polar component, where the error is distinguishable.
+- **Efficiency (Murphree) per tray** — a real column's stages are not
+  equilibrium stages. Additive to the cascade once a case can tell 20 real trays
+  from 14 ideal ones; deferring it keeps `N` meaning one thing.
 
 ## 6. Time
 
