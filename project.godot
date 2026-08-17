@@ -6,18 +6,25 @@
 ; https://docs.godotengine.org/en/stable/tutorials/editor/project_settings.html
 ;
 ; This project is the Godot 4 frontend host for the Refinery simulator.
-; It exists so the Godot editor (and the GDAI MCP editor plugin in
-; res://addons/) has a project to open. The refinery simulation itself lives
-; in the Rust workspace (crates/*) and will be surfaced here via the
-; refinery-godot-ext GDExtension when milestone M6 begins — see docs/ROADMAP.md.
+; The simulation itself lives in the Rust workspace (crates/*) and is surfaced
+; here by the refinery-godot-ext GDExtension — see refinery.gdextension, which
+; also explains why nothing loads until that crate has been built.
+;
+; The 4.3 this file used to declare was the version it was created under, not
+; a version anything was tested against. It says 4.7 because that is the Godot
+; the extension was built and demonstrated against (M6.2), and because
+; `compatibility_minimum` in refinery.gdextension and the `api-4-7` feature in
+; crates/godot-ext/Cargo.toml both name the same number. CONSEQUENCE, stated
+; rather than discovered: this project now requires Godot >= 4.7. Moving to an
+; older editor means moving all three together.
 
 config_version=5
 
 [application]
 
 config/name="Refinery"
-config/description="Godot 4 frontend host for the Refinery simulator. Loads the GDAI MCP editor plugin; the refinery-godot-ext GDExtension is wired in at milestone M6."
-config/features=PackedStringArray("4.3", "Forward Plus")
+config/description="Godot 4 frontend host for the Refinery simulator. Loads the GDAI MCP editor plugin and the refinery-godot-ext GDExtension (build it first: cargo build -p refinery-godot-ext --features godot)."
+config/features=PackedStringArray("4.7", "Forward Plus")
 
 [editor_plugins]
 

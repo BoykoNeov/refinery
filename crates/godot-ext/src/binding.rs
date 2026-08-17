@@ -1,0 +1,141 @@
+//! The gdext half of the adapter, behind `--features godot`.
+//!
+//! # This file deliberately contains no decisions
+//!
+//! `cargo test` cannot reach a single line here: `GString`, `Variant` and the
+//! `#[godot_api]` registration all need a live Godot runtime, and godot-rust's
+//! own suite runs *inside* the engine. So there is no mutation evidence for
+//! this module and there cannot be — which is only acceptable because there is
+//! nothing here to get wrong beyond a typo the compiler catches.
+//!
+//! Every method is one line forwarding to [`bridge::Session`], which holds the
+//! whole contract (what "not loaded yet" means, which failures get which code,
+//! what a missing name resolves to) in plain Rust that `cargo test --workspace`
+//! covers. If a decision ever needs making — a default, a retry, a fallback —
+//! it belongs on that side, not this one. Reading this file top to bottom is
+//! how that claim is checked.
+//!
+//! The one exception is [`RefinerySim::load_scenario`], which must branch on
+//! whether Godot could read the file. It is the exception because only Godot
+//! can read `res://` — that path is not a filesystem path once a game is
+//! exported into a `.pck` — and both of its outcomes are still encoded by the
+//! bridge.
+//!
+//! # Everything crosses as JSON text
+//!
+//! DESIGN §8's original sketch said `get_snapshot() -> Dictionary`. Building a
+//! `Dictionary` means a recursive JSON→`Variant` converter, which is exactly
+//! the untestable code the pure/gdext split exists to prevent — so the
+//! snapshot crosses as a `GString` and GDScript calls `JSON.parse_string()`.
+//! Fallible calls return the JSON `null` on success and `{code, message}` on
+//! failure, so one parse serves both.
+
+use godot::classes::file_access::ModeFlags;
+use godot::classes::FileAccess;
+use godot::prelude::*;
+
+use crate::bridge::{self, BridgeError, Session};
+
+struct RefineryExtension;
+
+#[gdextension]
+unsafe impl ExtensionLibrary for RefineryExtension {}
+
+/// The simulator, as a Godot node.
+///
+/// Ticking is the scene's job, not this node's: it does not override
+/// `physics_process`, because a game pausing, single-stepping or running the
+/// engine faster than the frame rate is a game decision. Call `tick()` from
+/// `_physics_process` for the sync single-threaded arrangement DESIGN §8
+/// specifies.
+#[derive(GodotClass)]
+#[class(init, base = Node)]
+pub struct RefinerySim {
+    session: Session,
+    base: Base<Node>,
+}
+
+#[godot_api]
+impl RefinerySim {
+    /// Load a scenario from a Godot path (`res://scenarios/foo.toml`).
+    ///
+    /// Returns `null` on success, `{code, message}` on failure.
+    #[func]
+    fn load_scenario(&mut self, res_path: GString) -> GString {
+        let path = res_path.to_string();
+        let outcome = match FileAccess::open(&res_path, ModeFlags::READ) {
+            Some(file) => self.session.load_scenario(&file.get_as_text().to_string()),
+            None => bridge::outcome_json(Err(BridgeError::FileUnreadable(format!(
+                "Godot could not open '{path}' (FileAccess error {:?})",
+                FileAccess::get_open_error()
+            )))),
+        };
+        GString::from(&outcome)
+    }
+
+    /// Load a scenario from TOML source already in hand — for a game that
+    /// generates plants, or holds them somewhere `FileAccess` cannot reach.
+    #[func]
+    fn load_scenario_source(&mut self, toml_src: GString) -> GString {
+        GString::from(&self.session.load_scenario(&toml_src.to_string()))
+    }
+
+    /// Whether a plant is loaded.
+    #[func]
+    fn is_loaded(&self) -> bool {
+        self.session.is_loaded()
+    }
+
+    /// Advance one fixed timestep. `null` on success, `{code, message}` on
+    /// failure — including `not_loaded`.
+    #[func]
+    fn tick(&mut self) -> GString {
+        GString::from(&self.session.tick())
+    }
+
+    /// Apply one command, in the JSON `Command` shape DESIGN §7 pins.
+    #[func]
+    fn apply_command(&mut self, command_json: GString) -> GString {
+        GString::from(&self.session.apply_command_json(&command_json.to_string()))
+    }
+
+    /// The whole snapshot as JSON text, or `null` before a scenario loads.
+    /// Before the first tick three float fields are `null` too — see the
+    /// `bridge` module docs, and expect it rather than reporting it.
+    #[func]
+    fn snapshot_json(&self) -> GString {
+        GString::from(&self.session.snapshot_json())
+    }
+
+    /// Resolve a node name to the id commands address, or `-1`.
+    #[func]
+    fn node_id(&self, name: GString) -> i64 {
+        self.session.node_id(&name.to_string())
+    }
+
+    /// Resolve an edge name to the id commands address, or `-1`. A
+    /// punctureable pipe's declared name gives the upstream half.
+    #[func]
+    fn edge_id(&self, name: GString) -> i64 {
+        self.session.edge_id(&name.to_string())
+    }
+
+    /// Ticks completed; `0` means loaded but not yet solved, `-1` means not
+    /// loaded.
+    #[func]
+    fn tick_index(&self) -> i64 {
+        self.session.tick_index()
+    }
+
+    /// Every node name, as a JSON array.
+    #[func]
+    fn node_names_json(&self) -> GString {
+        GString::from(&self.session.node_names_json())
+    }
+
+    /// Every edge name, as a JSON array.
+    #[func]
+    fn edge_names_json(&self) -> GString {
+        GString::from(&self.session.edge_names_json())
+    }
+}

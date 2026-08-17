@@ -2528,6 +2528,28 @@ for hot paths), `send_command(...)`. Sync single-threaded first; move the
 engine to its own thread behind a snapshot channel only if profiling shows
 tick time threatening the frame budget.
 
+**Two corrections to that sketch, made when the binding was built (M6.2).**
+
+1. **`get_snapshot()` returns a JSON string, not a `Dictionary`.** Building a
+   `Dictionary` means a recursive JSON→`Variant` converter, which is code
+   written in Godot types — precisely the untestable half this section's own
+   rule pushes work *out of*. The sketch would have moved the largest piece of
+   translation logic in the adapter to the side `cargo test` cannot reach. It
+   crosses as a `GString` and GDScript calls `JSON.parse_string()`. Typed
+   accessors for hot paths remain available if profiling ever asks for them;
+   nothing measured says it does.
+2. **The node does not tick itself.** `tick_in_physics_process` as a property
+   of the node makes pausing, single-stepping and running faster than the
+   frame rate into engine concerns. The scene calls `tick()` from its own
+   `_physics_process`, which is the same arrangement with the decision left
+   where it belongs.
+
+**Fallible calls return the JSON `null` on success and `{code, message}` on
+failure**, so one `JSON.parse_string` serves both and a scene branches on
+truthiness. Name lookups return `-1` rather than an error object: ids are
+`u32` so no real id collides with it, and resolving a name is a startup step a
+scene either got right or must fix in its own source.
+
 **What is gateable here and what is only demonstrated.** M6 bundles two unlike
 things, and conflating them is how a milestone comes to believe it is tested.
 The adapter's **translation layer** — command JSON → `Command`, `Snapshot` →
@@ -2598,6 +2620,61 @@ emitting null. Two consequences a scene author will otherwise report as bugs:
 pre-tick JSON does not deserialize back into a `Snapshot`, and pre-tick
 `nodes[i].temperature_k` is `null` while `nodes[i].kind.temperature` is a real
 number — the first is *solved*, the second is *stored*.
+
+### The binding (M6.2, second commit) — what building it settled
+
+**`Session` exists so the binding contains no decisions.** A Godot node is
+constructed before it is told which scenario to run, so *something* has to
+answer "what happens if you tick before loading?". Answering it in the binding
+would put a decision on the side `cargo test` cannot reach — the exact failure
+the pure/gdext split exists to prevent, arriving through the back door. So
+`bridge::Session` is a `Bridge` that may not exist yet, with every method
+total: plain Rust in, plain Rust out, every failure mode carrying a code. The
+binding is then one forwarding line per method, and "this file contains no
+decisions" is a claim a reader can check by reading it. Its gates are the ones
+that cover the binding's behaviour, because there is nothing else in it.
+
+**A failed load leaves the running plant untouched** — the same rule a refused
+`Command` follows. A typo in a scenario path must not destroy a running game,
+and half-swapping a plant would be worse than either outcome.
+
+**There is no mutation evidence for the binding, and that is the honest
+report.** No `cargo test` binary can construct a `GString`, so there is
+nothing to mutate. What makes the absence acceptable is the paragraph above:
+the module is branch-free marshalling, so the claim being made about it is
+verifiable by reading rather than by running. `cargo clippy --workspace` does
+not see it either (the feature is off), so
+`cargo clippy -p refinery-godot-ext --features godot --all-targets -D warnings`
+is run by hand and recorded in the roadmap when the binding changes.
+
+**The version pin is three numbers that must agree**: `api-4-7` in
+`crates/godot-ext/Cargo.toml`, `compatibility_minimum = 4.7` in
+`refinery.gdextension`, and `config/features` in `project.godot`. Godot 4.7 is
+what the extension was built and demonstrated against; the 4.3 `project.godot`
+used to declare was the version it was created under, tested against nothing.
+**Consequence, stated rather than discovered: this project now requires Godot
+>= 4.7.** A mismatch between the three fails silently — the library simply
+does not load, with no message naming the cause.
+
+**`cargo test --workspace` silently breaks the game, and the fix is a build
+directory rather than a warning.** The crate is `cdylib` + `rlib`, so the
+mandated pre-commit test run rebuilds the very `.dll` Godot loads — with the
+`godot` feature off, producing a library whose entry point does not exist.
+Godot then reports `GDExtension entry point 'gdext_rust_init' not found`,
+which reads like a broken build and is really "your last cargo command
+overwrote it". Every commit cycle would reproduce it. The featured build goes
+to `--target-dir target/godot` instead, which nothing else writes to, so the
+failure mode is removed rather than documented. Found by running the smoke
+script after a test run, not by reasoning about it.
+
+**The setup step that is not in any of those files.** Outside the editor,
+Godot loads extensions from `.godot/extension_list.cfg`, which the *editor*
+writes; it does not scan for `*.gdextension` at runtime. `.godot/` is
+gitignored, so a fresh clone that builds the library and runs the project gets
+`Identifier "RefinerySim" not declared` — a GDScript parse error naming
+nothing relevant. Opening the project in the editor once fixes it. Written
+into `refinery.gdextension`'s header, because that is the file someone reads
+when the extension does not load.
 
 **`serde_json` needed `float_roundtrip`, and nothing before now could have
 found it.** The default float parser is fast, not exact: it can land 1–2 ULP

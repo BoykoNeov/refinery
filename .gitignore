@@ -1,5 +1,12 @@
-# Rust build artifacts
-target/
+# Rust build artifacts. Written as `/target/*` rather than `target/` so that
+# the one file below can be excepted: git never looks inside a directory it
+# has ignored, so an exception under `target/` would be unreachable.
+/target/*
+# ...except this one. `refinery.gdextension` points Godot at cargo's own
+# output directory, and the editor's filesystem scanner would otherwise walk
+# every build artifact in it. Empty file, committed, restored by checkout
+# after a `cargo clean` removes it.
+!/target/.gdignore
 
 # GDAI MCP editor plugin — local AI tooling (native binaries), not shipped.
 # The project references it via project.godot but each dev supplies their own.

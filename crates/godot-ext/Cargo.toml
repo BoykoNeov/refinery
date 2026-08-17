@@ -9,7 +9,12 @@
 #              Needs a Godot 4 toolchain, so it is OFF by default.
 #
 #   cargo test --workspace                       # bridge only, no toolchain
-#   cargo build -p refinery-godot-ext --features godot   # the real GDExtension
+#   cargo build -p refinery-godot-ext --features godot --target-dir target/godot
+#
+# The separate --target-dir is required, not tidiness: `cargo test --workspace`
+# rebuilds this crate's cdylib with the feature OFF and would otherwise
+# overwrite the library Godot loads with one that has no entry point. See the
+# header of refinery.gdextension.
 
 [package]
 name = "refinery-godot-ext"
@@ -28,9 +33,13 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 
+# The gdext binding. Optional, so a default build has no toolchain
+# requirement. `api-4-7` pins the GDExtension API level to the Godot minor
+# installed here (4.7) and is the same number `refinery.gdextension` declares
+# as `compatibility_minimum` — the two must agree or Godot refuses the library
+# with no useful message.
+godot = { version = "0.5.5", features = ["api-4-7"], optional = true }
+
 [features]
 default = []
-# Pin the gdext version matching the Godot 4.x minor in use when the binding
-# lands (M6.2, second commit). Adding the dependency before the binding exists
-# would put a toolchain requirement on a crate that does not yet need one.
-godot = []
+godot = ["dep:godot"]

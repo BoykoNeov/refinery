@@ -8,7 +8,7 @@ use refinery_core::graph::{EdgeId, NodeId};
 use refinery_core::snapshot::{Command, Snapshot};
 use refinery_core::units::{SquareMeter, Watt};
 use refinery_core::SimError;
-use refinery_godot_ext::bridge::{Bridge, BridgeError, ErrorReport};
+use refinery_godot_ext::bridge::{Bridge, BridgeError, ErrorReport, Session, MISSING_ID};
 use serde_json::Value;
 
 // ---------------------------------------------------------------- fixtures
@@ -662,6 +662,8 @@ fn the_bridge_reproduces_a_direct_engine_run_byte_for_byte() {
 fn error_codes_are_stable() {
     let cases: Vec<(BridgeError, &str)> = vec![
         (BridgeError::BadJson("x".into()), "bad_json"),
+        (BridgeError::NotLoaded, "not_loaded"),
+        (BridgeError::FileUnreadable("x".into()), "file_unreadable"),
         (BridgeError::UnknownId("x".into()), "unknown_id"),
         (BridgeError::UnknownName("x".into()), "unknown_name"),
         (BridgeError::DuplicateName("x".into()), "duplicate_name"),
@@ -698,7 +700,15 @@ fn error_codes_are_stable() {
 
     // The diverged report carries the summary and NOT the history — the
     // decision recorded in `BridgeError`'s docs, gated so it stays true.
-    let diverged = ErrorReport::from(&cases[4].0);
+    // Found by code rather than by index: a variant added above must not
+    // silently re-point this at a different error.
+    let diverged = ErrorReport::from(
+        &cases
+            .iter()
+            .find(|(_, code)| *code == "solver_diverged")
+            .expect("the diverged case is still in the list")
+            .0,
+    );
     assert!(
         diverged.message.contains('7') && diverged.message.contains("1.500e0"),
         "the diverged summary lost its iterations/residual: {}",
@@ -709,6 +719,171 @@ fn error_codes_are_stable() {
         "the residual history leaked into the game-facing payload: {}",
         diverged.message
     );
+}
+
+// ----------------------------------------------------------------- Session
+
+// `Session` is what the gdext binding calls, method for method. Everything
+// below therefore gates code that no test can otherwise reach: the binding's
+// own lines are `GString` marshalling with the decisions removed, so gating
+// `Session` is gating the binding's behaviour.
+
+fn outcome_code(json: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(json).expect("an outcome is JSON");
+    match value {
+        Value::Null => None,
+        other => Some(
+            other["code"]
+                .as_str()
+                .expect("an outcome that is not null carries a code")
+                .to_string(),
+        ),
+    }
+}
+
+/// A Godot node exists before it is told what to simulate, so every call has
+/// to answer in that state. **All of them, not the ones someone remembered**:
+/// the point is that a scene calling any method on a fresh node gets a
+/// documented value instead of a panic or a plausible-looking lie.
+#[test]
+fn every_session_call_answers_before_a_scenario_is_loaded() {
+    let mut sim = Session::new();
+
+    assert!(!sim.is_loaded());
+    assert_eq!(sim.tick_index(), MISSING_ID, "unloaded must not read as 0");
+    assert_eq!(sim.node_id("supply_tank"), MISSING_ID);
+    assert_eq!(sim.edge_id("fill_line"), MISSING_ID);
+    assert_eq!(sim.snapshot_json(), "null");
+    assert_eq!(sim.node_names_json(), "null");
+    assert_eq!(sim.edge_names_json(), "null");
+
+    assert_eq!(outcome_code(&sim.tick()).as_deref(), Some("not_loaded"));
+    assert_eq!(
+        outcome_code(&sim.apply_command_json(r#"{"cmd":"set_pump_on","node":1,"on":false}"#))
+            .as_deref(),
+        Some("not_loaded"),
+        "a command must not be judged before there is a plant to judge it against"
+    );
+
+    // And loading turns all of that on.
+    assert_eq!(outcome_code(&sim.load_scenario(&scenario_src(LEAKY))), None);
+    assert!(sim.is_loaded());
+    assert_eq!(sim.tick_index(), 0, "loaded but unsolved is 0, not -1");
+    assert!(sim.node_id("supply_tank") >= 0);
+    assert_ne!(sim.snapshot_json(), "null");
+}
+
+/// Success is the JSON `null`, failure is an object with a code. One shape,
+/// so a scene parses once and branches on truthiness — the contract the
+/// binding's return type rests on.
+#[test]
+fn a_session_outcome_is_null_or_a_coded_object() {
+    let mut sim = Session::new();
+    assert_eq!(sim.load_scenario(&scenario_src(LEAKY)), "null");
+    assert_eq!(sim.tick(), "null");
+
+    let refused = sim.apply_command_json("not json at all");
+    let value: Value = serde_json::from_str(&refused).expect("a refusal is JSON");
+    assert_eq!(value["code"], "bad_json");
+    assert!(
+        value["message"].as_str().is_some_and(|m| !m.is_empty()),
+        "a refusal with no message tells a log nothing: {refused}"
+    );
+}
+
+/// A typo in a scenario path must not destroy a running game. The previously
+/// loaded plant survives a failed load **unchanged** — same rule a refused
+/// `Command` follows, and the only reason this is testable at all is that the
+/// decision lives here rather than in the binding.
+#[test]
+fn a_failed_load_leaves_the_running_plant_untouched() {
+    let mut sim = Session::new();
+    sim.load_scenario(&scenario_src(LEAKY));
+    for _ in 0..10 {
+        assert_eq!(sim.tick(), "null");
+    }
+    let before = sim.snapshot_json();
+
+    assert_eq!(
+        outcome_code(&sim.load_scenario("this is not toml")).as_deref(),
+        Some("scenario")
+    );
+    assert!(sim.is_loaded(), "a failed load unloaded the running plant");
+    assert_eq!(sim.tick_index(), 10);
+    assert_eq!(
+        sim.snapshot_json(),
+        before,
+        "a failed load disturbed the running plant"
+    );
+
+    // A successful load, by contrast, does replace it.
+    assert_eq!(
+        outcome_code(&sim.load_scenario(&scenario_src("tank_pump_valve.toml"))),
+        None
+    );
+    assert_eq!(sim.tick_index(), 0);
+}
+
+/// The names lookups are the same phone book, in the shape that crosses.
+#[test]
+fn session_name_lists_match_the_bridges() {
+    let mut sim = Session::new();
+    sim.load_scenario(&scenario_src(LEAKY));
+    let direct = bridge(LEAKY);
+
+    let nodes: Vec<String> = serde_json::from_str(&sim.node_names_json()).unwrap();
+    let edges: Vec<String> = serde_json::from_str(&sim.edge_names_json()).unwrap();
+    assert_eq!(nodes, direct.node_names());
+    assert_eq!(edges, direct.edge_names());
+    assert!(edges.contains(&"fill_line__leak".to_string()));
+
+    for name in &nodes {
+        assert_eq!(sim.node_id(name), direct.node_id(name).unwrap());
+    }
+    assert_eq!(
+        sim.node_id("no_such_node"),
+        MISSING_ID,
+        "an unknown name must not resolve to a plausible id"
+    );
+}
+
+/// The binding's whole claim to correctness is that `Session` is a
+/// pass-through. Driving one against a direct `Engine` for 50 ticks, with a
+/// command applied, is that claim as a gate — the `Bridge`-level version of
+/// this test does not cover the `Option` layer the binding actually talks to.
+#[test]
+fn a_session_reproduces_a_direct_engine_run_byte_for_byte() {
+    let src = scenario_src(LEAKY);
+
+    let file = refinery_scenarios::load_str(&src).unwrap();
+    let mut direct = refinery_scenarios::build_engine(&file).unwrap();
+    let mut sim = Session::new();
+    assert_eq!(sim.load_scenario(&src), "null");
+
+    let pipe = sim.edge_id("fill_line");
+    direct
+        .apply(Command::PuncturePipe {
+            edge: EdgeId(pipe as u32),
+            area: SquareMeter(5.0e-4),
+        })
+        .unwrap();
+    assert_eq!(
+        sim.apply_command_json(&format!(
+            r#"{{"cmd":"puncture_pipe","edge":{pipe},"area":0.0005}}"#
+        )),
+        "null"
+    );
+
+    for tick in 1..=50 {
+        direct.tick().unwrap();
+        assert_eq!(sim.tick(), "null");
+        assert_eq!(
+            serde_json::to_string(&direct.snapshot()).unwrap(),
+            sim.snapshot_json(),
+            "session and direct runs diverged at tick {tick}"
+        );
+    }
+    assert_eq!(sim.tick_index(), 50);
 }
 
 #[test]

@@ -5,3 +5,6 @@
 //! types. No Godot type crosses into core/solvers/scenarios, ever.
 
 pub mod bridge;
+
+#[cfg(feature = "godot")]
+mod binding;

@@ -85,7 +85,29 @@ off-by-default feature, because that is where the toolchain requirement
 actually is:
 
 ```
-cargo build -p refinery-godot-ext --features godot   # needs Godot 4 + gdext
+# needs Godot >= 4.7. The --target-dir is REQUIRED, not tidiness: see below.
+cargo build -p refinery-godot-ext --features godot --target-dir target/godot
+cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
+```
+
+That clippy line is not optional politeness: with the feature off, the
+workspace lint pass does not see one line of the binding. Run it (and record
+that you did) whenever the binding changes.
+
+The separate `--target-dir` exists because the crate is `cdylib` + `rlib`, so
+`cargo test --workspace` rebuilds the same `.dll` with the feature OFF and
+overwrites the one Godot loads. The symptom is `GDExtension entry point
+'gdext_rust_init' not found`, which does not sound like what it is.
+
+Running the Godot frontend needs one more step that nothing warns about — the
+editor must be opened once so it writes `.godot/extension_list.cfg`, which is
+what a *running* project loads extensions from. See the header comment in
+`refinery.gdextension`; skipping it produces a GDScript parse error naming
+nothing relevant.
+
+```
+godot --headless --path . --editor --quit                  # once, after cloning
+godot --headless --path . --quit-after 400 2>&1 | grep t=  # the M6.2 demo
 ```
 
 ## Testing philosophy

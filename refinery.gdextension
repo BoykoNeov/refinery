@@ -1,0 +1,73 @@
+; The GDExtension manifest. Godot scans res:// for *.gdextension at startup;
+; this is the file that makes the Rust library reachable at all.
+;
+; Three things here are easy to get wrong and fail SILENTLY (no error naming
+; the cause), so they are written down rather than left to be rediscovered:
+;
+;   1. `entry_symbol` is gdext's own, not ours. `#[gdextension]` generates a
+;      function called `gdext_rust_init` unless told otherwise.
+;   2. The library file is `refinery_godot_ext.dll` — cargo turns the crate's
+;      hyphens into underscores, and the name here must match the file, not
+;      the crate.
+;   3. `compatibility_minimum` must agree with the `api-4-N` feature pinned in
+;      crates/godot-ext/Cargo.toml. Both say 4.7, which is the Godot minor
+;      this was built and demonstrated against. Bumping one without the other
+;      is the silent-failure case.
+;
+; SETUP IN A FRESH CLONE — two steps, in this order:
+;
+;     cargo build -p refinery-godot-ext --features godot --target-dir target/godot
+;     godot --headless --path . --editor --quit
+;
+; The first builds the library. The second is the one that is easy to miss and
+; whose failure names nothing: outside the editor, Godot loads extensions from
+; `.godot/extension_list.cfg` rather than by scanning for *.gdextension, and
+; that file is written by the EDITOR. Skip it and a running project reports
+; `Identifier "RefinerySim" not declared` — a GDScript parse error that says
+; nothing about extensions, libraries or this file. `.godot/` is gitignored, so
+; every fresh clone starts in that state. (Measured, not guessed: it is exactly
+; how the first smoke run failed.)
+;
+; THE `--target-dir` IS LOAD-BEARING, not tidiness. The crate builds as both
+; `cdylib` and `rlib`, so a plain `cargo test --workspace` — the command every
+; commit is required to run — rebuilds this same .dll with the `godot` feature
+; OFF and overwrites it with one that has no entry point. Godot then reports
+;
+;     GDExtension entry point 'gdext_rust_init' not found in library ...
+;
+; which reads like a broken build and is really "your last cargo command
+; clobbered it". A separate output directory removes the failure mode instead
+; of documenting it: nothing but the featured build ever writes there.
+; (Measured, not guessed: it is exactly how the second smoke run failed.)
+;
+; The library lives in cargo's own output directory, which is NOT in git (see
+; .gitignore), so the build step is genuinely required rather than a
+; convenience. That is deliberate: the alternative is copying the .dll into a
+; committed `bin/` folder, which goes stale the first time someone edits Rust
+; and forgets the copy. `target/.gdignore` (also committed) keeps the editor's
+; filesystem scanner out of that directory, target/godot included.
+;
+; While the Godot editor is open on Windows it holds this .dll open, and the
+; next `cargo build` fails with a linker error until the editor is closed.
+; `reloadable = true` covers reloading the extension WITHIN a session, not
+; rebuilding it from outside one.
+
+[configuration]
+
+entry_symbol = "gdext_rust_init"
+compatibility_minimum = 4.7
+reloadable = true
+
+[libraries]
+
+; Verified: built and loaded on this platform.
+windows.debug.x86_64 = "res://target/godot/debug/refinery_godot_ext.dll"
+windows.release.x86_64 = "res://target/godot/release/refinery_godot_ext.dll"
+
+; Conventional cargo output names for the other desktop targets. NOT built or
+; loaded here — listed so a port has a starting point, not as a claim that it
+; works.
+linux.debug.x86_64 = "res://target/godot/debug/librefinery_godot_ext.so"
+linux.release.x86_64 = "res://target/godot/release/librefinery_godot_ext.so"
+macos.debug = "res://target/godot/debug/librefinery_godot_ext.dylib"
+macos.release = "res://target/godot/release/librefinery_godot_ext.dylib"

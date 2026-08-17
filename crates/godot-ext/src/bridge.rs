@@ -34,6 +34,15 @@
 //! 3. **Errors.** `SimError` becomes an `ErrorReport { code, message }` — a
 //!    stable string a scene can branch on, plus prose for a log.
 //!
+//! 4. **Not-yet-loaded.** [`Session`] is a [`Bridge`] that may not exist yet.
+//!    A Godot node is constructed before it is told which scenario to run, so
+//!    something must answer "what happens if you tick before loading?" — and
+//!    answering it in the binding would put a decision on the side `cargo
+//!    test` cannot reach, which is the failure this whole split exists to
+//!    prevent. Every `Session` method is total: JSON out instead of `Result`,
+//!    `-1` instead of a missing id, and a code for every refusal. The binding
+//!    is then one forwarding line per method.
+//!
 //! # Pre-tick state: floats are `null`, and that is not a bug
 //!
 //! Before the first tick, `node.pressure_pa`, `node.temperature_k` and
@@ -74,6 +83,17 @@ pub enum BridgeError {
     #[error("command is not valid JSON for a Command: {0}")]
     BadJson(String),
 
+    /// A [`Session`] method was called before any scenario loaded.
+    #[error("no scenario is loaded; call load_scenario() first")]
+    NotLoaded,
+
+    /// Only the binding constructs this: `res://` paths are Godot's to read
+    /// (a `.pck` is not a filesystem), so the failure arrives here already
+    /// worded. It lives in this enum anyway, so the code below stays the one
+    /// exhaustive place where a frontend-visible code is decided.
+    #[error("{0}")]
+    FileUnreadable(String),
+
     #[error("{0}")]
     UnknownId(String),
 
@@ -105,6 +125,8 @@ impl From<&BridgeError> for ErrorReport {
         // building. That is the whole mechanism keeping the code set honest.
         let code = match err {
             BridgeError::BadJson(_) => "bad_json",
+            BridgeError::NotLoaded => "not_loaded",
+            BridgeError::FileUnreadable(_) => "file_unreadable",
             BridgeError::UnknownId(_) => "unknown_id",
             BridgeError::UnknownName(_) => "unknown_name",
             BridgeError::DuplicateName(_) => "duplicate_name",
@@ -312,5 +334,154 @@ impl Bridge {
     /// Every edge name, ascending.
     pub fn edge_names(&self) -> Vec<String> {
         self.edges.keys().cloned().collect()
+    }
+}
+
+// ---------------------------------------------------------------- Session
+
+/// What a lookup returns when there is nothing to look up.
+///
+/// Ids are `u32` in the engine, so no real id is negative and the sentinel
+/// cannot collide with one. A scene tests `id < 0`; it does not get an error
+/// object, because resolving a name is a startup step a scene either got right
+/// or must fix in its own source.
+pub const MISSING_ID: i64 = -1;
+
+/// The result of a fallible call, as the game reads it: `null` when it worked,
+/// an [`ErrorReport`] object when it did not.
+///
+/// `null` rather than an empty string or a `success: true` field, so GDScript's
+/// `JSON.parse_string(...)` yields a falsy value on the happy path and a
+/// dictionary with `code`/`message` otherwise. One shape, one branch.
+pub fn outcome_json(result: Result<(), BridgeError>) -> String {
+    match result {
+        Ok(()) => "null".to_string(),
+        Err(err) => serde_json::to_string(&ErrorReport::from(&err))
+            // `ErrorReport` is two strings; serde has nothing to fail on. The
+            // fallback exists so this function cannot panic inside a frame.
+            .unwrap_or_else(|_| {
+                r#"{"code":"bridge_error","message":"unserializable"}"#.to_string()
+            }),
+    }
+}
+
+/// A [`Bridge`] that may not exist yet, with every method total.
+///
+/// **This type exists so the gdext binding contains no decisions.** A Godot
+/// node is constructed before it is told which scenario to run, so something
+/// must answer "what happens if you tick before loading?" — and anything
+/// answering that in terms of `GString`/`Variant` would be code `cargo test`
+/// cannot reach (DESIGN §8). So it is answered here: every method takes and
+/// returns plain Rust, every failure mode has a code, and the binding is a
+/// one-line forward per method.
+///
+/// Errors are returned as JSON rather than `Result`, because that is the shape
+/// that survives the crossing. [`Bridge`] keeps the `Result` API for Rust
+/// callers and tests.
+#[derive(Default)]
+pub struct Session {
+    bridge: Option<Bridge>,
+}
+
+impl Session {
+    /// An empty session. Every accessor reports `not_loaded` until
+    /// [`Session::load_scenario`] succeeds.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Load scenario TOML **source** (the binding reads `res://` itself).
+    ///
+    /// A failed load leaves the previously loaded plant in place, untouched —
+    /// the same rule a refused `Command` follows. Swapping in a half-built
+    /// plant, or dropping the running one, would make a typo in a scenario
+    /// path destroy a running game.
+    pub fn load_scenario(&mut self, toml_src: &str) -> String {
+        match Bridge::load(toml_src) {
+            Ok(bridge) => {
+                self.bridge = Some(bridge);
+                outcome_json(Ok(()))
+            }
+            Err(err) => outcome_json(Err(err)),
+        }
+    }
+
+    /// Whether a plant is loaded.
+    pub fn is_loaded(&self) -> bool {
+        self.bridge.is_some()
+    }
+
+    /// Advance one fixed timestep. See [`Bridge::tick`] for what an `Err`
+    /// leaves behind.
+    pub fn tick(&mut self) -> String {
+        outcome_json(match self.bridge.as_mut() {
+            Some(bridge) => bridge.tick(),
+            None => Err(BridgeError::NotLoaded),
+        })
+    }
+
+    /// Apply one `Command` in the contract's own JSON (DESIGN §7).
+    pub fn apply_command_json(&mut self, json: &str) -> String {
+        outcome_json(match self.bridge.as_mut() {
+            Some(bridge) => bridge.apply_command_json(json),
+            None => Err(BridgeError::NotLoaded),
+        })
+    }
+
+    /// The engine's snapshot JSON, or the JSON `null` when nothing is loaded.
+    ///
+    /// `null` is deliberately the same "nothing here" value the pre-tick
+    /// float fields use, so a scene that already handles those handles this.
+    pub fn snapshot_json(&self) -> String {
+        match self.bridge.as_ref() {
+            Some(bridge) => bridge.snapshot_json(),
+            None => "null".to_string(),
+        }
+    }
+
+    /// Resolve a node name, or [`MISSING_ID`] for an unknown name **or** an
+    /// unloaded session. The two are not distinguished: both mean "you cannot
+    /// address that", and a scene's response to either is to fix its source.
+    pub fn node_id(&self, name: &str) -> i64 {
+        self.bridge
+            .as_ref()
+            .and_then(|bridge| bridge.node_id(name).ok())
+            .unwrap_or(MISSING_ID)
+    }
+
+    /// Resolve an edge name, or [`MISSING_ID`]. For a punctureable pipe this
+    /// is the upstream half — see [`Bridge::edge_id`].
+    pub fn edge_id(&self, name: &str) -> i64 {
+        self.bridge
+            .as_ref()
+            .and_then(|bridge| bridge.edge_id(name).ok())
+            .unwrap_or(MISSING_ID)
+    }
+
+    /// Tick index, or [`MISSING_ID`] when nothing is loaded — distinguishable
+    /// from the `0` of a loaded-but-unsolved plant, which is a state a scene
+    /// legitimately sees.
+    pub fn tick_index(&self) -> i64 {
+        match self.bridge.as_ref() {
+            Some(bridge) => bridge.tick_index() as i64,
+            None => MISSING_ID,
+        }
+    }
+
+    /// Every node name as a JSON array, or `null` when nothing is loaded.
+    pub fn node_names_json(&self) -> String {
+        names_json(self.bridge.as_ref().map(Bridge::node_names))
+    }
+
+    /// Every edge name as a JSON array, or `null` when nothing is loaded.
+    pub fn edge_names_json(&self) -> String {
+        names_json(self.bridge.as_ref().map(Bridge::edge_names))
+    }
+}
+
+fn names_json(names: Option<Vec<String>>) -> String {
+    match names {
+        Some(names) => serde_json::to_string(&names).unwrap_or_else(|_| "null".to_string()),
+        None => "null".to_string(),
     }
 }
