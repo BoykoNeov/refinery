@@ -17,8 +17,10 @@
 //! weighting a blend by `ṁ·cp` rather than `ṁ` redistributes the fractions and
 //! conserves the total to the last bit, passing I1 and every energy balance.
 //! Splitting the balance per component is what makes that visible, and it is why
-//! the slate below has two cuts with a 4:1 `cp` ratio — on a one-component slate
-//! I7 is arithmetically identical to I1 and proves nothing.
+//! `two_cut_slate` below has two cuts with a 4:1 `cp` ratio — on a one-component
+//! slate I7 is arithmetically identical to I1 and proves nothing. (The M7.4c
+//! cascade arm at the end of this file carries a SECOND slate, `cascade_slate`,
+//! for reasons that are properties of the cascade rather than of I7; see there.)
 
 use proptest::prelude::*;
 use proptest::strategy::ValueTree;

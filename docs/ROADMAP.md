@@ -2818,6 +2818,25 @@ three of these — both index reversals and the reboiler's dropped balance term.
 gate labelled "caught nothing" is a statement about one mutation pass, not about
 the gate.
 
+Two provenance notes on the pass, so the caught set can be trusted rather than
+reconstructed (`a-void-mutation-looks-like-a-catch`). Every mutation was checked
+for a real compile failure by grepping for `error[E…]` and "could not compile" —
+zero, so all nine were live; the harness's own "did not compile" label is a false
+positive from matching cargo's `error: test failed` lines and should be ignored in
+the raw log. And the pass ran against `composition_transport.rs` **before** the
+solver-residual attribution block was added to `measure_cascade_arm_headroom`; the
+gate assertions it reports on are unchanged by that edit, and the new block cannot
+fire on any of these mutations (the residual is exactly 0 with no free nodes, and
+none of them adds one), so the set stands as reported.
+
+**The regression anchor holds by construction, which is stronger than measuring
+it.** No source file changed in this slice — the seven touched files are two docs,
+`CLAUDE.md`, two test files and two scenario TOMLs — so the ten column-free
+scenarios cannot have moved a bit. The two column-bearing ones DO move, by exactly
+the cut-point change this milestone's own box asked for, and that change is what
+`the_cut_point_demo_smears_a_component_across_two_draws` pins to a hand
+calculation.
+
 An attribution in this slice was also falsified before it was believed. The
 cascade arm's budget admits a second term for the cascade's own residual, and the
 first justification for that was a comparison against the column-free tee plant —
