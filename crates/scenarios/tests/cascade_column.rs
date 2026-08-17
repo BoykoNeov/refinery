@@ -13,10 +13,14 @@
 //! `Engine` is not `Debug` (boxed solver traits), so refusals are unwrapped by
 //! hand rather than with `expect_err`.
 
+use refinery_core::components::{Composition, Slate};
 use refinery_core::engine::Engine;
 use refinery_core::error::SimError;
 use refinery_core::graph::NodeKind;
+use refinery_core::traits::ThermoModel;
+use refinery_core::units::{Kelvin, Pascal, T_AMBIENT};
 use refinery_scenarios::{build_engine, load_str};
+use refinery_solvers::{MoleFractions, TroutonThermo};
 
 /// A two-cut slate whose molar masses differ by 2×, so the mass ⇄ mole boundary
 /// inside the cascade is live rather than degenerate. The boiling points are what
@@ -297,6 +301,220 @@ fn a_cascade_column_may_not_carry_the_splitters_fields() {
     assert!(
         m.contains("smearing_k") && m.contains("cut point"),
         "the refusal must say why a cascade has nothing to smear, got: {m}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// M7.4a — the draws leave at their tray temperatures.
+// ---------------------------------------------------------------------------
+
+/// The bubble point of a MASS composition at `pressure` [K], by bisection on
+/// `Σ Kᵢ(T)·xᵢ = 1` over mole fractions.
+///
+/// Deliberately a second implementation rather than a call into the cascade's own
+/// `bubble_point`, which is private: this is the gate's independent side. It uses
+/// only the published `ThermoModel::k_value` and the mass ⇄ mole boundary, so a
+/// cascade that computed its profile wrongly would disagree with it.
+///
+/// `Σ Kᵢ·xᵢ` is monotone increasing in `T` (every `K` is), so bisection converges
+/// on the single root; the bracket is wide enough to hold both cuts of the test
+/// slate at any pressure this file uses.
+fn bubble_point_of(slate: &Slate, mass: &Composition, pressure: Pascal) -> f64 {
+    let thermo = TroutonThermo::new();
+    let moles = MoleFractions::from_mass(mass, slate).expect("a draw carries a valid composition");
+    let sum_kx = |t: f64| -> f64 {
+        moles
+            .fractions()
+            .iter()
+            .enumerate()
+            .map(|(c, x)| {
+                x * thermo
+                    .k_value(slate, c, Kelvin(t), pressure)
+                    .expect("K at T > 0")
+            })
+            .sum()
+    };
+
+    let (mut low, mut high) = (200.0_f64, 800.0_f64);
+    assert!(
+        sum_kx(low) < 1.0 && sum_kx(high) > 1.0,
+        "the bracket must straddle the bubble point"
+    );
+    for _ in 0..200 {
+        let mid = 0.5 * (low + high);
+        if sum_kx(mid) < 1.0 {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    0.5 * (low + high)
+}
+
+fn edge_temperature(engine: &Engine, name: &str) -> f64 {
+    let eid = engine
+        .graph
+        .edge_ids()
+        .find(|e| engine.graph.pipe(*e).name == name)
+        .unwrap_or_else(|| panic!("edge '{name}' should exist"));
+    engine.graph.pipe(eid).stream.temperature.value()
+}
+
+/// **The M7.4a gate.** Each draw leaves at ITS OWN tray's temperature, and the two
+/// disagree.
+///
+/// Three properties at once, and the third is what makes the first two non-vacuous:
+///
+/// 1. **Ordered, strictly.** The overhead draw is colder than the bottoms. An
+///    unwired column arm hands every draw the column's single mixed temperature, so
+///    a non-strict comparison would pass on the very bug this slice fixes.
+/// 2. **Neither is the feed's.** The feed enters at 120 °C and the column has no
+///    other inflow, so its mixed temperature IS the feed's, and that is the exact
+///    number an unwired arm returns for every draw. Both must land clear of it.
+///    They land clear on the SAME side, which is a property of this fixture rather
+///    than of columns and is worth knowing before M7.4b: see the assertion.
+/// 3. **Each equals the bubble point of its own composition**, recomputed here from
+///    the published K-values rather than by calling the cascade's own (private)
+///    routine. This is the assertion with real physics in it: an off-by-one in the
+///    one-based-file to zero-based-profile translation leaves both temperatures
+///    real, both ordered and both away from the feed, and fails here.
+///
+///    It is **not** the sole catcher of anything measured — mutating that
+///    translation also fails the wired plant's split-and-balance test, and
+///    mis-taking the distillate's composition also fails the M7.3 flash reduction.
+///    What this assertion holds is INDEPENDENCE: a second derivation of the
+///    saturated-liquid contract, agreeing with the cascade's to 1e-6, so a wrong
+///    profile has to fool two unrelated computations. Said plainly because the
+///    first version of this comment claimed unique coverage it had not measured.
+///
+/// The contract behind (3): under a total condenser with liquid draws, every draw
+/// leaves as a saturated liquid, so its temperature is the bubble point of the
+/// composition it carries — for the distillate its own, for a stage draw that
+/// stage's liquid. That holds for both draw locations, which is why one identity
+/// covers both.
+#[test]
+fn each_draw_leaves_at_its_own_tray_temperature() {
+    let mut engine = build(&healthy()).expect("the cascade plant should build");
+    engine.tick().expect("tick should converge");
+
+    let column = engine.graph.find_node("column").unwrap();
+    let pressure = match &engine.graph.node(column).kind {
+        NodeKind::Column { pressure, .. } => *pressure,
+        other => panic!("expected a column, got {other:?}"),
+    };
+
+    let top = edge_temperature(&engine, "top_draw");
+    let bottom = edge_temperature(&engine, "bottom_draw");
+    let feed = edge_temperature(&engine, "feed_line");
+
+    // (1) Strict, not `<=`: equal temperatures are exactly the unwired case.
+    assert!(
+        top < bottom,
+        "the overhead draw must be strictly colder than the bottoms; got top {top} K and \
+         bottom {bottom} K — equal values mean the column arm is not wired at all"
+    );
+
+    // (2) Neither is the feed's. The column's only inflow is the feed line, so its
+    //     mixed temperature IS the feed's, and a draw still reading the node rather
+    //     than the tray would sit exactly on this number.
+    //
+    //     Both land BELOW it, and that is a fault in this FIXTURE rather than a
+    //     property of columns. The feed enters at 120 °C, above the bubble point of
+    //     a 50/50 mix at 1.5 bar, so it is superheated relative to the column it
+    //     feeds — and constant molar overflow admits only a saturated-liquid feed
+    //     (DESIGN §5, M7.3 correction 5). Nothing enforces that today, so this
+    //     plant has always been off-model. **M7.4b makes it an `Err` and moves this
+    //     fixture's feed onto its bubble point**; when it does, this assertion is
+    //     expected to keep holding with the two draws straddling the feed instead.
+    assert!(
+        (feed - top).abs() > 1.0 && (feed - bottom).abs() > 1.0,
+        "neither draw may sit on the column's mixed feed temperature ({feed} K), which is \
+         what an unwired arm returns; got top {top} K and bottom {bottom} K"
+    );
+
+    // (3) Each against the bubble point of the composition it actually carries.
+    for (name, temperature) in [("top_draw", top), ("bottom_draw", bottom)] {
+        let carried = Composition::from_weights(&edge_composition(&engine, name))
+            .expect("a draw carries a valid composition");
+        let saturated = bubble_point_of(&engine.slate, &carried, pressure);
+        approx::assert_relative_eq!(temperature, saturated, max_relative = 1e-6);
+    }
+}
+
+/// **Where the arm sits, not just that it exists.** A draw pipe with a real
+/// `ambient_ua` transforms its inlet on the way — and the inlet it starts from must
+/// be the TRAY's temperature, not the column's mixed one.
+///
+/// The first version of this comment claimed the test above would pass under a
+/// MISPLACED arm — one that resolves the tray only on the early "this node is the
+/// upwind end" return and leaves the downstream branch reading the node map.
+/// **Mutated, and the claim is false**: `Engine::tick` stores a pipe's temperature
+/// from its DOWNSTREAM end (`engine.rs`, the transport loop), so the early return
+/// is not the branch that test reads at all, and it fails on the misplacement too.
+/// Recorded rather than quietly deleted — the reasoning was the reason this test
+/// was written.
+///
+/// What it is actually for is narrower and still worth having. Every pipe in every
+/// scenario file in this workspace has `ambient_ua = 0`, where the transform is the
+/// identity; this is the ONLY place a column's draw pipe carries a live one. So it
+/// is the only gate that the arm and the transform **compose** — that the number
+/// the arm resolves is the number the transform starts from, rather than one it
+/// resolves and then drops. From the tray (~346 K here) a mild heat loss lands just
+/// below it; from the column's mixed ~393 K it lands just below THAT.
+///
+/// The `UA` is deliberately small. A large one drives the outlet toward ambient
+/// from either inlet, which would make a wrong placement pass — the bound has to
+/// be reached because the arm read the right inlet, not because the exponential
+/// swamped the difference. The control below measures that directly.
+#[test]
+fn a_draw_pipes_ambient_transform_starts_from_the_tray() {
+    let with_ua = healthy().replace(
+        "name = \"top_draw\"\nfrom = \"column\"\nto = \"top_tank\"\nlength_m = 20.0\ndiameter_m = 0.10",
+        "name = \"top_draw\"\nfrom = \"column\"\nto = \"top_tank\"\nlength_m = 20.0\ndiameter_m = 0.10\nambient_ua_w_per_k = 40.0",
+    );
+    assert!(
+        with_ua.contains("ambient_ua_w_per_k"),
+        "the fixture edit must have applied — a silent no-op replace would make this \
+         test a copy of the one above"
+    );
+
+    let mut engine = build(&with_ua).expect("a draw pipe may carry an ambient UA");
+    engine.tick().expect("tick should converge");
+
+    let column = engine.graph.find_node("column").unwrap();
+    let pressure = match &engine.graph.node(column).kind {
+        NodeKind::Column { pressure, .. } => *pressure,
+        other => panic!("expected a column, got {other:?}"),
+    };
+
+    let outlet = edge_temperature(&engine, "top_draw");
+    let feed = edge_temperature(&engine, "feed_line");
+    let carried = Composition::from_weights(&edge_composition(&engine, "top_draw"))
+        .expect("a draw carries a valid composition");
+    let tray = bubble_point_of(&engine.slate, &carried, pressure);
+
+    // Cooling, so the outlet is below the inlet — whichever inlet was used. The
+    // discriminating half is that it is below the TRAY: an inlet of the column's
+    // mixed temperature would leave it stranded up near the feed.
+    assert!(
+        outlet < tray,
+        "a draw pipe losing heat must leave below its tray temperature; got outlet \
+         {outlet} K against a tray at {tray} K"
+    );
+    // The control: this `UA` is mild enough that starting from the column's mixed
+    // temperature would NOT have decayed past the tray. Without this the assertion
+    // above could be satisfied by a large-enough UA regardless of the inlet, which
+    // is the "green for the wrong reason" trap.
+    let ua_ok = tray + (feed - tray) * 0.5;
+    assert!(
+        outlet < ua_ok,
+        "the UA must be mild enough that a wrong inlet would be visible: an outlet at \
+         {outlet} K is not clear of the {ua_ok} K midpoint between the tray ({tray} K) \
+         and the feed ({feed} K)"
+    );
+    assert!(
+        outlet > T_AMBIENT.value(),
+        "the analytic transform cannot cross ambient; got {outlet} K"
     );
 }
 

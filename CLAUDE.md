@@ -158,10 +158,14 @@ cascade) is in progress**: the design note is landed (DESIGN §5, "Complex colum
 `MoleFractions` boundary, and the Rachford–Rice single-stage flash), and **M7.3
 is done** — `StageCascade` in `solvers`, `CascadeSpec` and stage-located
 `ColumnDraw`s on `NodeKind::Column`, and `thermo = "trouton"` /
-`separation = "cascade"` selectable from a scenario. **M7.4 is the open box.**
+`separation = "cascade"` selectable from a scenario. **M7.4 is sliced in three and
+M7.4a is done** — `edge_temperature_at`'s column arm, so a draw now leaves at its
+own tray temperature. **M7.4b (duties, `Δh_vap`) and M7.4c (the I-series arm and
+the demo file) are the open boxes.**
 The note's verdicts are decisions, not results — M7.1 corrected its call shape,
-M7.2 its signature and gate structure, and M7.3 found that the constant-α model
-M7.2 shipped *for* the cascade could not have driven one stage of it.
+M7.2 its signature and gate structure, M7.3 found that the constant-α model
+M7.2 shipped *for* the cascade could not have driven one stage of it, and M7.4a
+falsified its own gate's justification with a mutation.
 
 A cascade column is specified by ratios only: `reflux_ratio` (molar, internal)
 plus one `draw_ratio` per draw (a **mass** fraction of the feed, with the bottoms
@@ -175,5 +179,12 @@ both directions: `up_to_c` + `smearing_k` are the splitter's, `stage` +
 refusing it on the other.
 
 Duties are still `Watt::ZERO` at the cascade fidelity — they need `Δh_vap`, which
-is M7.4. Draw temperatures are real tray temperatures already, but nothing reads
-them until M7.4 wires `edge_temperature_at`'s column arm.
+is M7.4b. Draw temperatures are real tray temperatures and are now **read**:
+`energy::column_draw_at` is the single owner of "which draw is this edge" for both
+composition and temperature, so the two fields of a draw always come from the same
+draw.
+
+Because of that, a cascade column is **no longer enthalpy-neutral** and its
+external energy books do not close until M7.4b lands the duties. Nothing gates the
+gap — the I-series generator never builds a column and no scenario file selects the
+cascade — so do not read a green suite as the balance closing.

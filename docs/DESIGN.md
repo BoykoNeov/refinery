@@ -3212,6 +3212,118 @@ bubble point is a different *start*, and fork 5's whole claim is that the start
 does not change the fixed point. That mutation surviving is the start-insensitivity
 gate working.
 
+#### Corrections from building it (M7.4a, landed)
+
+The reader is in: `edge_temperature_at` has its column arm, and a draw leaves at
+the temperature its separation gave it. **The note's shape survived exactly** —
+"a column arm, mirroring exactly what `edge_composition_at` already does for
+'which draw am I'" is what got built. Three things it did not say, one of them a
+claim this slice made and then falsified.
+
+**1. The mirror is one lookup, not two parallel arms.** The note says the
+temperature arm mirrors the composition arm, which reads as *write a second arm of
+the same shape*. Building it that way would have been the "two independently
+computed effectiveness terms" mistake `edge_temperature_at`'s own docstring
+rejects, one level down: two copies of "which draw is this edge" with nothing
+forcing them to agree, and a disagreement would hand a draw its own composition at
+a **different draw's temperature** — a state no plant can be in. So
+`column_draw_at` returns the whole `DrawSeparation` and both readers take the
+field they need out of it. The arms mirror because they are the same lookup, not
+because they were written alike.
+
+**2. The arm goes at the INLET resolution, not in the upwind early return.** The
+obvious place is the `node == upwind` branch — that is the branch that means "the
+fluid leaves the node at the node's own temperature", and a draw is exactly the
+exception to it. Putting it there is wrong: the *downstream* branch then starts
+`pipe_outlet_temperature` from the column's mixed feed temperature, transforming
+an inlet the fluid never had. It is invisible in this workspace, where every
+scenario's `ambient_ua` is 0 and the transform is the identity — the latent-bug
+class that same docstring already warns about for tanks. The gate therefore puts a
+live `ambient_ua` on a draw pipe, which is the only one in the repo.
+
+**3. The claim that justified that gate was itself wrong, and the mutation said
+so.** The gate was written believing a misplaced arm would slip past the
+tray-temperature test entirely. It does not: `Engine::tick` stores a pipe's
+temperature from its **downstream** end, so the early return is not the branch
+that test reads, and the misplacement fails both. What the ambient gate actually
+earns is narrower and still worth having — it is the only place the arm and the
+transform are shown to **compose**, rather than the arm resolving a number the
+transform then drops. Recorded rather than deleted, per
+`a-void-mutation-looks-like-a-catch`: the reasoning is why the test exists, and a
+future reader who deletes it as redundant should see what it does and does not
+cover.
+
+**The measurement that matters most is the negative one.** All twelve scenarios
+are byte-identical over 300 ticks, which was expected — `CutPointSplitter` sets
+`temperature: pass.temperature`, the same `f64` the sweep stored in the node map,
+so the cut-point path is unchanged by construction. Confirmed rather than
+asserted, and then falsified: a 1e-7 relative nudge to that field moves
+`crude_column` and `fcc_plant` and leaves the other ten alone. **The same nudge on
+the pre-change tree moves nothing at all — 0 of 12.** That is the difference
+between "the field exists" and "the field is read", measured rather than argued,
+and it is the cleanest available proof that this slice wired something.
+
+**What the mutation pass found.** Four mutations, each verified to compile: the arm
+absent; the arm misplaced to the early return; every stage draw reporting the top
+tray (the off-by-one class, since the file's `stage` is one-based with `0` meaning
+the condenser while the profile is zero-based); and the distillate's temperature
+taken at stage 1's *liquid* rather than the vapour a total condenser condenses. All
+four caught.
+
+**And the bubble-point identity was never the sole catcher — which is worth saying
+because the first draft of this paragraph claimed the opposite.** That identity is
+the slice's centrepiece gate: each draw's temperature equals the bubble point of
+the composition it carries, recomputed in the test from the published `k_value`
+instead of by calling the cascade's private routine, and it covers both draw
+locations at once because a distillate off a total condenser and a liquid off a
+tray are both saturated liquids. The claim written first was that it *is* the gate
+catching the off-by-one. It is not: that mutation also fails the wired plant's own
+split-and-balance test, and the fourth mutation — chosen specifically to be
+invisible to every balance, since it moves one temperature and no mass — was caught
+by the M7.3 flash reduction as well.
+
+So the identity's value is **independence, not unique coverage**: it is a second
+implementation of the saturated-liquid contract that agrees with the cascade's own
+to 1e-6, and a wrong profile has to fool two unrelated derivations rather than one.
+That is a real thing to hold, and it is a smaller thing than "this gate is what
+catches X". Recorded as measured, per `a-conjunctive-gate-hides-which-criterion-
+bound` — a gate that fires alongside others has not been shown to bind, and saying
+otherwise is the same error this section's correction 3 already caught once.
+
+**Left open on purpose, and named because nothing goes red.** A column was
+enthalpy-neutral by construction while every draw shared one temperature:
+`Σ ṁᵢ·cpᵢ = ṁ·cp_feed`, since `cp` is linear in composition and per-component mass
+is conserved. Differing tray temperatures end that, and the residual **is** the
+net reboiler-minus-condenser duty M7.4b adds. Between the two slices the column's
+external energy books do not close and no gate reaches the gap: I6's generator
+builds only Source/Junction/Tank/Sink, and no scenario file selects the cascade
+until M7.4c.
+
+**A precondition violation surfaced with it, and it is not the same kind of open
+box.** The wired M7.3 fixture feeds its column at 120 °C, which is *above* the
+bubble point of its own 50/50 mix at 1.5 bar — the feed is superheated relative to
+the column. Constant molar overflow assumes a **saturated-liquid** feed
+(correction 5 to the note), and nothing enforces it, so the wired fixture has
+always been off-model. This does not retract M7.3: Fenske, the null case and the
+flash reduction all run on hand-built passes in `solvers`, not on this plant. But
+"M7.4b will notice" understates it — an unclosed balance is a missing feature,
+while this is the formulation being fed something it does not admit.
+
+**M7.4b owes the runtime guard, not a tolerance in the docs.** `separate` returns
+`Err` when the feed is off its bubble point by more than a derived bound, and the
+fixture's feed moves onto its bubble point in the same slice so the wired gates
+measure an admissible column. The bound is derived from the enthalpy error the
+superheat represents, not picked to pass.
+
+That refusal makes the cascade reject plants the splitter accepts, and the
+asymmetry is deliberate — which is worth stating next to correction 5, where the
+opposite call was made. An **idle** column is a state the cascade *can* answer (a
+fraction of nothing is nothing), so refusing it would have made fidelity change
+legality for no reason. A superheated feed is a state it *cannot* answer, and the
+rule for that is already in this workspace: `ConstantThermo::k_value` errs rather
+than returning a plausible number. Refuse what you cannot answer; never refuse what
+you can.
+
 #### Deferred from M7, with what would un-defer each
 
 - **Tray hydraulics** — pressure drop per tray, weeping, flooding. Un-defers the

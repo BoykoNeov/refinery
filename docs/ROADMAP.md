@@ -2577,12 +2577,45 @@ because fork 5's claim is that the start cannot change the fixed point.
 
 ### M7.4 — Duties, tray temperatures, and the demo
 
-- [ ] `core`: per-draw temperatures through `edge_temperature_at`'s new column
-      arm; reboiler/condenser duties as emergent snapshot diagnostics.
+Sliced while building, because the two halves are separate physics and the first
+needs nothing from the second: **M7.4a** wires the temperatures (done), **M7.4b**
+adds `Δh_vap` and the duties, **M7.4c** the I-series arm and the demo file.
+
+- [x] `core`: per-draw temperatures through `edge_temperature_at`'s new column
+      arm. **Landed as M7.4a.** `column_draw_at` is the single owner of "which
+      draw is this edge" for BOTH fields, shared with `edge_composition_at` — so a
+      draw cannot be handed its own composition at another draw's temperature. The
+      arm sits at the inlet resolution, *above* the `node == upwind` return, or the
+      downstream branch would run its ambient transform from the column's mixed
+      feed temperature.
+- [ ] `core`: reboiler/condenser duties as emergent snapshot diagnostics.
 - [ ] `solvers`: `Δh_vap` into the duty calculation (the profile does not need it;
       the duties do — which is why this is a separate slice).
-- [ ] Gate: the **duty difference** against the sensible external balance (M4's
-      two-duty lesson), and per-draw temperatures ordered top-to-bottom.
+- [x] Gate (temperatures): per-draw temperatures **strictly** ordered, neither
+      equal to the column's mixed feed, and each equal to the **bubble point of the
+      composition it carries** — recomputed in the test from the published
+      `k_value` rather than by calling the cascade's own private routine. Plus a
+      draw pipe with a live `ambient_ua`, the only one in the workspace, so the arm
+      and the transform are gated as composing rather than merely coexisting.
+- [ ] Gate (duties): the **duty difference** against the sensible external balance
+      (M4's two-duty lesson).
+      **Known open by M7.4a, and nothing goes red:** once the draws leave at
+      differing tray temperatures the column stops being enthalpy-neutral by
+      construction — `Σ ṁᵢ·cpᵢ = ṁ·cp_feed` held only while every draw shared one
+      temperature — and the residual **is** the reboiler-minus-condenser duty this
+      box adds. No gate reaches it in between: I6's generator builds only
+      Source/Junction/Tank/Sink, and no scenario file selects the cascade until
+      M7.4c. Stated rather than discovered.
+- [ ] **Saturated-liquid feed becomes a guard, not an assumption.** Found while
+      building M7.4a: the wired M7.3 fixture feeds its column 20-odd K *above* the
+      bubble point of its own mix, and constant molar overflow admits only a
+      saturated-liquid feed. `separate` gains an `Err` outside a derived bound, and
+      the fixture's feed moves onto its bubble point in the same slice. This is a
+      precondition violation, not a missing feature — unlike the duties above, it
+      means the wired gates have been measuring a column fed something the
+      formulation does not admit. The asymmetry it creates is deliberate and is
+      argued in DESIGN §5: refuse what the model cannot answer (a superheated
+      feed), never what it can (an idle column, M7.3 correction 5).
 - [ ] I-series: extend the generator to reach a cascade column, with a
       **reachability count before the arm is believed** — a generated arm can be
       born vacuous.
@@ -2593,6 +2626,17 @@ because fork 5's claim is that the start cannot change the fixed point.
       component boils inside a ramp anywhere in this repo, so the demo column is
       a sharp splitter today and `smearing_k` changes nothing) — that is also
       where the two fidelities differ most and are most worth comparing.
+
+**M7.4a landed 2026-08-17.** The note's shape for this half survived unchanged —
+DESIGN §5 specified "a column arm, mirroring exactly what `edge_composition_at`
+already does", and that is what it is. Two measurements and one falsified claim
+(DESIGN §5, "Corrections from building it (M7.4a, landed)"): the twelve scenarios
+are byte-identical over 300 ticks, a 1e-7 nudge to the splitter's draw temperature
+moves exactly the two column-bearing ones — **and moves none at all on the
+pre-change tree**, which is what proves the field was dead and is now live. Four
+mutations, four caught — and the new bubble-point identity was the sole catcher of
+none of them, so it is recorded as an independent second derivation rather than as
+unique coverage.
 
 **Open until the note is falsified by building it.** Every milestone in this file
 has had its design note corrected by the code — M3.2's draw-flow location, M5.2's

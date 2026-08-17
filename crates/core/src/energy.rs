@@ -39,7 +39,9 @@
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{ColumnDraw, EdgeId, NodeId, NodeKind, PlantGraph};
-use crate::traits::{ColumnPass, ReactionModel, Separation, SeparationModel, ThermoModel};
+use crate::traits::{
+    ColumnPass, DrawSeparation, ReactionModel, Separation, SeparationModel, ThermoModel,
+};
 use crate::units::{JPerKg, JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -306,9 +308,10 @@ fn upwind_end(graph: &PlantGraph, edge: EdgeId, mass_flow: f64) -> NodeId {
 /// carry its own composition. When the upwind node is a `Column` and this edge is
 /// one of its draws, the crossing composition is that draw's *cut* composition,
 /// read out of `separations` — the single pass the `SeparationModel` made over
-/// this column when the sweep resolved it. This function is therefore the single
-/// owner of "which draw am I", the same way `edge_temperature_at` owns "which end
-/// am I". The result is `Cow`: borrowed either way, from whichever map holds it.
+/// this column when the sweep resolved it. Which draw an edge is comes from
+/// `column_draw_at`, shared with `edge_temperature_at`'s matching arm so the two
+/// fields of one draw can never come from two different draws. The result is
+/// `Cow`: borrowed either way, from whichever map holds it.
 ///
 /// **It reads a stored result rather than calling the model, and that is the
 /// shape of the M7.1 seam.** Calling `separate` here would run it once per draw
@@ -339,31 +342,61 @@ pub fn edge_composition_at<'a>(
         ))
     })?;
 
-    if let NodeKind::Column { draws, .. } = &graph.node(upwind).kind {
-        // The upwind node is a column, so this edge leaves it: it must be a draw.
-        let draw = draw_index_for_edge(graph, edge, upwind, draws)?;
-        let separation = separations.get(&upwind).ok_or_else(|| {
-            SimError::Numerical(format!(
-                "internal: column '{}' has no separation for this tick — the sweep \
-                 resolves every column before anything downstream of it reads a draw",
-                graph.node(upwind).name
-            ))
-        })?;
-        // Indexed through `get`, not `[]`: `separation.draws` is parallel to the
-        // column's own draw list BY CONTRACT, and a trait contract held by an impl
-        // in another crate is exactly what rule 5 says not to trust with a panic.
-        let cut = separation.draws.get(draw).ok_or_else(|| {
-            SimError::Numerical(format!(
-                "separation model returned {} draws for column '{}', which has {}",
-                separation.draws.len(),
-                graph.node(upwind).name,
-                draws.len()
-            ))
-        })?;
+    if let Some(cut) = column_draw_at(graph, separations, upwind, edge)? {
         return Ok(Cow::Borrowed(&cut.composition));
     }
 
     Ok(Cow::Borrowed(feed))
+}
+
+/// The separation result `edge` carries out of `upwind`, or `None` when `upwind`
+/// is not a column.
+///
+/// **The single owner of "which draw am I", for both fields at once.** A draw
+/// differs from its column in TWO ways — it carries a cut composition rather than
+/// the feed mix, and (at the cascade fidelity) it leaves at its tray's temperature
+/// rather than the column's mixed one — and both readers have to answer the same
+/// question first: which of this column's draws is this edge? Two lookups would be
+/// two copies of a rule that must agree, with nothing forcing them to; a mismatch
+/// would hand a draw its own composition at a different draw's temperature, which
+/// is not a state any plant can be in. That is the same rejection
+/// `edge_temperature_at` makes for the two ENDS of a pipe, applied to the two
+/// FIELDS of a draw.
+///
+/// # Errors
+/// `SimError::Numerical` if the column's separation is missing from `separations`,
+/// or if the edge cannot be matched to a draw — returned rather than indexed, so a
+/// sweep-ordering bug cannot panic (rule 5).
+fn column_draw_at<'a>(
+    graph: &PlantGraph,
+    separations: &'a BTreeMap<NodeId, Separation>,
+    upwind: NodeId,
+    edge: EdgeId,
+) -> Result<Option<&'a DrawSeparation>, SimError> {
+    let NodeKind::Column { draws, .. } = &graph.node(upwind).kind else {
+        return Ok(None);
+    };
+    // The upwind node is a column, so this edge leaves it: it must be a draw.
+    let draw = draw_index_for_edge(graph, edge, upwind, draws)?;
+    let separation = separations.get(&upwind).ok_or_else(|| {
+        SimError::Numerical(format!(
+            "internal: column '{}' has no separation for this tick — the sweep \
+             resolves every column before anything downstream of it reads a draw",
+            graph.node(upwind).name
+        ))
+    })?;
+    // Indexed through `get`, not `[]`: `separation.draws` is parallel to the
+    // column's own draw list BY CONTRACT, and a trait contract held by an impl
+    // in another crate is exactly what rule 5 says not to trust with a panic.
+    let cut = separation.draws.get(draw).ok_or_else(|| {
+        SimError::Numerical(format!(
+            "separation model returned {} draws for column '{}', which has {}",
+            separation.draws.len(),
+            graph.node(upwind).name,
+            draws.len()
+        ))
+    })?;
+    Ok(Some(cut))
 }
 
 /// Which draw of `column` the `edge` leaving it feeds, by matching the edge's far
@@ -432,6 +465,12 @@ fn column_feed_flow(
 ///   before the pipe has done anything to it. No transform.
 /// - `node` is the DOWNSTREAM end: the fluid arrives at the transformed outlet.
 ///
+/// A **column is the exception to "the node's own temperature"**, exactly as it is
+/// for composition: its draws leave at whatever temperature the separation model
+/// gave each of them — a tray's, under a cascade — and those differ from each
+/// other and from the column's mixed feed. The pipe transform then runs from the
+/// DRAW's temperature, not the column's. See `column_draw_at`.
+///
 /// Both readers pass every incident edge through here regardless of direction,
 /// which is what makes the difference between the two ends land on the pipe
 /// rather than on a node. Debiting a tank at its outflow pipe's OUTLET
@@ -466,13 +505,29 @@ pub fn edge_temperature_at(
     node: NodeId,
 ) -> Result<Kelvin, SimError> {
     let upwind = upwind_end(graph, edge, mass_flow);
-    let inlet = temperature.get(&upwind).copied().ok_or_else(|| {
-        SimError::Numerical(format!(
-            "internal: upwind node '{}' of pipe '{}' unresolved during the temperature sweep",
-            graph.node(upwind).name,
-            graph.pipe(edge).name
-        ))
-    })?;
+    // A COLUMN's draws do not leave at the column's own mixed temperature: each
+    // leaves at the temperature the separation model gives it, which at the
+    // cascade fidelity is its tray's and differs per draw. This is the composition
+    // arm's exact mirror, through the same lookup, and it is why a column is the
+    // one node whose outlets disagree about BOTH fields.
+    //
+    // It sits here, above the `node == upwind` return, rather than inside it —
+    // both ends need it. Fixing only the early return would leave the DOWNSTREAM
+    // branch starting its ambient transform from the column's mixed feed
+    // temperature, i.e. transforming the wrong inlet. That is invisible while
+    // every `ambient_ua` is 0 and a silent enthalpy error the moment one is not —
+    // the latent-bug class this function's own note above rejects, so the gate for
+    // this arm puts a real `ambient_ua` on a draw pipe.
+    let inlet = match column_draw_at(graph, separations, upwind, edge)? {
+        Some(cut) => cut.temperature,
+        None => temperature.get(&upwind).copied().ok_or_else(|| {
+            SimError::Numerical(format!(
+                "internal: upwind node '{}' of pipe '{}' unresolved during the temperature sweep",
+                graph.node(upwind).name,
+                graph.pipe(edge).name
+            ))
+        })?,
+    };
     if node == upwind {
         return Ok(inlet);
     }
