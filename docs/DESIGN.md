@@ -2515,6 +2515,75 @@ is therefore a **demonstrated** acceptance criterion, in the sense
 the observation written down. Stating this up front is cheaper than discovering
 at the end of M6 that half the milestone has no gate and pretending otherwise.
 
+### The translation layer (M6.2) — what building it settled
+
+**The crate splits along the feature, not along the file.** `godot-ext` now
+holds two things: `bridge`, plain Rust with no Godot types, and (later) the
+gdext `RefinerySim` node behind `--features godot`, off by default. The reason
+is not tidiness. gdext's `GString`/`Dictionary`/`Variant` need a live Godot
+runtime, so anything written in terms of them cannot be exercised by
+`cargo test` at all — godot-rust's own suite runs inside the engine. A
+translation layer expressed in Godot types would therefore be exactly the
+"half the milestone has no gate" outcome the paragraph above exists to
+prevent. Everything with a decision in it lives on the pure side; the binding
+is marshalling with no branches.
+
+**The crate joined the default workspace.** It was excluded because it needed
+a Godot toolchain; that requirement now belongs to the `godot` feature, not to
+the crate, and a gate that only runs under a bespoke `--manifest-path`
+invocation is a gate nobody invokes. `cargo test --workspace` and
+`cargo clippy --workspace --all-targets` now cover it.
+
+**The trust boundary is here, and it is load-bearing.** `Engine::apply`
+indexes its graph directly (`core/src/graph.rs:552-563`), so an out-of-range
+`NodeId`/`EdgeId` **panics** — measured, not inferred. Two project rules point
+opposite ways: rule 5 says the engine never panics, rule 1 says a `core` change
+needed to satisfy a frontend means the adapter is wrong. **Reachability breaks
+the tie.** Every in-repo caller takes its ids from a snapshot and is in-range
+by construction, and the CLI constructs no `Command` at all; untrusted external
+input is the only path in. So the ids are validated in `bridge`, against the
+set it read from the engine, and `core` is untouched. `Referent`'s
+wildcard-free match on `Command` is what makes that guard survive a new command
+variant — the crate stops building until the variant declares what it
+addresses. **Un-defers** into a `core` fix if a second untrusted-input frontend
+appears, or if any in-repo caller gains the ability to construct an
+out-of-range id; `core_panics_on_an_out_of_range_id` is a characterization test
+that fires if `core` changes underneath the guard.
+
+**No second command format.** `Command` addresses nodes and edges by numeric
+id and that JSON shape is a contract (§7, §3b), so the bridge does not add a
+name-addressed variant of it — two wire formats for one action is how they
+drift. It exposes `node_id(name)` / `edge_id(name)` instead: a scene resolves
+once at startup and sends the contract's own JSON thereafter. Name uniqueness
+is a *requirement* of that lookup, enforced by refusing to load a plant that
+breaks it; the sweep over `scenarios/` is evidence it is not onerous, not what
+makes it true. Under M6.1's split-at-load, a declared punctureable pipe's name
+resolves to the **upstream half** — the edge `PuncturePipe` addresses and the
+one carrying `leak_mass_flow` — with `<name>__downstream` and `<name>__leak`
+reachable by their own names.
+
+**Pre-tick, three snapshot fields serialize as `null`, and the bridge emits
+them.** `node.pressure_pa`, `node.temperature_k` and `edge.dissipation_w` are
+NaN until a solve has happened, and `serde_json` writes NaN as `null`.
+Substituting a number would invent data the solver has not produced — the
+failure mode this repo has three notes about — so the engine's JSON is passed
+through unchanged. The gate pins the *field set*, not "the round trip fails":
+a round-trip assertion would keep passing if a different field started
+emitting null. Two consequences a scene author will otherwise report as bugs:
+pre-tick JSON does not deserialize back into a `Snapshot`, and pre-tick
+`nodes[i].temperature_k` is `null` while `nodes[i].kind.temperature` is a real
+number — the first is *solved*, the second is *stored*.
+
+**`serde_json` needed `float_roundtrip`, and nothing before now could have
+found it.** The default float parser is fast, not exact: it can land 1–2 ULP
+from the value that was written, so `parse(write(x)) != x`. The bridge's
+round-trip gate failed on exactly two edge floats out of ~90. The existing
+determinism gate never saw it because it compares serialized *strings* between
+reruns and never parses one back — a class of defect that "compare the output
+text" cannot reach. The feature is set at `[workspace.dependencies]`, because
+cargo unifies features per build and a per-crate setting would make the
+behaviour depend on which crates are in the build.
+
 ## 9. Error handling & diagnostics
 
 `SimError` (thiserror): `SolverDiverged`, `NonFiniteState{location}`,

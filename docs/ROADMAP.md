@@ -2085,10 +2085,90 @@ does not build never ran, and reads as a catch in exactly the same shape.
 - **Air ingress as a modelled phenomenon** (and therefore combustion) — needs a
   slate carrying air and a reason to burn it.
 
-### M6.2 — godot-ext adapter + minimal scene — **NEXT**
-- [ ] Translation layer (command JSON → `Command`, `Snapshot` → `Dictionary`,
-      `SimError` → signal) unit-tested in Rust — this half **is** gateable.
+### M6.2 — godot-ext adapter + minimal scene — **HALF LANDED**
+
+Taken deliberately in two commits, because the halves are unlike: the
+translation layer is gateable Rust, the binding needs a toolchain and a
+network fetch. Letting the second hold the first hostage would have been the
+milestone's own mistake in miniature.
+
+- [x] **Translation layer landed** (`crates/godot-ext/src/bridge.rs`, 13 gates
+      in `tests/bridge.rs`). Command JSON → `Command`, `Snapshot` → JSON,
+      `SimError` → `ErrorReport { code, message }`, plus name → id lookup. The
+      crate joined the default workspace with the `godot` feature off, so
+      `cargo test --workspace` and clippy now cover it — the alternative was a
+      gate reachable only by a bespoke `--manifest-path` invocation.
+- [ ] gdext pin + the `RefinerySim` binding (`--features godot`). Godot 4.7 is
+      installed here; `project.godot` still declares `4.3` and will need
+      reconciling.
 - [ ] Minimal scene reading snapshots; leak and fire get visualization. The scene
       is a **demonstrated** criterion, not a gate (DESIGN §8).
+
+**Why the pure/gdext split is structural, not stylistic.** gdext's
+`GString`/`Dictionary`/`Variant` require a live Godot runtime, so a translation
+layer written in them cannot be run by `cargo test` at all. Every decision
+therefore lives on the pure side and the binding is branch-free marshalling.
+This is the same reasoning DESIGN §8 used to separate "gateable" from
+"demonstrated", applied one level down.
+
+**Three findings.**
+
+1. **`Engine::apply` PANICS on an out-of-range id** — it indexes petgraph
+   directly (`core/src/graph.rs:552-563`). Two rules pointed opposite ways
+   (rule 5: the engine never panics; rule 1: a `core` change to satisfy a
+   frontend means the adapter is wrong), and **reachability broke the tie
+   rather than precedence**: every in-repo caller takes ids from a snapshot and
+   is in-range by construction, and the CLI builds no `Command` at all, so
+   untrusted input is the only way in. Validated in the bridge, `core`
+   untouched, with the trigger that would reverse it written down and a
+   characterization test pinning the panic so the guard cannot become
+   decorative.
+2. **The snapshot JSON round trip was lossy, repo-wide, the whole time.**
+   `serde_json`'s default float parser lands 1–2 ULP off; two edge floats out
+   of ~90 failed the bridge's round-trip gate. Fixed with the `float_roundtrip`
+   feature at the workspace. **The existing determinism gate could not have
+   caught this** — it compares serialized strings between reruns and never
+   parses one back. Nothing had round-tripped a snapshot until a frontend
+   needed to.
+3. **Pre-tick, exactly three fields serialize as `null`** (`pressure_pa`,
+   `temperature_k`, `dissipation_w`), which is the natural first read from a
+   scene. Passed through rather than sanitized — a substituted number would be
+   invented data — and the gate pins the *field set*, not the round-trip
+   failure, because a round-trip assertion keeps passing when a *different*
+   field starts emitting null.
+
+**Two contract decisions.**
+- **No name-addressed command format.** `Command`'s id-addressed JSON is the
+  contract (DESIGN §7); the bridge adds `node_id`/`edge_id` lookup instead, so
+  a scene resolves once at startup. Two wire formats for one action is how
+  they drift. Name uniqueness is a load-time *requirement* of that lookup; the
+  sweep over `scenarios/` is evidence, not the justification.
+- **`SolverDiverged`'s `residual_history` does not cross into the game.**
+  `BridgeError` keeps the whole `SimError` for Rust callers; `ErrorReport`
+  carries the code and the Display summary (iterations, final residual). The
+  history is unbounded, grows with iteration count, and would be marshalled
+  every failed tick inside `_physics_process` for a payload no HUD reads.
+
+**Mutation evidence — 6 mutations, 6 caught, 0 void.** Every log checked for
+`could not compile` (0 in all six) and for which binary failed, so a mutation
+that never built cannot read as a catch.
+- `#[serde(tag = "cmd")]` renamed to `"command"` → **6 gates**.
+- The bridge's node-id membership check removed → **1 gate**,
+  `an_out_of_range_id_is_refused_by_the_bridge_not_forwarded`, which is the
+  designed outcome: that gate exists for exactly this defect and nothing else
+  should be sensitive to it.
+- The edge name map built one id too far (the "resolves to the downstream
+  half" failure, the subtle one) → **3 gates**.
+- `float_roundtrip` dropped → **1 gate**, the round-trip sweep.
+- An error code renamed → **2 gates**.
+- Pre-tick NaNs sanitized to `0.0` — the tempting wrong fix — → **1 gate**,
+  the field-set assertion.
+
+**What the blast radius says.** Both workspace-scope mutations (the serde tag,
+the float feature) failed **exactly one test binary**: this crate's. Before
+M6.2 nothing in the repo pinned the command wire format DESIGN §7 calls a
+frontend contract, and nothing parsed a snapshot back. The contract was
+asserted in prose and gated nowhere — which is why renaming a tag would have
+been a green commit.
 
 Complex column (stage cascade) can proceed in parallel here if desired.

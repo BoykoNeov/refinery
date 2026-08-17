@@ -5,10 +5,13 @@ members = [
     "crates/solvers",
     "crates/scenarios",
     "crates/cli",
+    # M6.2: godot-ext joined the workspace. It was excluded while the reason
+    # ("needs a Godot 4 toolchain") applied to the WHOLE crate; it now applies
+    # only to the `godot` feature, which is off by default. The translation
+    # layer — the half DESIGN §8 calls gateable — is plain Rust and must run
+    # under `cargo test --workspace`, or it is a gate nobody invokes.
+    "crates/godot-ext",
 ]
-# godot-ext is deliberately excluded from the default workspace until M6
-# (requires Godot toolchain). Build with: cargo build --manifest-path crates/godot-ext/Cargo.toml
-exclude = ["crates/godot-ext"]
 
 [workspace.package]
 edition = "2021"
@@ -21,7 +24,15 @@ refinery-solvers = { path = "crates/solvers" }
 refinery-scenarios = { path = "crates/scenarios" }
 
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `float_roundtrip`: serde_json's DEFAULT float parser is fast, not exact —
+# parsing a shortest-representation f64 back can land 1–2 ULP away, so
+# `parse(write(x)) != x` for some values. Found in M6.2 by the snapshot
+# round-trip gate, which failed on two edge floats. A repo whose first rule
+# after "no panics" is bit-identical reruns cannot ship a JSON boundary that
+# is quietly lossy. Set at the workspace so every crate parses the same way —
+# cargo unifies features per build, so enabling it in one crate would
+# otherwise make the behaviour depend on which crates are in the build.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
 petgraph = { version = "0.6", features = ["serde-1"] }
 faer = "0.20"

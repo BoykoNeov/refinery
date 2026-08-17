@@ -1031,6 +1031,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "refinery-godot-ext"
+version = "0.1.0"
+dependencies = [
+ "refinery-core",
+ "refinery-scenarios",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "refinery-scenarios"
 version = "0.1.0"
 dependencies = [

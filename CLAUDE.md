@@ -78,8 +78,15 @@ cargo run -p refinery-cli -- run scenarios/tank_pump_valve.toml --ticks 1000
 cargo test -p refinery-solvers --release -- proptest   # slow property tests
 ```
 
-`godot-ext` is excluded from default workspace builds until the game phase
-(needs Godot toolchain); build with `cargo build -p refinery-godot-ext`.
+`godot-ext` is in the default workspace as of M6.2, but only its **bridge**
+half — the pure-Rust translation layer, which has no Godot dependency and is
+covered by `cargo test --workspace`. The gdext binding lives behind an
+off-by-default feature, because that is where the toolchain requirement
+actually is:
+
+```
+cargo build -p refinery-godot-ext --features godot   # needs Godot 4 + gdext
+```
 
 ## Testing philosophy
 

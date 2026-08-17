@@ -1,20 +1,36 @@
-# M6 crate — excluded from the default workspace (needs Godot 4 toolchain).
-# Build: cargo build --manifest-path crates/godot-ext/Cargo.toml
-#
 # THE ONLY CRATE ALLOWED TO IMPORT GODOT. If core or solvers ever need a
 # change to satisfy this crate, the adapter is wrong — fix it here.
+#
+# Two halves, split by the `godot` feature (DESIGN §8):
+#
+#   bridge   — pure Rust, no Godot types, no toolchain. Unit-tested like any
+#              other crate; runs under `cargo test --workspace`.
+#   binding  — the gdext `RefinerySim` node, behind `--features godot`.
+#              Needs a Godot 4 toolchain, so it is OFF by default.
+#
+#   cargo test --workspace                       # bridge only, no toolchain
+#   cargo build -p refinery-godot-ext --features godot   # the real GDExtension
 
 [package]
 name = "refinery-godot-ext"
-edition = "2021"
-version = "0.1.0"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
 
 [lib]
-crate-type = ["cdylib"]
+# cdylib for Godot to dlopen; rlib so `tests/` can link the bridge.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-refinery-core = { path = "../core" }
-refinery-scenarios = { path = "../scenarios" }
-# Pin to the gdext version matching the Godot 4.x minor in use when M6 starts:
-# godot = "0.x"
-serde_json = "1"
+refinery-core.workspace = true
+refinery-scenarios.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[features]
+default = []
+# Pin the gdext version matching the Godot 4.x minor in use when the binding
+# lands (M6.2, second commit). Adding the dependency before the binding exists
+# would put a toolchain requirement on a crate that does not yet need one.
+godot = []
