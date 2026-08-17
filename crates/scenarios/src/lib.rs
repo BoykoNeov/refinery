@@ -108,7 +108,13 @@ pub struct Simulation {
 pub struct Fidelity {
     /// "newton" | "simple"
     pub flow: String,
-    /// "constant" (M1) — expands in M2+
+    /// "constant" (M1) — expands with M7.2's K-values.
+    ///
+    /// Until M7.2 this string was parsed and then **ignored**: `build_engine`
+    /// hardcoded `ConstantThermo`, so `thermo = "nonsense"` loaded a working
+    /// plant. It was alone among the fidelity keys in that, and it was found by
+    /// wiring `separation` beside it in M7.1 rather than by a test — nothing
+    /// reached the value, so nothing could fail on it.
     #[serde(default = "default_constant")]
     pub thermo: String,
     /// "none" (M1) — expands in M4
@@ -452,7 +458,14 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
             )))
         }
     };
-    let thermo: Box<dyn ThermoModel> = Box::new(refinery_solvers::ConstantThermo);
+    let thermo: Box<dyn ThermoModel> = match scenario.fidelity.thermo.as_str() {
+        "constant" => Box::new(refinery_solvers::ConstantThermo),
+        other => {
+            return Err(SimError::Scenario(format!(
+                "unknown thermo model '{other}' (valid: constant)"
+            )))
+        }
+    };
     let reactions: Box<dyn ReactionModel> = match scenario.fidelity.reactions.as_str() {
         "none" => Box::new(refinery_solvers::NoReactions),
         // The FCC placeholder table (M4.1). Both reacting fidelities resolve
