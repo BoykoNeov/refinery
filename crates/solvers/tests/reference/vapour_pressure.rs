@@ -39,8 +39,23 @@
 //! no recalled quantity anywhere in this file.
 
 use refinery_core::components::{Phase, PseudoComponent, Slate};
+use refinery_core::traits::ThermoModel;
 use refinery_core::units::{JPerKgK, Kelvin, KgPerM3, KgPerMol, P_ATM};
 use refinery_solvers::TroutonThermo;
+
+/// The model's saturated vapour pressure [Pa], read through the public API.
+///
+/// `K = Psat/P`, so evaluating at `P = P_ATM` and multiplying back is exact —
+/// not an approximation of a private method. Going through `k_value` rather than
+/// exposing `saturation_pressure` keeps the model's state validation on the only
+/// path into it (rule 5); a public vapour pressure would be the one entry that
+/// skips it and could hand out an `inf`.
+fn model_psat(thermo: &TroutonThermo, slate: &Slate, temperature: f64) -> f64 {
+    thermo
+        .k_value(slate, 0, Kelvin(temperature), P_ATM)
+        .expect("a hydrocarbon at a positive temperature is a valid state")
+        * P_ATM.value()
+}
 
 /// NIST Antoine coefficients for n-hexane, set 2 (see the module comment).
 const ANTOINE_A: f64 = 4.00266;
@@ -95,7 +110,7 @@ fn trouton_reproduces_the_tabulated_vapour_pressure_within_the_envelope() {
     let slate = hexane_slate();
     let thermo = TroutonThermo::new();
     for t in samples() {
-        let ratio = thermo.saturation_pressure(&slate, 0, Kelvin(t)) / antoine_pa(t);
+        let ratio = model_psat(&thermo, &slate, t) / antoine_pa(t);
         assert!(
             (0.9..=1.2).contains(&ratio),
             "at {t:.2} K, the Trouton-to-tabulated ratio is {ratio:.4}, outside [0.9, 1.2]"
@@ -120,11 +135,10 @@ fn trouton_reproduces_the_tabulated_vapour_pressure_within_the_envelope() {
 #[test]
 fn a_wrong_trouton_constant_escapes_the_envelope() {
     let slate = hexane_slate();
-    let cold = Kelvin(VALID_LOW);
     let tabulated = antoine_pa(VALID_LOW);
     for factor in [0.7, 1.3] {
         let wrong = TroutonThermo::with_trouton_constant(TroutonThermo::TROUTON_CONSTANT * factor);
-        let ratio = wrong.saturation_pressure(&slate, 0, cold) / tabulated;
+        let ratio = model_psat(&wrong, &slate, VALID_LOW) / tabulated;
         assert!(
             !(0.9..=1.2).contains(&ratio),
             "a Trouton constant {factor}× the shipped one must leave the envelope at \
@@ -134,10 +148,9 @@ fn a_wrong_trouton_constant_escapes_the_envelope() {
 
     // And the same wrong constants are INSIDE the band near the boiling point —
     // the measurement behind this test's placement, not an incidental remark.
-    let hot = Kelvin(VALID_HIGH);
     for factor in [0.7, 1.3] {
         let wrong = TroutonThermo::with_trouton_constant(TroutonThermo::TROUTON_CONSTANT * factor);
-        let ratio = wrong.saturation_pressure(&slate, 0, hot) / antoine_pa(VALID_HIGH);
+        let ratio = model_psat(&wrong, &slate, VALID_HIGH) / antoine_pa(VALID_HIGH);
         assert!(
             (0.9..=1.2).contains(&ratio),
             "the anchor is expected to hide a wrong constant near tb — if this now \

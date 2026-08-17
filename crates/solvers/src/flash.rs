@@ -73,7 +73,8 @@ const BISECTION_STEPS: u32 = 60;
 ///
 /// # Errors
 /// `SimError` if the thermo model cannot supply a K-value at this state (the
-/// `constant` fidelity never can), or if the result is not finite.
+/// `constant` fidelity never can), if it supplies one that is not finite and
+/// positive, or if the feed does not match the slate.
 pub fn flash_isothermal(
     feed: &MoleFractions,
     slate: &Slate,
@@ -91,7 +92,25 @@ pub fn flash_isothermal(
     let z = feed.fractions();
     let mut k = Vec::with_capacity(slate.len());
     for c in 0..slate.len() {
-        k.push(thermo.k_value(slate, c, temperature, pressure)?);
+        let kc = thermo.k_value(slate, c, temperature, pressure)?;
+        // The K vector is where a bad number can actually enter, and it comes
+        // from a trait impl that may live in another crate — which M7.1's
+        // correction 3 is exactly about not trusting. A non-positive K makes
+        // `Σ z/K` infinite and a non-finite one poisons the objective; both
+        // would otherwise surface as a meaningless β rather than as this.
+        if !kc.is_finite() || kc <= 0.0 {
+            return Err(SimError::NonFiniteState {
+                location: format!(
+                    "thermo model '{}' returned K = {kc} for '{}' at {} K, {} Pa; a \
+                     K-value must be finite and > 0",
+                    thermo.name(),
+                    slate.get(c).name,
+                    temperature.value(),
+                    pressure.value()
+                ),
+            });
+        }
+        k.push(kc);
     }
 
     // f(β) = Σ z(K−1)/(1 + β(K−1)), non-increasing on [0, 1].
@@ -139,15 +158,12 @@ pub fn flash_isothermal(
     let liquid = MoleFractions::from_amounts(&x)?;
     let vapour = MoleFractions::from_amounts(&y)?;
 
-    if !beta.is_finite() {
-        return Err(SimError::NonFiniteState {
-            location: format!(
-                "isothermal flash at {} K, {} Pa produced a non-finite vapour fraction",
-                temperature.value(),
-                pressure.value()
-            ),
-        });
-    }
+    // No `beta.is_finite()` check here, deliberately: `beta` is 0.0, 1.0, or a
+    // midpoint of `[0, 1]`, so there is no path on which it is not finite. A
+    // guard nothing can reach reads as coverage it is not
+    // (`a-command-can-be-a-no-op`). The reachable failure is a bad K, guarded
+    // above, and a degenerate phase vector, which `from_amounts` refuses with a
+    // better message than this function could write.
 
     Ok(FlashResult {
         vapour_fraction: beta,
@@ -253,6 +269,52 @@ mod tests {
             result.is_err(),
             "a flash on a fidelity with no phase equilibrium must fail"
         );
+    }
+
+    /// A thermo model returning a nonsense K is refused, naming the model and
+    /// the component.
+    ///
+    /// The guard exists because `ThermoModel` is a trait and an implementation
+    /// can live in another crate — M7.1's correction 3 is exactly about not
+    /// trusting a contract kept elsewhere. Neither model in this workspace can
+    /// violate it (`TroutonThermo` checks, `ConstantAlphaThermo` validates at
+    /// construction), so without a deliberately broken stub the guard would be
+    /// unreachable by every test in the repo, which is the shape
+    /// `a-counter-is-not-a-gate` records.
+    #[test]
+    fn a_thermo_returning_a_nonsense_k_is_refused_by_name() {
+        struct BrokenThermo(f64);
+        impl ThermoModel for BrokenThermo {
+            fn name(&self) -> &'static str {
+                "broken-stub"
+            }
+            fn k_value(
+                &self,
+                _slate: &Slate,
+                _component: usize,
+                _temperature: Kelvin,
+                _pressure: Pascal,
+            ) -> Result<f64, SimError> {
+                Ok(self.0)
+            }
+        }
+
+        let s = slate(2);
+        for bad in [f64::NAN, f64::INFINITY, 0.0, -1.0] {
+            let message = flash_isothermal(
+                &MoleFractions::from_amounts(&[0.5, 0.5]).unwrap(),
+                &s,
+                &BrokenThermo(bad),
+                Kelvin(400.0),
+                P_ATM,
+            )
+            .expect_err("a K of {bad} must not be flashed on")
+            .to_string();
+            assert!(
+                message.contains("broken-stub") && message.contains("cut0"),
+                "the refusal must name the model and the component, got: {message}"
+            );
+        }
     }
 
     /// A feed whose length does not match the slate is refused. Cheap, and it is

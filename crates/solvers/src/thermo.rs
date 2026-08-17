@@ -104,11 +104,16 @@ impl TroutonThermo {
         Self { trouton_constant }
     }
 
-    /// Saturated vapour pressure of one cut [Pa]. Split out from `k_value`
-    /// because the envelope gate compares a *pressure* against a tabulated
-    /// vapour pressure, and dividing by a system pressure first would only put
-    /// a constant on both sides of that comparison.
-    pub fn saturation_pressure(&self, slate: &Slate, component: usize, temperature: Kelvin) -> f64 {
+    /// Saturated vapour pressure of one cut [Pa].
+    ///
+    /// **Private on purpose.** As a public method it would be the one path into
+    /// this model that skips `check_state`, so a caller with a negative
+    /// temperature would get `exp` of a large positive — an `inf` handed out by
+    /// a public API, which rule 5 forbids and which `k_value`'s own guard would
+    /// have caught. A consumer that wants a vapour pressure asks for
+    /// `k_value(…, P_ATM)` and multiplies: `K = Psat/P` makes that exact, and it
+    /// is how the envelope gate gets its number.
+    fn saturation_pressure(&self, slate: &Slate, component: usize, temperature: Kelvin) -> f64 {
         let tb = slate.get(component).tb.value();
         P_ATM.value() * ((self.trouton_constant / R_GAS) * (1.0 - tb / temperature.value())).exp()
     }

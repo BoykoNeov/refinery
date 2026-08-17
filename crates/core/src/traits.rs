@@ -104,12 +104,20 @@ pub trait ThermoModel: Send {
     /// resolves at construction. A reference to the component alone would force
     /// every such model to look itself up by name on the hot path.
     ///
-    /// The anchor every implementation is expected to share: `K = 1` at
-    /// `T = tb` and `P = P_ATM`, because `tb` is the NORMAL boiling point. That
-    /// identity is what makes the property testable without a published table —
-    /// and, per DESIGN §5 correction 4, it is *structurally incapable* of
-    /// detecting a wrong empirical constant in the magnitude of `K` away from
-    /// that anchor, which is why a correlation needs a separate envelope gate.
+    /// The anchor every **correlation** shares: `K = 1` at `T = tb` and
+    /// `P = P_ATM`, because `tb` is the NORMAL boiling point. That identity is
+    /// what makes the property testable without a published table — and, per
+    /// DESIGN §5 correction 4, it is *structurally incapable* of detecting a
+    /// wrong empirical constant in the magnitude of `K` away from that anchor,
+    /// which is why a correlation needs a separate envelope gate.
+    ///
+    /// It is not a trait invariant, and one implementation opts out on purpose:
+    /// a model that returns K-values **supplied by a test** (`ConstantAlphaThermo`)
+    /// exists precisely so a separation gate can be written against algebra with
+    /// no correlation in it, so requiring it to honour a boiling-point anchor
+    /// would defeat what it is for. A model that claims to compute `K` from
+    /// physical properties is expected to hit the anchor; a model that is handed
+    /// its numbers is not.
     ///
     /// # Errors
     /// `SimError` if the state is outside what the model can evaluate — a

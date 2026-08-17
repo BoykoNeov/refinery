@@ -3040,6 +3040,16 @@ the hydrocarbon number is the relevant one; the water number is recorded because
 the workspace's one-component default slate *is* water, and a future reader
 flashing it should know what they are holding.
 
+**5a. Bit-identity is structural here, not measured — and that is worth saying,
+because measuring it is this workspace's habit.** M7.1 earned its claim by
+running all twelve scenarios for 300 ticks and comparing bytes. M7.2 does not
+need that: `build_engine` still hands `Box::new(ConstantThermo)` to every file,
+the loader arm only adds a refusal that all twelve files pass, and everything
+else is a new module no running plant reaches. There is no path from any scenario
+to a K-value, so there is nothing for the arithmetic to differ about. When M7.3
+makes `"trouton"` selectable, that stops being true and the measurement comes
+back.
+
 **6. The mass ⇄ mole round trip is necessary and not sufficient, measured.** The
 note lists it as a gate of its own. It cannot catch the bug it exists for:
 writing `n ∝ w·M` instead of `w/M` in **both** directions round-trips exactly.
