@@ -16,7 +16,9 @@
 //! because a table that promises a type is a claim like any other.
 
 pub mod elements;
+pub mod flash;
 pub mod four_lump;
+pub mod molar;
 pub mod network;
 pub mod newton_flow;
 pub mod reactor;
@@ -24,7 +26,9 @@ pub mod separation;
 pub mod simple_flow;
 pub mod thermo;
 
+pub use flash::{flash_isothermal, FlashResult};
 pub use four_lump::{FourLump, FourLumpParams};
+pub use molar::MoleFractions;
 pub use newton_flow::NewtonFlowSolver;
 pub use reactor::SimpleLookup;
 pub use separation::CutPointSplitter;

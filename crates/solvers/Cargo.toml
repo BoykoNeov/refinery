@@ -28,3 +28,7 @@ path = "tests/reference/orifice.rs"
 [[test]]
 name = "vapour_pressure_reference"
 path = "tests/reference/vapour_pressure.rs"
+
+[[test]]
+name = "flash_reference"
+path = "tests/reference/flash.rs"
