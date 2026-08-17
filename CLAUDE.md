@@ -149,25 +149,31 @@ extension removed too — ignore it, the file it writes is what matters.
 ## Current milestone
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
-M1–M6 are closed: flow network, heat, crude + simple column, reactor, gas and
-pressure realism, and damage + the Godot frontend. **M7 (complex column, stage
-cascade) is in progress**: the design note is landed (DESIGN §5, "Complex column
-(M7)"), **M7.1 is done** (the `SeparationModel` seam, with `CutPointSplitter` in
-`solvers` and every scenario byte-identical), **M7.2 is done**
-(`ThermoModel::k_value`, `TroutonThermo` and `ConstantAlphaThermo`, the
-`MoleFractions` boundary, and the Rachford–Rice single-stage flash), and **M7.3
-is done** — `StageCascade` in `solvers`, `CascadeSpec` and stage-located
-`ColumnDraw`s on `NodeKind::Column`, and `thermo = "trouton"` /
-`separation = "cascade"` selectable from a scenario. **M7.4 is sliced in three,
-M7.4a is done** — `edge_temperature_at`'s column arm, so a draw leaves at its own
-tray temperature — **and M7.4b is done**: `ThermoModel::dh_vap`, both column
-duties, and a saturated-liquid feed that is now enforced rather than assumed.
-**M7.4c (the I-series arm and the demo file) is the open box.**
+M1–M7 are closed: flow network, heat, crude + simple column, reactor, gas and
+pressure realism, damage + the Godot frontend, and the complex column. **M7 closed
+2026-08-18** — the design note (DESIGN §5, "Complex column (M7)"), the
+`SeparationModel` seam (M7.1), `ThermoModel::k_value` with `TroutonThermo` and the
+Rachford–Rice flash (M7.2), `StageCascade` with `CascadeSpec` and stage-located
+`ColumnDraw`s (M7.3), and M7.4's three slices: tray temperatures through
+`edge_temperature_at`'s column arm (a), `dh_vap` plus both duties plus the
+saturated-liquid feed guard (b), and I7's cascade arm plus
+`scenarios/crude_column_cascade.toml` (c).
 The note's verdicts are decisions, not results — M7.1 corrected its call shape,
 M7.2 its signature and gate structure, M7.3 found that the constant-α model
 M7.2 shipped *for* the cascade could not have driven one stage of it, M7.4a
-falsified its own gate's justification with a mutation, and M7.4b found that the
-gate its own box specified **cannot exist**.
+falsified its own gate's justification with a mutation, and **M7.4b and M7.4c each
+found that a gate their own box specified cannot exist** — both because the
+reboiler duty is *defined* to close the balance those gates would have checked it
+against. The rule that came out of it: a quantity defined to close a balance can
+never be gated by that balance, so check an invariant's two sides are computed by
+independent paths before writing it.
+
+The two column demos are a PAIR and are meant to be diffed:
+`crude_column.toml` (cut-point) and `crude_column_cascade.toml` (cascade) run the
+same crude into the same three tanks at the same three rates, and differ only in
+what the separation model does with it. `crude_column.toml`'s first cut sits at
+155 °C so the heavy naphtha boils inside its smearing ramp — that is deliberate
+and is the only exercise `smearing_k` gets on a wired plant.
 
 A cascade column is specified by ratios only: `reflux_ratio` (molar, internal)
 plus one `draw_ratio` per draw (a **mass** fraction of the feed, with the bottoms

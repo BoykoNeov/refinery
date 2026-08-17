@@ -2965,6 +2965,14 @@ is not vacuous) — but it does mean the ramp's only coverage is a unit test, an
 that **M7.4's demo scenario should place at least one cut inside a ramp**, where
 the two fidelities are also most worth comparing.
 
+*(Closed in M7.4c, and by moving THIS file's cut rather than by adding one to the
+new demo — a cascade column has no smearing to exercise, so a new file could not
+have satisfied it. `crude_column.toml`'s first cut moved from 185 °C to 155 °C, so
+the heavy naphtha at 150 °C sits half a ramp width below it and goes 70/30. The
+measurement above is what makes the closure checkable: disabling smearing was
+caught by that one unit test and nothing else, and is now caught by two wired demo
+gates as well.)*
+
 **And one thing found next door, recorded rather than fixed here.**
 `[fidelity] thermo` is parsed into a `String` that the loader never matches on:
 `build_engine` hardcodes `ConstantThermo`, so `thermo = "nonsense"` loads happily
@@ -3557,6 +3565,100 @@ identity true by construction, the other a wiring check — so the empty result
 confirms the labelling rather than exposing dead tests. Recorded rather than
 quietly deleted: they cover the draw write, the M7.4a column arm and `cp` mixing
 end to end, which no mutation in this pass touched.
+
+#### Corrections from building it (M7.4c, landed)
+
+The I-series reaches a column for the first time, both demos ship, and the largest
+correction is the same shape as M7.4b's.
+
+**1. The energy arm this milestone left owing cannot exist either.** The M7.4 box
+warned that an energy invariant reaching a cascade column "will NOT close unless it
+reads `NodeStates::column_separation` and counts that difference as a node heat
+term". That is true, and it is also the whole of it: `StageCascade::duties`
+*defines* `Q_reb = Q_cond + (Σ draw flux − feed flux)` in the engine's own datum,
+so an invariant that adds `Q_reb − Q_cond` at the column node is adding exactly the
+gap it is measuring. It closes identically, for any duties whatsoever — two duties
+both wrong by the same amount included. The deterministic version already exists
+(`the_reported_duties_bracket_the_enthalpy_the_plants_own_edges_carry`) and already
+says in its own docstring that it proves nothing about either duty.
+
+So M7.4c ships I7's cascade arm and NOT an I6 one, and records the verdict rather
+than writing the test (`falsifiability-as-scoping-criterion`). What un-defers it is
+a formulation where the reboiler duty is computed locally — an energy balance per
+stage — which is the same condition correction 2 of M7.4b names for revisiting the
+CMO inconsistency. Not a coincidence: one formulation choice produces both.
+
+**The generalizable form, because this is now twice: a quantity DEFINED to close a
+balance can never be gated by that balance.** Before writing an invariant, check
+that its two sides are computed by independent paths. That is
+`a-specified-gate-can-be-impossible` turned from a retrospective into a procedure.
+
+**2. A cascade scenario's admissible parameter region is a property of the SOLVER
+PATH, not of the physics, and it has to be swept for.** The obvious demo — the
+splitter's own 0.30 / 0.50 / 0.20 yields at `R = 2` — is refused: "the draws above
+the reboiler are carrying 1.026e3 mol/s away from a feed of 1.004e3 mol/s". The
+refusal is right and its message already explains how mass ratios and a molar
+constraint can disagree, but the part worth recording is that it is about an
+ITERATE. Moles out equal moles in at every converged split, identically, because
+per-component mass does; what fails is that successive substitution passes through
+profiles whose distillate is lighter than the answer, and at a high enough reflux
+one of those overshoots.
+
+The consequence for anyone writing another cascade file: the working region cannot
+be read off the specification. Sweeping `(D/F, S/F, R)` on this plant gives
+0.30 / 0.50 failing at every `R > 1`, 0.28 / 0.50 failing at `R = 4`, and
+0.246 / 0.554 — the shipped yields — solving at `R = 1, 2, 3` and failing at
+`R = 4`. The demo ships at `R = 2` with that margin written into the file, because a
+scenario one parameter step from a refusal is a scenario that refuses itself after
+the next edit.
+
+**3. The first tick is a different plant, and a per-tick precondition is what made
+that matter.** A pipe's transport density comes from its STORED composition (§3a
+fork 6, and M3.1's surviving deferral), which on tick 1 is the composition the
+stream was born with rather than the one it is about to carry. On the crude demo
+that is a step from 176.478 to 192.685 kg/s between ticks 1 and 2 — 9.2%, and it
+never recurs.
+
+It had never mattered before, because no gate in this workspace asserted anything
+about a first tick that a 9% flow difference could break. M7.4b's saturated-liquid
+guard runs every tick, so it does. The furnace's rise is `Q/(ṁ·c̄p)` and inherits
+the whole step, which turns the demo's duty from a free parameter into a
+constrained one: the rise must be small enough that 9.2% of it fits inside the
+window while the steady state sits on the bubble point. At the shipped 5.5 K trim
+tick 1 sits 0.53 K above saturation against ±1.18 K; at `crude_column.toml`'s own
+30 K preheat it would sit 2.7 K above and refuse its own first tick. That is why
+the cascade demo's heater is small and its source hot, which otherwise reads as an
+arbitrary difference between two files meant to be the same plant.
+
+**4. An attribution falsified before it was believed, and the control was the
+thing that was wrong.** The cascade arm's I7 budget admits a second term for the
+cascade's own convergence residual, and the first justification offered for it was
+a comparison against the column-free tee plant. That comparison shows **1.7e-7 kg
+against the cascade's 3.4e-7 kg** — within a factor of two, because Newton stops at
+`1e-8 + 1e-8·throughput` kg/s and the tee plant moves ~170 kg/s. Two unrelated
+mechanisms landing on the same order, so the comparison establishes nothing while
+reading exactly like confirmation.
+
+The attribution that holds is a measurement on the cascade plant itself: every node
+it builds is pressure-anchored, so the hydraulic solve has no unknowns, and the
+solver's reported residual measures exactly 0. That leaves the cascade's
+convergence as the only candidate for the 3.4e-7. The lesson is narrower than
+"measure rather than infer" — it is that **a control on a different fixture can
+agree with you for a reason that has nothing to do with your claim**, and the fix
+was to measure the term being excluded rather than to compare against a plant that
+excludes it.
+
+**5. The residual criterion fork 4 insisted on is a backstop, not the binding
+constraint.** Removing `residual <= COMPONENT_RESIDUAL_KG_PER_S` from the
+convergence conjunction changes **no test's verdict anywhere in the workspace** —
+the profile and temperature criteria are strictly tighter on every plant any test
+builds, and they stop the solve first. Loosening those while keeping the residual
+still leaves the I7 arm green; loosening those *and* dropping the residual makes it
+fire. So the criterion does bound the quantity the arm measures, and it has never
+been the thing that stopped a solve. Fork 4's demand that it be a gate rather than
+a counter is satisfied — M7.3's capped-iteration test reaches it deliberately — but
+"reachable on purpose" and "binding in practice" are different claims and this note
+had been treating them as one.
 
 #### Deferred from M7, with what would un-defer each
 

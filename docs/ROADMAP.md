@@ -2641,7 +2641,7 @@ the I-series arm and the demo file (open).
       heavier one — gated by running one offset against doubled latent heats for
       opposite verdicts), and the fixture is run at both edges of it to measure
       what admitting a feed there costs. It was 34 K off, not 20-odd.
-- [ ] I-series: extend the generator to reach a cascade column, with a
+- [x] I-series: extend the generator to reach a cascade column, with a
       **reachability count before the arm is believed** — a generated arm can be
       born vacuous.
       **What M7.4b leaves this box, stated while it is known:** the duties are
@@ -2654,7 +2654,40 @@ the I-series arm and the demo file (open).
       The generator also has to build a feed on the mix's bubble point at the
       column's pressure, or `separate` refuses it — which makes a generated
       cascade arm meaningfully harder to produce than a generated tank.
-- [ ] Demo: `scenarios/crude_column_cascade.toml` — the same plant as
+      **Landed as M7.4c**, as I7's cascade arm in
+      `solvers/tests/composition_transport.rs`. The plant is source → cascade
+      column → two tanks and the column is the ONLY interior node — the opposite
+      shaping decision from the tee plant beside it, where a multi-way mix is what
+      forces interior cancellation. Here the interior IS the unit under test, and
+      anything else would give it somewhere to hide.
+      The generator is harder to write than a generated tank exactly as this box
+      predicted: each sample's source sits on the **bubble point of its own
+      generated composition** at the column's pressure, computed by a second
+      implementation from the published `k_value`. Its slate is its own too, for
+      cascade reasons rather than preference — `two_cut_slate`'s pair are 275 K
+      apart and separate so completely that every draw is 1 and 0, and its
+      4000 J/(kg·K) heavy cut would shrink the saturated-liquid window to a third
+      of a kelvin, which the feed line's own friction would eat.
+      **Reachability measured before the arm was believed**: 60/60 plants ran,
+      60/60 separated (best 0.95 of light mass fraction), worst feed 8.43 kg/s,
+      worst feed-line rise 0.062 K against a window of 0.85 K at its tightest.
+      The budget is derived — I7's own 1e-6 kg plus the cascade's gated 1e-5 kg/s
+      residual over a 0.1 s tick — and the measured worst is 3.4e-7 kg, with the
+      hydraulic solver's residual on these plants measured at exactly 0 (every
+      node is pressure-anchored), which is what attributes that number to the
+      cascade. Fork 4's "I7 stops being free" as a measurement.
+      **The ENERGY arm this box warned about was NOT built, and the warning is
+      why.** `StageCascade::duties` *defines* `Q_reb = Q_cond + (Σ draw flux −
+      feed flux)`, so an invariant that reads `column_separation` and counts
+      `Q_reb − Q_cond` as the column's node heat term closes **identically**, for
+      any duties whatsoever — it is M7.4b correction 1's tautology one level out,
+      and the deterministic version of it already exists and already reports
+      catching nothing. Recorded as a verdict rather than shipped as a green test
+      (`falsifiability-as-scoping-criterion`). What would un-defer it is a
+      formulation where the reboiler duty is computed locally — an energy balance
+      per stage — because that is the change that makes the two sides
+      independent.
+- [x] Demo: `scenarios/crude_column_cascade.toml` — the same plant as
       `crude_column.toml` on the other fidelity, so the two are directly
       comparable and the swap is visible physics rather than a passing test.
       **Put at least one cut inside a smearing ramp** (M7.1's measurement: no
@@ -2664,6 +2697,39 @@ the I-series arm and the demo file (open).
       **M7.4b adds a constraint the note did not have**: the demo's feed must
       reach its column within `±ε·λ̄/c̄p` of the mix's bubble point, or the cascade
       refuses it. That is a real design input for the file, not a tuning step.
+      **Landed as M7.4c**, and the comparison is sharper than "comparable": the
+      cascade's `draw_ratio`s are set to the mass yields the splitter next door
+      produces, so both files put the **same three rates** — 47.40 / 106.75 /
+      38.54 kg/s — into the same three tanks. With the rates pinned as a control,
+      every remaining difference is the separation model. The splitter's bottoms
+      is pure residue and its distillate carries none; the cascade's bottoms is
+      69% residue / 30% diesel and its side draw carries 11% residue. The
+      splitter's three draws all leave at one feed temperature; the cascade's
+      leave at 387.6 / 505.3 / 632.0 K. And only one of them reports duties
+      (51.5 MW condenser, 80.3 MW reboiler) rather than `None`.
+      It also carries the workspace's first **side draw off an interior tray** on
+      a wired plant: every cascade fixture in `cascade_column.rs` is a two-draw
+      column, so `DrawLocation::Stage` was reached there only through the bottoms.
+      **The cut inside a ramp landed by moving `crude_column.toml`'s first cut
+      from 185 °C to 155 °C**, which is the only way to satisfy it — a cascade
+      column has no smearing to exercise. The heavy naphtha (tb 150 °C) now sits
+      half a ramp width below the cut, so 70% goes overhead and 30% down, it
+      appears in TWO draws, and that demo's yields move from 0.30 / 0.50 / 0.20 to
+      0.246 / 0.554 / 0.200. M7.1's measurement is closed, and there is now a hand
+      calculation on a wired plant keeping it closed.
+      **The feed design cost two decisions, not one.** The bubble point of this
+      crude at 1.6 bar is 425.287 K, so the source sits at 146.5 °C and `duty_mw`
+      is DERIVED (`Q = ṁ·c̄p·ΔT` at the steady 192.685 kg/s) rather than chosen.
+      The second is that the heater is deliberately SMALL: a pipe's transport
+      density comes from its stored composition, so tick 1 runs at 176.478 kg/s
+      and every later tick at 192.685, and that 9.2% step lands on the furnace's
+      rise. At a 5.5 K trim the first tick sits 0.53 K above saturation, inside
+      the ±1.18 K window; at `crude_column.toml`'s own 30 K preheat it would sit
+      2.7 K above and the plant would refuse its own first tick. Measured over 400
+      ticks, not assumed at `t = 0`.
+      `R = 2` has measured margin too: this specification solves at `R = 1, 2, 3`
+      and fails at `R = 4` on the molar-draw-rate constraint correction 1 names,
+      so the shipped value sits a factor of 1.5 from the nearest refusal.
 
 **M7.4a landed 2026-08-17.** The note's shape for this half survived unchanged —
 DESIGN §5 specified "a column arm, mirroring exactly what `edge_composition_at`
@@ -2710,6 +2776,58 @@ construction, the other a wiring check. All twelve scenarios byte-identical over
 300 ticks against `37e9137`, which is what the `Option` duties plus
 `skip_serializing_if` buy.
 
+**M7.4c landed 2026-08-18, and the box's second gate could not exist either.**
+M7.4b found that the duty gate this milestone specified was a tautology; M7.4c
+found the same about the energy invariant this box warned would be needed, and for
+the same reason — the reboiler duty is *defined* to close that balance, so no
+invariant over that balance has power. So the milestone ships I7's cascade arm and
+records the energy arm as a verdict. The generalizable form, because this is now
+twice: **a quantity defined to close a balance can never be gated by that balance**
+— check that an invariant's two sides are computed by independent paths before
+writing it.
+
+**Nine mutations, seven in the pass and two in a follow-up probe, every one
+verified to compile.** Eight caught. The one that survived is the interesting one
+and it corrected a claim written into this slice's own test file: removing the
+per-component residual from `StageCascade`'s convergence conjunction changes **no
+test's verdict anywhere**, because the profile and temperature criteria are
+strictly tighter on every plant any test builds and stop the solve first. The
+first draft of the I7 arm's comment called it "the first place in this workspace
+where I7 can fail for a reason that is neither a transport bug nor the flow
+solver". The probe settled it properly: loosening the criteria that DO bind while
+keeping the residual leaves the arm green, and loosening them *and* dropping the
+residual makes it fire. So the claim is true, but only through a criterion that
+never binds — a backstop rather than the binding constraint, which is a different
+sentence from the one first written and is now the one in the file.
+
+What the caught set says about the new gates. The I7 cascade arm catches the two
+index reversals — the draw FLOW write and the draw COMPOSITION read — which
+conserve total mass exactly and make the two halves of one split describe
+different draws; that is the failure M3.2 named and nothing else watches it on a
+generated plant. **Disabling smearing was previously invisible to every scenario
+in this repo** (only the unit test M7.1 measured saw it) and is now caught by two
+wired demo gates as well, which is the M7.1 deferral closed rather than merely
+ticked. None of the new gates was the sole catcher of anything, and two of them
+caught nothing at all — the feed-design gate, whose faults are edits to a TOML
+file rather than to the engine, and the determinism gate, which by construction
+computes a mutation the same way twice. Both say so in their own docstrings.
+
+One incidental finding worth carrying: `the_reported_duties_bracket_the_enthalpy_
+the_plants_own_edges_carry`, which M7.4b recorded as catching nothing, catches
+three of these — both index reversals and the reboiler's dropped balance term. A
+gate labelled "caught nothing" is a statement about one mutation pass, not about
+the gate.
+
+An attribution in this slice was also falsified before it was believed. The
+cascade arm's budget admits a second term for the cascade's own residual, and the
+first justification for that was a comparison against the column-free tee plant —
+which shows **1.7e-7 kg against the cascade's 3.4e-7 kg**, within a factor of two,
+because Newton stops at a throughput-relative tolerance and that plant moves
+~170 kg/s. Two unrelated mechanisms landing on one order, and the comparison
+proved nothing. The attribution is now a measurement on the cascade plant itself:
+every node there is pressure-anchored, the solver reports a residual of exactly 0,
+and that is what leaves the cascade as the only candidate.
+
 **Open until the note is falsified by building it.** Every milestone in this file
 has had its design note corrected by the code — M3.2's draw-flow location, M5.2's
 density end, M6.1's regularization. The forks above are decisions, not results.
@@ -2727,3 +2845,31 @@ stronger reason to split those gates than coverage; the feed is
 saturated-liquid-only under constant molar overflow; and the Trouton framing
 overclaimed — one fitted constant is not slate data. One claim was checked and
 survived: no I-series arm anywhere in `crates/solvers/tests/` reaches a column.
+(That last one stopped being true in M7.4c, which is what it was recorded for.)
+
+**M7 acceptance criteria are met.** M7.0 through M7.4c complete; `cargo test
+--workspace`, `cargo clippy --workspace --all-targets -- -D warnings` and
+`cargo fmt --check` are green. The runnable-demo criterion is met twice over, and
+as a PAIR rather than as one file:
+
+```
+cargo run -p refinery-cli -- run scenarios/crude_column.toml         --ticks 200
+cargo run -p refinery-cli -- run scenarios/crude_column_cascade.toml --ticks 200
+```
+
+Same crude, same three product tanks, same three product rates — and one splits it
+into boiling-range bands at a single temperature while the other splits it by
+equilibrium into products that each contain several cuts, at three different tray
+temperatures, and reports the 51.5 MW and 80.3 MW it costs to do so. That is the
+milestone's premise ("make the separation *emerge* from equilibrium instead of
+being declared by a cut temperature") as two files a reader can diff.
+
+Three caveats carried forward rather than buried. The reboiler duty carries the
+constant-molar-overflow formulation's error and the condenser duty does not
+(M7.4b correction 1) — that asymmetry is forced, not an oversight. The
+saturated-liquid feed is a **precondition**, refused rather than approximated, so
+a plant that preheats past the bubble point on purpose needs feed quality `q`,
+which is deferred with its un-defer condition stated. And a cascade
+specification's admissible region is a property of the solver path rather than of
+the physics: it has to be swept for, which is what the demo's stated `R = 1, 2, 3`
+margin is. M8 may begin.

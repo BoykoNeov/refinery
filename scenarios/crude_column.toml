@@ -17,6 +17,18 @@
 # SI. Cut points (`up_to_c`) are absolute boiling temperatures; `smearing_k` is a
 # ramp WIDTH, so a component boiling within it of a boundary lands partly in each
 # adjacent draw.
+#
+# **The first cut moved in M7.4c, from 185 °C to 155 °C, and that is the whole
+# point of it.** M7.1 measured that `smearing_k` was set in every demo file in
+# this repo and changed no number anywhere: no component's boiling point landed
+# inside a ramp, so every column here was a sharp splitter and the knob was
+# authoritative-looking and dead. At 155 °C the heavy naphtha (tb 150 °C) sits
+# 5 K below the cut and half a ramp width from it, so 70% of it goes overhead and
+# 30% goes to the distillate — the naphtha draw now leaves at 48.8 / 51.2 light
+# to heavy instead of a clean band, and the yields are 0.246 / 0.554 / 0.200
+# instead of 0.30 / 0.50 / 0.20. It is also where this fidelity and the stage
+# cascade differ most, which is what makes `crude_column_cascade.toml` next door
+# worth comparing against.
 
 [meta]
 name = "crude_column"
@@ -89,7 +101,7 @@ type = "column"
 pressure_bar = 1.6
 smearing_k = 25.0
 draws = [
-    { outlet = "naphtha_tank", up_to_c = 185.0 },
+    { outlet = "naphtha_tank", up_to_c = 155.0 },
     { outlet = "distillate_tank", up_to_c = 340.0 },
     { outlet = "bottoms_tank" },
 ]

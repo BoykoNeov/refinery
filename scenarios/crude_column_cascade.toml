@@ -1,0 +1,193 @@
+# M7.4c demo plant: crude → furnace → EQUILIBRIUM-STAGE column → three products.
+#
+# `crude_column.toml`'s plant on the other separation fidelity (docs/DESIGN.md §5,
+# "Complex column (M7)"). Same five-cut crude, same node shape, same three product
+# tanks, and — deliberately — the same three product RATES: the cascade's
+# `draw_ratio`s are set to the mass yields the cut-point splitter next door
+# produces, so the two runs put 47.40 / 106.75 / 38.54 kg/s into the same three
+# tanks and everything you see differ is the separation model.
+#
+# What differs, at 200 ticks:
+#
+#              cut-point splitter                 stage cascade
+#   naphtha    48.8 / 51.2 / 0 / 0 / 0            48.5 / 51.3 / 0.2 / 0 / 0
+#   distillate  0 / 9.8 / 45.1 / 45.1 / 0          0.1 / 9.7 / 44.8 / 34.2 / 11.1
+#   bottoms     0 / 0 / 0 / 0 / 100                0 / 0 / 0.7 / 30.2 / 69.2
+#   draw T      443.8 K for all three             387.6 / 505.3 / 632.0 K
+#   duties      none reported                     51.5 MW condenser, 80.3 MW reboiler
+#
+# The splitter's draws are boiling-range BANDS: a cut either belongs to a draw or
+# it does not (up to the smearing ramp), the bottoms is pure residue, and every
+# draw leaves at the one feed temperature because a band has no trays. The
+# cascade's draws are equilibrium products: every cut appears in more than one of
+# them, each draw leaves at its own tray's temperature, and the column reports the
+# condenser and reboiler duties that separation costs.
+#
+# --- three things about this file that are design inputs, not tuning -----------
+#
+# 1. THE FEED IS ON ITS BUBBLE POINT, AND THAT IS WHY THE HEATER IS SMALL.
+#    Constant molar overflow admits a saturated-liquid feed only, and the cascade
+#    REFUSES anything more than 1% of the feed off-phase — a window of ±1.18 K on
+#    this slate (`ε·Δh_vap/c̄p`; DESIGN §5, M7.4b correction 6). The bubble point of
+#    this crude at 1.6 bar is 425.287 K, so the source sits at 146.5 °C and the
+#    furnace trims the last 5.5 K onto saturation. `crude_column.toml` preheats
+#    with 8 MW to 443.8 K instead, which is 18.5 K superheated — legal for a
+#    splitter, which has no phase in it, and inadmissible here. That is the one
+#    respect in which the two plants cannot be identical.
+#
+#    `duty_mw` is therefore DERIVED, not chosen: `Q = ṁ·c̄p·ΔT` at the steady feed
+#    rate of 192.685 kg/s and `c̄p = 2034.5 J/(kg·K)`. It is also why the heater
+#    is small on purpose — the first tick runs at 176.478 kg/s (a pipe's density
+#    comes from its STORED composition, which is one tick behind on tick 1 only),
+#    so a 9.2% flow step lands on the furnace's rise. A 5.5 K rise puts tick 1
+#    0.53 K above saturation, inside the window; a 30 K preheat would put it 2.7 K
+#    above and the plant would refuse its own first tick.
+#
+# 2. `stages = 8` COUNTS THE REBOILER AND NOT THE TOTAL CONDENSER. Stage 0 is the
+#    condenser and carries the distillate; stage 8 is the reboiler and carries the
+#    bottoms; the side draw at stage 5 is a liquid draw off a real tray.
+#
+# 3. THE DRAW RATIOS ARE MASS FRACTIONS OF THE FEED, and the bottoms declares none
+#    — it is `1 − Σ` of the others by subtraction, which is what makes
+#    `Σ splitᵢ = 1` a property of the specification (DESIGN §5, fork 3). An
+#    absolute product rate in kg/s is inadmissible: the total through a column
+#    must stay hydraulically determined, and only the split may be
+#    composition-determined.
+#
+#    `R = 2` has measured margin rather than assumed margin. The molar draw rates
+#    are recomputed from the mass ratios each pass, and at a high enough reflux
+#    the iterate can ask the draws above the reboiler to carry more moles than the
+#    feed brings in — which `StageCascade` refuses rather than clamps. This
+#    specification solves at `R = 1, 2, 3` and fails at `R = 4`, so the shipped
+#    value has a 1.5× margin in the parameter that closes the gap.
+
+[meta]
+name = "crude_column_cascade"
+description = "Crude heated in a furnace and separated into three products by an equilibrium-stage cascade."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+separation = "cascade"
+reactions = "none"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[[components]]
+name = "kerosene"
+tb_c = 220.0
+molar_mass_kg_per_mol = 0.170
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2050.0
+
+[[components]]
+name = "diesel"
+tb_c = 300.0
+molar_mass_kg_per_mol = 0.220
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "residue"
+tb_c = 400.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 950.0
+cp_j_per_kg_k = 1900.0
+
+[nodes.crude_source]
+type = "source"
+pressure_bar = 6.0
+temperature_c = 146.5
+composition = { light_naphtha = 0.12, heavy_naphtha = 0.18, kerosene = 0.25, diesel = 0.25, residue = 0.20 }
+
+[nodes.preheater]
+type = "furnace"
+duty_mw = 2.1051
+
+[nodes.column]
+type = "column"
+pressure_bar = 1.6
+draws = [
+    { outlet = "naphtha_tank", stage = 0, draw_ratio = 0.246 },
+    { outlet = "distillate_tank", stage = 5, draw_ratio = 0.554 },
+    { outlet = "bottoms_tank", stage = 8 },
+]
+
+[nodes.column.cascade]
+stages = 8
+feed_stage = 4
+reflux_ratio = 2.0
+
+[nodes.naphtha_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { light_naphtha = 1.0 }
+
+[nodes.distillate_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { kerosene = 1.0 }
+
+[nodes.bottoms_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { residue = 1.0 }
+
+[[pipes]]
+name = "crude_line"
+from = "crude_source"
+to = "preheater"
+length_m = 30.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "hot_feed_line"
+from = "preheater"
+to = "column"
+length_m = 15.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "naphtha_draw"
+from = "column"
+to = "naphtha_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "distillate_draw"
+from = "column"
+to = "distillate_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "bottoms_draw"
+from = "column"
+to = "bottoms_tank"
+length_m = 20.0
+diameter_m = 0.12
