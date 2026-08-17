@@ -146,5 +146,6 @@ godot --headless --path . --quit-after 400 2>&1 | grep t=  # the M6.2 demo
 ## Current milestone
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
-M1 = flow network (tanks, pumps, valves, junctions, water) solid and tested.
-No chemistry before M1's property tests pass.
+M1–M6 are closed: flow network, heat, crude + simple column, reactor, gas and
+pressure realism, and damage + the Godot frontend. The complex column (stage
+cascade) is the next milestone and has not been scoped yet.

@@ -1895,7 +1895,7 @@ carry. Held meanwhile by `known_defect_frozen_anchoring_*`, which are written to
 FAIL when it is fixed, and by floors on the generated rates so it cannot quietly
 worsen. See FINDING 2 under M5.4 and DESIGN §3a.
 
-## M6 — Damage + Godot frontend (CURRENT)
+## M6 — Damage + Godot frontend (DONE)
 
 The stub this section replaces said "leak/fire commands (already supported by
 the graph model) get game-side visualization." **Half of that premise is false,
@@ -2085,7 +2085,7 @@ does not build never ran, and reads as a catch in exactly the same shape.
 - **Air ingress as a modelled phenomenon** (and therefore combustion) — needs a
   slate carrying air and a reason to burn it.
 
-### M6.2 — godot-ext adapter + minimal scene — **HALF LANDED**
+### M6.2 — godot-ext adapter + minimal scene — **LANDED**
 
 Taken deliberately in two commits, because the halves are unlike: the
 translation layer is gateable Rust, the binding needs a toolchain and a
@@ -2098,11 +2098,13 @@ milestone's own mistake in miniature.
       crate joined the default workspace with the `godot` feature off, so
       `cargo test --workspace` and clippy now cover it — the alternative was a
       gate reachable only by a bespoke `--manifest-path` invocation.
-- [ ] gdext pin + the `RefinerySim` binding (`--features godot`). Godot 4.7 is
-      installed here; `project.godot` still declares `4.3` and will need
-      reconciling.
-- [ ] Minimal scene reading snapshots; leak and fire get visualization. The scene
-      is a **demonstrated** criterion, not a gate (DESIGN §8).
+- [x] **gdext pin + the `RefinerySim` binding** (`--features godot`). gdext
+      0.5.5, `api-4-7`, against Godot 4.7. `project.godot` had been claiming
+      `4.3` — the version it was created under, tested against nothing.
+- [x] **Minimal scene reading snapshots; leak and fire visualized**
+      (`demo/plant.tscn` + `plant.gd`). A **demonstrated** criterion, not a
+      gate (DESIGN §8) — so the observation below is part of the deliverable,
+      not a byproduct of it.
 
 **Why the pure/gdext split is structural, not stylistic.** gdext's
 `GString`/`Dictionary`/`Variant` require a live Godot runtime, so a translation
@@ -2186,4 +2188,138 @@ frontend contract, and nothing parsed a snapshot back. The contract was
 asserted in prose and gated nowhere — which is why renaming a tag would have
 been a green commit.
 
-Complex column (stage cascade) can proceed in parallel here if desired.
+#### The binding and the scene (second and third commits)
+
+**A gap found in the engine, not the adapter: the fire was invisible.**
+`Command::SetHeatInput` had worked since M2 and nothing *reported* it. A scene
+could infer a fire from a rising temperature or remember having sent the
+command — and a scene drawing flames from its own memory keeps drawing them
+after a reload or a refused command, which is a picture of what the frontend
+did rather than of what the engine holds. That is M6.0's defect with the
+direction reversed, inside the milestone that found the shape.
+`NodeSnapshot::heat_input_w` closes it; `EdgeSnapshot::leak_mass_flow` had
+answered the analogous question for the leak all along, which is what makes
+the asymmetry an oversight rather than a decision. **The trap in closing it:**
+`energy::heat_load()` — the function every consumer already calls — returns
+the fire PLUS the node's unit term, so the obvious wiring would report every
+furnace in every scenario as on fire. Taken as its own commit, per this repo's
+own rule about separating an exposed defect from the feature that exposed it.
+
+**Two failures found by RUNNING it, neither of which names its cause.** Both
+are now in `refinery.gdextension`'s header, which is the file someone opens
+when the extension does not load.
+1. `Identifier "RefinerySim" not declared` — a GDScript parse error naming
+   nothing relevant. Outside the editor, Godot loads extensions from
+   `.godot/extension_list.cfg`, which the **editor** writes; it does not scan
+   for `*.gdextension` at runtime. `.godot/` is gitignored, so every fresh
+   clone starts in that state.
+2. `GDExtension entry point 'gdext_rust_init' not found` — reads like a broken
+   build, and is really "your last cargo command overwrote it". The crate is
+   `cdylib` + `rlib`, so `cargo test --workspace` — the command every commit
+   is *required* to run — rebuilds the same `.dll` with the feature OFF. Every
+   commit cycle would have reproduced it. Fixed with
+   `--target-dir target/godot`, which removes the failure mode rather than
+   documenting it.
+
+**Two corrections to DESIGN §8's own sketch**, recorded rather than quietly
+diverged from. `get_snapshot() -> Dictionary` would need a recursive
+JSON→`Variant` converter — the largest piece of translation logic in the
+adapter, written in Godot types, on the side no test can run; the sketch would
+have defeated the rule the same section states. And the node does not tick
+itself: pausing and single-stepping are game decisions, so the scene calls
+`tick()` from its own `_physics_process`.
+
+**No mutation evidence for `binding.rs`, and that is the honest report.** No
+test binary can construct a `GString`, so there is nothing to mutate. What
+makes the absence acceptable is that the module is branch-free marshalling —
+the claim is verifiable by reading. Everything with a decision in it lives in
+`bridge::Session`, which exists for exactly that reason and carries 5 new
+gates: every call answers before a scenario is loaded; an outcome is the JSON
+`null` or a coded object and never both shapes; a failed load leaves the
+running plant untouched (a typo in a path must not destroy a running game);
+the name lists match the bridge's; and a `Session` reproduces a direct
+`Engine` run byte for byte with a command applied — which the `Bridge`-level
+version of that gate does not cover, because it does not go through the
+`Option` layer the binding actually talks to.
+
+`cargo clippy --workspace` sees **none** of the binding while the feature is
+off, so `cargo clippy -p refinery-godot-ext --features godot --all-targets --
+-D warnings` is run by hand and recorded. Clean, as is fmt; 283 workspace
+tests pass.
+
+#### The observation (M6.2's demonstrated criterion)
+
+```
+godot --headless --path . --quit-after 5000 -- --auto
+```
+
+```
+Initialize godot-rust (API v4.7.stable.official, runtime v4.7.stable.official, safeguards strict)
+plant: loaded res://scenarios/leaking_line.toml
+t=  50  supply= 159611.2 kg  receiving=  20028.8 kg  T=293.150 K  leak= 0.000 kg/s  fire= 0.00 MW
+t= 100  supply= 159542.5 kg  receiving=  20097.5 kg  T=293.151 K  leak= 0.000 kg/s  fire= 0.00 MW
+plant: puncturing fill_line, 0.001 m^2
+t= 150  supply= 159473.6 kg  receiving=  20140.7 kg  T=293.151 K  leak= 5.139 kg/s  fire= 0.00 MW
+t= 200  supply= 159404.7 kg  receiving=  20183.9 kg  T=293.151 K  leak= 5.140 kg/s  fire= 0.00 MW
+plant: fire on receiving_tank, 5000000.0 W
+t= 250  supply= 159335.8 kg  receiving=  20227.1 kg  T=293.447 K  leak= 5.142 kg/s  fire= 5.00 MW
+t= 300  supply= 159266.9 kg  receiving=  20270.3 kg  T=293.741 K  leak= 5.143 kg/s  fire= 5.00 MW
+plant: repaired and extinguished
+t= 350  supply= 159198.1 kg  receiving=  20339.1 kg  T=293.739 K  leak= 0.000 kg/s  fire= 0.00 MW
+```
+
+**The arithmetic in those lines is the point, and a reader can check it
+without the engine.** The supply tank drains at a flat 68.9 kg per 50 ticks
+throughout — the pump does not care about the hole. The receiving tank gains
+43.2 kg per 50 ticks while the leak is open and 68.8 kg after the repair. The
+difference, 25.7 kg per 5 s, is **5.14 kg/s** — the number the leak edge is
+reporting on the same lines. The 10 cm² hole is the one `leak_reference` sizes
+at ~5.1 kg/s, now read through GDScript instead of Rust. The fire arrives at
+t=200 and the receiving tank goes 293.151 K → 293.741 K over the next 100
+ticks (5 MW × 10 s ≈ 0.6 K on 20 t of water), then holds when it is put out.
+`fire=` is read from `heat_input_w` — the engine's answer, not the scene's
+memory.
+
+**Deferred, with a trigger: a frontend cannot compute a tank LEVEL.** Found
+writing the scene. A tank reports mass [kg], area [m²] and height [m]; turning
+that into a fill fraction needs the fluid's density, which lives in the slate,
+and **the slate is not in the snapshot** — nor are component names, only
+`mass_fractions` as bare numbers. The scene therefore draws mass on a shared
+scale and prints kg, both of which are faithful functions of reported data,
+rather than hardcoding water's 998 kg/m³ and drawing a confident level that is
+wrong for every other plant. That distinction is why this was NOT fixed
+alongside the fire: an invisible fire made the visualization *unfalsifiable*,
+while an unavailable level only makes it *less convenient* — the bar still
+shows a number the engine really reported. **Un-defers** the first time a HUD
+needs an absolute fill fraction, a per-component readout, or a component name;
+the fix is slate-derived data on the snapshot, not a constant in a scene. (A
+per-tank scale was tried first and is worse than useless: a FILLING tank is
+always at its own maximum, so it draws as permanently full.)
+
+**Setup, because none of it is in git.** `target/` is ignored, so a fresh
+clone has no library:
+
+```
+cargo build -p refinery-godot-ext --features godot --target-dir target/godot
+godot --headless --path . --editor --quit     # writes .godot/extension_list.cfg
+```
+
+Skip either and the failure names something else entirely — see the two
+failures above.
+
+### M6 closed
+
+All three slices landed. The milestone's premise held up: fire was supported
+and the leak was a command that did nothing, and taking damage before the
+frontend is what made the second half honest — a scene built first would have
+visualized a command that lies, and (as it turned out) a fire that no snapshot
+reported.
+
+What is deliberately NOT in M6, with where each is written down: gas leaks and
+`Cd` as a scenario parameter (M6.1's deferrals); slate-derived data on the
+snapshot, without which a frontend cannot compute a tank level (M6.2's
+deferral); and a game — the scene is a demonstration that the contract works,
+not a product.
+
+Complex column (stage cascade) is the obvious next milestone and was already
+noted as parallelizable with this one.
