@@ -14,8 +14,8 @@ use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    ColumnDraw, HeatExchangerCoupling, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph,
-    TankState, VesselState,
+    CascadeSpec, ColumnDraw, HeatExchangerCoupling, LeakRole, Node, NodeId, NodeKind, Pipe,
+    PlantGraph, TankState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, ReactionModel, SeparationModel, ThermoModel};
@@ -108,7 +108,7 @@ pub struct Simulation {
 pub struct Fidelity {
     /// "newton" | "simple"
     pub flow: String,
-    /// "constant" — the only selectable value, and `"trouton"` joins it in M7.3.
+    /// "constant" (M1) | "trouton" (M7.3).
     ///
     /// Until M7.2 this string was parsed and then **ignored**: `build_engine`
     /// hardcoded `ConstantThermo`, so `thermo = "nonsense"` loaded a working
@@ -116,15 +116,19 @@ pub struct Fidelity {
     /// wiring `separation` beside it in M7.1 rather than by a test — nothing
     /// reached the value, so nothing could fail on it.
     ///
-    /// **Why `TroutonThermo` exists in `solvers` but cannot be named here yet.**
-    /// The only consumer of a K-value is the cascade, which is M7.3. Until then
-    /// the cut-point splitter ignores the thermo model entirely, so selecting
-    /// `"trouton"` would change no number in any plant — a scenario knob nothing
-    /// can discriminate, which is precisely the shape M7.1 measured on
-    /// `smearing_k` (`a-hand-written-scenario-can-be-vacuous`). The arm lands in
-    /// M7.3 together with the load-time refusal of the pairing it makes
-    /// possible: `separation = "cascade"` with `thermo = "constant"`, which
-    /// would otherwise fail on the first tick instead of at load.
+    /// **`"trouton"` was held back until M7.3, and the reason is worth keeping.**
+    /// The only consumer of a K-value is the cascade, so before M7.3 selecting it
+    /// would have changed no number in any plant — a scenario knob nothing can
+    /// discriminate, which is precisely the shape M7.1 measured on `smearing_k`
+    /// (`a-hand-written-scenario-can-be-vacuous`). It arrives together with the
+    /// load-time refusal of the pairing it makes possible: `separation =
+    /// "cascade"` with `thermo = "constant"` (see `build_engine`).
+    ///
+    /// The mirror pairing — `"trouton"` with the cut-point splitter — is still a
+    /// knob that changes nothing, and is deliberately **not** refused: a K-value
+    /// is a property of the fluid rather than of the column, and the next
+    /// consumer of one need not be a separation model. That is the same
+    /// permissiveness `reactions` already has toward a plant with no reactor.
     #[serde(default = "default_constant")]
     pub thermo: String,
     /// "none" (M1) — expands in M4
@@ -149,6 +153,9 @@ fn default_none() -> String {
 }
 fn default_cut_point() -> String {
     "cut_point".into()
+}
+fn default_total() -> String {
+    "total".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -271,11 +278,21 @@ pub enum NodeDef {
         pressure_bar: f64,
         /// Ramp width across each cut point [K]. A temperature WIDTH, so no
         /// °C→K offset (a delta of 10 °C is 10 K). `0` is a sharp splitter.
+        ///
+        /// An `Option` rather than a plain default since M7.3, because the
+        /// declared-iff-used correspondence needs to tell "absent" from "written
+        /// as 0". This is a cut-point knob and the cascade ignores it, so writing
+        /// it on a cascade column is refused rather than silently unread.
         #[serde(default)]
-        smearing_k: f64,
-        /// Draws in ascending boiling-point order, lightest first. Each names the
-        /// product node it feeds and the top of its boiling band. See `DrawDef`.
+        smearing_k: Option<f64>,
+        /// Draws in ascending boiling-point order, lightest first — which is also
+        /// top-down for a cascade. Each names the product node it feeds; how it is
+        /// located and sized depends on the separation fidelity. See `DrawDef`.
         draws: Vec<DrawDef>,
+        /// Equilibrium-stage equipment. Required iff `[fidelity] separation =
+        /// "cascade"`, refused otherwise. See `CascadeDef`.
+        #[serde(default)]
+        cascade: Option<CascadeDef>,
     },
     /// Isothermal conversion reactor (simple fidelity). One feed in, one product
     /// out, held at `t_set_c`; the chemistry comes from the engine's selected
@@ -299,14 +316,67 @@ pub enum NodeDef {
 /// the last cut, so no component can fall off the end and be lost. Every other
 /// draw must set it, strictly increasing. Outlets are addressed by name, matching
 /// the slate's positional-vector / name-addressed-file convention.
+/// Under the CASCADE fidelity the same list is read differently: `up_to_c` is
+/// refused and each draw declares the `stage` it leaves from and the `draw_ratio`
+/// (a **mass** fraction of the feed) it takes. The last draw is the bottoms and
+/// declares neither a stage top nor a ratio — it leaves the reboiler and gets
+/// `1 − Σ others`.
 #[derive(Debug, Deserialize)]
 pub struct DrawDef {
     /// Name of the product node this draw feeds.
     pub outlet: String,
     /// Top of this draw's boiling band [°C, absolute]. Omitted on (and only on)
-    /// the heaviest, last draw.
+    /// the heaviest, last draw. **Cut-point fidelity only.**
     #[serde(default)]
     pub up_to_c: Option<f64>,
+    /// Which equilibrium stage this draw leaves from: `0` is the total condenser
+    /// (the distillate), `stages` is the reboiler (the bottoms), and everything
+    /// between is a liquid side draw. **Cascade fidelity only.**
+    #[serde(default)]
+    pub stage: Option<u32>,
+    /// This draw's **mass** flow as a fraction of the column feed. Set on every
+    /// draw but the last. **Cascade fidelity only.**
+    #[serde(default)]
+    pub draw_ratio: Option<f64>,
+    /// `"liquid"` (the default and the only supported value) or `"vapour"`.
+    ///
+    /// The key exists so that a **vapour side draw** is something a file can say
+    /// and be refused for, rather than something the format cannot express. DESIGN
+    /// §5's energy argument buys M7's whole scope boundary from one condition —
+    /// with a total condenser and all-liquid draws, every kilogram vaporized
+    /// inside the column condenses inside it, the latent flows cancel, and the
+    /// external balance stays purely sensible against the workspace's one datum.
+    /// A vapour draw carries latent heat across the unit boundary and breaks that.
+    /// **Cascade fidelity only.**
+    #[serde(default)]
+    pub phase: Option<String>,
+}
+
+/// A cascade column's equipment (M7.3): `[nodes.<column>.cascade]`.
+///
+/// What is deliberately absent is any absolute flow. The column is specified by
+/// ratios alone — `reflux_ratio` here, and one `draw_ratio` per draw — because a
+/// prescribed product rate in kg/s re-runs the failure that killed M3.2's
+/// prescribed-draw column (DESIGN §5, fork 3). The total through the column stays
+/// hydraulically determined; only the split is composition-determined.
+#[derive(Debug, Deserialize)]
+pub struct CascadeDef {
+    /// Number of equilibrium stages `N`, **counting the reboiler and excluding
+    /// the total condenser** (DESIGN §5, correction 3).
+    pub stages: u32,
+    /// Which stage the feed enters, in `1..=stages`. The feed is taken as a
+    /// **saturated liquid**; feed quality is deferred (correction 5).
+    pub feed_stage: u32,
+    /// Reflux ratio `R = L/D` — molar, internal, and one of the two real
+    /// control-room handles this fidelity exposes.
+    pub reflux_ratio: f64,
+    /// `"total"` (the default and the only supported value) or `"partial"`.
+    ///
+    /// Present for the same reason as `DrawDef::phase`: a partial condenser
+    /// (vapour distillate) is refused at load, and a refusal of something the
+    /// format cannot express is not a refusal.
+    #[serde(default = "default_total")]
+    pub condenser: String,
 }
 fn default_true() -> bool {
     true
@@ -375,6 +445,12 @@ pub fn load_str(toml_src: &str) -> Result<ScenarioFile, SimError> {
 /// 4. Select solver impls from [fidelity]; unknown names are errors
 ///    listing valid options.
 pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
+    // Step 0: fidelity combinations that cannot work, before anything is built.
+    // It runs FIRST rather than beside the model selection in step 4, because a
+    // cascade column's own config is validated in step 2a and a mis-paired plant
+    // would otherwise be told about its draws when the real fault is its thermo.
+    require_compatible_fidelity(scenario)?;
+
     // Step 1: slate. An absent [[components]] table means the water-only slate,
     // which is what every scenario written before M3 meant — that default is
     // what keeps those files bit-identical rather than merely still-loading.
@@ -470,9 +546,13 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     };
     let thermo: Box<dyn ThermoModel> = match scenario.fidelity.thermo.as_str() {
         "constant" => Box::new(refinery_solvers::ConstantThermo),
+        // Raoult over a Clausius–Clapeyron vapour pressure with Trouton's rule
+        // for Δh_vap (M7.2). Selectable from M7.3, when the cascade gave a
+        // K-value its first consumer — see `Fidelity::thermo`.
+        "trouton" => Box::new(refinery_solvers::TroutonThermo::new()),
         other => {
             return Err(SimError::Scenario(format!(
-                "unknown thermo model '{other}' (valid: constant)"
+                "unknown thermo model '{other}' (valid: constant, trouton)"
             )))
         }
     };
@@ -495,9 +575,12 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     let separation: Box<dyn SeparationModel> = match scenario.fidelity.separation.as_str() {
         // M3.2's boiling-range splitter, and the default (see `Fidelity`).
         "cut_point" => Box::new(refinery_solvers::CutPointSplitter),
+        // The M7.3 equilibrium-stage cascade. Its pairing with `thermo` is
+        // already settled by `require_compatible_fidelity` in step 0.
+        "cascade" => Box::new(refinery_solvers::StageCascade::new()),
         other => {
             return Err(SimError::Scenario(format!(
-                "unknown separation model '{other}' (valid: cut_point)"
+                "unknown separation model '{other}' (valid: cut_point, cascade)"
             )))
         }
     };
@@ -805,7 +888,10 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
         } => NodeKind::Column {
             pressure: bar_to_pa(*pressure_bar),
             // A temperature WIDTH, so no °C→K offset — a 10 °C ramp is 10 K.
-            smearing: Kelvin(*smearing_k),
+            // Absent means 0, the sharp splitter, which is what every file that
+            // omits it has always meant; the `Option` exists so the cascade can
+            // refuse a value it would not read (`require_declared_iff_used`).
+            smearing: Kelvin(smearing_k.unwrap_or(0.0)),
             // Draws are resolved in a second pass, once every node exists so a
             // draw can name an outlet defined later in the file (like couplings).
             draws: Vec::new(),
@@ -1044,11 +1130,13 @@ fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
         }
         // Zero is legal — the sharp splitter. Negative is not: a ramp width is a
         // magnitude, and `smearing < 0` would flip the ramp's slope.
-        if !smearing_k.is_finite() || *smearing_k < 0.0 {
-            return Err(SimError::Scenario(format!(
-                "column '{name}' has smearing_k = {smearing_k}: it must be finite and >= 0 \
-                 (a ramp width; 0 is a sharp splitter)."
-            )));
+        if let Some(smearing_k) = smearing_k {
+            if !smearing_k.is_finite() || *smearing_k < 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' has smearing_k = {smearing_k}: it must be finite and >= 0 \
+                     (a ramp width; 0 is a sharp splitter)."
+                )));
+            }
         }
     }
     if let NodeDef::Reactor { t_set_c, tau_s } = def {
@@ -1188,10 +1276,23 @@ fn build_couplings(graph: &mut PlantGraph, defs: &[ExchangerDef]) -> Result<(), 
 ///   line puts a prescribed edge back into the Jacobian (unsupported), and a
 ///   source or column outlet is pressure-fixing but still wrong (vanishes the
 ///   product, or chains columns the draw write cannot feed); both refused.
+///
+/// Under the **cascade** fidelity the boiling-range half of that list is replaced
+/// rather than extended: `up_to_c` and `smearing_k` are refused, each draw
+/// declares its `stage` and (except the bottoms) its `draw_ratio`, and the column
+/// declares a `[cascade]` block. The structural validation of that shape is
+/// delegated to `StageCascade::validate` so the loader and the model cannot drift
+/// apart; what stays here is what needs the file's vocabulary — which key on which
+/// node, and the two scope boundaries (partial condenser, vapour side draw) that
+/// have no representation in `core` at all.
 fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
+    let cascade_selected = scenario.fidelity.separation == "cascade";
     for (name, def) in &scenario.nodes {
         let NodeDef::Column {
-            draws: draw_defs, ..
+            draws: draw_defs,
+            cascade,
+            smearing_k,
+            ..
         } = def
         else {
             continue;
@@ -1203,16 +1304,20 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                 draw_defs.len()
             )));
         }
+        require_declared_iff_used(name, cascade_selected, draw_defs, cascade, smearing_k)?;
 
         let last = draw_defs.len() - 1;
         let mut prev_cut = f64::NEG_INFINITY;
         let mut resolved: Vec<ColumnDraw> = Vec::with_capacity(draw_defs.len());
         for (i, d) in draw_defs.iter().enumerate() {
-            // Exactly the last draw omits up_to_c — the open catch-all.
-            let upper_cut_c = match (i == last, d.up_to_c) {
-                (true, None) => None,
-                (false, Some(c)) => Some(c),
-                (true, Some(_)) => {
+            // Exactly the last draw omits up_to_c — the open catch-all. Under the
+            // cascade this whole question is `stage`'s instead, and the stage
+            // numbering is checked by `StageCascade::validate` below.
+            let upper_cut_c = match (cascade_selected, i == last, d.up_to_c) {
+                (true, _, _) => None,
+                (false, true, None) => None,
+                (false, false, Some(c)) => Some(c),
+                (false, true, Some(_)) => {
                     return Err(SimError::Scenario(format!(
                         "column '{name}' draw '{}' is the heaviest (last) draw and must OMIT \
                          up_to_c: it is the catch-all for everything above the last cut, so a \
@@ -1220,7 +1325,7 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                         d.outlet
                     )))
                 }
-                (false, None) => {
+                (false, false, None) => {
                     return Err(SimError::Scenario(format!(
                         "column '{name}' draw '{}' omits up_to_c but is not the last draw: only \
                          the heaviest (last) draw may — every other draw needs a boiling-range top.",
@@ -1285,18 +1390,171 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                     )));
                 }
             }
-            resolved.push(ColumnDraw {
-                outlet,
-                upper_cut: upper_cut_c.map(c_to_k),
-                stage: None,
-                draw_ratio: None,
+            resolved.push(if cascade_selected {
+                ColumnDraw::by_stage(outlet, d.stage.unwrap_or(0), d.draw_ratio)
+            } else {
+                ColumnDraw::by_cut(outlet, upper_cut_c.map(c_to_k))
             });
         }
 
+        let spec = match (cascade_selected, cascade) {
+            (true, Some(def)) => {
+                let spec = CascadeSpec {
+                    stages: def.stages,
+                    feed_stage: def.feed_stage,
+                    reflux_ratio: def.reflux_ratio,
+                };
+                // One source of truth for the cascade's structural rules: the model
+                // that has to satisfy them. Duplicating them here would be two
+                // rule sets to keep in step, and M7.1's correction 3 is about the
+                // opposite hazard — a contract kept only in the OTHER crate. Both
+                // are avoided by having the loader call the model's own check and
+                // add the file's vocabulary to whatever it says.
+                refinery_solvers::StageCascade::validate(&spec, &resolved)
+                    .map_err(|e| SimError::Scenario(format!("column '{name}': {e}")))?;
+                Some(spec)
+            }
+            _ => None,
+        };
+
         let col_id = graph.find_node(name).expect("column node was just added");
-        if let NodeKind::Column { draws, .. } = &mut graph.node_mut(col_id).kind {
+        if let NodeKind::Column {
+            draws,
+            cascade: slot,
+            ..
+        } = &mut graph.node_mut(col_id).kind
+        {
             *draws = resolved;
+            *slot = spec;
         }
+    }
+    Ok(())
+}
+
+/// The **declared-iff-used** correspondence on a column, in both directions.
+///
+/// `PseudoComponent::density` is required iff the component is liquid; a valve's
+/// `x_T` is required iff it is in gas service. A column's separation config is the
+/// same rule with two vocabularies rather than one: `up_to_c` and `smearing_k`
+/// belong to the cut-point splitter, `stage`, `draw_ratio`, `phase` and the
+/// `[cascade]` block belong to the cascade, and neither fidelity may carry the
+/// other's fields (DESIGN §5, fork 2).
+///
+/// The point is not tidiness. A field a file declares and the running model never
+/// reads is an authoritative-looking number that changes nothing — the shape M7.1
+/// measured on `smearing_k` and recorded as
+/// `a-hand-written-scenario-can-be-vacuous`. Refusing it at load is the only place
+/// the mistake is still cheap.
+fn require_declared_iff_used(
+    name: &str,
+    cascade_selected: bool,
+    draws: &[DrawDef],
+    cascade: &Option<CascadeDef>,
+    smearing_k: &Option<f64>,
+) -> Result<(), SimError> {
+    if cascade_selected {
+        let Some(def) = cascade else {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' has no [nodes.{name}.cascade] block, but [fidelity] separation \
+                 = \"cascade\" is selected: a stage cascade needs stages, feed_stage and \
+                 reflux_ratio. A column with no equipment is the cut-point splitter's shape."
+            )));
+        };
+        // The two scope boundaries DESIGN §5's energy argument buys the whole of
+        // M7's fork 0 with. Both are refused HERE rather than in `core`, because
+        // neither has any representation there — the refusal and the thing refused
+        // would otherwise drift apart, which is what fork 0 asks not to happen.
+        if def.condenser != "total" {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' declares condenser = \"{}\": only \"total\" is supported. A \
+                 PARTIAL condenser makes the distillate a vapour, which carries latent heat out \
+                 of the unit — and M7's whole scope rests on the opposite: with a total \
+                 condenser and all-liquid draws every kilogram vaporized inside the column \
+                 condenses inside it, so the internal latent flows cancel and the external \
+                 balance stays purely sensible against this workspace's one enthalpy datum. Two-\
+                 phase transport ON THE GRAPH is the deferral this narrows to (DESIGN §5, fork 0).",
+                def.condenser
+            )));
+        }
+        if smearing_k.is_some() {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' declares smearing_k under [fidelity] separation = \"cascade\": \
+                 a smearing width is the cut-point splitter's ramp across a fixed boundary, and \
+                 a cascade has no cut points to smear — its separation comes from stagewise \
+                 equilibrium. The cascade would read nothing from it."
+            )));
+        }
+        for d in draws {
+            if d.up_to_c.is_some() {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' draw '{}' declares up_to_c under [fidelity] separation = \
+                     \"cascade\": a cascade locates a draw by STAGE, not by a boiling-range top. \
+                     Use stage = <n> (0 is the total condenser, {} the reboiler).",
+                    d.outlet, def.stages
+                )));
+            }
+            match d.phase.as_deref() {
+                None | Some("liquid") => {}
+                Some(other) => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draw '{}' declares phase = \"{other}\": only \"liquid\" \
+                         is supported. A VAPOUR side draw carries latent heat out of the unit, \
+                         and M7's scope rests on every draw being liquid so the internal latent \
+                         flows cancel and the external balance stays purely sensible. Two-phase \
+                         transport on the graph is the deferral this narrows to (DESIGN §5, \
+                         fork 0).",
+                        d.outlet
+                    )));
+                }
+            }
+        }
+    } else {
+        if cascade.is_some() {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' declares a [nodes.{name}.cascade] block, but [fidelity] \
+                 separation is \"{}\": the cut-point splitter separates by boiling range and \
+                 would read none of it. Select separation = \"cascade\" or delete the block.",
+                "cut_point"
+            )));
+        }
+        for d in draws {
+            let stray = if d.stage.is_some() {
+                Some("stage")
+            } else if d.draw_ratio.is_some() {
+                Some("draw_ratio")
+            } else if d.phase.is_some() {
+                Some("phase")
+            } else {
+                None
+            };
+            if let Some(key) = stray {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' draw '{}' declares {key}, which belongs to the cascade \
+                     fidelity: the cut-point splitter locates a draw by its boiling-range top \
+                     (up_to_c) and sizes it from the feed's own composition, so it would read \
+                     nothing from {key}.",
+                    d.outlet
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Fidelity combinations that cannot work, refused before anything is built.
+fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(), SimError> {
+    // **The pairing M7.2 left owing at this arm.** `ConstantThermo::k_value` is an
+    // `Err`, so without this a mis-paired plant would load cleanly and fail on its
+    // FIRST TICK — surfacing inside the composition sweep as a solver failure
+    // rather than as the configuration mistake it is. A combination that cannot
+    // work is a load-time error, exactly as an unknown model name is.
+    if scenario.fidelity.separation == "cascade" && scenario.fidelity.thermo == "constant" {
+        return Err(SimError::Scenario(
+            "separation = \"cascade\" with thermo = \"constant\": a cascade stage IS a \
+             vapour-liquid equilibrium, and the 'constant' fidelity is constant-property water \
+             with no K-value to give it. Select thermo = \"trouton\"."
+                .into(),
+        ));
     }
     Ok(())
 }

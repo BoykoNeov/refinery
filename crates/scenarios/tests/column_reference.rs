@@ -989,17 +989,22 @@ fn the_default_separation_is_the_cut_point_splitter() {
 }
 
 /// An unknown separation model is refused at LOAD, listing what is valid — the
-/// same contract every other `[fidelity]` string has. `cascade` is the name M7.3
-/// will take, so this test is also the marker that it does not exist yet.
+/// same contract every other `[fidelity]` string has.
+///
+/// Until M7.3 this test used `"cascade"` as its unknown name, so it doubled as
+/// the marker that the cascade did not exist yet. It now exists, so the name had
+/// to change — and the assertion is stronger for it: the valid list must contain
+/// BOTH models, which is what fails if an arm is added to `build_engine` and not
+/// to the message beside it.
 #[test]
 fn an_unknown_separation_model_is_refused() {
     let src = source_column_plant(25.0, 0.10).replace(
         r#"flow = "newton""#,
-        "flow = \"newton\"\nseparation = \"cascade\"",
+        "flow = \"newton\"\nseparation = \"osmosis\"",
     );
     let m = build_err(&src, "an unimplemented separation model");
     assert!(
-        m.contains("cascade") && m.contains("cut_point"),
-        "the error must name the bad value and list the valid ones, got: {m}"
+        m.contains("osmosis") && m.contains("cut_point") && m.contains("cascade"),
+        "the error must name the bad value and list every valid one, got: {m}"
     );
 }

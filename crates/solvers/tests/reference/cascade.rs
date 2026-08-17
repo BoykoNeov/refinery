@@ -15,7 +15,7 @@
 
 use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::graph::{CascadeSpec, ColumnDraw, NodeId};
-use refinery_core::traits::{ColumnPass, Separation, SeparationModel};
+use refinery_core::traits::{ColumnPass, Separation, SeparationModel, ThermoModel};
 use refinery_core::units::{JPerKgK, Kelvin, KgPerM3, KgPerMol, KgPerSec, P_ATM};
 use refinery_solvers::{flash_isothermal, ConstantAlphaThermo, MoleFractions, StageCascade};
 
@@ -315,6 +315,28 @@ fn a_single_stage_at_zero_reflux_is_the_rachford_rice_flash() {
         );
     }
 
+    // **The condenser's own temperature**, which nothing else in this milestone
+    // reads — `DrawSeparation::temperature` gains its consumer in M7.4 — and which
+    // is therefore the one number here that could be quietly wrong. It is not
+    // stage 1's temperature: the distillate is the CONDENSED vapour, a lighter
+    // liquid, so it boils lower at the same pressure. Asserted twice, because the
+    // ordering alone would still pass if the field simply echoed stage 1.
+    let condenser_t = separation.draws[0].temperature;
+    assert!(
+        condenser_t.value() < stage_t.value(),
+        "the distillate is condensed vapour and boils below the stage that made it: got \
+         {} K against a stage at {} K",
+        condenser_t.value(),
+        stage_t.value()
+    );
+    let bubble: f64 = distillate
+        .fractions()
+        .iter()
+        .enumerate()
+        .map(|(c, x)| x * thermo.k_value(&slate, c, condenser_t, P_ATM).unwrap())
+        .sum();
+    approx::assert_relative_eq!(bubble, 1.0, max_relative = CONVERGED_TOLERANCE);
+
     // The flash's molar vapour fraction must equal the cascade's molar distillate
     // rate over its molar feed rate — the conversion the mass ratio went through.
     let feed_molar = FEED_FLOW / feed_moles.mean_molar_mass(&slate).value();
@@ -488,8 +510,12 @@ fn a_cascade_capped_too_low_fails_with_its_residual() {
     .expect_err("two outer passes cannot converge an eight-stage column")
     .to_string();
     assert!(
-        message.contains("did not converge") && message.contains("residual"),
-        "the refusal must name what failed and carry the residual, got: {message}"
+        message.contains("did not converge")
+            && message.contains("per-component mass residual")
+            && message.contains("bound of"),
+        "the refusal must name what failed, and the per-component residual must be one of \
+         the criteria it NAMES — a residual that merely appears in a message while some \
+         other criterion does the failing is a counter, not a gate. Got: {message}"
     );
 
     try_run(&StageCascade::new(), &slate, &thermo, &column, &feed).expect(

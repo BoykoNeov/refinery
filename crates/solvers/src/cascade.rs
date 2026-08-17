@@ -139,6 +139,25 @@ impl StageCascade {
             seed_offset,
         }
     }
+
+    /// Check a column's cascade geometry without solving it — what the LOADER
+    /// calls so a malformed cascade column is refused when the file is read
+    /// rather than on its first tick.
+    ///
+    /// It is the same code `separate` runs, deliberately: two copies of the
+    /// stage-numbering and draw-ratio rules would be two things to keep in step,
+    /// and the loader's own job is the half that needs a file's vocabulary (which
+    /// key on which node, and the scope boundaries that have no representation in
+    /// `core` at all).
+    ///
+    /// # Errors
+    /// `SimError` for any geometry `separate` would refuse: a zero stage count, a
+    /// feed stage outside it, a negative reflux ratio, draws that do not run from
+    /// the condenser to the reboiler in order, a draw carrying the cut-point
+    /// fidelity's `upper_cut`, and a mis-declared set of draw ratios.
+    pub fn validate(spec: &CascadeSpec, draws: &[ColumnDraw]) -> Result<(), SimError> {
+        CascadePlan::new(spec, draws, 0).map(|_| ())
+    }
 }
 
 impl Default for StageCascade {
@@ -210,6 +229,8 @@ impl SeparationModel for StageCascade {
 
         let mut iterations = 0u32;
         let mut residual = f64::INFINITY;
+        let mut profile_change = f64::INFINITY;
+        let mut temperature_change = f64::INFINITY;
         let mut converged = false;
         let mut draws: Vec<DrawState> = Vec::new();
         // K at the seed profile. Recomputed at the END of each pass rather than
@@ -257,7 +278,7 @@ impl SeparationModel for StageCascade {
                 );
             }
 
-            let profile_change = max_abs_difference(&liquid, &next);
+            profile_change = max_abs_difference(&liquid, &next);
             liquid = next;
 
             // Bubble point per stage, at the NEW liquid composition.
@@ -274,7 +295,7 @@ impl SeparationModel for StageCascade {
                     .value(),
                 );
             }
-            let temperature_change = stage_t
+            temperature_change = stage_t
                 .iter()
                 .zip(&next_t)
                 .map(|(a, b)| (a - b).abs() / b)
@@ -297,15 +318,42 @@ impl SeparationModel for StageCascade {
         }
 
         if !converged {
+            // **Which criteria are unmet, named one by one.** Fork 4 asks for the
+            // per-component residual to be a GATE and not a counter, and the
+            // convergence test is a conjunction — so a message that reported only
+            // the residual would read identically whether the residual was the
+            // binding constraint or merely along for the ride. Naming each unmet
+            // criterion is what lets a test assert the residual is genuinely one
+            // of them (`a-counter-is-not-a-gate`).
+            let mut unmet = Vec::new();
+            if profile_change > tolerance {
+                unmet.push(format!(
+                    "the liquid profile still moved {profile_change:.3e} against a tolerance \
+                     of {tolerance:.3e}"
+                ));
+            }
+            if temperature_change > tolerance {
+                unmet.push(format!(
+                    "the temperature profile still moved {temperature_change:.3e} (relative) \
+                     against a tolerance of {tolerance:.3e}"
+                ));
+            }
+            if residual > COMPONENT_RESIDUAL_KG_PER_S {
+                unmet.push(format!(
+                    "the worst per-component mass residual is {residual:.3e} kg/s against a \
+                     bound of {COMPONENT_RESIDUAL_KG_PER_S:.3e} kg/s"
+                ));
+            }
             // Fork 5: an `Err`, never a held previous profile. Holding one would
             // make the column's output depend on tick history, which destroys the
             // property that makes a column's reference a clean hand calculation.
             return Err(SimError::Numerical(format!(
-                "stage cascade did not converge in {iterations} iterations: worst \
-                 per-component mass residual {residual:.3e} kg/s against a bound of \
-                 {COMPONENT_RESIDUAL_KG_PER_S:.3e} kg/s (I7's 1e-6 kg over a 0.1 s tick). \
-                 The profile is not held over from a previous tick — a column's answer must \
-                 not depend on run length."
+                "stage cascade did not converge in {iterations} iterations: {}. The bound on \
+                 the residual is I7's own number — 1e-6 kg per component over a 0.1 s tick — \
+                 over this column's feed rate, not a figure chosen to pass. The profile is \
+                 not held over from a previous tick: a column's answer must not depend on run \
+                 length.",
+                unmet.join("; ")
             )));
         }
 

@@ -3060,6 +3060,136 @@ component's answer*: the two rules swap the mixture end for end, and both sum to
 1. The hand calc is the gate; the round trip catches a one-sided slip and a lost
 component, which is worth having and is not the same claim.
 
+#### Corrections from building it (M7.3, landed)
+
+The cascade is in: `StageCascade` in `solvers`, `CascadeSpec` and the stage-located
+`ColumnDraw` on `NodeKind::Column`, `thermo = "trouton"` and
+`separation = "cascade"` in the loader with the declared-iff-used correspondence
+in both directions, and all five gates. **No verdict moved.** Six things the note
+had wrong or unstated, three of them measurements.
+
+**1. `ConstantAlphaThermo` could not do the job it was written for — and the note
+says so in its own words.** M7.2 shipped it "so a separation gate can be written
+against cascade *algebra* with the correlation held out of it", and this section
+names that gate as family 1. Building family 1 falsified the claim. A stage's
+temperature IS its bubble point, `Σ_c K_c(T)·x_c = 1`, and with `T`-independent
+K-values that equation has **no root at all**: the left side does not depend on
+`T`. The M7.2 type could not have driven one stage.
+
+The fix is the narrowest one that keeps the claim true: an optional
+`K_c(T) = k_c·(T/T_ref)^n`. Relative volatility is `α_ij = k_i/k_j` for **any**
+`n`, because the scaling is shared by every component and cancels — so Fenske's
+`α^N` stays exact and no correlation enters. `n = 0` is bit-for-bit the shipped
+behaviour, which is why the M7.2 flash gates still compare with `assert_eq!`.
+
+The alternative considered and rejected: have the cascade *detect* a flat model
+and hold some deterministic convention, as `flash_isothermal` does for the
+all-`K = 1` case. It does not transfer. The flash's degenerate case is
+recognisable from the K vector alone; a missing bubble point is not — a detector
+cannot tell "K does not depend on `T`" from "the root is outside my bracket", and
+the second case is finite, deterministic, plausible and wrong. **A stage whose
+bubble-point equation has no root in the bracket is an `Err` naming the model**,
+and the flat model reaching that arm is a gate of its own.
+
+**2. Fenske cannot be evaluated AT total reflux under fork 3's own
+specification, so the gate is a limit plus a bound.** Total reflux is `D = 0`,
+`R = ∞`, `F = 0` — not expressible by ratios, and not a well-posed
+boundary-value problem either (the profile is then determined only up to scale),
+which is why the textbook states Fenske as a *limiting* relation. The gate the
+ROADMAP calls "exact, derivable" therefore lands as two claims:
+
+- **`ratio ≤ α^N` at every `N` and every `R`, exactly.** Non-asymptotic, and it is
+  the half that polices correction 3's stage convention: a cascade that
+  *under*-counted would be claiming `α^(N+1)` and would breach the bound by a
+  whole factor of `α`.
+- **First order in `1/R`.** At finite reflux `y_{j+1} = (R·x_j + x_D)/(R+1)`, which
+  differs from the total-reflux `y_{j+1} = x_j` by `O(1/R)`, so doubling `R` must
+  halve the error. Gating the error *ratio* is sharper than any single tolerance
+  at one large `R`, and it catches the *over*-counted convention, where the limit
+  would be `α^(N−1)`, the error would stall near `1 − 1/α`, and the halving ratios
+  would go to 1 instead of 2.
+
+**Measured before the assertion was written**, per
+`integrator-order-of-convergence`. Sweeping `R` from 40 to 20480 at
+`N ∈ {2, 3, 5, 10}`, the halving ratio reaches 2 in different places: `N = 2` is
+asymptotic from about `R = 160`, `N = 5` only from about `R = 320`, and **`N = 10`
+is still at 1.95 at `R = 20480`** — the compounding over stages pushes the
+asymptotic window out faster than `N` grows. So the order gate runs on
+`N ∈ {2, 3, 5}` over `R ∈ [320, 5120]`, and the tall column is asserted on the
+bound and the direction only, said out loud in the test rather than quietly
+dropped.
+
+**3. The stiff case is a PINCH, and it is not the coupling correction 1
+introduced.** Successive substitution converges linearly here, and the iteration
+cap had to be measured rather than guessed. A 10-stage, `α = 4`, `R = 5` binary
+at `D/F = 0.35` converges in **20** passes; the same column at `D/F = 0.5` needs
+about **1300**. The reason is physical: at that ratio the distillate is asked for
+*exactly* the light component the feed contains, so the specification sits on a
+pinch and both products approach purity. The obvious suspect was correction 1's
+`M̄_D` coupling — and it is not: repeating the measurement on a slate whose two
+cuts have **equal molar mass** gives the same two numbers, 20 and 1300. The cap is
+set above the stiff case.
+
+**4. The bottoms-rate guard is not about reflux, and it exists only because
+`D/F` is a mass ratio.** The first attempt to reach it used a large reflux ratio,
+on the reasoning that a hard-boiling column runs its reboiler dry. The algebra
+refutes that: `V − L = D` telescopes through the column, so `B = F − D − Σ S` and
+**no reflux ratio can dry the reboiler**. Nor can a converged split, since every
+kilogram out came from a kilogram in and so the moles out cannot exceed the moles
+in. What reaches the guard is an *iterate* outside the physical region, and only
+because the draw ratios are MASS ratios: a distillate rich in light cuts can have
+a mean molar mass small enough that half the feed's mass is more than all of its
+moles. Found by search after the first version of its test failed to fire, which
+is `a-void-mutation-looks-like-a-catch` in the shape of a guard rather than a
+mutation.
+
+**5. M7.1's correction 4 is discharged in `solvers`, not in `core`.** That
+correction predicted a cascade would "solve on the zero and fail with a worse
+message before the guard that names the cause is ever reached", and it is exactly
+right: `separate` is called *inside* `resolve_node_states`, while
+`Engine::tick`'s reverse-feed refusal fires after the sweep. The fix is a guard in
+the cascade whose message names the cause and points at the engine's own. Nothing
+in `core` moved — the same reachability argument `reachability-decides-which-rule-wins`
+records, applied to a message rather than a panic.
+
+**6. The per-component residual had to be made *visibly* binding, or fork 4's
+"gate, not a counter" would have been unearned.** The convergence test is a
+conjunction of three criteria, so a failure message reporting only the residual
+reads identically whether the residual was the binding constraint or merely along
+for the ride — and a test asserting the message mentions a residual would pass
+either way. The message names **each unmet criterion** instead, and the gate
+asserts the residual is among them.
+
+Two smaller things, recorded because they are decisions rather than
+consequences. The draws report their **real tray temperatures** now rather than
+waiting for M7.4: the cascade solves the profile anyway (a K-value needs a
+temperature), so filling `DrawSeparation::temperature` costs nothing and returning
+the feed temperature would be a number this model knows to be wrong — M7.4 is left
+with only the reader. And both **duties stay `Watt::ZERO`**, because `Q_reb` is
+mostly latent and `Δh_vap` is M7.4's box; unlike the splitter's zero that is a gap
+rather than the honest answer, and the two are documented differently so nobody
+reads across.
+
+**And the measurement 5a promised.** M7.2 argued its bit-identity was structural
+rather than measured, and said the measurement comes back when `"trouton"` becomes
+selectable. It came back: all twelve scenarios, 300 ticks, every snapshot,
+**byte-identical** against `5b1a71b`. The new `Option` fields on `ColumnDraw` and
+`NodeKind::Column` carry `skip_serializing_if`, so a cut-point column's serialized
+shape is unchanged too — which was the reason to add fields rather than replace
+`upper_cut` with a sum type.
+
+**What the mutation pass found.** Seven mutations, each verified to compile.
+Reading K at the wrong stage, folding the condenser with `V` instead of `L`,
+treating `D/F` as molar, taking the distillate as stage 1's *liquid* rather than
+its condensed vapour, and letting a draw not leave its stage were each caught by
+five or six gates. Loosening the residual bound by 10⁴ was caught by exactly one —
+the wired plant's own per-component balance, which computes the check itself
+rather than trusting the solver's number. The seventh was **not caught, and must
+not be**: seeding the profile at the feed's resolved temperature instead of its
+bubble point is a different *start*, and fork 5's whole claim is that the start
+does not change the fixed point. That mutation surviving is the start-insensitivity
+gate working.
+
 #### Deferred from M7, with what would un-defer each
 
 - **Tray hydraulics** — pressure drop per tray, weeping, flooding. Un-defers the

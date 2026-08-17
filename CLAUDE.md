@@ -153,13 +153,27 @@ M1–M6 are closed: flow network, heat, crude + simple column, reactor, gas and
 pressure realism, and damage + the Godot frontend. **M7 (complex column, stage
 cascade) is in progress**: the design note is landed (DESIGN §5, "Complex column
 (M7)"), **M7.1 is done** (the `SeparationModel` seam, with `CutPointSplitter` in
-`solvers` and every scenario byte-identical) and **M7.2 is done** —
-`ThermoModel::k_value`, `TroutonThermo` and `ConstantAlphaThermo`, the
-`MoleFractions` boundary, and the Rachford–Rice single-stage flash. M7.3–M7.4 are
-open boxes in ROADMAP. The note's verdicts are decisions, not results — building
-M7.1 corrected its call shape and M7.2 corrected its signature and its gate
-structure, as every earlier milestone's note was corrected.
+`solvers` and every scenario byte-identical), **M7.2 is done**
+(`ThermoModel::k_value`, `TroutonThermo` and `ConstantAlphaThermo`, the
+`MoleFractions` boundary, and the Rachford–Rice single-stage flash), and **M7.3
+is done** — `StageCascade` in `solvers`, `CascadeSpec` and stage-located
+`ColumnDraw`s on `NodeKind::Column`, and `thermo = "trouton"` /
+`separation = "cascade"` selectable from a scenario. **M7.4 is the open box.**
+The note's verdicts are decisions, not results — M7.1 corrected its call shape,
+M7.2 its signature and gate structure, and M7.3 found that the constant-α model
+M7.2 shipped *for* the cascade could not have driven one stage of it.
 
-Nothing selects `TroutonThermo` from a scenario yet: `[fidelity] thermo` accepts
-only `"constant"` until M7.3, because until the cascade reads a K-value the
-choice would change no number.
+A cascade column is specified by ratios only: `reflux_ratio` (molar, internal)
+plus one `draw_ratio` per draw (a **mass** fraction of the feed, with the bottoms
+left over). An absolute product rate in kg/s is inadmissible — it re-runs the
+failure that killed M3.2's prescribed-draw column. `N` counts the reboiler and
+excludes the total condenser.
+
+The two separation fidelities carry mutually exclusive config, enforced at load in
+both directions: `up_to_c` + `smearing_k` are the splitter's, `stage` +
+`draw_ratio` + `phase` + `[cascade]` are the cascade's. Adding a knob to one means
+refusing it on the other.
+
+Duties are still `Watt::ZERO` at the cascade fidelity — they need `Δh_vap`, which
+is M7.4. Draw temperatures are real tray temperatures already, but nothing reads
+them until M7.4 wires `edge_temperature_at`'s column arm.

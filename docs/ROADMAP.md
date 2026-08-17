@@ -2528,36 +2528,52 @@ range for n-hexane, and **~60% high on water** at 50 °C. The crude slate is
 hydrocarbons; the water figure is recorded because the default one-component
 slate is water.
 
-### M7.3 — The cascade
+### M7.3 — The cascade ✅
 
-- [ ] `solvers`: `StageCascade` — N equilibrium stages, feed stage, total
-      condenser, reboiler; constant molar overflow first, so the *profile* needs
+- [x] `solvers`: `StageCascade` — N equilibrium stages, feed stage, total
+      condenser, reboiler; constant molar overflow, so the *profile* needs
       K-values only and no enthalpy. **`N` counts the reboiler and excludes the
       total condenser** (note correction 3 — the convention the Fenske gate's
       exponent rests on). Specified by `R` (molar, internal) and `D/F` (a **mass**
       ratio at the boundary, note correction 1), with a **saturated-liquid feed
-      only** (correction 5: under constant molar overflow, feed quality changes
-      the internal flows, not just an enthalpy term).
-- [ ] `core`/`scenarios`: cascade config on `NodeKind::Column` under the
-      declared-iff-used correspondence; `ColumnDraw` located by **stage** for
-      this fidelity and by `upper_cut` for the splitter, each refused for the
-      other. Load-time refusal of partial condenser and vapour side draw, each
-      message naming fork 0's narrowed deferral.
-- [ ] `scenarios`: the two things M7.2 deliberately left at this arm. Add
-      `thermo = "trouton"` — held back because until the cascade reads a K-value,
-      selecting it changes no number in any plant, which is the vacuous knob M7.1
-      measured on `smearing_k`. And refuse the pairing it makes possible,
-      `separation = "cascade"` with `thermo = "constant"`, **at load**: today
-      `ConstantThermo::k_value` returns `Err` and a unit test is the only thing
-      that reaches it, so a mis-paired plant would fail on its first tick instead
-      of when it is read.
-- [ ] Gates: **Fenske at total reflux** (`(x_D/(1−x_D))·((1−x_B)/x_B) = α^N`,
-      exact, derivable — no published table needed), one stage reducing to the
-      M7.2 flash, `α = 1` producing no separation at any `N` (the null gate), the
-      per-component residual `Err` reached deliberately, and start-insensitivity
-      from a perturbed seed. The exact identities in M7.2 **cannot** detect a
-      wrong Trouton constant even in principle (note correction 4), so the
-      envelope is the only gate that can — they stay separate tests.
+      only** (correction 5). Wang–Henke's bubble-point form: one Thomas sweep per
+      component through the tridiagonal stage balances at fixed K, then a bubble
+      point per stage, alternating to a fixed point. The total condenser folds
+      into stage 1 (`x_0 = y_1 = K_1·x_1`), which is *why* it is not a stage —
+      there is no row for it.
+- [x] `core`/`scenarios`: `CascadeSpec` on `NodeKind::Column` and `stage` /
+      `draw_ratio` / `phase` on `ColumnDraw`, all `Option` + `skip_serializing_if`
+      so a cut-point column's serialized shape is untouched. The
+      declared-iff-used correspondence runs in **both** directions — a cascade
+      column may not carry `up_to_c` or `smearing_k`, a cut-point column may not
+      carry `stage`, `draw_ratio`, `phase` or a `[cascade]` block. Partial
+      condenser and vapour side draw are refused at load, each naming fork 0's
+      narrowed deferral; both are things a **file can say**, because a refusal of
+      something the format cannot express is not a refusal.
+- [x] `scenarios`: `thermo = "trouton"` is selectable, and
+      `separation = "cascade"` with `thermo = "constant"` is refused **at load** —
+      including when the key is merely omitted, since `constant` is the default
+      and no file in this repo mentions it.
+- [x] Gates: **Fenske as a limit plus an exact bound** (see note correction 2 —
+      total reflux is not expressible under fork 3's ratio-only spec, so the gate
+      is `ratio ≤ α^N` everywhere plus first-order approach in `1/R`, with the
+      asymptotic window measured first), one stage at `R = 0` reducing to the M7.2
+      flash, `α = 1` producing no separation at any `N`, the per-component
+      residual `Err` reached deliberately *and shown to be the binding criterion*,
+      and start-insensitivity from a perturbed seed. Plus the refusals: fifteen of
+      them, each reached by a test.
+
+**Landed 2026-08-17.** Six corrections in DESIGN §5, three of them measurements:
+`ConstantAlphaThermo` could not have driven one cascade stage (a `T`-independent K
+has no bubble point) and gained an optional temperature scaling that leaves `α`
+untouched; Fenske's asymptotic window is `N`-dependent and `N = 10` never reaches
+it at any reflux worth solving at; the stiff case is a *pinch* (`D/F` at the feed's
+own light fraction — 20 passes against 1300) and **not** correction 1's molar-mass
+coupling, which was ruled out by re-measuring on an equal-molar-mass slate. Twelve
+scenarios byte-identical over 300 ticks, which is the measurement M7.2's
+correction 5a said would come back. Seven mutations, six caught; the seventh —
+seeding at the feed temperature rather than its bubble point — survives on purpose,
+because fork 5's claim is that the start cannot change the fixed point.
 
 ### M7.4 — Duties, tray temperatures, and the demo
 
