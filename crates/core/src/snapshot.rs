@@ -60,6 +60,20 @@ pub struct NodeSnapshot {
     /// value, or a zero-volume node's mixed inflow temperature. NaN before the
     /// first tick, like `pressure_pa`.
     pub temperature_k: f64,
+    /// External heat forced onto this node [W] — the damage model's fire, set
+    /// by [`Command::SetHeatInput`] and by nothing else.
+    ///
+    /// **This is `node.heat_input`, deliberately NOT `energy::heat_load()`.**
+    /// That function returns the fire PLUS the node's own unit term — a
+    /// furnace's duty, a cooler's negative duty, a tank's ambient exchange —
+    /// and reporting the sum here would show every furnace in every scenario
+    /// as being on fire. A furnace doing its job and a furnace with a fire on
+    /// it are different states, and this field is the one that tells them
+    /// apart. The operating setpoints stay where they already are, on `kind`.
+    ///
+    /// Real from load, not NaN before the first tick: it is a *stored*
+    /// quantity, like a tank's temperature, not a *solved* one.
+    pub heat_input_w: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

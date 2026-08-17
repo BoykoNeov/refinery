@@ -698,6 +698,10 @@ impl Engine {
                         .temperature
                         .get(&id)
                         .map_or(f64::NAN, |t| t.value()),
+                    // The raw field, not `energy::heat_load(n)` — see
+                    // `NodeSnapshot::heat_input_w` for why the sum would be
+                    // the wrong number to report.
+                    heat_input_w: n.heat_input.value(),
                 }
             })
             .collect();

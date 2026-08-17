@@ -2495,6 +2495,31 @@ not have); feed-quality dependence of the constants; and any second lump slate �
   commands return Err without mutating. `#[serde(tag = "cmd")]`, so the variant
   names and field names are a frontend contract: see §3b before renaming one.
 
+**Every command must have a reported consequence, and the fire did not.**
+Found while building the M6.2 scene. `Command::SetHeatInput` worked — the
+energy balance read `node.heat_input` and the temperature responded — but no
+snapshot field carried it, so a frontend could infer a fire from a rising
+temperature or remember having sent the command, and could not read the
+engine's own answer. `EdgeSnapshot::leak_mass_flow` exists for exactly the
+analogous question about the leak, which is what makes the asymmetry an
+oversight rather than a decision. It is also M6.0's defect with the direction
+reversed: there, a field nothing consumed; here, a field nothing reported. A
+scene drawing flames from its own memory keeps drawing them after a reload or
+a refused command — a picture of what the frontend did, not of what the engine
+holds. `NodeSnapshot::heat_input_w` closes it.
+
+**The trap in closing it.** `energy::heat_load(node)` — the function every
+consumer of "how much heat enters this node" already calls — returns the fire
+PLUS the node's own unit term: a furnace's duty, a cooler's negative duty, a
+tank's ambient exchange. Reporting that sum is the obvious implementation and
+would show every furnace in every scenario as on fire. The field is
+`node.heat_input`, the damage hook alone; operating setpoints stay on `kind`
+where they already are, and a fire on a furnace *stacks* rather than replacing
+it. Gated in `scenarios/tests/fire_reporting.rs`, whose ambient arm builds its
+plant inline because **no scenario in the repo sets a nonzero tank
+`ambient_ua_w_per_k`** — an arm written against the existing files would report
+zero for the right reason and pass for the wrong one.
+
 ## 8. Godot integration (M6)
 
 `godot-ext` (gdext crate) exposes a `RefinerySim` node: `load_scenario(path)`,
