@@ -2253,6 +2253,14 @@ tests pass.
 godot --headless --path . --quit-after 5000 -- --auto
 ```
 
+`--auto` runs the scripted timeline; the run ends itself at t=350 by calling
+`quit()`. **`--quit-after 5000` is a hang guard only, not the length** — it
+counts main-loop iterations, which are not engine ticks (600 of them reached
+only t≈200 when this was first tried), so changing that number does not change
+what the demo does. Without `--auto` the scene waits for the P / F / R keys
+instead, and without the guard a scene whose script failed to parse never
+quits at all — which is how it was first found.
+
 ```
 Initialize godot-rust (API v4.7.stable.official, runtime v4.7.stable.official, safeguards strict)
 plant: loaded res://scenarios/leaking_line.toml
@@ -2305,7 +2313,14 @@ godot --headless --path . --editor --quit     # writes .godot/extension_list.cfg
 ```
 
 Skip either and the failure names something else entirely — see the two
-failures above.
+failures above. **Validated from a wiped `.godot/`**, in that order, against
+the project as committed — not assumed from the state this milestone happened
+to leave behind: the same `t=` lines came back byte for byte, and the three
+committed `.uid` files were regenerated identical rather than churning. The
+editor step **exits nonzero** (a Windows access violation on shutdown, after
+it has written the file). It is not this extension's: removing
+`refinery.gdextension` from the project entirely and wiping the cache
+reproduces the same crash.
 
 ### M6 closed
 

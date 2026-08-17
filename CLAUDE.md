@@ -106,9 +106,12 @@ what a *running* project loads extensions from. See the header comment in
 nothing relevant.
 
 ```
-godot --headless --path . --editor --quit                  # once, after cloning
-godot --headless --path . --quit-after 400 2>&1 | grep t=  # the M6.2 demo
+godot --headless --path . --editor --quit    # once, after cloning; exits nonzero
+godot --headless --path . -- --auto          # the M6.2 demo; ends itself at t=350
 ```
+
+The editor step's nonzero exit is a shutdown crash that happens with this
+extension removed too — ignore it, the file it writes is what matters.
 
 ## Testing philosophy
 

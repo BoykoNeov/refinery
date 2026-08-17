@@ -28,6 +28,13 @@
 ; every fresh clone starts in that state. (Measured, not guessed: it is exactly
 ; how the first smoke run failed.)
 ;
+; That editor step EXITS NONZERO here — a Windows access violation on
+; shutdown, after it has done its work. Ignore it: the file it writes is what
+; matters, and the crash is not this extension's. Reproduced with
+; refinery.gdextension moved out of the project entirely and the cache wiped,
+; which still crashes the same way — so it belongs to the editor or to the
+; GDAI plugin, and no amount of fixing here will change it.
+;
 ; THE `--target-dir` IS LOAD-BEARING, not tidiness. The crate builds as both
 ; `cdylib` and `rlib`, so a plain `cargo test --workspace` — the command every
 ; commit is required to run — rebuilds this same .dll with the `godot` feature
