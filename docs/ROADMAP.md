@@ -2444,9 +2444,12 @@ signature fork 2 settles. Nothing physical changes.
       hand-calculation tests with it.
 - [x] `scenarios`: `[fidelity] separation = "cut_point"`, defaulting to the
       value every pre-M7 file means, so those files stay bit-identical rather
-      than merely still-loading (the M5.2 `phase` default precedent). Pinned by a
-      test that compares the implicit file against an explicit one **bit for
-      bit**, not by one that checks it still loads.
+      than merely still-loading (the M5.2 `phase` default precedent). A test
+      compares the implicit file against an explicit `cut_point` one bit for bit —
+      **a marker, not yet a gate**: with exactly one valid value the two arms
+      cannot differ, and it only becomes discriminating when M7.3 adds the second.
+      What actually pins the default today is the scenario anchor below, since
+      every one of those files omits the key.
 - [x] Gate: **regression anchor** — every existing golden bit-identical,
       `crude_column.toml` included. This slice has no reference of its own; a new
       number here would mean the move was not a move.

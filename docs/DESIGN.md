@@ -2911,7 +2911,25 @@ all because it had the call shape wrong.
 **3. `Separation::draws` is checked against the column's draw list, not indexed
 into.** The two are parallel *by contract*, and a trait contract kept by an impl in
 another crate is exactly what rule 5 says not to trust with a `[]`. A model
-returning a short list now errors by name in both readers.
+returning a short list now errors by name in both readers — and because the only
+implementation in the workspace can never violate that contract, both guards were
+**unreachable by every existing test**. `solvers/tests/separation_contract.rs`
+breaks the contract on purpose with a stub returning one draw for a two-draw
+column, and each guard was verified by removing it and watching its test fail. A
+guard cited in a design note as satisfying rule 5 and never once run is the
+"a counter is not a gate" shape.
+
+**3a. Which readers actually traverse the column arm, stated because the
+threading suggests more than is reachable.** Seven functions gained the
+separations parameter, but the arm inside `edge_composition_at` fires only where a
+draw edge is read: `Engine::tick`'s transport loop and stream publish, and the
+tank inflow loop (`stream_cp_at` / `edge_temperature_at` / `edge_composition_at`
+on a product tank's inflow). It is **unreachable** through `inflow_totals`,
+`mix_inflows` and `exchange_pair`, because those resolve *zero-volume* nodes and
+the loader refuses a free node on a draw line — a draw's outlet must be a product
+store, so a draw edge is never an inflow to a swept node. That threading is
+therefore defensive: correct, compiled, and dormant until the day a draw is
+allowed to feed a junction. Stating it beats implying the anchor covered it.
 
 **4. The reverse-feed refusal stays in `Engine::tick`, and `ColumnPass::feed_flow`
 is `0` rather than negative under it.** The sweep's inflow sum is the column's feed
@@ -2929,10 +2947,14 @@ ticks and the entire suite green — except
 travelled from `core::energy` to `solvers::separation` with the code.
 
 The reason is arithmetic, not luck: **no component's boiling point lands inside a
-ramp anywhere in this repo.** `crude_column.toml` cuts at 458.15 K and 613.15 K
-with `smearing_k = 25.0` (so ramps of 445.65–470.65 K and 600.65–625.65 K) over a
-slate boiling at 353/423/493/573/673 K; the `column_reference` plant has the same
-shape. Every weight is clamped to 0 or 1, so **the demo column is a sharp splitter
+ramp in any of the three column plants this repo has** — checked one by one, not
+inferred from the mutation. `crude_column.toml` cuts at 458.15 K and 613.15 K with
+`smearing_k = 25.0` (so ramps of 445.65–470.65 K and 600.65–625.65 K) over a slate
+boiling at 353/423/493/573/673 K. `fcc_plant.toml` cuts at 293.15 K and 523.15 K
+with the same smearing (ramps 280.65–305.65 K and 510.65–535.65 K) over a slate
+boiling at 233.15/373.15/673.15/1173.15 K. The `column_reference` plant has the
+same shape: cuts at 150/250 °C over components boiling at 100/200/300 °C, every
+one at least 50 K clear of a 12.5 K half-width. Every weight is clamped to 0 or 1, so **the demo column is a sharp splitter
 and its `smearing_k = 25.0` currently changes no number in any output.** This is
 "a generated arm can be born vacuous" applied to a hand-written scenario.
 

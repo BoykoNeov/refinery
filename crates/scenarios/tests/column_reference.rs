@@ -951,6 +951,13 @@ diameter_m = 0.10
 /// `cut_point` explicitly, on the plant whose draws are computed by the model,
 /// and demands the draw streams agree BIT for bit. A default that parsed but
 /// selected something else would pass a load test and fail this one.
+///
+/// **Honest about its own strength: today this is a marker, not a gate.** With
+/// exactly one valid value, both arms reach the same match arm and the assertion
+/// cannot fail — it starts discriminating the moment M7.3 adds `cascade`, which is
+/// also the moment a wrong default would silently change every existing plant.
+/// What pins the default *now* is the twelve-scenario regression anchor, since
+/// every one of those files omits the key.
 #[test]
 fn the_default_separation_is_the_cut_point_splitter() {
     let implicit = source_column_plant(25.0, 0.10);
