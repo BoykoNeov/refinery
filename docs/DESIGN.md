@@ -2970,7 +2970,85 @@ the two fidelities are also most worth comparing.
 `build_engine` hardcodes `ConstantThermo`, so `thermo = "nonsense"` loads happily
 today. Every other fidelity string is validated with a list of valid names. M7.2
 needs that arm to exist anyway (it selects a K-value fidelity), so it is recorded
-against that box instead of widening this commit.
+against that box instead of widening this commit. *(Fixed in M7.2, on its own
+commit — see correction 2 below.)*
+
+#### Corrections from building it (M7.2, landed)
+
+The K-value is on `ThermoModel`, the flash is in `solvers`, the mole boundary is
+a type of its own, and the ignored `thermo` string is fixed. Three things the
+note had wrong or unstated, and two measurements — one of which says something
+the note's own correction 4 did not go far enough on.
+
+**1. The K-value names its component by INDEX, not by `&PseudoComponent`.** The
+ROADMAP wrote `k_value(component, T, P)`, which reads as the component itself,
+and for a correlation that is fine — Trouton needs only `tb`. The constraint
+comes from the *other* implementation. `ConstantAlphaThermo` carries one K per
+slate position and identifies a component by **position**, exactly as
+`SimpleLookup::fcc_demo(&slate)` resolves its lumps at construction; handed a
+`&PseudoComponent` it would have to look itself up by name on every call, per
+component per stage per tick. So the signature is
+`k_value(&Slate, usize, Kelvin, Pascal) -> Result<f64, SimError>`. This is the
+one part of the slice that would have been expensive to change later, because it
+is in `core` and correction 2 above is literally a note about churning this trait.
+
+**2. The loader arm and the fidelity it selects are two different slices, and
+only one of them belongs here.** M7.2's box said to give `[fidelity] thermo` a
+match arm "to select a K-value fidelity". Building it split the line in half. The
+arm itself is a **defect** — `thermo = "nonsense"` loaded a working plant — and
+landed on its own, before any new thermo existed. Making `"trouton"` *selectable*
+is a different act, and it is deferred to M7.3: nothing reads a K-value until the
+cascade does, so a scenario setting `thermo = "trouton"` today would change no
+number in any plant. That is precisely the vacuous knob M7.1 measured on
+`smearing_k` one section above, and adding a second one in the commit that
+records the first would be hard to defend.
+
+M7.3 therefore owes two things at that arm, not one: `"trouton"`, and the
+**load-time refusal of `separation = "cascade"` with `thermo = "constant"`**.
+Until then `ConstantThermo::k_value` returning `Err` is the only guard, and a
+unit test is the only thing that reaches it.
+
+**3. `ConstantThermo::k_value` refuses rather than returning 1.** Worth writing
+down because `K = 1` is the tempting answer and it is the workspace's recurring
+failure shape: finite, deterministic, plausible, wrong. A column running on it
+would separate nothing and read as a physics result rather than a missing model.
+
+**4. The measurement that extends correction 4: the envelope is blind too, over
+most of its range.** Correction 4 established that the exact identities cannot
+detect a wrong Trouton constant *even in principle*, so the envelope carries the
+whole load. Building the envelope showed the load is not carried evenly. Near the
+boiling point the Clausius–Clapeyron anchor pins `Psat` to `P_atm` **whatever the
+constant is**: at 342.69 K a constant wrong by ±30% lands at ratios of 1.007 and
+0.992 against the tabulation — inside any band the correct constant could pass.
+All the discriminating power lives at the **cold end** of the tabulated range,
+where the exponent has room to diverge (0.595 and 2.049 at 286.18 K).
+
+So the gate's sample range is load-bearing, not stylistic, and the reference test
+asserts *both* directions: that a wrong constant escapes the band at the cold end
+**and** that it hides near `tb`. A later slice narrowing the samples toward the
+boiling point — the obvious "simplification", since that is where the model is
+most accurate — would leave a green test that catches nothing.
+
+**5. The size of what one fitted constant costs, on the fluids that matter.**
+Correction 6 conceded that Trouton's constant is not slate data without saying
+how wrong it makes things. Measured against NIST's Antoine coefficients for
+n-hexane over their whole stated validity range: **within about 10%**, worst at
+the cold end, exact at the anchor by construction. On water it is about **60%
+high at 50 °C** — Trouton's rule is poorest for hydrogen-bonding fluids, whose
+true `Δs_vap` is nearer 109 than 88 J/(mol·K). A crude slate is hydrocarbons, so
+the hydrocarbon number is the relevant one; the water number is recorded because
+the workspace's one-component default slate *is* water, and a future reader
+flashing it should know what they are holding.
+
+**6. The mass ⇄ mole round trip is necessary and not sufficient, measured.** The
+note lists it as a gate of its own. It cannot catch the bug it exists for:
+writing `n ∝ w·M` instead of `w/M` in **both** directions round-trips exactly.
+Both mutations were run — one-sided fails the round trip, two-sided passes it and
+fails only a hand-computed mole-fraction vector. On a 50/50 mass mixture of
+components 2.75× apart in molar mass, the wrong rule returns *precisely the other
+component's answer*: the two rules swap the mixture end for end, and both sum to
+1. The hand calc is the gate; the round trip catches a one-sided slip and a lost
+component, which is worth having and is not the same claim.
 
 #### Deferred from M7, with what would un-defer each
 

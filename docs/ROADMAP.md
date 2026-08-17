@@ -2472,31 +2472,61 @@ boiling point lands inside a ramp in any scenario, so the demo column is a sharp
 splitter and its `smearing_k = 25.0` changes no number anywhere. M7.4's demo owes a
 cut inside a ramp.
 
-### M7.2 — K-values on `ThermoModel`, and the single-stage flash
+### M7.2 — K-values on `ThermoModel`, and the single-stage flash — **LANDED**
 
-- [ ] `core`: `ThermoModel` gains `k_value(component, T, P)`; the stub's own
-      docstring condition ("when a consumer actually needs a property") is now met.
-- [ ] `scenarios`: give `[fidelity] thermo` a match arm. Found while wiring
+- [x] `core`: `ThermoModel` gains `k_value(slate, component, T, P)`; the stub's
+      own docstring condition ("when a consumer actually needs a property") is now
+      met. The component is named by **index**, not by `&PseudoComponent` — the
+      deciding constraint is `ConstantAlphaThermo`, which identifies a component
+      by slate position (note correction 1 from building it).
+- [x] `scenarios`: give `[fidelity] thermo` a match arm. Found while wiring
       `separation` beside it in M7.1: the string is parsed and then ignored —
       `build_engine` hardcodes `ConstantThermo`, so `thermo = "nonsense"` loads
-      today, alone among the fidelity keys. This slice needs the arm anyway to
-      select a K-value fidelity, which is why M7.1 recorded it here rather than
-      widening a bit-identical commit.
-- [ ] `solvers`: Raoult + a Clausius–Clapeyron form whose `Δh_vap` comes from
+      today, alone among the fidelity keys. **Landed as its own commit**, before
+      any new thermo existed: it is an exposed defect, not part of the feature.
+      Selecting `"trouton"` is *not* part of it — see M7.3.
+- [x] `solvers`: Raoult + a Clausius–Clapeyron form whose `Δh_vap` comes from
       `tb` via Trouton — **one empirical constant on top of slate data** (note
       correction 6; the first framing of this line overclaimed), carrying a
       published envelope and an exact identity that does not depend on it. That
       is what distinguishes it from M4's refused case, which had a gate of
       neither kind. Constant-`α` implementation alongside it, for the cascade
-      gates to run against.
-- [ ] `solvers`: isothermal flash (Rachford–Rice) on one stage.
-- [ ] Gates, kept apart (one test covering both proves neither): the **exact**
+      gates to run against — deliberately **not** selectable from TOML, since its
+      K vector has no scenario representation.
+- [x] `solvers`: isothermal flash (Rachford–Rice) on one stage, plus the molar
+      basis it needs — `MoleFractions`, a solvers-local type, so that handing
+      mole fractions to a mass-basis property function does not typecheck
+      (DESIGN §5, fork 1).
+- [x] Gates, kept apart (one test covering both proves neither): the **exact**
       identities — `K = 1` at `T = tb` and reference pressure, monotone in `T`,
       heavier cut lower at fixed `T` — and separately the **magnitude**, an
       envelope against a vapour pressure actually read and labelled a regression
       lock, not validation. Plus the flash against a hand calc, and the
       **mass ⇄ mole round trip**, which is where M4.2's real crux (units, not the
       ODE) says the bug will be.
+
+**What building it settled** (DESIGN §5, "Corrections from building it (M7.2,
+landed)"). In plain terms, three things a later slice needs:
+
+The exact identities run at **three** Trouton constants, two of them wrong by
+±30%, and pass at all three — so the note's claim that they cannot police the
+constant is now a test rather than an argument. The envelope carries that load
+alone, and it turns out to carry it **unevenly**: near the boiling point the
+correlation's own anchor hides a wrong constant (±30% gives ratios of 1.007 and
+0.992 against the tabulation), and all the discriminating power is at the cold
+end of the tabulated range. The reference test asserts both halves, so a later
+"simplification" of the sample range cannot silently void it.
+
+The **mass ⇄ mole round trip cannot catch an inverted conversion** — `n ∝ w·M`
+in both directions closes exactly. Measured, not assumed: the one-sided mutation
+fails the round trip and the two-sided one passes it, failing only the
+hand-computed mole-fraction vector. The round trip stays as a gate for one-sided
+slips; the hand calc is what pins the rule.
+
+Trouton's rule sizes out at **~10% on a hydrocarbon** over NIST's whole stated
+range for n-hexane, and **~60% high on water** at 50 °C. The crude slate is
+hydrocarbons; the water figure is recorded because the default one-component
+slate is water.
 
 ### M7.3 — The cascade
 
@@ -2513,6 +2543,14 @@ cut inside a ramp.
       this fidelity and by `upper_cut` for the splitter, each refused for the
       other. Load-time refusal of partial condenser and vapour side draw, each
       message naming fork 0's narrowed deferral.
+- [ ] `scenarios`: the two things M7.2 deliberately left at this arm. Add
+      `thermo = "trouton"` — held back because until the cascade reads a K-value,
+      selecting it changes no number in any plant, which is the vacuous knob M7.1
+      measured on `smearing_k`. And refuse the pairing it makes possible,
+      `separation = "cascade"` with `thermo = "constant"`, **at load**: today
+      `ConstantThermo::k_value` returns `Err` and a unit test is the only thing
+      that reaches it, so a mis-paired plant would fail on its first tick instead
+      of when it is read.
 - [ ] Gates: **Fenske at total reflux** (`(x_D/(1−x_D))·((1−x_B)/x_B) = α^N`,
       exact, derivable — no published table needed), one stage reducing to the
       M7.2 flash, `α = 1` producing no separation at any `N` (the null gate), the

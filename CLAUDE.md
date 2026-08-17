@@ -152,7 +152,14 @@ See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 M1–M6 are closed: flow network, heat, crude + simple column, reactor, gas and
 pressure realism, and damage + the Godot frontend. **M7 (complex column, stage
 cascade) is in progress**: the design note is landed (DESIGN §5, "Complex column
-(M7)") and **M7.1 is done** — the `SeparationModel` seam, with `CutPointSplitter`
-in `solvers` and every scenario byte-identical. M7.2–M7.4 are open boxes in
-ROADMAP. The note's verdicts are decisions, not results — building M7.1 already
-corrected its call shape, as every earlier milestone's note was corrected.
+(M7)"), **M7.1 is done** (the `SeparationModel` seam, with `CutPointSplitter` in
+`solvers` and every scenario byte-identical) and **M7.2 is done** —
+`ThermoModel::k_value`, `TroutonThermo` and `ConstantAlphaThermo`, the
+`MoleFractions` boundary, and the Rachford–Rice single-stage flash. M7.3–M7.4 are
+open boxes in ROADMAP. The note's verdicts are decisions, not results — building
+M7.1 corrected its call shape and M7.2 corrected its signature and its gate
+structure, as every earlier milestone's note was corrected.
+
+Nothing selects `TroutonThermo` from a scenario yet: `[fidelity] thermo` accepts
+only `"constant"` until M7.3, because until the cascade reads a K-value the
+choice would change no number.
