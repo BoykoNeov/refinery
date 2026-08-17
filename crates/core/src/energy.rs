@@ -39,7 +39,7 @@
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{ColumnDraw, EdgeId, NodeId, NodeKind, PlantGraph};
-use crate::traits::ReactionModel;
+use crate::traits::{ColumnPass, ReactionModel, Separation, SeparationModel, ThermoModel};
 use crate::units::{JPerKg, JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -304,19 +304,28 @@ fn upwind_end(graph: &PlantGraph, edge: EdgeId, mass_flow: f64) -> NodeId {
 ///
 /// A **column is the exception**: it is the first node whose outlets do NOT all
 /// carry its own composition. When the upwind node is a `Column` and this edge is
-/// one of its draws, the crossing composition is that draw's *cut* composition —
-/// `energy::column_separation` applied to the column's resolved (feed) mix — not
-/// the feed itself. This function is therefore the single owner of "which draw am
-/// I", the same way `edge_temperature_at` owns "which end am I". The result is
-/// `Cow`: borrowed from the map in the ordinary case, owned for a computed draw.
+/// one of its draws, the crossing composition is that draw's *cut* composition,
+/// read out of `separations` — the single pass the `SeparationModel` made over
+/// this column when the sweep resolved it. This function is therefore the single
+/// owner of "which draw am I", the same way `edge_temperature_at` owns "which end
+/// am I". The result is `Cow`: borrowed either way, from whichever map holds it.
+///
+/// **It reads a stored result rather than calling the model, and that is the
+/// shape of the M7.1 seam.** Calling `separate` here would run it once per draw
+/// edge per reader — the mistake the reactor note names explicitly for `react` —
+/// which at the cut-point fidelity only wastes work, but at M7.3 would re-solve a
+/// stage cascade four times over and give the column's two duties nowhere to
+/// live. So the model runs once per column per tick in the sweep, and its result
+/// travels to both consumers through `NodeStates`.
 ///
 /// # Errors
-/// `SimError::Numerical` if the upwind node's composition is unresolved (rule 5:
-/// returned rather than indexed so a sweep-ordering bug cannot panic), if a
-/// column's draw cannot be matched to this edge, or if separation fails.
+/// `SimError::Numerical` if the upwind node's composition is unresolved, if a
+/// column's separation is missing from `separations`, or if a column's draw
+/// cannot be matched to this edge — all returned rather than indexed, so a
+/// sweep-ordering bug cannot panic (rule 5).
 pub fn edge_composition_at<'a>(
     graph: &PlantGraph,
-    slate: &Slate,
+    separations: &'a BTreeMap<NodeId, Separation>,
     composition: &'a BTreeMap<NodeId, Composition>,
     edge: EdgeId,
     mass_flow: f64,
@@ -330,17 +339,28 @@ pub fn edge_composition_at<'a>(
         ))
     })?;
 
-    if let NodeKind::Column {
-        draws, smearing, ..
-    } = &graph.node(upwind).kind
-    {
+    if let NodeKind::Column { draws, .. } = &graph.node(upwind).kind {
         // The upwind node is a column, so this edge leaves it: it must be a draw.
-        // Its cut composition is a function of the resolved feed mix (`feed`)
-        // alone — no tick history, which is what makes the reference a clean hand
-        // calc (DESIGN §5).
         let draw = draw_index_for_edge(graph, edge, upwind, draws)?;
-        let separation = column_separation(slate, feed, draws, *smearing)?;
-        return Ok(Cow::Owned(separation[draw].composition.clone()));
+        let separation = separations.get(&upwind).ok_or_else(|| {
+            SimError::Numerical(format!(
+                "internal: column '{}' has no separation for this tick — the sweep \
+                 resolves every column before anything downstream of it reads a draw",
+                graph.node(upwind).name
+            ))
+        })?;
+        // Indexed through `get`, not `[]`: `separation.draws` is parallel to the
+        // column's own draw list BY CONTRACT, and a trait contract held by an impl
+        // in another crate is exactly what rule 5 says not to trust with a panic.
+        let cut = separation.draws.get(draw).ok_or_else(|| {
+            SimError::Numerical(format!(
+                "separation model returned {} draws for column '{}', which has {}",
+                separation.draws.len(),
+                graph.node(upwind).name,
+                draws.len()
+            ))
+        })?;
+        return Ok(Cow::Borrowed(&cut.composition));
     }
 
     Ok(Cow::Borrowed(feed))
@@ -374,131 +394,28 @@ fn draw_index_for_edge(
         })
 }
 
-/// The mass fraction of a component boiling at `tb` that lands on the HEAVY side
-/// of a cut point at `cut` [K], given a `smearing` ramp width [K].
+/// The total mass entering `column` this tick [kg/s] — its feed.
 ///
-/// A linear ramp centred on the cut: `0` a half-width below, `0.5` exactly at the
-/// cut, `1` a half-width above. `smearing = 0` is the sharp splitter — a step,
-/// with a component boiling exactly on the boundary shared evenly. The `s <= 0`
-/// branch also guards the `(tb − cut)/s` divide that the sharp case would hit.
-fn cut_fraction_above(tb: f64, cut: f64, smearing: f64) -> f64 {
-    if smearing <= 0.0 {
-        if tb < cut {
-            0.0
-        } else if tb > cut {
-            1.0
-        } else {
-            0.5
-        }
-    } else {
-        ((tb - cut) / smearing + 0.5).clamp(0.0, 1.0)
-    }
-}
-
-/// One draw's separation result: the fraction of the feed mass it takes and the
-/// composition that fraction carries.
-#[derive(Debug, Clone)]
-pub struct DrawSeparation {
-    /// `splitᵢ = Σ_c f_feed,c · w_ic` — the mass fraction of the feed to draw i.
-    pub split: f64,
-    /// `comp_i,c = f_feed,c · w_ic / splitᵢ` — draw i's composition.
-    pub composition: Composition,
-}
-
-/// Split a column feed into its draws by boiling range (DESIGN §5).
+/// The sum of its INFLOW edges, which is the feed alone: `network::edge_flows`
+/// guards every draw edge to zero in the solve, and the real draw flows are
+/// written back only after this sweep has run. So no draw can be counted as
+/// feed here even when its stored direction runs into the column.
 ///
-/// The single owner of the separation math: `edge_composition_at` calls it for a
-/// draw's composition, and `Engine::tick` calls it for the draw *flows*, so the
-/// two cannot disagree about how the feed is divided — which is exactly what
-/// per-component conservation at the column requires.
-///
-/// For each draw `i` a component `c` gets a weight `w_ic` from a ramp across the
-/// cut points; the split and per-draw composition are
-///
-/// ```text
-/// splitᵢ    = Σ_c f_feed,c · w_ic
-/// comp_i,c  = f_feed,c · w_ic / splitᵢ
-/// ```
-///
-/// **`Σᵢ w_ic = 1` holds by construction, not by luck.** Writing draw `i`'s
-/// weight as a difference of cumulative "fraction below cut" terms telescopes:
-/// `w_0 = 1 − h₀`, `w_i = h_{i−1} − h_i`, `w_{last} = h_{last−1}`, summing to 1
-/// for every component. With cut temperatures strictly increasing, each `h_{i−1}
-/// ≥ h_i` pointwise, so every weight is non-negative without a clamp. The splits
-/// are then normalized defensively so `Σᵢ splitᵢ = 1` to machine precision — the
-/// identity that makes the column mass-neutral and (via M3.1's linearity, since
-/// `Σᵢ splitᵢ·cpᵢ = cp_feed`) energy-neutral both.
-///
-/// A draw whose band catches no feed component has `splitᵢ = 0`; it carries the
-/// feed composition as an inert placeholder (its flow will be zero), never a
-/// divide-by-zero.
-///
-/// # Errors
-/// `SimError::Numerical` if a computed draw composition is not a valid
-/// composition (should not happen for a valid feed, but checked rather than
-/// unwrapped — rule 5).
-pub fn column_separation(
-    slate: &Slate,
-    feed: &Composition,
-    draws: &[ColumnDraw],
-    smearing: Kelvin,
-) -> Result<Vec<DrawSeparation>, SimError> {
-    let n = draws.len();
-    let s = smearing.value();
-    let f = feed.fractions();
-
-    // Cumulative "fraction of a component at or below draw i's upper cut". The
-    // heaviest draw (`upper_cut = None`) is the open catch-all: everything is at
-    // or below +∞, so its cumulative is 1.
-    let cumulative_below = |i: usize, tb: f64| -> f64 {
-        match draws[i].upper_cut {
-            Some(cut) => 1.0 - cut_fraction_above(tb, cut.value(), s),
-            None => 1.0,
-        }
-    };
-
-    let mut result: Vec<DrawSeparation> = Vec::with_capacity(n);
-    for i in 0..n {
-        let mut weights = vec![0.0; slate.len()];
-        let mut split = 0.0;
-        for (c, &fc) in f.iter().enumerate() {
-            let tb = slate.get(c).tb.value();
-            let c_i = cumulative_below(i, tb);
-            let c_prev = if i == 0 {
-                0.0
-            } else {
-                cumulative_below(i - 1, tb)
-            };
-            let w_ic = c_i - c_prev; // ≥ 0 since cuts increase ⇒ c_i ≥ c_prev
-            let contribution = fc * w_ic;
-            weights[c] = contribution;
-            split += contribution;
-        }
-        let composition = if split > 0.0 {
-            Composition::from_weights(&weights).map_err(|e| {
-                SimError::Numerical(format!(
-                    "column draw {i} produced no valid composition: {e}"
-                ))
-            })?
-        } else {
-            // Inert draw: no feed component in its band. Its flow is zero, so the
-            // placeholder is never carried anywhere; the feed keeps it finite.
-            feed.clone()
-        };
-        result.push(DrawSeparation { split, composition });
-    }
-
-    // Defensive normalization: the telescoping sum is 1 in exact arithmetic, so
-    // this only removes float drift, but it is what the DESIGN note names as the
-    // mechanism that *enforces* `Σ splitᵢ = 1` rather than hoping for it. Guarded
-    // against an all-zero feed band that no valid composition can produce.
-    let total: f64 = result.iter().map(|d| d.split).sum();
-    if total > 0.0 {
-        for d in &mut result {
-            d.split /= total;
-        }
-    }
-    Ok(result)
+/// A column running BACKWARDS has no inflow at all and reports `0` rather than a
+/// negative number. `Engine::tick` owns that refusal (its message names the
+/// cause) and fires it after the sweep; this value only reaches a
+/// `SeparationModel`, and the splitter does not read it.
+fn column_feed_flow(
+    graph: &PlantGraph,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    column: NodeId,
+) -> KgPerSec {
+    KgPerSec(
+        inflow_edges(graph, edge_mass_flow, column)
+            .iter()
+            .map(|(_, _, into_node)| *into_node)
+            .sum(),
+    )
 }
 
 /// The temperature at which fluid crosses `node`'s boundary along `edge` [K].
@@ -542,6 +459,7 @@ pub fn edge_temperature_at(
     slate: &Slate,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
+    separations: &BTreeMap<NodeId, Separation>,
     edge: EdgeId,
     mass_flow: f64,
     dissipation: Watt,
@@ -562,7 +480,7 @@ pub fn edge_temperature_at(
     // The cp of what is IN the pipe this tick — the upwind node's resolved
     // composition, not the pipe's stored copy of last tick's. See
     // `stream_cp_at` for why the difference is not cosmetic.
-    let cp = stream_cp_at(graph, slate, composition, edge, mass_flow)?;
+    let cp = stream_cp_at(graph, slate, separations, composition, edge, mass_flow)?;
     Ok(pipe_outlet_temperature(
         inlet,
         pipe.ambient_ua,
@@ -596,11 +514,12 @@ pub fn edge_temperature_at(
 pub fn stream_cp_at(
     graph: &PlantGraph,
     slate: &Slate,
+    separations: &BTreeMap<NodeId, Separation>,
     composition: &BTreeMap<NodeId, Composition>,
     edge: EdgeId,
     mass_flow: f64,
 ) -> Result<JPerKgK, SimError> {
-    Ok(edge_composition_at(graph, slate, composition, edge, mass_flow)?.mixture_cp(slate))
+    Ok(edge_composition_at(graph, separations, composition, edge, mass_flow)?.mixture_cp(slate))
 }
 
 /// Total heat delivered into a node [W]: external heat, plus the operating duty
@@ -878,6 +797,22 @@ pub struct NodeStates {
     /// only place feed, `T_in`, products and `Δh_rxn` are all in hand). Empty for
     /// a network with no reactor. See `ReactorDuty` and `reactor_duty`.
     pub reactor_duty: BTreeMap<NodeId, ReactorDuty>,
+    /// Per-column separation: one `SeparationModel` pass per column per tick,
+    /// made where the sweep resolves that column. Empty for a network with no
+    /// column.
+    ///
+    /// **The result travels; the model does not.** `SeparationModel` reaches
+    /// exactly one call site — this sweep, the way `ReactionModel` does — and its
+    /// two consumers read it from here: `edge_composition_at` for which draw
+    /// carries what, and `Engine::tick`'s post-sweep write for how much each draw
+    /// carries. That is what forces the flow split and the composition split to
+    /// come from the SAME pass, which per-component conservation at a zero-volume
+    /// column requires (DESIGN §5).
+    ///
+    /// It is also where a cascade's condenser and reboiler duties will live, next
+    /// to `reactor_duty` and for the same reason: an emergent diagnostic of a
+    /// unit, resolved on the sweep that has the state to compute it.
+    pub column_separation: BTreeMap<NodeId, Separation>,
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -929,21 +864,32 @@ pub struct ReactorDuty {
 /// is IMPOSED (`t_set`) rather than mixed. Both, plus its emergent duties, are
 /// resolved in the single-node branch (`reactor_duty`).
 ///
+/// A **column** mixes both fields like any other zero-volume node, and then makes
+/// one `SeparationModel` pass over the result — after its own temperature is
+/// resolved, since the pass is a function of it. Nothing downstream of a column
+/// is released until that pass is stored, which is what lets
+/// `edge_composition_at` read it rather than recompute it.
+///
 /// # Errors
 /// `SimError::Numerical` if a recycle among zero-volume nodes leaves the sweep
-/// with no valid order (see the module docs), or if `reactions` cannot produce
-/// valid products for a reactor's feed.
+/// with no valid order (see the module docs), if `reactions` cannot produce
+/// valid products for a reactor's feed, or if `separation` cannot split a
+/// column's feed.
+#[allow(clippy::too_many_arguments)]
 pub fn resolve_node_states(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
     edge_dissipation: &BTreeMap<EdgeId, Watt>,
     reactions: &dyn ReactionModel,
+    separation: &dyn SeparationModel,
+    thermo: &dyn ThermoModel,
     previous: &NodeStates,
 ) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
     let mut composition: BTreeMap<NodeId, Composition> = BTreeMap::new();
     let mut reactor_duties: BTreeMap<NodeId, ReactorDuty> = BTreeMap::new();
+    let mut separations: BTreeMap<NodeId, Separation> = BTreeMap::new();
 
     // 1. Inertial nodes are the roots of the sweep: known before it starts.
     //    Both fields are seeded from the SAME node, so the two boundary helpers
@@ -1041,7 +987,15 @@ pub fn resolve_node_states(
         // to it. Heat crosses between them; mass does not, and a pair whose
         // compositions influenced each other would be modelling a leak.
         for &id in sides {
-            let mixed = mix_compositions(graph, slate, edge_mass_flow, &composition, previous, id)?;
+            let mixed = mix_compositions(
+                graph,
+                slate,
+                edge_mass_flow,
+                &separations,
+                &composition,
+                previous,
+                id,
+            )?;
             composition.insert(id, mixed);
         }
 
@@ -1055,6 +1009,7 @@ pub fn resolve_node_states(
                     edge_dissipation,
                     &temperature,
                     &composition,
+                    &separations,
                     &previous.temperature,
                     (*a, *b),
                 )?;
@@ -1083,6 +1038,7 @@ pub fn resolve_node_states(
                             edge_dissipation,
                             &temperature,
                             &composition,
+                            &separations,
                             id,
                             &feed,
                             t_set,
@@ -1100,10 +1056,41 @@ pub fn resolve_node_states(
                             edge_dissipation,
                             &temperature,
                             &composition,
+                            &separations,
                             &previous.temperature,
                             id,
                         )?;
                         temperature.insert(id, mixed);
+
+                        // A column separates its feed once, HERE: after its own
+                        // temperature is mixed (the pass is a function of it) and
+                        // before the sweep releases anything downstream (which
+                        // reads the result through `edge_composition_at`). The
+                        // column's own two fields are the ordinary mix — a column
+                        // is not a T-overriding node the way a reactor is.
+                        if let NodeKind::Column {
+                            draws,
+                            smearing,
+                            pressure,
+                        } = &graph.node(id).kind
+                        {
+                            let feed = composition
+                                .get(&id)
+                                .expect("this vertex's composition was mixed above");
+                            let pass = separation.separate(
+                                &ColumnPass {
+                                    slate,
+                                    draws,
+                                    smearing: *smearing,
+                                    pressure: *pressure,
+                                    feed,
+                                    feed_flow: column_feed_flow(graph, edge_mass_flow, id),
+                                    temperature: mixed,
+                                },
+                                thermo,
+                            )?;
+                            separations.insert(id, pass);
+                        }
                     }
                 }
             }
@@ -1162,6 +1149,7 @@ pub fn resolve_node_states(
         temperature,
         composition,
         reactor_duty: reactor_duties,
+        column_separation: separations,
     })
 }
 
@@ -1187,6 +1175,7 @@ fn reactor_duty(
     edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
+    separations: &BTreeMap<NodeId, Separation>,
     node: NodeId,
     feed: &Composition,
     t_set: Kelvin,
@@ -1212,6 +1201,7 @@ fn reactor_duty(
         edge_dissipation,
         temperature,
         composition,
+        separations,
         node,
     )? {
         Some((inlet_enthalpy, _capacity)) => {
@@ -1259,6 +1249,7 @@ fn mix_compositions(
     graph: &PlantGraph,
     slate: &Slate,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    separations: &BTreeMap<NodeId, Separation>,
     composition: &BTreeMap<NodeId, Composition>,
     previous: &NodeStates,
     node: NodeId,
@@ -1274,7 +1265,7 @@ fn mix_compositions(
         // positive-into-this-node, which would name the wrong end on every edge
         // stored pointing inward. Same trap as the temperature path.
         let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
-        let incoming = edge_composition_at(graph, slate, composition, edge, flow)?;
+        let incoming = edge_composition_at(graph, separations, composition, edge, flow)?;
         for (weight, fraction) in weights.iter_mut().zip(incoming.fractions()) {
             *weight += into_node * fraction;
         }
@@ -1324,6 +1315,7 @@ fn inflow_totals(
     edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
+    separations: &BTreeMap<NodeId, Separation>,
     node: NodeId,
 ) -> Result<InflowTotals, SimError> {
     let mut enthalpy = 0.0; // Σ ṁ·cp·(T − T_REF) [W]
@@ -1351,6 +1343,7 @@ fn inflow_totals(
             slate,
             temperature,
             composition,
+            separations,
             edge,
             flow,
             dissipation_on(edge_dissipation, edge),
@@ -1359,7 +1352,7 @@ fn inflow_totals(
         // The same resolved-upwind cp the transform above used, through the same
         // helper: an inlet transformed at one heat capacity and mixed at another
         // would not conserve enthalpy across the pipe.
-        let cp = stream_cp_at(graph, slate, composition, edge, flow)?;
+        let cp = stream_cp_at(graph, slate, separations, composition, edge, flow)?;
         enthalpy += enthalpy_flux(KgPerSec(into_node), cp, inlet_t).value();
         capacity += into_node * cp.value();
     }
@@ -1376,6 +1369,7 @@ fn mix_inflows(
     edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
+    separations: &BTreeMap<NodeId, Separation>,
     previous: &BTreeMap<NodeId, Kelvin>,
     node: NodeId,
 ) -> Result<Kelvin, SimError> {
@@ -1393,6 +1387,7 @@ fn mix_inflows(
         edge_dissipation,
         temperature,
         composition,
+        separations,
         node,
     )? {
         let mixed = T_REF.value() + (enthalpy + heat_input) / capacity;
@@ -1459,6 +1454,7 @@ fn exchange_pair(
     edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
+    separations: &BTreeMap<NodeId, Separation>,
     previous: &BTreeMap<NodeId, Kelvin>,
     (side_a, side_b): (NodeId, NodeId),
 ) -> Result<(Kelvin, Kelvin), SimError> {
@@ -1476,6 +1472,7 @@ fn exchange_pair(
         edge_dissipation,
         temperature,
         composition,
+        separations,
         side_a,
     )?;
     let totals_b = inflow_totals(
@@ -1485,6 +1482,7 @@ fn exchange_pair(
         edge_dissipation,
         temperature,
         composition,
+        separations,
         side_b,
     )?;
 
@@ -1571,6 +1569,40 @@ mod tests {
         }
     }
 
+    /// The separation model for sweep tests, and it REFUSES to separate.
+    ///
+    /// `core`'s own tests build no column — the splitter's math and its hand
+    /// calculations moved to `solvers::separation` with the code in M7.1 — so a
+    /// stub that returns the right shape would be a second copy of a rule that
+    /// must agree with the real one, with nothing forcing it to. This one cannot
+    /// drift because it computes nothing; if a test ever does sweep a column, it
+    /// fails loudly here instead of silently grading itself against a duplicate.
+    struct NoSeparation;
+    impl SeparationModel for NoSeparation {
+        fn name(&self) -> &'static str {
+            "test-refuses"
+        }
+        fn separate(
+            &self,
+            _pass: &ColumnPass<'_>,
+            _thermo: &dyn ThermoModel,
+        ) -> Result<Separation, SimError> {
+            Err(SimError::Numerical(
+                "this sweep test builds no column; separation belongs to `solvers`".into(),
+            ))
+        }
+    }
+
+    /// Property stub, mirroring `solvers::ConstantThermo`. The trait has no
+    /// method to implement yet; it is here because `resolve_node_states` hands it
+    /// to the separation model (DESIGN §5, correction 2).
+    struct TestThermo;
+    impl ThermoModel for TestThermo {
+        fn name(&self) -> &'static str {
+            "test-constant"
+        }
+    }
+
     fn node(name: &str, kind: NodeKind) -> Node {
         Node {
             name: name.into(),
@@ -1646,6 +1678,8 @@ mod tests {
             flows,
             &no_friction(),
             &NoRxn,
+            &NoSeparation,
+            &TestThermo,
             &NodeStates::default(),
         )
         .map(|states| states.temperature)
@@ -1663,6 +1697,8 @@ mod tests {
             flows,
             &no_friction(),
             &NoRxn,
+            &NoSeparation,
+            &TestThermo,
             &NodeStates::default(),
         )
         .map(|states| states.composition)
@@ -1834,9 +1870,18 @@ mod tests {
                 )]),
                 ..Default::default()
             };
-            let held = resolve_node_states(&g, &slate, &flows, &no_friction(), &NoRxn, &previous)
-                .unwrap()
-                .composition;
+            let held = resolve_node_states(
+                &g,
+                &slate,
+                &flows,
+                &no_friction(),
+                &NoRxn,
+                &NoSeparation,
+                &TestThermo,
+                &previous,
+            )
+            .unwrap()
+            .composition;
             assert_eq!(held[&idle].fractions(), &[0.2, 0.8]);
 
             // With none, a valid composition rather than an error or a NaN.
@@ -2349,6 +2394,8 @@ mod tests {
             &flows,
             &no_friction(),
             &NoRxn,
+            &NoSeparation,
+            &TestThermo,
             &previous,
         )
         .unwrap()
@@ -2560,177 +2607,6 @@ mod tests {
         }
     }
 
-    /// `column_separation` — the cut-point splitter's math, in isolation, against
-    /// hand calculations. This is the gate the DESIGN note names as the ONLY one
-    /// with discriminating power over a column: a splitter conserves every
-    /// component identically, so I7 is green by construction and cannot see a cut
-    /// boundary off by one or a disabled smearing — but a per-draw *composition*
-    /// vector against a hand calc can.
-    mod column_separation_tests {
-        use super::*;
-        use crate::components::{Composition, Phase, PseudoComponent, Slate};
-        use crate::graph::{ColumnDraw, NodeId};
-        use crate::units::{JPerKgK, KgPerM3, KgPerMol};
-
-        /// A slate whose only meaningful property here is each cut's boiling
-        /// point — density/cp/MW are placeholders, since separation reads only
-        /// `tb`.
-        fn slate_with_tbs(tbs: &[f64]) -> Slate {
-            Slate::new(
-                tbs.iter()
-                    .enumerate()
-                    .map(|(i, &tb)| PseudoComponent {
-                        name: format!("cut{i}"),
-                        tb: Kelvin(tb),
-                        molar_mass: KgPerMol(0.1),
-                        density: Some(KgPerM3(800.0)),
-                        cp: JPerKgK(2000.0),
-                        phase: Phase::Liquid,
-                    })
-                    .collect(),
-            )
-            .unwrap()
-        }
-
-        /// The outlet id is unused by `column_separation` (it splits by boiling
-        /// range, not by which tank a draw feeds), so a dummy id suffices.
-        fn draw(upper_cut_k: Option<f64>) -> ColumnDraw {
-            ColumnDraw {
-                outlet: NodeId(0),
-                upper_cut: upper_cut_k.map(Kelvin),
-            }
-        }
-
-        /// SHARP splitter (smearing 0): each component lands wholly in the one
-        /// band its boiling point falls in. Four cuts at 50/150/250/350 K, three
-        /// draws split at 100 and 300 K, feed [0.1, 0.2, 0.3, 0.4]:
-        ///
-        ///   draw 0 (< 100): cut0 only            → split 0.1, comp [1,0,0,0]
-        ///   draw 1 (100–300): cut1, cut2         → split 0.5, comp [0,0.4,0.6,0]
-        ///   draw 2 (> 300): cut3 only            → split 0.4, comp [0,0,0,1]
-        ///
-        /// THE MUTATION THIS EXISTS FOR: a cut boundary off by one component
-        /// moves cut2 (250 K) from draw 1 into draw 0, which no mass balance sees
-        /// — total in still equals total out — but which this per-draw comp
-        /// assertion fails loudly on.
-        #[test]
-        fn sharp_splitter_assigns_each_cut_to_its_band() {
-            let slate = slate_with_tbs(&[50.0, 150.0, 250.0, 350.0]);
-            let feed = Composition::from_weights(&[0.1, 0.2, 0.3, 0.4]).unwrap();
-            let draws = [draw(Some(100.0)), draw(Some(300.0)), draw(None)];
-
-            let sep = column_separation(&slate, &feed, &draws, Kelvin(0.0)).unwrap();
-
-            let splits: Vec<f64> = sep.iter().map(|d| d.split).collect();
-            assert!(
-                (splits[0] - 0.1).abs() < 1e-12
-                    && (splits[1] - 0.5).abs() < 1e-12
-                    && (splits[2] - 0.4).abs() < 1e-12,
-                "splits should be [0.1, 0.5, 0.4], got {splits:?}"
-            );
-            let expect = [
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 0.4, 0.6, 0.0],
-                [0.0, 0.0, 0.0, 1.0],
-            ];
-            for (i, want) in expect.iter().enumerate() {
-                for (c, w) in want.iter().enumerate() {
-                    assert!(
-                        (sep[i].composition.fractions()[c] - w).abs() < 1e-12,
-                        "draw {i} comp[{c}] should be {w}, got {}",
-                        sep[i].composition.fractions()[c]
-                    );
-                }
-            }
-        }
-
-        /// SMEARED splitter: a component boiling INSIDE the ramp of a cut is split
-        /// between the two adjacent draws. Two cuts at 175/400 K, one boundary at
-        /// 200 K, smearing 100 K (half-width 50, band 150–250):
-        ///
-        ///   cut0 (175 K): fraction heavy = (175−200)/100 + 0.5 = 0.25
-        ///                 → 0.75 to draw 0, 0.25 to draw 1
-        ///   cut1 (400 K): far above       → 1.0 to draw 1
-        ///
-        /// Feed [0.5, 0.5]:
-        ///   split 0 = 0.5·0.75            = 0.375, comp [1, 0]
-        ///   split 1 = 0.5·0.25 + 0.5·1.0  = 0.625, comp [0.2, 0.8]
-        ///
-        /// THE MUTATION THIS EXISTS FOR: smearing silently disabled (treated as
-        /// 0). cut0 would then land WHOLLY in draw 0 — split 0.5, draw 1 comp
-        /// [0, 1] — so this assertion, unlike the sharp one, cannot pass unless
-        /// the ramp is actually applied. The sharp test alone leaves smearing
-        /// untested (its answer is the same at smearing 0), which is why both
-        /// exist.
-        #[test]
-        fn smearing_splits_a_boundary_cut_between_adjacent_draws() {
-            let slate = slate_with_tbs(&[175.0, 400.0]);
-            let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
-            let draws = [draw(Some(200.0)), draw(None)];
-
-            let sep = column_separation(&slate, &feed, &draws, Kelvin(100.0)).unwrap();
-
-            assert!(
-                (sep[0].split - 0.375).abs() < 1e-12 && (sep[1].split - 0.625).abs() < 1e-12,
-                "smeared splits should be [0.375, 0.625], got [{}, {}]",
-                sep[0].split,
-                sep[1].split
-            );
-            let d1 = sep[1].composition.fractions();
-            assert!(
-                (d1[0] - 0.2).abs() < 1e-12 && (d1[1] - 0.8).abs() < 1e-12,
-                "draw 1 (with smearing) should be [0.2, 0.8], got {d1:?}; a sharp \
-                 splitter would give [0, 1] — this is what a disabled smearing fails"
-            );
-        }
-
-        /// `Σᵢ splitᵢ = 1` for any feed and any cut structure — the identity that
-        /// makes the column mass-neutral (and, via linearity, energy-neutral). It
-        /// holds by telescoping before the defensive normalization, so this is a
-        /// tight bound. A five-cut feed through four draws with a nontrivial
-        /// smearing exercises overlapping ramps.
-        #[test]
-        fn splits_always_sum_to_one() {
-            let slate = slate_with_tbs(&[60.0, 140.0, 210.0, 300.0, 420.0]);
-            let feed = Composition::from_weights(&[0.05, 0.30, 0.15, 0.10, 0.40]).unwrap();
-            let draws = [
-                draw(Some(120.0)),
-                draw(Some(250.0)),
-                draw(Some(360.0)),
-                draw(None),
-            ];
-
-            let sep = column_separation(&slate, &feed, &draws, Kelvin(40.0)).unwrap();
-            let total: f64 = sep.iter().map(|d| d.split).sum();
-            assert!(
-                (total - 1.0).abs() < 1e-12,
-                "Σ splitᵢ must be 1 (mass neutrality), got {total}"
-            );
-        }
-
-        /// A draw whose band catches NO feed component has split 0 and carries the
-        /// feed composition as an inert placeholder — never a divide-by-zero. Here
-        /// the middle draw's band (150–250 K) contains neither cut (100 K, 400 K).
-        #[test]
-        fn an_empty_band_draw_is_zero_split_and_carries_the_feed() {
-            let slate = slate_with_tbs(&[100.0, 400.0]);
-            let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
-            let draws = [draw(Some(150.0)), draw(Some(250.0)), draw(None)];
-
-            let sep = column_separation(&slate, &feed, &draws, Kelvin(0.0)).unwrap();
-            assert!(
-                sep[1].split.abs() < 1e-12,
-                "the empty middle band must take no mass, got split {}",
-                sep[1].split
-            );
-            assert_eq!(
-                sep[1].composition.fractions(),
-                feed.fractions(),
-                "an empty draw carries the feed composition as an inert placeholder"
-            );
-        }
-    }
-
     /// The reactor's contract in the sweep — imposed `t_set`, product composition,
     /// and the two emergent duties — with hand-built flows and a KNOWN converting
     /// reaction, so the numbers are all traceable to arithmetic.
@@ -2836,6 +2712,8 @@ mod tests {
                 &flows,
                 &no_friction(),
                 &reactions,
+                &NoSeparation,
+                &TestThermo,
                 &NodeStates::default(),
             )
             .unwrap();
@@ -2919,6 +2797,8 @@ mod tests {
                 &flows,
                 &no_friction(),
                 &reactions,
+                &NoSeparation,
+                &TestThermo,
                 &NodeStates::default(),
             )
             .unwrap();

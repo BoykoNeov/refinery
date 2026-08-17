@@ -25,7 +25,7 @@ use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::graph::{LeakRole, Node, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::units::*;
-use refinery_solvers::{ConstantThermo, NewtonFlowSolver, NoReactions};
+use refinery_solvers::{ConstantThermo, CutPointSplitter, NewtonFlowSolver, NoReactions};
 
 const DT: Seconds = Seconds(0.1);
 
@@ -63,6 +63,7 @@ fn engine(graph: PlantGraph) -> Engine {
         Box::new(NewtonFlowSolver::default()),
         Box::new(ConstantThermo),
         Box::new(NoReactions),
+        Box::new(CutPointSplitter),
     )
 }
 

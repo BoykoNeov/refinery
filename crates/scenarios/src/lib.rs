@@ -18,7 +18,7 @@ use refinery_core::graph::{
     TankState, VesselState,
 };
 use refinery_core::stream::Stream;
-use refinery_core::traits::{FlowSolver, ReactionModel, ThermoModel};
+use refinery_core::traits::{FlowSolver, ReactionModel, SeparationModel, ThermoModel};
 use refinery_core::units::{
     CubicMeter, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Pascal, Seconds, SquareMeter, Watt,
     WattPerKelvin, P_ATM, T_AMBIENT,
@@ -114,12 +114,25 @@ pub struct Fidelity {
     /// "none" (M1) — expands in M4
     #[serde(default = "default_none")]
     pub reactions: String,
+    /// "cut_point" (M3.2) | "cascade" (M7.3).
+    ///
+    /// Defaults to the boiling-range splitter, which is what every file written
+    /// before M7 MEANS — not merely what keeps them loading. That distinction is
+    /// the M5.2 `phase` precedent: a default chosen so old files stay
+    /// bit-identical, rather than one chosen so they still parse. A file with no
+    /// column is unaffected either way, since the model is called once per column
+    /// and never otherwise.
+    #[serde(default = "default_cut_point")]
+    pub separation: String,
 }
 fn default_constant() -> String {
     "constant".into()
 }
 fn default_none() -> String {
     "none".into()
+}
+fn default_cut_point() -> String {
+    "cut_point".into()
 }
 
 #[derive(Debug, Deserialize)]
@@ -456,10 +469,22 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         }
     };
 
+    let separation: Box<dyn SeparationModel> = match scenario.fidelity.separation.as_str() {
+        // M3.2's boiling-range splitter, and the default (see `Fidelity`).
+        "cut_point" => Box::new(refinery_solvers::CutPointSplitter),
+        other => {
+            return Err(SimError::Scenario(format!(
+                "unknown separation model '{other}' (valid: cut_point)"
+            )))
+        }
+    };
+
     let config = EngineConfig {
         dt: refinery_core::units::Seconds(scenario.simulation.dt),
     };
-    Ok(Engine::new(graph, slate, config, flow, thermo, reactions))
+    Ok(Engine::new(
+        graph, slate, config, flow, thermo, reactions, separation,
+    ))
 }
 
 /// Build the canonical slate from the `[[components]]` table, in file order.

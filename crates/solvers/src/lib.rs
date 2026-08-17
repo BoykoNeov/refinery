@@ -1,10 +1,11 @@
 //! refinery-solvers: trait implementations at both fidelity levels.
 //!
-//! | Trait          | Simple (game)        | Complex (research)      |
-//! |----------------|----------------------|-------------------------|
-//! | FlowSolver     | SimpleFlowSolver     | NewtonFlowSolver        |
-//! | ThermoModel    | ConstantThermo (M2)  | CutThermo (M2/M3)       |
-//! | ReactionModel  | SimpleLookup (M4.1)  | FourLump (M4.2)         |
+//! | Trait           | Simple (game)        | Complex (research)      |
+//! |-----------------|----------------------|-------------------------|
+//! | FlowSolver      | SimpleFlowSolver     | NewtonFlowSolver        |
+//! | ThermoModel     | ConstantThermo (M2)  | CutThermo (M2/M3)       |
+//! | ReactionModel   | SimpleLookup (M4.1)  | FourLump (M4.2)         |
+//! | SeparationModel | CutPointSplitter     | StageCascade (M7.3)     |
 //!
 //! Selection happens in refinery-scenarios from TOML config; nothing in
 //! here or in core branches on a fidelity flag.
@@ -14,11 +15,13 @@ pub mod four_lump;
 pub mod network;
 pub mod newton_flow;
 pub mod reactor;
+pub mod separation;
 pub mod simple_flow;
 
 pub use four_lump::{FourLump, FourLumpParams};
 pub use newton_flow::NewtonFlowSolver;
 pub use reactor::SimpleLookup;
+pub use separation::CutPointSplitter;
 pub use simple_flow::SimpleFlowSolver;
 
 use refinery_core::components::{Composition, Slate};

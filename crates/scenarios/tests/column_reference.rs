@@ -1,8 +1,9 @@
 //! M3.2 reference: the fixed cut-point column, AS WIRED — loader → hydraulic
 //! solve → composition sweep → prescribed draw flows → transport.
 //!
-//! The separation math is hand-checked in isolation in `core::energy`'s
-//! `column_separation_tests`. What those cannot see, and these cover, is the
+//! The separation math is hand-checked in isolation in `solvers::separation`'s
+//! own tests, which moved there with the code when M7.1 put the
+//! `SeparationModel` seam under it. What those cannot see, and these cover, is the
 //! column as a plant: the loader building it, a real solve handing it a feed flow
 //! the file never states, the draw flows coming out as `splitᵢ · ṁ_feed` and not
 //! a pressure-driven number, the draws carrying their cut compositions, and
@@ -935,5 +936,63 @@ diameter_m = 0.10
     assert!(
         m.contains("column") && (m.contains("outlet") || m.contains("1 in / 2 out")),
         "the error must flag the column's missing outlet edge, got: {m}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The `SeparationModel` seam (M7.1). Nothing physical here — these pin the
+// SELECTION, which is the only thing the seam added to a scenario file.
+// ---------------------------------------------------------------------------
+
+/// `[fidelity] separation` defaults to the cut-point splitter — and "defaults"
+/// has to mean *the same answer*, not merely "still loads".
+///
+/// So this compares a file that says nothing against a file that says
+/// `cut_point` explicitly, on the plant whose draws are computed by the model,
+/// and demands the draw streams agree BIT for bit. A default that parsed but
+/// selected something else would pass a load test and fail this one.
+#[test]
+fn the_default_separation_is_the_cut_point_splitter() {
+    let implicit = source_column_plant(25.0, 0.10);
+    let explicit = implicit.replace(
+        r#"flow = "newton""#,
+        "flow = \"newton\"\nseparation = \"cut_point\"",
+    );
+    assert!(
+        explicit.contains("separation"),
+        "the fixture must actually have gained the key"
+    );
+
+    let mut a = build(&implicit).expect("the implicit plant should build");
+    let mut b = build(&explicit).expect("the explicit plant should build");
+    a.tick().expect("tick should converge");
+    b.tick().expect("tick should converge");
+
+    for draw in ["light_draw", "middle_draw", "heavy_draw"] {
+        let (flow_a, comp_a) = edge_stream(&a, draw);
+        let (flow_b, comp_b) = edge_stream(&b, draw);
+        assert_eq!(
+            flow_a.to_bits(),
+            flow_b.to_bits(),
+            "{draw}: an omitted `separation` key must select the same model, \
+             not merely load — got {flow_a} vs {flow_b}"
+        );
+        assert_eq!(comp_a, comp_b, "{draw}: composition must match bit for bit");
+    }
+}
+
+/// An unknown separation model is refused at LOAD, listing what is valid — the
+/// same contract every other `[fidelity]` string has. `cascade` is the name M7.3
+/// will take, so this test is also the marker that it does not exist yet.
+#[test]
+fn an_unknown_separation_model_is_refused() {
+    let src = source_column_plant(25.0, 0.10).replace(
+        r#"flow = "newton""#,
+        "flow = \"newton\"\nseparation = \"cascade\"",
+    );
+    let m = build_err(&src, "an unimplemented separation model");
+    assert!(
+        m.contains("cascade") && m.contains("cut_point"),
+        "the error must name the bad value and list the valid ones, got: {m}"
     );
 }

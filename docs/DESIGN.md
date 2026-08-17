@@ -2867,6 +2867,89 @@ alone and generalized. It is true: `Column` appears nowhere in
 `crates/solvers/tests/` at all — not in `invariants.rs`, the gas-valve arm, or
 any other. Fork 4's framing stands.
 
+#### Corrections from building it (M7.1, landed)
+
+The seam is in: `SeparationModel` in `core::traits`, `CutPointSplitter` in
+`solvers::separation`, `[fidelity] separation = "cut_point"` in the loader, and
+every one of the twelve scenarios byte-identical over 300 ticks. Four things the
+note had wrong or unstated, and one measurement that changes what M7.4 owes.
+
+**1. The MODEL reaches one call site; the RESULT reaches the two consumers.**
+Fork 2 said `SeparationModel` "follows the same path to the two call sites"
+(`edge_composition_at` and the post-sweep draw write). That is the wrong shape,
+and the deciding argument is not cost — it is that **a per-edge call has nowhere
+to put the duties**. `Separation` carries condenser and reboiler duties; a model
+invoked from inside `edge_composition_at` computes them once per draw edge per
+reader and stores them zero times. The `ReactionModel` precedent says the same
+thing for a second reason ("`react()` is called once per reactor per tick …
+rather than re-integrating per outlet edge, as a naive `edge_composition_at` hook
+would"), which at the cut-point fidelity merely wastes work but at M7.3 would
+re-solve a stage cascade four times a tick.
+
+So `separate` runs **once per column, in the composition sweep**, exactly where
+`react` runs, and the result is stored in `NodeStates::column_separation`
+alongside `reactor_duty` — which the note already called "the one extensive
+quantity resolved on this sweep", and which is now the general shape rather than
+the reactor's exception. Both consumers read it.
+
+Two consequences worth stating. The trait object threads to **one** function; what
+threads to the readers is a plain data map (`edge_composition_at`, `stream_cp_at`,
+`edge_temperature_at`, `inflow_totals`, `mix_inflows`, `exchange_pair`,
+`reactor_duty` each gained one parameter), which is strictly less plumbing than
+passing `&dyn SeparationModel` plus the temperature map into the composition mix.
+And M3.2's central worry — the flow split and the composition split must come
+from the same pass or per-component mass fails at the column — stops being a
+discipline two call sites keep and becomes **structural**: there is no longer
+anything to recompute.
+
+**2. Making `thermo` live was the cheap half.** Correction 2 flagged the threading
+as "the part worth checking before M7.1 starts", and it was: the slot had zero call
+sites since M1. But handing `&dyn ThermoModel` down to one function is three lines.
+The real work of this slice was the map above, which the note did not anticipate at
+all because it had the call shape wrong.
+
+**3. `Separation::draws` is checked against the column's draw list, not indexed
+into.** The two are parallel *by contract*, and a trait contract kept by an impl in
+another crate is exactly what rule 5 says not to trust with a `[]`. A model
+returning a short list now errors by name in both readers.
+
+**4. The reverse-feed refusal stays in `Engine::tick`, and `ColumnPass::feed_flow`
+is `0` rather than negative under it.** The sweep's inflow sum is the column's feed
+(draw edges are guarded to zero in the solve), and a column running backwards has
+no inflow at all. Keeping the guard where M3.2 put it preserves the error *and* its
+timing exactly; the splitter never reads the flow, so nothing changes today. **M7.3
+must revisit this**: a cascade WOULD solve on the zero and fail with a worse message
+before the guard that names the cause is ever reached.
+
+**5. The measurement: `smearing` is exercised by exactly ONE test in this
+workspace, and it is the one that moved.** Shifting the ramp's centre by `1e-7`
+(`+ 0.5` → `+ 0.5000001`) leaves all twelve scenarios **byte-identical** over 300
+ticks and the entire suite green — except
+`smearing_splits_a_boundary_cut_between_adjacent_draws`, the unit test that
+travelled from `core::energy` to `solvers::separation` with the code.
+
+The reason is arithmetic, not luck: **no component's boiling point lands inside a
+ramp anywhere in this repo.** `crude_column.toml` cuts at 458.15 K and 613.15 K
+with `smearing_k = 25.0` (so ramps of 445.65–470.65 K and 600.65–625.65 K) over a
+slate boiling at 353/423/493/573/673 K; the `column_reference` plant has the same
+shape. Every weight is clamped to 0 or 1, so **the demo column is a sharp splitter
+and its `smearing_k = 25.0` currently changes no number in any output.** This is
+"a generated arm can be born vacuous" applied to a hand-written scenario.
+
+It does not weaken this slice's gate — the anchor is sharply discriminating on the
+*split* (perturbing one draw's split by `1e-7` relative moves `crude_column`'s
+output and leaves the column-free scenarios alone, which is what proves the anchor
+is not vacuous) — but it does mean the ramp's only coverage is a unit test, and
+that **M7.4's demo scenario should place at least one cut inside a ramp**, where
+the two fidelities are also most worth comparing.
+
+**And one thing found next door, recorded rather than fixed here.**
+`[fidelity] thermo` is parsed into a `String` that the loader never matches on:
+`build_engine` hardcodes `ConstantThermo`, so `thermo = "nonsense"` loads happily
+today. Every other fidelity string is validated with a list of valid names. M7.2
+needs that arm to exist anyway (it selects a K-value fidelity), so it is recorded
+against that box instead of widening this commit.
+
 #### Deferred from M7, with what would un-defer each
 
 - **Tray hydraulics** — pressure drop per tray, weeping, flooding. Un-defers the

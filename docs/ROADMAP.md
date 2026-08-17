@@ -2427,30 +2427,58 @@ The verdicts, in plain terms:
   tray temperatures, so `edge_temperature_at` gains a column arm mirroring the
   one `edge_composition_at` already has.
 
-### M7.1 — The `SeparationModel` seam (bit-identical)
+### M7.1 — The `SeparationModel` seam (bit-identical) — **LANDED**
 
 Move the cut-point math out of `core::energy` behind the trait, with the
 signature fork 2 settles. Nothing physical changes.
 
-- [ ] `core`: `SeparationModel` trait, taking `&dyn ThermoModel` from the start
+- [x] `core`: `SeparationModel` trait, taking `&dyn ThermoModel` from the start
       (note correction 2 — without it M7.3 churns the trait, which is the outcome
       fork 2 claims to avoid); `Engine` holds a `Box<dyn SeparationModel>`
       threaded to the sweep the way `reactions` already is. **This is the commit
       that first makes `thermo` a live dependency**: the slot has been
       `#[allow(dead_code)]` with zero call sites since M1, so the threading is
-      real work, not a parameter rename.
-- [ ] `solvers`: `CutPointSplitter` — `column_separation` moved verbatim.
-- [ ] `scenarios`: `[fidelity] separation = "cut_point"`, defaulting to the
+      real work, not a parameter rename. *Built, and the note had the call shape
+      wrong — see below.*
+- [x] `solvers`: `CutPointSplitter` — `column_separation` moved verbatim, its
+      hand-calculation tests with it.
+- [x] `scenarios`: `[fidelity] separation = "cut_point"`, defaulting to the
       value every pre-M7 file means, so those files stay bit-identical rather
-      than merely still-loading (the M5.2 `phase` default precedent).
-- [ ] Gate: **regression anchor** — every existing golden bit-identical,
+      than merely still-loading (the M5.2 `phase` default precedent). Pinned by a
+      test that compares the implicit file against an explicit one **bit for
+      bit**, not by one that checks it still loads.
+- [x] Gate: **regression anchor** — every existing golden bit-identical,
       `crude_column.toml` included. This slice has no reference of its own; a new
       number here would mean the move was not a move.
+      **Measured, not assumed**: all twelve scenarios, 300 ticks, a snapshot every
+      5, compared byte-for-byte (`serde_json`'s `float_roundtrip` is on, so bytes
+      mean bits). Falsified before trusted — perturbing one draw's split by `1e-7`
+      relative moves `crude_column` and leaves the column-free scenarios alone.
+
+**What building it settled** (DESIGN §5, "Corrections from building it (M7.1,
+landed)"). In plain terms: the separation model is called **once per column per
+tick**, in the sweep, and its result is stored for the two places that need it —
+not called again by each of them, as the note assumed. The deciding reason is the
+duties: a column's condenser and reboiler heat has nowhere to live if the split is
+recomputed per pipe. That also makes M3.2's "both halves of the split must come
+from one pass" structural instead of a rule two call sites have to keep.
+
+The measurement that changes later work: **`smearing` is exercised by exactly one
+test in this workspace** — the unit test that moved with the code. No component's
+boiling point lands inside a ramp in any scenario, so the demo column is a sharp
+splitter and its `smearing_k = 25.0` changes no number anywhere. M7.4's demo owes a
+cut inside a ramp.
 
 ### M7.2 — K-values on `ThermoModel`, and the single-stage flash
 
 - [ ] `core`: `ThermoModel` gains `k_value(component, T, P)`; the stub's own
       docstring condition ("when a consumer actually needs a property") is now met.
+- [ ] `scenarios`: give `[fidelity] thermo` a match arm. Found while wiring
+      `separation` beside it in M7.1: the string is parsed and then ignored —
+      `build_engine` hardcodes `ConstantThermo`, so `thermo = "nonsense"` loads
+      today, alone among the fidelity keys. This slice needs the arm anyway to
+      select a K-value fidelity, which is why M7.1 recorded it here rather than
+      widening a bit-identical commit.
 - [ ] `solvers`: Raoult + a Clausius–Clapeyron form whose `Δh_vap` comes from
       `tb` via Trouton — **one empirical constant on top of slate data** (note
       correction 6; the first framing of this line overclaimed), carrying a
@@ -2504,6 +2532,10 @@ signature fork 2 settles. Nothing physical changes.
 - [ ] Demo: `scenarios/crude_column_cascade.toml` — the same plant as
       `crude_column.toml` on the other fidelity, so the two are directly
       comparable and the swap is visible physics rather than a passing test.
+      **Put at least one cut inside a smearing ramp** (M7.1's measurement: no
+      component boils inside a ramp anywhere in this repo, so the demo column is
+      a sharp splitter today and `smearing_k` changes nothing) — that is also
+      where the two fidelities differ most and are most worth comparing.
 
 **Open until the note is falsified by building it.** Every milestone in this file
 has had its design note corrected by the code — M3.2's draw-flow location, M5.2's

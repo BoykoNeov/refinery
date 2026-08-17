@@ -9,7 +9,7 @@ use crate::energy::{self, T_REF};
 use crate::error::SimError;
 use crate::graph::{LeakRole, NodeKind, PlantGraph};
 use crate::snapshot::{Command, EdgeSnapshot, NodeSnapshot, Snapshot};
-use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, ThermoModel};
+use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, SeparationModel, ThermoModel};
 use crate::units::*;
 
 /// Inventory below which a tank has no meaningful temperature [kg].
@@ -36,14 +36,23 @@ pub struct Engine {
     pub slate: Slate,
     config: EngineConfig,
     flow_solver: Box<dyn FlowSolver>,
-    /// Still a reserved slot at M2: transport uses constant-property `cp` off
-    /// `Composition` (ideal mixing), which is exactly what `ThermoModel`'s doc
-    /// says to leave alone until a consumer needs more. It takes over when
-    /// T-dependent or non-ideal properties arrive.
-    #[allow(dead_code)]
+    /// Reserved and UNREAD from M1 to M7.0 — a slot with `#[allow(dead_code)]`
+    /// and zero call sites for six milestones. M7.1 is where it becomes a live
+    /// dependency: it is handed to `SeparationModel::separate`, because a K-value
+    /// is a thermophysical property and belongs on this trait rather than on the
+    /// separation seam (DESIGN §5, fork 2). The splitter ignores it; M7.2 gives
+    /// the trait its first method and the cascade reads it.
+    ///
+    /// Transport still takes constant-property `cp` off `Composition` (ideal
+    /// mixing), which is what `ThermoModel`'s doc says to leave alone until a
+    /// consumer needs more.
     thermo: Box<dyn ThermoModel>,
     #[allow(dead_code)] // slot reserved; used from M4
     reactions: Box<dyn ReactionModel>,
+    /// How a column divides its feed among its draws. Reaches exactly one call
+    /// site — the composition sweep — and its result travels to the sweep's two
+    /// consumers through `NodeStates::column_separation`.
+    separation: Box<dyn SeparationModel>,
     tick: u64,
     last_solution: Option<HydraulicSolution>,
     /// Resolved node temperature [K] and composition fields from the last tick.
@@ -62,6 +71,7 @@ impl Engine {
         flow_solver: Box<dyn FlowSolver>,
         thermo: Box<dyn ThermoModel>,
         reactions: Box<dyn ReactionModel>,
+        separation: Box<dyn SeparationModel>,
     ) -> Self {
         Self {
             graph,
@@ -70,6 +80,7 @@ impl Engine {
             flow_solver,
             thermo,
             reactions,
+            separation,
             tick: 0,
             last_solution: None,
             node_states: energy::NodeStates::default(),
@@ -237,6 +248,8 @@ impl Engine {
             &solution.edge_mass_flow,
             &solution.edge_dissipation,
             self.reactions.as_ref(),
+            self.separation.as_ref(),
+            self.thermo.as_ref(),
             &self.node_states,
         )?;
         let node_temperature = &node_states.temperature;
@@ -259,19 +272,20 @@ impl Engine {
         //      no resolved state changes now that the real flows are written.
         let mut draw_writes: Vec<(crate::graph::EdgeId, f64)> = Vec::new();
         for nid in self.graph.node_ids().collect::<Vec<_>>() {
-            let (draws, smearing) = match &self.graph.node(nid).kind {
-                NodeKind::Column {
-                    draws, smearing, ..
-                } => (draws.clone(), *smearing),
+            let draws = match &self.graph.node(nid).kind {
+                NodeKind::Column { draws, .. } => draws.clone(),
                 _ => continue,
             };
-            let feed_comp = node_states.composition.get(&nid).ok_or_else(|| {
+            // The SAME pass `edge_composition_at` reads for the draw compositions,
+            // made once in the sweep above. Recomputing it here would put the two
+            // halves of one split behind two calls free to disagree — the failure
+            // M3.2 named, now prevented by there being nothing to recompute.
+            let separation = node_states.column_separation.get(&nid).ok_or_else(|| {
                 SimError::Numerical(format!(
                     "internal: column '{}' unresolved in the composition sweep",
                     self.graph.node(nid).name
                 ))
             })?;
-            let separation = energy::column_separation(&self.slate, feed_comp, &draws, smearing)?;
 
             // Sum the feed inflow and collect the draw edges. The feed is the one
             // incident edge whose far end is NOT a draw outlet (validate_degrees
@@ -299,7 +313,18 @@ impl Engine {
                 )));
             }
             for (eid, idx, sign_out) in draw_edges {
-                draw_writes.push((eid, sign_out * separation[idx].split * feed_into));
+                // `get`, not `[]`: the model's draw list is parallel to the
+                // column's by contract, and `edge_composition_at` refuses to
+                // trust that with a panic for the same reason (rule 5).
+                let cut = separation.draws.get(idx).ok_or_else(|| {
+                    SimError::Numerical(format!(
+                        "separation model returned {} draws for column '{}', which has {}",
+                        separation.draws.len(),
+                        self.graph.node(nid).name,
+                        draws.len()
+                    ))
+                })?;
+                draw_writes.push((eid, sign_out * cut.split * feed_into));
             }
         }
         for (eid, flow) in draw_writes {
@@ -332,6 +357,7 @@ impl Engine {
                 &self.slate,
                 node_temperature,
                 &node_states.composition,
+                &node_states.column_separation,
                 eid,
                 flow,
                 dissipation_of(&solution, eid),
@@ -405,6 +431,7 @@ impl Engine {
                 let cp = energy::stream_cp_at(
                     &self.graph,
                     &self.slate,
+                    &node_states.column_separation,
                     &node_states.composition,
                     eid,
                     flow,
@@ -418,6 +445,7 @@ impl Engine {
                     &self.slate,
                     node_temperature,
                     &node_states.composition,
+                    &node_states.column_separation,
                     eid,
                     flow,
                     dissipation_of(&solution, eid),
@@ -429,7 +457,7 @@ impl Engine {
                 if into_node > 0.0 {
                     let arriving = energy::edge_composition_at(
                         &self.graph,
-                        &self.slate,
+                        &node_states.column_separation,
                         &node_states.composition,
                         eid,
                         flow,
@@ -627,7 +655,7 @@ impl Engine {
             let flow = self.graph.pipe(eid).stream.mass_flow.value();
             let upwind = energy::edge_composition_at(
                 &self.graph,
-                &self.slate,
+                &node_states.column_separation,
                 &node_states.composition,
                 eid,
                 flow,

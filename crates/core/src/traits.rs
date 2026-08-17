@@ -7,8 +7,8 @@
 
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
-use crate::graph::{EdgeId, NodeId, PlantGraph};
-use crate::units::{JPerKg, Kelvin, Pascal, Seconds, Watt};
+use crate::graph::{ColumnDraw, EdgeId, NodeId, PlantGraph};
+use crate::units::{JPerKg, Kelvin, KgPerSec, Pascal, Seconds, Watt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -79,11 +79,144 @@ pub trait FlowSolver: Send {
 /// Physical property provider. M1 uses constant-property water; M2+ uses
 /// composition/temperature-dependent models. Kept minimal on purpose —
 /// extend when a consumer actually needs a property, not before.
+///
+/// **It has a consumer as of M7.1, and no method yet.** `SeparationModel::separate`
+/// takes `&dyn ThermoModel`, so the reserved slot on `Engine` is finally read and
+/// reaches `solvers` — but the cut-point splitter ignores it exactly as
+/// `ReactionModel::react` ignores `tau` at the lookup fidelity. The condition in
+/// the paragraph above is met by M7.2's `k_value(component, T, P)`, which is the
+/// first property a consumer actually needs; the *plumbing* lands a slice early
+/// so the cascade does not churn the separation trait to reach it (DESIGN §5,
+/// correction 2).
 pub trait ThermoModel: Send {
     fn name(&self) -> &'static str;
     // Density/cp currently live on Composition (ideal mixing). This trait
     // takes over when non-ideal or T-dependent behavior arrives (M2+),
     // at which point Composition's mixture_* helpers delegate here.
+}
+
+/// One draw's separation result: the fraction of the feed mass it takes, the
+/// composition that fraction carries, and the temperature it leaves at.
+#[derive(Debug, Clone)]
+pub struct DrawSeparation {
+    /// The mass fraction of the feed that leaves by this draw. `Σᵢ splitᵢ = 1`,
+    /// which is what makes a column mass-neutral every tick with no holdup.
+    pub split: f64,
+    /// This draw's composition (mass fractions, `Σ = 1`).
+    pub composition: Composition,
+    /// The temperature this draw leaves at [K].
+    ///
+    /// The cut-point splitter returns the feed temperature it was handed, which
+    /// is exactly what the engine does today — a column is a swept zero-volume
+    /// node and every draw reads it as their upwind end. A cascade's draws leave
+    /// at their **tray** temperatures instead, which differ per draw.
+    ///
+    /// **Nothing reads this field yet** (M7.1 changes no physics): the value is
+    /// carried so that M7.4 can wire `energy::edge_temperature_at`'s column arm
+    /// without churning the trait. Until then the splitter's copy and the sweep's
+    /// mixed value are the same number by construction, and
+    /// `a_draw_leaves_at_the_feed_temperature_it_was_handed` is the test that
+    /// pins that agreement.
+    pub temperature: Kelvin,
+}
+
+/// The outcome of one column pass: every draw's split, plus the column's two
+/// heat duties.
+#[derive(Debug, Clone)]
+pub struct Separation {
+    /// One entry per `ColumnDraw`, in the same order.
+    pub draws: Vec<DrawSeparation>,
+    /// Heat REMOVED at the condenser [W], a non-negative magnitude.
+    ///
+    /// The `Furnace`/`Cooler` convention, not a signed duty: which way a named
+    /// piece of equipment moves heat is a property of the equipment, so storing
+    /// it signed would make a condenser that heats representable. Both duties are
+    /// emergent DIAGNOSTICS like `energy::ReactorDuty` — nothing in the forward
+    /// solve is driven by them — and the energy gate M7.4 owes is their
+    /// DIFFERENCE against the sensible external balance, never either alone
+    /// (M4's two-duty lesson, DESIGN §5).
+    pub condenser_duty: Watt,
+    /// Heat ADDED at the reboiler [W], a non-negative magnitude. See
+    /// `condenser_duty`.
+    pub reboiler_duty: Watt,
+}
+
+/// Everything one column pass is a function of: the equipment, and the feed
+/// state that reaches it this tick.
+///
+/// A struct rather than eight positional arguments, and that is a scoping
+/// decision as much as a readability one: M7.3's cascade config (stage count,
+/// feed stage, reflux ratio, `D/F`) lands here as further fields under the
+/// declared-iff-used correspondence, and an impl that ignores them needs no
+/// edit — the same trait-churn argument correction 2 makes about `thermo`.
+pub struct ColumnPass<'a> {
+    /// The canonical component slate; `feed`'s fractions index into it.
+    pub slate: &'a Slate,
+    /// The column's draws in ascending boiling-point order. The returned
+    /// `Separation::draws` is parallel to this.
+    pub draws: &'a [ColumnDraw],
+    /// Ramp width across each cut point [K] (`NodeKind::Column::smearing`).
+    pub smearing: Kelvin,
+    /// The column's pinned operating pressure [Pa]. Ignored by the splitter,
+    /// load-bearing for a cascade's K-values.
+    pub pressure: Pascal,
+    /// The feed composition resolved by this tick's sweep — never a holdup:
+    /// a holdup mixes to one composition and separates nothing (DESIGN §5).
+    pub feed: &'a Composition,
+    /// Total mass entering the column this tick [kg/s]. Ignored by the splitter
+    /// (a fraction is a fraction), load-bearing for a cascade's internal flows.
+    ///
+    /// This is the sweep's inflow sum, so a column running BACKWARDS reports
+    /// `0` here rather than a negative number — `Engine::tick` owns the
+    /// reverse-feed refusal and fires it after the sweep, with the diagnostic
+    /// that names the cause. Harmless today because the splitter never reads
+    /// this; M7.3 must revisit it, because a cascade WOULD solve on the zero
+    /// and fail with a worse message before that guard is reached.
+    pub feed_flow: KgPerSec,
+    /// The feed's resolved temperature [K].
+    pub temperature: Kelvin,
+}
+
+/// How a column divides its feed among its draws — the separation seam.
+///
+/// The fidelity split this trait exists for: `CutPointSplitter` (M3.2's boiling
+/// -range splitter, moved here verbatim in M7.1) and the M7.3 stage cascade are
+/// two implementations of one contract, selected by
+/// `[fidelity] separation` in scenario TOML. `NodeKind::Column` is unchanged
+/// between them — **the complex column is a different `SeparationModel`, not a
+/// different plant unit** (DESIGN §5, fork 1).
+///
+/// **Called once per column per tick**, from the composition sweep, and the
+/// result is stored in `energy::NodeStates::column_separation` for its two
+/// consumers: `energy::edge_composition_at` (which draw carries what) and
+/// `Engine::tick`'s post-sweep draw write (how much each draw carries). This is
+/// the `ReactionModel` precedent exactly — `react` runs once per reactor rather
+/// than once per outlet edge — and it is what keeps the flow split and the
+/// composition split derived from the SAME pass, which per-component
+/// conservation at a zero-volume column requires.
+pub trait SeparationModel: Send {
+    fn name(&self) -> &'static str;
+
+    /// Split one column's feed among its draws.
+    ///
+    /// Pure: a function of `pass` alone, with no tick history. That is what keeps
+    /// a column's reference a clean hand calculation, and it is a contract, not an
+    /// implementation note — a cascade may WARM-START from a previous profile
+    /// (that changes the iteration count) but must never let one change the
+    /// answer (DESIGN §5, fork 5).
+    ///
+    /// `thermo` is unused by the cut-point splitter, which separates on the
+    /// slate's boiling points alone; the cascade reads K-values off it (M7.2).
+    ///
+    /// # Errors
+    /// `SimError` if the split cannot be produced — an invalid draw composition,
+    /// or (from M7.3) a cascade that does not converge. A non-converged solve is
+    /// an `Err`, never a held previous profile.
+    fn separate(
+        &self,
+        pass: &ColumnPass<'_>,
+        thermo: &dyn ThermoModel,
+    ) -> Result<Separation, SimError>;
 }
 
 /// The outcome of one reactor pass: the product composition and its heat of
