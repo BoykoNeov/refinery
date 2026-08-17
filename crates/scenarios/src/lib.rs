@@ -108,13 +108,23 @@ pub struct Simulation {
 pub struct Fidelity {
     /// "newton" | "simple"
     pub flow: String,
-    /// "constant" (M1) — expands with M7.2's K-values.
+    /// "constant" — the only selectable value, and `"trouton"` joins it in M7.3.
     ///
     /// Until M7.2 this string was parsed and then **ignored**: `build_engine`
     /// hardcoded `ConstantThermo`, so `thermo = "nonsense"` loaded a working
     /// plant. It was alone among the fidelity keys in that, and it was found by
     /// wiring `separation` beside it in M7.1 rather than by a test — nothing
     /// reached the value, so nothing could fail on it.
+    ///
+    /// **Why `TroutonThermo` exists in `solvers` but cannot be named here yet.**
+    /// The only consumer of a K-value is the cascade, which is M7.3. Until then
+    /// the cut-point splitter ignores the thermo model entirely, so selecting
+    /// `"trouton"` would change no number in any plant — a scenario knob nothing
+    /// can discriminate, which is precisely the shape M7.1 measured on
+    /// `smearing_k` (`a-hand-written-scenario-can-be-vacuous`). The arm lands in
+    /// M7.3 together with the load-time refusal of the pairing it makes
+    /// possible: `separation = "cascade"` with `thermo = "constant"`, which
+    /// would otherwise fail on the first tick instead of at load.
     #[serde(default = "default_constant")]
     pub thermo: String,
     /// "none" (M1) — expands in M4

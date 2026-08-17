@@ -30,7 +30,14 @@ pub enum Phase {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PseudoComponent {
     pub name: String,
-    /// True-boiling-point of the cut (used later for K-values / cut splits).
+    /// The cut's true boiling point **at `units::P_ATM`** — the NORMAL boiling
+    /// point, and the pressure matters as of M7.2.
+    ///
+    /// It was unstated while the only reader was the cut-point splitter, which
+    /// compares `tb` against a cut temperature and never against a pressure. A
+    /// K-value correlation anchors on it instead (`ThermoModel::k_value`:
+    /// `K = 1` at `T = tb`, `P = P_ATM`), so the reference pressure is now
+    /// load-bearing rather than descriptive.
     pub tb: Kelvin,
     pub molar_mass: KgPerMol,
     /// Liquid density at reference conditions. `None` for a gas-phase

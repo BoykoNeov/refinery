@@ -3,12 +3,17 @@
 //! | Trait           | Simple (game)        | Complex (research)      |
 //! |-----------------|----------------------|-------------------------|
 //! | FlowSolver      | SimpleFlowSolver     | NewtonFlowSolver        |
-//! | ThermoModel     | ConstantThermo (M2)  | CutThermo (M2/M3)       |
+//! | ThermoModel     | ConstantThermo       | TroutonThermo (M7.2)    |
 //! | ReactionModel   | SimpleLookup (M4.1)  | FourLump (M4.2)         |
 //! | SeparationModel | CutPointSplitter     | StageCascade (M7.3)     |
 //!
 //! Selection happens in refinery-scenarios from TOML config; nothing in
 //! here or in core branches on a fidelity flag.
+//!
+//! The thermo row said `CutThermo (M2/M3)` until M7.2. No such type was ever
+//! written and no milestone ever owed one — the trait had no methods, so there
+//! was nothing for a second implementation to differ about. It is named here
+//! because a table that promises a type is a claim like any other.
 
 pub mod elements;
 pub mod four_lump;
@@ -17,24 +22,56 @@ pub mod newton_flow;
 pub mod reactor;
 pub mod separation;
 pub mod simple_flow;
+pub mod thermo;
 
 pub use four_lump::{FourLump, FourLumpParams};
 pub use newton_flow::NewtonFlowSolver;
 pub use reactor::SimpleLookup;
 pub use separation::CutPointSplitter;
 pub use simple_flow::SimpleFlowSolver;
+pub use thermo::{ConstantAlphaThermo, TroutonThermo};
 
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
 use refinery_core::traits::{Reaction, ReactionModel, ThermoModel};
-use refinery_core::units::{JPerKg, Kelvin, Seconds};
+use refinery_core::units::{JPerKg, Kelvin, Pascal, Seconds};
 
 /// M1 placeholder: constant-property water; Composition's ideal-mixing
-/// helpers carry properties until M2.
+/// helpers carry properties.
+///
+/// The default and the only fidelity any scenario in this repo selects. It has
+/// **no phase equilibrium**, so `k_value` is an `Err` and not a number — see the
+/// method.
 pub struct ConstantThermo;
 impl ThermoModel for ConstantThermo {
     fn name(&self) -> &'static str {
         "constant"
+    }
+
+    /// Refused, deliberately.
+    ///
+    /// The tempting answer is `K = 1`, and it is the exact failure shape this
+    /// workspace keeps catching: finite, deterministic, plausible, and wrong —
+    /// a column that runs and separates nothing, which reads as a physics result
+    /// rather than a missing model. `ConstantThermo` is constant-property water;
+    /// it has no vapour pressure to divide by a system pressure.
+    ///
+    /// The pairing this protects (`separation = "cascade"` with
+    /// `thermo = "constant"`) becomes a LOAD-time refusal in M7.3, when
+    /// `cascade` first becomes selectable. Until then this arm is the only
+    /// guard, and a unit test is the only thing that reaches it.
+    fn k_value(
+        &self,
+        _slate: &Slate,
+        _component: usize,
+        _temperature: Kelvin,
+        _pressure: Pascal,
+    ) -> Result<f64, SimError> {
+        Err(SimError::Scenario(
+            "the 'constant' thermo fidelity has no vapour-liquid equilibrium, so it has \
+             no K-value; select thermo = \"trouton\" for a model that does"
+                .into(),
+        ))
     }
 }
 

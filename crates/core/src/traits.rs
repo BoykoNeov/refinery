@@ -80,19 +80,54 @@ pub trait FlowSolver: Send {
 /// composition/temperature-dependent models. Kept minimal on purpose —
 /// extend when a consumer actually needs a property, not before.
 ///
-/// **It has a consumer as of M7.1, and no method yet.** `SeparationModel::separate`
-/// takes `&dyn ThermoModel`, so the reserved slot on `Engine` is finally read and
-/// reaches `solvers` — but the cut-point splitter ignores it exactly as
-/// `ReactionModel::react` ignores `tau` at the lookup fidelity. The condition in
-/// the paragraph above is met by M7.2's `k_value(component, T, P)`, which is the
-/// first property a consumer actually needs; the *plumbing* lands a slice early
-/// so the cascade does not churn the separation trait to reach it (DESIGN §5,
-/// correction 2).
+/// **M7.1 gave it a consumer; M7.2 gives it its first method.**
+/// `SeparationModel::separate` takes `&dyn ThermoModel`, so the slot reserved on
+/// `Engine` since M1 is finally read and reaches `solvers` — and `k_value` is
+/// the property that consumer actually needs, which is the condition the
+/// paragraph above sets (DESIGN §5, fork 2).
 pub trait ThermoModel: Send {
     fn name(&self) -> &'static str;
+
+    /// The vapour–liquid equilibrium ratio of one component at `(T, P)`:
+    /// `K_c = y_c / x_c`, dimensionless.
+    ///
+    /// **`x` and `y` are MOLE fractions**, which is the whole reason fork 1
+    /// makes the cascade's internal state molar and converts at the unit's
+    /// boundary. A `Composition` in this workspace is mass fractions, and
+    /// handing one to this number without converting is the slip M4.2's real
+    /// crux (units, not the ODE) says to expect.
+    ///
+    /// A component is named by its **index into `slate`**, not by a
+    /// `&PseudoComponent`, because that is the identity a per-component
+    /// parameter vector is resolved against — `ConstantAlphaThermo` carries one
+    /// K per slate position, the same shape `SimpleLookup::fcc_demo(&slate)`
+    /// resolves at construction. A reference to the component alone would force
+    /// every such model to look itself up by name on the hot path.
+    ///
+    /// The anchor every implementation is expected to share: `K = 1` at
+    /// `T = tb` and `P = P_ATM`, because `tb` is the NORMAL boiling point. That
+    /// identity is what makes the property testable without a published table —
+    /// and, per DESIGN §5 correction 4, it is *structurally incapable* of
+    /// detecting a wrong empirical constant in the magnitude of `K` away from
+    /// that anchor, which is why a correlation needs a separate envelope gate.
+    ///
+    /// # Errors
+    /// `SimError` if the state is outside what the model can evaluate — a
+    /// non-positive or non-finite `T` or `P`, a component index off the end of
+    /// the slate, or a fidelity that has no vapour–liquid equilibrium at all
+    /// (`ConstantThermo`, which is every scenario before M7.2). Rule 5: a model
+    /// that cannot answer says so, and never returns a plausible number.
+    fn k_value(
+        &self,
+        slate: &Slate,
+        component: usize,
+        temperature: Kelvin,
+        pressure: Pascal,
+    ) -> Result<f64, SimError>;
+
     // Density/cp currently live on Composition (ideal mixing). This trait
-    // takes over when non-ideal or T-dependent behavior arrives (M2+),
-    // at which point Composition's mixture_* helpers delegate here.
+    // takes over when non-ideal or T-dependent behavior arrives, at which
+    // point Composition's mixture_* helpers delegate here.
 }
 
 /// One draw's separation result: the fraction of the feed mass it takes, the

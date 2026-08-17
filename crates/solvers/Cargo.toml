@@ -24,3 +24,7 @@ path = "tests/reference/four_lump.rs"
 [[test]]
 name = "orifice_reference"
 path = "tests/reference/orifice.rs"
+
+[[test]]
+name = "vapour_pressure_reference"
+path = "tests/reference/vapour_pressure.rs"

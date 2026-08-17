@@ -1593,13 +1593,26 @@ mod tests {
         }
     }
 
-    /// Property stub, mirroring `solvers::ConstantThermo`. The trait has no
-    /// method to implement yet; it is here because `resolve_node_states` hands it
-    /// to the separation model (DESIGN §5, correction 2).
+    /// Property stub, mirroring `solvers::ConstantThermo`. It is here because
+    /// `resolve_node_states` hands it to the separation model (DESIGN §5,
+    /// correction 2); no sweep test builds a column, so its `k_value` is
+    /// unreachable and refuses rather than inventing a number, exactly as the
+    /// real constant fidelity does.
     struct TestThermo;
     impl ThermoModel for TestThermo {
         fn name(&self) -> &'static str {
             "test-constant"
+        }
+        fn k_value(
+            &self,
+            _slate: &Slate,
+            _component: usize,
+            _temperature: Kelvin,
+            _pressure: Pascal,
+        ) -> Result<f64, SimError> {
+            Err(SimError::Numerical(
+                "this sweep test has no phase equilibrium; K-values belong to `solvers`".into(),
+            ))
         }
     }
 

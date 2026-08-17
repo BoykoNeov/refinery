@@ -40,8 +40,10 @@ pub struct Engine {
     /// and zero call sites for six milestones. M7.1 is where it becomes a live
     /// dependency: it is handed to `SeparationModel::separate`, because a K-value
     /// is a thermophysical property and belongs on this trait rather than on the
-    /// separation seam (DESIGN §5, fork 2). The splitter ignores it; M7.2 gives
-    /// the trait its first method and the cascade reads it.
+    /// separation seam (DESIGN §5, fork 2). The splitter ignores it; M7.2 gave
+    /// the trait its first method, `k_value`, and M7.3's cascade is what reads
+    /// it — so through M7.2 every scenario still selects `ConstantThermo`, whose
+    /// `k_value` refuses rather than answers.
     ///
     /// Transport still takes constant-property `cp` off `Composition` (ideal
     /// mixing), which is what `ThermoModel`'s doc says to leave alone until a
