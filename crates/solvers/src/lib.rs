@@ -15,6 +15,7 @@
 //! was nothing for a second implementation to differ about. It is named here
 //! because a table that promises a type is a claim like any other.
 
+pub mod cascade;
 pub mod elements;
 pub mod flash;
 pub mod four_lump;
@@ -26,6 +27,7 @@ pub mod separation;
 pub mod simple_flow;
 pub mod thermo;
 
+pub use cascade::StageCascade;
 pub use flash::{flash_isothermal, FlashResult};
 pub use four_lump::{FourLump, FourLumpParams};
 pub use molar::MoleFractions;

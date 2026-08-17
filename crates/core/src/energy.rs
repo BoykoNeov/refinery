@@ -1072,6 +1072,7 @@ pub fn resolve_node_states(
                             draws,
                             smearing,
                             pressure,
+                            cascade,
                         } = &graph.node(id).kind
                         {
                             let feed = composition
@@ -1086,6 +1087,7 @@ pub fn resolve_node_states(
                                     feed,
                                     feed_flow: column_feed_flow(graph, edge_mass_flow, id),
                                     temperature: mixed,
+                                    cascade: cascade.as_ref(),
                                 },
                                 thermo,
                             )?;

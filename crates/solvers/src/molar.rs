@@ -19,6 +19,7 @@
 
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
+use refinery_core::units::KgPerMol;
 
 /// Mole fractions over the slate, in slate order. Invariant: non-negative and
 /// summing to 1 — every constructor normalizes.
@@ -94,6 +95,27 @@ impl MoleFractions {
             .map(|(c, n)| n * slate.get(c).molar_mass.value())
             .collect();
         Composition::from_weights(&weights)
+    }
+
+    /// Mean molar mass on a MOLAR basis: `M̄ = Σ x_c·M_c` [kg/mol].
+    ///
+    /// The arithmetic mean weighted by mole fraction — where
+    /// `Composition::mean_molar_mass` is the *reciprocal* mean weighted by mass
+    /// fraction (`1/M̄ = Σ w_c/M_c`). Same physical number for the same mixture;
+    /// the formulas differ only because the weightings do, and
+    /// `the_two_mean_molar_masses_agree` pins that they do not drift apart.
+    ///
+    /// This is the factor the cascade converts a **mass** draw ratio through to
+    /// get a molar draw rate (DESIGN §5, correction 1), so it is the one place
+    /// where a wrong mean would move a flow rather than a fraction.
+    pub fn mean_molar_mass(&self, slate: &Slate) -> KgPerMol {
+        KgPerMol(
+            self.fractions
+                .iter()
+                .enumerate()
+                .map(|(c, n)| n * slate.get(c).molar_mass.value())
+                .sum(),
+        )
     }
 
     pub fn fractions(&self) -> &[f64] {
@@ -202,6 +224,24 @@ mod tests {
                     approx::assert_abs_diff_eq!(a, b, epsilon = 1e-14);
                 }
             }
+        }
+    }
+
+    /// The molar-basis mean and `Composition`'s mass-basis reciprocal mean are
+    /// the same number for the same mixture. Two formulas, one quantity — and
+    /// the mixture is 4× apart in molar mass so the two means are far from equal
+    /// to each other's mistakes.
+    #[test]
+    fn the_two_mean_molar_masses_agree() {
+        let slate = liquid_slate();
+        for weights in [[0.5, 0.5], [0.9, 0.1], [0.15, 0.85]] {
+            let mass = Composition::from_weights(&weights).unwrap();
+            let moles = MoleFractions::from_mass(&mass, &slate).unwrap();
+            approx::assert_relative_eq!(
+                moles.mean_molar_mass(&slate).value(),
+                mass.mean_molar_mass(&slate).value(),
+                max_relative = 1e-13
+            );
         }
     }
 

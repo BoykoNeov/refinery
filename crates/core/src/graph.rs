@@ -278,6 +278,17 @@ pub enum NodeKind {
         /// outlet node and owns the band below its `upper_cut` and above the
         /// previous draw's. See `ColumnDraw`.
         draws: Vec<ColumnDraw>,
+        /// Equilibrium-stage equipment, present iff `[fidelity] separation =
+        /// "cascade"` (M7.3). `None` is the cut-point splitter, which needs no
+        /// equipment at all — a boiling-range split is a property of the feed.
+        ///
+        /// The **declared-iff-used** correspondence this workspace already applies
+        /// to `PseudoComponent::density` (required iff liquid) and a valve's `x_T`
+        /// (required iff gas service): the loader requires this iff the cascade is
+        /// selected and refuses it otherwise, so neither fidelity can carry a
+        /// field the other silently ignores (DESIGN §5, fork 2).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cascade: Option<CascadeSpec>,
     },
     /// Isothermal conversion reactor (simple fidelity): one feed in, one product
     /// out, held at a fixed reactor-outlet temperature `t_set`, whose chemistry
@@ -325,14 +336,108 @@ pub enum NodeKind {
 /// every component above the last finite cut lands in; making it `None` rather
 /// than `+∞` keeps the field JSON-serializable (snapshots carry `NodeKind`) and
 /// makes "this is the residue draw" a type-level fact rather than a magic value.
+/// The `stage` / `draw_ratio` pair is the CASCADE's way of locating and sizing a
+/// draw, and it is the exact inverse of `upper_cut`: required by the cascade,
+/// refused by the splitter, and vice versa. Same declared-iff-used
+/// correspondence as `NodeKind::Column::cascade`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ColumnDraw {
     /// The product node this draw feeds. Resolved from a name by the loader,
     /// exactly as a `HeatExchangerCoupling`'s sides are.
     pub outlet: NodeId,
     /// Upper boiling-point boundary of this draw's band [K]; `None` for the
-    /// heaviest (open-topped) draw.
+    /// heaviest (open-topped) draw — and `None` for **every** draw under the
+    /// cascade fidelity, which locates a draw by stage instead.
     pub upper_cut: Option<Kelvin>,
+    /// Which equilibrium stage this draw leaves from (cascade fidelity only).
+    ///
+    /// `0` is the **total condenser** — the distillate — which is not an
+    /// equilibrium stage; `1..=N` are the stages, and `N` is the **reboiler**,
+    /// which is (note correction 3, and the convention the Fenske exponent rests
+    /// on). Every stage in between is a liquid side draw.
+    ///
+    /// A plain `u32` rather than a `Condenser | Stage(n) | Reboiler` sum type on
+    /// purpose: the integer *is* the position, `0` and `N` are already
+    /// distinguished by the stage count, and adding a variant would change
+    /// `ColumnDraw`'s serialized shape for every existing golden snapshot
+    /// (snapshots carry `NodeKind`) while moving no number.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<u32>,
+    /// This draw's **mass** flow as a fraction of the column feed (cascade
+    /// fidelity only): `D/F` for the distillate, `S_i/F` for a side draw.
+    ///
+    /// Mass, not molar, and that is load-bearing rather than a units convention
+    /// (DESIGN §5, correction 1): a molar `D/F` would make the mass split depend
+    /// on the distillate composition still being solved for, so total mass would
+    /// close only *at convergence* instead of exactly. `None` on the heaviest
+    /// (last) draw — the bottoms is `1 − Σ others` by subtraction and is never
+    /// specified, which is what makes `Σ splitᵢ = 1` an identity of the
+    /// specification.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw_ratio: Option<f64>,
+}
+
+impl ColumnDraw {
+    /// A draw located by boiling range — the cut-point splitter's shape.
+    /// `upper_cut = None` is the heaviest, open-topped draw.
+    pub fn by_cut(outlet: NodeId, upper_cut: Option<Kelvin>) -> Self {
+        Self {
+            outlet,
+            upper_cut,
+            stage: None,
+            draw_ratio: None,
+        }
+    }
+
+    /// A draw located by stage and sized by a mass ratio — the cascade's shape.
+    /// `draw_ratio = None` is the bottoms, whose share is `1 − Σ others`.
+    ///
+    /// Two constructors rather than one so the two fidelities' fields cannot be
+    /// mixed by accident at a call site; the loader enforces the same exclusion
+    /// on a file (DESIGN §5, fork 2).
+    pub fn by_stage(outlet: NodeId, stage: u32, draw_ratio: Option<f64>) -> Self {
+        Self {
+            outlet,
+            upper_cut: None,
+            stage: Some(stage),
+            draw_ratio,
+        }
+    }
+}
+
+/// A cascade column's equipment: how many equilibrium stages, where the feed
+/// enters, and how hard it is refluxed (M7.3, DESIGN §5 forks 2 and 3).
+///
+/// What is deliberately NOT here: any absolute flow. Fork 3's verdict is that a
+/// specification containing `D = 3.0 kg/s` re-runs the failure that killed M3.2's
+/// prescribed-draw column — it either freezes the feed or creates mass in a
+/// zero-volume node, while converging and conserving. The distillate and side
+/// draw *ratios* live on `ColumnDraw::draw_ratio`; the total through the column
+/// stays hydraulically determined.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CascadeSpec {
+    /// Number of equilibrium stages `N`, **counting the reboiler and excluding
+    /// the total condenser**.
+    ///
+    /// Stated here because a gate turns on it: Fenske at total reflux is
+    /// `(x_D/(1−x_D))·((1−x_B)/x_B) = α^N`, and the textbook `N_min` counts the
+    /// reboiler as a stage and does not count a total condenser. A convention
+    /// left implicit makes an "exact, derivable" gate pass or fail on an
+    /// off-by-one (DESIGN §5, correction 3).
+    pub stages: u32,
+    /// Which stage the feed enters, in `1..=stages`. A **saturated liquid** feed
+    /// only in M7.3: under constant molar overflow the feed quality sets the
+    /// internal liquid flow (`L' = L + q·F`), so a partly-vaporized feed changes
+    /// the cascade rather than just an enthalpy term (correction 5).
+    pub feed_stage: u32,
+    /// Reflux ratio `R = L/D`, **molar** and **internal** — it never crosses the
+    /// `SeparationModel` boundary as a flow, and it is one of the two real
+    /// control-room handles this fidelity exposes (the other is `D/F`).
+    ///
+    /// `0` is legal and is not a degenerate plant: it is a column run with no
+    /// reflux, and at `stages = 1` it is exactly the M7.2 single-stage flash,
+    /// which is one of the cascade's gates.
+    pub reflux_ratio: f64,
 }
 
 /// The thermal pairing of two `HeatExchanger` sides.

@@ -809,6 +809,9 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             // Draws are resolved in a second pass, once every node exists so a
             // draw can name an outlet defined later in the file (like couplings).
             draws: Vec::new(),
+            // Filled by the same second pass, which is where the declared-iff-used
+            // correspondence against `[fidelity] separation` is enforced.
+            cascade: None,
         },
         NodeDef::Reactor { t_set_c, tau_s } => NodeKind::Reactor {
             t_set: c_to_k(*t_set_c),
@@ -1285,6 +1288,8 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
             resolved.push(ColumnDraw {
                 outlet,
                 upper_cut: upper_cut_c.map(c_to_k),
+                stage: None,
+                draw_ratio: None,
             });
         }
 

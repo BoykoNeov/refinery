@@ -190,10 +190,7 @@ mod tests {
     /// The outlet id is unused by the splitter (it splits by boiling range, not
     /// by which tank a draw feeds), so a dummy id suffices.
     fn draw(upper_cut_k: Option<f64>) -> ColumnDraw {
-        ColumnDraw {
-            outlet: NodeId(0),
-            upper_cut: upper_cut_k.map(Kelvin),
-        }
+        ColumnDraw::by_cut(NodeId(0), upper_cut_k.map(Kelvin))
     }
 
     /// The feed state the splitter ignores, held constant across these tests so
@@ -216,6 +213,7 @@ mod tests {
                     feed,
                     feed_flow: KgPerSec(7.0),
                     temperature: FEED_T,
+                    cascade: None,
                 },
                 &ConstantThermo,
             )
@@ -395,6 +393,7 @@ mod tests {
                     feed: &feed,
                     feed_flow: KgPerSec(7.0),
                     temperature: FEED_T,
+                    cascade: None,
                 },
                 &ConstantThermo,
             )

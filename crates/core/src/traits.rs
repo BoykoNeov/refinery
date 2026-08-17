@@ -7,7 +7,7 @@
 
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
-use crate::graph::{ColumnDraw, EdgeId, NodeId, PlantGraph};
+use crate::graph::{CascadeSpec, ColumnDraw, EdgeId, NodeId, PlantGraph};
 use crate::units::{JPerKg, Kelvin, KgPerSec, Pascal, Seconds, Watt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -188,10 +188,11 @@ pub struct Separation {
 /// state that reaches it this tick.
 ///
 /// A struct rather than eight positional arguments, and that is a scoping
-/// decision as much as a readability one: M7.3's cascade config (stage count,
-/// feed stage, reflux ratio, `D/F`) lands here as further fields under the
-/// declared-iff-used correspondence, and an impl that ignores them needs no
-/// edit — the same trait-churn argument correction 2 makes about `thermo`.
+/// decision as much as a readability one: M7.3's cascade config landed here as a
+/// further field (`cascade`) under the declared-iff-used correspondence, and the
+/// splitter needed no edit to ignore it — the same trait-churn argument
+/// correction 2 makes about `thermo`. `D/F` did NOT land here: it is per-draw,
+/// so it rides `ColumnDraw::draw_ratio` beside the `upper_cut` it replaces.
 pub struct ColumnPass<'a> {
     /// The canonical component slate; `feed`'s fractions index into it.
     pub slate: &'a Slate,
@@ -218,6 +219,10 @@ pub struct ColumnPass<'a> {
     pub feed_flow: KgPerSec,
     /// The feed's resolved temperature [K].
     pub temperature: Kelvin,
+    /// The column's equilibrium-stage equipment, present iff the cascade fidelity
+    /// is selected (`NodeKind::Column::cascade`). Ignored by the splitter; the
+    /// cascade refuses a column that has none.
+    pub cascade: Option<&'a CascadeSpec>,
 }
 
 /// How a column divides its feed among its draws — the separation seam.

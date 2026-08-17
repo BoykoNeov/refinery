@@ -156,12 +156,17 @@ impl ThermoModel for TroutonThermo {
     }
 }
 
-/// K-values fixed per component, independent of `T` and `P`.
+/// K-values supplied per component, times an optional power of temperature:
+///
+/// ```text
+/// K_c(T) = k_c · (T/T_ref)^n         n = 0 by default ⇒ K is a constant
+/// ```
 ///
 /// "Constant relative volatility" is the classical shortcut, and this is its
-/// honest shape on this trait: the stored numbers ARE the K-values, so the
-/// relative volatility of any pair `α_ij = K_i/K_j` is constant by construction,
-/// which is exactly the condition the Fenske and null gates need.
+/// honest shape on this trait: the stored numbers ARE the K-values (up to a
+/// factor shared by every component), so the relative volatility of any pair
+/// `α_ij = K_i/K_j = k_i/k_j` is constant **for any `n`**, which is exactly the
+/// condition the Fenske and null gates need.
 ///
 /// **Not selectable from scenario TOML, and that is deliberate rather than an
 /// oversight.** The vector has no representation in a plant file — it is
@@ -170,12 +175,29 @@ impl ThermoModel for TroutonThermo {
 /// written against cascade *algebra* with the correlation held out of it
 /// (DESIGN §5, "the cascade algebra, through a relative volatility supplied by
 /// the test"); its consumers are tests.
+///
+/// **Why `n` exists at all — M7.2's version of this type could not do the job it
+/// was written for.** A cascade stage's temperature comes from its bubble point,
+/// `Σ_c K_c(T)·x_c = 1`. With `n = 0` that equation has **no root**: the left
+/// side does not depend on `T`. So the M7.2 type, whose whole stated purpose was
+/// to let a separation gate run with the correlation held out, could not have
+/// supported one stage of a cascade. Any monotone `T`-dependence fixes it without
+/// touching `α`, and a power law is the cheapest one that stays positive for every
+/// `T > 0`. That is a correction from building M7.3, recorded in DESIGN §5.
+///
+/// `n = 0` is still the default because a flash is *isothermal* — it is handed its
+/// temperature and never solves for one — and the M7.2 flash gates read the
+/// stored numbers back exactly.
 pub struct ConstantAlphaThermo {
     k_values: Vec<f64>,
+    /// Reference temperature of the scaling [K]; inert at `exponent = 0`.
+    t_ref: Kelvin,
+    /// `n` in `K_c = k_c·(T/T_ref)^n`. `0` is the constant model.
+    exponent: f64,
 }
 
 impl ConstantAlphaThermo {
-    /// One K per slate position, in slate order.
+    /// One K per slate position, in slate order, independent of `T` and `P`.
     ///
     /// # Errors
     /// `SimError` if the vector does not match the slate length, or carries a
@@ -183,6 +205,23 @@ impl ConstantAlphaThermo {
     /// leave the liquid, which makes `Σ z/K` in a flash infinite rather than
     /// merely large.
     pub fn new(slate: &Slate, k_values: Vec<f64>) -> Result<Self, SimError> {
+        Self::with_temperature_exponent(slate, k_values, Kelvin(1.0), 0.0)
+    }
+
+    /// `K_c(T) = k_c·(T/t_ref)^exponent` — the same fixed relative volatility,
+    /// made monotone in `T` so a bubble point exists. See the type's docs.
+    ///
+    /// # Errors
+    /// As `new`, plus a non-positive or non-finite `t_ref` and a non-finite
+    /// `exponent`. A NEGATIVE exponent is allowed and refused nowhere: it is a
+    /// model whose K falls with temperature, which is unphysical but is exactly
+    /// the sort of thing a gate may want to hand a cascade on purpose.
+    pub fn with_temperature_exponent(
+        slate: &Slate,
+        k_values: Vec<f64>,
+        t_ref: Kelvin,
+        exponent: f64,
+    ) -> Result<Self, SimError> {
         if k_values.len() != slate.len() {
             return Err(SimError::Scenario(format!(
                 "constant-alpha thermo has {} K-values for a {}-component slate",
@@ -200,7 +239,22 @@ impl ConstantAlphaThermo {
                 slate.get(i).name
             )));
         }
-        Ok(Self { k_values })
+        if !t_ref.value().is_finite() || t_ref.value() <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "constant-alpha reference temperature must be finite and > 0, got {} K",
+                t_ref.value()
+            )));
+        }
+        if !exponent.is_finite() {
+            return Err(SimError::Scenario(format!(
+                "constant-alpha temperature exponent must be finite, got {exponent}"
+            )));
+        }
+        Ok(Self {
+            k_values,
+            t_ref,
+            exponent,
+        })
     }
 }
 
@@ -216,12 +270,32 @@ impl ThermoModel for ConstantAlphaThermo {
         temperature: Kelvin,
         pressure: Pascal,
     ) -> Result<f64, SimError> {
-        // The state is validated even though the answer ignores it: a caller
-        // that reaches here with a 0 K tray has a bug either way, and a model
-        // that silently accepts a state its sibling refuses would make the two
+        // The state is validated even when the answer ignores it: a caller that
+        // reaches here with a 0 K tray has a bug either way, and a model that
+        // silently accepts a state its sibling refuses would make the two
         // fidelities disagree about which plants are legal.
         check_state(slate, component, temperature, pressure, "constant_alpha")?;
-        Ok(self.k_values[component])
+        let k = self.k_values[component];
+        // Branched rather than always multiplying by `powf(0.0)`: at n = 0 this
+        // must return the stored number BIT-for-bit, because the M7.2 flash gates
+        // compare it with `assert_eq!`.
+        if self.exponent == 0.0 {
+            return Ok(k);
+        }
+        let scaled = k * (temperature.value() / self.t_ref.value()).powf(self.exponent);
+        if !scaled.is_finite() || scaled <= 0.0 {
+            return Err(SimError::NonFiniteState {
+                location: format!(
+                    "constant_alpha k_value for '{}' at {} K: k = {k} scaled by \
+                     (T/{})^{} gave {scaled}",
+                    slate.get(component).name,
+                    temperature.value(),
+                    self.t_ref.value(),
+                    self.exponent
+                ),
+            });
+        }
+        Ok(scaled)
     }
 }
 
@@ -400,5 +474,91 @@ mod tests {
         assert!(ConstantAlphaThermo::new(&slate, vec![2.5]).is_err());
         assert!(ConstantAlphaThermo::new(&slate, vec![2.5, 0.0]).is_err());
         assert!(ConstantAlphaThermo::new(&slate, vec![2.5, -1.0]).is_err());
+    }
+
+    /// The scaled form keeps the relative volatility EXACTLY fixed while making
+    /// `K` monotone in `T`. Both halves matter and they are why the field exists:
+    /// `α` fixed is what the Fenske gate rests on, and monotone `K` is what gives
+    /// a cascade stage a bubble point at all.
+    ///
+    /// The pair of assertions is also the discrimination: a scaling applied
+    /// per-component (say `k_c·(T/T_ref)^c`) would still be monotone and would
+    /// still be "temperature-dependent", and would break `α` silently.
+    #[test]
+    fn the_scaled_form_moves_k_without_moving_alpha() {
+        let slate = slate_with_tbs(&[400.0, 500.0]);
+        let thermo = ConstantAlphaThermo::with_temperature_exponent(
+            &slate,
+            vec![4.0, 1.0],
+            Kelvin(400.0),
+            8.0,
+        )
+        .unwrap();
+
+        let mut previous = 0.0;
+        for t in [300.0, 400.0, 500.0, 600.0] {
+            let light = thermo.k_value(&slate, 0, Kelvin(t), P_ATM).unwrap();
+            let heavy = thermo.k_value(&slate, 1, Kelvin(t), P_ATM).unwrap();
+            approx::assert_relative_eq!(light / heavy, 4.0, max_relative = 1e-13);
+            assert!(
+                light > previous,
+                "K must rise with T: {light} after {previous}"
+            );
+            previous = light;
+        }
+        // The reference temperature is where the stored numbers are returned
+        // unchanged — the anchor that makes a hand calculation possible.
+        approx::assert_relative_eq!(
+            thermo.k_value(&slate, 0, Kelvin(400.0), P_ATM).unwrap(),
+            4.0,
+            max_relative = 1e-14
+        );
+    }
+
+    /// `new` is the `exponent = 0` case bit-for-bit, so every M7.2 flash gate
+    /// keeps comparing with `assert_eq!` rather than a tolerance.
+    #[test]
+    fn the_unscaled_constructor_is_the_zero_exponent_case_exactly() {
+        let slate = slate_with_tbs(&[400.0, 500.0]);
+        let plain = ConstantAlphaThermo::new(&slate, vec![2.5, 0.4]).unwrap();
+        let explicit = ConstantAlphaThermo::with_temperature_exponent(
+            &slate,
+            vec![2.5, 0.4],
+            Kelvin(400.0),
+            0.0,
+        )
+        .unwrap();
+        for t in [250.0, 900.0] {
+            for c in 0..2 {
+                assert_eq!(
+                    plain.k_value(&slate, c, Kelvin(t), P_ATM).unwrap(),
+                    explicit.k_value(&slate, c, Kelvin(t), P_ATM).unwrap()
+                );
+            }
+        }
+    }
+
+    /// The scaling's own parameters are refused when they cannot define a model.
+    #[test]
+    fn an_impossible_scaling_is_refused() {
+        let slate = slate_with_tbs(&[400.0]);
+        for (t_ref, exponent) in [
+            (0.0, 1.0),
+            (-400.0, 1.0),
+            (f64::NAN, 1.0),
+            (400.0, f64::NAN),
+            (400.0, f64::INFINITY),
+        ] {
+            assert!(
+                ConstantAlphaThermo::with_temperature_exponent(
+                    &slate,
+                    vec![2.0],
+                    Kelvin(t_ref),
+                    exponent
+                )
+                .is_err(),
+                "t_ref = {t_ref}, exponent = {exponent} must be refused"
+            );
+        }
     }
 }

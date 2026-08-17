@@ -130,15 +130,10 @@ fn column_plant() -> PlantGraph {
             pressure: Pascal(1.5e5),
             smearing: Kelvin(0.0),
             draws: vec![
-                ColumnDraw {
-                    outlet: light,
-                    upper_cut: Some(Kelvin(450.0)),
-                },
-                ColumnDraw {
-                    outlet: heavy,
-                    upper_cut: None,
-                },
+                ColumnDraw::by_cut(light, Some(Kelvin(450.0))),
+                ColumnDraw::by_cut(heavy, None),
             ],
+            cascade: None,
         },
     ));
     graph.add_pipe(feed, column, pipe("feed_line"));
