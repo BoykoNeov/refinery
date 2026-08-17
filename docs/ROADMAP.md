@@ -2149,8 +2149,19 @@ This is the same reasoning DESIGN §8 used to separate "gateable" from
   history is unbounded, grows with iteration count, and would be marshalled
   every failed tick inside `_physics_process` for a payload no HUD reads.
 
-**Mutation evidence — 6 mutations, 6 caught, 0 void.** Every log checked for
-`could not compile` (0 in all six) and for which binary failed, so a mutation
+**A coverage CLAIM is not a coverage MECHANISM** — caught on review, fixed
+before the slice closed. The first version of the effect test was a
+hand-written sequence of six blocks named
+`every_command_variant_reaches_the_engine_and_changes_it`. Nothing in it was
+compiler-enforced: a seventh variant would have left it passing, still reading
+as "every variant", covering nothing. Split in two — an acceptance sweep
+driven from the same list `wire_text`'s match already forces complete (so
+"every" is enforced), and a hand-picked effect sweep now *named* for what it
+is. The repo's own recurring lesson ([[a-counter-is-not-a-gate]]) applied to a
+test's name rather than to a number.
+
+**Mutation evidence — 7 mutations, 7 caught, 0 void.** Every log checked for
+`could not compile` (0 in all seven) and for which binary failed, so a mutation
 that never built cannot read as a catch.
 - `#[serde(tag = "cmd")]` renamed to `"command"` → **6 gates**.
 - The bridge's node-id membership check removed → **1 gate**,
@@ -2163,6 +2174,10 @@ that never built cannot read as a catch.
 - An error code renamed → **2 gates**.
 - Pre-tick NaNs sanitized to `0.0` — the tempting wrong fix — → **1 gate**,
   the field-set assertion.
+- One variant's `Referent` pointed at the wrong element kind (the copy-paste
+  slip the wildcard-free match exists to make impossible to *forget*, but not
+  to get *wrong*) → **2 gates**, including the new acceptance sweep. Run after
+  the split above, to show the replacement gate is not vacuous.
 
 **What the blast radius says.** Both workspace-scope mutations (the serde tag,
 the float feature) failed **exactly one test binary**: this crate's. Before

@@ -111,13 +111,73 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
 // -------------------------------------------- commands reach a real engine
 
+/// A plant each variant is legal on, and the element it addresses there.
+///
+/// **Wildcard-free, and that is what makes the sweep below a mechanism rather
+/// than a list someone maintains.** A new `Command` variant does not compile
+/// until it names somewhere it can be applied.
+fn fixture(cmd: &Command) -> (&'static str, &'static str) {
+    match cmd {
+        Command::SetValveOpening { .. } => (LEAKY, "discharge_valve"),
+        Command::SetPumpOn { .. } => (LEAKY, "transfer_pump"),
+        Command::PuncturePipe { .. } => (LEAKY, "fill_line"),
+        Command::SetHeatInput { .. } => (LEAKY, "receiving_tank"),
+        Command::SetFurnaceDuty { .. } => ("furnace_heater.toml", "heater"),
+        Command::SetCoolerDuty { .. } => ("cooler_chiller.toml", "chiller"),
+    }
+}
+
+/// Every variant is accepted by a real engine through the bridge.
+///
+/// Driven from `every_variant()`, whose completeness `wire_text`'s match
+/// already forces — so "every" here is enforced by the compiler, not by the
+/// author's memory. This gate covers ACCEPTANCE only; the per-command effects
+/// are the hand-picked sweep below, which deliberately does not claim to be
+/// exhaustive.
 #[test]
-fn every_command_variant_reaches_the_engine_and_changes_it() {
+fn every_command_variant_is_accepted_by_a_real_engine() {
+    for cmd in every_variant() {
+        let (plant, target) = fixture(&cmd);
+        let mut sim = bridge(plant);
+
+        // Rewrite the placeholder id in the canned variant with one this
+        // plant actually has, leaving every other field as written.
+        let mut value = serde_json::to_value(&cmd).expect("Command to JSON");
+        let object = value.as_object_mut().expect("Command is a JSON object");
+        let key = if object.contains_key("node") {
+            "node"
+        } else if object.contains_key("edge") {
+            "edge"
+        } else {
+            panic!(
+                "{cmd:?} addresses neither a node nor an edge — the bridge's \
+                    id validation has nothing to check, so `Referent` and this \
+                    sweep both need a decision"
+            )
+        };
+        let id = if key == "node" {
+            sim.node_id(target)
+        } else {
+            sim.edge_id(target)
+        }
+        .unwrap_or_else(|e| panic!("{plant} has no '{target}': {e}"));
+        object.insert(key.to_string(), Value::from(id));
+
+        sim.apply_command_json(&value.to_string())
+            .unwrap_or_else(|e| panic!("{cmd:?} refused on {plant}: {e}"));
+    }
+}
+
+/// The effects themselves, hand-picked per command. **Not exhaustive**, by
+/// name and by intent: what each command should physically do differs enough
+/// that a generic assertion would say nothing. Completeness of the variant
+/// set is `every_command_variant_is_accepted_by_a_real_engine`'s job.
+#[test]
+fn each_command_has_its_documented_effect() {
     // Valve, pump and puncture, on M6.1's leaky plant.
     let mut sim = bridge(LEAKY);
     let valve = sim.node_id("discharge_valve").unwrap();
     let pump = sim.node_id("transfer_pump").unwrap();
-    let tank = sim.node_id("supply_tank").unwrap();
     let pipe = sim.edge_id("fill_line").unwrap();
 
     sim.apply_command_json(&format!(
@@ -183,8 +243,6 @@ fn every_command_variant_reaches_the_engine_and_changes_it() {
         after > before,
         "SetHeatInput did not heat the tank ({before} K -> {after} K)"
     );
-    let _ = tank; // supply_tank resolves; its own heating is furnace_reference's gate
-
     // The two duty commands need their own units.
     let mut furnace = bridge("furnace_heater.toml");
     let heater = furnace.node_id("heater").unwrap();
