@@ -7,8 +7,8 @@
 use crate::components::Slate;
 use crate::energy::{self, T_REF};
 use crate::error::SimError;
-use crate::graph::{LeakRole, NodeKind, PlantGraph};
-use crate::snapshot::{ColumnDuty, Command, EdgeSnapshot, NodeSnapshot, Snapshot};
+use crate::graph::{ControlMode, ControlledValue, LeakRole, LoopId, NodeId, NodeKind, PlantGraph};
+use crate::snapshot::{ColumnDuty, Command, ControlSnapshot, EdgeSnapshot, NodeSnapshot, Snapshot};
 use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, SeparationModel, ThermoModel};
 use crate::units::*;
 
@@ -95,6 +95,24 @@ impl Engine {
                 if !(0.0..=1.0).contains(&opening) || !opening.is_finite() {
                     return Err(SimError::InvalidCommand(format!(
                         "valve opening {opening} outside [0,1]"
+                    )));
+                }
+                // Refused when a loop in AUTO owns this opening, and the shape is
+                // the relief valve's below: a write that survives until the top of
+                // the next tick and is then silently overwritten is a command that
+                // APPEARS to work and does not (docs/DESIGN.md §10 fork 4). In
+                // MANUAL the same command drives the actuator unchanged, which is
+                // what MANUAL means.
+                if let Some(owner) = self
+                    .graph
+                    .controls()
+                    .iter()
+                    .find(|c| c.actuator == node && c.mode == ControlMode::Auto)
+                {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO:                          its opening would be overwritten at the top of the next tick. Put                          the loop in MANUAL first (`set_controller_mode`), or move the                          loop's setpoint (`set_setpoint`)",
+                        self.graph.node(node).name,
+                        owner.name
                     )));
                 }
                 match &mut self.graph.node_mut(node).kind {
@@ -208,11 +226,53 @@ impl Engine {
                     ))),
                 }
             }
+            // A loop is put in AUTO or MANUAL. The transfer is bumpless in both
+            // directions, and in M8.2 that costs nothing: AUTO→MANUAL is free
+            // because the actuator already holds the loop's last output, and
+            // MANUAL→AUTO is free because a proportional controller has no memory
+            // to jump from. It stops being free with `PiController` (M8.3), which
+            // must back-calculate its integral from the actuator's current
+            // position here — the same arithmetic anti-windup needs, which is why
+            // fork 4 does not defer bumpless transfer to a later slice.
+            Command::SetControllerMode { loop_id, mode } => {
+                let control = self
+                    .graph
+                    .control_mut(loop_id)
+                    .ok_or_else(|| unknown_loop(loop_id))?;
+                control.mode = mode;
+                Ok(())
+            }
+            Command::SetSetpoint { loop_id, value } => {
+                let control = self
+                    .graph
+                    .control(loop_id)
+                    .ok_or_else(|| unknown_loop(loop_id))?;
+                // Range-checked by the graph, which is the single owner of what
+                // a reachable target is — the loader applies the same check to a
+                // declared setpoint, so a loop cannot load with a number this
+                // command would then refuse.
+                self.graph.check_setpoint(control.measurement_node, value)?;
+                // The variable cannot disagree: `ControlledValue` has one variant,
+                // so a level setpoint is the only thing this command can carry.
+                // See the type's own note for why there is deliberately no guard
+                // here, and for when one becomes required.
+                self.graph
+                    .control_mut(loop_id)
+                    .ok_or_else(|| unknown_loop(loop_id))?
+                    .setpoint = value;
+                Ok(())
+            }
         }
     }
 
     pub fn tick(&mut self) -> Result<(), SimError> {
         let dt = self.config.dt;
+
+        // 0. Regulation (M8.2). The control loops run at the TOP of the tick, on
+        //    the state standing at the start of it, and write their actuators
+        //    before anything is solved. See `run_control_loops` for why this is
+        //    an ordering decision and not a convenience.
+        self.run_control_loops(dt)?;
 
         // 1. Quasi-steady hydraulic solve (read-only over graph). `mut` because
         //    step 2b writes prescribed column draw flows back into it once the
@@ -709,6 +769,121 @@ impl Engine {
         Ok(())
     }
 
+    /// Run every control loop, in declaration order, on the state standing at
+    /// the top of this tick.
+    ///
+    /// **Before the hydraulic solve, and that is a decision rather than an
+    /// ordering convenience** (docs/DESIGN.md §10 fork 3). A loop reading *this*
+    /// tick's solved state and writing an actuator opening would change a solver
+    /// input after the solve, requiring a re-solve whose answer would change the
+    /// input again — an algebraic loop, the same shape §3c rejected for
+    /// per-iteration reclassification. The cost is one `dt` of measurement lag,
+    /// which is what a real sampled controller has: a DCS acts on the previous
+    /// scan, and that IS the physical system rather than an approximation of it.
+    /// It is also the staleness §3 already accepts everywhere else — the
+    /// quasi-steady solve is driven by tank levels integrated at the end of the
+    /// previous tick.
+    ///
+    /// **Three passes rather than one, and the reason is the borrow checker
+    /// telling the truth about the data flow.** Measuring reads the graph's
+    /// nodes, running a controller mutates the loop's own state, and writing an
+    /// opening mutates a node — one fused loop would hold a node reference
+    /// across a controller call. Splitting them also makes the ordering explicit:
+    /// **every loop measures before any loop writes**, so two loops on one plant
+    /// see the same start-of-tick state regardless of declaration order, and
+    /// declaration order decides only who wins a contested write. (Nothing can
+    /// contest one today — the loader refuses two loops on one actuator.)
+    fn run_control_loops(&mut self, dt: Seconds) -> Result<(), SimError> {
+        if self.graph.controls().is_empty() {
+            // The pre-M8 plants take this exit, which is why they are
+            // byte-identical: not one line below runs for a plant with no loop.
+            return Ok(());
+        }
+
+        // Pass 1 — measure, and read each actuator's current position. Both are
+        // reads of the graph, and both are of the state BEFORE this tick's solve.
+        let mut sampled: Vec<(ControlledValue, f64)> =
+            Vec::with_capacity(self.graph.controls().len());
+        for control in self.graph.controls() {
+            let measurement = self.graph.measure(
+                &self.slate,
+                control.measurement_node,
+                control.setpoint.variable(),
+            )?;
+            let position = match &self.graph.node(control.actuator).kind {
+                NodeKind::Valve { opening, .. } => *opening,
+                // Rule 5's backstop: the loader refuses a non-valve actuator, so
+                // this is reachable only from a hand-built graph, and it says so
+                // rather than inventing a position.
+                _ => {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' actuates node '{}', which is not a valve",
+                        control.name,
+                        self.graph.node(control.actuator).name
+                    )))
+                }
+            };
+            sampled.push((measurement, position));
+        }
+
+        // Pass 2 — run each controller and record what it wants written.
+        let mut writes: Vec<Option<(NodeId, f64)>> = Vec::with_capacity(sampled.len());
+        for (control, (measurement, position)) in self.graph.controls_mut().iter_mut().zip(sampled)
+        {
+            control.last_measurement = measurement;
+            match control.mode {
+                ControlMode::Auto => {
+                    let output = control
+                        .algorithm
+                        .update(measurement, control.setpoint, dt)?;
+                    // Checked here rather than trusted from the seam: the range
+                    // is the actuator's, not the algorithm's, and an out-of-range
+                    // position reaching `Valve::opening` is a plant state
+                    // `Command::SetValveOpening` would have refused from a human.
+                    if !output.is_finite() || !(0.0..=1.0).contains(&output) {
+                        return Err(SimError::Numerical(format!(
+                            "control loop '{}' ({}) produced actuator position {output}, \
+                             which is not a finite fraction in [0, 1]",
+                            control.name,
+                            control.algorithm.name()
+                        )));
+                    }
+                    control.last_output = output;
+                    writes.push(Some((control.actuator, output)));
+                }
+                // MANUAL writes nothing and TRACKS: the faceplate reports the
+                // actuator's real opening, which is what a DCS shows and what
+                // makes AUTO→MANUAL transfer free (fork 4). The measurement is
+                // still taken, so the loop-off counterfactual is a run of the
+                // same plant with a truthful faceplate rather than of a plant
+                // with the loop deleted.
+                ControlMode::Manual => {
+                    control.last_output = position;
+                    writes.push(None);
+                }
+            }
+        }
+
+        // Pass 3 — write the actuators.
+        for (actuator, opening) in writes.into_iter().flatten() {
+            match &mut self.graph.node_mut(actuator).kind {
+                NodeKind::Valve { opening: o, .. } => *o = opening,
+                // Unreachable: pass 1 already refused a non-valve actuator on
+                // this same id, and nothing between the two passes can change a
+                // node's kind. Left as an `Err` rather than an `unwrap` because
+                // rule 5 is about what the engine may do, not about what it can
+                // prove (`SetValveOpening`'s own arm has the same shape).
+                _ => {
+                    return Err(SimError::Scenario(format!(
+                        "control loop actuator '{}' is not a valve",
+                        self.graph.node(actuator).name
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let sol = self.last_solution.as_ref();
         let nodes = self
@@ -788,6 +963,26 @@ impl Engine {
                 _ => None,
             })
             .collect();
+        // One faceplate per loop, in declaration order — which is `LoopId` order
+        // and execution order both. `measurement` is the value the controller
+        // ACTED ON, carried on the loop since the top of the tick, and not a
+        // fresh read of the graph: those differ by one `dt`, and reporting the
+        // fresh one would hide the lag from the person debugging it.
+        let controls = self
+            .graph
+            .controls()
+            .iter()
+            .enumerate()
+            .map(|(i, c)| ControlSnapshot {
+                id: LoopId(i as u32),
+                name: c.name.clone(),
+                algorithm: c.algorithm.name().to_string(),
+                mode: c.mode,
+                setpoint: c.setpoint,
+                measurement: c.last_measurement,
+                output: c.last_output,
+            })
+            .collect();
         Snapshot {
             tick: self.tick,
             sim_time: Seconds(self.tick as f64 * self.config.dt.value()),
@@ -795,6 +990,7 @@ impl Engine {
             edges,
             solver: sol.map(|s| s.diagnostics.clone()).unwrap_or_default(),
             tanks,
+            controls,
         }
     }
 
@@ -828,6 +1024,15 @@ fn dissipation_of(solution: &HydraulicSolution, edge: crate::graph::EdgeId) -> W
         .get(&edge)
         .copied()
         .unwrap_or(Watt::ZERO)
+}
+
+/// The refusal for a `LoopId` that names no loop.
+///
+/// A `LoopId` arrives from outside the engine, so an out-of-range one is a
+/// command to refuse rather than a bug to index-panic on (rule 5). Shared by both
+/// loop commands so the two cannot phrase the same fault differently.
+fn unknown_loop(loop_id: LoopId) -> SimError {
+    SimError::InvalidCommand(format!("{loop_id:?} names no control loop on this plant"))
 }
 
 /// Validate a heater/cooler duty setpoint: finite and non-negative.

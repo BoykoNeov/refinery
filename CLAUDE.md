@@ -164,7 +164,43 @@ but the project's **first per-instance seam**, so "rule 2 says trait" had to be
 argued rather than inherited, and its impls own STATE where every earlier seam's
 are pure; and the loop runs at the TOP of the tick on the *previous* tick's
 state, because reading this tick's solve and writing an actuator is an algebraic
-loop. `docs/ROADMAP.md` M8.2–M8.5 are the building slices, none started.
+loop.
+
+**M8.2 landed 2026-08-26** — the seam itself: `PlantGraph::controls`, the
+`Controller` trait (the project's first `Vec<Box<dyn _>>` and its first seam whose
+impls own state), `ProportionalController`, the `[[controls]]` table, and the two
+loop commands. Five details of the note were corrected while building; three
+matter before touching M8.3.
+
+**`initial_output` is deliberately NOT in M8.2, and the reflex that wants it is a
+trap.** A proportional controller with no bias shuts its valve completely at
+setpoint, which makes `u = u_b + K·e` look obviously right. It is not: fork 5
+defines `initial_output` as the loop's *memory* and a P loop has none, and M8.3's
+gate reads the P loop's steady-state offset as a signal — a bias makes that offset
+a function of how well the bias was chosen instead. So the algorithm is
+`u = clamp(K·e, 0, 1)`, the offset is large and honest, and the key is not in the
+`[[controls]]` struct at all.
+
+Two more: the tuning key is **`gain_per_m`**, not the note's bare `gain`, by fork
+4's own argument about `setpoint_m` (a gain is `1/m` on a level loop and `1/Pa` on
+a pressure loop). And **two refusals the note names have no reachable path today**
+— both directions of "the setpoint's variable disagrees with the loop's", which one
+`ControlledValue` variant makes unrepresentable — so they are recorded in comments
+naming their own expiry rather than shipped as guards nothing reaches.
+
+A control loop can now slam a valve shut between two ticks, and **a branch driven
+to zero flow in ONE tick stalls the Newton solver**. That is NOT the loop's defect:
+`Command::SetValveOpening` writing the identical endpoint fails identically, which
+is the control that settles it. Reached gradually the same endpoint converges. It
+is pinned by `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it`, which
+is written to fail when the solver is fixed, and it belongs to a `newton_flow`
+slice. Practically: a level loop needs a gain gentle enough not to clamp to zero
+in one step, or a setpoint step small enough not to.
+
+No file in `scenarios/` declares a `[[controls]]` table — the two plants that carry
+a loop are inline test fixtures, because the thirteen shipped files ARE the
+regression anchor (26 runs byte-identical across this slice). The wired demo that
+regulates is M8.4's. `docs/ROADMAP.md` M8.3–M8.5 are the remaining slices.
 
 M1–M7 are closed: flow network, heat, crude + simple column, reactor, gas and
 pressure realism, damage + the Godot frontend, and the complex column. **M7 closed

@@ -14,11 +14,11 @@ use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    CascadeSpec, ColumnDraw, HeatExchangerCoupling, LeakRole, Node, NodeId, NodeKind, Pipe,
-    PlantGraph, TankState, VesselState,
+    CascadeSpec, ColumnDraw, ControlLoop, ControlMode, ControlledValue, HeatExchangerCoupling,
+    LeakRole, MeasuredVariable, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState, VesselState,
 };
 use refinery_core::stream::Stream;
-use refinery_core::traits::{FlowSolver, ReactionModel, SeparationModel, ThermoModel};
+use refinery_core::traits::{Controller, FlowSolver, ReactionModel, SeparationModel, ThermoModel};
 use refinery_core::units::{
     CubicMeter, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Pascal, Seconds, SquareMeter, Watt,
     WattPerKelvin, P_ATM, T_AMBIENT,
@@ -44,6 +44,12 @@ pub struct ScenarioFile {
     /// what keeps those files bit-identical (see `build_engine` step 1).
     #[serde(default)]
     pub components: Vec<ComponentDef>,
+    /// The plant's regulating loops (M8.2). Optional: absent is the thirteen
+    /// scenarios written before M8, which regulate nothing and stay
+    /// byte-identical because an empty list makes the loop pass and the snapshot
+    /// field both vanish.
+    #[serde(default)]
+    pub controls: Vec<ControlDef>,
 }
 
 /// One `[[components]]` entry: a boiling-point cut.
@@ -387,6 +393,78 @@ fn default_ambient_c() -> f64 {
     T_AMBIENT.value() - 273.15
 }
 
+/// One `[[controls]]` entry: a regulating loop (M8.2, docs/DESIGN.md §10).
+///
+/// **`deny_unknown_fields`, alone among the definitions in this file**, and that
+/// asymmetry is deliberate. Everywhere else an unrecognised key is a typo in a
+/// quantity that has a visible consequence — a mistyped `length_m` fails to
+/// deserialize because the field is required. Here the tuning constants are
+/// per-algorithm and therefore optional at the serde level, so `gain_per_metre`
+/// would parse as an unknown key, leave `gain_per_m` absent, and the file would
+/// be refused for the wrong reason or (once a default existed) accepted with an
+/// invented gain. The keys that belong to the OTHER algorithm are refused by name
+/// below; this catches the ones that belong to no algorithm at all.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlDef {
+    /// Unique per plant. What the loop's faceplate is labelled with.
+    pub name: String,
+    /// Which node's state this loop watches, and which of its variables.
+    pub measurement: MeasurementDef,
+    /// Name of the node this loop writes. A `valve`; a `relief_valve` is refused
+    /// with its own reason.
+    pub actuator: String,
+    /// `"p"` (M8.2). `"pi"` arrives with M8.3 and is refused until then, the way
+    /// every unknown fidelity string is.
+    pub algorithm: String,
+    /// `"auto"` (the loop drives its actuator) or `"manual"` (a human does).
+    pub mode: String,
+    /// The target, in metres. **Required for `variable = "level"` and meaningless
+    /// for any other variable**, exactly as `up_to_c` is the splitter's and
+    /// `stage` the cascade's.
+    ///
+    /// The unit is in the KEY because a snapshot's setpoint cannot put it in a
+    /// field name (docs/DESIGN.md §10 fork 4). When pressure control un-defers,
+    /// its key is `setpoint_pa` and this one becomes the one that is refused on a
+    /// pressure loop — the two-directional refusal the separation fidelities
+    /// already enforce.
+    #[serde(default)]
+    pub setpoint_m: Option<f64>,
+    /// Proportional gain, per metre of level error.
+    ///
+    /// **The unit is in the key, and the design note wrote this one bare.** That
+    /// is corrected here rather than followed: a gain is `1/m` on a level loop and
+    /// `1/Pa` on a pressure loop, so a bare `gain` is a number whose unit depends
+    /// on a sibling key — which is the exact failure fork 4 spent its own
+    /// correction on for `setpoint_m`, applied to the other half of the same
+    /// entry. No default, for the reason `x_T` has none.
+    #[serde(default)]
+    pub gain_per_m: Option<f64>,
+    /// Integral time [s]. **PI only** (M8.3), and refused on `algorithm = "p"`
+    /// with a message that says so.
+    ///
+    /// Present in this struct before the algorithm that reads it exists, for
+    /// `DrawDef::phase`'s reason: a refusal of something the format cannot express
+    /// is not a refusal. A file that tunes an integral term into a proportional
+    /// loop is making a real mistake, and it gets told which one.
+    #[serde(default)]
+    pub integral_time_s: Option<f64>,
+}
+
+/// The `measurement = { node = "...", variable = "..." }` inline table.
+///
+/// A table rather than two flat keys, because the pair is one thing: a variable
+/// with no node names nothing, and the loader has to resolve them together to
+/// know whether the node can answer for that variable at all.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MeasurementDef {
+    pub node: String,
+    /// `"level"` (M8.2). Pressure, temperature and flow are deferred per-variable
+    /// — see `MeasuredVariable`.
+    pub variable: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct PipeDef {
     pub name: String,
@@ -533,6 +611,12 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         graph.pipe_mut(eid).stream.composition = Composition::pure(slate.len(), index);
     }
 
+    // Step 3b: the control loops, after every node exists so a loop may name an
+    // actuator defined later in the file, exactly like an exchanger coupling or a
+    // column draw. It runs after `plant_phases` because a loop's seeded
+    // measurement is a real read of the finished plant, not a placeholder.
+    build_controls(&mut graph, &slate, &scenario.controls)?;
+
     // Step 4: select solver impls from [fidelity]; unknown names are errors
     // listing the valid options.
     let flow: Box<dyn FlowSolver> = match scenario.fidelity.flow.as_str() {
@@ -600,6 +684,230 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
 /// for no gain. Duplicate names ARE an error — `Composition` is written by name,
 /// so two cuts called the same thing make a composition ambiguous, and
 /// `Slate::index_of` would silently resolve every mention to the first.
+/// Build the plant's control loops from `[[controls]]`, after every node exists.
+///
+/// Declaration order is `LoopId` order and execution order, exactly as `[nodes]`
+/// order fixes node ids.
+///
+/// The refusals here are fork 5's, and each closes a way a file can declare a
+/// loop that would run and be wrong rather than fail:
+///
+/// - tuning that belongs to the other algorithm (`integral_time_s` on `"p"`),
+/// - two loops naming one actuator, which is two writers of one opening with no
+///   defined resolution order — split-range and override control are real, and are
+///   deferred *with an arbitration*, not left to declaration order,
+/// - a level measured on a node that is not a `Tank`, because a level names
+///   nothing on a vessel whose state IS pressure,
+/// - an actuator that is not a `Valve`, and a `ReliefValve` with its own reason.
+///
+/// Each loop is born with a real measurement rather than an empty one: a level is
+/// stored and is true from load, so `PlantGraph::measure` is called here exactly as
+/// the tick pass calls it, and a snapshot taken before the first tick reports a
+/// true level. `last_output` is seeded from the valve's own declared opening, which
+/// is what MANUAL would report and what AUTO overwrites on tick 1.
+fn build_controls(
+    graph: &mut PlantGraph,
+    slate: &Slate,
+    defs: &[ControlDef],
+) -> Result<(), SimError> {
+    let mut seen_names: Vec<&str> = Vec::new();
+    let mut claimed_actuators: Vec<(NodeId, &str)> = Vec::new();
+
+    for def in defs {
+        if seen_names.contains(&def.name.as_str()) {
+            return Err(SimError::Scenario(format!(
+                "two control loops are called '{}'. A loop's name is what its faceplate \
+                 is labelled with, so two of them make a snapshot ambiguous",
+                def.name
+            )));
+        }
+        seen_names.push(&def.name);
+
+        let variable = match def.measurement.variable.as_str() {
+            "level" => MeasuredVariable::Level,
+            other => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' measures unknown variable '{other}' (valid: level). \
+                     Pressure, temperature and flow control are deferred per variable, each \
+                     needing a measurement path and an actuator that exists \
+                     (docs/DESIGN.md §10)",
+                    def.name
+                )))
+            }
+        };
+
+        let measurement_node = graph.find_node(&def.measurement.node).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "control loop '{}' measures unknown node '{}'",
+                def.name, def.measurement.node
+            ))
+        })?;
+        let actuator = graph.find_node(&def.actuator).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "control loop '{}' actuates unknown node '{}'",
+                def.name, def.actuator
+            ))
+        })?;
+
+        // The measured node must be able to answer for the variable. Asking the
+        // graph rather than matching the kind here is deliberate: `measure` is the
+        // single owner of where a measurement comes from, so a kind this loader
+        // accepted and that reader then rejected is not a state that can exist.
+        graph
+            .measure(slate, measurement_node, variable)
+            .map_err(|e| {
+                SimError::Scenario(format!(
+                    "control loop '{}' cannot measure {} on node '{}': {e}",
+                    def.name, def.measurement.variable, def.measurement.node
+                ))
+            })?;
+
+        match &graph.node(actuator).kind {
+            NodeKind::Valve { .. } => {}
+            // Its own reason rather than "not a valve", exactly as
+            // `Command::SetValveOpening` refuses it: a relief valve IS a valve,
+            // and the point is that its opening is not a setpoint at all — it is a
+            // memoryless function of its own inlet pressure, recomputed every
+            // solve (docs/DESIGN.md §3a fork 5). A loop pointed at one would write
+            // a number the next solve overwrites.
+            NodeKind::ReliefValve { .. } => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', a relief valve. Its opening is \
+                     actuated by its own inlet pressure and is recomputed on every solve, \
+                     so a controller writing it would be overwritten before the tick ended",
+                    def.name, def.actuator
+                )))
+            }
+            _ => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', which is not a valve. A valve opening \
+                     is the only actuator M8.2 writes; pump speed, duty and the rest are \
+                     deferred with their own measurement paths (docs/DESIGN.md §10)",
+                    def.name, def.actuator
+                )))
+            }
+        }
+
+        if let Some((_, owner)) = claimed_actuators.iter().find(|(id, _)| *id == actuator) {
+            return Err(SimError::Scenario(format!(
+                "control loops '{owner}' and '{}' both actuate '{}'. Two writers of one \
+                 opening have no defined resolution order, and declaration order is not \
+                 one — split-range, override and feedforward control are real and are \
+                 deferred together, with an arbitration (docs/DESIGN.md §10)",
+                def.name, def.actuator
+            )));
+        }
+        claimed_actuators.push((actuator, &def.name));
+
+        // The setpoint key carries the unit, and which key that is comes from the
+        // variable. The absent direction is the reachable one today; the "key
+        // belongs to another variable" direction becomes expressible when a second
+        // variable lands, since `deny_unknown_fields` currently refuses such a key
+        // as unknown rather than as mismatched.
+        let setpoint = match variable {
+            MeasuredVariable::Level => ControlledValue::Level {
+                m: Meter(require_keyed(
+                    def.setpoint_m,
+                    &def.name,
+                    variable.setpoint_key(),
+                    "the loop's target",
+                )?),
+            },
+        };
+        graph
+            .check_setpoint(measurement_node, setpoint)
+            .map_err(|e| SimError::Scenario(format!("control loop '{}': {e}", def.name)))?;
+
+        let mode = match def.mode.as_str() {
+            "auto" => ControlMode::Auto,
+            "manual" => ControlMode::Manual,
+            other => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' has unknown mode '{other}' (valid: auto, manual)",
+                    def.name
+                )))
+            }
+        };
+
+        let algorithm: Box<dyn Controller> = match def.algorithm.as_str() {
+            "p" => {
+                // The refusal fork 5 names, in the reachable direction. Its mirror
+                // — `integral_time_s` ABSENT with `algorithm = "pi"` — arrives with
+                // M8.3, because until `"pi"` is a selectable algorithm the unknown
+                // -algorithm arm below is what a file writing it already hits.
+                if def.integral_time_s.is_some() {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' sets `integral_time_s` on `algorithm = \"p\"`. A \
+                         proportional loop has no integral term to tune, and a tuning \
+                         constant no algorithm reads is an authoritative-looking number \
+                         nothing consumes",
+                        def.name
+                    )));
+                }
+                let gain = require_keyed(def.gain_per_m, &def.name, "gain_per_m", "the gain")?;
+                Box::new(
+                    refinery_solvers::ProportionalController::new(gain).map_err(|e| {
+                        SimError::Scenario(format!("control loop '{}': {e}", def.name))
+                    })?,
+                )
+            }
+            other => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' selects unknown algorithm '{other}' (valid: p). The \
+                     integral term — `pi`, its anti-windup clamp and bumpless transfer — is \
+                     M8.3; a proportional loop's steady-state offset is what makes that \
+                     slice's gate mean anything, so it ships alone first (docs/DESIGN.md \
+                     §10)",
+                    def.name
+                )))
+            }
+        };
+
+        let last_measurement = graph.measure(slate, measurement_node, variable)?;
+        let last_output = match &graph.node(actuator).kind {
+            NodeKind::Valve { opening, .. } => *opening,
+            // Unreachable: the kind was matched above and nothing since can have
+            // changed it.
+            _ => 0.0,
+        };
+
+        graph.add_control(ControlLoop {
+            name: def.name.clone(),
+            measurement_node,
+            actuator,
+            setpoint,
+            mode,
+            algorithm,
+            last_measurement,
+            last_output,
+        });
+    }
+    Ok(())
+}
+
+/// A `[[controls]]` key that is required for this loop's variable or algorithm.
+///
+/// One helper rather than a refusal per key, so every "you left out the number
+/// that decides this loop's behaviour" message says the same thing — and so that
+/// no key can acquire a silent default by being forgotten in one branch. `gain`
+/// and the integral time have no defaults for the reason `x_T` has none (§3a fork
+/// 6): a silent default is an invented value in disguise, and every gate would
+/// then pass for whatever was chosen.
+fn require_keyed(
+    value: Option<f64>,
+    loop_name: &str,
+    key: &str,
+    what: &str,
+) -> Result<f64, SimError> {
+    value.ok_or_else(|| {
+        SimError::Scenario(format!(
+            "control loop '{loop_name}' declares no `{key}` — {what} has no default, \
+             because a silent default is an invented value in disguise and every gate \
+             would then pass for whatever was chosen"
+        ))
+    })
+}
+
 fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
     if defs.is_empty() {
         return Ok(Slate::water_only());

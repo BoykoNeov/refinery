@@ -1,7 +1,7 @@
 //! Frontend contract: `Command` in, `Snapshot` out. Both plain serde data.
 //! Frontends never touch engine internals.
 
-use crate::graph::{EdgeId, NodeId, NodeKind, TankState};
+use crate::graph::{ControlMode, ControlledValue, EdgeId, LoopId, NodeId, NodeKind, TankState};
 use crate::stream::Stream;
 use crate::traits::SolveDiagnostics;
 use crate::units::{Seconds, SquareMeter, Watt};
@@ -47,6 +47,24 @@ pub enum Command {
     SetCoolerDuty {
         node: NodeId,
         duty: Watt,
+    },
+    /// Put one control loop in `Auto` (it drives its actuator) or `Manual` (a
+    /// human does). See [`crate::graph::ControlMode`].
+    SetControllerMode {
+        loop_id: LoopId,
+        mode: ControlMode,
+    },
+    /// Move one loop's target.
+    ///
+    /// The value carries its own unit, so a setpoint in the wrong variable is
+    /// not something this command can express — the reason
+    /// [`ControlledValue`] is a tagged enum rather than a bare `f64` (§10 fork
+    /// 4). Range- and finiteness-checked like every other command argument: a
+    /// level setpoint must be finite and within the tank's own height, since a
+    /// target the plant cannot reach is a loop pinned at saturation forever.
+    SetSetpoint {
+        loop_id: LoopId,
+        value: ControlledValue,
     },
 }
 
@@ -112,6 +130,47 @@ pub struct ColumnDuty {
     pub reboiler_w: f64,
 }
 
+/// One control loop's faceplate — what a frontend draws and what §7's rule
+/// ("every command must have a reported consequence") requires exist.
+///
+/// `Command::SetSetpoint` writing a field no snapshot reports would be M6.0's
+/// `PuncturePipe` with the direction reversed: the defect §7 already documents.
+/// So the surface is specified with the commands rather than discovered later.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlSnapshot {
+    pub id: LoopId,
+    /// Scenario-given loop name — what a faceplate is labelled with.
+    pub name: String,
+    /// The algorithm driving it ("proportional"), from `Controller::name`.
+    pub algorithm: String,
+    pub mode: ControlMode,
+    /// The target. Carries its unit in its own tagged form, because a bare
+    /// `setpoint` would be a number whose unit depends on a sibling field — see
+    /// [`ControlledValue`].
+    pub setpoint: ControlledValue,
+    /// **The measurement the controller ACTED ON**, not a re-read of what is true
+    /// now.
+    ///
+    /// Those differ by one tick: the loop runs at the top of the tick on the
+    /// state standing at the start of it (docs/DESIGN.md §10 fork 3). Reporting
+    /// the fresh one would make a lagging loop look instantaneous — hiding the
+    /// lag from precisely the person debugging it.
+    ///
+    /// Same type as `setpoint` by construction, so a loop cannot report a
+    /// setpoint in one variable against a measurement in another, and the
+    /// difference a reader takes between them is the error the controller saw.
+    pub measurement: ControlledValue,
+    /// Actuator position, dimensionless in `[0, 1]`.
+    ///
+    /// In `Auto` this is the controller's output and is what was written to the
+    /// valve. In `Manual` the loop writes nothing and this tracks the actuator's
+    /// real opening, which is what a DCS faceplate shows. A bare fraction rather
+    /// than a tagged value: a valve opening is dimensionless and already
+    /// validated as such by `Command::SetValveOpening`. It gains a unit question
+    /// only when an actuator that is not a valve un-defers.
+    pub output: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeSnapshot {
     pub id: EdgeId,
@@ -158,4 +217,19 @@ pub struct Snapshot {
     pub solver: SolveDiagnostics,
     /// Convenience view for frontends: (node name, tank state).
     pub tanks: Vec<(String, TankState)>,
+    /// One entry per control loop, in declaration order — which is also
+    /// execution order and `LoopId` order.
+    ///
+    /// A list beside the nodes, and deliberately **no per-node controller
+    /// field**: that would be the inverse of `NodeSnapshot::column_duty`'s
+    /// argument, reporting "no loop here" on every node of every plant. Absent
+    /// where there is nothing to report, and the report lives with the loop that
+    /// owns it.
+    ///
+    /// `skip_serializing_if` is what keeps the thirteen pre-M8 scenarios
+    /// byte-identical — none declares a loop, so the key is not emitted at all.
+    /// The same move `ColumnDraw` and `column_duty` both made, and `default` is
+    /// its other half, so a snapshot written before M8.2 still deserializes.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<ControlSnapshot>,
 }

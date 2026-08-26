@@ -6,6 +6,13 @@
 //! | ThermoModel     | ConstantThermo       | TroutonThermo (M7.2)    |
 //! | ReactionModel   | SimpleLookup (M4.1)  | FourLump (M4.2)         |
 //! | SeparationModel | CutPointSplitter     | StageCascade (M7.3)     |
+//! | Controller      | ProportionalController (M8.2) | PiController (M8.3) |
+//!
+//! The last row is the odd one and says so here rather than in a comment nobody
+//! reads: a `Controller` is chosen PER LOOP, not once per engine, so it is not
+//! selected by a `[fidelity]` key at all — a plant declares one per `[[controls]]`
+//! entry (docs/DESIGN.md §10 fork 2). It is also the first row whose impls own
+//! state.
 //!
 //! Selection happens in refinery-scenarios from TOML config; nothing in
 //! here or in core branches on a fidelity flag.
@@ -16,6 +23,7 @@
 //! because a table that promises a type is a claim like any other.
 
 pub mod cascade;
+pub mod control;
 pub mod elements;
 pub mod flash;
 pub mod four_lump;
@@ -28,6 +36,7 @@ pub mod simple_flow;
 pub mod thermo;
 
 pub use cascade::StageCascade;
+pub use control::ProportionalController;
 pub use flash::{flash_isothermal, FlashResult};
 pub use four_lump::{FourLump, FourLumpParams};
 pub use molar::MoleFractions;

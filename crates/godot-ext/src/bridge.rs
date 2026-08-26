@@ -63,7 +63,7 @@
 
 use std::collections::BTreeMap;
 
-use refinery_core::graph::{EdgeId, NodeId};
+use refinery_core::graph::{EdgeId, LoopId, NodeId};
 use refinery_core::snapshot::Command;
 use refinery_core::{Engine, SimError};
 use serde::Serialize;
@@ -152,6 +152,15 @@ impl From<&BridgeError> for ErrorReport {
 enum Referent {
     Node(NodeId),
     Edge(EdgeId),
+    /// A control loop (M8.2). Carried for exhaustiveness and **deliberately not
+    /// validated here**, which is the same reachability argument that put the
+    /// node and edge guards here in the first place: `Engine::apply` looks a
+    /// `LoopId` up through `PlantGraph::control`/`control_mut`, which return
+    /// `Option` and refuse an out-of-range id as an invalid command. There is no
+    /// panic for a guard to stand in front of. It carries its id anyway so that
+    /// the day `core` gains a loop lookup that indexes, this arm is where the
+    /// guard goes rather than a `_` nobody revisits.
+    Loop(LoopId),
 }
 
 /// The id a command addresses, for validation before it reaches the engine.
@@ -169,6 +178,8 @@ fn referent(cmd: &Command) -> Referent {
         Command::SetHeatInput { node, .. } => Referent::Node(*node),
         Command::SetFurnaceDuty { node, .. } => Referent::Node(*node),
         Command::SetCoolerDuty { node, .. } => Referent::Node(*node),
+        Command::SetControllerMode { loop_id, .. } => Referent::Loop(*loop_id),
+        Command::SetSetpoint { loop_id, .. } => Referent::Loop(*loop_id),
     }
 }
 
@@ -293,6 +304,12 @@ impl Bridge {
                     )));
                 }
             }
+            // Forwarded unchecked, on purpose — see `Referent::Loop`. A frontend
+            // reads a loop's id and name together off `snapshot.controls`, so
+            // there is no name->id phone book here the way there is for nodes and
+            // edges; adding one is a frontend affordance and belongs with M8.5's
+            // Godot slice, not with the engine seam.
+            Referent::Loop(_) => {}
         }
 
         self.engine.apply(cmd).map_err(BridgeError::Sim)

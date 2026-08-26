@@ -4502,6 +4502,118 @@ existing scenarios byte-identical on both fidelities**, because none declares a
 loop. Anything that moves is the seam leaking into plants that never asked for
 it.
 
+### Corrections from building it (M8.2, landed)
+
+The seam, `ProportionalController`, the command surface and the `[[controls]]`
+table landed as fork 1 through fork 4 specify. Five things the note got wrong or
+left unsaid, and one finding that belongs to a different subsystem.
+
+**Correction 1 — `gain` cannot be a bare key, for `setpoint_m`'s own reason.**
+Fork 5's TOML sample writes `gain = 0.4`, and fork 4 spends a whole correction
+establishing that a loop's setpoint key must carry its unit because the quantity
+is "metres today and Pascals the moment pressure control un-defers". A gain is
+`1/m` on a level loop and `1/Pa` on a pressure loop, so a bare `gain` is a number
+whose unit depends on a **sibling key** — which is the exact failure that
+correction names, applied to the other half of the same entry. The key is
+`gain_per_m`, and it is required-per-variable exactly as `setpoint_m` is.
+
+**Correction 2 — `initial_output` is not in this slice, and putting it here would
+have cost the next slice its gate.** The reflex while building was that a P
+controller needs a bias (`u = u_b + K·e`), because without one a level loop shuts
+its valve completely at setpoint. That reflex is wrong twice over. It is wrong
+about the quantity: fork 5 defines `initial_output` as *the loop's memory*, from
+which the integral is derived, and a proportional controller has no memory for it
+to be the initial condition **of**. And it is wrong about the consequence: gate 3
+reads the P loop's steady-state offset as the discriminating half of a pair, and
+with a manual-reset bias that offset becomes a function of how well the bias was
+chosen rather than of the missing integral. So `ProportionalController` is
+`u = clamp(K·e, 0, 1)` with nothing else in it, the offset is large and honest
+(**+0.74 m** at a 4 m setpoint on the gate plant), and the key is not in the
+`[[controls]]` struct at all — `deny_unknown_fields` refuses a file that writes
+it, and M8.3 adds it once, with one meaning. The alternative — the key landing
+here as "bias" and changing meaning in M8.3 to "integral seed" — is worse than
+either.
+
+**Correction 3 — `MeasuredVariable` is derived from the setpoint, not stored
+beside it.** The note names both types and the reflex is a field for each. Two
+fields with one invariant is the shape M7.4's `column_draw_at` rule exists to
+prevent, so `ControlLoop` stores `setpoint: ControlledValue` alone and
+`ControlledValue::variable()` answers "what does this loop measure". The loader
+still parses a `variable` key, because a file must say which unit its setpoint key
+carries before the setpoint can be built — but it is consumed there rather than
+stored twice.
+
+**Correction 4 — two of fork 4's and fork 5's refusals have no reachable path
+today, and are recorded rather than shipped as guards.** Both are the "setpoint
+key disagrees with `variable`" refusal, in its two directions. With one
+`ControlledValue` variant a mismatched setpoint is *unrepresentable* — `SetSetpoint`
+can carry nothing else — and a mismatched TOML key is refused by
+`deny_unknown_fields` as unknown rather than as mismatched. A refusal path nothing
+can reach is a coverage claim that cannot be checked
+([[a-counter-is-not-a-gate]]), so neither is written. Both become required the day
+a second variable lands, and the types carry comments that say so
+([[a-comment-that-names-its-own-expiry]]). The same applies to the mirror of
+fork 5's tuning refusal: `integral_time_s` *present* on `"p"` is refused with its
+own message, while `integral_time_s` *absent* on `"pi"` is not, because `"pi"` is
+not a selectable algorithm until M8.3 and the unknown-algorithm arm is what a file
+writing it already hits.
+
+**Correction 5 — `PlantGraph` loses `Clone`, and a tank's level gains an owner.**
+The derive had no call site in the workspace and could not survive a
+`Box<dyn Controller>`: cloning a graph would fork a loop's memory into two engines
+that then diverge, which is the opposite of what rule 3 wants from a copied plant.
+`Debug` survives, which is why `Controller` carries it as a supertrait. Separately,
+`network::fixed_pressure` used to compute a tank's density inline — harmless while
+the solver's head was the only consumer of a level, and not harmless once a
+controller *acts* on the same level. `TankState::density`/`level`/`bottom_pressure`
+now take the slate, so there is one definition of where the liquid surface is.
+
+### The finding this slice reached and did not fix
+
+**A branch driven to zero flow in ONE tick stalls the hydraulic solver, and a hand
+command does it exactly as a controller does.** M8.2 makes something newly
+reachable — before it, a valve opening moved only when a person sent a command,
+and now a loop can slam one shut between two ticks. A setpoint step large enough
+to clamp `K·e` to zero produces `SolverDiverged` on the very next tick.
+
+The control is what settles where this belongs: the identical endpoint, written by
+`Command::SetValveOpening` on the same plant with the loop parked in MANUAL, fails
+the same way. So the seam **reached** a defect rather than introducing one, and
+fixing it inside the control loop — a rate limit — would hide it rather than mend
+it. Measured, on the gate plant after 8 000 ticks:
+
+- The residual falls **monotonically**, by about 0.36% per iteration:
+  `4.158 → 3.344` over the 50-iteration cap. Newton is crawling, not oscillating
+  and not stuck. `ΔP = α·Q|Q|` has an unbounded `dQ/dΔP` as `Q → 0`, so the step
+  from a warm start carrying 3.3 kg/s is enormous and the line search cuts it back
+  to nearly nothing.
+- The **same endpoint reached gradually converges** (20 ticks of `0.20 → 0.00`),
+  and so does a cold start already at the shut state. It is the jump that fails,
+  not the state.
+- `gain_per_m = 0.05`, which never fully shuts the valve, survives the same step;
+  so does the `simple` flow solver; so does any target opening at or above 0.01.
+
+Pinned by `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it`, which is
+written to FAIL when the solver is fixed and carries the assertion it should then
+make. It belongs to a `newton_flow` slice — warm-start handling or step damping —
+not to M8.
+
+**One consequence for this note's own deferral list.** "Actuator dynamics (stroke
+time, rate limits) … un-defer when a loop's measured performance depends on them,
+which at `dt = 0.1 s` against a 120 s integral time it does not" is right about
+performance and incomplete about *reachability*: a loop's ability to run at all can
+depend on the actuator's rate, through the solver rather than through the control.
+The deferral stands — the fault is the solver's, and the manual write proves it —
+but its stated reason is now known not to be the whole test.
+
+### What the regression anchor measured
+
+All thirteen shipped scenarios, both flow fidelities, 300 ticks: **26 runs, every
+one exiting zero, every one byte-identical** to the same run on the tree before
+this slice. The mechanism is `skip_serializing_if = "Vec::is_empty"` plus the
+empty-list early exit at the top of `run_control_loops`, so a plant that declares
+no loop does not execute one line of the seam. M8.0's shape and M8.0's reason.
+
 ### The mutations this slice owes, named before building
 
 Predictions, which is what makes them falsifiable — M8.0 got three of four wrong.

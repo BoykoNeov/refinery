@@ -7,7 +7,7 @@
 
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
-use crate::graph::{CascadeSpec, ColumnDraw, EdgeId, NodeId, PlantGraph};
+use crate::graph::{CascadeSpec, ColumnDraw, ControlledValue, EdgeId, NodeId, PlantGraph};
 use crate::units::{JPerKg, JPerMol, Kelvin, KgPerSec, Pascal, Seconds, Watt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -372,4 +372,64 @@ pub trait ReactionModel: Send {
         tau: Seconds,
         slate: &Slate,
     ) -> Result<Reaction, SimError>;
+}
+
+/// One control algorithm — the regulation seam (docs/DESIGN.md §10 fork 2).
+///
+/// **The project's first per-instance seam.** `FlowSolver`, `ThermoModel`,
+/// `ReactionModel` and `SeparationModel` are engine-wide singletons, each chosen
+/// once by one string in `[fidelity]`. A control algorithm is not that shape: one
+/// plant can reasonably want a proportional loop on one tank and an integral loop
+/// on another, and `[fidelity]`'s keys are per-engine by construction. So this is
+/// selected per `[[controls]]` entry and boxed on the loop. Rule 2 is honoured
+/// and it is the seam's ARITY that changed — the alternative, an enum matched
+/// inside one shared `update`, is `if fidelity == Simple` wearing a hat.
+///
+/// **And it is the first seam whose impls own STATE.** Every other trait in this
+/// file is a pure function of its arguments; a PI controller's integral term is
+/// carried across ticks and the next answer depends on it, which is why `update`
+/// takes `&mut self` and why §3a fork 5's "state is what turns an element into a
+/// controller" is the line M8 crosses on purpose. `Debug` is a supertrait so
+/// `PlantGraph` keeps its derive with a `Box<dyn Controller>` inside it.
+pub trait Controller: Send + std::fmt::Debug {
+    /// Human-readable identifier for snapshots/logs (e.g. "proportional").
+    fn name(&self) -> &'static str;
+
+    /// Compute the actuator position this loop should hold for the next tick.
+    ///
+    /// `measurement` is the plant state standing at the TOP of the tick — one
+    /// `dt` older than the solve that follows it, because reading this tick's
+    /// solve and writing an actuator is an algebraic loop (fork 3). Both it and
+    /// `setpoint` carry their unit in their type, and are the same type by
+    /// construction, so the difference `ControlledValue::error` takes is always
+    /// dimensionally honest.
+    ///
+    /// **The error term is `ControlledValue::error(measurement, setpoint)` and no
+    /// implementation may compute its own.** That function owns the sign
+    /// convention (positive = above setpoint), and an impl differencing the two
+    /// itself would be free to disagree with the value a snapshot reader
+    /// reconstructs from the same two reported numbers.
+    ///
+    /// The return is a **dimensionless** actuator position in `[0, 1]`, which is
+    /// what `Command::SetValveOpening` already validates a valve opening to be —
+    /// it gains a unit question only when an actuator that is not a valve
+    /// un-defers. Clamping to that interval is the implementation's job, because
+    /// saturation is exactly what M8.3's anti-windup has to know about; the engine
+    /// re-checks the range and refuses rather than trusting it.
+    ///
+    /// `dt` is the fixed timestep. Unused by `ProportionalController`, and in the
+    /// signature now so that the integral term needs no trait churn — the
+    /// `ReactionModel::tau` precedent.
+    ///
+    /// # Errors
+    /// `SimError` if the algorithm cannot produce a position — a non-finite
+    /// measurement or setpoint, or (from M8.3) state that has gone non-finite.
+    /// Rule 5: a controller that cannot answer says so, and never returns a
+    /// plausible number for a valve to be driven to.
+    fn update(
+        &mut self,
+        measurement: ControlledValue,
+        setpoint: ControlledValue,
+        dt: Seconds,
+    ) -> Result<f64, SimError>;
 }

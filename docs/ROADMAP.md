@@ -3188,43 +3188,129 @@ forks argued before any code, three of them corrections to the reflex answer:
       `apply` refuses without), saturation/windup on a plant built to saturate. Seven mutations named in
       advance, two of them predicted UNCAUGHT.
 
-### M8.2 — The control-loop seam and a proportional loop
+### M8.2 — The control-loop seam and a proportional loop — **LANDED** 2026-08-26
 
 The seam, one stateless algorithm, and the command surface. No integral term
 here: the P loop's steady-state offset is half of gate 3's discriminating pair,
 and shipping it alone is what makes M8.3's half meaningful.
 
-- [ ] `core`: `ControlLoop`, `LoopId`, `ControlMode`, `MeasuredVariable` in
+- [x] `core`: `ControlLoop`, `LoopId`, `ControlMode`, `MeasuredVariable` in
       `graph.rs`; `PlantGraph::controls` as a `Vec` (rule 3). `Controller` trait
       in `traits.rs`, taking the measurement, the setpoint and `dt`, returning
       the actuator position — units on every quantity, `Result` on the way out.
-- [ ] `core`: the loop pass at the TOP of `Engine::tick`, before the hydraulic
+- [x] `core`: the loop pass at the TOP of `Engine::tick`, before the hydraulic
       solve (fork 3). A level is read from `TankState` **on the graph** — stored,
       real from load, present at tick 0 — and NOT from `self.node_states`, which
       carries no inventory and is empty before the first tick. The measurement is
       captured into the loop so the snapshot can report what the controller acted
       on rather than what is true now.
-- [ ] `core`: `ControlledValue` as the tagged enum carrying setpoint and
+- [x] `core`: `ControlledValue` as the tagged enum carrying setpoint and
       measurement with their unit, unit newtypes inside `core` and unit-named
       fields on the wire (fork 4's correction). Bare `f64`s here would be rule 4
       broken at the boundary rule 4 names.
-- [ ] `core`: `Command::SetControllerMode` and `Command::SetSetpoint`; and
+- [x] `core`: `Command::SetControllerMode` and `Command::SetSetpoint`; and
       `SetValveOpening` REFUSED on a valve under a loop in AUTO, with the relief
       valve's reason-string shape (fork 4).
-- [ ] `core`: `Snapshot::controls: Vec<ControlSnapshot>` with
+- [x] `core`: `Snapshot::controls: Vec<ControlSnapshot>` with
       `skip_serializing_if = "Vec::is_empty"` — the byte-identity move
       `column_duty` and `ColumnDraw` both made. No per-node field (the inverse of
       `column_duty`'s absent-where-nothing-to-report argument).
-- [ ] `solvers`: `ProportionalController`.
-- [ ] `scenarios`: the `[[controls]]` table, `deny_unknown_fields`, and the four
+- [x] `solvers`: `ProportionalController`.
+- [x] `scenarios`: the `[[controls]]` table, `deny_unknown_fields`, and the four
       load-time refusals fork 5 names — tuning that belongs to the other
       algorithm, two loops on one actuator, a level measured on a non-tank, an
       actuator that is not a valve (and a `ReliefValve` with its own reason).
-- [ ] Tests: gates 1 and 2 (loop-off counterfactual, setpoint step) plus the
+- [x] Tests: gates 1 and 2 (loop-off counterfactual, setpoint step) plus the
       refusal gates. Gate 1 is written FIRST and is the control, not the test.
-- [ ] Tests: the regression anchor — all thirteen existing scenarios
+- [x] Tests: the regression anchor — all thirteen existing scenarios
       byte-identical on both fidelities, since none declares a loop. M8.0's shape
       and M8.0's reason.
+
+**Everything the note specified landed, and five details of it were corrected**
+(DESIGN §10, "Corrections from building it"). The three worth knowing before
+touching M8.3:
+
+- **`initial_output` is NOT here, and the reflex that wanted it would have cost
+  M8.3 its gate.** Building a P controller makes a bias term (`u = u_b + K·e`)
+  look obviously right, because without one a level loop shuts its valve
+  completely at setpoint. It is wrong about the quantity — fork 5 defines
+  `initial_output` as the loop's *memory*, and a proportional controller has none
+  for it to be the initial condition of — and wrong about the consequence, because
+  gate 3 reads the P loop's offset as a signal and a bias makes that offset a
+  function of how well the bias was chosen instead. So the algorithm is
+  `u = clamp(K·e, 0, 1)`, the offset is large and honest, and the key is not even
+  in the `[[controls]]` struct: `deny_unknown_fields` refuses a file that writes
+  it, and M8.3 adds it once with one meaning.
+- **`gain` had to become `gain_per_m`**, by fork 4's own argument about
+  `setpoint_m`. A gain is `1/m` on a level loop and `1/Pa` on a pressure loop, so
+  a bare key is a number whose unit depends on a sibling key.
+- **Two of the note's refusals have no reachable path and are recorded rather than
+  written.** Both directions of "the setpoint's variable disagrees with the loop's"
+  are unrepresentable with one `ControlledValue` variant, and
+  `integral_time_s` absent on `"pi"` is unreachable while `"pi"` is not selectable.
+  A refusal path nothing can reach is a coverage claim that cannot be checked
+  ([[a-counter-is-not-a-gate]]), so the types carry comments naming when each
+  becomes required instead.
+
+**The gate plant was built and MEASURED before any assertion was written**, which
+is what fork 6 asks for and what `a-control-can-be-implied-by-its-assertion` is
+about. Header → fixed feed valve → tank → controlled drain valve → rundown, sized
+so the drain valve at its declared 0.20 cannot pass the inflow anywhere below the
+tank's roof:
+
+| run (8 000 ticks, dt = 0.5 s) | level at the end |
+|---|---|
+| AUTO, setpoint 4.0 m | **4.7386 m**, valve 0.3693, settled |
+| AUTO, setpoint stepped to 3.0 m | **3.8337 m**, settled |
+| MANUAL, valve pinned at its declared 0.20 | **6.3449 m** and still rising |
+
+The AUTO run settles and the MANUAL run runs away, which is the whole of gate 1 —
+and gate 1 asserts BOTH halves in one test, with the counterfactual's failure
+message saying that it invalidates the AUTO assertion rather than merely failing
+on its own. **The +0.74 m offset is the proportional loop working correctly**, and
+is the half of M8.3's pair this slice exists to supply.
+
+**Gate 2's step is DOWNWARD, and that is a measured choice.** An upward step of the
+same size drives the drain valve fully shut in one tick, which the hydraulic solver
+does not survive. Both of gate 2's bounds are derived rather than fitted: the level
+must move, and must move LESS than the setpoint did, because a proportional loop's
+offset grows as the tank's head shrinks. Measured 0.9049 m for a 1.0 m step.
+
+**One of M8.4's seven mutations was run early**, because gate 2's docstring claimed
+to catch it and a claim is not a hope. "Gain applied to the measurement instead of
+the error" was applied, checked to COMPILE, run, and restored from a single
+pre-mutation snapshot. It failed **three** gates — gate 2 as predicted, plus gate 1
+and the solver-stall characterization. The remaining six, and the accounting of
+which gate fired for each, stay M8.4's.
+
+**The slice reached a solver defect and did not fix it, and the control is what
+settled where it belongs.** A branch driven to zero flow in ONE tick stalls Newton
+— the residual falls monotonically by ~0.36% per iteration, `4.158 → 3.344` over
+the 50-iteration cap, because `ΔP = α·Q|Q|` has an unbounded `dQ/dΔP` as `Q → 0`
+and the line search cuts every step to nearly nothing. M8.2 makes this newly
+reachable (a loop can now slam a valve between two ticks), but
+`Command::SetValveOpening` writing the identical endpoint on the same plant fails
+identically, so the seam reached the defect rather than introducing it. The same
+endpoint reached gradually converges, a cold start at the shut state converges,
+`gain_per_m = 0.05` survives, and the `simple` solver survives.
+`a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it` pins it, written to
+FAIL when the solver is fixed and carrying the assertion it should then make. It
+belongs to a `newton_flow` slice, not to M8 — and a rate limit in the controller
+would hide it rather than mend it.
+
+**The regression anchor held exactly**: thirteen scenarios × two fidelities × 300
+ticks, **26 runs, every one exiting zero, every one byte-identical** against the
+tree before this slice. The mechanism is asserted too, not just the outcome —
+`a_plant_with_no_loop_reports_no_controls_field` walks all thirteen and checks the
+key is absent from the JSON rather than present and empty.
+
+Two things this slice deliberately did NOT do, recorded so they are not discovered
+later. There is no `loop_id(name)` on the Godot bridge — a frontend reads a loop's
+id and name together off `snapshot.controls`, and a phone-book entry is a frontend
+affordance that belongs with M8.5. And no file in `scenarios/` declares a loop: the
+two plants that carry one are inline test fixtures, on `leak_reference.rs`'s
+precedent, because the thirteen shipped files ARE the regression anchor and the
+wired demo that regulates is M8.4's.
 
 ### M8.3 — The integral term: PI, anti-windup, bumpless transfer
 
@@ -3247,6 +3333,12 @@ and shipping it alone is what makes M8.3's half meaningful.
 - [ ] `scenarios/`: a wired plant that regulates — the level-controlled tank, in
       the shape of the M7 demo pair (a file a reader can diff against
       `tank_pump_valve.toml`, differing only in that one holds its level).
+      **Its gain has a measured upper bound and this is where to read it**: on
+      M8.2's gate plant, `gain_per_m = 0.05` survives a setpoint step and `0.1`
+      does not, because the larger gain clamps the output to zero in one tick and
+      a branch shut in one tick stalls the solver (M8.2's finding, DESIGN §10).
+      A demo that regulates must be tuned not to slam its own actuator, or it will
+      fail for a reason that has nothing to do with control.
 - [ ] **The mutation pass**, seven edits named in DESIGN §10 before building,
       each verified to COMPILE and each applied to a source restored from ONE
       pre-mutation snapshot. Two are predicted uncaught: the loop running after

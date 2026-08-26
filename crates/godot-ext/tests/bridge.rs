@@ -4,9 +4,9 @@
 //! frontend writes, the ids it may send, the codes it branches on, and the
 //! shape of the snapshot it reads. Physics is gated in `scenarios/tests`.
 
-use refinery_core::graph::{EdgeId, NodeId};
+use refinery_core::graph::{ControlMode, ControlledValue, EdgeId, LoopId, NodeId};
 use refinery_core::snapshot::{Command, Snapshot};
-use refinery_core::units::{SquareMeter, Watt};
+use refinery_core::units::{Meter, SquareMeter, Watt};
 use refinery_core::SimError;
 use refinery_godot_ext::bridge::{Bridge, BridgeError, ErrorReport, Session, MISSING_ID};
 use serde_json::Value;
@@ -28,6 +28,76 @@ fn bridge(name: &str) -> Bridge {
 /// punctureable — four of the six commands are exercisable on it alone.
 const LEAKY: &str = "leaking_line.toml";
 
+/// A plant with one control loop, declared here rather than shipped.
+///
+/// **Inline on purpose.** No scenario in `scenarios/` declares a `[[controls]]`
+/// table: the thirteen were written before M8 and adding one to any of them would
+/// move its snapshot, which is the regression anchor this milestone is measured
+/// against. The wired demo that regulates is M8.4's, and a bridge contract test
+/// should not be the thing that forces it early — so the two loop-addressed
+/// commands get the smallest plant that can carry a loop.
+const LEVEL: &str = r#"
+[meta]
+name = "bridge_level_control"
+[simulation]
+dt = 0.5
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[nodes.header]
+type = "source"
+pressure_bar = 5.0
+temperature_c = 20.0
+
+[nodes.control_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.0
+temperature_c = 20.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 60.0
+opening = 0.2
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "fill_line"
+from = "header"
+to = "control_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "control_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.10
+
+[[controls]]
+name = "tank_level"
+measurement = { node = "control_tank", variable = "level" }
+actuator = "drain_valve"
+algorithm = "p"
+mode = "auto"
+setpoint_m = 4.0
+gain_per_m = 0.5
+"#;
+
 // ------------------------------------------------ the wire format, pinned
 
 /// The exact JSON text of every `Command` variant.
@@ -47,6 +117,16 @@ fn wire_text(cmd: &Command) -> &'static str {
         Command::SetHeatInput { .. } => r#"{"cmd":"set_heat_input","node":0,"power":1000.0}"#,
         Command::SetFurnaceDuty { .. } => r#"{"cmd":"set_furnace_duty","node":1,"duty":500000.0}"#,
         Command::SetCoolerDuty { .. } => r#"{"cmd":"set_cooler_duty","node":1,"duty":500000.0}"#,
+        Command::SetControllerMode { .. } => {
+            r#"{"cmd":"set_controller_mode","loop_id":0,"mode":"manual"}"#
+        }
+        // The setpoint is a TAGGED value, not a bare number, and that is the part
+        // of this line worth reading: a loop's setpoint is metres today and
+        // Pascals once pressure control un-defers, so the unit travels with the
+        // value rather than in a field name (docs/DESIGN.md §10 fork 4).
+        Command::SetSetpoint { .. } => {
+            r#"{"cmd":"set_setpoint","loop_id":0,"value":{"variable":"level","m":5.0}}"#
+        }
     }
 }
 
@@ -77,6 +157,14 @@ fn every_variant() -> Vec<Command> {
             node: NodeId(1),
             duty: Watt(500_000.0),
         },
+        Command::SetControllerMode {
+            loop_id: LoopId(0),
+            mode: ControlMode::Manual,
+        },
+        Command::SetSetpoint {
+            loop_id: LoopId(0),
+            value: ControlledValue::Level { m: Meter(5.0) },
+        },
     ]
 }
 
@@ -106,7 +194,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 6, "a Command variant was added");
+    assert_eq!(every_variant().len(), 8, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -116,14 +204,44 @@ fn command_wire_format_is_pinned_in_both_directions() {
 /// **Wildcard-free, and that is what makes the sweep below a mechanism rather
 /// than a list someone maintains.** A new `Command` variant does not compile
 /// until it names somewhere it can be applied.
-fn fixture(cmd: &Command) -> (&'static str, &'static str) {
+fn fixture(cmd: &Command) -> Fixture {
     match cmd {
-        Command::SetValveOpening { .. } => (LEAKY, "discharge_valve"),
-        Command::SetPumpOn { .. } => (LEAKY, "transfer_pump"),
-        Command::PuncturePipe { .. } => (LEAKY, "fill_line"),
-        Command::SetHeatInput { .. } => (LEAKY, "receiving_tank"),
-        Command::SetFurnaceDuty { .. } => ("furnace_heater.toml", "heater"),
-        Command::SetCoolerDuty { .. } => ("cooler_chiller.toml", "chiller"),
+        Command::SetValveOpening { .. } => Fixture::shipped(LEAKY, "discharge_valve"),
+        Command::SetPumpOn { .. } => Fixture::shipped(LEAKY, "transfer_pump"),
+        Command::PuncturePipe { .. } => Fixture::shipped(LEAKY, "fill_line"),
+        Command::SetHeatInput { .. } => Fixture::shipped(LEAKY, "receiving_tank"),
+        Command::SetFurnaceDuty { .. } => Fixture::shipped("furnace_heater.toml", "heater"),
+        Command::SetCoolerDuty { .. } => Fixture::shipped("cooler_chiller.toml", "chiller"),
+        // A loop-addressed command needs a plant with a loop, and the one it gets
+        // is written above rather than shipped — see `LEVEL`.
+        Command::SetControllerMode { .. } => Fixture::inline(LEVEL, "tank_level"),
+        Command::SetSetpoint { .. } => Fixture::inline(LEVEL, "tank_level"),
+    }
+}
+
+/// Where a command can be applied, and what it addresses there.
+///
+/// Two constructors rather than a tuple, because a loop-addressed command names
+/// something the phone book has no entry for: `Bridge` resolves node and edge
+/// names, and a loop's id travels on the snapshot beside its name instead (a
+/// name→id lookup for loops is a frontend affordance, and belongs with M8.5).
+enum Fixture {
+    Shipped {
+        plant: &'static str,
+        target: &'static str,
+    },
+    Inline {
+        src: &'static str,
+        control: &'static str,
+    },
+}
+
+impl Fixture {
+    fn shipped(plant: &'static str, target: &'static str) -> Self {
+        Fixture::Shipped { plant, target }
+    }
+    fn inline(src: &'static str, control: &'static str) -> Self {
+        Fixture::Inline { src, control }
     }
 }
 
@@ -137,34 +255,54 @@ fn fixture(cmd: &Command) -> (&'static str, &'static str) {
 #[test]
 fn every_command_variant_is_accepted_by_a_real_engine() {
     for cmd in every_variant() {
-        let (plant, target) = fixture(&cmd);
-        let mut sim = bridge(plant);
+        let (mut sim, key, id, where_) = match fixture(&cmd) {
+            Fixture::Shipped { plant, target } => {
+                let sim = bridge(plant);
+                let value = serde_json::to_value(&cmd).expect("Command to JSON");
+                let key = if value.get("node").is_some() {
+                    "node"
+                } else if value.get("edge").is_some() {
+                    "edge"
+                } else {
+                    panic!(
+                        "{cmd:?} addresses neither a node nor an edge, and its fixture \
+                            says it is shipped-plant addressed — `Referent` and this \
+                            sweep both need a decision"
+                    )
+                };
+                let id = if key == "node" {
+                    sim.node_id(target)
+                } else {
+                    sim.edge_id(target)
+                }
+                .unwrap_or_else(|e| panic!("{plant} has no '{target}': {e}"));
+                (sim, key, id, plant)
+            }
+            // A loop's id is read off the snapshot beside its name, which is how a
+            // frontend addresses one: there is no `loop_id(name)` on the bridge.
+            Fixture::Inline { src, control } => {
+                let sim = Bridge::load(src).expect("inline control plant loads");
+                let id = snapshot_value(&sim)["controls"]
+                    .as_array()
+                    .and_then(|loops| {
+                        loops
+                            .iter()
+                            .find(|l| l["name"] == control)
+                            .and_then(|l| l["id"].as_i64())
+                    })
+                    .unwrap_or_else(|| panic!("inline plant has no control loop '{control}'"));
+                (sim, "loop_id", id, "the inline control plant")
+            }
+        };
 
         // Rewrite the placeholder id in the canned variant with one this
         // plant actually has, leaving every other field as written.
         let mut value = serde_json::to_value(&cmd).expect("Command to JSON");
         let object = value.as_object_mut().expect("Command is a JSON object");
-        let key = if object.contains_key("node") {
-            "node"
-        } else if object.contains_key("edge") {
-            "edge"
-        } else {
-            panic!(
-                "{cmd:?} addresses neither a node nor an edge — the bridge's \
-                    id validation has nothing to check, so `Referent` and this \
-                    sweep both need a decision"
-            )
-        };
-        let id = if key == "node" {
-            sim.node_id(target)
-        } else {
-            sim.edge_id(target)
-        }
-        .unwrap_or_else(|e| panic!("{plant} has no '{target}': {e}"));
         object.insert(key.to_string(), Value::from(id));
 
         sim.apply_command_json(&value.to_string())
-            .unwrap_or_else(|e| panic!("{cmd:?} refused on {plant}: {e}"));
+            .unwrap_or_else(|e| panic!("{cmd:?} refused on {where_}: {e}"));
     }
 }
 

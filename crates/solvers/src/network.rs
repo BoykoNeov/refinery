@@ -161,10 +161,10 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         NodeKind::Source { pressure, .. } => Some(pressure.value()),
         NodeKind::Sink { pressure, .. } => Some(pressure.value()),
         NodeKind::Atmosphere => Some(P_ATM.value()),
-        NodeKind::Tank(t) => {
-            let rho = t.composition.mixture_density(slate);
-            Some(t.bottom_pressure(rho).value())
-        }
+        // The density is `TankState`'s own (`TankState::density`) rather than
+        // computed here, so the level this head is built on and the level a
+        // control loop measures are the same number by construction (M8.2).
+        NodeKind::Tank(t) => Some(t.bottom_pressure(slate).value()),
         // A column runs on pressure control: its operating pressure is pinned,
         // exactly like a Source/Sink/Tank, so the feed edge is an ordinary
         // pressure-driven edge into a fixed node and the draws (fixed→fixed) never

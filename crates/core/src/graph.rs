@@ -9,6 +9,7 @@
 //!   a fire adds a heat source term to a node. No special-cased physics.
 
 use crate::components::{Composition, Slate};
+use crate::error::SimError;
 use crate::stream::Stream;
 use crate::units::*;
 use petgraph::stable_graph::{EdgeIndex, NodeIndex, StableDiGraph};
@@ -530,14 +531,232 @@ impl VesselState {
 }
 
 impl TankState {
-    pub fn level(&self, density: KgPerM3) -> Meter {
-        Meter((self.mass / density).value() / self.area.value())
+    /// The tank's own liquid density [kg/m³] — its contents' ideal-mixing density.
+    ///
+    /// **One owner, and that is the point of the method.** Until M8.2 the only
+    /// caller that needed a tank's density computed this expression inline
+    /// (`network::fixed_pressure`), which was harmless while the solver's head
+    /// was the only consumer of a level. A control loop reads the SAME level and
+    /// acts on it, so two inline copies of "which density does a tank have" would
+    /// be two definitions of where the liquid surface is — the shape M7.4's
+    /// `column_draw_at` rule exists to prevent, one milestone later and on the
+    /// pair a reader is least likely to check.
+    pub fn density(&self, slate: &Slate) -> KgPerM3 {
+        self.composition.mixture_density(slate)
     }
+
+    /// Liquid level [m]: `h = m / (ρ·A)`.
+    ///
+    /// Takes the slate rather than a caller-supplied density so the level a
+    /// controller measures and the level the hydrostatic head is built on cannot
+    /// come from different densities. See `density`.
+    pub fn level(&self, slate: &Slate) -> Meter {
+        Meter((self.mass / self.density(slate)).value() / self.area.value())
+    }
+
     /// Hydrostatic pressure at the tank bottom nozzle.
     /// P = P_atm + ρ·g·h (vented tank).
-    pub fn bottom_pressure(&self, density: KgPerM3) -> Pascal {
-        Pascal(P_ATM.value() + density.value() * G * self.level(density).value())
+    pub fn bottom_pressure(&self, slate: &Slate) -> Pascal {
+        let density = self.density(slate);
+        Pascal(P_ATM.value() + density.value() * G * self.level(slate).value())
     }
+}
+
+// ---------------------------------------------------------------------------
+// Control loops (M8)
+// ---------------------------------------------------------------------------
+
+/// Stable handle for one control loop: its index into `PlantGraph::controls`.
+///
+/// The `NodeId`/`EdgeId` shape, and for the same reason — the command surface
+/// has to name one loop from outside the engine (`Command::SetSetpoint`), and a
+/// name would make the frontend contract depend on a string the scenario author
+/// chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct LoopId(pub u32);
+
+/// Whether a loop drives its actuator, or a human does.
+///
+/// `Manual` is not "the loop is deleted": the loop still takes its measurement
+/// and still reports a faceplate, it simply does not write. That distinction is
+/// what makes the loop-off counterfactual (docs/DESIGN.md §10 fork 6, gate 1) a
+/// run of the SAME plant rather than of a different one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlMode {
+    Auto,
+    Manual,
+}
+
+/// Which plant quantity a loop regulates.
+///
+/// One variant, and that is the M8.2 scope (docs/DESIGN.md §10 fork 0): a tank's
+/// level, because both halves of it already exist and are already load-bearing,
+/// so the slice adds no measurement path and no actuator alongside the control
+/// machinery it is there to test.
+///
+/// Pressure, temperature and flow are deferred per-variable, each needing a
+/// measurement path and an actuator that exists. Pressure is the near one — see
+/// the note's deferral list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MeasuredVariable {
+    Level,
+}
+
+impl MeasuredVariable {
+    /// The scenario key that carries this variable's setpoint, unit included.
+    ///
+    /// Used only to phrase the loader's refusal, so a message can name the key a
+    /// file SHOULD have written rather than merely the one it did.
+    pub fn setpoint_key(self) -> &'static str {
+        match self {
+            MeasuredVariable::Level => "setpoint_m",
+        }
+    }
+}
+
+/// A regulated quantity — a setpoint or a measurement — carrying its own unit.
+///
+/// **The unit is in the type because it cannot be in the field name**
+/// (docs/DESIGN.md §10 fork 4). Every quantity on `NodeSnapshot` says its unit in
+/// its own name (`pressure_pa`, `temperature_k`, `heat_input_w`) because a
+/// snapshot is plain serde data with no newtypes to carry one. A loop's setpoint
+/// has no such name available: it is metres today and Pascals the moment pressure
+/// control un-defers, so `setpoint_m` would be a lie on half the loops and a bare
+/// `setpoint` would be a number whose unit depends on a SIBLING field. §7's own
+/// answer — "unit-specific extras as tagged enums" — is this type.
+///
+/// Two consequences taken deliberately:
+///
+/// - The setpoint and the measurement are the **same type**, so a loop cannot
+///   report a setpoint in one variable against a measurement in another. That is
+///   M7.4's `column_draw_at` rule applied to the pair a reader is most likely to
+///   subtract.
+/// - Inside `core` the payload is a unit newtype, so rule 4 holds on the way in
+///   as well as on the way out. `Meter` is `#[serde(transparent)]`, so the wire
+///   form is still `{"variable":"level","m":6.0}` — a tagged number, not a
+///   nested object.
+///
+/// **With one variant, "the setpoint's variable disagrees with the loop's" is
+/// unrepresentable, and there is deliberately no guard for it.** A refusal path
+/// nothing can reach is a coverage claim that cannot be checked
+/// (`a-counter-is-not-a-gate`). The moment a second variant lands, writing a
+/// setpoint through `Command::SetSetpoint` becomes able to change what a loop
+/// measures, and that refusal becomes required rather than optional.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "variable", rename_all = "snake_case")]
+pub enum ControlledValue {
+    Level { m: Meter },
+}
+
+impl ControlledValue {
+    /// Which variable this value is of.
+    ///
+    /// `ControlLoop` stores no separate `variable` field: the setpoint IS the
+    /// declaration of what the loop measures, so there is one owner and the two
+    /// cannot drift apart. The loader still parses a `variable` key, because a
+    /// file has to say which unit its setpoint key carries before the setpoint
+    /// can be built — but it is consumed there and not stored twice.
+    pub fn variable(self) -> MeasuredVariable {
+        match self {
+            ControlledValue::Level { .. } => MeasuredVariable::Level,
+        }
+    }
+
+    /// The bare magnitude, in this variable's SI unit.
+    ///
+    /// The one place a unit is dropped, and it exists so a `Controller` impl can
+    /// do arithmetic. Everything upstream of it — the measurement read, the
+    /// setpoint, the command that writes one — is typed; a controller's gain
+    /// carries the reciprocal unit implicitly, which is why the scenario key says
+    /// so (`gain_per_m`).
+    pub fn magnitude(self) -> f64 {
+        match self {
+            ControlledValue::Level { m } => m.value(),
+        }
+    }
+
+    /// `measurement − setpoint`, in this variable's SI unit.
+    ///
+    /// **The error's sign convention lives here and nowhere else.** Positive
+    /// means "above setpoint", so a loop on a tank's OUTLET valve is direct
+    /// acting: too much level opens the drain. A controller that computed its own
+    /// difference would be free to disagree with the one a snapshot reader
+    /// reconstructs from the two reported values, and the mutation this slice owes
+    /// ("gain applied to the measurement instead of the error") only means
+    /// anything while the error term is explicit and singly owned.
+    ///
+    /// Both arguments are the same type by construction, so a level measurement
+    /// cannot be differenced against a pressure setpoint.
+    pub fn error(measurement: Self, setpoint: Self) -> f64 {
+        measurement.magnitude() - setpoint.magnitude()
+    }
+}
+
+/// One regulating loop: what it measures, what it writes, and how.
+///
+/// **It lives beside the graph, not on it** (docs/DESIGN.md §10 fork 1). A
+/// `NodeKind` was rejected because a controller conducts nothing and every graph
+/// algorithm would have to skip it; a field on the actuator node was rejected
+/// because the actuator field is exactly what the loop WRITES, and storing the
+/// writer inside the written struct makes "who owns this opening" unanswerable
+/// where `Engine::apply` has to answer it.
+///
+/// Not `Serialize`/`Deserialize`, unlike every other type in this file: the
+/// algorithm is a boxed trait object selected at load, so a loop is not
+/// round-trippable through the scenario format. What a frontend needs to see
+/// travels as `snapshot::ControlSnapshot` instead, which is plain data.
+#[derive(Debug)]
+pub struct ControlLoop {
+    /// Scenario-given name, unique per plant. What a faceplate is labelled with.
+    pub name: String,
+    /// The node whose state is measured. A `Tank` for a level loop; the loader
+    /// refuses anything else, because a level names nothing on a vessel whose
+    /// state IS pressure.
+    pub measurement_node: NodeId,
+    /// The node this loop writes. A `Valve`; a `ReliefValve` is refused with its
+    /// own reason, since its opening is actuated by its own inlet pressure.
+    pub actuator: NodeId,
+    /// The target value, and — through `ControlledValue::variable` — the
+    /// declaration of what this loop measures.
+    pub setpoint: ControlledValue,
+    pub mode: ControlMode,
+    /// The control algorithm, boxed per loop.
+    ///
+    /// **The project's first `Vec<Box<dyn _>>` seam** (docs/DESIGN.md §10 fork 2).
+    /// Every earlier seam — `FlowSolver`, `ThermoModel`, `ReactionModel`,
+    /// `SeparationModel` — is an engine-wide singleton chosen by one string in
+    /// `[fidelity]`, and a control algorithm is not that shape: one plant can want
+    /// one loop type on a tank and another on a vessel, which `[fidelity]` has no
+    /// way to say. Rule 2 is honoured and its ARITY is what changed.
+    ///
+    /// The genuinely new property, stated at the field because it is easy to miss:
+    /// an impl of this trait **owns state** where every earlier seam's impls are
+    /// pure. That is §3a fork 5's own definition of what turns an element into a
+    /// controller, and it is why the box is part of the engine's inventory rather
+    /// than part of its configuration. `ProportionalController` (M8.2) happens to
+    /// be stateless; `PiController` (M8.3) is not.
+    pub algorithm: Box<dyn crate::traits::Controller>,
+    /// The measurement this loop last ACTED ON — not a re-read of what is true
+    /// now.
+    ///
+    /// The two differ by one tick (fork 3), and reporting the fresh one would make
+    /// a lagging loop look instantaneous, hiding the lag from exactly the person
+    /// debugging it. Real from load rather than optional: a level is a STORED
+    /// quantity, so `Engine::new` seeds this by taking the measurement once, and
+    /// a snapshot before the first tick reports a true level instead of a NaN or
+    /// an absence.
+    pub last_measurement: ControlledValue,
+    /// The actuator position this loop last put on the faceplate, dimensionless
+    /// in `[0, 1]`.
+    ///
+    /// In `Auto` it is the controller's output, which is also what was written to
+    /// the valve. In `Manual` the loop writes nothing and this TRACKS the
+    /// actuator's real opening, which is what a DCS faceplate shows and what makes
+    /// AUTO→MANUAL transfer free (fork 4). Seeded from the valve's declared
+    /// opening at load.
+    pub last_output: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -632,13 +851,27 @@ pub struct Pipe {
 // Graph wrapper
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default)]
+/// `Clone` was derived here until M8.2 and had no call site in the workspace.
+/// It went when `controls` arrived, because a `Box<dyn Controller>` owns state
+/// and cloning a graph would silently fork a loop's memory into two engines that
+/// then diverge — the opposite of what rule 3 wants from a copied plant. `Debug`
+/// survives, which is why `Controller` carries it as a supertrait.
+#[derive(Debug, Default)]
 pub struct PlantGraph {
     g: StableDiGraph<Node, Pipe>,
     /// Thermal pairings between `HeatExchanger` sides. A `Vec`, not a map:
     /// insertion-ordered iteration is deterministic (rule 3), and the list is
     /// short enough that the linear `partner` lookup costs nothing.
     couplings: Vec<HeatExchangerCoupling>,
+    /// The plant's regulating loops, beside the graph rather than on it
+    /// (docs/DESIGN.md §10 fork 1). **Declaration order is execution order**, so
+    /// this is a `Vec` and never a map (rule 3), and `LoopId` indexes it the way
+    /// `NodeId` indexes the nodes.
+    ///
+    /// Empty for every scenario written before M8, which is what keeps them
+    /// byte-identical: the loop pass iterates nothing and `Snapshot::controls`
+    /// serializes nothing.
+    controls: Vec<ControlLoop>,
 }
 
 impl PlantGraph {
@@ -742,5 +975,118 @@ impl PlantGraph {
 
     pub fn find_node(&self, name: &str) -> Option<NodeId> {
         self.node_ids().find(|id| self.node(*id).name == name)
+    }
+
+    /// Append a control loop. Its `LoopId` is its position, so declaration order
+    /// in the scenario file is both the id order and the execution order.
+    ///
+    /// Validation of the two node kinds it names, and of one-writer-per-actuator,
+    /// belongs to the loader, which can name the offending `[[controls]]` entry;
+    /// this is the plain storage operation, exactly like `add_coupling`.
+    pub fn add_control(&mut self, control: ControlLoop) -> LoopId {
+        self.controls.push(control);
+        LoopId(self.controls.len() as u32 - 1)
+    }
+
+    pub fn controls(&self) -> &[ControlLoop] {
+        &self.controls
+    }
+
+    /// The loops, mutably — the engine's loop pass writes `last_measurement`,
+    /// `last_output` and (from M8.3) the algorithm's own state through this.
+    pub fn controls_mut(&mut self) -> &mut [ControlLoop] {
+        &mut self.controls
+    }
+
+    /// One loop by id, or `None` if the id names no loop.
+    ///
+    /// `Option` rather than an index panic: a `LoopId` arrives from outside the
+    /// engine on `Command::SetSetpoint`, so an out-of-range one is a command to
+    /// refuse, not a bug to crash on (rule 5).
+    pub fn control(&self, id: LoopId) -> Option<&ControlLoop> {
+        self.controls.get(id.0 as usize)
+    }
+
+    pub fn control_mut(&mut self, id: LoopId) -> Option<&mut ControlLoop> {
+        self.controls.get_mut(id.0 as usize)
+    }
+
+    /// Is `value` a legal setpoint for a loop measuring `node`?
+    ///
+    /// **One owner, called from both write points**: the loader, when a
+    /// `[[controls]]` entry declares a setpoint, and `Engine::apply`, when
+    /// `Command::SetSetpoint` moves one. Two copies of "what is a reachable
+    /// target" could disagree, and the disagreement would look like a loop that
+    /// loaded fine and then refused the number it was loaded with.
+    ///
+    /// The bound is the measured node's own geometry rather than a constant: a
+    /// level setpoint above the tank's height is a target the plant cannot reach,
+    /// so the loop sits pinned at saturation and reads as a tuning problem. `0`
+    /// stays legal — it is "drain it".
+    ///
+    /// # Errors
+    /// `SimError::InvalidCommand` naming the range, or if the node cannot answer
+    /// for that variable at all.
+    pub fn check_setpoint(&self, node: NodeId, value: ControlledValue) -> Result<(), SimError> {
+        match (value, &self.node(node).kind) {
+            (ControlledValue::Level { m }, NodeKind::Tank(t)) => {
+                if !m.is_finite() || m.value() < 0.0 || m.value() > t.height.value() {
+                    return Err(SimError::InvalidCommand(format!(
+                        "level setpoint {} m is outside tank '{}''s range [0, {}] m — a                          setpoint the plant cannot reach leaves the loop pinned at                          saturation",
+                        m.value(),
+                        self.node(node).name,
+                        t.height.value()
+                    )));
+                }
+                Ok(())
+            }
+            (ControlledValue::Level { .. }, _) => Err(SimError::InvalidCommand(format!(
+                "node '{}' is not a tank, so it has no level setpoint range",
+                self.node(node).name
+            ))),
+        }
+    }
+
+    /// Read one regulated variable off the plant, as it stands right now.
+    ///
+    /// **The single owner of "where does a control loop's measurement come
+    /// from", and the answer differs by variable** (docs/DESIGN.md §10 fork 3,
+    /// which originally got this wrong for the one variable M8.2 builds). A level
+    /// is a STORED quantity: `TankState::mass` lives on this graph and is real
+    /// from load, so a level loop reads the graph and has a genuine measurement
+    /// at tick 0. It does NOT read `energy::NodeStates`, which carries
+    /// temperature, composition, reactor duties and column separations and no
+    /// inventory at all, and which is empty before the first tick.
+    ///
+    /// A pressure or a temperature is SOLVED and lives in `last_solution` /
+    /// `NodeStates`. A loop on either has no measurement at tick 0 and needs a
+    /// stated rule for that tick — which is one more reason those variables are
+    /// deferred per-variable rather than arriving "for free once the seam
+    /// exists".
+    ///
+    /// Called at load to seed `ControlLoop::last_measurement` and once per loop
+    /// per tick thereafter, so a loop's seeded measurement and its running one
+    /// can never be taken by two different rules.
+    ///
+    /// # Errors
+    /// `SimError::Scenario` if the node cannot answer for that variable — a level
+    /// asked of anything that is not a `Tank`. The loader refuses that
+    /// combination at load, so this is the rule-5 backstop for a hand-built
+    /// graph, not the user-facing message.
+    pub fn measure(
+        &self,
+        slate: &Slate,
+        node: NodeId,
+        variable: MeasuredVariable,
+    ) -> Result<ControlledValue, SimError> {
+        match (variable, &self.node(node).kind) {
+            (MeasuredVariable::Level, NodeKind::Tank(t)) => Ok(ControlledValue::Level {
+                m: t.level(slate),
+            }),
+            (MeasuredVariable::Level, _) => Err(SimError::Scenario(format!(
+                "node '{}' is not a tank, so it has no level to control. A level names                  nothing on a vessel whose state IS pressure (docs/DESIGN.md §3a fork 2)",
+                self.node(node).name
+            ))),
+        }
     }
 }
