@@ -5387,3 +5387,352 @@ is fixed, and the generated-network property arm passes.
   it is written on the field's own doc comment and asserted against the default
   by a unit test. Un-defers if the solver's numerics ever become scenario config,
   at which point it must become a load-time refusal.
+
+### M9.1 — the mirror step on the game fidelity — specified before building
+
+M9.1 was scoped by a probe sent to ask a binary question: M9.0 fixed the shut-in
+stall in `NewtonFlowSolver`, all fourteen shipped scenarios declare
+`flow = "newton"`, so does the same defect live in `SimpleFlowSolver`? The answer
+is yes, and the measurement that produced it moved the subject.
+
+**The shut-in is not the defect. It is where the defect stops finishing.**
+`SimpleFlowSolver` has no step-rejection criterion of any kind — it applies
+`P += ω · imbalance/g_sum` unconditionally — so it takes the step M9.0 proved is
+the worst one available on *every* valve node of *every* plant, always. The
+shut-in is the limit where that step makes no progress at all.
+
+#### The probe's question, and why the answer changed the subject
+
+M8.2's control fixture, tick 0, `dt = 0.5 s`, the solver called directly with the
+drain valve's opening varied. **The `[[controls]]` table was deleted from the
+fixture for this measurement**, so nothing here is the control loop's: the counts
+are identical with the loop present, which is what makes the defect the solver's.
+
+| drain valve | `SimpleFlowSolver` | `NewtonFlowSolver` |
+|---|---|---|
+| `0.20` (ordinary, open) | 189 | 8 |
+| `0.05` | 923 | 8 |
+| `0.01` | 3874 | 8 |
+| shut | **diverged at the 5 000 cap**, residual 77.2 kg/s | 8 |
+
+The first row is the finding. A valve at 20% open is an ordinary operating point
+with nothing shut anywhere, and it costs 189 sweeps against Newton's 8. Tracing
+which node is still moving late in the sweep says why: at `0.20` **the binding
+node is not the drain valve at all**. It is `feed_valve` — a fully open valve on a
+fixed 5 bar header, on the opposite side of the plant — and it takes **189 sweeps
+in all four runs, identically**, because the drain's opening has nothing to do
+with it. The drain valve only becomes the binding node once throttled below about
+`0.05`.
+
+So "the shut-in stall on the other fidelity" is the wrong frame. The right one is
+that this solver overshoots on ordinary plants routinely, and the shut valve is
+the tail where the overshoot stops converging.
+
+#### The mechanism, measured on the failing solve
+
+M9.0's own lesson is that a recorded mechanism can be false in both of its
+clauses, so this one was instrumented rather than inherited: every sweep's node
+pressures, on the failing solve and on the three converging ones.
+
+**On the shut valve it is exactly the closed form.** The dead leg's branch drop
+`x = p_tank − p_valve` changes sign every single sweep and its magnitude falls by
+**2.0000 Pa per sweep, unvarying across all 5 000 of them**, starting from
+`|x₀| = 106 790.90 Pa`. §11's algebra predicts `|x| − |x₁| = |x|·2ε/(|x| + 2ε)`,
+which at `ε = eps_dp = 1 Pa` is `1.99996`.
+
+That is a prediction, so it was checked as one rather than fitted: the crawl needs
+`106 790.90 / 2 = 53 395` sweeps, so raising `max_iter` to 100 000 should converge
+at about that count. **Measured: 53 411**, 0.03% out.
+
+**On a conducting valve it is the same overshoot with a contraction factor.** The
+sign still alternates every sweep, but the magnitude contracts geometrically
+instead of by a constant, because the second, conducting branch damps the
+reflection. Net decrement per sign-pair, as a fraction of `|x|`:
+
+| drain valve | contraction per pair |
+|---|---|
+| `0.20` | `1.10e-2` |
+| `0.05` | `3.05e-3` |
+| `0.01` | `6.57e-4` |
+
+— roughly proportional to the valve's own conductance. **So it is one mechanism
+across the whole column, and the shut valve is the limit where the contraction
+factor reaches exactly 1 and only the additive `2ε` is left.** "Continuous, not a
+cliff" is that limit being approached continuously; it is *not*, as first
+supposed, the branch drop growing as the valve closes. The drop barely moves
+(`109 529 → 106 791 Pa` across the four runs) and is not what separates them.
+
+#### The window is unbounded above, and that is a difference in kind
+
+§11 derives Newton's stall window as
+
+```text
+2·eps_dp·max_iter   <   |Δp₀|   ≲   eps_dp / ARMIJO_C
+```
+
+with an upper bound that exists **because** Armijo eventually rejects the mirror
+step. `SimpleFlowSolver` rejects nothing, so there is no upper bound:
+
+```text
+2·eps_dp·max_iter   <   |Δp₀|   <   ∞          (10 kPa, ∞) as shipped
+```
+
+Two consequences, and the first is the whole argument for this slice:
+
+1. **No value of `max_iter` closes this window.** §11's fork 2 — fund the crawl
+   with a bigger cap — was rejected there on cost, because every Newton iteration
+   is a dense LU. Here it is rejected on principle: raising the cap moves the
+   lower bound and the window stays infinite. A rejection criterion is not one of
+   several ways to fix this; it is the only one.
+2. **It is reachable structurally rather than by an unlucky plant.** The cold
+   seed in `network::classify` is the mean of the pinned pressures, so on this
+   fixture the free nodes start ~200 kPa from their roots — twenty times the
+   window's lower bound — before anybody touches a valve. Any plant whose
+   reservoirs span a few bar starts inside the window on tick 0.
+
+#### The forks
+
+**Fork 1 — a per-node sufficient-decrease test in the sweep. CHOSEN.**
+Require `|R_after| ≤ (1 − c·t)·|R_before|` on the node's own scalar imbalance,
+halving `t` until it holds. It is the node-wise analogue of what M9.0 already
+made Newton do, it needs no new state, and by the closed form it cannot cost more
+than one halving on the case it exists for: `t = ½` lands within `ε` of the root
+from any drop.
+
+**Fork 2 — raise `max_iter`.** Rejected on principle, per the unbounded window
+above. Recorded because it is the move that works on the other fidelity.
+
+**Fork 3 — lower the default `ω`.** Rejected, and the measurement that kills it
+also explains it. Worst sweeps in any tick over 500 ticks of all fourteen shipped
+scenarios, forced onto this fidelity:
+
+| scenario | `ω = 1.0` | `0.9` | `0.75` | `0.5` |
+|---|---|---|---|---|
+| `relief_blowdown` | 868 | 1079 | 1520 | **3035** |
+| `gas_valve` | 459 | 31 | 18 | 22 |
+| `tank_level_control` | 78 | 22 | 16 | 30 |
+| `fcc_plant` | 16 | 20 | 28 | 51 |
+| `leaking_line` | 18 | 15 | 12 | 30 |
+| `crude_column`, `crude_column_cascade` | 3 | 7 | 10 | 20 |
+
+The corpus worst case gets 3.5× worse, because `relief_blowdown`'s convergence is
+driven by its vessel's own `−C/dt` accumulation term rather than by branch
+conductance, and damping that funds nothing. A global `ω` trades one plant's
+stall for another's cost.
+
+**And the decisive measurement is that damping and the line search are the same
+remedy.** With fork 1 in place at `c = 5e-2` and `ω = 0.5`, the corpus reproduces
+the *no-line-search* `ω = 0.5` column exactly — `relief_blowdown` 3035,
+`fcc_plant` 51, `crude_column` 20 — because at `ω = ½` the line search never
+fires: the half step already passes its own test. Fork 3 is fork 1 applied
+unconditionally to every node of every plant, and fork 1 is fork 3 charged for
+only where it is needed. `ω` therefore survives as a field, its default stays
+`1.0`, and its doc comment has to stop advertising itself as the remedy for
+stiffness.
+
+**Fork 4 — a better cold seed.** Rejected as unable to reach the case. A valve
+shut between two ticks moves its node's root by the whole branch drop in one tick,
+so no seeding policy can anticipate it; and `network::prepare`'s own comment
+already establishes that the seed is a path rather than an answer. It would
+shorten the crawl on tick 0 and leave every later one.
+
+**Fork 5 — port §11's own fork 4, the sign-reversal trust region, node-wise.**
+Built and **measured, and it does not fix the defect.** "Reject a step that
+reverses the node's imbalance without shrinking it" is a large corpus win —
+`gas_valve` 459 → 7, `tank_level_control` 78 → 12 — and on the shut-in it
+reproduces the divergence **bit for bit**: the same 5 000 sweeps, the same
+`7.719e1` residual. The reason is the qualifier §11 wrote into the rule itself:
+the mirror step *does* shrink the imbalance, by `2ε` worth, so "reverses *and*
+does not shrink" is never satisfied on exactly the case the rule was written for.
+
+This does not fire §11's un-defer trigger for Newton — that trigger is "a stall
+that survives fork 1", and none has been found. What it does is supply evidence
+against the deferred rule from the other fidelity: it is attractive, it is
+scale-free, and on the one case it was designed for it is inert.
+
+#### The constant is Newton's number and is deliberately not Newton's constant
+
+The two tests are the same test. Newton compares `φ_t ≤ (1 − 2c·t)·φ` on
+`φ = ½‖R‖₂²`; the per-node form compares `|R_t| ≤ (1 − c·t)·|R|` on a scalar
+residual. Since `φ ∝ R²` and `(1 − ct)² = 1 − 2ct + O(c²t²)`, **the factor of two
+is the square and not a tuning choice**, and `c` means the same thing on both
+sides.
+
+The *justification* for `5e-2` does not transfer, though, and this is the trap.
+Newton's bare relation bound is `1/(2·max_iter) = 1e-2` at its cap of 50; here
+`max_iter = 5000` makes the same bound `1e-4`, five hundred times slacker. So the
+number was re-derived by measurement on this solver:
+
+| `c` | drain `0.20` | `0.05` | `0.01` | shut | `relief_blowdown` worst |
+|---|---|---|---|---|---|
+| none | 189 | 923 | 3874 | **diverged** | 868 |
+| `1e-4` | 84 | 258 | 1239 | 7 | — |
+| `1e-3` | 84 | 7 | 8 | 7 | 774 |
+| `1e-2` | **7** | 7 | 8 | 7 | 847 |
+| `5e-2` | 7 | 7 | 8 | 7 | **920** |
+| `2e-1` | 7 | 7 | 7 | 7 | 1325 |
+
+Three things to read off it:
+
+- **The relation's own bound closes the shut-in and leaves the crawl.** At
+  `1e-4` the fully shut valve converges in 7 sweeps and a valve 1% open still
+  takes 1239. The relation is about the dead leg, where progress is additive; the
+  near-shut nodes converge geometrically and need a test strict enough to reject
+  the mirror on a *conducting* node. This is the same shape M9.0 found at its own
+  bare bound, for a different reason — which is the argument for measuring the
+  margin on each solver rather than porting it.
+- **The knee is between `1e-3` and `1e-2`**, and above `1e-2` the fixture is
+  saturated at 7–8 sweeps whatever the opening.
+- **The cost lands on one plant and rises monotonically with strictness.**
+  `relief_blowdown` is the corpus worst either way; `5e-2` costs it 6% and `2e-1`
+  costs it 53%.
+
+`5e-2` is five times the measured knee and nearly free. That it is also Newton's
+number is a coincidence of two independent measurements, and the two are
+deliberately kept as **separate constants in separate files, each naming the
+other**: a shared one would let a future re-tuning of Newton's margin — which is
+tied to *its* `max_iter` of 50 — silently move a solver whose bound is five
+hundred times slacker. Rule 2's independent implementations, applied to a number.
+
+#### What the gate has to assert, and the one M9.0 wrote that cannot be mirrored
+
+The endpoint, not `Ok(())` — M9.0's rule, and it binds harder here, because the
+table above contains a value (`1e-4`) at which the shut-in converges and the
+defect is still there. A gate that only watches the shut valve would pass it.
+
+So the gate is two assertions on one fixture:
+
+- **the shut branch's endpoint**, the identity M9.0 already gates on Newton — no
+  flow through the shut branch, and the dead leg sitting at the tank's bottom
+  pressure. It is fidelity-independent by construction, which is the point: both
+  solvers must land on the same state, so this is an arm on the existing gate
+  rather than a new one.
+- **a sweep budget on the throttled fixture**, at 1% open. This is the vacuity
+  control for the first: it is what fails at `c = 1e-4`, where the endpoint
+  assertion passes.
+
+**M9.0's constant-relation unit test cannot be mirrored here, and shipping a copy
+of it would be worse than shipping nothing.** With fork 1 in place this solver's
+window takes Newton's form, `(2·eps_dp·max_iter, eps_dp/c]`, empty iff
+`c ≥ 1/(2·max_iter)`. At `max_iter = 5000` that is `1e-4`, which `5e-2` clears by
+a factor of five hundred — so the assertion would pass at almost any constant a
+later reader chose, and would read as coverage while providing none. The thing
+that actually needs gating on this fidelity is that a rejection criterion exists
+at all, and the endpoint gate is what asserts it.
+
+#### The branch where no step is acceptable, and how often it is reached
+
+If none of the halvings satisfies the test, the node is left where it is and the
+sweep moves on — a well-defined Gauss–Seidel choice (a node whose own scalar step
+cannot improve its own balance is one for its neighbours to move) and the honest
+one, since the alternative is applying a step the criterion just rejected.
+
+That branch is reached **3 281 times across 500 ticks of all fourteen scenarios**,
+which sounds like a hot path and is not: **every one of those sites has
+`|imbalance| ≤ 3.4e-13 kg/s`**, five orders of magnitude below the solver's own
+`tol_abs_kg_s = 1e-8`. It is the floating-point noise floor on an already-converged
+node, where `(1 − c·t)·|R|` is unreachable by rounding and the step being dropped
+is a no-op. Recorded because "it fires 3 281 times" is exactly the kind of number
+that would otherwise be read as a defect by whoever finds it next.
+
+#### The cost, in wall time rather than in iterations
+
+The scoping probe refused to claim this solver was slow from iteration counts
+alone, on the grounds that a sweep is `O(edges)` with no linear algebra while a
+Newton iteration is a dense LU. The same refusal applies to the fix: the line
+search costs up to nine extra imbalance evaluations per node per sweep, and
+iteration counts cannot say whether the sweeps it saves pay for them.
+
+Release build, 500 ticks, three runs each, best of three, in milliseconds:
+
+| scenario | before | after |
+|---|---|---|
+| `relief_blowdown` | 91.2 | 96.3 |
+| `gas_valve` | 4.4 | 3.9 |
+| `tank_level_control` | 5.8 | 5.8 |
+| `leaking_line` | 5.1 | 5.8 |
+
+`relief_blowdown`'s +6% in sweeps does not clear run-to-run spread, and no
+scenario moves outside it. **The evaluations are paid for by the sweeps they
+save**; the claim is "unchanged at this resolution", not "faster".
+
+#### Deferred, with what un-defers each
+
+- **`ω` is a `pub` field and no scenario file can set it** — the same shape as
+  §11's `max_iter` deferral, and the same disposition: a code-level invariant
+  written on the field's own doc comment, saying that the line search now owns
+  what damping used to be for and that lowering `ω` is *measured* to cost.
+  Un-defers if the solver's numerics ever become scenario config.
+- **`relief_blowdown`'s 868 sweeps are a different mechanism and this slice does
+  not touch them** (868 → 920). `relief_valve_reference.rs` records it: a
+  normally-shut PSV leaves its valve node a dead end, so the receiver's
+  Gauss–Seidel diagonal is dominated by a fat inlet branch carrying no net flow.
+  That is a preconditioning problem, not an overshoot, and the measurement above
+  separates them — the fix that takes `gas_valve` from 459 to 7 leaves this plant
+  where it was. Un-defers if a plant of that shape reaches the cap.
+- **The cold seed**, fork 4. Un-defers only alongside a reason other than this
+  one, since it cannot reach the shut-in case at all.
+
+#### The mutation pass, and the two predictions it falsified
+
+Six edits, each restored from a single pre-mutation snapshot with the mtime
+moved, each verified to have applied *and* compiled, `cargo test --workspace
+--no-fail-fast` so no binary truncates the catch set.
+
+| # | edit | predicted | fired |
+|---|---|---|---|
+| 1 | `ARMIJO_C: 5e-2 → 1e-4` | throttled gate alone | **throttled gate alone** |
+| 2 | accept every step unconditionally | both new gates | **both new gates** |
+| 3 | apply `full/256` where the search rejects | uncaught | **uncaught** |
+| 4 | trial imbalance drops the capacitance term | — | `both_fidelities_agree_on_a_capacitive_plant`, `both_fidelities_settle_the_relief_…` |
+| 5 | `MAX_HALVINGS: 8 → 1` | uncaught | **`a_relief_that_shuts_on_the_way_to_the_answer_…`** |
+| 6 | default `ω: 1.0 → 0.5` | — | shut-in gate (`simple` arm), `both_fidelities_settle_the_relief_…` |
+
+**Mutation 1 is the one this note stakes a claim on in print, and it holds.**
+The bare bound the stall relation licenses at this cap converges the shut branch
+and leaves a valve 1% open crawling, so the endpoint gate stays green and the
+sweep budget beside it is what fails. The two gates divide the work the way the
+note says they do — measured, not asserted.
+
+**Mutation 5 falsifies something this note implies, and the correction is worth
+more than the mutation.** §11's closed form says a HALF step lands within `ε` of
+the root *from any drop*, which would make the eighth halving decorative and this
+edit inert — the prediction, and it is wrong. `MAX_HALVINGS = 1` diverges M8.0's
+anchoring plant at 20 000 sweeps, residual `5.397e1`. The closed form describes a
+**dead leg**: rule F6 gives a shut valve's orphaned node exactly one live edge, so
+the mirror is exact and one halving finishes it. A node with two live edges is a
+different function, the second branch shifts the root off the mirror, and the half
+step can be rejected too. So `MAX_HALVINGS = 8` is load-bearing rather than copied
+from `newton_flow` for symmetry, and **the closed form's reach is narrower than
+the fix's** — it covers the case that motivated the slice, not every case the
+search is asked to handle.
+
+**Mutation 4 fails in a shape worth recognising: the residual FREEZES.**
+`0.02701386453465011` for all 5 000 sweeps, identical to the last digit. A line
+search whose trial evaluation is not the same function the step was derived from
+does not converge slowly — every `t` is rejected, `step = 0`, and the node never
+moves again. Both catches are pre-existing M5-era cross-fidelity tests; **neither
+new gate sees it**, because both watch a valve and this breaks a vessel.
+
+**Mutation 3 is uncaught, and that is a gap with a reason rather than a shrug.**
+Nothing gates the branch where no `t` is acceptable. A gate would need a plant on
+which that branch fires at an imbalance big enough to matter, and the corpus says
+none exists: 3 281 reject sites across all fourteen scenarios, every one at
+`|imbalance| ≤ 3.384e-13 kg/s` — five orders below `tol_abs_kg_s`. The branch is
+reached constantly and is never load-bearing, so the honest record is that it is
+untested and why, not a gate that would pass on any implementation.
+
+#### Reachability: no shipped scenario runs this file
+
+The corpus numbers above and the "blast radius is nil" claim both rest on all
+fourteen shipped files declaring `flow = "newton"`. Grep proves the text; a
+`panic!` at `SimpleFlowSolver::solve` proves the call. All fourteen at default
+fidelity: **0 of 14 fire**, with `leaking_line` forced to `simple` as the control
+that must, and does.
+
+**The first run of that probe reported 14 of 14, and the false positive is the
+part to remember.** `panic!` at the top of a function makes the rest of it
+unreachable, so rustc emits a diagnostic that **echoes the panic's own source
+line** — and `cargo run` replays cached build warnings on every invocation. The
+probe was matching the compiler, not the program. Build once, then invoke the
+binary, and require `panicked at` alongside the marker.

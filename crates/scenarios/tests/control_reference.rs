@@ -154,6 +154,20 @@ const BAND_M: f64 = 1.0;
 /// suite slow — the whole file is a couple of seconds in a debug build.
 const TICKS: u64 = 8_000;
 
+/// The fixture on a named flow fidelity. `PLANT` declares `newton`, and the two
+/// gates below are run on BOTH — a shut branch's endpoint is a fact about the
+/// plant, not about which solver found it.
+fn with_flow(src: &str, flow: &str) -> String {
+    // The guard is on the SOURCE, not on the result: swapping `newton` for
+    // `newton` is a legitimate no-op, so comparing before against after would
+    // fire on the arm that changes nothing.
+    assert!(
+        src.contains(r#"flow = "newton""#),
+        "the fixture must declare flow = \"newton\" for this swap to reach the solver"
+    );
+    src.replace(r#"flow = "newton""#, &format!(r#"flow = "{flow}""#))
+}
+
 fn engine_from(src: &str) -> Engine {
     let file = refinery_scenarios::load_str(src).expect("fixture parses");
     refinery_scenarios::build_engine(&file).expect("fixture builds")
@@ -384,6 +398,19 @@ fn the_level_follows_a_setpoint_step() {
 /// drop at all, so the whole defect was that `ARMIJO_C` was too small to reject
 /// the full one.
 ///
+/// **M9.1 runs the whole gate on BOTH fidelities, and that arm is not symmetry
+/// for its own sake.** `SimpleFlowSolver` had the same defect in a worse shape:
+/// it applies the full node-wise step unconditionally, with no rejection
+/// criterion of any kind, so before M9.1 this fixture could not complete a single
+/// tick on the game fidelity — 5 000 Gauss–Seidel sweeps, residual 77.2 kg/s,
+/// with the same mirror step crawling in at 2.0000 Pa a sweep from 106 790.90 Pa
+/// (53 411 sweeps needed). The identity asserted below is a fact about the plant
+/// rather than about the solver, which is what lets one `assert_dead_leg` grade
+/// both. See DESIGN §11, M9.1 — and note that this gate alone does NOT pin that
+/// fix: a constant slack enough to leave a valve 1% open crawling for 1 239
+/// sweeps still passes it. `a_throttled_branch_costs_the_game_solver_...` below
+/// is the half that fails there.
+///
 /// **`Ok(())` is not the assertion, and that refusal is deliberate.** A solve can
 /// converge, conserve mass and rerun bit-identically while frozen wrong (M3.2), so
 /// a line search that accepted *anything* would also pass an `is_ok()` gate here.
@@ -394,59 +421,126 @@ fn the_level_follows_a_setpoint_step() {
 /// self-report.
 #[test]
 fn a_branch_shut_in_one_tick_converges_whoever_shuts_it() {
-    // By controller: a setpoint step big enough that `u = K·e` clamps to zero.
-    let mut by_loop = engine_from(PLANT);
-    run(&mut by_loop, TICKS);
-    by_loop
-        .apply(Command::SetSetpoint {
-            loop_id: LoopId(0),
-            value: ControlledValue::Level { m: Meter(6.0) },
-        })
-        .expect("a reachable setpoint is accepted");
-    by_loop
-        .tick()
-        .expect("SOLVER REGRESSED: a controller shutting a branch in one tick");
-    assert_eq!(output_now(&by_loop), 0.0, "the step must reach the clamp");
-    assert_dead_leg(&by_loop, "the control loop");
+    for flow in ["newton", "simple"] {
+        let plant = with_flow(PLANT, flow);
+        let manual = plant.replace(r#"mode = "auto""#, r#"mode = "manual""#);
 
-    // By hand, on the same plant with the loop parked: the identical endpoint,
-    // written by a command that has existed since M1.
-    let mut by_hand = engine_from(&PLANT.replace(r#"mode = "auto""#, r#"mode = "manual""#));
-    run(&mut by_hand, TICKS);
-    let valve = by_hand.graph.find_node("drain_valve").expect("drain valve");
-    by_hand
-        .apply(Command::SetValveOpening {
-            node: valve,
-            opening: 0.0,
-        })
-        .expect("in MANUAL a human drives the valve");
-    by_hand
-        .tick()
-        .expect("SOLVER REGRESSED: a hand-shut branch in one tick");
-    assert_dead_leg(&by_hand, "a hand command");
+        // By controller: a setpoint step big enough that `u = K·e` clamps to zero.
+        let mut by_loop = engine_from(&plant);
+        run(&mut by_loop, TICKS);
+        by_loop
+            .apply(Command::SetSetpoint {
+                loop_id: LoopId(0),
+                value: ControlledValue::Level { m: Meter(6.0) },
+            })
+            .expect("a reachable setpoint is accepted");
+        by_loop.tick().unwrap_or_else(|e| {
+            panic!("SOLVER REGRESSED ({flow}): a controller shutting a branch in one tick: {e}")
+        });
+        assert_eq!(output_now(&by_loop), 0.0, "the step must reach the clamp");
+        assert_dead_leg(&by_loop, &format!("the control loop, {flow}"));
 
-    // The third route, and the only one that converged before the fix: the same
-    // endpoint walked down in twenty steps. It reaches a DIFFERENT tank level —
-    // twenty more ticks of draining — which is exactly why the identity asserted
-    // is level-independent rather than a stored pair of numbers.
-    let mut gradually = engine_from(&PLANT.replace(r#"mode = "auto""#, r#"mode = "manual""#));
-    run(&mut gradually, TICKS);
-    let valve = gradually
-        .graph
-        .find_node("drain_valve")
-        .expect("drain valve");
-    for step in (0..20).rev() {
-        gradually
+        // By hand, on the same plant with the loop parked: the identical endpoint,
+        // written by a command that has existed since M1.
+        let mut by_hand = engine_from(&manual);
+        run(&mut by_hand, TICKS);
+        let valve = by_hand.graph.find_node("drain_valve").expect("drain valve");
+        by_hand
             .apply(Command::SetValveOpening {
                 node: valve,
-                opening: 0.20 * f64::from(step) / 20.0,
+                opening: 0.0,
             })
             .expect("in MANUAL a human drives the valve");
-        gradually
-            .tick()
-            .expect("the gradual route always converged");
+        by_hand.tick().unwrap_or_else(|e| {
+            panic!("SOLVER REGRESSED ({flow}): a hand-shut branch in one tick: {e}")
+        });
+        assert_dead_leg(&by_hand, &format!("a hand command, {flow}"));
+
+        // The third route, and the only one that converged before the fix: the
+        // same endpoint walked down in twenty steps. It reaches a DIFFERENT tank
+        // level — twenty more ticks of draining — which is exactly why the
+        // identity asserted is level-independent rather than a stored pair of
+        // numbers. On the game fidelity it converged before M9.1 for the same
+        // reason it did on Newton: each step's branch drop is a twentieth of the
+        // whole, so the mirror step's crawl has a twentieth as far to walk.
+        let mut gradually = engine_from(&manual);
+        run(&mut gradually, TICKS);
+        let valve = gradually
+            .graph
+            .find_node("drain_valve")
+            .expect("drain valve");
+        for step in (0..20).rev() {
+            gradually
+                .apply(Command::SetValveOpening {
+                    node: valve,
+                    opening: 0.20 * f64::from(step) / 20.0,
+                })
+                .expect("in MANUAL a human drives the valve");
+            gradually
+                .tick()
+                .expect("the gradual route always converged");
+        }
+        assert_dead_leg(&gradually, &format!("the gradual route, {flow}"));
     }
-    assert_dead_leg(&gradually, "the gradual route");
+}
+
+/// The vacuity control for the gate above, and the half that actually pins M9.1.
+///
+/// **A gate that only watches a fully shut valve can be passed by a solver that
+/// is still broken.** DESIGN §11's constant sweep contains the counterexample: at
+/// `ARMIJO_C = 1e-4` — the bare bound the stall relation demands at this solver's
+/// cap of 5 000 — the shut branch converges in 7 sweeps and a valve 1% OPEN still
+/// takes 1 239. The endpoint gate passes; the defect is intact. So the
+/// discriminating measurement is not the shut valve at all, it is the throttled
+/// one.
+///
+/// The mechanism is why. A full node-wise Newton step on `f(x) = x/√(|x|+ε)`
+/// lands on the mirror of the branch drop; with the valve fully shut the node is a
+/// dead leg and the mirror is exact, so the sweep walks in at `2ε` a time and the
+/// relation's bound describes it. With the valve conducting, the second branch
+/// damps the reflection and the approach is geometric instead — measured
+/// contraction per sign-pair `1.10e-2 / 3.05e-3 / 6.57e-4` at openings
+/// `0.20 / 0.05 / 0.01` — which needs a strictly stronger rejection than the dead
+/// leg does. One mechanism, two regimes, and only the second one is binding.
+///
+/// **A budget rather than an exact count**, per the same call
+/// `relief_valve_reference.rs` makes: the number is a property of this geometry
+/// and would move with any legitimate re-sizing. What must not move is the order
+/// of magnitude. Measured on this fixture's first tick:
+///
+/// | | Newton | Simple |
+/// |---|---|---|
+/// | shipped | 8 | **8** |
+/// | `ARMIJO_C = 1e-4` | — | 1 239 |
+/// | no line search at all | — | 3 874 |
+///
+/// The asserted 100 sits between the columns with a factor of twelve either way.
+#[test]
+fn a_throttled_branch_costs_the_game_solver_a_handful_of_sweeps_not_thousands() {
+    let throttled = PLANT
+        .replace(r#"mode = "auto""#, r#"mode = "manual""#)
+        .replace("kv = 60.0\nopening = 0.2", "kv = 60.0\nopening = 0.01");
+    assert!(
+        throttled.contains("opening = 0.01"),
+        "the fixture's drain valve must be the one throttled"
+    );
+
+    for (flow, budget) in [("newton", 25u32), ("simple", 100u32)] {
+        let mut engine = engine_from(&with_flow(&throttled, flow));
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("{flow}: a throttled drain is an ordinary plant: {e}"));
+        let iterations = engine.snapshot().solver.iterations;
+        assert!(
+            iterations < budget,
+            "{flow}: a drain valve 1% open took {iterations} iterations against a \
+             budget of {budget}. On the game fidelity this is the mirror step \
+             going unrejected (DESIGN §11, M9.1): the full node-wise step lands \
+             on the far side of the root and the sweep alternates in toward it. \
+             Measured 3 874 with no line search and 1 239 at ARMIJO_C = 1e-4, \
+             which is the value the stall relation alone would license"
+        );
+    }
 }
 
 /// The endpoint every route to a shut drain must reach, asserted as an identity

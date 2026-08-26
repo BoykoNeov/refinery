@@ -3705,9 +3705,13 @@ that slice and takes its name from what the defect turned out to be about — no
 control, not the branch law, but the numerics that decide which Newton step to
 take.
 
-The milestone is scoped one slice at a time, because what M9.1 should be depends
-on what M9.0 measured, and M9.0 measured that a single constant closes the whole
-window. There is no fan of further work here waiting to be listed.
+The milestone is scoped one slice at a time, because what the next slice should be
+depends on what the last one measured. M9.0 measured that a single constant closes
+the whole window on `NewtonFlowSolver`; M9.1 came out of asking the one question
+that answer leaves open — every shipped scenario declares `flow = "newton"`, so
+what about the other solver — and the probe that asked it found a defect of the
+same family in a worse shape. There is still no fan of further work here waiting
+to be listed.
 
 ### M9.0 — the shut-in stall — **LANDED** 2026-08-26
 
@@ -3765,3 +3769,128 @@ The righted gate asserts the shut branch's ENDPOINT, so moving the control pass
 below the solve now leaves 4.16 kg/s running through a branch it says is shut.
 **Re-run an upside-down test's catches after turning it right way up** — deleting
 it would have reopened a gap M8.4 paid to find.
+
+### M9.1 — the mirror step on the game fidelity — **LANDED** 2026-08-26
+
+M9.0 fixed the shut-in stall in `NewtonFlowSolver` and every shipped scenario
+declares `flow = "newton"`, so the obvious question was whether the same defect
+lives in `SimpleFlowSolver`. It was asked as a probe with a binary answer, and the
+answer moved the subject. The design note is DESIGN §11's M9.1 half, written
+before the fix. **Six things worth carrying forward**, plus two more from the
+mutation pass below, which falsified two of its own predictions.
+
+**The shut valve is not the subject; it is where the defect stops finishing.**
+`SimpleFlowSolver` has no step-rejection criterion of any kind — it applies its
+full node-wise step unconditionally — so it takes the step M9.0 proved is the
+worst one available on *every* valve node of *every* plant. On the M8.2 fixture
+with the drain valve at a perfectly ordinary 20% open, nothing shut anywhere, the
+solver takes 189 sweeps against Newton's 8 — and the node still moving at the end
+is the **feed** valve on the far side of the plant, which takes exactly 189 sweeps
+whatever the drain is doing. The `[[controls]]` table was deleted from the fixture
+for that measurement, so none of it is the control loop's.
+
+**The mechanism was instrumented rather than inherited, and half of it is new.**
+On the shut valve it is exactly §11's closed form: the dead leg's branch drop
+changes sign every sweep and its magnitude falls by **2.0000 Pa, unvarying across
+all 5 000 sweeps**, from `106 790.90 Pa`. That predicts 53 395 sweeps, so it was
+checked as a prediction — raise the cap to 100 000 and it converges at **53 411**,
+0.03% out. On a *conducting* valve the same overshoot contracts geometrically
+instead of additively, at a rate roughly proportional to the valve's own
+conductance. **One mechanism, whose contraction factor reaches exactly 1 as the
+valve shuts** — so "continuous, not a cliff" is that limit being approached, not
+the branch drop growing, which was the first guess and is wrong (the drop moves
+by 2.5% across the whole column).
+
+**The stall window is unbounded above, which is why this needed a criterion and
+not a constant.** Newton's window `(2·eps_dp·max_iter, eps_dp/ARMIJO_C]` has an
+upper bound *because* Armijo eventually rejects the mirror step. With nothing
+rejecting anything the window is `(2·eps_dp·max_iter, ∞)`, and **no value of
+`max_iter` closes it.** M9.0's fork 2 — fund the crawl with a bigger cap — was
+rejected there on cost; here it is not available at all. It is also reachable
+structurally rather than by an unlucky plant: `network::classify`'s cold seed is
+the mean of the pinned pressures, so free nodes start ~200 kPa from their roots on
+this fixture, twenty times the window's lower bound, before anyone touches a
+valve.
+
+**Damping and the line search turn out to be the same remedy, and that is
+measured.** Lowering the under-relaxation `omega` is the reflex fix and it makes
+the corpus worst case 3.5× worse — `relief_blowdown` 868 → 3 035 at `ω = 0.5`,
+because that plant's convergence is driven by its vessel's own `−C/dt` term rather
+than by branch conductance. The decisive half: with the line search in at
+`ω = 0.5`, the corpus reproduces the *no-line-search* `ω = 0.5` numbers exactly,
+because the half step already passes its own test and the search never fires. So
+`ω` is the fix applied unconditionally to every node of every plant, and the fix
+is `ω` charged for only where it is needed. The default stays `1.0` and the
+field's doc comment now says so instead of advertising damping as the cure for
+stiffness.
+
+**§11's own deferred fork was built here and is inert on the case it was written
+for.** The sign-reversal trust region is a large corpus win (`gas_valve` 459 → 7)
+and reproduces the shut-in divergence **bit for bit** — same 5 000 sweeps, same
+`7.719e1` residual — because the mirror step *does* shrink the imbalance, by `2ε`
+worth, so "reverses *and* does not shrink" is never satisfied. That is not §11's
+un-defer trigger (which is "a stall that survives fork 1"), but it is evidence
+against the rule from the other fidelity.
+
+**`5e-2` is Newton's number and deliberately not Newton's constant, and one gate
+M9.0 wrote cannot be mirrored.** The two tests are the same test — Newton's
+`(1 − 2c·t)` on `½‖R‖²` against the per-node `(1 − c·t)` on `|R|`, where the
+factor of two is the square rather than a tuning choice. But Newton's margin is
+five times a relation bound tied to *its* cap of 50; at a cap of 5 000 the same
+bound is `1e-4`, and `1e-4` measurably leaves a valve 1% open crawling for 1 239
+sweeps. The number was re-swept on this solver instead: the knee sits between
+`1e-3` and `1e-2`, and the cost — which lands entirely on `relief_blowdown` —
+rises monotonically with strictness, 6% at `5e-2` against 53% at `2e-1`. The two
+constants are kept separate, in separate files, each naming the other. The same
+arithmetic also kills a mirrored `armijo_c_closes_the_shut_in_stall_window`: it
+would clear by a factor of five hundred and pass at almost any constant a reader
+picked. **So the shut-in gate alone does not pin this fix** — a *throttled*-valve
+sweep budget is what fails at the slack constant, and the pair is the gate.
+
+**Cost was measured in wall time, not inferred from iteration counts.** The
+scoping probe refused to claim this solver was slow from sweep counts, since a
+sweep is `O(edges)` with no linear algebra while a Newton iteration is a dense LU;
+the same refusal applies to the fix, which buys sweeps with up to nine extra
+imbalance evaluations per node. Release build, 500 ticks, best of three:
+`relief_blowdown` 91.2 → 96.3 ms, `gas_valve` 4.4 → 3.9, `tank_level_control`
+5.8 → 5.8, `leaking_line` 5.1 → 5.8. Its +6% in sweeps does not clear run-to-run
+spread. The claim is "unchanged at this resolution", not "faster".
+
+**`cargo clippy -p refinery-godot-ext --features godot` was NOT run, and that is
+the same call M9.0 recorded rather than an omission.** This slice touches
+`solvers`, one test file and the docs, and no line of `godot-ext`. The binding
+consumes `Snapshot`, whose shape is unchanged.
+
+**The mutation pass ran six edits and falsified two of its own predictions.** The
+one this slice stakes a claim on in print held: slackening the constant to the
+bare bound the stall relation licenses fires the *throttled*-valve gate alone and
+leaves the shut-in gate green, which is the division of labour the note asserts.
+The two that did not:
+
+- **`MAX_HALVINGS: 8 → 1` was predicted inert and diverges M8.0's anchoring
+  plant** (20 000 sweeps, residual `5.397e1`). §11's closed form says a half step
+  lands within `eps_dp` of the root from any drop — but it describes a **dead
+  leg**, where rule F6 leaves exactly one live edge and the mirror is exact. A
+  node with two live edges puts the root off the mirror and the half step can be
+  rejected too. The comment above the constant said the first halving was the one
+  that mattered; it now says why that is only true of the case that motivated the
+  slice. **The closed form's reach is narrower than the fix's.**
+- **Feeding the trial evaluation a different function from the step's own
+  derivation freezes the residual rather than slowing it** —
+  `0.02701386453465011` for all 5 000 sweeps, identical to the last digit, because
+  every `t` is rejected and the node stops moving. Caught by two M5-era
+  cross-fidelity tests and by **neither** new gate, which both watch a valve while
+  this breaks a vessel.
+
+**One mutation is uncaught and is recorded as a gap with its reason.** Nothing
+gates the branch where no step is acceptable; a gate would need a plant where it
+fires at an imbalance that matters, and across all fourteen scenarios it fires
+3 281 times with every site at `|imbalance| ≤ 3.384e-13 kg/s`.
+
+**"No shipped scenario runs this solver" is now measured, not grepped** — a
+`panic!` at `SimpleFlowSolver::solve`, 0 of 14 at default fidelity, with
+`leaking_line` forced to `simple` as the control that fires. **The first run of
+that probe reported 14 of 14 and was reading the compiler**: `panic!` at the top
+of a function makes the rest unreachable, rustc echoes the offending source line
+in the diagnostic, and `cargo run` replays cached warnings on every invocation.
+Build once, then run the binary, and require `panicked at` beside the marker.

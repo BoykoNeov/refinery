@@ -152,9 +152,13 @@ extension removed too — ignore it, the file it writes is what matters.
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
 **M9 is OPEN, and its scope is solver robustness.** It opened the way M8 did —
-with a defect the previous milestone reached and deliberately did not fix. Only
-one slice is scoped; what M9.1 should be depends on what M9.0 measured, and M9.0
-measured that the whole thing was one constant.
+with a defect the previous milestone reached and deliberately did not fix. Slices
+are scoped one at a time, because what the next one should be depends on what the
+last one measured. Two have landed and M9.2 is unscoped.
+
+**Both slices are about the same step**, and reading M9.1 without M9.0 will not
+work — M9.1's whole argument is the closed form M9.0 derived, applied to a solver
+that had no line search at all.
 
 **M9.0 landed 2026-08-26** — the shut-in stall. The design note is DESIGN §11.
 Five things to know before touching the hydraulic solver.
@@ -204,6 +208,81 @@ solve" (now 4.16 kg/s through a branch it says is shut), which closes the tick-o
 gap M8.4 recorded as open. **Re-run an upside-down test's catches after turning it
 right way up.** The demo's gain gate was re-premised rather than inverted: `0.4`
 still clamps, and now recovers.
+
+**M9.1 landed 2026-08-26** — the same step on the OTHER solver. The design note
+is DESIGN §11's M9.1 half. Eight things to know.
+
+**The shut valve is not the subject; it is where the defect stops finishing.**
+`SimpleFlowSolver` has no step-rejection criterion of any kind — it applies its
+full node-wise step unconditionally — so it takes the worst-available step on
+EVERY valve node of EVERY plant. On the M8.2 fixture with the drain 20% open and
+nothing shut anywhere, it takes 189 sweeps against Newton's 8, and the node still
+moving at the end is the FEED valve on the other side of the plant, which takes
+exactly 189 whatever the drain does. **"The shut-in stall on the other fidelity"
+was the wrong frame, and the probe's own first row said so.**
+
+**Half the mechanism is M9.0's closed form and half is new.** On a shut valve the
+drop alternates sign every sweep and falls by exactly `2.0000 Pa`, from
+`106 790.90 Pa` — predicted 53 395 sweeps, and raising the cap converges at
+**53 411**. On a CONDUCTING valve the same overshoot contracts geometrically
+instead, at a rate roughly proportional to the valve's conductance. One mechanism
+whose contraction factor reaches 1 as the valve shuts, so **"continuous, not a
+cliff" is that limit, not the drop growing** — the drop moves 2.5% across the
+whole column and is not what separates the cases.
+
+**The stall window here is unbounded above, and that is a difference in kind.**
+With nothing rejecting anything it is `(2·eps_dp·max_iter, ∞)`, so **no `max_iter`
+closes it**. M9.0's fork 2 was rejected on cost; here it is not available. And it
+is reachable structurally: the cold seed is the mean of the pinned pressures, so
+free nodes start ~200 kPa from their roots before anyone touches a valve.
+
+**Damping and the line search are the SAME remedy — measured, both ways.**
+Lowering `omega` is the reflex and makes the corpus worst case 3.5× worse
+(`relief_blowdown` 868 → 3 035 at `ω = 0.5`, because that plant converges on its
+vessel's `−C/dt` term, not on branch conductance). And with the line search in at
+`ω = 0.5`, the corpus reproduces the no-line-search `ω = 0.5` numbers EXACTLY,
+because the half step already passes its own test. `omega` stays `pub` with a
+default of `1.0` and a doc comment that no longer advertises damping as the cure
+for stiffness.
+
+**§11's own deferred fork was built here and is inert on the case it was written
+for.** The sign-reversal trust region is a big corpus win and reproduces the
+shut-in divergence bit for bit, because the mirror step DOES shrink the imbalance
+by `2ε` — so "reverses *and* does not shrink" never fires. Not an un-defer trigger
+for Newton, but evidence against the rule.
+
+**`MAX_HALVINGS = 8` is load-bearing and the closed form does NOT say so.** §11's
+form says a half step lands within `eps_dp` of the root from any drop, which reads
+as "one halving is enough" — predicted inert, and `MAX_HALVINGS = 1` DIVERGES
+M8.0's anchoring plant at 20 000 sweeps. The form describes a **dead leg**, where
+F6 leaves one live edge and the mirror is exact; a second live edge moves the root
+off the mirror and the half step can be rejected too. **The closed form's reach is
+narrower than the fix's**, and the comment that said otherwise was corrected.
+Also from the mutation pass: a trial evaluation that is not the step's own
+function **freezes** the residual (identical to the last digit for 5 000 sweeps)
+rather than slowing it, and is caught by two M5-era cross-fidelity tests and by
+neither new gate. The reject-all branch is **uncaught and recorded as such** — it
+fires 3 281 times across the corpus, every site at `|imbalance| ≤ 3.4e-13 kg/s`.
+
+**"No shipped scenario runs this solver" is measured, and the first probe lied.**
+0 of 14 fire a `panic!` at `SimpleFlowSolver::solve`, with `leaking_line` forced
+to `simple` as the control that does. The first run said 14 of 14: `panic!` at the
+top of a function makes the rest unreachable, rustc **echoes that source line** in
+the diagnostic, and `cargo run` replays cached warnings every invocation. Build
+once, then run the binary, and require `panicked at` beside the marker.
+
+**`ARMIJO_C = 5e-2` here is Newton's number and deliberately NOT Newton's
+constant, and one M9.0 gate cannot be mirrored.** The two tests are the same test
+(the factor of two is the square of the merit, not tuning), but Newton's margin is
+five times a bound tied to *its* cap of 50; at 5 000 that bound is `1e-4`, and
+`1e-4` leaves a valve 1% open crawling for 1 239 sweeps. Re-swept here: the knee
+is between `1e-3` and `1e-2`, and the cost lands entirely on `relief_blowdown`
+(6% at `5e-2`, 53% at `2e-1`). The same arithmetic kills a mirrored
+`armijo_c_closes_the_shut_in_stall_window` — it would clear by 500× and pass at
+almost any constant. **So the shut-in gate alone does not pin this fix**; the
+throttled-valve sweep budget beside it is what fails at the slack constant, and
+`a_branch_shut_in_one_tick_converges_whoever_shuts_it` now runs on BOTH
+fidelities.
 
 **M8 is CLOSED (2026-08-26), and its scope was regulation** — control loops, so a
 plant holds itself somewhere instead of being held by whoever is sending

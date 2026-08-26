@@ -33,7 +33,7 @@
 
 use crate::network::{
     accumulation, compile_edges, edge_flows, solve_with_active_anchoring, validate_degrees,
-    AnchorPass, Prepared,
+    AnchorPass, Capacitance, CompiledEdge, Prepared,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
@@ -43,9 +43,67 @@ use refinery_core::traits::{FlowSolver, HydraulicSolution};
 use refinery_core::units::Seconds;
 use std::collections::BTreeMap;
 
+/// Sufficient-decrease constant for the per-node line search, on the node's own
+/// scalar imbalance: a trial is accepted iff `|R_t| ≤ (1 − ARMIJO_C·t)·|R|`.
+///
+/// **This is `newton_flow`'s Armijo test, one node at a time.** That one compares
+/// `φ_t ≤ (1 − 2·c·t)·φ` on `φ = ½‖R‖₂²`; since `φ ∝ R²` on a scalar residual and
+/// `(1 − ct)² = 1 − 2ct + O(c²t²)`, the missing factor of two is the square and
+/// not a tuning choice. The `c` means the same thing on both sides.
+///
+/// **It is deliberately a SEPARATE constant from `newton_flow::ARMIJO_C`, not a
+/// shared one, and the equal value is a coincidence of two measurements.** There
+/// the number is five times a relation bound of `1/(2·max_iter) = 1e-2` at a cap
+/// of 50; here the same relation bound is `1e-4` at a cap of 5 000, five hundred
+/// times slacker, so nothing about that margin transfers. `5e-2` was re-derived
+/// on this solver by sweep (DESIGN §11, M9.1): the knee sits between `1e-3` and
+/// `1e-2`, everything above `1e-2` converges the shut-in fixture in 7–8 sweeps at
+/// any valve opening, and the cost — which lands entirely on `relief_blowdown` —
+/// rises monotonically with strictness, 6% here against 53% at `2e-1`. Sharing
+/// one constant would let a re-tuning of Newton's margin move this solver
+/// silently.
+///
+/// **Do not lower it toward the relation's bare bound.** At `1e-4` the fully shut
+/// valve converges in 7 sweeps and a valve 1% open still takes 1 239, because the
+/// relation describes the dead leg — where progress is additive — and a
+/// conducting node's overshoot contracts geometrically instead.
+const ARMIJO_C: f64 = 5e-2;
+
+/// Max halvings per node step (min step 1/256). Matches `newton_flow`, and the
+/// depth is load-bearing rather than symmetry — **measured, against a prediction
+/// that was wrong.**
+///
+/// The closed form in DESIGN §11 says `t = ½` on the regularised square-root law
+/// lands within `eps_dp` of the root from any branch drop at all, which reads as
+/// "the first halving is the one that matters" and would make this a `1`. It is
+/// not: at `MAX_HALVINGS = 1` the M8.0 anchoring plant DIVERGES, 20 000 sweeps at
+/// residual `5.397e1`. The closed form describes a **dead leg** — rule F6 leaves a
+/// shut valve's orphaned node exactly one live edge, so the mirror is exact and
+/// one halving finishes it. Give the node a second live edge and the root shifts
+/// off the mirror, so `t = ½` can be rejected too. Do not narrow this to the
+/// closed form's reach; the closed form is about the case that motivated the
+/// slice, not every case the search is asked to handle.
+const MAX_HALVINGS: u32 = 8;
+
 pub struct SimpleFlowSolver {
-    /// Pressure under-relaxation ω ∈ (0, 1]. 1.0 = full node-wise Newton step;
-    /// lower damps oscillation on stiff networks at the cost of more sweeps.
+    /// Pressure under-relaxation ω ∈ (0, 1], applied before the line search.
+    ///
+    /// **Leave it at 1.0.** Damping used to be this solver's only defence against
+    /// the square-root law's overshoot and is no longer: `ARMIJO_C` rejects the
+    /// bad step where it occurs, instead of shortening every step on every node
+    /// of every plant. The two are the SAME remedy — at `ω = 0.5` the line search
+    /// never fires, because the half step already passes its own test, and the
+    /// corpus reproduces the pre-M9.1 `ω = 0.5` numbers exactly.
+    ///
+    /// Lowering it is therefore measured to cost rather than to help: worst
+    /// sweeps in any tick over 500 ticks of all fourteen shipped scenarios rise
+    /// on every one of them, and `relief_blowdown` — whose convergence is driven
+    /// by its vessel's own `−C/dt` term rather than by branch conductance — goes
+    /// 920 → 1 520 → 3 035 at `ω` of 1.0, 0.75, 0.5 (DESIGN §11, M9.1 fork 3).
+    ///
+    /// No scenario file can set this; `crates/scenarios/src` never mentions it.
+    /// It is a code-level invariant, and it becomes a load-time refusal if the
+    /// solver's numerics ever become scenario config.
     pub omega: f64,
     /// Sweep cap; exceeding it is `Err(SolverDiverged)`. Generous because
     /// Gauss–Seidel needs far more iterations than Newton (relaxation, not
@@ -195,8 +253,8 @@ impl SimpleFlowSolver {
                 }
                 // g_sum > 0 for any anchored free node; the node-wise Newton
                 // step ΔP = imbalance / g_sum drives this node's balance to zero.
-                let step = self.omega * imbalance / g_sum;
-                if !step.is_finite() {
+                let full = self.omega * imbalance / g_sum;
+                if !full.is_finite() {
                     // `g_sum == 0` — an anchored node with no conducting edge
                     // left, which is the frozen-anchoring plant's exit on this
                     // fidelity. The bad step is never applied, so `pressures`
@@ -206,6 +264,57 @@ impl SimpleFlowSolver {
                         pressures,
                     };
                 }
+                // Per-node line search (M9.1, DESIGN §11). Without it this
+                // solver applies `full` unconditionally, and on the regularised
+                // square-root law `f(x) = x/√(|x|+ε)` a full Newton step lands on
+                // the MIRROR of the branch drop, only `2ε` nearer the root. That
+                // is not "a big step": it is the worst step available, and the
+                // sweep then alternates sign forever, walking in at two pascals
+                // apiece. Measured on the shut-in fixture: 2.0000 Pa per sweep
+                // from 106 790.90 Pa, i.e. 53 411 sweeps against a cap of 5 000.
+                //
+                // Newton's stall window closes from either end because Armijo
+                // eventually rejects the mirror; with no rejection at all this
+                // solver's window is `(2·eps_dp·max_iter, ∞)` and NO `max_iter`
+                // closes it. A rejection criterion is not one of several fixes
+                // here, it is the only one.
+                //
+                // Rejecting the full step forces `t = ½`, which the same closed
+                // form puts within `eps_dp` of the root from any drop — so this
+                // usually costs one halving and buys a converged node.
+                let p_now = pressures[&nid];
+                let mut t = 1.0;
+                let mut step = 0.0;
+                for _ in 0..=MAX_HALVINGS {
+                    let trial = t * full;
+                    let after = node_imbalance_at(
+                        nid,
+                        p_now + trial,
+                        &incident[&nid],
+                        &compiled,
+                        &pressures,
+                        capacitive.get(&nid),
+                        dt.value(),
+                        self.eps_dp,
+                    );
+                    if after.abs() <= (1.0 - ARMIJO_C * t) * imbalance.abs() {
+                        step = trial;
+                        break;
+                    }
+                    t *= 0.5;
+                }
+                // `step` is still 0 if nothing was acceptable: leave the node
+                // where it is and let its neighbours move it, rather than apply
+                // a step the criterion has just rejected. Gauss–Seidel permits
+                // that; a global Newton could not, which is why `newton_flow`
+                // returns `Err` in the same position.
+                //
+                // Reachable, and measured rather than assumed: it fires 3 281
+                // times across 500 ticks of all fourteen shipped scenarios, and
+                // EVERY one of those sites has `|imbalance| ≤ 3.4e-13 kg/s` —
+                // five orders below this solver's own `tol_abs_kg_s`. It is the
+                // rounding floor on an already-converged node, where the target
+                // `(1 − c·t)·|R|` is unreachable and the dropped step is a no-op.
                 *pressures.get_mut(&nid).expect("unknown is a node") += step;
             }
 
@@ -283,6 +392,39 @@ impl SimpleFlowSolver {
             pressures,
         }
     }
+}
+
+/// This node's mass-balance residual at a TRIAL pressure, every neighbour held
+/// fixed — the same sum the sweep drives to zero, re-evaluated off the iterate.
+/// The line search's only probe, and its only cost.
+///
+/// It must stay the same sum: measuring the trial against anything else would
+/// grade a step by a residual nobody is solving, which is M5.3's finding in this
+/// very file one paragraph down. So `capacitive` is threaded through and enters
+/// via the SAME `network::accumulation`, and the edge flows come from the SAME
+/// frozen `compiled` coefficients the step was differentiated against.
+#[allow(clippy::too_many_arguments)]
+fn node_imbalance_at(
+    nid: NodeId,
+    p_trial: f64,
+    incident: &[(EdgeId, bool)],
+    compiled: &BTreeMap<EdgeId, CompiledEdge>,
+    pressures: &BTreeMap<NodeId, f64>,
+    capacitive: Option<&Capacitance>,
+    dt: f64,
+    eps_dp: f64,
+) -> f64 {
+    let mut imbalance = 0.0;
+    for &(eid, incoming) in incident {
+        let c = &compiled[&eid];
+        let at = |n: NodeId| if n == nid { p_trial } else { pressures[&n] };
+        let mdot = c.rho * c.branch.flow(at(c.src) - at(c.tgt), eps_dp);
+        imbalance += if incoming { mdot } else { -mdot };
+    }
+    if let Some(cap) = capacitive {
+        imbalance += accumulation(cap, p_trial, dt).0;
+    }
+    imbalance
 }
 
 fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimError {
