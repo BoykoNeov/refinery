@@ -1425,6 +1425,268 @@ make it impossible. Air ingress as a modelled phenomenon (and therefore
 combustion) un-defers with a slate carrying air and a reason to burn it. Fire
 remains a heat source on a node, as §2 has said since M1.
 
+## 3c. The anchoring active-set loop (M8.0) — specified before building
+
+§3a leaves one **live defect** rather than an absent feature: `network::prepare`
+derives the anchored set ONCE, from the seed compile, so a plant whose anchoring
+the ANSWER decides is classified from a pressure that is not the answer. That is
+exact for every element whose `conducts` is constant through a solve, and the
+relief valve is the first element for which it is not. Both directions are
+reachable and both are pinned by hand-checkable plants
+(`known_defect_frozen_anchoring_*`): seed-open/converged-shut **fails the solve
+outright on both fidelities** (a zero residual row and column, hence a singular
+Jacobian), and seed-shut/converged-open converges with one determinate pressure
+reported as atmospheric.
+
+This note settles how the classification stops being frozen. It is the un-defer
+§3a asked for — "a design decision with its own slice and its own measured
+regression anchor" — and the shape below is that decision.
+
+### Fork 1 — reclassify every iteration. **Rejected.**
+
+The anchored set decides which free nodes are UNKNOWNS, so recomputing it inside
+the loop changes the dimension of the system mid-solve. Three costs, the first of
+which is disqualifying on its own:
+
+1. **The line search stops meaning anything.** Newton's Armijo test compares
+   `φ = ½‖R‖₂²` at the trial against `φ` at the incumbent. Those two numbers are
+   sums over different index sets the moment the unknown set changes, so
+   "sufficient decrease" is being asserted between quantities that are not
+   comparable. The same objection applies to Simple's residual: `converged_at`
+   would be reading a max over a set that moves under it.
+2. It reinstates exactly the flapping the freeze was chosen to prevent, with no
+   mechanism to stop a two-iteration cycle — the iterate is still moving, so
+   there is no fixed point to detect.
+3. Determinism survives it, but reproducing a failure means reproducing the
+   dimension history, which is not in any diagnostic this workspace carries.
+
+### Fork 2 — an outer loop over the classification. **Chosen.**
+
+An *active-set* iteration, the standard shape for a problem whose unknown set is
+part of its own answer. One pass is exactly today's solve. After it, the edges
+are recompiled at the pressures that pass ended on and the anchored set is
+recomputed from THOSE; if it differs from the set the pass ran under, the pass is
+repeated under the new one.
+
+Two properties this buys, and they are why it is preferred to any local repair of
+the singular row:
+
+- **Pass 1 is bit-for-bit the current solver.** A plant whose classification is
+  already a fixed point — every plant with no relief valve in it — exits after
+  one pass having computed exactly what it computes today. The regression anchor
+  is therefore structural rather than tuned, which is the strongest form it can
+  take. It is still measured (below), because "structural" has been wrong here
+  before.
+- **The dimension is constant WITHIN a pass**, so both fidelities' convergence
+  tests keep comparing like with like, and the freeze's original justification is
+  preserved rather than overturned. The freeze was right about what it forbade;
+  it was applied at the wrong scope.
+
+#### Fork 2a — reclassify only after a CONVERGED pass. **Rejected.**
+
+It fixes the benign half and leaves the fatal half untouched: the whole point of
+seed-open/converged-shut is that the pass does not converge, so a rule that fires
+only on convergence never sees it. The 83-of-306 divergence rate is the half a
+user actually meets, and a fix addressing only the cosmetic half is not worth the
+slice.
+
+#### Fork 2b — reclassify from the last accepted iterate, converged or not. **Chosen.**
+
+Both of Newton's give-up paths (`dp` non-finite, and line-search exhaustion) and
+both of Simple's (a non-finite step, the iteration cap) return WITHOUT writing a
+bad value into the pressure map — the trial is discarded and the incumbent is
+what remains. So a failed pass still leaves a finite, meaningful iterate, and on
+the seed-open/converged-shut plant that iterate is exactly the one that reveals
+the relief has shut. Reclassifying from it turns the failure into information.
+
+**One guard, because "finite" is asserted above rather than guaranteed:** Simple
+has one path (`pressures.values().any(|p| !p.is_finite())`) that fails *because*
+the map went non-finite. A pass whose final pressures are not all finite is not
+reclassified — its error is returned as-is. A classification derived from NaN
+would be arbitrary, and an arbitrary retry is worse than an honest failure.
+
+### The termination contract — a cycle is DETECTED, not waited out
+
+The loop can fail to settle, and the geometry that does it is already in the
+generator population. A relief spur that **relieves** (as opposed to a dead leg,
+which cannot move anything because it carries no flow) is a feedback loop between
+the classification and the answer: with the spur inert the junction sits above
+set pressure, so the spur is classified open; with the spur active enough escapes
+to the flare that the junction falls below set, so it is classified shut; and
+pass 3 repeats pass 1.
+
+Terminating on a bare pass cap and returning the last pass's answer would pick
+between two self-consistent states **by iteration parity**, which is precisely
+the failure `prove-the-exception-dont-skip-it` was written about. So the loop
+keeps the classifications it has run, in order, and:
+
+- **fixed point** (the recomputed set equals the set just used) ⇒ return that
+  pass's result verbatim, `Ok` or `Err`;
+- **repeat** (the recomputed set is one already seen) ⇒ terminate immediately
+  with an `Err` naming the nodes that changed;
+- **cap** (still producing new sets after `MAX_ANCHOR_PASSES`) ⇒ terminate with
+  an `Err` saying so.
+
+The last two are different events — a cycle is a plant with two self-consistent
+answers, a cap is a plant still moving — and they are distinguished by a FLAG
+rather than by their wording, because a caller has to be able to tell them from
+an ordinary numerical failure (correction 1: this paragraph originally chose
+`SimError::Numerical` and no new variant, and building it falsified the reason).
+A repeat only counts as a cycle when the pass that produced it CONVERGED
+(correction 2).
+
+**What the non-settling case IS, physically.** It is valve chatter: a relief
+whose own discharge is what makes it re-seat. §3a already defers "PSV hysteresis
+and chatter (needs element state)", and this is the same plant state arriving
+through the solver instead of through the element. So the honest answer is an
+`Err` that names the oscillating node and points at that deferral, not a
+tie-break dressed as an answer. How often generated spur trees land in it is a
+MEASUREMENT this slice owes: nonzero is the deferral's new evidence, and zero
+means the class is unreached and must be reported as unreached rather than as
+covered.
+
+### Where the loop lives — shared, and the reason is the warm start
+
+Both fidelities are defeated by the same plant, so both need the fix; the
+question is one driver or two copies. It is one, in `network.rs`, for the reason
+`prepare`'s own doc comment gives ("so neither solver can get it wrong") plus one
+that is specific to this change:
+
+`warm_start` is solver state written **only on convergence**. Under a loop that
+rule is no longer well defined by itself — pass 1 can converge under a
+classification the loop then REJECTS, and writing the warm start there would leak
+a rejected classification's pressures into the next tick, a cross-tick coupling
+that does not exist today. The rule becomes "the driver commits the warm start
+once, from the final accepted pass, and only when that pass converged". That is
+one rule about the loop, not two rules about two solvers, and it must not be
+written twice and left to drift.
+
+Shape: the driver owns `prepare`, the pass loop, the reclassification and the
+warm-start commit; each solver contributes one *pass* — its existing body, minus
+the `prepare` call and minus the warm-start write, returning its result **and**
+its final pressures. `prepare` gains an anchored-set override for passes after
+the first, so a later pass runs under the set the previous pass's answer implies
+rather than under the one its own seed implies.
+
+Each pass after the first is seeded from the previous pass's pressures. That is
+continuation rather than restart, and it is a PATH not an answer — uniqueness
+makes the seed unable to move the fixed point, the same argument already recorded
+for `Pⁿ`-versus-cold-mean in `prepare`. It is expected to be un-catchable by any
+gate, and is listed as such below rather than left looking covered.
+
+### What must not change, stated as a prediction that can be wrong
+
+Two of the thirteen scenarios contain a relief valve (`gas_line.toml`,
+`relief_blowdown.toml`). So:
+
+- the **other eleven must be byte-identical** over a long run. Not "the suite is
+  green" — a specific eleven, and if one of them moves, the loop has a bug rather
+  than a legitimate effect;
+- those two MAY move, and if they do the pass count is what explains it. Any
+  scenario needing more than one pass without a relief valve in it falsifies the
+  claim that `conducts` is pressure-independent for every other element, which is
+  the claim this whole regression anchor rests on.
+
+The two numbers that bounded the deferral — Newton's divergence rate and Simple's
+convergence rate on generated spur trees — were floors under a defect. Once the
+defect is fixed they must be **re-measured and tightened**, or they become
+exactly the vacuous counters this repo has already shipped twice
+(`a-counter-is-not-a-gate`). `floating_legs` reads the seed-time set directly and
+is unaffected.
+
+### The mutations this slice owes, named before building
+
+Two are predicted NOT to be caught, and saying so in advance is the point:
+
+- reclassify only after a converged pass (fork 2a) — must fail the seed-open
+  plant's new assertion and nothing else, since that is the mutation which earns
+  2b over 2a;
+- cycle detection removed / cap of 1 — must fail the seed-open plant;
+- seed each pass from the cold seed instead of the previous pass's pressures —
+  **predicted uncaught**, being a path and not an answer;
+- commit the warm start from every pass rather than the final one — **predicted
+  uncaught by any single-tick test**, and therefore a gap to fill with a
+  multi-tick gate or to record as uncovered.
+
+### Corrections from building it (M8.0, landed)
+
+Six, of which two change the shape above rather than its verdict. The chosen fork
+survived: an outer loop, first pass unchanged, reclassifying from the last
+accepted iterate whether or not it converged.
+
+**1. The error surface needed a new variant after all, and the reason given
+against one was wrong twice over.** The note argued for `SimError::Numerical` on
+the grounds that widening the type would spend a frontend change on a diagnostic
+string. Measured, the Godot bridge cost exactly ONE line — its match is
+exhaustive on purpose, precisely so a new variant has to be given a code. And the
+real objection is not cost at all: a CALLER has to discriminate this outcome.
+I3's termination invariant must accept "the classification did not settle" as a
+legal ending, exactly as it accepts divergence, while still rejecting an ordinary
+numerical failure — and doing that by matching a substring of a human-readable
+message is not something to gate on. Hence
+`AnchoringUnsettled { cycled, detail }`, with the flag rather than the prose
+carrying the distinction.
+
+**2. A repeat is a CYCLE only when the pass that produced it converged.** The
+termination contract above says a repeated classification is terminal. Measured
+before the qualifier existed: **13 of 21 repeats followed a pass that FAILED**. A
+failed pass ends on a mid-flight iterate, so the classification it implies is a
+guess rather than an answer, and repeating a guess is not evidence of two
+self-consistent states — which is what the note claimed the cycle exit meant.
+With the qualifier the loop keeps iterating in that case and the cap catches
+genuine non-termination. On generated spur trees this moves 10 cycles + 0 caps to
+**6 cycles + 2 caps**, with 2 plants reaching an ordinary divergence instead. Two
+things follow: `cycled: true` now means what the note said it meant, and the cap
+branch stopped being a stub-only path.
+
+**3. `warm_start` was doing two jobs, and multi-pass is what separated them.**
+Seeding a free node and parking a floating one both read the same map, which is
+indistinguishable while there is one pass. They are not the same thing. Seeding an
+anchored unknown is a PATH to an answer, so the nearest available start wins and
+the previous pass's pressures are right. A floating node's value is what gets
+REPORTED for a pressure the plant does not determine — and a previous pass's
+mid-solve iterate is a fine path and a meaningless report. Found by a test rather
+than by reading: the seed-open plant's sealed leg came back at 100502.69 Pa, which
+is pass 1's iterate for a node pass 2 had decided was indeterminate. `prepare_anchored`
+now takes the continuation seed separately, and the floating pin keeps reading the
+tick's own warm start — the pre-M8.0 convention untouched.
+
+**4. There are now two kinds of zero on a dead-end spur, and they carry different
+tolerances.** While a leg floats, its edge is inert and `edge_flows` reports a
+STRUCTURAL zero, exact to the bit. Once the leg is an anchored unknown, the same
+zero is SOLVED — the node's mass balance is driven to the solver's own convergence
+criterion and no further. Two assertions written at machine epsilon had to become
+assertions against that criterion, read off the solver rather than restated (and
+it is Simple, at `tol_rel = 1e-6` against Newton's `1e-8`, where the difference
+shows). This is not a loosening: machine epsilon was asserting something no solve
+ever promised.
+
+**5. The regression anchor came out stronger than predicted, and the reason is
+worth more than the result.** The prediction was eleven scenarios byte-identical
+and two possibly moved. Measured over 300 ticks on BOTH fidelities: all thirteen
+byte-identical, and every solve of every tick settles at pass one. A relief valve
+changing state does not necessarily change the anchored SET — both shipped relief
+scenarios discharge to a fixed node, which anchors whatever the valve does. What
+moves the classification is a relief that ISOLATES a subnetwork, and no scenario
+in this repo has one.
+
+So **no wired demo exercises this fix.** It is exercised by the generators (152
+floating dead legs per 400 samples) and by two hand-built plants. That is recorded
+here rather than left to be discovered, because the inverse mistake — trusting a
+demo file to cover a knob it never moves — is one this repo has already made
+(`a-hand-written-scenario-can-be-vacuous`).
+
+**6. Simple's failure on the seed-open plant changed KIND rather than
+disappearing, and the test asserts the difference.** It now converges on that
+plant in 7002 sweeps against a default cap of 5000, so at its defaults it still
+gives up — but that is ordinary Gauss–Seidel stiffness on a fat/thin resistance
+ratio (M5.4 FINDING 3), curable by sweeping longer. The frozen classification's
+failure was categorically different and no cap could cure it: the leg's diagonal
+was exactly zero, the node-wise step was non-finite, and the reported residual was
+`inf`. The gate is therefore that this plant can no longer produce an infinite
+residual, which is the signature, rather than that Simple converges in some
+particular number of sweeps.
+
 ## 4. Streams and pseudo-components
 
 ```

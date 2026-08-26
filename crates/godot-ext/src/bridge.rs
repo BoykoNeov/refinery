@@ -136,6 +136,7 @@ impl From<&BridgeError> for ErrorReport {
                 SimError::InvalidCommand(_) => "invalid_command",
                 SimError::Scenario(_) => "scenario",
                 SimError::Numerical(_) => "numerical",
+                SimError::AnchoringUnsettled { .. } => "anchoring_unsettled",
             },
         };
         ErrorReport {

@@ -2892,3 +2892,152 @@ which is deferred with its un-defer condition stated. And a cascade
 specification's admissible region is a property of the solver path rather than of
 the physics: it has to be swept for, which is what the demo's stated `R = 1, 2, 3`
 margin is. M8 may begin.
+
+## M8 — scope undecided; opens with a defect slice
+
+M7 closed with the roadmap's first genuinely open question: every milestone so
+far was named before it began, and M8 is not. The two candidates on the table are
+an operable plant (regulation — nothing in `Command` regulates anything, every
+variant is a direct manual value — plus the tank LEVEL the M6 frontend was
+deferred waiting for) and phase change outside the column (the flashing feed
+line, the partial condenser, the vapour side draw that M7.0 narrowed §3a's
+two-phase deferral down to).
+
+**Neither is what M8 opens with.** M8.0 below is a defect, not a feature, and it
+is first because it is the only item on the whole deferral list that is a known
+WRONG ANSWER in shipped code rather than an absent one — and the only one whose
+un-defer condition needs nothing external to happen first. The repo is already
+carrying two tests written to FAIL when it is fixed, which is the codebase asking
+for this slice by name.
+
+### M8.0 — the anchoring active-set loop
+Un-defers M5's FINDING 2. `network::prepare` freezes the anchored set at the seed
+compile; a relief valve's `conducts` is a function of the pressure ITERATE, so
+the classification can be stale in either direction. Seed-open/converged-shut
+fails the solve outright on both fidelities (83/306 generated spur trees);
+seed-shut/converged-open converges and reports a determinate pressure as
+atmospheric.
+
+- [x] **Design note first** (DESIGN §3c, "specified before building"). The fix is
+      a fork, which is why M5 refused to fold it into the slice that found it:
+      per-iteration reclassification versus an outer loop. §3c rejects the first
+      — the unknown set's dimension would change mid-solve, which makes Newton's
+      Armijo comparison and Simple's residual comparisons quantities over
+      different index sets — and chooses the second, an **active-set loop** whose
+      first pass is bit-for-bit today's solver.
+- [x] `solvers`: the loop lives in `network.rs`, ONE driver for both fidelities.
+      Not tidiness: `warm_start` is written only on convergence today, and under
+      a loop that rule is no longer well defined by itself — pass 1 can converge
+      under a classification the loop then rejects, leaking a rejected
+      classification's pressures into the next tick. The driver commits the warm
+      start once, from the final accepted pass. Each solver contributes one PASS
+      (its existing body, minus `prepare`, minus the warm-start write, returning
+      its final pressures alongside its result).
+- [x] `solvers`: reclassify from the last accepted iterate **whether or not the
+      pass converged** — the fatal half never converges, so a rule that fires only
+      on convergence fixes the cosmetic half alone. Guarded at one place: a pass
+      whose final pressures are not all finite (Simple has such a path) is
+      returned as-is rather than reclassified.
+- [x] **The termination contract, which is what decides the error surface.** The
+      loop can cycle with period 2, and the geometry is already generated: a
+      relieving spur is a feedback loop between the classification and the answer
+      (spur inert ⇒ junction above set ⇒ classify open; spur active ⇒ enough
+      escapes that the junction falls below set ⇒ classify shut). A bare pass cap
+      that returns the last answer picks between two self-consistent states by
+      iteration parity ([[prove-the-exception-dont-skip-it]]). So: fixed point ⇒
+      return that pass verbatim; a classification already SEEN ⇒ `Err` naming the
+      nodes that changed; still moving at the cap ⇒ a different `Err`. Both are
+      `SimError::Numerical` and NOT a new variant — the error surface crosses into
+      the Godot bridge, and a new variant would spend a frontend change on a
+      diagnostic string. Physically the non-settling case is valve chatter, which
+      §3a already defers.
+- [x] Tests: the two `known_defect_frozen_anchoring_*` characterization tests
+      become the description of the fix, exactly as their own docstrings say —
+      seed-open/converged-shut must SOLVE (A feeds B, the relief stays shut, the
+      sealed leg is floating and its edges carry zero), and seed-shut/converged-open
+      must report the leg at its neighbour's pressure rather than at `P_ATM`.
+- [x] Tests: the regression anchor, as a prediction that can be wrong in a
+      specific place rather than as "the suite is green". Two of the thirteen
+      scenarios carry a relief valve, so the **other eleven must be
+      byte-identical** over a long run; if one of them moves, the loop has a bug.
+      Any relief-free scenario needing more than one pass falsifies the claim
+      that `conducts` is pressure-independent for every other element, which is
+      what the whole anchor rests on.
+- [x] Tests: the two deferral floors in
+      `the_relief_arm_lifts_relieves_and_floats` bounded a defect. Re-measure and
+      TIGHTEN both, or they become the vacuous counters this repo has shipped
+      twice already ([[a-counter-is-not-a-gate]]). Add the new measurement the
+      loop owes: how many spur trees cycle or hit the cap — nonzero is the chatter
+      deferral's evidence, zero means the class is unreached and must be said to
+      be unreached.
+- [x] **Falsify before trusting.** Four mutations named in §3c before building,
+      two of them predicted NOT to be caught: reclassify-only-on-convergence
+      (must fail the seed-open plant and nothing else — it is the mutation that
+      earns the chosen fork over its rejected sub-fork); cycle detection removed;
+      re-seed each pass cold (predicted uncaught — a path, not an answer);
+      commit the warm start every pass (predicted uncaught by any single-tick
+      test, hence a gap to fill or to record).
+
+**M8.0 landed 2026-08-26, and the note's chosen fork survived while two of its
+details did not** (DESIGN §3c, "Corrections from building it"). The loop is an
+outer pass over the classification, first pass unchanged, reclassifying from the
+last accepted iterate whether or not it converged — all as specified. What
+building it corrected: the error surface needed its own variant after all, and a
+repeat only counts as a cycle when the pass that produced it converged.
+
+**What it bought, measured on the same generators before and after** (the
+`83/306` this milestone was scoped against came from an older generator; the
+comparison below is like for like, 400 samples, 305 spur trees):
+
+| | before | after |
+|---|---|---|
+| Newton failed | 74/305 | 42/305 |
+| — of which merely exhausted the 50-iteration cap | 32 | 33 |
+| — so failed FAST, the singular-Jacobian signature | ~42 | ~9 |
+| Simple converged | 55/305 | 57/305 |
+| flare spurs actually relieving | 95 | 103 |
+| anchoring refused as unsettled | n/a | 6 cycled + 2 capped (trees), 2 cycled (chains) |
+
+The middle row is the one that says the fix landed where it was aimed: the
+cap-exhausting failures did not move, which is what a well-posedness fix looks
+like as against a solver that merely got faster.
+
+**The regression anchor is stronger than the note predicted, and the reason
+matters more than the result.** Predicted: eleven scenarios byte-identical, two
+possibly moved. Measured over 300 ticks on BOTH fidelities: **all thirteen
+byte-identical, 26 runs, every one exiting zero** — and every solve of every tick
+settles at pass one, which is the mechanism rather than the coincidence. A relief
+changing state does not necessarily change the anchored SET: both shipped relief
+scenarios discharge to a fixed node, which anchors whatever the valve does. What
+moves the classification is a relief that ISOLATES a subnetwork.
+
+So **no wired demo exercises this fix**, and that is recorded rather than papered
+over. It is exercised by the generators (152 floating dead legs per 400 samples)
+and by the two hand-built plants that used to pin the defect. The inverse mistake
+— trusting a demo file to cover a knob it never moves — is one this repo has
+already made ([[a-hand-written-scenario-can-be-vacuous]]).
+
+**The two characterization tests did what their own docstrings promised.** They
+were written to FAIL when the defect was fixed, with the assertions they should
+then make written into their failure messages, and that is what they now assert:
+the seed-open plant solves (A feeds B, the relief stays shut, the sealed leg is
+indeterminate and therefore parked), and the seed-shut plant reports its leg at
+its neighbour's pressure instead of at atmospheric. Both were renamed off
+`known_defect_*`.
+
+**Three new gates drive the loop with a STUB pass**, because its three exits
+cannot otherwise be told apart: a real plant reaches whichever exit its physics
+reaches, and two of those exits are error paths. So the tests dictate the
+pressures and read the control flow — one pass for an ordinary plant (the
+regression anchor's mechanism, asserted rather than argued), a cycle detected at
+the repeat rather than at the cap, and a four-relief plant walked through eight
+never-repeating classifications to reach the cap. The generated rates are floored
+as well as capped: floored because a refusal path nothing reaches is a coverage
+claim that cannot be checked, capped because refusing more plants is not the same
+thing as solving more.
+
+**Two floors were rewritten rather than left standing.** `newton_diverged` and
+`simple_ok` bounded a DEFERRAL and now measure a FIX; at the deferral's loose
+bounds (84 ≤ 305 against a measured 42) they would have become counters with
+nothing behind them, which this file has already been caught by
+([[a-counter-is-not-a-gate]]).

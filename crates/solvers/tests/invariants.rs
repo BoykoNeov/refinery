@@ -49,15 +49,19 @@
 //! in gas service can choke) or a blocked-in DEAD LEG (a free Junction, which
 //! has no conducting path to any anchor while the PSV is shut).
 //!
-//! **A KNOWN DEFECT lives in that second case, and it is pinned, not hidden.**
-//! `network::prepare` computes the anchored set ONCE from the seed compile, on
-//! purpose, so it cannot flap mid-solve. That is exact for a constant-conductance
-//! element and stale for a PSV, both ways round — see
-//! `known_defect_frozen_anchoring_*` below, two hand-checkable plants, and
-//! docs/ROADMAP.md M5.4 for the measured reachability. The generators here
-//! REACH it (the tree gates accept the resulting `SolverDiverged` as legal per
-//! I3), which is why the rate is measured in
-//! `the_relief_arm_lifts_relieves_and_floats` rather than left to chance.
+//! **A KNOWN DEFECT lived in that second case until M8.0, and these generators
+//! are what measured it.** `network::prepare` computed the anchored set ONCE
+//! from the seed compile, which is exact for a constant-conductance element and
+//! stale for a PSV, both ways round. It is now an ACTIVE SET
+//! (`network::solve_with_active_anchoring`, DESIGN §3c): the classification is
+//! re-asked between passes until it stops changing. The two hand-checkable
+//! plants that pinned the defect now assert the fix, below.
+//!
+//! A THIRD legal termination came with it, and the tree and chain gates admit it
+//! by name: a plant whose classification will not settle is refused rather than
+//! answered by iteration parity. Its rate is measured in
+//! `the_relief_arm_lifts_relieves_and_floats`, floored so the path is reached
+//! and capped so refusing cannot pass for solving.
 //!
 //! WHAT THE TREE TEST ACTUALLY CATCHES (be honest — it is NOT a correctness
 //! oracle). The per-node balance recomputes each residual R_i from the RETURNED
@@ -1261,6 +1265,16 @@ proptest! {
                 }
             }
             Err(SimError::SolverDiverged { .. }) => { /* acceptable per I3 */ }
+            // The THIRD legal termination, new with M8.0. A plant whose
+            // anchoring will not settle has two self-consistent answers
+            // (chatter) or none yet; the solver refuses rather than picking one
+            // by iteration parity, and refusing is exactly as legal as
+            // diverging. Named by TYPE deliberately — accepting it by matching a
+            // substring of a message would also accept an unrelated numerical
+            // failure that happened to be worded like one. The RATE is measured
+            // rather than left to this matcher: see
+            // `the_relief_arm_lifts_relieves_and_floats`.
+            Err(SimError::AnchoringUnsettled { .. }) => { /* acceptable per I3, M8.0 */ }
             Err(other) => prop_assert!(false, "unexpected error: {other}"),
         }
     }
@@ -1318,6 +1332,10 @@ proptest! {
             // made every leaky tree refuse would fail there instead of quietly
             // emptying this gate.
             Err(ref other) if is_legal_leak_refusal(other) => {}
+            // The THIRD legal termination, new with M8.0 — see the chain arm
+            // above for why it is admitted by TYPE rather than by message, and
+            // where its rate is measured.
+            Err(SimError::AnchoringUnsettled { .. }) => { /* acceptable per I3, M8.0 */ }
             Err(other) => prop_assert!(false, "unexpected error: {other}"),
         }
     }
@@ -1488,7 +1506,7 @@ fn worst_recomputed_imbalance(
 /// `prove_roots` is false for TREES, and the reason is a defect rather than a
 /// principle: `worst_recomputed_imbalance` re-derives the anchored set at the
 /// solution, which is precisely what `network::prepare` does NOT do, so on a
-/// tree carrying the frozen-anchoring defect (`known_defect_frozen_anchoring_*`)
+/// tree carrying the anchoring defect M8.0 fixed (see the tests below)
 /// the proof would fail for a reason that has nothing to do with multiplicity.
 /// Chains cannot reach that: their free nodes lose their anchor only when a
 /// whole segment is sealed off between two shut PSVs, and a sealed segment parks
@@ -1604,7 +1622,7 @@ fn assert_same_solution(
 // Two numbers here are DEFERRAL EVIDENCE rather than health checks, and they are
 // bounded so the deferral cannot quietly worsen: Newton's divergence rate on
 // spur trees, and Simple's convergence rate on them. See docs/ROADMAP.md M5.4
-// and `known_defect_frozen_anchoring_*` below.
+// and the anchoring tests below.
 // ---------------------------------------------------------------------------
 
 /// How far below its set pressure a PSV's flange must sit before the arm will
@@ -1645,6 +1663,10 @@ fn the_relief_arm_lifts_relieves_and_floats() {
     );
     let (mut psv_chains, mut shut, mut partial, mut full) = (0usize, 0usize, 0usize, 0usize);
     let (mut discriminating, mut reverse_open) = (0usize, 0usize);
+    // M8.0's new termination, counted on chains as well as trees: a chain can
+    // carry a relief mid-run, and the active-set loop refuses a plant whose
+    // classification will not settle rather than picking one of its answers.
+    let (mut chain_cycled, mut chain_capped) = (0usize, 0usize);
     for _ in 0..SAMPLES {
         let (mids, pipes, p_src, p_snk, fluid) = chain_strat
             .new_tree(&mut runner)
@@ -1655,9 +1677,16 @@ fn the_relief_arm_lifts_relieves_and_floats() {
         }
         psv_chains += 1;
         let (g, _) = build_chain(&mids, &pipes, p_src, p_snk, &fluid);
-        let Ok(sol) =
-            NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
-        else {
+        let outcome =
+            NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
+        if let Err(SimError::AnchoringUnsettled { cycled, .. }) = &outcome {
+            if *cycled {
+                chain_cycled += 1;
+            } else {
+                chain_capped += 1;
+            }
+        }
+        let Ok(sol) = outcome else {
             continue;
         };
         if !sol.diagnostics.converged {
@@ -1761,6 +1790,7 @@ fn the_relief_arm_lifts_relieves_and_floats() {
     let tree_strat = tree_inputs_strategy();
     let (mut spur_trees, mut relieving, mut floating_legs) = (0usize, 0usize, 0usize);
     let (mut newton_diverged, mut simple_ok) = (0usize, 0usize);
+    let (mut tree_cycled, mut tree_capped) = (0usize, 0usize);
     let mut newton_hit_the_cap = 0usize;
     // Read from the solver rather than restated, so the split below cannot drift
     // out of step with the cap it is measuring against.
@@ -1817,17 +1847,32 @@ fn the_relief_arm_lifts_relieves_and_floats() {
                 }
             }
             // Split the failures by MECHANISM rather than counting them together.
-            // The frozen-anchoring defect leaves a residual row and column
-            // identically zero, so Newton gives up almost immediately; running out
-            // of iterations on an ordinary stiff plant is a different event that
+            // A singular Jacobian leaves a residual row and column identically
+            // zero, so Newton gives up almost immediately; running out of
+            // iterations on an ordinary stiff plant is a different event that
             // happens to produce the same `Err`. Worth separating because the
             // liquid/gas control in this file measures a worst case of 48 against
-            // `max_iter = 50` — a two-iteration margin — so "diverged" can no
-            // longer be read as "hit the singular Jacobian" without checking.
+            // `max_iter = 50` — a two-iteration margin — so "diverged" cannot be
+            // read as "hit the singular Jacobian" without checking. Since M8.0
+            // the split is also what shows WHERE the fix landed: the fast
+            // failures went from ~42 to ~9 while the cap-exhausting ones did not
+            // move, which is the signature of a well-posedness fix rather than
+            // of a solver that got faster.
             Err(SimError::SolverDiverged { iterations, .. }) => {
                 newton_diverged += 1;
                 if iterations >= newton_max_iter {
                     newton_hit_the_cap += 1;
+                }
+            }
+            // NOT counted as a divergence: a plant whose anchoring will not
+            // settle is a different event from a solve that could not find the
+            // root of one, and folding them together is what would let the fix
+            // look like it had merely moved the failures around.
+            Err(SimError::AnchoringUnsettled { cycled, .. }) => {
+                if cycled {
+                    tree_cycled += 1;
+                } else {
+                    tree_capped += 1;
                 }
             }
             _ => newton_diverged += 1,
@@ -1842,10 +1887,11 @@ fn the_relief_arm_lifts_relieves_and_floats() {
     }
     println!(
         "spur trees {spur_trees}/{SAMPLES}; flare spurs RELIEVING {relieving}; dead legs FLOATING \
-         at the seed {floating_legs}; newton diverged {newton_diverged}/{spur_trees} \
-         (frozen-anchoring deferral), of which {newton_hit_the_cap} exhausted the \
-         {newton_max_iter}-iteration cap rather than hitting the singular Jacobian; \
-         simple converged {simple_ok}/{spur_trees}"
+         at the seed {floating_legs}; newton diverged {newton_diverged}/{spur_trees}, of which \
+         {newton_hit_the_cap} exhausted the {newton_max_iter}-iteration cap; simple converged \
+         {simple_ok}/{spur_trees}; anchoring UNSETTLED on trees {tree_cycled} cycled + \
+         {tree_capped} capped, on chains {chain_cycled} cycled + {chain_capped} capped \
+         (of {psv_chains} relief-bearing chains)"
     );
 
     // (1) The arm is sampled at all.
@@ -1877,7 +1923,7 @@ fn the_relief_arm_lifts_relieves_and_floats() {
     // (measured: 1 gate with this arm, 0 without), and it runs only on the
     // samples this floor counts. A generator drift that halves the population
     // would disarm that catch rather than merely thin a statistic. Left at 10
-    // against a measured 21 rather than raised to hug the measurement, so an
+    // against a measured 20 rather than raised to hug the measurement, so an
     // honest change in the generators is not fought by a tripwire — but the
     // consequence is written down here rather than left to be rediscovered.
     assert!(
@@ -1900,65 +1946,91 @@ fn the_relief_arm_lifts_relieves_and_floats() {
         "only {floating_legs} dead legs were floating — the floating-subnetwork path this slice \
          added is not being reached"
     );
-    // Deferral evidence, bounded so it cannot silently worsen. Both numbers record
-    // the CURRENT behaviour rather than approving of it (ROADMAP M5.4).
+    // These two numbers bounded a DEFERRAL until M8.0 and now measure a FIX, so
+    // both are re-measured and tightened. Left at the deferral's loose bounds
+    // they would have become counters with nothing behind them
+    // ([[a-counter-is-not-a-gate]], which this file has already been caught by).
     //
-    // **`newton_diverged` is NOT purely the frozen anchored set, and the split
-    // above is what corrected that.** It counts every Newton failure. 42 of the 83
-    // ran the 50-iteration cap out; the hand-built `known_defect_*` plant gives up
-    // after 2, so only the ~41 fast failures carry the singular-Jacobian
-    // signature. A stalled singular solve and an ordinary stiff one are NOT
-    // separable by iteration count alone, so the honest reading is an upper bound
-    // on the defect's reach, not a measurement of it — and it matters because the
-    // liquid/gas control in this file peaks at 48 against that same cap of 50.
-    // What pins the MECHANISM is the two hand-built plants below, where there is
-    // nothing else it could be; this number only bounds how often something goes
-    // wrong on spur geometry.
+    // Measured on the same generators, before and after the active-set loop:
+    // Newton failed 74/305 and now fails 42/305, of which 33 exhausted the
+    // iteration cap rather than hitting a singular Jacobian — so the fast,
+    // structurally-broken failures went from ~42 to ~9. Simple converged 55/305
+    // and now converges 57/305. The remaining `newton_diverged` is dominated by
+    // ordinary stiffness, which is why the cap split is still reported: a rise
+    // here means one of two different things and the split says which.
     assert!(
-        newton_diverged * 2 <= spur_trees,
-        "Newton now fails on {newton_diverged}/{spur_trees} spur trees ({newton_hit_the_cap} of \
-         them by exhausting the {newton_max_iter}-iteration cap) — past what the deferral \
-         recorded. Either the frozen-anchoring defect has worsened or the iteration cap has \
-         become the binding constraint; the split says which"
+        newton_diverged * 6 <= spur_trees,
+        "Newton fails on {newton_diverged}/{spur_trees} spur trees ({newton_hit_the_cap} of \
+         them by exhausting the {newton_max_iter}-iteration cap), against 42 measured when \
+         the active-set loop landed. Either the anchoring loop has regressed or the \
+         iteration cap has become the binding constraint; the split says which"
     );
     assert!(
-        simple_ok * 10 >= spur_trees,
-        "Simple converged on only {simple_ok}/{spur_trees} spur trees — `tree_fidelity_agreement` \
-         has no non-vacuity guard of its own, so this is where a collapse would be seen"
+        simple_ok * 7 >= spur_trees,
+        "Simple converged on only {simple_ok}/{spur_trees} spur trees, against 57 measured \
+         when the active-set loop landed — `tree_fidelity_agreement` has no non-vacuity \
+         guard of its own, so this is where a collapse would be seen"
+    );
+    // M8.0's new termination, floored AND capped, for two different reasons.
+    //
+    // The FLOOR is reachability. The loop's refusal paths are error paths a
+    // plant may never take, and a refusal class nothing reaches is a claim about
+    // coverage that cannot be checked; measured, the generators reach the cycle
+    // 6 times and the cap twice on trees, plus 2 cycles on chains. If this went
+    // to zero, `an_alternating_classification_is_reported_as_a_cycle` and
+    // `a_classification_that_never_repeats_hits_the_cap` would be the only
+    // things exercising those paths, and both drive the loop with a STUB pass —
+    // no real solve behind them.
+    //
+    // The CAP is the honest half of the fix's advertisement. Refusing a plant is
+    // better than answering it by iteration parity, but it is still a refusal,
+    // and a change that turned the loop trigger-happy would otherwise look like
+    // an improvement in `newton_diverged`.
+    assert!(
+        tree_cycled + tree_capped >= 4,
+        "the anchoring loop refused only {tree_cycled} cycling + {tree_capped} capped spur \
+         trees — at this rate nothing but the stub-driven unit tests reaches its refusal \
+         paths, and those prove the control flow rather than that a plant can provoke it"
+    );
+    assert!(
+        (tree_cycled + tree_capped) * 20 <= spur_trees,
+        "the anchoring loop refused {tree_cycled} + {tree_capped} of {spur_trees} spur trees, \
+         well past the 8 measured when it landed — a loop that refuses more plants is not \
+         the same thing as a loop that solves more"
     );
 }
 
 // ---------------------------------------------------------------------------
-// KNOWN DEFECT — the frozen anchored set, pinned by two hand-checkable plants.
+// THE ANCHORING ACTIVE SET (M8.0) — the two plants that used to be
+// `known_defect_frozen_anchoring_*`, now asserting the fix, plus three gates on
+// the loop's control flow itself.
 //
-// `network::prepare` derives the anchored set ONCE, from the seed compile, so it
-// cannot flap mid-solve. Every element before the PSV had a conductance that was
-// constant for the whole solve, which made that exact. A PSV's conductance is a
-// function of the pressure ITERATE, so the classification can be stale in either
-// direction, and both are reachable from the generators above.
+// `network::prepare` derived the anchored set ONCE, from the seed compile. Every
+// element before the PSV had a conductance that was constant for the whole
+// solve, which made that exact; a PSV's conductance is a function of the
+// pressure ITERATE, so the classification could be stale in either direction.
+// `network::solve_with_active_anchoring` re-asks it between passes (DESIGN §3c).
 //
-// These two tests assert the behaviour as it IS. They are characterization
-// tests and they are MEANT to fail when the defect is fixed, at which point the
-// assertions below become the description of the fix. Nothing here should be
-// read as endorsing the current answer.
+// The first two tests were written as characterization tests, MEANT to fail when
+// the defect was fixed, with their own docstrings saying what they should then
+// assert. That is what they now assert, verbatim from those docstrings.
 // ---------------------------------------------------------------------------
 
-/// Seed-OPEN, converged-SHUT: the whole solve fails, on both fidelities.
+/// Seed-OPEN, converged-SHUT — the half that used to lose the whole solve on
+/// both fidelities.
 ///
 /// A(8 bar) —thin, long→ J —fat, short→ B(1 bar), with a blocked-in relief leg
 /// off J. The cold seed is the mean of the fixed pressures, 4.5 bar, above the
-/// 4.0 bar set — so at the seed the PSV conducts, the dead-leg terminal is
-/// anchored, and it enters the solve as an unknown. At the answer J sits near
-/// 1 bar, the PSV is shut, and the terminal's only edge stops conducting: its
-/// residual row and column are then identically zero and the Jacobian is
-/// singular.
+/// 4.0 bar set — so at the seed the PSV conducts and the dead-leg terminal is
+/// anchored. At the answer J sits near 1 bar and the PSV is shut, which under
+/// the frozen set left the terminal's residual row and column identically zero
+/// and the Jacobian singular.
 ///
-/// The plant itself is entirely ordinary — A feeds B, the relief stays shut, the
-/// sealed leg has no pressure of its own. There is nothing here a solver should
-/// be unable to manage, and I3 accepts the failure as legal, which is what makes
-/// it worth pinning rather than leaving to a divergence statistic.
+/// What it must do now is what the old test's failure message specified: A feeds
+/// B, the relief stays shut, and the sealed leg's pressure is indeterminate —
+/// so it is parked, and its edges carry nothing.
 #[test]
-fn known_defect_frozen_anchoring_seed_open_converged_shut_defeats_both_solvers() {
+fn a_relief_that_shuts_on_the_way_to_the_answer_no_longer_defeats_the_solve() {
     let fluid = Fluid::liquid();
     let mut g = PlantGraph::new();
     let a = g.add_node(source(8.0e5, &fluid));
@@ -1983,14 +2055,14 @@ fn known_defect_frozen_anchoring_seed_open_converged_shut_defeats_both_solvers()
         kind: NodeKind::Junction,
         heat_input: Watt(0.0),
     });
-    g.add_pipe(a, j, pipe((50.0, 0.05, 0.05, 0.0), "a_j", &fluid));
-    g.add_pipe(j, b, pipe((1.0, 0.30, 0.01, 0.0), "j_b", &fluid));
-    g.add_pipe(j, psv, pipe((5.0, 0.06, 0.02, 0.0), "j_psv", &fluid));
-    g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", &fluid));
+    let e_aj = g.add_pipe(a, j, pipe((50.0, 0.05, 0.05, 0.0), "a_j", &fluid));
+    let e_jb = g.add_pipe(j, b, pipe((1.0, 0.30, 0.01, 0.0), "j_b", &fluid));
+    let e_jpsv = g.add_pipe(j, psv, pipe((5.0, 0.06, 0.02, 0.0), "j_psv", &fluid));
+    let e_psvleg = g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", &fluid));
 
-    // The premise, asserted rather than assumed: the seed really does classify
-    // the terminal as anchored. Without this the test could pass for some other
-    // reason while still being named after this one.
+    // The premise, asserted rather than assumed: the SEED really does classify
+    // the terminal as anchored, so this is the seed-open/converged-shut case and
+    // not some other plant that happens to solve.
     let prep = refinery_solvers::network::prepare(
         &g,
         &fluid.slate,
@@ -2005,38 +2077,134 @@ fn known_defect_frozen_anchoring_seed_open_converged_shut_defeats_both_solvers()
          seed-open/converged-shut case"
     );
 
-    for (name, result) in [
+    // Simple needs a raised sweep cap on this plant, and that is NOT this
+    // defect. Measured: it converges in 7002 sweeps against a default of 5000 —
+    // ordinary Gauss-Seidel stiffness on a fat/thin resistance ratio, which is
+    // M5.4's FINDING 3 and is cured by sweeping longer. What the frozen
+    // classification did was categorically different and no cap could cure it:
+    // the leg's diagonal was exactly zero, so the node-wise step was non-finite
+    // and the reported residual was `inf`. That contrast is asserted below.
+    let mut simple = SimpleFlowSolver::default();
+    simple.max_iter = 20_000;
+    // Each fidelity's own convergence criterion, read off the solver rather than
+    // restated, because the zeros asserted below are SOLVED zeros and the bar for
+    // them is whatever that solver promised.
+    let newton = NewtonFlowSolver::default();
+    let tolerances = [
+        (newton.tol_abs_kg_s, newton.tol_rel),
+        (simple.tol_abs_kg_s, simple.tol_rel),
+    ];
+    for ((name, result), (tol_abs, tol_rel)) in [
         (
             "newton",
             NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1)),
         ),
         (
             "simple",
-            SimpleFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1)),
+            simple.solve(&g, &fluid.slate, &Default::default(), Seconds(0.1)),
         ),
-    ] {
+    ]
+    .into_iter()
+    .zip(tolerances)
+    {
+        let sol = result.unwrap_or_else(|e| {
+            panic!(
+                "{name} failed a plant the active-set loop exists to solve — A feeds B, the \
+                 relief stays shut, and only the CLASSIFICATION had to move: {e}"
+            )
+        });
         assert!(
-            matches!(result, Err(SimError::SolverDiverged { .. })),
-            "{name} solved a plant the frozen anchored set is expected to defeat. If the \
-             frozen-anchoring defect has been FIXED, this test has done its job and should now \
-             assert the answer instead: A feeds B, the relief stays shut, and the sealed leg's \
-             pressure is indeterminate"
+            sol.diagnostics.converged,
+            "{name} returned Ok but not converged"
         );
+
+        // A feeds B, as one stream: the spur takes nothing, so the two live
+        // edges carry the same flow. Asserted against each other rather than
+        // against a hand-computed number — the magnitude is `newton_reference`'s
+        // job, and what is at stake here is that the plant solves AT ALL.
+        let (m_aj, m_jb) = (sol.edge_mass_flow[&e_aj], sol.edge_mass_flow[&e_jb]);
+        assert!(m_aj > 0.0, "{name}: A must feed J, got {m_aj:.6e} kg/s");
+        approx::assert_relative_eq!(m_aj, m_jb, max_relative = 1e-6);
+
+        // The relief stays shut — and the spur's two edges are zero for two
+        // DIFFERENT reasons, which is worth keeping apart because it sets two
+        // different bars.
+        //
+        // The far edge touches a floating node, so it is inert: `edge_flows`
+        // reports a structural zero and machine epsilon is the right bar.
+        // The near edge has both ends anchored, so it is live, and it carries
+        // nothing only because the PSV behind it is a dead end — a fact the
+        // SOLVE has to discover, to its own convergence criterion and no
+        // further. Asserting machine epsilon there would be asserting something
+        // no solve promised, and Simple (tol_rel 1e-6 against Newton's 1e-8)
+        // is where that shows.
+        let throughput = sol
+            .edge_mass_flow
+            .values()
+            .fold(0.0f64, |m, &f| m.max(f.abs()));
+        let tol = tol_abs + tol_rel * throughput;
+        let near = sol.edge_mass_flow[&e_jpsv];
+        assert!(
+            near.abs() <= tol,
+            "{name}: the shut relief's inlet edge carries {near:.3e} kg/s against a \
+             convergence tolerance of {tol:.3e} (throughput {throughput:.3e})"
+        );
+        approx::assert_relative_eq!(sol.edge_mass_flow[&e_psvleg], 0.0, epsilon = 1e-12);
+
+        // And the answer really is on the SHUT side of the spring, which is what
+        // makes the seed's classification wrong rather than merely different.
+        let opening = refinery_solvers::elements::relief_opening(
+            sol.node_pressure[&psv].value(),
+            4.0e5,
+            0.5e5,
+        );
+        assert!(
+            opening <= refinery_solvers::network::OPEN_EPS,
+            "{name}: the PSV must end SHUT for this to be the case it is named after \
+             (opening {opening:.3e} at {:.0} Pa against a 4.0 bar set)",
+            sol.node_pressure[&psv].value()
+        );
+
+        // The sealed leg's pressure is INDETERMINATE — a dead end behind a shut
+        // valve has no pressure of its own — so it is parked at the floating
+        // convention's value rather than invented.
+        approx::assert_relative_eq!(
+            sol.node_pressure[&leg].value(),
+            P_ATM.value(),
+            max_relative = 1e-12
+        );
+    }
+
+    // The discriminating fact about Simple, separated from the sweep count it
+    // happens to need. Whatever its default cap is, this plant must no longer be
+    // able to produce an INFINITE residual: that value meant a zero diagonal —
+    // an anchored node with no conducting edge left — and it is the signature of
+    // the classification being stale rather than of a solve being slow. Written
+    // to accept convergence too, so a future rise in the default cap improves
+    // this test's subject rather than breaking it.
+    match SimpleFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1)) {
+        Ok(sol) => assert!(sol.diagnostics.converged),
+        Err(SimError::SolverDiverged { residual, .. }) => assert!(
+            residual.is_finite(),
+            "Simple reported an INFINITE residual, which is the zero-diagonal signature \
+             of an anchored node whose edges all stopped conducting — the very state the \
+             active-set loop exists to prevent"
+        ),
+        Err(other) => panic!("unexpected error from Simple: {other}"),
     }
 }
 
-/// Seed-SHUT, converged-OPEN: the benign half. The solve succeeds and every flow
-/// is right; what is wrong is one reported PRESSURE.
+/// Seed-SHUT, converged-OPEN — the half that used to converge with one
+/// determinate pressure reported as atmospheric.
 ///
 /// The same skeleton with the resistances swapped so J settles HIGH, and a set
-/// pressure above the 4.5 bar seed. At the seed the PSV is shut, so the terminal
-/// has no conducting path to any anchor and is parked at `P_ATM`. At the answer
-/// the PSV is open, which makes the terminal's pressure perfectly determinate —
-/// a dead end carries no flow, so it sits at its neighbour's pressure less the
-/// static head — but the classification was frozen and it is still reported at
-/// atmospheric.
+/// pressure above the 4.5 bar seed. At the seed the PSV is shut and the terminal
+/// has no conducting path to any anchor; at the answer the PSV is open, which
+/// makes the terminal's pressure perfectly determinate — a dead end carries no
+/// flow, so with no friction drop and no elevation it sits at exactly its
+/// neighbour's. That is now what is reported.
 #[test]
-fn known_defect_frozen_anchoring_seed_shut_converged_open_reports_a_parked_pressure() {
+fn a_leg_behind_a_relief_that_opens_reports_its_neighbours_pressure() {
     let fluid = Fluid::liquid();
     let mut g = PlantGraph::new();
     let a = g.add_node(source(8.0e5, &fluid));
@@ -2067,7 +2235,7 @@ fn known_defect_frozen_anchoring_seed_shut_converged_open_reports_a_parked_press
     g.add_pipe(j, psv, pipe((5.0, 0.06, 0.02, 0.0), "j_psv", &fluid));
     // Level, so a dead end's correct pressure is exactly its neighbour's: with
     // no flow there is no friction drop, and with no elevation there is no head.
-    g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", &fluid));
+    let e_psvleg = g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", &fluid));
 
     let prep = refinery_solvers::network::prepare(
         &g,
@@ -2084,7 +2252,7 @@ fn known_defect_frozen_anchoring_seed_shut_converged_open_reports_a_parked_press
 
     let sol = NewtonFlowSolver::default()
         .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
-        .expect("this half converges — only a reported pressure is wrong");
+        .expect("this half always converged — it was the reported pressure that was wrong");
     assert!(sol.diagnostics.converged);
 
     let p_psv = sol.node_pressure[&psv].value();
@@ -2093,18 +2261,284 @@ fn known_defect_frozen_anchoring_seed_shut_converged_open_reports_a_parked_press
         opening > refinery_solvers::network::OPEN_EPS,
         "premise failed: the PSV must end OPEN (inlet {p_psv:.0} Pa against a 5.0 bar set)"
     );
-    // The leg carries no flow, which is correct and is NOT the defect.
-    let (leg_edge, _) = outlet_of(&g, psv).expect("the PSV has an outlet");
-    approx::assert_relative_eq!(sol.edge_mass_flow[&leg_edge], 0.0, epsilon = 1e-12);
-
-    // The defect: the pressure is determinate and is reported as atmospheric.
-    let p_leg = sol.node_pressure[&leg].value();
-    approx::assert_relative_eq!(p_leg, P_ATM.value(), max_relative = 1e-12);
+    // The leg carries no flow, which is correct and was never the defect — but
+    // it is now zero for a DIFFERENT reason, and the tolerance has to follow.
+    // While the leg floated, its edge was inert and reported a structural zero;
+    // now that the leg is an anchored unknown, the zero is SOLVED — the node's
+    // mass balance is driven to the solver's own convergence criterion and no
+    // further. So the bar is that criterion, read off the solver rather than
+    // guessed, not machine epsilon. Asserting 1e-12 here would be asserting
+    // something the solve never promised.
+    let solver = NewtonFlowSolver::default();
+    let throughput = sol
+        .edge_mass_flow
+        .values()
+        .fold(0.0f64, |m, &f| m.max(f.abs()));
+    let tol = solver.tol_abs_kg_s + solver.tol_rel * throughput;
+    let carried = sol.edge_mass_flow[&e_psvleg];
     assert!(
-        (p_leg - p_psv).abs() > 1.0e5,
-        "if the parked pressure now agrees with the PSV's inlet ({p_psv:.0} Pa), the \
-         frozen-anchoring defect has been fixed and this test should assert equality instead"
+        carried.abs() <= tol,
+        "the dead leg carries {carried:.3e} kg/s against a convergence tolerance of \
+         {tol:.3e} (throughput {throughput:.3e}) — a dead end must carry nothing"
     );
+
+    // THE FIX. Two assertions, because "equals its neighbour" and "is no longer
+    // parked" are different claims and the second is the one that used to fail:
+    // a leg parked at P_ATM would satisfy neither, but a leg that happened to
+    // solve near atmospheric would satisfy the first alone.
+    let p_leg = sol.node_pressure[&leg].value();
+    approx::assert_relative_eq!(p_leg, p_psv, max_relative = 1e-6);
+    assert!(
+        (p_leg - P_ATM.value()).abs() > 1.0e5,
+        "the leg is back at atmospheric ({p_leg:.0} Pa) behind an OPEN relief — the \
+         classification has stopped following the answer"
+    );
+}
+
+// --- the loop's own control flow, driven by a stub pass ---------------------
+//
+// These three run `solve_with_active_anchoring` directly with a `pass` that
+// returns pressures of the test's choosing. That is what makes the loop's three
+// exits separable at all: a real plant reaches whichever exit its physics
+// reaches, so a gate built on one could not distinguish "settled" from "cycled"
+// from "gave up", and two of those exits are error paths a plant in this repo
+// may never take.
+
+/// The stub pass: report success at whatever pressures the test dictates.
+fn stub_pass(
+    graph: &PlantGraph,
+    fluid: &Fluid,
+    prep: refinery_solvers::network::Prepared,
+    dictate: impl Fn(&mut BTreeMap<NodeId, f64>),
+) -> refinery_solvers::network::AnchorPass {
+    let mut pressures = prep.pressures;
+    dictate(&mut pressures);
+    let edges = refinery_solvers::network::edge_flows(
+        graph,
+        &prep.compiled,
+        &pressures,
+        &prep.anchored,
+        1.0,
+    );
+    let result = refinery_solvers::network::finalize(graph, &pressures, edges, 0, 0.0);
+    let _ = fluid;
+    refinery_solvers::network::AnchorPass { result, pressures }
+}
+
+/// A plant with nothing pressure-actuated in it runs EXACTLY ONE pass.
+///
+/// This is the mechanism behind the regression anchor, asserted rather than
+/// argued: every scenario without a relief valve must be bit-identical to what
+/// it was before the loop existed, and the reason is that its classification is
+/// already a fixed point, so the loop returns pass one verbatim. Counting the
+/// passes is the only way to see that from outside — the ANSWER looks the same
+/// either way, which is exactly the point.
+#[test]
+fn an_ordinary_plant_runs_one_anchoring_pass() {
+    let fluid = Fluid::liquid();
+    let mut g = PlantGraph::new();
+    let a = g.add_node(source(8.0e5, &fluid));
+    let j = g.add_node(Node {
+        name: "j".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    let b = g.add_node(sink(1.0e5, &fluid));
+    g.add_pipe(a, j, pipe((10.0, 0.10, 0.02, 0.0), "a_j", &fluid));
+    g.add_pipe(j, b, pipe((10.0, 0.10, 0.02, 0.0), "j_b", &fluid));
+
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        |prep| {
+            passes += 1;
+            stub_pass(&g, &fluid, prep, |_| {})
+        },
+    );
+    assert!(out.is_ok(), "an ordinary plant must solve: {:?}", out.err());
+    assert_eq!(
+        passes, 1,
+        "a plant with no pressure-actuated element must settle on its FIRST \
+         classification — if it re-passes, every pre-M8.0 golden is at risk"
+    );
+    // The warm start is committed by the driver, from the pass that was accepted.
+    assert!(
+        warm.contains_key(&j),
+        "the driver must commit the warm start for a converged solve"
+    );
+}
+
+/// A classification that ALTERNATES is caught as a cycle, not waited out.
+///
+/// The stub drives the relief open on the first pass and shut on the second, so
+/// the second pass's recomputed set is one already seen. Physically this is a
+/// relief whose own discharge re-seats it — chatter, which needs element state
+/// and is deferred (DESIGN §3a) — and the honest answer is to say so rather than
+/// return whichever of the two self-consistent states the parity landed on
+/// ([[prove-the-exception-dont-skip-it]]).
+#[test]
+fn an_alternating_classification_is_reported_as_a_cycle() {
+    let fluid = Fluid::liquid();
+    let (g, psv, _leg) = spur_plant(&fluid, 5.0e5);
+
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        |prep| {
+            passes += 1;
+            let lift = passes == 1;
+            stub_pass(&g, &fluid, prep, |p| {
+                // Above the set + accumulation band, or well below it.
+                p.insert(psv, if lift { 6.0e5 } else { 2.0e5 });
+            })
+        },
+    );
+    let Err(SimError::AnchoringUnsettled { cycled, detail }) = out else {
+        panic!("an alternating classification must be refused, got {out:?}");
+    };
+    assert!(
+        cycled,
+        "the cycle exit must be FLAGGED as a cycle rather than as a give-up — the two \
+         are different plant states and only one of them names a deferral: {detail}"
+    );
+    assert!(
+        detail.contains("psv"),
+        "the diagnostic must name the element that is chattering: {detail}"
+    );
+    // Caught by REPETITION, so it stops at the repeat rather than burning the cap.
+    assert_eq!(
+        passes,
+        2,
+        "the cycle must be detected the moment a classification repeats, not after \
+         {} passes",
+        refinery_solvers::network::MAX_ANCHOR_PASSES
+    );
+    assert!(
+        warm.is_empty(),
+        "a solve that ends in Err must not leave a warm start behind"
+    );
+}
+
+/// A classification that keeps producing NEW sets hits the cap, and says so in
+/// different words from the cycle.
+///
+/// Four independent dead legs give sixteen possible classifications, and the
+/// stub walks the low bits of the pass counter through eight of them without
+/// ever repeating — so the cycle detector cannot fire and the only exit left is
+/// the cap. This is the backstop, and without a stub it would be unreachable:
+/// no plant in this repo is known to walk that many.
+#[test]
+fn a_classification_that_never_repeats_hits_the_cap() {
+    let fluid = Fluid::liquid();
+    let mut g = PlantGraph::new();
+    let a = g.add_node(source(8.0e5, &fluid));
+    let j = g.add_node(Node {
+        name: "j".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    let b = g.add_node(sink(1.0e5, &fluid));
+    g.add_pipe(a, j, pipe((10.0, 0.10, 0.02, 0.0), "a_j", &fluid));
+    g.add_pipe(j, b, pipe((10.0, 0.10, 0.02, 0.0), "j_b", &fluid));
+    // Four spurs, each with a set pressure ABOVE the 4.5 bar cold seed, so the
+    // seed classification is "all shut" and the stub's first move is new.
+    let mut psvs = Vec::new();
+    for i in 0..4 {
+        let psv = g.add_node(Node {
+            name: format!("psv{i}"),
+            kind: NodeKind::ReliefValve {
+                cv_max: 1e-3,
+                set_pressure: Pascal(6.0e5),
+                accumulation: Pascal(0.5e5),
+                x_t: None,
+            },
+            heat_input: Watt(0.0),
+        });
+        let leg = g.add_node(Node {
+            name: format!("deadleg{i}"),
+            kind: NodeKind::Junction,
+            heat_input: Watt(0.0),
+        });
+        g.add_pipe(j, psv, pipe((5.0, 0.06, 0.02, 0.0), "j_psv", &fluid));
+        g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", &fluid));
+        psvs.push(psv);
+    }
+
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        |prep| {
+            passes += 1;
+            let bits = passes;
+            let psvs = psvs.clone();
+            stub_pass(&g, &fluid, prep, move |p| {
+                for (i, &psv) in psvs.iter().enumerate() {
+                    // Bit set ⇒ this relief lifts ⇒ its leg is anchored.
+                    let lifted = bits & (1 << i) != 0;
+                    p.insert(psv, if lifted { 8.0e5 } else { 2.0e5 });
+                }
+            })
+        },
+    );
+    let Err(SimError::AnchoringUnsettled { cycled, detail }) = out else {
+        panic!("a classification that never settles must be refused, got {out:?}");
+    };
+    assert!(
+        !cycled,
+        "the cap exit must be distinguishable from the cycle exit — a plant still \
+         moving is not a plant alternating between two answers: {detail}"
+    );
+    assert_eq!(
+        passes,
+        refinery_solvers::network::MAX_ANCHOR_PASSES,
+        "the cap must be what stops it, which means every pass must have been run"
+    );
+}
+
+/// A(8 bar) → J → B(1 bar) with one blocked-in relief spur off J, at the given
+/// set pressure. Shared by the loop's control-flow gates, which care about the
+/// classification rather than about any particular resistance.
+fn spur_plant(fluid: &Fluid, set_pressure: f64) -> (PlantGraph, NodeId, NodeId) {
+    let mut g = PlantGraph::new();
+    let a = g.add_node(source(8.0e5, fluid));
+    let j = g.add_node(Node {
+        name: "j".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    let b = g.add_node(sink(1.0e5, fluid));
+    let psv = g.add_node(Node {
+        name: "psv".into(),
+        kind: NodeKind::ReliefValve {
+            cv_max: 1e-3,
+            set_pressure: Pascal(set_pressure),
+            accumulation: Pascal(0.5e5),
+            x_t: None,
+        },
+        heat_input: Watt(0.0),
+    });
+    let leg = g.add_node(Node {
+        name: "deadleg".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    g.add_pipe(a, j, pipe((10.0, 0.10, 0.02, 0.0), "a_j", fluid));
+    g.add_pipe(j, b, pipe((10.0, 0.10, 0.02, 0.0), "j_b", fluid));
+    g.add_pipe(j, psv, pipe((5.0, 0.06, 0.02, 0.0), "j_psv", fluid));
+    g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", fluid));
+    (g, psv, leg)
 }
 
 // ---------------------------------------------------------------------------

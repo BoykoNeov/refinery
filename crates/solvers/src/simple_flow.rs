@@ -31,7 +31,10 @@
 //! a NaN escape (rule 5). Cross-fidelity agreement with Newton on well-posed
 //! networks is the I5 property test.
 
-use crate::network::{accumulation, compile_edges, edge_flows, prepare, validate_degrees};
+use crate::network::{
+    accumulation, compile_edges, edge_flows, solve_with_active_anchoring, validate_degrees,
+    AnchorPass, Prepared,
+};
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
 use refinery_core::error::SimError;
@@ -83,9 +86,36 @@ impl FlowSolver for SimpleFlowSolver {
         dt: Seconds,
     ) -> Result<HydraulicSolution, SimError> {
         // Same classification + seeding + compilation as Newton (the fidelity
-        // seam), through the same `prepare`.
+        // seam), through the same `prepare` — and since M8.0 the same active-set
+        // loop around it, because the stale classification defeats both
+        // fidelities and one driver is what keeps them agreeing (DESIGN §3c).
         validate_degrees(graph)?;
-        let prep = prepare(graph, slate, previous_states, &self.warm_start)?;
+        let mut warm_start = std::mem::take(&mut self.warm_start);
+        let out =
+            solve_with_active_anchoring(graph, slate, previous_states, &mut warm_start, |prep| {
+                self.pass(prep, graph, slate, previous_states, dt)
+            });
+        self.warm_start = warm_start;
+        out
+    }
+
+    fn name(&self) -> &'static str {
+        "simple-relaxation"
+    }
+}
+
+impl SimpleFlowSolver {
+    /// One Gauss–Seidel solve under a FIXED anchoring classification — the body
+    /// this solver had before M8.0, minus the prologue and the warm-start write,
+    /// both of which the driver now owns.
+    fn pass(
+        &self,
+        prep: Prepared,
+        graph: &PlantGraph,
+        slate: &Slate,
+        previous_states: &NodeStates,
+        dt: Seconds,
+    ) -> AnchorPass {
         let cls = prep.classes;
         let capacitive = &cls.capacitive;
         let anchored = &prep.anchored;
@@ -121,7 +151,8 @@ impl FlowSolver for SimpleFlowSolver {
         // flows follow directly. Mirrors Newton's n == 0 branch.
         if unknowns.is_empty() {
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-            return crate::network::finalize(graph, &pressures, edges, 0, 0.0);
+            let result = crate::network::finalize(graph, &pressures, edges, 0, 0.0);
+            return AnchorPass { result, pressures };
         }
 
         // Nonlinear Gauss–Seidel: sweep, then measure the residual on the exact
@@ -166,7 +197,14 @@ impl FlowSolver for SimpleFlowSolver {
                 // step ΔP = imbalance / g_sum drives this node's balance to zero.
                 let step = self.omega * imbalance / g_sum;
                 if !step.is_finite() {
-                    return Err(diverged(iterations, f64::INFINITY, history));
+                    // `g_sum == 0` — an anchored node with no conducting edge
+                    // left, which is the frozen-anchoring plant's exit on this
+                    // fidelity. The bad step is never applied, so `pressures`
+                    // stays finite and the driver can reclassify from it.
+                    return AnchorPass {
+                        result: Err(diverged(iterations, f64::INFINITY, history)),
+                        pressures,
+                    };
                 }
                 *pressures.get_mut(&nid).expect("unknown is a node") += step;
             }
@@ -187,7 +225,15 @@ impl FlowSolver for SimpleFlowSolver {
             // is how a convergence flag can be honest and the answer still
             // wrong. Bit-identical for an all-liquid network, where
             // `density_at` ignores both arguments.
-            compiled = compile_edges(graph, slate, previous_states, &pressures)?;
+            compiled = match compile_edges(graph, slate, previous_states, &pressures) {
+                Ok(c) => c,
+                Err(e) => {
+                    return AnchorPass {
+                        result: Err(e),
+                        pressures,
+                    }
+                }
+            };
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
             let (flows, throughput) = (&edges.mass_flow, edges.throughput);
             let mut residual = 0.0f64;
@@ -216,26 +262,26 @@ impl FlowSolver for SimpleFlowSolver {
             history.push(residual);
 
             if converged_at(residual, throughput) {
-                // Converged: persist warm start (converged-only) and build the
-                // solution from the flows just measured.
-                for &nid in &cls.free {
-                    if let Some(&p) = pressures.get(&nid) {
-                        self.warm_start.insert(nid, p);
-                    }
-                }
-                return crate::network::finalize(graph, &pressures, edges, iterations, residual);
+                let result =
+                    crate::network::finalize(graph, &pressures, edges, iterations, residual);
+                return AnchorPass { result, pressures };
             }
             if pressures.values().any(|p| !p.is_finite()) {
-                return Err(diverged(iterations, residual, history));
+                // The one exit that leaves a NON-finite iterate. The driver
+                // refuses to reclassify from it and returns this error as-is,
+                // because a classification derived from NaN is arbitrary.
+                return AnchorPass {
+                    result: Err(diverged(iterations, residual, history)),
+                    pressures,
+                };
             }
         }
 
         let residual = history.last().copied().unwrap_or(f64::INFINITY);
-        Err(diverged(iterations, residual, history))
-    }
-
-    fn name(&self) -> &'static str {
-        "simple-relaxation"
+        AnchorPass {
+            result: Err(diverged(iterations, residual, history)),
+            pressures,
+        }
     }
 }
 

@@ -38,8 +38,8 @@
 //! legitimate, frequent game state (operator closes a valve), not an error.
 
 use crate::network::{
-    accumulation, compile_edges, edge_flows, finalize, prepare, validate_degrees, Capacitance,
-    CompiledEdge,
+    accumulation, compile_edges, edge_flows, finalize, solve_with_active_anchoring,
+    validate_degrees, AnchorPass, Capacitance, CompiledEdge, Prepared,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
@@ -89,11 +89,47 @@ impl FlowSolver for NewtonFlowSolver {
         // F6: pumps/valves must have exactly one inlet and one outlet edge.
         validate_degrees(graph)?;
 
-        // Classify the nodes (fixed/free, cold seed), seed the pressures, compile
-        // every edge's series branch (pipe ∘ device-at-source) and derive the
-        // anchored set — all shared with SimpleFlowSolver through `prepare`, so
-        // the two fidelities agree by construction.
-        let prep = prepare(graph, slate, previous_states, &self.warm_start)?;
+        // The classification is an ACTIVE SET, not a constant: a relief valve's
+        // opening depends on the pressure this solve is still finding, so the
+        // prologue's answer can be stale and the loop is what re-asks it
+        // (M8.0, DESIGN §3c). One `pass` below is a whole Newton solve under a
+        // fixed classification, which is what keeps the Jacobian's dimension —
+        // and therefore the line search's merit comparison — well defined.
+        //
+        // The warm start moves OUT for the duration: the driver owns writing it,
+        // because a pass can converge under a classification the loop then
+        // rejects. Taking it also splits the borrow, so the closure may hold
+        // `&self` for the tolerances.
+        let mut warm_start = std::mem::take(&mut self.warm_start);
+        let out =
+            solve_with_active_anchoring(graph, slate, previous_states, &mut warm_start, |prep| {
+                self.pass(prep, graph, slate, previous_states, dt)
+            });
+        self.warm_start = warm_start;
+        out
+    }
+
+    fn name(&self) -> &'static str {
+        "newton-network"
+    }
+}
+
+impl NewtonFlowSolver {
+    /// One damped-Newton solve under a FIXED anchoring classification — the body
+    /// this solver had before M8.0, minus the prologue (`prepare`, now the
+    /// driver's) and minus the warm-start write (also the driver's).
+    ///
+    /// Returns its final pressure iterate alongside its result, converged or
+    /// not: on the plant this loop exists for the pass FAILS, and its iterate is
+    /// what says why (DESIGN §3c).
+    fn pass(
+        &self,
+        prep: Prepared,
+        graph: &PlantGraph,
+        slate: &Slate,
+        previous_states: &NodeStates,
+        dt: Seconds,
+    ) -> AnchorPass {
         let anchored = &prep.anchored;
         let free = &prep.classes.free;
         let mut pressures = prep.pressures;
@@ -126,7 +162,8 @@ impl FlowSolver for NewtonFlowSolver {
         // — see `two_vessels_and_no_fixed_node_equalise`.
         if n == 0 {
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-            return finalize(graph, &pressures, edges, 0, 0.0);
+            let result = finalize(graph, &pressures, edges, 0, 0.0);
+            return AnchorPass { result, pressures };
         }
 
         // Damped Newton.
@@ -158,8 +195,15 @@ impl FlowSolver for NewtonFlowSolver {
             let dp = solve_linear(&jac, &neg_r);
             if dp.iter().any(|x| !x.is_finite()) {
                 // Singular/ill-conditioned Jacobian (e.g. an F2 case slipped
-                // through) — surfaces here first.
-                return Err(diverged(iterations, res, history));
+                // through) — surfaces here first. **This is the frozen-anchoring
+                // plant's exit**: a dead leg whose relief shut on the way to the
+                // answer leaves a zero row and column. `pressures` is the last
+                // ACCEPTED iterate — the bad trial is never stored — so the
+                // driver can reclassify from it and try again (DESIGN §3c).
+                return AnchorPass {
+                    result: Err(diverged(iterations, res, history)),
+                    pressures,
+                };
             }
 
             // Damped line search with the Armijo sufficient-decrease condition
@@ -177,7 +221,15 @@ impl FlowSolver for NewtonFlowSolver {
                 // consistent trial, not of the old coefficients at a new
                 // pressure. For an all-liquid network this reproduces the same
                 // `CompiledEdge` bit for bit (M5.2, `compile_edge`).
-                let compiled_t = compile_edges(graph, slate, previous_states, &trial)?;
+                let compiled_t = match compile_edges(graph, slate, previous_states, &trial) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        return AnchorPass {
+                            result: Err(e),
+                            pressures,
+                        }
+                    }
+                };
                 let (r_t, jac_t, tp_t) = assemble(
                     graph,
                     &compiled_t,
@@ -208,27 +260,24 @@ impl FlowSolver for NewtonFlowSolver {
                 // The exact Newton step is always a descent direction for a
                 // C¹ residual; failure to decrease means singularity, not a
                 // line-search deficiency (advisor Q4).
-                return Err(diverged(iterations, res, history));
+                return AnchorPass {
+                    result: Err(diverged(iterations, res, history)),
+                    pressures,
+                };
             }
             converged = converged_at(res, throughput);
         }
 
         if !converged {
-            return Err(diverged(iterations, res, history));
+            return AnchorPass {
+                result: Err(diverged(iterations, res, history)),
+                pressures,
+            };
         }
 
-        // Converged: update warm start (converged-only), then build solution.
-        for &nid in free {
-            if let Some(&p) = pressures.get(&nid) {
-                self.warm_start.insert(nid, p);
-            }
-        }
         let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-        finalize(graph, &pressures, edges, iterations, res)
-    }
-
-    fn name(&self) -> &'static str {
-        "newton-network"
+        let result = finalize(graph, &pressures, edges, iterations, res);
+        AnchorPass { result, pressures }
     }
 }
 

@@ -514,11 +514,44 @@ pub fn compile_edges(
 
 /// The shared solve prologue: classify, seed, compile, anchor, pin floating —
 /// in the one order that is self-consistent, and identical for both fidelities.
+///
+/// The anchored set comes from the SEED compile, which is exact for every
+/// element whose `conducts` is constant through a solve and stale for one whose
+/// opening the answer decides. `solve_with_active_anchoring` is what corrects
+/// that, by re-running this with an override (M8.0, DESIGN §3c); a direct call
+/// here is still the first pass and still classifies from the seed.
 pub fn prepare(
     graph: &PlantGraph,
     slate: &Slate,
     previous_states: &NodeStates,
     warm_start: &BTreeMap<NodeId, f64>,
+) -> Result<Prepared, SimError> {
+    prepare_anchored(graph, slate, previous_states, warm_start, None, None)
+}
+
+/// `prepare`, with the anchored set optionally SUPPLIED rather than derived.
+///
+/// `Some(set)` is how a later active-set pass runs under the classification the
+/// previous pass's ANSWER implies instead of the one its own seed implies. The
+/// floating pins below follow the override, so a node that has just become
+/// anchored stops being parked and one that has just stopped being anchored
+/// starts (DESIGN §3c).
+///
+/// `previous_pass` carries that pass's pressures, and it feeds the free-node
+/// SEED only — never the floating pin. The two look like one thing while there
+/// is a single pass and are not: seeding an unknown is a path to an answer, so
+/// the nearest available start wins, while a floating node's value is what gets
+/// REPORTED for a pressure the plant does not determine. A mid-solve iterate is
+/// a fine path and a meaningless report, so the pin keeps reading `warm_start` —
+/// the value the node last had while it was determinate, else atmospheric, which
+/// is the pre-M8.0 convention untouched.
+pub fn prepare_anchored(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    warm_start: &BTreeMap<NodeId, f64>,
+    previous_pass: Option<&BTreeMap<NodeId, f64>>,
+    anchored_override: Option<&BTreeSet<NodeId>>,
 ) -> Result<Prepared, SimError> {
     let classes = classify(graph, slate);
 
@@ -548,25 +581,22 @@ pub fn prepare(
         // would not suit a lone vessel. A blowdown to vacuum is 400 under all
         // three. Nothing in the suite can tell any of them apart on the ANSWER,
         // which is the honest statement of what this line is worth.
-        let seed =
-            warm_start
-                .get(&nid)
-                .copied()
-                .unwrap_or_else(|| match classes.capacitive.get(&nid) {
-                    Some(cap) => cap.p_prev,
-                    None => classes.cold,
-                });
+        let seed = previous_pass
+            .and_then(|p| p.get(&nid))
+            .or_else(|| warm_start.get(&nid))
+            .copied()
+            .unwrap_or_else(|| match classes.capacitive.get(&nid) {
+                Some(cap) => cap.p_prev,
+                None => classes.cold,
+            });
         pressures.insert(nid, seed);
     }
 
     let compiled = compile_edges(graph, slate, previous_states, &pressures)?;
-    // Anchors are the pinned nodes AND the capacitive ones: a vessel's own
-    // equation determines its pressure, so it needs no conducting path to a
-    // reservoir (DESIGN §3a fork 2). This is what makes a closed gas system well
-    // posed for the first time.
-    let mut anchors: BTreeSet<NodeId> = classes.fixed.keys().copied().collect();
-    anchors.extend(classes.capacitive.keys().copied());
-    let anchored = anchored_set(graph, &compiled, &anchors);
+    let anchored = match anchored_override {
+        Some(a) => a.clone(),
+        None => anchored_set(graph, &compiled, &base_anchors(&classes)),
+    };
 
     // A floating free node's pressure is indeterminate and its edges are inert,
     // so it is parked at its warm-start value or at P_ATM rather than at the
@@ -621,6 +651,20 @@ pub fn classify(graph: &PlantGraph, slate: &Slate) -> Classification {
     }
 }
 
+/// The nodes that anchor a pressure with no reference to anything outside
+/// themselves: the pinned ones AND the capacitive ones. A vessel's own equation
+/// determines its pressure, so it needs no conducting path to a reservoir
+/// (DESIGN §3a fork 2) — which is what makes a closed gas system well posed.
+///
+/// Its own function because the active-set loop recomputes `anchored_set` from a
+/// later iterate and must hand it the SAME anchors the seed pass used. Deriving
+/// them twice from two copies of this expression is how the two would drift.
+pub fn base_anchors(classes: &Classification) -> BTreeSet<NodeId> {
+    let mut anchors: BTreeSet<NodeId> = classes.fixed.keys().copied().collect();
+    anchors.extend(classes.capacitive.keys().copied());
+    anchors
+}
+
 /// Nodes reachable from any ANCHOR through conducting edges (undirected).
 /// Free nodes NOT in this set are floating (indeterminate pressure).
 ///
@@ -654,6 +698,164 @@ pub fn anchored_set(
         }
     }
     anchored
+}
+
+/// How many classifications one solve may run through before the loop gives up
+/// on the plant settling. A cycle is caught by REPETITION rather than by this cap
+/// (see `solve_with_active_anchoring`), so this bounds only the strictly *growing*
+/// case — a chain of never-before-seen sets, which in practice is bounded by the
+/// number of pressure-actuated elements in the plant.
+pub const MAX_ANCHOR_PASSES: usize = 8;
+
+/// What one fidelity's own iteration returns to the active-set driver: its
+/// result, and the pressure iterate it ended on.
+///
+/// The iterate is returned **whether or not the pass converged**, and that is the
+/// point of the type. The plant this loop exists for is the one whose pass fails
+/// — a dead leg behind a relief that shuts on the way to the answer leaves a zero
+/// residual row and a singular Jacobian — and the iterate at the moment of
+/// failure is exactly what reveals the relief has shut (DESIGN §3c, fork 2b).
+pub struct AnchorPass {
+    pub result: Result<HydraulicSolution, SimError>,
+    pub pressures: BTreeMap<NodeId, f64>,
+}
+
+/// The active-set loop over the anchoring classification, shared by both
+/// fidelities (M8.0, DESIGN §3c). Un-defers M5's FINDING 2.
+///
+/// One `pass` is a whole fidelity solve under a FIXED classification, so the
+/// unknown set — and with it the dimension of Newton's Jacobian and the index set
+/// its line search compares merits over — cannot move underneath it. Between
+/// passes the edges are recompiled at the pressures the pass ended on and the
+/// anchored set is recomputed from those; a pass whose set is already a fixed
+/// point returns verbatim, which is every plant with no pressure-actuated element
+/// in it, at pass one, bit for bit as before this loop existed.
+///
+/// **The warm start is committed HERE and nowhere else.** A pass may converge
+/// under a classification the loop then rejects, and writing the warm start
+/// inside the pass would leak that rejected classification's pressures into the
+/// next tick — a cross-tick coupling that did not exist while the set was frozen.
+/// The rule is one rule about the loop ("the final accepted pass, and only if it
+/// converged"), not two rules in two solvers free to drift apart.
+pub fn solve_with_active_anchoring<F>(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    warm_start: &mut BTreeMap<NodeId, f64>,
+    mut pass: F,
+) -> Result<HydraulicSolution, SimError>
+where
+    F: FnMut(Prepared) -> AnchorPass,
+{
+    let mut previous_pass: Option<BTreeMap<NodeId, f64>> = None;
+    let mut override_set: Option<BTreeSet<NodeId>> = None;
+    // Every classification this solve has run, in order. A REPEAT is a cycle and
+    // is terminal: the plant has two self-consistent answers, and picking the
+    // later one would be choosing between them by iteration parity.
+    let mut seen: Vec<BTreeSet<NodeId>> = Vec::new();
+
+    for _ in 0..MAX_ANCHOR_PASSES {
+        let prep = prepare_anchored(
+            graph,
+            slate,
+            previous_states,
+            warm_start,
+            previous_pass.as_ref(),
+            override_set.as_ref(),
+        )?;
+        // Taken before the pass consumes `prep`: the free list for the warm-start
+        // commit, and the anchors so the reclassification below runs against the
+        // SAME base set this pass was built from.
+        let used = prep.anchored.clone();
+        let free = prep.classes.free.clone();
+        let anchors = base_anchors(&prep.classes);
+        seen.push(used.clone());
+
+        let AnchorPass { result, pressures } = pass(prep);
+
+        // A pass that failed BECAUSE its iterate went non-finite is the one case
+        // the iterate cannot be reclassified from: the resulting set would be an
+        // artefact of NaN, and an arbitrary retry is worse than an honest
+        // failure. Simple has exactly such a path; Newton's two give-up paths
+        // discard the bad trial and keep a finite incumbent.
+        if pressures.values().any(|p| !p.is_finite()) {
+            return result;
+        }
+        let compiled = match compile_edges(graph, slate, previous_states, &pressures) {
+            Ok(c) => c,
+            // The pass already compiled at these pressures, so this is reachable
+            // only from a diverged iterate — whose own error is the better
+            // answer, and is what `and` keeps.
+            Err(e) => return result.and(Err(e)),
+        };
+        let next = anchored_set(graph, &compiled, &anchors);
+
+        if next == used {
+            if result.is_ok() {
+                for &nid in &free {
+                    if let Some(&p) = pressures.get(&nid) {
+                        warm_start.insert(nid, p);
+                    }
+                }
+            }
+            return result;
+        }
+        // A repeat is a CYCLE only when the pass that produced it CONVERGED, and
+        // that qualifier is a correction the code made to this slice's own design
+        // note. A converged pass under `used` whose answer implies a `next` the
+        // solve has already run is a genuine alternation: both states are
+        // self-consistent, and choosing between them by iteration parity is the
+        // thing being refused. A pass that FAILED ended on a mid-flight iterate,
+        // which is not an answer — the classification it implies is a guess, and
+        // repeating a guess is not evidence of anything. Those keep iterating,
+        // from the new seed, with the cap as the backstop.
+        //
+        // Measured before the qualifier existed: 13 of 21 repeats followed a
+        // failed pass, so refusing on all of them would have refused mostly on
+        // guesses (ROADMAP M8.0).
+        if result.is_ok() && seen.contains(&next) {
+            return Err(SimError::AnchoringUnsettled {
+                cycled: true,
+                detail: format!(
+                    "{} has been anchored before in this tick, so the plant has two \
+                     self-consistent answers and the element(s) at {} are chattering — a \
+                     relief whose own discharge re-seats it. Element state (hysteresis) is \
+                     what would resolve it, and is deferred (docs/DESIGN.md §3a, §3c)",
+                    describe_nodes(graph, &next),
+                    describe_nodes(graph, &symmetric_difference(&used, &next)),
+                ),
+            });
+        }
+        previous_pass = Some(pressures);
+        override_set = Some(next);
+    }
+    Err(SimError::AnchoringUnsettled {
+        cycled: false,
+        detail: format!(
+            "still producing new classifications after {MAX_ANCHOR_PASSES} passes — unlike \
+             the cycling case there is no repeat to name, so this is a plant whose anchoring \
+             keeps growing rather than one alternating between two answers \
+             (docs/DESIGN.md §3c)"
+        ),
+    })
+}
+
+/// Nodes in one set or the other but not both, for a diagnostic.
+fn symmetric_difference(a: &BTreeSet<NodeId>, b: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+    a.symmetric_difference(b).copied().collect()
+}
+
+/// Node ids rendered by NAME for an error message — ascending, so the text is
+/// deterministic like everything else the solve produces.
+fn describe_nodes(graph: &PlantGraph, nodes: &BTreeSet<NodeId>) -> String {
+    if nodes.is_empty() {
+        return "{}".to_string();
+    }
+    let names: Vec<&str> = nodes
+        .iter()
+        .map(|&nid| graph.node(nid).name.as_str())
+        .collect();
+    format!("{{{}}}", names.join(", "))
 }
 
 /// What one solve reports per edge: the signed mass flow, the power friction
