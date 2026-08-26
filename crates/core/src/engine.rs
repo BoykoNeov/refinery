@@ -8,7 +8,9 @@ use crate::components::Slate;
 use crate::energy::{self, T_REF};
 use crate::error::SimError;
 use crate::graph::{ControlMode, ControlledValue, LeakRole, LoopId, NodeId, NodeKind, PlantGraph};
-use crate::snapshot::{ColumnDuty, Command, ControlSnapshot, EdgeSnapshot, NodeSnapshot, Snapshot};
+use crate::snapshot::{
+    ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot, NodeSnapshot, Snapshot,
+};
 use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, SeparationModel, ThermoModel};
 use crate::units::*;
 
@@ -1035,9 +1037,23 @@ impl Engine {
                 output: c.last_output,
             })
             .collect();
+        // The slate, in ITS OWN order — `Slate::iter` walks the declaration
+        // order that `Composition`'s fractions index into, and a frontend zips
+        // the two. Any reordering here (sorting by name, say) would silently
+        // pair every tank's fractions with the wrong densities, which is the
+        // failure `scenarios/tests/snapshot_slate.rs` sizes rather than assumes.
+        let slate = self
+            .slate
+            .iter()
+            .map(|c| ComponentSnapshot {
+                name: c.name.clone(),
+                density_kg_per_m3: c.density.map(|d| d.value()),
+            })
+            .collect();
         Snapshot {
             tick: self.tick,
             sim_time: Seconds(self.tick as f64 * self.config.dt.value()),
+            slate,
             nodes,
             edges,
             solver: sol.map(|s| s.diagnostics.clone()).unwrap_or_default(),

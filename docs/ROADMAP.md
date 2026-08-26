@@ -3513,13 +3513,168 @@ believing a carried-over number is a path rather than an answer.
       of M8.3 that cost the most to get exact, which has no wired exercise at
       all.**
 
-### M8.5 — The slate on the snapshot (M6.2's deferral)
+### M8.5 — The slate on the snapshot (M6.2's deferral) — **LANDED** 2026-08-26
 
 Independent of the controller slices and deliberately after them: it is a
 frontend affordance, and M8.2–M8.4 must not be able to lean on it.
 
-- [ ] `core`: slate-derived data on `Snapshot` — component names and the
+- [x] `core`: slate-derived data on `Snapshot` — component names and the
       densities a frontend needs to turn a tank's mass into a fill fraction. The
       deferral's stated fix, NOT a precomputed `level_m` field.
-- [ ] `godot-ext`: the scene draws a real fill level instead of mass on a shared
-      scale, which is the deferral's stated trigger.
+      `Snapshot::slate: Vec<ComponentSnapshot>`, carrying `name` and
+      `density_kg_per_m3` and nothing else: `tb`, `molar_mass` and `cp` are
+      inputs to models that run *inside* the engine, and a frontend reading them
+      could only recompute what the engine already reports.
+- [x] `godot-ext`: the scene draws a real fill level instead of mass on a shared
+      scale, which is the deferral's stated trigger. `peak_mass` and the
+      `_rescale` pass are gone; each tank prints its level in metres and its
+      fill percentage beside the kg it already printed.
+- [x] Tests: `scenarios/tests/snapshot_slate.rs`, seven gates, reading **JSON
+      rather than the `Snapshot` struct** — the consumer is `demo/plant.gd`
+      through `snapshot_json`, so the contract that can break is the set of key
+      names (`slate`, `density_kg_per_m3`, `composition.mass_fractions`, `area`,
+      `height`, `mass`), and nothing else in the workspace pinned them.
+- [x] Tests: `godot-ext`'s `the_slate_crosses_the_bridge_and_is_real_before_the
+      _first_tick` — the slate is a *stored* quantity, so unlike the solved
+      floats it is real at tick 0 and a scene can lay itself out in `_ready()`.
+
+**This is the first field on `Snapshot` with neither `default` nor
+`skip_serializing_if`, and refusing that reflex is the slice's one design call.**
+Every field added since M6 got both, and the pattern is right for all of them:
+`controls: []` and `column_duty: None` are *true statements* about a plant — no
+loops here, that node is not a column — so absence is the honest encoding and the
+older scenarios stay byte-identical for free. An empty slate is not a statement,
+it is impossible: `Slate::new` refuses one. A `default` would let a pre-M8.5
+document deserialize into a snapshot claiming the plant has no components, which
+is `heat_input_w`'s lesson pointed the other way — not a field nothing reports,
+but a field reporting what nothing holds.
+
+**The regression anchor moved, and by exactly one key.** All fourteen shipped
+scenarios × both solvers = 28 runs, 200 ticks, a snapshot every 50, captured
+before and after. Stripping `"slate":[…],` from each *after* line reproduces the
+*before* file **byte for byte, 28 of 28** — so the change added a key and moved
+no number anywhere. The control that makes that readable rather than vacuous:
+the strip removes 112 real occurrences and 11 200 bytes; before the change the
+files contain the string `slate` zero times. **From here, "26 runs identical"
+means post-M8.5 identical** — a pre-M8.5 capture will differ on every line and
+that is not a regression.
+
+**The independent second side does not exist, and finding that out is the
+slice's real finding.** The obvious way to gate a published density is against
+something the solver derived from it, and a tank pins `P = P_ATM + ρ·g·h`. But
+substituting `h = m/(ρ·A)` cancels the density exactly: `P − P_ATM = m·g/A`. A
+tank's hydrostatic pressure carries **no density information at all**, so a
+snapshot shipping `cp` in the density slot would move both sides by the same
+factor and they would agree. The same cancellation kills mass balance, holdup
+and transport, because a density is observable only through a *volume* — and the
+only volume any scenario declares is `initial_level_m`. That load-time level is
+the one anchor outside the code, it exists only at tick 0, and
+`a_frontend_reconstructs_the_declared_level_from_the_snapshot_alone` is what
+this file rests on. The impossibility is kept as an assertion
+(`a_tanks_pressure_carries_no_density_to_gate_one`) rather than dropped, because
+it is the first thing the next person will reach for.
+
+**A tank's reported pressure and its reported mass are one Euler step apart.**
+Found by that assertion failing at 8.6e-6 relative — 0.67 Pa on the supply tank
+— which is small enough that a tolerance chosen to look tight would have hidden
+it. The tick is solve → transport → unit dynamics, so a snapshot's pressure was
+computed from the mass at the *start* of the tick while its mass is what the
+integration left. The gate compares against tick 0's mass, is then exact, and
+asserts the fresh comparison *fails*, so the offset is recorded rather than
+absorbed. Neither number is wrong; a frontend drawing a level reads mass, the
+fresh one.
+
+**Three wiring mutations, all caught — and which gates fire is more
+interesting than that they do.** Each was applied at the emission site from a
+single pristine copy, each **verified to compile** (a mutation that does not
+build is a void catch), and each run against the workspace:
+
+| mutation | gates fired |
+|---|---|
+| slate emitted **sorted by name** | 3 |
+| **`cp` in the density slot** | 5 |
+| **first component dropped** | 7 |
+
+**The bridge gate does not catch the order mutation, and that is the demo's
+coverage gap showing up as a measurement.** `leaking_line.toml` carries one
+component, and sorting a one-element list is the identity — so the only gate
+that runs on the plant the scene actually draws is blind to the single most
+likely wiring error. Only the crude-plant gates see it. The same shape as
+`mean_molar_mass`'s pure-cut case, one milestone later.
+
+**Nor is every tank moved by every order error.** A five-cut slate sorted by
+name moves the naphtha tank's density from 680 to 850 kg/m³ but leaves kerosene
+*exactly where it was* — it sits at the centre of the list and third
+alphabetically, so a reversal leaves it unmoved for the same reason. A gate run
+only on the distillate tank would have been vacuous under both.
+`the_slate_travels_in_declaration_order_not_sorted_by_name` therefore carries a
+table naming which tank discriminates which mutation, and asserts the invariant
+tanks *are* invariant, rather than claiming all three move.
+
+The `cp` mutation also fires `a_gas_component_reports_no_density`, because
+`Some(cp)` is emitted for a gas cut too and the `null` disappears — the pair of
+"never null on a tank" and "null for a gas" catching between them what neither
+catches alone. The only gate no mutation fires is
+`a_tanks_pressure_carries_no_density_to_gate_one`, which is the point of it.
+
+**What the demo does not cover, stated rather than assumed.**
+`leaking_line.toml` is water-only, so the scene exercises a one-component slate
+where the reciprocal mixing rule and any wrong rule agree exactly — the same
+vacuity `mean_molar_mass`'s pure-cut case documents. Mixing is covered on
+`crude_column.toml` instead, whose naphtha tank starts as a pure cut and becomes
+a genuine two-component mixture as it fills. That half is a **mirror** and is
+labelled as one in the test: after tick 0 there is no anchor outside the code
+left, so it compares against `TankState::level` and its power is over the
+wiring, not the rule.
+
+**The demo, re-recorded — and the kg columns did not move.**
+
+```
+plant: loaded res://scenarios/leaking_line.toml
+t=  50  supply= 8.00 m ( 159611.2 kg)  receiving= 1.00 m (  20028.8 kg)  T=293.150 K  leak= 0.000 kg/s  fire= 0.00 MW
+t= 100  supply= 7.99 m ( 159542.5 kg)  receiving= 1.01 m (  20097.5 kg)  T=293.151 K  leak= 0.000 kg/s  fire= 0.00 MW
+plant: puncturing fill_line, 0.001 m^2
+t= 150  supply= 7.99 m ( 159473.6 kg)  receiving= 1.01 m (  20140.7 kg)  T=293.151 K  leak= 5.139 kg/s  fire= 0.00 MW
+t= 200  supply= 7.99 m ( 159404.7 kg)  receiving= 1.01 m (  20183.9 kg)  T=293.151 K  leak= 5.140 kg/s  fire= 0.00 MW
+plant: fire on receiving_tank, 5000000.0 W
+t= 250  supply= 7.98 m ( 159335.8 kg)  receiving= 1.01 m (  20227.1 kg)  T=293.447 K  leak= 5.142 kg/s  fire= 5.00 MW
+t= 300  supply= 7.98 m ( 159266.9 kg)  receiving= 1.02 m (  20270.3 kg)  T=293.741 K  leak= 5.143 kg/s  fire= 5.00 MW
+plant: repaired and extinguished
+t= 350  supply= 7.98 m ( 159198.1 kg)  receiving= 1.02 m (  20339.1 kg)  T=293.739 K  leak= 0.000 kg/s  fire= 0.00 MW
+```
+
+**Every kg, K and kg/s figure is byte-identical to M6.2's recorded run**, which
+is the check that matters: this slice changed what a frontend can *read*, not
+what the engine *does*. The metres are the new half, and they are checkable from
+the file — `leaking_line.toml` declares 8.0 m and 1.0 m, and the first line
+shows exactly those, computed in GDScript from `mass`, `area` and a density the
+scene did not have three commits ago. The supply tank draining 0.02 m while the
+receiving tank gains 0.02 m is the same transfer the kg columns show, in the
+unit an operator reads.
+
+The bars now draw at 80% and 10% of their shells instead of at 100% and 12% of
+the largest mass on screen. The old scale was not merely less precise: it made
+the two tanks' *relative* masses the picture, so the supply tank was pinned full
+by definition and the receiving tank's own 10 m shell appeared nowhere.
+
+**Still deferred, and not this slice's:** a loop name→id phone book on the
+bridge. `bridge.rs`'s `Referent::Loop` comment names "M8.5's Godot slice" as
+where it would go, but the roadmap box does not ask for it and no shipped
+scenario the scene loads declares a loop — so it would be a lookup nothing
+calls, which is the `PuncturePipe` shape (M6.0) in a new place. **Un-defers with
+a scene that drives a control loop**, which needs a demo plant that has one.
+
+### M8 closed
+
+All six slices landed. The milestone opened with a defect (M8.0's frozen
+anchoring), specified itself before building (M8.1's DESIGN §10, seven forks),
+built the seam and both algorithms (M8.2, M8.3), wired and *measured* a demo
+(M8.4), and closed a two-milestone-old frontend deferral (M8.5).
+
+Worth carrying forward: four of M8.4's seven mutation predictions were wrong,
+and M8.5's specified gate could not exist for the fourth time in this project —
+so the note-then-build discipline keeps paying, and it keeps paying by being
+*falsified*, not confirmed. The rule that came out of M7 — check an invariant's
+two sides are computed by independent paths before writing the gate — earned a
+corollary here: when they are not, say so as an assertion, because the next
+person will reach for the same impossible gate.

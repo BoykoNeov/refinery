@@ -151,8 +151,9 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M8 is open, and its scope is regulation** — control loops, so a plant holds
-itself somewhere instead of being held by whoever is sending commands. It opened
+**M8 is CLOSED (2026-08-26), and its scope was regulation** — control loops, so a
+plant holds itself somewhere instead of being held by whoever is sending
+commands. Its six slices are summarized below; M9 is unscoped. It opened
 with a defect rather than a feature: **M8.0 landed 2026-08-26**, the anchoring
 active-set loop (DESIGN §3c), which un-defers M5's FINDING 2 — `network::prepare`
 used to freeze the anchored set at the seed compile, so a relief valve whose
@@ -275,10 +276,46 @@ in one step, or a setpoint step small enough not to.
 
 **Exactly one file in `scenarios/` declares a `[[controls]]` table** —
 `tank_level_control.toml`, M8.4's. The other thirteen were written before M8 and
-ARE the regression anchor (26 runs byte-identical across every slice of this
-milestone); adding a loop to one of them would move its snapshot. Two more plants
-that carry a loop are inline test fixtures for the same reason. `docs/ROADMAP.md`
-M8.5 is the one remaining slice.
+ARE the regression anchor; adding a loop to one of them would move its snapshot.
+Two more plants that carry a loop are inline test fixtures for the same reason.
+
+**M8.5 landed 2026-08-26, and M8 is closed** — `Snapshot::slate`, so a frontend
+can turn a tank's mass into a fill level. Four things to know.
+
+**The regression anchor moved by exactly one key, and it moved on purpose.**
+`slate` is the first field on `Snapshot` with neither `serde(default)` nor
+`skip_serializing_if`, so every scenario's JSON changed. That is not an oversight
+copied from the wrong pattern — it is the discriminating argument: `controls: []`
+and `column_duty: None` are *true statements* about a plant, while an empty slate
+is impossible (`Slate::new` refuses one), so a `default` would let an old document
+deserialize into a snapshot claiming the plant has no components. Measured rather
+than predicted: strip `"slate":[…],` from each of the 28 after-runs and all 28
+reproduce their before-file byte for byte. **From here, "runs byte-identical"
+means post-M8.5 identical.**
+
+**A tank's pressure cannot gate its density, and that is algebra, not a gap.**
+The obvious independent check on a published density is the tank's hydrostatic
+head — but `P − P_ATM = ρ·g·h = ρ·g·(m/ρA) = m·g/A`, so the density cancels
+exactly and a snapshot shipping `cp` in the density slot would move both sides
+identically. Every other candidate cancels the same way: a density is observable
+only through a *volume*, and the only volume a scenario declares is
+`initial_level_m`. So the load-time level is the **single** anchor outside the
+code, it exists only at tick 0, and that is what the real gate reconstructs. The
+impossibility is kept as an assertion rather than dropped, because it is the
+first thing the next person will reach for.
+
+**A snapshot's tank pressure and its tank mass are one Euler step apart** — 0.67
+Pa, 8.6e-6 relative, found by that assertion failing. The tick is solve →
+transport → unit dynamics, so the pressure came from the mass at the *start* of
+the tick. Nothing is wrong; a frontend drawing a level reads mass, the fresh one.
+
+**A tank's component densities are never `null`, so the scene needs no fallback.**
+The `Option` exists because a slate may carry gas cuts; it is unreachable down
+the fill path because the loader refuses a gas-phase tank and a gas holdup is a
+`vessel`, whose state is a pressure. Swept across all fourteen shipped files.
+The wired demo (`leaking_line.toml`) is water-only, so **it cannot exercise
+mixing at all** — that is covered on `crude_column.toml`, whose naphtha tank
+becomes a real two-component mixture as it fills.
 
 M1–M7 are closed: flow network, heat, crude + simple column, reactor, gas and
 pressure realism, damage + the Godot frontend, and the complex column. **M7 closed

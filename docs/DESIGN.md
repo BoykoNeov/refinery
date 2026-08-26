@@ -4006,10 +4006,11 @@ had been treating them as one.
 
 ## 7. Snapshots and commands
 
-- `Snapshot`: tick index, sim time, per-node state (levels, temperatures,
-  unit-specific extras as tagged enums), per-edge stream state, solver
-  diagnostics (iterations, residual). Serde: JSON for humans, bincode later
-  if profiling demands.
+- `Snapshot`: tick index, sim time, the component slate (name + density, so a
+  frontend can interpret the `mass_fractions` that index it — M8.5), per-node
+  state (levels, temperatures, unit-specific extras as tagged enums), per-edge
+  stream state, solver diagnostics (iterations, residual). Serde: JSON for
+  humans, bincode later if profiling demands.
 - `Command`: `SetValveOpening{node, opening}`, `SetPumpOn{node, on}`,
   `PuncturePipe{edge, area}`, `SetHeatInput{node, power}` (the fire — this is
   what the older sketch called `IgniteNode`), `SetFurnaceDuty{node, duty}`,
@@ -4041,6 +4042,47 @@ it. Gated in `scenarios/tests/fire_reporting.rs`, whose ambient arm builds its
 plant inline because **no scenario in the repo sets a nonzero tank
 `ambient_ua_w_per_k`** — an arm written against the existing files would report
 zero for the right reason and pass for the wrong one.
+
+**The other half of the same rule: a frontend must be able to DERIVE what it
+draws.** `Snapshot::slate` (M8.5) closes M6.2's deferral. `heat_input_w` above
+is about a command with no reported consequence; this is about a reported
+consequence with no interpretation. A tank reported mass [kg], area [m²] and
+height [m], which is everything except the density that turns them into
+`h = m/(ρ·A)` — so the M6.2 scene drew mass on a scale shared between its two
+tanks and printed kg, both faithful, neither answering "how full is it". The
+component *names* were missing on the same grounds: a composition crossed as a
+bare `mass_fractions` array indexing a list the frontend could not see.
+
+**The fix is the slate, deliberately not a `level_m` field**, and the two are
+not close calls. `TankState::level` already exists in `core` and a level field
+would have been three lines. But the deferral names three triggers — an
+absolute fill fraction, a per-component readout, a component name — and a level
+serves one; the slate serves all three and several nobody has asked for yet. It
+is also the right *kind* of data: the slate is an input a scenario declared, so
+publishing it invents nothing, whereas each derived field added to `Snapshot` is
+a quantity a frontend must then trust the engine to keep in step with the state
+beside it. `ComponentSnapshot` carries `name` and `density_kg_per_m3` only —
+`tb`, `molar_mass` and `cp` are inputs to models that run inside the engine, and
+a frontend reading them could only recompute what the engine already reports.
+
+**It is the first field on `Snapshot` with neither `default` nor
+`skip_serializing_if`, and the asymmetry is the argument.** `controls: []` and
+`column_duty: None` are true statements about a plant — it has no loops, that
+node is not a column — so absence is the honest encoding and byte-identity for
+the older scenarios comes free. An empty slate is not a statement: `Slate::new`
+refuses one, so every engine that exists has at least one component, and a
+`default` would let a pre-M8.5 document deserialize into a snapshot whose slate
+claims there are none. So this field moved every scenario's bytes, which is what
+made the measurement below worth doing.
+
+**A tank's component densities are never `null`, and that is enforced upstream.**
+The `Option` exists because a *slate* may carry gas cuts, whose density is
+`P·M̄/(R·T)` rather than a constant. It cannot be reached down the fill-level
+path: the loader refuses a tank whose composition is gas-phase, and the other
+holdup kind, `Vessel`, has a pressure for a state and no level to draw. So the
+scene divides by it with no fallback branch, and
+`no_tank_anywhere_holds_a_component_without_a_density` is what would notice if
+that guard were relaxed.
 
 ## 8. Godot integration (M6)
 
@@ -4207,6 +4249,73 @@ reruns and never parses one back — a class of defect that "compare the output
 text" cannot reach. The feature is set at `[workspace.dependencies]`, because
 cargo unifies features per build and a per-crate setting would make the
 behaviour depend on which crates are in the build.
+
+### The fill level (M8.5) — what building it settled
+
+The scene half of M6.2's deferral. `_tank_fraction` was mass over the largest
+mass seen anywhere that run; it is now `h/H` with `h = m/(ρ·A)` and `ρ` blended
+from `Snapshot::slate` by the reciprocal rule. `peak_mass` and the `_rescale`
+pass that maintained it are gone, and each tank now prints its level in metres
+and its fill percentage beside the kg it already printed. The scene still
+computes no physics in the sense that mattered in M6.2 — every operand is a
+snapshot field, and the blend is the same arithmetic `core::components` applies
+to the same numbers.
+
+**The independent second side does not exist, and the reason is worth keeping.**
+The natural way to gate a published density is against something the solver
+derived from it, and a tank pins `P = P_ATM + ρ·g·h` — so `(P − P_ATM)/(ρ·g)`
+looks like a solver-side level to check the snapshot-side one against. It is
+not. Substituting `h = m/(ρ·A)` cancels the density exactly:
+
+```text
+P − P_ATM = ρ·g·h = ρ·g·m/(ρ·A) = m·g/A
+```
+
+A tank's hydrostatic pressure is mass over area and carries **no density
+information at all**; a snapshot shipping `cp` in the density slot moves both
+sides by the same factor and they agree. The same cancellation kills every other
+candidate — mass balance, holdup, transport — because a density is observable
+only through a *volume*, and the only volume any scenario declares is
+`initial_level_m`. So the load-time level is the single anchor outside the code,
+it exists only at tick 0, and the gate that reconstructs it there is this
+slice's real one. What it pins is the WIRING — right field, right order, nothing
+dropped; the mixing rule itself is `components.rs`'s and is unit-tested there.
+This is the fourth time in this project a specified or reflexive gate turned out
+to have one side computed from the other, and the first where the answer was to
+*state* the impossibility as an assertion rather than drop it:
+`a_tanks_pressure_carries_no_density_to_gate_one` is kept precisely because it
+is the first thing the next person will reach for.
+
+**A tank's reported pressure and its reported mass are one Euler step apart.**
+Found by that assertion failing at 8.6e-6 relative — 0.67 Pa on
+`leaking_line`'s supply tank. The tick runs solve → transport → unit dynamics
+(§1), so the pressure in a snapshot was computed from the mass at the *start* of
+the tick while the mass in the same snapshot is what the integration left. The
+gate compares against tick 0's mass and is then exact, and asserts the fresh
+comparison *fails*, so the offset is recorded rather than absorbed into a
+tolerance. Nothing is wrong with either number; a frontend drawing a level reads
+mass, which is the fresh one.
+
+**What the wiring mutations measured.** Three edits at the emission site, each
+verified to compile and run against the workspace: the slate emitted **sorted by
+name** (3 gates fire), **`cp` in the density slot** (5), and **the first
+component dropped** (7).
+
+The order mutation is the interesting one, twice over. A five-cut slate sorted
+by name moves the naphtha tank's density from 680 to 850 kg/m³ but leaves
+kerosene — centre of the list, third alphabetically — exactly where it was, so a
+gate run only on the distillate tank would have been vacuous under both it and a
+reversal; the gate's table names which tank discriminates which mutation instead
+of asserting that all three move. And the **bridge** gate, the only one that
+runs on the plant the scene actually draws, does not catch it at all:
+`leaking_line.toml` carries one component and sorting a one-element list is the
+identity. The wired demo is blind to the most likely wiring error in the feature
+it exists to demonstrate, which is a fact about the demo rather than about the
+code, and is why the crude plant carries the gates that matter.
+
+The only gate no mutation fires is `a_tanks_pressure_carries_no_density_to_gate
+_one` — which is the point of it: it documents an impossibility rather than
+guarding a behaviour.
 
 ## 9. Error handling & diagnostics
 

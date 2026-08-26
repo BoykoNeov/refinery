@@ -214,6 +214,39 @@ pub struct EdgeSnapshot {
     pub leak_mass_flow: f64,
 }
 
+/// One pseudo-component, as a frontend needs to read it — the slate's
+/// **name** and the **density** that turns a mass into a volume (M8.5).
+///
+/// Deliberately not the whole [`crate::components::PseudoComponent`]: `tb`,
+/// `molar_mass` and `cp` are inputs to models that run *inside* the engine, and
+/// a frontend that read them could only recompute what the engine already
+/// reports. These two are the ones a frontend cannot obtain any other way — the
+/// name to label a fraction with, the density to size a level by.
+///
+/// Order is the slate's own declaration order, which is what makes it usable:
+/// `TankState::composition`'s `mass_fractions` index into exactly this list
+/// (`components::Slate` — "order is canonical"). A frontend zips the two.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ComponentSnapshot {
+    /// The scenario's own name for this cut, e.g. `"heavy_naphtha"`.
+    pub name: String,
+    /// Liquid density at reference conditions [kg/m³], or `null` for a
+    /// gas-phase component, whose density is `P·M̄/(R·T)` and not a constant
+    /// (`components::PseudoComponent::density`).
+    ///
+    /// **On the fill-level path this is never `null`**, and that is enforced
+    /// rather than hoped: the loader refuses a tank whose composition is
+    /// gas-phase (`components::Composition::mixture_density`), and the one other
+    /// holdup kind — `NodeKind::Vessel` — has a *pressure* for a state, not a
+    /// level. So a frontend computing `ρ = 1/Σ(fᵢ/ρᵢ)` over a tank's own
+    /// nonzero fractions cannot meet one, and needs no fallback for it. It is an
+    /// `Option` because the *slate* may still carry gas cuts that no tank holds.
+    ///
+    /// Spelled like the scenario key `density_kg_per_m3`, so the number a
+    /// frontend reads back is named the same as the number an author wrote.
+    pub density_kg_per_m3: Option<f64>,
+}
+
 /// Complete observable state after a tick. Serializable (JSON for humans,
 /// bincode if profiling ever demands it). Golden-snapshot tests compare
 /// these byte-for-byte for determinism.
@@ -221,6 +254,36 @@ pub struct EdgeSnapshot {
 pub struct Snapshot {
     pub tick: u64,
     pub sim_time: Seconds,
+    /// The engine's pseudo-component slate, in declaration order (M8.5).
+    ///
+    /// **This is what lets a frontend compute a tank's fill level**, which is
+    /// the M6.2 deferral this closes: a tank reports mass [kg], area [m²] and
+    /// height [m], and `h = m/(ρ·A)` needs a density the snapshot did not carry.
+    /// The fix is the slate rather than a precomputed `level_m` field, because
+    /// the same deferral names two other triggers a level would not have served
+    /// — a per-component readout and a component *name* — and because a level is
+    /// a view of data a frontend now holds, not a measurement only the engine
+    /// can make.
+    ///
+    /// **No `default`, and no `skip_serializing_if`** — the opposite of every
+    /// other field added to this struct, and the difference is real. `controls:
+    /// []` and `column_duty: None` are true statements about a plant (it has no
+    /// loops; that node is not a column). An empty slate is not a statement, it
+    /// is impossible: `components::Slate::new` refuses one, so every engine that
+    /// exists has at least one component. A `default` would let a document
+    /// written before this field deserialize into a `Snapshot` whose slate says
+    /// "no components", which is `heat_input_w`'s lesson pointed the other way —
+    /// not a field nothing reports, but a field reporting what nothing holds.
+    ///
+    /// **Constant for the life of an engine, and repeated on every snapshot
+    /// anyway.** The alternative is a header emitted once, which would make line
+    /// 400 of a JSON-lines run uninterpretable on its own and would give the
+    /// Godot bridge — whose entire outward surface is `snapshot_json` — nowhere
+    /// to put it. The cost is ~40 bytes per component per emitted snapshot.
+    ///
+    /// This is the field whose arrival moved every scenario's snapshot bytes;
+    /// see docs/ROADMAP.md M8.5 for the measurement.
+    pub slate: Vec<ComponentSnapshot>,
     pub nodes: Vec<NodeSnapshot>,
     pub edges: Vec<EdgeSnapshot>,
     pub solver: SolveDiagnostics,

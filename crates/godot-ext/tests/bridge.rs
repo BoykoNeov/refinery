@@ -722,6 +722,68 @@ fn pre_tick_json_is_null_in_exactly_the_documented_fields() {
     assert!(tank["kind"]["temperature"].as_f64().unwrap() > 0.0);
 }
 
+/// The slate crosses the bridge, and it is real BEFORE the first tick (M8.5).
+///
+/// Both halves matter to a scene. That the slate crosses at all is what lets
+/// `demo/plant.gd` draw a fill level instead of mass on a shared scale — the
+/// M6.2 deferral. That it is real pre-tick is what lets a scene lay itself out
+/// in `_ready()`, before `_physics_process` has run once: like a name or a
+/// tank's own temperature, the slate is a STORED quantity and not a solved one,
+/// so it is the wrong side of this file's `null` boundary to be NaN.
+///
+/// The arithmetic itself is gated on the engine side
+/// (`scenarios/tests/snapshot_slate.rs`); what is bridge-specific is that the
+/// keys survive the crossing, since this JSON is a scene's only channel.
+#[test]
+fn the_slate_crosses_the_bridge_and_is_real_before_the_first_tick() {
+    let sim = bridge(LEAKY);
+    assert_eq!(sim.tick_index(), 0, "fixture has already ticked");
+    let snapshot = snapshot_value(&sim);
+
+    let slate = snapshot["slate"]
+        .as_array()
+        .expect("a snapshot carries a slate");
+    assert_eq!(slate.len(), 1, "leaking_line is water only");
+    assert_eq!(slate[0]["name"], "water");
+    assert_eq!(
+        slate[0]["density_kg_per_m3"].as_f64().unwrap(),
+        998.0,
+        "water's density crosses unrounded"
+    );
+
+    // The scene's own computation, over the keys the scene reads: a tank
+    // declared at 8.0 m in a 10 m shell draws 80% full, with no tick required.
+    let tank = snapshot["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|n| n["name"] == "supply_tank")
+        .expect("leaking_line has a supply_tank")
+        .clone();
+    let fractions = tank["kind"]["composition"]["mass_fractions"]
+        .as_array()
+        .unwrap();
+    let inverse: f64 = fractions
+        .iter()
+        .zip(slate)
+        .filter(|(f, _)| f.as_f64().unwrap() > 0.0)
+        .map(|(f, c)| f.as_f64().unwrap() / c["density_kg_per_m3"].as_f64().unwrap())
+        .sum();
+    let level = tank["kind"]["mass"].as_f64().unwrap()
+        / ((1.0 / inverse) * tank["kind"]["area"].as_f64().unwrap());
+    // The round trip is `(ρ·A·h)/(ρ·A)` in f64 — exact but for two roundings,
+    // so the bound is a few ULP rather than a chosen tolerance.
+    assert!(
+        (level - 8.0).abs() < 1e-11,
+        "supply_tank is declared at 8.0 m; the snapshot reconstructs {level}"
+    );
+    let fraction = level / tank["kind"]["height"].as_f64().unwrap();
+    assert!(
+        (fraction - 0.80).abs() < 1e-11,
+        "8 m in a 10 m shell draws 80% full; got {fraction}"
+    );
+}
+
 /// After a solve there are no nulls, and the JSON is **exactly** reversible.
 ///
 /// The exactness half is load-bearing beyond this crate: it is what pins

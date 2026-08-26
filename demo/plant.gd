@@ -37,8 +37,6 @@ var fill_line_id := -1
 var snapshot: Dictionary = {}
 var halted := ""
 var auto_run := false
-## Largest tank mass seen anywhere this run — see the note on _tank_fraction.
-var peak_mass := 0.0
 
 
 func _ready() -> void:
@@ -125,8 +123,12 @@ func _send(command: Dictionary) -> void:
 
 # ---------------------------------------------------------------- reading
 
-## Every getter below is a field lookup. Nothing here computes physics — if a
-## number is not in the snapshot, this scene does not draw it.
+## Every getter below is a field lookup, and the three derived ones
+## (_tank_density, _level, _tank_fraction) take every operand from the snapshot
+## too. Nothing here computes physics — if a number is not in the snapshot, or
+## cannot be built from snapshot fields by a rule the engine documents, this
+## scene does not draw it. Hardcoding a density would break that, which is why
+## it took M8.5 to draw a level at all.
 
 func _node(id: int) -> Dictionary:
 	return snapshot["nodes"][id]
@@ -148,40 +150,61 @@ func _leak_kg_s() -> float:
 	return snapshot["edges"][fill_line_id]["leak_mass_flow"]
 
 
-## How tall to draw a tank's bar, 0..1.
+## The fluid's density in a tank [kg/m³], blended over the slate.
 ##
-## **This is mass on a shared scale, NOT a fill level, and the difference is a
-## gap rather than a style choice.** The snapshot cannot answer "how full is
-## it": a tank reports mass [kg], area [m²] and height [m], and turning that
-## into a level needs the fluid's density — which lives in the slate, and the
-## slate is not in the snapshot (docs/ROADMAP.md M6.2, the deferral).
-## Hardcoding water's 998 kg/m³ here would draw a confident level that is wrong
-## for every other plant: the invented-data failure this repo has three notes
-## about, in a frontend. The kg figure beside each bar is the absolute truth.
+## `1/ρ = Σ(fᵢ/ρᵢ)` — mass fractions weighting the RECIPROCAL, which is the
+## correct rule for ideal liquid blending, because volumes are what add. This
+## is still not the scene computing physics: both operands are snapshot fields
+## (`kind.composition.mass_fractions` and `slate[i].density_kg_per_m3`), and the
+## blend is the same arithmetic `core::components` applies to the same numbers.
 ##
-## The scale is shared across tanks and is the largest mass seen anywhere this
-## run, so the bars are comparable with each other. A per-tank scale was tried
-## first and is worse than useless: a tank that is FILLING is always at its own
-## maximum, so it draws as permanently full.
+## No null check on the density, and that is load-bearing rather than sloppy: a
+## tank's components are liquid by construction — the loader refuses a tank
+## whose composition is gas-phase, and a gas holdup is a `vessel`, whose state
+## is a pressure and which has no level to draw. Gated across every shipped
+## scenario by `no_tank_anywhere_holds_a_component_without_a_density`.
+func _tank_density(id: int) -> float:
+	var fractions: Array = _node(id)["kind"]["composition"]["mass_fractions"]
+	var slate: Array = snapshot["slate"]
+	var inverse := 0.0
+	for i in fractions.size():
+		var fraction: float = fractions[i]
+		if fraction <= 0.0:
+			continue
+		inverse += fraction / float(slate[i]["density_kg_per_m3"])
+	return 1.0 / inverse
+
+
+## Liquid level in a tank [m]: `h = m/(ρ·A)`.
+func _level(id: int) -> float:
+	return _mass(id) / (_tank_density(id) * float(_node(id)["kind"]["area"]))
+
+
+## How tall to draw a tank's bar, 0..1 — a REAL fill fraction as of M8.5.
+##
+## Until the slate reached the snapshot this was mass on a scale shared between
+## the tanks, because "how full is it" was a question the contract could not
+## answer: a tank reports mass, area and height, and the density that turns
+## those into a level lived only inside the engine. Hardcoding water's 998
+## kg/m³ here would have drawn a confident level that is wrong for every other
+## plant. `Snapshot::slate` is what closed it (docs/ROADMAP.md M8.5), and the
+## bar is now the tank's own geometry — a half-full tank draws half full
+## whatever else is on screen, which the shared scale could never say.
 func _tank_fraction(id: int) -> float:
-	if peak_mass <= 0.0:
-		return 0.0
-	return clampf(_mass(id) / peak_mass, 0.0, 1.0)
-
-
-## One pass over the tanks the scene draws, before any of them is drawn — so
-## both bars use the same scale within a frame.
-func _rescale() -> void:
-	for id in [supply_id, receiving_id]:
-		peak_mass = max(peak_mass, _mass(id))
+	return clampf(_level(id) / float(_node(id)["kind"]["height"]), 0.0, 1.0)
 
 
 func _readout(tick: int) -> String:
 	return (
-		"t=%4d  supply=%9.1f kg  receiving=%9.1f kg  T=%7.3f K  leak=%6.3f kg/s  fire=%5.2f MW"
+		(
+			"t=%4d  supply=%5.2f m (%9.1f kg)  receiving=%5.2f m (%9.1f kg)"
+			+ "  T=%7.3f K  leak=%6.3f kg/s  fire=%5.2f MW"
+		)
 		% [
 			tick,
+			_level(supply_id),
 			_mass(supply_id),
+			_level(receiving_id),
 			_mass(receiving_id),
 			_temperature(receiving_id),
 			_leak_kg_s(),
@@ -193,7 +216,7 @@ func _readout(tick: int) -> String:
 # ---------------------------------------------------------------- drawing
 
 const SUPPLY_RECT := Rect2(70, 150, 150, 320)
-## Bars are mass on a SHARED scale, not fill level — see _tank_fraction.
+## Bars are a real fill fraction as of M8.5 — see _tank_fraction.
 const RECEIVING_RECT := Rect2(790, 150, 150, 320)
 const PUMP_POS := Vector2(300, 470)
 const VALVE_POS := Vector2(430, 470)
@@ -217,7 +240,6 @@ func _draw() -> void:
 	if snapshot.is_empty():
 		return
 
-	_rescale()
 	_draw_line_run()
 	_draw_tank(SUPPLY_RECT, supply_id, "supply_tank")
 	_draw_tank(RECEIVING_RECT, receiving_id, "receiving_tank")
@@ -241,8 +263,10 @@ func _draw_tank(rect: Rect2, id: int, label: String) -> void:
 	# All labels BELOW the shell: above it is where the flames go.
 	var below := rect.position + Vector2(0, rect.size.y)
 	_text(below + Vector2(0, 26), label, INK)
-	_text(below + Vector2(0, 48), "%.0f kg" % _mass(id), INK)
-	_text(below + Vector2(0, 70), "%.2f K" % _temperature(id), INK)
+	# Level first: it is the number M8.5 added, and the one the bar draws.
+	_text(below + Vector2(0, 48), "%.2f m  (%.0f%%)" % [_level(id), fraction * 100.0], INK)
+	_text(below + Vector2(0, 70), "%.0f kg" % _mass(id), INK)
+	_text(below + Vector2(0, 92), "%.2f K" % _temperature(id), INK)
 
 
 func _draw_line_run() -> void:
