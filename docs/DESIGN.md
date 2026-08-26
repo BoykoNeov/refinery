@@ -4735,6 +4735,9 @@ no loop does not execute one line of the seam. M8.0's shape and M8.0's reason.
 ### The mutations this slice owes, named before building
 
 Predictions, which is what makes them falsifiable — M8.0 got three of four wrong.
+**Left verbatim: the outcomes are in "The mutation pass, against the
+predictions" below, and editing a prediction after running it destroys the only
+thing it was for.** (This one got four of seven wrong.)
 
 | the edit | predicted catch |
 |---|---|
@@ -4792,7 +4795,11 @@ measure and cannot be read off a CLI run.
 shortcut.** A level loop on this tank settles in ~2 500 s; at the repo's usual
 `0.1 s` the demo would be 60 000 ticks. The same run at `dt = 0.5` over twice
 the ticks ends at 3.991993 m / 0.366078 against 3.991994 m / 0.366080 — the
-answer is the step size's to 1e-6.
+answer is the step size's to 1e-6. **The endpoint is the weaker half of that
+check**, because a settled state is where the derivatives are smallest and the
+step size matters least; the informative comparison is the overshoot peak, which
+is 4.079400 m against 4.079582 m — agreement to 1.8e-4 m at the one place in the
+run where the level is actually moving fast.
 
 The demo's own trajectory carries the discrimination gate 3 had to be rebuilt to
 get: over its last 2 000 ticks the load is still falling (the supply tank is
@@ -4912,7 +4919,11 @@ because M8's remaining slice is the snapshot's, not another plant's.
   defined arbitration.
 - **Actuator dynamics** (stroke time, rate limits) and **deadband.** Un-defer
   when a loop's measured performance depends on them, which at `dt = 0.1 s`
-  against a 120 s integral time it does not.
+  against a 120 s integral time it does not. **The numbers are the note's, not a
+  shipped plant's**: M8.4's demo is the only wired loop and runs `dt = 1.0 s`
+  against a 600 s integral time, which is the same 1:600 ratio, so the reasoning
+  survives on the plant that exists. The reason it was *incomplete* is above —
+  reachability, not performance.
 - **Interlocks and trips** — a discrete layer, not a regulating one. Un-defers
   with a safety case needing a plant to shut *itself* down.
 - **The slate on the snapshot** (M6.2's deferral) stays exactly where it is, and

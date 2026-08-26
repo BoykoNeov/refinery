@@ -9,7 +9,7 @@
 #
 # | line | there | here | why |
 # |---|---|---|---|
-# | `dt` | 0.1 s | 1.0 s | a level loop on this tank settles in ~2 500 s; at 0.1 s the demo would be 60 000 ticks. **Not an accuracy shortcut**: the same run at `dt = 0.5` over twice the ticks ends at level 3.991993 m / opening 0.366078 against 3.991994 m / 0.366080 here, so the answer is the step size's to 1e-6. |
+# | `dt` | 0.1 s | 1.0 s | a level loop on this tank settles in ~2 500 s; at 0.1 s the demo would be 60 000 ticks. **Not an accuracy shortcut**: the same run at `dt = 0.5` over twice the ticks ends at level 3.991993 m / opening 0.366078 against 3.991994 m / 0.366080 here (1e-6), and — the more informative comparison, since a settled state is where step size matters least — peaks at 4.079400 m against 4.079582 m here, 1.8e-4 m apart at the fastest-moving point of the run. |
 # | `receiving_tank.area_m2` | 20.0 | 3.0 | at 20 m² the same flow imbalance moves the level ~7x slower, for no extra behaviour |
 # | `receiving_tank.initial_level_m` | 1.0 | 2.0 | the loop starts BELOW its setpoint and fills to it, which is the direction that cannot slam the drain shut — see the gain note |
 #

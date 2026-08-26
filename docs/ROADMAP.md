@@ -3456,20 +3456,21 @@ believing a carried-over number is a path rather than an answer.
         one.
 - [x] **The mutation pass**, seven edits named in DESIGN §10 before building,
       each verified to COMPILE and each applied to a source restored from ONE
-      pre-mutation snapshot. Two are predicted uncaught: the loop running after
-      the solve, and `initial_output` ignored. Report which gate actually fired,
-      not merely that something did. **Two of the seven were run early**: M8.2's
-      "gain applied to the measurement", predicted to fail gates 2 and 3 and in
-      fact failing three, and M8.3's "anti-windup clamp removed", predicted to
-      fail gate 4 alone and doing exactly that. **Five named edits remain.** A
-      further edit that the table does NOT name was also run and is counted
-      separately — seeding the MANUAL→AUTO transfer from the stale
-      `last_measurement`, applied because the gate's own failure message named it
-      as the cause and a message that names a cause is a claim; it fired that gate
-      alone. One prediction in the table is now stale and should be treated as
-      falsifiable rather than fixed: "back-calculation dropped on MANUAL→AUTO" is
-      predicted to be caught by gate 4, and was written before the transfer gate
-      existed.
+      pre-mutation snapshot, with the whole workspace run `--no-fail-fast` so a
+      catch set cannot be truncated at the first failing binary. Report which
+      gate actually fired, not merely that something did.
+      *(The box as written before the pass said two edits were predicted
+      uncaught, that five remained after M8.2's and M8.3's early runs, and that
+      one prediction — "back-calculation dropped on MANUAL→AUTO", caught by
+      gate 4 — was stale and should be falsified rather than quietly fixed. All
+      three of those statements are now spent: zero remain, both "uncaught"
+      predictions were falsified, and the stale one was falsified too. The
+      predictions themselves stay verbatim in DESIGN §10, which is what keeps
+      them falsifiable.)* A further edit that the table does NOT name was also
+      run and is counted separately — seeding the MANUAL→AUTO transfer from the
+      stale `last_measurement`, applied because the gate's own failure message
+      named it as the cause and a message that names a cause is a claim; it
+      fired that gate alone.
       **All seven have now been run, and four of the seven predictions were
       wrong** — close to M8.0's three-of-four, and the reason the table is
       written before building. The full result table with each mechanism is
