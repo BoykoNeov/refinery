@@ -3144,8 +3144,14 @@ forks argued before any code, three of them corrections to the reflex answer:
       loop — the same shape §3c rejected for per-iteration reclassification. One
       `dt` of lag, which is what a real sampled controller has and is the
       staleness §3 already accepts for the tank levels feeding a quasi-steady
-      solve. Consequence, not an edge case: tick 0 has no previous state, so the
-      initial actuator output must be DECLARED.
+      solve. **This box's first version justified `initial_output` with "tick 0
+      has no previous state", which is FALSE for the one variable the first
+      slice builds** — a tank's mass is stored on the graph and is real from
+      load (`initial_level_m`), so a level loop has a genuine measurement at tick
+      0 and never reads `NodeStates`, which carries no inventory. The tick-0
+      question is real for a *solved* measurement (pressure, temperature) and
+      travels with those deferrals instead. `initial_output` stands on fork 5's
+      reason alone.
 - [x] **Fork 4 makes a manual write under AUTO a refusal**, with its own reason
       string, because a write that survives until the top of the next tick and is
       then overwritten is a command that appears to work and does not — which
@@ -3154,7 +3160,17 @@ forks argued before any code, three of them corrections to the reflex answer:
       snapshot surface to be specified HERE: `Snapshot::controls`, skipped when
       empty, reporting the measurement the controller ACTED ON rather than a
       fresh re-read, because those differ by one tick and the fresh one would
-      hide the lag.
+      hide the lag. **Corrected before any code: the setpoint and the
+      measurement cannot be bare `f64`s.** A snapshot has no newtypes, so every
+      `NodeSnapshot` field carries its unit in its NAME — and a setpoint has no
+      such name available, being metres today and Pascals once pressure control
+      un-defers. §7's own words settle it ("unit-specific extras as tagged
+      enums"): one `ControlledValue` enum carries the unit, and using the SAME
+      type for both fields makes a setpoint in one variable against a
+      measurement in another unrepresentable — `column_draw_at`'s M7.4 rule
+      applied to the pair a reader is most likely to subtract. The TOML key
+      carries the unit too (`setpoint_m`), refused when it disagrees with
+      `variable`.
 - [x] **Fork 5 makes controller memory an initial condition.** The integral term
       is stored state in the sense a tank's mass is, and M8.0 just finished
       paying for the belief that a carried-over number is "a path, not an
@@ -3167,8 +3183,9 @@ forks argued before any code, three of them corrections to the reflex answer:
       from the admission that "the level sat at the setpoint" is NOT a gate: a
       tank draining through a fixed valve self-regulates through `ρgh` and passes
       that assertion with the loop removed. Loop-off counterfactual, setpoint
-      step, disturbance rejection (`PuncturePipe` is already a step disturbance),
-      saturation/windup on a plant built to saturate. Seven mutations named in
+      step, disturbance rejection (`PuncturePipe` is a step disturbance needing
+      no new ENGINE machinery — but its plant must declare a `leak_to`, which
+      `apply` refuses without), saturation/windup on a plant built to saturate. Seven mutations named in
       advance, two of them predicted UNCAUGHT.
 
 ### M8.2 — The control-loop seam and a proportional loop
@@ -3182,9 +3199,15 @@ and shipping it alone is what makes M8.3's half meaningful.
       in `traits.rs`, taking the measurement, the setpoint and `dt`, returning
       the actuator position — units on every quantity, `Result` on the way out.
 - [ ] `core`: the loop pass at the TOP of `Engine::tick`, before the hydraulic
-      solve, reading `self.node_states` from the previous tick (fork 3). The
-      measurement is captured into the loop so the snapshot can report what the
-      controller acted on rather than what is true now.
+      solve (fork 3). A level is read from `TankState` **on the graph** — stored,
+      real from load, present at tick 0 — and NOT from `self.node_states`, which
+      carries no inventory and is empty before the first tick. The measurement is
+      captured into the loop so the snapshot can report what the controller acted
+      on rather than what is true now.
+- [ ] `core`: `ControlledValue` as the tagged enum carrying setpoint and
+      measurement with their unit, unit newtypes inside `core` and unit-named
+      fields on the wire (fork 4's correction). Bare `f64`s here would be rule 4
+      broken at the boundary rule 4 names.
 - [ ] `core`: `Command::SetControllerMode` and `Command::SetSetpoint`; and
       `SetValveOpening` REFUSED on a valve under a loop in AUTO, with the relief
       valve's reason-string shape (fork 4).
@@ -3213,7 +3236,8 @@ and shipping it alone is what makes M8.3's half meaningful.
 - [ ] `scenarios`: `initial_output` → the derived initial integral (fork 5). One
       declared number, no silent zero.
 - [ ] Tests: gate 3 as a PAIR — the P loop returns with a measurable offset, the
-      PI loop without one. Neither half proves the integral term alone.
+      PI loop without one. Neither half proves the integral term alone. Its plant
+      declares a `leak_to` so `PuncturePipe` is admissible on it (§3b fork C).
 - [ ] Tests: gate 4, on a plant BUILT to saturate (inflow above the outlet's flow
       at full opening). An anti-windup branch nothing reaches is the vacuous
       counter this repo has shipped twice.

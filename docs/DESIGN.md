@@ -4305,7 +4305,7 @@ rejected for per-iteration reclassification: an input that moves mid-solve makes
 the solver's own comparisons quantities over different problems. **Rejected.**
 
 **Chosen: the loop runs at the top of the tick, before the hydraulic solve, on
-the previous tick's resolved state.** One `dt` of measurement lag, and two
+the state standing at the start of it.** One `dt` of measurement lag, and two
 independent justifications, neither of them convenience:
 
 - It is what a real plant does. A DCS samples on a scan and acts on the previous
@@ -4315,10 +4315,28 @@ independent justifications, neither of them convenience:
   is already driven by tank levels integrated at the end of the previous tick,
   which `network.rs` says of its transport density and `engine.rs` of its draws.
 
-**Tick 0 has no previous state**, and that is a consequence rather than an edge
-case: the first solve of a controlled plant must run on an actuator value
-nobody computed. So the initial output is *declared*, which fork 5 turns into a
-rule.
+**Where the measurement is read differs by variable, and this note originally
+got it wrong for the one variable the first slice builds.** The two kinds are
+already distinguished elsewhere in this file, in `heat_input_w`'s words: a
+*stored* quantity, like a tank's temperature, versus a *solved* one.
+
+- A **level is stored.** `TankState.mass` lives on the graph and is real from
+  load — the loader computes it from `initial_level_m` — so a level loop reads
+  the graph and has a genuine measurement at tick 0. It does **not** read
+  `NodeStates`, which carries temperature, composition, reactor duties and
+  column separations and no inventory at all.
+- A **pressure or a temperature is solved**, and lives in `last_solution` /
+  `NodeStates`, both of which are empty before the first tick. A loop on either
+  has no measurement at tick 0 and needs a stated rule for that tick when those
+  variables un-defer — which is one more reason they are deferred separately
+  rather than "for free once the seam exists".
+
+So the earlier claim that "tick 0 has no previous state, therefore the initial
+output must be declared" is **false for a level loop** and is not the reason
+`initial_output` exists. The reason is fork 5's: the loop's memory is an initial
+condition, and one declared number is what keeps it from being a silent zero.
+The tick-0 measurement question is real, but it belongs to the deferred
+variables, not to this one.
 
 ### Fork 4 — the command surface, and what "manual" now means
 
@@ -4359,6 +4377,39 @@ current state. Those differ by one tick (fork 3), and reporting the fresh one
 would make a lagging loop look instantaneous — hiding the lag from precisely the
 person debugging it.
 
+**`setpoint` and `measurement` cannot be bare `f64`s, and the field list above
+would have made them so.** Every quantity on `NodeSnapshot` carries its unit in
+its own name — `pressure_pa`, `temperature_k`, `heat_input_w`, `condenser_w` —
+because a snapshot is plain serde data with no newtypes to carry it. A loop's
+setpoint has no such name available: it is metres today and Pascals the moment
+pressure control un-defers, so `setpoint_m` would be a lie on half the loops and
+a bare `setpoint` would be a number whose unit depends on a *sibling field*,
+which is the failure rule 4 exists to prevent at a crate boundary. §7 already
+supplies the answer in its own words — "unit-specific extras as tagged enums":
+
+```text
+ControlledValue = Level { m: f64 } | Pressure { pa: f64 } | …   // #[serde(tag = "variable")]
+ControlSnapshot { id, name, mode, setpoint: ControlledValue, measurement: ControlledValue, output }
+```
+
+One consequence is worth taking deliberately rather than discovering: the
+setpoint and the measurement are then the **same type**, so a loop cannot report
+a setpoint in one variable against a measurement in another. That is
+`column_draw_at`'s rule from M7.4 — one owner for two fields that must agree —
+applied to the pair a reader is most likely to subtract.
+
+Inside `core` the same quantity is a unit newtype (`Meter`, `Pascal`) carried by
+the same enum, so rule 4 holds on the way in as well as on the way out. And at
+the TOML boundary the key carries the unit the way every other key does
+(`area_m2`, `initial_level_m`, `temperature_c`): `setpoint_m` for a level loop,
+and the loader refuses a key that does not match the loop's `variable` — the
+same two-directional refusal the two separation fidelities already enforce, so
+no second notion of "which unit is this" can exist to disagree.
+
+`output` stays a bare fraction: an actuator position is dimensionless in
+`[0, 1]` and is already validated as such by `SetValveOpening`. It gains a unit
+question only when an actuator that is not a valve un-defers.
+
 Two traps, both already paid for elsewhere in this file:
 
 - The list is `skip_serializing_if = "Vec::is_empty"`, so the thirteen existing
@@ -4386,7 +4437,7 @@ name            = "level_control"
 measurement     = { node = "supply_tank", variable = "level" }
 actuator        = "discharge_valve"
 algorithm       = "pi"        # "p" | "pi"
-setpoint        = 6.0         # m — the variable's own display units, SI inside
+setpoint_m      = 6.0         # the unit is in the KEY, and must match `variable`
 mode            = "auto"      # "auto" | "manual"
 initial_output  = 0.5         # actuator position at t = 0
 gain            = 0.4
@@ -4430,12 +4481,14 @@ Four gates, each named with the mutation it is predicted to be the one to catch:
    new value. This proves the output is a function of the setpoint, which the
    steady-state assertion cannot — a self-regulating tank's equilibrium is a
    function of the valve position alone.
-3. **Disturbance rejection**, and the disturbance is already built:
-   `Command::PuncturePipe` is a step increase in outflow needing no new
-   machinery. The loop must return the level toward setpoint; the P loop must do
-   so with a **measurable offset** and the PI loop without one. That pair is what
-   proves the integral term does the thing its name claims — neither half proves
-   it alone.
+3. **Disturbance rejection.** `Command::PuncturePipe` is a step increase in
+   outflow and needs no new *engine* machinery — but it is not free at the
+   scenario level: `apply` refuses a puncture on a pipe whose file declares no
+   `leak_to`, deliberately (§3b fork C), so the gate's plant has to declare the
+   leak path at load. The loop must return the level toward setpoint; the P loop
+   must do so with a **measurable offset** and the PI loop without one. That
+   pair is what proves the integral term does the thing its name claims —
+   neither half proves it alone.
 4. **Saturation and windup**, on a plant built to saturate: inflow exceeding the
    outlet's flow at *full* opening, so level rises while the valve is pinned and
    the integral accumulates against an actuator that cannot answer. Cut the
