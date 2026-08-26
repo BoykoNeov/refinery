@@ -36,7 +36,7 @@ pub mod simple_flow;
 pub mod thermo;
 
 pub use cascade::StageCascade;
-pub use control::ProportionalController;
+pub use control::{PiController, ProportionalController};
 pub use flash::{flash_isothermal, FlashResult};
 pub use four_lump::{FourLump, FourLumpParams};
 pub use molar::MoleFractions;

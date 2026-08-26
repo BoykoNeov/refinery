@@ -227,18 +227,70 @@ impl Engine {
                 }
             }
             // A loop is put in AUTO or MANUAL. The transfer is bumpless in both
-            // directions, and in M8.2 that costs nothing: AUTO→MANUAL is free
-            // because the actuator already holds the loop's last output, and
-            // MANUAL→AUTO is free because a proportional controller has no memory
-            // to jump from. It stops being free with `PiController` (M8.3), which
-            // must back-calculate its integral from the actuator's current
-            // position here — the same arithmetic anti-windup needs, which is why
-            // fork 4 does not defer bumpless transfer to a later slice.
+            // directions (docs/DESIGN.md §10 fork 4), and the two directions cost
+            // different things:
+            //
+            // - AUTO→MANUAL is free, and always was: the actuator already holds
+            //   the loop's last output, so a human takes over from where the loop
+            //   left it and `last_output` already tracks.
+            // - MANUAL→AUTO is not. A loop with memory has been sitting out the
+            //   run while a human moved the valve, and taking over would step the
+            //   actuator to whatever its stale memory says. So the memory is
+            //   SEEDED from the position the actuator is actually at — the same
+            //   back-calculation the anti-windup clamp performs, which is why fork
+            //   4 does not defer bumpless transfer to a slice after the integral.
+            //
+            // **The measurement is read fresh here rather than taken from
+            // `last_measurement`, and that is what makes the transfer exact.**
+            // Commands are applied between ticks, so the state standing now is the
+            // state the next tick's control pass will measure; seeding against it
+            // means the next `update` recomputes the same error and returns the
+            // same position. `last_measurement` is one tick older (fork 3), and
+            // seeding against it would make the transfer bumpless only to the
+            // extent the plant had stopped moving.
             Command::SetControllerMode { loop_id, mode } => {
+                let control = self
+                    .graph
+                    .control(loop_id)
+                    .ok_or_else(|| unknown_loop(loop_id))?;
+                let seed = if mode == ControlMode::Auto && control.mode == ControlMode::Manual {
+                    let measurement = self.graph.measure(
+                        &self.slate,
+                        control.measurement_node,
+                        control.setpoint.variable(),
+                    )?;
+                    let position = match &self.graph.node(control.actuator).kind {
+                        NodeKind::Valve { opening, .. } => *opening,
+                        // Rule 5's backstop, in `run_control_loops`' own shape:
+                        // the loader refuses a non-valve actuator, so this is
+                        // reachable only from a hand-built graph, and it says so
+                        // rather than seeding from an invented position.
+                        _ => {
+                            return Err(SimError::InvalidCommand(format!(
+                                "control loop '{}' actuates node '{}', which is not a valve, \
+                                 so there is no position to transfer from",
+                                control.name,
+                                self.graph.node(control.actuator).name
+                            )))
+                        }
+                    };
+                    Some((measurement, control.setpoint, position))
+                } else {
+                    None
+                };
                 let control = self
                     .graph
                     .control_mut(loop_id)
                     .ok_or_else(|| unknown_loop(loop_id))?;
+                if let Some((measurement, setpoint, position)) = seed {
+                    control
+                        .algorithm
+                        .seed_from_output(position, measurement, setpoint)?;
+                    // The faceplate reports what the loop will hold, not what it
+                    // held while it was sitting out: a transfer that reported the
+                    // old output would show a jump the plant never made.
+                    control.last_output = position;
+                }
                 control.mode = mode;
                 Ok(())
             }

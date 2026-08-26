@@ -4598,6 +4598,124 @@ written to FAIL when the solver is fixed and carries the assertion it should the
 make. It belongs to a `newton_flow` slice — warm-start handling or step damping —
 not to M8.
 
+### Corrections from building it (M8.3, landed)
+
+`PiController`, the anti-windup clamp, MANUAL→AUTO transfer and `initial_output`
+landed as fork 4 and fork 5 specify. Six things the note got wrong or left unsaid,
+and one of them is a gate.
+
+**Correction 1 — "the same arithmetic" is true only for one choice of state, and
+the note does not name it.** Fork 4 asserts that the anti-windup clamp and the
+MANUAL→AUTO back-calculation are the same arithmetic and are therefore built once.
+That is not a property of PI control; it is a property of how the integral term is
+*stored*. With the textbook state — `∫e dt`, multiplied by `K/T_i` where it is
+used — the clamp and the transfer are two different formulas over two different
+quantities, and "built once" would have been a claim the code could not keep.
+
+So the memory is held **in output units**: `u = clamp(K·e + b, 0, 1)`, and `b` is
+the share of the actuator position the integral term is responsible for. Inverting
+that for "what memory makes the next output be `u`" is `b = u − K·e`, one line,
+and all three writers of a loop's memory go through it — the clamp, the transfer,
+and the load-time seed from `initial_output`. The representation was chosen *by*
+fork 4's claim rather than the claim being checked against a representation chosen
+for other reasons.
+
+**Correction 2 — the integral is evaluated on errors already accumulated, and the
+order is load-bearing rather than stylistic.** `update` computes its output from
+the `b` standing at the top of the tick and adds this tick's error afterwards
+(explicit Euler, the engine's own rule). The alternative — accumulate, then
+compute — differs by one integration step, which is invisible in every steady
+state and is exactly what makes the transfer inexact: the first `update` after a
+seed would return `u + (K/T_i)·e·dt` instead of `u`. The bumpless-transfer gate
+asserts a few ULP, and it can only do so because of this ordering.
+
+**Correction 3 — the transfer reads the measurement FRESH, and the reflex is to
+reuse `last_measurement`.** Fork 3 establishes that a loop acts on one-tick-old
+state, and `ControlLoop::last_measurement` is that state, stored and reported. The
+reflex while building was that a transfer should therefore seed against it. It
+should not. Commands are applied *between* ticks, so the state standing when
+`SetControllerMode` runs is precisely the state the next control pass will
+measure: seeding against a fresh read makes the next output equal the actuator's
+current position identically (measured deviation: exactly zero), while seeding
+against `last_measurement` computes the seed against a different error than it is
+spent against, and the transfer is bumpless only to the extent the plant had
+stopped moving. The staleness fork 3 wants is in what the controller *acts on*,
+not in what a transfer is *calibrated against*.
+
+**Correction 4 — `Controller::seed_from_output` has no default body, deliberately.**
+A stateless impl needs an empty one, and the obvious economy is a default that
+does nothing. That default would mean an impl with memory inherits silence by
+forgetting — the one failure the method exists to prevent. `ProportionalController`
+writes its no-op out, with the reason it is a no-op.
+
+**Correction 5 — `initial_output` is accepted on a loop declared `mode =
+"manual"`, and the refusal list could be read as forbidding it.** The number does
+seed real state at load, the loop's first `set_controller_mode` re-seeds it from
+the actuator anyway, and refusing it would mean a plant that starts in MANUAL and
+goes to AUTO on tick 1 must omit a key it is then required to have. It is
+accepted; the reasoning is recorded because someone reading fork 5's refusals will
+ask.
+
+**Correction 6 — gate 3 as the note specifies it does not discriminate, and this
+is the correction that matters.** Fork 6 says: "the P loop must do so with a
+measurable offset and the PI loop without one. That pair is what proves the
+integral term does the thing its name claims." The first half is fine. The second
+half is not a discriminating test: a proportional loop's steady-state offset is
+`e = u/K`, so a large enough gain drives the offset toward zero and passes a
+"returned to setpoint" assertion with no integral term anywhere in the code. The
+gate would have measured the gain.
+
+What a proportional loop **cannot** do is move its output while holding its level,
+because `u = K·e` makes those the same statement. So the gate asserts the
+identity rather than the outcome: the P half's level move must equal its own valve
+travel divided by the gain (measured 0.477229 m against 0.477230 m, agreeing to
+1.2e-6 m), and the PI half must move its valve at least as far (0.260950) while
+its level does not move (0.001340 m, against the 0.521900 m that travel would
+force on a proportional loop). This is `a-control-can-be-implied-by-its-assertion`
+answered by making the assertion an identity of the algorithm, and it is the third
+time in two milestones that a gate specified in advance had to be rebuilt because
+one side of it was not independent of the other.
+
+**And one measured constraint the note could not have known.** Gate 4 removes the
+load by cutting the inflow, and cutting it to zero drives a branch to zero flow in
+one tick — the M8.2 stall, unrelated to control, which would have failed the gate
+for a reason that has nothing to do with windup. The cut is to a quarter of the
+feed valve's opening, which removes far more load than the gate needs and leaves
+the solver a problem it can solve.
+
+**The mutation both new gates were checked against**, since a docstring that
+claims a gate catches something is a claim rather than a hope. `if (0.0..=1.0)
+.contains(&unclamped)` → `if true`, i.e. accumulate while the actuator is pinned:
+checked to compile, run, and restored from a single pre-mutation snapshot. The
+loop then holds the drain wide open a metre below setpoint while it spends the
+surplus it accumulated — deepest level **2.7379 m against 3.7042 m** with the
+clamp, ending at **4.6213 m against 3.9304 m** on the far side of the overshoot
+that pays for it. Both of gate 4's assertions fire.
+
+**Its prediction was right, and that is worth saying because the last one was
+not.** The table above predicts "gate 4 alone" for this edit, and gate 4 alone is
+what fired. M8.2's early edit — "gain applied to the measurement instead of the
+error" — was predicted to fail gates 2 and 3 and in fact failed three, including
+one the table does not mention. Two of the seven named edits are now run: this
+one, predicted correctly, and that one, predicted incompletely.
+
+**A second edit was run that the table does NOT name**, and it is counted
+separately for that reason. The transfer gate's failure message names a cause, a
+named cause is a claim, so the cause was applied: seeding the transfer from
+`last_measurement` instead of a fresh read. It is caught, by that gate alone — and
+its number is the argument for the derived tolerance rather than a comfortable
+one. The stale seed steps the valve by **4.66e-5**, which any bound chosen to
+"look tight" would have passed. Only a bound derived from the two roundings in
+`b = u − K·e` followed by `K·e + b` is small enough to see it.
+
+So the tally M8.4 inherits is **five of the seven named edits remaining**, plus
+one unnamed edit already run. The table itself needs one revision there: it
+predicts that dropping the back-calculation on MANUAL→AUTO is caught by "gate 4,
+through the same clamp arithmetic", and that prediction was written before the
+transfer gate existed. It should now be caught by the transfer gate first, which
+makes it a prediction M8.4 can falsify rather than a stale one to quietly fix.
+
+
 **One consequence for this note's own deferral list.** "Actuator dynamics (stroke
 time, rate limits) … un-defer when a loop's measured performance depends on them,
 which at `dt = 0.1 s` against a 120 s integral time it does not" is right about

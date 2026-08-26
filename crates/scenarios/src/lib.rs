@@ -414,8 +414,9 @@ pub struct ControlDef {
     /// Name of the node this loop writes. A `valve`; a `relief_valve` is refused
     /// with its own reason.
     pub actuator: String,
-    /// `"p"` (M8.2). `"pi"` arrives with M8.3 and is refused until then, the way
-    /// every unknown fidelity string is.
+    /// `"p"` (M8.2) or `"pi"` (M8.3). Each has its own required tuning keys, and
+    /// each refuses the other's — the two-directional refusal the separation
+    /// fidelities established.
     pub algorithm: String,
     /// `"auto"` (the loop drives its actuator) or `"manual"` (a human does).
     pub mode: String,
@@ -440,15 +441,41 @@ pub struct ControlDef {
     /// entry. No default, for the reason `x_T` has none.
     #[serde(default)]
     pub gain_per_m: Option<f64>,
-    /// Integral time [s]. **PI only** (M8.3), and refused on `algorithm = "p"`
-    /// with a message that says so.
+    /// Integral time [s] — the ISA reset time, the interval in which the integral
+    /// term alone repeats the proportional term's contribution.
     ///
-    /// Present in this struct before the algorithm that reads it exists, for
-    /// `DrawDef::phase`'s reason: a refusal of something the format cannot express
-    /// is not a refusal. A file that tunes an integral term into a proportional
-    /// loop is making a real mistake, and it gets told which one.
+    /// **PI only.** Required with `algorithm = "pi"` and refused on `"p"`, in both
+    /// directions. The refusing direction shipped in M8.2, one slice before the
+    /// algorithm that reads this key existed, for `DrawDef::phase`'s reason: a
+    /// refusal of something the format cannot express is not a refusal. The
+    /// requiring direction became reachable here, the moment `"pi"` became a
+    /// selectable algorithm, which is exactly the expiry M8.2's note named.
     #[serde(default)]
     pub integral_time_s: Option<f64>,
+    /// The actuator position the loop starts from, dimensionless in `[0, 1]`.
+    ///
+    /// **PI only, and it is the loop's MEMORY rather than a bias** (docs/DESIGN.md
+    /// §10 fork 5). The integral term is *derived* from it at load by the same
+    /// back-calculation MANUAL→AUTO uses, so there is exactly one way a loop's
+    /// memory can be initialised and no silent zero anywhere — and the scenario
+    /// declares one number rather than two.
+    ///
+    /// **Refused on `algorithm = "p"` with its own reason**, which is a change of
+    /// message rather than of behaviour: until this key existed, a file writing it
+    /// was refused by `deny_unknown_fields` as an unknown key, and a proportional
+    /// loop rejecting it as *unknown* would now be a lie — the key exists, it just
+    /// names a memory that controller does not have. M8.2's correction 2 is why it
+    /// is not a bias: a manual-reset term would make the P loop's steady-state
+    /// offset a function of how well the bias was chosen, and that offset is the
+    /// discriminating half of gate 3.
+    ///
+    /// Accepted on a loop declared `mode = "manual"`, deliberately: the memory is
+    /// real from load and the very first `set_controller_mode` re-seeds it from
+    /// the actuator anyway, so the number is consumed rather than decorative — and
+    /// a loop that starts in MANUAL and is put in AUTO on tick 1 would otherwise
+    /// have to declare a key it is then refused.
+    #[serde(default)]
+    pub initial_output: Option<f64>,
 }
 
 /// The `measurement = { node = "...", variable = "..." }` inline table.
@@ -692,7 +719,9 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
 /// The refusals here are fork 5's, and each closes a way a file can declare a
 /// loop that would run and be wrong rather than fail:
 ///
-/// - tuning that belongs to the other algorithm (`integral_time_s` on `"p"`),
+/// - tuning that belongs to the other algorithm, in both directions
+///   (`integral_time_s` and `initial_output` on `"p"`; either of them missing on
+///   `"pi"`),
 /// - two loops naming one actuator, which is two writers of one opening with no
 ///   defined resolution order — split-range and override control are real, and are
 ///   deferred *with an arbitration*, not left to declaration order,
@@ -705,6 +734,12 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
 /// the tick pass calls it, and a snapshot taken before the first tick reports a
 /// true level. `last_output` is seeded from the valve's own declared opening, which
 /// is what MANUAL would report and what AUTO overwrites on tick 1.
+///
+/// That same measurement is what a PI loop's memory is derived AGAINST: fork 5's
+/// `initial_output` says where the actuator starts, and the integral term is
+/// whatever makes the controller ask for that position given the error standing at
+/// load. So the declared number is the one a reader can check on the faceplate at
+/// tick 0, and the state behind it is derived rather than declared twice.
 fn build_controls(
     graph: &mut PlantGraph,
     slate: &Slate,
@@ -753,7 +788,12 @@ fn build_controls(
         // graph rather than matching the kind here is deliberate: `measure` is the
         // single owner of where a measurement comes from, so a kind this loader
         // accepted and that reader then rejected is not a state that can exist.
-        graph
+        // Bound rather than discarded: this is both the load-time check that the
+        // node can answer for the variable AND the measurement the loop is born
+        // holding — and, for a PI loop, the error its declared `initial_output` is
+        // back-calculated against. Reading it twice would let the two drift apart
+        // in a way nothing downstream could detect.
+        let measurement = graph
             .measure(slate, measurement_node, variable)
             .map_err(|e| {
                 SimError::Scenario(format!(
@@ -831,16 +871,32 @@ fn build_controls(
 
         let algorithm: Box<dyn Controller> = match def.algorithm.as_str() {
             "p" => {
-                // The refusal fork 5 names, in the reachable direction. Its mirror
-                // — `integral_time_s` ABSENT with `algorithm = "pi"` — arrives with
-                // M8.3, because until `"pi"` is a selectable algorithm the unknown
-                // -algorithm arm below is what a file writing it already hits.
+                // Fork 5's refusal, in the direction that was reachable in M8.2.
+                // Its mirror — `integral_time_s` ABSENT with `algorithm = "pi"` —
+                // is `require_keyed` in the arm below, and became reachable the
+                // moment `"pi"` did, exactly as M8.2's comment predicted.
                 if def.integral_time_s.is_some() {
                     return Err(SimError::Scenario(format!(
                         "control loop '{}' sets `integral_time_s` on `algorithm = \"p\"`. A \
                          proportional loop has no integral term to tune, and a tuning \
                          constant no algorithm reads is an authoritative-looking number \
                          nothing consumes",
+                        def.name
+                    )));
+                }
+                // Its own reason rather than `deny_unknown_fields`' "unknown key",
+                // which is what refused this before M8.3 gave the key a meaning.
+                // The distinction is the whole of M8.2's correction 2: this is not
+                // a bias a proportional loop could use, it is a MEMORY, and a
+                // controller with none cannot be given an initial condition for it.
+                if def.initial_output.is_some() {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' sets `initial_output` on `algorithm = \"p\"`. That \
+                         key is the loop's MEMORY, from which a PI controller's integral \
+                         term is derived (docs/DESIGN.md §10 fork 5), and `u = K·e` has no \
+                         memory for it to be the initial condition of. It is deliberately \
+                         not a bias: a manual-reset term would turn a P loop's steady-state \
+                         offset into a function of how well the bias was chosen",
                         def.name
                     )));
                 }
@@ -851,19 +907,49 @@ fn build_controls(
                     })?,
                 )
             }
+            "pi" => {
+                let gain = require_keyed(def.gain_per_m, &def.name, "gain_per_m", "the gain")?;
+                let integral_time_s = require_keyed(
+                    def.integral_time_s,
+                    &def.name,
+                    "integral_time_s",
+                    "the integral time",
+                )?;
+                let initial_output = require_keyed(
+                    def.initial_output,
+                    &def.name,
+                    "initial_output",
+                    "the loop's initial memory",
+                )?;
+                // The setpoint and the measurement standing at load are arguments
+                // rather than a later call, so an unseeded `PiController` is not a
+                // value that can exist — fork 5's "no silent zero" holds by
+                // construction. The range check on `initial_output` lives with the
+                // controller, beside the range check `Command::SetValveOpening`
+                // applies to the same quantity.
+                Box::new(
+                    refinery_solvers::PiController::new(
+                        gain,
+                        integral_time_s,
+                        initial_output,
+                        measurement,
+                        setpoint,
+                    )
+                    .map_err(|e| SimError::Scenario(format!("control loop '{}': {e}", def.name)))?,
+                )
+            }
             other => {
                 return Err(SimError::Scenario(format!(
-                    "control loop '{}' selects unknown algorithm '{other}' (valid: p). The \
-                     integral term — `pi`, its anti-windup clamp and bumpless transfer — is \
-                     M8.3; a proportional loop's steady-state offset is what makes that \
-                     slice's gate mean anything, so it ships alone first (docs/DESIGN.md \
+                    "control loop '{}' selects unknown algorithm '{other}' (valid: p, pi). \
+                     Derivative action is deferred: a D term differentiates a measurement \
+                     that moves by one solve per tick, and needs a filter and a stated \
+                     rule for the setpoint kick before it means anything (docs/DESIGN.md \
                      §10)",
                     def.name
                 )))
             }
         };
 
-        let last_measurement = graph.measure(slate, measurement_node, variable)?;
         let last_output = match &graph.node(actuator).kind {
             NodeKind::Valve { opening, .. } => *opening,
             // Unreachable: the kind was matched above and nothing since can have
@@ -878,7 +964,7 @@ fn build_controls(
             setpoint,
             mode,
             algorithm,
-            last_measurement,
+            last_measurement: measurement,
             last_output,
         });
     }

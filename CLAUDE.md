@@ -177,9 +177,9 @@ trap.** A proportional controller with no bias shuts its valve completely at
 setpoint, which makes `u = u_b + K·e` look obviously right. It is not: fork 5
 defines `initial_output` as the loop's *memory* and a P loop has none, and M8.3's
 gate reads the P loop's steady-state offset as a signal — a bias makes that offset
-a function of how well the bias was chosen instead. So the algorithm is
-`u = clamp(K·e, 0, 1)`, the offset is large and honest, and the key is not in the
-`[[controls]]` struct at all.
+a function of how well the bias was chosen instead. So `ProportionalController` is
+`u = clamp(K·e, 0, 1)`, the offset is large and honest, and the key belongs to the
+PI loop alone.
 
 Two more: the tuning key is **`gain_per_m`**, not the note's bare `gain`, by fork
 4's own argument about `setpoint_m` (a gain is `1/m` on a level loop and `1/Pa` on
@@ -187,6 +187,43 @@ a pressure loop). And **two refusals the note names have no reachable path today
 — both directions of "the setpoint's variable disagrees with the loop's", which one
 `ControlledValue` variant makes unrepresentable — so they are recorded in comments
 naming their own expiry rather than shipped as guards nothing reaches.
+
+**M8.3 landed 2026-08-26** — `PiController`, the anti-windup clamp, MANUAL→AUTO
+transfer and `initial_output`. Four things to know before M8.4.
+
+**The loop's memory is stored in OUTPUT units, and that is what makes fork 4's
+"same arithmetic" claim keepable.** `u = clamp(K·e + b, 0, 1)`, where `b` is the
+share of the valve position the integral term owns — not `∫e dt`. Inverting for
+"what memory makes the next output be `u`" is then `b = u − K·e`, one private
+`back_calculate`, and all three writers of a loop's memory go through it: the
+anti-windup clamp, the MANUAL→AUTO seed, and the load-time seed from
+`initial_output`. With the textbook state those would have been three formulas.
+The integral is also accumulated AFTER the output is computed (explicit Euler),
+which is what makes the first update after a seed return the seeded position.
+
+**MANUAL→AUTO reads the measurement FRESH, not `last_measurement`.** Commands are
+applied between ticks, so the state at transfer time IS what the next control pass
+will measure, and seeding against it makes the transfer exact (measured deviation
+zero, against a derived few-ULP bound). The stale read is the reflex, and it was
+run as a mutation: it steps the valve by 4.66e-5 — small enough that any bound
+picked to "look tight" would have passed it, which is the argument for deriving
+the tolerance rather than choosing one.
+
+**Gate 3 as DESIGN §10 specifies it does not discriminate.** "The P loop with an
+offset, the PI loop without one" fails as a test because a proportional loop's
+offset is `e = u/K`: a big enough gain passes it with no integral term anywhere.
+What a P loop *cannot* do is move its output while holding its level. So the gate
+asserts that identity — the P half's level move equals its own valve travel over
+the gain (0.477229 m measured against 0.477230 m forced), while the PI half moved
+its valve further and its level by 0.0013 m.
+
+**Two of M8.4's seven named mutations are already run** (M8.2's, which fired three
+gates against a prediction of two, and M8.3's anti-windup edit, which fired the one
+gate predicted), leaving five. A further edit the list does NOT name was also run
+and is counted apart from them. `initial_output` is required on `algorithm = "pi"`,
+refused on `"p"` with its own reason (it names a memory that controller does not
+have, not an unknown key), and `"pid"` is now what the unknown-algorithm refusal
+is tested with.
 
 A control loop can now slam a valve shut between two ticks, and **a branch driven
 to zero flow in ONE tick stalls the Newton solver**. That is NOT the loop's defect:

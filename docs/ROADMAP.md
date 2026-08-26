@@ -3312,21 +3312,115 @@ two plants that carry one are inline test fixtures, on `leak_reference.rs`'s
 precedent, because the thirteen shipped files ARE the regression anchor and the
 wired demo that regulates is M8.4's.
 
-### M8.3 — The integral term: PI, anti-windup, bumpless transfer
+### M8.3 — The integral term: PI, anti-windup, bumpless transfer — **LANDED** 2026-08-26
 
-- [ ] `solvers`: `PiController`. Integral state owned by the impl, which is what
+- [x] `solvers`: `PiController`. Integral state owned by the impl, which is what
       makes this the first stateful seam in the project (fork 2).
-- [ ] `solvers`: the anti-windup clamp, and MANUAL→AUTO back-calculation, which
+- [x] `solvers`: the anti-windup clamp, and MANUAL→AUTO back-calculation, which
       is deliberately the SAME arithmetic — built once rather than twice, and the
       reason fork 4 does not defer bumpless transfer.
-- [ ] `scenarios`: `initial_output` → the derived initial integral (fork 5). One
+- [x] `scenarios`: `initial_output` → the derived initial integral (fork 5). One
       declared number, no silent zero.
-- [ ] Tests: gate 3 as a PAIR — the P loop returns with a measurable offset, the
+- [x] Tests: gate 3 as a PAIR — the P loop returns with a measurable offset, the
       PI loop without one. Neither half proves the integral term alone. Its plant
       declares a `leak_to` so `PuncturePipe` is admissible on it (§3b fork C).
-- [ ] Tests: gate 4, on a plant BUILT to saturate (inflow above the outlet's flow
+- [x] Tests: gate 4, on a plant BUILT to saturate (inflow above the outlet's flow
       at full opening). An anti-windup branch nothing reaches is the vacuous
       counter this repo has shipped twice.
+
+**"The same arithmetic" was a claim about the STATE REPRESENTATION, and the note
+never said so.** Fork 4 promises that anti-windup and MANUAL→AUTO transfer are one
+piece of code. That is not a property of PI control — with the textbook `∫e dt`
+state they are two different formulas over two different quantities. It becomes
+true only if the memory is held in **output units**: `u = clamp(K·e + b, 0, 1)`,
+where `b` is the share of the valve position the integral term owns. Then "what
+memory makes the next output be `u`" is `b = u − K·e`, one line, and all three
+writers of a loop's memory go through it — the clamp, the transfer, and the
+load-time seed from `initial_output`. The representation was chosen by the claim
+rather than the claim checked against a representation chosen for other reasons.
+
+**Gate 3 as the note specified it does not discriminate, and that is this slice's
+real finding.** Fork 6 asks for "the P loop with a measurable offset and the PI
+loop without one". The second half proves nothing on its own: a proportional
+loop's offset is `e = u/K`, so a large enough gain shrinks it toward zero and
+passes a "returned to setpoint" assertion with no integral term in the code. What
+a proportional loop *cannot* do is move its output while holding its level, since
+`u = K·e` makes those the same statement. So the gate asserts an identity of the
+algorithm instead of an outcome:
+
+| | valve travel | level move | `Δu/K`, what P is forced to move |
+|---|---|---|---|
+| `algorithm = "p"`, K = 0.5 | 0.238615 | **0.477229 m** | 0.477230 m |
+| `algorithm = "pi"`, same K | 0.260950 | **0.001340 m** | 0.521900 m |
+
+Same plant, same 5e-4 m² hole in the same fill line, 12 000 ticks each side. The P
+half agrees with its own forced value to 1.2e-6 m; the PI half moved its valve
+further and its level not at all. The pair is also asserted to have loaded two
+different algorithms, by name off the faceplate — a pair whose halves silently
+built the same controller passes every numeric assertion in the P direction.
+
+**The hole size is load-bearing in both directions and was measured, not chosen.**
+At 1e-4 m² the P loop's level moves 0.10 m, which is inside "did it settle". At
+1e-3 m² the leak takes essentially the whole feed, both loops drive the drain shut
+and sit there, and neither is regulating anything (the PI loop ends at 2.57 m with
+its valve at zero). 5e-4 m² is where both loops still hold a working valve
+position and the pair separates.
+
+**Gate 4's load is removed by a PARTIAL cut, because a full one fails for M8.2's
+reason.** Shutting the feed valve outright drives a branch to zero flow in one
+tick and stalls the hydraulic solver — nothing to do with windup, and it would
+have failed the gate for the wrong reason. Quartering the feed removes far more
+load than the gate needs. The gate asserts **reachability first**: the output was
+pinned at exactly 1.0 above setpoint on 779 of the first 2 000 ticks, and if that
+count were zero every number after it would describe a plant that never saturated.
+
+**One of the seven named mutations was run early, and its prediction held.** `if
+(0.0..=1.0).contains(&unclamped)` → `if true` — accumulate while the actuator is
+pinned — checked to compile, run, and restored from a single pre-mutation
+snapshot. DESIGN §10's table predicts "gate 4 alone" for this edit, and gate 4
+alone is what fired. The unclamped loop holds the drain wide open a metre below
+setpoint while it spends what it accumulated: deepest level **2.7379 m against
+3.7042 m**, ending at **4.6213 m against 3.9304 m** on the far side of the
+overshoot that pays for it. Both of gate 4's assertions fire on it.
+
+A second edit was run that the table does **not** name, and is counted separately
+for that reason: seeding the transfer from `last_measurement`, described above.
+Five of the seven named edits remain, and they stay M8.4's.
+
+**MANUAL→AUTO reads the measurement FRESH, and the reflex is to reuse
+`last_measurement`.** Fork 3 makes a loop act on one-tick-old state, so seeding
+from that stored value looks consistent. It is not: commands are applied *between*
+ticks, so the state standing at `SetControllerMode` is exactly the state the next
+control pass will measure. Seeding against a fresh read makes the next output
+equal the actuator's current position identically — **measured deviation zero**,
+against a derived bound of a few ULP — while seeding against the stored one
+calibrates the seed with a different error than it is spent with. The same
+transfer on a proportional loop steps the valve by **0.1832**, and that half is
+asserted in the same test: `u = K·e` has no memory to seed, and a transfer gate
+that passed for both controllers would be measuring the plant.
+
+**Two of M8.2's recorded expiries came due, exactly where its comments said they
+would.** `integral_time_s` absent on `"pi"` was unreachable while `"pi"` was not a
+selectable algorithm; it is now `require_keyed`. And the refusal table's
+"unknown algorithm" case used `"pi"` as its edit — that case now edits `"pid"`,
+and the refusal explains why derivative action is deferred (it differentiates a
+measurement that moves by one solve per tick, and needs a filter and a stated rule
+for the setpoint kick before it means anything). Two more refusals arrived with
+the new key: `initial_output` missing on `"pi"`, and `initial_output` *present* on
+`"p"` — the latter previously refused by `deny_unknown_fields` as an unknown key,
+which would now be a lie, since the key exists and merely names a memory that
+controller does not have.
+
+**Rule 3 on the first stateful seam is gated rather than assumed**: the same PI
+scenario run twice produces byte-identical snapshots for 500 ticks. Every seam
+before this one is a pure function of its arguments, so determinism followed from
+the graph and the solver alone; a `Box<dyn Controller>` carrying a number across
+ticks is the thing most likely to break it, and M8.0 has already paid once for
+believing a carried-over number is a path rather than an answer.
+
+**The regression anchor held**: thirteen scenarios × two fidelities × 300 ticks,
+26 runs, every one byte-identical against the tree before this slice. No file in
+`scenarios/` declares a loop — the wired demo is still M8.4's.
 
 ### M8.4 — The demo, and the mutation pass
 
@@ -3343,7 +3437,18 @@ wired demo that regulates is M8.4's.
       each verified to COMPILE and each applied to a source restored from ONE
       pre-mutation snapshot. Two are predicted uncaught: the loop running after
       the solve, and `initial_output` ignored. Report which gate actually fired,
-      not merely that something did.
+      not merely that something did. **Two of the seven were run early**: M8.2's
+      "gain applied to the measurement", predicted to fail gates 2 and 3 and in
+      fact failing three, and M8.3's "anti-windup clamp removed", predicted to
+      fail gate 4 alone and doing exactly that. **Five named edits remain.** A
+      further edit that the table does NOT name was also run and is counted
+      separately — seeding the MANUAL→AUTO transfer from the stale
+      `last_measurement`, applied because the gate's own failure message named it
+      as the cause and a message that names a cause is a claim; it fired that gate
+      alone. One prediction in the table is now stale and should be treated as
+      falsifiable rather than fixed: "back-calculation dropped on MANUAL→AUTO" is
+      predicted to be caught by gate 4, and was written before the transfer gate
+      existed.
 - [ ] Record what the demo does NOT cover, measured rather than assumed — M8.0's
       finding that no wired scenario exercised its own fix is the precedent, and
       `a-hand-written-scenario-can-be-vacuous` is the failure it avoids.

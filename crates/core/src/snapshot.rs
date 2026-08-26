@@ -50,6 +50,14 @@ pub enum Command {
     },
     /// Put one control loop in `Auto` (it drives its actuator) or `Manual` (a
     /// human does). See [`crate::graph::ControlMode`].
+    ///
+    /// **MANUAL→AUTO is not just a flag flip**: the loop's algorithm is seeded
+    /// from the position the actuator is actually at, so a loop taking over from
+    /// a human does not step the valve (§10 fork 4). That is the same
+    /// back-calculation the anti-windup clamp performs, and a controller with no
+    /// memory implements it as an explicit no-op — a proportional loop therefore
+    /// DOES step the valve on transfer, to whatever `K·e` says, which is the
+    /// controller being what it is rather than a defect.
     SetControllerMode {
         loop_id: LoopId,
         mode: ControlMode,
@@ -141,7 +149,8 @@ pub struct ControlSnapshot {
     pub id: LoopId,
     /// Scenario-given loop name — what a faceplate is labelled with.
     pub name: String,
-    /// The algorithm driving it ("proportional"), from `Controller::name`.
+    /// The algorithm driving it ("proportional", "proportional_integral"), from
+    /// `Controller::name`.
     pub algorithm: String,
     pub mode: ControlMode,
     /// The target. Carries its unit in its own tagged form, because a bare

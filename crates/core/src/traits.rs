@@ -432,4 +432,41 @@ pub trait Controller: Send + std::fmt::Debug {
         setpoint: ControlledValue,
         dt: Seconds,
     ) -> Result<f64, SimError>;
+
+    /// Set this controller's memory so that its NEXT `update` returns `output`.
+    ///
+    /// Two callers, one arithmetic, and that is the whole reason this is on the
+    /// trait rather than inside one impl (docs/DESIGN.md §10 fork 4):
+    ///
+    /// - **Load.** `initial_output` is the loop's declared memory (fork 5), and
+    ///   the integral term is *derived* from it here rather than declared beside
+    ///   it — so there is exactly one way a loop's memory can be initialised and
+    ///   no silent zero anywhere.
+    /// - **MANUAL→AUTO.** The actuator holds whatever a human left it at, and a
+    ///   loop taking over must not step it. Seeding from that position is what
+    ///   makes the transfer bumpless, and it is the same back-calculation the
+    ///   anti-windup clamp performs when it refuses to accumulate — which is why
+    ///   fork 4 does not defer bumpless transfer to a slice after the integral.
+    ///
+    /// `measurement` and `setpoint` are the pair the next `update` will see, so
+    /// the caller must read the measurement at the moment of transfer rather than
+    /// reuse the loop's one-tick-old `last_measurement` — otherwise the seed is
+    /// computed against a different error than it is spent against, and the
+    /// transfer is bumpless only to the extent the level stopped moving.
+    ///
+    /// A stateless controller implements this as an explicit no-op. There is
+    /// deliberately **no default body**: an impl with memory that forgot to seed
+    /// it would inherit a silent nothing, which is the one failure this method
+    /// exists to prevent.
+    ///
+    /// # Errors
+    /// `SimError` if `output` is not a finite fraction in `[0, 1]`, or if the
+    /// error term is non-finite. Rule 5: a controller that cannot seed its memory
+    /// says so rather than carrying a NaN into the next tick.
+    fn seed_from_output(
+        &mut self,
+        output: f64,
+        measurement: ControlledValue,
+        setpoint: ControlledValue,
+    ) -> Result<(), SimError>;
 }

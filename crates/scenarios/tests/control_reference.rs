@@ -28,6 +28,17 @@
 //! of M8.3's disturbance-rejection pair this slice is meant to supply — which is
 //! why `ProportionalController` ships with no bias term to hide it behind.
 //!
+//! **M8.3 adds the integral term, and its two gates are a PAIR and a PLANT.** The
+//! disturbance-rejection gate below runs the SAME leak on the SAME plant twice,
+//! once with `algorithm = "p"` and once with `"pi"`, because neither half proves
+//! anything alone — and its discriminating assertion is not "the PI loop has no
+//! offset", which a large enough proportional gain also produces. It is that the
+//! P loop's level move is FORCED to be `Δu/K` (measured 0.477229 m against the
+//! 0.477230 m its own valve travel forces) while the PI loop moved its valve
+//! slightly FURTHER and its level by 0.0013 m. A proportional loop cannot hold a
+//! level while its output changes; that is what the pair discriminates. The windup gate needs a plant
+//! built to saturate, and gets its own, for the reason fork 6 states in advance.
+//!
 //! The plants are declared here rather than shipped, and that is the same call
 //! `leak_reference.rs` already makes for its vacuum and gas plants: a plant built
 //! to expose one behaviour is a fixture, and the thirteen files in `scenarios/`
@@ -36,7 +47,7 @@
 
 use refinery_core::graph::{ControlMode, ControlledValue, LoopId, MeasuredVariable, NodeId};
 use refinery_core::snapshot::Command;
-use refinery_core::units::Meter;
+use refinery_core::units::{Meter, SquareMeter};
 use refinery_core::{Engine, SimError};
 
 // ------------------------------------------------------------------ fixtures
@@ -181,6 +192,20 @@ fn level_now(engine: &Engine) -> f64 {
     {
         ControlledValue::Level { m } => m.value(),
     }
+}
+
+/// The actuator position the loop last put on its faceplate.
+///
+/// Read off the snapshot rather than off the valve, deliberately: it is the
+/// number a frontend sees, and in MANUAL it is the number that has to TRACK a
+/// valve the loop is not writing.
+fn output_now(engine: &Engine) -> f64 {
+    engine
+        .snapshot()
+        .controls
+        .first()
+        .expect("the fixture declares one loop")
+        .output
 }
 
 /// Run `ticks` ticks, returning the level at the end and the highest level seen.
@@ -671,6 +696,22 @@ fn an_unknown_loop_id_is_refused() {
 /// expected substring, and a table makes it obvious when one is missing.
 #[test]
 fn a_control_table_is_refused_where_fork_5_says_it_must_be() {
+    // The M8.2 plant with M8.3's algorithm and the two keys it requires. The
+    // PI-only cases below edit THIS rather than `PLANT`, and it is asserted to
+    // load first: a refusal case built on a file that was already invalid proves
+    // nothing about the key it names.
+    let pi_plant = PLANT
+        .replace(r#"algorithm = "p""#, r#"algorithm = "pi""#)
+        .replace(
+            "gain_per_m = 0.5
+",
+            "gain_per_m = 0.5
+integral_time_s = 300.0
+initial_output = 0.2
+",
+        );
+    engine_from(&pi_plant);
+
     // (what the edit does, the edit, a phrase the refusal must contain)
     let cases: Vec<(&str, String, &str)> = vec![
         (
@@ -706,10 +747,43 @@ fn a_control_table_is_refused_where_fork_5_says_it_must_be() {
             ),
             "not a valve",
         ),
+        // `"pi"` was this case's edit in M8.2 and is a real algorithm now, which
+        // is the expiry that slice's comment named. The edit moved to `"pid"`
+        // rather than the case being deleted: derivative action is the next thing
+        // a file will reach for, and the refusal says why it is deferred.
         (
             "an unknown algorithm",
-            PLANT.replace(r#"algorithm = "p""#, r#"algorithm = "pi""#),
+            PLANT.replace(r#"algorithm = "p""#, r#"algorithm = "pid""#),
             "unknown algorithm",
+        ),
+        // The four refusals M8.3 makes reachable. Two of them are the mirrors
+        // M8.2 could only record in a comment, because until `"pi"` was
+        // selectable the unknown-algorithm arm is what a file writing either key
+        // already hit.
+        (
+            "the integral time missing on a PI loop",
+            pi_plant.replace("integral_time_s = 300.0\n", ""),
+            "integral_time_s",
+        ),
+        (
+            "the loop's memory missing on a PI loop",
+            pi_plant.replace("initial_output = 0.2\n", ""),
+            "initial_output",
+        ),
+        (
+            "a memory on a controller that has none",
+            PLANT.replace("gain_per_m = 0.5", "gain_per_m = 0.5\ninitial_output = 0.2"),
+            "no memory for it to be the initial condition of",
+        ),
+        (
+            "a memory that is not an actuator position",
+            pi_plant.replace("initial_output = 0.2", "initial_output = 1.4"),
+            "not a finite fraction in [0, 1]",
+        ),
+        (
+            "an integral time that divides by zero",
+            pi_plant.replace("integral_time_s = 300.0", "integral_time_s = 0.0"),
+            "finite and > 0 s",
         ),
         (
             "an unknown measured variable",
@@ -836,4 +910,586 @@ gain_per_m = 0.5
         "a relief valve must be refused for being pressure-actuated, not for \
          failing to be a valve: {text}"
     );
+}
+
+// ============================================================ M8.3: the integral term
+
+/// Gate 3's plant: gate 1's, plus an atmosphere and a declared leak path.
+///
+/// **The leak has to be declared at LOAD, and that is not a formality** — `apply`
+/// refuses `PuncturePipe` on a pipe whose file says nothing about leaking (§3b
+/// fork C), because writing an area onto a pipe with no orifice is the M6.0 defect
+/// where a command stores a number nothing reads. So the gate's plant declares
+/// `leak_to`, exactly as fork 6 says it must.
+///
+/// Nothing else differs from gate 1's plant, deliberately: the disturbance gate
+/// and the counterfactual gate should be measuring the same hydraulics.
+const LEAK_PLANT: &str = r#"
+[meta]
+name = "level_control_disturbance"
+description = "Gate 1's plant with a declared leak on the fill line."
+
+[simulation]
+dt = 0.5
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[nodes.header]
+type = "source"
+pressure_bar = 5.0
+temperature_c = 20.0
+
+[nodes.outside]
+type = "atmosphere"
+
+[nodes.feed_valve]
+type = "valve"
+kv = 20.0
+opening = 0.4
+
+[nodes.control_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.0
+temperature_c = 20.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 60.0
+opening = 0.2
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "header"
+to = "feed_valve"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "feed_valve"
+to = "control_tank"
+length_m = 10.0
+diameter_m = 0.10
+leak_to = "outside"
+
+[[pipes]]
+name = "drain_line"
+from = "control_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.10
+"#;
+
+/// The proportional half of gate 3's pair — gate 1's loop verbatim.
+const P_LOOP: &str = r#"
+[[controls]]
+name = "tank_level"
+measurement = { node = "control_tank", variable = "level" }
+actuator = "drain_valve"
+algorithm = "p"
+mode = "auto"
+setpoint_m = 4.0
+gain_per_m = 0.5
+"#;
+
+/// The integral half of gate 3's pair.
+///
+/// **The same gain**, which is what makes the two halves comparable: the pair's
+/// discriminating quantity is `Δu/K`, and a pair that also changed `K` could not
+/// say whether the integral term or the tuning did the work.
+///
+/// `integral_time_s = 300.0` was measured rather than derived from a tuning rule.
+/// The tank holds 3 m³ per metre against a feed of a few kg/s, so its own time
+/// constant is minutes; 300 s settles to within 0.01 m of setpoint in 12 000
+/// ticks (6 000 s) without the ringing a faster reset produces — 200 s reaches
+/// ±0.2 m and stays there. `initial_output = 0.2` is the valve's declared opening,
+/// so the loop starts holding the position the file already gave it.
+const PI_LOOP: &str = r#"
+[[controls]]
+name = "tank_level"
+measurement = { node = "control_tank", variable = "level" }
+actuator = "drain_valve"
+algorithm = "pi"
+mode = "auto"
+setpoint_m = 4.0
+gain_per_m = 0.5
+integral_time_s = 300.0
+initial_output = 0.2
+"#;
+
+/// How long each half of gate 3 runs before and after the disturbance.
+///
+/// Measured, not chosen: the PI loop is within 0.01 m of setpoint by 12 000 ticks
+/// (6 000 s) from a cold start and the P loop is settled to 1e-4 m well before
+/// that. Shorter runs measure the transient rather than the steady state, and the
+/// whole quantity this gate is about is a steady-state one.
+const REJECT_TICKS: u64 = 12_000;
+
+/// The hole. 5e-4 m² ≈ a 25 mm puncture, and the size is load-bearing in both
+/// directions, which is why it is stated here rather than tuned into the test.
+///
+/// - Smaller (1e-4 m²) and the disturbance is too weak to separate the halves:
+///   the P loop's level moves 0.10 m, which is within the noise of "did it settle".
+/// - Larger (1e-3 m²) and it stops being a disturbance and becomes a different
+///   plant: the leak takes essentially the whole feed, both loops drive the drain
+///   valve to zero and sit there, and neither is regulating anything. Measured —
+///   the PI loop ends at 2.57 m with its valve shut.
+///
+/// At 5e-4 m² both loops keep a working valve position and the pair discriminates.
+const HOLE_M2: f64 = 5.0e-4;
+
+/// Run one half of gate 3, returning `(level, output)` before and after the leak.
+fn reject_disturbance(loop_table: &str) -> ((f64, f64), (f64, f64)) {
+    let mut engine = engine_from(&format!("{LEAK_PLANT}{loop_table}"));
+    run(&mut engine, REJECT_TICKS);
+    let before = (level_now(&engine), output_now(&engine));
+
+    let fill = engine
+        .snapshot()
+        .edges
+        .iter()
+        .find(|e| e.name == "fill_line")
+        .expect("the plant declares a fill_line")
+        .id;
+    engine
+        .apply(Command::PuncturePipe {
+            edge: fill,
+            area: SquareMeter(HOLE_M2),
+        })
+        .expect("the fill line declares `leak_to`, so it is punctureable");
+
+    run(&mut engine, REJECT_TICKS);
+    (before, (level_now(&engine), output_now(&engine)))
+}
+
+/// **Gate 3, and it is a PAIR.** The same plant, the same leak, twice: once with
+/// `algorithm = "p"` and once with `"pi"`. Neither half proves the integral term
+/// alone, which is the whole reason M8.2 shipped the proportional loop by itself.
+///
+/// **The discriminating assertion is not "the PI loop has no offset".** That is
+/// the obvious one and it does not discriminate: a proportional loop's offset is
+/// `e = u/K`, so a large enough gain shrinks it toward zero and passes a
+/// no-offset test with no integral term anywhere. What a proportional loop
+/// *cannot* do is move its output while holding its level, because `u = K·e` makes
+/// the two the same statement. So the pair asserts:
+///
+/// - **P half:** the level moved by exactly `Δu/K`. This is an identity of the
+///   algorithm rather than a fitted bound, and it is what makes the offset a
+///   *consequence* rather than an observation — measured 0.477229 m against the
+///   0.477230 m its own 0.238615 of valve travel forces, agreeing to 1.2e-6 m.
+/// - **PI half:** MORE valve travel, and a level that did not move. The valve
+///   moved 0.260950 (further than the P loop, since it is holding a lower level
+///   against the same leak) while the level moved 0.001340 m — against the
+///   0.521900 m that same travel would have forced on a proportional loop.
+///
+/// The two runs are also asserted to have used *different algorithms*, by name off
+/// the faceplate. A pair whose halves silently built the same controller would
+/// pass every numeric assertion in the P direction and prove nothing, and the
+/// fixture strings differ by enough characters to make that a real mistake.
+#[test]
+fn the_integral_term_holds_a_level_a_proportional_loop_can_only_offset() {
+    let ((p_level_0, p_out_0), (p_level_1, p_out_1)) = reject_disturbance(P_LOOP);
+    let ((pi_level_0, pi_out_0), (pi_level_1, pi_out_1)) = reject_disturbance(PI_LOOP);
+
+    let p_travel = p_out_0 - p_out_1;
+    let pi_travel = pi_out_0 - pi_out_1;
+    let p_drop = p_level_0 - p_level_1;
+    let pi_drop = pi_level_0 - pi_level_1;
+
+    // The disturbance has to have DONE something, or every assertion below is a
+    // statement about a plant nothing happened to.
+    assert!(
+        p_travel > 0.15 && pi_travel > 0.15,
+        "the leak must move both loops' valves by a measurable amount, and moved \
+         {p_travel:.4} (P) and {pi_travel:.4} (PI). A disturbance nothing responds \
+         to makes this whole gate vacuous"
+    );
+
+    // The P half: `u = K·e` forces `Δlevel = Δu/K`. The tolerance is the width of
+    // the steady state rather than a fitted margin — both runs settle to ~1e-4 m,
+    // so a millimetre is the honest bound, and the measured disagreement is
+    // 1.2e-6 m, three orders inside it.
+    let forced = p_travel / 0.5;
+    assert!(
+        (p_drop - forced).abs() < 1.0e-3,
+        "a proportional loop's level move is its output move divided by the gain, \
+         and this run moved the level {p_drop:.4} m while {forced:.4} m is what its \
+         {p_travel:.4} of valve travel forces. If these disagree, either the error \
+         term or the gain is not what `u = K·e` says"
+    );
+    assert!(
+        p_drop > 0.3,
+        "the proportional loop's offset must be large enough to be the visible half \
+         of this pair, and moved only {p_drop:.4} m"
+    );
+
+    // The PI half: the same travel, and the level stayed where the setpoint is.
+    // A tenth of a metre on a ten-metre tank: a stated 1% band, not the measured
+    // 0.0013 m rounded up. Two orders of margin is what says this is the integral
+    // term rather than a lucky fixture.
+    assert!(
+        pi_drop.abs() < 0.1,
+        "the integral term must hold the level against the load, and the level \
+         moved {pi_drop:.4} m. A proportional loop with this gain would have moved \
+         {:.4} m for the same {pi_travel:.4} of valve travel",
+        pi_travel / 0.5
+    );
+    assert!(
+        (pi_level_1 - 4.0).abs() < 0.1,
+        "the integral term must return the level TO SETPOINT, not merely hold it \
+         somewhere: it ended at {pi_level_1:.4} m against a setpoint of 4.0 m"
+    );
+    assert!(
+        pi_drop.abs() * 5.0 < p_drop,
+        "the pair does not separate: the PI loop's level moved {pi_drop:.4} m and \
+         the P loop's {p_drop:.4} m for comparable valve travel"
+    );
+
+    // The control on the pair itself: two fixtures, two algorithms.
+    let p_name = engine_from(&format!("{LEAK_PLANT}{P_LOOP}"))
+        .snapshot()
+        .controls[0]
+        .algorithm
+        .clone();
+    let pi_name = engine_from(&format!("{LEAK_PLANT}{PI_LOOP}"))
+        .snapshot()
+        .controls[0]
+        .algorithm
+        .clone();
+    assert_ne!(
+        p_name, pi_name,
+        "both halves of the pair loaded the same algorithm ('{p_name}'), so the \
+         comparison above is between a run and itself"
+    );
+}
+
+/// Gate 4's plant: built to SATURATE, which fork 6 says in advance is the only
+/// way an anti-windup gate can mean anything.
+///
+/// The drain valve at FULL opening cannot pass the feed — `kv` 20 against the
+/// feed valve's 20 at 0.8 open — so the level rises while the controller has
+/// already asked for everything the actuator has. That is the state in which an
+/// unclamped integral accumulates against a plant that cannot answer, and no
+/// plant that can meet its setpoint ever enters it.
+///
+/// `initial_level_m` is the setpoint, so the run starts with zero error and the
+/// saturation is produced by the plant rather than by the initial condition.
+const SATURATING_PLANT: &str = r#"
+[meta]
+name = "level_control_windup"
+description = "A tank whose drain valve at full opening cannot pass its feed."
+
+[simulation]
+dt = 0.5
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[nodes.header]
+type = "source"
+pressure_bar = 5.0
+temperature_c = 20.0
+
+[nodes.feed_valve]
+type = "valve"
+kv = 20.0
+opening = 0.8
+
+[nodes.control_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.0
+temperature_c = 20.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 20.0
+opening = 0.2
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "header"
+to = "feed_valve"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "feed_valve"
+to = "control_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "control_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.10
+
+[[controls]]
+name = "tank_level"
+measurement = { node = "control_tank", variable = "level" }
+actuator = "drain_valve"
+algorithm = "pi"
+mode = "auto"
+setpoint_m = 4.0
+gain_per_m = 0.3
+integral_time_s = 300.0
+initial_output = 0.2
+"#;
+
+/// **Gate 4.** Saturate the actuator, then remove the load, and watch what the
+/// loop does with the time it spent asking for something the plant could not give.
+///
+/// **The reachability half is asserted first and is not decoration.** This repo
+/// has twice shipped a counter that proved nothing because the branch it counted
+/// was never reached, so the gate counts the ticks on which the output was pinned
+/// at exactly 1.0 while the level was still above setpoint — the state in which
+/// the anti-windup branch is the code that runs. Measured 779 of the first 2 000
+/// ticks. If that count is zero, every number below is about a plant that never
+/// saturated and the gate has no power, whatever it asserts.
+///
+/// **The load is removed by a PARTIAL cut, and that is a measured constraint
+/// rather than a stylistic one.** Shutting the feed valve outright drives a branch
+/// to zero flow in one tick, which stalls the hydraulic solver for reasons that
+/// have nothing to do with control and are pinned by
+/// `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it`. Quartering it
+/// removes more than enough load to expose windup and leaves the solver a problem
+/// it can solve.
+///
+/// **The signature is the undershoot, and both bounds were measured on this plant
+/// with the clamp removed** — the one mutation this slice ran early, because a
+/// docstring claiming a gate catches something is a claim and not a hope. The
+/// mutation is `if (0.0..=1.0).contains(&unclamped)` → `if true`, i.e. accumulate
+/// while saturated; it was checked to compile, run, and restored from a single
+/// pre-mutation snapshot:
+///
+/// | | with the clamp | without it |
+/// |---|---|---|
+/// | deepest level after the cut | **3.7042 m** | **2.7379 m** |
+/// | level after 20 000 ticks | 3.9304 m | 4.6213 m |
+/// | valve while undershooting | leaves 1.0 at ~6 000 ticks | pinned at 1.0, then slammed to 0.0 |
+///
+/// So the loop without anti-windup spends the surplus it accumulated by holding
+/// the drain wide open a metre below setpoint, and then overshoots the other way.
+/// Both assertions below fire on it.
+#[test]
+fn an_unclamped_integral_would_hold_the_valve_open_past_setpoint() {
+    let mut engine = engine_from(SATURATING_PLANT);
+
+    // Phase 1 — the plant cannot meet its setpoint, so the loop saturates.
+    let mut saturated_ticks = 0_u32;
+    for t in 0..SATURATE_TICKS {
+        engine.tick().unwrap_or_else(|e| panic!("tick {t}: {e}"));
+        if output_now(&engine) == 1.0 && level_now(&engine) > 4.0 {
+            saturated_ticks += 1;
+        }
+    }
+    assert!(
+        saturated_ticks > 100,
+        "the plant must actually saturate its actuator, and the output was pinned \
+         at 1.0 above setpoint on only {saturated_ticks} of {SATURATE_TICKS} ticks. \
+         An anti-windup gate on a plant that never saturates is the vacuous counter \
+         this repo has shipped twice"
+    );
+
+    // Phase 2 — the load is removed. The feed valve is not this loop's actuator,
+    // so a hand write on it is admissible with the loop still in AUTO.
+    let feed = engine
+        .graph
+        .find_node("feed_valve")
+        .expect("the plant has a feed valve");
+    engine
+        .apply(Command::SetValveOpening {
+            node: feed,
+            opening: 0.2,
+        })
+        .expect("the feed valve is nobody's actuator");
+
+    let mut deepest = level_now(&engine);
+    for t in 0..RECOVER_TICKS {
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("recovery tick {t}: {e}"));
+        deepest = deepest.min(level_now(&engine));
+    }
+
+    assert!(
+        deepest > 3.5,
+        "the level undershot to {deepest:.4} m. An integral term that kept \
+         accumulating while the valve was pinned at 1.0 has a surplus to spend, and \
+         spends it by holding the drain open well below setpoint — measured 2.7379 m \
+         with the clamp removed, against 3.7042 m with it"
+    );
+    let settled = level_now(&engine);
+    assert!(
+        (settled - 4.0).abs() < 0.25,
+        "the loop must come back to setpoint after the load is removed, and ended \
+         at {settled:.4} m. With the clamp removed the same run ends at 4.6213 m, on \
+         the far side of an overshoot the windup paid for"
+    );
+}
+
+/// Ticks of saturation before the load is removed. Long enough that an unclamped
+/// integral has something to accumulate (measured: 779 pinned ticks) and short
+/// enough that the level stays well below the tank's 10 m roof — a mass clamp
+/// would make this gate a test of the clamp instead.
+const SATURATE_TICKS: u64 = 2_000;
+
+/// Ticks after the cut. The undershoot bottoms out around 8 000 (clamped) and
+/// 12 000 (unclamped), so the run has to outlast both to compare their depths.
+const RECOVER_TICKS: u64 = 20_000;
+
+/// **MANUAL→AUTO is bumpless, and the counterfactual is in the same test.**
+///
+/// A loop that has been sitting in MANUAL while a human moved the valve holds
+/// memory from whenever it last ran. Taking over would step the actuator to
+/// whatever that stale memory asks for — which is exactly the "a command that
+/// appears to work and does not" failure fork 4 refuses in the other direction.
+/// So `SetControllerMode` seeds the algorithm from the position the actuator is
+/// actually at, by the same back-calculation the anti-windup clamp performs.
+///
+/// **The tolerance is derived, not fitted.** Seeding stores `b = u − K·e` and the
+/// next update returns `K·e + b`; the error is bit-identical between the two,
+/// because commands are applied between ticks and the seed reads the same state
+/// the next tick's control pass will. So the difference from `u` is at most the
+/// two roundings in that subtract-then-add, a few ULP of a quantity in `[0, 1]`.
+/// `1e-15` is that bound with room; the measured deviation on this fixture is
+/// exactly zero, which Sterbenz's lemma predicts for these magnitudes.
+///
+/// **The same transfer on a proportional loop steps the valve by 0.1832**, and
+/// that half is asserted too — not because it is a defect but because it is what
+/// makes the PI half mean something. `u = K·e` has no memory to seed, so it
+/// returns what the error says and ignores where the human left the valve
+/// entirely. A transfer test that passed for both controllers would be measuring
+/// the plant.
+#[test]
+fn a_loop_taking_over_from_a_human_does_not_step_the_valve() {
+    /// Where the human leaves the valve before handing it back. Deliberately not
+    /// the file's declared 0.20 and not what either controller would ask for, so
+    /// "the valve did not move" cannot be satisfied by a coincidence.
+    const HANDOVER: f64 = 0.31;
+
+    let mut deltas = Vec::new();
+    for loop_table in [PI_LOOP, P_LOOP] {
+        let parked =
+            format!("{LEAK_PLANT}{loop_table}").replace(r#"mode = "auto""#, r#"mode = "manual""#);
+        let mut engine = engine_from(&parked);
+        run(&mut engine, 3_000);
+
+        let valve = engine
+            .graph
+            .find_node("drain_valve")
+            .expect("the plant has a drain valve");
+        engine
+            .apply(Command::SetValveOpening {
+                node: valve,
+                opening: HANDOVER,
+            })
+            .expect("in MANUAL a human drives the valve");
+        engine.tick().expect("a tick in MANUAL");
+        assert_eq!(
+            output_now(&engine),
+            HANDOVER,
+            "in MANUAL the faceplate TRACKS the actuator, and reported something else"
+        );
+
+        engine
+            .apply(Command::SetControllerMode {
+                loop_id: LoopId(0),
+                mode: ControlMode::Auto,
+            })
+            .expect("a declared loop can be put in AUTO");
+        assert_eq!(
+            output_now(&engine),
+            HANDOVER,
+            "the faceplate must report what the loop will hold at the moment of \
+             transfer, not the output it last computed before it was parked"
+        );
+
+        engine.tick().expect("the first tick in AUTO");
+        deltas.push(output_now(&engine) - HANDOVER);
+    }
+
+    let (pi_step, p_step) = (deltas[0], deltas[1]);
+    assert!(
+        pi_step.abs() < 1.0e-15,
+        "MANUAL→AUTO moved the PI loop's valve by {pi_step:e}, and the bound is the \
+         rounding in `b = u − K·e` followed by `K·e + b` — a few ULP. A larger step \
+         means the loop was seeded against a different error than it spent, most \
+         likely the one-tick-old `last_measurement` instead of a fresh read"
+    );
+    assert!(
+        p_step.abs() > 0.05,
+        "the same transfer on a memoryless controller stepped the valve by only \
+         {p_step:e}, so this fixture does not discriminate: `u = K·e` cannot be \
+         seeded, and if it too holds the handover position then the PI assertion \
+         above is being satisfied by the plant rather than by the back-calculation"
+    );
+}
+
+/// Rule 3 on the project's first stateful seam: the same PI scenario twice ⇒
+/// bit-identical snapshots.
+///
+/// Every seam before this one is a pure function of its arguments, so determinism
+/// followed from the graph and the solver alone. A `Box<dyn Controller>` carries a
+/// number across ticks, and M8.0 has already paid once for the belief that a
+/// carried-over number is "a path, not an answer". The comparison is on the
+/// serialized bytes for `reruns_are_bit_identical`'s reason: identical f64 bits
+/// render to identical text, so one perturbed low bit fails here.
+#[test]
+fn a_loop_with_memory_reruns_bit_identically() {
+    fn capture() -> Vec<Vec<u8>> {
+        let mut engine = engine_from(SATURATING_PLANT);
+        (0..500)
+            .map(|t| {
+                engine.tick().unwrap_or_else(|e| panic!("tick {t}: {e}"));
+                serde_json::to_vec(&engine.snapshot()).expect("a snapshot serializes")
+            })
+            .collect()
+    }
+
+    let first = capture();
+    let second = capture();
+    assert_eq!(first.len(), 500, "a run must capture one snapshot per tick");
+    for (index, (a, b)) in first.iter().zip(&second).enumerate() {
+        assert!(
+            a == b,
+            "two runs of one PI scenario diverged at tick {}:\n  first:  {}\n  second: {}",
+            index + 1,
+            String::from_utf8_lossy(a),
+            String::from_utf8_lossy(b)
+        );
+    }
 }
