@@ -2977,6 +2977,9 @@ atmospheric.
       re-seed each pass cold (predicted uncaught — a path, not an answer);
       commit the warm start every pass (predicted uncaught by any single-tick
       test, hence a gap to fill or to record).
+      **These are predictions, not results — three of the four were wrong, both
+      of the "predicted uncaught" ones among them. Measured at the end of this
+      section.**
 
 **M8.0 landed 2026-08-26, and the note's chosen fork survived while two of its
 details did not** (DESIGN §3c, "Corrections from building it"). The loop is an
