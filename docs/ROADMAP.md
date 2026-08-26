@@ -3424,7 +3424,7 @@ believing a carried-over number is a path rather than an answer.
 
 ### M8.4 — The demo, and the mutation pass
 
-- [ ] `scenarios/`: a wired plant that regulates — the level-controlled tank, in
+- [x] `scenarios/`: a wired plant that regulates — the level-controlled tank, in
       the shape of the M7 demo pair (a file a reader can diff against
       `tank_pump_valve.toml`, differing only in that one holds its level).
       **Its gain has a measured upper bound and this is where to read it**: on
@@ -3433,7 +3433,28 @@ believing a carried-over number is a path rather than an answer.
       a branch shut in one tick stalls the solver (M8.2's finding, DESIGN §10).
       A demo that regulates must be tuned not to slam its own actuator, or it will
       fail for a reason that has nothing to do with control.
-- [ ] **The mutation pass**, seven edits named in DESIGN §10 before building,
+      **Landed as `scenarios/tank_level_control.toml`, gated by
+      `scenarios/tests/level_control_demo.rs`.** Three things the box could not
+      have known, each measured on the demo's own plant rather than inherited:
+      - **The loop has to actuate a DRAIN, and that is forced, not chosen.**
+        `error = measurement − setpoint` and `u = clamp(K·e + b, 0, 1)`, so a
+        rising level OPENS the actuator. On a fill valve that is runaway. The
+        demo therefore keeps M1's `discharge_valve` fixed at 0.5 and adds a
+        controlled drain, which is also why the diff is +2 nodes rather than a
+        one-line change.
+      - **The bound is the plant's, and both sides of it are run.** At the
+        settled operating point the drain sits at ~0.376, so a +1 m setpoint step
+        subtracts `gain_per_m` in one tick: `0.25` and `0.35` absorb it, `0.4`
+        reaches exactly `0.0` and diverges the Newton solver (residual ~1.1e1).
+        The file ships `0.25`. M8.2's 0.05/0.1 pair is that plant's number and
+        does not transfer.
+      - **A PI demo cannot slam its actuator at startup at any gain**, which is
+        the reverse of the box's worry: the memory is seeded by `b = u − K·e`, so
+        the first output is the declared opening whatever `K` is. Gains from 0.25
+        to 20 were run on the shipped file and all survive. The bound above is
+        reachable only through a setpoint move, which is why it is measured with
+        one.
+- [x] **The mutation pass**, seven edits named in DESIGN §10 before building,
       each verified to COMPILE and each applied to a source restored from ONE
       pre-mutation snapshot. Two are predicted uncaught: the loop running after
       the solve, and `initial_output` ignored. Report which gate actually fired,
@@ -3449,9 +3470,47 @@ believing a carried-over number is a path rather than an answer.
       falsifiable rather than fixed: "back-calculation dropped on MANUAL→AUTO" is
       predicted to be caught by gate 4, and was written before the transfer gate
       existed.
-- [ ] Record what the demo does NOT cover, measured rather than assumed — M8.0's
+      **All seven have now been run, and four of the seven predictions were
+      wrong** — close to M8.0's three-of-four, and the reason the table is
+      written before building. The full result table with each mechanism is
+      DESIGN §10, "The mutation pass, against the predictions". The three that
+      need their word "caught" qualified:
+      - **"the loop runs AFTER the solve", predicted uncaught, is caught** — by
+        `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it`, a test
+        written to fail when the solver is FIXED. Moving the pass below the solve
+        makes the tick after a setpoint step converge, so the upside-down test
+        reports "SOLVER FIXED". The prediction was right about the mechanism and
+        wrong about the consequence, and **the gap it named is still open**: no
+        gate asserts the tick order, and the one that noticed is a test whose
+        purpose is to be deleted. Recorded, not filled.
+      - **"`initial_output` ignored", predicted uncaught by any steady-state
+        gate, is caught twice** — by M8.4's own startup gate (the first output
+        comes back `0` instead of `0.2`, against a bound of `f64::EPSILON / 2`),
+        and by fork 5's refusal sweep, because the key's range check lives inside
+        `seed_from_output` and an edit that stops calling it stops validating
+        too. The prediction was right about the gates it had; it is this slice's
+        transient gate that falsifies it.
+      - **"back-calculation dropped on MANUAL→AUTO" fires the transfer gate
+        alone** (the valve steps 3.83e-1) and gate 4 stays green — so the table's
+        prediction is falsified and M8.3's revision of it confirmed.
+- [x] Record what the demo does NOT cover, measured rather than assumed — M8.0's
       finding that no wired scenario exercised its own fix is the precedent, and
       `a-hand-written-scenario-can-be-vacuous` is the failure it avoids.
+      **Measured by compiling a `panic!` into each site and running the shipped
+      file for its documented 6 000 ticks**, with the load-time seed as the
+      CONTROL that must fire — otherwise "nothing fired" cannot be told apart
+      from a probe that never reached the binary. Reached: the loader's
+      `[[controls]]` path, the tick order, `PiController`'s ordinary arm, the
+      snapshot's `controls` array. **Not reached: the anti-windup arm** (the
+      output stays inside `[0.194, 0.384]` for all 6 000 ticks, so `unclamped`
+      never leaves `[0, 1]`), **`ProportionalController`** (no file in
+      `scenarios/` selects it), **the `Manual` arm of the tick pass**, and **the
+      engine's range backstop**. Needing no probe because they are facts about
+      the runner: the CLI issues no commands, so `SetControllerMode`,
+      `SetSetpoint` and the AUTO refusal of `SetValveOpening` are unreachable
+      from any shipped scenario — **including the MANUAL→AUTO transfer, the piece
+      of M8.3 that cost the most to get exact, which has no wired exercise at
+      all.**
 
 ### M8.5 — The slate on the snapshot (M6.2's deferral)
 

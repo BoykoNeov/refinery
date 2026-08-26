@@ -543,9 +543,12 @@ fn a_plant_with_no_loop_reports_no_controls_field() {
         let json = serde_json::to_string(&engine.snapshot()).expect("snapshot serializes");
         assert!(
             !json.contains("\"controls\""),
-            "{name} grew a `controls` key. Every scenario in this repo was written \
-             before M8 and declares no loop; a key appearing on one of them is the \
-             seam leaking into plants that never asked for it"
+            "{name} grew a `controls` key. These thirteen were written before M8 and \
+             declare no loop; a key appearing on one of them is the seam leaking into \
+             plants that never asked for it. The list is spelled out rather than swept \
+             from the folder precisely so that M8.4's `tank_level_control.toml`, which \
+             DOES declare a loop, is excluded by name instead of by a filter that could \
+             quietly start excluding others"
         );
         assert!(
             engine.snapshot().controls.is_empty(),

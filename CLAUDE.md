@@ -75,6 +75,7 @@ cargo test  --workspace              # must pass before any commit
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo run -p refinery-cli -- run scenarios/tank_pump_valve.toml --ticks 1000
+cargo run -p refinery-cli -- run scenarios/tank_level_control.toml --ticks 6000   # the M8.4 loop demo
 cargo test -p refinery-solvers --release -- proptest   # slow property tests
 ```
 
@@ -217,13 +218,51 @@ asserts that identity — the P half's level move equals its own valve travel ov
 the gain (0.477229 m measured against 0.477230 m forced), while the PI half moved
 its valve further and its level by 0.0013 m.
 
-**Two of M8.4's seven named mutations are already run** (M8.2's, which fired three
-gates against a prediction of two, and M8.3's anti-windup edit, which fired the one
-gate predicted), leaving five. A further edit the list does NOT name was also run
-and is counted apart from them. `initial_output` is required on `algorithm = "pi"`,
-refused on `"p"` with its own reason (it names a memory that controller does not
-have, not an unknown key), and `"pid"` is now what the unknown-algorithm refusal
-is tested with.
+`initial_output` is required on `algorithm = "pi"`, refused on `"p"` with its own
+reason (it names a memory that controller does not have, not an unknown key), and
+`"pid"` is now what the unknown-algorithm refusal is tested with.
+
+**M8.4 landed 2026-08-26** — the wired demo, the mutation pass, and a measured
+coverage record. Four things to know.
+
+**`scenarios/tank_level_control.toml` is the first shipped file with a
+`[[controls]]` table**, and it is meant to be diffed against
+`tank_pump_valve.toml`. **A level loop must actuate a DRAIN, and that is forced,
+not chosen**: the error is `measurement − setpoint` and the output is
+`clamp(K·e + b, 0, 1)`, so a rising level OPENS the actuator — on a fill valve
+that is runaway. Every level loop written after this one inherits that. The gain
+bound is the plant's own and both sides are run: at the settled operating point
+the drain sits at ~0.376, so a +1 m setpoint step subtracts `gain_per_m` in one
+tick — 0.25 and 0.35 absorb it, 0.4 hits exactly 0 and stalls the solver. The
+file ships 0.25. M8.2's 0.05/0.1 pair belongs to M8.2's plant and does not
+transfer.
+
+**A PI loop cannot slam its actuator at STARTUP at any gain**, which is the
+reverse of the worry the roadmap box was written with: the memory is seeded by
+`b = u − K·e`, so the first output is the declared `initial_output` whatever `K`
+is (gains 0.25 to 20 all survive). The startup step exists only if a file
+declares the valve's `opening` and `initial_output` apart. The stall bound is
+reachable only through a setpoint move, so it takes a command to measure and
+cannot be read off a CLI run.
+
+**All seven named mutations have now been run, and four of the seven predictions
+were wrong.** The two "predicted uncaught" edits were both caught — but read the
+mechanisms in DESIGN §10 before trusting either word. "The loop runs after the
+solve" is caught only by the test written to FAIL when the solver is fixed, so
+**no gate asserts the tick order and that gap is recorded, not filled**.
+"`initial_output` ignored" is caught by M8.4's own new startup gate and by the
+refusal sweep (the key's range check lives inside `seed_from_output`, so an edit
+that stops calling it stops validating too). And "back-calculation dropped on
+MANUAL→AUTO" fires the transfer gate alone while gate 4 stays green, falsifying
+the table and confirming M8.3's revision of it.
+
+**What the demo does NOT cover was measured, not assumed** — a `panic!` compiled
+into each site, the shipped file run for 6 000 ticks, with the load-time seed as
+the control that must fire. Not reached: the anti-windup arm (the output never
+leaves `[0.194, 0.384]`), `ProportionalController` (no shipped file selects it),
+the `Manual` arm of the tick pass, the engine's range backstop. And because the
+CLI issues no commands, **the MANUAL→AUTO transfer has no wired exercise at
+all** — it is covered by fixtures only.
 
 A control loop can now slam a valve shut between two ticks, and **a branch driven
 to zero flow in ONE tick stalls the Newton solver**. That is NOT the loop's defect:
@@ -234,10 +273,12 @@ is written to fail when the solver is fixed, and it belongs to a `newton_flow`
 slice. Practically: a level loop needs a gain gentle enough not to clamp to zero
 in one step, or a setpoint step small enough not to.
 
-No file in `scenarios/` declares a `[[controls]]` table — the two plants that carry
-a loop are inline test fixtures, because the thirteen shipped files ARE the
-regression anchor (26 runs byte-identical across this slice). The wired demo that
-regulates is M8.4's. `docs/ROADMAP.md` M8.3–M8.5 are the remaining slices.
+**Exactly one file in `scenarios/` declares a `[[controls]]` table** —
+`tank_level_control.toml`, M8.4's. The other thirteen were written before M8 and
+ARE the regression anchor (26 runs byte-identical across every slice of this
+milestone); adding a loop to one of them would move its snapshot. Two more plants
+that carry a loop are inline test fixtures for the same reason. `docs/ROADMAP.md`
+M8.5 is the one remaining slice.
 
 M1–M7 are closed: flow network, heat, crude + simple column, reactor, gas and
 pressure realism, damage + the Godot frontend, and the complex column. **M7 closed

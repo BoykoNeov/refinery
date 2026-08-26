@@ -4750,6 +4750,150 @@ Two of the seven are predicted uncaught. If either is caught, this note was
 wrong about what its gates measure; if either survives, it names a gap the slice
 must fill or record.
 
+### The demo, and what it can and cannot slam (M8.4, landed)
+
+`scenarios/tank_level_control.toml` is the first file in `scenarios/` to declare
+a `[[controls]]` table: M1's reference plant with its receiving tank held at
+4.0 m by a PI loop on a drain valve, meant to be diffed against
+`tank_pump_valve.toml`. Four things it settled that the roadmap box could not
+have.
+
+**A level loop has to actuate a DRAIN, and that is forced by the sign
+convention rather than chosen.** `ControlledValue::error` is
+`measurement − setpoint` and an output is `clamp(K·e + b, 0, 1)`, so a rising
+level OPENS the actuator. On a fill valve that is runaway; only on a drain is it
+regulation. So the demo keeps M1's `discharge_valve` fixed at 0.5 and adds a
+controlled drain — which is why the diff against `tank_pump_valve.toml` is two
+extra nodes rather than a table and nothing else. This is the first place the
+convention chosen in fork 1 constrains a *plant*, and it will constrain every
+level loop written after it.
+
+**The gain bound is the plant's, and both sides of it are run.** At the demo's
+settled operating point the drain sits at ~0.376, so a setpoint step of +1 m
+subtracts `gain_per_m × 1` from the output in one tick: `0.25` and `0.35` absorb
+it, and `0.4` reaches exactly `0.0`, shuts the branch in one tick and diverges
+the Newton solver (residual ~1.1e1) — M8.2's finding, the solver's defect and
+not the loop's. The file ships `0.25`. M8.2's gate plant read `0.05` survives
+and `0.1` does not; that number belongs to that plant and does not transfer, and
+the roadmap box's instruction to read the bound here is why both were measured
+rather than one inherited.
+
+**A PI demo cannot slam its actuator at startup at any gain, which is the
+reverse of the worry the box was written with.** The memory is seeded by
+`b = u − K·e` against the error standing at load, so the first `update` returns
+the declared `initial_output` whatever `K` is — gains from 0.25 to 20 were run on
+the shipped file and every one survives. The startup step the box feared exists
+only if the file declares `level_valve.opening` and `initial_output` *apart*,
+and the demo declares them equal for exactly that reason. The bound above is
+reachable only through a setpoint move, which is why it takes a command to
+measure and cannot be read off a CLI run.
+
+**`dt = 1.0 s` is the only such value in `scenarios/` and is not an accuracy
+shortcut.** A level loop on this tank settles in ~2 500 s; at the repo's usual
+`0.1 s` the demo would be 60 000 ticks. The same run at `dt = 0.5` over twice
+the ticks ends at 3.991993 m / 0.366078 against 3.991994 m / 0.366080 — the
+answer is the step size's to 1e-6.
+
+The demo's own trajectory carries the discrimination gate 3 had to be rebuilt to
+get: over its last 2 000 ticks the load is still falling (the supply tank is
+draining), the loop tracks it by CLOSING the drain by 6.778e-3 — and the level
+*rises* by 1.584e-3. `Δlevel = Δu / K` would force a FALL of 2.711e-2. The wrong
+sign, not merely a smaller number than the identity predicts.
+
+### The mutation pass, against the predictions (M8.4, landed)
+
+All seven named edits have now been run, each verified to compile and each
+applied to a source restored from one pre-mutation snapshot, with the whole
+workspace run `--no-fail-fast` so a catch set cannot be truncated at the first
+failing binary. **Four of the seven predictions were wrong**, which is close to
+M8.0's three-of-four and is the reason the table is written before building
+rather than after.
+
+| the edit | predicted | what actually fired |
+|---|---|---|
+| gain applied to the measurement (run in M8.2) | gates 2 and 3 | three gates, one the table does not mention — **incomplete** |
+| the anti-windup clamp removed (run in M8.3) | gate 4 alone | gate 4 alone — **right** |
+| the integral never accumulates | gate 3's offset pair, **and nothing else** | four: gates 3 and 4, and both of the demo's — **wrong about "nothing else"** |
+| the loop runs AFTER the solve | **uncaught** | one: `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it` — **falsified** |
+| `initial_output` ignored, integral seeded at zero | **uncaught by any steady-state gate** | two: the demo's startup gate and fork 5's refusal sweep — **falsified** |
+| the AUTO refusal of `SetValveOpening` removed | the refusal gate alone | the refusal gate alone — **right** |
+| back-calculation dropped on MANUAL→AUTO | gate 4, through the clamp arithmetic | the transfer gate alone; gate 4 silent — **the table wrong, M8.3's revision right** |
+
+Three of those need their mechanism stated, because the bare word "caught" would
+be misleading in each.
+
+**The loop running after the solve is caught by a test that pins a DEFECT, not
+by a gate of the seam.** `a_branch_shut_in_one_tick_stalls_the_solver_whoever_
+shuts_it` steps a setpoint and asserts that the very next `tick` returns `Err`.
+With the control pass moved below the solve, that tick solves with the valve
+still where it was, converges, and the assertion written to fail when the solver
+is FIXED fails instead — its message reads "SOLVER FIXED: a controller can now
+shut a branch in one tick". So the prediction was right about the mechanism (a
+one-tick shift, invisible in every settled number) and wrong about the
+consequence, and it was a test kept deliberately upside-down that saw it. The
+gap the prediction named is real and is still open: **no gate asserts the tick
+ORDER**, and the one that noticed is a test whose whole purpose is to be deleted
+when the solver is fixed. That is recorded rather than filled, because a gate
+for it would have to assert something about a one-tick shift on a plant slow
+enough that nothing else can see it.
+
+**`initial_output` ignored is caught twice, and only one of the two is about
+what the edit is named for.** The demo's startup gate sees it directly — the
+first output comes back `0` instead of `0.2`, a step of −0.2 against a derived
+bound of `f64::EPSILON / 2`. The other catch is fork 5's refusal sweep, and it
+fires because the range check on `initial_output` lives *inside*
+`seed_from_output`: an edit that stops calling the seed also stops validating
+the key, so `initial_output = 1.4` loads. That is a faithful consequence of
+ignoring the key, but a narrower edit — keep the validation, drop only the seed
+— would leave the demo's gate alone, and the demo's gate did not exist when the
+prediction was written. **The note's prediction was correct about the gates it
+had**; it is M8.4's own transient gate that falsifies it, which is the slice
+filling the gap the note asked it to fill or record.
+
+**Dropping the back-calculation on MANUAL→AUTO steps the valve by 3.83e-1** and
+is caught by the transfer gate alone. Gate 4 — the table's prediction, written
+before the transfer gate existed — stays green. M8.3 flagged that prediction as
+stale and asked for it to be falsified rather than quietly fixed; it now has
+been.
+
+### What the demo does NOT cover, measured
+
+M8.0's precedent is a slice whose own fix no wired scenario exercised, and
+`a-hand-written-scenario-can-be-vacuous` is a demo file whose knob changed no
+number. So the demo's coverage is measured the way both of those should have
+been: a `panic!` is compiled into each site and the shipped file is run for its
+documented 6 000 ticks. **`seed_from_output` is the control and MUST fire** —
+without it, "nothing fired" cannot be told apart from a probe that never reached
+the binary.
+
+| site | reached by the demo's 6 000 ticks? |
+|---|---|
+| `PiController::seed_from_output` (the load-time seed) | **yes** — the control, and it panics |
+| the anti-windup arm of `PiController::update` | no |
+| `ProportionalController::update` | no |
+| the `ControlMode::Manual` arm of the tick's control pass | no |
+| the engine's range backstop on a controller's output | no |
+
+So the demo exercises the loader's `[[controls]]` path, the tick order, the PI
+algorithm's ordinary arm and the snapshot's `controls` array — and **nothing
+else in the seam**. The anti-windup branch is not merely untaken by luck: the
+run's output stays inside `[0.194, 0.384]` for all 6 000 ticks, so `unclamped`
+never leaves `[0, 1]` and the branch cannot be entered. `ProportionalController`
+is reached by no file in `scenarios/` at all.
+
+Three further gaps need no probe, because they are facts about the runner rather
+than about the plant: the CLI issues **no commands**, so `SetControllerMode`,
+`SetSetpoint` and the AUTO refusal of `SetValveOpening` are unreachable from any
+shipped scenario, and the MANUAL→AUTO transfer — the piece of M8.3 that cost the
+most to get exact — has no wired exercise whatever. All of them are covered by
+`control_reference.rs` and `level_control_demo.rs` on fixtures and by hand.
+
+**What this does not license.** None of these is a defect and none un-defers
+anything; the point of measuring is that "the repo has a demo that regulates" is
+now a claim with a stated extent. A second wired plant — a P loop, or one whose
+actuator saturates — would close the first two rows, and is not written here
+because M8's remaining slice is the snapshot's, not another plant's.
+
 ### Deferred, with what un-defers each
 
 - **Pressure, temperature and flow control.** Fork 1's shape is
