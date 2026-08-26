@@ -4214,3 +4214,284 @@ behaviour depend on which crates are in the build.
 `InvalidCommand`, `ScenarioError`. Engine keeps a ring buffer of recent solver
 diagnostics included in snapshots — frontends can show "solver stress" and
 tests can assert convergence quality, not just results.
+
+## 10. Regulation — control loops (M8) — specified before building
+
+### The premise, and the deferral that named it
+
+Nothing in this simulator regulates anything. Every `Command` variant is a
+direct manual write of a number a human chose: a valve opening, a pump's
+on/off, a furnace duty. A tank fills until the mass clamp catches it; a level
+that drifts drifts forever unless something outside the engine notices and
+sends another command. Thirteen scenarios, and not one setpoint among them.
+
+§3a fork 5 is where this was last refused, and it drew the boundary precisely:
+a relief valve is "a pure element characteristic … no state, no tuning
+constants, no tick history", and **"state is what turns an element into a
+controller."** M8 crosses that line deliberately, and this note is mostly about
+what the state costs.
+
+### Fork 0 — what "regulation" is scoped to in the first building slice
+
+One loop type: **a tank's level, actuating a valve on its outlet.**
+
+Both halves already exist and are already load-bearing. `TankState::level(ρ)`
+is what `bottom_pressure` reads, so the measurement is not new; `Valve::opening`
+is a settable, range-validated field, so the actuator is not new either. The
+slice therefore adds **no physics and no solver machinery** — its entire content
+is the loop, its state, its command surface, and its gates. That is deliberate:
+a slice introducing a new measurement *and* a new actuator alongside the control
+machinery could not tell a controller bug from a measurement bug.
+
+### Fork 1 — where a loop lives on the model
+
+- **(a) A new `NodeKind`. Rejected.** A controller conducts nothing.
+  `validate_degrees`, `anchored_set`, `compile_edges` and `NodeSnapshot` all
+  assume a node is a hydraulic object; a node with no incident edges is a
+  floating dead leg to §3c and a NaN pressure to every snapshot reader. The
+  graph would carry a thing whose only property is that every graph algorithm
+  must skip it.
+- **(b) A field on the actuator node. Rejected.** A loop names a measurement
+  and an actuator *independently*, and in the only case this slice builds they
+  are different nodes — hanging the loop off either end makes the other end the
+  arbitrary one. Worse, the actuator field is precisely what the loop WRITES;
+  storing the writer inside the written struct makes "who owns this opening"
+  unanswerable at the exact point `apply` has to answer it (fork 4).
+- **(c) Chosen: an ordered list beside the graph**, `PlantGraph::controls:
+  Vec<ControlLoop>`. Each entry names its measurement node, its measured
+  variable, its actuator node, its algorithm and tuning, its mode, its setpoint
+  and its state. Declaration order is execution order; a `Vec`, never a map
+  (rule 3). A `LoopId` indexes it the way `NodeId` indexes the nodes, because
+  the command surface has to name one from outside.
+
+### Fork 2 — is the algorithm a trait? Rule 2 does not settle this by itself
+
+The reflex is: proportional versus integral is a fidelity, fidelity is
+trait-impl selection (rule 2), therefore a `Controller` trait. **That reflex
+skips the step that matters here**, so it gets argued rather than inherited.
+
+Every seam this project has built — `FlowSolver`, `ThermoModel`,
+`ReactionModel`, `SeparationModel` — is an engine-wide **singleton**: one box,
+chosen once, by one string in `[fidelity]`. A control algorithm is not that
+shape. One plant can reasonably want a proportional loop on one tank and an
+integral loop on another, and `[fidelity]` has no way to say so — its keys are
+per-engine by construction.
+
+Two candidate shapes, differing in arity rather than in principle:
+
+- **(a) An enum on the loop, matched inside the update. Rejected.** That match
+  is `if fidelity == Simple` wearing a different hat, sitting inside the one
+  function every loop calls. It is the shape rule 2 names as a bug.
+- **(b) Chosen: a trait, boxed per loop.** `Controller` in `core::traits`,
+  impls in `solvers`, selected per `[[controls]]` entry rather than in
+  `[fidelity]`. This is the project's **first `Vec<Box<dyn _>>` seam** and the
+  first fidelity choice made per instance instead of per engine. Rule 2 is
+  honored, not bent: what changes is how many there are.
+
+**One asymmetry has to be said out loud, because it is genuinely new.** Every
+existing seam's impls are pure functions of their arguments. A `Controller`
+impl **owns state** — the integral term — which makes the box part of the
+engine's inventory rather than part of its configuration. That is exactly the
+property §3a fork 5 named as the thing that turns an element into a controller,
+and it is why fork 5's reasoning does not carry over: a PSV could stay an
+element because it had none.
+
+### Fork 3 — when in the tick, and what the loop is allowed to see
+
+A loop reading *this* tick's solved state and writing an actuator opening would
+change a solver input after the solve, requiring a re-solve, whose answer would
+change the input again. That is an algebraic loop, and it is the same shape §3c
+rejected for per-iteration reclassification: an input that moves mid-solve makes
+the solver's own comparisons quantities over different problems. **Rejected.**
+
+**Chosen: the loop runs at the top of the tick, before the hydraulic solve, on
+the previous tick's resolved state.** One `dt` of measurement lag, and two
+independent justifications, neither of them convenience:
+
+- It is what a real plant does. A DCS samples on a scan and acts on the previous
+  sample; sampled control with one scan of lag **is** the physical system, not
+  an approximation of it.
+- It is the staleness §3 already accepts everywhere else: the quasi-steady solve
+  is already driven by tank levels integrated at the end of the previous tick,
+  which `network.rs` says of its transport density and `engine.rs` of its draws.
+
+**Tick 0 has no previous state**, and that is a consequence rather than an edge
+case: the first solve of a controlled plant must run on an actuator value
+nobody computed. So the initial output is *declared*, which fork 5 turns into a
+rule.
+
+### Fork 4 — the command surface, and what "manual" now means
+
+Today `Command::SetValveOpening` writes `opening` and nothing contests it. With
+a loop in AUTO on that valve, the write survives until the top of the next tick
+and is then silently overwritten — **a command that appears to work and does
+not**, which is the failure `apply` already refuses by name for the relief
+valve. It gets the same treatment and its own reason string.
+
+- `SetControllerMode { loop_id, mode }` — `Auto | Manual`.
+- `SetSetpoint { loop_id, value }` — range- and finiteness-checked like every
+  other command argument.
+- In `Manual`, the existing `SetValveOpening` drives the actuator, unchanged.
+  In `Auto` it is refused.
+
+**Transfer between modes is bumpless in both directions, and that is a decision
+rather than a nicety.** AUTO→MANUAL is free — the actuator already holds the
+loop's last output. MANUAL→AUTO is not: an integral term that kept accumulating
+(or that sat at zero) makes the output jump the instant the loop takes over. The
+fix is to back-calculate the integral from the actuator's current position at
+the moment of transfer, which is **the same arithmetic anti-windup needs**
+(fork 6, gate 4). Building it once, in the slice that ships the integral, is
+cheaper than deferring it — which is why this note does not defer it.
+
+**§7's rule lands directly on this slice, and is why the snapshot surface is
+specified here rather than discovered later:** *every command must have a
+reported consequence.* A `SetSetpoint` writing a field no snapshot reports is
+M6.0's `PuncturePipe` with the direction reversed — the defect §7 already
+documents. So:
+
+```text
+Snapshot        { …, controls: Vec<ControlSnapshot> }   // skipped when empty
+ControlSnapshot { id, name, mode, setpoint, measurement, output }
+```
+
+`measurement` is the value **the controller acted on**, not a re-read of the
+current state. Those differ by one tick (fork 3), and reporting the fresh one
+would make a lagging loop look instantaneous — hiding the lag from precisely the
+person debugging it.
+
+Two traps, both already paid for elsewhere in this file:
+
+- The list is `skip_serializing_if = "Vec::is_empty"`, so the thirteen existing
+  scenarios stay byte-identical — the move `ColumnDraw` and `column_duty` both
+  made.
+- **No controller field on `NodeSnapshot`.** A per-node `Option` reporting "no
+  loop here" on every node of every plant is the inverse of `column_duty`'s
+  argument: absent where there is nothing to report, and the report lives with
+  the loop that owns it.
+
+### Fork 5 — controller state is an initial condition, not an implementation detail
+
+A PI loop's integral term is stored state in exactly the sense a tank's mass is:
+carried across ticks, and the next answer depends on it. Rule 3 says same
+scenario ⇒ bit-identical, and M8.0 has just finished paying for the belief that
+a carried-over number is "a path, not an answer" — `prepare`'s continuation seed
+turned out to decide where a pass terminates.
+
+So the scenario declares the loop's memory, and declares **one** number rather
+than two:
+
+```toml
+[[controls]]
+name            = "level_control"
+measurement     = { node = "supply_tank", variable = "level" }
+actuator        = "discharge_valve"
+algorithm       = "pi"        # "p" | "pi"
+setpoint        = 6.0         # m — the variable's own display units, SI inside
+mode            = "auto"      # "auto" | "manual"
+initial_output  = 0.5         # actuator position at t = 0
+gain            = 0.4
+integral_time_s = 120.0       # PI only; refused on "p"
+```
+
+`initial_output` is the declared quantity; the integral term is **derived** from
+it at load, by the same back-calculation MANUAL→AUTO uses. So there is exactly
+one way a loop's memory can be initialized and no silent zero anywhere. `gain`
+and `integral_time_s` have no defaults, for the reason `x_T` has none (§3a fork
+6): a silent default is an invented value in disguise, and every gate would then
+pass for whatever was chosen.
+
+Refused at load, in both directions — the pattern the two separation fidelities
+established:
+
+- `integral_time_s` present with `algorithm = "p"`, or absent with `"pi"`.
+- Two loops naming the same actuator. Split-range and override control are real
+  and are deferred below; until then two writers of one opening is an ambiguity
+  with no defined resolution order, which is worse than a refusal.
+- `variable = "level"` on a node that is not a `Tank` — a level names nothing on
+  a vessel whose state IS pressure (§3a fork 2 says so in those words).
+- An `actuator` that is not a `Valve`, and a `ReliefValve` with its own reason:
+  its opening is not settable by anything (§3a fork 5).
+
+### Fork 6 — the gates, named before building, and the vacuity each one closes
+
+**"The level sat at the setpoint" is not a gate.** A tank draining through a
+fixed valve self-regulates: `bottom_pressure` rises with level, so outflow rises
+with level, and the thing finds an equilibrium with no controller anywhere in
+sight. A single steady-state assertion passes on the plant with the loop
+*removed*, which is `a-control-can-be-implied-by-its-assertion` one milestone
+later.
+
+Four gates, each named with the mutation it is predicted to be the one to catch:
+
+1. **The loop-off counterfactual.** Same plant, same disturbance, loop parked in
+   `manual`. The level must leave the band the AUTO run holds. Written first,
+   and it is the control rather than the test.
+2. **Setpoint tracking.** Step the setpoint mid-run; the level must move to the
+   new value. This proves the output is a function of the setpoint, which the
+   steady-state assertion cannot — a self-regulating tank's equilibrium is a
+   function of the valve position alone.
+3. **Disturbance rejection**, and the disturbance is already built:
+   `Command::PuncturePipe` is a step increase in outflow needing no new
+   machinery. The loop must return the level toward setpoint; the P loop must do
+   so with a **measurable offset** and the PI loop without one. That pair is what
+   proves the integral term does the thing its name claims — neither half proves
+   it alone.
+4. **Saturation and windup**, on a plant built to saturate: inflow exceeding the
+   outlet's flow at *full* opening, so level rises while the valve is pinned and
+   the integral accumulates against an actuator that cannot answer. Cut the
+   inflow and an unclamped integral holds the valve open well past the setpoint
+   — the undershoot is the signature. **The plant has to be built for this**,
+   stated here because an anti-windup branch nothing reaches is the vacuous
+   counter this file has shipped twice (`a-counter-is-not-a-gate`).
+
+Plus the regression anchor, in M8.0's shape and for M8.0's reason: **all thirteen
+existing scenarios byte-identical on both fidelities**, because none declares a
+loop. Anything that moves is the seam leaking into plants that never asked for
+it.
+
+### The mutations this slice owes, named before building
+
+Predictions, which is what makes them falsifiable — M8.0 got three of four wrong.
+
+| the edit | predicted catch |
+|---|---|
+| the integral never accumulates (PI degraded to P) | gate 3's offset pair, and nothing else |
+| the anti-windup clamp removed | gate 4 alone |
+| the loop runs AFTER the solve instead of before | **predicted uncaught** — a one-tick shift on a slow loop |
+| gain applied to the measurement instead of the error | gates 2 and 3; deliberately subtler than a sign flip, which would fail everything for the wrong reason (M1's lesson) |
+| `initial_output` ignored, integral seeded at zero | **predicted uncaught by any steady-state gate** — it lives in the transient |
+| the AUTO refusal of `SetValveOpening` removed | the refusal gate alone |
+| back-calculation dropped on MANUAL→AUTO | gate 4, through the same clamp arithmetic |
+
+Two of the seven are predicted uncaught. If either is caught, this note was
+wrong about what its gates measure; if either survives, it names a gap the slice
+must fill or record.
+
+### Deferred, with what un-defers each
+
+- **Pressure, temperature and flow control.** Fork 1's shape is
+  variable-agnostic; each needs a measurement path and an actuator that exists.
+  Un-defers per variable, and pressure is the near one — a `Vessel`'s state IS a
+  pressure, and a relief-free vessel currently has no way to be held anywhere.
+- **Cascaded loops** — a loop whose setpoint is another loop's output.
+  Un-defers when a plant has an inner loop fast enough to be worth separating;
+  it needs an execution-order rule stronger than declaration order.
+- **Derivative action.** Deferred because a D term on a measurement this project
+  reports with one tick of lag and no noise model is tuning theatre — it would
+  move numbers no gate could interpret. Un-defers with a plant whose loop is
+  oscillatory enough for damping to be distinguishable from a lower gain.
+- **Split-range, override, feedforward.** All three are "more than one writer of
+  one actuator", which fork 5 refuses at load. They un-defer together, with a
+  defined arbitration.
+- **Actuator dynamics** (stroke time, rate limits) and **deadband.** Un-defer
+  when a loop's measured performance depends on them, which at `dt = 0.1 s`
+  against a 120 s integral time it does not.
+- **Interlocks and trips** — a discrete layer, not a regulating one. Un-defers
+  with a safety case needing a plant to shut *itself* down.
+- **The slate on the snapshot** (M6.2's deferral) stays exactly where it is, and
+  this slice does **not** trigger it. A level controller reads
+  `TankState::level(ρ)` inside the engine, which already holds the slate; the
+  deferral's stated trigger is a *frontend* needing an absolute fill fraction, a
+  per-component readout, or a component name. Satisfying one of three triggers
+  by a route that never leaves the engine is not the un-defer condition, and
+  treating it as one would spend a written decision without paying for it.

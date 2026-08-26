@@ -2893,15 +2893,26 @@ specification's admissible region is a property of the solver path rather than o
 the physics: it has to be swept for, which is what the demo's stated `R = 1, 2, 3`
 margin is. M8 may begin.
 
-## M8 — scope undecided; opens with a defect slice
+## M8 — regulation (an operable plant); opened with a defect slice
 
 M7 closed with the roadmap's first genuinely open question: every milestone so
-far was named before it began, and M8 is not. The two candidates on the table are
-an operable plant (regulation — nothing in `Command` regulates anything, every
-variant is a direct manual value — plus the tank LEVEL the M6 frontend was
+far was named before it began, and M8 was not. The two candidates on the table
+were an operable plant (regulation — nothing in `Command` regulates anything,
+every variant is a direct manual value — plus the tank LEVEL the M6 frontend was
 deferred waiting for) and phase change outside the column (the flashing feed
 line, the partial condenser, the vapour side draw that M7.0 narrowed §3a's
 two-phase deferral down to).
+
+**Decided 2026-08-26: regulation.** Control loops, so the plant holds itself
+somewhere instead of being held by whoever is sending commands. Phase outside the
+column keeps its place on the deferral list with its trigger unchanged — it
+changes `Stream`, `Composition` and every reader of them, which is the widest
+blast radius of anything remaining, and nothing needs it yet. The M6.2 tank-level
+deferral is bundled into this milestone by the paragraph above but **not into the
+controller slices**: a level controller reads `TankState::level` inside the
+engine, which never touches the snapshot, so it satisfies one of that deferral's
+three stated triggers by a route that does not fire it (DESIGN §10, "Deferred").
+It gets its own slice.
 
 **Neither is what M8 opens with.** M8.0 below is a defect, not a feature, and it
 is first because it is the only item on the whole deferral list that is a known
@@ -3099,3 +3110,135 @@ the guard the pass's own `NonFiniteState` is returned at pass one; without it th
 loop takes the NaN-invented classification seriously and re-passes (2 against 1),
 which is what the gate now asserts. Verified both ways: green on the pristine
 tree, red under the mutation.
+
+### M8.1 — Scoping + design note (regulation) — **LANDED** 2026-08-26
+
+DESIGN §10, "Regulation — control loops (M8) — specified before building". Seven
+forks argued before any code, three of them corrections to the reflex answer:
+
+- [x] **Fork 0 scopes the first building slice to ONE loop type** — a tank's
+      level actuating a valve on its outlet — because both halves already exist
+      and are already load-bearing (`TankState::level` is what `bottom_pressure`
+      reads; `Valve::opening` is already range-validated). No new physics, no new
+      solver machinery. A slice adding a new measurement *and* a new actuator
+      alongside the control machinery could not tell a controller bug from a
+      measurement bug.
+- [x] **Fork 1 puts a loop beside the graph, not on it** — `PlantGraph::controls:
+      Vec<ControlLoop>`. A `NodeKind` was rejected because a controller conducts
+      nothing and every graph algorithm would have to skip it; a field on the
+      actuator node was rejected because the actuator field is exactly what the
+      loop *writes*, and storing the writer inside the written struct makes
+      "who owns this opening" unanswerable where `apply` must answer it.
+- [x] **Fork 2 is the one that could have been inherited instead of argued.**
+      "P versus PI is a fidelity, therefore a trait (rule 2)" skips a step: every
+      existing seam is an engine-wide SINGLETON chosen by one string in
+      `[fidelity]`, and a control algorithm is per-instance — one plant can want
+      one loop type on a tank and another on a vessel. The trait is still chosen,
+      as the project's first `Vec<Box<dyn _>>` seam, with the argument recorded
+      that this changes the seam's ARITY and not rule 2. The genuinely new
+      property: a `Controller` impl owns STATE, where every existing seam's impls
+      are pure — which is §3a fork 5's own definition of what turns an element
+      into a controller.
+- [x] **Fork 3 runs the loop at the TOP of the tick on the previous tick's
+      state.** Reading this tick's solve and writing an actuator is an algebraic
+      loop — the same shape §3c rejected for per-iteration reclassification. One
+      `dt` of lag, which is what a real sampled controller has and is the
+      staleness §3 already accepts for the tank levels feeding a quasi-steady
+      solve. Consequence, not an edge case: tick 0 has no previous state, so the
+      initial actuator output must be DECLARED.
+- [x] **Fork 4 makes a manual write under AUTO a refusal**, with its own reason
+      string, because a write that survives until the top of the next tick and is
+      then overwritten is a command that appears to work and does not — which
+      `apply` already refuses by name for the relief valve. And §7's rule ("every
+      command must have a reported consequence", the M6.2 fire) forces the
+      snapshot surface to be specified HERE: `Snapshot::controls`, skipped when
+      empty, reporting the measurement the controller ACTED ON rather than a
+      fresh re-read, because those differ by one tick and the fresh one would
+      hide the lag.
+- [x] **Fork 5 makes controller memory an initial condition.** The integral term
+      is stored state in the sense a tank's mass is, and M8.0 just finished
+      paying for the belief that a carried-over number is "a path, not an
+      answer". The scenario declares ONE number — `initial_output` — and the
+      integral is derived from it by the same back-calculation MANUAL→AUTO uses,
+      so there is exactly one way a loop's memory is initialized and no silent
+      zero anywhere. `gain` and the integral time get no defaults, for the reason
+      `x_T` has none.
+- [x] **Fork 6 names four gates and says what vacuity each closes**, starting
+      from the admission that "the level sat at the setpoint" is NOT a gate: a
+      tank draining through a fixed valve self-regulates through `ρgh` and passes
+      that assertion with the loop removed. Loop-off counterfactual, setpoint
+      step, disturbance rejection (`PuncturePipe` is already a step disturbance),
+      saturation/windup on a plant built to saturate. Seven mutations named in
+      advance, two of them predicted UNCAUGHT.
+
+### M8.2 — The control-loop seam and a proportional loop
+
+The seam, one stateless algorithm, and the command surface. No integral term
+here: the P loop's steady-state offset is half of gate 3's discriminating pair,
+and shipping it alone is what makes M8.3's half meaningful.
+
+- [ ] `core`: `ControlLoop`, `LoopId`, `ControlMode`, `MeasuredVariable` in
+      `graph.rs`; `PlantGraph::controls` as a `Vec` (rule 3). `Controller` trait
+      in `traits.rs`, taking the measurement, the setpoint and `dt`, returning
+      the actuator position — units on every quantity, `Result` on the way out.
+- [ ] `core`: the loop pass at the TOP of `Engine::tick`, before the hydraulic
+      solve, reading `self.node_states` from the previous tick (fork 3). The
+      measurement is captured into the loop so the snapshot can report what the
+      controller acted on rather than what is true now.
+- [ ] `core`: `Command::SetControllerMode` and `Command::SetSetpoint`; and
+      `SetValveOpening` REFUSED on a valve under a loop in AUTO, with the relief
+      valve's reason-string shape (fork 4).
+- [ ] `core`: `Snapshot::controls: Vec<ControlSnapshot>` with
+      `skip_serializing_if = "Vec::is_empty"` — the byte-identity move
+      `column_duty` and `ColumnDraw` both made. No per-node field (the inverse of
+      `column_duty`'s absent-where-nothing-to-report argument).
+- [ ] `solvers`: `ProportionalController`.
+- [ ] `scenarios`: the `[[controls]]` table, `deny_unknown_fields`, and the four
+      load-time refusals fork 5 names — tuning that belongs to the other
+      algorithm, two loops on one actuator, a level measured on a non-tank, an
+      actuator that is not a valve (and a `ReliefValve` with its own reason).
+- [ ] Tests: gates 1 and 2 (loop-off counterfactual, setpoint step) plus the
+      refusal gates. Gate 1 is written FIRST and is the control, not the test.
+- [ ] Tests: the regression anchor — all thirteen existing scenarios
+      byte-identical on both fidelities, since none declares a loop. M8.0's shape
+      and M8.0's reason.
+
+### M8.3 — The integral term: PI, anti-windup, bumpless transfer
+
+- [ ] `solvers`: `PiController`. Integral state owned by the impl, which is what
+      makes this the first stateful seam in the project (fork 2).
+- [ ] `solvers`: the anti-windup clamp, and MANUAL→AUTO back-calculation, which
+      is deliberately the SAME arithmetic — built once rather than twice, and the
+      reason fork 4 does not defer bumpless transfer.
+- [ ] `scenarios`: `initial_output` → the derived initial integral (fork 5). One
+      declared number, no silent zero.
+- [ ] Tests: gate 3 as a PAIR — the P loop returns with a measurable offset, the
+      PI loop without one. Neither half proves the integral term alone.
+- [ ] Tests: gate 4, on a plant BUILT to saturate (inflow above the outlet's flow
+      at full opening). An anti-windup branch nothing reaches is the vacuous
+      counter this repo has shipped twice.
+
+### M8.4 — The demo, and the mutation pass
+
+- [ ] `scenarios/`: a wired plant that regulates — the level-controlled tank, in
+      the shape of the M7 demo pair (a file a reader can diff against
+      `tank_pump_valve.toml`, differing only in that one holds its level).
+- [ ] **The mutation pass**, seven edits named in DESIGN §10 before building,
+      each verified to COMPILE and each applied to a source restored from ONE
+      pre-mutation snapshot. Two are predicted uncaught: the loop running after
+      the solve, and `initial_output` ignored. Report which gate actually fired,
+      not merely that something did.
+- [ ] Record what the demo does NOT cover, measured rather than assumed — M8.0's
+      finding that no wired scenario exercised its own fix is the precedent, and
+      `a-hand-written-scenario-can-be-vacuous` is the failure it avoids.
+
+### M8.5 — The slate on the snapshot (M6.2's deferral)
+
+Independent of the controller slices and deliberately after them: it is a
+frontend affordance, and M8.2–M8.4 must not be able to lean on it.
+
+- [ ] `core`: slate-derived data on `Snapshot` — component names and the
+      densities a frontend needs to turn a tank's mass into a fill fraction. The
+      deferral's stated fix, NOT a precomputed `level_m` field.
+- [ ] `godot-ext`: the scene draws a real fill level instead of mass on a shared
+      scale, which is the deferral's stated trigger.

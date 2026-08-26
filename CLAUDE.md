@@ -149,6 +149,23 @@ extension removed too — ignore it, the file it writes is what matters.
 ## Current milestone
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
+
+**M8 is open, and its scope is regulation** — control loops, so a plant holds
+itself somewhere instead of being held by whoever is sending commands. It opened
+with a defect rather than a feature: **M8.0 landed 2026-08-26**, the anchoring
+active-set loop (DESIGN §3c), which un-defers M5's FINDING 2 — `network::prepare`
+used to freeze the anchored set at the seed compile, so a relief valve whose
+`conducts` depends on the pressure *iterate* could be classified stale in either
+direction. **M8.1 landed 2026-08-26**: the regulation design note, DESIGN §10,
+seven forks argued before any code. The three worth knowing before touching this
+milestone — a control loop lives *beside* the graph (`PlantGraph::controls`), not
+as a node and not as a field on the actuator it writes; the algorithm is a trait
+but the project's **first per-instance seam**, so "rule 2 says trait" had to be
+argued rather than inherited, and its impls own STATE where every earlier seam's
+are pure; and the loop runs at the TOP of the tick on the *previous* tick's
+state, because reading this tick's solve and writing an actuator is an algebraic
+loop. `docs/ROADMAP.md` M8.2–M8.5 are the building slices, none started.
+
 M1–M7 are closed: flow network, heat, crude + simple column, reactor, gas and
 pressure realism, damage + the Godot frontend, and the complex column. **M7 closed
 2026-08-18** — the design note (DESIGN §5, "Complex column (M7)"), the
