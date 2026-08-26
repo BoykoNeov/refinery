@@ -3019,7 +3019,9 @@ like as against a solver that merely got faster.
 **The regression anchor is stronger than the note predicted, and the reason
 matters more than the result.** Predicted: eleven scenarios byte-identical, two
 possibly moved. Measured over 300 ticks on BOTH fidelities: **all thirteen
-byte-identical, 26 runs, every one exiting zero** — and every solve of every tick
+byte-identical, 26 runs, every one exiting zero** (a *pre-M8.5* measurement —
+`Snapshot::slate` later moved every scenario's bytes by one key; see M8.5) — and
+every solve of every tick
 settles at pass one, which is the mechanism rather than the coincidence. A relief
 changing state does not necessarily change the anchored SET: both shipped relief
 scenarios discharge to a fixed node, which anchors whatever the valve does. What
@@ -3300,7 +3302,8 @@ would hide it rather than mend it.
 
 **The regression anchor held exactly**: thirteen scenarios × two fidelities × 300
 ticks, **26 runs, every one exiting zero, every one byte-identical** against the
-tree before this slice. The mechanism is asserted too, not just the outcome —
+tree before this slice (*pre-M8.5*: `Snapshot::slate` later moved every
+scenario's bytes by one key, so reproducing this needs a pre-M8.5 tree — M8.5). The mechanism is asserted too, not just the outcome —
 `a_plant_with_no_loop_reports_no_controls_field` walks all thirteen and checks the
 key is absent from the JSON rather than present and empty.
 
@@ -3419,8 +3422,9 @@ ticks is the thing most likely to break it, and M8.0 has already paid once for
 believing a carried-over number is a path rather than an answer.
 
 **The regression anchor held**: thirteen scenarios × two fidelities × 300 ticks,
-26 runs, every one byte-identical against the tree before this slice. No file in
-`scenarios/` declares a loop — the wired demo is still M8.4's.
+26 runs, every one byte-identical against the tree before this slice (*pre-M8.5*
+— `Snapshot::slate` later moved every scenario's bytes by one key; see M8.5). No
+file in `scenarios/` declares a loop — the wired demo is still M8.4's.
 
 ### M8.4 — The demo, and the mutation pass
 

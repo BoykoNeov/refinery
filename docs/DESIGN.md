@@ -4837,7 +4837,9 @@ but its stated reason is now known not to be the whole test.
 
 All thirteen shipped scenarios, both flow fidelities, 300 ticks: **26 runs, every
 one exiting zero, every one byte-identical** to the same run on the tree before
-this slice. The mechanism is `skip_serializing_if = "Vec::is_empty"` plus the
+this slice. (A *pre-M8.5* measurement: `Snapshot::slate` later added one key to
+every snapshot in the workspace, so reproducing this number requires a pre-M8.5
+tree — §7 and ROADMAP M8.5 carry that measurement.) The mechanism is `skip_serializing_if = "Vec::is_empty"` plus the
 empty-list early exit at the top of `run_control_loops`, so a plant that declares
 no loop does not execute one line of the seam. M8.0's shape and M8.0's reason.
 
