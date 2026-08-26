@@ -1,0 +1,146 @@
+# M8.4 regulation demo: the M1 reference plant, with the receiving tank held at
+# a level instead of filled until it overflows.
+#
+# **Meant to be diffed against `tank_pump_valve.toml`.** The supply tank, the
+# pump, the discharge valve and the three pipes between them are that file's,
+# number for number. What is added is a drain out of the receiving tank and a
+# `[[controls]]` table that modulates it, and what is changed is listed here so
+# a reader does not have to guess which numbers are load bearing:
+#
+# | line | there | here | why |
+# |---|---|---|---|
+# | `dt` | 0.1 s | 1.0 s | a level loop on this tank settles in ~2 500 s; at 0.1 s the demo would be 60 000 ticks. **Not an accuracy shortcut**: the same run at `dt = 0.5` over twice the ticks ends at level 3.991993 m / opening 0.366078 against 3.991994 m / 0.366080 here, so the answer is the step size's to 1e-6. |
+# | `receiving_tank.area_m2` | 20.0 | 3.0 | at 20 m² the same flow imbalance moves the level ~7x slower, for no extra behaviour |
+# | `receiving_tank.initial_level_m` | 1.0 | 2.0 | the loop starts BELOW its setpoint and fills to it, which is the direction that cannot slam the drain shut — see the gain note |
+#
+# **The loop actuates the DRAIN, and that is forced rather than chosen.** The
+# error term is `measurement − setpoint` (`ControlledValue::error`) and a
+# controller's output is `clamp(K·e + b, 0, 1)`, so a rising level opens the
+# actuator. On a fill valve that is runaway; on a drain it is regulation. A
+# level loop in this engine therefore writes the valve the liquid leaves by, and
+# `discharge_valve` keeps M1's fixed 0.5.
+#
+# **The gain has a measured upper bound, and this is where to read it.** At the
+# settled operating point below the drain sits at opening ~0.376, so a setpoint
+# step of +1 m subtracts `gain_per_m x 1` from the output in a single tick: at
+# `gain_per_m = 0.35` the step survives, at `0.4` the output reaches exactly 0,
+# the drain branch is shut in one tick, and the Newton solver diverges (residual
+# ~1.1e1) — M8.2's finding, which is the solver's defect and not the loop's
+# (docs/DESIGN.md §10). The shipped 0.25 leaves margin on that bound. The
+# numbers are pinned by `scenarios/tests/level_control_demo.rs`.
+#
+# **What the loop is worth is measured, not asserted.** The same file with
+# `mode = "manual"` — the loop present, reporting, and writing nothing — leaves
+# the drain at its declared 0.20, which cannot pass the pump's flow: the level
+# runs to 9.19 m by tick 6000 and is still rising. In `auto` it holds 3.99 m.
+# A tank draining through a FIXED valve does self-regulate (outflow rises with
+# level), so the counterfactual had to be built to settle somewhere useless —
+# here, against the roof.
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_level_control.toml --ticks 6000
+
+[meta]
+name = "tank_level_control"
+description = "Pump fills a tank whose level is held by a PI loop on its drain valve."
+
+[simulation]
+dt = 1.0            # seconds per tick
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.supply_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 20.0
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0           # metric Kv [m^3/h at 1 bar], converted to SI on load
+opening = 0.5       # fixed, exactly as in tank_pump_valve.toml
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 2.0
+temperature_c = 20.0
+
+# The actuator. Sized so that holding the setpoint needs it about a third open:
+# a drain that had to sit nearly shut would put the operating point next to the
+# clamp, and one that had to sit nearly wide open would put it next to the other.
+[nodes.level_valve]
+type = "valve"
+kv = 200.0
+opening = 0.2       # equal to `initial_output` below, and that is the point
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "suction"
+from = "supply_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "discharge_valve"
+length_m = 30.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "discharge_valve"
+to = "receiving_tank"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = 5.0
+
+[[pipes]]
+name = "drain_line"
+from = "receiving_tank"
+to = "level_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "level_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# `initial_output` is the loop's MEMORY, not a bias (docs/DESIGN.md §10 fork 5):
+# the integral term is back-calculated at load from it and the error standing
+# there, so the first `update` returns exactly this number. Declaring it equal to
+# `level_valve.opening` is what makes the loop start without stepping its own
+# actuator; declaring them apart would move the valve on tick 1 by the
+# difference, which is a startup transient the file would be inventing.
+#
+# `integral_time_s` is long against the loop's own settling time on purpose: at
+# 600 s the level overshoots to 4.08 m and is inside 0.01 m of setpoint by tick
+# 2751, with the drain never leaving [0.194, 0.384].
+[[controls]]
+name = "receiving_level"
+measurement = { node = "receiving_tank", variable = "level" }
+actuator = "level_valve"
+algorithm = "pi"
+mode = "auto"
+setpoint_m = 4.0
+gain_per_m = 0.25
+integral_time_s = 600.0
+initial_output = 0.2
