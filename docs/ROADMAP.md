@@ -3272,9 +3272,11 @@ message saying that it invalidates the AUTO assertion rather than merely failing
 on its own. **The +0.74 m offset is the proportional loop working correctly**, and
 is the half of M8.3's pair this slice exists to supply.
 
-**Gate 2's step is DOWNWARD, and that is a measured choice.** An upward step of the
-same size drives the drain valve fully shut in one tick, which the hydraulic solver
-does not survive. Both of gate 2's bounds are derived rather than fitted: the level
+**Gate 2's step is DOWNWARD, and that is a measured choice** — one M9.0 has since
+retired. An upward step of the same size drives the drain valve fully shut in one
+tick, which the hydraulic solver did not survive until DESIGN §11 fixed it; the
+step stays downward because the numbers below were measured on it, not because it
+has to be. Both of gate 2's bounds are derived rather than fitted: the level
 must move, and must move LESS than the setpoint did, because a proportional loop's
 offset grows as the tank's head shrinks. Measured 0.9049 m for a 1.0 m step.
 
@@ -3299,6 +3301,12 @@ endpoint reached gradually converges, a cold start at the shut state converges,
 FAIL when the solver is fixed and carrying the assertion it should then make. It
 belongs to a `newton_flow` slice, not to M8 — and a rate limit in the controller
 would hide it rather than mend it.
+
+> **M9.0 fixed it, and falsified the mechanism this paragraph states.** The line
+> search cut nothing (`t = 1` accepted on all fifty iterations), no conductance
+> was unbounded (the shut valve's is exactly zero), and the iterate oscillated
+> rather than crawled. See DESIGN §11. The pin was turned the right way up as
+> `a_branch_shut_in_one_tick_converges_whoever_shuts_it`.
 
 **The regression anchor held exactly**: thirteen scenarios × two fidelities × 300
 ticks, **26 runs, every one exiting zero, every one byte-identical** against the
@@ -3434,7 +3442,9 @@ file in `scenarios/` declares a loop — the wired demo is still M8.4's.
       **Its gain has a measured upper bound and this is where to read it**: on
       M8.2's gate plant, `gain_per_m = 0.05` survives a setpoint step and `0.1`
       does not, because the larger gain clamps the output to zero in one tick and
-      a branch shut in one tick stalls the solver (M8.2's finding, DESIGN §10).
+      a branch shut in one tick stalls the solver (M8.2's finding, DESIGN §10;
+      **fixed by M9.0, DESIGN §11 — the bound survives as a TUNING bound, not a
+      stability one**).
       A demo that regulates must be tuned not to slam its own actuator, or it will
       fail for a reason that has nothing to do with control.
       **Landed as `scenarios/tank_level_control.toml`, gated by
@@ -3487,7 +3497,10 @@ file in `scenarios/` declares a loop — the wired demo is still M8.4's.
         reports "SOLVER FIXED". The prediction was right about the mechanism and
         wrong about the consequence, and **the gap it named is still open**: no
         gate asserts the tick order, and the one that noticed is a test whose
-        purpose is to be deleted. Recorded, not filled.
+        purpose is to be deleted. Recorded, not filled. **M9.0 closed it** — the
+        pin was righted rather than deleted, and the reordering now leaves
+        4.16 kg/s running through a branch the gate says is shut, which is a state
+        assertion and survives the next solver change.
       - **"`initial_output` ignored", predicted uncaught by any steady-state
         gate, is caught twice** — by M8.4's own startup gate (the first output
         comes back `0` instead of `0.2`, against a bound of `f64::EPSILON / 2`),
@@ -3682,3 +3695,73 @@ so the note-then-build discipline keeps paying, and it keeps paying by being
 two sides are computed by independent paths before writing the gate — earned a
 corollary here: when they are not, say so as an assertion, because the next
 person will reach for the same impossible gate.
+
+## M9 — solver robustness; opened with the shut-in stall
+
+M8 closed having reached a defect it deliberately did not fix: a branch driven to
+zero flow in one tick diverges the Newton hydraulic solver, whoever shuts it. It
+was pinned upside-down, named a `newton_flow` slice as its owner, and left. M9 is
+that slice and takes its name from what the defect turned out to be about — not
+control, not the branch law, but the numerics that decide which Newton step to
+take.
+
+The milestone is scoped one slice at a time, because what M9.1 should be depends
+on what M9.0 measured, and M9.0 measured that a single constant closes the whole
+window. There is no fan of further work here waiting to be listed.
+
+### M9.0 — the shut-in stall — **LANDED** 2026-08-26
+
+The design note is DESIGN §11, written before the fix, and it opens by falsifying
+the mechanism M8 recorded. **Five things worth carrying forward.**
+
+**The recorded explanation was wrong in both of its clauses, and the code comment
+was right.** M8 said an unbounded `dQ/dΔP` produced an enormous step that the line
+search cut back to nearly nothing. Instrumentation: the line search accepted
+`t = 1` on all fifty iterations and never halved anything; the shut valve's
+conductance is exactly ZERO, not unbounded; and the branch drop changed sign every
+iteration while the residual fell anyway. Meanwhile the comment above the line
+search already said the right thing — "Armijo rejects [the near-symmetric
+overshoot] and forces t ≤ ½" — and the constant underneath it did not implement
+it. **A mis-sized constant under a correct comment is worse than a wrong comment**,
+because the comment is what stops the next reader from checking.
+
+**The whole defect is a closed form.** F6 makes a shut valve orphan a node with
+exactly one live edge, so the failing solve is scalar. On `f(x) = x/√(|x|+ε)`, a
+full Newton step lands on `−x·(|x|/2)/(|x|/2+ε)` — the mirror, `2ε` nearer the
+root — while a HALF step lands on `x·ε/(|x|+2ε)`, which is smaller than `ε`
+whatever `x` was. The two candidate steps are "the worst available" and "the
+answer", and `ARMIJO_C` is what chooses between them.
+
+**The stall window is a relation between three constants, and `eps_dp` cancels
+out of it.** A solve stalls iff `2·eps_dp·max_iter < |Δp₀| ≲ eps_dp/ARMIJO_C`,
+which is `(100 Pa, 10 000 Pa]` as shipped and is empty iff
+`ARMIJO_C ≥ 1/(2·max_iter)`. Shrinking the regularisation — the reflex — moves
+both bounds identically and does nothing. The relation is asserted by
+`armijo_c_closes_the_shut_in_stall_window`, which fires on either half of the
+coupling.
+
+**The fix costs nothing and that is a measurement.** `ARMIJO_C: 1e-4 → 5e-2`
+(five times the bare bound, because `1e-2` measurably left a band open). Rejecting
+the full step forces the half step, which is nearly exact, so worst-case Newton
+iterations per pass across 6 000 ticks of all fourteen shipped scenarios **fell**,
+11 → 10 against a cap of 50. Ten of fourteen scenarios stay byte-identical; the
+four that move do so by at most `7.6e-11` relative on any physical quantity, and
+the biggest *relative* move in the corpus is on `solver.residual`, a diagnostic
+whose target is zero.
+
+**`cargo clippy -p refinery-godot-ext --features godot` was NOT run, and that is
+the correct call recorded rather than an omission.** CLAUDE.md asks for it
+whenever the binding changes; this slice changes one constant in `solvers`, two
+test files and the docs, and touches no line of `godot-ext`. The binding consumes
+`Snapshot`, whose shape is unchanged.
+
+**A sweep that never fails needs a control, and the gate that pinned the defect
+had to be righted rather than deleted.** 171 dead-leg diameters all converge at
+`5e-2`; the identical sweep at `1e-4` stalls on 24 of them, in a contiguous band
+whose upper edge sits where the derivation says it should. And righting the pin
+turned out to keep a catch nobody was defending: M8.4 had recorded "no gate
+asserts the tick ORDER" as an open gap, noticed only by that upside-down test.
+The righted gate asserts the shut branch's ENDPOINT, so moving the control pass
+below the solve now leaves 4.16 kg/s running through a branch it says is shut.
+**Re-run an upside-down test's catches after turning it right way up** — deleting
+it would have reopened a gap M8.4 paid to find.

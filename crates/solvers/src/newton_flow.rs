@@ -52,9 +52,38 @@ use std::collections::{BTreeMap, BTreeSet};
 /// Max damped-halvings per Newton step (min step 1/256).
 const MAX_HALVINGS: u32 = 8;
 /// Armijo sufficient-decrease coefficient for the line search.
-const ARMIJO_C: f64 = 1e-4;
+///
+/// **This constant is coupled to [`NewtonFlowSolver::max_iter`], and the coupling
+/// is the whole of M9.0** (DESIGN §11). Newton applied to the regularised
+/// square-root branch law overshoots to the *mirror* of its own drop, shrunk by
+/// `2·eps_dp`, so a full step that Armijo accepts walks toward the root at two
+/// pascals per iteration for ever. A shut valve leaves a dead leg with exactly
+/// one live edge (F6), so the whole failing solve is that scalar case, and it
+/// stalls precisely when
+///
+/// ```text
+/// 2·eps_dp·max_iter   <   |Δp₀|   ≲   eps_dp / ARMIJO_C
+/// ```
+///
+/// `eps_dp` cancels — shrinking it cannot help — and the window is empty iff
+/// `ARMIJO_C ≥ 1/(2·max_iter)`, i.e. `1e-2` at the default cap of 50. The
+/// shipped `5e-2` is a factor of five of margin on that, because the derivation
+/// is leading order in `eps_dp/|Δp|` and `1e-2` measurably left a narrow band
+/// open. `armijo_c_closes_the_shut_in_stall_window` asserts the relation.
+///
+/// Costing nothing is a measurement, not a hope: rejecting the full step forces
+/// `t = ½`, which lands within `eps_dp` of the root from *any* drop, so the
+/// worst-case iterations per pass across all fourteen shipped scenarios FELL,
+/// 11 → 10 of 50, when this went from `1e-4` to `5e-2`.
+const ARMIJO_C: f64 = 5e-2;
 
 pub struct NewtonFlowSolver {
+    /// Hard cap on Newton iterations within one anchoring pass.
+    ///
+    /// **Lowering this reopens the shut-in stall window** unless `ARMIJO_C` rises
+    /// with it — see that constant, and DESIGN §11. Nothing refuses a low value,
+    /// because no scenario file can set it; the invariant is asserted against
+    /// this struct's `Default` only.
     pub max_iter: u32,
     /// Absolute residual tolerance floor [kg/s].
     pub tol_abs_kg_s: f64,
@@ -211,6 +240,12 @@ impl NewtonFlowSolver {
             // φ'(0) = −‖R‖₂² = −2φ, so we require φ_t ≤ (1 − 2·c·t)·φ. Merely
             // requiring "any decrease" would accept the √-law's near-symmetric
             // overshoot (t=1) and stall; Armijo rejects it and forces t≤½.
+            //
+            // That was true as intent and false as code until M9.0: the mirror
+            // step decreases the merit by `2·eps_dp/|Δp|`, so `ARMIJO_C = 1e-4`
+            // accepted it below a drop of 10 kPa and the solve crawled 2 Pa at a
+            // time. The rejection threshold IS `eps_dp/ARMIJO_C`; see that
+            // constant for the relation it must hold against `max_iter`.
             let mut t = 1.0;
             let mut accepted = false;
             for _ in 0..=MAX_HALVINGS {
@@ -402,4 +437,50 @@ fn solve_linear(jac: &[Vec<f64>], b: &[f64]) -> Vec<f64> {
     let rhs = faer::Mat::from_fn(n, 1, |i, _| b[i]);
     let x = a.partial_piv_lu().solve(&rhs);
     (0..n).map(|i| x[(i, 0)]).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The relation DESIGN §11 derives, asserted against the shipped defaults.
+    ///
+    /// This is a gate on two constants that look independent and are not. A
+    /// Newton step on the regularised square-root law lands on the mirror of the
+    /// branch drop, `2·eps_dp` closer to the root, so an accepted full step
+    /// converges only after `|Δp₀|/(2·eps_dp)` iterations. Armijo accepts that
+    /// step while `|Δp₀| ≲ eps_dp/ARMIJO_C`, so plants whose drop falls in
+    ///
+    /// ```text
+    /// (2·eps_dp·max_iter, eps_dp/ARMIJO_C]
+    /// ```
+    ///
+    /// stall. `eps_dp` cancels, which is why it does not appear below: the
+    /// window is empty iff `ARMIJO_C·2·max_iter ≥ 1`.
+    ///
+    /// It fires on either half of the coupling — dropping `ARMIJO_C` back toward
+    /// `1e-4`, or lowering `max_iter` far enough that the cap can no longer fund
+    /// the crawl the constant still permits.
+    #[test]
+    fn armijo_c_closes_the_shut_in_stall_window() {
+        let max_iter = f64::from(NewtonFlowSolver::default().max_iter);
+        let closure = ARMIJO_C * 2.0 * max_iter;
+        assert!(
+            closure >= 1.0,
+            "the shut-in stall window is OPEN: ARMIJO_C = {ARMIJO_C:e} against              max_iter = {max_iter}, so a branch drop between {lo:.0} and {hi:.0}              pascals is accepted at t = 1 and then cannot reach the root inside              the cap. Raise ARMIJO_C to at least {need:e}, or raise max_iter to              at least {need_iter:.0} (DESIGN §11, fork 2 — which costs a dense LU              per iteration and is why fork 1 was chosen)",
+            lo = 2.0 * NewtonFlowSolver::default().eps_dp * max_iter,
+            hi = NewtonFlowSolver::default().eps_dp / ARMIJO_C,
+            need = 1.0 / (2.0 * max_iter),
+            need_iter = 1.0 / (2.0 * ARMIJO_C),
+        );
+
+        // And the margin is deliberate rather than incidental: `1e-2` satisfies
+        // the relation exactly and measurably left a band open, because the
+        // derivation is leading order in `eps_dp/|Δp|`. Asserting the margin is
+        // what stops a later "simplification" to the bare bound.
+        assert!(
+            closure >= 4.0,
+            "ARMIJO_C satisfies the stall relation with no margin (factor              {closure:.2}). DESIGN §11 measures a surviving stall band at the              bare bound; the shipped value carries a factor of five"
+        );
+    }
 }

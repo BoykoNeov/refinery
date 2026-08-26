@@ -280,13 +280,14 @@ fn a_parked_loop_leaves_the_band_the_auto_loop_holds() {
 /// setpoint and watching the level move with it* shows the output is a function
 /// of the setpoint at all.
 ///
-/// **The step is downward, and that is a measured choice rather than a stylistic
-/// one.** An upward step of this size drives the drain valve fully shut in one
-/// tick, which the hydraulic solver does not survive — for reasons that have
-/// nothing to do with control and that a human `SetValveOpening` reproduces
-/// exactly. That is pinned separately, by
-/// `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it`, so this gate
-/// can measure tracking instead of measuring the solver.
+/// **The step is downward, and M9.0 retired the reason it had to be.** M8.2 wrote
+/// it this way because an upward step of this size drives the drain valve fully
+/// shut in one tick, which the hydraulic solver did not survive; that is now
+/// fixed (DESIGN §11) and `a_branch_shut_in_one_tick_converges_whoever_shuts_it`
+/// asserts the endpoint instead of the failure. The step stays downward anyway,
+/// because every number below was measured on it and reversing the direction
+/// would re-measure a settled gate for no gain. What is *no longer true* is that
+/// this file must avoid shutting a branch — a later gate is free to.
 ///
 /// The asserted quantity is the DIRECTION and the SIZE of the move, and both
 /// bounds are derived rather than fitted:
@@ -349,38 +350,50 @@ fn the_level_follows_a_setpoint_step() {
     );
 }
 
-/// A branch driven to zero flow in ONE tick stalls the hydraulic solver — and a
-/// human command does it exactly as a controller does.
+/// A branch driven to zero flow in ONE tick converges — and a human command does
+/// it exactly as a controller does.
 ///
-/// **A characterization test, and the control is the point of it.** M8.2 makes
-/// something newly reachable: before it, a valve opening only moved when a person
-/// sent a command, and now a loop can slam one shut between two ticks. The
-/// question a gate has to answer is whether the seam introduced a failure or
-/// merely reached one, and the two halves below answer it — the same plant, the
-/// same endpoint, once by `SetSetpoint` and once by `SetValveOpening`, both
-/// refused by the solver in the same way. So this is not the control loop's
-/// defect, and M8.2 does not fix it inside the control loop, where a rate limit
-/// would hide it rather than mend it.
+/// **This gate was written by M8.2 as a characterization of a DEFECT, and M9.0
+/// turned it over.** Its old form asserted `SolverDiverged` on both halves and
+/// said in its own docstring that it should assert convergence once the solver
+/// was fixed. It is that, now.
 ///
-/// **What was measured**, on the plant above after 8 000 ticks:
+/// **The control is still the point of it.** M8.2 made something newly reachable:
+/// before it, a valve opening only moved when a person sent a command, and now a
+/// loop can slam one shut between two ticks. Both halves below drive the same
+/// plant to the same endpoint, once by `SetSetpoint` and once by
+/// `SetValveOpening` — so the defect was never the control loop's, and was not
+/// fixed inside it, where a rate limit would have hidden it rather than mended
+/// it. The fix is one constant in `newton_flow` (DESIGN §11).
 ///
-/// - The residual falls MONOTONICALLY and by about 0.36% per iteration —
-///   `4.158 → 3.344` over the 50-iteration cap. Newton is crawling, not
-///   oscillating and not stuck: the pipe characteristic `ΔP = α·Q|Q|` has an
-///   unbounded `dQ/dΔP` as `Q → 0`, so the Newton step from a warm start carrying
-///   3.3 kg/s is enormous and the line search cuts it back to almost nothing.
-/// - The same endpoint reached GRADUALLY converges (20 ticks of `0.20 → 0.00`),
-///   and so does a cold start already at the shut state. It is the jump that
-///   fails, not the state.
-/// - `gain_per_m = 0.05`, which never fully shuts the valve, survives the same
-///   step; so does the `simple` flow solver; so does any target opening at or
-///   above 0.01.
+/// **The mechanism M8.2 recorded here was wrong in both of its clauses, and the
+/// wrong version is worth restating because it is what the next reader will
+/// guess.** It said the residual fell monotonically because Newton was *crawling*
+/// from an enormous step the line search had cut back, driven by an unbounded
+/// `dQ/dΔP` as `Q → 0`. Measured, on the failing solve: the line search accepted
+/// `t = 1` on all fifty iterations and never halved anything; the shut valve's
+/// conductance was exactly ZERO rather than unbounded; and the branch drop
+/// changed SIGN every iteration (`+281.8, −279.8, +277.9, …`) while the residual
+/// fell anyway, because the residual is a function of `|drop|`. A monotone
+/// residual history says nothing about the iterate's path.
 ///
-/// This belongs to a solver slice, not to M8. It un-defers with a warm-start or
-/// step-damping fix in `newton_flow`, at which point this test fails and should
-/// then assert that both halves CONVERGE.
+/// What was really happening: a Newton step on the regularised square-root law
+/// lands on the mirror of the drop, `2·eps_dp` nearer the root, so an accepted
+/// full step converges only after `|Δp₀|/2` iterations — 141 of them here,
+/// against a cap of 50. A HALVED step lands within `eps_dp` of the root from any
+/// drop at all, so the whole defect was that `ARMIJO_C` was too small to reject
+/// the full one.
+///
+/// **`Ok(())` is not the assertion, and that refusal is deliberate.** A solve can
+/// converge, conserve mass and rerun bit-identically while frozen wrong (M3.2), so
+/// a line search that accepted *anything* would also pass an `is_ok()` gate here.
+/// What is asserted is the endpoint, through the dead-leg identity below, on
+/// THREE independent routes to it: the loop's step, the hand command, and the
+/// gradual `0.20 → 0.00` that M8.2 recorded as already converging while the other
+/// two did not. The third is the one that makes this a comparison rather than a
+/// self-report.
 #[test]
-fn a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it() {
+fn a_branch_shut_in_one_tick_converges_whoever_shuts_it() {
     // By controller: a setpoint step big enough that `u = K·e` clamps to zero.
     let mut by_loop = engine_from(PLANT);
     run(&mut by_loop, TICKS);
@@ -390,9 +403,11 @@ fn a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it() {
             value: ControlledValue::Level { m: Meter(6.0) },
         })
         .expect("a reachable setpoint is accepted");
-    let loop_err = by_loop
+    by_loop
         .tick()
-        .expect_err("SOLVER FIXED: a controller can now shut a branch in one tick");
+        .expect("SOLVER REGRESSED: a controller shutting a branch in one tick");
+    assert_eq!(output_now(&by_loop), 0.0, "the step must reach the clamp");
+    assert_dead_leg(&by_loop, "the control loop");
 
     // By hand, on the same plant with the loop parked: the identical endpoint,
     // written by a command that has existed since M1.
@@ -405,33 +420,118 @@ fn a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it() {
             opening: 0.0,
         })
         .expect("in MANUAL a human drives the valve");
-    let hand_err = by_hand
+    by_hand
         .tick()
-        .expect_err("SOLVER FIXED: a hand-shut branch now converges");
+        .expect("SOLVER REGRESSED: a hand-shut branch in one tick");
+    assert_dead_leg(&by_hand, "a hand command");
 
-    for (who, err) in [("the control loop", loop_err), ("a hand command", hand_err)] {
-        match err {
-            SimError::SolverDiverged {
-                residual_history, ..
-            } => {
-                // Monotone descent is the claim that makes this a stall rather
-                // than a divergence, and it is what says the fix belongs in the
-                // step control rather than in the model.
-                let monotone = residual_history.windows(2).all(|w| w[1] <= w[0]);
-                assert!(
-                    monotone,
-                    "{who}: the residual history is not monotone, so this is no \
-                     longer the slow-crawl stall this test characterizes: \
-                     {residual_history:?}"
-                );
-            }
-            other => panic!(
-                "{who} was expected to stall the solver and instead produced {other}. \
-                 If the solver was fixed, both halves should now converge and this \
-                 test should assert that"
-            ),
-        }
+    // The third route, and the only one that converged before the fix: the same
+    // endpoint walked down in twenty steps. It reaches a DIFFERENT tank level —
+    // twenty more ticks of draining — which is exactly why the identity asserted
+    // is level-independent rather than a stored pair of numbers.
+    let mut gradually = engine_from(&PLANT.replace(r#"mode = "auto""#, r#"mode = "manual""#));
+    run(&mut gradually, TICKS);
+    let valve = gradually
+        .graph
+        .find_node("drain_valve")
+        .expect("drain valve");
+    for step in (0..20).rev() {
+        gradually
+            .apply(Command::SetValveOpening {
+                node: valve,
+                opening: 0.20 * f64::from(step) / 20.0,
+            })
+            .expect("in MANUAL a human drives the valve");
+        gradually
+            .tick()
+            .expect("the gradual route always converged");
     }
+    assert_dead_leg(&gradually, "the gradual route");
+}
+
+/// The endpoint every route to a shut drain must reach, asserted as an identity
+/// so that three runs at three different tank levels can be compared at all.
+///
+/// A shut valve carries no flow, so the node behind it is a dead leg fed by one
+/// pipe (F6 guarantees exactly one). With no flow through that pipe its drop is
+/// its static head alone, and this plant declares no elevation, so the valve node
+/// must sit at the tank's own bottom pressure.
+///
+/// **Both tolerances are bracketed by measurement on both sides, which is what a
+/// derivation alone could not do here.** The solve stops at
+/// `tol_abs + tol_rel·throughput`, about `3e-8 kg/s` on this plant, and the branch
+/// law turns that into a pressure bound: near the root `Q ≈ c·Δp/√eps_dp`, so
+/// `|Δp| ≲ √eps_dp·Q/c`. That is a conservative *upper* bound and nothing more —
+/// it lands about 30× above what the converged solve actually leaves.
+///
+/// So both sides were run instead:
+///
+/// | | converged | solve stopped short |
+/// |---|---|---|
+/// | drain flow [kg/s] | `1.6e-9` | `2.6e-4` |
+/// | dead-leg offset [Pa] | `6.5e-9` | `1.1e-3` |
+///
+/// The right-hand column is a mutation, `tol_abs_kg_s: 1e-8 → 1e-3`, and it is
+/// the one that matters: it makes the solve return `Ok` while stopping short,
+/// which is precisely the failure an `is_ok()` gate cannot see. The asserted
+/// bounds sit between the columns — loose enough that retuning the solver's last
+/// bits does not fail them, tight enough that both failure modes do. Each fired
+/// on its own, checked by relaxing the other.
+///
+/// **There is deliberately no column for the stall this gate used to pin, and the
+/// absence is the honest answer rather than a gap.** A stalled tick returns `Err`,
+/// so no snapshot exists to read an offset off — this function is never reached.
+/// What the instrumented solve showed is the same quantity seen from inside: the
+/// branch drop `x = Δp − β` still standing at about 185 Pa when the iteration cap
+/// hit (and `β` is zero here — the converged offset above is `6.5e-9`, not an
+/// elevation head). Three orders above the bound asserted below, measured on the
+/// solver rather than on a snapshot.
+fn assert_dead_leg(engine: &Engine, who: &str) {
+    let snapshot = engine.snapshot();
+    let pressure = |name: &str| {
+        snapshot
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap_or_else(|| panic!("{who}: the fixture has a node called {name}"))
+            .pressure_pa
+    };
+    let flow = |name: &str| {
+        snapshot
+            .edges
+            .iter()
+            .find(|e| e.name == name)
+            .unwrap_or_else(|| panic!("{who}: the fixture has a pipe called {name}"))
+            .stream
+            .mass_flow
+            .value()
+    };
+
+    let drain = flow("drain_line").abs();
+    assert!(
+        drain < 1e-6,
+        "{who}: the drain branch is shut, so its pipe must carry no flow, and it \
+         carries {drain:e} kg/s. TWO edits leave exactly this: a solve that \
+         returned Ok while stopping short (a few e-4), and the control pass \
+         moved BELOW the solve, which solves this tick with the valve still \
+         open and so leaves the branch its full running flow (a few e0)"
+    );
+    let rundown = flow("rundown_line").abs();
+    assert!(
+        rundown == 0.0,
+        "{who}: the shut valve's own outlet edge has zero conductance, so its \
+         flow is not merely small but exactly zero; got {rundown:e} kg/s"
+    );
+
+    let offset = (pressure("drain_valve") - pressure("control_tank")).abs();
+    assert!(
+        offset < 1e-4,
+        "{who}: with no flow through a pipe that declares no elevation, the dead \
+         leg behind the shut valve must sit at the tank's bottom pressure. It is \
+         off by {offset:e} Pa. THIS is the assertion that separates a converged \
+         solve from a solve that merely returned Ok: the mutation that stops the \
+         solve short leaves 1.1e-3 Pa here while still returning Ok"
+    );
 }
 
 // ------------------------------------------- what the snapshot reports
@@ -1283,13 +1383,13 @@ initial_output = 0.2
 /// ticks. If that count is zero, every number below is about a plant that never
 /// saturated and the gate has no power, whatever it asserts.
 ///
-/// **The load is removed by a PARTIAL cut, and that is a measured constraint
-/// rather than a stylistic one.** Shutting the feed valve outright drives a branch
-/// to zero flow in one tick, which stalls the hydraulic solver for reasons that
-/// have nothing to do with control and are pinned by
-/// `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it`. Quartering it
-/// removes more than enough load to expose windup and leaves the solver a problem
-/// it can solve.
+/// **The load is removed by a PARTIAL cut, and M9.0 retired the constraint that
+/// forced it.** Shutting the feed valve outright drives a branch to zero flow in
+/// one tick, which stalled the hydraulic solver when M8.3 wrote this and no
+/// longer does (DESIGN §11). Quartering it stays, because it removes more than
+/// enough load to expose windup and every number below was measured on it — but
+/// it is now a choice rather than a workaround, and the 779-tick saturation count
+/// above is what would have to be re-measured to change it.
 ///
 /// **The signature is the undershoot, and both bounds were measured on this plant
 /// with the clamp removed** — the one mutation this slice ran early, because a

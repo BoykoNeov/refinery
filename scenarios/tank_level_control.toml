@@ -23,11 +23,17 @@
 # **The gain has a measured upper bound, and this is where to read it.** At the
 # settled operating point below the drain sits at opening ~0.376, so a setpoint
 # step of +1 m subtracts `gain_per_m x 1` from the output in a single tick: at
-# `gain_per_m = 0.35` the step survives, at `0.4` the output reaches exactly 0,
-# the drain branch is shut in one tick, and the Newton solver diverges (residual
-# ~1.1e1) — M8.2's finding, which is the solver's defect and not the loop's
-# (docs/DESIGN.md §10). The shipped 0.25 leaves margin on that bound. The
-# numbers are pinned by `scenarios/tests/level_control_demo.rs`.
+# `gain_per_m = 0.35` the output never reaches the clamp, at `0.4` it reaches
+# exactly 0 and the drain branch is shut in one tick. The shipped 0.25 leaves
+# margin on that. The numbers are pinned by
+# `scenarios/tests/level_control_demo.rs`.
+#
+# **That bound used to be a STABILITY bound and is now only a tuning one.**
+# Shutting a branch in one tick diverged the Newton solver when M8.2 found it;
+# M9.0 fixed the solver (docs/DESIGN.md §11), and `0.4` now clamps, recovers and
+# parks on the stepped setpoint like its gentler neighbours. It is still not the
+# shipped gain, because a loop that slams its actuator against a limit on a
+# one-metre setpoint move is badly tuned — but it no longer breaks anything.
 #
 # **What the loop is worth is measured, not asserted.** The same file with
 # `mode = "manual"` — the loop present, reporting, and writing nothing — leaves

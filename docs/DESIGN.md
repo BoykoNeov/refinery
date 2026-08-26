@@ -441,6 +441,13 @@ defect is fixed, at which point their assertions become the description of the
 fix; and the generated rates are floored in the arm so the deferral cannot
 quietly worsen.
 
+> **This deferral was spent by M8.0 and the paragraph above is history.** The
+> outer loop over the classification is `network::solve_with_active_anchoring`
+> (DESIGN §3c); both `known_defect_frozen_anchoring_*` pins were turned the right
+> way up and now assert the fix, under the heading "the two plants that used to
+> be `known_defect_frozen_anchoring_*`" in `invariants.rs`. Nothing here still
+> holds a line.
+
 **The iterate needs a pressure floor that the converged answer does not.** A
 Newton trial can overshoot to a non-positive pressure on its way to the root,
 where `ρ = P·M̄/(R·T) ≤ 0` makes the pipe resistance non-positive and
@@ -4679,6 +4686,14 @@ now take the slate, so there is one definition of where the liquid surface is.
 
 ### The finding this slice reached and did not fix
 
+> **Superseded by M9.0 (DESIGN §11), and its stated mechanism is false.** The
+> stall is real and was fixed by one constant; the explanation below — an
+> unbounded `dQ/dΔP` and a line search cutting the step back — describes neither
+> the conductances nor the code that ran. What actually happens is that Newton on
+> the regularised square-root law overshoots to the *mirror* of the branch drop,
+> which `ARMIJO_C = 1e-4` was too small to reject. Kept as written because the
+> corrections below are only readable against it.
+
 **A branch driven to zero flow in ONE tick stalls the hydraulic solver, and a hand
 command does it exactly as a controller does.** M8.2 makes something newly
 reachable — before it, a valve opening moved only when a person sent a command,
@@ -4932,7 +4947,7 @@ rather than after.
 | gain applied to the measurement (run in M8.2) | gates 2 and 3 | three gates, one the table does not mention — **incomplete** |
 | the anti-windup clamp removed (run in M8.3) | gate 4 alone | gate 4 alone — **right** |
 | the integral never accumulates | gate 3's offset pair, **and nothing else** | four: gates 3 and 4, and both of the demo's — **wrong about "nothing else"** |
-| the loop runs AFTER the solve | **uncaught** | one: `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it` — **falsified** |
+| the loop runs AFTER the solve | **uncaught** | one: `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it` — **falsified** (and see M9.0: the catch SURVIVED that test being turned right way up) |
 | `initial_output` ignored, integral seeded at zero | **uncaught by any steady-state gate** | two: the demo's startup gate and fork 5's refusal sweep — **falsified** |
 | the AUTO refusal of `SetValveOpening` removed | the refusal gate alone | the refusal gate alone — **right** |
 | back-calculation dropped on MANUAL→AUTO | gate 4, through the clamp arithmetic | the transfer gate alone; gate 4 silent — **the table wrong, M8.3's revision right** |
@@ -4954,6 +4969,15 @@ ORDER**, and the one that noticed is a test whose whole purpose is to be deleted
 when the solver is fixed. That is recorded rather than filled, because a gate
 for it would have to assert something about a one-tick shift on a plant slow
 enough that nothing else can see it.
+
+> **M9.0 closed this, and not by writing the gate this paragraph asks for.** The
+> solver was fixed and the pin was turned the right way up rather than deleted;
+> it now asserts the shut branch's ENDPOINT, and the reordering leaves `4.16 kg/s`
+> running through a branch it says is shut. A state assertion catches what an
+> expected failure caught, and keeps catching it across the next solver change.
+> The lesson stands the other way round from how it was written: an upside-down
+> test can be carrying a real gate, so re-run its catches after righting it
+> (DESIGN §11).
 
 **`initial_output` ignored is caught twice, and only one of the two is about
 what the edit is named for.** The demo's startup gate sees it directly — the
@@ -5044,3 +5068,322 @@ because M8's remaining slice is the snapshot's, not another plant's.
   per-component readout, or a component name. Satisfying one of three triggers
   by a route that never leaves the engine is not the un-defer condition, and
   treating it as one would spend a written decision without paying for it.
+
+## 11. Solver robustness (M9) — specified before building
+
+M9 opens the way M8 did, with a defect the previous milestone reached and did not
+fix: **a branch driven to zero flow in one tick stalls the Newton hydraulic
+solver.** M8 left it pinned by a characterization test and named a `newton_flow`
+slice as its owner. This is that slice, and the first thing it did was falsify
+the mechanism M8 recorded for it.
+
+### The recorded mechanism is false, in both of its clauses
+
+DESIGN §10 and the pin's own docstring say this:
+
+> The residual falls monotonically, by about 0.36% per iteration: `4.158 → 3.344`
+> over the 50-iteration cap. Newton is crawling, not oscillating and not stuck.
+> `ΔP = α·Q|Q|` has an unbounded `dQ/dΔP` as `Q → 0`, so the step from a warm
+> start carrying 3.3 kg/s is enormous and the line search cuts it back to nearly
+> nothing.
+
+Instrumenting the failing solve — every iteration's step, accepted `t`, per-edge
+conductance, and the orphaned node's branch drop — refutes both halves:
+
+- **The line search cuts nothing.** `accepted = true` at `t = 1` on all 50
+  iterations, in both halves of the pin. No halving ever happens, so "the line
+  search cuts it back" describes code that does not run.
+- **No conductance blows up.** The shut valve's `alpha` is `+∞`, so its
+  conductance is exactly **zero** — the opposite of unbounded. The one conducting
+  edge into the orphaned node is an ordinary pipe whose conductance grows mildly
+  across the failing solve, `7.400e-3 → 9.154e-3`.
+- **The iterate oscillates.** The branch drop runs `+281.825, −279.839, +277.853,
+  −275.868, …, −188.625, +186.646, −184.667` Pa — it changes sign every
+  iteration. The residual falls monotonically anyway, because the residual is a
+  function of `|drop|`. So the pin's own inference — "monotone, therefore
+  crawling rather than oscillating" — does not follow, and is the second thing
+  this slice has to rewrite.
+
+The general lesson is one this project has paid for before: a monotone residual
+history says nothing about the iterate's path, because the merit is even in the
+error and the error is not.
+
+### The real mechanism: Newton on the regularised square root is a shrinking 2-cycle
+
+F6 (`validate_degrees`) forces a valve node to have exactly one inlet edge and one
+outlet edge, so shutting a valve **always** leaves a node with exactly one
+conducting edge — a dead leg with one unknown pressure. That reduces the failing
+solve to a scalar problem, which can be done in closed form.
+
+Let `x = Δp − β` be that branch's driving drop, `c` its conductance and
+
+```
+f(x)  = x / sqrt(|x| + ε)              (elements::smooth_signed_sqrt, ε = eps_dp = 1 Pa)
+f'(x) = (|x|/2 + ε) / (|x| + ε)^{3/2}
+```
+
+so the node residual is `R = c·f(x)`, with its root at `x = 0`. The Newton step in
+`x` is `f/f' = x(|x| + ε)/(|x|/2 + ε)`, and therefore
+
+```
+x₁ = x − f/f'   = −x · (|x|/2) / (|x|/2 + ε)      (full step, t = 1)
+x₁ = x − ½·f/f' =  x · ε / (|x| + 2ε)             (half step, t = ½)
+```
+
+Two facts fall straight out of that pair, and between them they are the whole
+defect and the whole fix:
+
+- **The full step is the mirror image, shrunk by `2ε`.** `|x₁| = |x|·|x|/(|x| +
+  2ε)`, so `|x| − |x₁| = |x|·2ε/(|x| + 2ε) → 2ε` for `|x| ≫ ε`. The iterate walks
+  toward the root at **two pascals per iteration**, forever, whatever the plant.
+  Measured decrements on the pin: `1.99, 1.99, 1.98, …, 1.98` against a predicted
+  `2.0`.
+- **The half step is nearly exact, and is bounded independently of the start.**
+  `|x₁| = |x|·ε/(|x| + 2ε) < ε`. One `t = ½` step lands within a pascal of the
+  root from *any* drop, however large.
+
+So the two candidate steps are not "big and small". They are "the worst step
+available" and "the answer". Everything below is about which one gets taken.
+
+### Why the line search takes the wrong one
+
+Merit is `φ = ½‖R‖₂²`, and on this scalar problem `φ ∝ f(x)²`. For `|x| ≫ ε`,
+`f(x)² ≈ |x|`, so the full step's merit ratio is
+
+```
+φ₁/φ₀ ≈ |x₁|/|x₀| ≈ 1 − 2ε/|x₀|
+```
+
+The Armijo test at `t = 1` is `φ₁ ≤ (1 − 2·ARMIJO_C)·φ₀`, so the mirror step is
+
+```
+ACCEPTED   iff   |x₀| ≲ ε / ARMIJO_C
+```
+
+At the shipped `ε = 1 Pa` and `ARMIJO_C = 1e-4` that threshold is **10 000 Pa**.
+The pin's plant starts the failing solve at 282 Pa, far below it, so the mirror
+step is accepted every time and the solve crawls at 2 Pa per iteration:
+282/2 = 141 iterations needed against a `max_iter` of 50. The by-hand half starts
+at 114.6 Pa, needs 57, and misses the cap by seven.
+
+**The comment above the line search already states the correct intent** — "merely
+requiring *any* decrease would accept the √-law's near-symmetric overshoot (t=1)
+and stall; Armijo rejects it and forces t ≤ ½". That sentence is right. The
+constant underneath it does not implement it. The defect is a mis-sized constant
+under a correct comment, which is worse than a wrong comment, because the comment
+is what stops the next reader from checking.
+
+### The stall window, and the relation between three constants
+
+A solve stalls exactly when the mirror step is accepted *and* the resulting 2 Pa
+crawl cannot finish inside the cap:
+
+```
+2·ε·max_iter   <   |x₀|   ≲   ε / ARMIJO_C
+```
+
+Three consequences, and the middle one kills the reflex fix:
+
+1. At the shipped constants the window is `(100 Pa, 10 000 Pa]` — wide, and
+   sitting squarely where ordinary plants live.
+2. **`ε` cancels.** It scales both bounds identically, so changing `eps_dp`
+   cannot open or close the window. "The regularisation is the problem, shrink
+   it" is the obvious move and it is inert.
+3. The window is empty iff **`ARMIJO_C ≥ 1/(2·max_iter)`**, which is `1e-2` at
+   the default `max_iter = 50`. That is a relation between two constants that
+   have never had anything to do with each other, and it is the thing this slice
+   has to write down somewhere a reader will find it.
+
+**Verified by prediction rather than by fitting.** At `ARMIJO_C = 3e-3` the
+relation predicts a window of `(100 Pa, 333 Pa]` — a *non-monotone* signature,
+converging at both ends of a drop sweep and stalling in the middle, which a
+merely-improved solver cannot fake. Sweeping the dead-leg pipe diameter (the drop
+falls roughly as `d⁻⁵` at nearly constant flow) produced exactly that: `0.08`
+converged, `0.09` converged, `0.10`/`0.11`/`0.12` stalled, `0.13`/`0.14`/`0.16`
+converged.
+
+### Reachability: it is a drop window, not a plant shape
+
+Three topologies were built and all three reproduce it, so nothing about the
+pin's plant is special:
+
+- **scalar** — the controlled valve straight off the tank (the pin's own plant);
+- **chain** — a junction inserted between tank and valve (`4.1577 → 3.3442`
+  against the scalar's `4.1579 → 3.3445`);
+- **branching** — a tee with two valves shut in the same tick, which converges at
+  the shipped diameters and stalls once the legs are narrowed to `d = 0.075`.
+
+That last one is the trap this slice nearly fell into. The tee converging first
+time reads as "branching cures it, the defect needs an isolated dead leg" — a
+topological conclusion, and false. Narrowing the legs brought the stall straight
+back. What decides is `|x₀|`, and a plant lands inside or outside the window for
+reasons that have nothing to do with its shape.
+
+Combined with F6, this is common rather than exotic: every shut valve in every
+plant orphans a node with exactly one live edge, and whether that plant survives
+being shut in one tick was decided by an undocumented pressure band.
+
+### The forks
+
+**Fork 1 — raise `ARMIJO_C` so the derived relation holds. CHOSEN.**
+One constant, no new code path, and it makes the line search do what its own
+comment already claims. `ARMIJO_C: 1e-4 → 5e-2`.
+
+Not `1e-2`, though `1e-2` is what the relation demands: at `1e-2` the two bounds
+merely *touch*, and the derivation is leading order in `ε/|x|`, so the neglected
+terms decide the boundary. Measured rather than assumed — at `1e-2` a surviving
+stall band was found at `d = 0.124` (residual stuck at 0.6604) and `d = 0.126`
+(0.0328). `5e-2` is a factor of five of margin on the relation, and it closed
+every sample taken.
+
+The standing objection to a stricter sufficient-decrease demand is that it
+rejects legitimate steps and turns a slow solve into a reported divergence. On
+this residual it does the opposite, and the closed form above says why: rejecting
+`t = 1` forces `t = ½`, and `t = ½` lands within `ε` of the root. **Measured
+worst-case Newton iterations per pass, over 6 000 ticks of all fourteen shipped
+scenarios**, against a cap of 50:
+
+| | worst pass, `1e-4` | worst pass, `5e-2` |
+|---|---|---|
+| `tank_level_control` | **11** | 9 |
+| `knockout_drum` | 10 | 7 |
+| `relief_blowdown` | 10 | **10** |
+| `leaking_line` | 9 | 8 |
+| `tank_pump_valve` | 9 | 9 |
+| `gas_line`, `gas_valve` | 8 | 8 |
+| `fcc_plant` | 6 | 7 |
+| `heat_recovery` | 5 | 5 |
+| `crude_column`, `crude_column_cascade` | 4 | 4 |
+| `fcc_reactor` | 3 | 3 |
+| `cooler_chiller`, `furnace_heater` | 0 | 0 |
+
+The worst case across the corpus **falls**, 11 → 10, and one scenario rises by a
+single iteration. Both leave a factor of five under the cap. "It has margin" is a
+measurement here, not an assertion.
+
+**Fork 2 — raise `max_iter` instead.** The relation closes from below as well as
+from above, so `max_iter ≥ 1/(2·ARMIJO_C) = 5 000` also empties the window.
+Rejected: every iteration is a dense LU, so this funds the crawl rather than
+removing it, and it makes a genuinely divergent plant take a hundred times longer
+to say so. It is recorded because it proves the window is a *relation* and not a
+property of either constant alone.
+
+**Fork 3 — shrink `eps_dp`.** Inert, per the cancellation above. Recorded because
+it is the reflex: the regularisation looks like the culprit and is not.
+
+**Fork 4 — a trust region in branch-drop space**, refusing any step that reverses
+the sign of a branch's `Δp − β`. Scale-free, constant-free, and exactly right
+here: the mirror step *is* a sign reversal, and the half step is not. Deferred,
+not rejected — a legitimate solve does reverse a branch's drop (a PSV in reverse
+flow multi-roots the network, M5.4; reverse flow through a tee leg is ordinary),
+so the rule would have to be "reverses *and* does not shrink", which is a new
+criterion with its own blast radius across the generated-network arm. **Un-defers
+if a plant is found whose stall survives fork 1** — that is, one where the mirror
+step is correctly rejected and the halved step is still not enough.
+
+**Fork 5 — quadratic-interpolation backtracking**, choosing `t` by fitting the
+merit rather than halving. Rejected as redundant: the existing backtrack already
+tries `t = ½` second, and `t = ½` is within `ε` of the root. What was missing was
+never a better `t`; it was a criterion for rejecting `t = 1`.
+
+### What the gate has to assert, and what it must not
+
+The pin becomes a convergence gate, and the obvious rewrite — "both halves now
+return `Ok`" — is refused for the reason M3.2 recorded: a solve can converge,
+conserve mass and rerun bit-identically while frozen wrong. A line search that
+accepted anything at all would also return `Ok` here.
+
+So the gate asserts the **endpoint**, through an identity that does not depend on
+how much the tank drained on the way there: with the branch shut, the orphaned
+valve node carries no flow, so its pressure must equal its neighbour's less the
+static head — on this plant, exactly the tank's bottom pressure. That is checked
+on both routes to the state (the loop's setpoint step and a hand
+`SetValveOpening`), and against the third route M8 recorded as already
+converging, the gradual `0.20 → 0.00` over 20 ticks. Three independent paths to
+one identity.
+
+The **sweep is the other half of the gate and needs its own control.** 171
+diameters across `d ∈ [0.060, 0.400]` all converge at `5e-2` — a result that is
+worthless alone, because a sweep that never fails cannot distinguish a fixed
+solver from a vacuous probe. Run at `1e-4` the identical sweep stalls on 24 of
+171, a contiguous band `d ∈ [0.060, 0.106]`, whose upper edge is where the drop
+falls below `2·ε·max_iter = 100 Pa` — and the last stalling sample sits at a
+residual of `5.5e-5`, i.e. the crawl nearly finished inside the cap. The band's
+location is predicted by the relation, not fitted to it.
+
+### The gate's two assertions, each proven on its own
+
+Three edits were compiled, run and restored from one pre-mutation snapshot.
+
+| the edit | what fired |
+|---|---|
+| `ARMIJO_C` back to `1e-4` | all three: the coupling unit test, the convergence gate, the demo's gain gate |
+| `tol_abs_kg_s: 1e-8 → 1e-3` — a solve that returns `Ok` while stopping short | the convergence gate, on flow (`2.6e-4 kg/s`) and, with that assertion relaxed, on pressure (`1.1e-3 Pa`) |
+| the control pass moved BELOW the solve | the convergence gate alone, on flow — `4.16 kg/s` through a branch it says is shut |
+
+The second is the one that justifies the gate's shape: it returns `Ok`, so an
+`is_ok()` rewrite would have passed it. Each of the two assertions was checked to
+fire alone, by relaxing the other — the flow bound is hit first otherwise, and a
+gate whose second assertion has never been reached is a gate with one assertion.
+
+### It closes a gap M8.4 recorded as open, and that was not the aim
+
+M8.4's mutation pass predicted that "the loop runs AFTER the solve" would go
+**uncaught**, and found that it was caught — by the stall pin, which asserted the
+next tick returns `Err` and therefore fired when the reordering made it converge.
+M8.4 was careful about what that meant: the catch came from a test written to be
+*deleted* when the solver was fixed, so it recorded the gap as still open —
+**"no gate asserts the tick ORDER"** — rather than claiming it filled.
+
+Fixing the solver was exactly the event that was supposed to lose that catch.
+Instead the rewritten gate keeps it and improves it: with the control pass below
+the solve, the tick solves with the valve still open, and the dead-leg assertion
+sees `4.16 kg/s` running through a branch the plant says is shut. That is a
+*state* being asserted rather than a failure being expected, so it survives the
+next solver change too, and `the_reported_measurement_is_the_one_the_controller_
+acted_on` still does not fire on this edit — the tick-order gap is closed by the
+gate that used to be upside-down, not by the gate that claims the subject.
+
+The general form is worth keeping: **an upside-down test can be carrying a real
+gate, and the way to find out is to re-run the mutations it caught after turning
+it the right way up.** Deleting it and trusting the named gates would have
+reopened a gap that M8.4 paid to discover.
+
+### Blast radius, measured
+
+All fourteen shipped scenarios declare `flow = "newton"`, but **twelve of them
+actually execute the changed comparison and two structurally cannot.**
+`cooler_chiller` and `furnace_heater` converge at iteration zero on every pass of
+every tick — the seed already satisfies the tolerance, so the loop body holding
+the Armijo test never runs. Their byte-identity is guaranteed by construction and
+is evidence of nothing, which is worth saying out loud: counting them as passes
+would be the degenerate-fixture mistake this project has made before, where a
+reference plant with no free node never ran the solver loop at all.
+
+Over 6 000 ticks: **ten of fourteen are byte-identical — eight of the twelve that
+could have moved**; `fcc_plant`, `knockout_drum`, `leaking_line` and
+`tank_level_control` move. The largest
+*relative* move in the whole corpus is `3.96` — on `solver.residual`, a
+diagnostic whose target is zero and whose two values are `9.6e-14` and `4.8e-13`,
+so a relative comparison there measures nothing. Excluding that block, the worst
+move on any physical quantity is `7.6e-11` relative (`4.7e-14` absolute) on an
+`fcc_plant` mass fraction of 0.06%, and the worst on any bulk quantity — a mass,
+a temperature, a dissipation — is `3.3e-13` relative. Nothing physical moves.
+
+The whole workspace suite passes except the two tests written to fail when this
+is fixed, and the generated-network property arm passes.
+
+### Deferred, with what un-defers each
+
+- **Fork 4's trust region**, above. Un-defers on a stall that survives fork 1.
+- **The crawl itself, on the accepted side.** Below `2·ε·max_iter` the solver
+  still walks in 2 Pa steps; it now always finishes, but a plant whose drop is
+  90 Pa spends 45 iterations doing what one halved step would do. Harmless at the
+  measured worst case of 10, and it is the same code fork 4 would replace.
+- **`max_iter` is a `pub` field.** A caller constructing `NewtonFlowSolver` with
+  `max_iter: 10` reopens the window at `ARMIJO_C = 5e-2`, and nothing refuses it.
+  No scenario file can set it — nothing in `crates/scenarios/src` mentions
+  `max_iter`, `tol_abs_kg_s` or `eps_dp` — so this is a code-level invariant, and
+  it is written on the field's own doc comment and asserted against the default
+  by a unit test. Un-defers if the solver's numerics ever become scenario config,
+  at which point it must become a load-time refusal.

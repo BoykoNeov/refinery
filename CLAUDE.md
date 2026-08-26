@@ -76,7 +76,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo run -p refinery-cli -- run scenarios/tank_pump_valve.toml --ticks 1000
 cargo run -p refinery-cli -- run scenarios/tank_level_control.toml --ticks 6000   # the M8.4 loop demo
-cargo test -p refinery-solvers --release -- proptest   # slow property tests
+cargo test -p refinery-solvers --release              # slow property tests
 ```
 
 `godot-ext` is in the default workspace as of M6.2, but only its **bridge**
@@ -150,6 +150,60 @@ extension removed too — ignore it, the file it writes is what matters.
 ## Current milestone
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
+
+**M9 is OPEN, and its scope is solver robustness.** It opened the way M8 did —
+with a defect the previous milestone reached and deliberately did not fix. Only
+one slice is scoped; what M9.1 should be depends on what M9.0 measured, and M9.0
+measured that the whole thing was one constant.
+
+**M9.0 landed 2026-08-26** — the shut-in stall. The design note is DESIGN §11.
+Five things to know before touching the hydraulic solver.
+
+**The mechanism M8 recorded for this defect was false in both of its clauses, and
+that is the thing to internalise.** M8 said an unbounded `dQ/dΔP` made the step
+enormous and the line search cut it back. Measured: the line search accepted the
+full step on all fifty iterations and never halved anything; the shut valve's
+conductance is exactly ZERO rather than unbounded; and the branch drop changed
+sign every iteration while the residual fell anyway. **A monotone residual history
+says nothing about the iterate's path**, because the merit is even in the error
+and the error is not — M8 inferred "crawling, not oscillating" from exactly that
+and was wrong.
+
+**The comment above the line search was right the whole time; the constant under
+it was not.** It said Armijo "rejects [the near-symmetric overshoot] and forces
+t ≤ ½". `ARMIJO_C = 1e-4` did not. **A mis-sized constant under a correct comment
+is worse than a wrong comment**, because the comment is what stops the next reader
+from checking.
+
+**The fix is `ARMIJO_C: 1e-4 → 5e-2` and the arithmetic behind it is a relation
+between three constants.** A shut valve orphans a node with exactly one live edge
+(F6), so the failing solve is scalar; a full Newton step on `x/√(|x|+ε)` lands on
+the MIRROR of the drop, `2ε` nearer the root, while a HALF step lands within `ε`
+of the root from any drop at all. A solve therefore stalls iff
+`2·eps_dp·max_iter < |Δp₀| ≲ eps_dp/ARMIJO_C`, which is empty iff
+`ARMIJO_C ≥ 1/(2·max_iter)`. **`eps_dp` cancels — shrinking the regularisation is
+the reflex and is inert.** `armijo_c_closes_the_shut_in_stall_window` asserts the
+relation and fires on either half of it, so **lowering `max_iter` reopens the
+window** and is a code-review failure without raising `ARMIJO_C` with it.
+
+**Stricter Armijo made the solver FASTER, which is the reverse of the standing
+objection.** Worst-case iterations per pass across 6 000 ticks of all fourteen
+shipped scenarios fell 11 → 10 against a cap of 50, because rejecting the full
+step forces the near-exact half step. Ten of fourteen scenarios stay
+byte-identical; four move by at most `7.6e-11` relative on any physical quantity.
+**From here, "runs byte-identical" means post-M9.0 identical for those four**
+(`fcc_plant`, `knockout_drum`, `leaking_line`, `tank_level_control`).
+
+**Two gates changed shape, and one of them kept a catch nobody was defending.**
+`a_branch_shut_in_one_tick_stalls_...` became
+`a_branch_shut_in_one_tick_converges_whoever_shuts_it` and asserts the shut
+branch's ENDPOINT — zero flow, and the dead leg sitting at the tank's bottom
+pressure — because `Ok(())` is passed by any line search that accepts anything.
+Righting it kept M8.4's accidental catch of "the control pass moved below the
+solve" (now 4.16 kg/s through a branch it says is shut), which closes the tick-order
+gap M8.4 recorded as open. **Re-run an upside-down test's catches after turning it
+right way up.** The demo's gain gate was re-premised rather than inverted: `0.4`
+still clamps, and now recovers.
 
 **M8 is CLOSED (2026-08-26), and its scope was regulation** — control loops, so a
 plant holds itself somewhere instead of being held by whoever is sending
@@ -234,15 +288,17 @@ not chosen**: the error is `measurement − setpoint` and the output is
 that is runaway. Every level loop written after this one inherits that. The gain
 bound is the plant's own and both sides are run: at the settled operating point
 the drain sits at ~0.376, so a +1 m setpoint step subtracts `gain_per_m` in one
-tick — 0.25 and 0.35 absorb it, 0.4 hits exactly 0 and stalls the solver. The
-file ships 0.25. M8.2's 0.05/0.1 pair belongs to M8.2's plant and does not
+tick — 0.25 and 0.35 absorb it, 0.4 hits exactly 0. (M8.4 measured that 0.4
+also stalled the solver; **M9.0 fixed that**, so 0.4 now clamps, recovers and
+parks on the stepped setpoint. The bound is a tuning bound now, not a stability
+one.) The file ships 0.25. M8.2's 0.05/0.1 pair belongs to M8.2's plant and does not
 transfer.
 
 **A PI loop cannot slam its actuator at STARTUP at any gain**, which is the
 reverse of the worry the roadmap box was written with: the memory is seeded by
 `b = u − K·e`, so the first output is the declared `initial_output` whatever `K`
 is (gains 0.25 to 20 all survive). The startup step exists only if a file
-declares the valve's `opening` and `initial_output` apart. The stall bound is
+declares the valve's `opening` and `initial_output` apart. The clamp bound is
 reachable only through a setpoint move, so it takes a command to measure and
 cannot be read off a CLI run.
 
@@ -250,7 +306,9 @@ cannot be read off a CLI run.
 were wrong.** The two "predicted uncaught" edits were both caught — but read the
 mechanisms in DESIGN §10 before trusting either word. "The loop runs after the
 solve" is caught only by the test written to FAIL when the solver is fixed, so
-**no gate asserts the tick order and that gap is recorded, not filled**.
+**no gate asserts the tick order and that gap is recorded, not filled** — until
+M9.0, which righted that test rather than deleting it and thereby kept the catch
+as a state assertion.
 "`initial_output` ignored" is caught by M8.4's own new startup gate and by the
 refusal sweep (the key's range check lives inside `seed_from_output`, so an edit
 that stops calling it stops validating too). And "back-calculation dropped on
@@ -265,14 +323,12 @@ the `Manual` arm of the tick pass, the engine's range backstop. And because the
 CLI issues no commands, **the MANUAL→AUTO transfer has no wired exercise at
 all** — it is covered by fixtures only.
 
-A control loop can now slam a valve shut between two ticks, and **a branch driven
-to zero flow in ONE tick stalls the Newton solver**. That is NOT the loop's defect:
-`Command::SetValveOpening` writing the identical endpoint fails identically, which
-is the control that settles it. Reached gradually the same endpoint converges. It
-is pinned by `a_branch_shut_in_one_tick_stalls_the_solver_whoever_shuts_it`, which
-is written to fail when the solver is fixed, and it belongs to a `newton_flow`
-slice. Practically: a level loop needs a gain gentle enough not to clamp to zero
-in one step, or a setpoint step small enough not to.
+A control loop can now slam a valve shut between two ticks, and M8.4 found that
+**a branch driven to zero flow in ONE tick stalled the Newton solver**. That was
+never the loop's defect — `Command::SetValveOpening` writing the identical
+endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 box
+below). A level loop no longer needs a gain gentle enough to avoid clamping; it
+still wants one, for tuning reasons.
 
 **Exactly one file in `scenarios/` declares a `[[controls]]` table** —
 `tank_level_control.toml`, M8.4's. The other thirteen were written before M8 and
