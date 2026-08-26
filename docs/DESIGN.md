@@ -1608,6 +1608,9 @@ Two are predicted NOT to be caught, and saying so in advance is the point:
   uncaught by any single-tick test**, and therefore a gap to fill with a
   multi-tick gate or to record as uncovered.
 
+Measured at the end of this section: three of these predictions were wrong,
+including both "predicted uncaught" ones.
+
 ### Corrections from building it (M8.0, landed)
 
 Six, of which two change the shape above rather than its verdict. The chosen fork
@@ -1686,6 +1689,52 @@ was exactly zero, the node-wise step was non-finite, and the reported residual w
 `inf`. The gate is therefore that this plant can no longer produce an infinite
 residual, which is the signature, rather than that Simple converges in some
 particular number of sweeps.
+
+### What the mutations measured (the pass, run after landing)
+
+Eight edits, seven caught. The three wrong predictions are worth more than the
+seven right ones, and one of them is wrong about a mechanism rather than about a
+test.
+
+**The continuation seed is not "a path, not an answer" — this loop promoted it.**
+Re-seeding each pass from the tick's warm start instead of from the previous
+pass's pressures was predicted uncaught, on the uniqueness argument recorded in
+`prepare` for `Pⁿ`-versus-cold-mean: the fixed point does not depend on where the
+iteration starts. That argument is about ONE pass, and it stays true. What the
+active-set loop adds is a second question the seed decides: a pass ends somewhere,
+the classification is recomputed from where it ends, and the loop terminates on
+the classification. So the seed selects which classification the next pass runs
+under — an answer-shaped role, not a path-shaped one. Measured: the seed-shut
+plant, which converged before this loop existed and converges under it, comes back
+`AnchoringUnsettled { cycled: true }` when each pass is re-seeded cold, and
+generated spur-tree refusals go from 6 cycles + 2 caps to 39 + 9. **The
+continuation seed is what makes the classification sequence contract**, and the
+note recorded it as a free choice.
+
+**A single-tick gate can catch a cross-tick leak if it asserts the STATE rather
+than the consequence.** Committing the warm start from every converged pass was
+predicted uncatchable inside one tick, and the prediction was reasoning about
+effects — a leaked pressure only shows up when the next tick reads it. The cycle
+gate catches it anyway, because it asserts that a solve ending in `Err` leaves the
+warm-start map empty. No multi-tick gate is owed.
+
+**Two edits bundled into one prediction behave differently.** "Cycle detection
+removed / cap of 1" was one line predicting one catch. A cap of 1 is the pre-M8.0
+solver, so it fails the seed-open plant and four more; removing cycle detection
+does not touch that plant and is caught only by the gates written for the cycle
+exit itself. A prediction that names two edits and one outcome cannot be falsified
+by either of them separately, which is the failure mode to avoid next time.
+
+**The one uncaught mutation is fork 2b's own guard, and it is now gated.**
+Removing the non-finite check — reclassifying from a NaN iterate — left the whole
+workspace green: nothing in the repo reaches the branch. It is Simple's failure
+path, and correction 6 above is why nothing reaches it any more (the plant that
+used to produce an infinite residual no longer does). Rather than record a
+defensive branch as unverified, it gets the same treatment as the loop's other
+three exits — a stub gate, `a_pass_that_ends_non_finite_is_not_reclassified`,
+which NaNs a relief whose seed classification is OPEN so that the NaN is what
+shuts it. With the guard: one pass, and the pass's own `NonFiniteState` survives.
+Without it: two passes, under a classification the NaN invented.
 
 ## 4. Streams and pseudo-components
 

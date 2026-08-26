@@ -2507,6 +2507,56 @@ fn a_classification_that_never_repeats_hits_the_cap() {
     );
 }
 
+/// A pass that ends NON-FINITE is returned as-is, never reclassified.
+///
+/// The fourth exit from the loop, and the only one with no plant behind it: the
+/// guard exists because `Simple` has a path that fails *because* its pressure
+/// map went non-finite, and a classification derived from NaN is an artefact of
+/// the NaN rather than an answer — an arbitrary retry is worse than an honest
+/// failure (DESIGN §3c, fork 2b's guard).
+///
+/// It gets a stub for the same reason the cycle and the cap do, and one reason
+/// more: it was found UNCOVERED by this slice's own mutation pass. Removing the
+/// guard left the whole suite green, so nothing in this repo reached it. The
+/// seed here classifies the relief OPEN (2 bar set against the 4.5 bar cold
+/// seed), so the NaN is what shuts it — without the guard the loop would take
+/// that flip seriously and re-pass under a set that NaN invented.
+#[test]
+fn a_pass_that_ends_non_finite_is_not_reclassified() {
+    let fluid = Fluid::liquid();
+    let (g, psv, _leg) = spur_plant(&fluid, 2.0e5);
+
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        |prep| {
+            passes += 1;
+            stub_pass(&g, &fluid, prep, |p| {
+                p.insert(psv, f64::NAN);
+            })
+        },
+    );
+    assert!(
+        matches!(out, Err(SimError::NonFiniteState { .. })),
+        "the pass's OWN failure must survive — replacing it with an anchoring \
+         refusal would report the loop's confusion instead of the solver's: {out:?}"
+    );
+    assert_eq!(
+        passes, 1,
+        "a pass whose pressures went non-finite must not be reclassified: the set \
+         a NaN implies is an artefact of the NaN, and re-passing under it spends \
+         the cap turning an honest failure into a made-up one"
+    );
+    assert!(
+        warm.is_empty(),
+        "a failed pass must leave no warm start behind, non-finite least of all"
+    );
+}
+
 /// A(8 bar) → J → B(1 bar) with one blocked-in relief spur off J, at the given
 /// set pressure. Shared by the loop's control-flow gates, which care about the
 /// classification rather than about any particular resistance.

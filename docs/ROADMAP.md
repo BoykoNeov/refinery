@@ -3041,3 +3041,58 @@ thing as solving more.
 bounds (84 ≤ 305 against a measured 42) they would have become counters with
 nothing behind them, which this file has already been caught by
 ([[a-counter-is-not-a-gate]]).
+
+**The mutation pass was the box still owed when the slice landed, and it
+falsified three of the note's own predictions.** Eight edits to `network.rs`,
+each checked for a real compile ([[a-void-mutation-looks-like-a-catch]]) and each
+applied to a source restored from ONE pre-mutation snapshot
+([[mutation-harness-must-snapshot-once]], [[a-restore-must-move-the-mtime]]).
+Seven were caught; the eighth was not, and is why there is now a fourth stub gate.
+
+| the edit | predicted | what actually caught it |
+|---|---|---|
+| reclassify only after a CONVERGED pass (the rejected sub-fork) | the seed-open plant "and nothing else" | that plant **and** the relief arm's Newton floor, at 75/305 against 42 |
+| pass cap of 1 — the loop present but disabled | the seed-open plant | five tests: both hand-built plants, the cycle gate, the gas arm, the relief arm's refusal cap |
+| cycle detection removed | (bundled with the line above) | the cycle gate and the relief arm's refusal FLOOR — and *not* the seed-open plant |
+| seed each pass cold instead of continuing | **uncaught** — "a path, not an answer" | the seed-shut plant, refused as a cycle; and the refusal cap at 39+9 against 6+2 |
+| commit the warm start from EVERY converged pass | **uncaught by any single-tick test** | the cycle gate — single-tick — asserting an `Err` leaves no warm start behind |
+| park a floating node at the previous pass's iterate (correction 3 undone) | — | the seed-open plant |
+| the cap exit flagged as a cycle (correction 1's flag) | — | the cap gate, alone |
+| reclassify from a NON-FINITE iterate (the guard removed) | — | **nothing** |
+
+**Both "predicted uncaught" predictions were wrong, and the seeding one is a
+finding rather than a lucky catch.** The note called the continuation seed a path
+and not an answer, on the uniqueness argument already recorded in `prepare` for
+`Pⁿ`-versus-cold-mean. That argument does not survive an outer loop that
+terminates on what the iterate implies: the seed decides where a pass ENDS, the
+classification is recomputed from where it ends, and the classification is what
+the loop stops on. So the seed is part of the answer's control flow even where it
+cannot move a converged pressure — measured, a plant that had always converged
+comes back refused as a chattering cycle, and generated refusals go from 6 cycles
++ 2 caps to 39 + 9. The continuation seed is what makes the classification
+sequence contract, which is a load-bearing role the note gave it by accident.
+
+**The other wrong prediction closes a gap instead of opening one.** Committing the
+warm start every pass was expected to need a multi-tick gate; it is caught inside
+one tick, because the cycle gate asserts the warm-start map directly rather than
+waiting to observe a leak downstream. Asserting the state beats observing its
+consequence, and no multi-tick gate is owed.
+
+**The note bundled "cycle detection removed / cap of 1" on one line and the two
+behave differently.** A cap of 1 is the pre-M8.0 solver and fails the seed-open
+plant; removing cycle detection leaves that plant untouched and is caught only by
+the gates written for the cycle itself. Predicting a shared catch for two edits
+because they sit in the same sentence is the kind of bundling that makes a
+prediction unfalsifiable in one direction.
+
+**The uncaught mutation bought the loop's fourth stub gate.** Removing the
+non-finite guard — reclassify from a NaN iterate — left the whole workspace green,
+so nothing in the repo reached the branch fork 2b was written to protect. That is
+the same "refusal path nothing reaches" this slice already floored the generators
+against, so it is filled rather than recorded:
+`a_pass_that_ends_non_finite_is_not_reclassified` drives the loop with a stub that
+NaNs a relief whose seed classification is OPEN, so the NaN is what shuts it. With
+the guard the pass's own `NonFiniteState` is returned at pass one; without it the
+loop takes the NaN-invented classification seriously and re-passes (2 against 1),
+which is what the gate now asserts. Verified both ways: green on the pristine
+tree, red under the mutation.
