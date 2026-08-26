@@ -3869,12 +3869,17 @@ The two that did not:
 
 - **`MAX_HALVINGS: 8 → 1` was predicted inert and diverges M8.0's anchoring
   plant** (20 000 sweeps, residual `5.397e1`). §11's closed form says a half step
-  lands within `eps_dp` of the root from any drop — but it describes a **dead
-  leg**, where rule F6 leaves exactly one live edge and the mirror is exact. A
-  node with two live edges puts the root off the mirror and the half step can be
-  rejected too. The comment above the constant said the first halving was the one
-  that mattered; it now says why that is only true of the case that motivated the
-  slice. **The closed form's reach is narrower than the fix's.**
+  lands within `eps_dp` of the root from any drop, so one halving should be
+  enough. **The closed form's reach is narrower than the constant it justifies.**
+  How much narrower was *bisected*, because the first draft of this finding did
+  what M8 did and fitted a mechanism to one divergence: `2` passes that test and
+  the whole workspace, `3` changes nothing further. So one node needs `t = ¼`, and
+  **why it is outside the form is not measured** — the dead-leg reading (F6 leaves
+  one live edge, so the mirror is exact; a second edge moves the root off it) is a
+  candidate, recorded as a candidate. Two consequences: `8` is six halvings of
+  margin and is *not* load-bearing, inherited from `newton_flow` where it was
+  never justified either; and cutting it to the measured `2` would be fitting a
+  constant to today's fourteen plants.
 - **Feeding the trial evaluation a different function from the step's own
   derivation freezes the residual rather than slowing it** —
   `0.02701386453465011` for all 5 000 sweeps, identical to the last digit, because
@@ -3882,10 +3887,19 @@ The two that did not:
   cross-fidelity tests and by **neither** new gate, which both watch a valve while
   this breaks a vessel.
 
-**One mutation is uncaught and is recorded as a gap with its reason.** Nothing
-gates the branch where no step is acceptable; a gate would need a plant where it
-fires at an imbalance that matters, and across all fourteen scenarios it fires
-3 281 times with every site at `|imbalance| ≤ 3.384e-13 kg/s`.
+**One mutation is uncaught, and the bisection makes the gap quantitative rather
+than a shrug.** Nothing gates the branch where no step is acceptable; across all
+fourteen scenarios it fires 3 281 times with every site at
+`|imbalance| ≤ 3.384e-13 kg/s`, five orders below the solver's own tolerance. The
+depth bisection says it from the other side: no node needs a step below `¼`, so
+halvings three through eight are never the accepted one.
+
+**Lowering `ω` is a correctness result before it is the cost result fork 3
+argues.** At `ω = 0.5` the shut-in fixture returns `Ok` with `3.77e-6` kg/s
+through a shut branch — inside the solver's own `tol_abs + tol_rel·throughput`
+and outside the gate's `1e-6`. A wrong endpoint reported as converged, on the
+plant the slice exists for. The 3.5× sweep table is the weaker half of the case
+for `ω = 1.0`.
 
 **"No shipped scenario runs this solver" is now measured, not grepped** — a
 `panic!` at `SimpleFlowSolver::solve`, 0 of 14 at default fidelity, with

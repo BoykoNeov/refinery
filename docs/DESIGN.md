@@ -5685,8 +5685,18 @@ moved, each verified to have applied *and* compiled, `cargo test --workspace
 | 2 | accept every step unconditionally | both new gates | **both new gates** |
 | 3 | apply `full/256` where the search rejects | uncaught | **uncaught** |
 | 4 | trial imbalance drops the capacitance term | — | `both_fidelities_agree_on_a_capacitive_plant`, `both_fidelities_settle_the_relief_…` |
-| 5 | `MAX_HALVINGS: 8 → 1` | uncaught | **`a_relief_that_shuts_on_the_way_to_the_answer_…`** |
+| 5 | `MAX_HALVINGS: 8 → 1` | uncaught | **`a_relief_that_shuts_on_the_way_to_the_answer_…`** (passes at 2) |
 | 6 | default `ω: 1.0 → 0.5` | — | shut-in gate (`simple` arm), `both_fidelities_settle_the_relief_…` |
+
+**Mutation 6 is a correctness result, and fork 3 above argues it as a cost one.**
+At `ω = 0.5` the shut-in fixture's solve returns `Ok` and leaves `3.77e-6` kg/s
+through a branch that is shut. That sits inside this solver's own convergence
+criterion — `tol_abs + tol_rel·throughput` is about `4e-6` at that plant's rate —
+and outside the `1e-6` the endpoint gate allows. So the damping does not merely
+buy fewer correct answers per second; it buys a **wrong endpoint reported as
+converged**, on the one plant the slice was written for. The 3.5× sweep table is
+the weaker half of the argument for leaving `ω` at 1.0, and the field's own doc
+comment now leads with this instead.
 
 **Mutation 1 is the one this note stakes a claim on in print, and it holds.**
 The bare bound the stall relation licenses at this cap converges the shut branch
@@ -5696,16 +5706,33 @@ note says they do — measured, not asserted.
 
 **Mutation 5 falsifies something this note implies, and the correction is worth
 more than the mutation.** §11's closed form says a HALF step lands within `ε` of
-the root *from any drop*, which would make the eighth halving decorative and this
+the root *from any drop*, which reads as "one halving is enough" and makes this
 edit inert — the prediction, and it is wrong. `MAX_HALVINGS = 1` diverges M8.0's
-anchoring plant at 20 000 sweeps, residual `5.397e1`. The closed form describes a
-**dead leg**: rule F6 gives a shut valve's orphaned node exactly one live edge, so
-the mirror is exact and one halving finishes it. A node with two live edges is a
-different function, the second branch shifts the root off the mirror, and the half
-step can be rejected too. So `MAX_HALVINGS = 8` is load-bearing rather than copied
-from `newton_flow` for symmetry, and **the closed form's reach is narrower than
-the fix's** — it covers the case that motivated the slice, not every case the
-search is asked to handle.
+anchoring plant at 20 000 sweeps, residual `5.397e1`. **The closed form's reach is
+narrower than the constant it was being used to justify.**
+
+**How much narrower was bisected rather than argued**, because the first draft of
+this paragraph did exactly what M8 did: fitted a mechanism to one divergence.
+Measured on the failing test, then on the whole workspace:
+
+| `MAX_HALVINGS` | `a_relief_that_shuts_…` | `cargo test --workspace` |
+|---|---|---|
+| 1 | diverges, 20 000 sweeps, residual `5.397e1` | — |
+| 2 | passes | **0 failing** |
+| 3 | passes | 0 failing |
+
+So one node, on one plant, needs `t = ¼`. **Why it is outside the closed form is
+not measured.** The form was derived on a dead leg — F6 leaves the orphaned node
+exactly one live edge, so the mirror is exact — and the natural reading is that a
+second live edge shifts the root off the mirror. That is a candidate fitted to a
+single data point, not a result, and nothing in this slice tests it. It is
+recorded as a candidate for that reason.
+
+Two consequences worth stating plainly. **`8` is six halvings of margin over
+anything the corpus needs**, so it is *not* load-bearing; it is inherited from
+`newton_flow`, where it has never been justified either. And cutting it to the
+measured `2` would be fitting a constant to today's fourteen plants — the same
+move fork 3 was rejected for.
 
 **Mutation 4 fails in a shape worth recognising: the residual FREEZES.**
 `0.02701386453465011` for all 5 000 sweeps, identical to the last digit. A line
@@ -5714,13 +5741,16 @@ does not converge slowly — every `t` is rejected, `step = 0`, and the node nev
 moves again. Both catches are pre-existing M5-era cross-fidelity tests; **neither
 new gate sees it**, because both watch a valve and this breaks a vessel.
 
-**Mutation 3 is uncaught, and that is a gap with a reason rather than a shrug.**
+**Mutation 3 is uncaught, and the depth bisection makes the gap quantitative.**
 Nothing gates the branch where no `t` is acceptable. A gate would need a plant on
 which that branch fires at an imbalance big enough to matter, and the corpus says
 none exists: 3 281 reject sites across all fourteen scenarios, every one at
-`|imbalance| ≤ 3.384e-13 kg/s` — five orders below `tol_abs_kg_s`. The branch is
-reached constantly and is never load-bearing, so the honest record is that it is
-untested and why, not a gate that would pass on any implementation.
+`|imbalance| ≤ 3.384e-13 kg/s` — five orders below `tol_abs_kg_s`. The bisection
+above says the same thing from the other side: no node anywhere needs a `t` below
+`¼`, so halvings three through eight are never the accepted step and everything
+reaching the bottom of the loop was already at the noise floor. Not "untested, and
+no gate is possible", but **unreachable at a load-bearing imbalance, with the
+margin measured at six halvings.**
 
 #### Reachability: no shipped scenario runs this file
 

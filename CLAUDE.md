@@ -210,7 +210,7 @@ right way up.** The demo's gain gate was re-premised rather than inverted: `0.4`
 still clamps, and now recovers.
 
 **M9.1 landed 2026-08-26** — the same step on the OTHER solver. The design note
-is DESIGN §11's M9.1 half. Eight things to know.
+is DESIGN §11's M9.1 half. Nine things to know.
 
 **The shut valve is not the subject; it is where the defect stops finishing.**
 `SimpleFlowSolver` has no step-rejection criterion of any kind — it applies its
@@ -251,18 +251,28 @@ shut-in divergence bit for bit, because the mirror step DOES shrink the imbalanc
 by `2ε` — so "reverses *and* does not shrink" never fires. Not an un-defer trigger
 for Newton, but evidence against the rule.
 
-**`MAX_HALVINGS = 8` is load-bearing and the closed form does NOT say so.** §11's
-form says a half step lands within `eps_dp` of the root from any drop, which reads
-as "one halving is enough" — predicted inert, and `MAX_HALVINGS = 1` DIVERGES
-M8.0's anchoring plant at 20 000 sweeps. The form describes a **dead leg**, where
-F6 leaves one live edge and the mirror is exact; a second live edge moves the root
-off the mirror and the half step can be rejected too. **The closed form's reach is
-narrower than the fix's**, and the comment that said otherwise was corrected.
-Also from the mutation pass: a trial evaluation that is not the step's own
-function **freezes** the residual (identical to the last digit for 5 000 sweeps)
-rather than slowing it, and is caught by two M5-era cross-fidelity tests and by
-neither new gate. The reject-all branch is **uncaught and recorded as such** — it
-fires 3 281 times across the corpus, every site at `|imbalance| ≤ 3.4e-13 kg/s`.
+**the closed form does not reach as far as the constants it justifies.** §11's form
+says a half step lands within `eps_dp` of the root from any drop, so
+`MAX_HALVINGS: 8 → 1` was predicted inert. It DIVERGES M8.0's anchoring plant at
+20 000 sweeps. **The first draft of that finding fitted a mechanism to that one
+divergence — which is what M8 did — so it was bisected instead:** `2` passes both
+the test and the whole workspace, `3` changes nothing. One node needs `t = ¼`, and
+**why it is outside the form is NOT measured** (the dead-leg reading — F6 leaves
+one live edge so the mirror is exact — is a candidate recorded as a candidate).
+So `8` is six halvings of margin and is *not* load-bearing; it is inherited from
+`newton_flow`, unjustified there too. Cutting it to `2` would fit a constant to
+today's fourteen plants. Also from the pass: a trial evaluation that is not the
+step's own function **freezes** the residual (identical to the last digit for
+5 000 sweeps) rather than slowing it, caught by two M5-era cross-fidelity tests
+and by neither new gate. The reject-all branch is **uncaught**, and the bisection
+bounds it — no node needs a step below `¼`, so halvings 3–8 are never the accepted
+one, and its 3 281 sites all sit at `|imbalance| ≤ 3.4e-13 kg/s`.
+
+**Lowering `omega` is a CORRECTNESS result, not the cost result the fork argues.**
+At `ω = 0.5` the shut-in fixture returns `Ok` with `3.77e-6` kg/s through a shut
+branch — inside the solver's own `tol_abs + tol_rel·throughput` and outside the
+gate's `1e-6`. A wrong endpoint reported as converged, on the plant the slice
+exists for. The 3.5× sweep table is the weaker half of the case for `ω = 1.0`.
 
 **"No shipped scenario runs this solver" is measured, and the first probe lied.**
 0 of 14 fire a `panic!` at `SimpleFlowSolver::solve`, with `leaking_line` forced

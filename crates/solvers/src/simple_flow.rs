@@ -70,19 +70,26 @@ use std::collections::BTreeMap;
 const ARMIJO_C: f64 = 5e-2;
 
 /// Max halvings per node step (min step 1/256). Matches `newton_flow`, and the
-/// depth is load-bearing rather than symmetry — **measured, against a prediction
-/// that was wrong.**
+/// depth the corpus actually needs is **2**, bisected rather than assumed.
 ///
 /// The closed form in DESIGN §11 says `t = ½` on the regularised square-root law
 /// lands within `eps_dp` of the root from any branch drop at all, which reads as
-/// "the first halving is the one that matters" and would make this a `1`. It is
-/// not: at `MAX_HALVINGS = 1` the M8.0 anchoring plant DIVERGES, 20 000 sweeps at
-/// residual `5.397e1`. The closed form describes a **dead leg** — rule F6 leaves a
-/// shut valve's orphaned node exactly one live edge, so the mirror is exact and
-/// one halving finishes it. Give the node a second live edge and the root shifts
-/// off the mirror, so `t = ½` can be rejected too. Do not narrow this to the
-/// closed form's reach; the closed form is about the case that motivated the
-/// slice, not every case the search is asked to handle.
+/// "one halving is enough" and would make this a `1`. It is not: at
+/// `MAX_HALVINGS = 1` the M8.0 anchoring plant DIVERGES, 20 000 sweeps at residual
+/// `5.397e1`. At `2` that plant passes and so does the whole workspace, and `3`
+/// changes nothing further. **So one node on that plant needs `t = ¼`, and the
+/// closed form does not describe it.**
+///
+/// Which property of that node puts it outside the form is NOT measured. The form
+/// was derived on a dead leg — rule F6 leaves a shut valve's orphaned node exactly
+/// one live edge, so the mirror is exact — and the natural reading is that a
+/// second live edge shifts the root off the mirror. That is a candidate fitted to
+/// a single divergence, not a result, and nothing here tests it.
+///
+/// `8` is therefore six halvings of margin over anything measured, and is
+/// inherited from `newton_flow` rather than derived — it has never been justified
+/// there either. Cutting it to the measured `2` would be fitting a constant to
+/// today's fourteen plants; cutting it to `1` is refuted.
 const MAX_HALVINGS: u32 = 8;
 
 pub struct SimpleFlowSolver {
@@ -95,7 +102,14 @@ pub struct SimpleFlowSolver {
     /// never fires, because the half step already passes its own test, and the
     /// corpus reproduces the pre-M9.1 `ω = 0.5` numbers exactly.
     ///
-    /// Lowering it is therefore measured to cost rather than to help: worst
+    /// **Lowering it is a correctness result before it is a cost one.** At
+    /// `ω = 0.5` the shut-in fixture's solve returns `Ok` and leaves `3.77e-6`
+    /// kg/s through a branch that is shut — inside this solver's own
+    /// `tol_abs + tol_rel·throughput` (about `4e-6` at that plant's rate) and
+    /// outside the `1e-6` the endpoint gate allows. The wrong answer is reported
+    /// as converged; the sweeps are the smaller half of the objection.
+    ///
+    /// It is also measured to cost rather than to help: worst
     /// sweeps in any tick over 500 ticks of all fourteen shipped scenarios rise
     /// on every one of them, and `relief_blowdown` — whose convergence is driven
     /// by its vessel's own `−C/dt` term rather than by branch conductance — goes
