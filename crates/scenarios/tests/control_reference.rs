@@ -1690,3 +1690,115 @@ fn a_loop_with_memory_reruns_bit_identically() {
         );
     }
 }
+
+/// M9.2's gate: **a node's mass balance is graded against its OWN traffic, not
+/// against the largest pipe elsewhere in the plant.**
+///
+/// Until M9.2 both fidelities stopped on `‖R‖_∞ < tol_abs + tol_rel·max_e|ṁ_e|`,
+/// where the throughput ranges over the WHOLE network. DESIGN §3 has specified
+/// "relative mass-imbalance per node" since M1; the code did not implement it.
+///
+/// **The shut valve is the wrong place to look for it, which is the second time
+/// this fixture has taught that lesson.** With the valve shut the dead leg's
+/// accepted flow is `1.6e-9` kg/s — three orders inside `assert_dead_leg`'s
+/// bound either way, so no bar drawn there discriminates. What does discriminate
+/// is the valve node while the valve is still CONDUCTING, which is where the old
+/// rule's slack is largest relative to what the node actually carries.
+///
+/// The observable is a series identity and needs no tolerance of its own.
+/// `drain_line` feeds the valve node and `rundown_line` leaves it; the node holds
+/// no volume, so the two edges must carry the same flow, and the difference
+/// between them IS that node's mass residual. The solver's own promise is
+/// therefore the bar — read off the solver rather than restated, so it cannot
+/// drift out of step with the criterion it is checking:
+///
+/// ```text
+/// |ṁ_drain − ṁ_rundown|  <  tol_abs + tol_rel · max(|ṁ_drain|, |ṁ_rundown|)
+/// ```
+///
+/// **This is the promise, not a chosen constant**, which is what makes a ratio of
+/// 0.97 an acceptable pass rather than a fitted one. Walking the valve down in
+/// twenty steps, worst ratio over the walk:
+///
+/// | | before M9.2 | after |
+/// |---|---|---|
+/// | newton | **1.81** (step 4) | 0.97 (step 9) |
+/// | simple | **2.58** (step 6) | 0.39 (step 7) |
+///
+/// **The two rows were measured in separate runs**, because this test fails on the
+/// first fidelity it reaches and never gets to the second: under the old rule the
+/// Newton half fires at step 4 and the Simple half's 2.58 was read by skipping it.
+/// A future reader should not assume one run produced both.
+///
+/// Both fidelities fail it on the old rule and pass on the new, so this is the
+/// one gate in the slice that is pinned to a measured violation rather than to a
+/// consistency argument. The game fidelity's absolute miss at its worst step is
+/// `2.06e-6` kg/s across a node carrying `0.787` kg/s — accepted because the
+/// tank feed elsewhere in the plant is larger.
+///
+/// Ratios near 1 on the "after" column are the point rather than a worry: they
+/// say the criterion BINDS at this node, so the gate is watching a live
+/// constraint and not an idle one (M7.4c's "reachable is not binding").
+#[test]
+fn a_valve_node_balances_against_its_own_flow_not_the_plants() {
+    let newton = refinery_solvers::NewtonFlowSolver::default();
+    let simple = refinery_solvers::SimpleFlowSolver::default();
+
+    for (flow, tol_abs, tol_rel) in [
+        ("newton", newton.tol_abs_kg_s, newton.tol_rel),
+        ("simple", simple.tol_abs_kg_s, simple.tol_rel),
+    ] {
+        let manual = with_flow(PLANT, flow).replace(r#"mode = "auto""#, r#"mode = "manual""#);
+        let mut engine = engine_from(&manual);
+        run(&mut engine, TICKS);
+        let valve = engine.graph.find_node("drain_valve").expect("drain valve");
+
+        // The premise the identity rests on: the valve node holds no volume, so
+        // its residual is exactly the difference of its two edges. A capacitive
+        // node would carry `−C·ΔP/dt` as well and the identity would be false.
+        assert!(
+            matches!(
+                engine.graph.node(valve).kind,
+                refinery_core::graph::NodeKind::Valve { .. }
+            ),
+            "{flow}: this gate reads the valve node as a zero-volume, unpinned unknown,              which `Valve` is by construction. `Vessel` is the one kind that carries a              capacitance, and there the residual gains an accumulation term and the two              edges are no longer required to agree"
+        );
+
+        for step in (0..20).rev() {
+            engine
+                .apply(Command::SetValveOpening {
+                    node: valve,
+                    opening: 0.20 * f64::from(step) / 20.0,
+                })
+                .expect("in MANUAL a human drives the valve");
+            engine.tick().unwrap_or_else(|e| {
+                panic!("SOLVER REGRESSED ({flow}): walking the valve down, step {step}: {e}")
+            });
+
+            let snapshot = engine.snapshot();
+            let flow_of = |name: &str| {
+                snapshot
+                    .edges
+                    .iter()
+                    .find(|e| e.name == name)
+                    .unwrap_or_else(|| panic!("{flow}: the fixture has a pipe called {name}"))
+                    .stream
+                    .mass_flow
+                    .value()
+                    .abs()
+            };
+            let (into_node, out_of_node) = (flow_of("drain_line"), flow_of("rundown_line"));
+            let miss = (into_node - out_of_node).abs();
+            let bar = tol_abs + tol_rel * into_node.max(out_of_node);
+            assert!(
+                miss < bar,
+                "{flow}, step {step}: the valve node carries {into_node:.6e} kg/s in and \
+                 {out_of_node:.6e} kg/s out — a mass imbalance of {miss:.3e} kg/s against \
+                 the {bar:.3e} kg/s this solver promises for a node carrying that much. \
+                 The pre-M9.2 rule graded it against the largest flow ANYWHERE in the \
+                 plant and accepted {:.2}x this bar",
+                miss / bar
+            );
+        }
+    }
+}

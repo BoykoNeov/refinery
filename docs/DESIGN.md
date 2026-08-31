@@ -88,6 +88,11 @@ are small), sparse later if needed. Convergence: relative mass-imbalance
 residual decreases). Non-convergence ⇒ `Err(SimError::SolverDiverged {...})`
 with the residual history attached.
 
+"Per node" was written here at M1 and was not implemented until **M9.2** (§11),
+which is why that slice reads as the code catching up with this paragraph rather
+than as a retuning. Both fidelities now stop on one shared rule,
+`network::grade_nodes`, and the scale is the node's own incident traffic.
+
 Fluids: incompressible liquid through M3. Gas/compressibility is milestone
 M5 and gets its own design note before implementation.
 
@@ -5766,3 +5771,240 @@ unreachable, so rustc emits a diagnostic that **echoes the panic's own source
 line** — and `cargo run` replays cached build warnings on every invocation. The
 probe was matching the compiler, not the program. Build once, then invoke the
 binary, and require `panicked at` alongside the marker.
+
+### M9.2 — the stopping rule, and the scale that belonged to another node
+
+M9.0 and M9.1 were both about which step the solver takes. This slice is about
+when it is allowed to stop, which is a different question and the one neither
+touched.
+
+#### The note and the code disagreed, and the note was the one that was right
+
+DESIGN §3 has said since M1:
+
+> Convergence: relative mass-imbalance **< 1e-8 per node**, max 50 iterations.
+
+The code said something else, and had since M1 in `newton_flow` and since the
+Simple sweep was written:
+
+```text
+max_n |R_n|   <   tol_abs + tol_rel · max_e |ṁ_e|
+```
+
+Per node in neither factor. `throughput = max_e |ṁ_e|` ranges over the WHOLE
+network (`network::edge_flows`), so **the error budget granted to any one node
+was set by the largest pipe anywhere in the plant** — a quantity with no relation
+to the equation being graded. A mass balance at a node is a sum of that node's own
+incident flows; nothing about a 10 kg/s trunk says how exactly a spur carrying
+10 g/s must balance.
+
+This is not an argument that a constant was too loose. It is the code catching up
+with a specification that was already written, and that framing is what licenses
+changing a settled decision (M5.4's rule: verify the premise, not just the
+verdict). The rule now lives in one place, `network::grade_nodes`, which both
+fidelities call — so "the two solvers stop on the same criterion" is structural
+rather than a convention two files have to keep.
+
+#### What the old rule granted, and where it bound
+
+`tol_rel` is `1e-8` on Newton and `1e-6` on Simple. On a plant moving 4 kg/s the
+Simple solver therefore allowed EVERY node an imbalance of 4e-6 kg/s, including a
+node whose own branches carried nothing. That is the mechanism behind M9.1's
+`ω = 0.5` finding — `Ok` returned with `3.77e-6` kg/s through a branch the plant
+says is shut, inside the solver's own tolerance and outside the gate's `1e-6`.
+The `ω` was the path; **the criterion is why the endpoint was accepted**.
+
+**Where the numbers in this section come from**, since they cannot be reproduced
+from the shipped code: a temporary `network::probe_report`, called at each
+solver's ACCEPTING iterate from `newton_flow` and `simple_flow`, gated on a
+`REFINERY_PROBE` environment variable, printing per solve the accepted residual,
+the plant-wide throughput, and four readings of the same criterion (`max` and `Σ`
+local scales, each with and without accumulation). It was deleted before this
+slice was committed, as M8.4's panic-probe was. Every ratio below is
+`accepted |R_n|` over the bar named in its column heading; reinstating the probe
+from this description reproduces them.
+
+Measured across 500 ticks of all fourteen shipped scenarios, both fidelities
+(accepted residual as a fraction of the bar, worst per plant):
+
+- The rule BINDS — the accepted residual sits at 0.64–0.9997 of the bar — on
+  `gas_line`, `gas_valve`, `knockout_drum`, `relief_blowdown` and
+  `tank_level_control` at the shipped fidelity. It was not a vestigial check.
+- But the shipped corpus barely exercises the defect. Reading the same tolerance
+  per node, only two plants exceed it at all: `tank_level_control` at 2.30× and
+  `relief_blowdown` at 1.015×, one node each.
+
+**So the corpus is not the reachability argument. The fixture is.** On
+`a_branch_shut_in_one_tick_converges_whoever_shuts_it` — the plant M9.0 and M9.1
+were both spent on — at the shipped `ω = 1.0`, over 24 022 solves per fidelity:
+
+| fidelity | solves with ≥1 node over its own bar | worst ratio |
+|---|---|---|
+| newton | 2 177 (9.1%) | 3.39 |
+| simple | 159 (0.7%) | **127.3** |
+
+The same node both times: the dead leg behind the shutting valve. Simple's worst
+is `|R| = 3.13e-6` kg/s against a local flow scale of `1.46e-2` kg/s, while the
+plant-wide reading says 0.74 of tolerance — comfortably "converged".
+
+#### The forks
+
+**Fork 1 — the scale is `max` over the node's own incident active edges.**
+Rejected: `Σ_e |ṁ_e|`, the textbook scaled residual. The deciding property is not
+a measurement: `max_incident ≤ throughput` at every node of every plant, so the
+new criterion is **never looser than the one it replaces**, anywhere. `Σ` is
+looser at any node with more than one live edge, which would let some plants stop
+EARLIER than they do today — the wrong direction for a slice that exists because
+the rule is too slack. The corpus shows `Σ` hiding the very violation it would be
+introduced to expose: on `relief_blowdown` the `Σ` reading is 0.771 and the `max`
+reading is 1.015.
+
+**Fork 2 — accumulation stays out of the scale.** `assemble` already documented
+the exclusion for `throughput`: the convergence scale is the network's mass flow,
+and a vessel's accumulation is measured against that, not added to it. A local
+scale SHARPENS that reason rather than inheriting it. Including `|−C·ΔP/dt|` would
+hand `relief_blowdown` a bar twice as loose (0.9999 → 0.505 on the Simple sweep)
+on the one node whose convergence M9.1 measured as driven by that very term — a
+quantity grading itself, which this project has been burned by twice (M7.4b,
+M7.4c). The consequence is stated rather than discovered: on a dead leg every
+incident flow is ~0, so the bar collapses to `tol_abs = 1e-8`.
+
+**Fork 3 — the reported residual is unchanged.** `SolveDiagnostics.residual`
+stays `‖R‖_∞` in kg/s: it is a diagnostic, and the worst absolute node imbalance
+is what a diagnostic in kg/s should say. Reporting a scaled residual would change
+what every snapshot's `solver.residual` means, for a gain nobody asked for.
+
+**Fork 4 — `tol_rel` is not re-tuned.** The shape of the criterion changed, not
+the constant. `1e-8` and `1e-6` now mean what they always read as — a relative
+error on the node's own flow — so re-fitting them here would be tuning to today's
+fourteen plants on top of a change whose whole argument is that it needs no
+plant-specific evidence.
+
+#### The gate: the shut valve is the wrong place to look, for the second time
+
+The obvious gate is the dead leg behind the shut valve, and it does not work.
+With the valve shut, that branch's accepted flow is `1.6e-9` kg/s — three orders
+inside `assert_dead_leg`'s bound before the change and after it — so no bar drawn
+there discriminates. This is M9.1's lesson arriving again on the same fixture:
+**a shut branch is the EASY case.**
+
+What discriminates is the valve node while the valve is still CONDUCTING, and the
+observable there needs no tolerance of its own. `drain_line` feeds the valve node
+and `rundown_line` leaves it; a `Valve` holds no volume, so the two edges must
+carry the same flow, and **the difference between them IS that node's mass
+residual**. The solver's own promise is therefore the bar, read off the solver
+rather than restated. Walking the valve down in twenty steps, worst ratio of miss
+to promise over the walk:
+
+| | before M9.2 | after |
+|---|---|---|
+| newton | **1.81** (step 4) | 0.97 (step 9) |
+| simple | **2.58** (step 6) | 0.39 (step 7) |
+
+Both fidelities fail on the old rule and pass on the new. At its worst step the
+game fidelity misses by `2.06e-6` kg/s across a node carrying `0.787` kg/s —
+accepted only because the tank feed elsewhere in the plant is larger. **A ratio of
+0.97 in the "after" column is a pass, not a near miss**: the bar is the promise
+rather than a chosen constant, and a ratio near 1 says the criterion BINDS at that
+node, so the gate watches a live constraint (M7.4c's "reachable is not binding").
+
+**The candidate gate this slice set out to write was a vessel, and measuring
+killed it.** The plan was to watch a capacitive vessel rather than a valve, on the
+reasoning that M9.1's frozen-residual mutation was caught only by M5-era
+cross-fidelity tests. But a vessel node is precisely where fork 2 decides NOT to
+tighten: its accumulation term is excluded from the scale by argument, so a vessel
+gate would have been asserting against the one quantity the criterion deliberately
+does not grade. The two vessel plants move by at most `8e-8` relative. The right
+place to look turned out to be a valve node, and to be the identity across it
+rather than the flow through it.
+
+**Two assertions elsewhere were tightened the same way, and only ONE of them is a
+consistency edit — which was got wrong first.** Both sites in `tests/invariants.rs`
+grade a dead-end node whose single live edge makes its residual exactly that
+edge's flow, so the bar derives to `tol_abs/(1 − tol_rel)` rather than being
+chosen. The seed-open/converged-shut half really is inert: its accepted flow is
+`0.0` exactly on Newton and `2.31e-10` on Simple, **identical before and after the
+change**. The seed-shut/converged-open half is not: under the pre-M9.2 rule its
+leg carries `5.97e-8` kg/s against the `1.00e-8` its own node promises, six times
+over, and the mutation pass fires it.
+
+**The error was predicting both from measuring one.** Two assertions with the same
+shape, on two plants, are two measurements — and the second plant's larger trunk
+is exactly what buys the extra slack. So M9.2 has two gates rather than one, and
+the second was found by mutating rather than by the reasoning that wrote it.
+
+#### The mutation pass: three edits, and the fork nothing defends
+
+Each mutation restored from one snapshot taken before the pass, with the mtime
+moved, and each was checked to have actually compiled (M5.4's rules).
+
+**1. The pre-M9.2 rule, re-expressed inside the new shape** — grade every node
+against the largest scale in the plant rather than its own. **Caught, twice**:
+`a_valve_node_balances_against_its_own_flow_not_the_plants` at 1.81× on the Newton
+half, and `a_leg_behind_a_relief_that_opens_reports_its_neighbours_pressure` at
+`5.97e-8` kg/s against a `1.00e-8` promise. The second is the one that was
+predicted inert, and finding it is what corrected the write-up above.
+
+**2. Only the last node graded** — `converged = …` in place of
+`converged = converged && …`. **Caught broadly**: 12 tests across four binaries,
+including both fidelity-agreement gates, the M1 acceptance run's closed-plant mass
+balance, and the punctured-line leak reference. Nothing subtle to record; a
+stopping rule that reads one node is a different program.
+
+**3. `Σ` in place of `max` for the local scale — UNCAUGHT.** Every test in
+`refinery-solvers` and `refinery-scenarios` passes with fork 1's rejected
+alternative in place. **This is the honest state of fork 1: it rests on the
+inequality `max_incident ≤ throughput` — an argument that the new rule is never
+looser than the old — and nothing in the suite defends the choice between `max`
+and `Σ`.**
+
+The mechanism, because "uncaught" without one is not a finding. `Σ = 2·max` at any
+node with two live edges, which the valve node in gate 1 is, so the mutation
+doubles that node's bar and the worst ratio falls from 0.97 to about 0.48. The
+gate restates `max` independently rather than reading the solver's scale, so it
+*could* fire — but only if the solve actually spent the extra slack, and it does
+not: Newton and the sweep both overshoot the looser requirement on the next
+iterate anyway. Everywhere else the two readings differ by less than the margin
+any endpoint gate leaves.
+
+Closing it would need a gate on a multi-edge node whose solve stops exactly at the
+bar — which is a fixture built to sit on a tolerance, and the project has called
+that a fitted test before. It is left open deliberately, and it is the reason
+fork 1 is argued from an inequality rather than from a measurement: **the
+inequality is the only thing holding that fork up.**
+
+#### Blast radius and cost, measured
+
+Twelve of the fourteen shipped scenarios run byte-identical over 6 000 ticks. The
+two that move are exactly the two the corpus probe predicted — `relief_blowdown`
+and `tank_level_control` — and they move on physical quantities by at most
+`8e-8` relative (worst: an edge dissipation). `tank_level_control`'s worst
+accepted imbalance tightens from `1.42e-7` to `1.07e-7` kg/s, which is the
+intended direction. **From here, "runs byte-identical" means post-M9.2 identical
+for those two**, on top of the post-M9.0 baseline for `fcc_plant`,
+`knockout_drum`, `leaking_line` and `tank_level_control`.
+
+The cost is one iteration on one plant. Worst iterations per tick over 6 000 ticks
+move on `tank_level_control` alone, 3 → 4; every other scenario is unchanged, and
+`relief_blowdown` still peaks at the 920 sweeps M9.1 recorded. **The fear that a
+tighter bar would push randomly generated plants into `Err` was measured and did
+not happen**: the reachability harnesses in `tests/invariants.rs` report identical
+convergence counts either side of the change — chains 238/300, gas 202/205 Newton
+and 187/205 Simple, psv chains 196/400, gas trees 200/400. That mattered because
+proptest generates spurs and dead legs, which is exactly the population whose bar
+collapsed to `tol_abs`, and fourteen curated plants moving by `8e-8` says nothing
+about it.
+
+#### Deferred, with what un-defers each
+
+- **`tol_rel` per fidelity is still two unrelated constants.** `1e-8` and `1e-6`
+  were chosen when they multiplied a plant-wide throughput; they now multiply a
+  node's own traffic, which is a different quantity, and neither has been re-swept
+  against the new meaning. Un-defers when a plant needs a tolerance argued from
+  its own numbers rather than inherited.
+- **A node with exactly one live edge can only ever satisfy `tol_abs`.** The
+  relative term is multiplied by a scale that its own residual bounds, so
+  `tol_rel` is inert there and the absolute floor does all the work. That is
+  correct for a dead end and would be wrong for a node whose single edge carries
+  real flow — a terminal consumer, say. No shipped plant has one; a scenario that
+  adds one un-defers this.

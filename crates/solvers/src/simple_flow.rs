@@ -231,7 +231,6 @@ impl SimpleFlowSolver {
         // edge flows the solution will report (so the returned solution provably
         // satisfies the reported bound, and matches the invariants-test balance).
         let mut history: Vec<f64> = Vec::new();
-        let converged_at = |res: f64, tp: f64| res < self.tol_abs_kg_s + self.tol_rel * tp;
         let mut iterations = 0u32;
         while iterations < self.max_iter {
             iterations += 1;
@@ -358,20 +357,20 @@ impl SimpleFlowSolver {
                 }
             };
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
-            let (flows, throughput) = (&edges.mass_flow, edges.throughput);
-            let mut residual = 0.0f64;
+            let flows = &edges.mass_flow;
+            let mut graded: Vec<(f64, f64)> = Vec::with_capacity(unknowns.len());
             for &nid in &unknowns {
-                let mut bal: f64 = incident[&nid]
-                    .iter()
-                    .map(|&(eid, incoming)| {
-                        let f = flows[&eid];
-                        if incoming {
-                            f
-                        } else {
-                            -f
-                        }
-                    })
-                    .sum();
+                let mut bal = 0.0f64;
+                // The node's own convergence scale, alongside its imbalance and
+                // off the same flows: `max |ṁ|` over its incident active edges.
+                // Definition and reasoning live on `network::grade_nodes`, so
+                // both fidelities stop on one rule (M9.2).
+                let mut scale = 0.0f64;
+                for &(eid, incoming) in &incident[&nid] {
+                    let f = flows[&eid];
+                    bal += if incoming { f } else { -f };
+                    scale = scale.max(f.abs());
+                }
                 // The SAME residual the sweep drove to zero. Measuring only the
                 // edge flows would declare a vessel converged the moment its
                 // branches balanced each other, which for a blowing-down vessel
@@ -380,11 +379,13 @@ impl SimpleFlowSolver {
                 if let Some(cap) = capacitive.get(&nid) {
                     bal += accumulation(cap, pressures[&nid], dt.value()).0;
                 }
-                residual = residual.max(bal.abs());
+                graded.push((bal, scale));
             }
+            let (residual, converged) =
+                crate::network::grade_nodes(graded, self.tol_abs_kg_s, self.tol_rel);
             history.push(residual);
 
-            if converged_at(residual, throughput) {
+            if converged {
                 let result =
                     crate::network::finalize(graph, &pressures, edges, iterations, residual);
                 return AnchorPass { result, pressures };

@@ -21,8 +21,11 @@
 //!   definite once each connected component has a pinned node ⇒ unique
 //!   solution. faer dense LU (networks are small; sparse is a later upgrade).
 //! - Damping: halve the Newton step until ‖R‖_∞ decreases, max 8 halvings.
-//! - Convergence: ‖R‖_∞ < tol_abs + tol_rel·throughput (throughput = max|ṁ_e|),
-//!   per DESIGN §3's relative criterion; hard cap max_iter, then
+//! - Convergence, per node: |R_n| < tol_abs + tol_rel·scale_n, where scale_n is
+//!   the largest |ṁ| on that node's OWN incident active edges (M9.2,
+//!   `network::grade_nodes`) — DESIGN §3's "relative mass-imbalance per node",
+//!   which until M9.2 was coded against the whole network's throughput instead.
+//!   Hard cap max_iter, then
 //!   Err(SolverDiverged) carrying the residual history. NEVER return NaN.
 //!
 //! Reverse flow: a single element's characteristic is odd in dP, but a
@@ -87,7 +90,9 @@ pub struct NewtonFlowSolver {
     pub max_iter: u32,
     /// Absolute residual tolerance floor [kg/s].
     pub tol_abs_kg_s: f64,
-    /// Relative residual tolerance (× network throughput) [kg/s per kg/s].
+    /// Relative residual tolerance [kg/s per kg/s], multiplied by each node's
+    /// OWN incident flow scale rather than by the network's throughput
+    /// (`network::grade_nodes`).
     pub tol_rel: f64,
     /// Regularization epsilon for sqrt laws [Pa].
     pub eps_dp: f64,
@@ -198,7 +203,7 @@ impl NewtonFlowSolver {
         // Damped Newton.
         let capacitive = &prep.classes.capacitive;
         let mut history: Vec<f64> = Vec::new();
-        let (mut r, mut jac, mut throughput) = assemble(
+        let (mut r, mut jac, scale) = assemble(
             graph,
             &compiled,
             &pressures,
@@ -209,12 +214,19 @@ impl NewtonFlowSolver {
             dt,
             self.eps_dp,
         );
-        let mut res = inf_norm(&r); // ∞-norm: convergence + reporting (per-node imbalance)
+        // ∞-norm for reporting, per-node grading for the stop decision — one
+        // definition, shared with the Simple sweep (`network::grade_nodes`).
+        let grade = |r: &[f64], scale: &[f64]| {
+            crate::network::grade_nodes(
+                r.iter().copied().zip(scale.iter().copied()),
+                self.tol_abs_kg_s,
+                self.tol_rel,
+            )
+        };
+        let (mut res, mut converged) = grade(&r, &scale);
         let mut merit = half_sq_norm(&r); // ½‖R‖₂²: smooth line-search merit
         history.push(res);
         let mut iterations = 0u32;
-        let converged_at = |res: f64, tp: f64| res < self.tol_abs_kg_s + self.tol_rel * tp;
-        let mut converged = converged_at(res, throughput);
 
         while !converged && iterations < self.max_iter {
             iterations += 1;
@@ -265,7 +277,7 @@ impl NewtonFlowSolver {
                         }
                     }
                 };
-                let (r_t, jac_t, tp_t) = assemble(
+                let (r_t, jac_t, scale_t) = assemble(
                     graph,
                     &compiled_t,
                     &trial,
@@ -280,11 +292,10 @@ impl NewtonFlowSolver {
                 if merit_t <= (1.0 - 2.0 * ARMIJO_C * t) * merit {
                     pressures = trial;
                     compiled = compiled_t;
-                    res = inf_norm(&r_t);
+                    (res, converged) = grade(&r_t, &scale_t);
                     merit = merit_t;
                     r = r_t;
                     jac = jac_t;
-                    throughput = tp_t;
                     accepted = true;
                     break;
                 }
@@ -300,7 +311,6 @@ impl NewtonFlowSolver {
                     pressures,
                 };
             }
-            converged = converged_at(res, throughput);
         }
 
         if !converged {
@@ -330,7 +340,7 @@ fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimEr
 
 /// Assemble the residual R and Jacobian J = ∂R/∂P over anchored free nodes.
 /// Only ACTIVE edges (both endpoints anchored) contribute; edges touching a
-/// floating node are inert (zero flow). Returns (R, J, throughput = max|ṁ|).
+/// floating node are inert (zero flow). Returns (R, J, per-node scale).
 ///
 /// A CAPACITIVE node adds `−C·(P − Pⁿ)/dt` to its own residual and `−C/dt` to its
 /// own diagonal, through the shared `network::accumulation` so the Simple sweep
@@ -340,9 +350,14 @@ fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimEr
 /// diagonal — better conditioned, not merely still invertible.
 ///
 /// This is what makes one solve an implicit-Euler step of a DAE rather than a
-/// steady state (DESIGN §3a fork 2). `throughput` deliberately excludes it: the
-/// convergence scale is the network's mass flow, and a vessel's accumulation is
-/// measured against that, not added to it.
+/// steady state (DESIGN §3a fork 2). The convergence scale deliberately excludes
+/// it: the scale is mass FLOW, and a vessel's accumulation is measured against
+/// that, not added to it. M9.2 sharpened the reason without changing the rule —
+/// see `network::grade_nodes`.
+///
+/// The third return is that scale, one entry per unknown in `idx` order:
+/// `scale[i] = max |ṁ_e|` over node i's own incident active edges. It replaced a
+/// single network-wide `throughput` in M9.2.
 #[allow(clippy::too_many_arguments)]
 fn assemble(
     graph: &PlantGraph,
@@ -354,10 +369,10 @@ fn assemble(
     n: usize,
     dt: Seconds,
     eps: f64,
-) -> (Vec<f64>, Vec<Vec<f64>>, f64) {
+) -> (Vec<f64>, Vec<Vec<f64>>, Vec<f64>) {
     let mut r = vec![0.0; n];
     let mut jac = vec![vec![0.0; n]; n];
-    let mut throughput = 0.0f64;
+    let mut scale = vec![0.0f64; n];
     for (nid, cap) in capacitive {
         if let Some(i) = idx.get(nid) {
             let (term, slope) = accumulation(cap, pressures[nid], dt.value());
@@ -373,9 +388,11 @@ fn assemble(
         let dp = pressures[&c.src] - pressures[&c.tgt];
         let mdot = c.rho * c.branch.flow(dp, eps);
         let g = c.rho * c.branch.flow_ddp(dp, eps); // conductance ≥ 0
-        throughput = throughput.max(mdot.abs());
         let si = idx.get(&c.src).copied();
         let ti = idx.get(&c.tgt).copied();
+        for end in [si, ti].into_iter().flatten() {
+            scale[end] = scale[end].max(mdot.abs());
+        }
         // R_src -= ṁ (outgoing), R_tgt += ṁ (incoming); J = −L.
         if let Some(s) = si {
             r[s] -= mdot;
@@ -392,7 +409,7 @@ fn assemble(
             }
         }
     }
-    (r, jac, throughput)
+    (r, jac, scale)
 }
 
 /// Copy `pressures`, advancing each unknown by `t·ΔP`.
@@ -408,10 +425,6 @@ fn apply_step(
         *out.get_mut(&nid).expect("unknown is a node") += t * dp[idx[&nid]];
     }
     out
-}
-
-fn inf_norm(v: &[f64]) -> f64 {
-    v.iter().fold(0.0f64, |m, x| m.max(x.abs()))
 }
 
 /// ½‖v‖₂² — the smooth merit function minimized by the Newton line search.

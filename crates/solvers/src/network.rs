@@ -239,6 +239,61 @@ pub fn accumulation(cap: &Capacitance, pressure: f64, dt: f64) -> (f64, f64) {
     (-cap.c * (pressure - cap.p_prev) / dt, -cap.c / dt)
 }
 
+/// The convergence test both fidelities stop on, per node:
+///
+/// ```text
+/// |R_n|  <  tol_abs + tol_rel · scale_n
+/// scale_n = max over node n's incident ACTIVE edges of |ṁ_e|   [kg/s]
+/// ```
+///
+/// **The scale is the node's own traffic, not the network's** (M9.2, DESIGN §11).
+/// Until M9.2 both solvers compared `‖R‖_∞` against `tol_abs + tol_rel·max_e|ṁ_e|`
+/// over the WHOLE graph, so the error budget granted to any one node was set by
+/// the largest pipe anywhere in the plant — a quantity with no relation to the
+/// equation being graded. DESIGN §3 has specified "relative mass-imbalance per
+/// node" since M1; this is the code catching up with it.
+///
+/// `scale_n ≤ throughput` for every node, so this criterion is **never looser**
+/// than the one it replaces, at any node of any plant. The rejected alternative
+/// is `Σ_e |ṁ_e|` — the textbook scaled residual — which is looser at any node
+/// with more than one live edge and would have let some plants stop earlier than
+/// they do today.
+///
+/// **A vessel's accumulation is deliberately NOT in the scale**, which sharpens
+/// the exclusion `assemble` already documents for `throughput`: it is measured
+/// against the network's mass flow, not added to it. Including `|−C·ΔP/dt|` would
+/// hand `relief_blowdown` a bar twice as loose on the one node whose convergence
+/// is driven by that very term.
+///
+/// The consequence to know: on a dead leg every incident flow is ~0, so the bar
+/// collapses to `tol_abs`. That is the intended tightening — a shut branch is
+/// exactly where the old rule was slackest.
+///
+/// **It is very nearly free, measured rather than predicted.** Across 6 000 ticks
+/// of all fourteen shipped scenarios the worst iteration count per tick moves on
+/// ONE plant, `tank_level_control`, from 3 to 4, and nowhere else; twelve of the
+/// fourteen stay byte-identical. Nor does it push any generated plant into `Err`:
+/// the reachability harnesses in `tests/invariants.rs` report identical
+/// convergence counts either side of the change (chains 238/300, gas 202/205
+/// Newton and 187/205 Simple, psv chains 196/400).
+///
+/// Returns `(‖R‖_∞ [kg/s], converged)`. The reported residual is unchanged: it is
+/// still the worst absolute node imbalance, because that is what a diagnostic in
+/// kg/s should say.
+pub fn grade_nodes(
+    residual_and_scale: impl IntoIterator<Item = (f64, f64)>,
+    tol_abs: f64,
+    tol_rel: f64,
+) -> (f64, bool) {
+    let mut worst = 0.0f64;
+    let mut converged = true;
+    for (residual, scale) in residual_and_scale {
+        worst = worst.max(residual.abs());
+        converged = converged && residual.abs() < tol_abs + tol_rel * scale;
+    }
+    (worst, converged)
+}
+
 /// Compile one edge into its series branch. The device (if any) at the edge's
 /// SOURCE node folds into this outlet edge, per the fold-at-source convention.
 ///

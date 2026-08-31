@@ -2132,22 +2132,38 @@ fn a_relief_that_shuts_on_the_way_to_the_answer_no_longer_defeats_the_solve() {
         //
         // The far edge touches a floating node, so it is inert: `edge_flows`
         // reports a structural zero and machine epsilon is the right bar.
+        //
         // The near edge has both ends anchored, so it is live, and it carries
         // nothing only because the PSV behind it is a dead end — a fact the
         // SOLVE has to discover, to its own convergence criterion and no
-        // further. Asserting machine epsilon there would be asserting something
-        // no solve promised, and Simple (tol_rel 1e-6 against Newton's 1e-8)
-        // is where that shows.
-        let throughput = sol
-            .edge_mass_flow
-            .values()
-            .fold(0.0f64, |m, &f| m.max(f.abs()));
-        let tol = tol_abs + tol_rel * throughput;
+        // further. Since M9.2 that criterion is the PSV node's OWN: the far edge
+        // being inert leaves the node exactly one live edge, so the node's mass
+        // residual IS this flow, and `grade_nodes` accepted it only if
+        //
+        //     |near| < tol_abs + tol_rel·|near|   ⟺   |near| < tol_abs/(1 − tol_rel)
+        //
+        // which is derived from the criterion rather than chosen. Before M9.2
+        // the bar here was `tol_abs + tol_rel · max|ṁ|` over the WHOLE plant —
+        // `1.04e-5` kg/s on the game fidelity, set by a trunk carrying 10 kg/s
+        // that this spur has nothing to do with.
+        //
+        // **This tightening is a consistency edit and is measured NOT to
+        // discriminate on this plant**, which is why it is recorded here rather
+        // than counted as M9.2's gate: the accepted flow is `0.0` exactly on
+        // Newton and `2.31e-10` on Simple, identical before and after the
+        // change, so both cleared even the old, looser bar by a wide margin.
+        // The measurement that does discriminate is
+        // `a_valve_node_balances_against_its_own_flow_not_the_plants` in
+        // `crates/scenarios/tests/control_reference.rs`, and it discriminates
+        // because it watches the valve node while the valve is still
+        // CONDUCTING. A shut branch is the easy case (M9.1's lesson, again).
+        let bar = tol_abs / (1.0 - tol_rel);
         let near = sol.edge_mass_flow[&e_jpsv];
         assert!(
-            near.abs() <= tol,
-            "{name}: the shut relief's inlet edge carries {near:.3e} kg/s against a \
-             convergence tolerance of {tol:.3e} (throughput {throughput:.3e})"
+            near.abs() < bar,
+            "{name}: the shut relief's inlet edge is the dead-end node's only live \
+             edge, so its flow IS that node's mass imbalance and the solve promised \
+             it under {bar:.3e} kg/s. It carries {near:.3e}"
         );
         approx::assert_relative_eq!(sol.edge_mass_flow[&e_psvleg], 0.0, epsilon = 1e-12);
 
@@ -2269,17 +2285,18 @@ fn a_leg_behind_a_relief_that_opens_reports_its_neighbours_pressure() {
     // further. So the bar is that criterion, read off the solver rather than
     // guessed, not machine epsilon. Asserting 1e-12 here would be asserting
     // something the solve never promised.
+    // Since M9.2 that criterion is the leg node's OWN, and this edge is its only
+    // one, so the node's mass residual IS this flow and the bar it was graded
+    // against collapses to `tol_abs/(1 - tol_rel)` - the same derivation as the
+    // seed-open/converged-shut half above, and non-discriminating here for the
+    // same measured reason.
     let solver = NewtonFlowSolver::default();
-    let throughput = sol
-        .edge_mass_flow
-        .values()
-        .fold(0.0f64, |m, &f| m.max(f.abs()));
-    let tol = solver.tol_abs_kg_s + solver.tol_rel * throughput;
+    let tol = solver.tol_abs_kg_s / (1.0 - solver.tol_rel);
     let carried = sol.edge_mass_flow[&e_psvleg];
     assert!(
-        carried.abs() <= tol,
-        "the dead leg carries {carried:.3e} kg/s against a convergence tolerance of \
-         {tol:.3e} (throughput {throughput:.3e}) — a dead end must carry nothing"
+        carried.abs() < tol,
+        "the dead leg carries {carried:.3e} kg/s against the {tol:.3e} kg/s the solve \
+         promised its own node - a dead end must carry nothing"
     );
 
     // THE FIX. Two assertions, because "equals its neighbour" and "is no longer

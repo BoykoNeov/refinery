@@ -154,9 +154,9 @@ See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 **M9 is OPEN, and its scope is solver robustness.** It opened the way M8 did —
 with a defect the previous milestone reached and deliberately did not fix. Slices
 are scoped one at a time, because what the next one should be depends on what the
-last one measured. Two have landed and M9.2 is unscoped.
+last one measured. Three have landed and M9.3 is unscoped.
 
-**Both slices are about the same step**, and reading M9.1 without M9.0 will not
+**M9.0 and M9.1 are about the same step**, and reading M9.1 without M9.0 will not
 work — M9.1's whole argument is the closed form M9.0 derived, applied to a solver
 that had no line search at all.
 
@@ -293,6 +293,65 @@ almost any constant. **So the shut-in gate alone does not pin this fix**; the
 throttled-valve sweep budget beside it is what fails at the slack constant, and
 `a_branch_shut_in_one_tick_converges_whoever_shuts_it` now runs on BOTH
 fidelities.
+
+**M9.2 landed 2026-08-31** — not the step this time but the STOPPING RULE. The
+design note is DESIGN §11's M9.2 section. Six things to know.
+
+**DESIGN §3 has specified "relative mass-imbalance per node" since M1 and the code
+never did it.** Both fidelities compared the worst node imbalance against
+`tol_abs + tol_rel × the largest flow anywhere in the plant`, so a spur carrying
+10 g/s was graded against a 10 kg/s trunk. The fix is one shared function,
+`network::grade_nodes`, whose scale is `max |ṁ|` over that node's OWN incident
+active edges. Both solvers now stop on one rule structurally, not by convention.
+**This framing — code catching up with a written spec — is what licensed changing
+a settled decision** instead of re-litigating a constant.
+
+**This is the mechanism behind M9.1's `ω = 0.5` finding.** M9.1 recorded `Ok`
+returned with `3.77e-6` kg/s through a shut branch, inside the solver's own
+tolerance. The damping was the path; the stopping rule is why the endpoint was
+accepted.
+
+**The shipped corpus is not the reachability argument — the fixture is.** Over 500
+ticks of all fourteen plants only two exceed the per-node bar at all (2.30× and
+1.015×, one node each). On the shut-in fixture at shipped settings the game
+fidelity's worst is **127×**. Reach for the fixture when the corpus says "barely".
+
+**The shut valve is the EASY case, for the second slice running.** The dead leg
+behind the shut valve cannot discriminate — `1.6e-9` kg/s before AND after. What
+discriminates is the valve node while the valve still CONDUCTS, and the observable
+is an identity, not a bound: a valve holds no volume, so its two edges must carry
+the same flow and their difference IS that node's residual. Worst ratio of miss to
+the solver's own promise: newton **1.81 → 0.97**, simple **2.58 → 0.39**, both
+failing on the old rule. A ratio of 0.97 is a pass, not a near miss — the bar is
+the promise rather than a chosen constant, and near-1 says the criterion BINDS
+there. Two dead-end assertions in `tests/invariants.rs` were tightened the same
+way, and **predicting both from measuring one was wrong**: one is inert (accepted
+flow identical before and after), the other fires under the mutation at `5.97e-8`
+kg/s against a `1.00e-8` promise. Two assertions of the same shape on two plants
+are two measurements.
+
+**The mutation pass has one uncaught edit and it is fork 1's own.** Reverting to
+the plant-wide scale is caught twice; grading only the last node is caught by 12
+tests across four binaries. But swapping `Σ` for `max` as the local scale — the
+alternative fork 1 rejects — passes EVERYTHING, because `Σ = 2·max` at a two-edge
+node so the bar doubles and the valve gate's 0.97 becomes 0.48, and the solve
+never spends the extra slack. **Fork 1 rests entirely on the inequality
+`max_incident ≤ throughput` — the new rule is never looser than the old — and no
+test defends it.** Left open deliberately.
+
+**The gate this slice set out to write was a vessel, and measuring killed it.** A
+vessel's accumulation term is deliberately OUTSIDE the scale (fork 2), so a vessel
+gate would assert against the one quantity the criterion does not grade. Third
+time in this project a specified gate had no power over its own subject.
+
+**Cost is one iteration on one plant, and the `Err` fear was measured away.**
+Twelve of fourteen scenarios stay byte-identical over 6 000 ticks; the two that
+move do so by ≤ `8e-8` relative on any physical quantity. Worst iterations move
+only on `tank_level_control`, 3 → 4. Because proptest generates spurs and dead
+legs — the population whose bar collapsed to `tol_abs` — the reachability counts
+were compared either side and are identical (chains 238/300, gas 202/205 Newton
+and 187/205 Simple, psv chains 196/400). **From here, "runs byte-identical" means
+post-M9.2 identical for `relief_blowdown` and `tank_level_control`.**
 
 **M8 is CLOSED (2026-08-26), and its scope was regulation** — control loops, so a
 plant holds itself somewhere instead of being held by whoever is sending

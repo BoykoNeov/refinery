@@ -3710,7 +3710,9 @@ depends on what the last one measured. M9.0 measured that a single constant clos
 the whole window on `NewtonFlowSolver`; M9.1 came out of asking the one question
 that answer leaves open — every shipped scenario declares `flow = "newton"`, so
 what about the other solver — and the probe that asked it found a defect of the
-same family in a worse shape. There is still no fan of further work here waiting
+same family in a worse shape. M9.2 came out of the one thing both had in common
+and neither touched: they argued about which STEP to take, and never about when
+the solver is allowed to stop. There is still no fan of further work here waiting
 to be listed.
 
 ### M9.0 — the shut-in stall — **LANDED** 2026-08-26
@@ -3908,3 +3910,74 @@ that probe reported 14 of 14 and was reading the compiler**: `panic!` at the top
 of a function makes the rest unreachable, rustc echoes the offending source line
 in the diagnostic, and `cargo run` replays cached warnings on every invocation.
 Build once, then run the binary, and require `panicked at` beside the marker.
+
+### M9.2 — the stopping rule — **LANDED** 2026-08-31
+
+The design note is DESIGN §11's M9.2 section. **Six things worth carrying
+forward.**
+
+**The specification was already right; the code had never implemented it.**
+DESIGN §3 has said "relative mass-imbalance **per node**" since M1. Both solvers
+actually compared the worst node imbalance against `tol_abs + tol_rel × the
+largest flow anywhere in the plant`. Per node in neither factor. So a spur
+carrying 10 g/s was graded against a 10 kg/s trunk it has nothing to do with.
+That framing — the code catching up with a written spec — is what licensed
+changing a settled decision rather than re-litigating a constant.
+
+**This is the mechanism behind M9.1's `ω = 0.5` finding, not a new defect.** M9.1
+recorded `Ok` returned with `3.77e-6` kg/s through a branch the plant says is
+shut, inside the solver's own tolerance. The damping was the path that got there;
+the stopping rule is why the endpoint was accepted.
+
+**The shipped corpus is not the reachability argument — the fixture is.** Across
+500 ticks of all fourteen plants, only two exceed the per-node bar at all
+(2.30× and 1.015×, one node each). On the shut-in fixture M9.0 and M9.1 were both
+spent on, at shipped settings, the game fidelity's worst is **127×** and 159 of
+24 022 solves accept a node over its own bar. Reach for the fixture before the
+corpus when the corpus says "barely".
+
+**The shut valve is the EASY case, for the second slice running.** The obvious
+gate — the dead leg behind the shut valve — cannot discriminate: its accepted flow
+is `1.6e-9` kg/s before the change and after it. What discriminates is the valve
+node while the valve is still CONDUCTING, and the observable is an identity rather
+than a bound: the valve holds no volume, so its two edges must carry the same
+flow, and their difference IS that node's residual. Worst ratio of miss to the
+solver's own promise, walking the valve down: newton **1.81 → 0.97**, simple
+**2.58 → 0.39**. Both fidelities fail on the old rule, both pass on the new.
+
+**Two more assertions were tightened the same way, and predicting both from
+measuring one was wrong.** Both grade a dead-end node whose single live edge makes
+its residual exactly that edge's flow, so the bar derives rather than being chosen.
+One really is inert (accepted flow identical before and after). The other is a
+gate: under the old rule its leg carries `5.97e-8` kg/s against the `1.00e-8` its
+own node promises, and the mutation pass fires it. Two assertions of the same
+shape on two plants are two measurements.
+
+**The gate this slice set out to write was a vessel, and measuring killed it.**
+Watching a capacitive vessel would have asserted against the accumulation term —
+which fork 2 deliberately excludes from the scale, so it is exactly where the
+criterion does NOT tighten. Third time in this project a specified gate turned out
+to have no power over the thing it was written for (M7.4b, M7.4c).
+
+**The mutation pass has one uncaught edit and it is fork 1's own.** Reverting to
+the plant-wide scale is caught twice; grading only the last node is caught by 12
+tests across four binaries. But swapping `Σ` for `max` as the local scale — the
+alternative fork 1 rejects — passes **everything**. `Σ = 2·max` at a two-edge
+node, so the bar doubles and the valve gate's 0.97 becomes 0.48; the solve never
+spends the extra slack. So fork 1 rests entirely on the inequality
+`max_incident ≤ throughput` (the new rule is never looser than the old), and
+nothing in the suite defends it. Left open deliberately: closing it needs a
+fixture built to stop exactly on a tolerance, which this project has called a
+fitted test before.
+
+**The cost is one iteration on one plant, and the `Err` fear was measured
+away.** Twelve of fourteen scenarios stay byte-identical over 6 000 ticks; the two
+that move do so by at most `8e-8` relative on any physical quantity. Worst
+iterations per tick move only on `tank_level_control`, 3 → 4. And because proptest
+generates spurs and dead legs — the population whose bar collapsed to `tol_abs` —
+the reachability counts were compared either side of the change and are identical
+(chains 238/300, gas 202/205 Newton and 187/205 Simple, psv chains 196/400).
+Fourteen curated plants moving by `8e-8` would have said nothing about that.
+
+**From here, "runs byte-identical" means post-M9.2 identical** for
+`relief_blowdown` and `tank_level_control`.
