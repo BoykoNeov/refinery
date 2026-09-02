@@ -88,7 +88,11 @@ cargo test -p refinery-solvers --release              # slow property tests
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
 # time of the tick loop, and a fingerprint over every snapshot. `--out` before
 # a change and `--baseline` after is the "runs byte-identical" claim as an
-# exit code. Release, because wall time is one of its columns.
+# exit code. Release, because wall time is one of its columns. A plant that
+# fails to load or fails a tick exits nonzero on its own, baseline or not.
+# Baseline rows are matched by plant NAME alone, so a baseline recorded under
+# one fidelity and compared against a run under the other now reads "moved" and
+# fails, where it used to read "new" and pass. Keep a baseline per fidelity.
 cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000
 cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --solver simple
 cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --out before.json
@@ -97,7 +101,10 @@ cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --baseline 
 
 CI (`.github/workflows/ci.yml`) runs the four gate commands, the godot-feature
 clippy, the release property tests, and the corpus under both fidelities on
-every push and pull request. A red main is now a red check, not a memory.
+every push and pull request. A red main is now a red check, not a memory. What
+CI does NOT check is that the numbers are unchanged: no baseline file is
+committed, so its corpus steps assert only that every plant still runs. The
+before/after comparison stays a per-slice measurement made by hand.
 
 `godot-ext` is in the default workspace as of M6.2, but only its **bridge**
 half — the pure-Rust translation layer, which has no Godot dependency and is

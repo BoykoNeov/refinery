@@ -30,9 +30,18 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
-      # `cargo test` does not exercise the CLI (docs/memory: a milestone's demo
-      # is verified with a real run). The corpus runs every shipped scenario
-      # under both fidelities and fails on any Err.
+      # `cargo test` does not exercise the CLI end to end (docs/memory: a
+      # milestone's demo is verified with a real run). These two steps run every
+      # shipped scenario under both fidelities and exit nonzero if any plant
+      # fails to load or fails a tick.
+      #
+      # What they do NOT check is that the numbers are unchanged. That needs a
+      # baseline from an earlier run (`corpus --out before.json`, then
+      # `--baseline before.json`), which is made by hand per slice and is not
+      # committed — a committed baseline would have to be regenerated on every
+      # deliberate numeric change, and CLAUDE.md records those per milestone
+      # instead. Do not add "and nothing moved" to this comment without adding
+      # the baseline file that would make it true.
       - run: cargo run --release -p refinery-cli -- corpus scenarios --ticks 500
       - run: cargo run --release -p refinery-cli -- corpus scenarios --ticks 500 --solver simple
 

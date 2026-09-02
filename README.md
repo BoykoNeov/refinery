@@ -41,7 +41,9 @@ cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --baseline 
 ```
 
 The last pair is how "runs byte-identical" is claimed: record the rows before a
-change, compare after, and the command exits nonzero if any plant moved.
+change, compare after, and the command exits nonzero if any plant moved. With
+or without a baseline, a plant that fails to load or fails a tick also exits
+nonzero — which is what makes the CI steps that run it without one worth having.
 
 Status: M1–M8 closed. **M9 (solver robustness) is open**; three slices have
 landed and the next is scoped from a measurement, not a list — see the M9.3

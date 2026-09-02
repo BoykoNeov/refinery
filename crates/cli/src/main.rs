@@ -17,8 +17,12 @@
 //! solver iteration count in any tick, the total, the wall time of the tick
 //! loop alone, and a fingerprint of every snapshot it emitted. Two runs whose
 //! fingerprints agree ran byte-identical; `--baseline` says which plants moved
-//! and exits nonzero if any did. The table is printed as markdown because that
-//! is the shape DESIGN.md and ROADMAP.md record it in.
+//! and exits nonzero if any did. A plant that fails to load or fails a tick is
+//! an error of the run itself: it is reported in the status column AND exits
+//! nonzero, with or without a baseline, because a corpus that reports a
+//! divergence and then exits 0 is a check that cannot fail. The table is
+//! printed as markdown because that is the shape DESIGN.md and ROADMAP.md
+//! record it in.
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -155,6 +159,46 @@ struct CorpusRow {
     fingerprint: String,
 }
 
+/// The status of a row that ran every tick it was asked for. Anything else is
+/// a message, and `CorpusRow::errored` is the only reader that needs to tell
+/// the two apart.
+const STATUS_OK: &str = "ok";
+
+impl CorpusRow {
+    /// Did this plant fail to load, or fail a tick?
+    fn errored(&self) -> bool {
+        self.status != STATUS_OK
+    }
+}
+
+/// A row's standing against a baseline run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    /// No plant of this name in the baseline.
+    New,
+    /// Same solver, same fingerprint: this plant runs byte-identical.
+    Identical,
+    /// Some number changed — or the run used a different solver, which makes
+    /// the fingerprints incomparable rather than equal.
+    Moved,
+}
+
+/// Grade one row against the baseline rows.
+///
+/// Rows are matched by scenario NAME alone, deliberately. `flow` cannot be part
+/// of the key: it is only known after a successful load, so a plant that fails
+/// to load carries the `(file)` placeholder, would miss its baseline row, and
+/// would be reported as `new` — the one verdict that is not counted as moved.
+/// A solver that differs from the baseline's is a real difference, so it is
+/// compared as a value instead of silently deciding which rows are comparable.
+fn verdict(row: &CorpusRow, baseline: &[CorpusRow]) -> Verdict {
+    match baseline.iter().find(|b| b.name == row.name) {
+        None => Verdict::New,
+        Some(b) if b.flow == row.flow && b.fingerprint == row.fingerprint => Verdict::Identical,
+        Some(_) => Verdict::Moved,
+    }
+}
+
 fn corpus(
     paths: &[PathBuf],
     ticks: u64,
@@ -186,14 +230,28 @@ fn corpus(
             .with_context(|| format!("writing {}", p.display()))?;
     }
 
+    // A plant that did not finish is a failure of the run whether or not a
+    // baseline was asked for, and it is checked FIRST: an errored row's
+    // fingerprint differs too, so grading it against a baseline would report
+    // "moved" for a plant whose real news is in the status column.
+    let failed: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.errored())
+        .map(|r| r.name.as_str())
+        .collect();
+    anyhow::ensure!(
+        failed.is_empty(),
+        "{} of {} plants did not finish {} ticks: {} (see the status column)",
+        failed.len(),
+        rows.len(),
+        ticks,
+        failed.join(", ")
+    );
+
     if let Some(base) = baseline {
         let moved: Vec<&str> = rows
             .iter()
-            .filter(|r| {
-                base.iter()
-                    .find(|b| b.name == r.name && b.flow == r.flow)
-                    .is_some_and(|b| b.fingerprint != r.fingerprint)
-            })
+            .filter(|r| verdict(r, &base) == Verdict::Moved)
             .map(|r| r.name.as_str())
             .collect();
         anyhow::ensure!(
@@ -237,7 +295,7 @@ fn run_one(file: &Path, ticks: u64, solver: Option<&str>) -> CorpusRow {
         name,
         flow: solver.unwrap_or("(file)").to_string(),
         ticks: 0,
-        status: "ok".into(),
+        status: STATUS_OK.into(),
         worst_iterations: 0,
         total_iterations: 0,
         tick_wall_ms: 0.0,
@@ -310,12 +368,12 @@ fn print_table(rows: &[CorpusRow], baseline: Option<&[CorpusRow]>) {
             r.fingerprint
         );
         if let Some(base) = baseline {
-            let verdict = match base.iter().find(|b| b.name == r.name && b.flow == r.flow) {
-                None => "new",
-                Some(b) if b.fingerprint == r.fingerprint => "identical",
-                Some(_) => "**moved**",
+            let label = match verdict(r, base) {
+                Verdict::New => "new",
+                Verdict::Identical => "identical",
+                Verdict::Moved => "**moved**",
             };
-            cells.push_str(&format!(" {verdict} |"));
+            cells.push_str(&format!(" {label} |"));
         }
         cells.push_str(&format!(" {} |", r.status));
         let _ = writeln!(out, "{cells}");
