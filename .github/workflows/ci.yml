@@ -1,0 +1,64 @@
+# The four commands CLAUDE.md says every commit must pass, run on every push and
+# pull request so "no red commits on the default branch" is enforced by a
+# machine rather than by memory. The godot binding is a separate job because
+# `cargo clippy --workspace` does not see one line of it (the feature is off by
+# default); CLAUDE.md asks for that lint whenever the binding changes, and this
+# is what makes "whenever" mean "always".
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Property tests and Newton iterations are slow in debug; the workspace
+  # profile already sets opt-level = 2 for dependencies.
+  RUSTFLAGS: -D warnings
+
+jobs:
+  workspace:
+    name: fmt · clippy · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      # `cargo test` does not exercise the CLI (docs/memory: a milestone's demo
+      # is verified with a real run). The corpus runs every shipped scenario
+      # under both fidelities and fails on any Err.
+      - run: cargo run --release -p refinery-cli -- corpus scenarios --ticks 500
+      - run: cargo run --release -p refinery-cli -- corpus scenarios --ticks 500 --solver simple
+
+  godot-binding:
+    name: clippy (godot feature)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: godot
+      # The separate --target-dir is REQUIRED, not tidiness: the crate is
+      # cdylib + rlib, and a workspace build with the feature off overwrites the
+      # library Godot loads. See CLAUDE.md.
+      - run: cargo clippy -p refinery-godot-ext --features godot --all-targets --target-dir target/godot -- -D warnings
+
+  slow-property-tests:
+    name: solvers property tests (release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - run: cargo test -p refinery-solvers --release
