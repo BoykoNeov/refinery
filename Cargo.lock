@@ -1116,6 +1116,7 @@ dependencies = [
  "clap",
  "refinery-core",
  "refinery-scenarios",
+ "serde",
  "serde_json",
 ]
 
