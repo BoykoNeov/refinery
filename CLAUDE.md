@@ -15,11 +15,18 @@ crates/
               # ZERO heavy deps. Never imports Godot, never imports solvers.
   solvers/    # Trait IMPLEMENTATIONS: flow solvers, thermo, kinetics.
               # Depends on core + faer. Simple and complex variants live here.
-  scenarios/  # Plant definition format (TOML), loader, engine builder.
-  cli/        # Headless runner: load scenario, run N ticks, emit JSON snapshots.
+  scenarios/  # Plant definition format (TOML), loader, engine builder:
+              # schema.rs (the document), build.rs (document → Engine),
+              # validate.rs (the load-time refusals). API re-exported from lib.rs.
+  cli/        # Headless runner: `run` one scenario to JSON snapshots;
+              # `corpus` runs every scenario and reports iterations, wall time
+              # and a per-plant fingerprint (the "runs byte-identical" check).
   godot-ext/  # GDExtension adapter. The ONLY crate that knows Godot exists.
-docs/         # DESIGN.md (architecture + physics), ROADMAP.md (milestones)
+docs/         # DESIGN.md (architecture + physics), ROADMAP.md (milestones),
+              # DEFERRED.md (every open hurdle, its un-defer trigger, and the
+              # measured distance from it — read it before scoping a slice)
 scenarios/    # *.toml plant definitions (start with tank_pump_valve.toml)
+.github/      # CI: fmt, clippy, test, the godot-feature lint, and the corpus
 ```
 
 ## Hard architectural rules
@@ -77,7 +84,20 @@ cargo fmt --all
 cargo run -p refinery-cli -- run scenarios/tank_pump_valve.toml --ticks 1000
 cargo run -p refinery-cli -- run scenarios/tank_level_control.toml --ticks 6000   # the M8.4 loop demo
 cargo test -p refinery-solvers --release              # slow property tests
+
+# The corpus: every shipped scenario, worst solver iterations per tick, wall
+# time of the tick loop, and a fingerprint over every snapshot. `--out` before
+# a change and `--baseline` after is the "runs byte-identical" claim as an
+# exit code. Release, because wall time is one of its columns.
+cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000
+cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --solver simple
+cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --out before.json
+cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --baseline before.json
 ```
+
+CI (`.github/workflows/ci.yml`) runs the four gate commands, the godot-feature
+clippy, the release property tests, and the corpus under both fidelities on
+every push and pull request. A red main is now a red check, not a memory.
 
 `godot-ext` is in the default workspace as of M6.2, but only its **bridge**
 half — the pure-Rust translation layer, which has no Godot dependency and is
@@ -154,7 +174,13 @@ See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 **M9 is OPEN, and its scope is solver robustness.** It opened the way M8 did —
 with a defect the previous milestone reached and deliberately did not fix. Slices
 are scoped one at a time, because what the next one should be depends on what the
-last one measured. Three have landed and M9.3 is unscoped.
+last one measured. Three have landed. **M9.3 is unscoped, but no longer
+unmeasured**: a scoping probe landed 2026-09-02 (ROADMAP, "M9.3 — the scoping
+probe") and found that one plant, `crude_column_cascade`, is 96% of the corpus's
+wall time — 12.4 s of 12.9 s over 6 000 ticks — because the stage cascade solves
+cold on every tick, 38 outer iterations and 306 sixty-step bisections per tick at
+steady state. DESIGN §5 fork 5 already licenses the warm start. Read the probe and
+`docs/DEFERRED.md` before scoping; do not scope from this paragraph.
 
 **M9.0 and M9.1 are about the same step**, and reading M9.1 without M9.0 will not
 work — M9.1's whole argument is the closed form M9.0 derived, applied to a solver

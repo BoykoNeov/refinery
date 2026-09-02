@@ -3713,7 +3713,9 @@ what about the other solver — and the probe that asked it found a defect of th
 same family in a worse shape. M9.2 came out of the one thing both had in common
 and neither touched: they argued about which STEP to take, and never about when
 the solver is allowed to stop. There is still no fan of further work here waiting
-to be listed.
+to be listed — but as of 2026-09-02 there is a measurement to scope M9.3 from,
+below, and a ledger of every open deferral (`docs/DEFERRED.md`) with its distance
+from its own trigger.
 
 ### M9.0 — the shut-in stall — **LANDED** 2026-08-26
 
@@ -3981,3 +3983,123 @@ Fourteen curated plants moving by `8e-8` would have said nothing about that.
 
 **From here, "runs byte-identical" means post-M9.2 identical** for
 `relief_blowdown` and `tank_level_control`.
+
+### M9.3 — the scoping probe — **LANDED** 2026-09-02, not yet a slice
+
+M9.0, M9.1 and M9.2 each opened with the same measurement made by hand: every
+shipped scenario for 6 000 ticks, the worst solver iteration count in any tick,
+and whether each plant's snapshots moved. This box is that measurement made into a
+command — `refinery corpus` — and run once, so that M9.3 can be scoped from a
+table rather than from the last slice's deferred list. It changes no number in
+`core` or `solvers`. **Four things it found.**
+
+**The corpus's wall time is one plant, and the plant is not a hydraulics case.**
+Release build, 6 000 ticks, tick loop only:
+
+| scenario | newton, worst iter | newton, wall ms | simple, worst sweeps | simple, wall ms |
+|---|---:|---:|---:|---:|
+| `crude_column_cascade` | 4 | **12 387.6** | 3 | **11 969.6** |
+| `relief_blowdown` | 10 | 89.2 | **920** | 124.0 |
+| `fcc_plant` | 7 | 64.7 | 16 | 63.1 |
+| `tank_level_control` | 9 | 53.5 | 12 | 53.6 |
+| `leaking_line` | 8 | 51.2 | 12 | 45.9 |
+| `gas_valve` | 8 | 36.2 | 7 | 46.7 |
+| `tank_pump_valve` | 9 | 35.0 | 11 | 33.5 |
+| `crude_column` | 4 | 32.3 | 3 | 41.0 |
+| `heat_recovery` | 5 | 29.5 | 5 | 35.9 |
+| `fcc_reactor` | 3 | 18.5 | 2 | 19.4 |
+| `gas_line` | 8 | 17.1 | 7 | 18.6 |
+| `furnace_heater` | 0 | 17.1 | 1 | 17.2 |
+| `knockout_drum` | 7 | 15.2 | 9 | 16.4 |
+| `cooler_chiller` | 0 | 13.3 | 1 | 17.8 |
+
+The hydraulic columns reproduce M9.0's and M9.1's post-fix tables exactly (Newton
+worst 10 of 50 on `relief_blowdown`; Simple 920 on the same plant, the number
+M9.1 recorded). The wall column says something none of the three slices looked
+at: `crude_column_cascade` costs **380× its cut-point twin** on the same plant,
+same feed, same three products, and 96% of the whole corpus's time. The
+hydraulic solver is not where it goes — that plant converges in 4 Newton
+iterations *in total* over 6 000 ticks.
+
+**The mechanism is a cold start, and it was measured, not inferred.** A counter
+in `StageCascade::separate` over 300 ticks: **38 outer iterations on every tick**,
+unvarying, at a plant that has been at steady state since the first few hundred
+ticks; and **306 bubble-point bisections per tick** (38 × 8 stages + the feed +
+the condenser), each running the full `BUBBLE_POINT_STEPS = 60`, each step
+evaluating a K-value per component. That is ~18 000 K-value sweeps per tick to
+re-find a profile the previous tick already had. Two constants are doing it:
+
+- the seed is the feed's bubble point on every stage, every tick — DESIGN §5 fork
+  5 forbids *holding* the previous profile and, in the same paragraph, licenses
+  *seeding* from it: "a warm start changes the iteration count, not the fixed
+  point". M7.3's own doc comment records that no warm start was built.
+- sixty bisection steps over a 1 950 K bracket resolve ~2e-15 K, against a
+  convergence test of `1e-6` relative — ~4e-4 K — which 22 steps would meet.
+  The constant was never argued for.
+
+**Nothing with a written trigger has moved toward it.** `relief_blowdown` on
+Simple sits at 920 of 5 000, where M9.1 left it. No Newton pass in the corpus
+exceeds 10 of 50. No plant `Err`s on either fidelity. The full list, with
+distances, is `docs/DEFERRED.md` — the deferrals of M9.0–M9.2 are its rows A3–A11.
+
+**The refactor beside this probe is bit-identical, and that is the tool's first
+use.** `crates/scenarios/src/lib.rs` was split into `schema`, `build` and
+`validate` with the crate's API re-exported unchanged; the corpus's fourteen
+fingerprints before and after are identical under `--baseline`. From here,
+**"runs byte-identical" means `refinery corpus … --baseline` exits zero**, and a
+slice that moves a plant records which rows moved and by how much, as M9.0–M9.2
+did by hand.
+
+#### What M9.3 should be, argued from the table
+
+**Candidate A — the cascade's cost: warm start, and a bubble point that stops
+when the tolerance is met.** Two changes with different blast radii, and they
+should be two commits even if one slice:
+
+- *The root finder first.* Replacing the fixed 60-step bisection with a
+  bracketed Newton (or a bisection that stops at the tolerance the caller can
+  see) moves the answer at the ULP level, so `crude_column_cascade`'s fingerprint
+  WILL move; the gate is `tests/reference/cascade.rs`'s tolerance, which is the
+  one that already says how close is close. Expected: ~7× on A2's share.
+- *The warm start second*, because it touches the seam. `SeparationModel::separate`
+  takes `&self` and is contracted pure; a warm start needs either `&mut self` or
+  interior state on `StageCascade`. Fork 5's own gate applies: the reference case
+  must be run cold AND shown start-insensitive from a perturbed seed. Expected:
+  38 → a handful of iterations at steady state, and — the number that matters —
+  no change to what a converged pass returns, within the tolerance the cold run
+  already claims.
+
+This is the recommendation, and the honest caveat comes with it: **2 ms per tick
+is not a defect for any frontend that exists.** The Godot demo runs one plant at
+`dt = 1 s`. What makes it M9's business is the same criterion M9.0 used to reject
+its fork 2 — cost was the reason not to fund a crawl — and that this crawl is 38
+iterations of re-deriving a known answer with a sanctioned remedy. The slice's
+first job is to write the trigger A1 lacks: the plant or frontend that would
+distinguish "fast enough" from not.
+
+**Candidate B — re-sweep `tol_rel` against its new meaning (A4).** Cheap to run
+with the corpus tool, and it closes a deferral M9.2 itself named. Rejected as the
+*next* slice because its trigger is a plant that argues a tolerance from its own
+numbers, and there is none — a sweep without one would be choosing a constant
+to pass fourteen plants, which this project has called a fitted test three times.
+
+**Candidate C — `relief_blowdown`'s preconditioning on Simple (A3).** A real
+mechanism, recorded and gated, 5.4× under its cap. Not reached. It would be the
+right slice if a shipped plant of that shape ever climbs toward 5 000.
+
+#### Beyond M9 — candidates, not commitments
+
+The rule stands: a design note before any of these, and the note may reject its
+own box. Listed in the order the ledger's distances suggest.
+
+1. **Pressure control** (E1). The nearest un-defer in `docs/DEFERRED.md` with a
+   plant already shipped: `relief_blowdown` has the vessel and the valve, and
+   lacks only the `ControlledValue` variant. It would also be the first loop
+   whose actuator is not a drain, which tests M8.4's "a level loop must actuate a
+   drain" as the special case it is rather than the rule it reads as.
+2. **A cavitation floor** (B1). The one physical statement in §3 that tells a
+   frontend to read a *wrong* number as a signal. Needs its trigger written before
+   its note.
+3. **Phase in the state vector** (B3). Milestone-sized, three load-time refusals
+   already name it, and it is what a flashing feed, a partial condenser and a
+   vapour side draw all wait on.
