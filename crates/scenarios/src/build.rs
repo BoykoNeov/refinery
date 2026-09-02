@@ -1,0 +1,1198 @@
+//! `build_engine`: a parsed `ScenarioFile` to a runnable `Engine`.
+//!
+//! Unit conversion happens at this boundary and nowhere else (CLAUDE.md rule
+//! 4): the file speaks bar, °C and Kv; everything past `node_kind` is SI.
+
+use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
+use refinery_core::engine::{Engine, EngineConfig};
+use refinery_core::error::SimError;
+use refinery_core::graph::{
+    CascadeSpec, ColumnDraw, ControlLoop, ControlMode, ControlledValue, HeatExchangerCoupling,
+    LeakRole, MeasuredVariable, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState, VesselState,
+};
+use refinery_core::stream::Stream;
+use refinery_core::traits::{Controller, FlowSolver, ReactionModel, SeparationModel, ThermoModel};
+use refinery_core::units::{
+    CubicMeter, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Seconds, SquareMeter, Watt,
+    WattPerKelvin, P_ATM, T_AMBIENT,
+};
+use std::collections::BTreeMap;
+
+use crate::schema::{
+    bar_to_pa, c_to_k, kv_to_cv_si, ComponentDef, ControlDef, ExchangerDef, NodeDef, PipeDef,
+    ScenarioFile,
+};
+use crate::validate::{
+    plant_phases, refuse_gas_leak, require_compatible_fidelity, require_declared_iff_used,
+    require_gas_valve_x_t, seed_component_index, validate_node_def, validate_pipe_def,
+    validate_topology,
+};
+
+/// Build a runnable engine from a scenario. Steps:
+/// 1. Build the Slate (water-only until M3's [components] table exists).
+/// 2. Instantiate nodes in file order (unit conversion at this boundary),
+///    then pipes, resolving names → NodeIds; unknown names are errors.
+/// 3. Validate topology: pumps/valves have exactly 1 in + 1 out edge;
+///    every node reachable; at least one pressure-fixing node per
+///    connected component (otherwise the hydraulic problem is singular —
+///    fail at load with a clear message, not at solve with divergence).
+/// 4. Select solver impls from [fidelity]; unknown names are errors
+///    listing valid options.
+pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
+    // Step 0: fidelity combinations that cannot work, before anything is built.
+    // It runs FIRST rather than beside the model selection in step 4, because a
+    // cascade column's own config is validated in step 2a and a mis-paired plant
+    // would otherwise be told about its draws when the real fault is its thermo.
+    require_compatible_fidelity(scenario)?;
+
+    // Step 1: slate. An absent [[components]] table means the water-only slate,
+    // which is what every scenario written before M3 meant — that default is
+    // what keeps those files bit-identical rather than merely still-loading.
+    let slate = build_slate(&scenario.components)?;
+
+    // Step 2: instantiate nodes in file order (IndexMap preserves it, so node
+    // ids are deterministic), then pipes — resolving names → NodeIds. Unit
+    // conversion happens here, at the human-friendly ↔ SI boundary.
+    let mut graph = PlantGraph::new();
+    for (name, def) in &scenario.nodes {
+        validate_node_def(name, def)?;
+        let kind = node_kind(name, def, &slate)?;
+        graph.add_node(Node {
+            name: name.clone(),
+            kind,
+            heat_input: Watt::ZERO,
+        });
+    }
+    // Step 2a: resolve column draws now that every node exists — a draw may name
+    // an outlet defined later in the file, exactly like an exchanger coupling.
+    // This is where a draw's outlet must be a pressure-fixing node (the
+    // free-node-on-a-draw-line rejection, DESIGN §5); the pipe-level topology
+    // (one pipe per draw, correct direction) is checked in `validate_topology`
+    // once the pipes exist.
+    resolve_column_draws(&mut graph, scenario)?;
+
+    for pipe in &scenario.pipes {
+        validate_pipe_def(pipe)?;
+        let from = graph.find_node(&pipe.from).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "pipe '{}' references unknown 'from' node '{}'",
+                pipe.name, pipe.from
+            ))
+        })?;
+        let to = graph.find_node(&pipe.to).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "pipe '{}' references unknown 'to' node '{}'",
+                pipe.name, pipe.to
+            ))
+        })?;
+        let whole = Pipe {
+            name: pipe.name.clone(),
+            length: Meter(pipe.length_m),
+            diameter: Meter(pipe.diameter_m),
+            friction_factor: pipe.friction_factor,
+            elevation_change: Meter(pipe.elevation_change_m),
+            leak: LeakRole::None,
+            ambient_ua: WattPerKelvin(pipe.ambient_ua_w_per_k),
+            // The solver overwrites mass_flow each tick, and transport
+            // overwrites the temperature. Seed representative T/P at
+            // ambient / atmospheric.
+            stream: Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
+        };
+        match &pipe.leak_to {
+            None => {
+                graph.add_pipe(from, to, whole);
+            }
+            Some(atmosphere) => split_for_leak(&mut graph, pipe, from, to, whole, atmosphere)?,
+        }
+    }
+
+    // Step 2b: thermally pair the exchanger sides, after every node exists so
+    // both ends of a coupling can be resolved regardless of file order.
+    build_couplings(&mut graph, &scenario.exchangers)?;
+
+    // Step 3: validate topology at load — a clear error here beats solve-time
+    // divergence for the same structural fault.
+    validate_topology(&graph, &slate)?;
+
+    // Step 3a: the single-phase connected-component guard, which also tells each
+    // pipe which phase it carries. Seeding the stream's composition needs the
+    // topology, so it happens here rather than in the pipe loop above; the value
+    // is a tick-1 density seed only (see `seed_component_index`).
+    let phases = plant_phases(&graph, &slate)?;
+    require_gas_valve_x_t(&graph, &phases)?;
+    refuse_gas_leak(&graph, &phases)?;
+    for eid in graph.edge_ids().collect::<Vec<_>>() {
+        let (src, _) = graph.endpoints(eid);
+        let index = seed_component_index(&slate, phases[src.0 as usize]);
+        graph.pipe_mut(eid).stream.composition = Composition::pure(slate.len(), index);
+    }
+
+    // Step 3b: the control loops, after every node exists so a loop may name an
+    // actuator defined later in the file, exactly like an exchanger coupling or a
+    // column draw. It runs after `plant_phases` because a loop's seeded
+    // measurement is a real read of the finished plant, not a placeholder.
+    build_controls(&mut graph, &slate, &scenario.controls)?;
+
+    // Step 4: select solver impls from [fidelity]; unknown names are errors
+    // listing the valid options.
+    let flow: Box<dyn FlowSolver> = match scenario.fidelity.flow.as_str() {
+        "newton" => Box::new(refinery_solvers::NewtonFlowSolver::default()),
+        "simple" => Box::new(refinery_solvers::SimpleFlowSolver::default()),
+        other => {
+            return Err(SimError::Scenario(format!(
+                "unknown flow solver '{other}' (valid: newton, simple)"
+            )))
+        }
+    };
+    let thermo: Box<dyn ThermoModel> = match scenario.fidelity.thermo.as_str() {
+        "constant" => Box::new(refinery_solvers::ConstantThermo),
+        // Raoult over a Clausius–Clapeyron vapour pressure with Trouton's rule
+        // for Δh_vap (M7.2). Selectable from M7.3, when the cascade gave a
+        // K-value its first consumer — see `Fidelity::thermo`.
+        "trouton" => Box::new(refinery_solvers::TroutonThermo::new()),
+        other => {
+            return Err(SimError::Scenario(format!(
+                "unknown thermo model '{other}' (valid: constant, trouton)"
+            )))
+        }
+    };
+    let reactions: Box<dyn ReactionModel> = match scenario.fidelity.reactions.as_str() {
+        "none" => Box::new(refinery_solvers::NoReactions),
+        // The FCC placeholder table (M4.1). Both reacting fidelities resolve
+        // their lumps against the slate by name, so an absent lump is a
+        // load-time error, not a solve-time surprise.
+        "lookup" => Box::new(refinery_solvers::SimpleLookup::fcc_demo(&slate)?),
+        // FCC 4-lump Arrhenius kinetics (M4.2), integrated with fixed-count RK4
+        // over the reactor's `tau_s`.
+        "fcc" => Box::new(refinery_solvers::FourLump::fcc(&slate)?),
+        other => {
+            return Err(SimError::Scenario(format!(
+                "unknown reaction model '{other}' (valid: none, lookup, fcc)"
+            )))
+        }
+    };
+
+    let separation: Box<dyn SeparationModel> = match scenario.fidelity.separation.as_str() {
+        // M3.2's boiling-range splitter, and the default (see `Fidelity`).
+        "cut_point" => Box::new(refinery_solvers::CutPointSplitter),
+        // The M7.3 equilibrium-stage cascade. Its pairing with `thermo` is
+        // already settled by `require_compatible_fidelity` in step 0.
+        "cascade" => Box::new(refinery_solvers::StageCascade::new()),
+        other => {
+            return Err(SimError::Scenario(format!(
+                "unknown separation model '{other}' (valid: cut_point, cascade)"
+            )))
+        }
+    };
+
+    let config = EngineConfig {
+        dt: refinery_core::units::Seconds(scenario.simulation.dt),
+    };
+    Ok(Engine::new(
+        graph, slate, config, flow, thermo, reactions, separation,
+    ))
+}
+
+/// Build the canonical slate from the `[[components]]` table, in file order.
+///
+/// An empty table is the water-only slate rather than an error: that is what
+/// every pre-M3 scenario means, and making it explicit would churn every file
+/// for no gain. Duplicate names ARE an error — `Composition` is written by name,
+/// so two cuts called the same thing make a composition ambiguous, and
+/// `Slate::index_of` would silently resolve every mention to the first.
+/// Build the plant's control loops from `[[controls]]`, after every node exists.
+///
+/// Declaration order is `LoopId` order and execution order, exactly as `[nodes]`
+/// order fixes node ids.
+///
+/// The refusals here are fork 5's, and each closes a way a file can declare a
+/// loop that would run and be wrong rather than fail:
+///
+/// - tuning that belongs to the other algorithm, in both directions
+///   (`integral_time_s` and `initial_output` on `"p"`; either of them missing on
+///   `"pi"`),
+/// - two loops naming one actuator, which is two writers of one opening with no
+///   defined resolution order — split-range and override control are real, and are
+///   deferred *with an arbitration*, not left to declaration order,
+/// - a level measured on a node that is not a `Tank`, because a level names
+///   nothing on a vessel whose state IS pressure,
+/// - an actuator that is not a `Valve`, and a `ReliefValve` with its own reason.
+///
+/// Each loop is born with a real measurement rather than an empty one: a level is
+/// stored and is true from load, so `PlantGraph::measure` is called here exactly as
+/// the tick pass calls it, and a snapshot taken before the first tick reports a
+/// true level. `last_output` is seeded from the valve's own declared opening, which
+/// is what MANUAL would report and what AUTO overwrites on tick 1.
+///
+/// That same measurement is what a PI loop's memory is derived AGAINST: fork 5's
+/// `initial_output` says where the actuator starts, and the integral term is
+/// whatever makes the controller ask for that position given the error standing at
+/// load. So the declared number is the one a reader can check on the faceplate at
+/// tick 0, and the state behind it is derived rather than declared twice.
+fn build_controls(
+    graph: &mut PlantGraph,
+    slate: &Slate,
+    defs: &[ControlDef],
+) -> Result<(), SimError> {
+    let mut seen_names: Vec<&str> = Vec::new();
+    let mut claimed_actuators: Vec<(NodeId, &str)> = Vec::new();
+
+    for def in defs {
+        if seen_names.contains(&def.name.as_str()) {
+            return Err(SimError::Scenario(format!(
+                "two control loops are called '{}'. A loop's name is what its faceplate \
+                 is labelled with, so two of them make a snapshot ambiguous",
+                def.name
+            )));
+        }
+        seen_names.push(&def.name);
+
+        let variable = match def.measurement.variable.as_str() {
+            "level" => MeasuredVariable::Level,
+            other => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' measures unknown variable '{other}' (valid: level). \
+                     Pressure, temperature and flow control are deferred per variable, each \
+                     needing a measurement path and an actuator that exists \
+                     (docs/DESIGN.md §10)",
+                    def.name
+                )))
+            }
+        };
+
+        let measurement_node = graph.find_node(&def.measurement.node).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "control loop '{}' measures unknown node '{}'",
+                def.name, def.measurement.node
+            ))
+        })?;
+        let actuator = graph.find_node(&def.actuator).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "control loop '{}' actuates unknown node '{}'",
+                def.name, def.actuator
+            ))
+        })?;
+
+        // The measured node must be able to answer for the variable. Asking the
+        // graph rather than matching the kind here is deliberate: `measure` is the
+        // single owner of where a measurement comes from, so a kind this loader
+        // accepted and that reader then rejected is not a state that can exist.
+        // Bound rather than discarded: this is both the load-time check that the
+        // node can answer for the variable AND the measurement the loop is born
+        // holding — and, for a PI loop, the error its declared `initial_output` is
+        // back-calculated against. Reading it twice would let the two drift apart
+        // in a way nothing downstream could detect.
+        let measurement = graph
+            .measure(slate, measurement_node, variable)
+            .map_err(|e| {
+                SimError::Scenario(format!(
+                    "control loop '{}' cannot measure {} on node '{}': {e}",
+                    def.name, def.measurement.variable, def.measurement.node
+                ))
+            })?;
+
+        match &graph.node(actuator).kind {
+            NodeKind::Valve { .. } => {}
+            // Its own reason rather than "not a valve", exactly as
+            // `Command::SetValveOpening` refuses it: a relief valve IS a valve,
+            // and the point is that its opening is not a setpoint at all — it is a
+            // memoryless function of its own inlet pressure, recomputed every
+            // solve (docs/DESIGN.md §3a fork 5). A loop pointed at one would write
+            // a number the next solve overwrites.
+            NodeKind::ReliefValve { .. } => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', a relief valve. Its opening is \
+                     actuated by its own inlet pressure and is recomputed on every solve, \
+                     so a controller writing it would be overwritten before the tick ended",
+                    def.name, def.actuator
+                )))
+            }
+            _ => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', which is not a valve. A valve opening \
+                     is the only actuator M8.2 writes; pump speed, duty and the rest are \
+                     deferred with their own measurement paths (docs/DESIGN.md §10)",
+                    def.name, def.actuator
+                )))
+            }
+        }
+
+        if let Some((_, owner)) = claimed_actuators.iter().find(|(id, _)| *id == actuator) {
+            return Err(SimError::Scenario(format!(
+                "control loops '{owner}' and '{}' both actuate '{}'. Two writers of one \
+                 opening have no defined resolution order, and declaration order is not \
+                 one — split-range, override and feedforward control are real and are \
+                 deferred together, with an arbitration (docs/DESIGN.md §10)",
+                def.name, def.actuator
+            )));
+        }
+        claimed_actuators.push((actuator, &def.name));
+
+        // The setpoint key carries the unit, and which key that is comes from the
+        // variable. The absent direction is the reachable one today; the "key
+        // belongs to another variable" direction becomes expressible when a second
+        // variable lands, since `deny_unknown_fields` currently refuses such a key
+        // as unknown rather than as mismatched.
+        let setpoint = match variable {
+            MeasuredVariable::Level => ControlledValue::Level {
+                m: Meter(require_keyed(
+                    def.setpoint_m,
+                    &def.name,
+                    variable.setpoint_key(),
+                    "the loop's target",
+                )?),
+            },
+        };
+        graph
+            .check_setpoint(measurement_node, setpoint)
+            .map_err(|e| SimError::Scenario(format!("control loop '{}': {e}", def.name)))?;
+
+        let mode = match def.mode.as_str() {
+            "auto" => ControlMode::Auto,
+            "manual" => ControlMode::Manual,
+            other => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' has unknown mode '{other}' (valid: auto, manual)",
+                    def.name
+                )))
+            }
+        };
+
+        let algorithm: Box<dyn Controller> = match def.algorithm.as_str() {
+            "p" => {
+                // Fork 5's refusal, in the direction that was reachable in M8.2.
+                // Its mirror — `integral_time_s` ABSENT with `algorithm = "pi"` —
+                // is `require_keyed` in the arm below, and became reachable the
+                // moment `"pi"` did, exactly as M8.2's comment predicted.
+                if def.integral_time_s.is_some() {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' sets `integral_time_s` on `algorithm = \"p\"`. A \
+                         proportional loop has no integral term to tune, and a tuning \
+                         constant no algorithm reads is an authoritative-looking number \
+                         nothing consumes",
+                        def.name
+                    )));
+                }
+                // Its own reason rather than `deny_unknown_fields`' "unknown key",
+                // which is what refused this before M8.3 gave the key a meaning.
+                // The distinction is the whole of M8.2's correction 2: this is not
+                // a bias a proportional loop could use, it is a MEMORY, and a
+                // controller with none cannot be given an initial condition for it.
+                if def.initial_output.is_some() {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' sets `initial_output` on `algorithm = \"p\"`. That \
+                         key is the loop's MEMORY, from which a PI controller's integral \
+                         term is derived (docs/DESIGN.md §10 fork 5), and `u = K·e` has no \
+                         memory for it to be the initial condition of. It is deliberately \
+                         not a bias: a manual-reset term would turn a P loop's steady-state \
+                         offset into a function of how well the bias was chosen",
+                        def.name
+                    )));
+                }
+                let gain = require_keyed(def.gain_per_m, &def.name, "gain_per_m", "the gain")?;
+                Box::new(
+                    refinery_solvers::ProportionalController::new(gain).map_err(|e| {
+                        SimError::Scenario(format!("control loop '{}': {e}", def.name))
+                    })?,
+                )
+            }
+            "pi" => {
+                let gain = require_keyed(def.gain_per_m, &def.name, "gain_per_m", "the gain")?;
+                let integral_time_s = require_keyed(
+                    def.integral_time_s,
+                    &def.name,
+                    "integral_time_s",
+                    "the integral time",
+                )?;
+                let initial_output = require_keyed(
+                    def.initial_output,
+                    &def.name,
+                    "initial_output",
+                    "the loop's initial memory",
+                )?;
+                // The setpoint and the measurement standing at load are arguments
+                // rather than a later call, so an unseeded `PiController` is not a
+                // value that can exist — fork 5's "no silent zero" holds by
+                // construction. The range check on `initial_output` lives with the
+                // controller, beside the range check `Command::SetValveOpening`
+                // applies to the same quantity.
+                Box::new(
+                    refinery_solvers::PiController::new(
+                        gain,
+                        integral_time_s,
+                        initial_output,
+                        measurement,
+                        setpoint,
+                    )
+                    .map_err(|e| SimError::Scenario(format!("control loop '{}': {e}", def.name)))?,
+                )
+            }
+            other => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' selects unknown algorithm '{other}' (valid: p, pi). \
+                     Derivative action is deferred: a D term differentiates a measurement \
+                     that moves by one solve per tick, and needs a filter and a stated \
+                     rule for the setpoint kick before it means anything (docs/DESIGN.md \
+                     §10)",
+                    def.name
+                )))
+            }
+        };
+
+        let last_output = match &graph.node(actuator).kind {
+            NodeKind::Valve { opening, .. } => *opening,
+            // Unreachable: the kind was matched above and nothing since can have
+            // changed it.
+            _ => 0.0,
+        };
+
+        graph.add_control(ControlLoop {
+            name: def.name.clone(),
+            measurement_node,
+            actuator,
+            setpoint,
+            mode,
+            algorithm,
+            last_measurement: measurement,
+            last_output,
+        });
+    }
+    Ok(())
+}
+
+/// A `[[controls]]` key that is required for this loop's variable or algorithm.
+///
+/// One helper rather than a refusal per key, so every "you left out the number
+/// that decides this loop's behaviour" message says the same thing — and so that
+/// no key can acquire a silent default by being forgotten in one branch. `gain`
+/// and the integral time have no defaults for the reason `x_T` has none (§3a fork
+/// 6): a silent default is an invented value in disguise, and every gate would
+/// then pass for whatever was chosen.
+fn require_keyed(
+    value: Option<f64>,
+    loop_name: &str,
+    key: &str,
+    what: &str,
+) -> Result<f64, SimError> {
+    value.ok_or_else(|| {
+        SimError::Scenario(format!(
+            "control loop '{loop_name}' declares no `{key}` — {what} has no default, \
+             because a silent default is an invented value in disguise and every gate \
+             would then pass for whatever was chosen"
+        ))
+    })
+}
+
+fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
+    if defs.is_empty() {
+        return Ok(Slate::water_only());
+    }
+    for (i, def) in defs.iter().enumerate() {
+        if defs[..i].iter().any(|d| d.name == def.name) {
+            return Err(SimError::Scenario(format!(
+                "component '{}' is defined twice: names must be unique, because \
+                 compositions reference components by name",
+                def.name
+            )));
+        }
+        // Every property is a positive physical magnitude; a zero density would
+        // divide by zero in `mixture_density`, and a zero cp makes any heat
+        // input an infinite temperature rise.
+        for (field, value) in [
+            ("tb_c", def.tb_c + 273.15),
+            ("molar_mass_kg_per_mol", def.molar_mass_kg_per_mol),
+            ("cp_j_per_kg_k", def.cp_j_per_kg_k),
+        ]
+        .into_iter()
+        .chain(def.density_kg_per_m3.map(|d| ("density_kg_per_m3", d)))
+        {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "component '{}' has a non-positive or non-finite {field} \
+                     ({value}); every component property must be > 0",
+                    def.name
+                )));
+            }
+        }
+        // Phase ↔ density correspondence, refused in BOTH directions so neither
+        // mistake can produce a plant that loads: a liquid with no density has
+        // no density law at all, and a gas with one carries a number nothing
+        // reads (docs/DESIGN.md §3a).
+        match (component_phase(def)?, def.density_kg_per_m3) {
+            (Phase::Liquid, None) => {
+                return Err(SimError::Scenario(format!(
+                    "liquid component '{}' has no density_kg_per_m3; a liquid's \
+                     density is a declared constant at this fidelity",
+                    def.name
+                )))
+            }
+            (Phase::Gas, Some(rho)) => {
+                return Err(SimError::Scenario(format!(
+                    "gas component '{}' declares density_kg_per_m3 = {rho}, which \
+                     nothing reads: a gas density is P·M̄/(R·T), computed from \
+                     molar_mass_kg_per_mol and the solved pressure. Remove the field.",
+                    def.name
+                )))
+            }
+            _ => {}
+        }
+    }
+    Slate::new(
+        defs.iter()
+            .map(|d| {
+                Ok(PseudoComponent {
+                    name: d.name.clone(),
+                    tb: c_to_k(d.tb_c),
+                    molar_mass: KgPerMol(d.molar_mass_kg_per_mol),
+                    density: d.density_kg_per_m3.map(KgPerM3),
+                    cp: JPerKgK(d.cp_j_per_kg_k),
+                    phase: component_phase(d)?,
+                })
+            })
+            .collect::<Result<Vec<_>, SimError>>()?,
+    )
+}
+
+/// Parse a component's `phase = "..."` field. Absent is liquid.
+fn component_phase(def: &ComponentDef) -> Result<Phase, SimError> {
+    match def.phase.as_deref() {
+        None | Some("liquid") => Ok(Phase::Liquid),
+        Some("gas") => Ok(Phase::Gas),
+        Some(other) => Err(SimError::Scenario(format!(
+            "component '{}' has unknown phase '{other}' (valid: liquid, gas)",
+            def.name
+        ))),
+    }
+}
+
+/// Resolve a node's `composition = { name = weight, ... }` against the slate.
+///
+/// Weights are normalized (`Composition::from_weights`), so a file may write
+/// fractions summing to 1 or raw mass amounts — whichever reads better — and
+/// both mean the same thing. Unknown names are rejected rather than ignored: a
+/// typo'd cut name would otherwise silently drop that fraction and renormalize
+/// the rest, producing a plausible-looking wrong feed.
+///
+/// An absent composition is only meaningful on a one-component slate, where
+/// there is exactly one thing the fluid can be. On a real slate it is refused
+/// rather than defaulted — see `NodeDef::Source::composition`.
+fn resolve_composition(
+    node: &str,
+    weights: &Option<BTreeMap<String, f64>>,
+    slate: &Slate,
+) -> Result<Composition, SimError> {
+    let Some(weights) = weights else {
+        if slate.len() == 1 {
+            return Ok(Composition::pure(1, 0));
+        }
+        return Err(SimError::Scenario(format!(
+            "node '{node}' has no composition, but the slate has {} components. \
+             Only a one-component slate has an unambiguous default; write \
+             composition = {{ <component> = <weight>, ... }}",
+            slate.len()
+        )));
+    };
+    let mut fractions = vec![0.0; slate.len()];
+    for (name, weight) in weights {
+        let index = slate.index_of(name).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "node '{node}' references unknown component '{name}'; the slate \
+                 defines: {}",
+                slate
+                    .iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        })?;
+        fractions[index] = *weight;
+    }
+    Composition::from_weights(&fractions)
+        .map_err(|e| SimError::Scenario(format!("node '{node}': {e}")))
+}
+
+/// Convert a scenario node definition into a core `NodeKind`, applying the
+/// human-friendly → SI conversions at this boundary (bar → Pa, °C → K,
+/// metric Kv → element cv_si, tank level → mass).
+///
+/// A tank's initial mass is `ρ·A·h` at the density of ITS OWN contents, not at
+/// water's. With a one-component slate the two coincide, which is why this went
+/// unnoticed through M1 and M2; with a crude slate, filling a tank with a light
+/// cut and computing its mass at 998 kg/m³ would over-charge the inventory by
+/// ~40% and break mass conservation at tick zero.
+fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimError> {
+    Ok(match def {
+        NodeDef::Source {
+            pressure_bar,
+            temperature_c,
+            composition,
+        } => NodeKind::Source {
+            pressure: bar_to_pa(*pressure_bar),
+            temperature: c_to_k(*temperature_c),
+            composition: resolve_composition(name, composition, slate)?,
+        },
+        NodeDef::Sink {
+            pressure_bar,
+            temperature_c,
+            composition,
+        } => NodeKind::Sink {
+            pressure: bar_to_pa(*pressure_bar),
+            temperature: c_to_k(*temperature_c),
+            // Through the same resolver a source uses, so an absent composition
+            // on a real slate is REFUSED rather than defaulted. This is the one
+            // place a sink's composition does not mirror its temperature, and
+            // the asymmetry is in the physics, not the design: ambient is a
+            // defensible neutral temperature to back-feed, and there is no
+            // corresponding neutral composition — "the first cut" is a guess
+            // that would run.
+            composition: resolve_composition(name, composition, slate)?,
+        },
+        NodeDef::Atmosphere => NodeKind::Atmosphere,
+        NodeDef::Tank {
+            area_m2,
+            height_m,
+            initial_level_m,
+            temperature_c,
+            ambient_ua_w_per_k,
+            composition,
+        } => {
+            let area = SquareMeter(*area_m2);
+            let composition = resolve_composition(name, composition, slate)?;
+            // A tank holds a LIQUID, and the two lines below are why the guard
+            // is here rather than left to the connected-component check: both
+            // `ρ·A·h` and `bottom_pressure`'s `ρgh` read a stored liquid density,
+            // and on a gas composition there is none — an inventory and a
+            // hydrostatic head computed from a level are not merely inaccurate
+            // for a gas, they name nothing. A gas holdup is the capacitive
+            // vessel (M5.3), whose state is pressure, not level.
+            if composition.phase(slate)? == Phase::Gas {
+                return Err(SimError::Scenario(format!(
+                    "tank '{name}' holds a gas-phase composition. A tank's inventory \
+                     (ρ·A·h) and head (ρgh) are liquid-level quantities; a gas holdup \
+                     is a capacitive vessel, whose state is pressure (docs/DESIGN.md §3a)"
+                )));
+            }
+            // m = ρ·A·h, at the density of the tank's own contents.
+            let density = composition.mixture_density(slate);
+            let mass = Kg(density.value() * area.value() * initial_level_m);
+            NodeKind::Tank(TankState {
+                area,
+                height: Meter(*height_m),
+                mass,
+                temperature: c_to_k(*temperature_c),
+                composition,
+                ambient_ua: WattPerKelvin(*ambient_ua_w_per_k),
+            })
+        }
+        NodeDef::Vessel {
+            volume_m3,
+            pressure_bar,
+            temperature_c,
+            composition,
+        } => {
+            let composition = resolve_composition(name, composition, slate)?;
+            // The mirror of the tank's liquid-only guard, and the other half of
+            // the same partition: a holdup is a tank if its state is a level and
+            // a vessel if its state is a pressure. `C = V·M̄/(R·T)` is the
+            // ideal-gas relation — for an incompressible liquid it is not merely
+            // inaccurate, it names nothing, and it would silently produce a
+            // capacitance ~5 orders too small and a plant that oscillates.
+            if composition.phase(slate)? != Phase::Gas {
+                return Err(SimError::Scenario(format!(
+                    "vessel '{name}' holds a liquid-phase composition. A vessel's state is \
+                     PRESSURE and its capacitance C = V·M̄/(R·T) is the ideal-gas relation; \
+                     a liquid holdup is a tank, whose state is level (docs/DESIGN.md §3a)"
+                )));
+            }
+            let mut vessel = VesselState {
+                volume: CubicMeter(*volume_m3),
+                // Filled in immediately below, from the capacitance this same
+                // struct computes. Going through `capacitance` rather than
+                // writing `P·V·M̄/(R·T)` out again is what guarantees the vessel's
+                // `pressure()` reads back EXACTLY the declared bar figure — and
+                // therefore that the accumulation term's `Pⁿ` starts where the
+                // file says the plant does.
+                mass: Kg(0.0),
+                temperature: c_to_k(*temperature_c),
+                composition,
+            };
+            vessel.mass = Kg(bar_to_pa(*pressure_bar).value() * vessel.capacitance(slate));
+            NodeKind::Vessel(vessel)
+        }
+        NodeDef::Pump { h0_m, a, on } => NodeKind::Pump {
+            h0: Meter(*h0_m),
+            a: *a,
+            on: *on,
+        },
+        // `x_t` is carried through unvalidated HERE and checked in
+        // `require_gas_valve_x_t` instead: whether a valve is in gas service is a
+        // TOPOLOGICAL fact, and the topology does not exist yet at this point in
+        // the load.
+        NodeDef::Valve { kv, opening, x_t } => NodeKind::Valve {
+            cv_max: kv_to_cv_si(*kv),
+            opening: *opening,
+            x_t: *x_t,
+        },
+        NodeDef::ReliefValve {
+            kv,
+            set_pressure_bar,
+            accumulation_bar,
+            x_t,
+        } => {
+            if !accumulation_bar.is_finite() || *accumulation_bar <= 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "relief valve '{name}' has accumulation_bar = {accumulation_bar}, which                      must be > 0. A zero band makes the opening a STEP in pressure, and a                      discontinuous characteristic is exactly what elements.rs promises not                      to hand the Newton Jacobian."
+                )));
+            }
+            if !set_pressure_bar.is_finite() || *set_pressure_bar <= 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "relief valve '{name}' has set_pressure_bar = {set_pressure_bar}; a set                      pressure is ABSOLUTE and must be positive."
+                )));
+            }
+            NodeKind::ReliefValve {
+                cv_max: kv_to_cv_si(*kv),
+                set_pressure: bar_to_pa(*set_pressure_bar),
+                accumulation: bar_to_pa(*accumulation_bar),
+                x_t: *x_t,
+            }
+        }
+        NodeDef::Furnace { duty_mw } => NodeKind::Furnace {
+            duty: Watt(*duty_mw * 1e6),
+        },
+        NodeDef::Cooler { duty_mw } => NodeKind::Cooler {
+            duty: Watt(*duty_mw * 1e6),
+        },
+        NodeDef::HeatExchanger => NodeKind::HeatExchanger,
+        NodeDef::Junction => NodeKind::Junction,
+        NodeDef::Column {
+            pressure_bar,
+            smearing_k,
+            ..
+        } => NodeKind::Column {
+            pressure: bar_to_pa(*pressure_bar),
+            // A temperature WIDTH, so no °C→K offset — a 10 °C ramp is 10 K.
+            // Absent means 0, the sharp splitter, which is what every file that
+            // omits it has always meant; the `Option` exists so the cascade can
+            // refuse a value it would not read (`require_declared_iff_used`).
+            smearing: Kelvin(smearing_k.unwrap_or(0.0)),
+            // Draws are resolved in a second pass, once every node exists so a
+            // draw can name an outlet defined later in the file (like couplings).
+            draws: Vec::new(),
+            // Filled by the same second pass, which is where the declared-iff-used
+            // correspondence against `[fidelity] separation` is enforced.
+            cascade: None,
+        },
+        NodeDef::Reactor { t_set_c, tau_s } => NodeKind::Reactor {
+            t_set: c_to_k(*t_set_c),
+            tau: Seconds(*tau_s),
+        },
+    })
+}
+
+/// Reject node definitions whose numbers are out of physical range, at load
+/// rather than at solve.
+///
+/// Duty is a non-negative MAGNITUDE in both units — direction is the unit's
+/// identity, not the sign of its number (see `NodeKind::Cooler`). A negative
+/// `furnace` duty used to be the only way to express cooling; now that `cooler`
+/// exists it can only be a sign slip, and a silently-chilling furnace is a
+/// plausible-looking wrong plant. Rejecting it here is what makes the two-unit
+/// design safe rather than merely tidy.
+///
+/// A tank's `UA` is refused on the same grounds. It is a CONDUCTANCE, not a
+/// signed rate: the direction of ambient exchange already comes from
+/// `T_AMBIENT − T_tank`, so a negative `UA` does not mean "loses heat" — it
+/// inverts the driving force, warming a hot tank further and cooling a cold one,
+/// a positive feedback that runs away from ambient instead of towards it.
+/// Reject a pipe's `UA` on the same grounds as a tank's, and one sharper one.
+///
+/// For a tank a negative `UA` inverts the driving force — bad, but the runaway
+/// is geometric per tick and bounded by the tick count. For a pipe it lands in
+/// an EXPONENT: `exp(−UA/(|ṁ|·cp))` with `UA < 0` is `exp(+x)`, which multiplies
+/// the temperature difference from ambient every time the fluid crosses the
+/// pipe, and a loop of such pipes diverges to infinity within a few ticks. Same
+/// conceptual error, a much shorter fuse.
+/// Build a declared pipe as a LEAK PATH: two halves joined by a `Junction`, with
+/// a dormant orifice edge from that junction to `atmosphere`.
+///
+/// **Split at LOAD, not at puncture** (docs/DESIGN.md §3b). Splitting when the
+/// damage happens would change the snapshot's shape mid-run, which is a rule-6
+/// contract problem for every frontend; splitting at load fixes the topology
+/// before tick 0, so a punctured plant and an intact one have the same shape and
+/// differ only in one commanded number.
+///
+/// **Hanging the orifice off an ENDPOINT was not merely inelegant, it was
+/// illegal.** `validate_degrees` requires exactly 1-in-1-out of a pump, valve,
+/// PSV, furnace, cooler, reactor and exchanger side, so a third edge leaving any
+/// of them is a load-time `Err` — and a pipe's upstream endpoint is a pump or a
+/// valve constantly (`tank_pump_valve.toml` is nothing but). An endpoint rule
+/// would therefore have forbidden leaks on exactly the lines a game most wants
+/// to puncture. The midpoint junction has no degree rule on it, and it carries
+/// the physically right pressure for a mid-pipe hole into the bargain: neither
+/// endpoint's, but the one between them.
+///
+/// The halves split the length, the elevation and the `UA` evenly and keep the
+/// diameter and friction factor, so the two in series are hydraulically the
+/// declared pipe: `k ∝ L` adds back to the original, `β = ρ·g·Δz` adds back, and
+/// the ambient transform composes over the two halves. **The upstream half keeps
+/// the declared NAME** — it is what `PuncturePipe` addresses and where
+/// `leak_mass_flow` is reported.
+fn split_for_leak(
+    graph: &mut PlantGraph,
+    def: &PipeDef,
+    from: NodeId,
+    to: NodeId,
+    whole: Pipe,
+    atmosphere: &str,
+) -> Result<(), SimError> {
+    let vent = graph.find_node(atmosphere).ok_or_else(|| {
+        SimError::Scenario(format!(
+            "pipe '{}' declares leak_to = '{atmosphere}', which is not a node in this plant",
+            def.name
+        ))
+    })?;
+    if !matches!(graph.node(vent).kind, NodeKind::Atmosphere) {
+        return Err(SimError::Scenario(format!(
+            "pipe '{}' declares leak_to = '{atmosphere}', which is a {:?}, not an atmosphere. \
+             A leak vents to the outside world; venting it into the plant would be an \
+             ordinary pipe, and the scenario should say so",
+            def.name,
+            graph.node(vent).kind
+        )));
+    }
+    // A COLUMN's pipes cannot be split, and this refusal is here because the
+    // failure it prevents is silent. `network::is_column_draw_edge` recognises a
+    // draw by its two endpoints — column at one end, one of that column's
+    // declared outlets at the other — and `edge_flows` guards a draw's flow to
+    // zero on the strength of it, because a draw's flow is PRESCRIBED
+    // (`splitᵢ·ṁ_feed`, written post-sweep) and not pressure-driven at all.
+    // Split that edge and neither half matches any more, so the guard silently
+    // stops applying and the draw becomes a pressure-driven number that is
+    // finite, deterministic, mass-conserving and wrong — DESIGN §5's silent
+    // hazard, reached by a scenario line that looks entirely reasonable. The feed
+    // is refused with it: a column is 1-in-N-out by `validate_degrees`, so a
+    // split feed would fail there anyway, but with a message about degrees that
+    // names the wrong cause.
+    for end in [from, to] {
+        if matches!(graph.node(end).kind, NodeKind::Column { .. }) {
+            return Err(SimError::Scenario(format!(
+                "pipe '{}' declares a leak path but connects to column '{}'. A column's \
+                 feed and draw pipes cannot be split: a draw's flow is prescribed by the \
+                 feed split, not by pressure, and splitting it would silently turn it \
+                 into a pressure-driven flow (docs/DESIGN.md §3b, §5)",
+                def.name,
+                graph.node(end).name
+            )));
+        }
+    }
+
+    let junction = format!("{}__leak_point", def.name);
+    if graph.find_node(&junction).is_some() {
+        return Err(SimError::Scenario(format!(
+            "pipe '{}' declares a leak path, whose midpoint junction would be named \
+             '{junction}' — and this plant already has a node by that name. Rename one",
+            def.name
+        )));
+    }
+    let mid = graph.add_node(Node {
+        name: junction,
+        kind: NodeKind::Junction,
+        heat_input: Watt::ZERO,
+    });
+
+    // Half a pipe each: k ∝ L and β = ρ·g·Δz both add back to the declared pipe,
+    // and UA ∝ exposed area does too.
+    let half = |name: String| Pipe {
+        name,
+        length: Meter(def.length_m / 2.0),
+        elevation_change: Meter(def.elevation_change_m / 2.0),
+        ambient_ua: WattPerKelvin(def.ambient_ua_w_per_k / 2.0),
+        ..whole.clone()
+    };
+    let upstream = graph.add_pipe(from, mid, half(def.name.clone()));
+    graph.add_pipe(mid, to, half(format!("{}__downstream", def.name)));
+
+    // The orifice runs junction → atmosphere, so positive graph direction is
+    // OUTWARD and `leak_mass_flow` needs no sign flip. Its geometry is ZERO on
+    // purpose: an orifice has no length to resist with and no bore that means
+    // anything (its area is commanded), and `compile_edge` returns before reading
+    // either. Should that early return ever be removed, `pipe_resistance` on a
+    // zero length and a zero diameter is non-finite and the edge fails loudly at
+    // the first solve — which is the point of writing zeros rather than plausible
+    // numbers that would quietly become a second resistance in the leak path.
+    let orifice = graph.add_pipe(
+        mid,
+        vent,
+        Pipe {
+            name: format!("{}__leak", def.name),
+            length: Meter(0.0),
+            diameter: Meter(0.0),
+            elevation_change: Meter(0.0),
+            ambient_ua: WattPerKelvin(0.0),
+            leak: LeakRole::Orifice {
+                area: SquareMeter::ZERO,
+            },
+            ..whole
+        },
+    );
+    graph.pipe_mut(upstream).leak = LeakRole::Punctureable { orifice };
+    Ok(())
+}
+
+/// Resolve the `[[exchangers]]` table into graph couplings, rejecting every way
+/// a pairing can be malformed.
+///
+/// The checks are not defensive noise — each rules out a plant that would
+/// otherwise RUN and report plausible temperatures:
+///
+/// - **ε outside (0, 1]** transfers more heat than the inlet temperature
+///   difference makes available, crossing the outlets. That is a second-law
+///   violation the sweep cannot detect locally, since every intermediate number
+///   stays finite and positive.
+/// - **A side paired twice** would give one node two partners, and the energy
+///   sweep's pair merge silently uses whichever coupling it finds first.
+/// - **A side paired with itself** makes the exchanger its own upstream.
+/// - **An uncoupled `heat_exchanger` node** is not an exchanger at all — it
+///   would behave as a plain junction, transferring nothing, which is exactly
+///   what a scenario author who forgot the table would fail to notice.
+fn build_couplings(graph: &mut PlantGraph, defs: &[ExchangerDef]) -> Result<(), SimError> {
+    let mut paired: BTreeMap<NodeId, String> = BTreeMap::new();
+
+    for def in defs {
+        if !(def.effectiveness.is_finite() && def.effectiveness > 0.0 && def.effectiveness <= 1.0) {
+            return Err(SimError::Scenario(format!(
+                "exchanger '{}'/'{}' has effectiveness = {}: it must lie in (0, 1]. \
+                 Above 1 the exchanger would transfer more than the inlet \
+                 temperature difference allows and cross the outlet temperatures; \
+                 0 or less is not an exchanger.",
+                def.side_a, def.side_b, def.effectiveness
+            )));
+        }
+        if def.side_a == def.side_b {
+            return Err(SimError::Scenario(format!(
+                "exchanger pairs '{}' with itself: the two sides must be \
+                 different nodes",
+                def.side_a
+            )));
+        }
+
+        let resolve = |name: &str| -> Result<NodeId, SimError> {
+            let id = graph.find_node(name).ok_or_else(|| {
+                SimError::Scenario(format!("exchanger references unknown node '{name}'"))
+            })?;
+            if !matches!(graph.node(id).kind, NodeKind::HeatExchanger) {
+                return Err(SimError::Scenario(format!(
+                    "exchanger side '{name}' is a {:?}, not a heat_exchanger node",
+                    graph.node(id).kind
+                )));
+            }
+            Ok(id)
+        };
+        let side_a = resolve(&def.side_a)?;
+        let side_b = resolve(&def.side_b)?;
+
+        for (id, name) in [(side_a, &def.side_a), (side_b, &def.side_b)] {
+            if let Some(other) = paired.get(&id) {
+                return Err(SimError::Scenario(format!(
+                    "exchanger side '{name}' is paired more than once (already \
+                     coupled with '{other}'): each side has exactly one partner"
+                )));
+            }
+            paired.insert(id, name.clone());
+        }
+
+        graph.add_coupling(HeatExchangerCoupling {
+            side_a,
+            side_b,
+            effectiveness: def.effectiveness,
+        });
+    }
+
+    // Every side must be in the table: an unpaired one is a silent plain pipe.
+    for id in graph.node_ids().collect::<Vec<_>>() {
+        if matches!(graph.node(id).kind, NodeKind::HeatExchanger) && !paired.contains_key(&id) {
+            return Err(SimError::Scenario(format!(
+                "heat_exchanger node '{}' is not paired in any [[exchangers]] \
+                 entry: an unpaired side transfers no heat at all and would run \
+                 as a plain junction",
+                graph.node(id).name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve every `column` node's draws (name → NodeId) and reject every way a
+/// draw list can be malformed. Runs after all nodes exist so a draw may name an
+/// outlet defined later in the file, exactly like an exchanger coupling.
+///
+/// Each check rules out a plant that would otherwise load and be wrong:
+///
+/// - **Fewer than two draws** separates nothing — use a pipe.
+/// - **The catch-all convention** — exactly the LAST draw omits `up_to_c`. The
+///   heaviest draw is open-topped so every component lands somewhere; if it had a
+///   finite top, components above it would be split into no draw and lost, a
+///   silent mass leak. Making "which draw is the residue" a syntactic fact keeps
+///   conservation a load-time guarantee.
+/// - **Cut points strictly increasing** — a flat or inverted cut is an empty or
+///   backwards band.
+/// - **Distinct outlets** — the engine maps a draw edge to a draw by its outlet,
+///   so the mapping has to be one-to-one.
+/// - **Outlet is a product store** (tank/sink/atmosphere) — a free node on a draw
+///   line puts a prescribed edge back into the Jacobian (unsupported), and a
+///   source or column outlet is pressure-fixing but still wrong (vanishes the
+///   product, or chains columns the draw write cannot feed); both refused.
+///
+/// Under the **cascade** fidelity the boiling-range half of that list is replaced
+/// rather than extended: `up_to_c` and `smearing_k` are refused, each draw
+/// declares its `stage` and (except the bottoms) its `draw_ratio`, and the column
+/// declares a `[cascade]` block. The structural validation of that shape is
+/// delegated to `StageCascade::validate` so the loader and the model cannot drift
+/// apart; what stays here is what needs the file's vocabulary — which key on which
+/// node, and the two scope boundaries (partial condenser, vapour side draw) that
+/// have no representation in `core` at all.
+fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
+    let cascade_selected = scenario.fidelity.separation == "cascade";
+    for (name, def) in &scenario.nodes {
+        let NodeDef::Column {
+            draws: draw_defs,
+            cascade,
+            smearing_k,
+            ..
+        } = def
+        else {
+            continue;
+        };
+        if draw_defs.len() < 2 {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' has {} draw(s): a column needs at least two, else it \
+                 separates nothing (use a pipe).",
+                draw_defs.len()
+            )));
+        }
+        require_declared_iff_used(name, cascade_selected, draw_defs, cascade, smearing_k)?;
+
+        let last = draw_defs.len() - 1;
+        let mut prev_cut = f64::NEG_INFINITY;
+        let mut resolved: Vec<ColumnDraw> = Vec::with_capacity(draw_defs.len());
+        for (i, d) in draw_defs.iter().enumerate() {
+            // Exactly the last draw omits up_to_c — the open catch-all. Under the
+            // cascade this whole question is `stage`'s instead, and the stage
+            // numbering is checked by `StageCascade::validate` below.
+            let upper_cut_c = match (cascade_selected, i == last, d.up_to_c) {
+                (true, _, _) => None,
+                (false, true, None) => None,
+                (false, false, Some(c)) => Some(c),
+                (false, true, Some(_)) => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draw '{}' is the heaviest (last) draw and must OMIT \
+                         up_to_c: it is the catch-all for everything above the last cut, so a \
+                         finite top would drop every heavier component.",
+                        d.outlet
+                    )))
+                }
+                (false, false, None) => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draw '{}' omits up_to_c but is not the last draw: only \
+                         the heaviest (last) draw may — every other draw needs a boiling-range top.",
+                        d.outlet
+                    )))
+                }
+            };
+            if let Some(c) = upper_cut_c {
+                let cut_k = c_to_k(c).value();
+                if cut_k <= prev_cut {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draw '{}' has up_to_c = {c} °C, not strictly above the \
+                         previous cut: draws must be listed in ascending boiling order.",
+                        d.outlet
+                    )));
+                }
+                prev_cut = cut_k;
+            }
+
+            if draw_defs[..i].iter().any(|e| e.outlet == d.outlet) {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' draws to '{}' more than once: each draw feeds a distinct \
+                     product node.",
+                    d.outlet
+                )));
+            }
+
+            let outlet = graph.find_node(&d.outlet).ok_or_else(|| {
+                SimError::Scenario(format!(
+                    "column '{name}' draw references unknown outlet node '{}'",
+                    d.outlet
+                ))
+            })?;
+            // A draw must end at a PRODUCT STORE. "Pressure-fixing" is necessary
+            // (a free node would put a prescribed edge in the Jacobian) but NOT
+            // sufficient: `fixed_pressure` is also `Some` for a Source and a
+            // Column, and both are silently wrong outlets. Drawing to a Source
+            // would vanish the product into an infinite supply — mass "conserved"
+            // at the boundary, a plant that runs and lies. Drawing to another
+            // Column would chain them, and the post-sweep two-pass draw write
+            // reads the upstream draw edge before the downstream column's write
+            // lands, so the second column silently sees a zero feed and does
+            // nothing. Neither is modelled at this fidelity, so the outlet is
+            // restricted to the three product-store kinds explicitly.
+            match &graph.node(outlet).kind {
+                NodeKind::Tank(_) | NodeKind::Sink { .. } | NodeKind::Atmosphere => {}
+                NodeKind::Source { .. } | NodeKind::Column { .. } => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draws to '{}', a source or column. A draw must end at a \
+                         product store — a tank, sink, or atmosphere. Drawing to a source vanishes \
+                         the product into a supply, and chaining columns is not supported at this \
+                         fidelity.",
+                        d.outlet
+                    )));
+                }
+                _ => {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' draws to '{}', a free (non-pressure-fixing) node. A draw \
+                         line must end at a product store (tank/sink/atmosphere); a valve or \
+                         junction on a draw is not supported at this fidelity.",
+                        d.outlet
+                    )));
+                }
+            }
+            resolved.push(if cascade_selected {
+                ColumnDraw::by_stage(outlet, d.stage.unwrap_or(0), d.draw_ratio)
+            } else {
+                ColumnDraw::by_cut(outlet, upper_cut_c.map(c_to_k))
+            });
+        }
+
+        let spec = match (cascade_selected, cascade) {
+            (true, Some(def)) => {
+                let spec = CascadeSpec {
+                    stages: def.stages,
+                    feed_stage: def.feed_stage,
+                    reflux_ratio: def.reflux_ratio,
+                };
+                // One source of truth for the cascade's structural rules: the model
+                // that has to satisfy them. Duplicating them here would be two
+                // rule sets to keep in step, and M7.1's correction 3 is about the
+                // opposite hazard — a contract kept only in the OTHER crate. Both
+                // are avoided by having the loader call the model's own check and
+                // add the file's vocabulary to whatever it says.
+                refinery_solvers::StageCascade::validate(&spec, &resolved)
+                    .map_err(|e| SimError::Scenario(format!("column '{name}': {e}")))?;
+                Some(spec)
+            }
+            _ => None,
+        };
+
+        let col_id = graph.find_node(name).expect("column node was just added");
+        if let NodeKind::Column {
+            draws,
+            cascade: slot,
+            ..
+        } = &mut graph.node_mut(col_id).kind
+        {
+            *draws = resolved;
+            *slot = spec;
+        }
+    }
+    Ok(())
+}
