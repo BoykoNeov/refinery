@@ -42,18 +42,45 @@ use crate::molar::MoleFractions;
 /// acceptance-gate argument.
 const COMPONENT_RESIDUAL_KG_PER_S: f64 = 1e-5;
 
-/// The bracket every stage's bubble point is sought in [K], and the number of
-/// halvings of it.
+/// The bracket every stage's bubble point is sought in [K], and the relative width
+/// the search closes it to.
 ///
 /// Wide on purpose: a cut's boiling point is slate data and a column's pressure is
 /// operator config, so the bubble point of a mixture is not bounded by anything
-/// this module knows. `1950·2⁻⁶⁰ ≈ 1.7e-15` K is below the spacing of an `f64`
-/// here, so the bracket collapses to adjacent floats and the loop is a fixed cost
-/// with no convergence arm of its own — the same argument `flash::BISECTION_STEPS`
-/// makes.
+/// this module knows.
+///
+/// **The resolution is the one thing here that may NOT be loosened, and the
+/// ledger row this slice strikes said the opposite.** Through M9.2 this bracket
+/// was halved a fixed 60 times, and `DEFERRED.md` row A2 read that as ~38 wasted
+/// halvings against a convergence test of `1e-6` relative — "22 steps would meet
+/// it". They would not. The cascade's outer test differences two bubble points
+/// (`|T − T'|/T' ≤ tolerance`), so a search that resolves `T` only to a relative
+/// width `w` gives that difference a noise floor of `w`: two calls at
+/// nearly-identical compositions land in different sub-intervals and differ by
+/// `w` for no physical reason. The outer loop therefore needs `w ≪ tolerance`,
+/// not `w ≈ tolerance` — at `w = tolerance` the column converges by luck and at
+/// `w` a little above it the column `Err`s. Closing the bracket to the float
+/// spacing keeps `w` at ~1e-16 relative, which is what makes the outer
+/// tolerance mean what it says.
+///
+/// So M9.3a took the cost out of the METHOD instead: the same resolution, reached
+/// by a bracketed superlinear search in 15 evaluations rather than 60 halvings.
 const BUBBLE_POINT_LOW_K: f64 = 50.0;
 const BUBBLE_POINT_HIGH_K: f64 = 2000.0;
-const BUBBLE_POINT_STEPS: u32 = 60;
+const BUBBLE_POINT_RESOLUTION: f64 = 2.0 * f64::EPSILON;
+
+/// Evaluations of `Σ K·x − 1` one bubble point may spend — a STRUCTURAL bound,
+/// not the working number.
+///
+/// The search bisects whenever the previous step failed to halve the bracket, so
+/// the width halves at least once every two evaluations whatever the model does.
+/// `[50, 2000]` is 8.8e16 times `2·ε·T` at the bottom of the bracket, so 57
+/// halvings close it from anywhere in it and 114 evaluations always reach the
+/// resolution: the loop exits on the bracket width and never on this budget. It
+/// is here so a pathological model is bounded by construction, the way the old
+/// fixed 60-step loop was, and it is twice that only in the case that cannot
+/// happen.
+const BUBBLE_POINT_MAX_EVALUATIONS: u32 = 120;
 
 /// Equilibrium-stage distillation: the complex (research) separation fidelity,
 /// selected by `[fidelity] separation = "cascade"`.
@@ -1218,7 +1245,8 @@ fn stage_k_values(
 /// The temperature at which a liquid of composition `x` boils at `pressure`:
 /// `Σ_c K_c(T)·x_c = 1`.
 ///
-/// Bisection on a wide fixed bracket, and **no root in the bracket is an `Err`**
+/// A bracketed search on a wide fixed bracket, and **no root in the bracket is an
+/// `Err`**
 /// naming the model — never a fallback temperature. That refusal is what makes
 /// this function safe to hand an arbitrary `ThermoModel`, and it is the arm a
 /// K-value with no temperature dependence at all lands in: `Σ K·x` is then a
@@ -1234,7 +1262,53 @@ fn bubble_point(
     pressure: Pascal,
     what: &str,
 ) -> Result<Kelvin, SimError> {
-    let excess = |t: f64| -> Result<f64, SimError> {
+    // The search's function is `ln Σ K·x`, and the logarithm is the whole of the
+    // speed-up. The safeguard below is here for a WORST case, not an average one.
+    //
+    // The root is where `Σ K·x = 1`, so the logarithm has the same root, the same
+    // sign either side of it (`Σ K·x > 0` always) and the same monotonicity, but a
+    // very different SHAPE. A K-value is exponential-ish in temperature for any
+    // model worth the name: Clausius−Clapeyron gives `ln K ~ A − B/T`, and
+    // this workspace's test model is a power law. Over a bracket as wide as
+    // `[50, 2000]` K that means `Σ K·x` itself spans SEVEN orders of magnitude
+    // (~1e-9 to ~1e7 on the M7.3 fixture) and THIRTY-EIGHT on the shipped
+    // `crude_column_cascade` slate, whose endpoints were measured at
+    // `ln Σ K·x = -81.8` and `+6.85` — far apart, and both comfortably finite,
+    // so the underflow arm below is a guard rather than the usual case. A
+    // secant through two points of a function that steep lands almost on top of
+    // the low endpoint every time, which is what regula falsi is famous for
+    // crawling on.
+    //
+    // Evaluations to the same bracket width on that fixture, every way round
+    // rather than argued — the two knobs swept independently, because the first
+    // draft of this comment asserted a table from memory and every cell of it
+    // was wrong:
+    //
+    // ```text
+    //                                  Σ K·x − 1      ln Σ K·x
+    //   no bisection safeguard               54              15
+    //   bisect if ONE step failed
+    //   to halve the bracket                 38              16
+    //   bisect if TWO steps failed
+    //   to halve the bracket                 65              15
+    // ```
+    //
+    // Plain bisection needs 55 and the loop this replaced always spent 60. Read
+    // the columns, not the cells: WITH the logarithm every safeguard costs 15 or
+    // 16, and without it none costs less than 38. The transform is the change;
+    // the safeguard is worth at most one evaluation and on this fixture is worth
+    // none. Anyone tuning the safeguard for speed is tuning the wrong knob.
+    //
+    // So why keep it? Because the cell that matters for the safeguard is not in
+    // this table. A secant with no bisection safeguard has NO bound on how many
+    // steps it can take — regula falsi retains one endpoint forever on a convex
+    // function, and 15 is what it happens to cost on this fixture, not what it
+    // is guaranteed to cost on a slate nobody has run yet. The two-step test is
+    // what makes `BUBBLE_POINT_MAX_EVALUATIONS` a structural bound rather than a
+    // hopeful one, and that bound is why this function can return an answer
+    // instead of an `Err` on a plant it has never seen. It buys a guarantee,
+    // not a number.
+    let ln_excess = |t: f64| -> Result<f64, SimError> {
         let mut sum = 0.0;
         for (c, xc) in x.iter().enumerate() {
             let k = thermo.k_value(slate, c, Kelvin(t), pressure)?;
@@ -1250,17 +1324,22 @@ fn bubble_point(
             }
             sum += k * xc;
         }
-        Ok(sum - 1.0)
+        // Every K is positive and finite and every `x` is non-negative, so the
+        // sum is too; it can still UNDERFLOW to zero far below the root, where
+        // `ln` gives negative infinity. That is a correct sign for the bracket,
+        // and the secant guard below rejects a non-finite interpolation, so the
+        // search bisects its way out rather than stepping on an infinity.
+        Ok(sum.ln())
     };
 
-    let low = excess(BUBBLE_POINT_LOW_K)?;
-    let high = excess(BUBBLE_POINT_HIGH_K)?;
+    let low = ln_excess(BUBBLE_POINT_LOW_K)?;
+    let high = ln_excess(BUBBLE_POINT_HIGH_K)?;
     if low > 0.0 || high < 0.0 {
         return Err(SimError::Numerical(format!(
             "stage cascade: {what} has no bubble point between {BUBBLE_POINT_LOW_K} K and \
-             {BUBBLE_POINT_HIGH_K} K at {} Pa under thermo model '{}': Σ K·x − 1 is \
-             {low:.4e} at the bottom of the bracket and {high:.4e} at the top, so it never \
-             crosses zero. A model whose K-values do not depend on temperature lands here by \
+             {BUBBLE_POINT_HIGH_K} K at {} Pa under thermo model '{}': ln Σ K·x is \
+             {low:.4e} at the bottom of the bracket and {high:.4e} at the top, so Σ K·x \
+             never crosses 1. A model whose K-values do not depend on temperature lands here by \
              construction, and it cannot drive a cascade: a stage's temperature IS its bubble \
              point.",
             pressure.value(),
@@ -1268,14 +1347,91 @@ fn bubble_point(
         )));
     }
 
+    // Regula falsi with Illinois weighting and a bisection safeguard: the secant
+    // through the bracket's two endpoints, with the RETAINED endpoint's value
+    // halved whenever it has been retained twice running (Illinois; Dowell &
+    // Jarratt, *BIT* 11 (1971) 168), and a bisection whenever the bracket has
+    // not halved over the last TWO steps (Brent's progress test, *Algorithms
+    // for Minimization without Derivatives*, 1973, ch. 4). 15 evaluations on
+    // the M7.3 fixture, against the 60 the fixed halving loop always spent.
+    // reached the same bracket width.
+    //
+    // **Bracket-preserving, and that is a requirement rather than a preference.**
+    // This function is contracted to be safe handed an ARBITRARY `ThermoModel`:
+    // `Σ K·x` is monotone in T for every model in this workspace, but nothing in
+    // the trait says so, and an unsafeguarded secant on a non-monotone excess can
+    // step outside and return a temperature that is finite, deterministic and
+    // wrong — the shape rule 5 exists to refuse. Every step below keeps
+    // `low_excess ≤ 0 ≤ high_excess`, so the root the two endpoint evaluations
+    // proved is still bracketed when the loop ends.
     let (mut low_t, mut high_t) = (BUBBLE_POINT_LOW_K, BUBBLE_POINT_HIGH_K);
-    for _ in 0..BUBBLE_POINT_STEPS {
-        let middle = 0.5 * (low_t + high_t);
-        if excess(middle)? <= 0.0 {
+    let (mut low_excess, mut high_excess) = (low, high);
+    // Which endpoint moved on the previous step: `-1` the low one, `1` the high
+    // one, `0` on the first step. This is what makes the weighting Illinois's
+    // rather than plain false position, and it is the whole of the acceleration.
+    let mut moved_last = 0i32;
+    // The bracket two steps ago, which is what the progress test below is
+    // measured against.
+    let mut width_two_ago = high_t - low_t;
+    let mut width_one_ago = high_t - low_t;
+    for _ in 0..BUBBLE_POINT_MAX_EVALUATIONS {
+        let width = high_t - low_t;
+        if width <= BUBBLE_POINT_RESOLUTION * high_t {
+            break;
+        }
+        // Brent's progress test, over TWO steps rather than one.
+        //
+        // The one-step version is the obvious one and it costs most of the
+        // win: it turns roughly every other evaluation into a bisection,
+        // because a secant step that shrinks the bracket to 0.55 of itself —
+        // real progress — fails it. See the table above the search's
+        // function for what each combination actually costs; this one is 15
+        // and the one-step version of the same code is 36.
+        //
+        // The guarantee survives the relaxation: whenever the width has not
+        // halved over the last two steps a bisection is forced, so it halves
+        // at worst once per two evaluations and 114 of them close this
+        // bracket from anywhere in it.
+        let force_bisection = width > 0.5 * width_two_ago;
+
+        let secant = (low_t * high_excess - high_t * low_excess) / (high_excess - low_excess);
+        // The secant is used only where it is strictly inside the bracket; a
+        // non-finite one (two equal excesses) and one that lands on an endpoint
+        // both fall back to the midpoint, which always shrinks the bracket.
+        //
+        // The NEGATED conjunction is load-bearing and must not be "simplified"
+        // to `secant <= low_t || secant >= high_t`. Those read as the same
+        // condition and are not: a NaN secant compares false against both
+        // bounds, so the negated form falls to bisection while the rewritten
+        // form takes the secant branch and writes a NaN into the bracket.
+        let middle = if force_bisection || !(secant > low_t && secant < high_t) {
+            0.5 * (low_t + high_t)
+        } else {
+            secant
+        };
+
+        // Evaluated once and reused: this call IS the cost this slice is about,
+        // and the old loop's one-evaluation-per-step budget is the thing being
+        // beaten rather than matched.
+        let middle_excess = ln_excess(middle)?;
+        if middle_excess <= 0.0 {
             low_t = middle;
+            low_excess = middle_excess;
+            if moved_last == -1 {
+                high_excess *= 0.5;
+            }
+            moved_last = -1;
         } else {
             high_t = middle;
+            high_excess = middle_excess;
+            if moved_last == 1 {
+                low_excess *= 0.5;
+            }
+            moved_last = 1;
         }
+
+        width_two_ago = width_one_ago;
+        width_one_ago = width;
     }
     Ok(Kelvin(0.5 * (low_t + high_t)))
 }
@@ -1301,7 +1457,8 @@ mod tests {
     use crate::ConstantAlphaThermo;
     use refinery_core::components::{Phase, PseudoComponent};
     use refinery_core::graph::NodeId;
-    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, KgPerSec, P_ATM};
+    use refinery_core::units::{JPerKgK, JPerMol, KgPerM3, KgPerMol, KgPerSec, P_ATM};
+    use std::cell::Cell;
 
     fn slate() -> Slate {
         Slate::new(
@@ -1425,6 +1582,142 @@ mod tests {
 
     /// The fixture the refusals deviate from actually solves. Without this, every
     /// assertion below would be satisfied by a cascade that refuses everything.
+    /// A `ThermoModel` that counts K-value evaluations.
+    ///
+    /// The cost claim this slice makes is a claim about how many times
+    /// `Σ K·x − 1` is evaluated per bubble point, and wall time cannot make it:
+    /// it moves with the machine, the build profile and whatever else is running.
+    /// The counter is the probe's own unit (`ROADMAP`, M9.3), made into a gate.
+    struct CountingThermo {
+        inner: ConstantAlphaThermo,
+        k_values: Cell<u32>,
+    }
+
+    impl ThermoModel for CountingThermo {
+        fn name(&self) -> &'static str {
+            self.inner.name()
+        }
+
+        fn k_value(
+            &self,
+            slate: &Slate,
+            component: usize,
+            temperature: Kelvin,
+            pressure: Pascal,
+        ) -> Result<f64, SimError> {
+            self.k_values.set(self.k_values.get() + 1);
+            self.inner.k_value(slate, component, temperature, pressure)
+        }
+
+        fn dh_vap(
+            &self,
+            slate: &Slate,
+            component: usize,
+            temperature: Kelvin,
+        ) -> Result<JPerMol, SimError> {
+            self.inner.dh_vap(slate, component, temperature)
+        }
+    }
+
+    /// `Σ K·x = 1` has a closed form under this fixture's thermo, so the search
+    /// can be gated against algebra rather than against its own previous answer.
+    ///
+    /// ```text
+    ///   Σ K_c(T)·x_c = (T/400)^10 · Σ α_c·x_c = 1  ⇒  T = 400·(Σ α_c·x_c)^(−1/10)
+    /// ```
+    fn exact_bubble_point(x: &[f64]) -> f64 {
+        let alpha = [2.0, 0.5];
+        let sum: f64 = x.iter().zip(alpha).map(|(xc, a)| a * xc).sum();
+        400.0 * sum.powf(-0.1)
+    }
+
+    /// The search lands on the root, to the resolution its own constant claims.
+    ///
+    /// **This is the gate that stops the resolution being loosened**, and it is
+    /// the reason M9.3a took its speed out of the method instead. `DEFERRED.md`
+    /// A2 proposed stopping the old bisection at the caller's `1e-6` tolerance;
+    /// that would land ~4e-4 K from the root here and fail this by nine orders of
+    /// magnitude, which is the point — the cascade's outer test DIFFERENCES two of
+    /// these, so a coarse bubble point gives that difference a noise floor at
+    /// exactly the bar it is graded against.
+    ///
+    /// The bound is derived, not fitted: the loop exits with a bracket no wider
+    /// than `2·ε·T` and returns its midpoint, so the answer is within `ε·T` of the
+    /// root plus whatever the excess evaluation's own rounding costs (that is
+    /// `noise/slope ≈ 2e-16/0.0375 ≈ 5e-15` K here). `4·ε·T` covers both with the
+    /// test's own `powf` rounding to spare.
+    #[test]
+    fn the_bubble_point_lands_on_the_root_the_algebra_gives() {
+        let slate = slate();
+        let thermo = thermo(&slate);
+        // The feed mixture, and a pure light cut — one composition could agree
+        // with the closed form by coincidence, two of them at different roots
+        // (384 K and 373 K) cannot.
+        for x in [vec![2.0 / 3.0, 1.0 / 3.0], vec![1.0, 0.0]] {
+            let expected = exact_bubble_point(&x);
+            let found = bubble_point(&slate, &thermo, &x, P_ATM, "the gate's fixture")
+                .expect("the fixture's excess crosses zero inside the bracket")
+                .value();
+            let bound = 4.0 * f64::EPSILON * expected;
+            assert!(
+                (found - expected).abs() <= bound,
+                "bubble point {found:.15e} K against the closed form {expected:.15e} K:                  off by {:.3e} K, bound {bound:.3e} K",
+                (found - expected).abs()
+            );
+        }
+    }
+
+    /// ...and reaches it in fewer than half the evaluations bisection needs.
+    ///
+    /// **Both halves in one test on purpose.** A cost gate alone is passed by a
+    /// search that stops early, and an accuracy gate alone is passed by the 60
+    /// halvings this slice replaced; the claim is the conjunction, so the
+    /// assertion is too.
+    ///
+    /// The bound is bisection's own number rather than a chosen one: closing
+    /// `[50, 2000]` to `2·ε·T` takes 55 halvings at this root, and the loop
+    /// M9.3a replaced spent a fixed 60. `30` is half of that, so this fails the
+    /// moment the method degrades to bisection class — it is not sized to today's
+    /// measurement, which is 15.
+    #[test]
+    fn the_bubble_point_beats_bisection_on_evaluations() {
+        let slate = slate();
+        let thermo = CountingThermo {
+            inner: thermo(&slate),
+            k_values: Cell::new(0),
+        };
+        let x = vec![2.0 / 3.0, 1.0 / 3.0];
+        let expected = exact_bubble_point(&x);
+
+        let found = bubble_point(&slate, &thermo, &x, P_ATM, "the gate's fixture")
+            .expect("the fixture's excess crosses zero inside the bracket")
+            .value();
+
+        // One evaluation of `Σ K·x − 1` is one K-value per component.
+        let evaluations = thermo.k_values.get() / slate.len() as u32;
+        assert!(
+            (found - expected).abs() <= 4.0 * f64::EPSILON * expected,
+            "the cheap answer must still be the right one: {found:.15e} K against              {expected:.15e} K"
+        );
+        // 20, against a measured 15. The bound exists to catch the loss of the
+        // LOGARITHM, which is the whole speed-up: dropping it costs 38, 54 or 65
+        // depending on which bisection safeguard is left in place, so every way
+        // of reverting it clears 20 by at least 18 evaluations.
+        //
+        // What this gate deliberately does NOT catch is a change to the
+        // safeguard, because with the logarithm in place all three variants cost
+        // 15 or 16 and there is no speed to defend. The safeguard buys the
+        // worst-case bound behind `BUBBLE_POINT_MAX_EVALUATIONS`, and a bound on
+        // a slate nobody has run yet is not a thing an evaluation count on this
+        // fixture can measure. Recorded rather than papered over with a bound
+        // tight enough to fire on 16 — that would be fitting a constant to this
+        // one composition.
+        assert!(
+            evaluations <= 20,
+            "the bubble point spent {evaluations} evaluations of the excess function;              15 is the measured cost, bisection needs 55 to reach the same bracket width,              and the loop this replaced spent a fixed 60"
+        );
+    }
+
     #[test]
     fn the_healthy_fixture_solves() {
         attempt(Some(&spec(4, 2, 2.0)), &healthy_draws(4), 10.0)
