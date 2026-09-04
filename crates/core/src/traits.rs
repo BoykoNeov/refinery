@@ -207,6 +207,52 @@ pub struct DrawSeparation {
     pub temperature: Kelvin,
 }
 
+/// One column's converged iterate, kept so a LATER tick can start from it.
+///
+/// # Both halves, or neither — and that is a measurement, not symmetry
+///
+/// A stage cascade iterates two profiles at once: the stage temperatures and the
+/// stage liquid compositions. Its convergence test is a CONJUNCTION over both,
+/// so seeding one and not the other leaves the unseeded half walking in from
+/// cold every tick and the solve is barely faster. M9.3b measured exactly that
+/// on `crude_column_cascade` over 6 000 ticks: seeding the temperatures alone
+/// took 38.0 → 35.0 outer iterations per solve, an 8% saving that vanished into
+/// the noise of a wall-clock measurement. Seeding both took it to **1.006**.
+///
+/// That is why this is one struct behind one `Option` rather than two `Option`
+/// fields on [`Separation`]. Two options would make "temperatures without
+/// compositions" representable, and that state is not a partial warm start — it
+/// is the configuration measurement has already falsified. Same argument, and
+/// same shape, as `condenser_duty` and `reboiler_duty`: a model that knows one
+/// knows both.
+///
+/// # It is a hint, and nothing may read it as an answer
+///
+/// Fork 5 permits a warm start because it changes the iteration count and not
+/// the fixed point. Nothing downstream consumes this: it is absent from
+/// `Snapshot`, no frontend sees it, and its only reader is the next tick's
+/// [`ColumnPass::seed`]. A model must return the same answer within tolerance
+/// whether it gets one, gets a wrong one, or gets none.
+#[derive(Debug, Clone)]
+pub struct CascadeProfile {
+    /// Stage temperatures [K], one per stage, in the model's own stage order.
+    pub temperatures: Vec<Kelvin>,
+    /// Stage liquid MOLE fractions: one row per stage, each row indexed by the
+    /// slate's component order and summing to one.
+    ///
+    /// **A bare `f64` here is deliberate and is the one place this file argues
+    /// for one.** Rule 4 makes an un-newtyped `f64` crossing a crate boundary a
+    /// review failure, and the rule is about physical quantities whose unit a
+    /// reader could get wrong. A mole fraction has no unit, `solvers` already has
+    /// the newtype that owns the invariant (`molar::MoleFractions`, which is
+    /// where `from_amounts` enforces normalisation), and `core` must not depend
+    /// on `solvers` to name it. Moving that type down into `core` would be the
+    /// alternative; it is a wider change than this slice, and it buys nothing
+    /// here, because `core` never interprets this field — it stores the value the
+    /// model returned and hands the same value back. See `docs/DEFERRED.md`.
+    pub liquid: Vec<Vec<f64>>,
+}
+
 /// The outcome of one column pass: every draw's split, plus the column's two
 /// heat duties.
 #[derive(Debug, Clone)]
@@ -243,6 +289,19 @@ pub struct Separation {
     /// knows one knows both, since M7.4b derives this one from the other plus
     /// the column's external sensible balance (`StageCascade::duties`).
     pub reboiler_duty: Option<Watt>,
+    /// This pass's converged iterate, for the next tick to start from, or `None`
+    /// from a fidelity that iterates nothing (the cut-point splitter) and from a
+    /// pass that did not converge to anything worth reusing. See
+    /// [`CascadeProfile`], which argues why both of its halves travel together.
+    ///
+    /// A reader who wants a tray temperature wants `DrawSeparation::temperature`
+    /// — a draw's real temperature, which is published. This is an iterate.
+    ///
+    /// It rides `Separation` rather than engine state because the previous tick's
+    /// `NodeStates` is already threaded into the sweep that makes this one, so
+    /// the warm start costs no new state and gets per-column keying from the
+    /// `BTreeMap` the results already live in.
+    pub profile: Option<CascadeProfile>,
 }
 
 /// Everything one column pass is a function of: the equipment, and the feed
@@ -284,6 +343,24 @@ pub struct ColumnPass<'a> {
     /// is selected (`NodeKind::Column::cascade`). Ignored by the splitter; the
     /// cascade refuses a column that has none.
     pub cascade: Option<&'a CascadeSpec>,
+    /// The previous tick's converged iterate for THIS column, when there is one —
+    /// `Separation::profile` from the last pass, or `None` on the first tick,
+    /// after a load, or from a fidelity that publishes none.
+    ///
+    /// **The seam stays pure because the history arrives HERE.** `separate` is
+    /// contracted a function of `pass` alone, and a warm start is tick history,
+    /// so the history is made an argument rather than hidden in the model. Three
+    /// things follow that would not hold if the model held it: the engine-wide
+    /// `Box<dyn SeparationModel>` singleton stays stateless while two columns on
+    /// one plant keep separate profiles; a test can hand `separate` a deliberately
+    /// wrong seed with no stateful model to build; and the contract sentence above
+    /// `separate` stays literally true.
+    ///
+    /// An implementation MUST treat this as a hint it is free to ignore — wrong
+    /// length, wrong plant, absurd values — and must return the same fixed point
+    /// within tolerance whatever it holds. `separation_is_start_insensitive`
+    /// gates exactly that.
+    pub seed: Option<&'a CascadeProfile>,
 }
 
 /// How a column divides its feed among its draws — the separation seam.
@@ -308,11 +385,19 @@ pub trait SeparationModel: Send {
 
     /// Split one column's feed among its draws.
     ///
-    /// Pure: a function of `pass` alone, with no tick history. That is what keeps
-    /// a column's reference a clean hand calculation, and it is a contract, not an
-    /// implementation note — a cascade may WARM-START from a previous profile
-    /// (that changes the iteration count) but must never let one change the
-    /// answer (DESIGN §5, fork 5).
+    /// Pure: a function of `pass` alone, with no tick history of its own. That is
+    /// what keeps a column's reference a clean hand calculation, and it is a
+    /// contract, not an implementation note — a cascade may WARM-START from a
+    /// previous profile (that changes the iteration count) but must never let one
+    /// change the answer (DESIGN §5, fork 5).
+    ///
+    /// M9.3b built that warm start and the sentence above still holds literally,
+    /// which was the reason for building it this way: the previous profile
+    /// arrives as `ColumnPass::seed` and leaves as `Separation::profile`, so it is
+    /// part of `pass` rather than state on `self`. `&self` is therefore still the
+    /// right receiver, and a model that stashed a profile internally would be
+    /// wrong twice over — it would falsify this sentence, and the engine holds
+    /// ONE model for every column on the plant.
     ///
     /// `thermo` is unused by the cut-point splitter, which separates on the
     /// slate's boiling points alone; the cascade reads K-values off it (M7.2).

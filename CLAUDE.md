@@ -181,8 +181,11 @@ See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 **M9 is OPEN, and its scope is solver robustness.** It opened the way M8 did —
 with a defect the previous milestone reached and deliberately did not fix. Slices
 are scoped one at a time, because what the next one should be depends on what the
-last one measured. Four have landed. **M9.3 is candidate A of the 2026-09-02
-scoping probe, in two commits: M9.3a (landed) and M9.3b, the warm start (open).**
+last one measured. Five have landed. **M9.3 is candidate A of the 2026-09-02
+scoping probe and both its commits landed 2026-09-04.** Together they take
+`crude_column_cascade` from 96% of the corpus's wall time to 26%, and close
+DEFERRED A1 — the deferral the probe existed to scope. Nothing in the ledger is
+past its trigger now.
 
 **M9.3a landed 2026-09-04** — the bubble-point root finder. The design note is
 DESIGN §5, "How fast is fast enough" and "What M9.3a changed". Five things to
@@ -433,6 +436,67 @@ legs — the population whose bar collapsed to `tol_abs` — the reachability co
 were compared either side and are identical (chains 238/300, gas 202/205 Newton
 and 187/205 Simple, psv chains 196/400). **From here, "runs byte-identical" means
 post-M9.2 identical for `relief_blowdown` and `tank_level_control`.**
+
+**M9.3b landed 2026-09-04** — the warm start, and M9.3 closes with it. The design
+note is DESIGN §5, "The warm start (M9.3b)". Six things to know.
+
+**Fork 5's word "profile" names the wrong half, and that is the finding.** A stage
+cascade iterates stage TEMPERATURES and stage LIQUID COMPOSITIONS at once.
+`stage_t` is what reads as "the profile" — it is what `with_seed_offset` perturbs
+and what the convergence diagnostic named — and seeding it alone is nearly inert:
+38.0 → 35.0 outer iterations per solve, 8%, which vanishes into wall-clock noise.
+Seeding BOTH gives **1.006**. The outer convergence test is a CONJUNCTION, and the
+composition profile was the binding criterion all along. **The obvious reading
+would have shipped the 8% and written the warm start up as measured and
+disappointing** — it was caught only because the A/B came back inside the noise
+band and the iteration count was measured to find out why.
+
+**The type is the measurement.** `CascadeProfile` holds both halves behind ONE
+`Option`, so "temperatures without compositions" — the configuration just
+falsified — is unrepresentable. Same shape and argument as the two duties.
+
+**It needed no engine state, and that settled the seam fork.** The previous tick's
+`NodeStates` is already an argument to the sweep and its separations are already
+keyed by node, so the profile rides `Separation` out and `ColumnPass` back in.
+`SeparationModel::separate` keeps `&self` and its "a function of `pass` alone"
+contract stays LITERALLY true, because the history is an argument rather than
+state on the model. `&mut self` and interior mutability both falsify that sentence
+and both put per-column state on the single `Box<dyn SeparationModel>` the engine
+holds for every column, which would cross-seed two columns on one plant.
+
+**1.006 iterations per solve needed an adversarial gate, not a celebration** —
+converging on the first pass is what a right seed looks like AND what a criterion
+that stopped binding looks like. Over 6 000 solves: 38 once (tick 1, before a
+profile exists), 1 for 5 998 ticks, one zero-flow return. So it binds when the
+seed is ABSENT; what no shipped plant reaches is a seed present and WRONG, and
+that is the gate — a light feed's converged profile handed to a heavy feed, which
+must return the heavy feed's own cold answer. **Two controls are asserted first**
+(the profiles must differ by > 1 K somewhere, the distillates by > 1000× the
+tolerance), because without them the gate is passed by a solver that ignores its
+seed and equally by one that ignores its feed.
+
+**The fixed-point worry was real, measured, and did not happen.** A warm start
+moves the answer by the outer tolerance rather than the ULP — ~8 orders more than
+M9.3a — and the cascade feeds tanks that integrate. Over 600 snapshots on both
+fidelities: worst move on any quantity above 1e-3 is **7.6e-07**, temperatures
+1.7e-08, duties 1.5e-08, pressures at the ULP, tank masses **bit-identical** (a
+draw's rate is a mass ratio of the feed, so an inventory never depended on the
+profile). The decisive number is that the drift is **flat across all ten deciles**,
+first equal to last — a tolerance-ball reseat, not accumulation. The full warm
+start is also CLOSER to cold than the partial one, because a better seed converges
+nearer the true fixed point.
+
+**One mutation is uncaught, deliberately.** Reverting the liquid half of the seed
+fails NOTHING: a half-warm start is still correct, only slow, and no test measures
+a cascade's iteration count. (Breaking the convergence test is caught by seven
+tests; dropping the seed's shape check by exactly its own gate.) A gate for it
+would have to assert a cost rather than a correctness, which is how a fitted test
+gets written. The defence is the type: undoing the fix means deleting a struct
+field, not forgetting a line. **Result: 4 828.9 → 235.7 ms newton (20.5×) and
+4 760.9 → 223.8 ms simple (21.3×) per 6 000 ticks, paired in one session; 37.8×
+fewer outer iterations, which is the machine-independent number. From here, "runs
+byte-identical" means post-M9.3b identical for `crude_column_cascade` under both
+fidelities.**
 
 **M8 is CLOSED (2026-08-26), and its scope was regulation** — control loops, so a
 plant holds itself somewhere instead of being held by whoever is sending

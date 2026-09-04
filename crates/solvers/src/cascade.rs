@@ -27,7 +27,9 @@ use refinery_core::components::{Composition, Slate};
 use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
 use refinery_core::graph::{CascadeSpec, ColumnDraw};
-use refinery_core::traits::{ColumnPass, DrawSeparation, Separation, SeparationModel, ThermoModel};
+use refinery_core::traits::{
+    CascadeProfile, ColumnPass, DrawSeparation, Separation, SeparationModel, ThermoModel,
+};
 use refinery_core::units::{Kelvin, Pascal, Watt};
 
 use crate::molar::MoleFractions;
@@ -377,6 +379,11 @@ impl SeparationModel for StageCascade {
         // not discovered" move `flash_isothermal` makes for its all-`K = 1` case.
         if feed_flow == 0.0 {
             return Ok(Separation {
+                // An idle column solved nothing, so it has nothing to seed the
+                // next tick with. Publishing the seed here would hand the next
+                // tick a profile no iteration produced — a plausible-wrong number
+                // of exactly the shape `condenser_duty`'s `None` exists to avoid.
+                profile: None,
                 draws: plan
                     .mass_ratios
                     .iter()
@@ -418,8 +425,37 @@ impl SeparationModel for StageCascade {
         // seed IS the feed's bubble point, so this costs one comparison.
         check_saturated_liquid_feed(slate, thermo, feed.fractions(), seed, pass)?;
 
-        let mut stage_t = vec![seed.value() + self.seed_offset.value(); plan.stages];
-        let mut liquid: Vec<Vec<f64>> = vec![feed.fractions().to_vec(); plan.stages];
+        // The warm start (M9.3b), and BOTH profiles or neither. The outer
+        // convergence test is a conjunction over the temperatures and the liquid
+        // compositions, so seeding one and not the other leaves the unseeded half
+        // walking in from cold and the solve is barely faster — measured at 38.0
+        // → 35.0 outer iterations per solve for the temperatures alone, against
+        // 1.006 for both. `CascadeProfile` is one struct for that reason, so the
+        // half-warm start is not a state this code can be in.
+        //
+        // A seed of the wrong shape is IGNORED rather than reshaped: it is
+        // contracted a hint, the only way to get one is a plant whose stage count
+        // or slate changed under a node id, and a padded profile is a worse start
+        // than the feed's own bubble point. `seed_offset` applies on top of
+        // whichever start is used, which is what lets the start-insensitivity
+        // gate perturb a WARM start and not only a cold one.
+        let warm = pass.seed.filter(|previous| {
+            previous.temperatures.len() == plan.stages
+                && previous.liquid.len() == plan.stages
+                && previous.liquid.iter().all(|row| row.len() == slate.len())
+        });
+        let mut stage_t: Vec<f64> = match warm {
+            Some(previous) => previous
+                .temperatures
+                .iter()
+                .map(|t| t.value() + self.seed_offset.value())
+                .collect(),
+            None => vec![seed.value() + self.seed_offset.value(); plan.stages],
+        };
+        let mut liquid: Vec<Vec<f64>> = match warm {
+            Some(previous) => previous.liquid.clone(),
+            None => vec![feed.fractions().to_vec(); plan.stages],
+        };
 
         let mut iterations = 0u32;
         let mut residual = f64::INFINITY;
@@ -538,15 +574,21 @@ impl SeparationModel for StageCascade {
                      bound of {COMPONENT_RESIDUAL_KG_PER_S:.3e} kg/s"
                 ));
             }
-            // Fork 5: an `Err`, never a held previous profile. Holding one would
-            // make the column's output depend on tick history, which destroys the
-            // property that makes a column's reference a clean hand calculation.
+            // Fork 5: an `Err`, never the previous tick's ANSWER. M9.3b makes
+            // that sentence need its distinction stated, because a previous
+            // profile is now a legitimate INPUT: it enters as a seed and leaves
+            // as `Separation::profile` only on the converged path below, so a
+            // failed solve publishes nothing and the next tick starts cold.
+            // What stays forbidden is what fork 5 forbade — carrying a stale
+            // answer forward and calling it this tick's, which would make the
+            // column's output depend on run length.
             return Err(SimError::Numerical(format!(
                 "stage cascade did not converge in {iterations} iterations: {}. The bound on \
                  the residual is I7's own number — 1e-6 kg per component over a 0.1 s tick — \
-                 over this column's feed rate, not a figure chosen to pass. The profile is \
-                 not held over from a previous tick: a column's answer must not depend on run \
-                 length.",
+                 over this column's feed rate, not a figure chosen to pass. A previous \
+                 tick's profile may SEED this solve but is never its answer, and a solve \
+                 that fails publishes no profile — so this is a refusal, not a stale \
+                 number.",
                 unmet.join("; ")
             )));
         }
@@ -597,6 +639,14 @@ impl SeparationModel for StageCascade {
 
         Ok(Separation {
             draws: result,
+            // Published only on the converged path: every `return` above this one
+            // is an `Err`, so a profile leaves this function only when the outer
+            // loop met all three of its criteria. A non-converged profile handed
+            // to the next tick would be a seed no fixed point stands behind.
+            profile: Some(CascadeProfile {
+                temperatures: stage_t.iter().copied().map(Kelvin).collect(),
+                liquid: liquid.clone(),
+            }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
         })
@@ -1569,6 +1619,7 @@ mod tests {
                 feed_flow: KgPerSec(feed_flow),
                 temperature: Kelvin(FEED_BUBBLE_K),
                 cascade: spec,
+                seed: None,
             },
             &thermo,
         )
@@ -1788,6 +1839,7 @@ mod tests {
                     feed_flow: KgPerSec(0.0),
                     temperature: Kelvin(400.0),
                     cascade: None,
+                    seed: None,
                 },
                 &thermo(&slate),
             )
@@ -2002,6 +2054,7 @@ mod tests {
                     feed_flow: KgPerSec(10.0),
                     temperature: saturated_feed(&wide_slate, &wide_thermo, &feed),
                     cascade: Some(&spec),
+                    seed: None,
                 },
                 &wide_thermo,
             )
@@ -2051,6 +2104,7 @@ mod tests {
                 feed_flow: KgPerSec(10.0),
                 temperature: Kelvin(400.0),
                 cascade: Some(&spec),
+                seed: None,
             },
             &crate::ConstantThermo,
         );
@@ -2081,6 +2135,7 @@ mod tests {
                 feed_flow: KgPerSec(10.0),
                 temperature: Kelvin(FEED_BUBBLE_K + offset),
                 cascade: Some(&spec),
+                seed: None,
             },
             &thermo,
         )
@@ -2254,6 +2309,7 @@ mod tests {
                         feed_flow: KgPerSec(10.0),
                         temperature: Kelvin(FEED_BUBBLE_K + offset),
                         cascade: Some(&spec),
+                        seed: None,
                     },
                     &thermo,
                 )
@@ -2338,6 +2394,7 @@ mod tests {
                         feed_flow: KgPerSec(10.0),
                         temperature: saturated_feed(&slate, &thermo, &feed),
                         cascade: Some(&spec),
+                        seed: None,
                     },
                     &thermo,
                 )

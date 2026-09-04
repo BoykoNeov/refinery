@@ -1143,6 +1143,17 @@ pub fn resolve_node_states(
                                     feed_flow: column_feed_flow(graph, edge_mass_flow, id),
                                     temperature: mixed,
                                     cascade: cascade.as_ref(),
+                                    // The warm start, and it needs no engine
+                                    // state: the previous tick's `NodeStates`
+                                    // is already an argument to this sweep, and
+                                    // its separations are already keyed by node.
+                                    // A column that did not exist last tick, or
+                                    // a fidelity that publishes no profile, is
+                                    // `None` and starts cold.
+                                    seed: previous
+                                        .column_separation
+                                        .get(&id)
+                                        .and_then(|previous| previous.profile.as_ref()),
                                 },
                                 thermo,
                             )?;

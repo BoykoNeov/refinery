@@ -3098,6 +3098,106 @@ deviation is a transient at tick 270, not the settled value. From here, "runs
 byte-identical" means post-M9.3a identical for `crude_column_cascade` under both
 `newton` and `simple`.
 
+#### The warm start (M9.3b) — and the half of the profile fork 5 does not name
+
+Fork 5 licenses seeding "from the previous tick's profile" and M9.3a's
+measurement said what to spend it on: the cascade's outer iteration count did not
+move, 33 to 38 per tick depending on the run, every tick re-deriving an answer
+that had barely changed. This is the slice that spends it.
+
+**The word "profile" hides the finding.** A stage cascade iterates two profiles at
+once — the stage temperatures and the stage liquid compositions — and `stage_t`
+is the one that reads as "the profile": it is what `with_seed_offset` perturbs,
+what the convergence message names, and what a reader of fork 5 would reach for.
+Seeding it alone is nearly inert. Measured on `crude_column_cascade` over 6 000
+ticks:
+
+```text
+                                      outer iterations   per solve   wall
+  cold (M9.3a)                                 227 962        38.0   ~8 081 ms
+  warm TEMPERATURES only                       209 968        35.0   ~7 894 ms
+  warm temperatures AND LIQUID                   6 036       1.006     ~408 ms
+```
+
+An 8% saving that vanishes into the noise of a wall-clock measurement, against a
+97% one. The reason is that the outer test is a **conjunction** over
+`profile_change` (the change in stage liquid compositions), `temperature_change`
+and the per-component residual. Seed the temperatures and leave `liquid` at
+`vec![feed.fractions(); stages]` and the composition profile still walks in from
+cold every tick — it was the binding criterion all along, and the temperatures
+were riding along behind it.
+
+**So `CascadeProfile` is one struct behind one `Option`, and that is the
+measurement expressed as a type.** Two independent `Option` fields would make
+"temperatures without compositions" representable, and that state is not a
+partial warm start — it is the configuration just falsified. The precedent is
+`condenser_duty` and `reboiler_duty`, which travel together for the same kind of
+reason: a model that knows one knows both.
+
+**It needed no engine state, which decided the fork.** `resolve_node_states`
+already receives the previous tick's `NodeStates`, and its `column_separation` is
+already a `BTreeMap<NodeId, Separation>`. So the seed is one lookup, the profile
+rides `Separation` out and `ColumnPass` back in, and `SeparationModel::separate`
+keeps `&self` and its "a function of `pass` alone" contract — literally, because
+the history is an argument rather than state on the model. The alternatives
+(`&mut self`, or interior mutability) both falsify that sentence and both put
+per-column state on an object the engine holds ONE of for every column on the
+plant, which would cross-seed two columns on the same tick.
+
+**1.006 iterations per solve is the number that needed an adversarial gate, not
+a celebration.** Converging on the first pass is what a right seed looks like and
+also what a criterion that stopped binding looks like. The distribution over
+6 000 solves is 38 once (tick 1, before any profile exists), 1 for 5 998 ticks,
+and one zero-flow early return — so the criterion demonstrably binds when the
+seed is ABSENT. What no shipped plant produces at steady state is a seed that is
+present and WRONG, so that is what the gate builds:
+`a_warm_start_from_the_wrong_profile_still_lands_on_the_cold_answer` solves a
+light feed cold, hands its converged profile to a heavy feed, and requires the
+heavy feed's own cold answer back. Two controls are asserted BEFORE the
+comparison, because without them the gate is passed by a solver that ignores its
+seed and equally by one that ignores its feed: the two profiles must differ by
+more than 1 K on some stage, and the two distillates by more than a thousand
+times the converged tolerance.
+
+**A seed of the wrong shape is ignored rather than reshaped**, and that has its
+own gate. It is contracted a hint; the only way to get a wrong-shaped one is a
+plant edited under a live node id; and a padded or truncated profile is a start
+no column ever had, which is worse than the feed's own bubble point.
+
+**Cost, and it is not what the fixed-point worry predicted.** The concern going
+in was that a warm start moves the answer by the outer tolerance rather than by
+the ULP — roughly eight orders more than M9.3a — and that a cascade feeding tanks
+would let that accumulate. Measured over 600 snapshots on both fidelities: the
+worst move on any quantity above 1e-3 is **7.6e-07**, temperatures move 1.7e-08
+(1.1e-5 K on 632 K), duties 1.5e-08, pressures at the ULP, and tank masses are
+**bit-identical** — a draw's rate is a mass ratio of the feed, so an inventory
+does not depend on the temperature profile at all. The decisive number is that
+the drift is **flat across all ten deciles**, first equal to last, on both
+fidelities: a tolerance-ball reseat, not accumulation. The full warm start is
+also CLOSER to the cold answer than the temperature-only one (7.6e-07 against
+1.35e-06), because a better seed converges nearer the true fixed point — the
+more aggressive change is the more faithful one.
+
+**One sentence in the non-convergence diagnostic had to be re-premised, not
+deleted.** It said "the profile is not held over from a previous tick", which is
+now false as written and sits in the message a reader gets when a solve fails.
+The distinction it was reaching for survives: a previous profile may SEED a solve
+and is never its ANSWER, and a solve that fails publishes no profile at all, so
+the next tick starts cold. The message says that instead.
+
+**One mutation is uncaught, deliberately, and it is this slice's own finding.**
+Reverting the liquid half of the seed — the 8%-inert configuration — fails
+NOTHING in the workspace, because a half-warm start is still correct, merely
+slow, and no test measures a cascade's iteration count. Breaking the convergence
+test is caught by seven tests including the new warm-start gate, and dropping the
+seed's shape check is caught by exactly the gate written for it; but the edit
+that would quietly undo 97% of the speed-up is invisible to the suite. Recorded
+rather than papered over: a gate for it would have to assert an iteration count,
+which is a cost measurement rather than a correctness one, and this project has
+three times called a bound fitted to today's plants a fitted test. The defence is
+the type — `CascadeProfile` makes the half-warm start unrepresentable, so the
+edit has to delete a struct field rather than forget a line.
+
 #### Energy — latent heat cancels, and that is what buys the scope boundary
 
 Every enthalpy in this workspace is **sensible-only** against a shared datum, and

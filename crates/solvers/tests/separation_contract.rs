@@ -38,6 +38,7 @@ impl SeparationModel for ShortSplitter {
         _thermo: &dyn ThermoModel,
     ) -> Result<Separation, SimError> {
         Ok(Separation {
+            profile: None,
             draws: vec![DrawSeparation {
                 split: 1.0,
                 composition: pass.feed.clone(),
@@ -207,6 +208,7 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
     separations.insert(
         column,
         Separation {
+            profile: None,
             draws: vec![DrawSeparation {
                 split: 1.0,
                 composition: feed,

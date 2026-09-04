@@ -3716,9 +3716,12 @@ the solver is allowed to stop. There is still no fan of further work here waitin
 to be listed — but as of 2026-09-02 there is a measurement to scope M9.3 from,
 below, and a ledger of every open deferral (`docs/DEFERRED.md`) with its distance
 from its own trigger. M9.3 is candidate A of that probe, in two commits with
-different blast radii: **M9.3a landed 2026-09-04** (the bubble-point root finder,
-which makes each cascade iteration cheaper) and M9.3b is the warm start (which
-makes them fewer). M9.3a wrote the trigger A1 had been sitting past without one.
+different blast radii, and **both landed 2026-09-04**: M9.3a, the bubble-point
+root finder, which makes each cascade iteration cheaper, and M9.3b, the warm
+start, which makes them fewer. Together they take `crude_column_cascade` from
+96% of the corpus's wall time to 26%, and A1 — the deferral the probe was written
+to scope — is closed. M9.3a wrote the trigger A1 had been sitting past
+without one; M9.3b found that the deferral named the wrong half of the profile.
 
 ### M9.0 — the shut-in stall — **LANDED** 2026-08-26
 
@@ -4152,6 +4155,79 @@ tick 6000 is 3.94e-15, so measuring the endpoint alone would have understated it
 3.3×. Exactly one of fourteen plants moves, on both fidelities — predicted, then
 measured. From here, "runs byte-identical" means post-M9.3a identical for
 `crude_column_cascade` under both `newton` and `simple`.
+
+### M9.3b — the warm start — **LANDED** 2026-09-04
+
+Candidate A's second commit, and M9.3 closes with it. The design note is DESIGN
+§5, "The warm start (M9.3b)". Six things to know.
+
+**The word "profile" in fork 5 names the wrong half, and that is the finding.** A
+stage cascade iterates stage TEMPERATURES and stage LIQUID COMPOSITIONS at once.
+`stage_t` is what reads as "the profile" — it is what `with_seed_offset`
+perturbs and what the convergence diagnostic names — and seeding it alone is
+nearly inert: 38.0 → 35.0 outer iterations per solve, an 8% saving that vanishes
+into wall-clock noise. Seeding both takes it to **1.006**, and the corpus plant
+from ~8 081 ms to ~408 ms over 6 000 ticks. The outer convergence test is a
+CONJUNCTION, and the composition profile was the binding criterion all along.
+
+**The obvious reading would have shipped the 8% and reported the warm start as
+measured and disappointing.** It was caught only because the wall-clock A/B came
+back inside the noise band and the iteration count was measured to find out why,
+rather than the result being written up as "warm start: 2%, not worth it".
+
+**The type is the measurement.** `CascadeProfile` holds both halves behind ONE
+`Option`, so "temperatures without compositions" — the configuration just
+falsified — is unrepresentable. Same shape and same argument as the two duties.
+
+**It needed no engine state, and that decided the seam fork.** The previous
+tick's `NodeStates` is already an argument to the sweep and its separations are
+already keyed by node, so the profile rides `Separation` out and `ColumnPass`
+back in. `SeparationModel::separate` keeps `&self` and its "a function of `pass`
+alone" contract stays literally true, because the history is an ARGUMENT rather
+than state on the model. `&mut self` and interior mutability both falsify that
+sentence and both put per-column state on the single `Box<dyn SeparationModel>`
+the engine holds for every column, which would cross-seed two columns.
+
+**1.006 iterations per solve needed an adversarial gate, not a celebration** —
+converging on the first pass is what a right seed looks like AND what a
+criterion that stopped binding looks like. Over 6 000 solves the distribution is
+38 once (tick 1, before a profile exists), 1 for 5 998 ticks, and one zero-flow
+return, so the criterion binds when the seed is ABSENT. What no shipped plant
+reaches is a seed that is present and WRONG, so the gate builds one: a light
+feed's converged profile handed to a heavy feed, which must return the heavy
+feed's own cold answer. Two controls are asserted first — the profiles must
+differ by more than 1 K somewhere and the distillates by more than a thousand
+times the tolerance — because without them the gate is passed by a solver that
+ignores its seed and by one that ignores its feed.
+
+**The fixed-point worry was real, measured, and did not happen.** A warm start
+moves the answer by the outer tolerance rather than the ULP, ~8 orders more than
+M9.3a, and the cascade feeds tanks that integrate. Over 600 snapshots on both
+fidelities: worst move on any quantity above 1e-3 is **7.6e-07**, temperatures
+1.7e-08, duties 1.5e-08, pressures at the ULP, tank masses **bit-identical** (a
+draw's rate is a mass ratio of the feed, so an inventory never depended on the
+profile). The decisive number is that the drift is **flat across all ten
+deciles**, first equal to last — a tolerance-ball reseat, not accumulation. The
+full warm start is also closer to the cold answer than the partial one, because
+a better seed converges nearer the true fixed point.
+
+**One mutation is uncaught and it is the slice's own finding.** Reverting the
+liquid half of the seed fails nothing: a half-warm start is still correct, only
+slow, and nothing measures a cascade's iteration count. Breaking the convergence
+test is caught by seven tests; dropping the shape check by exactly its own gate.
+Left open deliberately — a gate would have to assert a cost, not a correctness —
+with the type as the defence: `CascadeProfile` makes the half-warm start
+unrepresentable, so undoing it means deleting a field rather than forgetting a
+line.
+
+**Result, paired in one session against a baseline recorded minutes earlier:**
+`crude_column_cascade` 4 828.9 → **235.7 ms** newton (20.5×) and 4 760.9 →
+**223.8 ms** simple (21.3×) over 6 000 ticks; 37.8× fewer outer iterations, which
+is the machine-independent number. The plant falls from **86% of the corpus's
+wall time to 26%**, and at 0.039 ms per tick it is 64× inside the frame budget
+M9.3a wrote. Exactly one of fourteen plants moves, on both fidelities. From here,
+"runs byte-identical" means post-M9.3b identical for `crude_column_cascade` under
+both `newton` and `simple`.
 
 #### Beyond M9 — candidates, not commitments
 

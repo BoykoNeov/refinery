@@ -119,6 +119,12 @@ impl SeparationModel for CutPointSplitter {
 
         Ok(Separation {
             draws: result,
+            // No profile, for the same reason as the duties: a boiling-range
+            // split has no stages and iterates nothing, so there is no converged
+            // temperature profile to hand the next tick. `ColumnPass::seed` is
+            // likewise ignored here — this model reads the slate's boiling points
+            // and the feed, and a seed cannot change a number it never touches.
+            profile: None,
             // A fixed-cut split has no condenser and no reboiler: it is a
             // stoichiometric bookkeeping rule, not an energy-driven separation.
             // `None` rather than the `Watt::ZERO` this returned through M7.3 —
@@ -217,6 +223,7 @@ mod tests {
                     feed_flow: KgPerSec(7.0),
                     temperature: FEED_T,
                     cascade: None,
+                    seed: None,
                 },
                 &ConstantThermo,
             )
@@ -403,6 +410,7 @@ mod tests {
                     feed_flow: KgPerSec(7.0),
                     temperature: FEED_T,
                     cascade: None,
+                    seed: None,
                 },
                 &ConstantThermo,
             )

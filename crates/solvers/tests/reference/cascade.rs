@@ -15,7 +15,7 @@
 
 use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::graph::{CascadeSpec, ColumnDraw, NodeId};
-use refinery_core::traits::{ColumnPass, Separation, SeparationModel, ThermoModel};
+use refinery_core::traits::{CascadeProfile, ColumnPass, Separation, SeparationModel, ThermoModel};
 use refinery_core::units::{JPerKgK, Kelvin, KgPerM3, KgPerMol, KgPerSec, P_ATM};
 use refinery_solvers::{flash_isothermal, ConstantAlphaThermo, MoleFractions, StageCascade};
 
@@ -171,6 +171,32 @@ fn try_run(
             feed_flow: KgPerSec(FEED_FLOW),
             temperature: feed_bubble_point(slate, thermo, &feed),
             cascade: Some(&column.spec),
+            seed: None,
+        },
+        thermo,
+    )
+}
+
+fn try_run_warm(
+    cascade: &StageCascade,
+    slate: &Slate,
+    thermo: &ConstantAlphaThermo,
+    column: &Column,
+    feed_mass: &[f64],
+    seed: Option<&CascadeProfile>,
+) -> Result<Separation, refinery_core::error::SimError> {
+    let feed = Composition::from_weights(feed_mass).unwrap();
+    cascade.separate(
+        &ColumnPass {
+            slate,
+            draws: &column.draws,
+            smearing: Kelvin(0.0),
+            pressure: P_ATM,
+            feed: &feed,
+            feed_flow: KgPerSec(FEED_FLOW),
+            temperature: feed_bubble_point(slate, thermo, &feed),
+            cascade: Some(&column.spec),
+            seed,
         },
         thermo,
     )
@@ -624,6 +650,158 @@ fn the_answer_does_not_depend_on_where_the_solve_started() {
     }
 }
 
+/// **The warm start changes the count, not the fixed point — on a seed that is
+/// WRONG.** This is fork 5's permission stated as the thing that can fail, and
+/// M9.3b is the slice that took the permission up.
+///
+/// `the_answer_does_not_depend_on_where_the_solve_started` above perturbs a COLD
+/// seed by ±60 K and is the weaker half of the pair: it never puts a profile
+/// through `ColumnPass::seed`, so it cannot see this path at all. The seed here
+/// is another column's converged answer — a real profile, internally consistent,
+/// and about a materially different feed — which is the seed a plant actually
+/// produces when its feed moves between two ticks.
+///
+/// **The control is what stops this passing for the wrong reason.** If the warm
+/// solve simply accepted its seed and stopped, it would return the light feed's
+/// answer; if the two feeds happened to converge to the same profile, the gate
+/// would pass without the solver doing anything. So the two cold answers are
+/// asserted DIFFERENT by a wide margin first, and only then is the warm answer
+/// asserted equal to the right one of them. That ordering is the whole test:
+/// M9.3b measured 1.006 outer iterations per solve at steady state, and the
+/// question a number that small raises is whether the criterion still binds.
+#[test]
+fn a_warm_start_from_the_wrong_profile_still_lands_on_the_cold_answer() {
+    let slate = binary();
+    let thermo = thermo(&slate, vec![2.0, 0.5]);
+    let column = two_product(7, 4, 2.5, 0.3);
+
+    let light = [0.8, 0.2];
+    let heavy = [0.2, 0.8];
+
+    let cold_light = run(&StageCascade::new(), &slate, &thermo, &column, &light);
+    let cold_heavy = run(&StageCascade::new(), &slate, &thermo, &column, &heavy);
+
+    let light_profile = cold_light
+        .profile
+        .as_ref()
+        .expect("the cascade publishes a profile on a converged solve");
+    let heavy_profile = cold_heavy
+        .profile
+        .as_ref()
+        .expect("the cascade publishes a profile on a converged solve");
+
+    // Control: the two feeds must actually disagree, or the gate below is passed
+    // by a solver that ignores its seed AND by one that ignores its feed.
+    let profile_gap = light_profile
+        .temperatures
+        .iter()
+        .zip(&heavy_profile.temperatures)
+        .map(|(a, b)| (a.value() - b.value()).abs())
+        .fold(0.0f64, f64::max);
+    assert!(
+        profile_gap > 1.0,
+        "the two feeds must converge to materially different profiles for this gate to have any power; the widest stage disagreement is {profile_gap:.3e} K"
+    );
+    let answer_gap = (light_mole_fraction(&cold_light, &slate, 0)
+        - light_mole_fraction(&cold_heavy, &slate, 0))
+    .abs();
+    assert!(
+        answer_gap > 1000.0 * CONVERGED_TOLERANCE,
+        "the two feeds must give materially different distillates; they differ by {answer_gap:.3e}"
+    );
+
+    // The gate: the heavy feed, seeded with the LIGHT feed's converged profile.
+    let warm = try_run_warm(
+        &StageCascade::new(),
+        &slate,
+        &thermo,
+        &column,
+        &heavy,
+        Some(light_profile),
+    )
+    .expect("a wrong seed is a hint, not an infeasible specification");
+
+    for (i, (cold, warm)) in cold_heavy.draws.iter().zip(&warm.draws).enumerate() {
+        for c in 0..slate.len() {
+            approx::assert_abs_diff_eq!(
+                cold.composition.fractions()[c],
+                warm.composition.fractions()[c],
+                epsilon = CONVERGED_TOLERANCE
+            );
+        }
+        approx::assert_abs_diff_eq!(
+            cold.temperature.value(),
+            warm.temperature.value(),
+            epsilon = CONVERGED_TOLERANCE_K
+        );
+        assert_eq!(
+            cold.split, warm.split,
+            "draw {i}: the mass ratios are declared, not solved"
+        );
+    }
+
+    // And the seed must not survive into the answer: the profile that comes back
+    // is the heavy feed's, not the light one it started from.
+    let warm_profile = warm.profile.as_ref().expect("converged, so a profile");
+    for (warm_t, cold_t) in warm_profile
+        .temperatures
+        .iter()
+        .zip(&heavy_profile.temperatures)
+    {
+        approx::assert_abs_diff_eq!(
+            warm_t.value(),
+            cold_t.value(),
+            epsilon = CONVERGED_TOLERANCE_K
+        );
+    }
+}
+
+/// **A seed of the wrong shape is ignored, not reshaped.** `ColumnPass::seed` is
+/// contracted a hint an implementation is free to refuse, and the only way to get
+/// a wrong-shaped one is a plant edited under a live node id. Padding or
+/// truncating would start the solve from a profile no column ever had; the
+/// fallback is the feed's own bubble point, which is what a cold tick uses.
+#[test]
+fn a_seed_of_the_wrong_shape_is_ignored_and_the_answer_is_the_cold_one() {
+    let slate = binary();
+    let thermo = thermo(&slate, vec![2.0, 0.5]);
+    let column = two_product(7, 4, 2.5, 0.3);
+    let feed = [0.4, 0.6];
+
+    let cold = run(&StageCascade::new(), &slate, &thermo, &column, &feed);
+    let good = cold.profile.as_ref().expect("converged, so a profile");
+
+    let too_short = CascadeProfile {
+        temperatures: good.temperatures[..good.temperatures.len() - 1].to_vec(),
+        liquid: good.liquid[..good.liquid.len() - 1].to_vec(),
+    };
+    let wrong_slate = CascadeProfile {
+        temperatures: good.temperatures.clone(),
+        liquid: good.liquid.iter().map(|row| vec![row[0]]).collect(),
+    };
+
+    for (name, seed) in [("too short", &too_short), ("wrong slate", &wrong_slate)] {
+        let warm = try_run_warm(
+            &StageCascade::new(),
+            &slate,
+            &thermo,
+            &column,
+            &feed,
+            Some(seed),
+        )
+        .unwrap_or_else(|e| panic!("a {name} seed must be ignored, not an error: {e}"));
+        for (cold, warm) in cold.draws.iter().zip(&warm.draws) {
+            for c in 0..slate.len() {
+                approx::assert_abs_diff_eq!(
+                    cold.composition.fractions()[c],
+                    warm.composition.fractions()[c],
+                    epsilon = CONVERGED_TOLERANCE
+                );
+            }
+        }
+    }
+}
+
 /// A K-value with no temperature dependence has no bubble point, and the cascade
 /// says so instead of inventing a stage temperature.
 ///
@@ -650,6 +828,7 @@ fn a_temperature_independent_k_has_no_bubble_point_and_is_refused() {
                 feed_flow: KgPerSec(FEED_FLOW),
                 temperature: T_REF,
                 cascade: Some(&column.spec),
+                seed: None,
             },
             &flat,
         )
