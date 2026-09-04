@@ -3715,7 +3715,10 @@ and neither touched: they argued about which STEP to take, and never about when
 the solver is allowed to stop. There is still no fan of further work here waiting
 to be listed — but as of 2026-09-02 there is a measurement to scope M9.3 from,
 below, and a ledger of every open deferral (`docs/DEFERRED.md`) with its distance
-from its own trigger.
+from its own trigger. M9.3 is candidate A of that probe, in two commits with
+different blast radii: **M9.3a landed 2026-09-04** (the bubble-point root finder,
+which makes each cascade iteration cheaper) and M9.3b is the warm start (which
+makes them fewer). M9.3a wrote the trigger A1 had been sitting past without one.
 
 ### M9.0 — the shut-in stall — **LANDED** 2026-08-26
 
@@ -4086,6 +4089,69 @@ to pass fourteen plants, which this project has called a fitted test three times
 **Candidate C — `relief_blowdown`'s preconditioning on Simple (A3).** A real
 mechanism, recorded and gated, 5.4× under its cap. Not reached. It would be the
 right slice if a shipped plant of that shape ever climbs toward 5 000.
+
+### M9.3a — the bubble point — **LANDED** 2026-09-04
+
+Candidate A's first commit, the root finder. The design note is DESIGN §5, "How
+fast is fast enough" and "What M9.3a changed". Five things to know.
+
+**The slice's first job was the trigger, and it is a frame budget, not a corpus
+total.** The Godot binding leaves ticking to the scene, which calls `tick()` from
+`_physics_process` — 16.7 ms at 60 Hz — and a plant may carry several columns, so
+one cascade column gets about **2.5 ms per tick**. That is per *column*, because
+the corpus's total is an artefact of which files happen to be shipped, and it is
+read as a **ratio inside one session**, because this machine drifted 1.7× slower
+in a single day. Any absolute millisecond figure copied out of an older note,
+including the probe's own 12.4 s, is not comparable to a new one.
+
+**The probe's own proposed remedy was wrong, and the reason generalises.** The
+box above says "a bisection that stops at the tolerance the caller can see", and
+DEFERRED A2 said 22 steps would do. Both would have broken the solve: the outer
+convergence test *differences two bubble-point outputs*, so the root finder's
+resolution is a **noise floor on the test that grades it** and has to stay far
+below that tolerance rather than meet it. The resolution stayed at the float
+spacing and the speed came from the method — regula falsi with Illinois
+weighting and Brent's two-step safeguard, on `ln Σ K·x`. 60 steps → **15
+evaluations**, against plain bisection's 55.
+
+**The transform is the change and the safeguard is not, which is the reverse of
+what the first write-up claimed.** Both knobs were swept independently: with the
+logarithm every safeguard variant costs 15 or 16, without it none costs less than
+38. The first draft of that table was written from memory, asserted a story about
+the two knobs pulling against each other, and **every cell of it was wrong** — 
+caught by running the double-revert mutation, which was predicted at 28 and
+measured 38. The safeguard is kept for the worst-case bound behind
+`BUBBLE_POINT_MAX_EVALUATIONS`, a guarantee about a slate nobody has run yet, and
+the test deliberately does not gate it: with the logarithm in place there is no
+speed there to defend, and a bound tight enough to fire on 16 would be a constant
+fitted to one composition.
+
+**The expected ~7× was 2.60×, and the gap is fully attributed rather than
+shrugged at.** Region timers compiled into both versions: bubble points 14 288 →
+4 686 ms, a **3.05×** rather than the 4× that 60 → 15 evaluations predicts,
+because each evaluation now costs ~31% more (one `ln` plus secant arithmetic
+against a bare midpoint). The remainder is the unchanged 14% floor of the K-value
+profile and the Thomas sweeps. `flash.rs`'s own bisection — the first suspect —
+is **cleared by measurement**: it runs once per solve for the saturated-liquid
+feed guard, not once per outer iteration, and does not appear in the attribution.
+Per tick: 2.87 → **1.10 ms**, inside the new trigger with a margin of 2.3×.
+
+**The number that did NOT move is the one that scopes the next commit: 200 000
+outer iterations over 6 000 ticks, 33.3 per tick, identical before and after.**
+This slice made each iteration cheaper; the warm start makes them fewer, and it
+multiplies all three regions rather than one. Bubble points are still 77% of the
+loop. A1 stays open with its trigger now attached.
+
+Two measurement notes worth carrying. Wall time was taken **A/B/A/B in one
+session with an unrelated plant beside it** as a control — the machine's drift is
+larger than the effect on any single pair, so a before-file recorded in the
+morning cannot be compared to an after-run in the afternoon. And the movement
+bound was taken across **all 600 snapshots, not the final one**: the worst
+deviation is a transient at tick 270 (1.31e-14 relative) and the settled value at
+tick 6000 is 3.94e-15, so measuring the endpoint alone would have understated it
+3.3×. Exactly one of fourteen plants moves, on both fidelities — predicted, then
+measured. From here, "runs byte-identical" means post-M9.3a identical for
+`crude_column_cascade` under both `newton` and `simple`.
 
 #### Beyond M9 — candidates, not commitments
 

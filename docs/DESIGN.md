@@ -3026,6 +3026,78 @@ run cold and additionally shown to be start-insensitive (same answer within
 tolerance from a perturbed seed). Determinism is unaffected either way: the warm
 start is itself deterministic.
 
+#### How fast is fast enough (M9.3a) — the trigger fork 5 never wrote
+
+Fork 5 licensed the warm start and named no condition for building it, which is
+how `DEFERRED.md` A1 came to sit past a trigger that did not exist. M9.3a wrote
+one, and the number comes from the only frontend with a clock.
+
+The Godot binding does not tick itself — `RefinerySim` deliberately leaves that
+to the scene, which calls `tick()` from `_physics_process`. That is **16.7 ms at
+the default 60 Hz**, and it is a whole-frame budget the simulation shares with
+everything else the game does. A refinery may plausibly carry several columns,
+so the budget for **one** cascade column is about **2.5 ms per tick** — a sixth
+of a frame. That is the trigger: one column costing more than that is over
+budget, whatever the corpus's total says.
+
+Two things make this a usable trigger rather than a slogan. It is **per column,
+not per corpus** — the corpus runs one plant at a time and its total is an
+artefact of which files happen to be shipped, while a frame budget is a property
+of the frontend. And it is measured as a **ratio within one session**: this
+machine drifted 1.7× slower in a single day (the same code measured 10 268 ms in
+the morning and 17 228 ms in the afternoon), so an absolute millisecond figure
+copied from an old note means nothing. Run the corpus, divide the plant's tick
+wall time by the ticks, and put an unrelated plant beside it as a control.
+
+Against that bar, at the time of writing: **1.10 ms per tick**, down from 2.87.
+Inside the trigger — but the margin is 2.3×, not an order of magnitude, and the
+cost scales with the stage count and the slate size, both of which a scenario
+file chooses freely. A1 stays open with the trigger now attached to it.
+
+#### What M9.3a changed, and the one number it did not touch
+
+The bubble point is the cascade's inner loop: one per stage per outer iteration.
+It ran a **fixed 60 bisection steps** regardless of the answer. It now runs
+regula falsi under Illinois weighting with Brent's two-step bisection safeguard,
+on `ln Σ K·x` rather than `Σ K·x − 1`, and stops when the bracket closes to the
+float spacing — **15 evaluations** on the reference fixture.
+
+**The logarithm is the whole of the speed-up, and the safeguard is not.** Both
+knobs were swept independently: with the transform every safeguard variant costs
+15 or 16 evaluations, and without it none costs less than 38. A K-value is
+exponential in temperature, so `Σ K·x` spans thirty-eight orders of magnitude
+across the `[50, 2000]` K bracket on the shipped slate — the case regula falsi
+is famous for crawling on, and taking its logarithm is what makes the secant
+productive. The safeguard is kept for the **worst-case bound** behind
+`BUBBLE_POINT_MAX_EVALUATIONS`, which is a guarantee about a slate nobody has run
+yet, not a number on this fixture. Anyone tuning it for speed is tuning the wrong
+knob, and the code says so.
+
+**The resolution could not be loosened, and the deferral that said it could was
+wrong in an instructive way.** A2 proposed cutting the step count to the ~22 that
+meets the cascade's own `1e-6` relative convergence test. But that test
+*differences two bubble-point outputs*, so the root finder's resolution is a
+**noise floor on the test that grades it** — it must stay far below the
+tolerance, not meet it. Speed had to come from the method.
+
+**What did not move is the outer iteration count: 200 000 over 6 000 ticks,
+33.3 per tick, identical before and after.** That is the measurement that keeps
+A1 open and points at the warm start. M9.3a made each iteration cheaper — bubble
+points fell from 90.7% of the loop to 77.3%, 14 288 ms to 4 686 ms — and a warm
+start is the change that makes the iterations *fewer*, which multiplies all three
+regions rather than one. Attribution after the change: bubble points 77.3%,
+K-value profile 6.6%, Thomas sweeps 7.3%, the rest 8.8%. `flash.rs`'s own
+bisection does not appear: it runs once per solve, for the saturated-liquid feed
+guard, not once per outer iteration.
+
+Cost of the change, since fork 5 requires the fixed point to be unmoved: exactly
+one of fourteen plants moves against the corpus baseline, on both fidelities, by
+at most **1.31e-14 relative** on any physical quantity across 600 snapshots.
+Measuring only the final snapshot would have understated that 3.3× — the worst
+deviation is a transient at tick 270, not the settled value. From here, "runs
+byte-identical" means post-M9.3a identical for `crude_column_cascade` under both
+`newton` and `simple`.
+
 #### Energy — latent heat cancels, and that is what buys the scope boundary
 
 Every enthalpy in this workspace is **sensible-only** against a shared datum, and

@@ -26,8 +26,8 @@ release build, unless a row says otherwise.
 
 | # | item | argued in | un-defers when | distance, measured |
 |---|---|---|---|---|
-| A1 | **The stage cascade solves cold on every tick.** `StageCascade::separate` seeds every stage at the feed's bubble point and iterates to convergence with no memory of the previous tick's profile. Fork 5 forbids *holding* a previous profile and explicitly *allows* seeding from one ("a warm start changes the iteration count, not the fixed point"), and M7.3 recorded that it did not build one. | §5, "Complex column", fork 5; `cascade.rs` `with_seed_offset` doc | **No trigger written.** The note licenses the warm start and names no condition for building it. | 38 outer iterations on every one of 300 probed ticks at steady state, and 306 bubble-point bisections of 60 steps each per tick. `crude_column_cascade` costs **12 388 ms** per 6 000 ticks against **32 ms** for `crude_column`, the same plant under the splitter — 96% of the whole corpus's wall time is this one plant. |
-| A2 | **The bubble-point bisection runs 60 steps whatever the tolerance asks.** `BUBBLE_POINT_STEPS = 60` over a 1 950 K bracket resolves ~2e-15 K; the cascade's own convergence test is `1e-6` relative on temperature, ~4e-4 K, which 22 steps would meet. | `cascade.rs`, `bubble_point` | No trigger written; the constant was never argued for, only inherited by every stage of every iteration. | Half of A1's cost by construction: 60 × `nc` K-value evaluations per bisection, 306 bisections per tick. A bracketed Newton or secant on the same monotone excess would take ~8. |
+| A1 | **The stage cascade solves cold on every tick.** `StageCascade::separate` seeds every stage at the feed's bubble point and iterates to convergence with no memory of the previous tick's profile. Fork 5 forbids *holding* a previous profile and explicitly *allows* seeding from one ("a warm start changes the iteration count, not the fixed point"), and M7.3 recorded that it did not build one. | §5, "Complex column", fork 5; `cascade.rs` `with_seed_offset` doc; §5, "How fast is fast enough" | **A cascade column costs more than a sixth of a physics frame.** Written M9.3a. The Godot binding ticks from `_physics_process`, which is 16.7 ms at the default 60 Hz, and a plant may carry several columns — so the budget for one is ~2.5 ms and the trigger is one column exceeding it on this machine's corpus run. Absolute times are only comparable within one session (this machine drifted 1.7× in a day), so the measurement is: run the corpus, divide `crude_column_cascade`'s tick wall time by the ticks, compare. | **Past the trigger, and the distance halved but did not close.** M9.3a cut the cascade 2.60× — 2.87 → **1.10 ms per tick** measured A/B/A/B against a control plant — by making each outer iteration cheaper. The iteration count it does NOT touch: **200 000 outer iterations over 6 000 ticks, 33.3 per tick, identical before and after**. Bubble points are still **77%** of the loop (was 90.7%). That count is what a warm start attacks, and it multiplies all three regions rather than one. |
+| ~~A2~~ | ~~**The bubble-point bisection runs 60 steps whatever the tolerance asks.**~~ **CLOSED by M9.3a**, and its stated remedy was wrong in a way worth keeping. The row proposed cutting the step count to the ~22 that meets the outer convergence test. That would have broken the solve: the outer test *differences two bubble-point outputs* (`|T − T'|/T'` against a tolerance as tight as `1e-12`), so the root finder's resolution is a **noise floor on the test that grades it** and must stay far below the tolerance, not meet it. Speed had to come from the method, not the tolerance — and the row's other estimate, "a bracketed Newton or secant would take ~8", measured **15**. | `cascade.rs`, `bubble_point` | — | Resolution kept at the float spacing; evaluations 60 → 15; bubble points 14 288 → 4 686 ms per 6 000 ticks. |
 | A3 | `relief_blowdown` on `SimpleFlowSolver` takes 900-odd sweeps because a normally-shut PSV leaves its valve node a dead end and the receiver's Gauss–Seidel diagonal is dominated by a fat branch carrying nothing — a preconditioning problem, not an overshoot. | §11, M9.1, "Deferred" | A plant of that shape reaches the sweep cap (5 000). | **920** of 5 000; the gate in `relief_valve_reference.rs` asserts < 2 500. 5.4× under the trigger and unchanged since M9.1. |
 | A4 | `tol_rel` on each fidelity (`1e-8` Newton, `1e-6` Simple) was chosen against a plant-wide throughput and now multiplies a node's own traffic; neither has been re-swept against the new meaning. | §11, M9.2, "Deferred" | A plant needs a tolerance argued from its own numbers rather than inherited. | No shipped plant does. Worst Newton iterations per tick across the corpus: 10 of 50 (`relief_blowdown`); worst Simple sweeps other than A3: 16 (`fcc_plant`). |
 | A5 | A node with exactly one live edge can only ever satisfy `tol_abs`; correct for a dead end, wrong for a terminal consumer whose single edge carries real flow. | §11, M9.2, "Deferred" | A scenario adds a terminal consumer. | None shipped, per M9.2's note; the single-edge nodes it measured were all dead legs. |
@@ -91,13 +91,19 @@ release build, unless a row says otherwise.
 
 ## Reading the ledger
 
-- **The only item past a trigger is one with no trigger written.** A1 and A2 are
-  not defects — no scenario `Err`s and the cascade converges on every tick — but
-  they are the corpus's entire wall-time budget, and fork 5's own sentence is the
-  licence. That is what the M9.3 probe in `ROADMAP.md` argues from.
+- **A1 is the only item past its trigger, and it now HAS one.** M9.3a wrote it
+  (a cascade column must fit inside a sixth of a Godot physics frame) and then
+  closed A2 under it. A1 is still not a defect — no scenario `Err`s and the
+  cascade converges on every tick — but it is still the corpus's wall-time
+  budget, and fork 5's own sentence is the licence.
+- **A closed row's stated remedy is worth keeping when it was wrong.** A2's was:
+  it proposed loosening a tolerance that turns out to be the noise floor of the
+  test grading it. Struck rather than deleted, because the next person to see a
+  suspiciously tight constant will reach for exactly that.
 - **Everything with a numeric trigger is well inside it.** A3 at 5.4× under the
   cap is the nearest, and it has not moved since M9.1.
-- **Three deferrals have no trigger at all** (A1, B1, B2). Writing one is the
+- **Two deferrals have no trigger at all** (B1, B2); A1's was written by M9.3a.
+  Writing one is the
   first job of whichever slice takes them, and "when someone wants it" does not
   count — the note has to say what plant or frontend would tell a right answer
   from a wrong one.

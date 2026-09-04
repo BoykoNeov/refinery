@@ -181,13 +181,61 @@ See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 **M9 is OPEN, and its scope is solver robustness.** It opened the way M8 did —
 with a defect the previous milestone reached and deliberately did not fix. Slices
 are scoped one at a time, because what the next one should be depends on what the
-last one measured. Three have landed. **M9.3 is unscoped, but no longer
-unmeasured**: a scoping probe landed 2026-09-02 (ROADMAP, "M9.3 — the scoping
-probe") and found that one plant, `crude_column_cascade`, is 96% of the corpus's
-wall time — 12.4 s of 12.9 s over 6 000 ticks — because the stage cascade solves
-cold on every tick, 38 outer iterations and 306 sixty-step bisections per tick at
-steady state. DESIGN §5 fork 5 already licenses the warm start. Read the probe and
-`docs/DEFERRED.md` before scoping; do not scope from this paragraph.
+last one measured. Four have landed. **M9.3 is candidate A of the 2026-09-02
+scoping probe, in two commits: M9.3a (landed) and M9.3b, the warm start (open).**
+
+**M9.3a landed 2026-09-04** — the bubble-point root finder. The design note is
+DESIGN §5, "How fast is fast enough" and "What M9.3a changed". Five things to
+know.
+
+**The trigger A1 was sitting past is now written, and it is a FRAME budget, not
+a corpus total.** The Godot binding leaves ticking to the scene, which calls
+`tick()` from `_physics_process` — 16.7 ms at 60 Hz — and a plant may carry
+several columns, so one cascade column gets ~2.5 ms per tick. Per *column*,
+because the corpus total is an artefact of which files ship. And read as a ratio
+**inside one session**: this machine drifted 1.7× slower in a day, so the probe's
+own 12.4 s is not comparable to a number measured later. Now 1.10 ms per tick.
+
+**The probe's own proposed remedy would have broken the solve, and the reason
+generalises.** It said "a bisection that stops at the tolerance the caller can
+see"; DEFERRED A2 said 22 steps. But the cascade's outer convergence test
+*differences two bubble-point outputs*, so the root finder's resolution is a
+**noise floor on the test that grades it** — it must stay far below that
+tolerance, not meet it. Resolution stayed at the float spacing; speed came from
+the method (regula falsi, Illinois weighting, Brent's two-step safeguard, on
+`ln Σ K·x`). 60 fixed steps → **15 evaluations**, against bisection's 55.
+
+**The logarithm is the whole speed-up and the safeguard is not — the reverse of
+what the first write-up claimed.** Swept independently: with the transform every
+safeguard variant costs 15–16, without it none costs less than 38. That first
+table was written from memory and **every cell was wrong**, caught by running the
+double-revert mutation (predicted 28, measured 38). The safeguard buys the
+worst-case bound behind `BUBBLE_POINT_MAX_EVALUATIONS`; the gate deliberately
+does not defend it, because a bound tight enough to fire on 16 would be fitted to
+one composition. Also: the secant's bracket guard is a **negated conjunction** so
+a NaN falls to bisection — the "obvious" rewrite reads identically and poisons
+the bracket.
+
+**The expected ~7× was 2.60×, fully attributed rather than shrugged at.** Region
+timers in both versions: bubble points 14 288 → 4 686 ms, i.e. **3.05×** not the
+4× that 60 → 15 predicts, because each evaluation now costs ~31% more (an `ln`
+plus secant arithmetic against a bare midpoint); the rest is the unchanged 14%
+floor of the K-profile and Thomas sweeps. `flash.rs`'s bisection is **cleared by
+measurement** — once per solve, not once per outer iteration.
+
+**The number that did NOT move scopes M9.3b: 200 000 outer iterations over 6 000
+ticks, 33.3 per tick, identical before and after.** This slice made each
+iteration cheaper; the warm start makes them fewer, and multiplies all three
+regions rather than one. Bubble points are still 77% of the loop.
+
+Two measurement habits from this slice. Wall time was taken **A/B/A/B in one
+session with an unrelated plant as a control**, because the machine's drift
+exceeds the effect on any single pair. And the movement bound was taken over
+**all 600 snapshots, not the final one** — the worst deviation is a transient at
+tick 270 (1.31e-14) and the settled value is 3.94e-15, so the endpoint alone
+understates it 3.3×. Exactly one of fourteen plants moves, on both fidelities.
+**From here, "runs byte-identical" means post-M9.3a identical for
+`crude_column_cascade` under both `newton` and `simple`.**
 
 **M9.0 and M9.1 are about the same step**, and reading M9.1 without M9.0 will not
 work — M9.1's whole argument is the closed form M9.0 derived, applied to a solver
