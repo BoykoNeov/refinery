@@ -178,14 +178,24 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M9 is OPEN, and its scope is solver robustness.** It opened the way M8 did —
-with a defect the previous milestone reached and deliberately did not fix. Slices
-are scoped one at a time, because what the next one should be depends on what the
-last one measured. Five have landed. **M9.3 is candidate A of the 2026-09-02
-scoping probe and both its commits landed 2026-09-04.** Together they take
-`crude_column_cascade` from 96% of the corpus's wall time to 26%, and close
-DEFERRED A1 — the deferral the probe existed to scope. Nothing in the ledger is
-past its trigger now.
+**M9 is CLOSED (2026-09-06), and its scope was solver robustness.** It opened the
+way M8 did — with a defect the previous milestone reached and deliberately did not
+fix — and slices were scoped one at a time, because what the next one should be
+depended on what the last one measured. Six boxes landed: three about the
+hydraulic solvers (M9.0, M9.1, M9.2), one that turned the milestone's own
+hand-measurement into the `corpus` command (M9.3), and two that spent it (M9.3a,
+M9.3b). **Nothing in `docs/DEFERRED.md` is past its trigger.**
+
+Three things carry forward past the milestone. **The scope moved three times** —
+which step to take (M9.0/M9.1), when the solver may stop (M9.2), what an iteration
+costs and how many there are (M9.3) — and only the first was foreseeable.
+**Every box found its predecessor's write-up wrong** (M8's mechanism false in both
+clauses, M9.1's first draft fitted to one divergence, M9.3a's table wrong in every
+cell, M9.3b's deferral naming the wrong half), so a write-up composed from memory
+or from a plausible mechanism is a hypothesis with the formatting of a result —
+run the mutation the sentence implies. And **the next milestone is chosen from a
+table**: `refinery corpus` plus `docs/DEFERRED.md`, every open hurdle with the
+argument that deferred it, its un-defer trigger, and the measured distance.
 
 **M9.3a landed 2026-09-04** — the bubble-point root finder. The design note is
 DESIGN §5, "How fast is fast enough" and "What M9.3a changed". Five things to

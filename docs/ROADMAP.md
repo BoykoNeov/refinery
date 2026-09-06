@@ -4229,6 +4229,65 @@ M9.3a wrote. Exactly one of fourteen plants moves, on both fidelities. From here
 "runs byte-identical" means post-M9.3b identical for `crude_column_cascade` under
 both `newton` and `simple`.
 
+### M9 closed
+
+Six boxes landed: three about the hydraulic solvers (M9.0, M9.1, M9.2), one that
+turned the milestone's own hand-measurement into a command (M9.3), and two that
+spent it (M9.3a, M9.3b). The milestone opened the way M8 did — with a defect the
+previous milestone reached, pinned upside-down and deliberately did not fix — and
+it closes with nothing in `docs/DEFERRED.md` past its own trigger.
+
+**The scope moved three times, and the moves are the shape of the milestone.**
+M9.0 and M9.1 argue about *which step to take* — one constant on each fidelity,
+the same constant for the same reason and deliberately not the same value. M9.2
+is the question both left untouched: *when is the solver allowed to stop*, which
+turned out to be code catching up with a spec DESIGN §3 had carried since M1.
+M9.3 is neither — it is *what an iteration costs and how many there are*, on a
+plant whose hydraulics converge in 4 Newton iterations across 6 000 ticks. Three
+different answers to "robustness", and only the first was foreseeable when the
+milestone opened.
+
+**Every box found its predecessor's write-up wrong, and that is the thing to
+carry.** M8's recorded mechanism for the shut-in stall was false in both of its
+clauses. M9.1's first draft fitted a mechanism to a single divergence — which is
+exactly what M8 had done — and was bisected instead. M9.3a's first comparison
+table was written from memory and **every cell was wrong**, caught only by
+running the double-revert mutation it predicted. M9.3b found that the deferral
+it was built from named the wrong half of the thing it proposed to seed. A
+write-up composed from a plausible mechanism or from memory is a hypothesis with
+the formatting of a result; the only defence that worked, five times out of five,
+was running the mutation the sentence implies.
+
+**Two habits of measurement came out of it, both forced by being burned.** Wall
+time is taken **A/B/A/B inside one session with an unrelated plant as a control**,
+because this machine drifted 1.7× slower in a day and that is larger than most
+effects worth measuring; where an iteration count exists it is the number to
+report, because it is machine-independent. And a movement bound is read as a
+**trend across every snapshot**, not off the last one — M9.3a's worst deviation
+is a transient at tick 270 that the endpoint understates 3.3×, and M9.3b's
+argument that a warm start reseats inside a tolerance ball rather than
+accumulating is precisely that its drift is flat across all ten deciles.
+
+**Three mutations are uncaught and were left that way on purpose.** M9.2's
+fork 1 rests on an inequality no test defends; M9.1's `MAX_HALVINGS: 8` is six
+halvings of margin that `2` would tighten onto today's fourteen plants; M9.3b's
+liquid seed can be reverted and nothing fails, because a half-warm start is
+correct and merely slow. Each would need a gate that asserts a cost or stops
+exactly on a tolerance — which is how this project has written a fitted test
+three times. They are rows in the ledger with distances instead, and in M9.3b's
+case the defence is a type: `CascadeProfile` makes the half-warm start
+unrepresentable, so undoing it means deleting a field rather than forgetting a
+line.
+
+**What M9 leaves behind is a scoping tool, not just faster code.** `refinery
+corpus` is the measurement M9.0–M9.2 each made by hand, and running it once
+produced the table that scoped M9.3 — including the finding that 96% of the
+corpus's wall time was one plant that nobody suspected. `docs/DEFERRED.md` is the
+other half: every open hurdle with the argument that deferred it, the condition
+that would un-defer it, and the **measured** distance from that condition. The
+next milestone is chosen from a table now rather than from the last slice's
+regrets.
+
 #### Beyond M9 — candidates, not commitments
 
 The rule stands: a design note before any of these, and the note may reject its
