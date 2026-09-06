@@ -1692,6 +1692,23 @@ mod tests {
                 "this sweep test has no vapour phase; latent heats belong to `solvers`".into(),
             ))
         }
+        /// `Scenario`, matching `solvers::ConstantThermo` rather than the two
+        /// arms above: this is the variant the engine's cavitation pass reads as
+        /// "no criterion here", and a stub that refused with `Numerical` would
+        /// make a sweep test fail a tick instead of reporting nothing
+        /// (docs/DESIGN.md §13).
+        fn bubble_pressure(
+            &self,
+            _slate: &Slate,
+            _composition: &Composition,
+            _temperature: Kelvin,
+        ) -> Result<Pascal, SimError> {
+            Err(SimError::Scenario(
+                "this sweep test has no phase equilibrium; bubble pressures belong to \
+                 `solvers`"
+                    .into(),
+            ))
+        }
     }
 
     fn node(name: &str, kind: NodeKind) -> Node {

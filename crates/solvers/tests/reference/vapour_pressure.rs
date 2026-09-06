@@ -181,3 +181,62 @@ fn the_derived_boiling_point_returns_one_atmosphere() {
         "the anchor {tb:.2} K must lie inside the tabulated range"
     );
 }
+
+/// The bubble pressure of a PURE liquid IS that component's vapour pressure —
+/// so `bubble_pressure` inherits this file's envelope instead of needing a
+/// second one (M11, docs/DESIGN.md §13 gate 2).
+///
+/// **Exactness is what makes the inheritance sound.** If the two agreed only
+/// approximately, this file's `[0.9, 1.2]` band would be graded against a
+/// slightly different quantity than the one the engine publishes, and the
+/// difference would live exactly where nobody looks. Asserted across the whole
+/// validity range, at the shipped constant and at the two deliberately wrong
+/// ones — the identity holds for all three, which is the same property (and the
+/// same limitation) the `K = 1` anchor has.
+#[test]
+fn a_pure_liquids_bubble_pressure_is_its_own_vapour_pressure() {
+    let slate = hexane_slate();
+    let pure = refinery_core::components::Composition::pure(slate.len(), 0);
+    for c in [
+        TroutonThermo::TROUTON_CONSTANT,
+        TroutonThermo::TROUTON_CONSTANT * 0.7,
+        TroutonThermo::TROUTON_CONSTANT * 1.3,
+    ] {
+        let thermo = TroutonThermo::with_trouton_constant(c);
+        for t in samples() {
+            let bubble = thermo
+                .bubble_pressure(&slate, &pure, Kelvin(t))
+                .expect("a pure hydrocarbon at a positive temperature is a valid state");
+            approx::assert_relative_eq!(
+                bubble.value(),
+                model_psat(&thermo, &slate, t),
+                max_relative = 1e-15
+            );
+        }
+    }
+}
+
+/// And therefore the envelope itself, stated on the method the engine calls
+/// rather than on the one it happens to be built from.
+///
+/// A reader looking for "is the number the cavitation signal compares against
+/// any good?" should find the answer under that name, not have to follow the
+/// identity above to `k_value`.
+#[test]
+fn the_published_bubble_pressure_is_inside_the_tabulated_envelope() {
+    let slate = hexane_slate();
+    let pure = refinery_core::components::Composition::pure(slate.len(), 0);
+    let thermo = TroutonThermo::new();
+    for t in samples() {
+        let ratio = thermo
+            .bubble_pressure(&slate, &pure, Kelvin(t))
+            .expect("valid state")
+            .value()
+            / antoine_pa(t);
+        assert!(
+            (0.9..=1.2).contains(&ratio),
+            "at {t:.2} K the bubble pressure is {ratio:.4}× the tabulated vapour \
+             pressure, outside [0.9, 1.2]"
+        );
+    }
+}

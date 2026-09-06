@@ -179,38 +179,58 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M11 is OPEN — the cavitation criterion. M11.0 (the design note, DESIGN §13)
-landed 2026-09-06; no code yet.** It is the first milestone taken on a
-**decision** rather than on a measurement: neither of B1's trigger clauses has
-fired, and clause (b) — a frontend needing to display cavitation — is being
-decided rather than observed. What licenses it is that §3 told frontends for ten
-milestones to read a *wrong* number as the signal, and the M10 close-out's
-correction left them with nothing. **The row's own noun is wrong**: B1 says
-"floor" and §3 promises a "clamp"; §13 fork 1 rejects the clamp (the vapour it
-would account for is mass in a phase the state vector lacks — that is B3) and
-ships a **criterion plus a signal**. The hydraulics are untouched.
+**M11 is CLOSED (2026-09-06), and its scope was the cavitation criterion.**
+M11.0 wrote the note (DESIGN §13, seven forks) and M11.1 built it: a third method
+on `ThermoModel`, a per-tick criterion in `Engine::tick`, `NodeSnapshot::cavitation`,
+`scenarios/cavitating_pump.toml` and twelve gates. It is **the first milestone
+taken on a decision rather than on a measurement** — neither of B1's trigger
+clauses had fired, and clause (b), "a frontend needs to display cavitation", is a
+decision that was made rather than an event that arrived. What licensed it: §3
+told frontends for ten milestones to read a *wrong* number as the signal, and the
+M10 close-out's correction left them with nothing.
 
-**The finding that re-premises the row: B1's 1.865× is a number no engine
-configuration can produce.** `heat_recovery` declares `thermo = "constant"`,
+**The row's own noun was wrong and the milestone ships neither of the things it
+names.** B1 says "floor", §3 promised a "clamp"; §13 fork 1 rejects the clamp
+because the vapour it would account for is mass in a phase the state vector lacks
+— which *is* `docs/DEFERRED.md` B3. M11 ships a **criterion and a signal**, the
+hydraulics are untouched, and a cavitating pump still delivers full head. That
+disagreement is deliberate and is now its own ledger row (B9).
+
+**The finding that re-premised the row: B1's 1.865× was a number no engine
+configuration could produce.** `heat_recovery` declares `thermo = "constant"`,
 whose `k_value` is an `Err`; the number came from the M10 close-out's standalone
-script. **Fourteen of fifteen plants select `constant`**, so under B1's original
-four-kind node list ("pump, valve, junction or exchanger") the engine-computable
-set across the whole corpus is **EMPTY**. The only plant that can answer is
-`crude_column_cascade`, and its one flow-path node is a **furnace** at **1.899×**
-— which is why §13 fork 4 enumerates all fourteen `NodeKind` variants and adds
-`Furnace`/`Cooler`, and why the ledger's trigger now names six kinds. The general
-form: **a distance is a property of the engine, not of the plant.**
+script. **Fourteen of the fifteen pre-M11 plants select `constant`**, so under
+B1's original four-kind node list ("pump, valve, junction or exchanger") the
+engine-computable set across the whole corpus was **EMPTY** — every node of those
+kinds sits on a plant whose model refuses, and the one plant that can answer
+(`crude_column_cascade`) has none of them. Its only flow-path node is a
+**furnace**, so §13 fork 4 enumerates all fourteen `NodeKind` variants and the
+ledger's trigger now names six kinds. **A distance is a property of the engine,
+not of the plant.**
 
-Four things the building slice inherits. The criterion is `P_node <
-P_bub(T, x)`, a **new third method on `ThermoModel`** (`bubble_pressure`) —
-computing `P·Σ x·K` in `core` is Raoult-specific and would put a model assumption
-in `core`. The **bubble PRESSURE is a closed form** where the cascade's bubble
-TEMPERATURE needs a root find, which is what makes per-tick evaluation
-affordable. The snapshot field follows `column_duty`: **`None` means "no
-criterion here", never "healthy"**, so fourteen plants emit nothing and stay
-byte-identical. And the demo is a **new file on a light hydrocarbon, not water** —
-Trouton overstates water's vapour pressure ~60% at 50 °C — with the cavitating
-node **interior** to the regime and a healthy node in the same plant.
+Five things the next milestone inherits. **`None` never means "healthy"** — it
+means there is no criterion here (wrong node kind, a gas, a model that cannot
+answer, or before the first tick), and fourteen plants emit nothing at all; a
+frontend must render that as *unknown*. **The error VARIANT is load-bearing**:
+`SimError::Scenario` from a thermo model means "this fidelity cannot answer" and
+reports nothing, every other variant fails the tick — three of the workspace's six
+`ThermoModel` impls are test stubs and each had to be told which it meant. **An
+exclusion cannot be gated on the verdict**: an excluded node publishes nothing, so
+the only way to show the exclusion is doing work is to evaluate the criterion
+independently and find it would have fired — and the plant has to actually be in
+the state, which `crude_column_cascade`'s naphtha tank is not until **tick 1 826**.
+**The demo carries no holdup at all**, because the obvious shape (a hot rundown
+tank feeding a pump) would have shipped a plant sitting in B3's state. And
+**`thermo = "trouton"` now changes numbers on a plant with no column** — M11 is
+the first consumer that makes the key matter there, which was measured before it
+was relied on (the fidelity switch alone moves nothing: 175 197.988 Pa either
+way).
+
+**From here, "runs byte-identical" means post-M11 identical.** Fourteen of the
+fifteen pre-M11 plants are unchanged on both fidelities; `crude_column_cascade`
+carries exactly one extra key on exactly one node (`preheater`), verified by
+stripping the key and reproducing the before-file byte for byte. No solver
+iteration count moved. `scenarios/` now holds **sixteen** files.
 
 **M10 is CLOSED (2026-09-06), and its scope was the second controlled variable.**
 Pressure is built (M10.0 + M10.1) and pressure is all it built — temperature and
@@ -850,7 +870,7 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly two of the fifteen files in `scenarios/` declare a `[[controls]]`
+**Exactly two of the sixteen files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level) and
 `vessel_pressure_control.toml` (M10.1, a pressure). **The other thirteen were
 written before M8 and ARE the regression anchor**; adding a loop to one of them

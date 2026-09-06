@@ -1,0 +1,137 @@
+# M11 demo plant: hot naphtha lifted to a pump that boils in its own suction line.
+#
+# The wired demonstration of docs/DESIGN.md §13 — the cavitation criterion. Every
+# other shipped plant answers "no criterion here" at every node, because fourteen
+# of the fifteen select `thermo = "constant"`, which has no vapour-liquid
+# equilibrium to be graded against. This one answers.
+#
+# --- four things about this file that are design inputs, not tuning ------------
+#
+# 1. IT IS NOT WATER, AND THAT IS THE POINT TWICE OVER.
+#    `TroutonThermo`'s own doc says the correlation is poorest for associating
+#    fluids — it overstates water's vapour pressure by ~60% at 50 °C — and is good
+#    to roughly 10% over the reference hydrocarbon's tabulated range. A demo whose
+#    entire subject is a vapour pressure runs on the fluid class the correlation
+#    is honest about. And the marker §3 used to name (read a NEGATIVE absolute
+#    pressure as cavitating) is late by exactly the fluid's vapour pressure: on
+#    cold water that is 0.58 m of suction lift, and on this mixture it is
+#    1.8 bar — so `suction` here reports boiling while sitting at a comfortable
+#    positive pressure, which is the whole content of §3's correction.
+#
+# 2. THE FLUID IS A MIXTURE, SO MASS AND MOLE FRACTIONS DIFFER.
+#    `P_bub = Σ x_c · Psat_c(T)` is a sum over MOLE fractions. At 0.70/0.30 by
+#    mass on molar masses 0.100 and 0.130 the mole fractions are 0.7521/0.2479,
+#    and using the mass fractions instead moves the bubble pressure by ~6%. A
+#    single-component demo could not tell the two apart at all
+#    (`docs/memory/degenerate-fixture-disables-the-code-path`), and the cut
+#    properties are `crude_column_cascade`'s own so the two files can be read
+#    side by side.
+#
+# 3. THERE IS NO TANK AND NO VESSEL ANYWHERE, DELIBERATELY.
+#    A holdup below its bubble point is a two-phase INVENTORY — `docs/DEFERRED.md`
+#    B3, a different and deferred problem — and two shipped plants are already in
+#    that state. Building the demo out of a source, a junction, a pump, a valve
+#    and a sink keeps this plant's only sub-bubble-point node on the hydraulic
+#    flow path, which is what B1 is about. It also makes the plant steady from
+#    tick 1, so the cavitating node sits INTERIOR to the regime for the whole run
+#    rather than crossing into it at the end (M8.4's coverage gap, M10.1's vent).
+#
+# 4. BOTH ARMS ARE IN ONE FILE. `header` (a junction, just downstream of the
+#    source) and `discharge_valve` are subject to the same criterion and report
+#    healthy; `suction` (the pump) reports boiling. A frontend has both states to
+#    draw from one run, and a gate has its own control without a second plant.
+#
+# The mechanism is the classic NPSH failure and the one §3's paragraph describes:
+# the pump is mounted 25 m above its supply, so the static head is spent before
+# the fluid reaches the impeller. Nothing is wrong with the hydraulics — the solve
+# converges, the flow is real, and the pump still delivers its full head, because
+# what cavitation DOES to a pump is B3 plus a pump model (§13, "Deferred").
+
+[meta]
+name = "cavitating_pump"
+description = "Hot naphtha lifted 25 m to a pump whose suction pressure is below the mixture's bubble point."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+# The first plant with no column to have a reason for this: until M11 the only
+# consumer of a K-value was the stage cascade, so `trouton` here would have been
+# a knob that changed no number (`schema.rs` says so and deliberately does not
+# refuse the pairing). The cavitation criterion is that reason.
+thermo = "trouton"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+# 110 °C is chosen against the correlation, not picked: Psat_light(383.15 K) =
+# 2.321 bar and Psat_heavy = 0.336 bar, so the mixture's bubble pressure is
+# 1.829 bar — above the pump's suction pressure and below the header's.
+[nodes.rundown_source]
+type = "source"
+pressure_bar = 3.0
+temperature_c = 110.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+[nodes.header]
+type = "junction"
+
+[nodes.suction]
+type = "pump"
+h0_m = 40.0
+a = 800.0
+on = true
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0
+opening = 0.6
+
+[nodes.unit_feed]
+type = "sink"
+pressure_bar = 1.5
+temperature_c = 110.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+[[pipes]]
+name = "rundown_line"
+from = "rundown_source"
+to = "header"
+length_m = 8.0
+diameter_m = 0.15
+
+# The lift. 25 m of hot naphtha is 1.72 bar of static head, which is what puts
+# the impeller below the fluid's bubble point.
+[[pipes]]
+name = "lift_line"
+from = "header"
+to = "suction"
+length_m = 30.0
+diameter_m = 0.15
+elevation_change_m = 25.0
+
+[[pipes]]
+name = "discharge"
+from = "suction"
+to = "discharge_valve"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "feed_line"
+from = "discharge_valve"
+to = "unit_feed"
+length_m = 25.0
+diameter_m = 0.10

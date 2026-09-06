@@ -9,7 +9,8 @@ use crate::energy::{self, T_REF};
 use crate::error::SimError;
 use crate::graph::{ControlMode, ControlledValue, LeakRole, LoopId, NodeId, NodeKind, PlantGraph};
 use crate::snapshot::{
-    ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot, NodeSnapshot, Snapshot,
+    CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
+    NodeSnapshot, Snapshot,
 };
 use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, SeparationModel, ThermoModel};
 use crate::units::*;
@@ -65,6 +66,19 @@ pub struct Engine {
     /// Retained across ticks only to give a zero-volume node with no inflow a
     /// reproducible value to hold (see `energy::resolve_node_states`).
     node_states: energy::NodeStates,
+    /// The cavitation criterion at every node that has one, from the last tick
+    /// (M11, docs/DESIGN.md §13). Empty before the first tick, and missing an
+    /// entry for every node the criterion does not apply to.
+    ///
+    /// **Beside `last_solution`, not inside `NodeStates`, and that placement is
+    /// argued.** `NodeStates` is produced by `resolve_node_states` and consumed
+    /// by the NEXT tick's `FlowSolver::solve` as `previous_states`: it has one
+    /// owner and one contract. This is a diagnostic over the *pair* (solution,
+    /// states), computed once both exist, and putting it in the solver's input
+    /// would be a coupling nothing asked for. `reactor_duty` is the
+    /// counter-precedent — it lives in `NodeStates` because the sweep is the
+    /// only place its inputs meet, and here the sweep is not.
+    last_cavitation: std::collections::BTreeMap<NodeId, CavitationSnapshot>,
 }
 
 impl Engine {
@@ -88,6 +102,7 @@ impl Engine {
             tick: 0,
             last_solution: None,
             node_states: energy::NodeStates::default(),
+            last_cavitation: std::collections::BTreeMap::new(),
         }
     }
 
@@ -843,8 +858,65 @@ impl Engine {
             }
         }
 
+        // 5. The cavitation criterion (M11, docs/DESIGN.md §13). A DIAGNOSTIC:
+        //    nothing in the forward solve reads it, the hydraulics are untouched,
+        //    and a node reported as boiling still carries whatever the solve says
+        //    it carries. What the engine gains is the ability to SAY SO — §3 used
+        //    to tell frontends to infer it from a negative absolute pressure,
+        //    which fires late by the fluid's whole vapour pressure.
+        //
+        //    Here rather than in `snapshot()` because `snapshot` takes `&self`
+        //    and returns no `Result`: a criterion evaluated there would have to
+        //    swallow a model's `Err`, which rule 5 forbids and which would turn
+        //    "this model cannot answer" into "healthy". Here both halves are in
+        //    hand — the solved pressures, and the temperatures and compositions
+        //    the sweep just resolved.
+        let mut cavitation = std::collections::BTreeMap::new();
+        for nid in self.graph.node_ids() {
+            if !cavitation_subject(&self.graph.node(nid).kind) {
+                continue;
+            }
+            let (Some(pressure), Some(temperature), Some(composition)) = (
+                solution.node_pressure.get(&nid),
+                node_states.temperature.get(&nid),
+                node_states.composition.get(&nid),
+            ) else {
+                continue;
+            };
+            // A vapour does not cavitate — it is already vapour. `Composition`
+            // is the existing owner of that question (M5.2's density dispatch
+            // asks the same one), so no second notion of phase is invented here.
+            // A mixed-phase composition is an `Err` everywhere else in the
+            // engine and stays one.
+            if composition.phase(&self.slate)? != crate::components::Phase::Liquid {
+                continue;
+            }
+            let bubble = match self
+                .thermo
+                .bubble_pressure(&self.slate, composition, *temperature)
+            {
+                Ok(bubble) => bubble,
+                // `Scenario` is the model saying it has no vapour-liquid
+                // equilibrium at all — a legitimate configuration, and the one
+                // fourteen of the fifteen shipped plants are in. It reports
+                // nothing rather than reporting `false`, which would be a clean
+                // bill of health nothing computed. Every other variant is a real
+                // fault and fails the tick.
+                Err(SimError::Scenario(_)) => continue,
+                Err(other) => return Err(other),
+            };
+            cavitation.insert(
+                nid,
+                CavitationSnapshot {
+                    bubble_pressure_pa: bubble.value(),
+                    cavitating: pressure.value() < bubble.value(),
+                },
+            );
+        }
+
         self.node_states = node_states;
         self.last_solution = Some(solution);
+        self.last_cavitation = cavitation;
         self.tick += 1;
         Ok(())
     }
@@ -999,6 +1071,10 @@ impl Engine {
                             condenser_w: condenser.value(),
                             reboiler_w: reboiler.value(),
                         }),
+                    // Absent wherever the criterion does not apply, which is
+                    // three different sentences a frontend must read as
+                    // "unknown" — see `NodeSnapshot::cavitation`.
+                    cavitation: self.last_cavitation.get(&id).copied(),
                 }
             })
             .collect();
@@ -1104,6 +1180,61 @@ impl Engine {
     /// (docs/DESIGN.md §3a fork 6).
     pub fn node_states(&self) -> &energy::NodeStates {
         &self.node_states
+    }
+}
+
+/// Which node kinds the cavitation criterion is about (docs/DESIGN.md §13
+/// fork 4).
+///
+/// **Enumerated rather than matched with a catch-all, and the reason is
+/// measured.** `docs/DEFERRED.md` B1's trigger named four kinds — pump, valve,
+/// junction, exchanger — and across all fifteen shipped plants the set of nodes
+/// of those kinds at which the engine can evaluate a bubble pressure is EMPTY:
+/// every one of them is on a plant whose thermo model refuses, and the one plant
+/// that can answer has none of those kinds in it. Its only flow-path node is a
+/// FURNACE. A four-name list inherited without walking the type would have left
+/// this criterion with no reachable node at all.
+///
+/// A new `NodeKind` must therefore be classified here deliberately; there is no
+/// `_ =>` arm to fall into.
+fn cavitation_subject(kind: &NodeKind) -> bool {
+    match kind {
+        // The zero-volume hydraulic path. A pump's node sits at its SUCTION
+        // pressure (a device folds into its outlet edge), which is exactly the
+        // failure §3's paragraph is about; a throttle's node sits upstream of
+        // its own drop, so what flashes there is what the line delivers to it.
+        NodeKind::Pump { .. }
+        | NodeKind::Valve { .. }
+        | NodeKind::ReliefValve { .. }
+        | NodeKind::Junction
+        | NodeKind::HeatExchanger => true,
+        // A fired heater's outlet is where a refiner expects a liquid to boil —
+        // that is what a heater is for, and vaporizing in the TUBES rather than
+        // downstream is a real and expensive failure. Both are zero-volume flow-
+        // path nodes like the five above; they are called out separately only
+        // because B1's trigger omitted them.
+        NodeKind::Furnace { .. } | NodeKind::Cooler { .. } => true,
+        // Holdups, and this exclusion is load-bearing. A tank or vessel below
+        // its bubble point is a TWO-PHASE INVENTORY (`docs/DEFERRED.md` B3), not
+        // cavitation, which is a flow-path phenomenon. Two shipped plants are
+        // already in that state — `crude_column`'s naphtha tank sits at 0.30× its
+        // own bubble pressure — so without this the criterion would fire on them
+        // and report a boiling product tank as a cavitating pump.
+        NodeKind::Tank(_) | NodeKind::Vessel(_) => false,
+        // Declared boundaries: their pressures are typed into the scenario file
+        // rather than solved, so grading one grades the author's arithmetic. B1
+        // carried a distance for five milestones that was a declared sink's
+        // pressure, which is the cautionary case.
+        NodeKind::Source { .. } | NodeKind::Sink { .. } | NodeKind::Atmosphere => false,
+        // A column is AT its bubble point by definition — that is what a column
+        // is. Measured over 6 000 ticks, `crude_column_cascade`'s sits between
+        // 0.988 and 1.000 of it, so a signal here would report the model working.
+        NodeKind::Column { .. } => false,
+        // A reactor IMPOSES its outlet temperature, so the temperature the
+        // criterion would read is a setpoint rather than a resolved state; and
+        // the FCC slate declares a `gas` lump with tb = -40 °C as a liquid, which
+        // makes a liquid bubble-point test meaningless there (B3 again).
+        NodeKind::Reactor { .. } => false,
     }
 }
 

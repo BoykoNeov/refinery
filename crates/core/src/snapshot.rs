@@ -123,6 +123,62 @@ pub struct NodeSnapshot {
     /// heat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_duty: Option<ColumnDuty>,
+    /// Whether the liquid at this node is boiling, and the bubble pressure the
+    /// verdict was made against (M11, docs/DESIGN.md §13).
+    ///
+    /// **`None` means "there is no criterion at this node", never "healthy".**
+    /// Three different things produce it, and a frontend must render all three
+    /// as *unknown*: the node is not on the hydraulic flow path (a holdup below
+    /// its bubble point is a two-phase inventory, which is a different and
+    /// deferred problem); its fluid is a gas, which cannot cavitate because it
+    /// is already vapour; or the plant's `ThermoModel` has no vapour–liquid
+    /// equilibrium, which is fourteen of the fifteen shipped plants.
+    ///
+    /// That is `column_duty`'s shape and `column_duty`'s argument. Reporting
+    /// `cavitating: false` where nothing was computed would be
+    /// [`NodeSnapshot::heat_input_w`]'s lesson pointed the other way — not a
+    /// field nothing reports, but a field reporting what nothing computed, and
+    /// here it would be a clean bill of health issued by a model that has no
+    /// opinion.
+    ///
+    /// Also `None` before the first tick, where there is no solved pressure to
+    /// compare and no resolved temperature to evaluate at. `pressure_pa` reports
+    /// NaN there; this reports absence, because a NaN bubble pressure is a
+    /// number the model never produced and rule 5 forbids handing one out.
+    ///
+    /// `skip_serializing_if` is what keeps every plant that cannot answer
+    /// byte-identical, the move `column_duty` and `ColumnDraw`'s M7.3 fields
+    /// both made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cavitation: Option<CavitationSnapshot>,
+}
+
+/// The cavitation criterion at one node — see [`NodeSnapshot::cavitation`].
+///
+/// Two fields carrying one relationship, deliberately. The `bool` is the
+/// deliverable: docs/DESIGN.md §3 used to tell frontends to infer cavitation
+/// from a negative absolute pressure, which fires late by the fluid's whole
+/// vapour pressure, so the engine says it rather than leaving it to be
+/// inferred. The pressure is what makes the verdict auditable and what a margin
+/// gauge draws — a frontend holding only the `bool` cannot show a plant getting
+/// closer.
+///
+/// Two fields carrying one relationship is also how they drift, so their
+/// agreement is a gate rather than an assumption (`EdgeSnapshot::leak_mass_flow`
+/// has the same shape and the same defence).
+///
+/// **The engine reports this; it does not act on it.** A cavitating pump still
+/// delivers its full head, because the vapour that would spoil it is mass in a
+/// phase the state vector does not have (`docs/DEFERRED.md` B3). The
+/// disagreement is known, named, and preferred to a clamp that would make a
+/// converged solve stop conserving.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CavitationSnapshot {
+    /// Bubble pressure of this node's liquid at its resolved temperature [Pa] —
+    /// `ThermoModel::bubble_pressure`, the pressure below which it boils.
+    pub bubble_pressure_pa: f64,
+    /// `pressure_pa < bubble_pressure_pa`: the engine's own verdict.
+    pub cavitating: bool,
 }
 
 /// A column's two emergent heat duties [W] — see `NodeSnapshot::column_duty`.

@@ -7,7 +7,8 @@
 //! depend on any correlation being right — the split DESIGN §5 insists on under
 //! "three families, and conflating them proves neither".
 
-use refinery_core::components::Slate;
+use crate::molar::MoleFractions;
+use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
 use refinery_core::traits::ThermoModel;
 use refinery_core::units::{JPerMol, Kelvin, Pascal, P_ATM, R_GAS};
@@ -200,6 +201,56 @@ impl ThermoModel for TroutonThermo {
             });
         }
         Ok(JPerMol(dh))
+    }
+
+    /// Raoult over each cut's Clausius–Clapeyron vapour pressure:
+    /// `P_bub = Σ_c x_c · Psat_c(T)`, with `x` the MOLE fractions of the mass
+    /// composition handed in.
+    ///
+    /// **The mixture's sum, not the lightest cut's own vapour pressure.** A
+    /// liquid boils when the partial pressures of everything in it add up to
+    /// the pressure over it; testing `max_c Psat_c > P` instead would call a
+    /// crude boiling whenever its light naphtha would boil neat. The two agree
+    /// exactly for a pure fluid, which is why a water-only fixture cannot tell
+    /// them apart (docs/DESIGN.md §13 fork 2).
+    ///
+    /// **A closed form, where this same model's bubble TEMPERATURE is a root
+    /// find.** `cascade::bubble_point` iterates because `Psat` is transcendental
+    /// in `T`; inverted for `P` it is a weighted sum of numbers already in hand
+    /// — no iteration, no evaluation cap, no tolerance, and no failure mode
+    /// `check_state` does not already cover.
+    ///
+    /// Cuts the liquid does not carry are skipped rather than multiplied by
+    /// zero: a zero fraction contributes nothing to the sum either way, and
+    /// skipping keeps a slate whose gas cuts a liquid never holds from being
+    /// evaluated at all.
+    fn bubble_pressure(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        temperature: Kelvin,
+    ) -> Result<Pascal, SimError> {
+        let mole = MoleFractions::from_mass(composition, slate)?;
+        let mut bubble = 0.0;
+        for (component, x) in mole.fractions().iter().enumerate() {
+            if *x <= 0.0 {
+                continue;
+            }
+            // `P_ATM` is the anchor the correlation integrates from and the
+            // pressure a saturation pressure is not a function of; it is here
+            // because `check_state` needs one, exactly as in `dh_vap`.
+            check_state(slate, component, temperature, P_ATM, "trouton")?;
+            bubble += x * self.saturation_pressure(slate, component, temperature);
+        }
+        if !bubble.is_finite() || bubble <= 0.0 {
+            return Err(SimError::NonFiniteState {
+                location: format!(
+                    "trouton bubble_pressure at {} K gave {bubble} Pa",
+                    temperature.value()
+                ),
+            });
+        }
+        Ok(Pascal(bubble))
     }
 }
 
@@ -418,6 +469,32 @@ impl ThermoModel for ConstantAlphaThermo {
             ))),
         }
     }
+
+    /// Refused, and the reason is sharper than "it was handed its numbers".
+    ///
+    /// This model's `K` is **independent of pressure** (that is what "constant
+    /// relative volatility" means here), so the Raoult identity
+    /// `P_bub = P·Σ x_c·K_c` gives a different answer for every `P` it is
+    /// evaluated at. There is no bubble pressure to return — not merely none it
+    /// was told. The obvious reading, "it has K-values, so it can answer", is
+    /// what this arm exists to refuse (docs/DESIGN.md §13 fork 3).
+    ///
+    /// `Scenario`, like `ConstantThermo`'s: a fixture selecting this model is
+    /// not broken, it is a fixture with no bubble point.
+    fn bubble_pressure(
+        &self,
+        _slate: &Slate,
+        _composition: &Composition,
+        _temperature: Kelvin,
+    ) -> Result<Pascal, SimError> {
+        Err(SimError::Scenario(
+            "constant-alpha thermo has pressure-INDEPENDENT K-values, so P·Σ x·K is a \
+             different number at every pressure and there is no bubble pressure to \
+             report. Use thermo = \"trouton\", whose K = Psat/P makes the product a \
+             property of the liquid alone."
+                .into(),
+        ))
+    }
 }
 
 /// The EXACT identities — the family that holds for any Trouton constant, and
@@ -427,7 +504,7 @@ impl ThermoModel for ConstantAlphaThermo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use refinery_core::components::{Phase, PseudoComponent, Slate};
+    use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
     use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol};
 
     /// Cuts distinguished only by boiling point — every other property is a
@@ -842,5 +919,113 @@ mod tests {
                 "t_ref = {t_ref}, exponent = {exponent} must be refused"
             );
         }
+    }
+
+    /// `P_bub = P_ATM` for a PURE cut at its own normal boiling point — the
+    /// bubble-pressure form of the anchor `K = 1` is, and exact for **any**
+    /// Trouton constant for exactly the same reason: the Clausius–Clapeyron form
+    /// is integrated from `(tb, P_ATM)`.
+    ///
+    /// That independence is the point, and it is the same warning DESIGN §5
+    /// correction 4 attaches to the `K = 1` identity: this test passing says
+    /// nothing about whether the correlation's MAGNITUDE is right. The magnitude
+    /// half lives in `tests/reference/vapour_pressure.rs`, which M11 ties to this
+    /// method rather than duplicating.
+    #[test]
+    fn a_pure_cut_at_its_boiling_point_bubbles_at_one_atmosphere_for_any_constant() {
+        let slate = slate_with_tbs(&[300.0, 341.89, 600.0]);
+        for c in CONSTANTS {
+            let thermo = TroutonThermo::with_trouton_constant(c);
+            for i in 0..slate.len() {
+                let pure = Composition::pure(slate.len(), i);
+                let bubble = thermo
+                    .bubble_pressure(&slate, &pure, slate.get(i).tb)
+                    .expect("a pure cut at its own boiling point is a valid state");
+                approx::assert_relative_eq!(bubble.value(), P_ATM.value(), max_relative = 1e-12);
+            }
+        }
+    }
+
+    /// The sum is over MOLE fractions, and on a slate whose molar masses differ
+    /// that is a different number from the mass-weighted one.
+    ///
+    /// **The control is asserted first**, because without it this test is passed
+    /// by an implementation that weights by mass on a fixture where the two
+    /// happen to agree — which is every single-component fixture in the
+    /// workspace (`docs/memory/degenerate-fixture-disables-the-code-path`). The
+    /// hand calculation is written out rather than recomputed from the model, so
+    /// the gate does not grade the code against itself.
+    #[test]
+    fn the_bubble_pressure_sums_mole_fractions_not_mass_fractions() {
+        // The demo plant's own cuts and mixture: 0.70/0.30 by mass on molar
+        // masses 0.100 and 0.130 kg/mol.
+        let slate = Slate::new(vec![
+            PseudoComponent {
+                name: "light".into(),
+                tb: Kelvin(353.15),
+                molar_mass: KgPerMol(0.100),
+                density: Some(KgPerM3(680.0)),
+                cp: JPerKgK(2200.0),
+                phase: Phase::Liquid,
+            },
+            PseudoComponent {
+                name: "heavy".into(),
+                tb: Kelvin(423.15),
+                molar_mass: KgPerMol(0.130),
+                density: Some(KgPerM3(750.0)),
+                cp: JPerKgK(2100.0),
+                phase: Phase::Liquid,
+            },
+        ])
+        .unwrap();
+        let mixture = Composition::from_weights(&[0.7, 0.3]).unwrap();
+        let t = Kelvin(383.15);
+        let thermo = TroutonThermo::new();
+
+        // Psat from the model's own public path, so the hand calculation below
+        // differs from the implementation only in HOW the two are weighted.
+        let psat = |i: usize| thermo.k_value(&slate, i, t, P_ATM).unwrap() * P_ATM.value();
+        // n_c = w_c / M_c, x_c = n_c / Σ n.
+        let n = [0.7 / 0.100, 0.3 / 0.130];
+        let total: f64 = n.iter().sum();
+        let by_mole = (n[0] / total) * psat(0) + (n[1] / total) * psat(1);
+        let by_mass = 0.7 * psat(0) + 0.3 * psat(1);
+
+        // The control: on this slate the two weightings are far apart, so the
+        // assertion below can tell them apart.
+        let separation = (by_mole - by_mass).abs() / by_mole;
+        assert!(
+            separation > 0.05,
+            "this fixture cannot discriminate mole from mass weighting: they differ by \
+             {separation:.4}, so the assertion below would pass either way"
+        );
+
+        let bubble = thermo.bubble_pressure(&slate, &mixture, t).unwrap();
+        approx::assert_relative_eq!(bubble.value(), by_mole, max_relative = 1e-12);
+    }
+
+    /// A model handed its K-values has no bubble pressure, and refuses with the
+    /// variant that means "this fidelity cannot", not the one that means
+    /// "something went wrong".
+    ///
+    /// The distinction is load-bearing: the engine's cavitation pass reports
+    /// nothing on `SimError::Scenario` and fails the tick on anything else
+    /// (docs/DESIGN.md §13).
+    #[test]
+    fn a_pressure_independent_k_has_no_bubble_pressure() {
+        let slate = slate_with_tbs(&[300.0, 400.0]);
+        let thermo = ConstantAlphaThermo::new(&slate, vec![2.0, 0.5]).unwrap();
+        let err = thermo
+            .bubble_pressure(
+                &slate,
+                &Composition::from_weights(&[0.5, 0.5]).unwrap(),
+                Kelvin(350.0),
+            )
+            .expect_err("constant-alpha has no bubble pressure to give");
+        assert!(
+            matches!(err, SimError::Scenario(_)),
+            "the refusal must be `Scenario` — the engine reads that variant as 'no \
+             criterion here' and every other variant as a fault: {err}"
+        );
     }
 }

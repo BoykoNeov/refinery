@@ -108,6 +108,27 @@ impl ThermoModel for ConstantThermo {
                 .into(),
         ))
     }
+
+    /// Refused, and this is the arm fourteen of the fifteen shipped plants take.
+    ///
+    /// `SimError::Scenario` rather than `Numerical`, and the variant is
+    /// load-bearing: the engine's cavitation pass reads this one as "no
+    /// criterion at this node" and reports nothing, while any other variant
+    /// fails the tick (docs/DESIGN.md §13). A plant on this fidelity is not
+    /// broken — it simply has no thermodynamics to be graded against, and
+    /// `cavitating: false` would be a clean bill of health nothing computed.
+    fn bubble_pressure(
+        &self,
+        _slate: &Slate,
+        _composition: &Composition,
+        _temperature: Kelvin,
+    ) -> Result<Pascal, SimError> {
+        Err(SimError::Scenario(
+            "the 'constant' thermo fidelity has no vapour-liquid equilibrium, so it has \
+             no bubble pressure; select thermo = \"trouton\" for a model that does"
+                .into(),
+        ))
+    }
 }
 
 /// Identity reaction: the feed passes through unchanged with zero heat of
@@ -130,5 +151,33 @@ impl ReactionModel for NoReactions {
             products: feed.clone(),
             dh_rxn: JPerKg::ZERO,
         })
+    }
+}
+
+#[cfg(test)]
+mod constant_thermo_tests {
+    use super::*;
+    use refinery_core::components::Slate;
+    use refinery_core::units::Kelvin;
+
+    /// The fidelity fourteen of the fifteen shipped plants select has no bubble
+    /// pressure, and refuses with the variant that means "this configuration
+    /// cannot answer".
+    ///
+    /// **The variant is the assertion.** `SimError::Scenario` is what the
+    /// engine's cavitation pass reads as "no criterion at this node"; any other
+    /// variant fails the tick. A refusal that returned `Numerical` here would
+    /// stop every `thermo = "constant"` plant in the corpus from ticking
+    /// (docs/DESIGN.md §13, "Corrections from building it").
+    #[test]
+    fn the_constant_fidelity_refuses_a_bubble_pressure_as_a_scenario_error() {
+        let slate = Slate::water_only();
+        let err = ConstantThermo
+            .bubble_pressure(&slate, &Composition::pure(slate.len(), 0), Kelvin(300.0))
+            .expect_err("constant-property water has no vapour-liquid equilibrium");
+        assert!(
+            matches!(err, SimError::Scenario(_)),
+            "must refuse as `Scenario`, the variant the engine reads as 'no criterion': {err}"
+        );
     }
 }

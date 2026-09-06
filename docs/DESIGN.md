@@ -7229,3 +7229,155 @@ plant and a frontend has something to draw both states from.
   would give the criterion twelve more subject nodes and move no physics — but it
   would move the regression anchor of every one of them, for a signal nothing
   reads. Un-defers with a frontend that reads it.
+
+#### Corrections from building it (M11.1, landed)
+
+The note's seven forks all survived; three of them were **underspecified in a way
+that only shows up when something has to compile**, and one gate had to be
+rewritten because the form the note gave it could not fail.
+
+##### 1. The note never said what happens to the OTHER kind of error
+
+Fork 3 says a model with no vapour–liquid equilibrium returns an `Err`, and fork
+5 says the snapshot reports `None` there. Neither says what the engine does with
+an `Err` that means something *else* — a non-finite temperature, a composition
+the slate cannot interpret. Swallowing every error would turn a genuine fault
+into a silent "no criterion", which is the failure fork 5 spends a paragraph
+forbidding one level up.
+
+**The variant carries it.** `ConstantThermo` already refused `k_value` with
+`SimError::Scenario`, and `TroutonThermo`'s state guard already used
+`Numerical`/`NonFiniteState`, so the distinction existed before this slice needed
+it. The tick pass reads `Scenario` as "this configuration cannot answer" and
+reports nothing; every other variant propagates and fails the tick. That is
+`SimError::AnchoringUnsettled`'s own precedent — a caller that must accept one
+outcome needs to tell it apart from an ordinary failure, and a substring of a
+human-readable message is not something to gate on.
+
+It has a consequence worth recording: **the test stub in `core`'s own
+`energy.rs` was refusing with `Numerical`**, and left alone it would have made a
+sweep test fail a tick rather than report nothing. Three of the six
+`ThermoModel` implementations in this workspace are test stubs, and adding a
+method to a trait means deciding what each of them *means*, not just what makes
+them compile.
+
+##### 2. Fork 5 was silent on tick 0, and the tempting answer is the forbidden one
+
+`pressure_pa` is NaN before the first solve and `NodeStates` is empty, so there
+is nothing to compare and nothing to evaluate at. The reflex is to report
+`Some` with a NaN bubble pressure, matching `pressure_pa`'s convention — and a
+NaN bubble pressure is a number no model produced, which is exactly what rule 5
+forbids handing out. **`None` before the first tick**, decided and written on the
+field rather than discovered. `dissipation_w` reports NaN there and this reports
+absence, and the difference is that one of them is a *quantity that exists and
+is not yet known* while the other is *a verdict nobody has made*.
+
+##### 3. Gate 4 was specified in a form that cannot fail, and its run length was wrong
+
+The note calls gate 4 "the strongest gate available" because it is asserted on a
+plant already in the state, and then specifies the assertion as "the tank must
+report **no signal**". Two things were wrong with that.
+
+**The assertion has to be on the `Option`, not the verdict.**
+`cavitating == false` is what a *broken* exclusion reports for a tank that is not
+boiling — so a gate in that form passes whether the node-kind clause works or
+not. Only `is_none()` distinguishes "excluded" from "included and healthy". That
+is the `None`-versus-`false` distinction fork 5 argues for a whole paragraph, and
+the gate that depends on it did not name it.
+
+**And the plant is not in the state when the note assumed it was.** The M10
+close-out reported `crude_column_cascade`'s naphtha tank at 0.940× "hovering on
+the line"; measured tick by tick, it is **above** its bubble point for the first
+1 826 ticks and only then crosses — 3.99× at tick 1, 1.69× at tick 400, 0.957×
+at tick 2500. A gate running 400 ticks would have been asserting an exclusion on
+a tank that was not boiling, which is the same vacuity in a second dress. The
+gate runs 2 500 ticks and **asserts the control first**: it computes the tank's
+bubble pressure itself and refuses to proceed unless the margin is below 1.
+
+The control has to be computed rather than read, and that is a general property
+of an exclusion: **an excluded node publishes nothing, so there is no way to show
+the exclusion is doing work except to evaluate the criterion independently and
+find that it would have fired.**
+
+##### 4. The demo has no holdup anywhere, which fork 7 did not require
+
+Fork 7 asks for a light hydrocarbon, an interior operating point and a healthy
+node in the same file. Building it added a fourth constraint that the note should
+have derived: **a hot naphtha in a vented tank is B3's two-phase inventory**, and
+a demo built the obvious way — a rundown tank feeding a pump — would have shipped
+a plant sitting in the state the exclusion exists to keep out of this milestone.
+`cavitating_pump.toml` is a source, a junction, a pump, a valve and a sink, so
+its only sub-bubble-point node is on the flow path. It is also steady from tick 1,
+which is what makes "interior for the whole run" a property of the plant rather
+than of the run length.
+
+The mechanism is the one §3's paragraph describes and B1's fixture uses: the pump
+is 25 m above its supply. The numbers are chosen against the correlation rather
+than tuned — at 110 °C the mixture's bubble pressure is 1.829 bar, the header
+sits at 3.0 bar (1.64×), the pump at 1.27 bar (0.70×) and the discharge valve at
+3.95 bar (2.16×).
+
+##### 5. What the anchor gate can and cannot buy, stated where it is used
+
+Gate 1 (`P_bub = P_ATM` for a pure cut at its own `tb`) is exact for any Trouton
+constant, and therefore — DESIGN §5 correction 4 again — structurally blind to a
+wrong one. The note says to reuse `tests/reference/vapour_pressure.rs` for the
+magnitude half, and building it made the *mechanism* of that reuse explicit: the
+tie is an **exactness identity**, that a pure liquid's bubble pressure IS that
+component's vapour pressure, asserted to `1e-15` across the whole validity range
+and at three different constants. Only because the two are the same number to the
+ULP does the existing envelope grade the new method rather than something near
+it. The envelope is then restated on `bubble_pressure` itself, so a reader asking
+"is the number the cavitation signal compares against any good?" finds the answer
+under that name.
+
+##### 6. What did not change, measured
+
+Every prediction in "What must not change" held. **Fourteen of the fifteen
+pre-M11 plants are byte-identical on both fidelities**, and
+`crude_column_cascade` moved — by exactly one key on exactly one node, verified
+M8.5's way rather than predicted: 60 snapshots, 60 `cavitation` keys, and
+stripping them reproduces the before-file byte for byte (276 626 bytes either
+side). **No solver iteration count moved anywhere**, on either fidelity. Wall
+time on the cascade is unchanged within noise — 320.3 ms before against 330.5 ms
+after, paired A/B/A/B in one session, against a control-plant spread of ±15% in
+the same runs — which is what a criterion costing five `exp` calls per tick
+should look like beside a stage cascade. `measure`, `Controller`, both
+`FlowSolver`s and `network.rs` are untouched.
+
+##### 7. The mutation pass, against the predictions
+
+All eight edits compiled, and **the six the note predicted caught were caught,
+each by the gate the note named and by nothing that was not expected**:
+
+| edit | caught by |
+|---|---|
+| mass fractions where mole are needed | the `solvers` unit test and the demo's hand calc — the two written for it |
+| the node-kind filter widened to holdups | **gate 4 alone** |
+| the filter narrowed to B1's four names | **gate 4's furnace half alone** |
+| `bubble_pressure` answering `Ok(0.0)` instead of refusing | the `ConstantThermo` unit test and the whole-plant silence gate |
+| the comparison made against `P_ATM` | three gates: the drift check, the wire form, and the cascade's furnace |
+| the gas-phase exclusion dropped | its fixture gate alone — **the shipped corpus could not have caught it**, because every gas plant refuses one step earlier |
+
+Two edits changed nothing, and only one of them was predicted.
+
+**`<` widened to `<=` is uncaught, as the note said in advance.** Exact equality
+between a solved pressure and a bubble pressure is measure-zero, and a fixture
+built to land on it would be fitted to the arithmetic rather than to the physics.
+
+**Swallowing every error variant is uncaught, and the note could not have
+predicted it** — the decision it breaks (correction 1) was made while building,
+after the note was written. That is the mutation pass doing its actual job:
+finding the guard that no test defends because no *loadable* plant can reach it.
+The scenario format selects a thermo model by name and both selectable models
+either answer or refuse with `Scenario`, so the "every other variant fails the
+tick" arm was a branch that compiled, was cited in a design note as satisfying
+rule 5, and had never once run. `solvers/tests/cavitation_contract.rs` closes it
+with a stub pair — one refusing with `Numerical`, one with `Scenario`, on the same
+hand-built plant — which is `separation_contract.rs`'s shape and exists for
+exactly the same reason.
+
+**The general form, and it is the third time this project has hit it**: a
+decision made *while building* has no gate unless someone writes one, because the
+gate list was drawn up against the note. Read the diff for decisions the note does
+not contain, and mutate those too.

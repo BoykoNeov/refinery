@@ -4730,3 +4730,84 @@ hydrocarbon rather than water, because `TroutonThermo`'s own doc says the
 correlation overstates water's vapour pressure by ~60% at 50 °C while being good
 to ~10% over the reference hydrocarbon's range — and because on a naphtha §3's
 old marker is **nine bar** late instead of 0.58 m of lift late.
+
+### M11.1 — the trait method, the criterion, the signal and the demo — **LANDED** 2026-09-06
+
+`ThermoModel::bubble_pressure`, a per-tick evaluation in `Engine::tick`,
+`NodeSnapshot::cavitation`, `scenarios/cavitating_pump.toml`, and eight gates.
+The design note is DESIGN §13; its corrections are in the same section under
+"Corrections from building it". **Seven things to know.**
+
+**All seven forks survived, and three of them were underspecified in a way that
+only shows up when something has to compile.** The note says a model with no
+vapour–liquid equilibrium returns an `Err` and the snapshot reports `None` there
+— and never says what happens to an `Err` that means something *else*. Swallowing
+every error would turn a real fault into a silent "no criterion", which is the
+failure the note forbids one level up. **The variant carries it**: `Scenario`
+means "this configuration cannot answer" and reports nothing, every other variant
+propagates and fails the tick. The distinction already existed
+(`ConstantThermo::k_value` refused with `Scenario`, `TroutonThermo`'s state guard
+used `Numerical`) and it is `SimError::AnchoringUnsettled`'s own precedent. It
+had a consequence: **the test stub inside `core`'s `energy.rs` refused with
+`Numerical`**, and left alone would have made a sweep test fail a tick rather
+than report nothing. Three of this workspace's six `ThermoModel` impls are test
+stubs, and adding a trait method means deciding what each of them *means*.
+
+**Fork 5 was silent about tick 0, and the tempting answer is the forbidden one.**
+There is no solved pressure and no resolved temperature before the first tick, so
+the reflex is `Some` with a NaN bubble pressure — matching `pressure_pa`'s own
+convention, and handing out a number no model produced. It reports `None`. The
+difference: `dissipation_w`'s NaN is a quantity that exists and is not yet known;
+a verdict nobody has made is not a quantity at all.
+
+**Gate 4 was specified in a form that cannot fail, and its plant was not in the
+state the note assumed.** The note calls it "the strongest gate available" and
+then specifies "the tank must report no signal" — but `cavitating == false` is
+what a *broken* exclusion reports for a tank that is not boiling, so the gate
+passes either way unless it is asserted on the `Option`. And the tank is not
+boiling when the note assumed: measured tick by tick,
+`crude_column_cascade`'s naphtha tank is **above** its bubble point for the first
+**1 826 ticks** (3.99× at tick 1, 1.69× at tick 400) and only then crosses. The
+M10 close-out's "0.940×, hovering on the line" is the worst tick of a 6 000-tick
+run, not the plant's condition. The gate runs 2 500 ticks and computes the tank's
+margin itself as a control before asserting anything — which an exclusion always
+forces, because **an excluded node publishes nothing, so the only way to show the
+exclusion is doing work is to evaluate the criterion independently and find that
+it would have fired.**
+
+**The demo has no holdup anywhere, and fork 7 did not ask for that.** Built the
+obvious way — a hot rundown tank feeding a pump — the demo would have shipped a
+plant sitting in B3's two-phase-inventory state, which is precisely what the
+node-kind exclusion exists to keep out of this milestone.
+`scenarios/cavitating_pump.toml` is a source, a junction, a pump, a valve and a
+sink, so its only sub-bubble-point node is on the flow path, and it is steady from
+tick 1 — which makes "interior for the whole run" a property of the plant rather
+than of the run length. Its numbers come from the correlation rather than from
+tuning: at 110 °C the 70/30 naphtha mixture bubbles at **1.829 bar**, the header
+sits at 3.00 bar (1.64×), the pump at **1.27 bar (0.70×, boiling)** and the
+discharge valve at 3.95 bar (2.16×).
+
+**The pump boils at 1.27 bar, which is the whole point.** §3's old marker — read
+a *negative* absolute pressure as cavitating — is silent there and would stay
+silent for another 1.8 bar of descent. That is the milestone's headline gate, and
+both halves are asserted, because "cavitating at a negative pressure" is a
+rediscovery of §3's marker and "positive and silent" is every other plant in the
+corpus.
+
+**What must not change did not.** Fourteen of the fifteen pre-M11 plants are
+byte-identical on both fidelities; `crude_column_cascade` moved by **exactly one
+key on exactly one node**, verified M8.5's way rather than predicted — 60
+snapshots, 60 `cavitation` keys, and stripping them reproduces the before-file
+byte for byte (276 626 bytes either side). No solver iteration count moved
+anywhere. Wall time on the cascade is unchanged within noise (320.3 ms before,
+330.5 ms after, paired A/B/A/B in one session against a ±15% control spread),
+which is what five `exp` calls per tick should look like beside a stage cascade.
+**From here, "runs byte-identical" means post-M11 identical, and
+`crude_column_cascade` carries one extra key.**
+
+**The criterion is a signal and the engine still does nothing about it.** A
+cavitating pump delivers its full head, and the snapshot says the plant is
+boiling while the flow says it is not. That disagreement is deliberate, named,
+and cheaper than the alternative: a clamp would make a converged solve stop
+conserving, because the vapour it would account for is mass in a phase the state
+vector does not have (B3).

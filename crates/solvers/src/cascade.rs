@@ -1668,6 +1668,15 @@ mod tests {
         ) -> Result<JPerMol, SimError> {
             self.inner.dh_vap(slate, component, temperature)
         }
+
+        fn bubble_pressure(
+            &self,
+            slate: &Slate,
+            composition: &refinery_core::components::Composition,
+            temperature: Kelvin,
+        ) -> Result<Pascal, SimError> {
+            self.inner.bubble_pressure(slate, composition, temperature)
+        }
     }
 
     /// `Σ K·x = 1` has a closed form under this fixture's thermo, so the search

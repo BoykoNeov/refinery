@@ -307,6 +307,18 @@ mod tests {
                 // here to satisfy the trait, not to be reached.
                 Err(SimError::Numerical("the broken stub has no Δh_vap".into()))
             }
+            fn bubble_pressure(
+                &self,
+                _slate: &Slate,
+                _composition: &refinery_core::components::Composition,
+                _temperature: Kelvin,
+            ) -> Result<Pascal, SimError> {
+                // Same: this stub exists to hand `flash_isothermal` a nonsense
+                // K, and a flash never asks for a bubble pressure.
+                Err(SimError::Numerical(
+                    "the broken stub has no bubble pressure".into(),
+                ))
+            }
         }
 
         let s = slate(2);

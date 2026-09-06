@@ -173,6 +173,57 @@ pub trait ThermoModel: Send {
         temperature: Kelvin,
     ) -> Result<JPerMol, SimError>;
 
+    /// The **bubble pressure** of a liquid mixture at `temperature` [Pa]: the
+    /// pressure at which the first bubble comes out of a liquid of this
+    /// composition, and therefore the pressure below which that liquid is
+    /// boiling (docs/DESIGN.md §13).
+    ///
+    /// `composition` is MASS fractions, like every `Composition` in this
+    /// workspace; a model needing mole fractions converts at its own boundary
+    /// (§5 fork 1). Nothing here is a graph quantity — this is a property
+    /// lookup, the shape `k_value` and `dh_vap` already have.
+    ///
+    /// **Why a method rather than `P·Σ x_c·K_c(T, P)` at the call site.** That
+    /// identity is exact — and exact only for a model whose `K` is inversely
+    /// proportional to pressure, which is Raoult's law and a property of
+    /// `TroutonThermo` rather than of this trait. Writing it into `core` would
+    /// put a model assumption in `core` as plainly as a fidelity `if` would
+    /// (CLAUDE.md rule 2), and it would silently return the wrong number for any
+    /// future `K` that is not `Psat/P`. It also needs mole fractions, which
+    /// `docs/DEFERRED.md` A13 keeps in `solvers`.
+    ///
+    /// **A closed form, unlike the bubble TEMPERATURE.** `Σ K_c(T)·x_c = 1`
+    /// solved for `T` is a root find that cost M9.3a a whole slice; solved for
+    /// `P` it is a weighted sum. That is what makes a per-tick criterion
+    /// affordable (§13 fork 2).
+    ///
+    /// # Errors
+    /// Two kinds, and a caller must tell them apart (§13, "Corrections from
+    /// building it"):
+    /// - **`SimError::Scenario` — this fidelity has no vapour–liquid
+    ///   equilibrium**, so there is no bubble pressure to give. A legitimate
+    ///   configuration: every plant on `thermo = "constant"` is in it. The
+    ///   engine reads it as "no criterion at this node" and reports nothing,
+    ///   exactly as it reports no `column_duty` for a fidelity with no
+    ///   condenser.
+    /// - **Every other variant — a genuine fault** (a non-positive or
+    ///   non-finite temperature, a composition the slate cannot interpret).
+    ///   It propagates and fails the tick, per rule 5.
+    ///
+    /// This is the same distinction `SimError::AnchoringUnsettled` exists for,
+    /// and it is a variant rather than a substring for the same reason.
+    ///
+    /// A model that is HANDED its K-values refuses too, and for a sharper
+    /// reason than "it has no correlation": if `K` does not depend on pressure
+    /// then `P·Σ x·K` depends on which `P` it is evaluated at, so there is no
+    /// bubble pressure to return.
+    fn bubble_pressure(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        temperature: Kelvin,
+    ) -> Result<Pascal, SimError>;
+
     // Density/cp currently live on Composition (ideal mixing). This trait
     // takes over when non-ideal or T-dependent behavior arrives, at which
     // point Composition's mixture_* helpers delegate here.
