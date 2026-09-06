@@ -178,7 +178,9 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M10 is OPEN, and its scope is the second controlled variable.** It is the first
+**M10 is OPEN, and its scope is the second controlled variable.** Pressure is
+built (M10.0 + M10.1, both landed 2026-09-06); whether temperature and flow follow
+is the open question, and neither is committed to. It is the first
 milestone chosen from `docs/DEFERRED.md` rather than handed over as a defect. E1
 — pressure control — is the row; the milestone is scoped one step wider on
 purpose, because everything the note argues is machinery the *second* variable
@@ -221,6 +223,79 @@ own trigger (DEFERRED E7) rather than smuggled in as a negative gain. The demo
 also carries **no PSV** (a shut relief valve is the dead-end shape behind A3) and
 its vent must be sized to sit interior at steady state, or the milestone repeats
 M8.4's coverage gap where the wired loop never reached its own saturation arm.
+
+**M10.1 landed 2026-09-06** — the measured variable, the vessel arm, the two
+config keys and the demo plant. The design note is DESIGN §12, "Corrections from
+building it". Seven things to know.
+
+**The seam held, and it held wider than M8 claimed it would.** M8.2 built the
+control machinery with one variable in it and asserted it was variable-agnostic.
+Not one line of `Engine::run_control_loops` changed — and neither did the
+`Controller` trait, either controller implementation, `ControlLoop`, `ControlMode`,
+`ControlSnapshot` or `Snapshot`. The whole milestone is two enum arms, four match
+arms, two scenario keys and a demo. This project's record is that about half its
+predictions are wrong; this one was right, and saying so is part of the record.
+
+**What did NOT hold is one level down: `ControlledValue::error` became unsound and
+fork 6 did not name it.** Its doc read "both arguments are the same type by
+construction, so a level measurement cannot be differenced against a pressure
+setpoint" — **a property of there being ONE variant, not of the type.** With two,
+`error(Pressure{5e5}, Level{4.0})` returns a plausible `499996.0`, metres
+subtracted from Pascals. It now returns `NaN`, which the engine's existing
+finite-output check turns into a diagnosed error. The wider lesson: **a safety
+argument resting on a type having one inhabitant expires silently, because the
+code does not change.** It also showed the `SetSetpoint` variable guard is
+load-bearing rather than cosmetic — it and the tick pass's `setpoint.variable()`
+are what keep `error` sound.
+
+**The setpoint's `×1e5` and the gain's `÷1e5` are resolved at ONE site, above the
+algorithm match, and that placement is the fix rather than tidiness.** Both `"p"`
+and `"pi"` need a gain, so following the existing per-arm shape would have put the
+conversion at two sites. Measured: converting one without the other fires no
+solver, mass or energy test — the loop stays stable, merely mistuned by five
+orders — but it does move the settled operating point, so the demo gates catch it
+too. The note's "gate 3 and nothing else" was wrong in the "nothing else" clause.
+
+**Fork 5's reason for expecting a cheap plant is FALSE, and it corrects ledger row
+A3.** The fork predicted the demo would avoid `relief_blowdown`'s 920
+game-fidelity sweeps because a controlled vent conducts, so its node is not a dead
+end. The vent conducts 0.4987 kg/s and the first draft still took **741 sweeps**.
+With only the vent line's geometry changed: 2 m × 0.10 m → 741, 5 m × 0.06 m → 34,
+the shipped 10 m × 0.05 m → 13. **Dead-endedness is not the mechanism; the
+branch's conductance against the vessel's capacitance is.** The shipped geometry
+was chosen on gas velocity (20.8 m/s against the placeholder's oversized 5.2), not
+to fix this — the sweep count is the consequence, recorded.
+
+**A byte-identity baseline has NO power over the file the slice adds, and that is
+how the sharpest mutation escaped.** Giving the new `ControlledValue` variant the
+same serde tag as the old one moves **zero** corpus rows on both fidelities and
+passes the entire test suite, because the only plant whose bytes change is the one
+that is new in the same slice and has no baseline row. The demo then reports
+`{"variable":"level","pa":2000000.0}`. Tagging the *existing* variant is caught,
+and that is the edit §12's prose describes while its mutation table lists the
+other. A wire-form gate now closes it, asserted on the serialized bytes because a
+Rust match on `ControlledValue::Pressure { .. }` passes under any tag.
+
+**An identity carried across from another node kind is a hypothesis about that
+kind's state vector.** M8.5 measured a tank's pressure and mass "one Euler step
+apart"; gate 2 carried that across and FAILED. On a vessel the exact identity is
+on the MASS, because `C = V·M̄/(R·T)` is itself a function of a state that moved —
+the receiver heats as it fills and the pressures miss by 653.6 Pa, 4.078e-4
+relative, **which is exactly `ΔT/T`**. Dividing the temperature out restores it to
+1.2e-7. A tank's capacitance analogue is geometry; a vessel's is a state.
+
+**One of the five specified mutations is not expressible**, and the demo's
+counterfactual came out differently from M8.4's. "`measure` reads the solved
+pressure" cannot be written — `last_solution` is private to `Engine` and `measure`
+takes `&self` on the graph — so gate 1's `NaN` half defends a fault the module
+boundary already prevents (fourth time in this project a specified gate had no
+power over its own subject). And a parked pressure loop does not run away the way
+a parked level loop did: a vent's flow rises with the vessel's own pressure, a far
+stiffer feedback than `ρgh`, so it **settles at the wrong number** — 25.197 bar
+against the loop's 20.000. The demo's gain bound is also two-sided, unlike M8.4's:
+the vent settles interior at 0.558224, so `0.5582` reaches 0 on a one-bar step up
+and `0.4418` reaches 1 on a step down. **From here, "runs byte-identical" is
+unchanged — all fourteen pre-M10 plants are identical on both fidelities.**
 
 **M9 is CLOSED (2026-09-06), and its scope was solver robustness.** It opened the
 way M8 did — with a defect the previous milestone reached and deliberately did not

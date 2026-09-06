@@ -6483,3 +6483,250 @@ record is that roughly half of them are wrong.
   own measurement path argued, which is the shape this note has now walked once.
 - **Actuators other than a valve opening.** Pump speed and duty are still refused
   by name, unchanged from M8.
+
+### Corrections from building it (M10.1, landed)
+
+Nine things the note got wrong or left unsaid, in the order they bit.
+
+#### The one prediction that held exactly: `run_control_loops` is unchanged
+
+M8.2 built the control seam with one variable in it and claimed it was
+variable-agnostic. **It was.** The tick pass already read
+
+```rust
+self.graph.measure(&self.slate, control.measurement_node, control.setpoint.variable())
+```
+
+and that line reads a vessel's pressure without knowing it did anything new. Not
+one line of `Engine::run_control_loops` changed in this milestone, and neither
+did `Controller`, `ProportionalController`, `PiController`, `ControlLoop`,
+`ControlMode`, `ControlSnapshot` or `Snapshot`. The whole of M10.1 is two new
+enum arms, four new match arms, two scenario keys and a demo.
+
+That is worth stating plainly because this project's record with predictions is
+that about half are wrong, and the temptation on the other half is to say nothing.
+The seam held; the thing that did NOT hold is one level down, in the type the seam
+carries.
+
+#### `ControlledValue::error` became unsound, and fork 6 did not name it
+
+Fork 6 lists the refusals a second variant makes reachable: the two cross-variable
+scenario keys, and the `Command::SetSetpoint` guard `ControlledValue`'s own doc
+promised. It does not name the method that actually does the arithmetic:
+
+```rust
+pub fn error(measurement: Self, setpoint: Self) -> f64 {
+    measurement.magnitude() - setpoint.magnitude()
+}
+```
+
+whose doc ended "both arguments are the same type by construction, so a level
+measurement cannot be differenced against a pressure setpoint". **That sentence
+was a property of there being one variant, not of the type**, and with two,
+`error(Pressure { pa: 5e5 }, Level { m: 4.0 })` returns a plausible `499996.0`
+— metres subtracted from Pascals, silently.
+
+The fix is a `NaN` on a mismatch, which the engine's existing
+`!output.is_finite()` check turns into a diagnosed `SimError::Numerical` naming
+the loop, one call later. But the more useful part is what it revealed about the
+`SetSetpoint` guard: that guard is not a cosmetic refusal about faceplates. It and
+the tick pass's `setpoint.variable()` are **the two things that keep `error`
+sound**, and the `NaN` is only the backstop behind them. Fork 6 asked for the
+guard as a courtesy to the reader; it is load-bearing.
+
+The general form, and it is the third time this project has hit it: **a safety
+argument that rests on a type having one inhabitant expires when the type gets a
+second one, and it expires silently, because the code does not change.** M8.2's
+own doc caught this for the command surface and named its expiry. Nobody wrote the
+same note over `error`, four lines below.
+
+#### The gain resolution had to be hoisted, and the note's "one site" is why
+
+Fork 3's whole defence against the factor of 100 000 is that the setpoint's `×1e5`
+and the gain's `÷1e5` are written as one pair a reader sees together. `build_controls`
+fetched the gain **inside each algorithm arm** — once under `"p"` and once under
+`"pi"` — so following the existing shape would have put the conversion at two
+sites and reopened the trap for whoever adds the third algorithm. Both are now
+resolved above `match def.algorithm.as_str()`, and the arms consume the result.
+
+This is a case where the safe edit was the one that changed MORE code than the
+feature needed. The minimal diff was two more `require_keyed` calls.
+
+#### Fork 5's reason for expecting a cheap plant is FALSE, and it corrects A3
+
+Fork 5 predicted the demo would avoid `relief_blowdown`'s 920 game-fidelity sweeps
+because "the controlled vent conducts at steady state, so its node is not a dead
+end". The vent does conduct — 0.4987 kg/s at the settled state, a real flow, no
+dead end anywhere in the plant. **The first draft of the file, with a 2 m × 0.10 m
+vent line, took 741 sweeps.**
+
+So dead-endedness is not what drives that cost. Measured, on the same plant with
+only the vent line's geometry changed:
+
+| vent line | worst sweeps, game fidelity | per-decile worst |
+|---|---|---|
+| 2 m × 0.10 m | **741** | 741, 298, 297, 286, 269, 249, 228, 206, 184, 161 |
+| 5 m × 0.06 m (`psv_inlet`'s) | 34 | 34, 14, 14, 13, 13, 12, 11, 10, 9, 8 |
+| 10 m × 0.05 m (shipped) | **13** | 13, 6, 6, 6, 5, 5, 4, 4, 4, 3 |
+
+The mechanism is the one `psv_inlet`'s own comment describes — the vessel's
+Gauss–Seidel diagonal dominated by a fat branch, so each sweep moves the vessel by
+almost nothing — but **the branch does not have to be carrying nothing** for it to
+happen. `relief_blowdown`'s comment says "a branch carrying no net flow"; the flow
+is incidental and the conductance is the whole of it. Ledger row A3 states the
+dead end as the mechanism and is corrected.
+
+Two further readings, because the profile above is the interesting part. The
+sweep count **falls monotonically as the vent opens** (741 → 161 across the run,
+while the opening goes 0.30 → 0.5582), so it is not monotone in total path
+conductance: narrowing the pipe helps AND opening the valve helps. And the
+geometry that shipped was **not chosen to fix this**. It was chosen on gas
+velocity — 0.4987 kg/s at 12.214 kg/m³ through 0.05 m is 20.8 m/s, an ordinary gas
+line, where the placeholder 0.10 m gave 5.2 m/s and was simply oversized. The
+sweep count is the consequence, recorded; had the two disagreed, the velocity
+would still have won and the cost would have been reported.
+
+#### Gate 2's "one Euler step apart" is too simple on a vessel, and the first draft failed
+
+M8.5 measured a tank's snapshot pressure and its mass one Euler step apart, 0.67
+Pa and 8.6e-6 relative, and gate 2 was specified by carrying that reading across.
+Written out, the vessel version looked like an exact identity: the solve closes
+`C·(P − Pⁿ)/dt = Σṁ` and the integrator advances the mass with the same flows, so
+`mⁿ⁺¹ = C·P_solved` and therefore `mⁿ⁺¹/C = P_solved`.
+
+**The mass half is exact. The pressure half is not, because `C` is itself a
+function of a state that moved.** `C = V·M̄/(R·T)`, the receiver heats as it fills,
+and `m/C` is re-evaluated at the new temperature. Measured at tick 101: the loop
+reads 1 603 637.7305 Pa against the tick-100 solve's 1 602 984.0865 Pa, **653.6441
+Pa apart, 4.078e-4 relative** — and `ΔT/T` over that tick is 0.1308 K on 320.8531
+K, which is **4.077e-4**. The residual is the temperature term to four figures.
+
+So the gate divides it out. `P/T` is proportional to the mass alone, and the
+assertion is that the loop's `P/T` at tick N+1 is the solve's `P/T` at tick N —
+which holds to 1.2e-7, against the 1.2e-3 a `measure` reading the solved pressure
+would produce. Four orders of separation, where the undivided form had none.
+
+The habit this is an instance of: **an identity carried across from another node
+kind is a hypothesis about that kind's state vector.** A tank's capacitance
+analogue is its area, which is geometry; a vessel's is a function of temperature,
+which is a state. The two look the same in the balance equation and are not.
+
+#### One of the five specified mutations is NOT EXPRESSIBLE
+
+The note asks for "`measure` reads the solved pressure instead of the stored one",
+predicted caught by gate 1's `NaN` half. **That edit cannot be written.**
+`last_solution` is a private field on `Engine`; `PlantGraph::measure` takes `&self`
+on the *graph*, which holds nodes, couplings and control loops and has no path to a
+solve at all. The fault gate 1 defends is prevented by the module boundary, not by
+the gate.
+
+That is a real result rather than a technicality, and it cuts both ways. Gate 1's
+`NaN` half is genuinely weaker than the note claims — it cannot fail for the reason
+it was written for. What it still does is pin the *observable*: if anyone ever
+threads solved state into `measure` (by widening the signature, which is the only
+way in), the tick-0 assertion is what stops it landing quietly. The nearest
+expressible substitute was run instead — `measure` returning a `NaN` pressure — and
+its result is in the table below.
+
+This is the fourth time in this project a specified gate or mutation turned out to
+have no power over its own subject (M7.4b's duty gate, M7.4c's cascade balance,
+M9.2's vessel gate, and now this). The common shape: **the note reasons about what
+the code should check, and does not check what the code can reach.**
+
+#### The demo's counterfactual came out differently from M8.4's, and the difference is physical
+
+M8.4's parked level loop ran to the tank's roof, and that gate could assert
+divergence. A parked pressure loop does not diverge: a vent's flow rises with the
+vessel's own pressure, which is a far stiffer feedback than a tank's `ρgh`, so the
+manual run **settles** — at 25.197 bar, against the loop's 20.000. So the gate
+asserts a wrong equilibrium rather than a runaway: five bar apart, with the auto
+run holding its setpoint to six figures.
+
+Worth keeping because the reflex is to reuse the previous demo's assertion. "The
+parked plant runs away" is a property of how weakly that particular plant
+self-regulates, not of what a control loop is for.
+
+#### The gain bound is two-sided here, and the bound is not the clamp
+
+M8.4's level demo had one gain bound: its drain settled at 0.376 and its setpoint
+was only ever stepped up, so only the lower clamp was reachable. This plant's vent
+settles **interior at 0.558224**, so a one-bar setpoint step moves the output by
+`gain_per_bar` in either direction and there are two bounds — `0.5582` reaches 0 on
+a step up, `0.4418` reaches 1 on a step down. The shipped `0.10` has a factor of
+four of margin either way, and both neighbours are run, because a margin claim with
+only the passing side measured is not a margin claim.
+
+The second correction is smaller and cost a test run. **A gain of exactly the
+settled opening lands the output ON zero without engaging the clamp** — measured
+`3.4e-10`, not `0.0`, because the loop is still that far from its own fixed point
+after 20 000 ticks. The bound and the clamp are two claims: the arithmetic is
+asserted at the bound, and the clamp ten percent past it, where it engages exactly.
+
+#### M8.2's unknown-variable test case expired, exactly as its algorithm twin did
+
+`a_control_table_is_refused_where_fork_5_says_it_must_be` used
+`variable = "pressure"` as its stand-in for "a variable the loader does not know".
+It now names a variable the loader knows and refuses for a measured reason of its
+own, so the case moved to `"temperature"` — the same move M8.3 made when `"pi"`
+stopped being a good stand-in for an unknown algorithm and the case became `"pid"`.
+
+Two of these in three milestones is a pattern worth naming: **a refusal test
+written against "the next thing that does not exist yet" has a shelf life, and the
+slice that implements that thing is the one that owes the replacement.** The test
+does not fail loudly on its own terms — it failed here only because the new
+refusal's message says something different.
+
+### The mutation pass, against the predictions (M10.1, landed)
+
+Eight edits — the five the note named, plus the two guards this slice added, plus
+the split of the fifth into the two directions it turned out to be. **Three of the
+six predictions were wrong**, which is this project's usual rate.
+
+| # | edit | predicted | measured |
+|---|---|---|---|
+| 1a | the setpoint's `×1e5` dropped, the gain's `÷1e5` kept | gate 3, and nothing else | **caught by 7**, gate 3 among them |
+| 1b | the gain's `÷1e5` dropped, the setpoint's kept | gate 3, and nothing else | **caught by 7**, gate 3 among them |
+| 2 | `measure` reads the solved pressure | gate 1's `NaN` half, and gate 2 | **not expressible** — see below. The nearest substitute (a `NaN` measurement) is caught by 12 |
+| 3 | `Tank` accepted for `variable = "pressure"` | the refusal sweep only | **caught by exactly 1** — the refusal sweep |
+| 4 | the vent rewired as an INLET of the receiver | the demo's control that the pressure moves; no convergence gate | **caught by 4**, all of them demo gates; no convergence or conservation test fired |
+| 5a | the NEW variant tagged `"level"` | the byte-identity check | ***UNCAUGHT* by everything**, until this slice added a gate for it |
+| 5b | the EXISTING variant tagged `"pressure"` | (the prose, not the table) | caught by the corpus, both fidelities, `tank_level_control` moved |
+| 6 | the `SetSetpoint` variable guard dropped | gate 5d | caught by exactly 1 — gate 5d |
+| 7 | `error` subtracts across variables again | gate 5d's backstop half | caught by exactly 1 — gate 5d |
+
+**Prediction 1's "and nothing else" was wrong in both directions, and the reason
+is worth keeping.** The note argued that a factor of 100 000 in the tuning "would
+still be stable, just tuned by a factor of 100 000, which every convergence and
+conservation test tolerates". That half is exactly right — no solver, mass or
+energy test fires. What the note did not account for is that the demo gates pin
+the *settled operating point*, and a loop mistuned by five orders does not settle
+where the file's header says. So gate 3 is not the only thing standing between
+this project and the trap; it is the only thing that **names** it, which is a
+different and smaller claim than the note made.
+
+**Prediction 5 was wrong because a regression anchor cannot see the file the slice
+adds.** Split into its two directions, one is caught and one was invisible:
+
+- tagging the **existing** level variant `"pressure"` moves `tank_level_control`
+  and the corpus exits nonzero on both fidelities. That is what the note's prose
+  describes — "the moment anyone touches the serde representation of the existing
+  variant".
+- tagging the **new** pressure variant `"level"` moves **nothing**: zero rows on
+  both fidelities, and the whole test suite green. The baseline was recorded
+  before the slice, so the only plant whose bytes change is the one that is new in
+  the same slice and therefore has no baseline row. The demo then reports
+  `{"variable":"level","pa":2000000.0}` and a frontend draws a pressure faceplate
+  labelled as a level.
+
+The mutation table listed the second and the prose described the first, and they
+are not the same edit. **The general rule: a byte-identity baseline protects the
+old files and has no power over the new one, so anything a slice ADDS needs an
+assertion of its own.** `the_demo_reports_its_variable_on_the_wire_as_pressure`
+is that assertion, and it had to be written against the serialized bytes — a Rust
+match on `ControlledValue::Pressure { .. }` passes under any tag.
+
+**Predictions 3, 6 and 7 held exactly**, each caught by exactly one test and that
+test the one named. 6 and 7 are caught by the *same* test, which is deliberate:
+gate 5d asserts the refusal and the `NaN` backstop as two assertions in one place,
+because they are two halves of one claim — that nothing subtracts metres from
+Pascals — and separating them would suggest either could stand alone.

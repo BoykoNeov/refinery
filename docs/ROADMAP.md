@@ -4293,13 +4293,13 @@ regrets.
 The rule stands: a design note before any of these, and the note may reject its
 own box. Listed in the order the ledger's distances suggest.
 
-1. **Pressure control** (E1) — **TAKEN, as M10.** The nearest un-defer in
-   `docs/DEFERRED.md`. This entry said `relief_blowdown` "has the vessel and the
-   valve, and lacks only the `ControlledValue` variant"; M10.0 measured that the
-   plant has **no ordinary valve at all**, so it lacks an actuator too and the
-   demo has to be a new file. The other half of the entry held: it is the first
-   loop whose actuator is not a drain, and M10.0 generalised M8.4's rule to "the
-   actuator is an outlet of the measured holdup".
+1. ~~**Pressure control** (E1)~~ — **TAKEN as M10 and CLOSED by M10.1**,
+   2026-09-06. This entry said `relief_blowdown` "has the vessel and the valve,
+   and lacks only the `ControlledValue` variant"; M10.0 measured that the plant
+   has **no ordinary valve at all**, so it lacked an actuator too and the demo is
+   a new file, `scenarios/vessel_pressure_control.toml`. The other half of the
+   entry held: it is the first loop whose actuator is not a drain, and M10.0
+   generalised M8.4's rule to "the actuator is an outlet of the measured holdup".
 2. **A cavitation floor** (B1). The one physical statement in §3 that tells a
    frontend to read a *wrong* number as a signal. Needs its trigger written before
    its note.
@@ -4376,3 +4376,83 @@ The prediction to check rather than argue: adding a `ControlledValue` variant
 leaves every shipped scenario byte-identical, because the enum is serde-tagged
 and no pre-M10 file can select the new variable. `corpus --baseline`, both
 fidelities.
+
+### M10.1 — the measured variable, the vessel arm, the keys, the demo — **LANDED** 2026-09-06
+
+The building slice. `MeasuredVariable::Pressure`, a second `ControlledValue`
+variant, the vessel arm of `PlantGraph::measure` and `check_setpoint`, the
+`setpoint_bar` / `gain_per_bar` pair with both cross-variable refusals,
+`scenarios/vessel_pressure_control.toml`, and fifteen gates across two test files.
+The design note's corrections are DESIGN §12, "Corrections from building it".
+
+- [x] `core`: `MeasuredVariable::Pressure` with `setpoint_key`/`gain_key`;
+      `ControlledValue::Pressure { pa: Pascal }`; the vessel/tank/junction/
+      catch-all arms of `measure`; fork 2's bound in `check_setpoint`;
+      `Command::SetSetpoint`'s variable guard; `ControlledValue::error`'s
+      cross-variable `NaN`
+- [x] `scenarios`: `setpoint_bar`, `gain_per_bar`, the `"pressure"` variable arm,
+      and the setpoint/gain conversion pair hoisted to one site above the
+      algorithm match
+- [x] `scenarios/vessel_pressure_control.toml` — the demo, diffable against
+      `relief_blowdown.toml`
+- [x] Gates: `pressure_control_reference.rs` (10) and `pressure_control_demo.rs` (5)
+- [x] The mutation pass, all eight edits
+
+**The claim M10 exists to test held, and held wider than it was stated.** M8.2
+built the control seam with one variable in it and asserted it was
+variable-agnostic. Not one line of `Engine::run_control_loops` changed — and
+neither did `traits.rs`'s `Controller`, `solvers/src/control.rs`'s two algorithms,
+`ControlLoop`, `ControlMode`, `ControlSnapshot` or `Snapshot`. The whole milestone
+is two enum arms, four match arms, two scenario keys and a demo. Worth stating
+plainly because this project's record is that about half its predictions are
+wrong, and the temptation on the other half is to say nothing.
+
+**What did NOT hold is one level down, in the type the seam carries.**
+`ControlledValue::error` subtracts two magnitudes, and its doc closed with "both
+arguments are the same type by construction, so a level measurement cannot be
+differenced against a pressure setpoint". **That was a property of there being one
+variant, not of the type** — with two, `error(Pressure{5e5}, Level{4.0})` returns a
+plausible `499996.0`, metres subtracted from Pascals. Fork 6 listed the refusals a
+second variant makes reachable and did not name this one. It also revealed that
+the `SetSetpoint` guard fork 6 asked for as a courtesy is **load-bearing**: it and
+the tick pass's `setpoint.variable()` are what keep `error` sound, and the `NaN`
+is only the backstop behind them.
+
+**Fork 5's reason for expecting a cheap plant is false, and it corrects ledger row
+A3.** The fork predicted the demo would avoid `relief_blowdown`'s 920
+game-fidelity sweeps because a controlled vent conducts, so its node is not a dead
+end. The vent conducts 0.4987 kg/s and the first draft of the file still took
+**741 sweeps**. Measured with only the vent line's geometry changed: 2 m × 0.10 m
+→ 741, 5 m × 0.06 m → 34, the shipped 10 m × 0.05 m → 13. **Dead-endedness is not
+the mechanism; the branch's conductance against the vessel's capacitance is**, and
+A3's row states the dead end as the cause. The shipped geometry was chosen on gas
+velocity (20.8 m/s, against the placeholder's oversized 5.2), not to fix this; the
+sweep count is the consequence, recorded.
+
+**Gate 2's identity had to be rewritten after it failed.** M8.5 measured a tank's
+pressure and mass "one Euler step apart" and the gate carried that reading across.
+On a vessel the exact identity is on the MASS, because `C = V·M̄/(R·T)` is itself a
+function of a state that moved: the receiver heats as it fills, and the pressures
+miss by **653.6 Pa, 4.078e-4 relative, which is exactly `ΔT/T`**. The gate divides
+the temperature out — `P/T` is proportional to mass alone — and then holds to
+1.2e-7 against the 1.2e-3 a wrong `measure` produces.
+
+**One of the five specified mutations is not expressible.** "`measure` reads the
+solved pressure instead of the stored one" cannot be written: `last_solution` is
+private to `Engine` and `measure` takes `&self` on the *graph*. The fault gate 1
+defends is prevented by the module boundary, not by the gate. Fourth time in this
+project a specified gate or mutation had no power over its own subject.
+
+**The demo's counterfactual came out differently from M8.4's, and the difference
+is physical.** A parked level loop ran to the tank's roof; a parked pressure loop
+**settles**, at 25.197 bar against the loop's 20.000, because a vent's flow rises
+with the vessel's own pressure and that is a far stiffer feedback than `ρgh`. The
+gate asserts a wrong equilibrium, not a runaway. And the gain bound here is
+**two-sided** — the vent settles interior at 0.558224, so `0.5582` reaches 0 on a
+one-bar step up and `0.4418` reaches 1 on a step down, where M8.4's demo had only
+the lower one.
+
+**The prediction that must not change held exactly.** All fourteen pre-M10 plants
+byte-identical against a baseline recorded before the slice, on both fidelities;
+`vessel_pressure_control` reads "new". Newton worst 9 iterations, game fidelity
+worst 13.

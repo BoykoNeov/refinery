@@ -141,6 +141,46 @@ fn the_demo_moves_its_pressure_and_writes_its_actuator() {
     );
 }
 
+/// **The wire form, and it is here because the mutation pass found nothing else
+/// covering it.**
+///
+/// §12 predicted that giving the second `ControlledValue` variant the same serde
+/// tag as the first would be "caught by the byte-identity prediction". **It is
+/// not.** Measured both ways:
+///
+/// - tagging the EXISTING level variant `"pressure"` moves `tank_level_control`
+///   and the corpus exits nonzero on both fidelities — that is the mutation the
+///   note's prose describes;
+/// - tagging the NEW pressure variant `"level"` moves **nothing**. The corpus
+///   compares against a baseline recorded before this slice, so the only plant
+///   whose bytes change is the one that is new in the same slice and has no
+///   baseline row. Zero rows moved, whole suite green, and the demo then reports
+///   `{"variable":"level","pa":2000000.0}` — a frontend would draw a pressure
+///   faceplate labelled as a level.
+///
+/// The general rule, which is the reason this gate is worth its lines: **a
+/// regression anchor protects the old files and has no power over the file the
+/// slice adds.** Anything new needs an assertion of its own, and for a wire form
+/// that assertion has to be on the SERIALIZED bytes rather than on the enum —
+/// matching `ControlledValue::Pressure { .. }` in Rust passes under any tag.
+#[test]
+fn the_demo_reports_its_variable_on_the_wire_as_pressure() {
+    let engine = build(DEMO);
+    let json = serde_json::to_string(&engine.snapshot()).expect("a snapshot serializes");
+
+    assert!(
+        json.contains(r#""setpoint":{"variable":"pressure","pa":2000000.0}"#),
+        "the loop's setpoint must reach a frontend tagged as a pressure, in Pascals: the snapshot \
+         said {json}"
+    );
+    assert!(
+        !json.contains(r#""variable":"level""#),
+        "nothing on this plant is a level, so no control value may be tagged as one. A second \
+         variant sharing the first's serde tag is invisible to the corpus baseline, because the only \
+         plant it changes is this one"
+    );
+}
+
 // ------------------------------------------------ claim 1: the counterfactual
 
 /// **Claim 1, and it is the gate this file exists for.**
