@@ -200,11 +200,18 @@ deferred.
 **The close-out's own work was `docs/DEFERRED.md` row B1 — the cavitation floor —
 and it falsified the sentence the row rested on.** DESIGN §3 told frontends to
 read *negative absolute node pressure* as "cavitating". A liquid boils below its
-**vapour** pressure, which is positive: the lowest solved pressure in the corpus
-is 120 846.9 Pa on a node whose contents boil at 5 640.6 Pa, so §3's marker sat a
-factor of **21.4 below the physics it claimed to signal** and could never fire
-first. §3 is corrected: **the engine does not detect cavitation and has no signal
-for it.** The row's old distance ("the lowest pressure is 100 000 Pa, so nothing
+**vapour** pressure, which is positive, so §3's marker fires **late by exactly
+that vapour pressure**. Measured on the reference plant with one number changed
+(the pump mounted above its tank): cavitation begins at **17.44 m** of suction
+lift and §3's marker only fires at **18.02 m** — a band in which the plant is
+boiling and reported healthy. It is narrow only because cold water boils at
+5 640.6 Pa; on light naphtha at 445.75 K the same marker would be **nine bar**
+late. §3's *reachability* claim was true and is now measured: 19 m of lift gives
+−9 522.9 Pa with the solver converging and 9.8 kg/s flowing. §3 is corrected:
+**the engine does not detect cavitation and has no signal for it**, and a
+negative pressure is a symptom after the fact, not a criterion. **The first draft
+of this write-up said the marker "can never fire", which was an overstatement
+caught by running the probe instead of reasoning about it.** The row's old distance ("the lowest pressure is 100 000 Pa, so nothing
 is near a vapour pressure") compared a pressure against **zero** while concluding
 something about a vapour pressure it never evaluated — and its 100 000 Pa was a
 *declared sink*, not a solved state. Against each node's own bubble point the
@@ -213,7 +220,9 @@ pressure in the **hydraulic path** (pump, valve, junction, exchanger — not a
 holdup) falling below that node's bubble pressure, or a frontend needing to
 display cavitation. **The node-kind clause is load-bearing**: without it the
 trigger fires immediately on two product tanks, and a tank above its bubble point
-is B3's two-phase holdup, not cavitation.
+is B3's two-phase holdup, not cavitation. **Clause (a)'s reachability was measured,
+not assumed** — one edit to one shipped file reaches it — because a trigger no
+plant can reach would have been the fifth dead gate in this project's record.
 
 **The sweep moved a different row, and that is the sharper finding.** B3 (phase in
 the state vector) said "no shipped plant asks" and guards three paths at load.

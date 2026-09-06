@@ -102,27 +102,42 @@ can produce a genuine solution with sub-zero *absolute* suction pressure. That
 is real cavitation the model does not yet represent; a vapor-pressure clamp is
 a later milestone.
 
-**Corrected 2026-09-06 (M10 close-out, and the sentence that was here was
-false).** This paragraph used to end "Frontends should treat negative absolute
-node pressure as a 'cavitating' signal, not a solver error." **Zero is not the
-threshold, and a frontend following that advice would never fire on a real
-cavitation.** A liquid boils below its own vapour pressure, which is positive:
-the lowest *solved* pressure anywhere in the corpus is `tank_level_control`'s
-`level_valve` at **120 846.9 Pa**, and that node's contents boil at **5 640.6
-Pa** — so the marker this paragraph named sits a factor of **21.4 below** the
-physics it claims to signal, and every state in between is reported as a good
-solution with no signal at all. Read against zero, the corpus looks 120 kPa
-clear; read against each node's own bubble point, the tightest solved margin in
-the corpus is **1.865×** (`heat_recovery`'s exchanger, 365.18 K water at 150 000
-Pa against a bubble pressure of 80 417 Pa). The distinction matters because the
-model **already contains** the thermodynamics that decides this —
-`ThermoModel::k_value` with `TroutonThermo` — so the criterion is available and
-was never used, which is the same shape as §3's "relative mass-imbalance per
-node" waiting from M1 to M9.2 for the code to catch up with it.
+**Corrected 2026-09-06 (M10 close-out).** This paragraph used to end "Frontends
+should treat negative absolute node pressure as a 'cavitating' signal, not a
+solver error." **The reachability claim above is true and is now measured; the
+threshold in that last sentence is wrong, and it is wrong by exactly the fluid's
+vapour pressure.** A liquid boils below its own vapour pressure, which is
+positive, so a plant is already cavitating while its absolute pressure is still
+above zero and the signal is silent.
+
+**Measured on the reference plant with one number changed** — `elevation_change_m`
+on `tank_pump_valve`'s suction line, i.e. the pump mounted above its tank:
+
+| suction lift | pump-node pressure | state |
+|---|---|---|
+| 17 m | 9 904.7 Pa | liquid, 1.76× its bubble point |
+| **17.44 m** | **5 640.6 Pa** | **cavitation begins** |
+| 18 m | 190.2 Pa | boiling; the signal below is still silent |
+| **18.02 m** | **0 Pa** | **the signal this paragraph named finally fires** |
+| 19 m | −9 522.9 Pa | solver converges, 9.8 kg/s, deeply wrong |
+
+So the marker is not unreachable and not useless — it is **late**, by a margin
+equal to the vapour pressure of whatever is in the line. For cold water that is
+5 640.6 Pa, which is the 0.58 m band above. **For anything hot or light it is not
+a band, it is the whole plant**: light naphtha at 445.75 K boils at 913 281 Pa,
+so the same marker would be nine bar late on a crude column's own fluid.
+
+The distinction matters because the model **already contains** the thermodynamics
+that decides it — `ThermoModel::k_value` with `TroutonThermo`, since M7.2 — so
+the right criterion was available and was never used. Same shape as this
+section's "relative mass-imbalance per node", specified at M1 and not implemented
+until M9.2.
 
 The honest statement, until a floor exists: **the engine does not detect
-cavitation and has no signal for it.** A frontend cannot read one out of a
-pressure. `docs/DEFERRED.md` B1 carries the trigger and the measured distance.
+cavitation and has no signal for it**, and a negative pressure is a symptom that
+arrives after the fact rather than a criterion. `docs/DEFERRED.md` B1 carries the
+trigger and the measured distance — no shipped plant is past it, the tightest
+solved margin in the corpus being **1.865×** (`heat_recovery`'s exchanger).
 
 **SimpleFlowSolver** (game-fidelity): solves the *same* quasi-steady fixed point
 as Newton, but matrix-free — **nonlinear Gauss–Seidel** over node pressures

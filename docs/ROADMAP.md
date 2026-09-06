@@ -4514,16 +4514,38 @@ on the model's own `TroutonThermo` vapour pressure — reimplemented in the
 measurement script so it does not run through the code it grades, and checked
 against the model's public API at five points, agreeing to `1.4e-10`.
 
-**DESIGN §3's cavitation signal was false, and it is false in a way no plant
-could ever have revealed.** §3 told frontends to read *negative absolute node
+**DESIGN §3's cavitation signal is LATE, and the amount it is late by is the
+fluid's vapour pressure.** §3 told frontends to read *negative absolute node
 pressure* as "cavitating". A liquid boils below its **vapour** pressure, which is
-positive. The lowest solved pressure anywhere in the corpus is
-`tank_level_control`'s `level_valve` at **120 846.9 Pa**; that node's contents
-boil at **5 640.6 Pa**. So the marker §3 named sits a factor of **21.4 below** the
-physics it claims to signal, and every state in between would be reported as a
-good solution with no signal at all. A frontend implementing §3's advice
-literally would never fire on a real cavitation. §3 is corrected and now says
-plainly that the engine does not detect cavitation and has no signal for it.
+positive, so a plant cavitates while its absolute pressure is still above zero
+and the signal is silent. Measured on the reference plant with one number changed
+— `elevation_change_m` on `tank_pump_valve`'s suction line, the pump mounted
+above its tank:
+
+| suction lift | pump-node pressure | state |
+|---|---|---|
+| 17 m | 9 904.7 Pa | liquid, 1.76× its bubble point |
+| **17.44 m** | **5 640.6 Pa** | **cavitation begins** |
+| 18 m | 190.2 Pa | boiling; §3's signal still silent |
+| **18.02 m** | **0 Pa** | **§3's signal finally fires** |
+| 19 m | −9 522.9 Pa | solver converges, 9.8 kg/s, deeply wrong |
+
+**The first draft of this write-up said the marker "can never fire" and that was
+an overstatement, caught by running the probe rather than reasoning about it.**
+It fires; it fires 0.58 m of lift too late here. The band is narrow only because
+water at 20 °C boils at 5 640.6 Pa — **on light naphtha at 445.75 K it is nine
+bar wide**, which is more than the whole operating range of the column that
+carries it. §3 is corrected and now says plainly that the engine does not detect
+cavitation and has no signal for it, and that a negative pressure is a symptom
+arriving after the fact rather than a criterion.
+
+**§3's reachability claim, by contrast, was true and is now measured.** The
+paragraph says an over-driven pump "can produce a genuine solution with sub-zero
+absolute suction pressure". It can: 19 m of lift on the reference plant gives
+−9 522.9 Pa with the solver converging and the plant carrying 9.8 kg/s. **The
+shipped corpus is not the reachability argument — the fixture is**, which is
+M9.2's rule, and it matters here because a trigger no plant can reach would have
+been the fifth dead gate this project has written.
 
 **The old distance was measured against the wrong quantity, and the row's own
 sentence said so.** B1 read "the lowest node pressure in any plant's tick-6 000
@@ -4581,7 +4603,8 @@ the first draft of this trigger would have fired immediately on the two product
 tanks above, and a tank above its bubble point is B3's two-phase holdup, not
 cavitation. **Scoping the trigger by node kind is what stops B1 and B3 claiming
 each other's evidence.** Distance now: 1.87× on (a), nothing on (b) — the Godot
-demo reads pressures only. Not past either.
+demo reads pressures only. Not past either, and clause (a) is reachable in one
+edit to one shipped file, which is the difference between a trigger and a wish.
 
 **No code changed in this close-out**, so no corpus baseline moved and none was
 taken; the sweep is a measurement over the shipped binary, and the one temporary
