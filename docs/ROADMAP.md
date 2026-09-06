@@ -4456,3 +4456,17 @@ the lower one.
 byte-identical against a baseline recorded before the slice, on both fidelities;
 `vessel_pressure_control` reads "new". Newton worst 9 iterations, game fidelity
 worst 13.
+
+**Two checks the workspace gates cannot make were run by hand, and both are
+clean.** `cargo build`/`cargo clippy -p refinery-godot-ext --features godot
+--target-dir target/godot -- -D warnings`: the gdext binding is off by default, so
+the workspace lint pass sees none of it, and **adding an enum variant is exactly
+the edit that breaks a feature-gated exhaustive match**. It does not here — the
+bridge translates `ControlledValue` before the gdext layer marshals it — but
+`godot-ext` being absent from the diff is the reason to check rather than the
+reason not to. And `crates/core/src/traits.rs` was corrected after the fact: the
+`Controller` trait's own doc still asserted the sentence §12 expired ("the same
+type by construction, so the difference `ControlledValue::error` takes is always
+dimensionally honest"), on the page the next implementer reads. **The write-up had
+been citing that file's absence from the diff as evidence the seam held**, which
+is a good illustration of how a stale doc survives a milestone about stale docs.

@@ -485,9 +485,19 @@ pub trait Controller: Send + std::fmt::Debug {
     /// `measurement` is the plant state standing at the TOP of the tick — one
     /// `dt` older than the solve that follows it, because reading this tick's
     /// solve and writing an actuator is an algebraic loop (fork 3). Both it and
-    /// `setpoint` carry their unit in their type, and are the same type by
-    /// construction, so the difference `ControlledValue::error` takes is always
-    /// dimensionally honest.
+    /// `setpoint` carry their unit in their type.
+    ///
+    /// **What used to stand here — "and are the same type by construction, so the
+    /// difference `ControlledValue::error` takes is always dimensionally honest"
+    /// — expired in M10** (docs/DESIGN.md §12). That was a property of
+    /// `ControlledValue` having ONE variant, not of the type: with a second, the
+    /// two arguments can be a pressure and a level, and the subtraction would be
+    /// Pascals minus metres. What actually keeps them matched is the engine —
+    /// `run_control_loops` measures `setpoint.variable()`, and
+    /// `Command::SetSetpoint` refuses a value whose variable disagrees with the
+    /// loop's — with `error`'s own cross-variable `NaN` as the backstop behind
+    /// them. **An impl may assume the pair matches; it may not assume the TYPE is
+    /// what guarantees it**, and neither guard may be deleted as redundant.
     ///
     /// **The error term is `ControlledValue::error(measurement, setpoint)` and no
     /// implementation may compute its own.** That function owns the sign

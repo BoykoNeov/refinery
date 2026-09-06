@@ -83,6 +83,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
 cargo run -p refinery-cli -- run scenarios/tank_pump_valve.toml --ticks 1000
 cargo run -p refinery-cli -- run scenarios/tank_level_control.toml --ticks 6000   # the M8.4 loop demo
+cargo run -p refinery-cli -- run scenarios/vessel_pressure_control.toml --ticks 6000  # the M10.1 pressure loop
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -283,6 +284,16 @@ on the MASS, because `C = V·M̄/(R·T)` is itself a function of a state that mo
 the receiver heats as it fills and the pressures miss by 653.6 Pa, 4.078e-4
 relative, **which is exactly `ΔT/T`**. Dividing the temperature out restores it to
 1.2e-7. A tank's capacitance analogue is geometry; a vessel's is a state.
+
+**The false sentence survived in a third file, and the write-up was citing its
+absence from the diff as a virtue.** `traits.rs`'s `Controller` doc still said the
+two arguments "are the same type by construction, so the difference
+`ControlledValue::error` takes is always dimensionally honest" — the expired claim
+again, on the page the next implementer reads. Corrected after the fact. The
+gdext binding was also built and linted behind its feature (`--features godot
+--target-dir target/godot`), because a new enum variant is exactly what breaks a
+feature-gated exhaustive match and the workspace lint sees none of that crate;
+both are clean.
 
 **One of the five specified mutations is not expressible**, and the demo's
 counterfactual came out differently from M8.4's. "`measure` reads the solved
@@ -752,10 +763,13 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly one file in `scenarios/` declares a `[[controls]]` table** —
-`tank_level_control.toml`, M8.4's. The other thirteen were written before M8 and
-ARE the regression anchor; adding a loop to one of them would move its snapshot.
-Two more plants that carry a loop are inline test fixtures for the same reason.
+**Exactly two of the fifteen files in `scenarios/` declare a `[[controls]]`
+table** — `tank_level_control.toml` (M8.4, a level) and
+`vessel_pressure_control.toml` (M10.1, a pressure). **The other thirteen were
+written before M8 and ARE the regression anchor**; adding a loop to one of them
+would move its snapshot, which is why each regulation slice ships a NEW file
+rather than wiring one into an existing plant. Every other plant that carries a
+loop is an inline test fixture for the same reason.
 
 **M8.5 landed 2026-08-26, and M8 is closed** — `Snapshot::slate`, so a frontend
 can turn a tank's mass into a fill level. Four things to know.
