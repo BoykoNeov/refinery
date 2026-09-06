@@ -6544,6 +6544,13 @@ in the same session, `crude_column_cascade` costs 355.9 ms per 6 000 ticks, i.e.
 **59.3 µs per tick**, so three boiling tanks would add ~13%; on a cheap plant
 like `cooler_chiller` (45.3 ms, **7.6 µs per tick**) a single tank is ~34%.
 
+**Those two percentages are not in tension, and stating the ratio once is what
+stops this being reopened.** 34% of `cooler_chiller`'s tick is 2.6 µs. It is a
+large share of a small number, and the number it has to fit inside is 16.7 ms.
+A game plant is far more likely to be a handful of tanks than a cascade, so the
+34% is the figure a future reader will reach for — and thirty tanks on one plant
+would still be 78 µs, half a percent of a frame.
+
 **So the CPU clause does not carry this key and the disagreement clause does**,
 and getting that the wrong way round would have mattered. "A root find per tank
 per tick" *sounds* like the expensive-model half of the user's criterion; it is
@@ -7789,7 +7796,7 @@ heated there within 6 000 ticks. **A tank that is not boiling yet is not a
 control**, and a gate that uses one as its negative case is asserting on the run
 length rather than on the physics.
 
-### Fork 8 — the demo plant, and a gate that may not be writable on the shipped one
+### Fork 8 — the demo plant, and a gate that may not be writable on the shipped one (amended by fork 9)
 
 Every regulation and criterion milestone since M8.4 has shipped a NEW file rather
 than wiring the feature into an existing plant, because thirteen of the sixteen
@@ -7875,6 +7882,17 @@ under test, so a gate that fires is pointing at the term and not at the plant.
    than by any non-zero amount. This is the gate that makes gate 5's silence mean
    "declined" rather than "ignored", and it is the only thing standing between
    this key and the `thermo = "nonsense"` defect.
+
+   **Its control has to be asserted first, and it is not the obvious one.** "The
+   two files differ" is *also* satisfied by a demo that differs for some
+   unrelated reason — a mistyped draw ratio, a different tank geometry — and
+   such a gate would be green while proving nothing about the key, which is
+   `smearing_k`'s shape with extra steps. So the gate must first assert that the
+   two TOML documents are identical **except for the `boiloff` line**, textually,
+   before it asserts anything about the numbers. That is the same
+   control-before-assertion discipline gate 1 uses for the tank's mixture and
+   M9.3b's warm-start gate uses for its two profiles, and here it is what makes
+   the difference attributable to the key rather than to the plant.
 
 ### The mutations this slice owes, named before building
 
