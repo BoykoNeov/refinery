@@ -112,7 +112,10 @@ impl Engine {
                     .find(|c| c.actuator == node && c.mode == ControlMode::Auto)
                 {
                     return Err(SimError::InvalidCommand(format!(
-                        "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO:                          its opening would be overwritten at the top of the next tick. Put                          the loop in MANUAL first (`set_controller_mode`), or move the                          loop's setpoint (`set_setpoint`)",
+                        "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO: its \
+                         opening would be overwritten at the top of the next tick. Put the loop in \
+                         MANUAL first (`set_controller_mode`), or move the loop's setpoint \
+                         (`set_setpoint`)",
                         self.graph.node(node).name,
                         owner.name
                     )));
@@ -305,11 +308,34 @@ impl Engine {
                 // a reachable target is — the loader applies the same check to a
                 // declared setpoint, so a loop cannot load with a number this
                 // command would then refuse.
+                // **The refusal `ControlledValue`'s own doc said would become
+                // required "the moment a second variant lands"** (docs/DESIGN.md
+                // §12 fork 6). M10 is that moment: with two variants this command
+                // can change WHAT a loop measures, not merely what it aims at, and
+                // a loop whose setpoint is a pressure and whose measurement node is
+                // a tank has no measurement at all.
+                //
+                // It is checked BEFORE `check_setpoint` rather than after, because
+                // `check_setpoint`'s own mismatch arms would refuse this for the
+                // node's sake ("not a vessel") when the actual mistake is the
+                // command's — the same distinction that gives a relief valve its
+                // own refusal instead of "not a valve".
+                //
+                // This guard is also what keeps `ControlledValue::error` sound: it
+                // and the tick pass's `measure(setpoint.variable())` are the two
+                // things that stop Pascals being subtracted from metres. See that
+                // method for the backstop behind them.
+                if value.variable() != control.setpoint.variable() {
+                    return Err(SimError::InvalidCommand(format!(
+                        "control loop '{}' measures {:?} and this setpoint is {:?}. A setpoint does \
+                         not change what a loop MEASURES — the measurement node would then be \
+                         answering for a variable it may not have at all",
+                        control.name,
+                        control.setpoint.variable(),
+                        value.variable()
+                    )));
+                }
                 self.graph.check_setpoint(control.measurement_node, value)?;
-                // The variable cannot disagree: `ControlledValue` has one variant,
-                // so a level setpoint is the only thing this command can carry.
-                // See the type's own note for why there is deliberately no guard
-                // here, and for when one becomes required.
                 self.graph
                     .control_mut(loop_id)
                     .ok_or_else(|| unknown_loop(loop_id))?

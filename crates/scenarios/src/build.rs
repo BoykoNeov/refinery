@@ -214,15 +214,20 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
 /// - two loops naming one actuator, which is two writers of one opening with no
 ///   defined resolution order — split-range and override control are real, and are
 ///   deferred *with an arbitration*, not left to declaration order,
-/// - a level measured on a node that is not a `Tank`, because a level names
-///   nothing on a vessel whose state IS pressure,
+/// - a level measured on a node that is not a `Tank`, or a pressure measured on
+///   one that is not a `Vessel` — three distinct refusals on the pressure side
+///   alone (a tank, whose pressure IS its level in a worse unit; a junction, whose
+///   pressure is genuinely solved and absent at tick 0; and the boundary kinds,
+///   whose pressures are pinned by declaration),
+/// - a setpoint or a gain key belonging to the OTHER variable, both directions,
 /// - an actuator that is not a `Valve`, and a `ReliefValve` with its own reason.
 ///
-/// Each loop is born with a real measurement rather than an empty one: a level is
-/// stored and is true from load, so `PlantGraph::measure` is called here exactly as
-/// the tick pass calls it, and a snapshot taken before the first tick reports a
-/// true level. `last_output` is seeded from the valve's own declared opening, which
-/// is what MANUAL would report and what AUTO overwrites on tick 1.
+/// Each loop is born with a real measurement rather than an empty one: both
+/// controlled variables are stored and true from load, so `PlantGraph::measure` is
+/// called here exactly as the tick pass calls it, and a snapshot taken before the
+/// first tick reports a true level or a true pressure. `last_output` is seeded from
+/// the valve's own declared opening, which is what MANUAL would report and what
+/// AUTO overwrites on tick 1.
 ///
 /// That same measurement is what a PI loop's memory is derived AGAINST: fork 5's
 /// `initial_output` says where the actuator starts, and the integral term is
@@ -249,12 +254,14 @@ fn build_controls(
 
         let variable = match def.measurement.variable.as_str() {
             "level" => MeasuredVariable::Level,
+            "pressure" => MeasuredVariable::Pressure,
             other => {
                 return Err(SimError::Scenario(format!(
-                    "control loop '{}' measures unknown variable '{other}' (valid: level). \
-                     Pressure, temperature and flow control are deferred per variable, each \
-                     needing a measurement path and an actuator that exists \
-                     (docs/DESIGN.md §10)",
+                    "control loop '{}' measures unknown variable '{other}' (valid: level, \
+                     pressure). Temperature and flow control stay deferred, each needing a \
+                     measurement path and an actuator that exists: a temperature really is a \
+                     solved quantity, and a flow lives on an EDGE, which nothing in \
+                     `PlantGraph::measure`'s signature can name (docs/DESIGN.md §12)",
                     def.name
                 )))
             }
@@ -328,20 +335,91 @@ fn build_controls(
         }
         claimed_actuators.push((actuator, &def.name));
 
-        // The setpoint key carries the unit, and which key that is comes from the
-        // variable. The absent direction is the reachable one today; the "key
-        // belongs to another variable" direction becomes expressible when a second
-        // variable lands, since `deny_unknown_fields` currently refuses such a key
-        // as unknown rather than as mismatched.
-        let setpoint = match variable {
-            MeasuredVariable::Level => ControlledValue::Level {
-                m: Meter(require_keyed(
-                    def.setpoint_m,
+        // **The setpoint and the gain are resolved HERE, above the algorithm
+        // match, and that placement is load bearing rather than tidy**
+        // (docs/DESIGN.md §12 fork 3). Both `"p"` and `"pi"` need a gain, so
+        // fetching it inside each arm would put the bar→Pa conversion at two
+        // sites — and fork 3's whole defence against the factor of 100 000 is that
+        // the setpoint's `× 1e5` and the gain's `÷ 1e5` are written as one pair
+        // that a reader sees together. One site, both directions, or the trap is
+        // reopened by the next person who adds an algorithm.
+        //
+        // Which key carries each comes from the variable, and BOTH directions of
+        // the mismatch are refused. Until a second variable existed the "belongs
+        // to the other variable" direction was not a state the format could reach
+        // — `deny_unknown_fields` refused such a key as *unknown*, a different
+        // message — so by the project's own rule it is new work here rather than
+        // existing coverage, and it is two refusals rather than one because
+        // `setpoint_*` and `gain_per_*` are two different mistakes in a file.
+        let (setpoint, gain) = match variable {
+            MeasuredVariable::Level => {
+                refuse_foreign_key(
+                    def.setpoint_bar.is_some(),
                     &def.name,
+                    "setpoint_bar",
+                    MeasuredVariable::Pressure,
+                    variable,
                     variable.setpoint_key(),
-                    "the loop's target",
-                )?),
-            },
+                )?;
+                refuse_foreign_key(
+                    def.gain_per_bar.is_some(),
+                    &def.name,
+                    "gain_per_bar",
+                    MeasuredVariable::Pressure,
+                    variable,
+                    variable.gain_key(),
+                )?;
+                let setpoint = ControlledValue::Level {
+                    m: Meter(require_keyed(
+                        def.setpoint_m,
+                        &def.name,
+                        variable.setpoint_key(),
+                        "the loop's target",
+                    )?),
+                };
+                // Metres in, metres in the arithmetic: nothing to convert, and
+                // that is exactly why the pressure arm below needs a comment.
+                let gain =
+                    require_keyed(def.gain_per_m, &def.name, variable.gain_key(), "the gain")?;
+                (setpoint, gain)
+            }
+            MeasuredVariable::Pressure => {
+                refuse_foreign_key(
+                    def.setpoint_m.is_some(),
+                    &def.name,
+                    "setpoint_m",
+                    MeasuredVariable::Level,
+                    variable,
+                    variable.setpoint_key(),
+                )?;
+                refuse_foreign_key(
+                    def.gain_per_m.is_some(),
+                    &def.name,
+                    "gain_per_m",
+                    MeasuredVariable::Level,
+                    variable,
+                    variable.gain_key(),
+                )?;
+                // **The pair.** `ControlledValue::magnitude` returns SI, so the
+                // error a controller differences is in Pascals and the gain must
+                // be per Pascal. The file declares both in bar; these two
+                // conversions are the whole of it, and they are adjacent so that
+                // converting one without the other is a visible omission rather
+                // than an invisible one. Nothing downstream can catch it: the loop
+                // stays stable and is merely mistuned by a factor of 1e5.
+                let setpoint = ControlledValue::Pressure {
+                    pa: bar_to_pa(require_keyed(
+                        def.setpoint_bar,
+                        &def.name,
+                        variable.setpoint_key(),
+                        "the loop's target",
+                    )?),
+                };
+                let gain =
+                    require_keyed(def.gain_per_bar, &def.name, variable.gain_key(), "the gain")?
+                        / 1e5;
+                (setpoint, gain)
+            }
         };
         graph
             .check_setpoint(measurement_node, setpoint)
@@ -389,7 +467,6 @@ fn build_controls(
                         def.name
                     )));
                 }
-                let gain = require_keyed(def.gain_per_m, &def.name, "gain_per_m", "the gain")?;
                 Box::new(
                     refinery_solvers::ProportionalController::new(gain).map_err(|e| {
                         SimError::Scenario(format!("control loop '{}': {e}", def.name))
@@ -397,7 +474,6 @@ fn build_controls(
                 )
             }
             "pi" => {
-                let gain = require_keyed(def.gain_per_m, &def.name, "gain_per_m", "the gain")?;
                 let integral_time_s = require_keyed(
                     def.integral_time_s,
                     &def.name,
@@ -468,6 +544,36 @@ fn build_controls(
 /// and the integral time have no defaults for the reason `x_T` has none (§3a fork
 /// 6): a silent default is an invented value in disguise, and every gate would
 /// then pass for whatever was chosen.
+/// A `[[controls]]` key that belongs to the OTHER variable (docs/DESIGN.md §12
+/// fork 6).
+///
+/// Two directions and two keys, so four messages, and one helper rather than four
+/// literals — every one of them has to name the key that was written, the
+/// variable it belongs to, the variable this loop actually measures, and the key
+/// that was meant. A file gets the correction, not just the rejection.
+///
+/// Separate from `deny_unknown_fields`, which is what refused these before a
+/// second variable existed: "unknown key" and "that is the pressure loop's key"
+/// are different mistakes, and telling an author the first when the second is
+/// true sends them looking for a typo they did not make.
+fn refuse_foreign_key(
+    present: bool,
+    loop_name: &str,
+    key: &str,
+    belongs_to: MeasuredVariable,
+    measures: MeasuredVariable,
+    instead: &str,
+) -> Result<(), SimError> {
+    if present {
+        return Err(SimError::Scenario(format!(
+            "control loop '{loop_name}' measures {measures:?} and declares `{key}`, which is \
+             the {belongs_to:?} loop's key. A setpoint and a gain carry their variable's unit \
+             in their key precisely so this is visible; write `{instead}` instead"
+        )));
+    }
+    Ok(())
+}
+
 fn require_keyed(
     value: Option<f64>,
     loop_name: &str,
@@ -741,12 +847,16 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
         } => {
             if !accumulation_bar.is_finite() || *accumulation_bar <= 0.0 {
                 return Err(SimError::Scenario(format!(
-                    "relief valve '{name}' has accumulation_bar = {accumulation_bar}, which                      must be > 0. A zero band makes the opening a STEP in pressure, and a                      discontinuous characteristic is exactly what elements.rs promises not                      to hand the Newton Jacobian."
+                    "relief valve '{name}' has accumulation_bar = {accumulation_bar}, which must be \
+                     > 0. A zero band makes the opening a STEP in pressure, and a discontinuous \
+                     characteristic is exactly what elements.rs promises not to hand the Newton \
+                     Jacobian."
                 )));
             }
             if !set_pressure_bar.is_finite() || *set_pressure_bar <= 0.0 {
                 return Err(SimError::Scenario(format!(
-                    "relief valve '{name}' has set_pressure_bar = {set_pressure_bar}; a set                      pressure is ABSOLUTE and must be positive."
+                    "relief valve '{name}' has set_pressure_bar = {set_pressure_bar}; a set pressure \
+                     is ABSOLUTE and must be positive."
                 )));
             }
             NodeKind::ReliefValve {

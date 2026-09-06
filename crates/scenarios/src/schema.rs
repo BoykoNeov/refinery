@@ -408,27 +408,63 @@ pub struct ControlDef {
     pub algorithm: String,
     /// `"auto"` (the loop drives its actuator) or `"manual"` (a human does).
     pub mode: String,
-    /// The target, in metres. **Required for `variable = "level"` and meaningless
-    /// for any other variable**, exactly as `up_to_c` is the splitter's and
-    /// `stage` the cascade's.
+    /// The target, in metres. **Required for `variable = "level"` and refused on
+    /// any other variable**, exactly as `up_to_c` is the splitter's and `stage`
+    /// the cascade's.
     ///
     /// The unit is in the KEY because a snapshot's setpoint cannot put it in a
-    /// field name (docs/DESIGN.md §10 fork 4). When pressure control un-defers,
-    /// its key is `setpoint_pa` and this one becomes the one that is refused on a
-    /// pressure loop — the two-directional refusal the separation fidelities
-    /// already enforce.
+    /// field name (docs/DESIGN.md §10 fork 4). **This doc used to predict that
+    /// pressure control's key would be `setpoint_pa`, and M10 followed the FORMAT
+    /// instead of the prediction** (docs/DESIGN.md §12 fork 3): every pressure a
+    /// scenario declares is in bar, so `setpoint_pa` would have been the only one
+    /// that is not. The key is `setpoint_bar`, below.
+    ///
+    /// The refusing direction became reachable with it. Until a second variable
+    /// existed, "this key belongs to the other variable" was not a state the
+    /// format could reach — `deny_unknown_fields` refuses a key belonging to no
+    /// variable at all, which is a different message — so by the project's own
+    /// rule (a refusal of something the format cannot express is not a refusal)
+    /// that pair is new work in M10 rather than existing coverage.
     #[serde(default)]
     pub setpoint_m: Option<f64>,
-    /// Proportional gain, per metre of level error.
+    /// The target, in bar absolute. **Required for `variable = "pressure"` and
+    /// refused on any other variable** (docs/DESIGN.md §12 fork 3).
+    ///
+    /// Bar rather than Pascals because that is what the rest of the format says:
+    /// `pressure_bar` on source, sink, vessel and column, `set_pressure_bar` and
+    /// `accumulation_bar` on the PSV — six pressure keys across four node kinds
+    /// and no `_pa` anywhere. A `setpoint_pa` would be a number whose unit a
+    /// reader has to infer from its neighbours' *dis*agreement, which is fork 4's
+    /// own failure mode inverted.
+    ///
+    /// Converted to Pascals at the loader together with `gain_per_bar`, at one
+    /// site. See that key.
+    #[serde(default)]
+    pub setpoint_bar: Option<f64>,
+    /// Proportional gain, per metre of level error. **Level loops only.**
     ///
     /// **The unit is in the key, and the design note wrote this one bare.** That
     /// is corrected here rather than followed: a gain is `1/m` on a level loop and
-    /// `1/Pa` on a pressure loop, so a bare `gain` is a number whose unit depends
+    /// `1/bar` on a pressure loop, so a bare `gain` is a number whose unit depends
     /// on a sibling key — which is the exact failure fork 4 spent its own
     /// correction on for `setpoint_m`, applied to the other half of the same
     /// entry. No default, for the reason `x_T` has none.
     #[serde(default)]
     pub gain_per_m: Option<f64>,
+    /// Proportional gain, per BAR of pressure error. **Pressure loops only.**
+    ///
+    /// **Per bar, not per Pascal, and this is the slice's named trap**
+    /// (docs/DESIGN.md §12 fork 3). A gain's unit is its setpoint's reciprocal, so
+    /// a `setpoint_bar` forces a `gain_per_bar` — but a controller's arithmetic is
+    /// in SI, so the loader must multiply the setpoint by 1e5 and DIVIDE this by
+    /// the same 1e5. Converting one and not the other is a factor of 100 000 that
+    /// no type catches, because a gain is a bare `f64` all the way into
+    /// `ProportionalController::new` and the loop stays perfectly stable, merely
+    /// mistuned by five orders of magnitude. Both conversions are written as one
+    /// pair at one site in `build_controls`, and a gate measures the loop's first
+    /// output against a hand-computed `K·e` rather than trusting either.
+    #[serde(default)]
+    pub gain_per_bar: Option<f64>,
     /// Integral time [s] — the ISA reset time, the interval in which the integral
     /// term alone repeats the proportional term's contribution.
     ///
@@ -475,8 +511,9 @@ pub struct ControlDef {
 #[serde(deny_unknown_fields)]
 pub struct MeasurementDef {
     pub node: String,
-    /// `"level"` (M8.2). Pressure, temperature and flow are deferred per-variable
-    /// — see `MeasuredVariable`.
+    /// `"level"` (M8.2, a `tank`) or `"pressure"` (M10, a `vessel`). Temperature
+    /// and flow stay deferred per-variable — see `MeasuredVariable`. Which key
+    /// carries the setpoint and which carries the gain both follow from this.
     pub variable: String,
 }
 

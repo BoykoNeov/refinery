@@ -205,6 +205,10 @@ fn level_now(engine: &Engine) -> f64 {
         .expect("the control tank has a level")
     {
         ControlledValue::Level { m } => m.value(),
+        // M10 added a second variant. A level fixture reading a pressure means
+        // the loop measures something this helper cannot report, which is a
+        // broken test rather than a number to coerce.
+        other => panic!("this fixture's loop measures a level, not {other:?}"),
     }
 }
 
@@ -653,6 +657,10 @@ fn the_reported_measurement_is_the_one_the_controller_acted_on() {
 
     let reported = match engine.snapshot().controls[0].measurement {
         ControlledValue::Level { m } => m.value(),
+        // M10 added a second variant. A level fixture reading a pressure means
+        // the loop measures something this helper cannot report, which is a
+        // broken test rather than a number to coerce.
+        other => panic!("this fixture's loop measures a level, not {other:?}"),
     };
     assert_eq!(
         reported, before_tick,
@@ -766,6 +774,10 @@ fn a_loop_has_a_real_measurement_before_the_first_tick() {
     assert_eq!(snapshot.tick, 0);
     let reported = match snapshot.controls[0].measurement {
         ControlledValue::Level { m } => m.value(),
+        // M10 added a second variant. A level fixture reading a pressure means
+        // the loop measures something this helper cannot report, which is a
+        // broken test rather than a number to coerce.
+        other => panic!("this fixture's loop measures a level, not {other:?}"),
     };
     assert_eq!(
         reported,
@@ -983,8 +995,16 @@ initial_output = 0.2
             "finite and > 0 s",
         ),
         (
+            // **`"pressure"` used to be this case's stand-in for "unknown", and
+            // M10 expired it** — the same way M8.3's arrival expired `"pi"` as the
+            // unknown-*algorithm* stand-in and that case moved to `"pid"`. A
+            // pressure loop on a tank is now refused for a measured reason of its
+            // own (the density cancels out of `P_atm + ρ·g·h`, so it is a level
+            // loop in a worse unit), which is asserted in
+            // `pressure_control_reference.rs`. `"temperature"` is the deferral
+            // that is still genuinely unknown to the loader.
             "an unknown measured variable",
-            PLANT.replace(r#"variable = "level""#, r#"variable = "pressure""#),
+            PLANT.replace(r#"variable = "level""#, r#"variable = "temperature""#),
             "unknown variable",
         ),
         (

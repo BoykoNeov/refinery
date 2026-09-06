@@ -590,28 +590,68 @@ pub enum ControlMode {
 
 /// Which plant quantity a loop regulates.
 ///
-/// One variant, and that is the M8.2 scope (docs/DESIGN.md §10 fork 0): a tank's
-/// level, because both halves of it already exist and are already load-bearing,
-/// so the slice adds no measurement path and no actuator alongside the control
-/// machinery it is there to test.
+/// **Two variants as of M10, and the second one is the milestone**
+/// (docs/DESIGN.md §12). M8.2 shipped one — a tank's level — because both halves
+/// of it already existed and were already load-bearing, so that slice added no
+/// measurement path and no actuator alongside the control machinery it was there
+/// to test. M8 then *claimed* the seam was variable-agnostic, and the only way to
+/// find out was to add a variable.
 ///
-/// Pressure, temperature and flow are deferred per-variable, each needing a
-/// measurement path and an actuator that exists. Pressure is the near one — see
-/// the note's deferral list.
+/// **A vessel's pressure needs no new measurement path either, and the note that
+/// deferred it said otherwise.** §10 fork 3 split the world into stored and
+/// solved quantities and put pressure on the solved side — "lives in
+/// `last_solution` / `NodeStates`, both of which are empty before the first
+/// tick". That is false for a `Vessel`, whose pressure is `m/C` with `m` on this
+/// graph: stored, real from load, and exactly the declared figure because the
+/// loader builds the initial mass as `P · capacitance` through the same method
+/// `pressure` divides by. It is true of a `Junction`, and that is where the
+/// deferral survives — scoped to the node kinds it is actually true of rather
+/// than to the variable. See `PlantGraph::measure`.
+///
+/// Temperature and flow stay deferred, and their reasons are NOT the one that
+/// was wrong here: a temperature really is a `NodeStates` quantity, and a flow
+/// lives on an edge, which nothing in `measure`'s signature can name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeasuredVariable {
     Level,
+    Pressure,
 }
 
 impl MeasuredVariable {
     /// The scenario key that carries this variable's setpoint, unit included.
     ///
-    /// Used only to phrase the loader's refusal, so a message can name the key a
-    /// file SHOULD have written rather than merely the one it did.
+    /// Used to phrase the loader's refusals — so a message can name the key a
+    /// file SHOULD have written rather than merely the one it did — and, since
+    /// M10, to name the OTHER variable's key when a file writes that one instead.
+    ///
+    /// **`setpoint_bar`, not the `setpoint_pa` `ControlDef` predicted**
+    /// (docs/DESIGN.md §12 fork 3): every pressure a scenario declares is in bar,
+    /// six keys across four node kinds, and a `_pa` here would be the only one
+    /// that is not.
     pub fn setpoint_key(self) -> &'static str {
         match self {
             MeasuredVariable::Level => "setpoint_m",
+            MeasuredVariable::Pressure => "setpoint_bar",
+        }
+    }
+
+    /// The scenario key that carries this variable's proportional gain.
+    ///
+    /// A gain's unit is the setpoint's reciprocal, so this pairs with
+    /// `setpoint_key` and is chosen by the same variable — `gain_per_m` on a
+    /// level loop, `gain_per_bar` on a pressure loop.
+    ///
+    /// **The silent trap this key exists to make loud** (docs/DESIGN.md §12 fork
+    /// 3): a controller's arithmetic is in SI, so a `gain_per_bar` must be
+    /// divided by the same 1e5 the setpoint is multiplied by. Converting one and
+    /// not the other is a factor of 100 000 that no type catches, because a gain
+    /// is a bare `f64` all the way into `ProportionalController::new`. The loader
+    /// does both conversions at one site for exactly that reason.
+    pub fn gain_key(self) -> &'static str {
+        match self {
+            MeasuredVariable::Level => "gain_per_m",
+            MeasuredVariable::Pressure => "gain_per_bar",
         }
     }
 }
@@ -638,16 +678,36 @@ impl MeasuredVariable {
 ///   form is still `{"variable":"level","m":6.0}` — a tagged number, not a
 ///   nested object.
 ///
-/// **With one variant, "the setpoint's variable disagrees with the loop's" is
-/// unrepresentable, and there is deliberately no guard for it.** A refusal path
+/// **The second variant landed in M10, and it made two guards required that were
+/// deliberately absent while there was one.** The note here used to read: "with
+/// one variant, 'the setpoint's variable disagrees with the loop's' is
+/// unrepresentable, and there is deliberately no guard for it — a refusal path
 /// nothing can reach is a coverage claim that cannot be checked
-/// (`a-counter-is-not-a-gate`). The moment a second variant lands, writing a
+/// (`a-counter-is-not-a-gate`); the moment a second variant lands, writing a
 /// setpoint through `Command::SetSetpoint` becomes able to change what a loop
-/// measures, and that refusal becomes required rather than optional.
+/// measures, and that refusal becomes required rather than optional." M10 is that
+/// moment and pays it, in `Engine::apply`.
+///
+/// The one it did NOT name is `error` itself, below — see that method.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "variable", rename_all = "snake_case")]
 pub enum ControlledValue {
-    Level { m: Meter },
+    Level {
+        m: Meter,
+    },
+    /// A vessel's absolute pressure.
+    ///
+    /// **The payload is Pascals where the scenario key is bar, and that
+    /// asymmetry is deliberate** (docs/DESIGN.md §12 fork 3). `Pascal` is
+    /// `#[serde(transparent)]` like `Meter`, so the wire form is
+    /// `{"variable":"pressure","pa":1.2e6}` — a tagged number, the same shape the
+    /// level variant has. The format's own convention is `pressure_bar` in and
+    /// `pressure_pa` out; this variant follows the format rather than the level
+    /// loop, and rule 4 holds on both sides because the unit is in the key going
+    /// in and in the type coming out.
+    Pressure {
+        pa: Pascal,
+    },
 }
 
 impl ControlledValue {
@@ -661,6 +721,7 @@ impl ControlledValue {
     pub fn variable(self) -> MeasuredVariable {
         match self {
             ControlledValue::Level { .. } => MeasuredVariable::Level,
+            ControlledValue::Pressure { .. } => MeasuredVariable::Pressure,
         }
     }
 
@@ -674,6 +735,7 @@ impl ControlledValue {
     pub fn magnitude(self) -> f64 {
         match self {
             ControlledValue::Level { m } => m.value(),
+            ControlledValue::Pressure { pa } => pa.value(),
         }
     }
 
@@ -687,9 +749,29 @@ impl ControlledValue {
     /// ("gain applied to the measurement instead of the error") only means
     /// anything while the error term is explicit and singly owned.
     ///
-    /// Both arguments are the same type by construction, so a level measurement
-    /// cannot be differenced against a pressure setpoint.
+    /// **The sentence that used to close this doc became false in M10, and the
+    /// method had to change with it.** It read: "both arguments are the same type
+    /// by construction, so a level measurement cannot be differenced against a
+    /// pressure setpoint." That was a property of there being ONE variant, not of
+    /// the type — with two, `error(Pressure { pa: 5e5 }, Level { m: 4.0 })`
+    /// subtracts metres from Pascals and returns a plausible `499996.0`. The type
+    /// stops a level being differenced against a pressure only if something
+    /// checks the variables match, and until here nothing did.
+    ///
+    /// So a mismatch returns `NaN` rather than a number. It does not propagate
+    /// silently: `Engine::run_control_loops` already refuses a controller output
+    /// that is not a finite fraction, naming the loop, so the existing rule-5
+    /// backstop turns this into a diagnosed `SimError::Numerical` one call later.
+    ///
+    /// **This is a backstop and not the guard.** The engine only ever calls
+    /// `measure(setpoint.variable())` against that same loop's setpoint, and
+    /// `Command::SetSetpoint` refuses a value whose variable disagrees with the
+    /// loop's — those two are what make a mismatch unreachable. The `NaN` is what
+    /// happens if one of them is ever removed.
     pub fn error(measurement: Self, setpoint: Self) -> f64 {
+        if measurement.variable() != setpoint.variable() {
+            return f64::NAN;
+        }
         measurement.magnitude() - setpoint.magnitude()
     }
 }
@@ -711,9 +793,10 @@ impl ControlledValue {
 pub struct ControlLoop {
     /// Scenario-given name, unique per plant. What a faceplate is labelled with.
     pub name: String,
-    /// The node whose state is measured. A `Tank` for a level loop; the loader
-    /// refuses anything else, because a level names nothing on a vessel whose
-    /// state IS pressure.
+    /// The node whose state is measured. A `Tank` for a level loop, a `Vessel`
+    /// for a pressure loop; the loader refuses every other pairing through
+    /// `PlantGraph::measure`, which is the single owner of which kinds can answer
+    /// for which variable and carries a distinct reason for each refusal.
     pub measurement_node: NodeId,
     /// The node this loop writes. A `Valve`; a `ReliefValve` is refused with its
     /// own reason, since its opening is actuated by its own inlet pressure.
@@ -743,10 +826,18 @@ pub struct ControlLoop {
     ///
     /// The two differ by one tick (fork 3), and reporting the fresh one would make
     /// a lagging loop look instantaneous, hiding the lag from exactly the person
-    /// debugging it. Real from load rather than optional: a level is a STORED
-    /// quantity, so `Engine::new` seeds this by taking the measurement once, and
-    /// a snapshot before the first tick reports a true level instead of a NaN or
-    /// an absence.
+    /// debugging it. Real from load rather than optional: **both** variables this
+    /// engine controls are STORED quantities — a tank's mass and a vessel's mass
+    /// both live on the graph — so the loader seeds this by taking the measurement
+    /// once, and a snapshot before the first tick reports a true level or a true
+    /// pressure instead of a NaN or an absence.
+    ///
+    /// That contrast is sharpest on the pressure loop and is worth reading once:
+    /// at tick 0 this field holds the vessel's declared pressure while
+    /// `NodeSnapshot::pressure_pa` for the same node is NaN, because the solve has
+    /// not run. Two different quantities that agree once the plant is running, and
+    /// the fact that one exists before the other is the whole of what §12
+    /// corrected.
     pub last_measurement: ControlledValue,
     /// The actuator position this loop last put on the faceplate, dimensionless
     /// in `[0, 1]`.
@@ -1032,7 +1123,8 @@ impl PlantGraph {
             (ControlledValue::Level { m }, NodeKind::Tank(t)) => {
                 if !m.is_finite() || m.value() < 0.0 || m.value() > t.height.value() {
                     return Err(SimError::InvalidCommand(format!(
-                        "level setpoint {} m is outside tank '{}''s range [0, {}] m — a                          setpoint the plant cannot reach leaves the loop pinned at                          saturation",
+                        "level setpoint {} m is outside tank '{}''s range [0, {}] m — a setpoint the \
+                         plant cannot reach leaves the loop pinned at saturation",
                         m.value(),
                         self.node(node).name,
                         t.height.value()
@@ -1042,6 +1134,39 @@ impl PlantGraph {
             }
             (ControlledValue::Level { .. }, _) => Err(SimError::InvalidCommand(format!(
                 "node '{}' is not a tank, so it has no level setpoint range",
+                self.node(node).name
+            ))),
+            // **A vessel has no geometric analogue of a tank's height, and the
+            // reflex that wants one is rejected in the note** (docs/DESIGN.md §12
+            // fork 2). `P = m·R·T/(V·M̄)` is unbounded above; there is no height
+            // to exceed. Reconstructing reachability from the plant — refuse a
+            // setpoint above every source pressure — is possible from `&self` and
+            // is a network traversal masquerading as a range check: wrong the
+            // moment a plant has a compressor or a second source, and refusing
+            // legitimate plants for a reason the author cannot act on.
+            //
+            // So the bound is finiteness and strict positivity, and the asymmetry
+            // with the level arm is the part worth stating: `0` is LEGAL there and
+            // refused here. A level setpoint of zero is "drain it"; a pressure
+            // setpoint of zero is a vacuum the ideal-gas relation cannot reach at
+            // any finite mass, so a loop given one sits pinned at saturation
+            // forever, which is exactly what a setpoint bound exists to prevent.
+            (ControlledValue::Pressure { pa }, NodeKind::Vessel(_)) => {
+                if !pa.is_finite() || pa.value() <= 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "pressure setpoint {} Pa on vessel '{}' is not a finite positive absolute \
+                         pressure. A vessel has no geometric bound the way a tank's height bounds a \
+                         level, so this is the whole of the check — but 0 is refused where a level's \
+                         0 is legal: `P = m·R·T/(V·M̄)` reaches zero only at zero mass, so the loop \
+                         would sit pinned at saturation",
+                        pa.value(),
+                        self.node(node).name
+                    )));
+                }
+                Ok(())
+            }
+            (ControlledValue::Pressure { .. }, _) => Err(SimError::InvalidCommand(format!(
+                "node '{}' is not a vessel, so it has no pressure setpoint range",
                 self.node(node).name
             ))),
         }
@@ -1058,11 +1183,21 @@ impl PlantGraph {
     /// temperature, composition, reactor duties and column separations and no
     /// inventory at all, and which is empty before the first tick.
     ///
-    /// A pressure or a temperature is SOLVED and lives in `last_solution` /
-    /// `NodeStates`. A loop on either has no measurement at tick 0 and needs a
-    /// stated rule for that tick — which is one more reason those variables are
-    /// deferred per-variable rather than arriving "for free once the seam
-    /// exists".
+    /// **A `Vessel`'s pressure is stored too, and the sentence that used to stand
+    /// here said otherwise** (docs/DESIGN.md §12). It read: "a pressure or a
+    /// temperature is SOLVED and lives in `last_solution` / `NodeStates`; a loop
+    /// on either has no measurement at tick 0 and needs a stated rule for that
+    /// tick." `VesselState::pressure` is `m/C` and `m` is on this graph — real
+    /// from load, and *exactly* the declared figure, because `build_engine`
+    /// computes the initial mass as `P_declared · capacitance` through the same
+    /// `capacitance` method `pressure` divides by, precisely so that round trip is
+    /// exact. So this signature did not change and the promised tick-0 rule was
+    /// never owed.
+    ///
+    /// The claim is true of a `Junction`, whose pressure is an unknown of the
+    /// solve, and of a temperature, which really is a `NodeStates` quantity. Both
+    /// stay deferred; the junction arm below names the missing tick-0 rule so the
+    /// refusal doubles as that deferral's own trigger.
     ///
     /// Called at load to seed `ControlLoop::last_measurement` and once per loop
     /// per tick thereafter, so a loop's seeded measurement and its running one
@@ -1070,9 +1205,12 @@ impl PlantGraph {
     ///
     /// # Errors
     /// `SimError::Scenario` if the node cannot answer for that variable — a level
-    /// asked of anything that is not a `Tank`. The loader refuses that
-    /// combination at load, so this is the rule-5 backstop for a hand-built
-    /// graph, not the user-facing message.
+    /// asked of anything that is not a `Tank`, a pressure asked of anything that
+    /// is not a `Vessel`. The loader calls this very function at load, so these
+    /// messages ARE the user-facing ones rather than a rule-5 backstop behind
+    /// them: `build_controls` asks the graph instead of matching the kind itself,
+    /// so a kind the loader accepted and this reader then rejected is not a state
+    /// that can exist.
     pub fn measure(
         &self,
         slate: &Slate,
@@ -1084,7 +1222,45 @@ impl PlantGraph {
                 m: t.level(slate),
             }),
             (MeasuredVariable::Level, _) => Err(SimError::Scenario(format!(
-                "node '{}' is not a tank, so it has no level to control. A level names                  nothing on a vessel whose state IS pressure (docs/DESIGN.md §3a fork 2)",
+                "node '{}' is not a tank, so it has no level to control. A level names nothing on a \
+                 vessel whose state IS pressure (docs/DESIGN.md §3a fork 2)",
+                self.node(node).name
+            ))),
+            // Stored, exact from load, per the note above.
+            (MeasuredVariable::Pressure, NodeKind::Vessel(v)) => Ok(ControlledValue::Pressure {
+                pa: v.pressure(slate),
+            }),
+            // **Refused, and the reason is measured rather than stylistic**
+            // (docs/DESIGN.md §12 fork 1). A tank's pressure is
+            // `P_atm + ρ·g·h = P_atm + m·g/A`: the density cancels exactly (M8.5),
+            // so a tank-pressure loop is a level loop in a worse unit — a setpoint
+            // the author has to convert by hand and a gain in the wrong reciprocal
+            // unit. The message names what was meant instead.
+            (MeasuredVariable::Pressure, NodeKind::Tank(_)) => Err(SimError::Scenario(format!(
+                "node '{}' is a tank, and a tank's pressure is `P_atm + ρ·g·h = P_atm + m·g/A` — the \
+                 density cancels exactly, so controlling it is controlling the LEVEL in a worse \
+                 unit. Write `variable = \"level\"` with `setpoint_m`",
+                self.node(node).name
+            ))),
+            // **This is the one node kind fork 3's claim is actually true of.** A
+            // junction holds nothing; its pressure is an unknown of the solve and
+            // does not exist before the first tick. The refusal names the missing
+            // piece, so it doubles as the deferral's own trigger.
+            (MeasuredVariable::Pressure, NodeKind::Junction) => Err(SimError::Scenario(format!(
+                "node '{}' is a junction, which holds nothing: its pressure is an UNKNOWN of the \
+                 network solve and lives in `last_solution`, which is empty before the first tick. \
+                 Junction-pressure control is deferred on exactly that — it needs a stated rule for \
+                 what a loop measures at tick 0 (docs/DESIGN.md §12)",
+                self.node(node).name
+            ))),
+            // The catch-all, and its reason is a third distinct one: a source's
+            // and a sink's pressures are pinned by declaration, which makes them
+            // boundary conditions rather than states. Regulating one is regulating
+            // the scenario file.
+            (MeasuredVariable::Pressure, _) => Err(SimError::Scenario(format!(
+                "node '{}' has no pressure of its own to control. A vessel's pressure is a STATE; a \
+                 source's and a sink's are pinned by declaration, so a loop on one would be \
+                 regulating the scenario file rather than the plant",
                 self.node(node).name
             ))),
         }

@@ -53,6 +53,10 @@ fn build(src: &str) -> Engine {
 fn level(engine: &Engine) -> f64 {
     match engine.snapshot().controls[0].measurement {
         ControlledValue::Level { m } => m.value(),
+        // M10 added a second variant. A level fixture reading a pressure means
+        // the loop measures something this helper cannot report, which is a
+        // broken test rather than a number to coerce.
+        other => panic!("this fixture's loop measures a level, not {other:?}"),
     }
 }
 
