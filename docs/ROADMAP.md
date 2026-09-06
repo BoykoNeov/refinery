@@ -4293,14 +4293,86 @@ regrets.
 The rule stands: a design note before any of these, and the note may reject its
 own box. Listed in the order the ledger's distances suggest.
 
-1. **Pressure control** (E1). The nearest un-defer in `docs/DEFERRED.md` with a
-   plant already shipped: `relief_blowdown` has the vessel and the valve, and
-   lacks only the `ControlledValue` variant. It would also be the first loop
-   whose actuator is not a drain, which tests M8.4's "a level loop must actuate a
-   drain" as the special case it is rather than the rule it reads as.
+1. **Pressure control** (E1) — **TAKEN, as M10.** The nearest un-defer in
+   `docs/DEFERRED.md`. This entry said `relief_blowdown` "has the vessel and the
+   valve, and lacks only the `ControlledValue` variant"; M10.0 measured that the
+   plant has **no ordinary valve at all**, so it lacks an actuator too and the
+   demo has to be a new file. The other half of the entry held: it is the first
+   loop whose actuator is not a drain, and M10.0 generalised M8.4's rule to "the
+   actuator is an outlet of the measured holdup".
 2. **A cavitation floor** (B1). The one physical statement in §3 that tells a
    frontend to read a *wrong* number as a signal. Needs its trigger written before
    its note.
 3. **Phase in the state vector** (B3). Milestone-sized, three load-time refusals
    already name it, and it is what a flashing feed, a partial condenser and a
    vapour side draw all wait on.
+
+## M10 — the second controlled variable; opened from the ledger
+
+M9 closed with nothing in `docs/DEFERRED.md` past its trigger, so this milestone
+is the first one chosen from the table rather than handed over as a defect. E1 —
+pressure control — is the nearest row, and the milestone is scoped one step wider
+than that row on purpose: **"the second controlled variable"**, because
+everything this note argues is machinery the second variable pays for and the
+third and fourth inherit. M8 built the control seam and claimed it was
+variable-agnostic; the only way to find out is to add a variable.
+
+Pressure is the one it builds. Temperature and flow are explicitly not committed
+to — both are worse on the criterion below, and whether they follow is a decision
+for after pressure is measured.
+
+### M10.0 — Scoping + design note — **LANDED** 2026-09-06
+
+The note is DESIGN §12, written before any code, six forks and five gates. It
+changes no number. **Four things to know before the building slice.**
+
+**The reason E1 gives for deferring pressure is false, and it is the third
+recurrence of that exact error.** §10 fork 3 says a pressure is *solved* and
+lives in `last_solution`/`NodeStates`, both empty before the first tick, so a
+pressure loop has no measurement at tick 0. A `Vessel`'s pressure is `m/C` with
+`m` on the graph — **stored**, and exactly the declared figure, because the
+loader computes the initial mass as `P · capacitance(slate)` through the same
+method `pressure` divides by. So the measurement path already exists, `measure`'s
+signature does not change, and the tick-0 rule fork 3 promised is not owed. The
+claim is true only of a *junction's* pressure, and the deferral survives there,
+scoped to the node kinds it is actually true of. §3a fork 4 made the same class
+of error, and §10 fork 3 corrected M8.1's version of it **one paragraph before
+committing it again about the variable it was deferring**.
+
+**The ledger's own distance for E1 was wrong, and the milestone's demo has to be
+a new file.** E1 says `relief_blowdown` "lacks only the measurement variant". It
+has four nodes — source, vessel, PSV, sink — and **no ordinary valve**; the PSV
+is refused as an actuator by name, since its opening is recomputed every solve.
+It lacks an actuator. Adding one would move a regression anchor, which is why
+M8.4 shipped a new file rather than adding a loop to `tank_pump_valve.toml`. The
+row is corrected in `docs/DEFERRED.md`.
+
+**The schema's own prediction about the setpoint key is wrong, and following it
+would have been the only non-bar pressure in the format.** `ControlDef` predicts
+`setpoint_pa`; every pressure a scenario declares is in bar (six keys across four
+node kinds, no `_pa`), converted at the loader. So the keys are **`setpoint_bar` and
+`gain_per_bar`** — and with them a silent trap, named in advance: the
+controller's arithmetic is in Pascals, so the setpoint *and* the gain both need
+converting at the same site, and converting one without the other is a factor of
+100 000 that no type catches, because a gain is a bare `f64` all the way in.
+
+**M8.4's "a level loop must actuate a drain" is too narrow, and the general form
+is what decides the demo's wiring.** What the sign convention forces is that the
+actuator is an **outlet of the measured holdup** — a drain for a level, a vent
+for a vessel. So the demo vents to flare and the direction question never arises.
+Throttling the make-up instead is reverse acting, is refused at load in both
+controllers by design, and is **deferred with its own trigger** rather than
+smuggled in as a negative gain.
+
+Two more things the note fixes in advance. The demo carries **no PSV**, because a
+normally-shut relief valve leaves a dead-end node — the shape that puts
+`relief_blowdown` at 920 of 5 000 sweeps on the game fidelity and is deferral
+A3's whole subject — and a second plant of that shape would move a deferral's
+distance as a side effect. And the vent must be sized to sit **interior at steady
+state**, or the milestone repeats M8.4's recorded coverage gap, where the wired
+loop never reached its own saturation arm.
+
+The prediction to check rather than argue: adding a `ControlledValue` variant
+leaves every shipped scenario byte-identical, because the enum is serde-tagged
+and no pre-M10 file can select the new variable. `corpus --baseline`, both
+fidelities.

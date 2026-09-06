@@ -6180,3 +6180,300 @@ about it.
   correct for a dead end and would be wrong for a node whose single edge carries
   real flow — a terminal consumer, say. No shipped plant has one; a scenario that
   adds one un-defers this.
+
+## 12. The second controlled variable — pressure (M10) — specified before building
+
+### What M10 is, and why it is a milestone rather than a ledger row
+
+M9 closed with nothing in `docs/DEFERRED.md` past its trigger, so the next
+milestone is chosen from that table rather than handed over as a defect. E1 is
+the nearest row: §10 fork 1's loop shape is variable-agnostic, and each variable
+un-defers on its own once it has a measurement path and an actuator that exists.
+
+**The milestone is "the second controlled variable", and pressure is the first
+one it builds.** That framing is argued rather than assumed, because the obvious
+alternative — call it "pressure control", one row, one slice — would make
+temperature and flow two more unrelated rows later, each re-deriving the same
+questions about where a measurement comes from and what bounds a setpoint. The
+whole content of this note is machinery that the *second* variable pays for and
+the third and fourth inherit: a `MeasuredVariable` with more than one arm, a
+`ControlledValue` with more than one variant, a setpoint key chosen by the
+variable, and the two cross-variable refusals that only become expressible once
+two variables exist. M8 built the seam; M10 is what proves the seam was
+variable-agnostic, and it can only prove that by adding a variable to it.
+
+What M10 does **not** commit to is temperature and flow. Whether they follow in
+this milestone is a decision for after pressure is measured, in M9's habit of
+scoping one slice at a time — and both look worse than pressure on exactly the
+criterion below: a temperature is a `NodeStates` quantity and genuinely solved,
+and a flow lives on an edge, which nothing in `measure`'s signature can name.
+
+### The premise E1 states is false, and this is its third recurrence
+
+§10 fork 3 says where a measurement comes from differs by variable, and splits
+the world with `heat_input_w`'s own words — a *stored* quantity versus a *solved*
+one. It then says:
+
+> A **pressure or a temperature is solved**, and lives in `last_solution` /
+> `NodeStates`, both of which are empty before the first tick. A loop on either
+> has no measurement at tick 0 and needs a stated rule for that tick when those
+> variables un-defer.
+
+**That is false for the one node kind E1 names.** A `Vessel`'s pressure is
+`VesselState::pressure(slate) = m/C`, and `m` lives on the graph. It is real from
+load and it is *exactly* the declared figure: `build.rs` computes the initial
+mass as `P_declared · capacitance(slate)` through the same `capacitance` method
+`pressure` divides by, precisely so that round trip is exact. So a vessel-pressure
+loop reads the graph, has a genuine measurement at tick 0, and needs no stated
+rule for that tick. `measure`'s signature does not change and fork 3's promised
+tick-0 rule is not owed.
+
+The claim is true of a **junction's** pressure, which exists only in
+`last_solution` — and that is where the deferral survives, scoped to the node
+kinds it is actually true of rather than to the variable.
+
+**Third time.** §3a fork 4 specified a smoothstep across the choke on the premise
+that a clamp is a kink; the premise was false and the machinery was dropped. §10
+fork 3 itself corrected M8.1's "tick 0 has no previous state" for a *level*, and
+recorded the generalisation — before arguing from a quantity's absence, check
+whether it is stored or solved. It then made the same error in the next
+paragraph, about the variable it was deferring. A premise checked for the case in
+front of you is not checked for the case you are deferring, and a deferral's
+stated reason is exactly the sentence nobody re-reads.
+
+### The ledger's distance for E1 is wrong: the plant has no actuator
+
+E1's distance column says `relief_blowdown` "already has the vessel and the
+valve, and lacks only the measurement variant". It has four nodes — a source, the
+vessel, a `relief_valve` and a sink — and **no ordinary valve at all**. The PSV
+is refused as an actuator by name and for its own reason (its opening is a
+memoryless function of its own inlet pressure, so a controller writing it would
+be overwritten inside the same tick). The plant lacks an actuator, not a variant.
+
+Adding one would also move a regression anchor: thirteen of the fourteen shipped
+files were written before M8 and *are* the anchor, which is why M8.4 shipped a
+new file rather than adding a loop to `tank_pump_valve.toml`. M10's demo is a new
+file for the same reason. The row is corrected in the ledger.
+
+### Fork 1 — which node kinds can answer for a pressure
+
+`measure` is the single owner of where a measurement comes from, and its
+`(variable, kind)` match is where this is settled. Four answers, and the three
+refusals each carry their own reason because each is a different mistake:
+
+- **`Vessel` — yes.** Stored, exact from load, per above.
+- **`Tank` — refused, and the reason is measured.** A tank's pressure is
+  `P_atm + ρ·g·h = P_atm + m·g/A` (M8.5): the density cancels exactly, so a tank
+  pressure loop is a *level loop in a worse unit*, with a setpoint the author
+  would have to convert by hand and a gain in the wrong reciprocal unit. The
+  refusal names `variable = "level"` as the thing that was meant.
+- **`Junction` — refused, and this is where fork 3's claim is true.** A junction
+  holds nothing; its pressure is an unknown of the solve and does not exist
+  before the first tick. Refused with the tick-0 rule named as the missing piece,
+  so the refusal doubles as the deferral's own trigger.
+- **Everything else — refused as a catch-all.** A source's and a sink's pressures
+  are pinned by declaration, which makes them boundary conditions rather than
+  states; regulating one is regulating the scenario file. The catch-all says so.
+
+**Rejected: a `pressure()` method on `Node`, dispatching internally.** It would
+make "which nodes can be pressure-controlled" a property of a helper rather than
+of `measure`'s match, and the three refusals above are three different sentences
+that a single `Option<Pascal>` cannot carry.
+
+### Fork 2 — what bounds a pressure setpoint
+
+`check_setpoint` bounds a level by the measured tank's own geometry — a setpoint
+above the tank's height is unreachable, so the loop sits pinned at saturation and
+reads as a tuning problem. **A vessel has no geometric analogue.**
+`P = m·R·T/(V·M̄)` is unbounded above; there is no height to exceed.
+
+The reflex is to reconstruct reachability from the plant — refuse a setpoint
+above every source pressure or below every sink pressure. `check_setpoint` takes
+`&self` on the graph, so it is *possible*. **Rejected.** It is a network
+traversal masquerading as a range check, it is wrong the moment a plant has a
+compressor or a second source, and it would refuse legitimate plants for a reason
+the author cannot act on. The level arm's bound is cheap because a tank's height
+is a declared number on the measured node itself; nothing on a vessel plays that
+role.
+
+**Chosen: finite and strictly positive, with a comment saying why the level's
+bound has no analogue.** A pressure setpoint of zero is not "drain it" the way a
+level setpoint of zero is — it is a vacuum the ideal-gas relation cannot reach at
+finite mass — so `0` is refused here where it is legal there, and the asymmetry
+is stated at both arms.
+
+### Fork 3 — the key's unit, and the schema's own prediction is wrong
+
+`ControlDef::setpoint_m` predicts, in a comment written at M8.2: "when pressure
+control un-defers, its key is `setpoint_pa`". **Follow the format instead of the
+prediction.** Every pressure a scenario file declares is in bar — `pressure_bar`
+on source, sink, vessel and column, `set_pressure_bar` and `accumulation_bar` on
+the PSV, six pressure keys across four node kinds and no `_pa` anywhere —
+converted once at the loader by `bar_to_pa`. A `setpoint_pa` would be the only pressure in the format not in bar,
+which is the failure fork 4 exists to prevent (a number whose unit a reader has
+to infer from its neighbours), inverted. **The keys are `setpoint_bar` and
+`gain_per_bar`**, and this note corrects its own prediction the way M8.2
+corrected the note's bare `gain` to `gain_per_m`.
+
+**The trap that comes with it, named here because it is silent.**
+`ControlledValue::magnitude` returns SI, so a controller's arithmetic is in
+Pascals: the error is in Pa and the gain must therefore be *per Pa*. Both the
+setpoint and the gain need converting at load, at the same site, and converting
+one and not the other is a factor of 100 000 that no type catches — the gain is a
+bare `f64` all the way into `ProportionalController::new`. The two conversions
+are written as one pair with a comment naming the other, and the gate below
+measures the loop's output against a hand-computed `K·e` rather than trusting
+either.
+
+A consequence taken deliberately: the scenario key and the snapshot field carry
+different units for this variable (`setpoint_bar` in,
+`{"variable":"pressure","pa":…}` out) where the level loop's agree. That matches
+the rest of the format (`pressure_bar` in, `pressure_pa` out) rather than the
+level loop, and rule 4 holds on both sides — the unit is in the key on the way in
+and in the type on the way out.
+
+### Fork 4 — the direction of action, and what a vent valve buys
+
+`ControlledValue::error` is `measurement − setpoint` and the output is
+`clamp(K·e + b, 0, 1)`, so **a rising measurement opens the actuator**. M8.4
+recorded this as "a level loop must actuate a drain", and read as a rule about
+levels it is too narrow: what is forced is that **the actuator must be an outlet
+of the measured holdup**. A drain is the level case; for a vessel it is a vent.
+
+So the loop this milestone builds vents the vessel — pressure rises, the vent
+opens, the vessel blows down toward its setpoint — and the direction question
+never arises. The alternative wiring, throttling the *make-up* into the vessel,
+is reverse acting and is **not expressible today**: a negative gain is refused at
+load in both controllers, deliberately, with the note that a reverse-acting loop
+needs its own declaration rather than a sign. **M10 does not build reverse
+action.** It is a separate row with its own trigger, and building it beside the
+first pressure loop would blur which of the two the demo's numbers are evidence
+for.
+
+What this milestone *does* owe is generalising M8.4's sentence in the code that
+carries it, since "drain" is now one of two words for the same constraint.
+
+### Fork 5 — the demo plant, and whether it carries a PSV
+
+A new file, for the anchor reason above, and meant to be diffed against
+`relief_blowdown.toml` the way `tank_level_control.toml` is meant to be diffed
+against `tank_pump_valve.toml`: the same receiver on the same make-up line, with
+the PSV replaced by a controlled vent. The pair then says exactly what regulation
+is — one plant is held by a spring, the other by a loop.
+
+Three design inputs for the file, each of which will otherwise be discovered:
+
+- **The vent valve is in gas service, so it must declare `x_t`.** The loader
+  enforces that in both directions off M5.2's topological single-phase analysis;
+  it will refuse the file on the first load otherwise. `0.72` with
+  `gas_valve.toml`'s citation, as `relief_blowdown` already carries.
+- **The valve must sit interior at steady state**, off both limits, or the
+  milestone repeats M8.4's recorded coverage gap — that demo's output never left
+  `[0.194, 0.384]`, so the anti-windup arm was never reached by a wired run.
+  Sizing the vent so the settled opening is mid-range is a design input like the
+  cascade's saturated-liquid feed, not something to tune afterwards.
+- **No PSV on the demo plant.** A normally-shut PSV leaves its valve node a dead
+  end, which is the shape that puts `relief_blowdown` at 920 sweeps of 5 000 on
+  the game fidelity and is A3's whole subject; a second plant of that shape would
+  move a deferral's distance as a side effect of a milestone about something
+  else. The controlled vent conducts at steady state, so its node is not a dead
+  end. **Predicted, not assumed** — the corpus is run on both fidelities and the
+  new plant's sweep count recorded either way.
+
+### Fork 6 — the two cross-variable refusals become reachable for the first time
+
+`setpoint_m` on a pressure loop, and `setpoint_bar` on a level loop. Neither is
+covered today: `deny_unknown_fields` refuses a key that belongs to no algorithm
+and no variable, and until now the *other* variable's key did not exist, so
+"belongs to another variable" was not a state the format could reach. By the
+project's own rule — a refusal of something the format cannot express is not a
+refusal — these are new work rather than existing coverage, and they are two
+refusals, not one, because they are two different files with two different
+mistakes in them.
+
+The same becomes true of `gain_per_m` versus `gain_per_bar`, and of the setpoint
+variable a `Command::SetSetpoint` carries: `ControlledValue`'s own doc records
+that with one variant "the setpoint's variable disagrees with the loop's" is
+unrepresentable and there is deliberately no guard, and that **the moment a
+second variant lands that refusal becomes required**. M10 is that moment. The
+comment names its own expiry; this slice pays it.
+
+### The gates, named before building, and the vacuity each one closes
+
+1. **The tick-0 measurement.** At load, before any tick, the loop's reported
+   measurement is the vessel's declared pressure and the *snapshot's* pressure
+   for the same node is `NaN` — the solve has not run. **The two sides are
+   independent**: one is `ControlSnapshot::measurement`, read from the graph's
+   stored mass; the other is `NodeSnapshot::pressure_pa`, read from
+   `last_solution`, which is `None`. This is the gate that asserts the finding
+   fork 3 got wrong, and it is worth stating that the *equality* half alone would
+   be near-tautological — mass is built from pressure through the same
+   capacitance `pressure` divides by, so it is a round trip and could only catch
+   an asymmetric fault (M7.2's rule). The `NaN` half is what discriminates.
+2. **The one-Euler-step offset, read during the transient.** While the vessel is
+   still moving, the loop's measurement is the *start*-of-tick pressure and the
+   snapshot's is the solved end-of-tick one; they differ by one step, exactly as
+   M8.5 measured for a tank (0.67 Pa, 8.6e-6 relative). **The gate must be read
+   during the transient**, because at steady state the difference vanishes and
+   the assertion is vacuous — a reachability requirement on the fixture, stated
+   before it is written.
+3. **The unit pairing.** The loop's first output is compared against a
+   hand-computed `K·e` with the error in Pascals, which fails if the setpoint is
+   converted and the gain is not, or vice versa. A round trip through the loader
+   would not.
+4. **P versus PI transfers unchanged from M8.3** — the P loop's steady-state
+   offset equals its own actuator travel over the gain, which a high-gain P loop
+   cannot fake. Nothing about it is level-specific; running it on the pressure
+   plant is what shows that.
+5. **The refusal sweep**: each of fork 1's three refusals, fork 2's two bounds,
+   and fork 6's two cross-variable keys, each asserted on its own message rather
+   than on "load fails".
+
+Two controls asserted first, in M9.3b's habit: the vessel's pressure must
+actually move during the run (otherwise every gate above is passed by a plant
+that sits still), and the vent valve's opening must leave its initial value
+(otherwise they are passed by a loop that writes nothing).
+
+### What must not change, stated as a prediction that can be wrong
+
+**Adding a `ControlledValue` variant leaves every shipped scenario
+byte-identical, `tank_level_control.toml` included.** The enum is
+`#[serde(tag = "variable")]`, so an unused variant contributes nothing to the
+wire form of the used one, and no pre-M10 file can select the new variable. The
+prediction stops being true the moment anyone touches the serde representation of
+the existing variant — which is exactly the edit this states in advance so it
+cannot be made quietly. Checked with `corpus --baseline` on both fidelities, not
+argued.
+
+### The mutations this slice owes, named before building
+
+- **The gain converted, the setpoint not** (and its mirror). Predicted caught by
+  gate 3 and by nothing else — the loop would still be stable, just tuned by a
+  factor of 100 000, which every convergence and conservation test tolerates.
+- **`measure` reads the solved pressure instead of the stored one.** Predicted
+  caught by gate 1's `NaN` half at tick 0 and by gate 2 during the transient.
+- **`Tank` accepted for `variable = "pressure"`.** Predicted caught by the
+  refusal sweep only, which is the point: nothing physical goes wrong, the loop
+  merely controls a level in Pascals.
+- **The vent wired to the make-up line instead** (reverse action by rewiring
+  rather than by sign). Predicted caught by the control that the pressure moves
+  toward setpoint, and predicted *not* caught by any convergence gate.
+- **The second `ControlledValue` variant given the same serde tag.** Predicted
+  caught by the byte-identity prediction above.
+
+As always the predictions are the point of writing them down, and this project's
+record is that roughly half of them are wrong.
+
+### Deferred, with what un-defers each
+
+- **Reverse action** — a loop whose actuator is an inlet of the measured holdup.
+  Needs its own declaration, never a negative gain. Un-defers with a plant whose
+  only actuator is upstream of what it measures.
+- **Junction pressure control**, and with it fork 3's genuine tick-0 rule. A
+  junction's pressure is solved and absent before the first tick; the refusal in
+  fork 1 names this as the missing piece.
+- **Temperature and flow.** A temperature is a `NodeStates` quantity and really
+  is solved; a flow lives on an edge, and `measure` names a node. Each needs its
+  own measurement path argued, which is the shape this note has now walked once.
+- **Actuators other than a valve opening.** Pump speed and duty are still refused
+  by name, unchanged from M8.

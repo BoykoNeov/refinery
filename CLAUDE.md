@@ -178,6 +178,50 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M10 is OPEN, and its scope is the second controlled variable.** It is the first
+milestone chosen from `docs/DEFERRED.md` rather than handed over as a defect. E1
+— pressure control — is the row; the milestone is scoped one step wider on
+purpose, because everything the note argues is machinery the *second* variable
+pays for and the third and fourth inherit. Pressure is what it builds;
+temperature and flow are explicitly not committed to.
+
+**M10.0 landed 2026-09-06** — the design note, DESIGN §12, six forks and five
+gates, no code. Four things to know before the building slice.
+
+**The reason §10 gives for deferring pressure is FALSE, and it is the third
+recurrence of that exact error.** Fork 3 says a pressure is *solved* and lives in
+`last_solution`/`NodeStates`, empty before tick 1, so a pressure loop has no
+measurement at tick 0. A `Vessel`'s pressure is `m/C` with `m` on the graph —
+**stored**, and exactly the declared figure, because `build.rs` computes the
+initial mass as `P · capacitance(slate)` through the same method `pressure`
+divides by. The measurement path already exists, `measure`'s signature does not
+change, and the promised tick-0 rule is not owed. The claim is true only of a
+*junction's* pressure. §3a fork 4 made the same class of error, and §10 fork 3
+corrected M8.1's version of it **one paragraph before committing it again** about
+the variable it was deferring.
+
+**The ledger's own distance for E1 was wrong: `relief_blowdown` has NO ordinary
+valve** — source, vessel, PSV, sink — and the PSV is refused as an actuator by
+name. It lacks an actuator, not a variant, and adding one would move a regression
+anchor. The demo is a new file, as M8.4's was. Row corrected.
+
+**The schema's prediction `setpoint_pa` is wrong; the keys are `setpoint_bar` and
+`gain_per_bar`.** Every pressure a scenario declares is in bar (six keys across
+four node kinds, no `_pa`). The trap that comes with it, named in advance: the controller's
+arithmetic is in Pascals, so the setpoint AND the gain both convert at the same
+site, and converting one without the other is a factor of 100 000 no type
+catches — a gain is a bare `f64` all the way in.
+
+**M8.4's "a level loop must actuate a drain" is too narrow.** What the sign
+convention forces is that the actuator is an **outlet of the measured holdup** —
+a drain for a level, a vent for a vessel. The demo vents to flare, so the
+direction question never arises; throttling the make-up instead is reverse
+acting, refused at load in both controllers by design, and is deferred with its
+own trigger (DEFERRED E7) rather than smuggled in as a negative gain. The demo
+also carries **no PSV** (a shut relief valve is the dead-end shape behind A3) and
+its vent must be sized to sit interior at steady state, or the milestone repeats
+M8.4's coverage gap where the wired loop never reached its own saturation arm.
+
 **M9 is CLOSED (2026-09-06), and its scope was solver robustness.** It opened the
 way M8 did — with a defect the previous milestone reached and deliberately did not
 fix — and slices were scoped one at a time, because what the next one should be
