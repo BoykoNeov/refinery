@@ -11,7 +11,9 @@ use refinery_core::graph::{
     LeakRole, MeasuredVariable, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState, VesselState,
 };
 use refinery_core::stream::Stream;
-use refinery_core::traits::{Controller, FlowSolver, ReactionModel, SeparationModel, ThermoModel};
+use refinery_core::traits::{
+    BoilOffModel, Controller, FlowSolver, ReactionModel, SeparationModel, ThermoModel,
+};
 use refinery_core::units::{
     CubicMeter, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Seconds, SquareMeter, Watt,
     WattPerKelvin, P_ATM, T_AMBIENT,
@@ -44,6 +46,15 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // cascade column's own config is validated in step 2a and a mis-paired plant
     // would otherwise be told about its draws when the real fault is its thermo.
     require_compatible_fidelity(scenario)?;
+
+    // The boil-off model is selected HERE rather than with the other four in
+    // step 4, because it is the one fidelity key that changes the plant's
+    // TOPOLOGY: a model that can boil needs a vent edge per holdup to carry the
+    // vapour out (docs/DESIGN.md §14 fork 4), and those edges must exist before
+    // the topology is validated. Selecting once and carrying the box down is
+    // what keeps "which model is this" and "does this model need vents" from
+    // becoming two answers to one question.
+    let (boiloff, vents_holdups) = select_boiloff(&scenario.fidelity.boiloff)?;
 
     // Step 1: slate. An absent [[components]] table means the water-only slate,
     // which is what every scenario written before M3 meant — that default is
@@ -109,6 +120,13 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // Step 2b: thermally pair the exchanger sides, after every node exists so
     // both ends of a coupling can be resolved regardless of file order.
     build_couplings(&mut graph, &scenario.exchangers)?;
+
+    // Step 2c: the boil-off vents, when the selected model can boil. Before
+    // `validate_topology`, so the vents are part of the plant it validates
+    // rather than edges that appear behind its back.
+    if vents_holdups {
+        build_boiloff_vents(&mut graph, slate.len())?;
+    }
 
     // Step 3: validate topology at load — a clear error here beats solve-time
     // divergence for the same structural fault.
@@ -189,8 +207,111 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         dt: refinery_core::units::Seconds(scenario.simulation.dt),
     };
     Ok(Engine::new(
-        graph, slate, config, flow, thermo, reactions, separation,
+        graph, slate, config, flow, thermo, reactions, separation, boiloff,
     ))
+}
+
+/// Select the boil-off model, and say whether it needs vent edges.
+///
+/// **Two answers from one match, deliberately.** The topology a plant is built
+/// with and the model it runs must agree about whether a holdup can boil: build
+/// the vents without the model and the plant carries three dead edges; select
+/// the model without the vents and the first boiling tank fails the tick with
+/// nowhere to put its vapour (`Engine::tick` refuses exactly that). Returning
+/// the pair makes the agreement structural rather than a convention two call
+/// sites keep.
+fn select_boiloff(name: &str) -> Result<(Box<dyn BoilOffModel>, bool), SimError> {
+    match name {
+        // The default, and what every file written before M12 means.
+        "none" => Ok((Box::new(refinery_solvers::NoBoilOff), false)),
+        // The M12.1 equilibrium flash. Its pairing with `thermo` is already
+        // settled by `require_compatible_fidelity` in step 0.
+        "flash" => Ok((Box::new(refinery_solvers::FlashBoilOff), true)),
+        other => Err(SimError::Scenario(format!(
+            "unknown boil-off model '{other}' (valid: none, flash)"
+        ))),
+    }
+}
+
+/// Build one vent edge per liquid holdup, tank → `Atmosphere`, for a plant whose
+/// boil-off model can boil (docs/DESIGN.md §14 fork 4).
+///
+/// **Why the loader builds these and the scenario does not declare them.** The
+/// demo this milestone ships is `crude_column_cascade.toml` with ONE line
+/// changed, which is the M7 pair pattern it is meant to be diffed against — and
+/// a file that had to declare an atmosphere node and a vent pipe per tank would
+/// differ by nine lines instead of one, so the difference in the numbers would
+/// no longer be attributable to the key. It is also the `leak_to` precedent
+/// (M6.0): a leak path is graph surgery performed at LOAD, because a topology
+/// that appears mid-run changes the snapshot's shape mid-run.
+///
+/// **An existing `Atmosphere` is reused rather than joined by a second one.** A
+/// plant may already have one (`leaking_line.toml` does); two would be two names
+/// for the outside world, and the vapour would leave through whichever the
+/// loader happened to pick.
+fn build_boiloff_vents(graph: &mut PlantGraph, components: usize) -> Result<(), SimError> {
+    let tanks: Vec<NodeId> = graph
+        .node_ids()
+        .filter(|id| matches!(graph.node(*id).kind, NodeKind::Tank(_)))
+        .collect();
+    if tanks.is_empty() {
+        // A plant with no holdup selects a boil-off model and gets no vents,
+        // which is not an error: the key says what a holdup WOULD do.
+        return Ok(());
+    }
+
+    let existing_atmosphere = graph
+        .node_ids()
+        .find(|id| matches!(graph.node(*id).kind, NodeKind::Atmosphere));
+    let atmosphere = match existing_atmosphere {
+        Some(existing) => existing,
+        None => {
+            const VENT_ATMOSPHERE: &str = "boiloff_atmosphere";
+            if graph.find_node(VENT_ATMOSPHERE).is_some() {
+                return Err(SimError::Scenario(format!(
+                    "this plant selects `[fidelity] boiloff` with a model that vents, whose                      atmosphere node would be named '{VENT_ATMOSPHERE}' — and the plant                      already has a node by that name which is not an atmosphere. Rename it,                      or declare `type = \"atmosphere\"` on it and the vents will use it"
+                )));
+            }
+            graph.add_node(Node {
+                name: VENT_ATMOSPHERE.into(),
+                kind: NodeKind::Atmosphere,
+                heat_input: Watt::ZERO,
+            })
+        }
+    };
+
+    for tank in tanks {
+        let name = format!("{}__boiloff_vent", graph.node(tank).name);
+        if graph.edge_ids().any(|eid| graph.pipe(eid).name == name) {
+            return Err(SimError::Scenario(format!(
+                "tank '{}' would vent its boil-off through an edge named '{name}', and this                  plant already has a pipe by that name. Rename it",
+                graph.node(tank).name
+            )));
+        }
+        // **Geometry of ZERO, for the leak orifice's reason.** A vent has no
+        // length to resist with and no bore that means anything: its flow is
+        // prescribed by the holdup's enthalpy balance, and `compile_edge`
+        // returns on the role before reading either. Writing plausible numbers
+        // here would put a second, silent resistance in a path that has none.
+        //
+        // The direction is tank → atmosphere, so graph-positive IS outward and
+        // the engine's write needs no sign flip.
+        graph.add_pipe(
+            tank,
+            atmosphere,
+            Pipe {
+                name,
+                length: Meter(0.0),
+                diameter: Meter(0.0),
+                friction_factor: 0.0,
+                elevation_change: Meter(0.0),
+                ambient_ua: WattPerKelvin(0.0),
+                leak: LeakRole::BoilOffVent,
+                stream: Stream::stagnant(components, T_AMBIENT, P_ATM),
+            },
+        );
+    }
+    Ok(())
 }
 
 /// Build the canonical slate from the `[[components]]` table, in file order.

@@ -4940,3 +4940,43 @@ exactly, passes I1 and I7 and every other conservation test in the workspace, an
 **never changes what is in the tank** — so the light cut doing the boiling stays
 there forever. A boil-off is a flash, not a decrement, and the only gate that can
 tell them apart is the one that watches the composition move.
+
+### M12.1 — The boil-off, the `boiloff` fidelity key and its demo — **LANDED** 2026-09-07
+
+The building slice. `BoilOffModel` in `core` with `NoBoilOff` and `FlashBoilOff`
+in `solvers`, `[fidelity] boiloff = "none" | "flash"`, the vent edge the loader
+builds per holdup, `scenarios/crude_column_boiloff.toml`, ten gates and a
+twelve-edit mutation pass. The design note is DESIGN §14; what building it
+corrected is §14's "Corrections from building it", and the two findings worth
+carrying forward are there rather than here.
+
+**The result, and it is smaller than the note predicted.** About **a tenth** of
+the naphtha product boils off, not a quarter: 2 539.2 kg of 28 439.9 kg drawn
+over 6 000 ticks, `vent/draw = 0.109` at the end against `f_in = 0.1282`
+predicted from the plant's own numbers. The note's 0.236 was computed at the
+tank's *declared* pure composition — the tick-0 trap the note itself names one
+section earlier for gate 1 — and against the mixture the tank actually holds the
+bubble point is 369.77 K rather than 354.3 K.
+
+**The defect that mattered was in the accounted path, not the physics.** The
+tank's inventory fell by 2 539 kg while its vent reported 0.0 kg/s on every tick:
+the vent edge has two ends, step 3 loops over every node, and the atmosphere's
+own iteration wrote a zero over a rate a tank had published. Caught by a gate's
+control rather than by any assertion about vapour, and by no conservation test.
+
+**All sixteen shipped plants are byte-identical on both fidelities**, measured
+against a corpus baseline recorded from `HEAD` in a separate worktree rather than
+predicted: sixteen `identical` rows on `newton` and sixteen on `simple`, no
+iteration count moved, and `crude_column_boiloff` reported `new`. The anchor now
+declares `boiloff = "none"` explicitly so the pair reads as a pair; stripping that
+line reproduces its snapshot byte for byte (M8.5's verification, as a gate).
+
+**What this does NOT close.** B3's three STREAM paths — a flashing feed line, a
+partial condenser, a vapour side draw — are untouched and keep the row open; the
+holdup clause is struck. And the term ships with a known open end: the vapour's
+LATENT heat has no accounted path, because the engine's holdup datum is sensible
+only. **7.6084e8 J over the run, 13.9% of the enthalpy the draw delivered, 1.54 MW
+at tick 6 000.** Mass balances exactly and the energy books show a sink at every
+boiling tank. That is `docs/DEFERRED.md` **B16**, and it was measured rather than
+called small — the fix that suggests itself (a vent temperature chosen to make the
+sensible enthalpy come out right) is a fabricated number and is refused.

@@ -40,7 +40,9 @@ use refinery_core::energy::{enthalpy_flux, T_REF};
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::graph::{EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::units::*;
-use refinery_solvers::{ConstantThermo, CutPointSplitter, NewtonFlowSolver, NoReactions};
+use refinery_solvers::{
+    ConstantThermo, CutPointSplitter, NewtonFlowSolver, NoBoilOff, NoReactions,
+};
 
 const DT: Seconds = Seconds(0.1);
 /// Water's cp at the slate's reference conditions [J/(kg·K)]. Mirrors
@@ -58,6 +60,7 @@ fn engine(graph: PlantGraph) -> Engine {
         Box::new(ConstantThermo),
         Box::new(NoReactions),
         Box::new(CutPointSplitter),
+        Box::new(NoBoilOff),
     )
 }
 

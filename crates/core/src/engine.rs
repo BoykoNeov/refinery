@@ -4,7 +4,7 @@
 //!   commands → hydraulic solve (quasi-steady) → transport → unit dynamics
 //!   → validation → snapshot available.
 
-use crate::components::Slate;
+use crate::components::{Composition, Slate};
 use crate::energy::{self, T_REF};
 use crate::error::SimError;
 use crate::graph::{ControlMode, ControlledValue, LeakRole, LoopId, NodeId, NodeKind, PlantGraph};
@@ -12,7 +12,9 @@ use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
     NodeSnapshot, Snapshot,
 };
-use crate::traits::{FlowSolver, HydraulicSolution, ReactionModel, SeparationModel, ThermoModel};
+use crate::traits::{
+    BoilOffModel, FlowSolver, HydraulicSolution, ReactionModel, SeparationModel, ThermoModel,
+};
 use crate::units::*;
 
 /// Inventory below which a tank has no meaningful temperature [kg].
@@ -23,6 +25,14 @@ use crate::units::*;
 /// merely imprecise. Below a milligram the tank is empty for any refinery
 /// purpose, so its last temperature is held instead of dividing by ~0.
 const MIN_THERMAL_MASS_KG: f64 = 1e-6;
+
+/// How far below zero a component's remaining mass may land before it stops
+/// being a rounding error, as a fraction of the holdup (M12.1).
+///
+/// Seven orders above the double-precision spacing of a mass and seven below any
+/// over-draw a model could make on purpose, so it separates the two without
+/// being fitted to either.
+const ROUNDING_MASS_FRACTION: f64 = 1e-9;
 
 pub struct EngineConfig {
     pub dt: Seconds,
@@ -58,6 +68,10 @@ pub struct Engine {
     /// site — the composition sweep — and its result travels to the sweep's two
     /// consumers through `NodeStates::column_separation`.
     separation: Box<dyn SeparationModel>,
+    /// What a liquid holdup does above its own bubble point (M12,
+    /// docs/DESIGN.md §14). Reaches one call site — the `Tank` arm of step 3 —
+    /// and `NoBoilOff` is what every plant written before M12 selects.
+    boiloff: Box<dyn BoilOffModel>,
     tick: u64,
     last_solution: Option<HydraulicSolution>,
     /// Resolved node temperature [K] and composition fields from the last tick.
@@ -82,6 +96,7 @@ pub struct Engine {
 }
 
 impl Engine {
+    #[allow(clippy::too_many_arguments)] // one argument per fidelity seam; see `[fidelity]`
     pub fn new(
         graph: PlantGraph,
         slate: Slate,
@@ -90,6 +105,7 @@ impl Engine {
         thermo: Box<dyn ThermoModel>,
         reactions: Box<dyn ReactionModel>,
         separation: Box<dyn SeparationModel>,
+        boiloff: Box<dyn BoilOffModel>,
     ) -> Self {
         Self {
             graph,
@@ -99,6 +115,7 @@ impl Engine {
             thermo,
             reactions,
             separation,
+            boiloff,
             tick: 0,
             last_solution: None,
             node_states: energy::NodeStates::default(),
@@ -195,6 +212,15 @@ impl Engine {
                         "'{}' ({edge:?}) IS a leak orifice, not a pipe that has one. \
                          Puncture the pipe the scenario declared; the engine routes the \
                          area onto its orifice",
+                        self.graph.pipe(edge).name
+                    ))),
+                    // A vent is not damage and is not commandable. Its area is
+                    // not a handle at all: the flow through it is written by the
+                    // holdup's own enthalpy balance every tick (M12), so an area
+                    // stored here would be a number no solver reads — the same
+                    // defect this command was found to have in M6.0.
+                    LeakRole::BoilOffVent => Err(SimError::InvalidCommand(format!(
+                        "'{}' ({edge:?}) is a boil-off vent, not a pipe that can be \n                         punctured. It exists because this plant selects \n                         `[fidelity] boiloff = \"flash\"`, and its flow is prescribed \n                         by the tank's enthalpy balance rather than by any area \n                         (docs/DESIGN.md §14)",
                         self.graph.pipe(edge).name
                     ))),
                 }
@@ -503,6 +529,15 @@ impl Engine {
         //     While `ambient_ua` is 0 the transform is the identity and this is
         //     bit-identical to the isothermal transport it replaces.
         for eid in self.graph.edge_ids().collect::<Vec<_>>() {
+            // A boil-off vent is written whole — flow, composition AND
+            // temperature — by the holdup dynamics below, at the state the
+            // vapour actually left in (M12, docs/DESIGN.md §14 fork 4). The
+            // upwind rule cannot produce that value: the tank's temperature at
+            // this point in the tick is the pre-boil-off one, and the vapour
+            // leaves at the bubble point the flash lands on. See step 3.
+            if self.graph.pipe(eid).leak.is_boiloff_vent() {
+                continue;
+            }
             let (from, to) = self.graph.endpoints(eid);
             let flow = self.graph.pipe(eid).stream.mass_flow.value();
             // The outlet is the end the flow LEAVES by, which mirrors the
@@ -578,6 +613,15 @@ impl Engine {
             let mut inflow_mass_rate = 0.0; // [kg/s]
             let mut outflow_mass_rate = 0.0; // [kg/s], positive magnitude
             for (eid, _other, incoming) in self.graph.incident(nid) {
+                // The vent is NOT a flux into this balance, and counting it here
+                // would remove the vapour twice: the boil-off below debits the
+                // inventory directly, and the vent edge exists so that an
+                // EXTERNAL mass balance (I1, a frontend, the corpus) sees the
+                // mass leave by an accounted path rather than vanish. Its flow
+                // is also last tick's at this point in the tick.
+                if self.graph.pipe(eid).leak.is_boiloff_vent() {
+                    continue;
+                }
                 let stream = &self.graph.pipe(eid).stream;
                 let flow = stream.mass_flow.value();
                 let into_node = if incoming { flow } else { -flow };
@@ -634,6 +678,34 @@ impl Engine {
             // below needs it for its diagnostic, and a node cannot be borrowed
             // both ways at once.
             let node_name = self.graph.node(nid).name.clone();
+            // The boil-off vent this holdup writes, if the plant has one. Found
+            // before the borrow for the same reason as the name, and by ROLE
+            // rather than by "an edge to an Atmosphere": a declared pipe from a
+            // tank to an atmosphere node is an ordinary pressure-driven pipe and
+            // must stay one.
+            //
+            // **Restricted to the holdup END, and that is not a refinement.**
+            // Every vent on the plant is also incident to the ATMOSPHERE node,
+            // and this loop runs over every node — so without the `Tank` test
+            // the atmosphere's own iteration finds the first vent in its
+            // incident list, has no boil-off of its own, and writes a zero over
+            // a rate a tank had already published. Measured before it was
+            // understood: the tank's inventory fell by 2 539 kg over 6 000 ticks
+            // while its vent reported 0.0 kg/s on every one of them, so the mass
+            // balance the vent exists to close was the thing being broken.
+            let vent = self
+                .graph
+                .incident(nid)
+                .into_iter()
+                .find(|(eid, _, _)| {
+                    self.graph.pipe(*eid).leak.is_boiloff_vent()
+                        && matches!(self.graph.node(nid).kind, NodeKind::Tank(_))
+                })
+                .map(|(eid, _, _)| eid);
+            // What the vent carries this tick: a rate, the equilibrium vapour,
+            // and the temperature it left at. `None` while nothing boils, which
+            // is every tick on a plant that selects `boiloff = "none"`.
+            let mut vented: Option<(KgPerSec, Composition, Kelvin)> = None;
             if let NodeKind::Tank(tank) = &mut self.graph.node_mut(nid).kind {
                 let mass_old = tank.mass.value();
                 // The inventory's enthalpy at the composition that actually
@@ -720,6 +792,104 @@ impl Engine {
                         )
                     })?;
                 }
+
+                // The boil-off (M12, docs/DESIGN.md §14). HERE, in the same tick
+                // that let the holdup reach the superheated state, because the
+                // constraint is algebraic: a one-tick lag would not vanish as
+                // `dt → 0`, which is M3.2's test for a lag that is really a
+                // defect.
+                //
+                // The branch below contains no arithmetic that differs between
+                // the two fidelities — the flash fraction, its caps and the
+                // vapour composition all live in the model (§14 fork 6, as
+                // amended by fork 9). What is here is WHEN to ask and what to do
+                // with the answer, which is what rule 2 means by selecting an
+                // implementation rather than branching on a flag.
+                //
+                // **`P_ATM`, not the tank's node pressure, and that is a
+                // correction to the note.** §14 fork 3 writes `T_bub(P_node, x)`;
+                // a tank's node pressure is its BOTTOM pressure, which on the
+                // demo's geometry is up to 80 kPa above the blanket — a
+                // different question by ~10 K of bubble point. `NodeKind::Tank`
+                // is documented as vented, its free surface is at atmospheric,
+                // and that is the pressure a well-mixed atmospheric holdup
+                // boils at. Reading the bottom pressure would also make the term
+                // a function of LEVEL, so a tank would stop boiling as it filled.
+                if let Some(boil) = self.boiloff.boil_off(
+                    &self.slate,
+                    &tank.composition,
+                    Kg(mass_new),
+                    tank.temperature,
+                    P_ATM,
+                    self.thermo.as_ref(),
+                )? {
+                    let vapour_mass = boil.vapour_mass.value();
+                    // Rule 5's backstop on a seam: a model that returns more
+                    // vapour than the holdup holds would drive the inventory
+                    // negative, and the mass update below has no branch that
+                    // would notice.
+                    if !vapour_mass.is_finite() || !(0.0..=mass_new).contains(&vapour_mass) {
+                        return Err(SimError::Numerical(format!(
+                            "boil-off model '{}' boiled {vapour_mass} kg off tank                              '{node_name}', which holds {mass_new:.4e} kg",
+                            self.boiloff.name()
+                        )));
+                    }
+                    let remaining = mass_new - vapour_mass;
+                    // Per component, at the VAPOUR's composition — the fork.
+                    // Debiting at the tank's own `x` conserves mass exactly and
+                    // leaves the fractions untouched for ever, which every
+                    // conservation test in this workspace passes.
+                    //
+                    // Guarded by the same inventory floor as the temperature
+                    // above: a holdup that boils away to nothing has no
+                    // composition and no temperature left to compute, and holds
+                    // its last valid ones.
+                    if remaining > MIN_THERMAL_MASS_KG {
+                        //
+                        // **The `max(0.0)` is a ROUNDING guard and the bound
+                        // beside it is what keeps it one.** The model caps the
+                        // vaporisation so that no component is over-drawn, and
+                        // where that cap BINDS the subtraction below is
+                        // `w·m − y·((w/y)·m)` — exactly zero in real arithmetic
+                        // and a few ULP either side of it in floating point, so
+                        // a bare `from_weights` refuses a composition that is
+                        // correct. Anything more than a rounding error below
+                        // zero is a model over-drawing a component, and that is
+                        // an `Err` with the component named rather than a clamp.
+                        let mut weights = Vec::with_capacity(self.slate.len());
+                        for (c, (x, y)) in tank
+                            .composition
+                            .fractions()
+                            .iter()
+                            .zip(boil.vapour.fractions())
+                            .enumerate()
+                        {
+                            let left = x * mass_new - y * vapour_mass;
+                            if left < -ROUNDING_MASS_FRACTION * mass_new {
+                                return Err(SimError::Numerical(format!(
+                                    "boil-off model '{}' over-draws component {c} of tank                                      '{node_name}': the tank holds {:.4e} kg of it and the                                      flash takes {:.4e} kg",
+                                    self.boiloff.name(),
+                                    x * mass_new,
+                                    y * vapour_mass
+                                )));
+                            }
+                            weights.push(left.max(0.0));
+                        }
+                        tank.composition =
+                            Composition::from_weights(&weights).map_err(|e| {
+                                SimError::Numerical(format!(
+                                    "tank '{node_name}' has no valid composition left after                                      boiling {vapour_mass:.4e} kg off {mass_new:.4e} kg: {e}.                                      The vapour is enriched, so an over-drawn component runs                                      negative before the total does"
+                                ))
+                            })?;
+                        tank.temperature = boil.liquid_temperature;
+                    }
+                    tank.mass = Kg(remaining);
+                    vented = Some((
+                        KgPerSec(vapour_mass / dt.value()),
+                        boil.vapour,
+                        boil.liquid_temperature,
+                    ));
+                }
             } else if let NodeKind::Vessel(vessel) = &mut self.graph.node_mut(nid).kind {
                 // The tank's balance over a compressible substance. Mass,
                 // composition and energy integrate identically — the fluxes above
@@ -783,6 +953,41 @@ impl Engine {
                     })?;
                 }
             }
+
+            // The vent, written whole and written here — after the holdup update
+            // it reports, which is why it is not step 2b′ where a column draw is
+            // written (§14 fork 4). A draw needs the resolved FEED composition; a
+            // vent needs the holdup update that precedes it.
+            //
+            // Written on every tick a vent exists, including the ticks nothing
+            // boils: a stale rate left on the edge would keep venting mass that
+            // the inventory is no longer losing.
+            if let Some(eid) = vent {
+                let (flow, composition, temperature) = vented.unwrap_or_else(|| {
+                    (
+                        KgPerSec(0.0),
+                        self.graph.pipe(eid).stream.composition.clone(),
+                        self.graph.pipe(eid).stream.temperature,
+                    )
+                });
+                let pipe = self.graph.pipe_mut(eid);
+                pipe.stream.mass_flow = flow;
+                pipe.stream.composition = composition;
+                pipe.stream.temperature = temperature;
+                // Kept consistent with the stream for the same reason a draw is:
+                // any reader of `edge_mass_flow` — a mass balance, a frontend,
+                // the snapshot's dissipation lookup — must see the prescribed
+                // flow and not the solver's placeholder zero.
+                solution.edge_mass_flow.insert(eid, flow.value());
+            } else if vented.is_some() {
+                // A model produced a boil-off on a holdup with nowhere to vent
+                // it. Refused rather than dropped: dropping it is the bare
+                // decrement fork 4 rejects, and it would break I1 on a plant
+                // that looks fine.
+                return Err(SimError::Numerical(format!(
+                    "tank '{node_name}' boiled off vapour but has no vent edge to                      `Atmosphere`. The loader builds one per tank when                      `[fidelity] boiloff` selects a model that can boil; a graph built                      by hand must do the same (docs/DESIGN.md §14 fork 4)"
+                )));
+            }
         }
 
         // 3b. Publish each stream's composition: its upwind node's, unchanged —
@@ -809,6 +1014,15 @@ impl Engine {
         //     quasi-steady staleness the tank levels feeding that solve already
         //     have.
         for eid in self.graph.edge_ids().collect::<Vec<_>>() {
+            // Not a vent: the upwind node is the tank, so this pass would
+            // overwrite the equilibrium vapour `y = K·x` with the LIQUID
+            // composition it left behind. That is the fork-2 defect written
+            // back onto the edge — the tank's own books would still move, but
+            // every external reader, I7 included, would see the vapour leaving
+            // at `x`.
+            if self.graph.pipe(eid).leak.is_boiloff_vent() {
+                continue;
+            }
             let flow = self.graph.pipe(eid).stream.mass_flow.value();
             let upwind = energy::edge_composition_at(
                 &self.graph,
@@ -1106,7 +1320,12 @@ impl Engine {
                             .and_then(|s| s.edge_mass_flow.get(&orifice))
                             .copied()
                             .unwrap_or(0.0),
-                        LeakRole::None | LeakRole::Orifice { .. } => 0.0,
+                        // A VENT is not a leak: `leak_mass_flow` is the
+                        // frontend's "this pipe is spraying" number, and a
+                        // boil-off vent is ordinary operation of a plant that
+                        // declares `boiloff = "flash"`. Its flow is on the vent
+                        // EDGE, where every other prescribed flow is read.
+                        LeakRole::None | LeakRole::Orifice { .. } | LeakRole::BoilOffVent => 0.0,
                     },
                 }
             })

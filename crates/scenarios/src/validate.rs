@@ -269,6 +269,18 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
                 .into(),
         ));
     }
+    // The same shape, one key over, and refused for the same reason: without it
+    // the plant loads happily, runs, and boils nothing at all — because
+    // `ConstantThermo`'s `bubble_pressure` is an `Err` that the boil-off model
+    // reads as "this fidelity cannot answer". That is silent rather than loud,
+    // which makes it worse than the cascade's version: a scenario author would
+    // see a plant that selects `flash` and behaves exactly like `none`.
+    if scenario.fidelity.boiloff == "flash" && scenario.fidelity.thermo == "constant" {
+        return Err(SimError::Scenario(
+            "boiloff = \"flash\" with thermo = \"constant\": a boil-off IS a vapour-liquid              equilibrium — it needs a bubble point to park the holdup on, a K-value to say              what leaves, and a latent heat to size it — and the 'constant' fidelity is              constant-property water with none of the three. Select thermo = \"trouton\"."
+                .into(),
+        ));
+    }
     Ok(())
 }
 

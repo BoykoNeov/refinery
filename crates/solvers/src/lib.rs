@@ -6,6 +6,7 @@
 //! | ThermoModel     | ConstantThermo       | TroutonThermo (M7.2)    |
 //! | ReactionModel   | SimpleLookup (M4.1)  | FourLump (M4.2)         |
 //! | SeparationModel | CutPointSplitter     | StageCascade (M7.3)     |
+//! | BoilOffModel    | NoBoilOff (M12.1)    | FlashBoilOff (M12.1)    |
 //! | Controller      | ProportionalController (M8.2) | PiController (M8.3) |
 //!
 //! The last row is the odd one and says so here rather than in a comment nobody
@@ -22,6 +23,8 @@
 //! was nothing for a second implementation to differ about. It is named here
 //! because a table that promises a type is a claim like any other.
 
+pub mod boiloff;
+pub mod bubble;
 pub mod cascade;
 pub mod control;
 pub mod elements;
@@ -35,6 +38,8 @@ pub mod separation;
 pub mod simple_flow;
 pub mod thermo;
 
+pub use boiloff::{FlashBoilOff, NoBoilOff};
+pub use bubble::bubble_temperature;
 pub use cascade::StageCascade;
 pub use control::{PiController, ProportionalController};
 pub use flash::{flash_isothermal, FlashResult};

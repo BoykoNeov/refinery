@@ -18,7 +18,7 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{ColumnDraw, LeakRole, Node, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::traits::{ColumnPass, DrawSeparation, Separation, SeparationModel, ThermoModel};
 use refinery_core::units::*;
-use refinery_solvers::{ConstantThermo, NewtonFlowSolver, NoReactions};
+use refinery_solvers::{ConstantThermo, NewtonFlowSolver, NoBoilOff, NoReactions};
 
 const DT: Seconds = Seconds(0.1);
 
@@ -152,6 +152,7 @@ fn engine_with(separation: Box<dyn SeparationModel>) -> Engine {
         Box::new(ConstantThermo),
         Box::new(NoReactions),
         separation,
+        Box::new(NoBoilOff),
     )
 }
 

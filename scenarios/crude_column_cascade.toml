@@ -73,6 +73,7 @@ flow = "newton"
 thermo = "trouton"
 separation = "cascade"
 reactions = "none"
+boiloff = "none"
 
 [[components]]
 name = "light_naphtha"

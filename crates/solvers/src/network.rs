@@ -369,6 +369,25 @@ pub fn compile_edge(
 ) -> Result<CompiledEdge, SimError> {
     let (src, tgt) = graph.endpoints(eid);
     let pipe = graph.pipe(eid);
+    // A BOIL-OFF VENT compiles to a closed branch and returns before anything
+    // else is read — above the density lookup on purpose, because a vent has no
+    // hydraulics at all and must not be able to fail on a property it does not
+    // use. `alpha = +∞` is what `conducts` already reads as closed, so the vent
+    // contributes nothing to any node's residual, nothing to the throughput and
+    // nothing to the per-node scale `grade_nodes` stops on. Its flow is written
+    // by `Engine::tick` from the holdup's enthalpy balance (docs/DESIGN.md §14).
+    if pipe.leak.is_boiloff_vent() {
+        return Ok(CompiledEdge {
+            src,
+            tgt,
+            branch: QuadraticBranch {
+                alpha: f64::INFINITY,
+                beta: 0.0,
+            },
+            rho: 1.0,
+            conducts: false,
+        });
+    }
     let upwind_node = if pressures[&src] >= pressures[&tgt] {
         src
     } else {
@@ -955,7 +974,8 @@ pub struct EdgeResults {
 /// the column at exactly the feed temperature, which is the limitation DESIGN §5
 /// already states and `column_reference` already gates.
 ///
-/// **Column draw edges are guarded to zero here, not computed.** A draw's flow is
+/// **Column draw edges and boil-off vents are guarded to zero here, not
+/// computed.** A draw's flow is
 /// `splitᵢ · ṁ_feed`, prescribed by the feed's composition, and both endpoints
 /// (column and product tank) are fixed reservoirs — so the pressure-driven
 /// `ρ·branch.flow(dp)` this function would otherwise report is a finite,
@@ -966,6 +986,13 @@ pub struct EdgeResults {
 /// post-sweep by `Engine::tick`, once the feed composition is resolved; here we
 /// only refuse to leak a bogus value. This needs no slate or composition — only
 /// the graph topology telling a draw edge from an ordinary one.
+///
+/// A boil-off vent (M12) is the same case with a different owner: its rate comes
+/// from the holdup's enthalpy balance, `Engine::tick` writes it post-update, and
+/// left pressure-driven it would drain a tank to atmosphere through a pipe
+/// nobody declared. It is recognised by its ROLE rather than by its endpoints,
+/// because a scenario is free to declare an ordinary pipe from a tank to an
+/// atmosphere node and that pipe must stay pressure-driven.
 pub fn edge_flows(
     graph: &PlantGraph,
     compiled: &BTreeMap<EdgeId, CompiledEdge>,
@@ -978,7 +1005,7 @@ pub fn edge_flows(
     let mut throughput = 0.0f64;
     for eid in graph.edge_ids() {
         let c = &compiled[&eid];
-        let mdot = if is_column_draw_edge(graph, eid) {
+        let mdot = if is_column_draw_edge(graph, eid) || graph.pipe(eid).leak.is_boiloff_vent() {
             0.0
         } else if anchored.contains(&c.src) && anchored.contains(&c.tgt) {
             let dp = pressures[&c.src] - pressures[&c.tgt];

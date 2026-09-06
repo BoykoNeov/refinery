@@ -7954,3 +7954,175 @@ under test, so a gate that fires is pointing at the term and not at the plant.
   shipped plant that can tell the two answers apart, which is this project's bar
   for a fidelity key. `docs/DEFERRED.md` B14 and B15, each with that plant as its
   trigger.
+
+### Corrections from building it (M12.1, landed 2026-09-07)
+
+Eight, and the first two are the ones to read.
+
+**1. The tank's inventory fell by 2 539 kg while its vent reported 0.0 kg/s on
+every one of 6 000 ticks — because the atmosphere is a node too.** Fork 4's vent
+edge has two ends, and step 3 of the tick loops over every NODE. The atmosphere
+node has no holdup, so its own iteration found the first vent in its incident
+list, had nothing to report through it, and wrote the "nothing boiled here" zero
+over a rate a tank had already published. The physics was right and the accounted
+path — the entire point of fork 4 — was silently empty, which is the shape B3's
+own hazard sentence describes. Caught by a gate's CONTROL ("nothing is leaving
+the vent, so every assertion below is about a term that never fired") rather than
+by any assertion about the vapour, and by no conservation test at all: mass
+leaving an inventory with no edge to carry it is exactly what I1 would catch, and
+I1 is not evaluated on this plant. The fix is one clause — the vent lookup is
+restricted to the holdup end — and the lesson is that *a shared edge belongs to
+one of its endpoints, and a per-node loop must say which.*
+
+**2. `f_in = 0.236` was computed at the tank's DECLARED composition, which is the
+trap this note names one section earlier.** Fork 8 warns that
+`crude_column_cascade`'s naphtha tank is *declared* pure `light_naphtha` and that
+a gate written against the file's own number would be asserting on a composition
+the tank holds only at tick 0. The second table then does exactly that: its
+`T_bub = 354.3 K` is essentially pure light naphtha's normal boiling point
+(353.15 K), not the mixture's bubble point. Measured on the built engine, at tick
+6 000:
+
+| quantity | note's prediction | measured |
+|---|---|---|
+| tank composition | 0.5299 / 0.4685 / 0.0016 | 0.4971 / 0.5011 / 0.0017 |
+| `T_bub` at the blanket pressure | 354.3 K | **369.77 K** |
+| `f_in = c̄p·(T_draw − T_bub)/Δh̄_vap` | 0.236 | **0.1282** |
+| vent ÷ draw, delivered | — | **0.1090** |
+| over the whole run | — | 2 539.2 kg of 28 439.9 kg = **8.93%** |
+
+So **about a tenth of the naphtha product boils off, not a quarter**, and the
+headline the milestone was scoped against was the trap it had just described. The
+remaining 15% between the prediction and the delivery has a mechanism rather than
+a shrug: the flash enriches the tank, so its bubble point RISES (369.256 K at
+tick 5 000, 369.770 K at 6 000), and superheat spent lifting the bubble point is
+superheat that never has to be boiled away. The identity behind the prediction is
+worth keeping, because it is what gate 7 asserts and it is **not** a tautology —
+the inventory cancels out of `vent/draw = c̄p·(T_draw − T_bub)/Δh̄_vap`, and the
+model is never shown `T_draw`.
+
+**3. `P_ATM`, not the tank's node pressure, and the difference is 618 ticks.**
+Fork 3 writes `T_bub(P_node, x)`. A tank's node pressure is its BOTTOM pressure:
+136 404 Pa on the demo at tick 6 000, 35 kPa above the blanket it actually boils
+against. `NodeKind::Tank` is documented as vented and its free surface is at
+atmospheric, so the blanket is the right pressure — and reading the floor would
+make the term a function of LEVEL, so a tank would stop boiling as it filled.
+Measured either way: against the floor the tank first crosses its bubble point at
+tick ~1 820 (which is where the note's "first crossing at tick 1 825" comes
+from), against the blanket the demo first boils at tick **1 207**.
+
+**4. The clamp at `f = 1` is not sufficient, and what it misses is reachable on
+this milestone's own gate-6 fixture.** The vapour is enriched, so
+`w_c·m − y_c·m_v` goes negative for an enriched component long before the total
+does: at `f = 1` with `y ≠ x` the model asks for more light naphtha than the tank
+holds while its total mass balance still closes. Added: a per-component cap,
+`m_v ≤ m · min_c(w_c / y_c)`. It makes the everything-flashes case **asymptotic**
+rather than instantaneous — the tank empties over many ticks, enriching in the
+heavies as it goes, which is what a boiling tank does — and where it binds, the
+liquid is left ABOVE its bubble point at the temperature the removed latent heat
+allows, because parking it on `T_bub` there would destroy energy the flash never
+carried out. Found by building gate 6's fixture BEFORE the happy path; it fails
+at tick 1 808 without the cap.
+
+**5. A rounding guard, and the bound beside it is what keeps it from being a
+clamp.** Where the per-component cap binds exactly, the engine's subtraction is
+`w·m − y·((w/y)·m)` — exactly zero in real arithmetic and a few ULP either side
+of it in floating point, so `Composition::from_weights` refuses a composition
+that is correct. `ROUNDING_MASS_FRACTION = 1e-9` separates that from a model
+genuinely over-drawing a component, which is an `Err` naming the component.
+
+**6. Gate 7's textual control cannot be "identical except the `boiloff` line".**
+The corpus matches baseline rows by plant NAME, so the pair must differ in
+`[meta] name`, and in the `description` beside it, and in the comment header the
+demo needs to explain itself. Three exemptions, named in the assertion.
+
+**7. The latent heat leaves with no accounted path, and the number is not
+small.** The engine's holdup datum is `h = cp·(T − T_REF)` — sensible only — so
+the vent edge can carry the vapour's SENSIBLE enthalpy and nothing else. The
+latent heat that actually did the vaporising, `m_v·Δh̄_vap`, simply does not
+appear anywhere: mass balances exactly, and the plant's energy books show a sink
+at every boiling tank. Measured rather than waved at: **7.6084e8 J over 6 000
+ticks, 13.9% of the sensible enthalpy the naphtha draw delivered over the same
+run, and 1.54 MW at tick 6 000** against the column's own 51.5 MW condenser duty.
+The tempting fix is a vent temperature chosen so that the sensible enthalpy
+equals the energy removed; that is a fabricated temperature — finite,
+deterministic, plausible and wrong — and it is refused here for the same reason
+fork 3 refused a mass-transfer coefficient. It is `docs/DEFERRED.md` **B16**,
+whose trigger is a consumer of the plant's external energy balance. Note this is
+NOT the tautology gate 4 forbids: gate 4 forbids checking a defined quantity
+against the balance that defines it, and this is a real open term with a measured
+size.
+
+**8. The root find was promoted with two doors, and the second one is why.**
+Fork 5 chose to promote `cascade::bubble_point` rather than duplicate it or add a
+fourth `ThermoModel` method. Promoting it *typed* — `&MoleFractions`, so that
+handing it mass fractions does not compile — would have meant normalising the
+cascade's own bare `Vec<f64>` stage iterate at the call site, and a re-division by
+a sum that is 1 only to within a rounding error moves a regression anchor on
+sixteen plants. So `bubble_temperature` takes `&MoleFractions` for every caller
+outside `cascade.rs`, and `bubble_temperature_unnormalized` stays crate-private
+for the cascade's iterate. The evaluation-count bound the note said to re-measure
+was not re-tuned: `BUBBLE_POINT_MAX_EVALUATIONS = 120` is structural (57 halvings
+close the bracket from anywhere in it), and no tank composition in the corpus
+comes near it.
+
+**9. What the term costs, paired in one session against its own twin.** Fork 9
+argued the key on the models disagreeing rather than on CPU, having measured a
+bubble point at 2 381–3 034 ns and predicted ~13% of `crude_column_cascade`'s
+tick for three boiling tanks. Measured on the shipped pair, both plants inside
+one corpus run so the machine cannot drift between them, twice:
+
+```text
+              run 1     run 2
+boiloff      410.5 ms  398.0 ms      (6 000 ticks)
+cascade      346.6 ms  341.1 ms
+             +18.4%    +16.7%
+```
+
+So **+17.5% of this plant's own tick, ~9.5 µs, and 0.06% of a 60 Hz frame** — and
+that includes the three vent edges and the atmosphere node the loader adds, not
+only the thermodynamics. Fork 9's conclusion stands with a measured number under
+it: the cost is real, small, and not what the key rests on.
+
+### The mutation pass, against the predictions (M12.1, landed)
+
+Twelve edits, each applied alone to a clean tree, compiled, run against the ten
+plant gates and the five model unit tests, and reverted. Eleven were named by the
+note before building; the twelfth is the fix for correction 1. **Two predictions
+were wrong, and one of those two was the note's central claim about its own most
+important gate.**
+
+| edit | predicted | measured |
+|---|---|---|
+| vapour leaves at `x` instead of `y = K·x` | caught by **gate 1 alone** | caught by the MODEL's unit test — and **not by gate 1 as gate 1 was written**. See below; the gate was rewritten and now catches it |
+| the vent edge reports nothing (mass still leaves the inventory) | caught by I1 and gate 2 | caught by gates 1, 2, 3, 6, 7. **Not by I1**, which is not evaluated on any plant that boils |
+| the temperature clamped to `T_bub` with no mass removed | caught by gate 2, NOT gate 3 | exactly that: gates 2 and 6, and gate 3 stays green |
+| the boil-off applied one tick late | caught by gate 3 only if `ε` is derived | caught by gate 3 — and by 1, 2, 6 and 7 as well |
+| a `Scenario` `Err` read as "boil off zero" rather than "no term" | inert | **not expressible.** Both are `Ok(false)` out of one `match` arm, so there is no edit to make. The prediction was right about the consequence and wrong about there being a code path |
+| the flash fraction's clamp at 1 removed | caught by gate 6 | **UNCAUGHT, and provably so** — see below |
+| `boiloff` parsed and then ignored (the impl is always `"none"`) | caught by gate 7 and nothing else | caught by gates 1, 2, 3, 6, 7 and the atmospheric-pressure gate. The note under-counted its own coverage: every gate that needs the term to fire fails when it does not |
+| the default flipped to `"flash"` | caught by gate 5 on two plants | caught by exactly one gate — the anchor's byte-identity strip |
+| the `"flash"` + `thermo = "constant"` refusal dropped | needs its own refusal test | caught by that refusal test alone, as predicted |
+| an unknown `boiloff` value accepted as `"none"` | needs its own refusal test | caught by that refusal test alone, as predicted |
+| the per-component over-draw cap removed (correction 4) | — | caught by the model's own everything-flashes test and by gate 6 |
+| the vent write not restricted to the holdup end (correction 1) | — | caught by gates 1, 2, 3, 6 and 7 |
+
+**Gate 1 did not defend fork 2, and fork 2 is the milestone.** §14 calls the
+composition comparison "the only one that separates a flash from a decrement". It
+is not: a decrement still removes mass, a tank holding less mass blends its
+incoming draw in faster, and so its composition parts company with its
+non-boiling twin's either way. The two-plant comparison stayed green under the
+decrement. What cannot be faked is the vapour's own published composition — a
+vent carrying `x` is not richer in the light cut than `x` — so gate 1 now asserts
+the VENT stream against the holdup, with the two-plant comparison kept beside it
+for direction. Re-run against the same mutation, it fails. **A gate that compares
+two plants is measuring the difference between two trajectories; a gate that
+compares two streams at one instant is measuring the thing itself.**
+
+**The clamp at `f = 1` is dead code, and that is a proof rather than a
+measurement.** The per-component cap is `min_c(w_c / y_c)`, and since
+`Σ w = Σ y = 1`, no such ratio can exceed 1 for every component at once — so the
+cap is **always ≤ 1** and the clamp above it can never bind. Removing it fails
+nothing, on any plant, ever. It is kept, with this paragraph, because it states
+fork 3's specification where a reader will look for it; the honest label is
+"subsumed", not "defensive".

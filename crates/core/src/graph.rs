@@ -886,6 +886,33 @@ pub enum LeakRole {
     /// `network::compile_edge`'s existing `conducts` test already reads as
     /// "closed", so a dormant leak conducts nothing and needs no special case.
     Orifice { area: SquareMeter },
+    /// A boil-off vent: tank → `Atmosphere`, built by the loader when
+    /// `[fidelity] boiloff = "flash"` (M12, docs/DESIGN.md §14 fork 4).
+    ///
+    /// **Not a leak, and it shares this field anyway.** The question this field
+    /// answers is not "is this edge damaged" but "is this edge an ordinary
+    /// pressure-driven pipe, or a path to `Atmosphere` that something else
+    /// owns" — a leak orifice is owned by `Command::PuncturePipe`, and a vent by
+    /// `Engine::tick`'s holdup dynamics. One field keeps "this edge is an
+    /// orifice AND a vent" unrepresentable, which is the same property the three
+    /// variants above were collapsed into one enum for.
+    ///
+    /// **Its flow is PRESCRIBED, exactly like a column draw's.** A vent's rate
+    /// comes from an enthalpy balance over the holdup, not from
+    /// `ρ·branch.flow(dp)`, so `network::edge_flows` guards it to zero and
+    /// `Engine::tick` writes the authoritative value afterwards. Leaving it
+    /// pressure-driven would drain a tank to atmosphere through a pipe nobody
+    /// declared — finite, deterministic, mass-conserving and wrong.
+    BoilOffVent,
+}
+
+impl LeakRole {
+    /// True for an edge whose flow the ENGINE writes rather than the hydraulic
+    /// solve. One predicate, so the several passes that must skip such an edge
+    /// cannot come to disagree about which edges those are.
+    pub fn is_boiloff_vent(&self) -> bool {
+        matches!(self, LeakRole::BoilOffVent)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

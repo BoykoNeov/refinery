@@ -33,8 +33,8 @@ use refinery_core::graph::{
 use refinery_core::traits::ThermoModel;
 use refinery_core::units::*;
 use refinery_solvers::{
-    ConstantThermo, CutPointSplitter, MoleFractions, NewtonFlowSolver, NoReactions, StageCascade,
-    TroutonThermo,
+    ConstantThermo, CutPointSplitter, MoleFractions, NewtonFlowSolver, NoBoilOff, NoReactions,
+    StageCascade, TroutonThermo,
 };
 
 const DT: Seconds = Seconds(0.1);
@@ -74,6 +74,7 @@ fn engine(graph: PlantGraph) -> Engine {
         Box::new(ConstantThermo),
         Box::new(NoReactions),
         Box::new(CutPointSplitter),
+        Box::new(NoBoilOff),
     )
 }
 
@@ -707,6 +708,7 @@ fn cascade_engine(graph: PlantGraph) -> Engine {
         Box::new(TroutonThermo::new()),
         Box::new(NoReactions),
         Box::new(StageCascade::new()),
+        Box::new(NoBoilOff),
     )
 }
 

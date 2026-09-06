@@ -84,6 +84,7 @@ cargo fmt --all
 cargo run -p refinery-cli -- run scenarios/tank_pump_valve.toml --ticks 1000
 cargo run -p refinery-cli -- run scenarios/tank_level_control.toml --ticks 6000   # the M8.4 loop demo
 cargo run -p refinery-cli -- run scenarios/vessel_pressure_control.toml --ticks 6000  # the M10.1 pressure loop
+cargo run -p refinery-cli -- run scenarios/crude_column_boiloff.toml --ticks 6000      # the M12.1 boiling tanks
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -179,92 +180,74 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M12 is OPEN, and its scope is the two-phase HOLDUP — a quarter of `docs/DEFERRED.md`
-B3.** It is the first milestone opened because the ledger says a hurdle has arrived:
-B3 is the only row on the wrong side of its own number. **M12.0 landed 2026-09-06**
-— the design note, DESIGN §14, **nine** forks, seven gates, eleven mutations, no
-code. The building slice is M12.1 and B3 stays past its trigger until it lands.
+**M12 is CLOSED (2026-09-07), and its scope was the two-phase HOLDUP — a quarter
+of `docs/DEFERRED.md` B3.** It is the first milestone opened because the ledger
+said a hurdle had arrived: B3 was the only row on the wrong side of its own
+number. **M12.0** wrote the design note (DESIGN §14, nine forks, seven gates,
+eleven mutations, no code); **M12.1 landed 2026-09-07** and built it — the
+`BoilOffModel` seam with `NoBoilOff` and `FlashBoilOff`, `[fidelity] boiloff`, the
+loader-built vent edge, `scenarios/crude_column_boiloff.toml`, ten gates and a
+twelve-edit mutation pass. **Nothing in `docs/DEFERRED.md` is past its trigger
+again**; B3 itself stays open on its three STREAM paths.
 
-**Fork 9 makes the boil-off a FIDELITY KEY, and it was added on the user's
-instruction rather than derived** — physics models should be swappable where they
-contradict reality in different ways and neither is provably better. So
-`[fidelity] boiloff = "none" | "flash"`, a fifth key selecting an implementation
-the way `reactions` selects a `ReactionModel`. `"none"` says a product tank never
-boils however hot the column runs; `"flash"` says a quarter of the naphtha
-product leaves at `y = K·x` through a vent to `Atmosphere` with nothing
-downstream of it — which B12 and B13 already say is incomplete. Neither is a
-refinement of the other. **This resolves the anchor question the note left
-open**: `crude_column_cascade` declares `"none"` and stays byte-identical, so
-**all sixteen shipped plants are byte-identical** and the demo is that same file
-with ONE line changed — deliberately the M7 `crude_column` / `crude_column_cascade`
-pair pattern, extended to a third member. The fallback the note named, a quieter
-term, is refused: tuning a model down to protect a baseline is how an engine
-acquires a constant nobody can justify.
+**What a boiling tank now does.** A liquid holdup above its own bubble point
+vaporises the superheat, parks on its bubble point, and the vapour leaves at
+`y = K·x` through a vent edge to `Atmosphere` that the LOADER builds — one per
+tank, plus the atmosphere node, whenever the plant selects a model that boils.
+The mass that boils is the mass whose latent heat absorbs the excess enthalpy
+(`f = c̄p·ΔT/Δh̄_vap`), an enthalpy constraint rather than a rate law, so there is
+no constant to tune.
 
-**The CPU half of the swappability argument was measured and does NOT hold.** A
-bubble point on the shipped five-cut slate is **2 381–3 034 ns** (200 000 solves,
-release): ~0.016% of a 60 Hz frame per boiling tank. Against the plant's own tick
-it is real but small — `crude_column_cascade` is 59.3 µs/tick (355.9 ms / 6 000),
-so three boiling tanks add ~13%; `cooler_chiller` at 7.6 µs/tick would pay ~34%.
-**"A root find per tank per tick" sounds expensive and is two and a half
-microseconds**, so the key rests on the models disagreeing, not on cost.
+**Six things the next milestone inherits.**
 
-**The bar for a NEW fidelity key is that a shipped plant tells the two answers
-apart** — `trouton` was held back a whole milestone rather than ship as a knob
-nothing could discriminate, citing `smearing_k` as the anti-pattern. `boiloff`
-clears it on day one (0% against ~24% on two files differing by one line). A
-selectable equation of state and a selectable `cp(T)` do NOT, and are now ledger
-rows **B14** and **B15** with that plant as the trigger. **And the trap that comes
-with a fifth key: `thermo` was parsed and then ignored from M1 to M7.2** —
-`thermo = "nonsense"` loaded a working plant, found by wiring a neighbour key
-rather than by a test — so gate 7 (the demo and its twin must actually differ)
-is the only thing separating this key from that defect, and unknown values and
-the `"flash"` + `thermo = "constant"` pairing each need their own refusal test.
+**The note's headline number was measured at the tank's DECLARED composition, and
+the note names that trap one section earlier.** `f_in = 0.236` rests on
+`T_bub = 354.3 K`, which is essentially pure light naphtha's normal boiling point
+— the tick-0 declaration. Against the mixture the tank actually holds
+(`T_bub = 369.77 K`) the prediction is 0.1282 and the plant delivers **0.1090**;
+over the run **8.93%** of the naphtha draw. So a tenth boils off, not a quarter.
+**A number in a design note is a hypothesis with formatting**, and this one was
+wrong in the exact way its own text warned about.
 
-**B3 names four paths and exactly one fired.** A flashing feed line, a partial
-condenser and a vapour side draw are all still refused at load with no plant
-asking; the two-phase *holdup* is not refused, because nothing in the file is
-wrong at load. **So M12 takes the holdup clause and the row stays open** — said in
-the note's first paragraph, because M11's row went stale in exactly that way.
+**The defect that mattered was in the ACCOUNTED PATH, not the physics: the
+atmosphere is a node too.** The tank's inventory fell by 2 539 kg while its vent
+reported 0.0 kg/s on every tick — step 3 loops over every node, the atmosphere
+has no holdup, and its iteration wrote a zero over a rate a tank had published.
+Caught by a gate's CONTROL, not by any assertion about vapour, and by no
+conservation test (I1 is not evaluated on a plant that boils). **A shared edge
+belongs to one of its endpoints, and a per-node loop must say which.**
 
-**The holdup clause does NOT need phase in the state vector, and the reason was
-written into the type ten milestones ago.** `NodeKind::Tank` is documented as
-*vented* and `NodeKind::Vessel` as gas-only — "the two kinds partition the holdups
-by phase" — so vapour formed in a vented tank **leaves**. That is exactly the
-property §13 fork 1 lacked when it rejected a cavitation clamp: there the vapour
-was mass in a phase the state vector lacks, here it exits by an accounted path,
-which is M6's leak-to-`Atmosphere` doctrine applied to a holdup. **`Stream` and
-`Composition` are untouched, and so are the fifty files that read them.** Two
-precedents make the vent cheap: `leak_to` already builds a tank → `Atmosphere`
-edge, and a **prescribed-flow edge already exists** — a column draw is recognised
-by topology, guarded to zero in the solve, and written afterwards by `Engine::tick`.
+**The gate the note called "the only one that separates a flash from a decrement"
+did not.** Removing mass at the tank's own composition still removes mass, so the
+tank blends its inflow differently and its composition parts company with its
+non-boiling twin's either way — the two-plant comparison stayed green under the
+decrement. What discriminates is the VENT's own published composition against the
+holdup's: a vent carrying `x` is not richer in the light cut than `x`. **A gate
+comparing two plants measures two trajectories; a gate comparing two streams at
+one instant measures the thing itself.**
 
-**The silent failure to expect: a decrement is not a flash.** Removing mass at the
-tank's own composition conserves mass exactly, passes I1 and I7 and every other
-conservation test, and **never changes what is in the tank**. The vapour leaves at
-`y = K·x`, and the only gate that separates the two watches the composition move.
+**The latent heat ships with no accounted path, and it is not small.** The holdup
+datum is `h = cp·(T − T_REF)` — sensible only — so the vent carries the vapour's
+sensible enthalpy and nothing else. **7.6084e8 J over 6 000 ticks, 13.9% of the
+enthalpy the draw delivered, 1.54 MW at tick 6 000.** Mass balances exactly; the
+energy books show a sink at every boiling tank. Ledger row **B16**. The fix that
+suggests itself — a vent temperature chosen so the sensible enthalpy comes out
+right — is a fabricated number and is refused.
 
-**Two measurements, and the second corrected the first inside the note.** The
-obvious probe reads the STANDING superheat on the uncorrected engine — 2.31 K and
-1.7% of the inventory on the shipped cascade, two flipped-FCC tanks over 1.8. That
-is accumulated **drift**, and the boil-off prevents the state it describes from
-existing. What the design rests on is the flash fraction of the ARRIVING stream,
-`f_in = cp̄·(T_in − T_bub)/Δh̄_vap`. **"Gentle" was true of the wrong quantity:**
-per tick the term is small everywhere (worst inventory share 2.1e-3, nothing
-stiff), but the shipped cascade settles at **`f_in = 0.236` — a quarter of the
-naphtha product boils off**, the largest regression-anchor movement any milestone
-here has taken. **`f ≥ 1` is reachable on THREE tanks**, and not because an
-inventory holds too much heat — because `fcc_plant` flipped draws at 800.4 K into
-a tank boiling at 374.4 K, so more than all of what arrives flashes and the tank
-cannot fill. The clamp and gate 6 are about an inflow, not an inventory. **And the
-two cascade tanks the first table called a control are not one** — their inflow is
-already above their own bubble points, they just have not heated there in 6 000
-ticks; a tank that is not boiling *yet* is not a negative case.
+**Two specification corrections found by building.** The boil-off is evaluated at
+`P_ATM`, the tank's BLANKET pressure, not its node (floor) pressure — the floor is
+35 kPa higher on the demo, would make the term a function of LEVEL, and moves the
+first boil by 618 ticks. And the clamp at `f = 1` is **provably subsumed** by a
+per-component cap the note never specified: the vapour is enriched, so an enriched
+component runs out before the total does, and `min_c(w_c/y_c) ≤ 1` always.
 
-**The gate the note expected to be impossible is writable**: the naphtha tank is
-*declared* pure `light_naphtha`, where `y = K·x` and `x` coincide, but the draw
-makes it 0.5299 / 0.4685 / 0.0016 well before it boils. The declaration is the
-trap for a short-running gate, so gate 1 asserts the mixture as a control first.
+**From here, "runs byte-identical" means post-M12.1 identical, which is
+unchanged: all sixteen pre-M12 plants are byte-identical on both fidelities**,
+measured against a baseline recorded from `HEAD` in a separate worktree, with no
+iteration count moved. `scenarios/` now holds **seventeen** files, and the new one
+is `crude_column_cascade.toml` with one key changed — the M7 pair pattern extended
+to a third member. It costs **+17.5% of that plant's own tick** (paired, twice, in
+one session), which is 0.06% of a 60 Hz frame.
 
 **M11 is CLOSED (2026-09-06), and its scope was the cavitation criterion.**
 M11.0 wrote the note (DESIGN §13, seven forks) and M11.1 built it: a third method
@@ -317,7 +300,8 @@ way).
 fifteen pre-M11 plants are unchanged on both fidelities; `crude_column_cascade`
 carries exactly one extra key on exactly one node (`preheater`), verified by
 stripping the key and reproducing the before-file byte for byte. No solver
-iteration count moved. `scenarios/` now holds **sixteen** files.
+iteration count moved. `scenarios/` held **sixteen** files at M11 and holds
+**seventeen** from M12.1.
 
 **M10 is CLOSED (2026-09-06), and its scope was the second controlled variable.**
 Pressure is built (M10.0 + M10.1) and pressure is all it built — temperature and
@@ -957,10 +941,11 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly two of the sixteen files in `scenarios/` declare a `[[controls]]`
+**Exactly two of the seventeen files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level) and
-`vessel_pressure_control.toml` (M10.1, a pressure). **The other thirteen were
-written before M8 and ARE the regression anchor**; adding a loop to one of them
+`vessel_pressure_control.toml` (M10.1, a pressure). **The other fifteen were
+written before M8 (thirteen of them) or after it without a loop, and ARE the
+regression anchor**; adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file
 rather than wiring one into an existing plant. Every other plant that carries a
 loop is an inline test fixture for the same reason.

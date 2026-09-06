@@ -22,7 +22,7 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{LeakRole, Node, NodeKind, Pipe, PlantGraph};
 use refinery_core::traits::ThermoModel;
 use refinery_core::units::*;
-use refinery_solvers::{CutPointSplitter, NewtonFlowSolver, NoReactions, TroutonThermo};
+use refinery_solvers::{CutPointSplitter, NewtonFlowSolver, NoBoilOff, NoReactions, TroutonThermo};
 
 const DT: Seconds = Seconds(0.1);
 
@@ -170,6 +170,7 @@ fn engine_with(thermo: Box<dyn ThermoModel>) -> Engine {
         thermo,
         Box::new(NoReactions),
         Box::new(CutPointSplitter),
+        Box::new(NoBoilOff),
     )
 }
 

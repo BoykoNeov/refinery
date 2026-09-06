@@ -132,6 +132,40 @@ pub struct Fidelity {
     /// and never otherwise.
     #[serde(default = "default_cut_point")]
     pub separation: String,
+    /// "none" (M1–M12.0) | "flash" (M12.1).
+    ///
+    /// What a liquid holdup does when it is above its own bubble point
+    /// (docs/DESIGN.md §14). `"none"` says a product tank is a liquid store
+    /// whose contents never boil however hot the column runs; `"flash"` says the
+    /// superheat leaves as vapour at `y = K·x` through a vent to `Atmosphere`
+    /// with nothing downstream of it. **Neither is a refinement of the other** —
+    /// the first moves no mass and invents no stream, the second is incomplete
+    /// in the way `docs/DEFERRED.md` B12 and B13 already record — which is what
+    /// makes this a fidelity key rather than a bug fix with a flag on it (§14
+    /// fork 9).
+    ///
+    /// Defaults to `"none"` on the `separation`/`phase` argument: that is what
+    /// every file written before M12 MEANS, not merely what keeps it loading.
+    /// It is forced anyway — fourteen of the sixteen shipped plants declare
+    /// `thermo = "constant"`, which has no K-value to flash with.
+    ///
+    /// **The pairing that is refused, and the defect it is modelled on.**
+    /// `boiloff = "flash"` with `thermo = "constant"` is a load-time error (see
+    /// `require_compatible_fidelity`), exactly as `separation = "cascade"` with
+    /// the same thermo is. And the value is READ on the day it lands: `thermo`
+    /// was parsed and then ignored from M1 to M7.2, so `thermo = "nonsense"`
+    /// loaded a working plant — a key whose value is consumed only when some
+    /// other key is set is born in exactly that state, which is why
+    /// `crude_column_boiloff.toml` ships as a one-line twin of
+    /// `crude_column_cascade.toml` and the two must disagree.
+    ///
+    /// Its own default function rather than `reactions`' `default_none`,
+    /// although both spell the same string: sharing one would make "flip the
+    /// boil-off default" and "flip the reaction default" the same edit, and a
+    /// key's default is exactly the sort of thing a mutation pass has to be able
+    /// to move on its own.
+    #[serde(default = "default_no_boiloff")]
+    pub boiloff: String,
 }
 
 fn default_constant() -> String {
@@ -139,6 +173,10 @@ fn default_constant() -> String {
 }
 
 fn default_none() -> String {
+    "none".into()
+}
+
+fn default_no_boiloff() -> String {
     "none".into()
 }
 

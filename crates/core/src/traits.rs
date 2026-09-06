@@ -8,7 +8,7 @@
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{CascadeSpec, ColumnDraw, ControlledValue, EdgeId, NodeId, PlantGraph};
-use crate::units::{JPerKg, JPerMol, Kelvin, KgPerSec, Pascal, Seconds, Watt};
+use crate::units::{JPerKg, JPerMol, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -412,6 +412,89 @@ pub struct ColumnPass<'a> {
     /// within tolerance whatever it holds. `separation_is_start_insensitive`
     /// gates exactly that.
     pub seed: Option<&'a CascadeProfile>,
+}
+
+/// What one tick's boil-off removes from a holdup: the vapour that formed, and
+/// the temperature the liquid is left at.
+///
+/// A MASS and a composition rather than a rate, because the constraint that
+/// produces it is an enthalpy balance over the tick rather than a rate law
+/// (docs/DESIGN.md §14 fork 3). The engine divides by `dt` at the one place a
+/// rate is needed — the vent edge's `mass_flow`.
+#[derive(Debug, Clone)]
+pub struct BoilOff {
+    /// Mass vaporised over this tick [kg]. Never negative, never more than the
+    /// holdup it came from.
+    pub vapour_mass: Kg,
+    /// What left, as MASS fractions — the equilibrium vapour `y_c = K_c·x_c`
+    /// normalised, converted back at the model's own mass ⇄ mole boundary.
+    ///
+    /// **This field is the whole fork.** Returning the holdup's own composition
+    /// here conserves mass exactly, passes I1 and I7, and leaves the tank's
+    /// fractions untouched for ever — a decrement, not a flash, and no
+    /// conservation test in this workspace can see the difference (§14 fork 2).
+    pub vapour: Composition,
+    /// What the liquid is left at [K]: its bubble temperature at the holdup's
+    /// own pressure. The enthalpy constraint is stated *as* "the tank cannot be
+    /// above this", so the temperature is an output of the same solve that
+    /// sized `vapour_mass` and not a second answer to be derived from it.
+    pub liquid_temperature: Kelvin,
+}
+
+/// Whether a liquid holdup above its bubble point boils off, and how much —
+/// the M12 fidelity seam (docs/DESIGN.md §14, `[fidelity] boiloff`).
+///
+/// **A key rather than a behaviour, and the argument is the user's own** (§14
+/// fork 9): two models that are wrong in different ways, with neither a
+/// refinement of the other. `NoBoilOff` says a product tank is a liquid store
+/// whose contents never boil however hot the column runs — wrong, and wrong
+/// conservatively, in that it moves no mass and invents no stream.
+/// `FlashBoilOff` says the superheat leaves as vapour at `y = K·x` through a
+/// vent to `Atmosphere` with nothing downstream of it — also wrong, because a
+/// real unit condenses that vapour and recovers it (`docs/DEFERRED.md` B12,
+/// B13). A plant is not more correct for choosing one; it is making a different
+/// statement about what is being modelled.
+///
+/// **`Ok(None)` is the ordinary answer and means "no term here".** A model that
+/// cannot evaluate a K-value, a holdup that is not boiling, and the `"none"`
+/// fidelity all take it, and the engine leaves the holdup untouched — no vapour,
+/// no vent flow, no temperature write. That is deliberately the same arithmetic
+/// as a boil-off of zero: unlike `NodeSnapshot::cavitation`, where absent and
+/// `false` are different claims, here there is nothing for a frontend to
+/// misread.
+///
+/// **Pure, and a function of its arguments alone**, like every seam in this file
+/// except `Controller`: the engine holds ONE model for every holdup on the
+/// plant, so state on `self` would cross-seed two tanks.
+pub trait BoilOffModel: Send {
+    fn name(&self) -> &'static str;
+
+    /// How much of `mass` boils off this tick, given the holdup's END-of-tick
+    /// state.
+    ///
+    /// `composition` is MASS fractions, `pressure` is the holdup's own pressure
+    /// (a vented tank's gas blanket is at `P_ATM`; it is passed rather than
+    /// assumed so the caller owns the question), and `thermo` is the engine's
+    /// thermodynamics — reached as an argument for the same reason
+    /// `SeparationModel::separate` takes one: a K-value is a property of the
+    /// fluid, not of this seam.
+    ///
+    /// # Errors
+    /// `SimError` when the model can evaluate the term and it comes out
+    /// impossible — a non-finite flash fraction, a vapour composition that does
+    /// not normalise, a bubble temperature with no root in the model's bracket.
+    /// A model that simply has no vapour–liquid equilibrium returns `Ok(None)`
+    /// instead: "this fidelity cannot answer" is not a fault, it is fourteen of
+    /// the sixteen shipped plants (§14 fork 7).
+    fn boil_off(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        mass: Kg,
+        temperature: Kelvin,
+        pressure: Pascal,
+        thermo: &dyn ThermoModel,
+    ) -> Result<Option<BoilOff>, SimError>;
 }
 
 /// How a column divides its feed among its draws — the separation seam.
