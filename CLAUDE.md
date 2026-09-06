@@ -179,6 +179,47 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M12 is OPEN, and its scope is the two-phase HOLDUP — a quarter of `docs/DEFERRED.md`
+B3.** It is the first milestone opened because the ledger says a hurdle has arrived:
+B3 is the only row on the wrong side of its own number. **M12.0 landed 2026-09-06**
+— the design note, DESIGN §14, eight forks, six gates, six mutations, no code. The
+building slice is M12.1 and B3 stays past its trigger until it lands.
+
+**B3 names four paths and exactly one fired.** A flashing feed line, a partial
+condenser and a vapour side draw are all still refused at load with no plant
+asking; the two-phase *holdup* is not refused, because nothing in the file is
+wrong at load. **So M12 takes the holdup clause and the row stays open** — said in
+the note's first paragraph, because M11's row went stale in exactly that way.
+
+**The holdup clause does NOT need phase in the state vector, and the reason was
+written into the type ten milestones ago.** `NodeKind::Tank` is documented as
+*vented* and `NodeKind::Vessel` as gas-only — "the two kinds partition the holdups
+by phase" — so vapour formed in a vented tank **leaves**. That is exactly the
+property §13 fork 1 lacked when it rejected a cavitation clamp: there the vapour
+was mass in a phase the state vector lacks, here it exits by an accounted path,
+which is M6's leak-to-`Atmosphere` doctrine applied to a holdup. **`Stream` and
+`Composition` are untouched, and so are the fifty files that read them.** Two
+precedents make the vent cheap: `leak_to` already builds a tank → `Atmosphere`
+edge, and a **prescribed-flow edge already exists** — a column draw is recognised
+by topology, guarded to zero in the solve, and written afterwards by `Engine::tick`.
+
+**The silent failure to expect: a decrement is not a flash.** Removing mass at the
+tank's own composition conserves mass exactly, passes I1 and I7 and every other
+conservation test, and **never changes what is in the tank**. The vapour leaves at
+`y = K·x`, and the only gate that separates the two watches the composition move.
+
+**Measured before the forks were settled** (`f` = the inventory share whose latent
+heat absorbs the standing superheat): `crude_column_cascade`'s `naphtha_tank`
+**as shipped** is gentle — 2.31 K, `f = 0.0166`, boiling from tick 1 825 — which is
+what makes taking the term on a pre-M8 anchor affordable. Flipped to `trouton`,
+`crude_column` reaches `f = 0.376` and **`fcc_plant` reaches `f = 2.013` and
+`1.811` on two tanks** — more heat than their own latent heat can absorb — so the
+`f ≥ 1` arm is specified with a clamp, not assumed away. **And the gate the note
+expected to be impossible is writable**: the naphtha tank is *declared* pure
+`light_naphtha`, where `y = K·x` and `x` coincide, but the draw makes it
+0.5299 / 0.4685 / 0.0016 well before it boils. The declaration is the trap for a
+short-running gate, so gate 1 asserts the mixture as a control first.
+
 **M11 is CLOSED (2026-09-06), and its scope was the cavitation criterion.**
 M11.0 wrote the note (DESIGN §13, seven forks) and M11.1 built it: a third method
 on `ThermoModel`, a per-tick criterion in `Engine::tick`, `NodeSnapshot::cavitation`,

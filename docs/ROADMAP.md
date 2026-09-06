@@ -4811,3 +4811,86 @@ boiling while the flow says it is not. That disagreement is deliberate, named,
 and cheaper than the alternative: a clamp would make a converged solve stop
 conserving, because the vapour it would account for is mass in a phase the state
 vector does not have (B3).
+
+## M12 — the two-phase holdup; the first milestone opened from a row past its trigger
+
+M11 closed with `docs/DEFERRED.md` B3 already past its trigger, and it is still
+the only row in that table on the wrong side of its own number. This is a
+different opening again from the three before it: M8 and M9 opened on a defect
+the previous milestone reached and did not fix, M10 on a ledger row with a
+measured distance well inside its trigger, M11 on a decision. **M12 is the first
+one where the ledger simply says a hurdle has arrived.**
+
+**The row names four paths and exactly one of them fired.** A flashing feed line,
+a partial condenser and a vapour side draw are all still refused at load with no
+plant asking. The fourth — a two-phase *holdup* — is not refused, because nothing
+in the file is wrong at load: a cascade column draws at real tray temperatures,
+the product tank has no cooler, and the tank stores a liquid the model's own
+correlation says is boiling. So **M12 takes a quarter of B3 and the row stays
+open**, which is written into the note's first paragraph rather than discovered
+later; M11's row went stale in exactly that way and cost the ledger a correction.
+
+### M12.0 — Scoping + design note — **LANDED** 2026-09-06
+
+The note is DESIGN §14, written before any code: eight forks, six gates, six named
+mutations, and one measurement taken before the forks were settled. It changes no
+number and adds no test. **Four things to know before the building slice.**
+
+**The holdup case does not need phase in the state vector, and the reason was
+written into the type ten milestones ago.** `NodeKind::Tank` is documented as
+*vented* — gas blanket at `P_ATM` — and `NodeKind::Vessel` as gas-only, with the
+sentence "the two kinds partition the holdups by phase". Vapour formed in a
+vented tank **leaves**; there is nothing to store. That is precisely the property
+§13 fork 1 lacked when it rejected a cavitation clamp: there the vapour would
+have been mass in a phase the state vector does not have, here it is mass that
+exits by an accounted path, which is M6's leak-to-`Atmosphere` doctrine applied
+to a holdup instead of a pipe. **So this milestone is narrower than its own row:
+`Stream` does not change, `Composition` does not change, and the fifty files that
+read them do not change.**
+
+**Two structural precedents make the vent cheap, and the second is the one nobody
+would look for.** `leak_to` already builds a tank → `Atmosphere` edge and already
+refuses a target that is not an atmosphere. And a **prescribed-flow edge already
+exists**: a column draw's flow is not pressure-driven, so `network::edge_flows`
+recognises it by topology, guards it to zero, and `Engine::tick` writes the
+authoritative value afterwards. A vent's rate is set by an enthalpy balance, not
+by `ρ·branch.flow(dp)`, so it is the same case — and the comment guarding the
+draw already names the hazard a pressure-driven vent would have.
+
+**The measurement that shaped the note, taken before the forks were settled.**
+Over 6 000 ticks of every liquid tank on the three plants whose thermo model can
+answer, `f` being the share of the inventory whose latent heat would absorb the
+tank's standing superheat:
+
+| plant | tank | first boils | ticks boiling | superheat | `f` |
+|---|---|---|---|---|---|
+| `crude_column_cascade` (**as shipped**) | `naphtha_tank` | 1 825 | 4 176 / 6 000 | 2.31 K | **0.0166** |
+| `crude_column` (flipped) | `naphtha_tank` | 324 | 5 677 / 6 000 | 52.3 K | **0.376** |
+| `fcc_plant` (flipped) | `gasoline_tank` | 290 | 5 711 / 6 000 | 300.4 K | **2.013** |
+| `fcc_plant` (flipped) | `gas_drum` | 1 | 6 000 / 6 000 | 495.3 K | **1.811** |
+
+The shipped case is **gentle** — 2.3 K and 1.7% of the inventory — which is what
+makes taking the term on a pre-M8 regression anchor affordable. And **`f ≥ 1` is
+reachable on two tanks**, both one inert `thermo` line from shipping, so "the
+tank holds more heat than its own latent heat can absorb" is specified with a
+clamp and a gate rather than left undefined.
+
+**The gate the note expected to be impossible is writable, and measuring is what
+found that out.** `crude_column_cascade`'s naphtha tank is *declared*
+`light_naphtha = 1.0`, and for a pure fluid the equilibrium vapour `y = K·x` and
+the liquid `x` are the same vector — so fork 2's whole distinction, a flash
+versus a decrement, would have been invisible on the plant that fired the
+trigger, exactly as §13's water-only fixture could not tell a mixture bubble
+point from a single component's vapour pressure. Measured: the stage-0 draw is
+not pure, and by tick 6 000 the tank holds **0.5299 light / 0.4685 heavy /
+0.0016 kerosene**. **But the declaration is the trap** — a gate sampling early,
+or asserting against the file's own number, reads the pure composition the tank
+holds only at tick 0. Gate 1 therefore asserts the mixture as a *control* before
+it asserts anything about the flash, which is M9.3b's shape.
+
+**The silent failure this milestone is most likely to ship**, named in advance:
+decrementing the tank's mass at the tank's own composition conserves mass
+exactly, passes I1 and I7 and every other conservation test in the workspace, and
+**never changes what is in the tank** — so the light cut doing the boiling stays
+there forever. A boil-off is a flash, not a decrement, and the only gate that can
+tell them apart is the one that watches the composition move.
