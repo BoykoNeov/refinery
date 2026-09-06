@@ -13,7 +13,7 @@
 //! thermo model with no vapour–liquid equilibrium — and `false` is a model that
 //! looked and found the liquid was not boiling. Asserting `cavitating == false`
 //! where `is_none()` is meant is the weaker test, and measurably so: the holdup
-//! the exclusion is about spends its first 1 826 ticks ABOVE its bubble point,
+//! the exclusion is about spends its first 1 824 ticks ABOVE its bubble point,
 //! where a *broken* exclusion would report `false` as well — so a gate written
 //! that way would pass on the engine it is meant to catch, at most run lengths.
 //! The gate that defends the node-kind clause has to be written on the `Option`,
@@ -23,7 +23,10 @@
 //! hand rather than with `expect` on the engine itself.
 
 use refinery_core::snapshot::{NodeSnapshot, Snapshot};
+use refinery_core::traits::ThermoModel;
+use refinery_core::units::Kelvin;
 use refinery_core::Engine;
+use refinery_solvers::TroutonThermo;
 
 const DEMO: &str = include_str!("../../../scenarios/cavitating_pump.toml");
 const CASCADE: &str = include_str!("../../../scenarios/crude_column_cascade.toml");
@@ -206,10 +209,95 @@ fn the_demos_bubble_pressure_matches_a_mole_weighted_hand_calculation() {
     }
 }
 
+/// **`docs/DEFERRED.md` B3's trigger evidence, made durable.**
+///
+/// The row carried, for a milestone, a distance of `0.30×` on `crude_column`. That
+/// number came from a standalone script, and that plant declares
+/// `thermo = "constant"`, whose `bubble_pressure` is an `Err` — so **no engine
+/// configuration of it produces any margin at all**. It was the same error that was
+/// corrected twice on B1 before B1 closed, and the reason it survived is that the
+/// number lived in a scratch directory rather than in a test. This gate is the
+/// correction made durable: the margin is produced by the **engine's own**
+/// `ThermoModel`, on the plant's **own declared fidelity**, with no edit to any file.
+///
+/// **Two assertions, not one crossing tick.** The crossing is at tick 1 825 —
+/// measured both with this model and with `bubble_pressure_by_hand`, which agree
+/// exactly — but pinning a single tick would fail on a legitimate change in the last
+/// digit, because the margin is nearly flat there (deciles 1.002, 0.961, 0.944). So
+/// the gate brackets it: comfortably above at tick 1 000, comfortably below at 2 500.
+/// Both halves are load-bearing — the early one is what proves the tank is not simply
+/// born boiling, and without it the late one would pass on a plant that was never
+/// healthy.
+///
+/// **This gate inverts when B3 is fixed, and that is the intended end of it.** A
+/// plant that no longer stores a boiling liquid is the goal. When the late assertion
+/// fails because the margin rose above 1.0, delete this test and close the row —
+/// do not relax the bound.
+#[test]
+fn the_cascade_naphtha_tank_stores_a_boiling_liquid_on_its_own_declared_fidelity() {
+    // The fidelity is part of the claim. A margin is a distance only if the model
+    // the FILE selects can produce it; if this line changes, the number below stops
+    // being engine-producible and this gate stops meaning what it says.
+    assert!(
+        CASCADE.contains("thermo = \"trouton\""),
+        "as shipped, `crude_column_cascade` must declare a thermo fidelity that can
+         answer a bubble pressure, or this margin is not engine-producible"
+    );
+
+    let thermo = TroutonThermo::new();
+    let margin = |engine: &Engine| -> f64 {
+        let snapshot = engine.snapshot();
+        let (_, tank) = snapshot
+            .tanks
+            .iter()
+            .find(|(name, _)| name == "naphtha_tank")
+            .expect("the cascade plant has a naphtha tank");
+        let bubble = thermo
+            .bubble_pressure(
+                &engine.slate,
+                &tank.composition,
+                Kelvin(tank.temperature.value()),
+            )
+            .expect("the plant's own thermo fidelity answers");
+        node(&snapshot, "naphtha_tank").pressure_pa / bubble.value()
+    };
+
+    // Named once so a message cannot drift away from the tick it reports. The
+    // mutation that moved the early sample past the crossing failed with a
+    // message still naming tick 1 000 — this repo's "a correct comment over a
+    // wrong constant" in miniature, found by running the mutation.
+    const EARLY_TICK: u64 = 1_000;
+    const LATE_TICK: u64 = 2_500;
+
+    let mut engine = build(CASCADE);
+
+    // Above its bubble point early: the state this row is about EMERGES during
+    // the run, which is exactly why a load-time refusal cannot catch it. Without
+    // this half, the gate would pass on a plant that was never healthy.
+    run(&mut engine, EARLY_TICK);
+    let early = margin(&engine);
+    assert!(
+        early > 1.0,
+        "the tank must start ABOVE its bubble point: at tick {EARLY_TICK} it sits at {early:.4}"
+    );
+
+    // And below it later: docs/DEFERRED.md B3's trigger, "holds an inventory
+    // below its own bubble point", met by this plant on its own declared
+    // fidelity. If this ever reads above 1.0, B3 is fixed — delete the gate and
+    // close the row rather than relaxing the bound.
+    run(&mut engine, LATE_TICK - EARLY_TICK);
+    let late = margin(&engine);
+    assert!(
+        late < 1.0,
+        "B3's trigger: at tick {LATE_TICK} the naphtha tank sits at
+         {late:.4} of its bubble pressure"
+    );
+}
+
 /// **Gate 4 — the holdup exclusion, on a plant that is already in the state.**
 ///
 /// `crude_column_cascade`'s naphtha tank is below its own bubble pressure from
-/// tick 1826 onward: the column draws at real tray temperatures (M7.4a), the
+/// tick 1825 onward: the column draws at real tray temperatures (M7.4a), the
 /// tank has no cooler, and the model's own correlation says what it stores is
 /// boiling — 0.957× at the tick this gate reads. That is `docs/DEFERRED.md` B3, a
 /// two-phase INVENTORY, and not cavitation, which is a flow-path phenomenon. The
@@ -220,11 +308,11 @@ fn the_demos_bubble_pressure_matches_a_mole_weighted_hand_calculation() {
 /// show the exclusion is doing work — rather than sitting in front of a tank that
 /// happens to be healthy — is to evaluate the criterion independently and find
 /// that it WOULD fire. Without it, this test would pass on a plant whose tank was
-/// nowhere near boiling, which is exactly what it looked like before tick 1826.
+/// nowhere near boiling, which is exactly what it looked like before tick 1825.
 ///
 /// **Asserted on the `Option`, not on the verdict.** `cavitating == false` is the
 /// weaker form: it is what a *broken* exclusion would report at any tick before
-/// 1826, so a gate written that way would pass on the engine it is meant to
+/// 1825, so a gate written that way would pass on the engine it is meant to
 /// catch, at most run lengths.
 #[test]
 fn a_boiling_holdup_reports_no_criterion_while_the_flow_path_reports_one() {

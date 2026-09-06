@@ -421,7 +421,7 @@ fix — and slices were scoped one at a time, because what the next one should b
 depended on what the last one measured. Six boxes landed: three about the
 hydraulic solvers (M9.0, M9.1, M9.2), one that turned the milestone's own
 hand-measurement into the `corpus` command (M9.3), and two that spent it (M9.3a,
-M9.3b). **Nothing in `docs/DEFERRED.md` is past its trigger.**
+M9.3b). **Nothing in `docs/DEFERRED.md` was past its trigger** when M9 closed. **That is no longer true: B3 (two phases in the state vector) went past on 2026-09-06** — see its row and the ledger's own summary.
 
 Three things carry forward past the milestone. **The scope moved three times** —
 which step to take (M9.0/M9.1), when the solver may stop (M9.2), what an iteration
