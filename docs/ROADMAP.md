@@ -4832,9 +4832,36 @@ later; M11's row went stale in exactly that way and cost the ledger a correction
 
 ### M12.0 — Scoping + design note — **LANDED** 2026-09-06
 
-The note is DESIGN §14, written before any code: eight forks, six gates, six named
-mutations, and one measurement taken before the forks were settled. It changes no
-number and adds no test. **Four things to know before the building slice.**
+The note is DESIGN §14, written before any code: **nine** forks, seven gates,
+eleven named mutations, and three measurements. It changes no number and adds no
+test. **Five things to know before the building slice.**
+
+**Fork 9 was added after the rest of the note, on the user's instruction that
+physics models should be swappable where they contradict reality in different
+ways and neither is provably better — and it answers the question the note left
+open.** The boil-off becomes a fifth `[fidelity]` key, `boiloff = "none" |
+"flash"`, selecting an implementation the way `reactions` selects a
+`ReactionModel`. `"none"` says a product tank never boils however hot the column
+runs; `"flash"` says a quarter of the naphtha product leaves as vapour through a
+vent to atmosphere with nothing downstream of it (which B12 and B13 say is also
+incomplete). Neither is a refinement of the other. **`crude_column_cascade`
+therefore declares `"none"` and stays byte-identical**, the demo is that same file
+with one line changed — the M7 `crude_column` / `crude_column_cascade` pair
+pattern, a third member of the same family — and the ~24% movement lands where
+it is the feature rather than a cost. The fallback the note named, a quieter
+term, is explicitly not taken.
+
+**The CPU half of that argument was measured and does NOT hold, which is the
+finding.** A bubble-point root find on the shipped five-cut slate costs
+**2 381–3 034 ns**, timed over 200 000 solves. Against A1's frame budget
+(16.7 ms at 60 Hz) that is ~0.016% per boiling tank — nothing. Against the
+plant's own tick it is real but small: `crude_column_cascade` runs at 59.3 µs per
+tick (355.9 ms / 6 000, same session), so three boiling tanks would add ~13%; a
+cheap plant like `cooler_chiller` at 7.6 µs per tick would pay ~34%. **"A root
+find per tank per tick" sounds like the expensive-model case and is two and a
+half microseconds.** So the key is justified by the models disagreeing, not by
+one being costly — and the note says so, because a key defended on 0.016% of a
+budget is defended on nothing.
 
 **The holdup case does not need phase in the state vector, and the reason was
 written into the type ten milestones ago.** `NodeKind::Tank` is documented as

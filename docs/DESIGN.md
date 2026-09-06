@@ -6451,6 +6451,116 @@ unrepresentable and there is deliberately no guard, and that **the moment a
 second variant lands that refusal becomes required**. M10 is that moment. The
 comment names its own expiry; this slice pays it.
 
+### Fork 9 — the boil-off is a FIDELITY KEY, not a behaviour
+
+Raised by the user on 2026-09-06, after the note above was written and before any
+code: *some physics models should be toggleable and swappable, especially where
+there is a big difference in CPU cost or where they contradict reality in
+different ways and neither is provably better.* That is rule 2, and it applies to
+this term more sharply than to anything the project has put behind a key so far.
+
+- **(a) unconditional** — every plant whose thermo model can answer gets the
+  term.
+- **(b) a fifth `[fidelity]` key**, `boiloff = "none" | "flash"`, selecting an
+  implementation the way `reactions` selects a `ReactionModel`.
+- **(c) a per-node key** on the tank that boils.
+
+**Verdict: (b).**
+
+**The two models are wrong in different ways and neither is a refinement of the
+other, which is the actual reason for the key.** `"none"` says a product tank is
+a liquid store whose contents never boil however hot the column runs — wrong,
+and wrong *conservatively*, in that it moves no mass and invents no stream.
+`"flash"` says a quarter of the naphtha product leaves as vapour at `y = K·x`
+through a vent to `Atmosphere` with nothing downstream of it — also wrong,
+because a real unit condenses that vapour and recovers it, which is exactly what
+B12 and B13 defer. A plant is not more correct for choosing either one; it is
+making a different statement about what is being modelled. That is a fidelity
+choice in this project's sense, not a bug fix with a flag on it.
+
+**It also resolves the question M12.0 left open, and resolves it without weakening
+the physics.** The note asked whether ≈24% of a naphtha product boiling away was
+an acceptable movement of a pre-M8 regression anchor. Under (b) the anchor
+declares `"none"` and does not move at all, the term is exercised in full on a
+one-line twin of it (fork 8), and the corpus carries both answers side by side.
+The fallback the note named — a quieter term — is not taken, and must not be:
+tuning a model down to protect a baseline is how a physics engine acquires a
+constant nobody can justify.
+
+**(c) is rejected.** A phase behaviour is a property of the *model*, not of one
+vessel; per-node selection would let a single plant carry two thermodynamics with
+no argument for which node gets which. Every existing per-node key is geometry,
+duty or a setpoint — never model selection — and the one per-instance seam in
+the workspace, `Controller`, was argued as an exception in §10 rather than
+inherited. Nothing here asks for a second exception.
+
+**Four traps, one from each key that already exists, every one of them something
+that actually went wrong.** They are listed here because a fifth key written
+without reading `schema.rs`'s own comments will step in at least one:
+
+1. **Default `"none"`, argued the M5.2 way.** Not "so old files still parse" but
+   *that is what a pre-M12 file means*. The distinction is the one `separation`'s
+   default already draws, and it is forced here anyway: fourteen of sixteen
+   plants declare `thermo = "constant"`, which cannot answer.
+2. **Refuse `boiloff = "flash"` with `thermo = "constant"` at load**, at the same
+   site and in the same shape as the existing `separation = "cascade"` +
+   `thermo = "constant"` refusal in `build_engine`. Without it the pairing loads
+   happily and fails at tick 1 with a solver error naming a K-value, which is
+   §9's "an error must name what the author can fix" failing.
+3. **Refuse an unknown value, and write the test that exercises the refusal.**
+   `thermo` was parsed and then *ignored* from M1 to M7.2, so `thermo =
+   "nonsense"` loaded a working plant — and it was found by wiring a neighbour
+   key beside it, not by a test, because nothing reached the value so nothing
+   could fail on it. A key whose value is read only when some other key is set is
+   born in exactly that state.
+4. **The key must change a number on a plant that ships, on the day it lands.**
+   `trouton` was held back for a whole milestone rather than shipped as a knob
+   nothing could discriminate, citing `smearing_k` — set in every demo file,
+   changing no number — as the anti-pattern. This key clears the bar the day it
+   lands: 0% against ~24% of a product stream, on two files differing by one
+   line.
+
+### Fork 9's other half: what does NOT become a key, and why
+
+The user's criterion has two clauses — a large CPU difference, *or* two models
+wrong in different ways with no clear winner. **This term qualifies under the
+second clause and not the first, and measuring that is what keeps the argument
+honest.**
+
+**Measured, because it is the user's own criterion and it was a guess.** A
+bubble-point root find on the shipped five-cut slate, through `TroutonThermo`,
+timed over 200 000 solves per composition in a release build:
+
+| tank composition | `T_bub` | ns per solve |
+|---|---|---:|
+| naphtha (0.5299 / 0.4685 / 0.0016) | 368.21 K | **2 559** |
+| distillate | 503.84 K | **3 034** |
+| bottoms | 607.73 K | **2 381** |
+
+**Against the budget that matters, this is nothing: ~0.016% of a 60 Hz frame per
+boiling tank** (A1's yardstick is the 16.7 ms `_physics_process` call the Godot
+binding ticks from). Against the plant's own tick it is not nothing — measured
+in the same session, `crude_column_cascade` costs 355.9 ms per 6 000 ticks, i.e.
+**59.3 µs per tick**, so three boiling tanks would add ~13%; on a cheap plant
+like `cooler_chiller` (45.3 ms, **7.6 µs per tick**) a single tank is ~34%.
+
+**So the CPU clause does not carry this key and the disagreement clause does**,
+and getting that the wrong way round would have mattered. "A root find per tank
+per tick" *sounds* like the expensive-model half of the user's criterion; it is
+two and a half microseconds. A key defended on a cost of 0.016% of the budget is
+a key defended on nothing, and the moment the term were made cheaper the argument
+for the key would evaporate — whereas the argument that actually holds it up
+(the two models make different claims about the plant, and B12/B13 say the more
+expensive one is *also* incomplete) does not depend on speed at all.
+
+The same criterion, applied to the other candidates in the engine, says *not
+yet* rather than *no*: a real-gas equation of state and a temperature-dependent
+`cp` are both genuinely "wrong in a different way", both are absent as seams, and
+**neither has a shipped plant whose numbers would differ.** Adding a key nothing
+can tell apart is `smearing_k` again, so they go to the ledger with "a plant that
+discriminates the two answers" as the trigger (`docs/DEFERRED.md` B14 and B15)
+rather than into this milestone.
+
 ### The gates, named before building, and the vacuity each one closes
 
 1. **The tick-0 measurement.** At load, before any tick, the loop's reported
@@ -7587,6 +7697,15 @@ not the next one. A one-tick lag here is M3.2's lesson (a lag that does not
 vanish as `dt → 0` is a defect, not a lag) — the boil-off is an algebraic
 constraint, so it must be applied at the same time as the state it constrains.
 
+**Amended by fork 9: the placement stays, the arithmetic does not.** With the
+term behind a selectable model, everything fork 3 specifies — the flash
+fraction, its clamp at 1, the `y = K·x` composition — belongs to the impl, and
+`Engine::tick`'s `Tank` branch keeps only two things: *when* to ask (here, this
+tick) and *what to do with the answer* (fork 4's vent edge). That division is
+what rule 2 means by "fidelity is trait impl selection": the branch must contain
+no arithmetic that differs between `"none"` and `"flash"`, or the key is an
+`if simple_mode` in disguise.
+
 ### Fork 7 — which plants can evaluate this at all
 
 **Fourteen of the sixteen shipped plants declare `thermo = "constant"`, whose
@@ -7701,6 +7820,18 @@ The demo file is still new rather than wired into an existing plant, for the
 thirteen-anchor reason above — but the shipped cascade is now the *regression*
 case AND a usable second exercise, not a plant that cannot see the feature.
 
+**Amended by fork 9, and the amendment makes the demo almost free.** With the
+term selectable, `crude_column_cascade.toml` keeps `boiloff = "none"` and stays
+byte-identical, and the demo is that same file with **one line changed**. That is
+deliberately the M7 pattern: `crude_column.toml` and `crude_column_cascade.toml`
+already ship as a pair meant to be diffed, identical in feed, rates and tanks and
+differing only in what the separation model does with them. A third file in that
+family — same plant, `boiloff = "flash"` — makes the two answers directly
+comparable in one `corpus` run, which is the only honest way to present a fork
+where **neither model is provably better** (fork 9). It also means every gate
+below runs on a plant whose *only* difference from a shipped anchor is the key
+under test, so a gate that fires is pointing at the term and not at the plant.
+
 ### The gates, named before building, and the vacuity each one closes
 
 1. **The tank's composition MOVES, and toward the heavy end.** The gate for fork
@@ -7724,15 +7855,26 @@ case AND a usable second exercise, not a plant that cannot see the feature.
    rediscover it for the fifth time. What replaces it is gate 3, whose two sides
    (a temperature trajectory and a thermodynamic property) are computed by
    independent paths.
-5. **Fourteen plants byte-identical, on both fidelities.** The `constant`-thermo
-   arm, verified M8.5's way — strip the new key and reproduce the before-file
-   byte for byte — rather than predicted.
+5. **ALL SIXTEEN shipped plants byte-identical, on both fidelities** — raised
+   from fourteen by fork 9, because the two plants that *can* evaluate the term
+   now decline it by declaring `boiloff = "none"`. Verified M8.5's way — strip
+   the new key and reproduce the before-file byte for byte — rather than
+   predicted. **This gate got stronger and easier at the same time, which is
+   worth distrusting**: an all-identical corpus is also what a key that is parsed
+   and ignored produces (fork 9, trap 3), so gate 5 is only meaningful beside
+   gate 7.
 6. **The everything-flashes case terminates honestly.** Where `f_in ≥ 1` the tank
    cannot fill: it must not reach a negative mass, a NaN, or a sub-zero
    temperature, and the mass balance must still close over the tick. Asserted
    against an **inflow**, not an inventory — the inventory version of this gate
    defends a state the correction prevents from ever arising, which would be the
    fifth specified gate in this project with no power over its own subject.
+7. **The two files differ, and differ in the predicted direction.** Added by fork
+   9. The demo and its one-line twin must disagree on the naphtha tank's mass,
+   temperature and composition, by roughly the measured `f_in = 0.236` rather
+   than by any non-zero amount. This is the gate that makes gate 5's silence mean
+   "declined" rather than "ignored", and it is the only thing standing between
+   this key and the `thermo = "nonsense"` defect.
 
 ### The mutations this slice owes, named before building
 
@@ -7744,22 +7886,29 @@ case AND a usable second exercise, not a plant that cannot see the feature.
 | the boil-off applied one tick late | predicted caught by gate 3 only if `ε` is derived; a chosen tolerance passes it (M8.3's 4.66e-5 lesson) |
 | a `Scenario` `Err` read as "boil off zero" rather than "no term" | predicted **inert**, and that is worth recording: unlike M11's snapshot key, where `false` and absent differ, a zero term and no term are the same arithmetic |
 | `f` clamped to 1 removed | the `f ≥ 1` case; predicted caught by gate 6 |
+| `boiloff` parsed and then ignored (the impl always `"none"`) | **the M1–M7.2 `thermo` defect, reproduced deliberately.** Predicted caught by gate 7 and by NOTHING else — gate 5 passes, every conservation test passes, and the corpus is all-identical, which is the point |
+| the default flipped to `"flash"` | predicted caught by gate 5 on two plants and by no other gate; the other fourteen cannot form the term, so a wrong default is invisible on 87% of the corpus |
+| the `"flash"` + `thermo = "constant"` refusal dropped | predicted **not** caught by any gate above — it needs its own refusal test, because no shipped file declares that pairing. Named here so the building slice does not discover it by shipping it |
+| an unknown `boiloff` value accepted and treated as `"none"` | same shape; needs its own refusal test. `"pid"` is what M8.3's unknown-algorithm refusal is tested with, and this wants the same |
 
 ### What must not change, stated as a prediction that can be wrong
 
-- **Fourteen plants on `thermo = "constant"` are byte-identical on both
-  fidelities.** Their models refuse all three inputs, so the term cannot form.
-- **`crude_column_cascade` MOVES, and by more than a rounding.** It is a pre-M8
-  regression anchor, and at `f_in = 0.236` roughly a quarter of its naphtha draw
-  leaves as vapour once the tank reaches its bubble point at tick 1 825 — so the
-  tank's mass, temperature and composition all change materially over the back two
-  thirds of the run. Measured M8.5's way after the fact rather than predicted.
-  **This is the largest anchor movement any milestone in this project has taken**,
-  and if the building slice judges it unacceptable the fallback is fork 8's new
-  demo file plus a refusal, not a quieter term.
+- **REWRITTEN BY FORK 9. All sixteen shipped plants are byte-identical on both
+  fidelities**, not fourteen. The first version of this section predicted that
+  `crude_column_cascade` would move by roughly a quarter of its naphtha draw and
+  called it "the largest anchor movement any milestone in this project has
+  taken". With the term behind `boiloff`, the anchor declares `"none"` and does
+  not move at all. **The prediction was not wrong about the physics — it was
+  wrong about who bears it**, and the movement now lives entirely on the new demo
+  file, where it is the feature rather than a cost.
+- **The movement itself must still appear, on the demo.** ~24% of the naphtha
+  draw leaving as vapour from tick 1 825 is what gate 7 asserts. A slice that
+  ships an all-identical corpus AND a demo that matches its twin has built
+  nothing, however green it is.
 - **The other two cascade tanks are heading the same way and are NOT controls.**
   Their inflow is already above their own bubble points; they have simply not
-  heated there within 6 000 ticks. A longer run moves them too.
+  heated there within 6 000 ticks. A longer run moves them too — on the demo;
+  on the anchor they are frozen by the key.
 - **`cavitating_pump` is untouched.** Its only sub-bubble-point node is a pump,
   and M11's node-kind exclusion and this milestone's holdup scope are disjoint by
   construction — which is worth asserting, because the two features now both read
@@ -7782,3 +7931,8 @@ case AND a usable second exercise, not a plant that cannot see the feature.
 - **What the vented vapour does after it leaves.** It goes to `Atmosphere` and
   stops being modelled, exactly as a leak does. Routing it to a flare or a vapour
   recovery unit is a topology the format cannot express today.
+- **A selectable equation of state, and a selectable `cp(T)`.** Fork 9's other
+  half. Both are "wrong in a different way" in the user's sense and neither has a
+  shipped plant that can tell the two answers apart, which is this project's bar
+  for a fidelity key. `docs/DEFERRED.md` B14 and B15, each with that plant as its
+  trigger.

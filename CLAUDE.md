@@ -182,8 +182,44 @@ See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 **M12 is OPEN, and its scope is the two-phase HOLDUP — a quarter of `docs/DEFERRED.md`
 B3.** It is the first milestone opened because the ledger says a hurdle has arrived:
 B3 is the only row on the wrong side of its own number. **M12.0 landed 2026-09-06**
-— the design note, DESIGN §14, eight forks, six gates, six mutations, no code. The
-building slice is M12.1 and B3 stays past its trigger until it lands.
+— the design note, DESIGN §14, **nine** forks, seven gates, eleven mutations, no
+code. The building slice is M12.1 and B3 stays past its trigger until it lands.
+
+**Fork 9 makes the boil-off a FIDELITY KEY, and it was added on the user's
+instruction rather than derived** — physics models should be swappable where they
+contradict reality in different ways and neither is provably better. So
+`[fidelity] boiloff = "none" | "flash"`, a fifth key selecting an implementation
+the way `reactions` selects a `ReactionModel`. `"none"` says a product tank never
+boils however hot the column runs; `"flash"` says a quarter of the naphtha
+product leaves at `y = K·x` through a vent to `Atmosphere` with nothing
+downstream of it — which B12 and B13 already say is incomplete. Neither is a
+refinement of the other. **This resolves the anchor question the note left
+open**: `crude_column_cascade` declares `"none"` and stays byte-identical, so
+**all sixteen shipped plants are byte-identical** and the demo is that same file
+with ONE line changed — deliberately the M7 `crude_column` / `crude_column_cascade`
+pair pattern, extended to a third member. The fallback the note named, a quieter
+term, is refused: tuning a model down to protect a baseline is how an engine
+acquires a constant nobody can justify.
+
+**The CPU half of the swappability argument was measured and does NOT hold.** A
+bubble point on the shipped five-cut slate is **2 381–3 034 ns** (200 000 solves,
+release): ~0.016% of a 60 Hz frame per boiling tank. Against the plant's own tick
+it is real but small — `crude_column_cascade` is 59.3 µs/tick (355.9 ms / 6 000),
+so three boiling tanks add ~13%; `cooler_chiller` at 7.6 µs/tick would pay ~34%.
+**"A root find per tank per tick" sounds expensive and is two and a half
+microseconds**, so the key rests on the models disagreeing, not on cost.
+
+**The bar for a NEW fidelity key is that a shipped plant tells the two answers
+apart** — `trouton` was held back a whole milestone rather than ship as a knob
+nothing could discriminate, citing `smearing_k` as the anti-pattern. `boiloff`
+clears it on day one (0% against ~24% on two files differing by one line). A
+selectable equation of state and a selectable `cp(T)` do NOT, and are now ledger
+rows **B14** and **B15** with that plant as the trigger. **And the trap that comes
+with a fifth key: `thermo` was parsed and then ignored from M1 to M7.2** —
+`thermo = "nonsense"` loaded a working plant, found by wiring a neighbour key
+rather than by a test — so gate 7 (the demo and its twin must actually differ)
+is the only thing separating this key from that defect, and unknown values and
+the `"flash"` + `thermo = "constant"` pairing each need their own refusal test.
 
 **B3 names four paths and exactly one fired.** A flashing feed line, a partial
 condenser and a vapour side draw are all still refused at load with no plant
