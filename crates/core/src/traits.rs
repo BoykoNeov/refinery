@@ -479,6 +479,22 @@ pub trait BoilOffModel: Send {
     /// `SeparationModel::separate` takes one: a K-value is a property of the
     /// fluid, not of this seam.
     ///
+    /// **What makes an implementation of this sound, stated because one model
+    /// satisfying it is not the same as the trait requiring it** (the M10.1
+    /// lesson: a safety argument resting on there being ONE inhabitant expires
+    /// silently, because the code does not change). A boil-off model asks the
+    /// thermo model two questions that must agree — is this liquid below its
+    /// bubble PRESSURE at its own temperature, and what TEMPERATURE does it boil
+    /// at under its own pressure. `FlashBoilOff` uses the first to gate the
+    /// second, and treats a disagreement as "nothing boils this tick" rather
+    /// than as a fault, which is right only for a `ThermoModel` whose
+    /// `bubble_pressure` and `k_value` come from ONE correlation.
+    /// `TroutonThermo` does; three of this workspace's six implementations are
+    /// test stubs that answer only some of the three methods. A model that
+    /// derives the two answers independently can make a boil-off model swallow a
+    /// real inconsistency, and the place to catch that is here, in the model,
+    /// not in `Engine::tick`.
+    ///
     /// # Errors
     /// `SimError` when the model can evaluate the term and it comes out
     /// impossible — a non-finite flash fraction, a vapour composition that does

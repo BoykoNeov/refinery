@@ -8044,6 +8044,18 @@ appear anywhere: mass balances exactly, and the plant's energy books show a sink
 at every boiling tank. Measured rather than waved at: **7.6084e8 J over 6 000
 ticks, 13.9% of the sensible enthalpy the naphtha draw delivered over the same
 run, and 1.54 MW at tick 6 000** against the column's own 51.5 MW condenser duty.
+**And it is EXACTLY the latent term, which was checked rather than assumed.** The
+worry behind checking it: if the flash also perturbed the tank's own Euler
+integration, the gap would be larger than `m_v·Δh̄_vap` and the sentence above
+would be half the story. It does not. Mixture `cp` is linear in the component
+masses, so `mass_new·c̄p_before − mass_left·c̄p_after` is identically
+`m_v·c̄p_vapour` — the sensible content of what left is exactly the sensible
+content the tank lost — and that identity is not free, because the
+per-component subtraction, the over-draw cap and the rounding guard all sit
+between the two sides of it. Instrumented in the engine over 3 000 ticks of the
+demo, on both of its boiling tanks: **3e-12 relative**. So the tank's own books
+are exact and the unaccounted energy is the latent heat and nothing else.
+
 The tempting fix is a vent temperature chosen so that the sensible enthalpy
 equals the energy removed; that is a fabricated temperature — finite,
 deterministic, plausible and wrong — and it is refused here for the same reason

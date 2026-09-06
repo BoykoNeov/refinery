@@ -4970,6 +4970,11 @@ predicted: sixteen `identical` rows on `newton` and sixteen on `simple`, no
 iteration count moved, and `crude_column_boiloff` reported `new`. The anchor now
 declares `boiloff = "none"` explicitly so the pair reads as a pair; stripping that
 line reproduces its snapshot byte for byte (M8.5's verification, as a gate).
+**The two hand-written scenario lists were checked rather than overlooked**: the
+new file belongs in neither `snapshot_slate.rs`'s fourteen (a slate claim about
+the plants that existed when `Snapshot::slate` landed) nor `control_reference.rs`'s
+thirteen (the pre-M8 plants that must never grow a `controls` key), and both
+lists are spelled out precisely so a new file does not silently join them.
 
 **What this does NOT close.** B3's three STREAM paths — a flashing feed line, a
 partial condenser, a vapour side draw — are untouched and keep the row open; the
