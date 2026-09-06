@@ -4616,9 +4616,13 @@ was deleted after it printed.
 The rule stands: a design note before any of these, and the note may reject its
 own box.
 
-1. **A cavitation floor** (B1). Now the nearest numeric trigger in the ledger
-   after A3, at 1.87×, and the only one whose subject is a *wrong number a
-   frontend is asked to interpret*. Its trigger is written; its note is not.
+1. ~~**A cavitation floor** (B1)~~ — **TAKEN as M11**, 2026-09-06, and both
+   halves of this entry were wrong. Its 1.87× is a number **no engine
+   configuration can produce** (`heat_recovery` declares `thermo = "constant"`,
+   whose `k_value` is an `Err`), and "floor" is not what the note ships — DESIGN
+   §13 fork 1 rejects the clamp and ships a criterion plus a signal. The half
+   that held: it is the only row whose subject is a wrong number a frontend is
+   asked to interpret, and that is the licence the milestone is taken under.
 2. **Phase in the state vector** (B3). Milestone-sized, four paths in now rather
    than three, and two shipped plants already in the state it describes. The
    cheap alternative — a product cooler in the two column files — should be
@@ -4626,3 +4630,103 @@ own box.
    go away without fixing anything.
 3. **Temperature or flow control** (E1b). Deferred with the asymmetry above
    recorded; neither has a plant asking.
+
+## M11 — the cavitation criterion; the first milestone taken on a decision
+
+M10 closed with nothing in `docs/DEFERRED.md` past its trigger, and that is still
+true. B1 — the cavitation floor — is the nearest row whose subject is a *wrong
+number a frontend is asked to interpret*, and it has two trigger clauses: (a) a
+solved hydraulic-path pressure below its own bubble point, and (b) a frontend
+needing to display cavitation. **Neither has fired. Clause (b) is a decision, and
+this milestone is that decision being made** — which is a different opening from
+M10's (a ledger row with a measured distance) and different again from M8's and
+M9's (a defect the previous milestone reached and did not fix). It is written
+down as a decision so a later reader can disagree with the reasoning rather than
+reconstruct it.
+
+What licenses it: §3 told frontends for ten milestones to read *negative absolute
+pressure* as cavitating, the M10 close-out proved that marker fires late by the
+fluid's whole vapour pressure, and the correction left frontends with **nothing**
+— the engine has no signal at all. The thermodynamics to produce one has been in
+the engine since M7.2 and has exactly one consumer.
+
+**The milestone's own row names it wrong and the note says so.** B1 is "no
+cavitation floor"; §3 promised "a vapor-pressure clamp". M11 ships neither. It
+ships a criterion and a signal, and stops exactly where B3 (phase in the state
+vector) begins.
+
+### M11.0 — Scoping + design note — **LANDED** 2026-09-06
+
+The note is DESIGN §13, written before any code: seven forks, seven gates, seven
+named mutations. It changes no number and adds no test. **Five things to know
+before the building slice.**
+
+**B1's distance is a number no engine configuration can produce, and that is a
+new kind of error for this ledger.** The row says 1.865×, at `heat_recovery`'s
+`hx_hot`. It reproduces to six figures — and `heat_recovery` declares
+`thermo = "constant"`, whose `k_value` is an `Err` by design. The M10 close-out
+measured the corpus with a standalone script that reimplemented Raoult over
+Trouton, and **the script's instrument is not the engine's**. The close-out
+corrected this row once already, for measuring against the wrong *quantity* (a
+pressure against zero while concluding about a vapour pressure). This is
+different in kind: the quantity is right, and the **instrument is one the engine
+does not have**. Reading for the ledger: *a distance is a property of the engine,
+not of the plant* — if the number cannot be produced by a run, it is a prediction
+about a configuration nobody ships.
+
+**Fourteen of the fifteen shipped plants select `thermo = "constant"`, so under
+the trigger's own words the engine-computable set is EMPTY.** The trigger names
+"a pump, valve, junction or exchanger". Every node of those four kinds in the
+corpus sits on a plant whose thermo model refuses to answer, and the only plant
+that *can* answer — `crude_column_cascade` — contains none of those four kinds.
+Its one flow-path node is a **furnace**, which the trigger does not name. So the
+note's fork 4 enumerates all **fourteen** `NodeKind` variants rather than
+inheriting a four-name list, and adds `Furnace` and `Cooler`: a fired heater's
+outlet is exactly where a refiner expects a liquid to boil, and excluding them
+would have left the criterion with no reachable node at all — the fifth dead gate
+this project has written. The trigger is corrected in the ledger to name six
+kinds.
+
+**The engine's own numbers, measured over 6 000 ticks, every tick, through the
+model's public API** (`TroutonThermo::k_value`, so `Psat = P·K` exactly):
+
+| plant | node | kind | margin `P/P_bub` | engine can evaluate? |
+|---|---|---|---|---|
+| `crude_column_cascade` | `preheater` | **furnace** | **1.899** (spread 1.899–1.921) | **yes** |
+| `crude_column_cascade` | `column` | column | 0.988–1.000 | yes, and meaningless |
+| `crude_column_cascade` | `naphtha_tank` | tank | 0.940 | yes, and it is B3's |
+| `crude_column` | `preheater` | furnace | 1.258 | no — `constant` |
+| `heat_recovery` | `hx_hot` | exchanger | 1.865 | no — `constant` |
+| every liquid pump/valve/junction | | | ≥ 21.4 | no — all `constant` |
+
+The column's 0.988–1.000 is the exclusion argued and then measured: a column is
+*at* its bubble point by definition, and a signal there reports the model
+working. The `naphtha_tank`'s 0.940 is the load-bearing holdup exclusion, and it
+becomes gate 4 — the strongest gate available, because it is asserted on a plant
+already in the state rather than on a fixture built to be.
+
+**The signal is a signal, and the two rejected shapes are rejected on their
+merits.** A **clamp** (what §3 promised) makes a converged solve stop conserving:
+the mass that fails to balance is vapour, at a node the state vector calls
+liquid, which *is* B3. An **`Err`** turns an operating state a game must render
+into a dead simulation, against §3b's damage doctrine — a leak is an edge, a fire
+is a heat source, damage is representable rather than fatal. So the engine says
+what its thermodynamics says and touches no hydraulics, at the price of a known,
+named disagreement: a cavitating pump in M11 still delivers full head.
+
+**The reachability fixture takes two edits, not the one B1 claims — and the
+second one moves no number.** Raising `tank_pump_valve`'s suction line crosses
+the bubble point at 17.44 m, re-measured here with the engine's instrument and
+reproducing the close-out's table to six figures (17 m → 9 904.66 Pa; 19 m →
+−9 522.94 Pa, converged, 10.0 kg/s). But that plant declares `thermo =
+"constant"`, so the fidelity line is a second edit. Switching it to `"trouton"`
+leaves the pump-node pressure at **175 197.988 Pa, identical to the last digit** —
+because `k_value` has exactly one consumer and that plant has no column.
+**M11 is therefore the first consumer that makes `thermo` matter on a plant with
+no column**, which retroactively gives the `"trouton"` + splitter pairing —
+deliberately not refused at load since M7.2 — a purpose. The demo will be a new
+file all the same (M8.4's and M10.1's precedent), and it will run a light
+hydrocarbon rather than water, because `TroutonThermo`'s own doc says the
+correlation overstates water's vapour pressure by ~60% at 50 °C while being good
+to ~10% over the reference hydrocarbon's range — and because on a naphtha §3's
+old marker is **nine bar** late instead of 0.58 m of lift late.

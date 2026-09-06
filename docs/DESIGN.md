@@ -139,6 +139,17 @@ arrives after the fact rather than a criterion. `docs/DEFERRED.md` B1 carries th
 trigger and the measured distance — no shipped plant is past it, the tightest
 solved margin in the corpus being **1.865×** (`heat_recovery`'s exchanger).
 
+**Superseded by §13 (M11), and that 1.865× comes with a caveat the close-out did
+not have.** The criterion is specified there — a node's own **bubble pressure**,
+from `ThermoModel::bubble_pressure`, reported per node in the snapshot as a
+verdict plus the number behind it. It is a *signal*, deliberately not the "clamp"
+this paragraph promised: §13 fork 1 rejects the clamp, because the vapour a clamp
+would account for is mass in a phase the state vector does not have (ledger row
+B3). The caveat is that `heat_recovery` declares `thermo = "constant"`, whose
+`k_value` is an `Err`, so **no engine configuration of that plant can produce
+1.865×** — it is a number from the close-out's measurement script. Fourteen of
+the fifteen shipped plants are in that position.
+
 **SimpleFlowSolver** (game-fidelity): solves the *same* quasi-steady fixed point
 as Newton, but matrix-free — **nonlinear Gauss–Seidel** over node pressures
 instead of a global linear solve. Each free node takes a scalar Newton step from
@@ -6766,3 +6777,455 @@ test the one named. 6 and 7 are caught by the *same* test, which is deliberate:
 gate 5d asserts the refusal and the `NaN` backstop as two assertions in one place,
 because they are two halves of one claim — that nothing subtracts metres from
 Pascals — and separating them would suggest either could stand alone.
+
+## 13. The cavitation criterion (M11) — specified before building
+
+### What M11 is, and why its own row's name is wrong
+
+`docs/DEFERRED.md` B1 is called **"no cavitation floor"** and §3 above promises
+"a vapor-pressure clamp is a later milestone". This note ships **neither a floor
+nor a clamp**. It ships a *criterion* — the model's own answer to "is this liquid
+boiling?" — and a *signal* that carries the answer to a frontend. Fork 1 rejects
+the clamp on its merits, so the row's noun is corrected in the ledger rather than
+honoured in the code.
+
+The distinction is the whole scope boundary. A clamp changes what the plant
+*does*; a criterion changes what the engine *says*. What cavitation does to a
+pump — head degradation, the vapour that forms and then collapses — is mass in a
+phase this state vector does not have, which is ledger row B3 and a milestone of
+its own. M11 stops exactly where B3 begins, and the snapshot says so.
+
+### The trigger is not past, and the reason is sharper than "not yet"
+
+B1's distance column says **1.865×**, at `heat_recovery`'s `hx_hot`. That number
+is real, reproduces to six figures, and **no engine configuration of that plant
+can produce it.** `heat_recovery` declares `thermo = "constant"`, and
+`ConstantThermo::k_value` is an `Err` by design — it has no phase equilibrium at
+all. The M10 close-out measured the corpus with a *standalone script* that
+reimplemented Raoult over Trouton, and the script's instrument is not the
+engine's.
+
+**Fourteen of the fifteen shipped plants select `thermo = "constant"`.** The one
+that does not is `crude_column_cascade`. So the set of nodes at which *the engine*
+can evaluate a bubble pressure today is not the corpus — it is one plant.
+
+Measured, 6 000 ticks, every tick, through the model's own public API
+(`TroutonThermo::k_value`, so `Psat = P·K` exactly):
+
+| plant | node | kind | margin `P/P_bub` | engine can evaluate? |
+|---|---|---|---|---|
+| `crude_column_cascade` | `preheater` | **furnace** | **1.899** (spread 1.899–1.921) | **yes** |
+| `crude_column_cascade` | `column` | column | 0.988–1.000 | yes, and meaningless (below) |
+| `crude_column_cascade` | `naphtha_tank` | tank | 0.940 | yes, and it is B3's |
+| `crude_column` | `preheater` | furnace | 1.258 | no — `constant` |
+| `heat_recovery` | `hx_hot` | exchanger | 1.865 | no — `constant` |
+| every liquid pump/valve/junction | | | ≥ 21.4 | no — all `constant` |
+
+**Under the trigger's own words — "a pump, valve, junction or exchanger" — the
+engine-computable set across all fifteen plants is EMPTY.** Every node of those
+four kinds lives on a plant whose thermo model refuses to answer, and the one
+plant that can answer has none of those four kinds in it. Its only flow-path node
+is a **furnace**, which the trigger does not name.
+
+**This is a fourth variant of a pattern the ledger already tracks.** The M10
+close-out corrected B1's distance because it had been measured *against the wrong
+quantity* — a pressure against zero, concluding about a vapour pressure. This
+correction is different in kind: the quantity is right and the **instrument is one
+the engine does not have**. A distance measured with a script says what the
+physics would say if the engine could ask; it does not say what the engine can
+report. The tell was available in the old row too — it cites `heat_recovery` by
+name, and `heat_recovery`'s fidelity line is three lines from the top of its file.
+
+Reading for the ledger: **a distance is a property of the engine, not of the
+plant.** If the number cannot be produced by a run, it is a prediction about a
+configuration nobody ships.
+
+### The licence this milestone is taken under, stated plainly
+
+Neither trigger clause has fired. Clause (a) — a solved hydraulic-path pressure
+below its own bubble point — is not merely unreached, it is *unmeasurable* on
+fourteen plants. Clause (b) — a frontend needing to display cavitation — is a
+**decision**, and this milestone is that decision being made rather than a
+measurement arriving.
+
+Two things make it a decision worth making now, and they are stated so a later
+reader can disagree with the reasoning rather than guess it:
+
+1. **§3's frontend contract is actively wrong, and this is the only ledger row
+   whose subject is a wrong number a frontend is asked to interpret.** Until the
+   M10 close-out, §3 told frontends to read negative absolute pressure as
+   cavitating. A frontend that implemented exactly what was written displays
+   cavitation late by the fluid's vapour pressure — 0.58 m of suction lift on
+   cold water, **nine bar** on light naphtha at 445.75 K. The close-out corrected
+   the paragraph to say the engine has no signal; that is honest, and it leaves a
+   frontend with nothing.
+2. **The thermodynamics has been in the engine since M7.2 and has exactly one
+   consumer.** `ThermoModel::k_value` is read by the stage cascade and by nothing
+   else, which is why `thermo = "trouton"` on a plant with no column is a knob
+   that changes no number — `schema.rs` says so in a comment and deliberately
+   does not refuse the pairing. **This milestone is the first consumer that makes
+   `thermo` matter on a plant with no column**, and that is measured, not
+   asserted: switching `tank_pump_valve` to `"trouton"` leaves its pump-node
+   pressure at 175 197.988 Pa, identical to the last digit.
+
+What this note does **not** claim is that a plant asked. None did.
+
+### Fork 1 — a signal, a refusal, or a clamp
+
+Three shapes for "the engine knows this liquid is boiling", and the choice
+determines the milestone's size.
+
+**(a) A clamp — floor the node pressure at the bubble pressure inside the solve.
+Rejected.** It is what §3 promised and it is wrong at this fidelity. A clamped
+node no longer satisfies `Σṁ = 0`: the mass that fails to balance is vapour, and
+vapour at a node the state vector calls liquid is exactly B3. The model would
+report a converged, conserving solve that conserves nothing — a stronger version
+of the failure `well-posed ≠ correct` already names. It is also a kink in the
+residual, and §3a fork 4 spent a whole fork establishing that this network keeps
+its characteristics C¹.
+
+**(b) An `Err` — refuse the tick. Rejected on two grounds.** Rule 5's `Err` is
+for a solve that *failed*; this solve succeeded, and the answer it produced is a
+genuine root of the equations it was given. And it converts an operating state a
+game must render — an over-driven pump, a suction line someone throttled — into a
+dead simulation. §3b's damage doctrine is the precedent: a leak is an edge and a
+fire is a heat source, because damage must be *representable*, not fatal.
+
+**(c) A signal — evaluate the criterion and report it. Chosen.** The engine says
+what its own thermodynamics says, the hydraulics are untouched, and the frontend
+gets the sentence §3 could not give it. The cost is honesty about what is not
+modelled: a cavitating pump in M11 still delivers its full head, so the snapshot
+says the plant is boiling while the flow says it is not. That is a *known*
+disagreement with a name and a ledger row, which is better than the current
+state, where there is no disagreement because there is no signal.
+
+### Fork 2 — what the criterion is, and one property of it worth keeping
+
+`P_node < P_bub(T_node, x_node)`, where `P_bub` is the **mixture bubble
+pressure**: the pressure at which the first bubble forms out of a liquid of that
+composition at that temperature.
+
+```text
+P_bub = Σ_c x_c · Psat_c(T)          Raoult, x MOLE fractions
+```
+
+**Rejected: "any single component is above its own vapour pressure"**
+(`max_c Psat_c(T) > P`). That fires on the lightest cut alone and would call a
+crude boiling whenever its light naphtha would boil neat. A mixture boils when
+the *sum* of its partial pressures reaches the ambient pressure; the light cut's
+contribution is weighted by how much of it there is. For a pure fluid the two are
+the same number, which is why a water-only fixture cannot tell them apart — see
+the gates.
+
+**A property worth recording, because the cascade's experience predicts the
+opposite: the bubble PRESSURE is explicit, where the bubble TEMPERATURE is a root
+find.** `cascade.rs::bubble_point` solves `Σ K_c(T)·x_c = 1` for `T`, and M9.3a
+spent a slice getting it from 60 evaluations to 15, with a
+`BUBBLE_POINT_MAX_EVALUATIONS` bound and an argument about resolution being a
+noise floor on the test that grades it. None of that applies here. `P_bub` is a
+weighted sum of closed forms — no iteration, no cap, no tolerance, and no failure
+mode other than the ones `k_value` already guards. **A criterion whose cost is
+one `exp` per component per node is a criterion that can run every tick**, which
+is what fork 6 turns on.
+
+### Fork 3 — where the number comes from: a new trait method
+
+**Chosen: `ThermoModel::bubble_pressure(&self, slate, composition, temperature)
+-> Result<Pascal, SimError>`**, a third method on the trait that has carried two
+since M7.2.
+
+**Rejected: computing `P·Σ x_c·K_c(T, P)` in `core` from the existing
+`k_value`.** It is algebraically identical *and only for a Raoult-form model*:
+the `P` cancels because `K = Psat/P`, which is a property of `TroutonThermo`, not
+of the trait. Writing that cancellation into `core` puts a model assumption in
+`core` as plainly as a fidelity `if` would (rule 2), and it would be silently
+wrong for any future `K` that is not inversely proportional to pressure. It also
+needs **mole** fractions, and ledger row A13 records why `MoleFractions` lives in
+`solvers` and must not be dragged down into `core`.
+
+The three implementations, and each refusal has its own reason:
+
+- **`TroutonThermo` — the closed form above.** It converts the mass composition
+  it is handed to mole fractions at its own boundary, which is §5 fork 1's
+  convention: a `Composition` is mass fractions everywhere in this workspace, and
+  molar is a model's internal business.
+- **`ConstantThermo` — `Err`.** It has no phase equilibrium, exactly as its
+  `k_value` does not. Rule 5: never a plausible number.
+- **`ConstantAlphaThermo` — `Err`, and the reason is sharper than "it was handed
+  its numbers".** Its `K` is *independent of pressure*, so `P·Σ x·K` depends on
+  which `P` you evaluate it at: there is no bubble pressure to return, not merely
+  none it was told. That sentence belongs in the code, because the obvious
+  reading — "it has K-values, so it can answer" — is wrong.
+
+The signature takes a `&Composition` rather than a node or a slate index, so the
+method knows nothing about graphs and stays a pure property lookup, the shape
+`k_value` and `dh_vap` already have.
+
+### Fork 4 — which node kinds are subject, enumerated
+
+The trigger names four kinds. `NodeKind` has **fourteen** variants, and the
+section above measured what inheriting a four-name list would cost: the one node
+in the corpus the engine can actually evaluate is of a kind the list omits. So
+every variant gets a verdict and a reason.
+
+**Subject to the criterion — the zero-volume hydraulic path:**
+
+- **`Pump`** — the failure mode §3's paragraph is about. Suction-side boiling is
+  the canonical case.
+- **`Valve`, `ReliefValve`** — flashing across a throttle is the second canonical
+  case; the pressure recovers downstream, the vapour does not.
+- **`Junction`** — a header or tee; its pressure is a pure unknown of the solve.
+- **`HeatExchanger`** — the corpus's tightest script-measured margin (1.865×).
+- **`Furnace`, `Cooler` — and these are the ones the trigger's list drops.** A
+  fired heater's outlet is precisely where a refiner expects a liquid to boil;
+  that is what a heater is for, and vaporising in the *tubes* rather than
+  downstream is a real and expensive failure. They are also the only flow-path
+  kind the engine can evaluate anywhere in the shipped corpus, so excluding them
+  by inheriting a four-name list would leave the criterion with **no reachable
+  node at all** — the fifth dead gate this project has written. The trigger is
+  corrected in the ledger to name six kinds.
+
+**Excluded, holdups — this is the load-bearing exclusion:**
+
+- **`Tank`, `Vessel`.** A holdup below its bubble point is a **two-phase
+  inventory**, which is B3, not cavitation. The distinction is not pedantry: it
+  is what stops the two rows claiming each other's evidence, and it is already
+  measured — `crude_column_cascade`'s `naphtha_tank` sits at **0.940×** and
+  `crude_column`'s at **0.30×**, so a criterion without the exclusion fires on
+  two shipped plants and reports them as cavitating pumps.
+
+**Excluded, declared boundaries:**
+
+- **`Source`, `Sink`, `Atmosphere`.** Their pressures are typed into the file,
+  not solved. Grading one grades the author's arithmetic, and the old B1 distance
+  is the cautionary case: its 100 000 Pa was a declared sink.
+
+**Excluded, and each for its own physics:**
+
+- **`Column`.** A column is **at** its bubble point by definition — that is what
+  a column is. Measured over 6 000 ticks: `crude_column_cascade`'s sits between
+  **0.988 and 1.000**, straddling the criterion for the whole run. A signal there
+  reports the model working.
+- **`Reactor`.** It *imposes* its outlet temperature (`t_set`), so the
+  temperature the criterion would read is a setpoint rather than a resolved
+  state; and the FCC slate declares a `gas` lump with `tb = −40 °C` as a liquid,
+  which makes a liquid bubble-point test meaningless there (measured: 0.0029×).
+  That second half is B3's, and it is why the exclusion is stated rather than
+  left to the phase check below.
+
+**And one cross-cutting exclusion that is not a node kind: a gas composition.**
+A vapour does not cavitate; it is already vapour. `Composition::phase` is the
+existing owner of that question and answers `Gas`, `Liquid`, or `Err` on a
+mixture — so the criterion asks it rather than inventing a second notion of
+phase, exactly as M5.2's density dispatch does. Without it, **four plants carry a
+gas-phase subject node** — a tee, a control valve, a PSV and a vent valve — and
+every one of them reads between 0.012× and 0.017×, so the signal would be noise
+on every gas plant in the corpus. A mixed-phase composition is already an `Err`
+everywhere else in the engine and stays one here.
+
+**The exclusion has no reachable subject today, and that is stated rather than
+discovered later**: all four of those plants declare `thermo = "constant"`, so
+the model refuses before the phase check is reached. Its gate therefore needs a
+fixture that selects `"trouton"` on a gas slate — which is the shape of a dead
+gate, and is why the fixture is named in the mutation list rather than assumed to
+fall out of the corpus.
+
+### Fork 5 — what the snapshot carries, and the difference between "no" and "cannot tell"
+
+**Chosen: `NodeSnapshot::cavitation: Option<CavitationSnapshot>`**, skipped when
+`None`, carrying both the verdict and the number it was made from:
+
+```rust
+pub struct CavitationSnapshot {
+    /// Bubble pressure of this node's liquid at its resolved temperature [Pa].
+    pub bubble_pressure_pa: f64,
+    /// `pressure_pa < bubble_pressure_pa` — the engine SAYING SO.
+    pub cavitating: bool,
+}
+```
+
+**`None` means "there is no criterion here", never "healthy".** That is
+`column_duty`'s shape and `column_duty`'s argument: a cut-point column reports no
+duties because its fidelity has no such equipment, and a node reports no
+cavitation state when it is the wrong kind, when its fluid is a gas, or when the
+plant's thermo model cannot answer. Reporting `cavitating: false` in those cases
+would be `heat_input_w`'s lesson pointed the other way — not a field nothing
+reports, but a field reporting what nothing computed. **Fourteen of fifteen
+plants will emit nothing at all**, and a frontend must render that as "unknown",
+not as "fine".
+
+**Both fields, not one, and the reason for each.** The `bool` is the deliverable:
+clause (b) asks for the engine to say so rather than for a frontend to infer it,
+and inference is what §3 got wrong. The number is what makes the verdict
+auditable and what a margin gauge draws — a frontend holding only a `bool` cannot
+show a plant getting closer. Two fields carrying one relationship is how they
+drift, so their agreement is a gate, the way `leak_mass_flow`'s agreement with
+its orifice edge is.
+
+**Rejected: a bare margin ratio `P/P_bub`.** It hides a division by a bubble
+pressure that can underflow toward zero for a heavy residue — the corpus already
+contains one at 213 Pa, giving a ratio of 630 — and it makes the verdict a
+comparison against 1.0 that every frontend re-implements, which is the current
+situation with a different constant.
+
+**The regression anchor moves by exactly one key on one node.** Only
+`crude_column_cascade` selects `trouton`, and only its `preheater` survives fork
+4's exclusions, so it is the single node in the corpus that gains a key. The
+other fourteen plants are byte-identical for free. Verified M8.5's way — strip
+the key from the after-run and reproduce the before-file byte for byte — rather
+than predicted.
+
+### Fork 6 — evaluated in the tick, not in the snapshot
+
+`Engine::snapshot` takes `&self` and returns a `Snapshot`, not a `Result`. A
+criterion evaluated there would have to swallow the `Err` a thermo model returns,
+which rule 5 forbids and which would turn "this model cannot answer" into
+"healthy". So the evaluation happens in `tick`, where both halves are in hand —
+`solution.node_pressure` from step 1, and the resolved temperature and
+composition from step 2b — and the snapshot reports what the tick stored.
+
+**Every tick, not on demand.** A frontend samples snapshots (the CLI writes one
+every N ticks; the Godot scene reads one per physics frame), and a criterion
+evaluated only when someone looks cannot see a transient between two looks. Fork
+2's closed form is what makes this affordable: one `exp` per component per
+subject node, against a tick that already runs a Newton network solve and, on the
+one plant that can answer, a stage cascade.
+
+**Stored beside `last_solution`, not inside `NodeStates`.** `NodeStates` is
+produced by `resolve_node_states` and consumed by the *next* tick's solver as
+`previous_states`; it has one owner and one contract. This is a diagnostic over
+the *pair* (solution, states), computed after both exist, and feeding it back
+into the solver's input would be a coupling nobody asked for. `reactor_duty` is
+the counter-precedent worth naming: it lives in `NodeStates` because the sweep is
+the only place its inputs meet. Here the sweep is not.
+
+**Nothing in the forward solve reads it.** Same as `column_duty` and
+`reactor_duty`: an emergent diagnostic. That is what makes M11 unable to break a
+determinism or conservation gate — and also what makes those gates unable to
+defend it.
+
+### Fork 7 — the demo plant, and why it is not water
+
+A new file, on M8.4's and M10.1's precedent: the thirteen pre-M8 plants *are* the
+regression anchor, and adding a signal to one would move it.
+
+**B1's reachability fixture takes two edits, not the one the row claims.**
+Raising `tank_pump_valve`'s suction line crosses the bubble point at 17.44 m —
+re-measured here with the engine's own instrument, reproducing the close-out's
+table to six figures (17 m → 9 904.66 Pa; 19 m → −9 522.94 Pa, solver converged,
+10.0 kg/s flowing). But that plant declares `thermo = "constant"`, so the second
+edit is the fidelity line, and the row's "one number in one shipped file" is
+wrong in the same way its distance was. **The fidelity edit moves no number**
+(measured: 175 197.988 Pa either way), which is what makes it admissible in a
+demo at all.
+
+**The demo runs a light hydrocarbon, not water, and this is a design input.**
+`TroutonThermo`'s own doc comment says the correlation is poorest for associating
+fluids — it overstates water's vapour pressure by about 60% at 50 °C — and is
+good to roughly 10% over the reference hydrocarbon's tabulated range. A demo
+whose entire subject is a vapour pressure should run on the fluid class the
+correlation is honest about. It is also the better demonstration: on cold water
+§3's old marker is 0.58 m of lift late; on a light naphtha it is **nine bar**
+late, which is more than the operating range of the plant carrying it.
+
+**Two shape requirements, both from measured coverage gaps.** The cavitating node
+must sit **interior** to the regime for most of the run, not touch it at the last
+tick — M8.4's wired loop never reached its own saturation arm, and M10.1's vent
+had to be sized to sit interior at steady state. And the same file must carry a
+**healthy** subject node, so the firing and non-firing arms are covered by one
+plant and a frontend has something to draw both states from.
+
+### The gates, named before building, and the vacuity each one closes
+
+1. **The anchor: a pure component at its normal boiling point has
+   `P_bub = P_ATM` exactly.** `K = 1` at `(tb, P_ATM)` is the identity the
+   correlation is integrated from, so this is exact and independent of Trouton's
+   constant. It closes an arithmetic error in the Raoult sum. **It is
+   structurally incapable of seeing a wrong constant** (§5 correction 4), which
+   is why it is not the only gate.
+2. **The envelope half reuses `tests/reference/vapour_pressure.rs`.** That file
+   already carries a published envelope, run at a deliberately wrong constant. A
+   second envelope invented here would be a second thing to keep right.
+3. **Mass-versus-mole, on a slate where they differ materially.** The crude slate
+   spans molar masses 0.100 to 0.400 kg/mol, so mass and mole fractions are far
+   apart; a water-only plant cannot catch the swap at all
+   (`degenerate-fixture-disables-the-code-path`). This is M4.2's crux — units,
+   not the algorithm — and it is the mutation most likely to produce a plausible
+   wrong number.
+4. **The holdup exclusion, on the plant already in the state.**
+   `crude_column_cascade`'s `naphtha_tank` sits at 0.940× and must report **no
+   signal**, while the same run's `preheater` at 1.899× reports one. This is the
+   gate defending the clause the ledger calls load-bearing, and it is asserted on
+   a plant that is already below its bubble point rather than on a fixture built
+   to be.
+5. **The late-marker gate — the whole content of §3's correction, asserted.** The
+   demo plant, at an operating point inside the band, must report
+   `cavitating: true` while its absolute pressure is still **positive**. On the
+   reference plant that band is `[17.44 m, 18.02 m]` of lift; on the hydrocarbon
+   demo it is bar-wide. Without this the milestone is a refactor of a number
+   nobody checks.
+6. **Cannot-answer reports `None`, not `false`.** Both refusing models, asserted
+   at the snapshot level, because the mistake this prevents is not an `Err`
+   escaping — it is an `Err` being turned into a clean bill of health.
+7. **The wire form, asserted on the serialized bytes.** M10.1's lesson: a
+   byte-identity baseline has no power over the file the slice *adds*, so the
+   demo's own signal must be asserted on its JSON. A Rust match on
+   `Some(CavitationSnapshot { cavitating: true, .. })` passes under any serde
+   tag.
+
+### What must not change, stated as a prediction that can be wrong
+
+- **Fourteen of fifteen plants byte-identical on both fidelities**, and
+  `crude_column_cascade` different by exactly one key on exactly one node.
+- **No solver iteration count moves anywhere.** The criterion is downstream of
+  the solve and feeds nothing back.
+- **Wall time on `crude_column_cascade` unchanged within noise**, measured A/B in
+  one session with an unrelated plant as a control — that plant is the only one
+  with a wall-time history (M9.3a, M9.3b), so it is the one someone will ask
+  about.
+- **`measure`, `Controller`, every `FlowSolver` and `network.rs` untouched.**
+  M10.1's equivalent prediction held exactly and saying so was part of the
+  record; this one is broader and correspondingly more likely to be wrong.
+
+### The mutations this slice owes, named before building
+
+1. **Mass fractions where mole are needed** → predicted caught by gate 3, and by
+   nothing else.
+2. **The node-kind filter widened to include `Tank`** → gate 4.
+3. **The node-kind filter narrowed to the trigger's four names** (dropping
+   `Furnace`/`Cooler`) → predicted caught by gate 4's `preheater` half alone,
+   because that is the only subject node in the corpus.
+4. **`bubble_pressure` returning `Ok(0.0)` instead of `Err`** on a model with no
+   equilibrium → gate 6; without it, every node of every plant reports healthy
+   against a bubble pressure of zero.
+5. **The comparison made against `P_ATM`, or against the upstream node's
+   pressure, instead of this node's own** → gate 5.
+6. **The gas-phase exclusion dropped** → predicted caught only by a **fixture**:
+   the four gas plants that would report `cavitating: true` at 0.012–0.017× all
+   declare `thermo = "constant"` and refuse before the phase check, so the
+   shipped corpus cannot catch this edit. The fixture selects `"trouton"` on a
+   gas slate.
+7. **`<` widened to `<=`** → predicted **uncaught**, and said in advance: exact
+   equality on a float pressure is measure-zero, and no fixture can be built to
+   land on it without being fitted to the arithmetic.
+
+### Deferred, with what un-defers each
+
+- **The consequence of cavitation** — head degradation, an NPSH curve, the vapour
+  itself. This is B3 plus a pump model, and the snapshot's honest disagreement
+  (boiling, yet delivering full head) is what un-defers it: a frontend that must
+  show a pump *losing* flow rather than a warning lamp.
+- **Latching a transient.** The criterion is evaluated every tick but reported
+  only when sampled, so an event between two snapshots is invisible. A latch is
+  state and needs a reset command, which is a discrete layer (E6). Un-defers when
+  a plant is measured to cavitate between two sampled snapshots.
+- **A load-time refusal for "this plant wants the signal and its thermo cannot
+  give it".** Deliberately absent: `thermo = "trouton"` on a plant with no column
+  is a legal and now-meaningful choice, and its absence is a silent `None` rather
+  than an error, because nothing in a scenario file *asks* for cavitation
+  reporting. Un-defers if a frontend needs the signal on a plant whose author did
+  not choose the model that provides it.
+- **The other thirteen plants' fidelity lines.** Switching them to `"trouton"`
+  would give the criterion twelve more subject nodes and move no physics — but it
+  would move the regression anchor of every one of them, for a signal nothing
+  reads. Un-defers with a frontend that reads it.

@@ -179,6 +179,39 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M11 is OPEN — the cavitation criterion. M11.0 (the design note, DESIGN §13)
+landed 2026-09-06; no code yet.** It is the first milestone taken on a
+**decision** rather than on a measurement: neither of B1's trigger clauses has
+fired, and clause (b) — a frontend needing to display cavitation — is being
+decided rather than observed. What licenses it is that §3 told frontends for ten
+milestones to read a *wrong* number as the signal, and the M10 close-out's
+correction left them with nothing. **The row's own noun is wrong**: B1 says
+"floor" and §3 promises a "clamp"; §13 fork 1 rejects the clamp (the vapour it
+would account for is mass in a phase the state vector lacks — that is B3) and
+ships a **criterion plus a signal**. The hydraulics are untouched.
+
+**The finding that re-premises the row: B1's 1.865× is a number no engine
+configuration can produce.** `heat_recovery` declares `thermo = "constant"`,
+whose `k_value` is an `Err`; the number came from the M10 close-out's standalone
+script. **Fourteen of fifteen plants select `constant`**, so under B1's original
+four-kind node list ("pump, valve, junction or exchanger") the engine-computable
+set across the whole corpus is **EMPTY**. The only plant that can answer is
+`crude_column_cascade`, and its one flow-path node is a **furnace** at **1.899×**
+— which is why §13 fork 4 enumerates all fourteen `NodeKind` variants and adds
+`Furnace`/`Cooler`, and why the ledger's trigger now names six kinds. The general
+form: **a distance is a property of the engine, not of the plant.**
+
+Four things the building slice inherits. The criterion is `P_node <
+P_bub(T, x)`, a **new third method on `ThermoModel`** (`bubble_pressure`) —
+computing `P·Σ x·K` in `core` is Raoult-specific and would put a model assumption
+in `core`. The **bubble PRESSURE is a closed form** where the cascade's bubble
+TEMPERATURE needs a root find, which is what makes per-tick evaluation
+affordable. The snapshot field follows `column_duty`: **`None` means "no
+criterion here", never "healthy"**, so fourteen plants emit nothing and stay
+byte-identical. And the demo is a **new file on a light hydrocarbon, not water** —
+Trouton overstates water's vapour pressure ~60% at 50 °C — with the cavitating
+node **interior** to the regime and a healthy node in the same plant.
+
 **M10 is CLOSED (2026-09-06), and its scope was the second controlled variable.**
 Pressure is built (M10.0 + M10.1) and pressure is all it built — temperature and
 flow were explicitly not committed to and stay deferred as ledger row E1b. It is
