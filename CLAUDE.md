@@ -179,14 +179,59 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M10 is OPEN, and its scope is the second controlled variable.** Pressure is
-built (M10.0 + M10.1, both landed 2026-09-06); whether temperature and flow follow
-is the open question, and neither is committed to. It is the first
-milestone chosen from `docs/DEFERRED.md` rather than handed over as a defect. E1
-— pressure control — is the row; the milestone is scoped one step wider on
-purpose, because everything the note argues is machinery the *second* variable
-pays for and the third and fourth inherit. Pressure is what it builds;
-temperature and flow are explicitly not committed to.
+**M10 is CLOSED (2026-09-06), and its scope was the second controlled variable.**
+Pressure is built (M10.0 + M10.1) and pressure is all it built — temperature and
+flow were explicitly not committed to and stay deferred as ledger row E1b. It is
+the first milestone chosen from `docs/DEFERRED.md` rather than handed over as a
+defect. E1 — pressure control — was the row; the milestone was scoped one step
+wider on purpose, because everything the note argues is machinery the *second*
+variable pays for and the third and fourth inherit. **That argument was tested
+and came back stronger than stated, so a third variable has nothing left to prove
+about the seam**, which is why the milestone closes here rather than continuing.
+
+**The asymmetry between the two variables left behind is recorded, not acted on.**
+A temperature really is absent before the first tick — resolved by the tick, not
+stored on the graph — so a temperature loop *would* owe the tick-0 rule pressure
+turned out not to owe. A flow lives on an EDGE, and `measure` takes a node, so
+flow control is a signature change rather than a new match arm. **Neither has a
+plant asking**, which is the sentence that keeps twenty other ledger rows
+deferred.
+
+**The close-out's own work was `docs/DEFERRED.md` row B1 — the cavitation floor —
+and it falsified the sentence the row rested on.** DESIGN §3 told frontends to
+read *negative absolute node pressure* as "cavitating". A liquid boils below its
+**vapour** pressure, which is positive: the lowest solved pressure in the corpus
+is 120 846.9 Pa on a node whose contents boil at 5 640.6 Pa, so §3's marker sat a
+factor of **21.4 below the physics it claimed to signal** and could never fire
+first. §3 is corrected: **the engine does not detect cavitation and has no signal
+for it.** The row's old distance ("the lowest pressure is 100 000 Pa, so nothing
+is near a vapour pressure") compared a pressure against **zero** while concluding
+something about a vapour pressure it never evaluated — and its 100 000 Pa was a
+*declared sink*, not a solved state. Against each node's own bubble point the
+tightest solved margin is **1.865×**. B1's trigger is now written: a solved
+pressure in the **hydraulic path** (pump, valve, junction, exchanger — not a
+holdup) falling below that node's bubble pressure, or a frontend needing to
+display cavitation. **The node-kind clause is load-bearing**: without it the
+trigger fires immediately on two product tanks, and a tank above its bubble point
+is B3's two-phase holdup, not cavitation.
+
+**The sweep moved a different row, and that is the sharper finding.** B3 (phase in
+the state vector) said "no shipped plant asks" and guards three paths at load.
+There is a **fourth path no refusal names, because it does not exist at load**: a
+column draws at real tray temperatures, the product tank has no cooler, and the
+tank stores a liquid the model's own correlation says is boiling.
+`crude_column`'s `naphtha_tank` sits at **0.30×** its own bubble pressure,
+sustained and worsening as the draw heats it (395 K → 432 K over the run), and
+reports as liquid throughout. **A load-time refusal cannot catch a state that
+emerges during the run.** Whether the fix is a product cooler in two files or
+phase in the state vector is left open in the row.
+
+**Three of four categories in that sweep were exclusions, and saying so is part
+of the result.** Ten of fifteen plants have a node below its bubble pressure:
+five declare gas-phase cuts (a liquid bubble-point test is meaningless there),
+two are columns (which are *at* their bubble point by definition), two are the
+FCC plants (B3 already). Publishing the headline without the exclusions would
+have moved two rows on evidence that does not exist.
 
 **M10.0 landed 2026-09-06** — the design note, DESIGN §12, six forks and five
 gates, no code. Four things to know before the building slice.

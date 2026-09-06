@@ -22,7 +22,12 @@ Three rules for keeping it honest:
 Distances measured 2026-09-02 on the fourteen shipped scenarios, 6 000 ticks,
 release build, unless a row says otherwise. **`scenarios/` holds fifteen files as
 of M10.1**; rows whose distance predates it say so, and the two that M10.1
-re-measured (A3, E1) carry the new number.
+re-measured (A3, E1) carry the new number. **B1 and B3 were re-measured
+2026-09-06** at the M10 close-out, on all fifteen and both fidelities, and both
+of their old distances were wrong — B1's because it compared a pressure against
+zero rather than against a vapour pressure, B3's because the state it says
+nothing asks for arises during a run rather than at load, where its three
+refusals look.
 
 ## A. Solver numerics — M9's subject
 
@@ -46,9 +51,9 @@ re-measured (A3, E1) carry the new number.
 
 | # | item | argued in | un-defers when | distance, measured |
 |---|---|---|---|---|
-| B1 | **No cavitation floor.** An over-driven pump can produce a genuine solution with sub-zero absolute suction pressure; frontends are told to read that as "cavitating", not as an error. | §3, "No cavitation / vapor-pressure floor in M1" | **No trigger written.** "A later milestone." | Measured: the lowest node pressure in any plant's tick-6 000 snapshot is 100 000 Pa (atmospheric), so no shipped plant is anywhere near a vapour pressure. A frontend that wants to *show* cavitation, or a pump-curve scenario with a real NPSH margin, is the obvious trigger and would need writing down first. |
+| B1 | **No cavitation floor.** An over-driven pump can produce a genuine solution with a suction pressure below the fluid's vapour pressure, and the engine has no signal for it. **The row's own framing used to be wrong in the same way §3's was**: it repeated §3's "frontends are told to read sub-zero absolute pressure as cavitating", and zero is not the threshold — a liquid boils below its *vapour* pressure, which is positive, so that marker sits below the physics and can never fire first. §3 is corrected; this row is re-premised on the bubble point. | §3, "No cavitation / vapor-pressure floor in M1", corrected 2026-09-06 | **Trigger written 2026-09-06** (it had none; "a later milestone"). Either of: **(a)** a *solved* pressure at a node in the hydraulic path — a pump, valve, junction or exchanger, not a holdup — falls below that node's own bubble pressure, i.e. the hydraulics ask a line to carry liquid the model's own thermodynamics says is boiling; or **(b)** a frontend needs to *display* cavitation, which requires the engine to say so rather than a frontend to infer it from a pressure. | **Re-measured 2026-09-06**, all fifteen plants, 6 000 ticks, every tick (not the endpoint), both fidelities — worst disagreement between them `3.0e-7`. Bubble pressure is Raoult over each plant's own slate, mass fractions converted to mole, on the model's own `TroutonThermo` vapour pressure. **(a)** Tightest solved margin in the corpus: **1.865×** — `heat_recovery`'s `hx_hot`, 365.18 K water at 150 000 Pa against a bubble pressure of 80 417 Pa. Not the "nowhere near" the old distance claimed, which read a pressure against **zero** and got 120 kPa of false comfort. **But that node is static**: its pressure and temperature have *zero* spread over 6 000 ticks, so 1.865× says where a plant sits, not what the solver can wander into. The three plants with pumps — what §3's paragraph is actually about — are **19.7× to 21.4×** clear, and their suction nodes are the plant's *highest* pressures, not its lowest. **(b)** No frontend displays it; the Godot demo reads pressures only. Not past either trigger. |
 | B2 | Fixed friction factor per pipe; Colebrook/Haaland "later". | §3; `elements.rs` `pipe_resistance` | **No trigger written.** | No shipped pipe declares `friction`; all fourteen plants run the schema default of 0.02 on every pipe. A plant whose Reynolds number crosses a regime inside a run is where a fixed `f` becomes distinguishable from a correlation. |
-| B3 | Two phases in one `Stream`: a flashing feed line, a partial condenser, a vapour side draw. Phase is absent from the state vector, so this changes `Stream`, `Composition` and every reader — a milestone, not a slice. M7 refuses all three at load. | §3a, "What is deferred"; §5 M7 fork 0 | A plant needs one of the three. | Three load-time refusals, each naming the bullet. No shipped plant asks. |
+| B3 | Two phases in one `Stream`: a flashing feed line, a partial condenser, a vapour side draw. Phase is absent from the state vector, so this changes `Stream`, `Composition` and every reader — a milestone, not a slice. M7 refuses all three at load. **There is a fourth path in that no refusal names**, found 2026-09-06 by B1's sweep: a two-phase *holdup*, arriving not from declared config but from a **draw temperature**. A cascade column draws at real tray temperatures (M7.4a), the product tank has no cooler, and the tank then stores a liquid the model's own vapour-pressure correlation says is boiling. A refusal cannot catch it, because nothing in the file is wrong at load — the state emerges during the run. | §3a, "What is deferred"; §5 M7 fork 0; the fourth path is new | A plant needs one of the three — **or holds an inventory below its own bubble point**, which two already do. | **"No shipped plant asks" was false and is corrected.** Measured over 6 000 ticks: `crude_column`'s `naphtha_tank` sits at **0.30×** its own bubble pressure, **sustained and worsening** (P/P_bub 0.464 at tick 1 000 → 0.312 at 3 000 → 0.304 at 6 000, as the draw heats the tank 395 K → 432 K); `crude_column_cascade`'s same tank hovers on the line, worst **0.940×**. Both report as liquid with no signal. **Which fix is right is open and this row does not decide it**: a product cooler in the two files is a scenario defect and cheap; phase in the state vector is the model defect and is this row. The other three load-time refusals still have no plant asking. |
 | B4 | Real-gas `Z`, gas `cp(T)`. | §3a | A case near the critical point. | Ideal gas throughout; additive when needed. |
 | B5 | Pump efficiency heating (~0.03 K). | §3a; M2 close | A scenario with real pump curves and efficiencies, where a wrong `η` is distinguishable from a right one. | `η` has one possible value in the repo. |
 | B6 | PSV hysteresis and chatter — needs element state. | §3a fork 5 | A relief case where reseat pressure matters. | The relief valve is a characteristic, not a controller (fork 5's verdict). |
@@ -115,9 +120,32 @@ re-measured (A3, E1) carry the new number.
   test grading it. Struck rather than deleted, because the next person to see a
   suspiciously tight constant will reach for exactly that.
 - **Everything with a numeric trigger is well inside it.** A3 at 5.4× under the
-  cap is the nearest, and it has not moved since M9.1.
-- **Two deferrals have no trigger at all** (B1, B2); A1's was written by M9.3a.
-  Writing one is the
-  first job of whichever slice takes them, and "when someone wants it" does not
-  count — the note has to say what plant or frontend would tell a right answer
-  from a wrong one.
+  cap is the nearest, and it has not moved since M9.1. **B1 is second at 1.87×**,
+  which is a distance the row did not have until 2026-09-06 and which is far
+  nearer than the number it used to carry.
+- **One deferral has no trigger at all** (B2); A1's was written by M9.3a and
+  **B1's at the M10 close-out**. Writing one is the first job of whichever slice
+  takes them, and "when someone wants it" does not count — the note has to say
+  what plant or frontend would tell a right answer from a wrong one.
+- **A distance is only as good as the quantity it is measured against, and B1's
+  was measured against the wrong one for five milestones.** The row read node
+  pressures against **zero**, reported 120 kPa of clearance, and concluded "no
+  shipped plant is anywhere near a vapour pressure" — while never evaluating a
+  vapour pressure. Against the model's own (`ThermoModel::k_value`, which existed
+  from M7.2) the clearance is 1.87×. The tell was available in the row's own
+  sentence: it named the quantity it was not measuring. **When a row's distance
+  and its stated concern are in different units, the distance is not about the
+  concern.**
+- **A trigger has to name what kind of node it is about.** B1's first draft would
+  have fired immediately, because two product *tanks* are already below their
+  bubble point — but a tank above its bubble point is a two-phase holdup (B3),
+  not cavitation, which is a hydraulic-path phenomenon. Scoping the trigger to
+  the flow path is what keeps B1 and B3 from claiming each other's evidence, and
+  the exclusion had to be written down rather than assumed.
+- **Most of a scary-looking sweep was not evidence.** Ten of fifteen plants have
+  a node below its bubble pressure. Five declare `phase = "gas"` cuts, where a
+  liquid bubble-point test is meaningless by construction; two are columns, which
+  are *at* their bubble point by definition; two carry an FCC `gas` lump with
+  `tb = −40 °C` declared liquid, which is this table's B3 already. **Three of the
+  four categories were exclusions**, and a sweep that reports the headline
+  without them would have moved two rows on evidence that does not exist.

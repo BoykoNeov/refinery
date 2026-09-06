@@ -4470,3 +4470,136 @@ type by construction, so the difference `ControlledValue::error` takes is always
 dimensionally honest"), on the page the next implementer reads. **The write-up had
 been citing that file's absence from the diff as evidence the seam held**, which
 is a good illustration of how a stale doc survives a milestone about stale docs.
+
+### M10 close-out — **M10 IS CLOSED** 2026-09-06
+
+**M10 closes with pressure and nothing else, which is the scope it opened with.**
+The milestone was "the second controlled variable", scoped one step wider than
+ledger row E1 on the argument that the machinery a second variable pays for is
+machinery a third and fourth inherit. That argument was tested by M10.1 and came
+back *stronger* than it was stated: the whole milestone is two enum arms, four
+match arms, two scenario keys and a demo plant, and not one line of the engine's
+control pass, the `Controller` trait, either controller, `ControlLoop`,
+`ControlMode`, `ControlSnapshot` or `Snapshot` changed. There is nothing left for
+a third variable to prove about the seam.
+
+**Temperature and flow stay deferred (E1b), and the asymmetry between them is
+recorded rather than acted on.** Neither has a plant asking for it, which is the
+same sentence that keeps twenty other rows in `docs/DEFERRED.md` deferred, and
+building a variable no plant asks for to re-test a seam already measured as
+holding is the kind of work this project has learned to refuse. But the two are
+not equally far away, and the difference is worth having written down before
+anyone picks one up. **A temperature really is absent before the first tick** —
+it is resolved by the tick, not stored on the graph — so a temperature loop
+*would* owe the tick-0 rule §10 fork 3 promised and pressure turned out not to
+owe. **A flow lives on an EDGE**, and `measure(&self, slate, node, variable)`
+takes a node, so flow control is a signature change and not a new match arm. The
+cheap-looking one is the one with the signature change; the one that looks like
+pressure is the one that reopens the question pressure closed.
+
+**What M10 leaves for the next milestone is a corrected §3 and a trigger that did
+not exist.** The close-out spent its measurement budget on `docs/DEFERRED.md` row
+B1 — the cavitation floor, the one physical statement in §3 that tells a frontend
+to read a *wrong* number as a signal, and one of only two rows in the whole ledger
+with no written trigger. It now has one, and writing it required falsifying the
+sentence the row was built on.
+
+#### The cavitation sweep — measured 2026-09-06
+
+All fifteen shipped plants, 6 000 ticks, **every tick rather than the endpoint**,
+**both fidelities** (worst disagreement between them `3.0e-7`, so fidelity
+independence is measured here and not inferred). Each node's bubble pressure is
+Raoult over that plant's own slate, mass fractions converted to mole fractions,
+on the model's own `TroutonThermo` vapour pressure — reimplemented in the
+measurement script so it does not run through the code it grades, and checked
+against the model's public API at five points, agreeing to `1.4e-10`.
+
+**DESIGN §3's cavitation signal was false, and it is false in a way no plant
+could ever have revealed.** §3 told frontends to read *negative absolute node
+pressure* as "cavitating". A liquid boils below its **vapour** pressure, which is
+positive. The lowest solved pressure anywhere in the corpus is
+`tank_level_control`'s `level_valve` at **120 846.9 Pa**; that node's contents
+boil at **5 640.6 Pa**. So the marker §3 named sits a factor of **21.4 below** the
+physics it claims to signal, and every state in between would be reported as a
+good solution with no signal at all. A frontend implementing §3's advice
+literally would never fire on a real cavitation. §3 is corrected and now says
+plainly that the engine does not detect cavitation and has no signal for it.
+
+**The old distance was measured against the wrong quantity, and the row's own
+sentence said so.** B1 read "the lowest node pressure in any plant's tick-6 000
+snapshot is 100 000 Pa (atmospheric), so no shipped plant is anywhere near a
+vapour pressure" — a comparison against **zero**, concluding something about a
+vapour pressure it never evaluated. Two further faults in that one line: the
+100 000 Pa is a **declared sink**, not a solved state, so it was not the engine's
+number at all; and it read the tick-6 000 snapshot, which the corpus has known
+since M9.3 understates a run. Against each node's own bubble point the corpus's
+tightest solved margin is **1.865×**, not 20×.
+
+**The tightest margin is solved but STATIC, and that distinction is what the
+trigger's wording turns on.** `heat_recovery`'s `hx_hot` — 365.18 K water at
+150 000 Pa against a bubble pressure of 80 417 Pa — is a genuinely solved node
+(2 bar source, 1 bar sink, identical pipes), but its pressure and temperature
+have **zero spread over 6 000 ticks**. It says where a plant sits, not what the
+solver can wander into, and a trigger resting on it would be resting on what
+someone typed. The three plants with pumps — what §3's paragraph is actually
+about — sit **19.7× to 21.4×** clear, and their pump suction nodes are among each
+plant's *highest* pressures rather than its lowest, which is the reverse of the
+failure mode §3 describes.
+
+**Ten of fifteen plants have a node below its bubble pressure and three of the
+four categories are exclusions.** Five plants declare `phase = "gas"` cuts, where
+a liquid bubble-point test is meaningless by construction. Two are columns, which
+are *at* their bubble point by definition — that is what a column is. Two are the
+FCC plants, whose `gas` lump has `tb = −40 °C` and is declared liquid, which is
+ledger row B3 and already deferred there. Publishing the headline without the
+exclusions would have moved two rows on evidence that does not exist, and the
+exclusions are written into both rows rather than left to the reader.
+
+**What survives the exclusions moved a DIFFERENT row, and it is the sharper
+finding.** B3 — phase in the state vector — said "no shipped plant asks", and its
+three load-time refusals cover a flashing feed, a partial condenser and a vapour
+side draw. There is a **fourth path in that no refusal names**, because it does
+not exist at load: a cascade column draws at real tray temperatures (M7.4a), the
+product tank has no cooler, and the tank then *stores* a liquid the model's own
+correlation says is boiling. `crude_column`'s `naphtha_tank` sits at **0.30×** its
+own bubble pressure, **sustained and worsening** as the draw heats it — 0.464 at
+tick 1 000, 0.312 at 3 000, 0.304 at 6 000, the tank climbing 395 K to 432 K —
+and reports as liquid throughout. `crude_column_cascade`'s same tank hovers on
+the line at worst **0.940×**. **A load-time refusal cannot catch a state that
+emerges during the run**, which is the general form and is why three refusals
+were not the coverage they looked like. Whether the right fix is a product cooler
+in two scenario files (a plant defect, cheap) or phase in the state vector (the
+model defect, a milestone) is left open in the row rather than decided here.
+
+**The trigger, written.** B1 un-defers on either of: **(a)** a *solved* pressure
+at a node in the **hydraulic path** — a pump, valve, junction or exchanger, not a
+holdup — falling below that node's own bubble pressure, i.e. the hydraulics
+asking a line to carry liquid the model says is boiling; or **(b)** a frontend
+needing to *display* cavitation, which requires the engine to say so rather than
+a frontend to infer it from a pressure. The node-kind clause is not decoration:
+the first draft of this trigger would have fired immediately on the two product
+tanks above, and a tank above its bubble point is B3's two-phase holdup, not
+cavitation. **Scoping the trigger by node kind is what stops B1 and B3 claiming
+each other's evidence.** Distance now: 1.87× on (a), nothing on (b) — the Godot
+demo reads pressures only. Not past either.
+
+**No code changed in this close-out**, so no corpus baseline moved and none was
+taken; the sweep is a measurement over the shipped binary, and the one temporary
+Rust test written to verify the measurement script against the model's public API
+was deleted after it printed.
+
+#### Beyond M10 — candidates, not commitments
+
+The rule stands: a design note before any of these, and the note may reject its
+own box.
+
+1. **A cavitation floor** (B1). Now the nearest numeric trigger in the ledger
+   after A3, at 1.87×, and the only one whose subject is a *wrong number a
+   frontend is asked to interpret*. Its trigger is written; its note is not.
+2. **Phase in the state vector** (B3). Milestone-sized, four paths in now rather
+   than three, and two shipped plants already in the state it describes. The
+   cheap alternative — a product cooler in the two column files — should be
+   costed in its note before the milestone is, because it may make the evidence
+   go away without fixing anything.
+3. **Temperature or flow control** (E1b). Deferred with the asymmetry above
+   recorded; neither has a plant asking.

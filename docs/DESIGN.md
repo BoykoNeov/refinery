@@ -100,8 +100,29 @@ No cavitation / vapor-pressure floor in M1: the hydraulic solve is a pure
 pressure-flow system, so an over-driven pump (e.g. low downstream resistance)
 can produce a genuine solution with sub-zero *absolute* suction pressure. That
 is real cavitation the model does not yet represent; a vapor-pressure clamp is
-a later milestone. Frontends should treat negative absolute node pressure as a
-"cavitating" signal, not a solver error.
+a later milestone.
+
+**Corrected 2026-09-06 (M10 close-out, and the sentence that was here was
+false).** This paragraph used to end "Frontends should treat negative absolute
+node pressure as a 'cavitating' signal, not a solver error." **Zero is not the
+threshold, and a frontend following that advice would never fire on a real
+cavitation.** A liquid boils below its own vapour pressure, which is positive:
+the lowest *solved* pressure anywhere in the corpus is `tank_level_control`'s
+`level_valve` at **120 846.9 Pa**, and that node's contents boil at **5 640.6
+Pa** — so the marker this paragraph named sits a factor of **21.4 below** the
+physics it claims to signal, and every state in between is reported as a good
+solution with no signal at all. Read against zero, the corpus looks 120 kPa
+clear; read against each node's own bubble point, the tightest solved margin in
+the corpus is **1.865×** (`heat_recovery`'s exchanger, 365.18 K water at 150 000
+Pa against a bubble pressure of 80 417 Pa). The distinction matters because the
+model **already contains** the thermodynamics that decides this —
+`ThermoModel::k_value` with `TroutonThermo` — so the criterion is available and
+was never used, which is the same shape as §3's "relative mass-imbalance per
+node" waiting from M1 to M9.2 for the code to catch up with it.
+
+The honest statement, until a floor exists: **the engine does not detect
+cavitation and has no signal for it.** A frontend cannot read one out of a
+pressure. `docs/DEFERRED.md` B1 carries the trigger and the measured distance.
 
 **SimpleFlowSolver** (game-fidelity): solves the *same* quasi-steady fixed point
 as Newton, but matrix-free — **nonlinear Gauss–Seidel** over node pressures
