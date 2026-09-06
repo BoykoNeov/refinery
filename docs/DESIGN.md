@@ -6363,10 +6363,16 @@ is — one plant is held by a spring, the other by a loop.
 
 Three design inputs for the file, each of which will otherwise be discovered:
 
-- **The vent valve is in gas service, so it must declare `x_t`.** The loader
-  enforces that in both directions off M5.2's topological single-phase analysis;
-  it will refuse the file on the first load otherwise. `0.72` with
-  `gas_valve.toml`'s citation, as `relief_blowdown` already carries.
+- **The vent valve is in gas service, so it must declare `x_t`.** Checked against
+  `require_gas_valve_x_t` rather than copied from `relief_blowdown`: the rule
+  reads the phase M5.2's topological analysis assigns to that NODE, and both
+  valve kinds share it because both reach the same compressible law. A gas-only
+  slate makes every node gas, so the vent is in gas service by the plant's
+  composition and not by anyone's choice, and the loader refuses the file on the
+  first load without the key. `0.72` with `gas_valve.toml`'s citation, as
+  `relief_blowdown` already carries. The mirror direction bites too: the key is
+  refused on a liquid valve, so this is a design input the file cannot dodge by
+  omitting.
 - **The valve must sit interior at steady state**, off both limits, or the
   milestone repeats M8.4's recorded coverage gap — that demo's output never left
   `[0.194, 0.384]`, so the anti-windup arm was never reached by a wired run.
