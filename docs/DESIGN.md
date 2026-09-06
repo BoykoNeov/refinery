@@ -7504,16 +7504,24 @@ with the tank left at `T_bub`. No new constant: `cp̄` is
 `T_bub` is fork 5's root find. This is the same move `energy` already makes for a
 tank's ambient exchange — a signed term derived from state, with no tuning knob.
 
-**`f` is clamped to 1, and the table above is why that is a specification rather
-than defensive coding.** Two of the eleven tanks measured reach `f > 1.8`: a
-liquid stored hundreds of degrees above its own boiling point holds more heat
-than its own latent heat can absorb. The constraint then has no solution — there
-is not enough mass to cool the tank to its bubble point — and the honest answer
-is that the inventory boils away entirely and the tank ends the tick empty. The
-temperature is left at `T_bub` on the (now nil) inventory, which is the same
-"hold the last valid value" rule the existing `MIN_THERMAL_MASS_KG` branch
-already applies to a nearly-empty tank. Both instances are one `thermo` line from
-shipping, so the arm is reachable, not hypothetical.
+**The flash fraction is clamped to 1, and the second table above is why that is a
+specification rather than defensive coding.** Three tanks on the flipped FCC plant
+receive a stream whose `f_in` exceeds 1 — the column draws at 800.4 K into a tank
+whose own contents boil at 374.4 K, so **more than all of what arrives would have
+to flash**. The constraint has no solution there: there is not enough mass to
+absorb the arriving enthalpy at the bubble point, and the honest answer is that
+everything arriving boils off and the tank does not fill. The temperature is left
+at `T_bub` on whatever inventory remains, which is the "hold the last valid value"
+rule the existing `MIN_THERMAL_MASS_KG` branch already applies to a nearly-empty
+tank.
+
+**The clamp is about the arriving stream, not the standing inventory**, and that
+distinction is this note's own correction: the first draft argued it from the
+uncorrected engine's accumulated superheat, which the boil-off term prevents from
+ever existing. **A specification defended by a number the fixed engine cannot
+produce** is the instrument error this ledger has now recorded three times against
+B1 and B3, and it was one draft away from being made a fourth — inside the note
+that cites the rule.
 
 ### Fork 4 — where the vapour goes: a vent edge, not a bare decrement
 
@@ -7595,10 +7603,12 @@ byte-identical for that reason and not by accident.
 
 **Measured before the forks below were settled**, over 6 000 ticks of every
 liquid tank on the three plants whose thermo model can answer, through the
-engine's own `TroutonThermo`. `f` is fork 3's flash fraction — the share of the
-inventory whose latent heat would absorb the tank's *standing* superheat. It is
-measured on the UNCORRECTED engine, so it is the distance the present model has
-drifted, not a per-tick rate:
+engine's own `TroutonThermo`. `f` here is the share of the inventory whose latent
+heat would absorb the tank's *standing* superheat — measured on the UNCORRECTED
+engine, where nothing removes it. **It is accumulated drift, not a rate, and the
+second table below is what fork 3 actually rests on.** Reading this one as a
+per-tick quantity is the error this note made in its first draft and corrected
+before anything was built on it:
 
 | plant | tank | first boils | ticks boiling | worst superheat | worst `f` |
 |---|---|---|---|---|---|
@@ -7609,22 +7619,56 @@ drifted, not a per-tick rate:
 | `fcc_plant` (flipped) | `gas_drum` | 1 | 6 000 / 6 000 | 495.3 K | **1.811** |
 | `fcc_plant` (flipped) | `bottoms_tank` | — | 0 | — | 0 |
 
-Three things the table decides.
+**The quantity fork 3 needs is a different one, and measuring it separately
+changed two of this note's claims.** Under the boil-off the tank never reaches
+678 K — it parks at its bubble point and thereafter carries only the superheat one
+tick's inflow adds. So what decides both the cost and the clamp is the flash
+fraction of the **arriving stream**,
 
-**The shipped case is GENTLE, and that is the good news about the regression
-anchor.** 2.31 K of superheat and 1.7% of the inventory. The correction to
-`crude_column_cascade` is real but small, which is what makes taking the term on
-a shipped anchor affordable at all.
+```text
+f_in = cp̄ · (T_in − T_bub) / Δh̄_vap
+```
 
-**`f ≥ 1` is reachable, on two tanks, and therefore has to be specified rather
-than assumed away.** `fcc_plant`'s gasoline tank stores a cut with `tb = 100 °C`
-at 678 K: it holds **twice** the heat needed to boil its entire contents. Both
-instances are one `thermo` line from shipping — the same inert edit B3's own
-re-measurement documents — so "no shipped plant reaches it" is not a licence to
-leave the case undefined. Fork 3 gets a clamp and gate 6 exists.
+which is `1` when everything arriving boils and the tank cannot fill. Measured the
+same way, with `T_in` the enthalpy-weighted inflow temperature:
 
-**Only four of eleven tanks ever boil**, and the two `crude_column_cascade` tanks
-that do not are the control that the term is selective rather than global.
+| plant | tank | `T_in` | `T_bub` | `f_in` | inventory share per tick |
+|---|---|---|---|---|---|
+| `crude_column_cascade` (**as shipped**) | `naphtha_tank` | 387.6 K | 354.3 K | **0.236** | 4.1e-4 |
+| `crude_column_cascade` | `distillate_tank` | 505.3 K | 491.2 K | 0.117 | 2.8e-4 |
+| `crude_column_cascade` | `bottoms_tank` | 632.0 K | 623.5 K | 0.097 | 2.8e-5 |
+| `crude_column` (flipped) | `naphtha_tank` | 445.8 K | 354.3 K | 0.648 | 1.1e-3 |
+| `fcc_plant` (flipped) | `gasoline_tank` | 800.4 K | 374.4 K | **2.854** | 1.4e-3 |
+| `fcc_plant` (flipped) | `gas_drum` | 800.4 K | 233.6 K | **2.072** | 2.1e-3 |
+| `fcc_plant` (flipped) | `bottoms_tank` | 800.4 K | 675.9 K | **1.261** | 3.8e-4 |
+
+**Correction 1 — "gentle" was true of the wrong quantity, and the two readings
+point opposite ways.** Per tick the term is genuinely small everywhere: the worst
+inventory share is 2.1e-3, so nothing here is stiff and no integrator argument is
+needed. But the shipped cascade's naphtha tank settles at `f_in = 0.236` — **a
+quarter of the naphtha product boils off** once the tank reaches its bubble point
+at tick 1 825. That is a large plant-level correction to a pre-M8 regression
+anchor, and the first draft of this note called it small on the strength of the
+1.7% drift figure. The term is cheap to integrate and expensive in what it says
+about the plant; those are different sentences and only one of them was measured.
+
+**Correction 2 — `f ≥ 1` is reachable, but not for the reason the first draft
+gave.** It is not that a stored inventory holds more heat than its own latent heat
+can absorb; under the correction no inventory ever gets there, because the term
+prevents the superheat from accumulating. It is that **three** tanks on the
+flipped FCC plant receive a stream so far above their own bubble point that more
+than all of it flashes — the column draws at 800.4 K into a tank whose contents
+boil at 374.4 K. Such a tank cannot fill at all. The clamp is therefore about the
+arriving stream, the case is reachable on three tanks rather than two, and gate 6
+asserts against an inflow rather than an inventory.
+
+**Correction 3 — the term is not as selective as the first table suggested.**
+The first measurement found only one of the cascade's three tanks boiling, and
+this note called the other two a control. They are not: their inflow is already
+above their own bubble points (`f_in` of 0.117 and 0.097) and they have simply not
+heated there within 6 000 ticks. **A tank that is not boiling yet is not a
+control**, and a gate that uses one as its negative case is asserting on the run
+length rather than on the physics.
 
 ### Fork 8 — the demo plant, and a gate that may not be writable on the shipped one
 
@@ -7683,9 +7727,12 @@ case AND a usable second exercise, not a plant that cannot see the feature.
 5. **Fourteen plants byte-identical, on both fidelities.** The `constant`-thermo
    arm, verified M8.5's way — strip the new key and reproduce the before-file
    byte for byte — rather than predicted.
-6. **The whole-inventory case terminates honestly.** Where `f ≥ 1` the tank
-   empties; it must not go negative, NaN, or below absolute zero, and the mass
-   balance must still close over the tick that empties it.
+6. **The everything-flashes case terminates honestly.** Where `f_in ≥ 1` the tank
+   cannot fill: it must not reach a negative mass, a NaN, or a sub-zero
+   temperature, and the mass balance must still close over the tick. Asserted
+   against an **inflow**, not an inventory — the inventory version of this gate
+   defends a state the correction prevents from ever arising, which would be the
+   fifth specified gate in this project with no power over its own subject.
 
 ### The mutations this slice owes, named before building
 
@@ -7702,11 +7749,17 @@ case AND a usable second exercise, not a plant that cannot see the feature.
 
 - **Fourteen plants on `thermo = "constant"` are byte-identical on both
   fidelities.** Their models refuse all three inputs, so the term cannot form.
-- **`crude_column_cascade` MOVES, and that is the expected cost, not a
-  surprise.** It is a pre-M8 regression anchor and the boil-off changes its
-  naphtha tank's mass, temperature and composition for the ticks it is boiling.
-  Measured M8.5's way after the fact rather than predicted: the blast radius is
-  whatever stripping the new term reproduces.
+- **`crude_column_cascade` MOVES, and by more than a rounding.** It is a pre-M8
+  regression anchor, and at `f_in = 0.236` roughly a quarter of its naphtha draw
+  leaves as vapour once the tank reaches its bubble point at tick 1 825 — so the
+  tank's mass, temperature and composition all change materially over the back two
+  thirds of the run. Measured M8.5's way after the fact rather than predicted.
+  **This is the largest anchor movement any milestone in this project has taken**,
+  and if the building slice judges it unacceptable the fallback is fork 8's new
+  demo file plus a refusal, not a quieter term.
+- **The other two cascade tanks are heading the same way and are NOT controls.**
+  Their inflow is already above their own bubble points; they have simply not
+  heated there within 6 000 ticks. A longer run moves them too.
 - **`cavitating_pump` is untouched.** Its only sub-bubble-point node is a pump,
   and M11's node-kind exclusion and this milestone's holdup scope are disjoint by
   construction — which is worth asserting, because the two features now both read

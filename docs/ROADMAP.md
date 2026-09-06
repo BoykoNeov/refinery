@@ -4857,23 +4857,42 @@ authoritative value afterwards. A vent's rate is set by an enthalpy balance, not
 by `ρ·branch.flow(dp)`, so it is the same case — and the comment guarding the
 draw already names the hazard a pressure-driven vent would have.
 
-**The measurement that shaped the note, taken before the forks were settled.**
-Over 6 000 ticks of every liquid tank on the three plants whose thermo model can
-answer, `f` being the share of the inventory whose latent heat would absorb the
-tank's standing superheat:
+**Two measurements, and the second one corrected the first — inside the note,
+before any code.** The obvious probe measures the STANDING superheat on the
+uncorrected engine, where nothing removes it: that gives the shipped cascade's
+naphtha tank 2.31 K and 1.7% of its inventory, and the flipped FCC plant two tanks
+over `f = 1.8`. **Those are accumulated drift, not rates**, and the boil-off term
+prevents the state they describe from ever existing. The quantity the design
+actually rests on is the flash fraction of the **arriving stream**,
+`f_in = cp̄·(T_in − T_bub)/Δh̄_vap`, which is 1 when everything arriving boils:
 
-| plant | tank | first boils | ticks boiling | superheat | `f` |
+| plant | tank | `T_in` | `T_bub` | `f_in` | inventory share per tick |
 |---|---|---|---|---|---|
-| `crude_column_cascade` (**as shipped**) | `naphtha_tank` | 1 825 | 4 176 / 6 000 | 2.31 K | **0.0166** |
-| `crude_column` (flipped) | `naphtha_tank` | 324 | 5 677 / 6 000 | 52.3 K | **0.376** |
-| `fcc_plant` (flipped) | `gasoline_tank` | 290 | 5 711 / 6 000 | 300.4 K | **2.013** |
-| `fcc_plant` (flipped) | `gas_drum` | 1 | 6 000 / 6 000 | 495.3 K | **1.811** |
+| `crude_column_cascade` (**as shipped**) | `naphtha_tank` | 387.6 K | 354.3 K | **0.236** | 4.1e-4 |
+| `crude_column_cascade` | `distillate_tank` | 505.3 K | 491.2 K | 0.117 | 2.8e-4 |
+| `crude_column_cascade` | `bottoms_tank` | 632.0 K | 623.5 K | 0.097 | 2.8e-5 |
+| `crude_column` (flipped) | `naphtha_tank` | 445.8 K | 354.3 K | 0.648 | 1.1e-3 |
+| `fcc_plant` (flipped) | `gasoline_tank` | 800.4 K | 374.4 K | **2.854** | 1.4e-3 |
+| `fcc_plant` (flipped) | `gas_drum` | 800.4 K | 233.6 K | **2.072** | 2.1e-3 |
+| `fcc_plant` (flipped) | `bottoms_tank` | 800.4 K | 675.9 K | **1.261** | 3.8e-4 |
 
-The shipped case is **gentle** — 2.3 K and 1.7% of the inventory — which is what
-makes taking the term on a pre-M8 regression anchor affordable. And **`f ≥ 1` is
-reachable on two tanks**, both one inert `thermo` line from shipping, so "the
-tank holds more heat than its own latent heat can absorb" is specified with a
-clamp and a gate rather than left undefined.
+**"Gentle" was true of the wrong quantity, and the two readings point opposite
+ways.** Per tick the term is small everywhere — worst inventory share 2.1e-3, so
+nothing is stiff. But the shipped cascade settles at `f_in = 0.236`: **a quarter
+of the naphtha product boils off** once the tank reaches its bubble point. That is
+the largest movement of a regression anchor any milestone here has taken, and the
+first draft called it small on the strength of the 1.7% drift figure.
+
+**`f ≥ 1` is reachable, on three tanks and for a different reason than the first
+draft gave** — not an inventory holding more heat than its latent heat can absorb,
+but a column drawing at 800.4 K into a tank whose contents boil at 374.4 K, so
+more than all of what arrives has to flash and the tank cannot fill. The clamp is
+about the arriving stream, and gate 6 asserts against an inflow.
+
+**And the two cascade tanks the first table called a control are not one.** Their
+inflow is already above their own bubble points; they simply have not heated there
+within 6 000 ticks. A tank that is not boiling *yet* is not a negative case, and a
+gate using one asserts on the run length rather than the physics.
 
 **The gate the note expected to be impossible is writable, and measuring is what
 found that out.** `crude_column_cascade`'s naphtha tank is *declared*

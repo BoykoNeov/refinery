@@ -208,17 +208,27 @@ tank's own composition conserves mass exactly, passes I1 and I7 and every other
 conservation test, and **never changes what is in the tank**. The vapour leaves at
 `y = K·x`, and the only gate that separates the two watches the composition move.
 
-**Measured before the forks were settled** (`f` = the inventory share whose latent
-heat absorbs the standing superheat): `crude_column_cascade`'s `naphtha_tank`
-**as shipped** is gentle — 2.31 K, `f = 0.0166`, boiling from tick 1 825 — which is
-what makes taking the term on a pre-M8 anchor affordable. Flipped to `trouton`,
-`crude_column` reaches `f = 0.376` and **`fcc_plant` reaches `f = 2.013` and
-`1.811` on two tanks** — more heat than their own latent heat can absorb — so the
-`f ≥ 1` arm is specified with a clamp, not assumed away. **And the gate the note
-expected to be impossible is writable**: the naphtha tank is *declared* pure
-`light_naphtha`, where `y = K·x` and `x` coincide, but the draw makes it
-0.5299 / 0.4685 / 0.0016 well before it boils. The declaration is the trap for a
-short-running gate, so gate 1 asserts the mixture as a control first.
+**Two measurements, and the second corrected the first inside the note.** The
+obvious probe reads the STANDING superheat on the uncorrected engine — 2.31 K and
+1.7% of the inventory on the shipped cascade, two flipped-FCC tanks over 1.8. That
+is accumulated **drift**, and the boil-off prevents the state it describes from
+existing. What the design rests on is the flash fraction of the ARRIVING stream,
+`f_in = cp̄·(T_in − T_bub)/Δh̄_vap`. **"Gentle" was true of the wrong quantity:**
+per tick the term is small everywhere (worst inventory share 2.1e-3, nothing
+stiff), but the shipped cascade settles at **`f_in = 0.236` — a quarter of the
+naphtha product boils off**, the largest regression-anchor movement any milestone
+here has taken. **`f ≥ 1` is reachable on THREE tanks**, and not because an
+inventory holds too much heat — because `fcc_plant` flipped draws at 800.4 K into
+a tank boiling at 374.4 K, so more than all of what arrives flashes and the tank
+cannot fill. The clamp and gate 6 are about an inflow, not an inventory. **And the
+two cascade tanks the first table called a control are not one** — their inflow is
+already above their own bubble points, they just have not heated there in 6 000
+ticks; a tank that is not boiling *yet* is not a negative case.
+
+**The gate the note expected to be impossible is writable**: the naphtha tank is
+*declared* pure `light_naphtha`, where `y = K·x` and `x` coincide, but the draw
+makes it 0.5299 / 0.4685 / 0.0016 well before it boils. The declaration is the
+trap for a short-running gate, so gate 1 asserts the mixture as a control first.
 
 **M11 is CLOSED (2026-09-06), and its scope was the cavitation criterion.**
 M11.0 wrote the note (DESIGN §13, seven forks) and M11.1 built it: a third method
