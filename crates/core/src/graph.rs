@@ -903,7 +903,19 @@ pub enum LeakRole {
     /// `Engine::tick` writes the authoritative value afterwards. Leaving it
     /// pressure-driven would drain a tank to atmosphere through a pipe nobody
     /// declared — finite, deterministic, mass-conserving and wrong.
-    BoilOffVent,
+    ///
+    /// **`emitter` is the holdup that OWNS this vent, and it is stored rather
+    /// than derived (M14, docs/DESIGN.md §16 fork 3).** Through M13 every vent
+    /// ended at an `Atmosphere`, so "the emitting end" could be read off the
+    /// edge's direction — `build_boiloff_vents` writes tank → atmosphere and
+    /// says so in a comment that nothing enforces. Once a vent can end at
+    /// another TANK, both endpoints are holdups and the per-node loop must be
+    /// able to ask which one owns the edge: the emitter skips it (its boil-off
+    /// debits the inventory directly) and the receiver counts it as an inflow.
+    /// Deriving that from the direction would be right today and silently wrong
+    /// the moment a vent were ever stored the other way round, which is the
+    /// shape of M12.1's own hardest bug.
+    BoilOffVent { emitter: NodeId },
 }
 
 impl LeakRole {
@@ -911,7 +923,21 @@ impl LeakRole {
     /// solve. One predicate, so the several passes that must skip such an edge
     /// cannot come to disagree about which edges those are.
     pub fn is_boiloff_vent(&self) -> bool {
-        matches!(self, LeakRole::BoilOffVent)
+        matches!(self, LeakRole::BoilOffVent { .. })
+    }
+
+    /// The holdup that owns this vent, or `None` on any other edge.
+    ///
+    /// The single owner of "whose vent is this". Both readers go through it in
+    /// opposite directions — `Engine::tick`'s inflow loop skips the vent whose
+    /// emitter it IS and counts the one whose emitter it is not — so the two
+    /// cannot come to disagree about ownership the way a `matches!` at each site
+    /// could.
+    pub fn boiloff_vent_emitter(&self) -> Option<NodeId> {
+        match self {
+            LeakRole::BoilOffVent { emitter } => Some(*emitter),
+            _ => None,
+        }
     }
 }
 
@@ -1055,6 +1081,106 @@ impl PlantGraph {
         // Deterministic order regardless of petgraph internals.
         out.sort_by_key(|(e, _, _)| *e);
         out
+    }
+
+    /// The order in which `Engine::tick` must evaluate holdups, so that a vent's
+    /// EMITTER is updated before its RECEIVER (M14, docs/DESIGN.md §16 fork 3).
+    ///
+    /// A boil-off vent's flow, composition, temperature and latent heat are
+    /// written at the END of the emitting tank's own iteration, from the state
+    /// the vapour left in. A tank receiving that vent must therefore be
+    /// iterated after it, or it reads the PREVIOUS tick's vapour: a systematic
+    /// one-tick lag, which parks `ṁ_v·dt` of mass in flight on every tick and
+    /// puts a floor under any mass balance taken over the plant. Every ordinary
+    /// edge in this engine debits and credits its two endpoints from the same
+    /// flow inside one tick, and a vent is the only edge that could not.
+    ///
+    /// **Only tank → tank vents constrain anything.** A vent ending at an
+    /// `Atmosphere` has no receiving holdup, so a plant on which every vent ends
+    /// there — which is every plant written before M14 — produces an empty
+    /// constraint set and takes the early return below. The order is then
+    /// `node_ids()` exactly, by construction rather than by measurement, which
+    /// is what keeps the existing corpus byte-identical.
+    ///
+    /// **A cycle is refused HERE, and that is the fork-5 refusal's real
+    /// mechanism.** §16 fork 5 gives the reason as "a cycle makes the answer
+    /// depend on node order"; with an evaluation order the sharper statement is
+    /// that no such order exists, and Kahn's algorithm ending with nodes left
+    /// over is what says so. Reachable from a scenario (`vent_to` naming a tank
+    /// that vents back) and from a hand-built graph, and refused identically.
+    ///
+    /// Ties are broken by ascending `NodeId`, so the result is a function of the
+    /// graph alone.
+    pub fn holdup_evaluation_order(&self) -> Result<Vec<NodeId>, SimError> {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        // (emitter, receiver) for every vent whose far end is itself a holdup.
+        // An `Atmosphere` receiver constrains nothing: it has no branch in the
+        // holdup update at all.
+        let mut successors: BTreeMap<NodeId, BTreeSet<NodeId>> = BTreeMap::new();
+        let mut constraints = 0usize;
+        for eid in self.edge_ids() {
+            let Some(emitter) = self.pipe(eid).leak.boiloff_vent_emitter() else {
+                continue;
+            };
+            let (from, to) = self.endpoints(eid);
+            let receiver = if from == emitter { to } else { from };
+            if !matches!(self.node(receiver).kind, NodeKind::Tank(_)) {
+                continue;
+            }
+            if successors.entry(emitter).or_default().insert(receiver) {
+                constraints += 1;
+            }
+        }
+        let all: Vec<NodeId> = self.node_ids().collect();
+        if constraints == 0 {
+            return Ok(all);
+        }
+
+        // Kahn's algorithm with a lowest-id tie-break. With no constraints this
+        // reproduces `node_ids()` exactly, which is why the early return above
+        // is a shortcut rather than a special case.
+        let mut indegree: BTreeMap<NodeId, usize> = all.iter().map(|n| (*n, 0)).collect();
+        for targets in successors.values() {
+            for t in targets {
+                *indegree
+                    .get_mut(t)
+                    .expect("receiver is a node of this graph") += 1;
+            }
+        }
+        let mut ready: BTreeSet<NodeId> = indegree
+            .iter()
+            .filter(|(_, d)| **d == 0)
+            .map(|(n, _)| *n)
+            .collect();
+        let mut order = Vec::with_capacity(all.len());
+        while let Some(next) = ready.iter().next().copied() {
+            ready.remove(&next);
+            order.push(next);
+            if let Some(targets) = successors.get(&next) {
+                for t in targets {
+                    let d = indegree
+                        .get_mut(t)
+                        .expect("receiver is a node of this graph");
+                    *d -= 1;
+                    if *d == 0 {
+                        ready.insert(*t);
+                    }
+                }
+            }
+        }
+        if order.len() != all.len() {
+            let stuck: Vec<&str> = all
+                .iter()
+                .filter(|n| !order.contains(n))
+                .map(|n| self.node(*n).name.as_str())
+                .collect();
+            return Err(SimError::Scenario(format!(
+                "the boil-off vents on these holdups form a cycle: {}. Each vent is written                  at the end of its own tank's update and read by the tank it arrives at, so                  the tanks have to be evaluated emitter-first — and a cycle has no such                  order (docs/DESIGN.md §16 fork 5)",
+                stuck.join(", ")
+            )));
+        }
+        Ok(order)
     }
 
     pub fn node_count(&self) -> usize {

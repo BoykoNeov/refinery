@@ -1094,7 +1094,7 @@ fn build_boiling_plant(inputs: &BoilingInputs, slate: &Slate) -> PlantGraph {
             friction_factor: 0.0,
             elevation_change: Meter(0.0),
             ambient_ua: WattPerKelvin::ZERO,
-            leak: LeakRole::BoilOffVent,
+            leak: LeakRole::BoilOffVent { emitter: tank },
             stream: refinery_core::stream::Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
         },
     );
@@ -1283,7 +1283,7 @@ fn a_vent_carries_a_latent_term_exactly_while_it_is_boiling() {
             friction_factor: 0.0,
             elevation_change: Meter(0.0),
             ambient_ua: WattPerKelvin::ZERO,
-            leak: LeakRole::BoilOffVent,
+            leak: LeakRole::BoilOffVent { emitter: tank },
             stream: refinery_core::stream::Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
         },
     );

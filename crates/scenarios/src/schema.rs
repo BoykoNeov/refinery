@@ -234,6 +234,23 @@ pub enum NodeDef {
         /// `TankState::ambient_ua`.
         #[serde(default)]
         ambient_ua_w_per_k: f64,
+        /// Where this tank's boil-off vent goes (M14, docs/DESIGN.md §16
+        /// fork 2). The name of an `atmosphere` node or of another `tank`.
+        ///
+        /// Optional, and absent means the atmosphere `build_boiloff_vents`
+        /// already finds or builds — which is what every file written before
+        /// M14 means, so the whole existing corpus is untouched by construction
+        /// rather than by measurement. Naming an atmosphere explicitly is legal
+        /// and is that default written out.
+        ///
+        /// **On the TANK variant, not on `PipeDef`.** A vent is graph surgery
+        /// performed at load (the `leak_to` precedent), so there is no pipe in
+        /// the file to hang it on; and only a holdup can emit one, so putting
+        /// the key here makes `vent_to` on a valve or a column unrepresentable
+        /// instead of a runtime refusal. It is still refused on a plant whose
+        /// `[fidelity] boiloff` builds no vents at all — see `build.rs`.
+        #[serde(default)]
+        vent_to: Option<String>,
         /// Initial tank contents. Same rule as `Source::composition`.
         #[serde(default)]
         composition: Option<BTreeMap<String, f64>>,

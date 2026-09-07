@@ -85,6 +85,7 @@ cargo run -p refinery-cli -- run scenarios/tank_pump_valve.toml --ticks 1000
 cargo run -p refinery-cli -- run scenarios/tank_level_control.toml --ticks 6000   # the M8.4 loop demo
 cargo run -p refinery-cli -- run scenarios/vessel_pressure_control.toml --ticks 6000  # the M10.1 pressure loop
 cargo run -p refinery-cli -- run scenarios/crude_column_boiloff.toml --ticks 6000      # the M12.1 boiling tanks
+cargo run -p refinery-cli -- run scenarios/crude_column_recovery.toml --ticks 6000     # the M14.1 recovery drum
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -180,99 +181,119 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M14 is OPEN, and its scope is THE RECOVERED VAPOUR — `docs/DEFERRED.md` rows
-B12 (condensation) and B13 (where the vented vapour goes), taken together.**
-**M14.0 landed 2026-09-07**: the design note, DESIGN §16, seven forks, six gates,
-nine named mutations, no code. The building slice is M14.1 and has not started.
+**M14 is CLOSED (2026-09-07), and its scope was THE RECOVERED VAPOUR —
+`docs/DEFERRED.md` rows B12 (condensation) and B13 (where the vented vapour
+goes), taken together because they cannot be split.** M14.0 wrote the note
+(DESIGN §16, seven forks, six gates, nine named mutations, no code); **M14.1
+landed 2026-09-07** and built it — a per-tank `vent_to` key, the receiver side of
+a boil-off vent, `PlantGraph::holdup_evaluation_order`,
+`scenarios/crude_column_recovery.toml`, nine gates and two hand-built fixtures.
+B12 is struck; **B13 is struck for RECOVERY only** — a flare is combustion (B7)
+and fork 5 refuses a `Sink` destination, so its emissions clause stays open.
 
-**Nothing selected this milestone: it is M11's licence (a decision), the third
-time.** But the ledger's own reason for saying so was examined first and was
-unsupported. "Nothing is past its trigger … A3 at 5.4× is the nearest" ranks only
-the rows that carry a number, and **two do not**: B14 (a second equation of
-state) and B15 (a temperature-dependent `cp`), both reading "Not measured".
+**What a recovery drum now does.** A tank's boil-off vent can name another tank.
+The receiving holdup counts the vent as an inflow, reads the stream WHOLE — flow,
+composition `y = K·x`, temperature and `latent` — and books it through
+`energy::stream_enthalpy_flux`, so the arriving vapour's `c̄p·(T − T_REF) + λ` is
+credited rather than its sensible half. It condenses **entirely**; whatever
+cannot stay boils back off through the drum's own vent at the drum's own
+equilibrium, so partial condensation is the composition of two terms that already
+existed and **no stream is ever part liquid and part vapour** (which is what
+keeps this out of B3). The condenser is `ambient_ua_w_per_k` — `Q = UA·(T_AMB −
+T_B)`, self-limiting, in a field documented as insulation, which is a new ledger
+row rather than a thing fixed here.
 
-**Running B15's probe produced two findings and neither is a distance.** (i) **The
-row measures the wrong quantity, exactly as B1 did for five milestones.** It cites
-`fcc_plant`'s internal *excursion*, 800.4 K to 374.4 K. `energy::T_REF` is
-273.15 K and every sensible term is `cp·(T − T_REF)`, so the span a constant `cp`
-must average over runs from the **datum**, inside one term: **527.2 K** on
-`fcc_plant`'s `reactor_effluent` stream, **520.2 K** on `fcc_reactor`'s product
-line, 358.8 K on both cascade columns, 20.1 K on the water plants. (ii) **The
-trigger is COMPARATIVE**: "a constant `cp` and a correlation disagree" cannot be
-evaluated from anything in the workspace. B14's "two EOS choices differ" is the
-same shape.
+**There is no seam, and fork 6 was right.** `traits.rs` is untouched, there is no
+`[fidelity] condensation` key, and `schema.rs` gained exactly one optional field.
 
-**Both findings had a first draft that was wrong, and both corrections are the
-same shape as the finding itself.** The locus was first written as the
-`fractionator` NODE at the same 800.35 K — but a column is a zero-volume mixing
-node, so its temperature is the *output* of an enthalpy balance, not a factor in
-one; **only streams and holdups are factors**. And (ii) was first written as
-"SELF-BLOCKING — can never fire", which is false: `reference/vapour_pressure.rs`
-already IS that instrument for a different property (M13 gate 3, NIST Antoine
-coefficients for n-hexane, one comparable cut, compared as an envelope), and NIST
-carries `cp(T)` for the same molecule. **B15 needs one gate-3-shaped probe, not
-the selectable model.** What is genuinely wrong is the LABEL: every other ledger
-row fires on a *state* a run can be asked about, these two on a *disagreement
-between two models*, which must be built or cited first. "Not measured" reads as
-an omission and licensed a ranking that had no right to include them. A
-comparative trigger's distance column must name the instrument it waits on and
-what it costs; the summary sentence is now scoped to the rows that can move it.
+**Nine things the next milestone inherits.**
 
-**Why B12 + B13, and why now — four things, and the timing was chosen by M13.**
-(1) `energy.rs`'s own comment on `stream_enthalpy_flux` reads "a future consumer
-that condenses a vapour into a holdup (B12) is what makes this read inside the
-engine, **and it should read it here**". (2) `crude_column_boiloff.toml`'s header
-already says the plant is wrong this way. (3) **B13 had never carried a number and
-now does**: the demo's two boiling tanks vent **6 709.7 kg over 6 000 ticks —
-5.80% of the plant's own crude intake** — carrying **4.121e9 J**, 42.51% of it the
-latent term M13 built; **10.64 MW at tick 6 000**. (4) **B12 cannot be split from
-B13**: route a vent to a holdup and leave the receiver's balance alone and the
-arriving vapour is booked sensible-only, which is B16's defect in the mirror on a
-plant that would ship with it.
+**All seventeen existing plants are byte-identical on BOTH fidelities with no
+iteration count moved** — the claim M13 could not make for the whole corpus,
+measured against a baseline from `HEAD` in a separate worktree. From here, "runs
+byte-identical" means post-M14.1 identical, which is unchanged. `scenarios/` holds
+**eighteen** files and the new one is `crude_column_boiloff.toml` plus a drum and
+two keys — the pair pattern extended a fourth time.
 
-**The milestone fires its own trigger** (B13's words are "an emissions figure, or
-a recovery loop" and the demo is a recovery loop), named in the note's first
-paragraph as M13's was.
+**There is a FOURTH receiver-side site and it is the one the note quotes as its
+own precedent.** `engine.rs:701`'s vent-finding predicate tests the NODE's kind,
+never the edge — loop-invariant — so on a recovery drum it reduces to "I am a
+Tank and this is a vent" and returns a SOURCE tank's vent. The drum would publish
+its boil-off onto that tank's edge: M12.1's 2 539 kg bug at the site whose
+comment records paying for it. **M12.1's `NodeKind::Tank` test was right while
+every vent ended at an `Atmosphere` and stops being right the moment both
+endpoints are holdups.** Meanwhile `engine.rs:1036`, which the note marks for
+work, is correct and stays.
 
-**Five things §16 decides, before any code exists.**
+**Ownership is STORED, not derived.** `LeakRole::BoilOffVent { emitter: NodeId }`,
+with `boiloff_vent_emitter` the single predicate both sites read in opposite
+directions. A vent stored the other way round is now a *correct* graph rather
+than a tripwire, so fork 3's promised fixture is a real gate.
 
-**There is NO SEAM, and it is the verdict most likely to be wrong.** Fork 6
-rejects a `CondensationModel` trait and a `[fidelity] condensation` key: there is
-no choice for a model to make. The mass is what the vent published, the enthalpy
-is what the stream carries, the temperature is the holdup integration already
-written, and whether any of it stays is `FlashBoilOff`'s decision. **A trait
-method whose only implementation is `a + b` is a seam with nothing behind it.**
-So M14 should add one scenario key, no fidelity key, and leave `traits.rs`
-untouched.
+**The evaluation order is machinery the note did not name, and gate 1's tolerance
+is the argument.** A vent is written at the END of its emitter's iteration and
+read at the TOP of its receiver's, so the wrong order parks `ṁ_v·dt` in flight
+every tick — 1.69 kg against the run's 6 709.7 kg, 2.5e-4 systematic.
+`holdup_evaluation_order` is a stable Kahn sort constrained by **tank → tank
+vents only**, so every pre-M14 plant takes an early return and gets `node_ids()`
+by construction. **It re-premises fork 5's cycle refusal**: not "a cycle makes
+the answer depend on node order" but "no order exists".
 
-**Partial condensation needs no new term, and that is what keeps this out of B3.**
-Fork 1: condense the arriving vapour **entirely**, then let the existing flash
-boil back off whatever cannot stay, through the receiving drum's own vent.
-**No stream is ever part vapour at any instant** — which is exactly the property
-B3 is about.
+**Gate 3 as the note words it is falsified by the CORRECT engine.** The drum
+holds 0.2614 light naphtha and `naphtha_tank` holds 0.4971 — the note's
+inequality points the wrong way, because the drum takes vapour from two tanks and
+the heavier carries 2.3× the flow. The reference that works is the flow-weighted
+mix of ALL the emitting liquids (0.1523), against which the drum is 1.72× richer
+and 44× leaner in the heaviest cut. **A gate written against one member of a set
+can be falsified by the set.**
 
-**B13's stated obstacle is the wrong one — fourth time a row's mechanism has
-outlived its number.** The format can already declare a drum and a line; what it
-cannot express is where a **loader-built** vent goes. The real obstacle is the
-forward solve: five sites read "is a boil-off vent" as "is invisible", two
-correctly and permanently (`engine.rs:538`, `network.rs:1008`) and three only
-because every vent currently ends at an `Atmosphere` (`engine.rs:622`, `:656`,
-`:1036`).
+**Fork 4's argument for the condenser is FALSE in its stated mechanism.** An
+uncooled drum does not recover nothing: it recovers **20.72%** and
+**self-fractionates into a heavy pot**, boiling the light material back off until
+its own bubble point has climbed past 435 K and it has stopped re-venting
+entirely. The shipped `UA = 3.5e4 W/K` recovers **42.52%** over the run and holds
+**49.87%** at tick 6 000; `1e5` recovers 100%. The knob discriminates, which is
+what M7.1's `smearing_k` rule demands — but the case for it is "otherwise half as
+much, and what is kept is the bottom of the barrel". **Recovery is also not
+monotone in `UA` at the low end** (20.72 → 17.35 → 23.75 → 42.52 → 100).
 
-**One of those three is M12.1's own hardest bug at a site that milestone left
-alone.** `engine.rs:622` skips a vent as a property of the EDGE and uses it as a
-property of the ENDPOINT. Forty lines down, `engine.rs:701` records paying for
-exactly this — 2 539 kg vanished while the accounted path read 0.0 kg/s. Fork 3
-applies the rule to the receiving end: **skip the vent I own, not every vent.**
+**Adding an inert node to a plant is not bit-neutral**, and it took a control to
+say so: an inert `spare_tank` on `crude_column_boiloff.toml` moves the other
+tanks' vented mass by 7.1e-11 and 9.8e-10, the same order as the recovery plant's
+own 8.7e-11. The mechanism is deliberately unpinned.
 
-**A condenser is a heat sink, and the demo's is `ambient_ua`.** An uncooled drum
-recovers nothing at steady state (a knob nothing discriminates — `smearing_k`);
-a constant duty is unbounded and would drive an idle drum toward the sub-zero
-Kelvin failure `checked_temperature` exists to catch. `Q = UA·(T_AMB − T_B)` is
-self-limiting and already exists, and makes the recovered fraction an emergent
-measurement rather than a target. Its wart is named: a condenser's `UA` is order
-1e4–1e5 W/K in a field documented as insulation. The demo's `UA` must put the
-recovery **interior**, neither 0% nor 100%, as M10.1's vent had to be.
+**The `Vessel` refusal needed a plant of its own** — a vessel must hold a gas
+composition, refused one pass earlier for the wrong reason with the right exit
+code. A refusal is only tested if the thing it refuses could otherwise be built.
+
+**Four of the note's nine mutation predictions were wrong, and the two that were
+exactly right were already paid for.** (2), the receiver reading the upwind
+node's liquid `x`, is caught by gate 3 and nothing else — M12.1's finding,
+confirmed. (5), scoping by incidence direction, is inert on the demo and caught
+by the hand-built fixture alone, exactly as fork 3 said. What was wrong: (1) and
+(9), dropping the latent term, spread to gates 1 and 4 as well as 2, because the
+arriving enthalpy is what decides whether the drum ever boils — the note treated
+`λ` as bookkeeping and it is a state variable's forcing. (4), "the skip scoped by
+node kind alone", was predicted **inert** and is identical to (3): on this plant
+the RECEIVER is a Tank, so scoping by kind makes the drum skip its own inflow. It
+is inert only on a plant whose vents all end at an `Atmosphere`, which is the
+whole corpus before M14 and none of it after. And (8), removing the cycle refusal
+from the loader, fires the scenario gate and NOT the fixture — the two callers of
+one function are independently defended, which is the right answer.
+
+**Gate 5 came for free, both trees in one probe, as fork 5 predicted it would.**
+Scaling `BoilOff::latent_heat` by 3.7× at the construction site only — M13.1's
+own write-only probe — over 3 000 ticks: the emitting `naphtha_tank`'s
+temperature, mass and vent rate are **bit-identical**, and the receiving drum's
+mass falls 4 019.4 → 694.8 kg, its temperature rises 357.6 → 408.5 K, its light
+fraction falls 0.811 → 0.112 and its own vent nearly doubles. The same edit that
+moved nothing before this milestone now moves only the receiver.
+
+**The mutation harness corrupted the tree, for the reason already on record.**
+Two accidental concurrent runs; five mutations in two crates reported the
+identical energy residual to seven figures, which is arithmetically impossible
+and is the signature of a reinstated edit. The shipped pass holds a lock and
+verifies every anchor afterwards.
 
 **M13 is CLOSED (2026-09-07), and its scope was the LATENT HEAT of a boil-off —
 `docs/DEFERRED.md` row B16.** M12.1 left the vent carrying its vapour's sensible

@@ -9355,3 +9355,294 @@ is wrong the corpus says so on the first run.
   made for the plant-wide duty: the term is published on the edges that carry it
   and the summing belongs to the consumer, until someone argues who owns the
   total.
+
+### Corrections from building it (M14.1, landed 2026-09-07)
+
+What shipped: `LeakRole::BoilOffVent { emitter }`, `PlantGraph::boiloff_vent_emitter`,
+`PlantGraph::holdup_evaluation_order`, the receiver branch in `Engine::tick`'s
+holdup inflow loop, the ownership scoping of the vent-finding site, a `vent_to`
+key on `NodeDef::Tank`, `resolve_vent_destination`,
+`scenarios/crude_column_recovery.toml`, nine gates in
+`crates/scenarios/tests/vapour_recovery_reference.rs` and two fixtures in
+`crates/solvers/tests/vapour_recovery_contract.rs`.
+
+**The prediction that held, and it is the one the note staked the milestone on.**
+All **seventeen** existing plants are byte-identical on **both** fidelities, with
+no solver iteration count moved — measured against a baseline recorded from
+`HEAD` in a separate worktree. M13 could not make that claim for the whole
+corpus; this milestone can, because it publishes no new field anywhere and
+`vent_to` is absent from every existing file. The sub-prediction held too: fork 3
+stops the **atmosphere's** iteration from skipping vents, its `net_mass` and
+`net_enthalpy` do become nonzero, and nothing reads them because `Atmosphere` has
+no holdup branch. `traits.rs` is untouched (fork 6) and `schema.rs` gained
+exactly one optional field.
+
+#### 1. There is a FOURTH receiver-side site, and it is the one the note quotes as its precedent
+
+§16 fork 2's table lists five sites and marks three for work. Both halves are
+wrong by one.
+
+`engine.rs:1036` — the composition publish sweep — is **correct and stays**, with
+`:538` and `network.rs:1008`. Its skip is what stops the sweep overwriting
+`y = K·x` with the upwind node's liquid `x`, which is the fork-2 defect written
+back onto the edge; its own comment already said so. What the receiver needs
+instead is not that sweep but the `edge_composition_at` call **inside the inflow
+loop**, which is `:622`'s own arithmetic and not a separate site.
+
+The site that does need work, and that the note names only as the *precedent for
+the rule*, is the vent-finding predicate at `engine.rs:701`:
+
+```rust
+.find(|(eid, _, _)| {
+    self.graph.pipe(*eid).leak.is_boiloff_vent()
+        && matches!(self.graph.node(nid).kind, NodeKind::Tank(_))
+})
+```
+
+The `matches!` is **loop-invariant**: it asks about the node being iterated and
+never about the edge. So the predicate reduces to "I am a Tank AND this is a
+vent", which on a recovery drum is satisfied by the vent of *every tank feeding
+it*. `.find` returns the first in edge order — `naphtha_tank`'s — and the drum
+would publish its own boil-off rate, composition, temperature and `latent` onto a
+source tank's edge, then write that flow into `solution.edge_mass_flow` over the
+rate the source tank had published moments earlier. That is M12.1's 2 539 kg bug
+exactly, at the site whose comment records paying for it.
+
+**M12.1's `NodeKind::Tank` test was the right fix for a plant whose vents all end
+at an `Atmosphere`, and it stops being one the moment both endpoints are
+holdups.** The property that was meant all along is ownership, and the note's
+own rule — "a shared edge belongs to one endpoint, and a per-node loop must say
+which" — is what says so. Both sites now go through one predicate,
+`LeakRole::boiloff_vent_emitter`, in opposite directions.
+
+Consequence for the mutation list: mutation 4 ("scoped by node kind alone —
+*predicted inert*") is right about `:622` in isolation and wrong about the fix as
+a whole, and the measured result below says so.
+
+#### 2. Ownership is STORED, not derived, and that is what makes mutation 5 defensible
+
+`LeakRole::BoilOffVent` became `BoilOffVent { emitter: NodeId }`. Through M13
+"the emitting end" could be read off the edge's direction, because
+`build_boiloff_vents` writes tank → atmosphere and says so in a comment that
+nothing enforces. §16 fork 3 names the trap ("right today and wrong the moment a
+vent is ever stored the other way round") and then proposes to defend it with a
+fixture. Storing the emitter is cheaper than defending a convention: the
+scoping test is `emitter == nid`, a vent stored the other way round is a
+*correct* graph rather than a broken one, and the fixture becomes a real gate
+(`a_vent_stored_the_other_way_round_moves_the_same_mass`) instead of a tripwire.
+
+The emitter's WRITE had to become direction-aware to match — `+rate` when the
+edge points away from the emitter, `−rate` when it points in — which is its own
+named mutation (5b) and is inert on every plant in the corpus.
+
+#### 3. The evaluation order is machinery the note did not name, and gate 1's tolerance is the argument for it
+
+A vent's stream is written at the END of its emitting tank's iteration. A tank
+that RECEIVES that vent reads it at the top of its own. So the two have to happen
+in that order, or the receiver is one tick behind — and a one-tick lag is not a
+rounding error here: it parks `ṁ_v·dt` of mass in flight on **every** tick, about
+1.69 kg against the run's 6 709.7 kg, a systematic 2.5e-4 that gate 1's bound
+would have to be widened to swallow. Every ordinary edge in this engine debits
+and credits its two endpoints from the same flow inside one tick; a vent is the
+only edge that could not.
+
+`PlantGraph::holdup_evaluation_order` is a stable Kahn sort over one constraint —
+emitter before receiver, **for tank → tank vents only**. A plant on which every
+vent ends at an `Atmosphere` has an empty constraint set and takes the early
+return, so it gets `node_ids()` order exactly, by construction rather than by
+measurement. That is what makes the corpus claim above free.
+
+**And it re-premises fork 5's cycle refusal.** The note's reason is "a cycle
+makes the answer depend on node order". With an evaluation order the sharper
+statement is that **no such order exists**, and Kahn's algorithm ending with
+nodes left over is what says so. The refusal has one owner, called at load
+(`build_boiloff_vents`) and every tick (`Engine::tick`), so the two cannot
+disagree. `moving_the_drum_up_the_file_changes_no_number` is the gate: the
+reordered file moves the drum's node id and reproduces every number exactly.
+
+#### 4. Gate 3's reference is falsified by the CORRECT engine
+
+§16 gate 3 asks that "the drum's contents are richer in the light cut than the
+emitting tank's". Measured at tick 6 000: the drum holds **0.2614** light
+naphtha and `naphtha_tank` holds **0.4971**. The inequality points the other
+way, and the plant is right — the drum takes vapour from two tanks and the
+heavier of them carries 2.3× the flow (11.73 kg/s against 5.17).
+
+The reference the gate needs is the **flow-weighted mix of all the emitting
+liquids**, which is 0.1523, and against that the drum is **1.72×** richer in the
+light cut and **44×** leaner in the heaviest (0.0018 against 0.0784). That is
+exactly the counterfactual — a receiver resolving its inflow through
+`edge_composition_at` fills the drum with those liquids — and the shipped gate
+asserts it with a control that the two references differ at all.
+
+**A gate written against one member of a set can be falsified by the set.** The
+note's wording came from a one-emitter picture; the demo has two on purpose.
+
+#### 5. Fork 4's argument for the condenser is FALSE in its stated mechanism
+
+§16 fork 4: "A drum with no cooling reaches its bubble point and re-vents
+everything: at steady state it recovers **nothing** and the demo is dead."
+Measured over 6 000 ticks:
+
+| `ambient_ua` [W/K] | recovery over the run | held at tick 6 000 | drum at tick 6 000 |
+|---:|---:|---:|---|
+| 0 | **20.72%** | 100% | 3 183.9 kg at 435.2 K |
+| 5e3 | 17.35% | 100% | 3 618.4 kg at 425.5 K |
+| 1.5e4 | 23.75% | 37.87% | 4 305.0 kg at 407.9 K |
+| **3.5e4 (shipped)** | **42.52%** | **49.87%** | 5 567.0 kg at 386.2 K |
+| 1e5 | 100.00% | 100% | 9 429.7 kg at 364.8 K |
+| 1e7 | 100.00% | 100% | 9 429.7 kg at 294.1 K |
+
+An uncooled drum does not recover nothing. It **self-fractionates into a heavy
+pot**: it boils the light material straight back off, its own bubble point climbs
+as what stays gets heavier (light fraction 0.9882 at tick 2 100 down to 0.0369 at
+6 000), and by the end of the run it has stopped re-venting altogether. Its
+instantaneous retention is 100% and its run recovery is 20.72% of a stream it has
+separated the wrong way round.
+
+So the case for the condenser is not "otherwise nothing is recovered" but
+"otherwise half as much is recovered, and what is kept is the bottom of the
+barrel". The knob still discriminates — 20.72% → 42.52% → 100% — which is what
+M7.1's `smearing_k` rule actually demands, and gate 4 asserts the two ends rather
+than the note's sentence.
+
+**The recovered fraction is also not monotone in `UA` at the low end**
+(20.72 → 17.35 → 23.75 → 42.52 → 100), because two mechanisms compete: cooling
+retains mass, and what is retained moves the drum's own bubble point. A gate
+asserting monotonicity would have been fitted to wherever it happened to sample.
+
+#### 6. Adding an inert node to a plant is not bit-neutral, and a control says so
+
+Gate 1's first draft asserted that the two emitting tanks vent *exactly* the same
+mass on `crude_column_recovery` as on `crude_column_boiloff`. They do not: they
+agree to **8.7e-11** and **1.2e-10** relative over 6 000 ticks.
+
+The control that settles what that is: add an inert `spare_tank` to
+`crude_column_boiloff.toml` — nothing piped to it, no `vent_to` anywhere on the
+plant — and the same two figures move by **7.1e-11** and **9.8e-10**. So a plant
+with one more node (and the vent the loader gives it) is a different plant at the
+last few bits, and the routing is not what did it. The mechanism is not pinned
+here, deliberately: M9.1's rule is that a write-up fitting a mechanism to one
+observation is a hypothesis with formatting.
+
+What the comparison does establish is that the **emitting** half of the engine is
+indifferent to where its vapour goes, which is the claim gate 1 needs.
+
+#### 7. The `Vessel` refusal needs a plant of its own
+
+Fork 5 refuses a `Vessel` destination, and the obvious test — put a `vessel` on
+the demo and point a `vent_to` at it — is refused for the **wrong reason** with
+the right exit code: a vessel must hold a GAS-phase composition (§3a), and the
+demo's slate is five liquid cuts, so the node cannot be constructed at all. That
+check runs one pass before the vents are built. The shipped test carries a
+minimal two-cut plant with a gas cut so that the vessel is a legal node and fork
+5's refusal is the one that fires.
+
+Same class as M11.1's finding about excluded nodes: **a refusal is only tested if
+the thing it refuses could otherwise have been built.**
+
+#### 8. The comment that predicted its own expiry
+
+`energy::stream_enthalpy_flux`'s doc read "**Not called from the forward solve,
+deliberately.** … A future consumer that condenses a vapour into a holdup (B12)
+is what makes this read inside the engine, and it should read it here." It is now
+called from the forward solve, at exactly that site, and the comment says so
+instead. The emitting end still does not call it — a tank's own boil-off debits
+its inventory through the flash's state change, not through a flux — so the
+function is read exactly once per vent per tick, by the holdup the vapour arrives
+at.
+
+#### 9. The harness corrupted the tree, for the reason already on record
+
+The mutation pass was launched twice by accident, and the second `snapshot()`
+captured a source file with the first run's edit already applied. Two mutations
+in two crates produced the *identical* energy residual to seven figures — 1, 5,
+5b, 6 and 7 all reporting `ΔU = 5.050993e10 J` against `5.226176e10 J` — which is
+arithmetically impossible for edits in different files and is the signature of a
+stale or reinstated mutation. `docs/` already carried the rule ("a mutation
+harness cannot run concurrently"), and the run below holds a lock file and
+verifies every anchor afterwards.
+
+#### The mutation table, measured
+
+Eleven edits, one at a time, against `vapour_recovery_reference`,
+`vapour_recovery_contract`, `boiloff_reference` and `energy_invariants` in
+release. **Four of the note's nine predictions were wrong**, and the two that
+were exactly right are the two the previous milestones had already paid to
+learn.
+
+| # | edit | §16 predicted | measured |
+|---|---|---|---|
+| 1 | receiver calls `enthalpy_flux` (sensible only) | gate 2 only | gates **1, 2 and 4** |
+| 2 | receiver takes `edge_composition_at` (the upwind `x`) | gate 3 only | **gate 3 only ✓** |
+| 3 | the inflow skip left unscoped | gates 1 and 5 | gates **1, 2, 3, 4** and the reversed-vent fixture |
+| 4 | the skip scoped by node kind alone | **inert** | **the same five as (3) — falsified** |
+| 5 | the skip scoped by incidence direction | inert on the demo; fixture or nothing | **the fixture alone ✓** |
+| 5b | the vent's WRITE assumes outward regardless of direction | — (new) | the fixture alone |
+| 6 | `vent_to`'s default becomes the first tank | the corpus, on sixteen plants | **fifteen tests across four binaries** |
+| 7 | a tank that receives a vent gets none of its own | gate 4's upper arm | gates **1, 2, 3, 4** and the cycle gate |
+| 8 | the cycle refusal removed from the loader | gate 6 and its fixture | **the scenario gate alone** |
+| 9 | `stream_enthalpy_flux` called, `latent` stripped at the call site | gate 2 | gates **1, 2 and 4** |
+| 10 | the evaluation order reversed (one tick of lag) | — (new) | gates **1, 2, 3, 4** and the fixture |
+
+**(1) and (9) spread because the arriving enthalpy decides whether the drum
+boils at all.** Dropping `λ` makes gate 2 miss by **3.35e-2 relative** —
+1.75e9 J of 5.2e10 J, seven orders above the `1e-9` bound — but it also leaves
+the drum 45% short of the heat it needs, so it never reaches its own bubble
+point, never re-vents, and gate 1's *reachability control* and gate 4's
+interiority fire alongside. The note's "gate 2 only" treated the term as
+bookkeeping; it is a state variable's forcing.
+
+**(4) is the falsified prediction, and it is the fourth site all over again.**
+"I added a `NodeKind::Tank` test" reads like M12.1's fix and is not it: on this
+plant the *receiver* is a Tank, so scoping by kind alone makes the drum skip its
+own inflow and the edit becomes indistinguishable from (3). It is inert only on a
+plant whose vents all end at an `Atmosphere` — which is the whole corpus before
+M14 and none of it after.
+
+**(8) shows the two call sites are independently defended, which is the right
+answer for one function with two callers.** Removing `holdup_evaluation_order`
+from the loader fires the scenario gate (the file is no longer refused at load)
+and NOT the hand-built fixture, which exercises the same function from
+`Engine::tick` and still refuses. Neither call site is redundant.
+
+**(10) is caught by four gates and NOT by the reorder gate**, which is worth
+saying because the reorder gate is the one that looks like it is about ordering.
+Reversing the evaluation order gives *both* file orders the same one-tick lag, so
+they still agree with each other: the reorder gate defends order-**independence**
+and gates 1–4 defend order-**correctness**. Two different properties that a
+single test cannot cover.
+
+**Gate 5, both trees, in one probe.** Scaling `BoilOff::latent_heat` by 3.7× at
+the construction site only — so the flash fraction keeps its unscaled divisor and
+nothing but the reported field moves — over 3 000 ticks of the demo:
+
+| quantity | unscaled | `latent` × 3.7 | relative |
+|---|---:|---:|---:|
+| `naphtha_tank` temperature | 367.459481301635 K | 367.459481301635 K | **0** |
+| `naphtha_tank` mass | 15 964.694260163327 kg | 15 964.694260163327 kg | **0** |
+| its vent's rate | 5.295078861859 kg/s | 5.295078861859 kg/s | **0** |
+| `recovery_drum` mass | 4 019.408465217293 kg | 694.818881109054 kg | 8.27e-1 |
+| `recovery_drum` temperature | 357.621322109107 K | 408.495928582503 K | 1.42e-1 |
+| its light-naphtha fraction | 0.811344307313 | 0.111670329546 | 8.62e-1 |
+| the drum's own vent | 14.734366483531 kg/s | 28.584476495220 kg/s | 9.40e-1 |
+
+The EMITTING half is bit-identical — M13.1's write-only result, reproduced in
+situ rather than cited — and the RECEIVING half moves by 83% of its inventory
+and 51 K. **That is the before-tree and after-tree halves of the same probe in
+one run**, which is the one time in this project a both-trees perturbation has
+come for free, exactly as §16 gate 5 said it would.
+
+#### What the demo does NOT cover
+
+- **A vent arriving at a tank that is itself above its bubble point when it
+  arrives.** The drum starts 40 K below boiling and is still below it when the
+  first vapour lands at tick 1 210, so the "condense it all, then flash" order of
+  fork 1(d) is exercised in one direction only.
+- **Reverse flow on a vent.** The engine now signs a vent's write by the edge's
+  direction, and the fixture covers a vent *stored* the other way round, but no
+  vent ever carries a negative rate: a flash produces vapour or nothing.
+- **More than one hop.** Every vent on the demo goes tank → drum or tank →
+  atmosphere. A chain of three holdups is what the evaluation order was written
+  for and nothing ships one; the ordering is covered by the reorder gate and by
+  the cycle fixture, not by a chain.

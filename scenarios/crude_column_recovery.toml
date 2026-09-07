@@ -1,0 +1,222 @@
+# M14.1 demo plant: `crude_column_boiloff.toml` with a DRUM and two keys.
+#
+# The pair is meant to be diffed, exactly as `crude_column.toml` and
+# `crude_column_cascade.toml` are, and as `crude_column_cascade.toml` and
+# `crude_column_boiloff.toml` are (docs/DESIGN.md §5, §14 fork 9, §16 fork 7).
+# Same crude, same furnace, same column, same three product tanks at the same
+# three rates. What differs from `crude_column_boiloff.toml`:
+#
+#     + [nodes.recovery_drum]                 a cooled tank, nothing else
+#     + vent_to = "recovery_drum"             on naphtha_tank
+#     + vent_to = "recovery_drum"             on distillate_tank
+#
+# (plus the plant's own name, which must differ because the corpus matches
+# baseline rows by name). No new pipe, no new fidelity key: a vent is graph
+# surgery performed at load, and where it goes is a topology fact rather than a
+# choice of model (§16 fork 6 — there is no seam here, because there is no
+# choice for a model to make).
+#
+# WHAT THE KEYS SAY. `crude_column_boiloff.toml`'s own header calls its plant
+# wrong in exactly this way: "the vapour leaves at y = K·x through a vent to
+# `Atmosphere` with NOTHING DOWNSTREAM OF IT. Also wrong — a real unit condenses
+# that vapour and recovers it." Measured on that plant over 6 000 ticks, the two
+# boiling tanks throw away 6 709.7 kg — 5.80% of the plant's own crude intake —
+# carrying 4.121e9 J, 42.51% of it the latent heat M13 built. This file is where
+# that vapour goes.
+#
+# WHAT THE DRUM DOES. It condenses the arriving vapour ENTIRELY and then boils
+# back off whatever it cannot hold, through its own loader-built vent to
+# atmosphere (§16 fork 1(d)). Partial condensation is therefore the composition
+# of two terms that already existed — the holdup integration and the flash — and
+# no stream is ever part liquid and part vapour at any instant, which is what
+# keeps this plant out of `docs/DEFERRED.md` B3.
+#
+# THE DRUM RE-VENTS AT ITS OWN COMPOSITION, NOT THE SOURCE TANKS'. A recovery
+# drum fractionates: what arrives is the tanks' equilibrium vapour, and what
+# leaves is the drum's. That is the one thing this plant exists to show, and it
+# is why a gate comparing the drum's contents against the emitting tank's at one
+# instant is the discriminating one (M12.1's finding, §16 gate 3).
+#
+# `bottoms_tank` KEEPS THE KEY ABSENT, AND THAT IS DELIBERATE. It never boils —
+# measured at 0.0 kg over 6 000 ticks — so it is this file's own control: a tank
+# whose vent still ends at the atmosphere, on the plant that routes two others.
+# It is what says the `vent_to` default is still the atmosphere and that nothing
+# routes a vent it was not told to.
+
+[meta]
+name = "crude_column_recovery"
+description = "The crude_column_boiloff plant with its two boiling tanks vented into a cooled recovery drum."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+separation = "cascade"
+reactions = "none"
+boiloff = "flash"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[[components]]
+name = "kerosene"
+tb_c = 220.0
+molar_mass_kg_per_mol = 0.170
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2050.0
+
+[[components]]
+name = "diesel"
+tb_c = 300.0
+molar_mass_kg_per_mol = 0.220
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "residue"
+tb_c = 400.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 950.0
+cp_j_per_kg_k = 1900.0
+
+[nodes.crude_source]
+type = "source"
+pressure_bar = 6.0
+temperature_c = 146.5
+composition = { light_naphtha = 0.12, heavy_naphtha = 0.18, kerosene = 0.25, diesel = 0.25, residue = 0.20 }
+
+[nodes.preheater]
+type = "furnace"
+duty_mw = 2.1051
+
+[nodes.column]
+type = "column"
+pressure_bar = 1.6
+draws = [
+    { outlet = "naphtha_tank", stage = 0, draw_ratio = 0.246 },
+    { outlet = "distillate_tank", stage = 5, draw_ratio = 0.554 },
+    { outlet = "bottoms_tank", stage = 8 },
+]
+
+[nodes.column.cascade]
+stages = 8
+feed_stage = 4
+reflux_ratio = 2.0
+
+[nodes.naphtha_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { light_naphtha = 1.0 }
+vent_to = "recovery_drum"
+
+[nodes.distillate_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { kerosene = 1.0 }
+vent_to = "recovery_drum"
+
+# No `vent_to`: this tank never boils, and it is the file's own control for the
+# default (see the header).
+[nodes.bottoms_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { residue = 1.0 }
+
+# THE RECOVERY DRUM, and it is declared AFTER the tanks that vent into it purely
+# because that reads well. File order does not decide the answer: the engine
+# evaluates holdups emitter-before-receiver from the vent topology itself
+# (`PlantGraph::holdup_evaluation_order`), so moving this block above
+# `naphtha_tank` changes no number.
+#
+# `ambient_ua_w_per_k` IS THE CONDENSER, AND THE FIELD IS WEARING THE WRONG
+# NAME. §16 fork 4: a drum with no cooling reaches its bubble point and re-vents
+# everything, so a heat sink is what makes recovery happen at all — and of the
+# three shapes available, `Q = UA·(T_AMB − T_B)` is the only SELF-LIMITING one.
+# It stops at ambient and can never drive the drum toward the sub-zero Kelvin
+# that `energy::checked_temperature` exists to catch, which a declared constant
+# duty would do the moment the feed stopped. The cost is honesty about the
+# field: 3.5e4 W/K is a condenser's UA, in a slot documented as a tank's
+# insulation. Right physics, wrong name, and a deferred row rather than a thing
+# fixed here.
+#
+# THE VALUE IS SIZED TO PUT THE RECOVERY INTERIOR — neither 0% nor 100% — the
+# same requirement M10.1's vent had before either of its saturation arms was
+# reachable. First-order: ~16.9 kg/s arriving at ~250 kJ/kg is a 4.2 MW latent
+# load, and a drum near 353 K against 293.15 K ambient has ~60 K of driving
+# force, so the half-recovery point is of order 3.5e4 W/K. That is an estimate
+# the gates MEASURE rather than trust.
+#
+# IT MUST NOT BOIL AT TICK 0. Nothing arrives before tick ~1 210 (when the
+# naphtha tank first reaches its own bubble point), and a drum that vented
+# vapour it had never received would be a plant that looks like it works. It
+# starts at 40 °C holding light naphtha, whose bubble point at one atmosphere is
+# ~354 K, so it sits ~40 K below boiling with no inflow.
+#
+# IT MUST NOT FILL TO ITS HEIGHT. It can receive at most 6 709.7 kg; at ~700
+# kg/m³ over 8 m² that is 1.2 m on top of the 0.5 m it starts with. Twelve
+# metres is margin, not a coincidence.
+[nodes.recovery_drum]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+ambient_ua_w_per_k = 35000.0
+composition = { light_naphtha = 1.0 }
+
+[[pipes]]
+name = "crude_line"
+from = "crude_source"
+to = "preheater"
+length_m = 30.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "hot_feed_line"
+from = "preheater"
+to = "column"
+length_m = 15.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "naphtha_draw"
+from = "column"
+to = "naphtha_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "distillate_draw"
+from = "column"
+to = "distillate_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "bottoms_draw"
+from = "column"
+to = "bottoms_tank"
+length_m = 20.0
+diameter_m = 0.12

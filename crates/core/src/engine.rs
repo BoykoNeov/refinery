@@ -219,7 +219,7 @@ impl Engine {
                     // holdup's own enthalpy balance every tick (M12), so an area
                     // stored here would be a number no solver reads — the same
                     // defect this command was found to have in M6.0.
-                    LeakRole::BoilOffVent => Err(SimError::InvalidCommand(format!(
+                    LeakRole::BoilOffVent { .. } => Err(SimError::InvalidCommand(format!(
                         "'{}' ({edge:?}) is a boil-off vent, not a pipe that can be \n                         punctured. It exists because this plant selects \n                         `[fidelity] boiloff = \"flash\"`, and its flow is prescribed \n                         by the tank's enthalpy balance rather than by any area \n                         (docs/DESIGN.md §14)",
                         self.graph.pipe(edge).name
                     ))),
@@ -581,7 +581,15 @@ impl Engine {
         //    — invisible while every `ambient_ua` is 0, and a silent enthalpy
         //    error the moment one is not. That is what makes the discrete
         //    balance close to round-off (I6).
-        for nid in self.graph.node_ids().collect::<Vec<_>>() {
+        // EMITTER-FIRST over the boil-off vents, `node_ids()` order on every
+        // plant that has none between two holdups (M14, docs/DESIGN.md §16
+        // fork 3). A vent's stream is written at the END of its emitting tank's
+        // iteration below; a tank RECEIVING that vent reads it at the top of its
+        // own, so the two have to happen in that order or the receiver is one
+        // tick behind and `ṁ_v·dt` of mass sits in flight on every tick. Every
+        // other edge in this loop debits and credits its endpoints from the same
+        // flow inside one tick, and the vent is the only one that could not.
+        for nid in self.graph.holdup_evaluation_order()? {
             // Through `heat_load`, not off `heat_input` directly: that function
             // is the single owner of "how much heat enters this node", summing
             // the fire and the unit's own terms with the signs the unit implies.
@@ -613,13 +621,68 @@ impl Engine {
             let mut inflow_mass_rate = 0.0; // [kg/s]
             let mut outflow_mass_rate = 0.0; // [kg/s], positive magnitude
             for (eid, _other, incoming) in self.graph.incident(nid) {
-                // The vent is NOT a flux into this balance, and counting it here
-                // would remove the vapour twice: the boil-off below debits the
-                // inventory directly, and the vent edge exists so that an
-                // EXTERNAL mass balance (I1, a frontend, the corpus) sees the
-                // mass leave by an accounted path rather than vanish. Its flow
-                // is also last tick's at this point in the tick.
-                if self.graph.pipe(eid).leak.is_boiloff_vent() {
+                // A boil-off vent is two different things at its two ends, and
+                // which end this loop is standing at is the whole question
+                // (M14, docs/DESIGN.md §16 fork 3).
+                //
+                // At the EMITTER it is not a flux into this balance, and
+                // counting it would remove the vapour twice: the boil-off below
+                // debits the inventory directly, and the vent edge exists so
+                // that an EXTERNAL mass balance (I1, a frontend, the corpus)
+                // sees the mass leave by an accounted path rather than vanish.
+                // Its flow is also last tick's at this point in the tick.
+                //
+                // At the RECEIVER it is an ordinary inflow of condensate — and
+                // it is read STRAIGHT OFF THE STREAM rather than through
+                // `stream_cp_at` / `edge_temperature_at` / `edge_composition_at`
+                // like every other edge. All three of those resolve the UPWIND
+                // NODE, which on a vent is the emitting tank: they would hand
+                // back the tank's liquid `x` at the tank's own temperature,
+                // which is precisely the fork-2 defect M12.1 exists to avoid.
+                // The emitter wrote flow, composition, temperature and `latent`
+                // onto this edge whole, at the state the vapour actually left
+                // in, and the four travel together because they describe one
+                // stream.
+                //
+                // Skipping "any vent" instead of "the vent I emit" is what
+                // M12.1 paid for forty lines below, at `engine.rs`'s
+                // vent-finding site: a property of the EDGE used as a property
+                // of the ENDPOINT.
+                let vent_emitter = self.graph.pipe(eid).leak.boiloff_vent_emitter();
+                if let Some(emitter) = vent_emitter {
+                    if emitter == nid {
+                        continue;
+                    }
+                    let stream = &self.graph.pipe(eid).stream;
+                    let flow = stream.mass_flow.value();
+                    let into_node = if incoming { flow } else { -flow };
+                    // The VAPOUR's own composition, not the upwind node's and
+                    // not this holdup's: `y = K·x` is what the edge carries and
+                    // what `mixture_cp` must be taken over. The same expression
+                    // I6b's boundary term uses, so the balance and the engine
+                    // charge the arriving stream identically.
+                    let cp = stream.composition.mixture_cp(&self.slate);
+                    // `stream_enthalpy_flux`, NOT `enthalpy_flux` — the arriving
+                    // vapour's enthalpy is `cp·(T − T_REF) + λ` on this engine's
+                    // saturated-liquid datum, and dropping `λ` here is B16's
+                    // defect mirrored onto the receiving end (docs/DESIGN.md
+                    // §16 fork 1). It is signed the same way the sensible term
+                    // below is, because the flux is linear in the stream's own
+                    // flow and `incoming` is what says which way that points.
+                    let flux = energy::stream_enthalpy_flux(stream, cp).value();
+                    net_mass += into_node;
+                    net_enthalpy += if incoming { flux } else { -flux };
+                    if into_node > 0.0 {
+                        let arriving = stream.composition.clone();
+                        for (rate, fraction) in
+                            inflow_component_rate.iter_mut().zip(arriving.fractions())
+                        {
+                            *rate += into_node * fraction;
+                        }
+                        inflow_mass_rate += into_node;
+                    } else {
+                        outflow_mass_rate -= into_node;
+                    }
                     continue;
                 }
                 let stream = &self.graph.pipe(eid).stream;
@@ -684,23 +747,30 @@ impl Engine {
             // tank to an atmosphere node is an ordinary pressure-driven pipe and
             // must stay one.
             //
-            // **Restricted to the holdup END, and that is not a refinement.**
-            // Every vent on the plant is also incident to the ATMOSPHERE node,
-            // and this loop runs over every node — so without the `Tank` test
-            // the atmosphere's own iteration finds the first vent in its
-            // incident list, has no boil-off of its own, and writes a zero over
-            // a rate a tank had already published. Measured before it was
-            // understood: the tank's inventory fell by 2 539 kg over 6 000 ticks
-            // while its vent reported 0.0 kg/s on every one of them, so the mass
-            // balance the vent exists to close was the thing being broken.
+            // **Restricted to the vent this node EMITS, and that is not a
+            // refinement.** Every vent on the plant is also incident to its
+            // destination, and this loop runs over every node — so a node that
+            // merely receives a vent must not find it here, have no boil-off of
+            // its own, and write a zero over a rate the emitter published.
+            // Measured before it was understood (M12.1): the tank's inventory
+            // fell by 2 539 kg over 6 000 ticks while its vent reported 0.0 kg/s
+            // on every one of them, so the mass balance the vent exists to close
+            // was the thing being broken.
+            //
+            // **M12.1's `NodeKind::Tank` test was the right fix for a plant
+            // whose vents all end at an `Atmosphere`, and it is NOT the fix
+            // here** (M14, docs/DESIGN.md §16 fork 3). It is loop-invariant — it
+            // asks about `nid`, never about the edge — so it reduces to "I am a
+            // Tank and this is a vent", which on a recovery drum is satisfied by
+            // the vent of every tank feeding it. `.find` would return the first
+            // of those in edge order and the drum would publish its own boil-off
+            // onto a source tank's edge. Ownership is the property that was
+            // meant all along, and `boiloff_vent_emitter` is where it lives.
             let vent = self
                 .graph
                 .incident(nid)
                 .into_iter()
-                .find(|(eid, _, _)| {
-                    self.graph.pipe(*eid).leak.is_boiloff_vent()
-                        && matches!(self.graph.node(nid).kind, NodeKind::Tank(_))
-                })
+                .find(|(eid, _, _)| self.graph.pipe(*eid).leak.boiloff_vent_emitter() == Some(nid))
                 .map(|(eid, _, _)| eid);
             // What the vent carries this tick: a rate, the equilibrium vapour,
             // and the temperature it left at. `None` while nothing boils, which
@@ -982,8 +1052,21 @@ impl Engine {
                         (flow, composition, temperature, Some(latent))
                     },
                 );
+                // **Signed by the edge's own direction, not assumed outward.**
+                // `build_boiloff_vents` stores every vent emitter → destination,
+                // so this is `+rate` on every plant in the corpus — but the
+                // ownership fix above makes a vent stored the other way round a
+                // representable graph, and its receiver reads this flow through
+                // the same `if incoming` rule every ordinary edge uses. Writing
+                // an unconditional `+rate` would make that fixture move mass
+                // backwards (docs/DESIGN.md §16 fork 3, mutation 5).
+                let outward = self.graph.endpoints(eid).0 == nid;
                 let pipe = self.graph.pipe_mut(eid);
-                pipe.stream.mass_flow = flow;
+                pipe.stream.mass_flow = if outward {
+                    flow
+                } else {
+                    KgPerSec(-flow.value())
+                };
                 pipe.stream.composition = composition;
                 pipe.stream.temperature = temperature;
                 pipe.stream.latent = latent;
@@ -991,14 +1074,15 @@ impl Engine {
                 // any reader of `edge_mass_flow` — a mass balance, a frontend,
                 // the snapshot's dissipation lookup — must see the prescribed
                 // flow and not the solver's placeholder zero.
-                solution.edge_mass_flow.insert(eid, flow.value());
+                let signed = self.graph.pipe(eid).stream.mass_flow.value();
+                solution.edge_mass_flow.insert(eid, signed);
             } else if vented.is_some() {
                 // A model produced a boil-off on a holdup with nowhere to vent
                 // it. Refused rather than dropped: dropping it is the bare
                 // decrement fork 4 rejects, and it would break I1 on a plant
                 // that looks fine.
                 return Err(SimError::Numerical(format!(
-                    "tank '{node_name}' boiled off vapour but has no vent edge to                      `Atmosphere`. The loader builds one per tank when                      `[fidelity] boiloff` selects a model that can boil; a graph built                      by hand must do the same (docs/DESIGN.md §14 fork 4)"
+                    "tank '{node_name}' boiled off vapour but owns no vent edge. The loader                      builds one per tank — to the plant's `Atmosphere` by default, or to                      whatever that tank's `vent_to` names — when `[fidelity] boiloff`                      selects a model that can boil; a graph built by hand must do the same                      (docs/DESIGN.md §14 fork 4, §16 fork 2)"
                 )));
             }
         }
@@ -1338,7 +1422,9 @@ impl Engine {
                         // boil-off vent is ordinary operation of a plant that
                         // declares `boiloff = "flash"`. Its flow is on the vent
                         // EDGE, where every other prescribed flow is read.
-                        LeakRole::None | LeakRole::Orifice { .. } | LeakRole::BoilOffVent => 0.0,
+                        LeakRole::None
+                        | LeakRole::Orifice { .. }
+                        | LeakRole::BoilOffVent { .. } => 0.0,
                     },
                 }
             })

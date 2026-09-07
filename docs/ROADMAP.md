@@ -5374,3 +5374,126 @@ half M13.1 has already taken; the fork-5 refusals with the cycle one shown
 reachable by a fixture; and **all seventeen existing plants byte-identical on
 both fidelities** — a claim M13 could not make for the whole corpus and this
 milestone can, because it publishes no new field.
+
+### M14.1 — The building slice — **LANDED** 2026-09-07
+
+What shipped: `LeakRole::BoilOffVent { emitter }` and
+`PlantGraph::boiloff_vent_emitter`, `PlantGraph::holdup_evaluation_order`, the
+receiver branch in `Engine::tick`'s holdup inflow loop, the ownership scoping of
+the vent-finding site, a `vent_to` key on the `tank` node,
+`resolve_vent_destination` with fork 5's fourteen-variant enumeration,
+`scenarios/crude_column_recovery.toml`, nine gates and two hand-built fixtures.
+The design note's own record is DESIGN §16, "Corrections from building it".
+**Nine things to know.**
+
+**The prediction the milestone was staked on HELD, and for the whole corpus.**
+All **seventeen** existing plants are byte-identical on **both** fidelities with
+no solver iteration count moved, against a baseline recorded from `HEAD` in a
+separate worktree. M13 could not say that; this slice can, because it publishes
+no new field and `vent_to` is absent from every existing file. The sub-prediction
+held too — the atmosphere's iteration does stop skipping vents, and nothing reads
+what it computes. `traits.rs` is untouched (fork 6 was right that there is no
+seam) and `schema.rs` gained exactly one optional field.
+
+**There is a FOURTH receiver-side site, and it is the one the note quotes as its
+own precedent.** `engine.rs:701`'s vent-finding predicate tests
+`matches!(self.graph.node(nid).kind, NodeKind::Tank(_))` — **loop-invariant**, a
+question about the node and never about the edge — so on a recovery drum it
+reduces to "I am a Tank and this is a vent" and `.find` returns the first vent in
+the drum's incidence list, which belongs to a source tank. The drum would have
+published its own boil-off onto `naphtha_tank`'s edge and written that flow over
+the rate the tank published moments earlier: **M12.1's 2 539 kg bug, at the site
+whose comment records paying for it.** M12.1's `NodeKind::Tank` test was the
+right fix while every vent ended at an `Atmosphere` and stops being one the
+moment both endpoints are holdups. Correspondingly, `engine.rs:1036` — which the
+note marks for work — is **correct and stays**: its skip is what keeps the
+publish sweep from overwriting `y = K·x` with the liquid `x`.
+
+**Ownership is STORED rather than derived, which turns fork 3's tripwire into a
+gate.** `LeakRole::BoilOffVent` carries the emitting `NodeId`. The note names the
+trap ("right today and wrong the moment a vent is ever stored the other way
+round") and proposes to defend a convention with a fixture; storing the emitter
+makes a reversed vent a *correct* graph instead, and
+`a_vent_stored_the_other_way_round_moves_the_same_mass` is then a real
+assertion. The emitter's write became direction-aware to match, which is its own
+named mutation and is inert on every shipped plant.
+
+**The evaluation order is machinery the note did not name, and the argument for
+it is gate 1's tolerance.** A vent's stream is written at the END of its
+emitter's iteration and read at the TOP of its receiver's, so an emitter iterated
+second leaves `ṁ_v·dt` of mass in flight on every tick — about 1.69 kg against
+the run's 6 709.7 kg, a systematic 2.5e-4 that gate 1's bound would have had to
+swallow. `PlantGraph::holdup_evaluation_order` is a stable Kahn sort constrained
+only by **tank → tank** vents, so every plant written before M14 has an empty
+constraint set and gets `node_ids()` order by construction — which is what makes
+the byte-identity claim free rather than measured. **It also re-premises fork 5's
+cycle refusal**: the note's reason is "a cycle makes the answer depend on node
+order", and the sharper one is that no order exists at all.
+
+**Gate 3 as the note words it is falsified by the CORRECT engine.** "The drum's
+contents are richer in the light cut than the emitting tank's" points the wrong
+way here: the drum holds 0.2614 light naphtha and `naphtha_tank` holds 0.4971,
+because the drum takes vapour from two tanks and the heavier carries 2.3× the
+flow. The reference that works is the flow-weighted mix of ALL the emitting
+liquids — 0.1523 — against which the drum is **1.72×** richer and **44×** leaner
+in the heaviest cut. A gate written against one member of a set can be falsified
+by the set.
+
+**Fork 4's argument for the condenser is FALSE in its stated mechanism.** The
+note says an uncooled drum "reaches its bubble point and re-vents everything: at
+steady state it recovers nothing". Measured: `UA = 0` recovers **20.72%** of the
+arriving mass over the run, because the drum **self-fractionates into a heavy
+pot** — it boils the light material back off, its own bubble point climbs as what
+stays gets heavier, and by tick 6 000 it has stopped re-venting altogether at
+435.2 K. The shipped `UA = 3.5e4 W/K` recovers **42.52%** over the run and holds
+**49.87%** at tick 6 000; `1e5` recovers 100%. So the knob discriminates, which
+is what M7.1's `smearing_k` rule demands — but the case for it is "otherwise half
+as much, and what is kept is the bottom of the barrel", not "otherwise nothing".
+**Recovery is also not monotone in `UA` at the low end** (20.72 → 17.35 → 23.75 →
+42.52 → 100), because cooling retains mass and what is retained moves the drum's
+own bubble point.
+
+**Adding an inert node to a plant is not bit-neutral, and it took a control to
+say so.** Gate 1's first draft asserted the two emitting tanks vent *exactly* the
+same mass here as on `crude_column_boiloff`; they agree to 8.7e-11 and 1.2e-10.
+Adding an inert `spare_tank` to `crude_column_boiloff.toml` — nothing piped to
+it, no `vent_to` anywhere — moves the same two figures by 7.1e-11 and 9.8e-10. A
+plant with one more node is a different plant at the last few bits; the mechanism
+is deliberately not pinned (M9.1's rule). What the comparison does establish is
+that the emitting half of the engine is indifferent to where its vapour goes.
+
+**The `Vessel` refusal needed a plant of its own**, and finding that out is the
+point: a vessel must hold a gas-phase composition (§3a) and the demo's slate is
+five liquid cuts, so putting one on the demo is refused one pass earlier for the
+wrong reason with the right exit code. A refusal is only tested if the thing it
+refuses could otherwise have been built — M11.1's shape again.
+
+**Four of the note's nine mutation predictions were wrong, and the two that were
+exactly right were already paid for.** (2), the receiver reading the upwind
+node's liquid `x`, is caught by gate 3 and nothing else — M12.1's finding,
+confirmed. (5), scoping by incidence direction, is inert on the demo and caught
+by the hand-built fixture alone, exactly as fork 3 said. What was wrong: (1) and
+(9), dropping the latent term, spread to gates 1 and 4 as well as 2, because the
+arriving enthalpy is what decides whether the drum ever boils — the note treated
+`λ` as bookkeeping and it is a state variable's forcing. (4), "the skip scoped by
+node kind alone", was predicted **inert** and is identical to (3): on this plant
+the RECEIVER is a Tank, so scoping by kind makes the drum skip its own inflow. It
+is inert only on a plant whose vents all end at an `Atmosphere`, which is the
+whole corpus before M14 and none of it after. And (8), removing the cycle refusal
+from the loader, fires the scenario gate and NOT the fixture — the two callers of
+one function are independently defended, which is the right answer.
+
+**Gate 5 came for free, both trees in one probe, as fork 5 predicted it would.**
+Scaling `BoilOff::latent_heat` by 3.7× at the construction site only — M13.1's
+own write-only probe — over 3 000 ticks: the emitting `naphtha_tank`'s
+temperature, mass and vent rate are **bit-identical**, and the receiving drum's
+mass falls 4 019.4 → 694.8 kg, its temperature rises 357.6 → 408.5 K, its light
+fraction falls 0.811 → 0.112 and its own vent nearly doubles. The same edit that
+moved nothing before this milestone now moves only the receiver.
+
+**The mutation harness corrupted the tree, for the reason already on record.** It
+was launched twice by accident and the second snapshot captured a file with the
+first run's edit live; five mutations across two crates then reported the
+*identical* energy residual to seven figures, which is arithmetically impossible
+and is the signature of a reinstated edit. The rule was already written down. The
+shipped pass holds a lock and verifies every anchor afterwards.

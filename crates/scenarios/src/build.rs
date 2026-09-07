@@ -125,7 +125,24 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // `validate_topology`, so the vents are part of the plant it validates
     // rather than edges that appear behind its back.
     if vents_holdups {
-        build_boiloff_vents(&mut graph, slate.len())?;
+        build_boiloff_vents(&mut graph, slate.len(), &scenario.nodes)?;
+    } else {
+        // `vent_to` names where a vent GOES, and this plant builds none. Refused
+        // rather than ignored, for `PuncturePipe`'s reason (M6.0): a key nothing
+        // reads is a file that looks configured and is not. It cannot be refused
+        // inside `build_boiloff_vents`, which is exactly the function that is not
+        // called here.
+        for (name, def) in &scenario.nodes {
+            if let NodeDef::Tank {
+                vent_to: Some(destination),
+                ..
+            } = def
+            {
+                return Err(SimError::Scenario(format!(
+                    "tank '{name}' declares vent_to = '{destination}', but this plant's                      `[fidelity] boiloff` selects a model that never boils, so it has no                      vent edges at all for the key to route. Select a model that vents, or                      drop the key (docs/DESIGN.md §16 fork 2)"
+                )));
+            }
+        }
     }
 
     // Step 3: validate topology at load — a clear error here beats solve-time
@@ -249,7 +266,11 @@ fn select_boiloff(name: &str) -> Result<(Box<dyn BoilOffModel>, bool), SimError>
 /// plant may already have one (`leaking_line.toml` does); two would be two names
 /// for the outside world, and the vapour would leave through whichever the
 /// loader happened to pick.
-fn build_boiloff_vents(graph: &mut PlantGraph, components: usize) -> Result<(), SimError> {
+fn build_boiloff_vents(
+    graph: &mut PlantGraph,
+    components: usize,
+    nodes: &indexmap::IndexMap<String, NodeDef>,
+) -> Result<(), SimError> {
     let tanks: Vec<NodeId> = graph
         .node_ids()
         .filter(|id| matches!(graph.node(*id).kind, NodeKind::Tank(_)))
@@ -258,6 +279,22 @@ fn build_boiloff_vents(graph: &mut PlantGraph, components: usize) -> Result<(), 
         // A plant with no holdup selects a boil-off model and gets no vents,
         // which is not an error: the key says what a holdup WOULD do.
         return Ok(());
+    }
+
+    // Every tank that names a destination, keyed by the tank's node id. Built
+    // before the atmosphere is, because a plant on which EVERY tank routes its
+    // vent elsewhere still needs one: the receiving drum has a vent of its own,
+    // and the file that declared the drum did not have to say where it goes.
+    let mut declared: BTreeMap<NodeId, &str> = BTreeMap::new();
+    for tank in &tanks {
+        let name = graph.node(*tank).name.as_str();
+        if let Some(NodeDef::Tank {
+            vent_to: Some(destination),
+            ..
+        }) = nodes.get(name)
+        {
+            declared.insert(*tank, destination.as_str());
+        }
     }
 
     let existing_atmosphere = graph
@@ -281,6 +318,12 @@ fn build_boiloff_vents(graph: &mut PlantGraph, components: usize) -> Result<(), 
     };
 
     for tank in tanks {
+        // Where this tank's vapour goes: the atmosphere above by default, or
+        // whatever `vent_to` named (M14, docs/DESIGN.md §16 forks 2 and 5).
+        let destination = match declared.get(&tank) {
+            None => atmosphere,
+            Some(name) => resolve_vent_destination(graph, tank, name)?,
+        };
         let name = format!("{}__boiloff_vent", graph.node(tank).name);
         if graph.edge_ids().any(|eid| graph.pipe(eid).name == name) {
             return Err(SimError::Scenario(format!(
@@ -298,7 +341,7 @@ fn build_boiloff_vents(graph: &mut PlantGraph, components: usize) -> Result<(), 
         // the engine's write needs no sign flip.
         graph.add_pipe(
             tank,
-            atmosphere,
+            destination,
             Pipe {
                 name,
                 length: Meter(0.0),
@@ -306,12 +349,91 @@ fn build_boiloff_vents(graph: &mut PlantGraph, components: usize) -> Result<(), 
                 friction_factor: 0.0,
                 elevation_change: Meter(0.0),
                 ambient_ua: WattPerKelvin(0.0),
-                leak: LeakRole::BoilOffVent,
+                leak: LeakRole::BoilOffVent { emitter: tank },
                 stream: Stream::stagnant(components, T_AMBIENT, P_ATM),
             },
         );
     }
+    // The cycle refusal, and it has ONE owner rather than a copy here: the
+    // engine needs an emitter-before-receiver evaluation order every tick, and a
+    // cycle is exactly the graph for which no such order exists
+    // (`PlantGraph::holdup_evaluation_order`, docs/DESIGN.md §16 fork 5). Asking
+    // for it at LOAD is what turns "the first tick fails" into "the file is
+    // refused", and the two answers cannot disagree because they are one
+    // function.
+    graph.holdup_evaluation_order()?;
     Ok(())
+}
+
+/// Resolve a tank's `vent_to` to a node that may receive its vapour
+/// (docs/DESIGN.md §16 fork 5).
+///
+/// Two kinds are admitted and each of the rest is refused **for its own
+/// reason**, because M11 fork 4 is the precedent: a trigger naming four node
+/// kinds from memory was falsified by the first slice that enumerated the type,
+/// and `NodeKind` has fourteen variants. The match below is exhaustive, so a
+/// fifteenth cannot be admitted by omission.
+fn resolve_vent_destination(
+    graph: &PlantGraph,
+    tank: NodeId,
+    destination: &str,
+) -> Result<NodeId, SimError> {
+    let tank_name = graph.node(tank).name.clone();
+    let target = graph.find_node(destination).ok_or_else(|| {
+        SimError::Scenario(format!(
+            "tank '{tank_name}' declares vent_to = '{destination}', which is not a node in \
+             this plant"
+        ))
+    })?;
+    if target == tank {
+        return Err(SimError::Scenario(format!(
+            "tank '{tank_name}' declares vent_to = '{destination}', which is itself. A vent \
+             carries vapour OUT of the holdup that boiled it; a self-loop would hand the \
+             vapour straight back to the inventory the flash took it from, and the tank \
+             would boil for ever at no cost"
+        )));
+    }
+    let reason = match &graph.node(target).kind {
+        // The two admitted kinds. An `Atmosphere` is today's behaviour written
+        // out rather than left to the default; a `Tank` is the recovery drum,
+        // and it is the only holdup in this engine whose state is an inventory
+        // of LIQUID, which is what a condensate is.
+        NodeKind::Atmosphere | NodeKind::Tank(_) => return Ok(target),
+        NodeKind::Vessel(_) => {
+            "a gas holdup whose state is a pressure, so an arriving condensate has nowhere \
+             to be. That is the pressurised two-phase holdup (`docs/DEFERRED.md` B11)"
+        }
+        NodeKind::Sink { .. } => {
+            "a sink, whose composition is DECLARED. Routing a computed vapour into a \
+             declared composition is the `Atmosphere` back-feed problem under another name; \
+             and a flare is combustion (`docs/DEFERRED.md` B7), not a sink"
+        }
+        NodeKind::Source { .. } => "a source: pinned, and upstream by definition",
+        NodeKind::Column { .. } => {
+            "a column, which has its own separation and its own inlet contract. A vent is \
+             not a feed, and a cascade's saturated-liquid feed guard would refuse it anyway"
+        }
+        NodeKind::Reactor { .. } => {
+            "a reactor: a zero-volume node with an IMPOSED outlet temperature, so a stream              arriving there loses the state that says how much of it can condense, and the              next paragraph's arithmetic applies as well"
+        }
+        NodeKind::Junction
+        | NodeKind::Pump { .. }
+        | NodeKind::Valve { .. }
+        | NodeKind::ReliefValve { .. }
+        | NodeKind::Furnace { .. }
+        | NodeKind::Cooler { .. }
+        | NodeKind::HeatExchanger => {
+            "a zero-volume node. The condensate would have to leave again in the same tick \
+             by a pressure-driven edge, but a vent's flow is PRESCRIBED and the hydraulic \
+             solve cannot see it, so the node's mass balance would carry an inflow nothing \
+             balances. Not unsupported — arithmetically inconsistent"
+        }
+    };
+    Err(SimError::Scenario(format!(
+        "tank '{tank_name}' declares vent_to = '{destination}', which is {reason}. A \
+         boil-off vent may end at an `atmosphere` (the default) or at another `tank` \
+         (docs/DESIGN.md §16 fork 5)"
+    )))
 }
 
 /// Build the canonical slate from the `[[components]]` table, in file order.
@@ -881,6 +1003,11 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             initial_level_m,
             temperature_c,
             ambient_ua_w_per_k,
+            // Read by `build_boiloff_vents`, which runs after every node exists
+            // so a destination declared later in the file resolves — the same
+            // reason a column draw and an exchanger coupling are resolved in
+            // their own passes rather than here.
+            vent_to: _,
             composition,
         } => {
             let area = SquareMeter(*area_m2);

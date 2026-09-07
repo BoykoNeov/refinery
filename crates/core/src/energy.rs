@@ -96,12 +96,19 @@ pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> W
 /// copy published on the stream — `stream_cp_at` is what settles that, and
 /// the lagged copy is a reader this project has already been bitten by.
 ///
-/// **Not called from the forward solve, deliberately.** Today the only stream
-/// carrying a latent term is a boil-off vent, which the holdup loop and the
-/// transport sweep both skip and whose flow is prescribed, so the term is
-/// write-only inside a tick and its arrival moved no published number. A future
-/// consumer that condenses a vapour into a holdup (`docs/DEFERRED.md` B12) is
-/// what makes this read inside the engine, and it should read it here.
+/// **Called from the forward solve since M14, and the comment that stood here
+/// predicted exactly that.** Through M13 the only stream carrying a latent term
+/// was a boil-off vent that every pass skipped, so the term was write-only
+/// inside a tick and its arrival moved no published number; the note said "a
+/// future consumer that condenses a vapour into a holdup (`docs/DEFERRED.md`
+/// B12) is what makes this read inside the engine, and it should read it here."
+/// That consumer is `Engine::tick`'s holdup inflow loop, at the RECEIVING end of
+/// a vent routed by `vent_to` (docs/DESIGN.md §16 fork 1), and it reads it here.
+///
+/// The emitting end still does not: a tank's own boil-off debits its inventory
+/// through the flash's state change, not through a flux. So this function is
+/// read exactly once per vent per tick, by the holdup the vapour arrives at, and
+/// `enthalpy_flux` above remains what every liquid path calls.
 #[inline]
 pub fn stream_enthalpy_flux(stream: &crate::stream::Stream, cp: JPerKgK) -> Watt {
     let latent = stream.latent.map_or(0.0, |l| l.value());
