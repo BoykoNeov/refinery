@@ -180,6 +180,61 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M13 is OPEN, and its scope is the LATENT HEAT of a boil-off —
+`docs/DEFERRED.md` row B16.** M12.1 left the vent carrying its vapour's sensible
+enthalpy and nothing else, so `m_v·Δh̄_vap` appears nowhere and every flashing
+plant's energy books show a sink: **7.6084e8 J over 6 000 ticks, 13.9% of what
+the naphtha draw delivered, 1.54 MW at tick 6 000.** **M13.0 landed 2026-09-07** —
+the design note, DESIGN §15, seven forks, four gates, eight mutations, no code.
+
+**Nothing was past its trigger, so this is M11's licence (a decision), not M12's
+(an event arrived) — and the milestone fires its own trigger.** B16's trigger is
+"a consumer of a flashing plant's external energy balance" and it names three;
+M13's first artefact is one of them. That is written into the note's first
+paragraph rather than left to be noticed. What argues for *now*: the hole is
+measured, **no energy invariant in this workspace has ever run on a plant that
+boils** (I6 and the energy proptests all build with `NoBoilOff`), and B12
+(condensation) and B13 (where the vapour goes) both need the term to exist.
+
+**The gap is an IDENTITY, derived by hand rather than inherited from M12.1's
+measurement.** With `U = m·c̄p·(T − T_REF)` and mixture `cp` linear in the
+component masses, a flash drops the holdup by
+`m_v·(Δh̄_vap + c̄p_v·(T_bub − T_REF))` while the vent carries only the second
+term — **in both branches of the model**, including the capped one. And the
+sentence that was actually wrong is the datum: **`h = cp·(T − T_REF)` is the
+datum for a LIQUID**, stated without that qualifier in §4a and `energy.rs`; a
+vapour on it is a liquid plus its heat of vaporisation. Same class as M5.3's
+`u = cv·T − cp·T_REF`.
+
+**The forks all agree on the number and disagree about WHO CAN SEE IT.** Chosen:
+**`Stream::latent: Option<JPerKg>`** — self-describing for energy, published for
+free because `EdgeSnapshot::stream` is a `Stream`, and where B12 will look. A
+node duty beside `column_duty` is rejected on **location** (a condenser duty is
+heat conducted into cooling water; this leaves with material through an edge, and
+B13 routing a vent to a flare would strand the duty on the tank), an edge-snapshot
+field on the **mirror** (B12's condenser is an in-engine consumer). **It is not
+B3** — one scalar on a single-phase vapour stream, not a stream that is part
+liquid and part vapour — and spelling it `phase: Phase` is refused because the
+vent's cuts are *declared* liquid, so the marker would contradict
+`Composition::phase`. A consequence: **`is_boiloff_vent()` leaves the energy path**
+rather than acquiring a comment naming its own expiry.
+
+**Three things the building slice must not skip.** Gate 1 (the boundary balance
+closing from published state) does **not** anchor `Δh̄_vap`: halve
+`TroutonThermo::dh_vap` and the flash boils twice the mass at half the latent
+heat, closing the balance to the last digit — so the slice owes a reference test
+for `dh_vap`, which **the workspace does not have today**. And the note's most
+load-bearing prediction is that the vent's enthalpy is **write-only in the forward
+solve**, which would keep all seventeen plants byte-identical and means **"the
+numbers moved" cannot be a gate here** — the probe for it is a corpus baseline
+either side *and* an arbitrary perturbation of `boil.latent_heat` showing nothing
+but `latent` itself moves. And **gate 1's tolerance must be measured before it is
+sized**: the two candidate scales are about eight orders apart (float noise if the
+invariant restates the engine's discrete rule — the flash *writes* the temperature
+rather than integrating to it — versus explicit Euler's truncation if it states
+the continuous first law), and a truncation-sized bound over a float-noise
+residual is a gate that cannot fail.
+
 **M12 is CLOSED (2026-09-07), and its scope was the two-phase HOLDUP — a quarter
 of `docs/DEFERRED.md` B3.** It is the first milestone opened because the ledger
 said a hurdle had arrived: B3 was the only row on the wrong side of its own

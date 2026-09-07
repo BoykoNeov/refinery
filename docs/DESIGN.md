@@ -8138,3 +8138,406 @@ cap is **always ≤ 1** and the clamp above it can never bind. Removing it fails
 nothing, on any plant, ever. It is kept, with this paragraph, because it states
 fork 3's specification where a reader will look for it; the honest label is
 "subsumed", not "defensive".
+
+## 15. The latent heat of a boil-off (M13) — specified before building
+
+### What fired, and the licence this milestone is taken under
+
+**Nothing fired.** `docs/DEFERRED.md` records that nothing in the table is past
+its trigger as of 2026-09-07, and B16 is no exception: its trigger names *a
+consumer of a flashing plant's external energy balance* — an energy invariant
+evaluated on a plant declaring `boiloff = "flash"`, a frontend that displays a
+plant-wide duty, or B12/B13 landing — and it says in its own text that the
+corpus running `crude_column_boiloff` does **not** satisfy it, because the corpus
+audits reproducibility rather than energy.
+
+So this is an **M11-shaped milestone: a decision, not an event.** And the
+circularity has to be named rather than left to be noticed, because it is the
+whole of the licence: **the trigger is fired by the first artefact this milestone
+builds.** M13 writes the energy invariant on a boiling plant, that invariant is
+one of the three consumers B16's trigger enumerates, and it fails by a measured
+7.6084e8 J the moment it exists. Written down plainly: nobody was blocked, and
+the reason to do it now is that M12.1 left a *measured* hole with a *known* size
+in the one part of the engine this project has been most careful about, and the
+two rows downstream of it (B12 condensation, B13 where the vapour goes) cannot
+be built on top of an energy term that does not exist.
+
+The alternative licence — wait for a frontend to ask — was considered and
+rejected on the M11 precedent: §3 told frontends for ten milestones to read a
+wrong number as the cavitation signal, and nobody noticed until a milestone went
+looking. An external energy balance that is short by 13.9% of what a column
+delivers is the same shape of trap, and it is worse in one respect: a frontend
+that sums the published fluxes today gets a plausible finite number.
+
+### The balance, by hand, before any code
+
+M12.1's correction 7 measured the gap and asserted it is exactly the latent term.
+Here is the algebra, because the invariant this slice writes has to be built on
+the identity rather than on the measurement.
+
+Take one holdup at the moment the flash runs. Before it: mass `m`, temperature
+`T`, mass fractions `w`, mixture heat capacity `c̄p`. The flash removes `m_v` at
+the equilibrium vapour composition `y` (mixture heat capacity `c̄p_v`) and leaves
+`m − m_v` at `w'`, `c̄p'`, sitting on its bubble point `T_bub`. The enthalpy
+constraint fork 3 of §14 states is
+
+```text
+m·c̄p·(T − T_bub) = m_v·Δh̄_vap
+```
+
+and mixture `cp` is linear in the component masses, so
+
+```text
+m·c̄p = (m − m_v)·c̄p' + m_v·c̄p_v
+```
+
+The holdup's internal energy on the engine's datum is `U = m·c̄p·(T − T_REF)`
+(`cv = cp` for a liquid — `energy::specific_internal_energy`). Subtract:
+
+```text
+U_before − U_after
+  = m·c̄p·(T − T_REF) − (m − m_v)·c̄p'·(T_bub − T_REF)
+  = m·c̄p·(T − T_bub) + [m·c̄p − (m − m_v)·c̄p']·(T_bub − T_REF)
+  = m_v·Δh̄_vap        +  m_v·c̄p_v·(T_bub − T_REF)
+```
+
+The vent carries `m_v·c̄p_v·(T_bub − T_REF)` — the second term, and only the
+second term. **The residual is `m_v·Δh̄_vap` exactly, in both branches of the
+model**, including the one where the per-component cap binds and the liquid is
+left above its bubble point: there the temperature written is
+`T − applied·Δh̄_vap/c̄p`, and substituting it for `T_bub` in the first line gives
+the same result.
+
+Two things follow, and they are the whole design.
+
+**The specific enthalpy of the vapour that leaves is
+`c̄p_v·(T_bub − T_REF) + Δh̄_vap`.** Not a temperature — a temperature chosen to
+make the sensible term come out right is the fabricated number B16 refuses, and
+now there is an exact expression that needs no fabrication.
+
+**`h = cp·(T − T_REF)` was never the datum; it was the datum *for a liquid*.**
+§4a and `energy.rs` both state the formula without the qualifier, which is
+correct for every stream the engine carried before M12.1 and wrong for the one
+it added. The reference state is *saturated liquid at `T_REF`*, and a vapour on
+that datum is a liquid plus its heat of vaporisation. This is a documentation
+correction as much as a code one, and it is the same class as M5.3's
+`u = cv·T − cp·T_REF`: a datum that is right while one thing is constant and
+load-bearing exactly when it is not.
+
+### Fork 1 — who can SEE the term. This is the axis; the arithmetic is settled
+
+Everything below agrees on the number. What they disagree about is where a
+consumer looks for it, and B16's trigger names three different consumers.
+
+**1(a) An in-engine function only.** `energy::latent_flux(...)`, called by the
+new invariant. **Rejected.** It satisfies exactly one of the three trigger
+clauses. A frontend reading a snapshot still cannot close the books, and B12's
+condenser still has nothing to receive.
+
+**1(b) A published duty on the NODE, beside `column_duty`.** Cheap, exactly
+precedented (`NodeSnapshot::column_duty` exists because "a plant-level energy
+balance at a cascade column does not close without it"), and it gives the right
+boundary total. **Rejected, and the reason is location rather than arithmetic.**
+A condenser duty is heat crossing the boundary by conduction into cooling water;
+it belongs to the node because that is where the equipment is. This energy
+leaves *with material*, through a named edge, to a named far end. Attaching it to
+the tank means a consumer adds a term that is not where the mass went — and it
+breaks the day B13 routes a vent to a flare instead of the atmosphere, because
+the duty would still be sitting on the tank while the energy arrives somewhere
+else. **The boundary total is identical under 1(b) and 1(c)/1(d); the case
+against it is that it is true of the plant and false of the plant's parts.**
+
+**1(c) A published field on the EDGE snapshot**, `EdgeSnapshot::latent_heat_w`.
+Located correctly, `skip_serializing_if` keeps the other sixteen plants
+byte-identical, and it closes the books for a frontend. **Rejected on the
+mirror**: the engine's own `Stream` still under-carries, so the term exists only
+after the snapshot is taken. B12's condenser is an in-engine consumer reading an
+in-engine stream, and it would find nothing there.
+
+**1(d) On the `Stream` itself, as a SPECIFIC latent enthalpy. Chosen.**
+
+```rust
+pub struct Stream {
+    pub mass_flow: KgPerSec,
+    pub temperature: Kelvin,
+    pub pressure: Pascal,
+    pub composition: Composition,
+    /// Latent heat carried per kilogram [J/kg] — `None` on a liquid stream.
+    pub latent: Option<JPerKg>,
+}
+```
+
+Four properties decide it. The stream becomes **self-describing for energy**: its
+specific enthalpy is `cp·(T − T_REF) + latent.unwrap_or(0)`, one expression, no
+second lookup keyed by edge id and no consumer that has to know which edges are
+vents. It is **published for free**, because `EdgeSnapshot::stream` is a `Stream`
+— so 1(c)'s frontend clause is satisfied without a second field, and two fields
+carrying one quantity is how `leak_mass_flow` earned its own agreement gate. It
+is **what B12 needs**, in the place B12 will look. And it is **specific rather
+than a rate**, so it composes with `mass_flow` the way `temperature` does and
+needs no `dt`.
+
+`Option<JPerKg>` rather than a bare `f64` defaulting to zero, and the distinction
+is `column_duty`'s: `None` says "this stream is a liquid and the question does
+not arise", `Some(ZERO)` would say "a vapour whose latent heat is nothing". Only
+the first is true of the sixteen non-boiling plants, and `serde(default,
+skip_serializing_if = "Option::is_none")` is then what keeps them byte-identical
+— the move `column_duty`, `cavitation` and `ColumnDraw`'s M7.3 fields all made,
+and deliberately **not** `Snapshot::slate`'s (M8.5), where an absent value would
+have been a false statement about the plant.
+
+**What 1(d) is NOT.** It is not phase in the state vector and it is not B3. B3 is
+a stream that is *part* liquid and *part* vapour — a flashing feed line, a
+partial condenser, a vapour side draw — which changes `Composition` and every
+reader of it. This is a single-phase vapour stream declaring one scalar about its
+own energy. The temptation to spell the field `phase: Phase` instead is refused
+for a reason worth stating: the vent's composition is made of cuts the slate
+*declares* `phase = Liquid`, so a `Phase::Gas` marker on it would contradict
+`Composition::phase(slate)`, which M11 and M12 both consult and which the loader
+enforces on a tank. A latent-heat field makes no claim the slate can disagree
+with.
+
+### Fork 2 — where the number is computed: once, by the model
+
+`BoilOff` gains a fourth field:
+
+```rust
+pub struct BoilOff {
+    pub vapour_mass: Kg,
+    pub vapour: Composition,
+    pub liquid_temperature: Kelvin,
+    /// Latent heat per kilogram of `vapour` [J/kg] — the `Δh̄_vap` this flash
+    /// was sized against, not a number to be re-derived from it.
+    pub latent_heat: JPerKg,
+}
+```
+
+The argument is already written on the struct, one field up: `liquid_temperature`
+is there because it "is an output of the same solve that sized `vapour_mass` and
+not a second answer to be derived from it". `Δh̄_vap` is in exactly that
+position, and it is *more* exposed, because there are at least three plausible
+ways to recompute it that all produce a finite, smooth, plausible number: at the
+tank's temperature instead of the bubble point, mole-weighted instead of
+mass-weighted, or over the *vapour's* fractions instead of the *liquid's*. Any of
+them leaves a residual that reads as a bug in the invariant.
+
+`FlashBoilOff` already computes this exact quantity — the `w / molar_mass`
+weighted sum at `bubble` — and currently throws it away after dividing by it.
+`NoBoilOff` never constructs a `BoilOff` at all, so the seam is untouched.
+
+### Fork 3 — which `Δh̄_vap`, and a mutation that is inert for a reason
+
+The number must be the model's own, evaluated **at the bubble point** and
+weighted by the **liquid's** mass fractions — because that is what the flash
+fraction was divided by, and the books have to use the number the mass was sized
+against. Weighting by the vapour's fractions instead would be more defensible
+thermodynamically and would **stop the balance closing**, which is worth stating
+as its own sentence: *the invariant checks bookkeeping consistency, not
+thermodynamic virtue, and if the two disagree the fix belongs in the model, not
+in the term the vent carries.*
+
+**The temperature argument is inert on every shipped plant, and this is read off
+the source rather than predicted.** `TroutonThermo::dh_vap` is `C·tb` — Trouton's
+rule at the *normal* boiling point — and it uses its `temperature` argument only
+for `check_state`. So the mutation "evaluate `dh_vap` at the tank's temperature
+instead of the bubble point" changes nothing on `trouton`, which is the only
+shipped model that can answer at all. It is still specified below, and it is
+still predicted **uncaught**, because the trait method takes a temperature and a
+future `ThermoModel` will use it. Naming an inert mutation as inert in advance is
+cheaper than discovering later that a gate everyone believed in was passed by
+construction.
+
+### Fork 4 — where the term is written, and why `is_boiloff_vent()` stops being the discriminator
+
+The vent stream is already written whole — flow, composition and temperature — at
+one site in step 3, after the holdup update it reports (§14 fork 4, correction
+1). `latent` is the fourth thing written there, from `boil.latent_heat`, and it
+is cleared to `None` on the ticks nothing boils, for the same reason the flow is
+zeroed: a stale latent term on an idle vent would claim energy is leaving a tank
+that is not boiling.
+
+**A consequence worth naming: the `is_boiloff_vent()` test disappears from the
+energy path rather than acquiring a comment.** "This edge is the only one that
+carries vapour" is a one-inhabitant argument of exactly the kind M10.1 caught
+expiring silently — but under 1(d) no energy consumer asks it. The stream says
+whether it carries latent heat, so a second vapour-bearing edge (B12, B13) needs
+no new discriminator and no audit of who was testing for a vent. The role marker
+keeps its other jobs: excluding the vent from the tank's own flux loop, refusing
+a `PuncturePipe`, and telling the transport sweep not to overwrite the
+temperature.
+
+### Fork 5 — the capped flash, which needs no special case
+
+Where the per-component cap binds (§14 correction 4), less mass boils than the
+enthalpy constraint asked for and the liquid is left above its bubble point at
+`T − applied·Δh̄_vap/c̄p`. Because `latent_heat` is **specific**, the total carried
+is `vapour_mass · latent_heat` in both branches and the algebra above closes in
+both. **No arm, no branch, no second formula.** That is the argument for specific
+over total, and it is the same argument M8.3 made for storing a controller's
+memory in output units: pick the representation that makes the two cases one
+case.
+
+### Fork 6 — the mirror, checked before the name is committed
+
+B12 is condensation: a subcooled vapour arriving at a holdup gives its latent
+heat *up*. Whatever ships here must admit that without renaming.
+
+`latent: Option<JPerKg>` does. A condensing stream arrives with `Some(λ)` and
+loses it; the holdup gains `m·λ`; the field's sign never goes negative, because
+the direction lives in the mass flow the way it already does for
+`enthalpy_flux`. A field named `boiloff_latent_w`, or a rate, or a node duty
+called `vaporisation_duty`, all read wrong the moment the arrow reverses. Checked
+here because the M12 note's own naming (`BoilOffVent`, `boil_off`) is
+direction-committed and did not have to be — the *seam* is about a phase change,
+and only the model that implements it is about boiling.
+
+### Fork 7 — the invariant, and where it can live
+
+This is the artefact that fires the trigger, so it decides the milestone.
+
+`crates/solvers/tests/energy_invariants.rs` is where I6 lives and it builds every
+engine with `NoBoilOff` — so no energy invariant in this workspace has ever been
+evaluated on a plant that boils, which is why 7.6084e8 J was invisible to the
+whole suite. Two places it could go:
+
+- **In `energy_invariants.rs`, on a hand-built fixture.** Keeps I6's family
+  together, runs under `cargo test --workspace`, and can generate networks. But
+  the fixtures there are water plants and water is one component: a
+  single-component holdup makes `y = K·x` and `x` identical, which is §14 fork
+  8's trap and §13's water-fixture trap before it. A boiling fixture there has to
+  be a real mixture, built by hand.
+- **In `crates/scenarios/tests/boiloff_reference.rs`, on the shipped demo.** That
+  is where M12.1's ten gates already are, it runs the plant the number was
+  measured on, and it reads published snapshots — which is what a frontend would
+  read.
+
+**Both, and they are not redundant.** The scenarios one is the *gate*: it asserts
+the books close on `crude_column_boiloff` from published state alone, which is
+the consumer B16's trigger describes. The solvers one is the *invariant*: a
+property over generated plants, which is the only thing that covers holdups,
+compositions and cap regimes the demo never enters. If only one is built it is
+the gate — but then this note must say the property is untested, rather than
+letting "I6 now covers boiling" stand.
+
+### The gates, named before building, and the vacuity each one closes
+
+**Gate 1 — the boundary balance closes on the demo, from published state.** Sum,
+over one tick of `crude_column_boiloff`: every edge's enthalpy flux including the
+latent term, every node's heat load and column duty, against the change in every
+holdup's internal energy.
+
+**The tolerance is derived and not chosen (the M2 habit) — but WHICH quantity it
+is derived from is itself unknown, and guessing it wrong is how this gate ends up
+orders too loose.** Two candidates, and they are about eight orders apart. If the
+invariant re-states the engine's own discrete rule, the balance is an algebraic
+rearrangement of what `Engine::tick` already computed and the residual is float
+noise — M12.1 instrumented the holdup's own books at **3e-12 relative**, and a
+flash *writes* the temperature rather than integrating to it, so there is no
+truncation term on that path at all. If the invariant states the *continuous*
+first law instead, explicit Euler's `O(dt²)` per step appears and the bound is
+several orders looser. **A truncation-sized bound over a float-noise residual is
+a gate that cannot fail**, which is the failure M8.3 recorded ("a tight-looking
+bound is still too loose"). So: measure the residual on one tick of the demo with
+the latent term added by hand, size the bound to what is actually there, and say
+in the write-up which of the two scales it turned out to be.
+
+*The vacuity it must close, and this is the one to be careful about:* run it on
+the **`boiloff = "none"` twin** as a control, where it must also pass — otherwise
+a gate that passes on both is proving nothing about the latent term. And run it
+against `HEAD` before the fix, where it must **fail by 7.6084e8 J over the run**,
+because a gate that has never failed is a gate whose subject is unproven.
+
+**Gate 2 — the term is on the stream a frontend reads.** Assert on the serialized
+snapshot bytes that the vent edge carries a `latent` value and that an ordinary
+liquid edge on the same plant does not. On the bytes, because a Rust match on
+`Some(_)` passes under any serde tag — M10.1's wire-form lesson, whose absence
+let the sharpest mutation of that milestone escape a full byte-identity baseline.
+
+**Gate 3 — `Δh̄_vap` is anchored independently, or the pair is a tautology.** This
+is the gate that decides whether gate 1 means anything, and it is the
+M7.4b/M7.4c shape this project has now hit three times. Gate 1's two sides are
+*not* the same path — the model computes `Δh̄_vap` and the flash fraction from it,
+and the engine then applies a per-component subtraction, an over-draw cap, a
+rounding guard and a composition renormalisation before anything is published, so
+gate 1 genuinely catches the engine mis-applying the model's answer. **But
+neither side anchors the number itself**: if `dh_vap` returned half of Trouton's
+rule, the flash would boil twice as much mass, the vent would carry half the
+latent heat per kilogram, and gate 1 would close to the last digit.
+
+The workspace has **no reference test for `dh_vap`** — `cavitation_contract.rs`
+only wraps it and `reference/cascade.rs` supplies a stub's values. So this slice
+owes one: Trouton's rule against a published `Δh_vap` for a comparable
+hydrocarbon, as an envelope (M4's published-anchor habit — degrade to an envelope
+from data actually read, never transcribe a number from a search summary).
+Without gate 3, gate 1 is a consistency check wearing a physics label.
+
+**Gate 4 — the term is in the right UNIT, and deliberately says nothing about its
+size.** `latent` is J/kg and the total is `vapour_mass · latent`; writing the
+total into the specific field is a factor of `m_v` — order 10³ on the demo — which
+any order-of-magnitude assertion catches. **What this gate must NOT do is assert
+proximity to the measured 13.9%.** That share is a property of *this* plant's draw
+temperature over *this* run length, so a bound around it pins the demo's tuning
+rather than the physics, and it would have to be re-fitted every time the column
+changes. This project has written that gate before and called it a coincidence
+passing as a gate (M7.4b). The size claim belongs in the write-up as a
+measurement, not in a test as an assertion.
+
+### What must not change, stated as a prediction that can be wrong
+
+**All seventeen plants byte-identical on both fidelities, including
+`crude_column_boiloff`.** The reasoning: the vent's enthalpy is *write-only in
+the forward solve*. Step 3's holdup loop `continue`s past the vent before reading
+any stream; the transport sweep in step 2c `continue`s past it too, and the
+engine's own comment there says the published temperature "is display only:
+nothing downstream in the engine reads it"; the far end is `Atmosphere`, whose
+temperature is pinned to `T_AMBIENT` and whose composition is pinned by
+`energy::node_composition`, and which is not a zero-volume node, so nothing mixes
+it in; and the vent's flow is prescribed, so the hydraulic solve never sees it
+either. Adding a field the forward solve does not read therefore moves no
+physical number.
+
+**This is a prediction and it is the note's most load-bearing one**, because two
+different claims rest on it: the blast radius, and the fact that "the numbers
+moved" cannot be a gate for this milestone — the *only* thing that fires is the
+new invariant. The probe that settles it is named here so it is not skipped: with
+the field added and written, record a corpus baseline before and after under both
+fidelities, and separately perturb `boil.latent_heat` by an arbitrary factor and
+confirm that every published quantity except `latent` itself is unmoved. The
+second half matters because the first is passed by a field that is never written.
+
+Also predicted unchanged: `BoilOffModel`, `ThermoModel`, `FlowSolver`,
+`SeparationModel`, `Controller`, the scenario schema, and the `[fidelity]` keys.
+M13 adds no configuration — a stream either carries latent heat or it does not,
+and which is not a fidelity choice.
+
+### The mutations this slice owes, named before building
+
+| edit | prediction |
+|---|---|
+| `latent` written but never added into the boundary sum | caught by gate 1, and on the demo only — the `"none"` control is unaffected |
+| the latent term added with the wrong sign | caught by gate 1, at twice the residual |
+| `latent_heat` re-derived in `Engine::tick` from a fresh `thermo.dh_vap` at the tank's temperature | **uncaught**, because Trouton's rule ignores its temperature argument (fork 3). Specified so the inertness is recorded rather than discovered |
+| `latent_heat` weighted by the vapour's fractions instead of the liquid's | caught by gate 1 — the two differ once the mixture is not pure, which is every tick after the demo's first boil |
+| `latent` left stale on an idle vent / cleared on a boiling one | the stale half caught by gate 1 on the ticks after the first boil; the cleared half by gate 2 |
+| `latent` serialized as a bare `f64` defaulting to `0.0`, or under a different serde tag | predicted caught by gate 2 alone, and by no byte-identity baseline — M10.1's escape, reproduced deliberately |
+| `dh_vap` scaled by ½ in `TroutonThermo` | caught by **gate 3 alone**; gate 1 closes to the last digit. This is the entry that justifies gate 3 existing |
+| the vent excluded from the boundary sum entirely | caught by gate 1 through the *sensible* term, which is the larger of the two — so this mutation does **not** show gate 1 sees the latent term, and gate 1's justification must not cite it |
+
+### Deferred, with what un-defers each
+
+- **A vapour `cp`.** The vent's sensible term uses the components' declared
+  liquid `cp`, because that is the only heat capacity a `PseudoComponent` has.
+  Above the bubble point that is wrong by the usual tens of percent. It is
+  *consistently* wrong — the same `c̄p` appears on both sides of the algebra above
+  — so the books close regardless, which is exactly why it can be deferred.
+  Un-defers with B15 (temperature-dependent `cp`) or B4 (real-gas properties),
+  and it is the same shape as both: a correlation nobody has coefficients for.
+- **Condensation (B12) and where the vapour goes (B13).** Unchanged by this
+  slice, except that they now have a term to work with, which was the point.
+- **A two-phase stream (B3).** Untouched. `latent` says a stream is *all* vapour;
+  a stream that is *part* vapour needs a quality, which is `Composition`'s
+  problem and a milestone.
+- **The plant-wide duty a frontend would display.** M13 publishes the term on the
+  edge that carries it and leaves the summing to the consumer, the way
+  `column_duty` does. A `Snapshot`-level total is a view over published state and
+  needs its own argument about who owns it.
