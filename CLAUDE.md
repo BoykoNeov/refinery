@@ -216,8 +216,14 @@ field; the coolant temperature becomes ledger row **B19**.
 
 **The demo was run before the fork claiming it works was written.** A throwaway
 two-stage plant outside the repo loads and runs **with no code change** (fork 2
-confirmed), taking recovery **42.52% → 85.63%** over 6 000 ticks and 100% at long
-times, with the emitting tanks venting 6 717.7 kg either way. Stage 2's feed
+confirmed), taking recovery **42.4316% → 85.6203%** over 6 000 ticks and 100% at
+long times, with the emitting tanks venting **6 709.70 kg** either way. **That
+percentage does not reproduce M14.1's 42.52% and the note's first draft said it
+did**: integrating at the snapshot interval rather than per tick gives 42.52% and
+6 717.7 kg, so **M14.1's own cumulative figure is a coarse-integration artefact**
+while its instantaneous companion (49.87% held at tick 6 000) reproduces exactly.
+An agreement between two numbers computed the same wrong way is not
+corroboration. Stage 2's feed
 decays but **asymptotes** at 5.80 kg/s over 20 000 ticks — it is not a transient —
 but it **switches on only at about tick 2 900**, half the shipped run, worse than
 M14.1's 1 210 and stated in fork 3 rather than discovered later.

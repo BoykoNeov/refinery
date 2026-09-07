@@ -9853,14 +9853,34 @@ loads and runs unmodified. Over 6 000 ticks:
 
 | | tanks vented | reached atmosphere | **recovered** |
 |---|---|---|---|
-| one stage (shipped) | 6 717.7 kg | 3 861.3 kg | **42.52%** |
-| two stages (probe) | 6 717.7 kg | 965.2 kg | **85.63%** |
+| one stage (shipped) | 6 709.70 kg | 3 862.67 kg | **42.4316%** |
+| two stages (probe) | 6 709.70 kg | 964.84 kg | **85.6203%** |
 
-Two things to read off that table. The recovery figure **reproduces M14.1's
-42.52% exactly**, which is what says the probe is measuring the same quantity the
-last milestone did. And **the emitting half is unchanged to five figures** —
-6 717.7 kg either way — which is M14.1's finding that the tanks are indifferent to
-where their vapour goes, now confirmed one hop further out.
+**The emitting half is unchanged to six figures** — 6 709.70 kg either way — which
+is M14.1's finding that the tanks are indifferent to where their vapour goes, now
+confirmed one hop further out, and which reproduces M14.1's own vented mass
+exactly.
+
+**The recovery figure does NOT reproduce M14.1's 42.52%, and the first draft of
+this note claimed it did.** That draft integrated the vent rates over
+`--snapshot-every 10` — a left-endpoint rectangle rule over 10-tick spans on a
+quantity that moves fast between ticks 2 900 and 6 000 — and got 42.52% and
+6 717.7 kg. The agreement was then cited as evidence the probe measured the same
+quantity M14.1 did. At `--snapshot-every 1` the mass lands on M14.1's figure
+exactly and the percentage does not: **42.4316%**, and by three independent
+routes that agree to four decimals — `1 − out/in`, the drum's mass gain over the
+arriving mass, and the same gain measured from the declared initial inventory
+rather than from tick 1. **So M14.1's 42.52% is itself a coarse-integration
+artefact**, and its companion figure is not: "holds 49.87% at tick 6 000" is an
+*instantaneous* retention, `1 − 8.4726/16.9011`, which reproduces as **49.8694%**.
+One number in that sentence was integrated and one was read, and only the
+integrated one drifted.
+
+**An agreement between two numbers computed the same wrong way is not
+corroboration**, and the tell was available before the fine run: a cumulative
+recovery and an instantaneous retention cannot both be right if the rate is still
+falling, and 42.52 against 49.87 was already the shape of a run that has not
+settled.
 
 At long times the train goes to **100%**: stage 2's own vent reads 0.000 kg/s from
 about tick 12 000, with stage 1 parked at 412.0 K and stage 2 at 357.3 K. That is
@@ -9877,10 +9897,13 @@ is a more expensive way to write a number that already exists.
 drum at a high `UA` condenses everything into **one** inventory: a single tank
 holding the whole recovered stream at one temperature. Two drums at the shipped
 `UA` **fractionate** — stage 1 settles at 412.0 K holding 10% light cut, stage 2
-at 357.3 K holding 77% light cut. Same total mass recovered, two products instead
-of one, and the split is the thing a recovery train exists to do. A gate comparing
-the two inventories' compositions at one instant separates them; a gate comparing
-recovered *mass* does not.
+at 357.3 K holding 77% light cut, and at tick 6 000 they are 3.65× apart (0.2614
+against 0.9544). Two products instead of one, and the split is the thing a
+recovery train exists to do. A gate comparing the two inventories' compositions at
+one instant separates them; a gate comparing recovered *mass* does not — and the
+mass is not even the same, so a mass gate would separate them for the wrong
+reason: one drum at `UA = 1e5` recovers 100% where the train recovers 85.62% over
+6 000 ticks and reaches 100% only at long times.
 
 **Verdict: a plant.** And the gate that defends it is a composition gate, which
 is M12.1's finding for the third time — two trajectories cannot discriminate what
@@ -9960,8 +9983,20 @@ Four shapes, and the third is the verdict:
    surroundings at a fixed temperature*; insulation loss and an ambient-cooled
    condenser are the same term with different signs of intent, and the field
    should say so. This is the only option that makes the code true without adding
-   anything, and its cost is measured: **one declaration in one scenario file**,
-   plus the doc comments.
+   anything.
+
+   **Its cost is larger than finding (ii) implies, and the first statement of it
+   here was understated.** Finding (ii) counted declarations in `scenarios/`, and
+   there is one. A rename touches every *name*, and those live in `crates/` too:
+   `schema.rs` (two serde field names, tank and pipe), `build.rs` (four read
+   sites), `validate.rs` (error strings that quote the key back to the user), and
+   — the ones a grep of `scenarios/` cannot see — **two inline TOML fixtures in
+   `crates/scenarios/src/lib.rs`** that declare `ambient_ua_w_per_k` in a string
+   literal, plus the negative-value refusals beside them. A rename that misses a
+   fixture is a load failure discovered mid-build rather than a compile error.
+   **So the honest cost is: one scenario declaration, two serde names, two inline
+   fixtures, the refusal messages, and the doc comments** — still no published
+   field, which is what keeps fork 5's "moves no number" prediction intact.
 4. **A `Cooler` node.** `NodeKind::Cooler` already exists, and B17 names why it
    cannot be used: a vent's flow is prescribed, `network::edge_flows` guards it to
    zero, and a zero-volume node on a prescribed-flow path carries an inflow
@@ -9987,18 +10022,30 @@ M7.1's rule exists to stop.
 ### The gates, named before building, and the vacuity each one closes
 
 1. **Recovery rises, and the emitting half does not move.** The train recovers
-   85.63% against one stage's 42.52% over 6 000 ticks, and both plants' tanks
-   vent 6 717.7 kg. *Closes:* a gate on recovery alone would be passed by a bigger
-   `UA` on one drum (fork 1).
-2. **The two drums' inventories differ in composition at one instant.** Stage 1
-   ~10% light cut, stage 2 ~77%, at tick 6 000. *Closes:* the fork-1 vacuity —
-   this is the assertion that says a train fractionates and a single big condenser
-   does not. M12.1's shape: two streams at one instant, not two runs.
+   85.6203% against one stage's 42.4316% over 6 000 ticks, and both plants' tanks
+   vent 6 709.70 kg. *Closes:* a gate on recovery alone would be passed by a bigger
+   `UA` on one drum (fork 1). **Integrated at tick resolution, not at the snapshot
+   interval** — that distinction is worth 0.09 points and it is what the section
+   above is about.
+2. **The two drums' inventories differ in composition at one instant.** At tick
+   6 000: stage 1 holds **0.2614** light cut at 386.22 K, stage 2 **0.9544** at
+   354.19 K — 3.65× apart. (At 20 000 ticks they have settled to 0.101 and 0.771;
+   the *first draft of this gate quoted the settled pair against tick 6 000*, which
+   is the same class of error as the paragraph above and was caught the same way.)
+   *Closes:* the fork-1 vacuity — this is the assertion that says a train
+   fractionates and a single big condenser does not. M12.1's shape: two streams at
+   one instant, not two runs.
 3. **The reorder gate, WITH the control M14.1's could not have.** Declaring both
    drums above the tanks that feed them produces a genuinely different sort order
    (measured, finding (i)) and bit-identical results across all 600 snapshots
    (measured). **The control is the first half** — without it the gate is passed
    by an implementation whose sort is inert, which is exactly what ships today.
+   **So the gate must assert BOTH halves in code — `order != node_ids()` and then
+   the results identical — and must build the reordered graph itself rather than
+   describing it in prose.** A gate whose control lives in a sentence is a gate
+   whose control silently stops reaching, which is the failure this project has
+   recorded five times; and the reordering measured for this note lives outside
+   the repo, so M15.1 reconstructs it as a fixture or not at all.
 4. **A three-holdup cycle is refused**, at depth 2 rather than depth 1
    (a to b to c to a), from a scenario and from a hand-built graph, as M14.1's
    pair of independently-defended callers requires.

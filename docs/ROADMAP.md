@@ -5568,12 +5568,23 @@ closes B17 as a **doc-and-name fix on one field**, not a physical term.
 **The demo works, measured on a throwaway plant before the fork claiming so was
 written.** `crude_column_recovery.toml` copied outside the repo, `vent_to`
 pointed at a second identical drum: it loads and runs **with no code change**,
-confirming fork 2. Over 6 000 ticks, recovery **42.52% → 85.63%**, with the
-emitting tanks venting 6 717.7 kg either way — the 42.52% reproducing M14.1's own
-figure exactly, and the unchanged emitting half confirming one hop further out
-that the tanks are indifferent to where their vapour goes. At long times the
-train reaches **100%**: stage 2's vent reads 0.000 kg/s from about tick 12 000,
-stage 1 parked at 412.0 K and stage 2 at 357.3 K.
+confirming fork 2. Over 6 000 ticks, recovery **42.4316% → 85.6203%**, with the
+emitting tanks venting **6 709.70 kg** either way — the unchanged emitting half
+confirming one hop further out that the tanks are indifferent to where their
+vapour goes, and its mass reproducing M14.1's own figure exactly. At long times
+the train reaches **100%**: stage 2's vent reads 0.000 kg/s from about tick
+12 000, stage 1 parked at 412.0 K and stage 2 at 357.3 K.
+
+**The recovery percentage does NOT reproduce M14.1's 42.52%, and this note's
+first draft claimed it did.** That draft integrated at the snapshot interval
+(every 10 ticks, left-endpoint) and got 42.52% and 6 717.7 kg; at tick resolution
+the mass lands on M14.1's figure exactly and the percentage is **42.4316%**, by
+three independent routes agreeing to four decimals. **M14.1's 42.52% is itself a
+coarse-integration artefact** — while its companion "holds 49.87% at tick 6 000"
+is an *instantaneous* retention and reproduces as 49.8694%. One number in that
+sentence was integrated and one was read; only the integrated one drifted.
+**An agreement between two numbers computed the same wrong way is not
+corroboration.**
 
 **Stage 2's feed was the real risk and it was measured as a trend, not an
 endpoint.** M14.1 found an uncooled drum self-fractionates into a heavy pot and
@@ -5592,7 +5603,15 @@ six-edit mutation pass. **Predicted: no change to `core`, `solvers` or
 `scenarios` logic** — fork 2, already confirmed by probe — and all eighteen
 existing plants byte-identical on both fidelities. **The prediction that can
 actually fail is the rename's**: if it leaks into `NodeSnapshot`, eighteen plants
-move at once.
+move at once. Its cost is also wider than finding (ii) suggests — two serde
+names, four read sites, the refusal messages, and **two inline TOML fixtures in
+`crates/scenarios/src/lib.rs`** that a grep of `scenarios/` cannot see.
+
+**Gate 3 has to build its own reordered graph.** The reordering that proves the
+sort is not inert was measured for M15.0 outside the repo, so the gate must
+assert both halves in code — that the sort's order differs from `node_ids()`, and
+that the results are then identical. A control that lives in a sentence is a
+control that silently stops reaching.
 
 **Mutation 1 is the one the note is least sure about.** Making the sort return
 `node_ids()` unconditionally must fire gate 3 on the reordered plant; whether it
