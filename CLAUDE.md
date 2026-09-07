@@ -180,6 +180,100 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M14 is OPEN, and its scope is THE RECOVERED VAPOUR — `docs/DEFERRED.md` rows
+B12 (condensation) and B13 (where the vented vapour goes), taken together.**
+**M14.0 landed 2026-09-07**: the design note, DESIGN §16, seven forks, six gates,
+nine named mutations, no code. The building slice is M14.1 and has not started.
+
+**Nothing selected this milestone: it is M11's licence (a decision), the third
+time.** But the ledger's own reason for saying so was examined first and was
+unsupported. "Nothing is past its trigger … A3 at 5.4× is the nearest" ranks only
+the rows that carry a number, and **two do not**: B14 (a second equation of
+state) and B15 (a temperature-dependent `cp`), both reading "Not measured".
+
+**Running B15's probe produced two findings and neither is a distance.** (i) **The
+row measures the wrong quantity, exactly as B1 did for five milestones.** It cites
+`fcc_plant`'s internal *excursion*, 800.4 K to 374.4 K. `energy::T_REF` is
+273.15 K and every sensible term is `cp·(T − T_REF)`, so the span a constant `cp`
+must average over runs from the **datum**, inside one term: **527.2 K** on
+`fcc_plant`'s `reactor_effluent` stream, **520.2 K** on `fcc_reactor`'s product
+line, 358.8 K on both cascade columns, 20.1 K on the water plants. (ii) **The
+trigger is COMPARATIVE**: "a constant `cp` and a correlation disagree" cannot be
+evaluated from anything in the workspace. B14's "two EOS choices differ" is the
+same shape.
+
+**Both findings had a first draft that was wrong, and both corrections are the
+same shape as the finding itself.** The locus was first written as the
+`fractionator` NODE at the same 800.35 K — but a column is a zero-volume mixing
+node, so its temperature is the *output* of an enthalpy balance, not a factor in
+one; **only streams and holdups are factors**. And (ii) was first written as
+"SELF-BLOCKING — can never fire", which is false: `reference/vapour_pressure.rs`
+already IS that instrument for a different property (M13 gate 3, NIST Antoine
+coefficients for n-hexane, one comparable cut, compared as an envelope), and NIST
+carries `cp(T)` for the same molecule. **B15 needs one gate-3-shaped probe, not
+the selectable model.** What is genuinely wrong is the LABEL: every other ledger
+row fires on a *state* a run can be asked about, these two on a *disagreement
+between two models*, which must be built or cited first. "Not measured" reads as
+an omission and licensed a ranking that had no right to include them. A
+comparative trigger's distance column must name the instrument it waits on and
+what it costs; the summary sentence is now scoped to the rows that can move it.
+
+**Why B12 + B13, and why now — four things, and the timing was chosen by M13.**
+(1) `energy.rs`'s own comment on `stream_enthalpy_flux` reads "a future consumer
+that condenses a vapour into a holdup (B12) is what makes this read inside the
+engine, **and it should read it here**". (2) `crude_column_boiloff.toml`'s header
+already says the plant is wrong this way. (3) **B13 had never carried a number and
+now does**: the demo's two boiling tanks vent **6 709.7 kg over 6 000 ticks —
+5.80% of the plant's own crude intake** — carrying **4.121e9 J**, 42.51% of it the
+latent term M13 built; **10.64 MW at tick 6 000**. (4) **B12 cannot be split from
+B13**: route a vent to a holdup and leave the receiver's balance alone and the
+arriving vapour is booked sensible-only, which is B16's defect in the mirror on a
+plant that would ship with it.
+
+**The milestone fires its own trigger** (B13's words are "an emissions figure, or
+a recovery loop" and the demo is a recovery loop), named in the note's first
+paragraph as M13's was.
+
+**Five things §16 decides, before any code exists.**
+
+**There is NO SEAM, and it is the verdict most likely to be wrong.** Fork 6
+rejects a `CondensationModel` trait and a `[fidelity] condensation` key: there is
+no choice for a model to make. The mass is what the vent published, the enthalpy
+is what the stream carries, the temperature is the holdup integration already
+written, and whether any of it stays is `FlashBoilOff`'s decision. **A trait
+method whose only implementation is `a + b` is a seam with nothing behind it.**
+So M14 should add one scenario key, no fidelity key, and leave `traits.rs`
+untouched.
+
+**Partial condensation needs no new term, and that is what keeps this out of B3.**
+Fork 1: condense the arriving vapour **entirely**, then let the existing flash
+boil back off whatever cannot stay, through the receiving drum's own vent.
+**No stream is ever part vapour at any instant** — which is exactly the property
+B3 is about.
+
+**B13's stated obstacle is the wrong one — fourth time a row's mechanism has
+outlived its number.** The format can already declare a drum and a line; what it
+cannot express is where a **loader-built** vent goes. The real obstacle is the
+forward solve: five sites read "is a boil-off vent" as "is invisible", two
+correctly and permanently (`engine.rs:538`, `network.rs:1008`) and three only
+because every vent currently ends at an `Atmosphere` (`engine.rs:622`, `:656`,
+`:1036`).
+
+**One of those three is M12.1's own hardest bug at a site that milestone left
+alone.** `engine.rs:622` skips a vent as a property of the EDGE and uses it as a
+property of the ENDPOINT. Forty lines down, `engine.rs:701` records paying for
+exactly this — 2 539 kg vanished while the accounted path read 0.0 kg/s. Fork 3
+applies the rule to the receiving end: **skip the vent I own, not every vent.**
+
+**A condenser is a heat sink, and the demo's is `ambient_ua`.** An uncooled drum
+recovers nothing at steady state (a knob nothing discriminates — `smearing_k`);
+a constant duty is unbounded and would drive an idle drum toward the sub-zero
+Kelvin failure `checked_temperature` exists to catch. `Q = UA·(T_AMB − T_B)` is
+self-limiting and already exists, and makes the recovered fraction an emergent
+measurement rather than a target. Its wart is named: a condenser's `UA` is order
+1e4–1e5 W/K in a field documented as insulation. The demo's `UA` must put the
+recovery **interior**, neither 0% nor 100%, as M10.1's vent had to be.
+
 **M13 is CLOSED (2026-09-07), and its scope was the LATENT HEAT of a boil-off —
 `docs/DEFERRED.md` row B16.** M12.1 left the vent carrying its vapour's sensible
 enthalpy and nothing else, so `m_v·Δh̄_vap` appeared nowhere and every flashing
