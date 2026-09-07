@@ -9552,7 +9552,64 @@ its inventory through the flash's state change, not through a flux — so the
 function is read exactly once per vent per tick, by the holdup the vapour arrives
 at.
 
-#### 9. The harness corrupted the tree, for the reason already on record
+#### 9. Gate 2's tolerance was WRITTEN before it was measured, and the numbers were wrong
+
+The first draft of this section and of the gate's own doc comment said the
+residual "RISES like `1/dt`, the signature of float noise", quoted 8.0e-13 for
+it, and put the arriving latent share at 45.09% of 4.10e9 J. **None of those
+four numbers had been run.** The gate passed, which said only that the residual
+was under `1e-9`; the share came from arithmetic on M14.0's probe rather than
+from this plant; and the `dt` sweep the sentence describes had never been
+executed. This project's own rule covers it — a write-up composed from a
+plausible mechanism is a hypothesis with the formatting of a result — and it was
+caught in review rather than by anything in the workspace.
+
+Measured, with a `println!` and an `#[ignore]`d probe that now ship beside the
+gate:
+
+| | measured | first draft |
+|---|---:|---:|
+| gate 2's relative residual at `dt` | **8.5104e-14** | 8.0e-13 |
+| enthalpy arriving at the drum | **4.121041e9 J** | 4.10e9 J |
+| its latent share | **1.751830e9 J, 42.51%** | 1.85e9 J, 45.09% |
+| the miss under mutation (1) | **3.35e-2 relative** | "~1.9e9 J" |
+
+The latent figure reproduces M14.0's own probe (1.751830e9 against 1.751826e9),
+which is the consistency check saying the two measure the same thing.
+
+**And the discriminator gives a WEAKER answer here than it did for M13.1, which
+is the part worth keeping.** Over the same 600 s of plant time the residual runs
+8.5104e-14 → 6.3446e-14 → 2.4341e-13 at `dt`, `dt/2`, `dt/4`. It is **not
+monotone**: it dips and then rises, ending 2.86× above where it started. So it
+is neither M13.1's clean `1/dt` rise nor a truncation term — a first-order one
+would have arrived at a quarter of the coarse value. What survives is the only
+inference the tolerance needs: **the bound is not sized against an engine error,
+because there is no engine error there to size it against.** The balance
+telescopes exactly and what is left is where the last bits of two ~5e10 J sums
+land, which is not a smooth function of the step. The shipped assertion is
+therefore "it does not fall like a truncation term", with a factor of two of
+slack against the first-order prediction, and deliberately NOT "it rises" —
+which two of the three points would support and the third would not.
+
+#### 10. The cost of the evaluation order, stated rather than left to be wondered about
+
+`holdup_evaluation_order` is called once per tick on every plant, so A1's frame
+budget is entitled to an answer. **The argument is structural and no measurement
+is offered, because none of the ones available can settle it.** The line it
+replaced was `self.graph.node_ids().collect::<Vec<_>>()`, which is the same
+allocation; what is added is one pass over `edge_ids()` reading a `LeakRole`,
+plus a `BTreeMap` and a counter that stay empty on every plant whose vents end at
+an `Atmosphere` — on which the function then takes its early return and does
+nothing else. Seventeen of the eighteen shipped plants are that case.
+
+The corpus wall-time column cannot be used here and saying so is part of the
+answer: `crude_column_boiloff` reads 199.4 ms in the baseline and 305.0 ms after,
+on a plant this milestone proves byte-identical, which is machine drift under
+this project's own rule that wall time needs a control taken in the same session.
+A real number would need the A/B/A/B pairing M9.3a used, and the thing being
+measured is one `Vec` allocation against an already-allocating tick.
+
+#### 11. The harness corrupted the tree, for the reason already on record
 
 The mutation pass was launched twice by accident, and the second `snapshot()`
 captured a source file with the first run's edit already applied. Two mutations

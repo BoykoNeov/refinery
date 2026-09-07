@@ -209,10 +209,17 @@ fn run(src: &str, vents: &[&str]) -> Run {
             .tick()
             .unwrap_or_else(|e| panic!("the plant must run: tick {t}: {e}"));
         expected += tank_boundary_power(&engine) * DT;
-        let snapshot = engine.snapshot();
+        // Off the GRAPH, not off a snapshot: `Engine::snapshot` allocates the
+        // whole published document, and taking one on every tick of every run in
+        // this file is the dev-profile cost CI actually pays. The vent's stream
+        // is the same object the snapshot would copy.
         for (i, name) in vents.iter().enumerate() {
-            if let Some(e) = edge(&snapshot, name) {
-                let m = e.stream.mass_flow.value();
+            if let Some(eid) = engine
+                .graph
+                .edge_ids()
+                .find(|e| engine.graph.pipe(*e).name == *name)
+            {
+                let m = engine.graph.pipe(eid).stream.mass_flow.value();
                 vented[i] += m * DT;
                 reached[i] |= m > 0.0;
             }
@@ -327,19 +334,24 @@ fn what_the_two_tanks_vent_is_what_the_drum_receives() {
 /// `tank_boundary_power` for why the surface is drawn there and why a vent
 /// between two tanks contributes nothing to it.
 ///
-/// **The counterfactual is measured, not asserted.** 45% of the enthalpy
-/// arriving at the drum is the latent term. A receiver calling `enthalpy_flux`
-/// instead of `stream_enthalpy_flux` drops exactly that — B16's defect
-/// mirrored — and this balance would miss by ~1.9e9 J against a bound of 1e-9
-/// relative. The mutation pass is what confirms it fires; the number below is
-/// what says by how much.
+/// **The counterfactual is measured, not asserted.** Over the run the drum
+/// receives **4.121041e9 J**, of which **1.751830e9 J — 42.51% — is the latent
+/// term**. A receiver calling `enthalpy_flux` instead of `stream_enthalpy_flux`
+/// drops exactly that, which is B16's defect mirrored. Measured under the
+/// mutation, this gate then misses by **3.35e-2 relative**, against a bound of
+/// `1e-9` and a passing residual of 8.51e-14: **twelve orders**.
 ///
-/// **The tolerance is derived from the residual's DIRECTION under `dt`, per
-/// M13.1** rather than from the size of a truncation term. `ΔU` is a difference
-/// of two large tank inventories, so the gate's own cancellation dominates and
-/// the relative residual RISES as the step shrinks — the signature of float
-/// noise, not of Euler. The bound is `1e-9`, orders above the measured residual
-/// and orders below what a missing latent term would produce.
+/// **The tolerance is derived by RUNNING the `dt` discriminator, not by
+/// reasoning about it** — see `the_energy_residual_does_not_fall_like_a_truncation_term`,
+/// which is `#[ignore]`d beside this gate. The measured residual is
+/// **8.5104e-14** at the shipped step, and 6.3446e-14 and 2.4341e-13 at half and
+/// a quarter of it. It does NOT fall the way a truncation term must (a
+/// first-order one would reach a quarter of the coarse value; this reaches
+/// 2.86× it), so the bound is not sized against an engine error. It also does
+/// not rise cleanly like `1/dt` the way M13.1's did — it dips first — which is
+/// what the summation floor looks like rather than a clean cancellation law, and
+/// saying so is part of the measurement. `1e-9` is four orders above the
+/// residual and twelve below the mutation.
 #[test]
 fn the_holdups_energy_books_close_with_the_drum_in_the_loop() {
     let demo = run(
@@ -349,6 +361,10 @@ fn the_holdups_energy_books_close_with_the_drum_in_the_loop() {
     let (delta, expected) = demo.energy;
     let scale = delta.abs().max(expected.abs());
     let relative = (delta - expected).abs() / scale;
+    // Printed rather than only formatted on failure, because the tolerance
+    // paragraph above quotes these numbers and a figure a passing test never
+    // emits is a figure nobody measured. `cargo test -- --nocapture`.
+    println!("gate 2: dU = {delta:.6e} J, boundary = {expected:.6e} J, relative = {relative:.4e}");
     assert!(
         relative < 1e-9,
         "ΔU over the tanks = {delta:.6e} J against {expected:.6e} J of boundary enthalpy \
@@ -359,11 +375,97 @@ fn the_holdups_energy_books_close_with_the_drum_in_the_loop() {
     // share of the arriving enthalpy, or "the balance closes" is a claim about
     // a term that was barely there.
     let (total, latent) = demo.arriving_energy;
+    println!(
+        "gate 2: arriving enthalpy {total:.6e} J, of which latent {latent:.6e} J = {:.2}%",
+        100.0 * latent / total
+    );
     assert!(
         latent / total > 0.30,
         "the latent share of the enthalpy arriving at the drum is {:.2}% \
          ({latent:.6e} J of {total:.6e} J) — too small for this gate to be about it",
         100.0 * latent / total
+    );
+}
+
+/// **The derivation behind gate 2's `1e-9`, run rather than reasoned.**
+///
+/// `#[ignore]` because it is three full runs of a cascade plant at successively
+/// finer steps and it defends a CONSTANT rather than a behaviour — the same
+/// reason M9.3b declined to gate an iteration count. Run it with
+/// `cargo test --release -p refinery-scenarios --test vapour_recovery_reference
+/// -- --ignored --nocapture` when the tolerance is questioned.
+///
+/// **What it discriminates.** Gate 2's residual could be either of two things,
+/// and they move in opposite directions as the step shrinks. Euler truncation
+/// FALLS with `dt` — a first-order term is four times smaller at `dt/4`, a
+/// second-order one sixteen. Float cancellation in the gate's own `ΔU` does not
+/// fall at all, and M13.1 measured its own gate rising like `1/dt`
+/// (4.58e-12 → 7.0e-12 → 1.40e-11).
+///
+/// **Measured here, and it is a WEAKER answer than M13.1's** — which is worth
+/// stating rather than rounding into the same sentence. Over the same 600 s of
+/// plant time:
+///
+/// | step | ticks | relative residual |
+/// |---|---:|---:|
+/// | `dt` = 0.1 s | 6 000 | 8.5104e-14 |
+/// | `dt/2` | 12 000 | 6.3446e-14 |
+/// | `dt/4` | 24 000 | 2.4341e-13 |
+///
+/// It is **not monotone**: it dips and then rises, ending 2.86× above where it
+/// started. So `1/dt` is not what this is, and neither is truncation — a
+/// first-order term would have arrived at a quarter of the coarse value and this
+/// is nearly three times it. What it looks like is the summation floor: both
+/// sides are ~5e10 J accumulated over 6 000 to 24 000 terms, they agree to about
+/// a hundred ULP, and how the last bits land is not a smooth function of the
+/// step. The DISCRIMINATION still holds, and it is the only thing the tolerance
+/// needs: gate 2's bound is not sized against an engine error, because there
+/// is no engine error there to size it against. The balance telescopes exactly.
+///
+/// The tick count scales with the step so all three runs cover the same 600 s of
+/// plant time, or the comparison is between different trajectories.
+#[test]
+#[ignore]
+fn the_energy_residual_does_not_fall_like_a_truncation_term() {
+    let mut residuals = Vec::new();
+    for (label, dt, ticks) in [
+        ("dt", "0.1", 6_000u64),
+        ("dt/2", "0.05", 12_000),
+        ("dt/4", "0.025", 24_000),
+    ] {
+        let src = body(DEMO).replace("dt = 0.1", &format!("dt = {dt}"));
+        let mut engine = build(&src);
+        let start = holdup_energy(&engine);
+        let step: f64 = dt.parse().expect("a step");
+        let mut expected = 0.0;
+        for t in 1..=ticks {
+            expected += tank_ambient_power(&engine) * step;
+            engine
+                .tick()
+                .unwrap_or_else(|e| panic!("{label}: tick {t}: {e}"));
+            expected += tank_boundary_power(&engine) * step;
+        }
+        let delta = holdup_energy(&engine) - start;
+        let relative = (delta - expected).abs() / delta.abs().max(expected.abs());
+        println!("{label:5} ({ticks} ticks): relative residual {relative:.4e}");
+        assert!(
+            relative < 1e-9,
+            "{label}: the balance must close at every step size, not {relative:.4e}"
+        );
+        residuals.push(relative);
+    }
+    // The one thing the tolerance rests on. A first-order truncation term would
+    // land at a QUARTER of the coarse-step value at `dt/4` and a second-order
+    // one at a sixteenth; the bar is half, which leaves a factor of two of slack
+    // against the first-order prediction and is nowhere near the measured 2.86×.
+    // Deliberately not an assertion that it RISES: it does not do so monotonically
+    // and a gate saying it did would be fitted to two of three points.
+    let (coarse, fine) = (residuals[0], residuals[2]);
+    assert!(
+        fine > coarse / 2.0,
+        "the residual falls like a truncation term ({coarse:.4e} at dt, {fine:.4e} at \
+         dt/4), so gate 2's bound is sized against the engine rather than against the \
+         gate's own summation and the tolerance paragraph is wrong"
     );
 }
 

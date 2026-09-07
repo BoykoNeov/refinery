@@ -289,6 +289,27 @@ mass falls 4 019.4 → 694.8 kg, its temperature rises 357.6 → 408.5 K, its li
 fraction falls 0.811 → 0.112 and its own vent nearly doubles. The same edit that
 moved nothing before this milestone now moves only the receiver.
 
+**Gate 2's tolerance was WRITTEN before it was measured, and four numbers were
+wrong.** The first draft said the residual "rises like `1/dt`", quoted 8.0e-13
+for it, and put the arriving latent share at 45.09% of 4.10e9 J — none of it run.
+Measured: the residual is **8.5104e-14**, the drum receives **4.121041e9 J** of
+which **1.751830e9 J (42.51%)** is latent (reproducing M14.0's own probe), and
+mutation (1) misses by **3.35e-2**, twelve orders above the bound. **The `dt`
+discriminator also gives a weaker answer than it did for M13.1**: 8.5104e-14 →
+6.3446e-14 → 2.4341e-13 at `dt`, `dt/2`, `dt/4` — not monotone, so neither
+`1/dt` nor truncation. What survives is the inference the tolerance needs, that
+the bound is not sized against an engine error, and the shipped assertion is "it
+does not fall like a truncation term" rather than "it rises".
+
+**The evaluation order's per-tick cost is argued structurally and NOT measured,
+because nothing available can measure it.** The line it replaced was already a
+`node_ids().collect()`; what is added is one pass over `edge_ids()` and a
+`BTreeMap` that stays empty on the seventeen plants whose vents all end at an
+`Atmosphere`, where the function takes its early return. The corpus wall-time
+column cannot settle it — `crude_column_boiloff` reads 199.4 ms before and
+305.0 ms after on a plant proved byte-identical, which is machine drift under
+this project's own rule.
+
 **The mutation harness corrupted the tree, for the reason already on record.**
 Two accidental concurrent runs; five mutations in two crates reported the
 identical energy residual to seven figures, which is arithmetically impossible
@@ -1159,9 +1180,9 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly two of the seventeen files in `scenarios/` declare a `[[controls]]`
+**Exactly two of the eighteen files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level) and
-`vessel_pressure_control.toml` (M10.1, a pressure). **The other fifteen were
+`vessel_pressure_control.toml` (M10.1, a pressure). **The other sixteen were
 written before M8 (thirteen of them) or after it without a loop, and ARE the
 regression anchor**; adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file
