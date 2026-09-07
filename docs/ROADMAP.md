@@ -5595,25 +5595,140 @@ over 20 000 ticks, the drum's re-vent decays and **asymptotes** — 14.6 → 8.5
 2 900**, nearly half the shipped run, which is worse than M14.1's tick 1 210 and
 is stated in fork 3 rather than discovered during the build.
 
-### M15.1 — The building slice — **NOT STARTED**
+### M15.1 — The building slice — **LANDED** 2026-09-08
 
-One scenario file (`crude_column_recovery_train.toml`, the fifth member of the
-pair-diff family), the fork-4 rename with its doc corrected, seven gates and a
-six-edit mutation pass. **Predicted: no change to `core`, `solvers` or
-`scenarios` logic** — fork 2, already confirmed by probe — and all eighteen
-existing plants byte-identical on both fidelities. **The prediction that can
-actually fail is the rename's**: if it leaks into `NodeSnapshot`, eighteen plants
-move at once. Its cost is also wider than finding (ii) suggests — two serde
-names, four read sites, the refusal messages, and **two inline TOML fixtures in
-`crates/scenarios/src/lib.rs`** that a grep of `scenarios/` cannot see.
+One scenario file (`scenarios/crude_column_recovery_train.toml`, the fifth
+member of the pair-diff family), the fork-4 rename with its doc corrected, seven
+gates and a ten-edit mutation pass. **B17 and B18 are both CLOSED.**
 
-**Gate 3 has to build its own reordered graph.** The reordering that proves the
-sort is not inert was measured for M15.0 outside the repo, so the gate must
-assert both halves in code — that the sort's order differs from `node_ids()`, and
-that the results are then identical. A control that lives in a sentence is a
-control that silently stops reaching.
+**Fork 2 held, and it was confirmed before anything else was touched.** The train
+was written, loaded and run to 6 000 ticks against a `core`, `solvers` and loader
+none of which had changed. A chain needs no code. Over the run it takes recovery
+from **42.431605%** to **85.620291%**, on an emitting half that vents
+**6 709.6978 kg** either way, and every number M15.0 measured on a throwaway plant
+reproduces on the shipped one — which is worth stating in a project whose record
+is that about half its predictions are wrong.
 
-**Mutation 1 is the one the note is least sure about.** Making the sort return
-`node_ids()` unconditionally must fire gate 3 on the reordered plant; whether it
-fires anything on the natural one is exactly the measurement of whether depth 2
-bought coverage or only a second user.
+**The rename was the risky half, and it was risky in two ways the note did not
+name.**
+
+**It is byte-neutral because it stops at the LOADER, not because no published
+field bears the name.** Fork 4's cost list ends "still no published field";
+`NodeSnapshot::kind` serializes `TankState`, so `ambient_ua` is published on
+every tank of every plant — sixteen occurrences in two snapshots of the recovery
+plant. `schema.rs`'s two TOML-facing names moved and `graph.rs`'s two Rust fields
+did not. One layer deeper would have moved eighteen plants at once, which is
+exactly what §17 flagged as the prediction that could actually fail. Gate 7
+asserts both ends on the serialized bytes (M10.1's precedent — a Rust match on a
+field passes under any serde name), and the corpus confirms it: **all eighteen
+existing plants byte-identical on both fidelities, no iteration count moved**,
+against a baseline recorded before the first edit.
+
+**A bare rename would have been a SILENT breaking change.** Neither `NodeDef` nor
+`PipeDef` carries `deny_unknown_fields` — `ControlDef` is the only definition in
+`schema.rs` that does — so a file still spelling the key `ambient_ua_w_per_k`
+parses, has the key dropped, and runs with `UA = 0`: `crude_column_recovery.toml`
+would load, tick all 6 000 ticks and recover **20.7%** where its author asked for
+42.4%, with nothing saying why. The old spelling therefore ships as a tombstone
+refused by name, with the counterfactual shown as a test rather than described —
+a key the schema has never heard of really does load silently with the tank's
+`UA` at zero.
+
+**B17's noun was wrong a third time.** `TankState::ambient_ua`'s own doc has read
+"a SIGNED term … which heats a tank colder than ambient and cools one hotter"
+since M2.2, so the CORE never called this insulation. What did was the scenario
+schema, and only in its statement of what the default means. The whole wart was
+one key's spelling plus one clause of one doc comment. Its cost was also wider
+than fork 4 counted in a second way: four more inline TOML fixtures live in
+`crates/scenarios/tests/`, which a grep of `scenarios/` cannot see either.
+
+**Gate 3 asserts TRANSITIVITY by brute force, because an inequality would not.**
+`order != node_ids()` is satisfied by any permutation. What ships enumerates all
+**36 transpositions** of the reordered plant's node order and asserts none
+satisfies the constraint set — the property no depth-1 plant can ask for — with
+`crude_column_recovery.toml` reordered the same way beside it as the control,
+where a single swap does suffice. The identity half is asserted too, deliberately
+as an `assert_eq!`: **the shipped file is one the sort leaves alone**, and a
+future file that changed that would make the coverage argument stale without
+failing anything. Equality is checked every tick on every tank, not at the end,
+because a wrong order parks `ṁ_v·dt` in flight and depth 2 has two hops for it.
+
+**One of the note's figures named the wrong thing.** Fork 3(b) says stage 2 "is
+idle for the first ~2 900 ticks". At tick resolution the product tanks first boil
+at **1 208** and **2 376** (M14.1's 1 210 and 2 380 are the same events at its
+10-tick snapshot resolution), stage 1 first re-vents at **2 752** — which is when
+stage 2's *feed* switches on, and the figure the note was quoting — and **stage 2
+itself does not vent until tick 3 834**, 64% of the run rather than half.
+
+**The emitting half is indifferent one hop further out, and thirty times less
+exactly.** M14.1 measured 8.7e-11 and 1.2e-10 between `_boiloff` and `_recovery`;
+between `_recovery` and `_train` the same two figures are **2.7e-9** and
+**3.7e-9** — one more node, one more order of the same deliberately-unpinned
+mechanism — so gate 1's bound is `1e-8` rather than M14.1's `1e-9`. Free beside
+it: the train's stage 1 reproduces the single-drum plant's drum to 1.1e-9 on mass.
+
+**Gate 6's second hop is more latent-heavy than its first**: stage 1 receives
+4.121041e9 J at 42.51% latent (reproducing M14.1 exactly, since what arrives is
+unchanged) and stage 2 receives 1.933335e9 J at **58.07%**, because what stage 1
+re-vents is lighter and nearer its own bubble point. The gate asserts that
+ordering rather than just the two magnitudes. Chain residuals: mass 2.7e-15
+relative end to end, energy 1.6e-13 against a bound of 1e-9.
+
+**Fork 1 is measured rather than argued.** One drum at `UA = 1e5` recovers
+**100.000000%** — it beats the train on mass — so a gate on recovery alone would
+prefer the plant this milestone exists to reject. What separates them is
+composition at one instant: stage 1 a 386.22 K pot at 0.2614 light cut, stage 2 a
+354.19 K one at 0.9544. Two products, not more of one.
+
+**The mutation pass grew from six edits to ten, and two of the extras are the
+finding.** Mutation 5 split into three because the rename has three
+independently breakable halves. Mutations 2 and 3 had to be run twice, because
+**the note's own edits are not expressible at the site the note points at**: the
+receiver block in `engine.rs` is ONE site shared by both hops, so the obvious
+edit breaks hop 1 as well and is then caught by every hop-1 gate M14.1 already
+shipped. §17 predicted "gate 5 blind" for a second-hop latent drop; gate 5 fired,
+but only because hop 1 broke.
+
+**The first attempt to scope them was VOID and read as the milestone's sharpest
+escape.** The scope test asked whether the emitting tank vents at all, which is
+true of every tank on every boiling plant — the loader gives each one a vent —
+so both edits compiled, ran fifty-six test binaries and changed nothing, and the
+first write-up called 2b uncaught and gate 6 blind to the second hop. **An inert
+edit and an uncaught edit are the same observation**; the harness now prints
+gate 6's own residual under `--nocapture`, so a scoped edit that does nothing
+shows as an unmoved number. What actually separates the hops is one step up:
+**the tank that emitted this vapour is itself receiving somebody else's vent**,
+false on `crude_column_recovery.toml` and on every M14.1 fixture. Run that way,
+2b fires **gate 6 and gate 1 and nothing else** — the residual goes
+1.5435e-13 → 2.1754e-2, a 1.12e9 J hole equal to hop 2's own latent arrival —
+and 3b fires **gate 2 alone**, the note's prediction verbatim, while gate 6's
+residual does not move at all.
+
+**Mutation 1 corrects B18's "built and unused", and the correction is against
+this milestone's own coverage claim.** Making the sort return `node_ids()`
+unconditionally leaves gate 5 green, so the sort really is inert on the shipped
+train — finding (i) survives contact with the real file. But the edit is caught
+by **M14.1's own `moving_the_drum_up_the_file_changes_no_number`**, which builds
+a reordered depth-1 graph in-test and asserts the drum's mass, temperature and
+composition are unchanged. **The sort was already defended before this
+milestone**; what depth 2 bought is the transitivity assertion, not the first
+exercise of the machinery. The edit is also compound — the early return skips
+cycle detection too — so four of its six catches are measuring mutation 4.
+**A catch set is evidence only after each catch has been read for why it fired.**
+
+**Mutation 6 half-falsifies its own prediction and the failing half is the
+interesting one.** Gate 1 fires: an uncooled stage 2 takes the train from
+**85.620291%** to **51.954037%**, against one stage's **42.431605%**. But gate 2
+stays green — the two drums still hold different products, because **stage 2's
+separation comes from stage 1's vapour already being light, not from stage 2's
+own cooling**. The condenser decides how much is retained; the chain decides
+what. The note read M14.1's uncooled-drum result as "the compositions converge"
+and they do not.
+
+**Every edit compiled, and that was checked rather than trusted.** The harness's
+own `compiled` flag is defective — it tests `'error: ' not in output`, which
+matches cargo's `error: test failed` — so it read `False` on every run that
+worked. Two of the scoped edits genuinely did not compile on their first attempt
+and reported **zero catches**, which is `a-void-mutation-looks-like-a-catch`
+arriving from the other direction: not a void edit that looks like a catch, but a
+void edit that looks like an ESCAPE.

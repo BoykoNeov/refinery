@@ -225,15 +225,39 @@ pub enum NodeDef {
         height_m: f64,
         initial_level_m: f64,
         temperature_c: f64,
-        /// Ambient heat transfer coefficient × area, `UA` [W/K]. Already SI —
-        /// there is no customary unit for it worth converting from, unlike the
-        /// bar/°C/MW elsewhere in this file.
+        /// External heat exchange with the surroundings: heat transfer
+        /// coefficient × area, `UA` [W/K]. Already SI — there is no customary
+        /// unit for it worth converting from, unlike the bar/°C/MW elsewhere in
+        /// this file.
         ///
-        /// Optional, defaulting to 0: a perfectly insulated tank, which is what
-        /// every scenario written before this field existed meant. See
-        /// `TankState::ambient_ua`.
+        /// **Named for the TERM, not for one use of it** (M15.1,
+        /// docs/DESIGN.md §17 fork 4). It drives `Q = UA·(T_AMBIENT − T_tank)`,
+        /// which is signed: heat leaking out of a hot tank through poor lagging
+        /// and heat pulled out of a recovery drum by an ambient-cooled
+        /// condenser are the same arithmetic with opposite intent. The old
+        /// name, `ambient_ua_w_per_k`, read as the first of those and the only
+        /// declaration in the shipped corpus is the second.
+        ///
+        /// Optional, defaulting to 0: a body that exchanges no heat with its
+        /// surroundings — a perfectly insulated tank — which is what every
+        /// scenario written before this field existed meant. See
+        /// `TankState::ambient_ua`, whose name is deliberately NOT this one:
+        /// `NodeSnapshot::kind` publishes the core struct, so renaming there
+        /// would move every plant's bytes for a spelling.
         #[serde(default)]
-        ambient_ua_w_per_k: f64,
+        ambient_exchange_ua_w_per_k: f64,
+        /// The retired spelling, kept only so that a file using it is REFUSED
+        /// by name (`validate_node_def`) instead of silently losing its `UA`.
+        ///
+        /// `NodeDef` carries no `deny_unknown_fields` — see `ControlDef`, which
+        /// is the one definition in this file that does — so without this
+        /// tombstone an old file would parse, drop the key, and run a condenser
+        /// with `UA = 0`: a plant that loads, ticks, and recovers a third of
+        /// what its author asked for. M6.0's rule, in the direction nobody
+        /// checks: a key nothing reads is a file that looks configured and is
+        /// not.
+        #[serde(default, rename = "ambient_ua_w_per_k")]
+        retired_ambient_ua_w_per_k: Option<f64>,
         /// Where this tank's boil-off vent goes (M14, docs/DESIGN.md §16
         /// fork 2). The name of an `atmosphere` node or of another `tank`.
         ///
@@ -583,15 +607,30 @@ pub struct PipeDef {
     pub friction_factor: f64,
     #[serde(default)]
     pub elevation_change_m: f64,
-    /// Ambient heat transfer coefficient × exposed area, `UA` [W/K].
+    /// External heat exchange with the surroundings: heat transfer coefficient
+    /// × exposed area, `UA` [W/K].
+    ///
+    /// Renamed with the tank's for one reason and kept spelled the same for
+    /// another (M15.1, docs/DESIGN.md §17 fork 4): the two keys must agree,
+    /// because a reader who learns one learns the other — and they do NOT drive
+    /// the same equation. A tank's is a lumped `Q`; a pipe's is a transform
+    /// along the edge. See `Pipe::ambient_ua`.
+    ///
+    /// **This key has never been declared in a shipped scenario** — measured
+    /// across all eighteen files at M15.0 — so it is renamed on the strength of
+    /// the tank's finding rather than on one of its own.
     ///
     /// Optional and defaulting to 0 — a perfectly insulated pipe — for the same
     /// reason as the tank's, and it matters more here: a pipe is the one body
     /// EVERY scenario has, so a nonzero default would change the answer of every
-    /// file ever written rather than only those with tanks. See
-    /// `Pipe::ambient_ua` for why this drives a transform and not a heat term.
+    /// file ever written rather than only those with tanks.
     #[serde(default)]
-    pub ambient_ua_w_per_k: f64,
+    pub ambient_exchange_ua_w_per_k: f64,
+    /// The retired spelling. See the tank's — `PipeDef` carries no
+    /// `deny_unknown_fields` either, so this is what makes an old file fail
+    /// loudly rather than run un-lagged.
+    #[serde(default, rename = "ambient_ua_w_per_k")]
+    pub retired_ambient_ua_w_per_k: Option<f64>,
     /// Declares this pipe punctureable, naming the `Atmosphere` node its leak
     /// vents to. Absent (the default) = a pipe that cannot be damaged.
     ///

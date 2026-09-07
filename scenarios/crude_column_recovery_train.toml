@@ -1,0 +1,255 @@
+# M15.1 demo plant: `crude_column_recovery.toml` with ONE KEY and ONE NODE.
+#
+# The FIFTH member of the pair-diff family, and the diff is the point every
+# time: `crude_column.toml` -> `_cascade` (same crude, a different separation
+# model) -> `_boiloff` (the same plant, boiling) -> `_recovery` (the vapour goes
+# somewhere) -> `_train` (it goes somewhere twice). What differs from
+# `crude_column_recovery.toml`:
+#
+#     + vent_to = "polish_drum"              on recovery_drum
+#     + [nodes.polish_drum]                  a second cooled tank, identical
+#
+# (plus the plant's own name, which must differ because the corpus matches
+# baseline rows by name). NO CODE CHANGED to make this run - not in `core`, not
+# in `solvers`, not in the loader. A chain is "each holdup emits one vent, and
+# some of them arrive at another holdup", which is the topology M14.1 already
+# built; depth is not a case anything in the engine distinguishes
+# (docs/DESIGN.md §17 fork 2).
+#
+# WHAT THE SECOND STAGE IS FOR. One drum with a big enough condenser also
+# recovers everything - M14.1 measured `UA = 1e5` reaching 100% - so if mass
+# were the only observable this file would be an expensive way to write a
+# number that already exists. What a TRAIN does that a bigger condenser cannot
+# is FRACTIONATE. Measured over the shipped 6 000 ticks:
+#
+#     recovered, one stage      42.4316%     (`crude_column_recovery.toml`)
+#     recovered, this train     85.6203%
+#     emitted by the tanks    6 709.70 kg    (identical either way)
+#
+# and at tick 6 000 the two drums are holding different products: stage 1 is a
+# 386.22 K pot at 26.14% light naphtha, stage 2 a 354.19 K one at 95.44% -
+# 3.65x apart in the light cut. Two products instead of one. The emitting half
+# not moving is M14.1's finding one hop further out: the tanks are indifferent
+# to where their vapour goes.
+#
+# THE DECLARATION ORDER IS THE COVERAGE, NOT THE DEPTH. `docs/DEFERRED.md` B18
+# was written as "a chain exercises `PlantGraph::holdup_evaluation_order`", and
+# it does not: this file, written the way anyone would write it, produces an
+# evaluation order EXACTLY equal to `node_ids()`, because every receiver is
+# already declared after everything that feeds it. The sort only bites when a
+# file declares a drum ABOVE its feeders, and what depth 2 buys is that the
+# constraint is then TRANSITIVE - no single swap satisfies it, which a depth-1
+# plant cannot ask for. That reordering is built and run by the gate
+# (`crates/scenarios/tests/vapour_recovery_train.rs`), not left to this comment.
+#
+# STAGE 2 IS IDLE FOR THE FIRST 3 834 TICKS, and that is stated here rather
+# than discovered. Nothing arrives at stage 1 until tick 1 208, stage 1 does not
+# re-vent until 2 752, and stage 2 does not reach its own bubble point until
+# 3 834 - 64% of the shipped run. A stage 2 that vented earlier would be a plant
+# that looks like it works; a holdup that receives nothing publishes nothing,
+# which is the same control `bottoms_tank` provides one hop upstream.
+#
+# BOTH ARMS OF THE SATURATION RULE ARE REACHABLE, which is M10.1's requirement.
+# At tick 6 000 stage 2 re-vents 2.4266 kg/s - interior, and what the shipped
+# corpus run sees. Run it long enough and the train reaches 100%: stage 2 stops
+# venting entirely at around tick 12 000. The saturated arm costs a longer run,
+# not a different file.
+
+[meta]
+name = "crude_column_recovery_train"
+description = "The crude_column_recovery plant with the drum's own vent routed into a second cooled drum."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+separation = "cascade"
+reactions = "none"
+boiloff = "flash"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[[components]]
+name = "kerosene"
+tb_c = 220.0
+molar_mass_kg_per_mol = 0.170
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2050.0
+
+[[components]]
+name = "diesel"
+tb_c = 300.0
+molar_mass_kg_per_mol = 0.220
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "residue"
+tb_c = 400.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 950.0
+cp_j_per_kg_k = 1900.0
+
+[nodes.crude_source]
+type = "source"
+pressure_bar = 6.0
+temperature_c = 146.5
+composition = { light_naphtha = 0.12, heavy_naphtha = 0.18, kerosene = 0.25, diesel = 0.25, residue = 0.20 }
+
+[nodes.preheater]
+type = "furnace"
+duty_mw = 2.1051
+
+[nodes.column]
+type = "column"
+pressure_bar = 1.6
+draws = [
+    { outlet = "naphtha_tank", stage = 0, draw_ratio = 0.246 },
+    { outlet = "distillate_tank", stage = 5, draw_ratio = 0.554 },
+    { outlet = "bottoms_tank", stage = 8 },
+]
+
+[nodes.column.cascade]
+stages = 8
+feed_stage = 4
+reflux_ratio = 2.0
+
+[nodes.naphtha_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { light_naphtha = 1.0 }
+vent_to = "recovery_drum"
+
+[nodes.distillate_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { kerosene = 1.0 }
+vent_to = "recovery_drum"
+
+# No `vent_to`: this tank never boils, and it is the file's own control for the
+# default (see the header).
+[nodes.bottoms_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { residue = 1.0 }
+
+# STAGE 1. The M14.1 drum, unchanged except that its own boil-off now goes to
+# stage 2 instead of to the atmosphere. It is declared AFTER the tanks that vent
+# into it, and stage 2 after it, purely because that reads well - and on this
+# file that means `PlantGraph::holdup_evaluation_order` returns `node_ids()`
+# unchanged. The order it would return for a file written the other way round is
+# what the reorder gate builds and runs.
+#
+# `ambient_exchange_ua_w_per_k` IS THE CONDENSER on both drums, and the key was
+# renamed by this milestone to say so (§17 fork 4, `docs/DEFERRED.md` B17).
+# `Q = UA·(T_AMB − T_B)` is SELF-LIMITING: it stops at ambient and can never drive
+# a drum toward the sub-zero Kelvin `energy::checked_temperature` exists to
+# catch, which a declared constant duty would do the moment the feed stopped.
+#
+# BOTH STAGES CARRY THE SAME 3.5e4 W/K, and that is deliberate. Ambient is
+# 293.15 K and the lightest cut on this slate boils at 353.15 K, so the coolant
+# is already 60 K below what the train is condensing — a second stage needs no
+# colder coolant, only another pass. A knob nothing on this slate can
+# discriminate is the `smearing_k` anti-pattern, and a coolant temperature is
+# deferred as `docs/DEFERRED.md` B19 rather than shipped here.
+#
+# THE VALUE IS SIZED TO PUT THE RECOVERY INTERIOR — neither 0% nor 100% — the
+# same requirement M10.1's vent had before either of its saturation arms was
+# reachable. First-order: ~16.9 kg/s arriving at ~250 kJ/kg is a 4.2 MW latent
+# load, and a drum near 353 K against 293.15 K ambient has ~60 K of driving
+# force, so the half-recovery point is of order 3.5e4 W/K. That is an estimate
+# the gates MEASURE rather than trust.
+#
+# NEITHER DRUM MAY BOIL AT TICK 0. Nothing arrives at stage 1 before tick 1 208
+# and nothing at stage 2 before tick 2 752; both start at 40 °C holding light
+# naphtha, whose bubble point at one atmosphere is ~354 K, so each sits ~40 K
+# below boiling with no inflow. A drum venting vapour it had never received
+# would be a plant that looks like it works.
+#
+# NEITHER MAY FILL TO ITS HEIGHT. The tanks emit at most 6 709.7 kg over the
+# run; at ~700 kg/m³ over 8 m² that is 1.2 m on top of the 0.5 m each starts
+# with, and stage 2 receives strictly less than stage 1. Twelve metres is
+# margin, not a coincidence.
+[nodes.recovery_drum]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+ambient_exchange_ua_w_per_k = 35000.0
+composition = { light_naphtha = 1.0 }
+vent_to = "polish_drum"
+
+# STAGE 2, and it is IDENTICAL to stage 1 in every declared quantity — same
+# geometry, same start, same condenser. That is the experiment: nothing about
+# the second drum is tuned, so whatever separates the two inventories at tick
+# 6 000 was produced by the train and not by the file. What arrives here is
+# stage 1's own equilibrium vapour, which is already much lighter than what the
+# product tanks emitted, so this drum settles ~32 K colder and holds a nearly
+# pure light-naphtha product.
+[nodes.polish_drum]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+ambient_exchange_ua_w_per_k = 35000.0
+composition = { light_naphtha = 1.0 }
+
+[[pipes]]
+name = "crude_line"
+from = "crude_source"
+to = "preheater"
+length_m = 30.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "hot_feed_line"
+from = "preheater"
+to = "column"
+length_m = 15.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "naphtha_draw"
+from = "column"
+to = "naphtha_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "distillate_draw"
+from = "column"
+to = "distillate_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "bottoms_draw"
+from = "column"
+to = "bottoms_tank"
+length_m = 20.0
+diameter_m = 0.12

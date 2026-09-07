@@ -11,15 +11,44 @@ use std::collections::BTreeMap;
 
 use crate::schema::{c_to_k, CascadeDef, DrawDef, NodeDef, PipeDef, ScenarioFile};
 
+/// The retired `ambient_ua_w_per_k`, refused by name (M15.1, docs/DESIGN.md
+/// §17 fork 4).
+///
+/// **A refusal rather than an alias, and rather than nothing.** Neither
+/// `NodeDef` nor `PipeDef` carries `deny_unknown_fields`, so dropping the old
+/// spelling from the schema would make an old file parse with the key ignored
+/// and `UA = 0` — `crude_column_recovery.toml` would load, tick, and quietly
+/// recover 20.7% instead of 42.4% with nothing anywhere saying why. Accepting
+/// it as an alias instead would leave two spellings of one quantity in the
+/// corpus forever, which is the failure `EdgeSnapshot::leak_mass_flow`'s own
+/// comment records about two fields carrying one number.
+fn retired_ambient_ua(element: &str, value: Option<f64>) -> Result<(), SimError> {
+    match value {
+        None => Ok(()),
+        Some(v) => Err(SimError::Scenario(format!(
+            "{element} declares ambient_ua_w_per_k = {v}, which was renamed to \
+             ambient_exchange_ua_w_per_k in M15.1. The quantity is unchanged — it is the \
+             same UA in the same W/K driving the same Q = UA·(T_AMBIENT − T_body) — and \
+             only the name moved, because the term is external exchange with the \
+             surroundings and the old name read as lagging alone (docs/DESIGN.md §17 \
+             fork 4). Rename the key."
+        ))),
+    }
+}
+
 pub(crate) fn validate_pipe_def(def: &PipeDef) -> Result<(), SimError> {
-    if !def.ambient_ua_w_per_k.is_finite() || def.ambient_ua_w_per_k < 0.0 {
+    retired_ambient_ua(
+        &format!("pipe '{}'", def.name),
+        def.retired_ambient_ua_w_per_k,
+    )?;
+    if !def.ambient_exchange_ua_w_per_k.is_finite() || def.ambient_exchange_ua_w_per_k < 0.0 {
         return Err(SimError::Scenario(format!(
-            "pipe '{}' has ambient_ua_w_per_k = {}: it must be finite and >= 0. UA \
+            "pipe '{}' has ambient_exchange_ua_w_per_k = {}: it must be finite and >= 0. UA \
              is a conductance; the DIRECTION of ambient exchange comes from \
              (T_ambient − T_in), so a negative value does not mean 'loses heat' — \
              in a pipe it inverts the exponent and drives the outlet away from \
              ambient without bound.",
-            def.name, def.ambient_ua_w_per_k
+            def.name, def.ambient_exchange_ua_w_per_k
         )));
     }
     Ok(())
@@ -27,15 +56,19 @@ pub(crate) fn validate_pipe_def(def: &PipeDef) -> Result<(), SimError> {
 
 pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
     if let NodeDef::Tank {
-        ambient_ua_w_per_k, ..
+        ambient_exchange_ua_w_per_k,
+        retired_ambient_ua_w_per_k,
+        ..
     } = def
     {
-        if !ambient_ua_w_per_k.is_finite() || *ambient_ua_w_per_k < 0.0 {
+        retired_ambient_ua(&format!("tank '{name}'"), *retired_ambient_ua_w_per_k)?;
+        if !ambient_exchange_ua_w_per_k.is_finite() || *ambient_exchange_ua_w_per_k < 0.0 {
             return Err(SimError::Scenario(format!(
-                "tank '{name}' has ambient_ua_w_per_k = {ambient_ua_w_per_k}: it must \
-                 be finite and >= 0. UA is a conductance; the DIRECTION of ambient \
-                 exchange comes from (T_ambient − T_tank), so a negative value does \
-                 not mean 'loses heat' — it drives the tank away from ambient."
+                "tank '{name}' has ambient_exchange_ua_w_per_k = \
+                 {ambient_exchange_ua_w_per_k}: it must be finite and >= 0. UA is a \
+                 conductance; the DIRECTION of ambient exchange comes from \
+                 (T_ambient − T_tank), so a negative value does not mean 'loses heat' \
+                 — it drives the tank away from ambient."
             )));
         }
     }

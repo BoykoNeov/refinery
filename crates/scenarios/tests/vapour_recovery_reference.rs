@@ -577,8 +577,8 @@ fn the_drum_fills_at_the_vapour_composition_and_re_vents_at_its_own() {
 
 fn with_drum_ua(ua: &str) -> String {
     body(DEMO).replace(
-        "ambient_ua_w_per_k = 35000.0",
-        &format!("ambient_ua_w_per_k = {ua}"),
+        "ambient_exchange_ua_w_per_k = 35000.0",
+        &format!("ambient_exchange_ua_w_per_k = {ua}"),
     )
 }
 
@@ -808,8 +808,8 @@ pressure_bar = 1.0
 #[test]
 fn boil_off_vents_may_not_form_a_cycle() {
     let cyclic = body(DEMO).replace(
-        "ambient_ua_w_per_k = 35000.0",
-        "ambient_ua_w_per_k = 35000.0\nvent_to = \"naphtha_tank\"",
+        "ambient_exchange_ua_w_per_k = 35000.0",
+        "ambient_exchange_ua_w_per_k = 35000.0\nvent_to = \"naphtha_tank\"",
     );
     let message = refusal(&cyclic);
     assert!(

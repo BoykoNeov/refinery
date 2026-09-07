@@ -213,3 +213,55 @@ fn a_cycle_of_vents_fails_the_tick_it_cannot_order() {
         "both members named: got {message}"
     );
 }
+
+/// **The same refusal at DEPTH 2** (M15.1, docs/DESIGN.md §17 gate 4): three
+/// holdups, `a → b → c → a`, which no pairwise check can see — every adjacent
+/// pair points the right way and only the closure is impossible.
+///
+/// It is here as well as in the scenario gate because the two callers of
+/// `holdup_evaluation_order` are independently defended: M14.1 measured that
+/// removing the loader's call fires the scenario gate and leaves this one
+/// green, which is the right answer and only visible with both written.
+#[test]
+fn a_three_holdup_cycle_fails_the_tick_it_cannot_order() {
+    let slate = naphtha_slate();
+    let mut graph = PlantGraph::new();
+    let a = graph.add_node(holdup("a", 5_000.0, 430.0, 0.5, 0.0));
+    let b = graph.add_node(holdup("b", 5_000.0, 430.0, 0.5, 0.0));
+    let c = graph.add_node(holdup("c", 5_000.0, 430.0, 0.5, 0.0));
+    graph.add_pipe(a, b, vent("a__boiloff_vent", slate.len(), a));
+    graph.add_pipe(b, c, vent("b__boiloff_vent", slate.len(), b));
+    graph.add_pipe(c, a, vent("c__boiloff_vent", slate.len(), c));
+
+    let mut engine = boiling_engine(graph);
+    let message = engine
+        .tick()
+        .expect_err("a three-holdup cycle has no evaluation order")
+        .to_string();
+    assert!(
+        message.contains("form a cycle: a, b, c"),
+        "all three members must be named: got {message}"
+    );
+
+    // The control, and it is what says the refusal is about the CLOSURE rather
+    // than about three holdups in a row: the same chain with the last vent sent
+    // to the sky instead runs, and every holdup gets an order.
+    let mut graph = PlantGraph::new();
+    let a = graph.add_node(holdup("a", 5_000.0, 430.0, 0.5, 0.0));
+    let b = graph.add_node(holdup("b", 5_000.0, 380.0, 0.5, 5.0e4));
+    let c = graph.add_node(holdup("c", 5_000.0, 300.0, 0.5, 5.0e4));
+    let sky = graph.add_node(Node {
+        name: "sky".into(),
+        kind: NodeKind::Atmosphere,
+        heat_input: Watt::ZERO,
+    });
+    graph.add_pipe(a, b, vent("a__boiloff_vent", slate.len(), a));
+    graph.add_pipe(b, c, vent("b__boiloff_vent", slate.len(), b));
+    graph.add_pipe(c, sky, vent("c__boiloff_vent", slate.len(), c));
+    let mut engine = boiling_engine(graph);
+    for t in 1..=TICKS {
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("an open chain of three holdups must run: {t}: {e}"));
+    }
+}

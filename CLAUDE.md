@@ -181,52 +181,86 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M15 is OPEN, and its scope is THE SECOND RECOVERY STAGE — `docs/DEFERRED.md`
-rows B18 (a vent chain longer than one hop) and B17 (a condenser's `UA` in a field
-documented as insulation).** Nothing is past its trigger, so this is a DECISION on
-M11's licence, the fourth; and **both rows are triggers the milestone fires by
-building its own demo**, which is M13's shape and is named in the note's first
-paragraph. **M15.0 landed 2026-09-07** — the design note (DESIGN §17, five forks,
-seven gates, six mutations, no code). **M15.1 has not started.**
+**M15 is CLOSED (2026-09-08), and its scope was THE SECOND RECOVERY STAGE —
+`docs/DEFERRED.md` rows B18 (a vent chain longer than one hop) and B17 (a
+condenser's `UA` in a field documented as insulation).** Nothing was past its
+trigger, so this is a DECISION on M11's licence, the fourth; and **both rows are
+triggers the milestone fired by building its own demo**, which is M13's shape.
+**M15.0 landed 2026-09-07** — the design note (DESIGN §17, five forks, seven
+gates, six mutations, no code). **M15.1 landed 2026-09-08** and built it:
+`scenarios/crude_column_recovery_train.toml`, the fork-4 rename, seven gates and
+a ten-edit mutation pass. B17 and B18 are both struck.
 
-**Four things the note measured, and all four correct something already written.**
+**A chain needed NO CODE, and that was confirmed on the shipped tree before
+anything was edited.** `core`, `solvers` and the loader are untouched by the
+train; the only source changes in the milestone belong to the rename. Over
+6 000 ticks the train takes recovery from **42.431605%** to **85.620291%**, on an
+emitting half that vents **6 709.6978 kg** either way. `scenarios/` holds
+**nineteen** files and the new one is the fifth member of the pair-diff family.
 
-**The evaluation order has never done anything, and a chain is not what starts
-it.** `PlantGraph::holdup_evaluation_order` returns *exactly* `node_ids()` on
-`crude_column_recovery`, the only plant with a non-empty constraint set — the file
-declares the drum after the tanks that feed it, so node order already satisfies
-the constraint. **Depth does not change that**; a stage-2 file written the obvious
-way is inert too. What makes the sort bite is **declaration order**. A chain buys
-one narrower thing — a TRANSITIVE constraint no single swap satisfies — so a
-reorder gate at depth 2 has power the depth-1 one lacks. B18's number is right and
-its implied mechanism is wrong, eight days after it was written.
+**Six things the next milestone inherits.**
 
-**B17 is wrong by a wider margin.** "Every other plant means that field as
-lagging" — measured, `ambient_ua_w_per_k` is declared **once in eighteen files**,
-on the drum, as a condenser; the pipe-side key zero times. The documented purpose
-has **no users at all**.
+**The sort was ALREADY defended, so B18's "built and unused" was wrong about the
+gate as well as about the mechanism.** Making `holdup_evaluation_order` return
+`node_ids()` unconditionally is caught by **M14.1's own
+`moving_the_drum_up_the_file_changes_no_number`**, which builds a reordered
+depth-1 graph in-test. Gate 5 stays green, so the sort really is inert on the
+shipped train — M15.0's finding (i) survives. **What depth 2 bought is the
+TRANSITIVITY assertion, not the first exercise of the machinery**, and gate 3
+asserts it by enumerating all 36 transpositions of the reordered plant's node
+order and finding none that satisfies the constraint set, with the depth-1 plant
+reordered the same way beside it as the control, where one swap suffices.
 
-**The physical coupling that would have made B17 and B18 one slice is FALSE, and
-it was this note's own premise.** `T_AMBIENT` is 293.15 K and the lightest cut
-boils at 353.15 K, so ambient is already 60 K below what the train condenses, and
-M14.1 measured `UA = 1e5` reaching 100% at that ambient. A second stage needs a
-bigger `UA`, not colder coolant. **Fork 4 therefore rejects a coolant temperature**
-as a knob no plant discriminates and closes B17 as a doc-and-name fix on one
-field; the coolant temperature becomes ledger row **B19**.
+**A rename has a blast radius in TWO directions and B17 named neither.**
+`NodeSnapshot::kind` serializes `TankState`, so `ambient_ua` is a PUBLISHED name
+on every tank of every plant — the thorough rename would have moved eighteen
+plants' bytes for a spelling. And `NodeDef`/`PipeDef` carry no
+`deny_unknown_fields` (only `ControlDef` does), so the minimal rename would have
+let an older file parse, drop the key and run with `UA = 0` —
+`crude_column_recovery.toml` recovering 20.7% instead of 42.4% with nothing
+saying why. **What ships stops at the LOADER**: `ambient_exchange_ua_w_per_k` is
+the TOML key on both tank and pipe, `graph.rs`'s two Rust fields keep their
+spelling, and the old spelling ships as a tombstone refused by name with the
+counterfactual as a test. Gate 7 asserts both ends on the serialized bytes.
 
-**The demo was run before the fork claiming it works was written.** A throwaway
-two-stage plant outside the repo loads and runs **with no code change** (fork 2
-confirmed), taking recovery **42.4316% → 85.6203%** over 6 000 ticks and 100% at
-long times, with the emitting tanks venting **6 709.70 kg** either way. **That
-percentage does not reproduce M14.1's 42.52% and the note's first draft said it
-did**: integrating at the snapshot interval rather than per tick gives 42.52% and
-6 717.7 kg, so **M14.1's own cumulative figure is a coarse-integration artefact**
-while its instantaneous companion (49.87% held at tick 6 000) reproduces exactly.
-An agreement between two numbers computed the same wrong way is not
-corroboration. Stage 2's feed
-decays but **asymptotes** at 5.80 kg/s over 20 000 ticks — it is not a transient —
-but it **switches on only at about tick 2 900**, half the shipped run, worse than
-M14.1's 1 210 and stated in fork 3 rather than discovered later.
+**The note's own mutations were not expressible at the site the note pointed
+at.** The receiver block in `engine.rs` is ONE site shared by both hops, so
+dropping the arriving latent term there breaks hop 1 too and is caught by every
+hop-1 gate M14.1 already shipped — §17 predicted "gate 5 blind" for a second-hop
+drop and gate 5 fired, for the wrong reason. **The first attempt to scope them
+was VOID and read as an escape**: the scope test asked whether the emitter vents
+at all, which is true of every tank on every boiling plant, so both edits ran
+fifty-six binaries and changed nothing — and the first write-up called 2b
+uncaught and gate 6 blind to the second hop. **An inert edit and an uncaught edit
+are the same observation.** The test that works is one step up — the emitting
+tank is itself receiving somebody else's vent — and run that way 2b fires gate 6
+and gate 1 alone (residual 1.5435e-13 → 2.1754e-2, a 1.12e9 J hole equal to
+hop 2's own latent arrival) and 3b fires gate 2 alone, as §17 predicted.
+**Read a catch set for WHY each catch fired before counting it**, which is also
+what mutation 1 needs (its early return skips cycle detection, so four of its six
+catches are measuring mutation 4 instead).
+
+**An uncooled second stage still fractionates.** Setting stage 2's `UA` to zero
+fires gate 1 — recovery falls **85.620291% → 51.954037%** against one stage's
+42.431605% — and leaves **gate 2 green**, because stage 2's separation comes from
+stage 1's vapour already being light, not from stage 2's own cooling. The
+condenser decides how much is retained; the chain decides what. §17 predicted the
+compositions would converge and they do not.
+
+**Two of M15.0's own figures were wrong and both were understatements.** Stage 2's
+FEED switches on at tick **2 752** and stage 2 itself does not vent until
+**3 834** — 64% of the shipped run, not the note's "about half". And the emitting
+tanks' indifference to where their vapour goes is **2.7e-9 / 3.7e-9** relative
+one hop further out, against M14.1's 8.7e-11 — one more node, one more order of
+the same deliberately-unpinned mechanism — so gate 1's bound is `1e-8`.
+
+**From here, "runs byte-identical" means post-M15.1 identical, which is
+unchanged: all eighteen pre-M15 plants are byte-identical on BOTH fidelities**
+with no iteration count moved, against a baseline recorded before the first edit.
+The three rows M15 leaves behind are **B19** (a coolant colder than ambient),
+**B20** (a chain deeper than two) and **B21** (a condensate that rejoins the
+process), and all three cost "a scenario file or a slate" — which B18's own
+correction now says is a weaker argument than it sounds.
 
 **M14 is CLOSED (2026-09-07), and its scope was THE RECOVERED VAPOUR —
 `docs/DEFERRED.md` rows B12 (condensation) and B13 (where the vented vapour
@@ -258,9 +292,9 @@ row rather than a thing fixed here.
 **All seventeen existing plants are byte-identical on BOTH fidelities with no
 iteration count moved** — the claim M13 could not make for the whole corpus,
 measured against a baseline from `HEAD` in a separate worktree. From here, "runs
-byte-identical" means post-M14.1 identical, which is unchanged. `scenarios/` holds
-**eighteen** files and the new one is `crude_column_boiloff.toml` plus a drum and
-two keys — the pair pattern extended a fourth time.
+byte-identical" means post-M14.1 identical, which is unchanged. `scenarios/` held
+**eighteen** files at M14.1 and the new one is `crude_column_boiloff.toml` plus a
+drum and two keys — the pair pattern extended a fourth time.
 
 **There is a FOURTH receiver-side site and it is the one the note quotes as its
 own precedent.** `engine.rs:701`'s vent-finding predicate tests the NODE's kind,
@@ -1227,9 +1261,9 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly two of the eighteen files in `scenarios/` declare a `[[controls]]`
+**Exactly two of the nineteen files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level) and
-`vessel_pressure_control.toml` (M10.1, a pressure). **The other sixteen were
+`vessel_pressure_control.toml` (M10.1, a pressure). **The other seventeen were
 written before M8 (thirteen of them) or after it without a loop, and ARE the
 regression anchor**; adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file

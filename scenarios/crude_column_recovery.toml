@@ -150,16 +150,23 @@ composition = { residue = 1.0 }
 # (`PlantGraph::holdup_evaluation_order`), so moving this block above
 # `naphtha_tank` changes no number.
 #
-# `ambient_ua_w_per_k` IS THE CONDENSER, AND THE FIELD IS WEARING THE WRONG
-# NAME. §16 fork 4: a drum with no cooling reaches its bubble point and re-vents
+# `ambient_exchange_ua_w_per_k` IS THE CONDENSER, AND THE FIELD NOW SAYS SO.
+# §16 fork 4: a drum with no cooling reaches its bubble point and re-vents
 # everything, so a heat sink is what makes recovery happen at all — and of the
 # three shapes available, `Q = UA·(T_AMB − T_B)` is the only SELF-LIMITING one.
 # It stops at ambient and can never drive the drum toward the sub-zero Kelvin
 # that `energy::checked_temperature` exists to catch, which a declared constant
-# duty would do the moment the feed stopped. The cost is honesty about the
-# field: 3.5e4 W/K is a condenser's UA, in a slot documented as a tank's
-# insulation. Right physics, wrong name, and a deferred row rather than a thing
-# fixed here.
+# duty would do the moment the feed stopped.
+#
+# This key was `ambient_ua_w_per_k` until M15.1 and the file's own comment here
+# called that "right physics, wrong name" (`docs/DEFERRED.md` B17). §17 fork 4
+# closed the row by renaming the key rather than by adding a term: insulation
+# loss and an ambient-cooled condenser are the same signed `Q` with opposite
+# intent, and this drum was the field's ONLY declaration in the whole corpus —
+# so the documented purpose had no users and the one user meant the other
+# thing. The old spelling is now refused by name, because the schema does not
+# reject unknown keys and a silently-dropped `UA` is a drum that recovers 20.7%
+# with nothing saying why.
 #
 # THE VALUE IS SIZED TO PUT THE RECOVERY INTERIOR — neither 0% nor 100% — the
 # same requirement M10.1's vent had before either of its saturation arms was
@@ -168,7 +175,7 @@ composition = { residue = 1.0 }
 # force, so the half-recovery point is of order 3.5e4 W/K. That is an estimate
 # the gates MEASURE rather than trust.
 #
-# IT MUST NOT BOIL AT TICK 0. Nothing arrives before tick ~1 210 (when the
+# IT MUST NOT BOIL AT TICK 0. Nothing arrives before tick 1 208 (when the
 # naphtha tank first reaches its own bubble point), and a drum that vented
 # vapour it had never received would be a plant that looks like it works. It
 # starts at 40 °C holding light naphtha, whose bubble point at one atmosphere is
@@ -183,7 +190,7 @@ area_m2 = 8.0
 height_m = 12.0
 initial_level_m = 0.5
 temperature_c = 40.0
-ambient_ua_w_per_k = 35000.0
+ambient_exchange_ua_w_per_k = 35000.0
 composition = { light_naphtha = 1.0 }
 
 [[pipes]]

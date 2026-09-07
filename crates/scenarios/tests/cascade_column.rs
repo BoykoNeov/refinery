@@ -502,10 +502,10 @@ fn each_draw_leaves_at_its_own_tray_temperature() {
 fn a_draw_pipes_ambient_transform_starts_from_the_tray() {
     let with_ua = healthy().replace(
         "name = \"top_draw\"\nfrom = \"column\"\nto = \"top_tank\"\nlength_m = 20.0\ndiameter_m = 0.10",
-        "name = \"top_draw\"\nfrom = \"column\"\nto = \"top_tank\"\nlength_m = 20.0\ndiameter_m = 0.10\nambient_ua_w_per_k = 10000.0",
+        "name = \"top_draw\"\nfrom = \"column\"\nto = \"top_tank\"\nlength_m = 20.0\ndiameter_m = 0.10\nambient_exchange_ua_w_per_k = 10000.0",
     );
     assert!(
-        with_ua.contains("ambient_ua_w_per_k"),
+        with_ua.contains("ambient_exchange_ua_w_per_k"),
         "the fixture edit must have applied — a silent no-op replace would make this \
          test a copy of the one above"
     );

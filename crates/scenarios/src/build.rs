@@ -103,7 +103,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
             friction_factor: pipe.friction_factor,
             elevation_change: Meter(pipe.elevation_change_m),
             leak: LeakRole::None,
-            ambient_ua: WattPerKelvin(pipe.ambient_ua_w_per_k),
+            ambient_ua: WattPerKelvin(pipe.ambient_exchange_ua_w_per_k),
             // The solver overwrites mass_flow each tick, and transport
             // overwrites the temperature. Seed representative T/P at
             // ambient / atmospheric.
@@ -1002,7 +1002,10 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             height_m,
             initial_level_m,
             temperature_c,
-            ambient_ua_w_per_k,
+            ambient_exchange_ua_w_per_k,
+            // Refused by `validate_node_def`, which runs before this pass; the
+            // field exists only so an old spelling fails by name (M15.1).
+            retired_ambient_ua_w_per_k: _,
             // Read by `build_boiloff_vents`, which runs after every node exists
             // so a destination declared later in the file resolves — the same
             // reason a column draw and an exchanger coupling are resolved in
@@ -1035,7 +1038,7 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                 mass,
                 temperature: c_to_k(*temperature_c),
                 composition,
-                ambient_ua: WattPerKelvin(*ambient_ua_w_per_k),
+                ambient_ua: WattPerKelvin(*ambient_exchange_ua_w_per_k),
             })
         }
         NodeDef::Vessel {
@@ -1264,7 +1267,7 @@ fn split_for_leak(
         name,
         length: Meter(def.length_m / 2.0),
         elevation_change: Meter(def.elevation_change_m / 2.0),
-        ambient_ua: WattPerKelvin(def.ambient_ua_w_per_k / 2.0),
+        ambient_ua: WattPerKelvin(def.ambient_exchange_ua_w_per_k / 2.0),
         ..whole.clone()
     };
     let upstream = graph.add_pipe(from, mid, half(def.name.clone()));

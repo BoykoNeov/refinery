@@ -192,7 +192,7 @@ fn a_working_furnace_is_not_on_fire() {
 /// all, so the furnace arm above cannot reach it.
 ///
 /// **Built inline rather than loaded, and that is the point.** No scenario in
-/// the repo sets a nonzero `ambient_ua_w_per_k` on a tank, so an arm written
+/// the repo sets a nonzero `ambient_exchange_ua_w_per_k` on a tank, so an arm written
 /// against the existing files would report 0.0 for the right reason and pass
 /// for the wrong one. The plant below is `tank_pump_valve` with a hot supply
 /// tank losing heat to the air — checked to be actually losing it, so the
@@ -218,7 +218,7 @@ area_m2 = 20.0
 height_m = 10.0
 initial_level_m = 8.0
 temperature_c = 80.0
-ambient_ua_w_per_k = 200000.0
+ambient_exchange_ua_w_per_k = 200000.0
 
 [nodes.transfer_pump]
 type = "pump"

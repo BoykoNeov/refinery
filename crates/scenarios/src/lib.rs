@@ -39,7 +39,7 @@ mod tests {
         assert_eq!(s.nodes.get_index(0).unwrap().0, "supply_tank");
     }
 
-    /// `ambient_ua_w_per_k` is optional and defaults to a perfectly insulated
+    /// `ambient_exchange_ua_w_per_k` is optional and defaults to a perfectly insulated
     /// tank. This is what keeps every scenario written before the field existed
     /// bit-identical — `tank_pump_valve.toml` does not mention it, and must
     /// still load a tank with UA = 0 rather than failing to parse or picking up
@@ -56,7 +56,7 @@ mod tests {
             NodeKind::Tank(t) => assert_eq!(
                 t.ambient_ua.value(),
                 0.0,
-                "a tank whose file omits ambient_ua_w_per_k must be insulated"
+                "a tank whose file omits ambient_exchange_ua_w_per_k must be insulated"
             ),
             _ => panic!("supply_tank must be a tank"),
         }
@@ -75,7 +75,7 @@ mod tests {
             assert_eq!(
                 pipe.ambient_ua.value(),
                 0.0,
-                "pipe '{}' omits ambient_ua_w_per_k and must be insulated",
+                "pipe '{}' omits ambient_exchange_ua_w_per_k and must be insulated",
                 pipe.name
             );
         }
@@ -87,9 +87,9 @@ mod tests {
     fn an_ambient_ua_reaches_the_pipe_in_watts_per_kelvin() {
         let src = include_str!("../../../scenarios/tank_pump_valve.toml").replace(
             "name = \"suction\"",
-            "name = \"suction\"\nambient_ua_w_per_k = 750.0",
+            "name = \"suction\"\nambient_exchange_ua_w_per_k = 750.0",
         );
-        let s = super::load_str(&src).expect("must parse with an ambient_ua_w_per_k");
+        let s = super::load_str(&src).expect("must parse with an ambient_exchange_ua_w_per_k");
         let engine = super::build_engine(&s).expect("must build");
         let suction = engine
             .graph
@@ -111,11 +111,11 @@ mod tests {
     fn a_negative_pipe_ambient_ua_is_refused() {
         let src = include_str!("../../../scenarios/tank_pump_valve.toml").replace(
             "name = \"suction\"",
-            "name = \"suction\"\nambient_ua_w_per_k = -1.0",
+            "name = \"suction\"\nambient_exchange_ua_w_per_k = -1.0",
         );
         let file = super::load_str(&src).expect("must parse");
         match super::build_engine(&file) {
-            Ok(_) => panic!("a negative pipe ambient_ua_w_per_k must not build"),
+            Ok(_) => panic!("a negative pipe ambient_exchange_ua_w_per_k must not build"),
             Err(e) => {
                 let message = e.to_string();
                 assert!(
@@ -139,9 +139,9 @@ mod tests {
 
         let src = include_str!("../../../scenarios/tank_pump_valve.toml").replace(
             "[nodes.supply_tank]",
-            "[nodes.supply_tank]\nambient_ua_w_per_k = 500.0",
+            "[nodes.supply_tank]\nambient_exchange_ua_w_per_k = 500.0",
         );
-        let s = super::load_str(&src).expect("must parse with an ambient_ua_w_per_k");
+        let s = super::load_str(&src).expect("must parse with an ambient_exchange_ua_w_per_k");
         let engine = super::build_engine(&s).expect("must build");
         let id = engine.graph.find_node("supply_tank").unwrap();
         match &engine.graph.node(id).kind {
@@ -166,13 +166,14 @@ mod tests {
         let mut file = super::load_str(src).expect("must parse");
         match file.nodes.get_mut("supply_tank").expect("a supply_tank") {
             super::NodeDef::Tank {
-                ambient_ua_w_per_k, ..
-            } => *ambient_ua_w_per_k = -1.0,
+                ambient_exchange_ua_w_per_k,
+                ..
+            } => *ambient_exchange_ua_w_per_k = -1.0,
             other => panic!("supply_tank must be a tank, got {other:?}"),
         }
         // `Engine` is not `Debug`, so unwrap the Result by hand.
         match super::build_engine(&file) {
-            Ok(_) => panic!("a negative ambient_ua_w_per_k must not build"),
+            Ok(_) => panic!("a negative ambient_exchange_ua_w_per_k must not build"),
             Err(e) => {
                 let message = e.to_string();
                 assert!(
@@ -183,6 +184,82 @@ mod tests {
                      why, got: {message}"
                 );
             }
+        }
+    }
+
+    /// **The retired spelling is refused BY NAME on both a tank and a pipe, and
+    /// the reason it is a refusal at all is that nothing else would notice**
+    /// (M15.1, docs/DESIGN.md §17 fork 4).
+    ///
+    /// Neither `NodeDef` nor `PipeDef` carries `deny_unknown_fields` — only
+    /// `ControlDef` does, and its doc comment says so — so a file still saying
+    /// `ambient_ua_w_per_k` would otherwise parse, drop the key, and run with
+    /// `UA = 0`. On `crude_column_recovery.toml` that is a condenser silently
+    /// switched off: the plant loads, ticks all 6 000 ticks and recovers 20.7%
+    /// where its author asked for 42.4%. The counterfactual is shown rather
+    /// than described — the second half of this test deserializes the same
+    /// document with the tombstone bypassed and checks that the tank really
+    /// does come out with no `UA`.
+    #[test]
+    fn the_retired_ambient_ua_spelling_is_refused_by_name() {
+        use refinery_core::graph::NodeKind;
+
+        for (label, needle, replacement) in [
+            (
+                "tank",
+                "supply_tank",
+                (
+                    "[nodes.supply_tank]",
+                    "[nodes.supply_tank]\nambient_ua_w_per_k = 500.0",
+                ),
+            ),
+            (
+                "pipe",
+                "suction",
+                (
+                    "name = \"suction\"",
+                    "name = \"suction\"\nambient_ua_w_per_k = 750.0",
+                ),
+            ),
+        ] {
+            let src = include_str!("../../../scenarios/tank_pump_valve.toml")
+                .replace(replacement.0, replacement.1);
+            let file = super::load_str(&src)
+                .unwrap_or_else(|e| panic!("{label}: the old key must still PARSE: {e}"));
+            match super::build_engine(&file) {
+                Ok(_) => panic!("{label}: a file using the retired spelling must not build"),
+                Err(e) => {
+                    let message = e.to_string();
+                    assert!(
+                        message.contains(needle)
+                            && message.contains("ambient_exchange_ua_w_per_k")
+                            && message.contains("renamed"),
+                        "{label}: the refusal must name the element and the new key, \
+                         got: {message}"
+                    );
+                }
+            }
+        }
+
+        // The counterfactual: with the tombstone gone this is what the file
+        // would have meant. Written with the NEW key absent and the old one
+        // present under a name the schema does not know, which is exactly the
+        // state a bare rename would have left.
+        let src = include_str!("../../../scenarios/tank_pump_valve.toml").replace(
+            "[nodes.supply_tank]",
+            "[nodes.supply_tank]\nambient_ua_from_some_older_format_w_per_k = 500.0",
+        );
+        let file = super::load_str(&src).expect("an unknown key on a tank still parses");
+        let engine = super::build_engine(&file).expect("and still builds");
+        let id = engine.graph.find_node("supply_tank").unwrap();
+        match &engine.graph.node(id).kind {
+            NodeKind::Tank(t) => assert_eq!(
+                t.ambient_ua.value(),
+                0.0,
+                "an unrecognised key on a tank is DROPPED, not refused — which is why \
+                 the retired spelling needs a tombstone of its own"
+            ),
+            _ => panic!("supply_tank must be a tank"),
         }
     }
 
