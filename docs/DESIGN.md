@@ -9703,3 +9703,358 @@ come for free, exactly as §16 gate 5 said it would.
   atmosphere. A chain of three holdups is what the evaluation order was written
   for and nothing ships one; the ordering is covered by the reorder gate and by
   the cycle fixture, not by a chain.
+
+## 17. The second recovery stage (M15) — specified before building
+
+### What fired, and the licence — two self-triggers, named before anything else
+
+**Nothing fired.** `docs/DEFERRED.md` closed after M14.1 with "nothing is past its
+trigger", and re-reading it produces the same answer: A3 at 5.4× under its cap is
+still the nearest of the rows that carry a number, and it has not moved since
+M9.1. So M15 is taken on a **decision**, on M11's licence, for the fourth time.
+
+The two rows are **B18** (a vent chain longer than one hop) and **B17** (a
+condenser's `UA` in a field documented as insulation), and **both of them are
+triggers this milestone would fire by building its own demo**:
+
+- B18's trigger is "a plant with three holdups in a vent chain", and its distance
+  column reads, in full, "**the cost of the trigger is a scenario file**".
+- B17's trigger is "a SECOND plant needs a cooling duty", and the second stage
+  B18 asks for is a second cooled drum.
+
+That is M13's shape — a milestone whose first artefact fires its own trigger —
+and the rule `docs/DEFERRED.md` wrote for it applies here: **admissible, not
+automatic, and the circularity is named in the first paragraph rather than left
+to be noticed.** What has to be argued instead is why *now*, and the answer is
+below, in the section that runs the probes first. Three of the four reasons this
+note started with turned out to be wrong, which is the other reason the probes
+come before the forks.
+
+### What the probes found before any fork was argued
+
+**Three ledger claims and one of this note's own premises were falsified, and
+they are reported in the order they were measured.**
+
+#### (i) B18's implied MECHANISM is wrong: a chain is not what exercises the sort
+
+B18 reads "the machinery is exercised by the reorder gate and by the cycle
+fixture, not by a chain", which invites the conclusion that a chain would
+exercise it. Measured on `crude_column_recovery` — the only plant in the corpus
+with a non-empty constraint set:
+
+```
+node_ids : [crude_source, preheater, column, naphtha_tank, distillate_tank, bottoms_tank, recovery_drum, boiloff_atmosphere]
+eval     : [crude_source, preheater, column, naphtha_tank, distillate_tank, bottoms_tank, recovery_drum, boiloff_atmosphere]
+IDENTICAL: true
+```
+
+**`PlantGraph::holdup_evaluation_order` has never changed an evaluation order on
+any shipped plant.** Not because the constraint set is empty — it is not, it has
+depth 1 — but because the file declares the drum after the tanks that feed it, so
+`node_ids()` already satisfies the constraint and Kahn's lowest-id tie-break
+reproduces it exactly.
+
+**And chain DEPTH does not change that.** A stage-2 file written the way anyone
+would write it — the second drum declared after the first — leaves the sort
+inert in exactly the same way. Measured on the probe plant:
+
+```
+two_stage.toml            IDENTICAL: true
+two_stage_reordered.toml  IDENTICAL: false
+```
+
+What makes the sort bite is **declaration order, not chain length**. So B18's
+number ("depth 1, one plant") is right and the mechanism the row implies is not —
+the third recurrence of `docs/DEFERRED.md`'s own "a row's stated mechanism can be
+wrong even when its number is right", and this time it is a row *this project
+wrote eight days ago*.
+
+**What a chain does add is a TRANSITIVE constraint, and that is a different and
+smaller claim.** On the reordered probe the sort returns
+
+```
+node_ids : [crude_source, preheater, column, recovery_drum, polish_drum, naphtha_tank, distillate_tank, bottoms_tank, boiloff_atmosphere]
+eval     : [crude_source, preheater, column, naphtha_tank, distillate_tank, recovery_drum, polish_drum, bottoms_tank, boiloff_atmosphere]
+```
+
+— which no single swap produces: both emitting tanks move ahead of the first
+drum, which moves ahead of the second, and `bottoms_tank` slides past both. At
+depth 1 a reorder gate is passed by any implementation that pushes receivers to
+the end; at depth 2 it is not. **That is the whole coverage argument for B18, and
+it is honestly smaller than the row implies.**
+
+#### (ii) B17's stated mechanism is wrong, and by a wider margin
+
+B17 reads: "3.5e4 W/K is a condenser, and **every other plant means that field as
+lagging**." Measured across all eighteen files in `scenarios/`:
+
+```
+$ grep -rn "ambient_ua" scenarios/
+scenarios/crude_column_recovery.toml:153:# `ambient_ua_w_per_k` IS THE CONDENSER, AND THE FIELD IS WEARING THE WRONG
+scenarios/crude_column_recovery.toml:186:ambient_ua_w_per_k = 35000.0
+```
+
+**No other plant means that field as anything, because no other plant declares
+it.** `ambient_ua_w_per_k` appears exactly once in the shipped corpus, on the
+recovery drum, as a condenser; the pipe-side key of the same name appears zero
+times. The field's *documented* purpose — a tank's insulation — has **no users at
+all**, and its only user means the other thing. The row's noun is not the problem
+the row thinks it is: this is not a condenser hiding among lagging, it is a field
+whose sole inhabitant contradicts its doc comment.
+
+#### (iii) The coupling this note was going to be built on is FALSE
+
+The first draft of this note argued that B17 and B18 are one slice because they
+are coupled through the physics: a second stage receives a *lighter* vapour than
+the first, a lighter vapour needs a colder condenser, `energy::ambient_exchange`
+hard-codes the global `T_AMBIENT`, and therefore B18 cannot work until B17 buys a
+coolant temperature. Every clause of that is true except the one that matters.
+
+`T_AMBIENT` is 293.15 K. The lightest cut on this slate is light naphtha, whose
+normal boiling point is 353.15 K. **Ambient is already 60 K below the vapour this
+train is trying to condense**, and M14.1 had already measured that `UA = 1e5`
+recovers 100% at that same ambient. A second stage therefore needs a bigger `UA`,
+not a colder coolant, and the argument that made these two rows one slice does
+not survive its own numbers.
+
+**A coolant temperature would be a knob nothing on this slate discriminates**,
+which is M7.1's `smearing_k` anti-pattern and the standing rule against it. Fork
+4 takes that as its premise rather than as its conclusion.
+
+#### (iv) The feed exists, measured as a time series rather than an endpoint
+
+The remaining risk was that stage 2 has nothing to work on. M14.1 measured that an
+uncooled drum "self-fractionates into a heavy pot" and stops re-venting
+altogether; if the shipped drum did the same slowly, stage 2's feed would be a
+transient and the demo a dead gate — the failure this project has hit four times.
+Measured on `crude_column_recovery`, 20 000 ticks, the drum's own vent:
+
+| tick | arriving kg/s | drum re-vent kg/s | drum K | drum light-cut |
+|---|---|---|---|---|
+| 2 000 | 5.44 | **0.000** | 322.3 | 0.990 |
+| 4 000 | 16.78 | 12.879 | 366.3 | 0.559 |
+| 6 000 | 16.90 | 8.473 | 386.2 | 0.261 |
+| 10 000 | 16.95 | 6.185 | 405.1 | 0.131 |
+| 14 000 | 16.96 | 5.904 | 409.8 | 0.109 |
+| 20 000 | 16.97 | **5.799** | 412.0 | 0.101 |
+
+It decays and it **asymptotes rather than dying**: 5.80 kg/s at 20 000 ticks,
+still a third of the 16.97 kg/s arriving. Within the corpus's own 6 000-tick run
+it is 8.47 kg/s. Stage 2 has a real feed. **It switches on at about tick 2 900**,
+which is a demo-design constraint rather than a physics one and is fork 3's
+problem.
+
+### The number this milestone is for, measured on a throwaway plant
+
+Fork 2 predicts a chain needs no code. That prediction was cheap to test *before*
+writing the fork, so it was: `crude_column_recovery.toml` copied outside the repo,
+`vent_to = "polish_drum"` added to the drum, a second identical drum appended. It
+loads and runs unmodified. Over 6 000 ticks:
+
+| | tanks vented | reached atmosphere | **recovered** |
+|---|---|---|---|
+| one stage (shipped) | 6 717.7 kg | 3 861.3 kg | **42.52%** |
+| two stages (probe) | 6 717.7 kg | 965.2 kg | **85.63%** |
+
+Two things to read off that table. The recovery figure **reproduces M14.1's
+42.52% exactly**, which is what says the probe is measuring the same quantity the
+last milestone did. And **the emitting half is unchanged to five figures** —
+6 717.7 kg either way — which is M14.1's finding that the tanks are indifferent to
+where their vapour goes, now confirmed one hop further out.
+
+At long times the train goes to **100%**: stage 2's own vent reads 0.000 kg/s from
+about tick 12 000, with stage 1 parked at 412.0 K and stage 2 at 357.3 K. That is
+the plant working, and it is also fork 3's hardest constraint, because a demo
+whose second stage saturates has an unreachable arm at steady state.
+
+### Fork 1 — is a second stage a plant, or a knob?
+
+The alternative to a second drum is a bigger `UA` on the first: M14.1 measured
+`1e5` recovering 100% with one drum. If the two are indistinguishable, B18's demo
+is a more expensive way to write a number that already exists.
+
+**They are not indistinguishable, and the discriminator is composition.** One
+drum at a high `UA` condenses everything into **one** inventory: a single tank
+holding the whole recovered stream at one temperature. Two drums at the shipped
+`UA` **fractionate** — stage 1 settles at 412.0 K holding 10% light cut, stage 2
+at 357.3 K holding 77% light cut. Same total mass recovered, two products instead
+of one, and the split is the thing a recovery train exists to do. A gate comparing
+the two inventories' compositions at one instant separates them; a gate comparing
+recovered *mass* does not.
+
+**Verdict: a plant.** And the gate that defends it is a composition gate, which
+is M12.1's finding for the third time — two trajectories cannot discriminate what
+two streams at one instant can.
+
+### Fork 2 — does the chain need code?
+
+**Predicted: none in `core`, none in `solvers`, none in `scenarios`.** The
+argument, and it has already been run as a probe (above), is that every piece is
+general:
+
+- `PlantGraph::holdup_evaluation_order` is Kahn's algorithm over a `BTreeMap` of
+  constraints. Nothing in it is bounded by depth.
+- The engine's receiver branch is scoped by `boiloff_vent_emitter() == nid`, a
+  question about *this* edge and *this* node. A holdup that is both a receiver and
+  an emitter already exists — M14.1's drum reads two vents and writes one.
+- `resolve_vent_destination` admits `Atmosphere | Tank(_)`. A drum is a `Tank`.
+
+**The one thing that could have made this false is the loader's own vent
+building**, which creates one vent per tank whenever the plant selects a model
+that boils: a drum that names `vent_to` still gets its own vent, so a chain is
+"each holdup emits one vent, and some of them arrive at another holdup" rather
+than a new topology. The probe confirms it.
+
+**So the risk in this fork is not that the prediction is wrong, it is that it is
+uninteresting** — a milestone whose building slice is one TOML file. Fork 4 is
+what stops that being the whole of M15.
+
+### Fork 3 — the demo plant, and its two hard constraints
+
+The file is `scenarios/crude_column_recovery_train.toml`, and it is the **fifth**
+member of the pair-diff family (`crude_column` to `_cascade` to `_boiloff` to
+`_recovery` to `_train`), differing from `crude_column_recovery.toml` by one key
+and one node, exactly as that file differs from `_boiloff`.
+
+Two constraints the sizing has to satisfy, both measured above rather than
+assumed:
+
+**(a) Stage 2 must be interior over the shipped run.** M10.1's rule: a demo whose
+actuator sits at a saturation bound never exercises the interior arm, and one
+whose actuator never reaches a bound never exercises the saturated arm. At
+`UA = 3.5e4` on both drums, stage 2 re-vents 2.427 kg/s at tick 6 000 — interior —
+and 0.000 kg/s from about tick 12 000 — saturated. **The corpus runs 6 000 ticks,
+so the shipped gate sees the interior arm and the saturated arm is reachable by
+running longer.** That is a better position than M10.1's, where one arm needed a
+command to reach.
+
+**(b) Stage 2 is idle for the first ~2 900 ticks**, nearly half the run, because
+stage 1 does not begin re-venting until it reaches its own bubble point. M14.1's
+drum was idle until tick 1 210 and that was already recorded as acceptable; this
+is worse and has to be stated rather than discovered. It is also the plant's own
+control for the same property M14.1's `bottoms_tank` provides: **a holdup that
+receives nothing publishes nothing**, and a stage 2 that vented before tick 2 900
+would be a plant that looks like it works.
+
+The drum sizing carries over unchanged: 8 m² × 12 m reaches 3.68 m at 20 000
+ticks on stage 1 and less on stage 2, so neither fills.
+
+### Fork 4 — B17, and what to do about a field whose doc has no users
+
+Finding (ii) removes the option this fork was expected to take. The row proposes
+the problem is a condenser hiding among insulation; there is no insulation.
+Four shapes, and the third is the verdict:
+
+1. **A coolant temperature on the tank** — `Q = UA·(T_coolant − T_B)`, defaulting
+   to `T_AMBIENT`. Rejected by finding (iii): nothing on this slate, or on any
+   slate in the corpus, can tell a coolant from ambient, because ambient is
+   already 60 K below the lightest cut's boiling point. It would ship a knob no
+   plant discriminates, which is the rule this project applies to fidelity keys
+   and applies here for the same reason.
+2. **A second field, `condenser_ua_w_per_k`, summed with the first.** Two keys,
+   one arithmetic, no observable difference — a rename wearing extra machinery,
+   and two fields carrying one quantity is how they drift (`EdgeSnapshot`'s own
+   comment says so about `leak_mass_flow`).
+3. **Correct the DOC and the name to what the term actually is, and keep one
+   field.** `Q = UA·(T_AMBIENT − T_body)` is *external exchange with the
+   surroundings at a fixed temperature*; insulation loss and an ambient-cooled
+   condenser are the same term with different signs of intent, and the field
+   should say so. This is the only option that makes the code true without adding
+   anything, and its cost is measured: **one declaration in one scenario file**,
+   plus the doc comments.
+4. **A `Cooler` node.** `NodeKind::Cooler` already exists, and B17 names why it
+   cannot be used: a vent's flow is prescribed, `network::edge_flows` guards it to
+   zero, and a zero-volume node on a prescribed-flow path carries an inflow
+   nothing balances. `resolve_vent_destination` refuses it today, with that
+   reason. Unchanged.
+
+**Verdict: (3), and it is a smaller change than B17 asks for and a truer one.**
+The row says "right physics under the wrong noun"; the physics is right, the noun
+is right for one reading and the *doc* is wrong for both. **A rename moves no
+number** — fork 5's prediction — and B17 closes as a naming fix rather than as a
+physical term, with the coolant temperature becoming its own row against the day
+a slate carries a cut that ambient cannot condense.
+
+### Fork 5 — the seam, and for the second milestone running there isn't one
+
+`traits.rs` is untouched. There is no `[fidelity] condensation`, no
+`[fidelity] recovery`, and no new trait. A second stage is a **topology fact** —
+the same argument M14.1's fork 6 made about where a vent goes — and a rename is
+not a model choice. Two milestones in a row whose answer to "where is the seam" is
+"there is none" is worth recording, because the reflex that wants one is what
+M7.1's rule exists to stop.
+
+### The gates, named before building, and the vacuity each one closes
+
+1. **Recovery rises, and the emitting half does not move.** The train recovers
+   85.63% against one stage's 42.52% over 6 000 ticks, and both plants' tanks
+   vent 6 717.7 kg. *Closes:* a gate on recovery alone would be passed by a bigger
+   `UA` on one drum (fork 1).
+2. **The two drums' inventories differ in composition at one instant.** Stage 1
+   ~10% light cut, stage 2 ~77%, at tick 6 000. *Closes:* the fork-1 vacuity —
+   this is the assertion that says a train fractionates and a single big condenser
+   does not. M12.1's shape: two streams at one instant, not two runs.
+3. **The reorder gate, WITH the control M14.1's could not have.** Declaring both
+   drums above the tanks that feed them produces a genuinely different sort order
+   (measured, finding (i)) and bit-identical results across all 600 snapshots
+   (measured). **The control is the first half** — without it the gate is passed
+   by an implementation whose sort is inert, which is exactly what ships today.
+4. **A three-holdup cycle is refused**, at depth 2 rather than depth 1
+   (a to b to c to a), from a scenario and from a hand-built graph, as M14.1's
+   pair of independently-defended callers requires.
+5. **Mass closes across the whole chain**, with no `ṁ_v·dt` in flight at either
+   hop — the depth-2 form of M14.1's gate 1, and the gate whose tolerance is the
+   argument for the evaluation order existing.
+6. **Energy closes across the chain (I6b)**, with the arriving latent term at both
+   hops. The vapour reaching stage 2 carries `λ` exactly as the vapour reaching
+   stage 1 does, and dropping it at the second hop is a mutation the first hop's
+   gate cannot see.
+7. **The renamed field reproduces every number**, on all eighteen plants and both
+   fidelities.
+
+### What must not change, stated as a prediction that can be wrong
+
+**All eighteen existing plants are byte-identical on both fidelities, and no
+solver iteration count moves.** The mechanisms: the sort's constraint set is
+unchanged on all of them; the rename is a key nothing but the recovery drum
+declares; and the new plant is a new file, which has no baseline row.
+
+**The prediction that can actually fail is the rename's.** M8.5's precedent is a
+key that moved every plant's bytes; this one moves no *published* field, only a
+TOML input name and a doc comment. If a serde rename leaks into `NodeSnapshot`,
+eighteen plants move at once and the corpus says so. **A baseline has no power
+over the file the slice adds** (M10.1), so gate 1 and gate 2 are what defend the
+train, and they are asserted on its own numbers.
+
+### The mutations this slice owes, named before building
+
+| # | edit | predicted |
+|---|---|---|
+| 1 | `holdup_evaluation_order` returns `node_ids()` unconditionally | Gate 3 fires on the reordered plant; **gate 5 fires on the natural one only if the sort is not already inert there** — and finding (i) says it is, so this is the mutation that measures whether depth 2 bought anything |
+| 2 | Drop `latent` from the stream at the second hop only | Gate 6; gate 5 blind (mass is unaffected), gate 1 possibly, because arriving enthalpy decides whether stage 2 boils |
+| 3 | Stage 2 reads the upwind node's liquid `x` rather than the vent's `y` | Gate 2 and nothing else (M12.1's finding, third confirmation) |
+| 4 | The cycle refusal removed | Gate 4, from the scenario and from the fixture independently |
+| 5 | The renamed field silently keeps the old serde name | Gate 7 — and if it does not, the rename was never observable and fork 4's verdict is cheaper than it looks |
+| 6 | Stage 2's `UA` set to `0` | Gate 1 (recovery falls toward one stage's), gate 2 (the compositions converge) |
+
+**Mutation 1 is the one this note is least sure about**, and that is deliberate:
+it is the only edit that can tell whether the evaluation order is machinery this
+milestone exercised or machinery it merely declared a second user for.
+
+### Deferred, with what un-defers each
+
+- **A coolant temperature below ambient.** Fork 4 option 1, rejected because no
+  slate in the corpus carries a cut that ambient cannot condense. *Un-defers:* a
+  slate with a cut whose bubble point at plant pressure is below `T_AMBIENT` —
+  a C3/C4 light-ends cut — at which point `ambient_exchange` gains a temperature
+  argument and the field gains a second key.
+- **A chain deeper than two.** The sort is general; nothing tests depth 3.
+  *Un-defers:* a plant with one, and the cost is again a scenario file — which
+  finding (i) now says is a weaker argument than it sounds.
+- **A vent that rejoins the process** rather than terminating in a drum or the
+  atmosphere — the recovered condensate pumped back to a tank. *Un-defers:* a
+  holdup whose recovered liquid has a pressure-driven outlet, which needs the
+  prescribed-flow/solved-flow boundary a vent currently sits outside of.
+- **Stage 2's saturated arm inside the shipped run.** It is reachable at ~12 000
+  ticks and the corpus runs 6 000. *Un-defers:* the corpus run length changing, or
+  a `UA` chosen to saturate earlier — which would cost the interior arm instead.

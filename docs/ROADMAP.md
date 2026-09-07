@@ -5518,3 +5518,83 @@ first run's edit live; five mutations across two crates then reported the
 *identical* energy residual to seven figures, which is arithmetically impossible
 and is the signature of a reinstated edit. The rule was already written down. The
 shipped pass holds a lock and verifies every anchor afterwards.
+
+## M15 — the second recovery stage; a chain, and a field whose doc had no users
+
+Nothing in `docs/DEFERRED.md` is past its trigger, so M15 is a **decision**, on
+M11's licence, for the fourth time. The rows are **B18** (a vent chain longer
+than one hop) and **B17** (a condenser's `UA` in a field documented as
+insulation). **Both are triggers this milestone fires by building its own demo**,
+which is M13's shape — admissible, not automatic, and named in the note's first
+paragraph rather than left to be noticed.
+
+### M15.0 — Scoping + design note — **LANDED** 2026-09-07
+
+The note is DESIGN §17, written before any code: five forks, seven gates, six
+named mutations. It changes no number and adds no test. **Five things to know
+before the building slice, and four of them are corrections the probes made to
+claims this project wrote eight days ago.**
+
+**The evaluation order has never done anything, and a chain is not what makes it
+start.** `PlantGraph::holdup_evaluation_order` returns *exactly* `node_ids()` on
+`crude_column_recovery`, the only plant in the corpus whose constraint set is
+non-empty. Not because the set is empty — it has depth 1 — but because the file
+declares the drum after the tanks that feed it, so node order already satisfies
+the constraint. **And depth does not change that**: a stage-2 file written the
+obvious way leaves the sort inert too. What makes it bite is **declaration
+order**. B18's number is right and the mechanism it implies is wrong — the third
+recurrence of the ledger's own warning, on a row eight days old. What a chain
+*does* buy is a **transitive** constraint that no single swap satisfies, so the
+reorder gate at depth 2 has power the depth-1 one does not. That is the whole
+coverage argument, and it is smaller than B18 implies.
+
+**B17 is wrong about its own mechanism by a wider margin.** The row says "every
+other plant means that field as lagging". Measured across all eighteen scenario
+files, `ambient_ua_w_per_k` is declared **exactly once** — on the recovery drum,
+as a condenser — and the pipe-side key of the same name zero times. **The field's
+documented purpose has no users at all.** This is not a condenser hiding among
+insulation; it is a field whose sole inhabitant contradicts its doc comment.
+
+**The coupling the note was going to be built on is FALSE, and it was this
+note's own premise rather than the ledger's.** The argument was: stage 2 gets a
+lighter vapour, a lighter vapour needs a colder condenser, `ambient_exchange`
+hard-codes `T_AMBIENT`, so B18 needs B17. But `T_AMBIENT` is 293.15 K and light
+naphtha boils at 353.15 K — **ambient is already 60 K below what the train is
+condensing**, and M14.1 had measured `UA = 1e5` recovering 100% at that ambient.
+A second stage needs a bigger `UA`, not colder coolant. So fork 4 **rejects** a
+coolant temperature as a knob no plant discriminates (the `smearing_k` rule) and
+closes B17 as a **doc-and-name fix on one field**, not a physical term.
+
+**The demo works, measured on a throwaway plant before the fork claiming so was
+written.** `crude_column_recovery.toml` copied outside the repo, `vent_to`
+pointed at a second identical drum: it loads and runs **with no code change**,
+confirming fork 2. Over 6 000 ticks, recovery **42.52% → 85.63%**, with the
+emitting tanks venting 6 717.7 kg either way — the 42.52% reproducing M14.1's own
+figure exactly, and the unchanged emitting half confirming one hop further out
+that the tanks are indifferent to where their vapour goes. At long times the
+train reaches **100%**: stage 2's vent reads 0.000 kg/s from about tick 12 000,
+stage 1 parked at 412.0 K and stage 2 at 357.3 K.
+
+**Stage 2's feed was the real risk and it was measured as a trend, not an
+endpoint.** M14.1 found an uncooled drum self-fractionates into a heavy pot and
+stops venting; had the shipped drum done the same slowly, stage 2's feed would be
+a transient and the demo the fifth dead gate in this project's record. Measured
+over 20 000 ticks, the drum's re-vent decays and **asymptotes** — 14.6 → 8.5 →
+5.80 kg/s, still a third of what arrives. But it **switches on only at about tick
+2 900**, nearly half the shipped run, which is worse than M14.1's tick 1 210 and
+is stated in fork 3 rather than discovered during the build.
+
+### M15.1 — The building slice — **NOT STARTED**
+
+One scenario file (`crude_column_recovery_train.toml`, the fifth member of the
+pair-diff family), the fork-4 rename with its doc corrected, seven gates and a
+six-edit mutation pass. **Predicted: no change to `core`, `solvers` or
+`scenarios` logic** — fork 2, already confirmed by probe — and all eighteen
+existing plants byte-identical on both fidelities. **The prediction that can
+actually fail is the rename's**: if it leaks into `NodeSnapshot`, eighteen plants
+move at once.
+
+**Mutation 1 is the one the note is least sure about.** Making the sort return
+`node_ids()` unconditionally must fire gate 3 on the reordered plant; whether it
+fires anything on the natural one is exactly the measurement of whether depth 2
+bought coverage or only a second user.

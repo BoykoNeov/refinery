@@ -181,6 +181,47 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M15 is OPEN, and its scope is THE SECOND RECOVERY STAGE — `docs/DEFERRED.md`
+rows B18 (a vent chain longer than one hop) and B17 (a condenser's `UA` in a field
+documented as insulation).** Nothing is past its trigger, so this is a DECISION on
+M11's licence, the fourth; and **both rows are triggers the milestone fires by
+building its own demo**, which is M13's shape and is named in the note's first
+paragraph. **M15.0 landed 2026-09-07** — the design note (DESIGN §17, five forks,
+seven gates, six mutations, no code). **M15.1 has not started.**
+
+**Four things the note measured, and all four correct something already written.**
+
+**The evaluation order has never done anything, and a chain is not what starts
+it.** `PlantGraph::holdup_evaluation_order` returns *exactly* `node_ids()` on
+`crude_column_recovery`, the only plant with a non-empty constraint set — the file
+declares the drum after the tanks that feed it, so node order already satisfies
+the constraint. **Depth does not change that**; a stage-2 file written the obvious
+way is inert too. What makes the sort bite is **declaration order**. A chain buys
+one narrower thing — a TRANSITIVE constraint no single swap satisfies — so a
+reorder gate at depth 2 has power the depth-1 one lacks. B18's number is right and
+its implied mechanism is wrong, eight days after it was written.
+
+**B17 is wrong by a wider margin.** "Every other plant means that field as
+lagging" — measured, `ambient_ua_w_per_k` is declared **once in eighteen files**,
+on the drum, as a condenser; the pipe-side key zero times. The documented purpose
+has **no users at all**.
+
+**The physical coupling that would have made B17 and B18 one slice is FALSE, and
+it was this note's own premise.** `T_AMBIENT` is 293.15 K and the lightest cut
+boils at 353.15 K, so ambient is already 60 K below what the train condenses, and
+M14.1 measured `UA = 1e5` reaching 100% at that ambient. A second stage needs a
+bigger `UA`, not colder coolant. **Fork 4 therefore rejects a coolant temperature**
+as a knob no plant discriminates and closes B17 as a doc-and-name fix on one
+field; the coolant temperature becomes ledger row **B19**.
+
+**The demo was run before the fork claiming it works was written.** A throwaway
+two-stage plant outside the repo loads and runs **with no code change** (fork 2
+confirmed), taking recovery **42.52% → 85.63%** over 6 000 ticks and 100% at long
+times, with the emitting tanks venting 6 717.7 kg either way. Stage 2's feed
+decays but **asymptotes** at 5.80 kg/s over 20 000 ticks — it is not a transient —
+but it **switches on only at about tick 2 900**, half the shipped run, worse than
+M14.1's 1 210 and stated in fork 3 rather than discovered later.
+
 **M14 is CLOSED (2026-09-07), and its scope was THE RECOVERED VAPOUR —
 `docs/DEFERRED.md` rows B12 (condensation) and B13 (where the vented vapour
 goes), taken together because they cannot be split.** M14.0 wrote the note
