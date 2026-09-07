@@ -439,6 +439,31 @@ pub struct BoilOff {
     /// above this", so the temperature is an output of the same solve that
     /// sized `vapour_mass` and not a second answer to be derived from it.
     pub liquid_temperature: Kelvin,
+    /// Latent heat per kilogram of `vapour` [J/kg] — the `Δh̄_vap` this flash
+    /// was sized against, not a number to be re-derived from it.
+    ///
+    /// The argument is `liquid_temperature`'s, one field up, and it is stronger
+    /// here: there are at least three plausible ways to recompute this
+    /// downstream — at the holdup's temperature instead of its bubble point,
+    /// mole-weighted instead of mass-weighted, or over the VAPOUR's fractions
+    /// instead of the liquid's — and all three produce a finite, smooth,
+    /// plausible number that leaves a residual reading as a bug in whoever is
+    /// closing the books. The model divided by this number to size
+    /// `vapour_mass`; the books have to multiply by the same one.
+    ///
+    /// **Specific rather than total, and that is what removes an arm.** Where a
+    /// per-component cap cuts the vaporisation short of what the enthalpy
+    /// constraint asked for, less mass boils and the liquid is left above its
+    /// bubble point — and the energy carried is still `vapour_mass ·
+    /// latent_heat` (docs/DESIGN.md §15 fork 5). One formula, both branches.
+    ///
+    /// Over the liquid's mass fractions at the bubble point, because that is
+    /// what the flash fraction `c̄p·ΔT/Δh̄_vap` was divided by. Weighting by the
+    /// vapour's fractions would be more defensible thermodynamically and would
+    /// stop the balance closing: the invariant checks bookkeeping consistency,
+    /// not thermodynamic virtue, and if the two ever disagree the fix belongs
+    /// in the model rather than in the term the vent carries.
+    pub latent_heat: JPerKg,
 }
 
 /// Whether a liquid holdup above its bubble point boils off, and how much —

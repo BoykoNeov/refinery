@@ -18,6 +18,7 @@
 //! `the_vapour_leaves_at_y_not_x` is the only gate here that can tell a flash
 //! from a decrement, and everything else is passed by the broken version.
 
+use refinery_core::energy::T_REF;
 use refinery_core::snapshot::{EdgeSnapshot, NodeSnapshot, Snapshot};
 use refinery_core::traits::ThermoModel;
 use refinery_core::units::{Kelvin, Pascal};
@@ -736,4 +737,363 @@ fn a_vented_tank_boils_at_atmospheric_not_at_its_own_floor() {
         "the tank parks at {temperature:.3} K and its bubble point at ATMOSPHERIC is \
          {at_atmospheric:.3} K"
     );
+}
+
+// ===========================================================================
+// M13 — the latent heat of a boil-off (docs/DESIGN.md §15)
+// ===========================================================================
+//
+// **What these gates are, and what they cannot reach.** Gate 1 below closes the
+// whole plant's external energy books from published state. Its power over the
+// latent term comes entirely from the TANKS: the cascade column's reboiler duty
+// is *defined* as its condenser duty plus the column's own external sensible
+// balance (M7.4b, docs/DESIGN.md §5), so the column's contribution to this sum
+// is closed by construction and audits nothing. "The plant-wide balance closes"
+// must not be read as "the column was checked too" — this project has walked
+// into a quantity defined to close the balance that would gate it four times.
+//
+// **And gate 1 does not anchor the latent heat itself.** Halve
+// `TroutonThermo::dh_vap` and the flash boils twice the mass at half the latent
+// heat per kilogram, and every assertion here closes to the last digit. What
+// polices the number is `solvers/tests/reference/vapour_pressure.rs`'s
+// `trouton_reproduces_the_tabulated_latent_heat_within_the_envelope`, and
+// without it the gates below are a consistency check wearing a physics label.
+
+/// Total internal energy of every holdup on the plant [J], `U = m·c̄p·(T − T_REF)`.
+///
+/// A tank's `cv` equals its `cp` (a liquid), so this is the datum
+/// `energy::specific_internal_energy` uses, evaluated on published state alone.
+fn holdup_energy(s: &Snapshot, slate: &refinery_core::components::Slate) -> f64 {
+    let mut total = 0.0;
+    for n in &s.nodes {
+        if let refinery_core::graph::NodeKind::Tank(t) = &n.kind {
+            let cp = t.composition.mixture_cp(slate).value();
+            total += t.mass.value() * cp * (t.temperature.value() - T_REF.value());
+        }
+    }
+    total
+}
+
+/// Net power crossing the plant's boundary INTO it [W], from published state.
+///
+/// Three kinds of term, and the bookkeeping is stated here because it is what
+/// makes the residual mean something:
+///
+///   * **Edges with exactly one end outside** (a `Source`, `Sink` or
+///     `Atmosphere`) carry enthalpy in or out. The flux is taken at the edge's
+///     PUBLISHED temperature, which is its outlet — so the friction that pipe
+///     dissipated is already inside the number and must not be added twice.
+///   * **Interior edges cancel**, because a pipe holds no inventory: what it
+///     delivers downstream is what it took upstream plus its own dissipation.
+///     Only that dissipation survives the cancellation, and it is a genuine
+///     energy source inside the boundary.
+///   * **Nodes** contribute their heat loads (a commanded fire, a furnace duty,
+///     a cooler's, a tank's ambient exchange) and a column's net duty.
+///
+/// `with_latent = false` reproduces the pre-M13 books exactly, which is what
+/// makes the counterfactual in gate 1 a measurement rather than an assertion.
+fn boundary_power(
+    s: &Snapshot,
+    slate: &refinery_core::components::Slate,
+    with_latent: bool,
+) -> f64 {
+    use refinery_core::graph::NodeKind;
+    let kind_of =
+        |id: refinery_core::graph::NodeId| s.nodes.iter().find(|n| n.id == id).map(|n| &n.kind);
+    let outside = |k: &NodeKind| {
+        matches!(
+            k,
+            NodeKind::Source { .. } | NodeKind::Sink { .. } | NodeKind::Atmosphere
+        )
+    };
+
+    let mut power = 0.0;
+    for e in &s.edges {
+        let cp = refinery_core::units::JPerKgK(e.stream.composition.mixture_cp(slate).value());
+        let flux = if with_latent {
+            refinery_core::energy::stream_enthalpy_flux(&e.stream, cp).value()
+        } else {
+            refinery_core::energy::enthalpy_flux(e.stream.mass_flow, cp, e.stream.temperature)
+                .value()
+        };
+        match (
+            outside(kind_of(e.from).expect("the edge's source node")),
+            outside(kind_of(e.to).expect("the edge's target node")),
+        ) {
+            (true, false) => power += flux,
+            (false, true) => power -= flux,
+            (false, false) => power += e.dissipation_w,
+            (true, true) => panic!("an edge with both ends outside the plant"),
+        }
+    }
+    for n in &s.nodes {
+        power += n.heat_input_w;
+        match &n.kind {
+            NodeKind::Furnace { duty } => power += duty.value(),
+            NodeKind::Cooler { duty } => power -= duty.value(),
+            NodeKind::Tank(t) => {
+                power +=
+                    refinery_core::energy::ambient_exchange(t.ambient_ua, t.temperature).value()
+            }
+            _ => {}
+        }
+        if let Some(d) = &n.column_duty {
+            power += d.reboiler_w - d.condenser_w;
+        }
+    }
+    power
+}
+
+/// The worst per-tick relative residual of the boundary balance over a run, and
+/// the cumulative signed energy it leaves unaccounted [J] — **both with the
+/// latent term and without it, from ONE simulation.**
+///
+/// The two sums see the identical trajectory (the term is write-only in the
+/// forward solve), so running the plant twice would burn a second 6 000-tick
+/// simulation to reach numbers already in hand. Returned as
+/// `(with, without)` pairs of `(worst, cumulative)`.
+fn energy_books(src: &str, ticks: u64) -> ((f64, f64), (f64, f64)) {
+    let mut engine = build(src);
+    let slate = engine.slate.clone();
+    let dt = 0.1;
+    let mut previous = holdup_energy(&engine.snapshot(), &slate);
+    let (mut worst_with, mut cumulative_with) = (0.0_f64, 0.0);
+    let (mut worst_without, mut cumulative_without) = (0.0_f64, 0.0);
+    for t in 1..=ticks {
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("the plant must run: tick {t}: {e}"));
+        let now = engine.snapshot();
+        let energy = holdup_energy(&now, &slate);
+        // Graded against the plant's own accumulation rate, which is the
+        // largest quantity in the balance and is never near zero on this plant.
+        let accumulation = (energy - previous) / dt;
+        let scale = accumulation.abs().max(1.0);
+
+        let with = accumulation - boundary_power(&now, &slate, true);
+        cumulative_with += with * dt;
+        worst_with = worst_with.max(with.abs() / scale);
+
+        let without = accumulation - boundary_power(&now, &slate, false);
+        cumulative_without += without * dt;
+        worst_without = worst_without.max(without.abs() / scale);
+
+        previous = energy;
+    }
+    (
+        (worst_with, cumulative_with),
+        (worst_without, cumulative_without),
+    )
+}
+
+/// **The tolerance, measured before it was sized, and it is FLOAT NOISE.**
+///
+/// §15 named two candidate scales about eight orders apart and refused to guess
+/// between them: if the invariant restates the engine's own discrete rule the
+/// residual is round-off, and if it states the continuous first law explicit
+/// Euler's truncation appears. Measured on this plant with the term in place,
+/// the worst per-tick relative residual is **4.58e-12**, and the discriminating
+/// evidence is not its size but its DIRECTION OF MOTION under `dt`: halving the
+/// timestep over the same physical duration takes it to 7.0e-12 and quartering
+/// it to 1.40e-11. Truncation FALLS with `dt`. This rises, and it rises like
+/// `1/dt`, which identifies the source exactly — it is cancellation in this
+/// gate's own `ΔU`, a difference of two ~1e10 J inventories whose absolute
+/// round-off is fixed while the interval it is divided by shrinks. The engine's
+/// flash path contributes none of it: a flash WRITES the liquid temperature
+/// rather than integrating to it.
+///
+/// So the bound is round-off with three orders of headroom, and it sits eleven
+/// orders below what the same balance reports without the term (5.6e-2).
+const ENERGY_BOOKS_TOLERANCE: f64 = 1.0e-9;
+
+/// **Gate 1 — the plant's external energy books close, from published state.**
+///
+/// Every edge's enthalpy flux including the latent term, every node's heat load
+/// and column duty, against the change in every holdup's internal energy.
+///
+/// Three things make this more than a rearrangement of what `Engine::tick`
+/// computed. The model computes the latent heat and sizes the flash from it, and
+/// the engine then applies a per-component subtraction, an over-draw cap, a
+/// rounding guard and a composition renormalisation before anything is
+/// published — so the two sides are not one path. The `boiloff = "none"` twin
+/// is run as a control, where the same balance must also close. And the
+/// counterfactual is the pre-M13 engine exactly: the same sum with the latent
+/// term dropped, which must fail.
+#[test]
+fn the_external_energy_books_close_on_a_boiling_plant() {
+    let ((worst, cumulative), (worst_without, cumulative_without)) = energy_books(DEMO, TICKS);
+    assert!(
+        worst <= ENERGY_BOOKS_TOLERANCE,
+        "the boiling plant's energy books do not close: worst per-tick residual \
+         {worst:.4e} relative against a bound of {ENERGY_BOOKS_TOLERANCE:.0e}, leaving \
+         {cumulative:.6e} J unaccounted over {TICKS} ticks"
+    );
+
+    // THE COUNTERFACTUAL, and it is the pre-M13 engine rather than a
+    // hypothetical one: the identical sum with `Stream::latent` left out is the
+    // balance a frontend could have written the day M12.1 landed. Taken from
+    // the SAME simulation, because the term is write-only in the forward solve
+    // — the two sums see one trajectory and a second run would only cost time.
+    assert!(
+        worst_without > 1.0e-3,
+        "dropping the latent term leaves a worst residual of {worst_without:.4e}, which is \
+         indistinguishable from the {worst:.4e} the full balance leaves — so this plant is \
+         not actually venting latent heat and the gate above closes for the wrong reason"
+    );
+    assert!(
+        cumulative_without < -1.0e9,
+        "without the latent term the books show a SINK of {cumulative_without:.6e} J over \
+         {TICKS} ticks; M13.1 measured -1.7518e9 J on this plant and the gate is sized \
+         against a hole of that order"
+    );
+
+    // THE CONTROL: the same balance on the twin that does not boil. A gate that
+    // passed on both plants would be proving nothing about the latent term —
+    // and a control that FAILED would mean the balance itself is mis-stated.
+    let ((worst_twin, _), _) = energy_books(ANCHOR, TICKS);
+    assert!(
+        worst_twin <= ENERGY_BOOKS_TOLERANCE,
+        "the non-boiling twin's books do not close either ({worst_twin:.4e} relative), so \
+         the balance above is mis-stated rather than measuring a latent term"
+    );
+}
+
+/// **Gate 2 — the term is on the stream a frontend reads, on the BYTES.**
+///
+/// Asserted on the serialized snapshot rather than on a Rust match, because a
+/// match on `Some(_)` passes under any serde tag: M10.1's sharpest mutation was
+/// a renamed wire form that moved zero corpus rows and passed the whole suite.
+/// The two halves are equally load-bearing — a vent that carries the key, and
+/// an ordinary liquid edge on the same plant that does not, which is what makes
+/// `Option` rather than a defaulted `0.0` observable from outside.
+#[test]
+fn the_vent_publishes_a_latent_heat_and_a_liquid_line_does_not() {
+    let mut engine = build(DEMO);
+    run(&mut engine, TICKS);
+    let snapshot = engine.snapshot();
+
+    let vent = edge(&snapshot, VENT);
+    assert!(
+        vent.stream.mass_flow.value() > 0.0,
+        "the vent is idle at tick {TICKS}, so it would carry no latent term for any reason"
+    );
+    let vent_json = serde_json::to_string(vent).expect("an edge snapshot serializes");
+    assert!(
+        vent_json.contains("\"latent\":"),
+        "the vent's serialized stream carries no `latent` key, so a frontend closing the \
+         plant's energy books from JSON still cannot: {vent_json}"
+    );
+
+    let liquid_json =
+        serde_json::to_string(edge(&snapshot, "naphtha_draw")).expect("an edge serializes");
+    assert!(
+        !liquid_json.contains("latent"),
+        "an ordinary liquid draw publishes a `latent` key. `None` must mean \"this stream \
+         is a liquid and the question does not arise\" — a serialized zero there is a \
+         vapour whose latent heat is nothing, which is false: {liquid_json}"
+    );
+    // The THIRD vent, and it is a different statement from the liquid draw
+    // above. `bottoms_tank` holds residue, never reaches its bubble point, and
+    // its vent is built by the loader anyway — so this is an edge that COULD
+    // carry a latent term and does not. The draw above is an edge that could
+    // not. Measured over the run: the naphtha vent publishes `latent` in 480 of
+    // the 600 snapshots and the distillate vent in 363, and this one in none.
+    let idle_json = serde_json::to_string(edge(&snapshot, "bottoms_tank__boiloff_vent"))
+        .expect("an edge serializes");
+    assert!(
+        !idle_json.contains("latent"),
+        "a vent whose tank never reached its bubble point publishes a `latent` key. \
+         `None` on an idle vent is what stops a consumer booking energy out of a tank that \
+         is not boiling: {idle_json}"
+    );
+}
+
+/// **Gate 4 — the term is SPECIFIC (J/kg), asserted two ways, and deliberately
+/// silent about its size.**
+///
+/// §15 specified this as an order-of-magnitude check, on the reasoning that
+/// writing the total into the specific field is "a factor of `m_v` — order 10³
+/// on the demo". **That is false on this plant**: the vents move 0.517 kg and
+/// 1.173 kg per tick, so a total would sit 0.5–1.2× the specific value and no
+/// magnitude band could see it. Gate 1 is what catches that mutation, through
+/// the `mass_flow` that `stream_enthalpy_flux` multiplies by. What survives here
+/// are two statements that do not depend on the demo's tuning:
+///
+///   * **A mixture average lies between its members.** `latent` must sit
+///     between the smallest and largest of the components' own latent heats per
+///     kilogram at the vent's own temperature — which a per-MOLE value (order
+///     3e4 J/mol) or a power (order 1.5e6 W) both miss. The bounds come from the
+///     thermo model per component and the weighting does not, so this is not the
+///     model's own sum restated.
+///   * **A specific quantity is intensive.** Halving the timestep halves the
+///     vapour mass each tick and must leave `latent` where it was. Measured:
+///     the mass per tick halves exactly and `latent` moves by 2.8e-7 relative.
+///
+/// **What this gate must NOT assert is proximity to the measured share of the
+/// draw's enthalpy.** That share is a property of this column's draw
+/// temperature over this run length; a band around it would pin the demo's
+/// tuning rather than the physics and would need re-fitting every time the
+/// column changed (M7.4b's coincidence-passing-as-a-gate). The size claim
+/// belongs in the write-up as a measurement.
+#[test]
+fn the_latent_term_is_specific_and_intensive() {
+    use refinery_core::traits::ThermoModel;
+
+    let mut engine = build(DEMO);
+    run(&mut engine, TICKS);
+    let snapshot = engine.snapshot();
+    let vent = edge(&snapshot, VENT);
+    let latent = vent
+        .stream
+        .latent
+        .expect("a boiling vent carries a latent heat")
+        .value();
+
+    let thermo = TroutonThermo::new();
+    let mut low = f64::INFINITY;
+    let mut high: f64 = 0.0;
+    for c in 0..engine.slate.len() {
+        let per_kg = thermo
+            .dh_vap(&engine.slate, c, vent.stream.temperature)
+            .expect("trouton answers")
+            .value()
+            / engine.slate.get(c).molar_mass.value();
+        low = low.min(per_kg);
+        high = high.max(per_kg);
+    }
+    assert!(
+        latent >= low && latent <= high,
+        "the vent reports {latent:.6e} for its latent heat, outside [{low:.6e}, {high:.6e}] \
+         J/kg — the range the slate's own components span at {} K. No mass-weighted \
+         average of them can land there, so this is not a specific latent heat",
+        vent.stream.temperature.value()
+    );
+
+    // Intensivity: the same plant on half the timestep, run to the same
+    // physical time. `m_v` per tick halves; a specific quantity does not move.
+    let halved = DEMO.replace("dt = 0.1", "dt = 0.05");
+    assert!(
+        halved.contains("dt = 0.05"),
+        "the timestep line moved; this gate is comparing the plant with itself"
+    );
+    let mut half_engine = build(&halved);
+    run(&mut half_engine, TICKS * 2);
+    let half = half_engine.snapshot();
+    let half_vent = edge(&half, VENT);
+    let half_latent = half_vent
+        .stream
+        .latent
+        .expect("the halved plant still boils")
+        .value();
+
+    // The control: the thing that IS extensive really did halve, or "latent did
+    // not move" is passed by a plant where nothing moved.
+    let mass_ratio =
+        (half_vent.stream.mass_flow.value() * 0.05) / (vent.stream.mass_flow.value() * 0.1);
+    assert!(
+        (0.49..=0.51).contains(&mass_ratio),
+        "the vapour mass per tick moved by {mass_ratio:.4}× rather than halving, so the \
+         two runs are not at the same physical state and nothing below discriminates"
+    );
+    approx::assert_relative_eq!(latent, half_latent, max_relative = 1.0e-5);
 }

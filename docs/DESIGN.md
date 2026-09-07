@@ -1917,10 +1917,22 @@ scenario in the workspace builds one. If a real plant needs it — a recycle loo
 with no vessel anywhere in it — the fix is a linear solve over the loop, and it
 should arrive with the scenario that motivates it, not before.
 
-**Enthalpy datum.** `h = cp·(T − T_REF)`, `T_REF = 273.15 K`. Every flux in the
-engine goes through `energy::enthalpy_flux`, so the datum cancels exactly as
-long as mass balances. It is deliberately non-zero: a 0 K datum makes `h = cp·T`
-and would hide any path that dropped the reference entirely.
+**Enthalpy datum.** `h = cp·(T − T_REF)` **for a LIQUID**, `T_REF = 273.15 K`.
+Every SENSIBLE flux in the engine goes through `energy::enthalpy_flux`, so the
+datum cancels exactly as long as mass balances. It is deliberately non-zero: a
+0 K datum makes `h = cp·T` and would hide any path that dropped the reference
+entirely.
+
+**The qualifier is load-bearing and was added by M13** (§15): the reference
+state is *saturated liquid* at `T_REF`, so a stream that became a VAPOUR from a
+liquid this datum describes carries `h = cp·(T − T_REF) + λ`. That is
+`Stream::latent`, and `energy::stream_enthalpy_flux` is the one expression that
+puts the two together. Exactly one such stream exists today — the boil-off vent
+M12.1 added — and until M13 its `λ` appeared nowhere, so every flashing plant's
+external books were short by it (`docs/DEFERRED.md` B16, 1.751826e9 J over
+6 000 ticks of the demo). A cut the slate *declares* `Gas` is untouched by any of
+this: it never condenses anywhere in the engine, so its own reference state is
+that gas at `T_REF` and `h = cp·(T − T_REF)` is its whole enthalpy.
 
 **Accuracy is inherited from the hydraulics.** Enthalpy cancels at a junction
 only as exactly as *mass* balances there, and the flow solver stops at a finite
@@ -8162,6 +8174,14 @@ in the one part of the engine this project has been most careful about, and the
 two rows downstream of it (B12 condensation, B13 where the vapour goes) cannot
 be built on top of an energy term that does not exist.
 
+**The 7.6084e8 J in the paragraph above, and everywhere else in this section, is
+the NAPHTHA TANK alone.** M13.1 closed the plant's books and found
+`distillate_tank` boiling harder with nothing counting it: the demo's own hole is
+**1.751826e9 J over 6 000 ticks and 4.317708e6 W at tick 6 000**, 2.30× and
+2.80×. The original text is left standing rather than quietly corrected, because
+what went wrong is worth reading — see "Corrections from building it (M13.1)",
+correction 1.
+
 The alternative licence — wait for a frontend to ask — was considered and
 rejected on the M11 precedent: §3 told frontends for ten milestones to read a
 wrong number as the cavitation signal, and nobody noticed until a milestone went
@@ -8541,3 +8561,248 @@ and which is not a fidelity choice.
   edge that carries it and leaves the summing to the consumer, the way
   `column_duty` does. A `Snapshot`-level total is a view over published state and
   needs its own argument about who owns it.
+
+### Corrections from building it (M13.1, landed 2026-09-07)
+
+Nine things the note got wrong, or left open and this slice measured. The
+arithmetic of §15 survived intact — the identity `U_before − U_after − vent =
+m_v·Δh̄_vap` is what the engine now reports and the books close on it — so
+everything below is about the *evidence*, not the physics.
+
+**1. The number this milestone was licensed by counted ONE of the demo's TWO
+boiling tanks.** M12.1's correction 7 recorded 7.6084e8 J over 6 000 ticks and
+1.54 MW at tick 6 000, and §15 repeats both. Measured here with the whole
+plant's books in front of it, the hole is **1.751826e9 J over the run and
+4.317708e6 W at tick 6 000** — 2.30× and 2.80× the recorded figures. The
+recorded ones are the **naphtha tank alone**, reproduced to five digits
+(7.608392e8 J, 1.542113e6 W) once the sum is restricted to that vent. The
+`distillate_tank` boils too, harder — 11.73 kg/s of vapour against the naphtha
+tank's 5.17 — and carries 2.775588e6 W that nothing had counted. M12.1's own
+prose says the 3e-12 instrumentation ran "on both of its boiling tanks", so the
+plant was known to have two; the headline was measured on one of them. **The
+lesson is not "check your arithmetic" — the number was right about its subject
+and wrong about its scope, and nothing in the sentence said which tank it was.**
+
+**2. The tolerance is float noise, and what settles it is not the size but the
+DIRECTION OF MOTION under `dt`.** §15 named two candidates about eight orders
+apart and refused to guess. Measured with the term in place, the worst per-tick
+relative residual on the demo is **4.58e-12** — which on its own is only weak
+evidence, because a truncation term could be that small on a well-behaved plant.
+The decisive run is the sweep: halving the timestep over the same physical
+duration gives **7.0e-12**, quartering it **1.40e-11**. Explicit Euler's error
+*falls* with `dt`. This **rises**, and it rises like `1/dt`, which names its
+source exactly — it is cancellation in the invariant's own `ΔU`, a difference of
+two ~1e10 J holdup energies whose absolute round-off is fixed while the interval
+it is divided by shrinks. **So the residual is not the engine's at all; it is the
+gate's own subtraction**, and the flash path contributes none of it, because a
+flash *writes* the liquid temperature rather than integrating to it. The bound
+ships at `1e-9` — three orders above the noise, eleven below the 5.6e-2 the same
+sum reports without the term.
+
+**3. "All seventeen plants byte-identical" is FALSE as stated, and true in the
+thing it was trying to say.** Sixteen of seventeen are byte-identical on both
+fidelities. `crude_column_boiloff` **moved**, and it had to: the corpus
+fingerprint is taken over published snapshots, and the entire point of the
+milestone is to publish a field there. §15 conflated "the forward solve reads
+nothing new" with "the bytes do not change", and **the corpus cannot express the
+first** — it is a fingerprint, so any new published key moves it.
+
+What replaces the claim is the M8.5 / M11 method: run the demo either side at
+6 000 ticks on both fidelities, strip the `latent` keys from the after-file, and
+compare. **843 keys on each fidelity, and both after-files reproduce their
+before-file byte for byte.** So the only change on the one plant that moved is
+the key that was added.
+
+**843 is itself a check, and the denominator has to be stated for it to be one** —
+which on this milestone of all milestones is the point. The loader builds
+**three** vents (one per tank) and the run emits **600** snapshots, so a field
+written unconditionally would appear 1 800 times. `bottoms_tank`'s vent never
+boils at all and the other two are `None` until their tanks reach their bubble
+points, which is fork 4's "cleared on the ticks nothing boils" showing up in the
+file size.
+
+**4. The note's most load-bearing prediction — the vent's enthalpy is write-only
+in the forward solve — is TRUE, and was measured the way the note asked rather
+than inferred from the identical bytes.** Scaling `BoilOff::latent_heat` by an
+arbitrary 3.7× **at the construction site only**, so the flash fraction
+`c̄p·ΔT/Δh̄_vap` keeps its unscaled divisor, leaves every published quantity on
+both fidelities byte-identical except `latent` itself. Perturbing `dh_vap`
+instead would have moved the flash fraction and the whole plant with it — a
+different probe that cannot answer this question.
+
+**5. Gate 4 as §15 specifies it cannot catch its own mutation, and the reason is
+a number the note guessed.** The note sized an order-of-magnitude assertion on
+"writing the total into the specific field is a factor of `m_v` — order 10³ on
+the demo". The demo's vents move **0.517 kg and 1.173 kg per tick**, so a total
+would sit 0.5–1.2× the specific value: no magnitude band could see it, and the
+one the note describes would have passed under the fault it was written for. It
+is **gate 1** that catches specific-versus-total, through the `mass_flow` that
+`stream_enthalpy_flux` multiplies by.
+
+What ships instead are two statements that do not depend on the demo's tuning. A
+mixture average must lie **between its members** — `latent` against the smallest
+and largest of the slate's own `Δh_vap/M` at the vent's temperature, which a
+per-mole value (order 3e4) or a power (order 1.5e6) both miss, with the bounds
+computed per component so the weighting is not restated. And a specific quantity
+is **intensive**: halve the timestep and the vapour mass per tick halves exactly
+while `latent` moves by 2.8e-7 relative. §15's prohibition stands and is
+enforced — the gate says nothing about the share of the draw's enthalpy, which
+is a property of this column's tuning and, per correction 1, a quantity whose
+subject has to be named before it means anything.
+
+**6. Gate 3 rests on the SLOPE of a citation the workspace already carries.**
+`reference/vapour_pressure.rs` holds NIST's Antoine coefficients for n-hexane,
+and Clausius–Clapeyron turns that fit's slope into a latent heat with no second
+source: `Δh_vap = R·T²·ln(10)·B/(T + C)²`. At the boiling point the fit's own
+coefficients invert to, that is **30 515.9 J/mol** against Trouton's
+**30 086.4** — a ratio of **0.9859**, which is where a ±10% correlation sitting
+under an anchor biased a few percent high by the ideal-gas assumption should
+land. The band is `[0.85, 1.15]`, decided from those two one-sided errors before
+the ratio was computed, and it is shown to be escapable at ×0.5, ×0.8, ×1.2 and
+×2.0. **The symbolic slope is cross-checked against a central difference of
+`antoine_pa` itself**, because the `ln 10` and the `(T + C)²` are a factor slip
+that produces a smooth, positive, wrong latent heat.
+
+Two things this gate is not. It is not covered by the vapour-pressure envelope
+beside it: `TroutonThermo` reads its constant in two independent methods, and
+scaling only `dh_vap` leaves `saturation_pressure` — and therefore every existing
+test in that file — untouched. And it is not circular with gate 1: gate 1's two
+sides both move together under a wrong `Δh_vap`, which is precisely why §15 said
+the pair needs it.
+
+**7. Fork 7 asked for both artefacts and both shipped, so the note does not have
+to record a property as untested.** The gate is on the demo, in
+`boiloff_reference.rs`; the property is **I6b** in `energy_invariants.rs`, a
+proptest over generated plants with a two-cut naphtha slate, `TroutonThermo` and
+`FlashBoilOff`, feeding a mixing tee into a holdup with a hand-built vent. It
+needed its own slate because the file's water plants collapse `y = K·x` onto `x`,
+and its own reachability counter because a property about boiling is passed by a
+population that never boils: **123 of 200** generated plants vent vapour, and the
+counterfactual is inside the test — on any sample that boiled, the same sum
+without the latent term must miss.
+
+**7a. The prediction that no seam changes holds, checked rather than assumed.**
+`traits.rs` is 25 insertions and zero deletions — the `BoilOff::latent_heat`
+field fork 2 specifies, and nothing else; the struct changed and the trait did
+not. `BoilOffModel`, `ThermoModel`, `FlowSolver`, `SeparationModel` and
+`Controller` are untouched, and the scenario schema and `[fidelity]` keys are
+proven untouched by absence, `schema.rs`, `build.rs`, `validate.rs` and
+`control.rs` being outside the diff entirely.
+
+**8. The declared-GAS datum is untouched, and saying so is what stops the next
+reader "fixing" it.** `capacitive_vessel_reference.rs` states `h = cp·(T − T_REF)`
+for a blowdown gas and is right. The qualifier M13 adds is about a **phase
+change**: a cut the slate declares `Gas` never condenses anywhere in this engine,
+so its own reference state is that gas at `T_REF` and its books are
+self-consistent. What was wrong is the datum for a stream that **became** a
+vapour from a liquid the same datum describes, which is exactly one stream — the
+boil-off vent M12.1 added.
+
+**9. `is_boiloff_vent()` left the energy path as fork 4 said it would**, and the
+consequence is visible in the two new consumers: neither the demo gate nor I6b
+asks which edges are vents. Both ask the stream. The role marker keeps its other
+three jobs (excluding the vent from the tank's own flux loop, refusing a
+`PuncturePipe`, telling the transport sweep not to overwrite the temperature),
+and a second vapour-bearing edge — B12's condenser feed, B13's flare line — needs
+no new discriminator and no audit of who was testing for a vent.
+
+### The mutation pass, against the predictions (M13.1, landed)
+
+Nine edits — §15's table splits into nine because its fifth row names two
+opposite faults — each applied to a pristine snapshot, built and run against the
+**whole workspace** with `--no-fail-fast`, then restored. Three of them — the two
+that break `stream_enthalpy_flux` and the stale-vent one — were **re-run after
+the suite was strengthened**, because a verdict taken against a weaker suite is
+only sound in the "caught" direction. Every edit is confirmed
+to have compiled, and the one that reads a value it should not is confirmed to
+have landed at the intended site rather than at a similar-looking one elsewhere
+in the file (`a-void-mutation-looks-like-a-catch`).
+
+| edit | §15's prediction | what fired |
+|---|---|---|
+| `latent` written but never added into the boundary sum | gate 1, demo only | **gate 1 alone** as I6b was first written; **gate 1 and I6b** after the restructure correction 12 describes |
+| the latent term added with the wrong sign | gate 1, at twice the residual | same: gate 1 alone, then **gate 1 and I6b** |
+| `latent_heat` re-derived from a fresh `dh_vap` at the tank's temperature | **uncaught** | **uncaught**, and the stated reason verified: `TroutonThermo::dh_vap` is `C·tb` and reads its temperature argument only for `check_state`, so the mutant value is bit-identical |
+| `latent_heat` weighted by the vapour's fractions | gate 1 | gate 1 **and I6b** |
+| `latent` cleared on a boiling vent | gate 2 | gate 1, gate 2, gate 4 **and** I6b |
+| `latent` left stale on an idle vent | gate 1, on the ticks after the first boil | **UNCAUGHT by everything the slice originally shipped — the prediction is wrong twice over** (correction 10). Caught by `a_vent_carries_a_latent_term_exactly_while_it_is_boiling` and by that fixture ALONE once it existed, which is the sharpest form of the finding: nothing else in the workspace can see this edit |
+| `latent` under a different serde tag | gate 2 alone | **gate 2 alone**, M10.1's escape reproduced and closed |
+| `dh_vap` scaled by ½ | gate 3 alone; gate 1 closes to the last digit | **gate 1 closes — checked by name, not by reading the list**. But six tests fire, two of them older than M13 (correction 11) |
+| the vent excluded from the boundary sum entirely | gate 1, through the SENSIBLE term | **gate 1 alone**, and §15's warning stands: this edit is not evidence that gate 1 sees the latent term |
+
+**10. The stale-latent mutation escaped, and the prediction was wrong for two
+independent reasons — either of which alone would have been enough.**
+
+§15 said a stale `Some(λ)` left on an idle vent would be "caught by gate 1 on the
+ticks after the first boil". It is not caught by anything. First, **gate 1 is
+structurally blind to it**: an idle vent's `mass_flow` is zero, and the term is
+*specific*, so `stream_enthalpy_flux` multiplies the stale value by zero. The
+same property that made "specific rather than total" the right representation
+(fork 5 — one formula, both branches) is what makes an energy balance unable to
+police the field on an idle edge.
+
+Second, **the demo cannot reach the state at all.** Measured over the run: the
+naphtha vent publishes `latent` from tick 1 210 to the end (480 of 600
+snapshots), the distillate vent from tick 2 380 (363), and `bottoms_tank`'s never
+does. **Both figures are at the run's 10-tick snapshot resolution** — the
+crossings lie in 1 201–1 210 and 2 371–2 380 — and stating either as exact would
+be this milestone's own headline error in miniature. The naphtha figure is also
+not in conflict with the `TICKS` comment in `boiloff_reference.rs`, which says
+that tank first boils at tick 1 825: that is the crossing against the tank's
+FLOOR pressure, and M12.1's correction 3 records the move to the blanket pressure
+as 618 ticks earlier, which is 1 207 and inside the window above. **No vent on this plant ever goes from boiling to idle**, so the stale value
+a leaking engine would read is the `None` it should have written anyway. A gate
+on this demo could not have caught it whatever it asserted.
+
+Closed with the cheapest fixture that reaches the state —
+`a_vent_carries_a_latent_term_exactly_while_it_is_boiling`, in
+`energy_invariants.rs`: a hot holdup with **no inflow at all**, which boils its
+superheat away on the first tick, parks on its bubble point and is idle for the
+remaining forty-nine. The assertion is the biconditional (`carrying vapour` ⇔
+`latent.is_some()`) rather than either half, with both arms asserted to have been
+reached, because each half alone is passed by a plant that never leaves the other
+regime. A second, cheaper assertion goes into gate 2 on the demo: the
+`bottoms_tank` vent is an edge that **could** carry the term and does not, which
+is a different statement from the liquid draw beside it (an edge that could not).
+
+**11. Gate 3's own justifying mutation is not gate 3's alone, and §15's "the
+workspace has no reference test for `dh_vap`" is false as literally written.**
+Halving `dh_vap` fires six tests, and two of them predate M13:
+`thermo::tests::the_latent_heat_is_proportional_to_tb_and_flat_in_temperature`
+asserts exact equality against `TROUTON_CONSTANT · tb`, and
+`the_latent_heat_is_the_slope_of_the_vapour_pressure` asserts the internal
+identity `d ln K/d(1/T) = −Δh_vap/R`, which a `dh_vap`-only scaling breaks
+because `k_value` is untouched by it.
+
+**What is true, and is the argument gate 3 should have been given, is that both
+of those compare the model against ITSELF.** One pins `dh_vap` to the workspace's
+own constant; the other pins it to the workspace's own vapour pressure. Neither
+can see a wrong `TROUTON_CONSTANT`, which moves both sides together — and before
+M13 the *magnitude* of a latent heat was bounded only indirectly, through the
+vapour-pressure envelope on `k_value` plus the algebraic accident that this
+particular model spells `dh_vap` as `C·tb`. That chain breaks the moment a model
+computes it any other way: the deferred Watson form would, and
+`ConstantAlphaThermo::with_dh_vap` already takes supplied values that nothing
+anchors. Gate 3 is the only test in the workspace that compares a latent heat's
+magnitude to data from outside it, on the method a duty and a flash actually
+call. The mutation table entry was wrong; the reason for the gate was not.
+
+Two details from the same run. **Gate 1's pass under this mutation was checked by
+searching for the test's name**, not inferred from a failure list — the claim
+§15 rests on is that it *passes*, and a test that silently stopped running would
+read the same way as one that passed. And `a_wrong_latent_heat_escapes_the_envelope`
+fails here for exactly the right reason: with `dh_vap` already halved, its ×2.0
+probe lands on the true value and no longer escapes the band, which is the
+falsifiability test correctly reporting that the model is not the model it was
+written against.
+
+**12. The I6b restructure was found by the mutation pass, not designed in — and
+the provenance belongs in the record.** As first written, I6b assembled its
+boundary flux by reading `Stream::latent` directly. That is why the first two
+mutations, both of which break `energy::stream_enthalpy_flux`, were caught by the
+demo gate and by nothing else: the invariant computed the same quantity by a
+parallel path and never consulted the owner. It now assembles the crossing state
+onto a cloned `Stream` and calls `stream_enthalpy_flux`, so the single owner has
+two defenders instead of one. A test changed after seeing which mutations escaped
+is a fitted test unless its provenance is written down; this is that sentence.
+

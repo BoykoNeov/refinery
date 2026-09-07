@@ -180,60 +180,106 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M13 is OPEN, and its scope is the LATENT HEAT of a boil-off —
+**M13 is CLOSED (2026-09-07), and its scope was the LATENT HEAT of a boil-off —
 `docs/DEFERRED.md` row B16.** M12.1 left the vent carrying its vapour's sensible
-enthalpy and nothing else, so `m_v·Δh̄_vap` appears nowhere and every flashing
-plant's energy books show a sink: **7.6084e8 J over 6 000 ticks, 13.9% of what
-the naphtha draw delivered, 1.54 MW at tick 6 000.** **M13.0 landed 2026-09-07** —
-the design note, DESIGN §15, seven forks, four gates, eight mutations, no code.
+enthalpy and nothing else, so `m_v·Δh̄_vap` appeared nowhere and every flashing
+plant's energy books showed a sink. **M13.0** wrote the design note (DESIGN §15,
+seven forks, four gates, eight mutations, no code) and **M13.1 landed 2026-09-07**
+and built it: `Stream::latent: Option<JPerKg>`, `BoilOff::latent_heat`,
+`energy::stream_enthalpy_flux`, the datum correction, four gates, a `dh_vap`
+reference envelope, and **I6b — the first energy invariant in this workspace ever
+evaluated on a plant that boils.**
 
-**Nothing was past its trigger, so this is M11's licence (a decision), not M12's
-(an event arrived) — and the milestone fires its own trigger.** B16's trigger is
-"a consumer of a flashing plant's external energy balance" and it names three;
-M13's first artefact is one of them. That is written into the note's first
-paragraph rather than left to be noticed. What argues for *now*: the hole is
-measured, **no energy invariant in this workspace has ever run on a plant that
-boils** (I6 and the energy proptests all build with `NoBoilOff`), and B12
-(condensation) and B13 (where the vapour goes) both need the term to exist.
+**Nothing selected this milestone: it is M11's licence (a decision), and it fired
+its own trigger.** B16's trigger is "a consumer of a flashing plant's external
+energy balance" and it names three; M13's first artefact is one of them. That is
+written into the note's first paragraph rather than left to be noticed.
 
-**The gap is an IDENTITY, derived by hand rather than inherited from M12.1's
-measurement.** With `U = m·c̄p·(T − T_REF)` and mixture `cp` linear in the
-component masses, a flash drops the holdup by
-`m_v·(Δh̄_vap + c̄p_v·(T_bub − T_REF))` while the vent carries only the second
-term — **in both branches of the model**, including the capped one. And the
-sentence that was actually wrong is the datum: **`h = cp·(T − T_REF)` is the
-datum for a LIQUID**, stated without that qualifier in §4a and `energy.rs`; a
-vapour on it is a liquid plus its heat of vaporisation. Same class as M5.3's
-`u = cv·T − cp·T_REF`.
+**A stream is now self-describing for energy.** Its specific enthalpy is
+`cp·(T − T_REF) + latent.unwrap_or(0)`, and `energy::stream_enthalpy_flux` is the
+single owner of that expression. `latent` is `None` on a liquid — not `Some(0)`,
+which would say "a vapour whose latent heat is nothing" — and
+`skip_serializing_if` is what keeps sixteen plants byte-identical. **It is not
+B3**: one scalar on a single-phase vapour stream, not a stream that is part
+liquid and part vapour. **`is_boiloff_vent()` left the energy path** as the note
+predicted, so B12's condenser and B13's flare need no new discriminator.
 
-**The forks all agree on the number and disagree about WHO CAN SEE IT.** Chosen:
-**`Stream::latent: Option<JPerKg>`** — self-describing for energy, published for
-free because `EdgeSnapshot::stream` is a `Stream`, and where B12 will look. A
-node duty beside `column_duty` is rejected on **location** (a condenser duty is
-heat conducted into cooling water; this leaves with material through an edge, and
-B13 routing a vent to a flare would strand the duty on the tank), an edge-snapshot
-field on the **mirror** (B12's condenser is an in-engine consumer). **It is not
-B3** — one scalar on a single-phase vapour stream, not a stream that is part
-liquid and part vapour — and spelling it `phase: Phase` is refused because the
-vent's cuts are *declared* liquid, so the marker would contradict
-`Composition::phase`. A consequence: **`is_boiloff_vent()` leaves the energy path**
-rather than acquiring a comment naming its own expiry.
+**The datum sentence was the thing that was actually wrong.** `h = cp·(T − T_REF)`
+is the datum **for a LIQUID** — the reference state is saturated liquid at
+`T_REF` — and §4a, `energy.rs` and `Stream` all now say so. A cut the slate
+*declares* `Gas` is untouched: it never condenses in this engine, so its own
+datum is self-consistent and `capacitive_vessel_reference.rs` is right as it
+stands.
 
-**Three things the building slice must not skip.** Gate 1 (the boundary balance
-closing from published state) does **not** anchor `Δh̄_vap`: halve
-`TroutonThermo::dh_vap` and the flash boils twice the mass at half the latent
-heat, closing the balance to the last digit — so the slice owes a reference test
-for `dh_vap`, which **the workspace does not have today**. And the note's most
-load-bearing prediction is that the vent's enthalpy is **write-only in the forward
-solve**, which would keep all seventeen plants byte-identical and means **"the
-numbers moved" cannot be a gate here** — the probe for it is a corpus baseline
-either side *and* an arbitrary perturbation of `boil.latent_heat` showing nothing
-but `latent` itself moves. And **gate 1's tolerance must be measured before it is
-sized**: the two candidate scales are about eight orders apart (float noise if the
-invariant restates the engine's discrete rule — the flash *writes* the temperature
-rather than integrating to it — versus explicit Euler's truncation if it states
-the continuous first law), and a truncation-sized bound over a float-noise
-residual is a gate that cannot fail.
+**Six things the next milestone inherits.**
+
+**The number this milestone was licensed by counted ONE of the demo's TWO boiling
+tanks.** M12.1's 7.6084e8 J and 1.54 MW are the naphtha tank alone — reproduced
+here to five digits once the sum is restricted to that vent. The plant's real
+hole is **1.751826e9 J over 6 000 ticks and 4.317708e6 W at tick 6 000**, because
+`distillate_tank` boils harder (11.73 kg/s of vapour against 5.17) and nothing
+had counted it: **2.30× and 2.80×**. M12.1's own prose named two boiling tanks one
+sentence from the figure. **A measured number can be right about its subject and
+silent about its scope.**
+
+**"All seventeen plants byte-identical" is FALSE as stated and true in what it
+meant, and the corpus cannot tell the difference.** Sixteen are identical on both
+fidelities; `crude_column_boiloff` moved and *had to* — the fingerprint is taken
+over published snapshots and the point of the milestone is to publish a field
+there. What replaces the claim is the M8.5 method: strip the `latent` keys from
+the after-file and compare. **843 keys per fidelity, and both after-files
+reproduce their before-file byte for byte.** From here, "runs byte-identical"
+means post-M13.1 identical.
+
+**The note's load-bearing prediction was RIGHT, and the probe it named is what
+proved it.** Scaling the reported `latent_heat` by 3.7× *at the construction site
+only* — so the flash fraction keeps its unscaled divisor — moves nothing but
+`latent` on either fidelity. Perturbing `dh_vap` instead would have moved the
+whole plant and could not have answered the question.
+
+**Gate 1's tolerance is float noise, and the discriminator is which way it moves
+under `dt`.** 4.58e-12 at the shipped timestep, 7.0e-12 at half, 1.40e-11 at a
+quarter — it **rises**, like `1/dt`, where truncation would fall. The source is
+the gate's own `ΔU`, a difference of two ~1e10 J inventories, not the engine.
+Bound `1e-9`, eleven orders below what the same sum reports without the term.
+**And gate 1's power comes entirely from the TANKS**: the cascade's reboiler duty
+is defined as its condenser duty plus the column's own external balance, so the
+column's contribution closes by construction and audits nothing.
+
+**Gate 4 as the note specified it could not have caught its own mutation.** The
+note put specific-versus-total at "a factor of `m_v` — order 10³"; the vents move
+**0.517 kg and 1.173 kg per tick**, so a total sits 0.5–1.2× the specific value
+and no magnitude band sees it. Gate 1 catches it, through the `mass_flow`
+`stream_enthalpy_flux` multiplies by. What ships is a mixture-average bound and
+an intensivity test under a halved timestep.
+
+**The one mutation §15 said gate 1 would catch is UNCAUGHT, and the reason
+generalises.** A stale `Some(λ)` left on an idle vent is invisible to any energy
+balance, because the term is SPECIFIC and an idle vent's `mass_flow` is zero —
+the very property that made "specific rather than total" the right shape (one
+formula, both branches) is what stops a balance policing the field. And the demo
+cannot reach the state: **no vent on it ever goes from boiling back to idle**
+(naphtha publishes `latent` from tick 1 210, distillate from 2 380, bottoms
+never — both figures at the run's 10-tick snapshot resolution, and the naphtha
+one reconciling with the file's 1 825 through M12.1's 618-tick blanket-pressure
+correction). Closed with a fixture, not a gate on the demo — a hot holdup with no
+inflow, which boils once and is idle for the next forty-nine ticks, asserting
+`carrying vapour ⇔ latent.is_some()` with both arms shown reached.
+
+**`dh_vap` is anchored for the first time, on the SLOPE of a citation already in
+the repo.** `reference/vapour_pressure.rs` carries NIST's Antoine coefficients
+for n-hexane; Clausius–Clapeyron turns that fit's slope into **30 515.9 J/mol**
+against Trouton's **30 086.4**, a ratio of **0.9859** inside a `[0.85, 1.15]`
+band sized from two one-sided errors (the ideal-gas assumption biases the anchor
+high; Trouton is a ±10% correlation). Without it gate 1 is a consistency check
+wearing a physics label — halve `dh_vap` and the flash boils twice the mass at
+half the latent heat and every book closes to the last digit (verified by
+searching for gate 1's name, because the claim is that it PASSES). **But the
+note's "the workspace has no reference test for `dh_vap`" is false as written**:
+two `thermo::tests` already pin it. Both compare the model **against itself** —
+one against the workspace's own constant, one against its own vapour pressure —
+and neither can see a wrong `TROUTON_CONSTANT`. Gate 3 is the only test
+comparing a latent heat's magnitude to data from outside the workspace.
 
 **M12 is CLOSED (2026-09-07), and its scope was the two-phase HOLDUP — a quarter
 of `docs/DEFERRED.md` B3.** It is the first milestone opened because the ledger
@@ -285,7 +331,9 @@ one instant measures the thing itself.**
 datum is `h = cp·(T − T_REF)` — sensible only — so the vent carries the vapour's
 sensible enthalpy and nothing else. **7.6084e8 J over 6 000 ticks, 13.9% of the
 enthalpy the draw delivered, 1.54 MW at tick 6 000.** Mass balances exactly; the
-energy books show a sink at every boiling tank. Ledger row **B16**. The fix that
+energy books show a sink at every boiling tank. Ledger row **B16**, **closed by
+M13.1** — where those figures turned out to be the naphtha tank alone and the
+plant's own are 1.751826e9 J and 4.317708e6 W. The fix that
 suggests itself — a vent temperature chosen so the sensible enthalpy comes out
 right — is a fabricated number and is refused.
 

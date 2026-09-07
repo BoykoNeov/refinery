@@ -31,10 +31,19 @@
 //! rejected as `SimError::Numerical` rather than silently mis-ordered. No
 //! scenario in the workspace builds one (see `docs/DESIGN.md` §4a).
 //!
-//! Specific enthalpy is `h = cp·(T − T_REF)`. Every enthalpy flux in the engine
-//! goes through `enthalpy_flux`, so the reference cancels exactly as long as
-//! mass balances — the invariant tests state it against `T_REF` explicitly
-//! rather than assuming a zero reference makes it moot.
+//! Specific enthalpy is `h = cp·(T − T_REF)` **for a LIQUID**, and the
+//! qualifier is load-bearing rather than pedantic (M13, docs/DESIGN.md §15):
+//! the reference state is *saturated liquid* at `T_REF`, so a VAPOUR on the
+//! same datum is that plus its heat of vaporisation, `h = cp·(T − T_REF) + λ`.
+//! Correct without the qualifier for every stream this engine carried before
+//! M12.1 and wrong for the one it added — the same class of error as M5.3's
+//! `u = cv·T − cp·T_REF`, which was right while a holdup's mass was constant
+//! and load-bearing exactly when it was not. `Stream::latent` carries `λ` and
+//! `stream_enthalpy_flux` is the one expression that puts the two together.
+//! Every enthalpy flux in the engine goes through `enthalpy_flux`, so the
+//! reference cancels exactly as long as mass balances — the invariant tests
+//! state it against `T_REF` explicitly rather than assuming a zero reference
+//! makes it moot.
 
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
@@ -46,7 +55,9 @@ use crate::units::{JPerKg, JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMB
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Reference temperature for specific enthalpy: `h = cp·(T − T_REF)` [K].
+/// Reference temperature for specific enthalpy [K]: the datum is **saturated
+/// liquid at `T_REF`**, so `h = cp·(T − T_REF)` on a liquid and
+/// `h = cp·(T − T_REF) + λ` on a vapour (`Stream::latent`, M13).
 ///
 /// Deliberately non-zero (0 °C, the conventional steam-table datum). A zero
 /// reference would make `h = cp·T` and hide any code path that forgot the
@@ -54,16 +65,50 @@ use std::collections::{BTreeMap, BTreeSet};
 /// energy tests actually discriminate on it.
 pub const T_REF: Kelvin = Kelvin(273.15);
 
-/// Enthalpy flux carried by a mass flow: `ṁ·cp·(T − T_REF)`.
+/// SENSIBLE enthalpy flux carried by a mass flow: `ṁ·cp·(T − T_REF)`.
 ///
 /// Sign follows `mass_flow`: the caller passes flow *into* the node it is
 /// accounting for, so an outflow (negative) subtracts its enthalpy. This is
 /// the single definition every energy balance in the engine goes through —
 /// tank integration, junction mixing, and the invariant tests all call it, so
 /// they cannot disagree about the datum.
+///
+/// **The sensible term alone**, which is the whole enthalpy of a liquid and
+/// not of a vapour. A caller holding a whole `Stream` wants
+/// `stream_enthalpy_flux`, which adds the latent term when the stream carries
+/// one; this function stays as it is because every interior path in the engine
+/// carries liquid and because a latent-aware version here would silently
+/// change what a forward solve integrates.
 #[inline]
 pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> Watt {
     Watt(mass_flow.value() * cp.value() * (temperature.value() - T_REF.value()))
+}
+
+/// TOTAL enthalpy flux carried by a stream: `ṁ·(cp·(T − T_REF) + λ)` [W].
+///
+/// The single owner of "a stream's specific enthalpy on this engine's datum",
+/// and the reason `Stream::latent` is a field on the stream rather than a
+/// lookup keyed by edge id (docs/DESIGN.md §15 fork 1): a consumer closing an
+/// energy balance calls this and never has to know which edges carry vapour.
+///
+/// `cp` is passed in rather than read off the stream because the engine's
+/// authoritative composition for an edge is its resolved upwind node's, not the
+/// copy published on the stream — `stream_cp_at` is what settles that, and
+/// the lagged copy is a reader this project has already been bitten by.
+///
+/// **Not called from the forward solve, deliberately.** Today the only stream
+/// carrying a latent term is a boil-off vent, which the holdup loop and the
+/// transport sweep both skip and whose flow is prescribed, so the term is
+/// write-only inside a tick and its arrival moved no published number. A future
+/// consumer that condenses a vapour into a holdup (`docs/DEFERRED.md` B12) is
+/// what makes this read inside the engine, and it should read it here.
+#[inline]
+pub fn stream_enthalpy_flux(stream: &crate::stream::Stream, cp: JPerKgK) -> Watt {
+    let latent = stream.latent.map_or(0.0, |l| l.value());
+    Watt(
+        stream.mass_flow.value()
+            * (cp.value() * (stream.temperature.value() - T_REF.value()) + latent),
+    )
 }
 
 /// A holdup's end-of-tick composition: what it retained after the tick's outflow,

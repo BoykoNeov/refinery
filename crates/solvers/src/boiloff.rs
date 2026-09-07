@@ -18,7 +18,7 @@
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::error::SimError;
 use refinery_core::traits::{BoilOff, BoilOffModel, ThermoModel};
-use refinery_core::units::{Kelvin, Kg, Pascal};
+use refinery_core::units::{JPerKg, Kelvin, Kg, Pascal};
 
 use crate::bubble::bubble_temperature;
 use crate::molar::MoleFractions;
@@ -269,6 +269,11 @@ impl BoilOffModel for FlashBoilOff {
             vapour_mass: Kg(applied * mass.value()),
             vapour,
             liquid_temperature,
+            // The number this flash was SIZED against, handed on rather than
+            // thrown away after the division above (M13, docs/DESIGN.md §15
+            // fork 2). Recomputing it downstream has three plausible spellings
+            // and all of them leave a residual; this has one.
+            latent_heat: JPerKg(dh_vap),
         }))
     }
 }

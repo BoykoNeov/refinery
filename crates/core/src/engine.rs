@@ -705,7 +705,7 @@ impl Engine {
             // What the vent carries this tick: a rate, the equilibrium vapour,
             // and the temperature it left at. `None` while nothing boils, which
             // is every tick on a plant that selects `boiloff = "none"`.
-            let mut vented: Option<(KgPerSec, Composition, Kelvin)> = None;
+            let mut vented: Option<(KgPerSec, Composition, Kelvin, JPerKg)> = None;
             if let NodeKind::Tank(tank) = &mut self.graph.node_mut(nid).kind {
                 let mass_old = tank.mass.value();
                 // The inventory's enthalpy at the composition that actually
@@ -888,6 +888,7 @@ impl Engine {
                         KgPerSec(vapour_mass / dt.value()),
                         boil.vapour,
                         boil.liquid_temperature,
+                        boil.latent_heat,
                     ));
                 }
             } else if let NodeKind::Vessel(vessel) = &mut self.graph.node_mut(nid).kind {
@@ -963,17 +964,29 @@ impl Engine {
             // boils: a stale rate left on the edge would keep venting mass that
             // the inventory is no longer losing.
             if let Some(eid) = vent {
-                let (flow, composition, temperature) = vented.unwrap_or_else(|| {
-                    (
-                        KgPerSec(0.0),
-                        self.graph.pipe(eid).stream.composition.clone(),
-                        self.graph.pipe(eid).stream.temperature,
-                    )
-                });
+                // The latent term is the FOURTH thing written here and it is
+                // cleared on the ticks nothing boils, for the same reason the
+                // flow is zeroed: a stale `Some(λ)` on an idle vent would claim
+                // energy is leaving a tank that has stopped boiling (M13,
+                // docs/DESIGN.md §15 fork 4).
+                let (flow, composition, temperature, latent) = vented.map_or_else(
+                    || {
+                        (
+                            KgPerSec(0.0),
+                            self.graph.pipe(eid).stream.composition.clone(),
+                            self.graph.pipe(eid).stream.temperature,
+                            None,
+                        )
+                    },
+                    |(flow, composition, temperature, latent)| {
+                        (flow, composition, temperature, Some(latent))
+                    },
+                );
                 let pipe = self.graph.pipe_mut(eid);
                 pipe.stream.mass_flow = flow;
                 pipe.stream.composition = composition;
                 pipe.stream.temperature = temperature;
+                pipe.stream.latent = latent;
                 // Kept consistent with the stream for the same reason a draw is:
                 // any reader of `edge_mass_flow` — a mass balance, a frontend,
                 // the snapshot's dissipation lookup — must see the prescribed

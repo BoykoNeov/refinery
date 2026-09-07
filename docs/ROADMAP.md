@@ -4996,6 +4996,13 @@ vapour a boiling holdup vents carries its sensible enthalpy and nothing else, so
 Measured on the shipped demo the day it was found: **7.6084e8 J over 6 000 ticks,
 13.9% of the enthalpy the naphtha draw delivered, 1.54 MW at tick 6 000.**
 
+**Both of those figures are the NAPHTHA TANK alone, which M13.1 found while
+closing the plant's books and which the rest of this section has not been
+rewritten to hide.** `distillate_tank` boils harder and nothing had counted it,
+so the plant's own hole is **1.751826e9 J over the run and 4.317708e6 W at tick
+6 000** — 2.30× and 2.80×. Read every 7.6084e8 J below as "the naphtha tank's
+share"; see M13.1's box and DESIGN §15, correction 1.
+
 **The circularity is named rather than left to be noticed, because it is the
 whole of the licence.** B16's trigger is "a consumer of a flashing plant's
 external energy balance", and it enumerates three: an energy invariant on a plant
@@ -5103,3 +5110,115 @@ that fires is the new invariant.** The probe is named in the note so it is not
 skipped: a corpus baseline either side under both fidelities, *and* an arbitrary
 perturbation of `boil.latent_heat` confirming nothing but `latent` itself moves —
 the second half because the first is passed by a field that is never written.
+
+### M13.1 — Building it: the term, the datum, and the first energy invariant on a boiling plant — **LANDED** 2026-09-07
+
+`Stream::latent: Option<JPerKg>`, `BoilOff::latent_heat`,
+`energy::stream_enthalpy_flux`, the datum correction in `energy.rs` and §4a,
+four gates on the demo, a `dh_vap` reference envelope, and **I6b** — the first
+energy invariant in this workspace evaluated on a plant that boils. The design
+note's own arithmetic survived unchanged; nine things around it did not, and
+they are DESIGN §15, "Corrections from building it".
+
+- [x] `core`: `Stream::latent`, `serde(default, skip_serializing_if)`, covered by
+      `all_finite`; `BoilOff::latent_heat`; the vent's fourth written field,
+      cleared on the ticks nothing boils; `energy::stream_enthalpy_flux` as the
+      single owner of "a stream's specific enthalpy on this datum".
+- [x] `solvers`: `FlashBoilOff` hands on the `Δh̄_vap` it sized the flash against
+      instead of discarding it.
+- [x] Gate 1 (`scenarios/tests/boiloff_reference.rs`): the plant's external
+      energy books close from published state, with the `boiloff = "none"` twin
+      as a control and the pre-M13 sum as the counterfactual.
+- [x] Gate 2: the term is on the serialized bytes of the vent's stream, not on
+      an ordinary liquid line, and not on the third vent — an edge that COULD
+      carry it and does not.
+- [x] Gate 3 (`solvers/tests/reference/vapour_pressure.rs`): `dh_vap` against
+      the Antoine fit's own Clausius–Clapeyron slope, `[0.85, 1.15]`, shown
+      escapable at four wrong constants.
+- [x] Gate 4: the term is specific — a mixture average between its members, and
+      intensive under a halved timestep.
+- [x] I6b (`solvers/tests/energy_invariants.rs`): energy conservation over
+      generated boiling plants, with a reachability counter and an in-test
+      counterfactual.
+- [x] `a_vent_carries_a_latent_term_exactly_while_it_is_boiling` — the fixture
+      the shipped demo cannot supply, because no vent on it ever stops boiling.
+- [x] §15's eight named mutations — nine edits, because its fifth row names two
+      opposite faults — run against the whole workspace, with the three whose
+      verdicts the strengthened suite could change re-run after it.
+- [x] Corpus baselines both fidelities; the demo's before/after diff reduced to
+      the added key; the write-only perturbation probe.
+
+**Six things to know.**
+
+**The number that licensed this milestone counted one of the demo's two boiling
+tanks.** 7.6084e8 J and 1.54 MW are the **naphtha tank alone** — reproduced here
+to five digits once the sum is restricted to that vent. The plant's actual hole
+is **1.751826e9 J over 6 000 ticks and 4.317708e6 W at tick 6 000**, because
+`distillate_tank` boils harder (11.73 kg/s against 5.17) and nothing had counted
+it. 2.30× and 2.80×. **A measured number can be right about its subject and
+silent about its scope**, and M12.1's own prose named two tanks one sentence
+away from the figure.
+
+**"All seventeen plants byte-identical" is false as stated and true in what it
+meant.** Sixteen are identical on both fidelities; `crude_column_boiloff` moved
+and *had to*, because the corpus fingerprint is taken over published snapshots
+and this milestone's whole purpose is to publish a field there. **The corpus
+cannot express "no physical number moved".** What can: strip the `latent` keys
+from the after-file and compare — 843 keys per fidelity, and both after-files
+reproduce their before-file byte for byte.
+
+**The note's load-bearing prediction was right, and the probe it named is what
+proved it.** Scaling the reported `latent_heat` by 3.7× *at the construction
+site only* — so the flash fraction keeps its unscaled divisor — moves nothing
+but `latent` on either fidelity. The vent's enthalpy really is write-only in the
+forward solve.
+
+**Gate 1's tolerance is float noise, and the discriminator is which way it moves
+under `dt`.** 4.58e-12 at the shipped timestep, 7.0e-12 at half, 1.40e-11 at a
+quarter: it **rises**, like `1/dt`, where truncation would fall. The source is
+the gate's own `ΔU` — a difference of two ~1e10 J inventories — not the engine.
+Bound `1e-9`.
+
+**Gate 4 as the note specified it could not have caught its own mutation.** The
+note put the specific-versus-total error at "order 10³"; the vents move 0.517 kg
+and 1.173 kg per tick, so a total sits 0.5–1.2× the specific value and no
+magnitude band sees it. Gate 1 is what catches it. What ships instead is a
+mixture-average bound and an intensivity test under a halved timestep.
+
+**§15's second prediction — that no seam changes — holds, and is checked rather
+than assumed.** `crates/core/src/traits.rs` is 25 insertions and zero deletions:
+the `BoilOff::latent_heat` field fork 2 specifies, and nothing else. `BoilOffModel`,
+`ThermoModel`, `FlowSolver`, `SeparationModel` and `Controller` are untouched, and
+the scenario schema and `[fidelity]` keys are proven untouched by absence —
+`schema.rs`, `build.rs`, `validate.rs` and `control.rs` are not in the diff. M13
+adds no configuration: a stream either carries latent heat or it does not, and
+which is not a fidelity choice.
+
+**Fork 7 asked for two artefacts and both shipped**, so nothing has to be
+recorded as untested: the demo gate is the consumer B16's trigger describes, and
+I6b is the property over states the demo never enters. I6b needed its own
+two-cut slate — the file's water plants collapse `y = K·x` onto `x` — and its own
+reachability counter, which measures **123 of 200** generated plants boiling.
+**The mutation §15 predicted gate 1 would catch is UNCAUGHT, and it was wrong
+for two independent reasons.** A stale `Some(λ)` left on an idle vent is
+invisible to an energy balance, because the term is *specific* and an idle vent's
+`mass_flow` is zero — the same property that made "specific rather than total"
+the right representation is what stops a balance policing it. And the demo cannot
+reach the state at all: the naphtha vent publishes `latent` from tick 1 210 to
+the end and the distillate vent from 2 380 — both to this run's 10-tick snapshot
+resolution, so the crossings are somewhere in 1 201–1 210 and 2 371–2 380 — while
+`bottoms_tank`'s never does, and **no vent on this plant ever goes from boiling
+back to idle**. Closed with the
+cheapest fixture that reaches it — a hot holdup with no inflow, which boils once
+and is idle for the next forty-nine ticks — asserting the biconditional with both
+arms shown reached.
+
+**Gate 3's own justifying mutation is not gate 3's alone, and the note's "the
+workspace has no reference test for `dh_vap`" is false as written.** Halving
+`dh_vap` fires six tests, two of them older than M13. What is true is that both
+of those compare the model **against itself** — one against the workspace's own
+constant, one against the workspace's own vapour pressure — and neither can see a
+wrong `TROUTON_CONSTANT`. Gate 3 is the only test that compares a latent heat's
+magnitude to data from outside the workspace, on the method a duty and a flash
+call. The table entry was wrong; the reason for the gate was not.
+

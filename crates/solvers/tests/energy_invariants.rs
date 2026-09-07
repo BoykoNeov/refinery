@@ -946,3 +946,451 @@ proptest! {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// I6b — energy conservation on random plants that BOIL (M13, docs/DESIGN.md §15)
+// ---------------------------------------------------------------------------
+//
+// **Why this section exists at all.** Everything above builds its engine with
+// `NoBoilOff` and a water-only slate, so no energy invariant in this workspace
+// had ever been evaluated on a plant that boils — which is why M12.1's
+// unaccounted latent heat was invisible to the entire suite while every test in
+// it stayed green. `scenarios/tests/boiloff_reference.rs` closes the same books
+// on the shipped demo, and that is the GATE; this is the PROPERTY, and the two
+// are not redundant. The demo sits at one composition, one superheat and one
+// cap regime; the generator below reaches the states it never enters — in
+// particular the per-component over-draw cap, which the demo's flash fraction
+// stays well under.
+//
+// **Water cannot be the fluid here, and that is structural rather than a
+// preference.** A single-component holdup makes `y = K·x` and `x` the same
+// vector, which is §14 fork 8's trap: the flash becomes indistinguishable from
+// a decrement and the composition never moves. So this section carries its own
+// two-cut slate, its own `mixture_cp`, and `TroutonThermo` — `ConstantThermo`
+// answers `Err` to every equilibrium question by design and would make every
+// generated plant boil nothing at all.
+
+/// A two-cut naphtha slate. Real enough to have a bubble point and a K-value
+/// spread; deliberately not the shipped five-cut crude, because a property test
+/// should not inherit a demo's tuning.
+fn naphtha_slate() -> Slate {
+    Slate::new(vec![
+        refinery_core::components::PseudoComponent {
+            name: "light".into(),
+            tb: Kelvin(353.15),
+            molar_mass: KgPerMol(0.100),
+            density: Some(KgPerM3(680.0)),
+            cp: JPerKgK(2200.0),
+            phase: refinery_core::components::Phase::Liquid,
+        },
+        refinery_core::components::PseudoComponent {
+            name: "heavy".into(),
+            tb: Kelvin(423.15),
+            molar_mass: KgPerMol(0.130),
+            density: Some(KgPerM3(750.0)),
+            cp: JPerKgK(2100.0),
+            phase: refinery_core::components::Phase::Liquid,
+        },
+    ])
+    .expect("a two-cut slate")
+}
+
+/// The same engine the water plants use, with the two things a boil-off needs:
+/// a thermo model that can answer an equilibrium question, and the model that
+/// flashes the superheat.
+fn boiling_engine(graph: PlantGraph) -> Engine {
+    Engine::new(
+        graph,
+        naphtha_slate(),
+        EngineConfig { dt: DT },
+        Box::new(NewtonFlowSolver::default()),
+        Box::new(refinery_solvers::TroutonThermo::new()),
+        Box::new(NoReactions),
+        Box::new(CutPointSplitter),
+        Box::new(refinery_solvers::FlashBoilOff),
+    )
+}
+
+/// `(feed pressures + temperatures + light fractions, tank T, tank mass, tank
+/// light fraction)`. Shaped like `plant_inputs_strategy`: fixed-length and
+/// positional, so a shrunk sample stays a valid plant.
+type BoilingInputs = (
+    Vec<(f64, f64, f64)>, // feeds: (pressure_pa, temperature_k, light mass fraction)
+    f64,                  // tank temperature [K]
+    f64,                  // tank mass [kg]
+    f64,                  // tank light mass fraction
+);
+
+/// Temperatures reach 520 K against a mixture that boils between about 354 K
+/// and 423 K at one atmosphere, so the generated space spans all three regimes
+/// the model has: below the bubble point (nothing boils), a little above it
+/// (the enthalpy constraint binds), and far above it (the per-component
+/// over-draw cap binds and the liquid is left superheated).
+fn boiling_inputs_strategy() -> impl Strategy<Value = BoilingInputs> {
+    (
+        prop::collection::vec((2.0e5..8.0e5f64, 300.0..520.0f64, 0.05..0.95f64), 2..=3),
+        300.0..520.0f64,
+        500.0..50_000.0f64,
+        0.05..0.95f64,
+    )
+}
+
+/// N feeds at different temperatures and compositions → a mixing tee → a tank
+/// that boils → a vent to atmosphere.
+///
+/// **The tee is not decoration.** It is what makes this an invariant rather
+/// than the tank update restated: the interior enthalpy has to cancel at a
+/// multi-way mix of streams with different temperatures AND different heat
+/// capacities before the boundary sum can close.
+///
+/// **The vent is built by hand, exactly as the loader builds it** — zero
+/// geometry, `LeakRole::BoilOffVent`, tank → atmosphere — because a holdup that
+/// boils with nowhere to vent is a refusal, not a plant.
+fn build_boiling_plant(inputs: &BoilingInputs, slate: &Slate) -> PlantGraph {
+    let (feeds, tank_t, tank_mass, tank_light) = inputs;
+    let mut graph = PlantGraph::new();
+
+    let tee = graph.add_node(node("tee", NodeKind::Junction));
+    let tank = graph.add_node(Node {
+        name: "holdup".into(),
+        kind: NodeKind::Tank(TankState {
+            area: SquareMeter(10.0),
+            height: Meter(20.0),
+            mass: Kg(*tank_mass),
+            temperature: Kelvin(*tank_t),
+            composition: Composition::from_weights(&[*tank_light, 1.0 - *tank_light])
+                .expect("two fractions in (0, 1)"),
+            ambient_ua: WattPerKelvin::ZERO,
+        }),
+        heat_input: Watt::ZERO,
+    });
+    let sky = graph.add_node(node("sky", NodeKind::Atmosphere));
+
+    for (i, (pressure, temperature, light)) in feeds.iter().enumerate() {
+        let s = graph.add_node(node(
+            &format!("feed{i}"),
+            NodeKind::Source {
+                pressure: Pascal(*pressure),
+                temperature: Kelvin(*temperature),
+                composition: Composition::from_weights(&[*light, 1.0 - *light])
+                    .expect("two fractions in (0, 1)"),
+            },
+        ));
+        let mut leg = pipe(&format!("leg{i}"), 12.0, 0.12);
+        leg.stream = refinery_core::stream::Stream::stagnant(slate.len(), T_AMBIENT, P_ATM);
+        graph.add_pipe(s, tee, leg);
+    }
+    let mut fill = pipe("fill", 15.0, 0.15);
+    fill.stream = refinery_core::stream::Stream::stagnant(slate.len(), T_AMBIENT, P_ATM);
+    graph.add_pipe(tee, tank, fill);
+
+    graph.add_pipe(
+        tank,
+        sky,
+        Pipe {
+            name: "holdup__boiloff_vent".into(),
+            length: Meter(0.0),
+            diameter: Meter(0.0),
+            friction_factor: 0.0,
+            elevation_change: Meter(0.0),
+            ambient_ua: WattPerKelvin::ZERO,
+            leak: LeakRole::BoilOffVent,
+            stream: refinery_core::stream::Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
+        },
+    );
+    graph
+}
+
+/// The holdup's internal energy [J] at its own mixture heat capacity.
+fn mixture_holdup_energy(engine: &Engine) -> f64 {
+    engine
+        .graph
+        .node_ids()
+        .filter_map(|id| match &engine.graph.node(id).kind {
+            NodeKind::Tank(t) => Some(
+                t.mass.value()
+                    * t.composition.mixture_cp(&engine.slate).value()
+                    * (t.temperature.value() - T_REF.value()),
+            ),
+            _ => None,
+        })
+        .sum()
+}
+
+/// Net power crossing this plant's boundary INTO it [W].
+///
+/// **Routed through `energy::stream_enthalpy_flux`, not around it.** That
+/// function is the single owner of "a stream's specific enthalpy on this
+/// engine's datum", and an invariant that read `Stream::latent` directly would
+/// leave it undefended — a `stream_enthalpy_flux` that silently dropped the
+/// latent term would be caught by the shipped demo's gate and by nothing here.
+/// The crossing state is assembled onto a cloned `Stream` so the owner is
+/// called with the flow, temperature and composition the fluid actually crosses
+/// with, rather than the flux being computed and then rescaled.
+///
+/// `with_latent = false` reproduces the pre-M13 books, which is what makes the
+/// counterfactual in the property below a measurement.
+fn boiling_boundary_power(engine: &Engine, with_latent: bool) -> f64 {
+    let mut power = 0.0;
+    for id in engine.graph.node_ids() {
+        if !matches!(
+            engine.graph.node(id).kind,
+            NodeKind::Source { .. } | NodeKind::Sink { .. } | NodeKind::Atmosphere
+        ) {
+            continue;
+        }
+        for (edge, _other, incoming) in engine.graph.incident(id) {
+            let stream = &engine.graph.pipe(edge).stream;
+            let (from, to) = engine.graph.endpoints(edge);
+            let upwind = if stream.mass_flow.value() >= 0.0 {
+                from
+            } else {
+                to
+            };
+            // The state the fluid crosses the boundary WITH, chosen by flow
+            // sign — the same rule `reservoir_crossing_temperature` states one
+            // section up, extended to the composition because the fluid here is
+            // a mixture and its heat capacity is not a constant.
+            let mut crossing = stream.clone();
+            crossing.mass_flow = KgPerSec(if incoming {
+                stream.mass_flow.value()
+            } else {
+                -stream.mass_flow.value()
+            });
+            if upwind == id {
+                // Leaving the reservoir: its own state, before the pipe touches
+                // it — and a reservoir supplies liquid, so no latent term.
+                match &engine.graph.node(id).kind {
+                    NodeKind::Source {
+                        temperature,
+                        composition,
+                        ..
+                    } => {
+                        crossing.temperature = *temperature;
+                        crossing.composition = composition.clone();
+                    }
+                    NodeKind::Atmosphere => {
+                        crossing.temperature = T_AMBIENT;
+                        crossing.composition = refinery_core::energy::boundary_composition(
+                            &NodeKind::Atmosphere,
+                            &engine.slate,
+                        )
+                        .expect("an atmosphere has a composition");
+                    }
+                    other => panic!("'{other:?}' is not a reservoir"),
+                }
+                crossing.latent = None;
+            }
+            if !with_latent {
+                crossing.latent = None;
+            }
+            let cp = crossing.composition.mixture_cp(&engine.slate);
+            // `crossing.mass_flow` is INTO the reservoir, which is out of the
+            // plant, hence the minus.
+            power -= refinery_core::energy::stream_enthalpy_flux(&crossing, cp).value();
+        }
+    }
+    power += engine
+        .snapshot()
+        .edges
+        .iter()
+        .map(|e| e.dissipation_w)
+        .sum::<f64>();
+    power
+}
+
+/// Worst |ΔU − dt·boundary| over a run, relative to the enthalpy in motion.
+/// Returns `None` if the plant never boiled, so a caller can insist that it did.
+fn worst_boiling_energy_error(
+    engine: &mut Engine,
+    ticks: u32,
+    with_latent: bool,
+) -> (Option<f64>, bool) {
+    let mut worst: Option<f64> = None;
+    let mut boiled = false;
+    for _ in 0..ticks {
+        let before = mixture_holdup_energy(engine);
+        if engine.tick().is_err() {
+            return (worst, boiled); // divergence is legal (I3)
+        }
+        let expected = DT.value() * boiling_boundary_power(engine, with_latent);
+        let actual = mixture_holdup_energy(engine) - before;
+        boiled |= engine.graph.edge_ids().any(|e| {
+            let p = engine.graph.pipe(e);
+            p.leak.is_boiloff_vent() && p.stream.mass_flow.value() > 0.0
+        });
+        let scale = engine
+            .graph
+            .edge_ids()
+            .map(|e| {
+                let s = &engine.graph.pipe(e).stream;
+                let cp = s.composition.mixture_cp(&engine.slate);
+                DT.value() * enthalpy_flux(s.mass_flow, cp, s.temperature).value().abs()
+            })
+            .fold(1.0f64, f64::max);
+        let relative = (actual - expected).abs() / scale;
+        worst = Some(worst.map_or(relative, |w: f64| w.max(relative)));
+    }
+    (worst, boiled)
+}
+
+/// **A vent's latent term is present exactly when it is carrying vapour** — the
+/// half of §15 fork 4 that the shipped demo cannot exercise.
+///
+/// Fork 4 says `latent` is cleared to `None` on the ticks nothing boils, "for
+/// the same reason the flow is zeroed: a stale latent term on an idle vent
+/// would claim energy is leaving a tank that is not boiling". **Nothing on
+/// `crude_column_boiloff` can test that**, and the mutation pass is what showed
+/// it: on that plant a vent that starts boiling never stops (the naphtha vent
+/// from tick 1 210, the distillate vent from 2 380, both to the end of the run)
+/// and the third vent never starts, so the stale value a leaking mutation would
+/// read is always the `None` it should have written anyway. Gate 1 is blind to
+/// it too, because an idle vent's `mass_flow` is zero and
+/// `stream_enthalpy_flux` multiplies the stale term by it.
+///
+/// The fixture that reaches the state is the simplest plant that can: a hot
+/// holdup with **no inflow at all**, which boils its superheat away on the first
+/// tick, parks on its bubble point, and is idle from then on. Both regimes occur
+/// in one run, so the assertion is the biconditional rather than either half,
+/// and both arms are asserted to have been reached — without the two controls
+/// this passes on a plant that never boils and on one that never stops.
+#[test]
+fn a_vent_carries_a_latent_term_exactly_while_it_is_boiling() {
+    let slate = naphtha_slate();
+    let mut graph = PlantGraph::new();
+    let tank = graph.add_node(Node {
+        name: "holdup".into(),
+        kind: NodeKind::Tank(TankState {
+            area: SquareMeter(10.0),
+            height: Meter(20.0),
+            mass: Kg(5_000.0),
+            // Well above the mixture's ~370 K bubble point at one atmosphere,
+            // and with nothing feeding it the superheat is all it will ever get.
+            temperature: Kelvin(430.0),
+            composition: Composition::from_weights(&[0.5, 0.5]).expect("a 50/50 mix"),
+            ambient_ua: WattPerKelvin::ZERO,
+        }),
+        heat_input: Watt::ZERO,
+    });
+    let sky = graph.add_node(node("sky", NodeKind::Atmosphere));
+    graph.add_pipe(
+        tank,
+        sky,
+        Pipe {
+            name: "holdup__boiloff_vent".into(),
+            length: Meter(0.0),
+            diameter: Meter(0.0),
+            friction_factor: 0.0,
+            elevation_change: Meter(0.0),
+            ambient_ua: WattPerKelvin::ZERO,
+            leak: LeakRole::BoilOffVent,
+            stream: refinery_core::stream::Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
+        },
+    );
+
+    let mut engine = boiling_engine(graph);
+    let (mut boiled, mut idled) = (0usize, 0usize);
+    for t in 1..=50 {
+        engine.tick().unwrap_or_else(|e| panic!("tick {t}: {e}"));
+        let vent = engine
+            .graph
+            .pipe(engine.graph.edge_ids().next().expect("the vent"));
+        let flowing = vent.stream.mass_flow.value() > 0.0;
+        assert_eq!(
+            flowing,
+            vent.stream.latent.is_some(),
+            "at tick {t} the vent carries {} kg/s and its latent term is {:?}. The two must \
+             agree: a stale term on an idle vent claims energy is leaving a tank that is not \
+             boiling, and a cleared one on a boiling vent loses it",
+            vent.stream.mass_flow.value(),
+            vent.stream.latent.map(|l| l.value())
+        );
+        if flowing {
+            boiled += 1;
+        } else {
+            idled += 1;
+        }
+    }
+    assert!(
+        boiled > 0,
+        "the holdup never boiled in 50 ticks, so the `Some` arm above was never reached"
+    );
+    assert!(
+        idled > 0,
+        "the vent never went idle in 50 ticks, so the `None` arm above was never reached — \
+         which is exactly the gap that made this fixture necessary rather than a gate on the \
+         shipped demo"
+    );
+}
+
+/// The generator must actually reach the state under test, or the property
+/// below is passed by a population of plants that never boil.
+///
+/// **A counter is not a gate** — this is the reachability half, and the
+/// mutation half is the counterfactual inside the property itself. It also
+/// records the fraction, so a later change that quietly stops the plants
+/// boiling reads as a failure here rather than as a still-green property test.
+///
+/// Measured at the time of writing: **123 of 200**. The bar is set six times
+/// below that on purpose — it is an alarm for a generator that has stopped
+/// reaching the state, not a number fitted to today's strategy.
+#[test]
+fn the_boiling_generator_reaches_a_boiling_plant() {
+    const SAMPLES: usize = 200;
+    let slate = naphtha_slate();
+    let mut runner = TestRunner::deterministic();
+    let strategy = boiling_inputs_strategy();
+    let mut boiling = 0usize;
+    for _ in 0..SAMPLES {
+        let inputs = strategy
+            .new_tree(&mut runner)
+            .expect("strategy produces a value")
+            .current();
+        let mut e = boiling_engine(build_boiling_plant(&inputs, &slate));
+        if worst_boiling_energy_error(&mut e, 5, true).1 {
+            boiling += 1;
+        }
+    }
+    assert!(
+        boiling >= SAMPLES / 10,
+        "only {boiling}/{SAMPLES} generated plants ever vented vapour, so I6b below is \
+         mostly asserting a balance on plants that do not boil"
+    );
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(200))]
+
+    /// I6b — a plant whose holdup BOILS conserves energy, with the vapour's
+    /// latent heat counted.
+    ///
+    /// The same claim as I6 one section up, on the population that section
+    /// cannot generate. The counterfactual is inside the test rather than
+    /// beside it: on any sample that actually boiled, the identical sum with
+    /// `Stream::latent` dropped must MISS — otherwise this plant is not
+    /// exercising the term and the assertion above closed for the wrong reason.
+    #[test]
+    fn a_boiling_plant_conserves_energy(inputs in boiling_inputs_strategy()) {
+        let slate = naphtha_slate();
+        let mut e = boiling_engine(build_boiling_plant(&inputs, &slate));
+        let (worst, boiled) = worst_boiling_energy_error(&mut e, 5, true);
+        if let Some(worst) = worst {
+            prop_assert!(
+                worst <= ENERGY_TOLERANCE,
+                "energy imbalance {worst:e} on a boiling plant exceeds the \
+                 {ENERGY_TOLERANCE:e} budget"
+            );
+        }
+        if boiled {
+            let mut without = boiling_engine(build_boiling_plant(&inputs, &slate));
+            let (worst_without, _) = worst_boiling_energy_error(&mut without, 5, false);
+            if let Some(worst_without) = worst_without {
+                prop_assert!(
+                    worst_without > ENERGY_TOLERANCE,
+                    "this plant vented vapour and the books close to {worst_without:e} \
+                     WITHOUT the latent term too, so nothing here is testing it"
+                );
+            }
+        }
+    }
+}

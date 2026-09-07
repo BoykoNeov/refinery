@@ -240,3 +240,124 @@ fn the_published_bubble_pressure_is_inside_the_tabulated_envelope() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// M13 gate 3 — `dh_vap`'s own magnitude, which nothing anchored before
+// ---------------------------------------------------------------------------
+//
+// **Why this is a separate gate and not covered by the envelope above.**
+// `TroutonThermo` reads `trouton_constant` in two independent methods:
+// `saturation_pressure` buries it in an exponent, and `dh_vap` returns `C·tb`
+// directly. The tests above police the first path only, so a `dh_vap` that
+// returned half of Trouton's rule while `k_value` stayed correct escapes every
+// one of them — and it escapes M13's own boundary-energy gate too, because the
+// flash would then boil twice as much mass at half the latent heat per kilogram
+// and the books would close to the last digit (docs/DESIGN.md §15 gate 3).
+// Without this file's next two tests, that gate is a consistency check wearing
+// a physics label.
+//
+// **The anchor is the SLOPE of the same citation, not a second one.** The
+// module comment's Antoine coefficients are a fit to measured vapour pressures;
+// Clausius–Clapeyron turns that fit's slope into a latent heat with no new
+// data:
+//
+// ```text
+//   ln P = ln(10)·(A − B/(T + C))          d(ln P)/dT = ln(10)·B/(T + C)²
+//   d(ln P)/dT = Δh_vap /(R·T²)            ⇒  Δh_vap = R·T²·ln(10)·B/(T + C)²
+// ```
+//
+// That keeps the whole file resting on one citation, exactly as
+// `normal_boiling_point` does — no recalled kJ/mol figure appears anywhere
+// here, which is the `published-anchor-envelope` rule.
+
+/// Universal gas constant [J/(mol·K)], CODATA exact since the 2019 SI.
+const R_GAS: f64 = 8.314_462_618_153_24;
+
+/// n-hexane's heat of vaporisation at its normal boiling point [J/mol],
+/// from the Antoine fit by Clausius–Clapeyron.
+fn antoine_dh_vap(temperature: f64) -> f64 {
+    R_GAS * temperature * temperature * std::f64::consts::LN_10 * ANTOINE_B
+        / (temperature + ANTOINE_C).powi(2)
+}
+
+/// The symbolic slope above is checked against a numerical derivative of
+/// `antoine_pa` itself.
+///
+/// **Two paths to one number, because the factor available to slip here is
+/// silent.** `antoine_pa` works in bar and base-10 logs; the differentiation
+/// introduces `ln 10` and a `(T + C)²`, and getting either wrong produces a
+/// latent heat that is smooth, positive, and off by a constant — which the
+/// envelope below would then absorb or reject for the wrong reason. A central
+/// difference of the function the file already trusts has none of that
+/// algebra in it.
+#[test]
+fn the_antoine_slope_agrees_with_a_numerical_derivative() {
+    let tb = normal_boiling_point();
+    let h = 1.0e-4;
+    let numerical = (antoine_pa(tb + h).ln() - antoine_pa(tb - h).ln()) / (2.0 * h);
+    let symbolic = std::f64::consts::LN_10 * ANTOINE_B / (tb + ANTOINE_C).powi(2);
+    approx::assert_relative_eq!(symbolic, numerical, max_relative = 1e-8);
+}
+
+/// The envelope: Trouton's rule reproduces the Antoine fit's own latent heat at
+/// the normal boiling point to within `[0.85, 1.15]`.
+///
+/// **Where the band comes from, stated rather than fitted.** Two known errors
+/// sit between the two sides, and both are one-sided:
+///
+///   * The anchor is the IDEAL-GAS Clausius–Clapeyron form — it drops the
+///     vapour's non-ideality and the liquid's molar volume, which at a
+///     hydrocarbon's normal boiling point makes it read a few percent HIGH.
+///     So the model is expected to sit slightly below 1.
+///   * Trouton's rule is a one-parameter correlation across all
+///     non-associating liquids, quoted as good to about ten percent.
+///
+/// ±15% covers both with room, and it is the band, not the measurement, that
+/// had to be decided in advance: the measured ratio is **0.9859**, which is
+/// where a correlation that is 1.4% under an anchor biased high should land.
+/// A tighter band would be fitted to n-hexane; a looser one could not fail.
+#[test]
+fn trouton_reproduces_the_tabulated_latent_heat_within_the_envelope() {
+    let slate = hexane_slate();
+    let tb = normal_boiling_point();
+    let model = TroutonThermo::new()
+        .dh_vap(&slate, 0, Kelvin(tb))
+        .expect("a hydrocarbon at its boiling point is a valid state")
+        .value();
+    let ratio = model / antoine_dh_vap(tb);
+    assert!(
+        (0.85..=1.15).contains(&ratio),
+        "Trouton's rule gives n-hexane {model:.1} J/mol at its normal boiling point \
+         ({tb:.2} K) against the Antoine fit's own {:.1} J/mol — a ratio of {ratio:.4}, \
+         outside [0.85, 1.15]",
+        antoine_dh_vap(tb)
+    );
+}
+
+/// The envelope is FALSIFIABLE, and the mutation it is sized against is named.
+///
+/// `docs/DESIGN.md` §15's mutation table has one entry predicted caught by this
+/// gate ALONE — `dh_vap` scaled by ½ — because M13's boundary-energy balance
+/// closes to the last digit under it: the flash boils twice the mass at half
+/// the latent heat per kilogram and every term in the books moves together.
+/// This asserts that the ½ really does escape, and that a ±20% error does too,
+/// so the band is not merely wide enough to admit the truth.
+#[test]
+fn a_wrong_latent_heat_escapes_the_envelope() {
+    let slate = hexane_slate();
+    let tb = normal_boiling_point();
+    let anchor = antoine_dh_vap(tb);
+    for factor in [0.5, 0.8, 1.2, 2.0] {
+        let ratio = TroutonThermo::with_trouton_constant(TroutonThermo::TROUTON_CONSTANT * factor)
+            .dh_vap(&slate, 0, Kelvin(tb))
+            .expect("valid state")
+            .value()
+            / anchor;
+        assert!(
+            !(0.85..=1.15).contains(&ratio),
+            "a Trouton constant scaled by {factor} still lands at {ratio:.4}× the \
+             tabulated latent heat, inside the envelope — so the band cannot catch the \
+             mutation §15 says only it can catch"
+        );
+    }
+}
