@@ -5860,9 +5860,17 @@ which plants and why.
 
 **The two that fire are exactly the two carrying a `Vessel`, so the mechanism is
 not gas-ness.** It is **a holdup that integrates a temperature over a span**.
-And the five gas plants hold the corpus's SMALLEST spans — 0.02, 2.63, 4.93,
-36.12, 42.42 K — against the 358.8 K and 527.2 K spans that produced M16.0's
-19.45% and 25.05%. **The clause that fired has the citation and the small spans;
+And there are TWO spans, which the note's own first draft conflated — the same
+error M14.0 recorded against this row. Measured from `energy::T_REF`, the
+quantity M14.0 settled on, the five gas plants run **20.02 to 62.42 K, or 1.34%
+to 4.13% of shape error**, recomputed here from §18's Scott tabulation rather
+than interpolated off its table of round spans; their internal EXCURSIONS run
+0.02 to 42.42 K. The first sets how wrong the constant is, the second whether
+that wrongness can reach a published number — `gas_valve` carries as much shape
+error as the water plants and moves 0.0007 K. Both are the corpus's smallest,
+against the 358.8 K and 527.2 K spans that produced M16.0's 19.45% and 25.05%.
+(The 2.64% perturbation was itself picked off the excursion column before this
+was corrected, so what was run is **conservative by 1.6×**.) **The clause that fired has the citation and the small spans;
 the clause with the big spans has no citation.** That inversion shapes every
 fork in the note, and it is why the demo is a NEW plant rather than any of the
 five.

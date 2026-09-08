@@ -200,9 +200,16 @@ not five — `relief_blowdown` (1.28 K, 6.6 kPa) and `vessel_pressure_control`
 changed is which plants and why.
 
 **The two that fire are exactly the two carrying a `Vessel`, so the mechanism is a
-holdup that integrates a temperature over a span — not gas-ness.** The five gas
-plants also hold the corpus's SMALLEST spans (0.02, 2.63, 4.93, 36.12, 42.42 K)
-against the 358.8 K and 527.2 K that produced the 19.45% and 25.05% figures. **The
+holdup that integrates a temperature over a span — not gas-ness.** **There are TWO
+spans and §19's own first draft conflated them**, which is the error M14.0 already
+recorded against this row: measured from `energy::T_REF` (the quantity M14.0
+settled on) the five gas plants run **20.02 to 62.42 K, 1.34% to 4.13% of shape
+error**; their internal EXCURSIONS run 0.02 to 42.42 K. The first says how wrong
+the constant is, the second whether that wrongness can reach a published number —
+`gas_valve` carries as much shape error as the water plants and moves 0.0007 K.
+Both are the corpus's smallest, against the 358.8 K and 527.2 K that produced the
+19.45% and 25.05% figures. The 2.64% perturbation was picked off the excursion
+column before the correction, so what was run is **conservative by 1.6×**. **The
 clause that fired has the citation and the small spans; the clause with the big
 spans has no citation.** And the anchor read at M16.0 is **n-hexane** while all five
 gas plants declare one component, `fuel_gas` at `molar_mass = 0.016043` — methane

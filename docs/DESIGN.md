@@ -10590,35 +10590,64 @@ plants §18 named.
 Three probes, on the shipped tree at `5e6bb8a`, read-only except for the same
 one-line loader edit §18 used, made in a detached worktree.
 
-**(P1) The five `phase = "gas"` plants are nearly isothermal.** Worst-to-best
-node temperature over 6 000 ticks, whole plant:
+**(P1) The five `phase = "gas"` plants are nearly isothermal, and there are TWO
+spans, not one.** M14.0's correction (i) to B15 settled that the interval a
+constant `cp` is asked to average over is **`T − T_REF` from the datum**, because
+that is what sits inside one `cp·(T − T_REF)` term — not the plant's own
+excursion. **The first draft of this section used the excursion and is corrected
+here**, which is the same error M14.0 recorded, one milestone later, in a note
+that cites it.
 
-| plant | span [K] | shape error a constant leaves, §18's minimax table |
-|---|---:|---:|
-| `gas_valve` | 0.02 | ~0.001% |
-| `knockout_drum` | 2.63 | ~0.17% |
-| `gas_line` | 4.93 | ~0.33% |
-| `vessel_pressure_control` | 36.12 | ~2.4% |
-| `relief_blowdown` | 42.42 | **2.64%** |
+Both quantities are reported because they answer different questions. Over
+6 000 ticks:
+
+| plant | span from `T_REF` [K] | shape error over that span | excursion [K] |
+|---|---:|---:|---:|
+| `gas_valve` | 20.02 | 1.34% | 0.02 |
+| `gas_line` | 24.93 | 1.66% | 4.93 |
+| `knockout_drum` | 29.48 | 1.96% | 2.63 |
+| `vessel_pressure_control` | 56.12 | 3.72% | 36.12 |
+| `relief_blowdown` | 62.42 | **4.13%** | 42.42 |
+
+The shape-error column is **recomputed here from §18's own Scott (1974)
+tabulation** rather than interpolated off its table of round spans — the minimax
+constant over `[T_REF, T_max]` reduces to `(M̄ − cp(T_REF))/(M̄ + cp(T_REF))` with
+`M̄` the mean capacity over the interval, and that reconstruction reproduces
+§18's published rows to within 0.11 points (1.34 against 1.33 at 20 K, 19.56
+against 19.45 at 358.8 K), which is how it is known to be the same instrument.
+It is n-hexane gas data on plants that carry methane — see (P4).
+
+**The two columns are not the same measurement and neither one alone answers the
+question.** The from-datum span sets **how wrong the constant is**; the excursion
+sets **whether that wrongness can reach a published number**, because a uniform
+offset in `h` cancels between a holdup's start and end of tick and only a
+temperature that MOVES converts shape error into a moved snapshot. `gas_valve`
+carries a 1.34% error and shows 0.0007 K of movement, which is the two columns
+disagreeing on purpose. Conflating them is the same class of error as conflating
+a spot capacity with a mean, enumerated three sections below.
 
 §18's headline figures — 19.45% at 358.8 K, 25.05% at 527.2 K — belong to spans
-`crude_column_recovery_train` has and no gas plant comes near. **The clause that
-fired has the citation and the corpus's SMALLEST spans; the clause with the big
-spans has no citation.** That inversion is the milestone's central awkwardness
-and every fork below is shaped by it.
+`crude_column_recovery_train` and `fcc_plant` have and no gas plant comes near
+on either column. **The clause that fired has the citation and the corpus's
+SMALLEST spans; the clause with the big spans has no citation.** That inversion
+is the milestone's central awkwardness and every fork below is shaped by it.
 
 **(P2) The corpus fingerprint cannot fail this question.** Re-running §18's
-perturbation at 2.64% — the largest a gas plant's own span justifies, rather
-than the round 5% — moves **the same 13 of 19 plants**, `gas_valve` included.
+perturbation at **2.64%** rather than the round 5% moves **the same 13 of 19
+plants**, `gas_valve` included. (2.64% was chosen off the excursion column
+before (P1) was corrected; the from-datum figure `relief_blowdown` justifies is
+**4.13%**, so the perturbation actually run is **conservative by 1.6×** — which
+strengthens every conclusion below rather than weakening one, since the point is
+what still fails to move.)
 It would move them at 0.01% too: the fingerprint is a hash over published
 snapshot bytes, so it answers "did any bit change", not "did a number a consumer
 reads move". **This is the FOURTH column of B15 to be wrong**, after M14.0
 corrected its quantity and its low figure and M16.0 corrected its threshold. The
 row's own summary called all five gas plants "fired" on exactly this evidence.
 
-**(P3) Magnitudes at 2.64%, which is the bar the trigger's words actually set.**
-Worst relative movement on any published temperature, pressure or mass, over all
-600 snapshots:
+**(P3) Magnitudes at that same conservative 2.64%, which is the bar the
+trigger's words actually set.** Worst relative movement on any published
+temperature, pressure or mass, over all 600 snapshots:
 
 | plant | worst relative move | in units |
 |---|---:|---|
@@ -10631,9 +10660,12 @@ Worst relative movement on any published temperature, pressure or mass, over all
 
 **So two of the five fire and three do not**, and the two that do are exactly the
 two carrying a `Vessel`. **The mechanism is not gas-ness; it is a holdup that
-integrates a temperature over a span.** `gas_valve` is a gas plant whose whole
-temperature field moves 0.02 K, and no heat capacity model of any fidelity can
-matter there. This is what tells fork 6 what the demo must be.
+integrates a temperature over a span** — the excursion column of (P1), not the
+from-datum one. `gas_valve` carries as much shape error as the water plants
+(1.34%) and shows 0.0007 K of movement, because its temperature field moves
+0.02 K and there is nothing for the error to act on. This is what tells fork 6
+what the demo must be, and it is why the demo needs a HOLDUP and a wide
+excursion rather than merely a gas.
 
 **(P4, by inspection) The anchor read at M16.0 covers no shipped component.**
 All five gas plants declare one component, `fuel_gas`, `molar_mass = 0.016043`
