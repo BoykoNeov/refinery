@@ -181,6 +181,74 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M16 is OPEN and its first slice is a PROBE, not a design note — `docs/DEFERRED.md`
+row B15, one constant heat capacity per cut.** M16.0 landed 2026-09-08 (DESIGN §18,
+the M9.3 "LANDED, not yet a slice" precedent): it changes no number, adds no test
+and touches no crate. **M16.1 is NOT scoped by it and is not automatic** — a
+building slice is a `core` change, which is the widest blast radius since M11.
+
+**The row's trigger could not be failed, and rewriting it is the milestone's first
+result.** It compared a percent against the tick's ~1e-13 truncation error, so it
+fired on `fcc_plant` at 527 K of span and equally on plain water at 20 K — an
+identity with a threshold attached. **Third column of that row to be wrong**, after
+M14.0 corrected its quantity and its low figure; B1 went the same way. The
+replacement rests on this project's own `smearing_k` bar (a knob must move a number
+a consumer reads) and splits: **fired** on the five `phase = "gas"` plants,
+**approaching** on the eight liquid-slate ones. **Nothing had been past a trigger
+since B3 fired at M12, and M11–M15 were five consecutive decisions on M11's licence
+— so a building slice here would be the first in five that is not one.**
+
+**`cp` was never confined to sensible enthalpy, and M12's boil-off is what made that
+matter.** One edit at the loader's single construction site, `cp × 1.05`: **13 of 19
+plants moved**, and the 6 that did not are exactly the 6 with no `[[components]]`
+block, which fall back to `Slate::water_only()` — **a second `cp` hard-coded in
+`core` that never passes through the loader**. On `crude_column_recovery_train`,
+recovery **85.620291% → 83.029685%** and escaped mass **964.8 → 1 177.7 kg,
++22.06%** — a 5% input amplified **4.4×**, through the flash fraction
+`f = c̄p·ΔT/Δh̄_vap`. The baseline reproduces M15.1's published figures exactly.
+
+**This project's own citation precedent could not supply the correlation, which
+falsifies what the row predicted about its own cost.** B15 said "NIST carries
+`cp(T)` for the same molecule"; that is true of the **GAS** only. For n-hexane
+LIQUID the same source gives **15 K of spot values scattering 184.2 to
+265.2 J/mol·K at essentially one temperature** — the published data disagrees with
+itself by more than the effect being measured. What ships as the anchor is the
+wide-range gas tabulation, Scott (1974), *U.S. Bureau of Mines Bulletin 666*. The
+Watson–Nelson petroleum-fraction correlation is the right shape and the form found
+was a **search-engine paraphrase, inadmissible** under the read-not-recalled rule.
+
+**Taking the MINIMAX constant per span — so what remains is pure shape error —
+gives 1.33% at 20 K, 19.45% at 358.8 K and 25.05% at 527.2 K.** Read against a
+plant rather than a round number: `crude_column_recovery_train` spans several at
+once, so its own irreducible error is **2.6% to 19.4%, bracketing the 5%
+perturbation from both sides**. The first write-up said "6.5% on the crude-column
+spans" and 6.49% is the 100 K row, **a span no plant in the corpus has**. All of it
+is GAS data: **an upper bound of unknown tightness for the eight liquid plants**.
+
+**What the probe does NOT establish is stated deliberately, and no further probe can
+fix it.** A uniform `cp` scale **cancels exactly** in enthalpy-weighted mixing while
+scaling linearly in the flash fraction — so a uniform scale and a `cp(T)` shape
+error are different perturbations, and "19.4% exceeds 5%, therefore recovery moves
+at least 2.6 points" is an **inference, not a measurement**. A per-component
+differential scale is still one constant per component. It closes by implementing
+`h(T)` and no other way.
+
+**The corpus's widest spans sit where no correlation of either phase is valid.**
+`fcc_plant`'s `fractionator` runs at 800.35 K holding cuts declared LIQUID with
+normal boiling points of 233 K, 373 K and 673 K — a liquid heat capacity applied
+**427 K above one cut's boiling point**. Adjacent to B3, and kept OUT of the trigger
+arithmetic on purpose.
+
+**Named before building**: `cp·(T − T_REF)` becomes an enthalpy function `h(T)`, and
+§4a's datum cancellation survives only if every path integrates consistently from
+`T_REF`; **`u = cv·T − cp·T_REF` (§3a fork 3) becomes ILL-FORMED rather than
+approximate**, holding two heat capacities at two temperatures; and whether
+`PseudoComponent` stores a capacity or an enthalpy is a change in the sacred crate.
+
+**A3 is re-measured and unmoved**: 920 of 5 000 sweeps on `relief_blowdown`, next
+worst plant 20 — the first time since M9.1 that number was RUN rather than
+re-asserted, now on nineteen plants. Nothing else in the ledger is nearer.
+
 **M15 is CLOSED (2026-09-08), and its scope was THE SECOND RECOVERY STAGE —
 `docs/DEFERRED.md` rows B18 (a vent chain longer than one hop) and B17 (a
 condenser's `UA` in a field documented as insulation).** Nothing was past its

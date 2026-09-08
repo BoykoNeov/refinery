@@ -5732,3 +5732,107 @@ worked. Two of the scoped edits genuinely did not compile on their first attempt
 and reported **zero catches**, which is `a-void-mutation-looks-like-a-catch`
 arriving from the other direction: not a void edit that looks like a catch, but a
 void edit that looks like an ESCAPE.
+
+## M16 — the temperature-dependent heat capacity; opened as a probe, not a note
+
+M15 closed with nothing in `docs/DEFERRED.md` past its trigger, so M16 opened
+the way M11–M15 did: as a **decision**. The row chosen is **B15** — one constant
+heat capacity per cut, used for every sensible balance in the engine — because
+it is user-originated ("physics models should be swappable where the CPU cost
+differs or where two models are wrong in different ways", 2026-09-06), because
+it fits rule 2's fidelity-seam architecture exactly, and because it has read
+**"Not measured"** since M12.0, which is what stopped the ledger's summary from
+ranking it at four consecutive close-outs.
+
+**The first slice is deliberately a PROBE and not a design note** — the M9.3
+precedent, "LANDED, not yet a slice". A note commits forks; this one was not
+allowed to, because the question it had to answer first was whether there is
+anything to build.
+
+### M16.0 — the scoping probe — **LANDED** 2026-09-08
+
+The probe is DESIGN §18. It changes no number, adds no test, and touches no
+crate. **Six things to know, and the first is a ledger status change rather
+than a measurement.**
+
+**B15's trigger cannot be failed, and under a trigger that can, the row is PAST
+IT.** The old bar — "a constant and a correlation disagree by more than the
+tick's own truncation error" — compares a percent against ~1e-13, so it fires on
+the 527 K plant and equally on plain water at 20 K. It is an identity with a
+threshold attached. **This is the THIRD column of this row to be wrong**, after
+M14.0 corrected its quantity and its low figure; B1 went the same way —
+threshold, then instrument, then noun. The replacement rests on this project's
+own `smearing_k` bar (a knob must move a number a consumer reads) and splits in
+two, because the corpus does: **fired** on the five `phase = "gas"` plants, where
+the correlation is read from source; **approaching** on the eight liquid-slate
+plants, where its size is inferred from a different phase. **Nothing has been
+past a trigger since B3 fired at M12, and M11–M15 were five consecutive
+decisions on M11's licence — so a building slice here would be the first in five
+that is not one.**
+
+**The knob has a consumer and the corpus amplifies it 4.4×.** One edit at the
+loader's single construction site (M13.1's method, in a detached worktree),
+`cp × 1.05`: **13 of 19 plants moved**, and the 6 that did not are exactly the 6
+declaring no `[[components]]` block, which fall back to a `cp` hard-coded in
+`core` that never passes through the loader. So the perturbation reached every
+plant it could and moved all of them — iteration counts included
+(`knockout_drum` 1 047 → 911), so it is not float noise. On
+`crude_column_recovery_train`: recovery **85.620291% → 83.029685%**, escaped mass
+**964.8 → 1 177.7 kg (+22.06%)**, reboiler duty +2.50%. The baseline reproduces
+M15.1's published figures exactly, which is how the instrument is known to be
+right. The path is the flash fraction `f = c̄p·ΔT/Δh̄_vap` — **`cp` was never
+confined to sensible enthalpy, and M12's boil-off is what made that matter.**
+
+**This project's own citation precedent could not supply the correlation.**
+`vapour_pressure.rs` anchors on NIST WebBook n-hexane; for a heat capacity the
+same source gives **15 K of liquid data (293.5–308.35 K) scattering from 184.2
+to 265.2 J/mol·K at essentially one temperature** — the published data disagrees
+with itself by more than the effect being measured. What it does give is a
+wide-range **gas** tabulation, 200–1500 K, Scott (1974), *U.S. Bureau of Mines
+Bulletin 666*, read from the page. The Watson–Nelson petroleum-fraction
+correlation is the right shape and the form located was a **search-engine
+paraphrase**, inadmissible under the read-not-recalled rule; it is recorded as a
+lead a build slice owes a primary source for.
+
+**The disagreement is 2.6% to 19.4% across ONE plant's own operating span, and
+the first draft of that sentence quoted a span no plant has.** Taking the
+minimax constant for each span — the best a single number can do, so what
+remains is pure shape error — gives 1.33% at 20 K, 9.64% at 152.7 K, **19.45% at
+358.8 K** and **25.05% at 527.2 K**. The first write-up said "6.5% on the
+crude-column spans"; 6.49% is the 100 K row, which belongs to nothing in the
+corpus. `crude_column_recovery_train` spans several at once — tanks at 40 K,
+drums at ~80 K, bottoms draw at 358.8 K — so the honest figure **brackets the 5%
+perturbation from both sides**. All of it is gas data: **an upper bound of
+unknown tightness for the eight liquid plants**, and directly applicable only to
+the five gas ones.
+
+**What the probe does NOT establish is stated deliberately, and no further probe
+can fix it.** A uniform `cp` scale **cancels exactly** in enthalpy-weighted
+mixing while scaling linearly in the flash fraction and in a furnace's outlet —
+so a uniform scale and a `cp(T)` shape error are different perturbations, and
+"19.4% exceeds 5%, therefore recovery moves at least 2.6 points" is an
+**inference, not a measurement**. A per-component differential scale would not
+close it either: that is still one constant per component, testing sensitivity
+to *choosing* the constant rather than to temperature dependence within one.
+Sensitivity is measured; the liquid-side magnitude is bounded above and is not
+measurable at probe stage.
+
+**And the corpus's widest spans sit where no correlation of either phase is
+valid.** `fcc_plant`'s `fractionator` runs at 800.35 K holding cuts declared
+LIQUID with normal boiling points of 233 K, 373 K and 673 K — a liquid heat
+capacity applied **427 K above one cut's boiling point**, past the critical
+temperature of any comparable hydrocarbon. That is a statement about the model,
+adjacent to B3, and it is kept OUT of the trigger arithmetic on purpose: a wider
+span makes the old trigger fire harder while making the comparison less
+meaningful, which is the opposite of what a distance column should do.
+
+**Named before building, because a build slice is a `core` change**:
+`cp·(T − T_REF)` stops being the right object (the correct one is an enthalpy
+function `h(T)`, and §4a's datum cancellation survives only if every path
+integrates consistently); **`u = cv·T − cp·T_REF` becomes ILL-FORMED rather than
+approximate**, because it holds two heat capacities at two temperatures; there is
+a second, hard-coded `cp` site in `core` that the loader never sees; and whether
+`PseudoComponent` stores a capacity or an enthalpy is a change in the sacred
+crate — **a wider blast radius than any of M12–M15 took**, all of which added an
+optional field or a scenario file. M16.1 is therefore **not** scoped by this
+probe and is not automatic.
