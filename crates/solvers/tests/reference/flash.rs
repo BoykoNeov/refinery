@@ -29,6 +29,7 @@ fn slate(n: usize) -> Slate {
                 molar_mass: KgPerMol(0.1),
                 density: Some(KgPerM3(800.0)),
                 cp: JPerKgK(2000.0),
+                cp_shape: None,
                 phase: Phase::Liquid,
             })
             .collect(),

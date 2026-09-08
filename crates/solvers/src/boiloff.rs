@@ -17,7 +17,7 @@
 
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::error::SimError;
-use refinery_core::traits::{BoilOff, BoilOffModel, ThermoModel};
+use refinery_core::traits::{BoilOff, BoilOffModel, EnthalpyModel, ThermoModel};
 use refinery_core::units::{JPerKg, Kelvin, Kg, Pascal};
 
 use crate::bubble::bubble_temperature;
@@ -51,6 +51,7 @@ impl BoilOffModel for NoBoilOff {
         _temperature: Kelvin,
         _pressure: Pascal,
         _thermo: &dyn ThermoModel,
+        _enthalpy: &dyn EnthalpyModel,
     ) -> Result<Option<BoilOff>, SimError> {
         Ok(None)
     }
@@ -115,6 +116,7 @@ impl BoilOffModel for FlashBoilOff {
         temperature: Kelvin,
         pressure: Pascal,
         thermo: &dyn ThermoModel,
+        enthalpy: &dyn EnthalpyModel,
     ) -> Result<Option<BoilOff>, SimError> {
         // Spelled `is_finite() || <= 0` rather than `!(m > 0)`: both reject a
         // NaN, and only this one survives clippy's `neg_cmp_op_on_partial_ord`.
@@ -185,7 +187,17 @@ impl BoilOffModel for FlashBoilOff {
         // solution there: there is not enough mass to absorb the arriving
         // enthalpy at the bubble point, and the honest answer is that everything
         // boils off and the tank does not fill.
-        let cp = composition.mixture_cp(slate).value();
+        // **The MEAN capacity over `[T_bub, T]`, which is what this ratio always
+        // wanted and could not say while there was only one number to ask for**
+        // (§20's consumer (b)). `c̄p·ΔT` IS `h(T) − h(T_bub)`, so under a shape
+        // the fraction is an enthalpy ratio with no capacity in it at all — the
+        // flash loses a term rather than gaining one. It is written as the
+        // product rather than as the difference because the constant model's
+        // mean is `mixture_cp` to the bit, which is what keeps every boiling
+        // plant identical (`ConstantEnthalpy::mean_cp`).
+        let cp = enthalpy
+            .mean_cp(slate, composition, bubble, temperature)?
+            .value();
         let wanted = cp * superheat / dh_vap;
         if !wanted.is_finite() {
             return Err(SimError::Numerical(format!(
@@ -296,6 +308,7 @@ mod tests {
                 molar_mass: KgPerMol(0.100),
                 density: Some(KgPerM3(680.0)),
                 cp: JPerKgK(2200.0),
+                cp_shape: None,
                 phase: Phase::Liquid,
             },
             PseudoComponent {
@@ -304,6 +317,7 @@ mod tests {
                 molar_mass: KgPerMol(0.130),
                 density: Some(KgPerM3(750.0)),
                 cp: JPerKgK(2100.0),
+                cp_shape: None,
                 phase: Phase::Liquid,
             },
         ])
@@ -322,6 +336,7 @@ mod tests {
                 Kelvin(900.0),
                 Pascal(101_325.0),
                 &TroutonThermo::new(),
+                &crate::ConstantEnthalpy,
             )
             .expect("no boil-off cannot fail");
         assert!(
@@ -345,6 +360,7 @@ mod tests {
                 Kelvin(900.0),
                 Pascal(101_325.0),
                 &ConstantThermo,
+                &crate::ConstantEnthalpy,
             )
             .expect("a model that cannot answer is not a fault");
         assert!(
@@ -369,6 +385,7 @@ mod tests {
                 Kelvin(420.0),
                 Pascal(101_325.0),
                 &TroutonThermo::new(),
+                &crate::ConstantEnthalpy,
             )
             .expect("trouton answers")
             .expect("a 50/50 naphtha mix at 420 K and one atmosphere is boiling");
@@ -397,6 +414,7 @@ mod tests {
                 Kelvin(300.0),
                 Pascal(101_325.0),
                 &TroutonThermo::new(),
+                &crate::ConstantEnthalpy,
             )
             .expect("trouton answers");
         assert!(
@@ -429,6 +447,7 @@ mod tests {
                 Kelvin(800.0),
                 Pascal(101_325.0),
                 &TroutonThermo::new(),
+                &crate::ConstantEnthalpy,
             )
             .expect("trouton answers")
             .expect("400 K of superheat boils");

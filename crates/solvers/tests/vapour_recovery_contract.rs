@@ -41,6 +41,7 @@ fn naphtha_slate() -> Slate {
             molar_mass: KgPerMol(0.100),
             density: Some(KgPerM3(680.0)),
             cp: JPerKgK(2200.0),
+            cp_shape: None,
             phase: refinery_core::components::Phase::Liquid,
         },
         refinery_core::components::PseudoComponent {
@@ -49,6 +50,7 @@ fn naphtha_slate() -> Slate {
             molar_mass: KgPerMol(0.130),
             density: Some(KgPerM3(750.0)),
             cp: JPerKgK(2100.0),
+            cp_shape: None,
             phase: refinery_core::components::Phase::Liquid,
         },
     ])
@@ -65,6 +67,7 @@ fn boiling_engine(graph: PlantGraph) -> Engine {
         Box::new(NoReactions),
         Box::new(CutPointSplitter),
         Box::new(FlashBoilOff),
+        Box::new(refinery_solvers::ConstantEnthalpy),
     )
 }
 

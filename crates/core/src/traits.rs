@@ -8,7 +8,7 @@
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{CascadeSpec, ColumnDraw, ControlledValue, EdgeId, NodeId, PlantGraph};
-use crate::units::{JPerKg, JPerMol, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt};
+use crate::units::{JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -74,6 +74,246 @@ pub trait FlowSolver: Send {
 
     /// Human-readable identifier for snapshots/logs (e.g. "newton-network").
     fn name(&self) -> &'static str;
+}
+
+/// The specific ENTHALPY of a mixture, and everything derived from it — the
+/// heat-capacity seam (M16.2, docs/DESIGN.md §20).
+///
+/// **What this trait owns is `h(T)`, not `cp`** (§20 fork 1). Both capacities are
+/// derived from it: the spot value is `dh/dT`, the mean over an interval is the
+/// difference quotient `(h(T₂) − h(T₁))/(T₂ − T₁)`. The alternative — supply
+/// `cp(T)` and let each consumer integrate — is refused for the reason
+/// `mixture_cv` and `cp − R/M̄` are gated against each other in `components.rs`:
+/// two expressions of one quantity drift, and here the thing that would drift is
+/// the datum `energy::T_REF` that §4a's reference cancellation rests on. With one
+/// function that IS the integral, a consumer cannot integrate it from the wrong
+/// end; with a capacity and a convention, sixteen call sites can each get it
+/// wrong independently.
+///
+/// **Why the flux, the stock, the mix and both inversions are methods here rather
+/// than free functions in `energy` taking an `h`.** They are algebraically
+/// `ṁ·h`, `m·h`, `T(Σṁh/Σṁ)` and `T(U/m)` — but algebra is not bits.
+/// `enthalpy_flux` was `(ṁ·cp)·(T − T_REF)` for fifteen milestones, and
+/// regrouping it to `ṁ·(cp·(T − T_REF))` — with no shape, no seam and no physics
+/// change whatever — moves **11 of the 19** shipped plants on each fidelity, and
+/// not the same 11 (measured, M16.2). Fork 4 promises the constant model
+/// reproduces today's arithmetic *bit for bit*; the only way to keep that promise
+/// is to let the model own the grouping. `ConstantEnthalpy` therefore holds the
+/// pre-M16 expressions verbatim, and a gate asserts the two forms agree to a few
+/// ULP so the override cannot hide a real disagreement.
+///
+/// **Pure, and a function of its arguments alone**, like every seam in this file
+/// except `Controller`: the engine holds ONE model for the whole plant, so state
+/// on `self` would cross-seed two holdups.
+///
+/// **`T_REF` is not a parameter.** Every method integrates from
+/// `energy::T_REF` and an implementation that picks its own datum is wrong, not
+/// configurable — which is what gate 5 asserts against the constant explicitly
+/// rather than relying on a zero reference to make it moot.
+pub trait EnthalpyModel: Send {
+    fn name(&self) -> &'static str;
+
+    /// Specific enthalpy `h(T) = ∫_{T_REF}^{T} cp(τ) dτ` [J/kg], on the
+    /// saturated-liquid datum M13 settled (`energy::T_REF`).
+    ///
+    /// # Errors
+    /// `SimError::Numerical` when the mixture has no evaluable shape at this
+    /// state — never a NaN (rule 5).
+    fn specific_enthalpy(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        temperature: Kelvin,
+    ) -> Result<JPerKg, SimError>;
+
+    /// The enthalpy flux `ṁ·h(T)` [W] carried by a mass flow.
+    ///
+    /// Sign follows `mass_flow`, exactly as the free function it replaces did:
+    /// the caller passes flow *into* the node it is accounting for, so an outflow
+    /// subtracts. **The SENSIBLE term alone** — a caller holding a whole
+    /// `Stream` wants `stream_enthalpy_flux` below, which adds `λ`.
+    ///
+    /// # Errors
+    /// As `specific_enthalpy`.
+    fn enthalpy_flux(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        mass_flow: KgPerSec,
+        temperature: Kelvin,
+    ) -> Result<Watt, SimError>;
+
+    /// The TOTAL enthalpy flux a stream carries, `ṁ·(h(T) + λ)` [W].
+    ///
+    /// The single owner of "a stream's specific enthalpy on this engine's datum",
+    /// and the reason `Stream::latent` is a field on the stream rather than a
+    /// lookup keyed by edge id (§15 fork 1): a consumer closing an energy balance
+    /// calls this and never has to know which edges carry vapour.
+    ///
+    /// **Provided, not required, and that is a measurement rather than a
+    /// convenience.** The pre-M16 expression was already `ṁ·(cp·(T − T_REF) + λ)`
+    /// — the `ṁ·h` grouping this trait wants — so composing it out of
+    /// `specific_enthalpy` reproduces it bit for bit with no override, which the
+    /// flux and the stock above cannot do.
+    ///
+    /// # Errors
+    /// As `specific_enthalpy`.
+    fn stream_enthalpy_flux(
+        &self,
+        slate: &Slate,
+        stream: &crate::stream::Stream,
+    ) -> Result<Watt, SimError> {
+        let h = self
+            .specific_enthalpy(slate, &stream.composition, stream.temperature)?
+            .value();
+        let latent = stream.latent.map_or(0.0, |l| l.value());
+        Ok(Watt(stream.mass_flow.value() * (h + latent)))
+    }
+
+    /// A holdup's enthalpy STOCK `m·h(T)` [J].
+    ///
+    /// The same expression as the flux with a mass in place of a mass rate, and a
+    /// method of its own rather than a units lie at the call site: an inventory is
+    /// not a flow, and `engine.rs`'s tank branch is the second site in the engine
+    /// that holds the datum (§20's consumer (a)).
+    ///
+    /// # Errors
+    /// As `specific_enthalpy`.
+    fn enthalpy_stock(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        mass: Kg,
+        temperature: Kelvin,
+    ) -> Result<f64, SimError>;
+
+    /// The mean capacity over `[t1, t2]`: `(h(t2) − h(t1))/(t2 − t1)`
+    /// [J/(kg·K)].
+    ///
+    /// **At `t2 == t1` this returns the SPOT value `cp(t1)`**, which is the
+    /// continuous limit and therefore a right answer rather than a convenient one
+    /// — the same standing as `pipe_outlet_temperature`'s zero-flow return of its
+    /// inlet (§20 fork 7). Exact equality, not a threshold, for that function's
+    /// own stated reason: a threshold is a magic number that would also flatten
+    /// legitimately small intervals. The state is reachable rather than
+    /// hypothetical — a tank sitting at ambient, a draw at its own tray
+    /// temperature, a stagnant edge.
+    ///
+    /// # Errors
+    /// As `specific_enthalpy`.
+    fn mean_cp(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        t1: Kelvin,
+        t2: Kelvin,
+    ) -> Result<JPerKgK, SimError>;
+
+    /// The SPOT capacity `cp(T) = dh/dT` [J/(kg·K)].
+    ///
+    /// The third consumer, and the one this project keeps conflating with the
+    /// second (§20's enumeration): `γ = cp/cv` is a ratio at ONE temperature, and
+    /// so is the derivative an inverter needs. A mean over an interval is a
+    /// different number, and answering one question with the other is the error
+    /// mutation 1 exists to catch.
+    ///
+    /// # Errors
+    /// As `specific_enthalpy`.
+    fn spot_cp(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        temperature: Kelvin,
+    ) -> Result<JPerKgK, SimError>;
+
+    /// Specific internal energy `u(T) = h(T) − (R/M̄)·T` [J/kg], on the same
+    /// datum.
+    ///
+    /// **Well formed under any shape, which is §20's correction to §18.** The
+    /// offset `R/M̄` is a property of the mixture's molar mass and is temperature
+    /// independent (`Composition::gas_constant_offset`), so `cv(T) = cp(T) − R/M̄`
+    /// holds exactly whatever `cp` does. With `cp` flat this evaluates to M5.3's
+    /// `cv·T − cp·T_REF` — and, in `ConstantEnthalpy`, to those very bits.
+    ///
+    /// # Errors
+    /// As `specific_enthalpy`.
+    fn specific_internal_energy(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        temperature: Kelvin,
+    ) -> Result<JPerKg, SimError>;
+
+    /// Invert the enthalpy stock: the temperature [K] a holdup of `mass` ends a
+    /// step at, holding `energy` joules on the enthalpy datum.
+    ///
+    /// **Takes `(energy, mass)` rather than a pre-divided `h`**, and that is the
+    /// signature doing the work rather than the body: the constant model needs
+    /// `T_REF + energy/(mass·cp)` — one division by a product — to reproduce the
+    /// pre-M16 tank branch exactly, and a caller that had already divided could
+    /// not give it back.
+    ///
+    /// # Errors
+    /// `SimError::Numerical` when no temperature answers — a mixture whose shape
+    /// has no root at this energy, which is `h` leaving the range its declared
+    /// shape is monotone over.
+    fn temperature_from_enthalpy(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        energy: f64,
+        mass: f64,
+    ) -> Result<Kelvin, SimError>;
+
+    /// Invert `specific_internal_energy` for a holdup: the temperature [K] a
+    /// vessel of `mass` ends a step at, holding `energy` joules of INTERNAL
+    /// energy.
+    ///
+    /// Kept beside its forward form for the reason M5.3 gave: a balance must not
+    /// integrate on one datum and read back on another.
+    ///
+    /// # Errors
+    /// As `temperature_from_enthalpy`.
+    fn temperature_from_internal_energy(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        energy: f64,
+        mass: f64,
+    ) -> Result<Kelvin, SimError>;
+
+    /// The temperature [K] a zero-volume node's inflows mix to.
+    ///
+    /// **Three sums arrive and the two models divide different pairs**, which is
+    /// why this is a method rather than a division at the call site. The mixed
+    /// specific enthalpy is `Σṁh/Σṁ` and the answer is its inverse; the constant
+    /// model instead keeps `T_REF + Σṁh/Σṁcp`, the expression `mix_inflows` has
+    /// evaluated since M2.1. The two are the same number and not the same bits.
+    ///
+    /// # Errors
+    /// As `temperature_from_enthalpy`.
+    fn mix_temperature(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        totals: InflowEnthalpy,
+    ) -> Result<Kelvin, SimError>;
+}
+
+/// The three sums a zero-volume node's inflows produce, carried together because
+/// `EnthalpyModel::mix_temperature`'s two implementations divide different pairs
+/// of them (see that method).
+///
+/// `capacity_rate` is also read on its own, by the exchanger, to size `C_min` —
+/// the second reader §20's consumer enumeration does not name.
+#[derive(Debug, Clone, Copy)]
+pub struct InflowEnthalpy {
+    /// `Σ ṁ·h` [W].
+    pub enthalpy_rate: f64,
+    /// `Σ ṁ` [kg/s].
+    pub mass_rate: f64,
+    /// `Σ ṁ·cp` [W/K], each term at its own inlet's SPOT capacity.
+    pub capacity_rate: f64,
 }
 
 /// Physical property provider. M1 uses constant-property water; M2+ uses
@@ -502,7 +742,11 @@ pub trait BoilOffModel: Send {
     /// assumed so the caller owns the question), and `thermo` is the engine's
     /// thermodynamics — reached as an argument for the same reason
     /// `SeparationModel::separate` takes one: a K-value is a property of the
-    /// fluid, not of this seam.
+    /// fluid, not of this seam. `enthalpy` arrives on the same argument (M16.2):
+    /// the flash fraction is an ENTHALPY RATIO, and under §20 the engine has one
+    /// owner of what an enthalpy is. `enthalpy` arrives on the same argument (M16.2):
+    /// the flash fraction is an ENTHALPY RATIO, and under §20 the engine has one
+    /// owner of what an enthalpy is.
     ///
     /// **What makes an implementation of this sound, stated because one model
     /// satisfying it is not the same as the trait requiring it** (the M10.1
@@ -527,6 +771,7 @@ pub trait BoilOffModel: Send {
     /// A model that simply has no vapour–liquid equilibrium returns `Ok(None)`
     /// instead: "this fidelity cannot answer" is not a fault, it is fourteen of
     /// the sixteen shipped plants (§14 fork 7).
+    #[allow(clippy::too_many_arguments)] // one argument per seam this model reads
     fn boil_off(
         &self,
         slate: &Slate,
@@ -535,6 +780,7 @@ pub trait BoilOffModel: Send {
         temperature: Kelvin,
         pressure: Pascal,
         thermo: &dyn ThermoModel,
+        enthalpy: &dyn EnthalpyModel,
     ) -> Result<Option<BoilOff>, SimError>;
 }
 

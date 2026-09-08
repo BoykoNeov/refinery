@@ -5,7 +5,7 @@
 //!   → validation → snapshot available.
 
 use crate::components::{Composition, Slate};
-use crate::energy::{self, T_REF};
+use crate::energy::{self};
 use crate::error::SimError;
 use crate::graph::{ControlMode, ControlledValue, LeakRole, LoopId, NodeId, NodeKind, PlantGraph};
 use crate::snapshot::{
@@ -13,7 +13,8 @@ use crate::snapshot::{
     NodeSnapshot, Snapshot,
 };
 use crate::traits::{
-    BoilOffModel, FlowSolver, HydraulicSolution, ReactionModel, SeparationModel, ThermoModel,
+    BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, ReactionModel, SeparationModel,
+    ThermoModel,
 };
 use crate::units::*;
 
@@ -72,6 +73,15 @@ pub struct Engine {
     /// docs/DESIGN.md §14). Reaches one call site — the `Tank` arm of step 3 —
     /// and `NoBoilOff` is what every plant written before M12 selects.
     boiloff: Box<dyn BoilOffModel>,
+    /// The specific enthalpy of a mixture, and every capacity derived from it
+    /// (M16.2, docs/DESIGN.md §20). Reaches every energy path in the engine —
+    /// the transport sweep, both holdup branches, the reactor's duty and the
+    /// boil-off's flash — because it owns the datum all of them share.
+    ///
+    /// `ConstantEnthalpy` is what nineteen of the twenty shipped plants select,
+    /// and it reproduces the pre-M16 arithmetic bit for bit rather than merely
+    /// the same number.
+    enthalpy: Box<dyn EnthalpyModel>,
     tick: u64,
     last_solution: Option<HydraulicSolution>,
     /// Resolved node temperature [K] and composition fields from the last tick.
@@ -106,6 +116,7 @@ impl Engine {
         reactions: Box<dyn ReactionModel>,
         separation: Box<dyn SeparationModel>,
         boiloff: Box<dyn BoilOffModel>,
+        enthalpy: Box<dyn EnthalpyModel>,
     ) -> Self {
         Self {
             graph,
@@ -116,11 +127,26 @@ impl Engine {
             reactions,
             separation,
             boiloff,
+            enthalpy,
             tick: 0,
             last_solution: None,
             node_states: energy::NodeStates::default(),
             last_cavitation: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// The engine's enthalpy model, for a consumer closing its own energy
+    /// balance (M16.2).
+    ///
+    /// Public because the datum moved behind a seam: an external balance used to
+    /// call `energy::enthalpy_flux` and reach the same arithmetic the engine did,
+    /// and after §20 the only way to reach it is to ask the same model. A test
+    /// that rebuilt the expression instead would be grading the engine against a
+    /// second copy of the rule — which is exactly what M13 found its two `dh_vap`
+    /// tests doing.
+    #[must_use]
+    pub fn enthalpy(&self) -> &dyn EnthalpyModel {
+        self.enthalpy.as_ref()
     }
 
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
@@ -433,6 +459,7 @@ impl Engine {
             self.reactions.as_ref(),
             self.separation.as_ref(),
             self.thermo.as_ref(),
+            self.enthalpy.as_ref(),
             &self.node_states,
         )?;
         let node_temperature = &node_states.temperature;
@@ -547,6 +574,7 @@ impl Engine {
             let outlet = energy::edge_temperature_at(
                 &self.graph,
                 &self.slate,
+                self.enthalpy.as_ref(),
                 node_temperature,
                 &node_states.composition,
                 &node_states.column_separation,
@@ -658,10 +686,12 @@ impl Engine {
                     let into_node = if incoming { flow } else { -flow };
                     // The VAPOUR's own composition, not the upwind node's and
                     // not this holdup's: `y = K·x` is what the edge carries and
-                    // what `mixture_cp` must be taken over. The same expression
-                    // I6b's boundary term uses, so the balance and the engine
-                    // charge the arriving stream identically.
-                    let cp = stream.composition.mixture_cp(&self.slate);
+                    // what `h` must be evaluated at. The same expression I6b's
+                    // boundary term uses, so the balance and the engine charge
+                    // the arriving stream identically — and since M16.2 that is
+                    // enforced by both reading ONE model rather than by both
+                    // spelling one formula.
+                    //
                     // `stream_enthalpy_flux`, NOT `enthalpy_flux` — the arriving
                     // vapour's enthalpy is `cp·(T − T_REF) + λ` on this engine's
                     // saturated-liquid datum, and dropping `λ` here is B16's
@@ -669,7 +699,10 @@ impl Engine {
                     // §16 fork 1). It is signed the same way the sensible term
                     // below is, because the flux is linear in the stream's own
                     // flow and `incoming` is what says which way that points.
-                    let flux = energy::stream_enthalpy_flux(stream, cp).value();
+                    let flux = self
+                        .enthalpy
+                        .stream_enthalpy_flux(&self.slate, stream)?
+                        .value();
                     net_mass += into_node;
                     net_enthalpy += if incoming { flux } else { -flux };
                     if into_node > 0.0 {
@@ -688,18 +721,6 @@ impl Engine {
                 let stream = &self.graph.pipe(eid).stream;
                 let flow = stream.mass_flow.value();
                 let into_node = if incoming { flow } else { -flow };
-                // Off the RESOLVED upwind composition, through the same helper
-                // the sweep used: the pipe's stored composition is last tick's,
-                // and charging an arriving stream the heat capacity of the
-                // fluid it replaced is wrong on the very first tick it changes.
-                let cp = energy::stream_cp_at(
-                    &self.graph,
-                    &self.slate,
-                    &node_states.column_separation,
-                    &node_states.composition,
-                    eid,
-                    flow,
-                )?;
                 // The raw stored flow, not `into_node`: the helper selects the
                 // upwind end from the sign, and `into_node` has been re-signed
                 // positive-into-this-tank, which would name the wrong end on
@@ -707,6 +728,7 @@ impl Engine {
                 let crossing_t = energy::edge_temperature_at(
                     &self.graph,
                     &self.slate,
+                    self.enthalpy.as_ref(),
                     node_temperature,
                     &node_states.composition,
                     &node_states.column_separation,
@@ -715,8 +737,22 @@ impl Engine {
                     dissipation_of(&solution, eid),
                     nid,
                 )?;
+                // Off the RESOLVED upwind composition, through the same helper
+                // the sweep used: the pipe's stored composition is last tick's,
+                // and charging an arriving stream the heat capacity of the
+                // fluid it replaced is wrong on the very first tick it changes.
+                let crossing = energy::edge_composition_at(
+                    &self.graph,
+                    &node_states.column_separation,
+                    &node_states.composition,
+                    eid,
+                    flow,
+                )?;
                 net_mass += into_node;
-                net_enthalpy += energy::enthalpy_flux(KgPerSec(into_node), cp, crossing_t).value();
+                net_enthalpy += self
+                    .enthalpy
+                    .enthalpy_flux(&self.slate, &crossing, KgPerSec(into_node), crossing_t)?
+                    .value();
 
                 if into_node > 0.0 {
                     let arriving = energy::edge_composition_at(
@@ -783,8 +819,12 @@ impl Engine {
                 // with — the two differ only while a tank's contents are
                 // changing, and using one for both would book the enthalpy of a
                 // mixture that was never in the vessel.
-                let cp_old = tank.composition.mixture_cp(&self.slate).value();
-                let energy_old = mass_old * cp_old * (tank.temperature.value() - T_REF.value());
+                let energy_old = self.enthalpy.enthalpy_stock(
+                    &self.slate,
+                    &tank.composition,
+                    Kg(mass_old),
+                    tank.temperature,
+                )?;
 
                 // Composition: a per-component mass balance over the tick,
                 // explicit Euler like every other slow state here.
@@ -825,8 +865,6 @@ impl Engine {
                         ))
                     })?;
                 }
-                let cp = tank.composition.mixture_cp(&self.slate).value();
-
                 let mass_new = (mass_old + net_mass * dt.value()).max(0.0);
                 let energy_new = energy_old + (net_enthalpy + heat_input) * dt.value();
 
@@ -842,7 +880,19 @@ impl Engine {
                 // meaningful temperature and holds its last valid one, so it has
                 // no computed value to check and must not trip this.
                 if mass_new > MIN_THERMAL_MASS_KG {
-                    let value = T_REF.value() + energy_new / (mass_new * cp);
+                    // The inversion, and it is the model's rather than a division
+                    // here: under a shaped `cp` this is a quadratic root and under
+                    // the constant one it is `T_REF + energy/(mass·cp)` to the bit
+                    // (docs/DESIGN.md §20 fork 2).
+                    let value = self
+                        .enthalpy
+                        .temperature_from_enthalpy(
+                            &self.slate,
+                            &tank.composition,
+                            energy_new,
+                            mass_new,
+                        )?
+                        .value();
                     tank.temperature = energy::checked_temperature(value, || {
                         // Both sides are ENERGIES over this tick, and both are
                         // stated against the START-of-tick inventory that
@@ -854,11 +904,11 @@ impl Engine {
                         format!(
                             "tank '{node_name}' cools to {value:.2} K, below absolute zero: over \
                              this tick a net heat load of {:.4e} W removed {:.4e} J, more than \
-                             the {:.4e} J of sensible heat its {mass_old:.4e} kg held above 0 K. \
-                             Reduce the heat being drawn out of it.",
+                             the {:.4e} J of sensible heat its {mass_old:.4e} kg held above \
+                             the datum. Reduce the heat being drawn out of it.",
                             net_enthalpy + heat_input,
                             (net_enthalpy + heat_input) * dt.value(),
-                            energy_old + mass_old * cp_old * T_REF.value(),
+                            energy_old,
                         )
                     })?;
                 }
@@ -892,6 +942,7 @@ impl Engine {
                     tank.temperature,
                     P_ATM,
                     self.thermo.as_ref(),
+                    self.enthalpy.as_ref(),
                 )? {
                     let vapour_mass = boil.vapour_mass.value();
                     // Rule 5's backstop on a seam: a model that returns more
@@ -981,10 +1032,15 @@ impl Engine {
                 // term the residual drove to zero IS this mass update, so the two
                 // cannot disagree about how much the vessel took on.
                 let mass_old = vessel.mass.value();
-                let cv_old = vessel.composition.mixture_cv(&self.slate);
-                let cp_old = vessel.composition.mixture_cp(&self.slate);
                 let energy_old = mass_old
-                    * energy::specific_internal_energy(cv_old, cp_old, vessel.temperature).value();
+                    * self
+                        .enthalpy
+                        .specific_internal_energy(
+                            &self.slate,
+                            &vessel.composition,
+                            vessel.temperature,
+                        )?
+                        .value();
 
                 if inflow_mass_rate > 0.0 {
                     vessel.composition = energy::blended_holdup_composition(
@@ -1000,26 +1056,30 @@ impl Engine {
                         ))
                     })?;
                 }
-                let cv = vessel.composition.mixture_cv(&self.slate);
-                let cp = vessel.composition.mixture_cp(&self.slate);
-
                 let mass_new = (mass_old + net_mass * dt.value()).max(0.0);
                 let energy_new = energy_old + (net_enthalpy + heat_input) * dt.value();
 
                 vessel.mass = Kg(mass_new);
                 if mass_new > MIN_THERMAL_MASS_KG {
-                    let value =
-                        energy::temperature_from_internal_energy(energy_new, mass_new, cv, cp);
+                    let value = self
+                        .enthalpy
+                        .temperature_from_internal_energy(
+                            &self.slate,
+                            &vessel.composition,
+                            energy_new,
+                            mass_new,
+                        )?
+                        .value();
                     vessel.temperature = energy::checked_temperature(value, || {
                         format!(
                             "vessel '{node_name}' cools to {value:.2} K, below absolute zero: over \
                              this tick a net heat load of {:.4e} W removed {:.4e} J from the \
-                             {:.4e} J of internal energy its {mass_old:.4e} kg held above 0 K. A \
+                             {:.4e} J of internal energy its {mass_old:.4e} kg held above the \
                              vessel blowing down DOES cool — that is the model working — but not \
                              through zero; check the step size and the discharge resistance.",
                             net_enthalpy + heat_input,
                             (net_enthalpy + heat_input) * dt.value(),
-                            mass_old * cv_old.value() * vessel.temperature.value(),
+                            energy_old,
                         )
                     })?;
                 }

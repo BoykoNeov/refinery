@@ -362,7 +362,7 @@ fn the_choke_point_moves_with_the_slates_heat_capacity_ratio() {
     let heavy_cp = 5000.0;
     let mut file = load();
     match file.components.first_mut() {
-        Some(c) => c.cp_j_per_kg_k = heavy_cp,
+        Some(c) => c.cp_j_per_kg_k = Some(heavy_cp),
         None => panic!("gas_valve.toml must declare a component"),
     }
     let flow = solve(&file, "newton");

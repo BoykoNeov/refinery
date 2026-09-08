@@ -48,7 +48,76 @@ pub struct PseudoComponent {
     /// (declared iff liquid), so `mixture_density` may assume it.
     pub density: Option<KgPerM3>,
     pub cp: JPerKgK,
+    /// The temperature dependence of this cut's heat capacity, when the file
+    /// declares one (M16.2, docs/DESIGN.md §20 fork 3).
+    ///
+    /// `None` is not "a flat shape" — it is "this component declares no shape",
+    /// which is what nineteen of the twenty shipped plants mean and what the
+    /// loader REFUSES to pair with `[fidelity] heat_capacity = "linear"`. The
+    /// two are different statements for the same reason `Stream::latent` is
+    /// `None` on a liquid rather than `Some(0)`.
+    ///
+    /// `cp` above stays *the* constant, unshadowed: a shaped component declares
+    /// its own anchor pair rather than re-interpreting `cp_j_per_kg_k` as "the
+    /// value at some unwritten temperature" (§20 fork 3's named trap, and B17's
+    /// precedent — a key whose meaning was implicit).
+    ///
+    /// `skip_serializing_if` because `PseudoComponent` is `Serialize` and a new
+    /// always-present key would move every plant's bytes for a field nineteen of
+    /// them do not have.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cp_shape: Option<CpShape>,
     pub phase: Phase,
+}
+
+/// A declared temperature dependence for one cut's heat capacity [J/(kg·K)]:
+///
+/// ```text
+/// cp(T) = cp_at_anchor + slope·(T − anchor_temperature)
+/// ```
+///
+/// **Linear, and that is a verdict rather than a starting point** (§20 fork 2,
+/// verdict (3)): a linear `cp` makes `h(T) = ∫cp` quadratic and the inversion
+/// `T(h)` a quadratic formula — exact, no iteration, and therefore no evaluation
+/// bound to defend inside the tick loop, where an inversion runs once per holdup
+/// per tick rather than once per solve.
+///
+/// **The anchor is a PAIR and the slope is separate**, so "which temperature is
+/// `cp` quoted at" is written in the file rather than implied by a constant that
+/// already means something else.
+///
+/// **`slope >= 0` is a load-time refusal, not a convention.** With a
+/// non-negative slope and `cp(T_REF) > 0` — both checked at load — `cp` is
+/// positive for every `T >= T_REF` and `h` is strictly increasing there, so the
+/// inverse exists in closed form and is single valued without the file having to
+/// declare a validity range. A decreasing `cp` would need one, and there is no
+/// key for it; that is deferred rather than approximated (docs/DESIGN.md §20).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct CpShape {
+    /// The temperature the declared capacity is quoted AT [K].
+    pub anchor_temperature: Kelvin,
+    /// The capacity at `anchor_temperature` [J/(kg·K)].
+    pub cp_at_anchor: JPerKgK,
+    /// `dcp/dT` [J/(kg·K²)]. Refused negative at load — see the type docs.
+    pub slope: f64,
+}
+
+impl CpShape {
+    /// This shape re-anchored at `energy::T_REF`, as the pair
+    /// `(cp(T_REF), slope)`.
+    ///
+    /// Every consumer wants the shape on the engine's own datum, and moving the
+    /// anchor there once — rather than carrying `anchor_temperature` into the
+    /// integral — is what keeps `h`, its mean and its inverse from each having
+    /// to remember where the file's author chose to quote the number.
+    #[must_use]
+    pub fn at_datum(&self, t_ref: Kelvin) -> (f64, f64) {
+        (
+            self.cp_at_anchor.value()
+                + self.slope * (t_ref.value() - self.anchor_temperature.value()),
+            self.slope,
+        )
+    }
 }
 
 impl PseudoComponent {
@@ -59,6 +128,12 @@ impl PseudoComponent {
             molar_mass: KgPerMol(0.018),
             density: Some(KgPerM3(998.0)),
             cp: JPerKgK(4184.0),
+            // Water declares no shape, and that is fork 5's whole verdict: the
+            // six plants with no `[[components]]` block reach this constructor,
+            // so a shape here would move their bytes for a milestone whose demo
+            // is elsewhere. The loader refuses the shaped model on those plants
+            // instead (docs/DESIGN.md §20 fork 5).
+            cp_shape: None,
             phase: Phase::Liquid,
         }
     }
@@ -303,6 +378,63 @@ impl Composition {
         )
     }
 
+    /// `Σ_{gas} fᵢ·R/Mᵢ` [J/(kg·K)]: the gap between a mixture's `cp` and its
+    /// `cv`, and it is **temperature independent** whatever `cp` does.
+    ///
+    /// That independence is the whole of §20's correction to §18. `h − u = P/ρ =
+    /// (R/M̄)·T` is fixed by thermodynamics, so `cv(T) = cp(T) − R/M̄` holds
+    /// exactly under any shape and `u(T) = h(T) − (R/M̄)·T` is a one-line
+    /// generalisation rather than the ill-formed expression §18 predicted. A
+    /// liquid contributes nothing, mirroring `mixture_cv`'s phase branch, so on
+    /// an all-liquid mixture this is exactly zero and `u = h`.
+    ///
+    /// **Not `mixture_cp − mixture_cv`**, although it equals that algebraically:
+    /// this sums the offsets directly, which is what a shaped model needs (it has
+    /// no single `cp` to subtract from) and what keeps the quantity independent
+    /// of any capacity at all.
+    pub fn gas_constant_offset(&self, slate: &Slate) -> JPerKgK {
+        JPerKgK(
+            self.mass_fractions
+                .iter()
+                .enumerate()
+                .map(|(i, f)| {
+                    let component = slate.get(i);
+                    match component.phase {
+                        Phase::Liquid => 0.0,
+                        Phase::Gas => f * R_GAS / component.molar_mass.value(),
+                    }
+                })
+                .sum(),
+        )
+    }
+
+    /// The mixture's declared shape, re-anchored at `t_ref`: `(cp(t_ref), slope)`
+    /// such that `cp_mix(T) = cp(t_ref) + slope·(T − t_ref)`.
+    ///
+    /// A mass-weighted sum of linear shapes is itself linear, which is why the
+    /// mixture can be reduced to one pair once and every consumer — the integral,
+    /// the mean, the spot value and the inverse — then read the same two numbers.
+    /// Re-anchoring at the datum here rather than in each consumer is what stops
+    /// four expressions from having to agree about where the file quoted `cp`.
+    ///
+    /// `None` when any component carrying a nonzero fraction declares no shape.
+    /// A zero-fraction component does not vote, on the same argument as `phase`:
+    /// a gas sub-plant on a slate that also defines liquid cuts carries zeros for
+    /// those, and letting them vote would refuse every mixed slate outright.
+    pub fn mixture_cp_shape(&self, slate: &Slate, t_ref: Kelvin) -> Option<(f64, f64)> {
+        let mut cp_at_ref = 0.0;
+        let mut slope = 0.0;
+        for (i, f) in self.mass_fractions.iter().enumerate() {
+            if *f <= 0.0 {
+                continue;
+            }
+            let (c, s) = slate.get(i).cp_shape?.at_datum(t_ref);
+            cp_at_ref += f * c;
+            slope += f * s;
+        }
+        Some((cp_at_ref, slope))
+    }
+
     /// Mixture heat capacity: mass-fraction weighted.
     pub fn mixture_cp(&self, slate: &Slate) -> JPerKgK {
         JPerKgK(
@@ -327,6 +459,7 @@ mod tests {
             molar_mass: KgPerMol(molar_mass),
             density: None,
             cp: JPerKgK(2000.0),
+            cp_shape: None,
             phase: Phase::Gas,
         }
     }
@@ -338,6 +471,7 @@ mod tests {
             molar_mass: KgPerMol(0.1),
             density: Some(KgPerM3(density)),
             cp: JPerKgK(2000.0),
+            cp_shape: None,
             phase: Phase::Liquid,
         }
     }

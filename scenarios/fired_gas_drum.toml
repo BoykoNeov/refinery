@@ -1,0 +1,126 @@
+# M16.2 demo plant: fuel gas fired from ambient to ~800 K into a surge drum.
+#
+# THE point of this file is the `[fidelity] heat_capacity = "linear"` key and the
+# three `cp_shape_*` keys on its one component. It is the only plant in the
+# corpus that declares either. Everything else about it is deliberately the
+# smallest thing that makes those keys matter.
+#
+# Why it is a NEW file rather than a key added to an existing one
+# (docs/DESIGN.md §20 fork 6). The five plants that carry a gas are ruled out by
+# measurement, not by taste: over 6 000 ticks their internal temperature
+# EXCURSIONS run 0.02 to 42.42 K, and under a 2.64% perturbation of `cp` three of
+# the five move by less than half a Kelvin — `gas_valve` by 0.0007 K. A constant
+# heat capacity is wrong by an amount set by the span from the enthalpy datum,
+# but that wrongness can only reach a published number through a temperature that
+# MOVES. The two that do move are `relief_blowdown` and `vessel_pressure_control`,
+# which are the M5.3 and M10.1 regression anchors and have been still since those
+# milestones.
+#
+# So the shape this demo needs was read straight off that measurement: a gas
+# HOLDUP whose temperature moves over a span where the shape error is large.
+# `furnace_heater` is the plant shape (source → fired heater → sink) and it is
+# water-only; this is that shape with a methane slate and a drum in the middle.
+#
+# What the file is claiming, and what it is not. The three shape numbers are a
+# LINEAR FIT to a published methane gas tabulation, not the tabulation itself —
+# NIST WebBook CAS 74-82-8, Shomate coefficients from Chase (1998), NIST-JANAF
+# Thermochemical Tables 4th ed., valid 298–1300 K. The fit is what the engine
+# integrates, because §20 fork 2 admits only shapes that invert in closed form
+# and a Shomate polynomial does not. The gap between the fit and the source is
+# the reference gate's subject, not something this comment can assert:
+# `crates/scenarios/tests/methane_cp_reference.rs`.
+#
+# The `x_t` a real fuel-gas valve would carry is absent, and its absence is
+# enforced: a shaped plant with a compressible valve is REFUSED at load, because
+# the choked-flow law takes γ = cp/cv from the constant capacity inside the flow
+# solve, which this milestone did not reach. Same for a cascade column. Those
+# refusals are the milestone's own boundary made loud (docs/DEFERRED.md).
+
+[meta]
+name = "fired_gas_drum"
+description = "Fuel gas fired from ambient into a surge drum, with a heat capacity that rises with temperature."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+# The whole reason this file exists. Default is "constant", which is what the
+# other nineteen plants mean.
+heat_capacity = "linear"
+
+# Methane, with a shape instead of a constant.
+#
+# `cp_j_per_kg_k` is ABSENT and would be refused: under a shape the capacity at
+# every temperature — the datum included — comes out of the anchor pair below,
+# so a declared constant would be a number nothing reads. That is the same rule
+# `density_kg_per_m3` follows one field up.
+#
+# The anchor is a PAIR so that "which temperature is this quoted at" is written
+# down rather than implied. The fit runs over 300–800 K, this plant's own
+# operating span; below 300 K the shape is the fit's linear extrapolation, which
+# stays positive and increasing all the way to the 273.15 K datum the engine
+# integrates from — checked at load, not hoped for.
+#
+#   cp(300 K) = 2187.35   fit    (source: 2225.96)
+#   cp(800 K) = 3948.06   fit    (source: 3922.40)
+#
+# For scale: the other five gas plants in this corpus declare 2220.0 J/(kg·K)
+# flat, which is methane at about 298 K and 43% low at 800 K.
+[[components]]
+name = "fuel_gas"
+phase = "gas"
+tb_c = -161.5                          # methane's normal boiling point
+molar_mass_kg_per_mol = 0.016043
+cp_shape_anchor_c = 26.85              # 300.00 K, the low end of the fit
+cp_shape_at_anchor_j_per_kg_k = 2187.35
+cp_shape_slope_j_per_kg_k2 = 3.5214071112
+
+[nodes.gas_header]
+type = "source"
+pressure_bar = 8.0
+temperature_c = 20.0
+
+# The fired heater. Its duty is chosen so the drum settles near 800 K — the top
+# of the fit's range, and the span §18 measured 25.05% of pure shape error over.
+[nodes.heater]
+type = "furnace"
+duty_mw = 0.56
+
+# The holdup, and the reason the plant has one. A vessel integrates a
+# temperature over a span, which is what converts a wrong capacity into a moved
+# snapshot; a plant of pipes and valves carries the same error and publishes
+# almost none of it.
+[nodes.surge_drum]
+type = "vessel"
+volume_m3 = 4.0
+pressure_bar = 5.0
+temperature_c = 20.0
+
+[nodes.fuel_sink]
+type = "sink"
+pressure_bar = 1.5
+temperature_c = 20.0
+
+[[pipes]]
+name = "feed_line"
+from = "gas_header"
+to = "heater"
+length_m = 30.0
+diameter_m = 0.05
+
+[[pipes]]
+name = "transfer_line"
+from = "heater"
+to = "surge_drum"
+length_m = 20.0
+diameter_m = 0.05
+
+[[pipes]]
+name = "drum_outlet"
+from = "surge_drum"
+to = "fuel_sink"
+length_m = 40.0
+diameter_m = 0.04

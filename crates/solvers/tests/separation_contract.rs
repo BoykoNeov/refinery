@@ -59,6 +59,7 @@ fn two_cut_slate() -> Slate {
             density: Some(KgPerM3(700.0)),
             phase: Phase::Liquid,
             cp: JPerKgK(2000.0),
+            cp_shape: None,
         },
         PseudoComponent {
             name: "heavy".into(),
@@ -67,6 +68,7 @@ fn two_cut_slate() -> Slate {
             density: Some(KgPerM3(900.0)),
             phase: Phase::Liquid,
             cp: JPerKgK(2000.0),
+            cp_shape: None,
         },
     ])
     .expect("a two-component slate is valid")
@@ -153,6 +155,7 @@ fn engine_with(separation: Box<dyn SeparationModel>) -> Engine {
         Box::new(NoReactions),
         separation,
         Box::new(NoBoilOff),
+        Box::new(refinery_solvers::ConstantEnthalpy),
     )
 }
 

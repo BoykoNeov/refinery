@@ -52,6 +52,7 @@ fn two_cut_slate() -> Slate {
             density: Some(KgPerM3(700.0)),
             phase: Phase::Liquid,
             cp: JPerKgK(1000.0),
+            cp_shape: None,
         },
         PseudoComponent {
             name: "heavy".into(),
@@ -60,6 +61,7 @@ fn two_cut_slate() -> Slate {
             density: Some(KgPerM3(900.0)),
             phase: Phase::Liquid,
             cp: JPerKgK(4000.0),
+            cp_shape: None,
         },
     ])
     .expect("a two-component slate is valid")
@@ -75,6 +77,7 @@ fn engine(graph: PlantGraph) -> Engine {
         Box::new(NoReactions),
         Box::new(CutPointSplitter),
         Box::new(NoBoilOff),
+        Box::new(refinery_solvers::ConstantEnthalpy),
     )
 }
 
@@ -677,6 +680,7 @@ fn cascade_slate() -> Slate {
             density: Some(KgPerM3(700.0)),
             phase: Phase::Liquid,
             cp: JPerKgK(1500.0),
+            cp_shape: None,
         },
         PseudoComponent {
             name: "heavy".into(),
@@ -685,6 +689,7 @@ fn cascade_slate() -> Slate {
             density: Some(KgPerM3(900.0)),
             phase: Phase::Liquid,
             cp: JPerKgK(2500.0),
+            cp_shape: None,
         },
     ])
     .expect("a two-component slate is valid")
@@ -709,6 +714,7 @@ fn cascade_engine(graph: PlantGraph) -> Engine {
         Box::new(NoReactions),
         Box::new(StageCascade::new()),
         Box::new(NoBoilOff),
+        Box::new(refinery_solvers::ConstantEnthalpy),
     )
 }
 

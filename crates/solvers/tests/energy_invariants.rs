@@ -36,7 +36,20 @@ use proptest::prelude::*;
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::TestRunner;
 use refinery_core::components::{Composition, Slate};
-use refinery_core::energy::{enthalpy_flux, T_REF};
+use refinery_core::energy::T_REF;
+
+/// `ṁ·cp·(T − T_REF)` — this file's OWN expression of the datum, for the water
+/// balances below that write `CP_WATER` out rather than reading it off the slate.
+///
+/// It replaces `energy::enthalpy_flux`, which M16.2 moved onto `EnthalpyModel`
+/// (docs/DESIGN.md §20 fork 1). Asking the engine's model here instead would make
+/// I6 grade the engine against itself on both sides — and independence is exactly
+/// what `CP_WATER`'s own comment says this constant is for. Where a balance does
+/// read the slate, it asks `engine.enthalpy()` instead, and those sites are the
+/// ones a shaped plant would move.
+fn sensible_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> Watt {
+    Watt(mass_flow.value() * cp.value() * (temperature.value() - T_REF.value()))
+}
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::graph::{EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::units::*;
@@ -61,6 +74,7 @@ fn engine(graph: PlantGraph) -> Engine {
         Box::new(NoReactions),
         Box::new(CutPointSplitter),
         Box::new(NoBoilOff),
+        Box::new(refinery_solvers::ConstantEnthalpy),
     )
 }
 
@@ -778,7 +792,7 @@ fn boundary_power(engine: &Engine) -> f64 {
                     let flow = engine.graph.pipe(edge).stream.mass_flow.value();
                     let into_reservoir = if incoming { flow } else { -flow };
                     // Into the reservoir is out of the plant, hence the minus.
-                    power -= enthalpy_flux(
+                    power -= sensible_flux(
                         KgPerSec(into_reservoir),
                         JPerKgK(CP_WATER),
                         reservoir_crossing_temperature(engine, id, edge),
@@ -821,7 +835,7 @@ fn worst_relative_energy_error(engine: &mut Engine, ticks: u32) -> Option<f64> {
             .map(|e| {
                 let s = &engine.graph.pipe(e).stream;
                 DT.value()
-                    * enthalpy_flux(s.mass_flow, JPerKgK(CP_WATER), s.temperature)
+                    * sensible_flux(s.mass_flow, JPerKgK(CP_WATER), s.temperature)
                         .value()
                         .abs()
             })
@@ -981,6 +995,7 @@ fn naphtha_slate() -> Slate {
             molar_mass: KgPerMol(0.100),
             density: Some(KgPerM3(680.0)),
             cp: JPerKgK(2200.0),
+            cp_shape: None,
             phase: refinery_core::components::Phase::Liquid,
         },
         refinery_core::components::PseudoComponent {
@@ -989,6 +1004,7 @@ fn naphtha_slate() -> Slate {
             molar_mass: KgPerMol(0.130),
             density: Some(KgPerM3(750.0)),
             cp: JPerKgK(2100.0),
+            cp_shape: None,
             phase: refinery_core::components::Phase::Liquid,
         },
     ])
@@ -1008,6 +1024,7 @@ fn boiling_engine(graph: PlantGraph) -> Engine {
         Box::new(NoReactions),
         Box::new(CutPointSplitter),
         Box::new(refinery_solvers::FlashBoilOff),
+        Box::new(refinery_solvers::ConstantEnthalpy),
     )
 }
 
@@ -1184,10 +1201,16 @@ fn boiling_boundary_power(engine: &Engine, with_latent: bool) -> f64 {
             if !with_latent {
                 crossing.latent = None;
             }
-            let cp = crossing.composition.mixture_cp(&engine.slate);
             // `crossing.mass_flow` is INTO the reservoir, which is out of the
-            // plant, hence the minus.
-            power -= refinery_core::energy::stream_enthalpy_flux(&crossing, cp).value();
+            // plant, hence the minus. Through the ENGINE's own enthalpy model
+            // since M16.2: the datum lives on the seam, and a balance that
+            // rebuilt the expression would be grading a shaped plant against a
+            // constant one.
+            power -= engine
+                .enthalpy()
+                .stream_enthalpy_flux(&engine.slate, &crossing)
+                .expect("the engine's own model priced this stream during the tick")
+                .value();
         }
     }
     power += engine
@@ -1224,8 +1247,13 @@ fn worst_boiling_energy_error(
             .edge_ids()
             .map(|e| {
                 let s = &engine.graph.pipe(e).stream;
-                let cp = s.composition.mixture_cp(&engine.slate);
-                DT.value() * enthalpy_flux(s.mass_flow, cp, s.temperature).value().abs()
+                DT.value()
+                    * engine
+                        .enthalpy()
+                        .enthalpy_flux(&engine.slate, &s.composition, s.mass_flow, s.temperature)
+                        .expect("a stream the engine priced this tick")
+                        .value()
+                        .abs()
             })
             .fold(1.0f64, f64::max);
         let relative = (actual - expected).abs() / scale;

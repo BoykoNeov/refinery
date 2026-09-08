@@ -249,6 +249,7 @@ mod tests {
                     density: Some(KgPerM3(800.0)),
                     phase: Phase::Liquid,
                     cp: JPerKgK(2000.0),
+                    cp_shape: None,
                 })
                 .collect(),
         )

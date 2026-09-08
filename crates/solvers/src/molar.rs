@@ -151,6 +151,7 @@ mod tests {
                     molar_mass: KgPerMol(*m),
                     density: None,
                     cp: JPerKgK(2000.0),
+                    cp_shape: None,
                     phase: Phase::Gas,
                 })
                 .collect(),
@@ -168,6 +169,7 @@ mod tests {
                     molar_mass: KgPerMol(*m),
                     density: Some(KgPerM3(800.0)),
                     cp: JPerKgK(2000.0),
+                    cp_shape: None,
                     phase: Phase::Liquid,
                 })
                 .collect(),
@@ -285,6 +287,7 @@ mod tests {
             molar_mass: KgPerMol(0.0),
             density: Some(KgPerM3(800.0)),
             cp: JPerKgK(2000.0),
+            cp_shape: None,
             phase: Phase::Liquid,
         }])
         .unwrap();

@@ -519,6 +519,7 @@ mod tests {
                     molar_mass: KgPerMol(0.1),
                     density: Some(KgPerM3(800.0)),
                     cp: JPerKgK(2000.0),
+                    cp_shape: None,
                     phase: Phase::Liquid,
                 })
                 .collect(),
@@ -966,6 +967,7 @@ mod tests {
                 molar_mass: KgPerMol(0.100),
                 density: Some(KgPerM3(680.0)),
                 cp: JPerKgK(2200.0),
+                cp_shape: None,
                 phase: Phase::Liquid,
             },
             PseudoComponent {
@@ -974,6 +976,7 @@ mod tests {
                 molar_mass: KgPerMol(0.130),
                 density: Some(KgPerM3(750.0)),
                 cp: JPerKgK(2100.0),
+                cp_shape: None,
                 phase: Phase::Liquid,
             },
         ])

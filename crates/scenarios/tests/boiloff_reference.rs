@@ -795,6 +795,7 @@ fn holdup_energy(s: &Snapshot, slate: &refinery_core::components::Slate) -> f64 
 fn boundary_power(
     s: &Snapshot,
     slate: &refinery_core::components::Slate,
+    enthalpy: &dyn refinery_core::traits::EnthalpyModel,
     with_latent: bool,
 ) -> f64 {
     use refinery_core::graph::NodeKind;
@@ -809,11 +810,23 @@ fn boundary_power(
 
     let mut power = 0.0;
     for e in &s.edges {
-        let cp = refinery_core::units::JPerKgK(e.stream.composition.mixture_cp(slate).value());
+        // Through the ENGINE's own model since M16.2: the datum moved onto the
+        // seam (docs/DESIGN.md §20 fork 1), so a boundary balance that rebuilt
+        // `cp·(T − T_REF)` would be auditing a shaped plant against a constant.
         let flux = if with_latent {
-            refinery_core::energy::stream_enthalpy_flux(&e.stream, cp).value()
+            enthalpy
+                .stream_enthalpy_flux(slate, &e.stream)
+                .expect("the engine priced this stream during the tick")
+                .value()
         } else {
-            refinery_core::energy::enthalpy_flux(e.stream.mass_flow, cp, e.stream.temperature)
+            enthalpy
+                .enthalpy_flux(
+                    slate,
+                    &e.stream.composition,
+                    e.stream.mass_flow,
+                    e.stream.temperature,
+                )
+                .expect("the engine priced this stream during the tick")
                 .value()
         };
         match (
@@ -870,11 +883,11 @@ fn energy_books(src: &str, ticks: u64) -> ((f64, f64), (f64, f64)) {
         let accumulation = (energy - previous) / dt;
         let scale = accumulation.abs().max(1.0);
 
-        let with = accumulation - boundary_power(&now, &slate, true);
+        let with = accumulation - boundary_power(&now, &slate, engine.enthalpy(), true);
         cumulative_with += with * dt;
         worst_with = worst_with.max(with.abs() / scale);
 
-        let without = accumulation - boundary_power(&now, &slate, false);
+        let without = accumulation - boundary_power(&now, &slate, engine.enthalpy(), false);
         cumulative_without += without * dt;
         worst_without = worst_without.max(without.abs() / scale);
 

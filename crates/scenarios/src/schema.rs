@@ -56,12 +56,62 @@ pub struct ComponentDef {
     /// mode as an invented kinetic constant (docs/DESIGN.md §3a).
     #[serde(default)]
     pub density_kg_per_m3: Option<f64>,
-    pub cp_j_per_kg_k: f64,
+    /// THE constant heat capacity [J/(kg·K)], and it keeps that meaning under
+    /// every fidelity.
+    ///
+    /// **A shaped component does not re-interpret this key**, and refusing to let
+    /// it is §20 fork 3's named trap. Nineteen files declare it as the constant;
+    /// under a shape it would silently become "the value at some temperature", and
+    /// which temperature is written nowhere — precisely B17's failure (a key
+    /// documented as insulation, used as a condenser). A shaped component declares
+    /// its own anchor pair below instead, and the loader REFUSES to let a plant
+    /// select the shaped model while reading this number.
+    ///
+    /// **Required under `heat_capacity = "constant"` and REFUSED under
+    /// `"linear"`**, in both directions, which is `density_kg_per_m3`'s rule one
+    /// field up: a gas has no stored density and a shaped cut has no stored
+    /// capacity, and a declared constant that nothing reads is an
+    /// authoritative-looking number with no effect. Under a shape the capacity at
+    /// any temperature — the datum included — comes out of the anchor pair, so
+    /// there is nothing left for this key to say.
+    #[serde(default)]
+    pub cp_j_per_kg_k: Option<f64>,
+    /// The temperature this cut's shaped capacity is quoted at [°C at this
+    /// boundary, K inside] (M16.2).
+    ///
+    /// The three `cp_*` shape keys below are all-or-nothing: declaring one means
+    /// declaring all three, refused otherwise. A shape with a slope and no anchor
+    /// is not a partial specification, it is an ambiguous one.
+    #[serde(default)]
+    pub cp_shape_anchor_c: Option<f64>,
+    /// The capacity AT `cp_shape_anchor_c` [J/(kg·K)].
+    #[serde(default)]
+    pub cp_shape_at_anchor_j_per_kg_k: Option<f64>,
+    /// `dcp/dT` [J/(kg·K²)]. Refused negative — see `components::CpShape`.
+    #[serde(default)]
+    pub cp_shape_slope_j_per_kg_k2: Option<f64>,
     /// `"liquid"` (default) or `"gas"`. Absent means liquid, which is what
     /// every slate written before M5.2 meant — the default that keeps those
     /// files bit-identical rather than merely still-loading.
     #[serde(default)]
     pub phase: Option<String>,
+}
+
+impl ComponentDef {
+    /// Whether this component declares a `cp` shape at all — ANY of the three
+    /// keys.
+    ///
+    /// Deliberately "any", not "all": the all-or-nothing check lives in
+    /// `build_slate`, and reporting a half-declared shape as "declares none"
+    /// would send an author to the wrong error. One of these predicates says
+    /// *whether the author was reaching for a shape*, the other says *whether
+    /// they finished*.
+    #[must_use]
+    pub fn declares_cp_shape(&self) -> bool {
+        self.cp_shape_anchor_c.is_some()
+            || self.cp_shape_at_anchor_j_per_kg_k.is_some()
+            || self.cp_shape_slope_j_per_kg_k2.is_some()
+    }
 }
 
 /// One `[[exchangers]]` entry: which two sides are thermally coupled, and how
@@ -166,6 +216,37 @@ pub struct Fidelity {
     /// to move on its own.
     #[serde(default = "default_no_boiloff")]
     pub boiloff: String,
+    /// "constant" (M1–M16.1) | "linear" (M16.2).
+    ///
+    /// What a heat capacity does with temperature (docs/DESIGN.md §20).
+    /// `"constant"` says one number per cut is the whole story — which is what
+    /// every file written before M16 MEANS, not merely what keeps it loading, and
+    /// what nineteen of the twenty shipped plants say. `"linear"` says each cut
+    /// declares `cp(T) = cp_a + s·(T − T_a)` and the engine integrates it.
+    ///
+    /// **A key of its own rather than a third arm on `thermo`, and that is
+    /// argued** (§20 fork 4). `thermo` already selects between a model with no
+    /// vapour–liquid equilibrium at all and a latent-heat correlation, and
+    /// fourteen of nineteen plants select the former; putting a heat capacity
+    /// there would make one key select two unrelated properties and force any
+    /// plant wanting a shape to acquire a K-value model it has no use for. That is
+    /// M14's argument for keeping a condenser off a new key, pointed the other
+    /// way.
+    ///
+    /// **Both directions of every pairing are refused at load**
+    /// (`require_compatible_fidelity`): a shape declared while `"constant"` is
+    /// selected is a number nothing reads; `"linear"` with no `[[components]]`
+    /// block, or with a component that declares no shape, is a model with no
+    /// data; and `"linear"` beside `separation = "cascade"` or beside a valve
+    /// declaring `x_t` is a plant HALF of whose energy arithmetic would still be
+    /// reading the constant — the two sites this milestone deliberately did not
+    /// reach.
+    #[serde(default = "default_constant_heat_capacity")]
+    pub heat_capacity: String,
+}
+
+fn default_constant_heat_capacity() -> String {
+    "constant".into()
 }
 
 fn default_constant() -> String {

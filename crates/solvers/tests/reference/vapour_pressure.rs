@@ -88,6 +88,7 @@ fn hexane_slate() -> Slate {
         molar_mass: KgPerMol(0.086_18),
         density: Some(KgPerM3(655.0)),
         cp: JPerKgK(2260.0),
+        cp_shape: None,
         phase: Phase::Liquid,
     }])
     .unwrap()

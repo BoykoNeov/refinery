@@ -157,6 +157,7 @@ impl Fluid {
                 molar_mass: KgPerMol(0.016043),
                 density: None,
                 cp: JPerKgK(2220.0),
+                cp_shape: None,
                 phase: refinery_core::components::Phase::Gas,
             },
             PseudoComponent {
@@ -165,6 +166,7 @@ impl Fluid {
                 molar_mass: KgPerMol(0.044096),
                 density: None,
                 cp: JPerKgK(1670.0),
+                cp_shape: None,
                 phase: refinery_core::components::Phase::Gas,
             },
         ])

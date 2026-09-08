@@ -11002,3 +11002,295 @@ tests that compare the model against itself).
   Adjacent to B3 and un-defers with it.
 - **A pressure-dependent `cp`.** Nothing asks; named so that "cp(T)" is not
   silently read as "cp(T, P)" later.
+
+## 20. Temperature-dependent heat capacity (M16.2) — built
+
+M16.2 is the building slice for `docs/DEFERRED.md` **B15**, and it is the first
+slice in the milestone that writes code. §18 is the probe, §19 is the note that
+commits the forks; **read them in that order and read §19's corrections to §18
+before either.** This section records what shipped, where §19 was wrong, and what
+the mutation pass found — including three gates §19 specified that had no power
+over their own subjects until this pass forced them to.
+
+Landed 2026-09-08. B15 is **narrowed, not struck**: the gas clause is closed and
+the liquid clause is untouched, for the reason §19 already gave — the citation
+for a liquid `cp(T)` does not exist in a usable form.
+
+### What shipped
+
+**One trait, two implementations, one new `[fidelity]` key, one new plant.**
+
+- `core::traits::EnthalpyModel` — the seam. Eleven methods: the specific
+  enthalpy, the flux, the stock, the mean capacity over an interval, the spot
+  capacity, the specific internal energy, both inversions
+  (`temperature_from_enthalpy`, `temperature_from_internal_energy`), the mix, and
+  a provided `stream_enthalpy_flux` that keeps M13's `ṁ·(h + λ)` shape.
+- `core::traits::InflowEnthalpy` — the accumulator the mix reads: `Σ ṁ·h`,
+  `Σ ṁ`, and `Σ ṁ·cp` with each term at its own inlet's **spot** capacity.
+- `solvers::enthalpy::ConstantEnthalpy` — today's arithmetic, held verbatim.
+- `solvers::enthalpy::LinearCpEnthalpy` — `cp(T) = c₀ + s·(T − T_REF)`, so
+  `h(T) = c₀·y + ½·s·y²` with `y = T − T_REF`, and both inversions are one
+  quadratic solved on the numerically stable `c/q` branch.
+- `[fidelity] heat_capacity = "constant" | "linear"`, defaulting to `"constant"`.
+- `PseudoComponent::cp_shape: Option<CpShape>` — an anchor temperature, the
+  capacity there, and a slope. Three TOML keys, all-three-or-none.
+- `scenarios/fired_gas_drum.toml` — the twentieth plant, and the only one that
+  selects the key.
+
+**The four free functions in `core::energy` are gone.** `enthalpy_flux`,
+`stream_enthalpy_flux`, `specific_internal_energy` and
+`temperature_from_internal_energy` were the module's own expressions of the
+datum; they are now methods on the seam, and `&dyn EnthalpyModel` is threaded
+through `resolve_node_states`, `edge_temperature_at`, `inflow_totals`,
+`mix_inflows`, `exchange_pair`, `exchanger_side_outlet` and `reactor_duty`.
+`BoilOffModel::boil_off` takes it too.
+
+**`core` is still sacred.** No root find crossed into it: the shape inverts in
+closed form, which is fork 2's whole reason for admitting only shapes that do.
+
+### Where §19 was wrong, fork by fork
+
+**Fork 3 shipped a `cp_j_per_kg_k` that would have been a dead number, and the
+fix is the `density_kg_per_m3` rule.** §19 left the declared constant in place
+alongside a shape. Under `"linear"` nothing reads it — the anchor pair gives the
+capacity at every temperature, the datum included — so it would have been an
+authoritative-looking number with no effect, which is the exact failure mode this
+project refuses. The key is now `Option<f64>`, **required** under `"constant"`
+and **refused** under `"linear"`, in both directions. `PseudoComponent::cp` is
+then derived from the shape at `T_REF` when the constant is absent, so the field
+keeps meaning one thing.
+
+**Fork 1's `enthalpy_flux` signature change is not a regrouping, and that is what
+made gate 3 hard.** A probe on a detached worktree changed nothing but the
+association — `(ṁ·cp)·(T − T_REF)` to `ṁ·(cp·(T − T_REF))`, no seam, no shape —
+and **11 of the 19 plants moved on each fidelity, and not the same 11.** So the
+constant model cannot compose its five expressions out of `specific_enthalpy`; it
+holds the pre-M16 groupings verbatim, and
+`the_constant_models_hand_held_groupings_agree_with_the_composed_forms` asserts
+the two forms agree to a few ULP so the override cannot hide a real disagreement.
+
+**The milestone's own boundary is refused at load rather than shipped quietly.**
+`cascade.rs`'s two duties and `network.rs`'s `γ = cp/cv` read a constant capacity
+from inside solver traits whose signatures this slice deliberately did not
+change. A shaped plant paired with either would run half its arithmetic on a
+constant. Both pairings are refusals that name themselves:
+`heat_capacity = "linear"` with `separation = "cascade"`, and with any valve or
+relief valve declaring `x_t`.
+
+### The three consumers, measured rather than enumerated
+
+§19's central claim is that `cp` has three consumers and conflating them is the
+error this project keeps catching late: the integral `h(T)`, the mean over an
+interval, and the spot value. All three exist in the code. **They do not all have
+a shipped consumer, and which is which was measured, not assumed.**
+
+- **The integral is live.** It is every sensible term in the engine.
+- **The spot value is live.** `stream_cp_at` returns it, for the pipe's outlet
+  temperature and for the exchanger's `C_min`. §19's deferred list asks M16.2 to
+  record which of the two answers it took: **the spot value**, at the stream's
+  own temperature.
+- **The mean has exactly one engine caller and no shipped one.** `mean_cp` is
+  read at `boiloff.rs` and nowhere else, and no shaped plant boils. Mutation 1
+  below is **corpus-inert on both fidelities**, which is that statement as a
+  measurement. `LinearCpEnthalpy::mean_cp` is gate-only today; ledger row B24.
+
+**The mix was predicted to be gate-only too, and that prediction is false.** A
+plausible reading of the demo — a single-inflow chain, header to heater to drum
+to sink — says two streams never mix, so `mix_temperature`'s new formula never
+runs. It runs anyway: `mix_inflows` is evaluated for a holdup with *one* inflow
+as well, and there `T_REF + Σṁh/Σṁcp` and `T(Σṁh/Σṁ)` are different numbers the
+moment `cp` is not flat. Replacing the shaped mix with the constant model's form
+(mutation 7) moves the demo's bytes on the Newton fidelity and **diverges the
+hydraulic solver at tick 170** on the game fidelity.
+
+### Gate 3 — the nineteen plants
+
+**All nineteen pre-M16 plants are byte-identical on BOTH fidelities, with no
+iteration count moved**, against baselines recorded from the shipped tree before
+the first edit. The twentieth plant reads `new`, which is the one verdict the
+corpus does not count as moved. From here, "runs byte-identical" means post-M16.2
+identical, which is unchanged.
+
+`fired_gas_drum`'s own fingerprints — `8349baff19009eee` under `newton`,
+`016973454caa9f3b` under `simple` — reproduced across independent runs, so its
+determinism is measured rather than assumed.
+
+**A3 does not move.** The new plant's worst sweep count is 9 on the Newton
+fidelity and 7 on the game one, against `relief_blowdown`'s 920.
+
+### The citation, and the component it actually covers
+
+§19's sixth correction to B15 is that §18's anchor is **n-hexane** while all five
+gas plants declare `fuel_gas` at `molar_mass = 0.016043` — methane — so the
+read-from-source correlation covered no component in the corpus. M16.2 owes a
+methane tabulation and ships one.
+
+**NIST WebBook, CAS 74-82-8, Shomate coefficients from Chase (1998), NIST-JANAF
+Thermochemical Tables 4th ed., valid 298–1300 K.** The engine cannot integrate a
+Shomate polynomial in closed form, so what the file declares is a **linear least-
+squares fit over the demo's own 300–800 K span**, whose worst residual against
+the source is **1.7346%**.
+
+`the_declared_shape_tracks_the_published_methane_tabulation` is gate 2, and **its
+band is computed in-test from the best straight line's own residual — 1.4× of it
+— rather than chosen.** The counterfactual is the number the corpus's five gas
+plants actually declare: a flat 2 220 J/(kg·K), which misses the tabulation by
+more than 40% at the top of the range. Two anchor points, for the record:
+
+| | fit | source |
+|---|---:|---:|
+| `cp(300 K)` | 2 187.35 | 2 225.96 |
+| `cp(800 K)` | 3 948.06 | 3 922.40 |
+
+### The demo, and what it publishes
+
+`scenarios/fired_gas_drum.toml`: a methane header at 8 bar and 20 °C, a fired
+heater at 0.56 MW, a 4 m³ surge drum, a sink at 1.5 bar. The shape came straight
+off §19's measurement — the two gas plants whose numbers moved under a `cp`
+perturbation are exactly the two carrying a `Vessel`, so the demo needs **a gas
+holdup whose temperature moves over a span where the shape error is large**.
+
+Against its constant twin at tick 6 000:
+
+| | shaped | constant |
+|---|---:|---:|
+| `heater` outlet | 791.784 K | 1 081.305 K |
+| `surge_drum` | **802.438 K** | **1 106.863 K** |
+| drum inventory | 6.559893 kg | 4.822575 kg |
+
+Worst relative movement on any published temperature over the run is **0.547959
+at tick 140**, on the heater — 998.75 K shaped against 2 209.43 K constant. At
+the drum's settled 802.4 K the declared shape reads 3 956.6 J/(kg·K) against the
+corpus's flat 2 220, a factor of 1.78.
+
+**The pair pattern is departed from and the consequence is recorded.** M7, M12,
+M14 and M15 each shipped two files differing in one key. Here the refusals make
+the twins differ in four lines — the fidelity key, the three shape keys and the
+constant — so the twin is derived **in-test** by text substitution on the shipped
+file. The contrast is therefore not runnable from the CLI, which is a real loss
+and is ledger row B25.
+
+### The mutation pass, against the predictions
+
+Seven edits, one at a time, under a lock, with every tracked source file hashed
+before and verified after the revert (M14.1's harness corruption). Six are §19's;
+two of those six had to be substituted because the edit as written has no
+subject, and the seventh is the mix probe above.
+
+| # | the edit | §19 predicted | measured |
+|---|---|---|---|
+| 1 | return the spot `cp(t₁)` where a mean is wanted | gate 1, and the flash's own reference case | **gate 1 GREEN.** Caught by gate 6 and by fork 7's isothermal test. Corpus inert on both fidelities. |
+| 2 | integrate from 0 K instead of `T_REF` | gate 5 alone | **six tests** — gate 5, gate 4, the partly-shaped gate, both demo tests, gate 6 — and the demo's bytes move on both fidelities. |
+| 3 | keep M5.3's closed-form `u` under a shaped `h` | gate 6, and the M5.3 blowdown reference | gate 6, gate 4 and both demo tests. On the corpus the demo **diverges the hydraulic solver at tick 59** on both fidelities. |
+| 4 | *substitute*: take the other quadratic root | gate 4 | gate 4 and both demo tests; **the discarded-root gate GREEN.** The demo errors at tick 1 with `'heater' cools to −1228.81 K, below absolute zero`. |
+| 5 | *substitute*: give the constant model the difference-quotient `mean_cp` | INERT, as the control | **inert in the suite (0 failures) and NOT inert in the bytes**: `crude_column_boiloff`, `crude_column_recovery` and `crude_column_recovery_train` all move, on both fidelities. |
+| 6 | fall back to the declared constant when a shape is absent | the refusal sweep alone | **the refusal sweep GREEN.** Caught only by the hand-built-slate gate. |
+| 7 | *probe*: shaped `mix_temperature` → the constant form | — | the demo's bytes move on `newton` and it **diverges at tick 170** on `simple`. |
+
+**Two of §19's six mutations are not expressible and the substitutes are stated
+rather than quietly swapped.** (4) "stop the inverter after one step" has no
+subject — fork 2 admits only shapes that invert in closed form, so there is no
+iteration to stop, and §19 flagged this mutation as the one most likely to be
+wrong for a different reason. (5) "give the constant model a `mean_cp` that
+ignores its interval" **is the shipped behaviour**; the expressible edit is the
+opposite direction.
+
+**Every §19 prediction that named an EXISTING reference test was structurally
+impossible, for one reason.** "The flash's own reference case" (1) and "the M5.3
+blowdown reference" (3) are tests on plants that select `ConstantEnthalpy`, and
+all three of those mutations edit `LinearCpEnthalpy`. **All nineteen pre-M16
+plants select the constant model, so no mutation of the shaped one can reach any
+test written before this milestone.** That is also why the demo's own two tests
+did so much of the catching, and it is the thing to hold on to before predicting
+a catch set for a seam whose second implementation has exactly one consumer.
+
+**Three gates had no power over their own subjects.** All three are now
+strengthened, and each is worth stating as a rule rather than a fix:
+
+1. **Gate 1 measured a DIFFERENCE and was therefore blind to a constant offset in
+   its own argument.** For a linear shape the mean over `[a, b]` is the spot value
+   at the midpoint, so reading it at the left edge instead shifts both of the
+   gate's two answers by the same `s·(b − a)/2` and the difference it asserts is
+   unmoved. The gate now asserts the midpoint identity itself, together with the
+   magnitude by which either endpoint misses it — `s·20 = 70.43 J/(kg·K)` on this
+   shape, a number the declared shape predicts.
+2. **The discarded-root gate computed both roots by hand and never called the
+   model.** It defended an arithmetic claim rather than the shipped branch. It now
+   reads the taken root back through `temperature_from_enthalpy`.
+3. **The refusal sweep had no case for its own refusal.** Its partial-shape case
+   removes one of the three keys, which is `build.rs`'s all-three-or-none check —
+   a different refusal from the pairing rule mutation 6 deletes. A case with no
+   shape keys at all was added.
+
+**Mutation 5 is closed rather than recorded, and the reasoning is the difference
+between a cost claim and a bytes claim.** M9.3b left a mutation uncaught because
+a gate for it would have had to assert a *cost*, which is how a fitted test gets
+written. This one asserts *bytes*, which M8.5 and M13.1 both closed with explicit
+assertions, and it was defended by nothing but a baseline file on the measurer's
+disk — CI commits no baseline. `ConstantEnthalpy::mean_cp` is now asserted
+bit-equal to `mixture_cp` in the grouping gate. **The spans in that assertion are
+deliberately not round**, and the first draft was green under the mutation
+because they were: `(h(t₂) − h(t₁))/(t₂ − t₁)` reproduces a flat 2 220 J/(kg·K)
+exactly over 300–700 K, while the engine's arguments are a bubble point and a
+tank temperature and roughly two in five such spans differ by an ULP. The gate
+also asserts that at least one of its spans still disagrees, so it cannot quietly
+become vacuous.
+
+**Two more edits, because a refusal nobody mutated is a refusal nobody
+measured.** The pass as first run covered the three refusals that guard the
+shape's own data and skipped the two that guard the milestone's BOUNDARY. Deleting
+each in turn: both fire the sweep, and both fire at
+`panic!("this plant should not have loaded")` — the plant loads clean without
+its refusal, so the message the sweep reads can only have come from the refusal
+under test. **But the assertions were passing on the wrong half of a
+disjunction.** The cascade case asserted
+`e.contains("separation = \\\"cascade\\\"") || e.contains("cascade")`; the first
+term is false (the error carries plain quotes, not escaped ones) and the second
+is satisfied by any message mentioning the word at all — including the cascade
+loader's own refusals, which a `[cascade]`-less file would plausibly raise. The
+valve case asserted the bare substring `x_t`. Both now assert a distinctive
+substring of the refusal's own message. **M14.1 recorded the same shape one level
+up** — the `Vessel` refusal "refused one pass earlier for the wrong reason with
+the right exit code".
+
+**The boundary is exactly two sites, audited rather than asserted.** Under
+`"linear"` a component's stored `cp` is the shape's value at the datum —
+2 092.8 J/(kg·K) on the demo, the coldest value the shape takes — so any
+surviving reader of `mixture_cp`, `mixture_cv` or `PseudoComponent::cp` outside
+`enthalpy.rs` would be using the coldest capacity as if it held everywhere. There
+are exactly three such live sites and they are the two known ones:
+`cascade.rs`'s feed and draw capacity terms (its two duties) and `network.rs`'s
+`γ`, the latter inside the `Some(x_t)` arm and therefore reachable only through
+the valve the refusal blocks. `gas_constant_offset` reads `molar_mass` and is
+temperature-independent by construction. No third path.
+
+### Two method findings
+
+**A catch set measured under `cargo test`'s default fail-fast is a LOWER BOUND,
+and binary ordering decides which subset you see.** Mutation 2 first read as two
+failures and is six; the two were in the scenarios crate, whose test binary runs
+before the solvers one, so the solvers gates never ran at all. Every number in
+the table above is from `--no-fail-fast`. This project has a standing rule that a
+write-up composed from a plausible mechanism is a hypothesis with formatting;
+this is the same failure one level down, where the *instrument* truncates.
+
+**A harness failure was rendered as a measurement, three times, before anything
+noticed.** The harness invoked the corpus binary through `subprocess` with a
+forward-slash relative path; Python's `shell=True` on Windows is `cmd.exe`, which
+answered `'target' is not recognized`, and the harness dutifully logged
+`corpus exit=1, 0 moved rows` — which reads exactly like "something moved but I
+could not parse which". Same shape as M9.1's first probe, which reported 14 of 14
+scenarios running a solver none of them ran. **An exit code with no rows behind it
+is not a result.**
+
+### What M16.2 does NOT do, stated deliberately
+
+- **No liquid shape.** B15's remaining clause. Its distance is a citation and §19
+  already measured that the citation does not exist in usable form for a liquid.
+- **`PseudoComponent::water()` has no shape**, so the six plants with no
+  `[[components]]` block fall back to a constant hard-coded in `core`. That is
+  fork 5, and the shaped model is refused on those plants by name rather than
+  falling back silently.
+- **The cascade's duties and the compressible valve's `γ`** keep reading a
+  constant. Both are refused in combination with a shape.
+- **No published key.** `Snapshot` gains nothing; a shape is an input.

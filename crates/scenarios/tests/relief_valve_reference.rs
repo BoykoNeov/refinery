@@ -278,6 +278,7 @@ fn the_solver_refuses_a_gas_valve_with_no_x_t_even_bypassing_the_loader() {
         molar_mass: KgPerMol(0.016_043),
         density: None,
         cp: JPerKgK(2220.0),
+        cp_shape: None,
         phase: Phase::Gas,
     }])
     .expect("a single gas cut is a valid slate");

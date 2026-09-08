@@ -31,7 +31,7 @@
 //! rejected as `SimError::Numerical` rather than silently mis-ordered. No
 //! scenario in the workspace builds one (see `docs/DESIGN.md` §4a).
 //!
-//! Specific enthalpy is `h = cp·(T − T_REF)` **for a LIQUID**, and the
+//! Specific enthalpy is `h(T) = ∫_{T_REF}^{T} cp(τ) dτ` **for a LIQUID**, and the
 //! qualifier is load-bearing rather than pedantic (M13, docs/DESIGN.md §15):
 //! the reference state is *saturated liquid* at `T_REF`, so a VAPOUR on the
 //! same datum is that plus its heat of vaporisation, `h = cp·(T − T_REF) + λ`.
@@ -39,19 +39,26 @@
 //! M12.1 and wrong for the one it added — the same class of error as M5.3's
 //! `u = cv·T − cp·T_REF`, which was right while a holdup's mass was constant
 //! and load-bearing exactly when it was not. `Stream::latent` carries `λ` and
-//! `stream_enthalpy_flux` is the one expression that puts the two together.
-//! Every enthalpy flux in the engine goes through `enthalpy_flux`, so the
-//! reference cancels exactly as long as mass balances — the invariant tests
-//! state it against `T_REF` explicitly rather than assuming a zero reference
-//! makes it moot.
+//! `EnthalpyModel::stream_enthalpy_flux` is the one expression that puts the two
+//! together.
+//!
+//! **Since M16.2 the integral itself is a fidelity seam** (docs/DESIGN.md §20).
+//! `h` is not `cp·(T − T_REF)` in this module any more: it is whatever
+//! `traits::EnthalpyModel` says, and this module asks. `ConstantEnthalpy` gives
+//! back the pre-M16 expression bit for bit; `LinearCpEnthalpy` integrates a
+//! declared `cp(T)`. Every enthalpy flux, stock, mix and inversion in the engine
+//! goes through that ONE model, so the reference cancels exactly as long as mass
+//! balances — the invariant tests state it against `T_REF` explicitly rather than
+//! assuming a zero reference makes it moot.
 
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{ColumnDraw, EdgeId, NodeId, NodeKind, PlantGraph};
 use crate::traits::{
-    ColumnPass, DrawSeparation, ReactionModel, Separation, SeparationModel, ThermoModel,
+    ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, ReactionModel, Separation,
+    SeparationModel, ThermoModel,
 };
-use crate::units::{JPerKg, JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
+use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -64,59 +71,6 @@ use std::collections::{BTreeMap, BTreeSet};
 /// datum entirely; with 273.15 K, dropping it changes the answer, so the
 /// energy tests actually discriminate on it.
 pub const T_REF: Kelvin = Kelvin(273.15);
-
-/// SENSIBLE enthalpy flux carried by a mass flow: `ṁ·cp·(T − T_REF)`.
-///
-/// Sign follows `mass_flow`: the caller passes flow *into* the node it is
-/// accounting for, so an outflow (negative) subtracts its enthalpy. This is
-/// the single definition every energy balance in the engine goes through —
-/// tank integration, junction mixing, and the invariant tests all call it, so
-/// they cannot disagree about the datum.
-///
-/// **The sensible term alone**, which is the whole enthalpy of a liquid and
-/// not of a vapour. A caller holding a whole `Stream` wants
-/// `stream_enthalpy_flux`, which adds the latent term when the stream carries
-/// one; this function stays as it is because every interior path in the engine
-/// carries liquid and because a latent-aware version here would silently
-/// change what a forward solve integrates.
-#[inline]
-pub fn enthalpy_flux(mass_flow: KgPerSec, cp: JPerKgK, temperature: Kelvin) -> Watt {
-    Watt(mass_flow.value() * cp.value() * (temperature.value() - T_REF.value()))
-}
-
-/// TOTAL enthalpy flux carried by a stream: `ṁ·(cp·(T − T_REF) + λ)` [W].
-///
-/// The single owner of "a stream's specific enthalpy on this engine's datum",
-/// and the reason `Stream::latent` is a field on the stream rather than a
-/// lookup keyed by edge id (docs/DESIGN.md §15 fork 1): a consumer closing an
-/// energy balance calls this and never has to know which edges carry vapour.
-///
-/// `cp` is passed in rather than read off the stream because the engine's
-/// authoritative composition for an edge is its resolved upwind node's, not the
-/// copy published on the stream — `stream_cp_at` is what settles that, and
-/// the lagged copy is a reader this project has already been bitten by.
-///
-/// **Called from the forward solve since M14, and the comment that stood here
-/// predicted exactly that.** Through M13 the only stream carrying a latent term
-/// was a boil-off vent that every pass skipped, so the term was write-only
-/// inside a tick and its arrival moved no published number; the note said "a
-/// future consumer that condenses a vapour into a holdup (`docs/DEFERRED.md`
-/// B12) is what makes this read inside the engine, and it should read it here."
-/// That consumer is `Engine::tick`'s holdup inflow loop, at the RECEIVING end of
-/// a vent routed by `vent_to` (docs/DESIGN.md §16 fork 1), and it reads it here.
-///
-/// The emitting end still does not: a tank's own boil-off debits its inventory
-/// through the flash's state change, not through a flux. So this function is
-/// read exactly once per vent per tick, by the holdup the vapour arrives at, and
-/// `enthalpy_flux` above remains what every liquid path calls.
-#[inline]
-pub fn stream_enthalpy_flux(stream: &crate::stream::Stream, cp: JPerKgK) -> Watt {
-    let latent = stream.latent.map_or(0.0, |l| l.value());
-    Watt(
-        stream.mass_flow.value()
-            * (cp.value() * (stream.temperature.value() - T_REF.value()) + latent),
-    )
-}
 
 /// A holdup's end-of-tick composition: what it retained after the tick's outflow,
 /// blended with what arrived.
@@ -161,42 +115,6 @@ pub fn blended_holdup_composition(
         *weight += retained * fraction;
     }
     Composition::from_weights(&weights)
-}
-
-/// Specific internal energy [J/kg] on the same datum `enthalpy_flux` uses:
-/// `u = cv·T − cp·T_REF`.
-///
-/// **Not `cv·(T − T_REF)`, and the difference is the whole of blowdown cooling.**
-/// The two must be consistent: a holdup's energy is `m·u` and every stream
-/// crossing its boundary carries `h = cp·(T − T_REF)`, so thermodynamics fixes
-/// their difference at `h − u = P/ρ = (R/M̄)·T`. Writing `u = cv·(T − T_REF)`
-/// gives `h − u = (R/M̄)·(T − T_REF)` instead — an offset of `(R/M̄)·T_REF`, which
-/// is invisible whenever the holdup's mass is constant and load-bearing exactly
-/// when it is not. Solving `u = h − (R/M̄)·T` gives the form above.
-///
-/// The consequence, which is why this is a function with a name rather than an
-/// expression inlined at the one call site: on the reference blowdown the
-/// inconsistent datum predicts a **5.5 K** drop where the consistent one predicts
-/// **80.3 K**, and both are finite, smooth, mass-conserving and reproducible. The
-/// first integral `T/Tᵢ = (m/mᵢ)^(γ−1)` — which docs/DESIGN.md §3a fork 3 derives
-/// with `T`, then states with `(T − T_REF)`, contradicting itself — comes out of
-/// this form and not the other.
-///
-/// A LIQUID is unaffected: `cv = cp` there, so this is `cp·(T − T_REF)`, bit for
-/// bit the expression the tank balance has always used.
-#[inline]
-pub fn specific_internal_energy(cv: JPerKgK, cp: JPerKgK, temperature: Kelvin) -> JPerKg {
-    JPerKg(cv.value() * temperature.value() - cp.value() * T_REF.value())
-}
-
-/// Invert `specific_internal_energy` for the temperature [K] a holdup ends a step
-/// at, given the energy and mass it ends with.
-///
-/// The pair is kept together so the balance cannot integrate on one datum and
-/// read back on another.
-#[inline]
-pub fn temperature_from_internal_energy(energy: f64, mass: f64, cv: JPerKgK, cp: JPerKgK) -> f64 {
-    (energy / mass + cp.value() * T_REF.value()) / cv.value()
 }
 
 /// Heat exchanged with the surroundings [W], SIGNED: positive into the body.
@@ -328,6 +246,24 @@ pub fn pipe_outlet_temperature(
     let decay = (-beta).exp();
     let friction_rise = dissipation.value() / capacity_rate * exp_decay_mean(beta);
     Kelvin(T_AMBIENT.value() + (inlet.value() - T_AMBIENT.value()) * decay + friction_rise)
+}
+
+/// The composition the sweep has already mixed for `node`.
+///
+/// A zero-volume node's composition is settled — by `mix_compositions` — before
+/// its temperature is, and every consumer of `EnthalpyModel::mix_temperature`
+/// runs after that. Looked up rather than recomputed, so the shape a mix is
+/// inverted through is the same one the mass balance produced; returned as an
+/// error rather than indexed, so a sweep-ordering bug cannot panic (rule 5).
+fn mixed_composition_at(
+    composition: &BTreeMap<NodeId, Composition>,
+    node: NodeId,
+) -> Result<&Composition, SimError> {
+    composition.get(&node).ok_or_else(|| {
+        SimError::Numerical(format!(
+            "internal: node {node:?} was mixed for temperature before its composition"
+        ))
+    })
 }
 
 /// The end of `edge` the fluid comes FROM, given a signed mass flow.
@@ -548,6 +484,7 @@ fn column_feed_flow(
 pub fn edge_temperature_at(
     graph: &PlantGraph,
     slate: &Slate,
+    enthalpy: &dyn EnthalpyModel,
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
     separations: &BTreeMap<NodeId, Separation>,
@@ -587,7 +524,16 @@ pub fn edge_temperature_at(
     // The cp of what is IN the pipe this tick — the upwind node's resolved
     // composition, not the pipe's stored copy of last tick's. See
     // `stream_cp_at` for why the difference is not cosmetic.
-    let cp = stream_cp_at(graph, slate, separations, composition, edge, mass_flow)?;
+    let cp = stream_cp_at(
+        graph,
+        slate,
+        enthalpy,
+        separations,
+        composition,
+        edge,
+        mass_flow,
+        inlet,
+    )?;
     Ok(pipe_outlet_temperature(
         inlet,
         pipe.ambient_ua,
@@ -597,7 +543,19 @@ pub fn edge_temperature_at(
     ))
 }
 
-/// The specific heat of the fluid crossing `edge` this tick [J/(kg·K)].
+/// The SPOT specific heat of the fluid crossing `edge` this tick [J/(kg·K)],
+/// evaluated at `temperature`.
+///
+/// **Spot, and that answer is chosen rather than defaulted into** (§20's
+/// consumer (b), which requires this slice to say which of two answers it took).
+/// Its two readers both want a capacity at ONE state: `pipe_outlet_temperature`
+/// puts it inside `β = UA/(ṁ·cp)` and inside `Φ/(ṁ·cp)`, and `inflow_totals`
+/// puts it in the `C_min` an exchanger sizes its duty by. The mean the first of
+/// those really wants would be over the pipe's own inlet-to-outlet path, which is
+/// the quantity the formula is solving for; the exchanger's would be over an
+/// outlet that does not exist until the duty is known. Both are circular, so both
+/// take the inlet's spot value and the error is deferred with a trigger rather
+/// than hidden behind a mean that looks more careful than it is.
 ///
 /// Off the RESOLVED upwind composition, and deliberately not off
 /// `pipe.stream.composition`. The stored copy is written at the end of a tick,
@@ -618,15 +576,19 @@ pub fn edge_temperature_at(
 ///
 /// # Errors
 /// `SimError::Numerical` if the upwind node's composition is unresolved.
+#[allow(clippy::too_many_arguments)]
 pub fn stream_cp_at(
     graph: &PlantGraph,
     slate: &Slate,
+    enthalpy: &dyn EnthalpyModel,
     separations: &BTreeMap<NodeId, Separation>,
     composition: &BTreeMap<NodeId, Composition>,
     edge: EdgeId,
     mass_flow: f64,
+    temperature: Kelvin,
 ) -> Result<JPerKgK, SimError> {
-    Ok(edge_composition_at(graph, separations, composition, edge, mass_flow)?.mixture_cp(slate))
+    let crossing = edge_composition_at(graph, separations, composition, edge, mass_flow)?;
+    enthalpy.spot_cp(slate, &crossing, temperature)
 }
 
 /// Total heat delivered into a node [W]: external heat, plus the operating duty
@@ -991,6 +953,7 @@ pub fn resolve_node_states(
     reactions: &dyn ReactionModel,
     separation: &dyn SeparationModel,
     thermo: &dyn ThermoModel,
+    enthalpy: &dyn EnthalpyModel,
     previous: &NodeStates,
 ) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
@@ -1112,6 +1075,7 @@ pub fn resolve_node_states(
                 let (t_a, t_b) = exchange_pair(
                     graph,
                     slate,
+                    enthalpy,
                     edge_mass_flow,
                     edge_dissipation,
                     &temperature,
@@ -1141,6 +1105,7 @@ pub fn resolve_node_states(
                         let (products, duty) = reactor_duty(
                             graph,
                             slate,
+                            enthalpy,
                             edge_mass_flow,
                             edge_dissipation,
                             &temperature,
@@ -1159,6 +1124,7 @@ pub fn resolve_node_states(
                         let mixed = mix_inflows(
                             graph,
                             slate,
+                            enthalpy,
                             edge_mass_flow,
                             edge_dissipation,
                             &temperature,
@@ -1291,6 +1257,7 @@ pub fn resolve_node_states(
 fn reactor_duty(
     graph: &PlantGraph,
     slate: &Slate,
+    enthalpy_model: &dyn EnthalpyModel,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
     edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
@@ -1317,6 +1284,7 @@ fn reactor_duty(
     let sensible = match inflow_totals(
         graph,
         slate,
+        enthalpy_model,
         edge_mass_flow,
         edge_dissipation,
         temperature,
@@ -1324,10 +1292,14 @@ fn reactor_duty(
         separations,
         node,
     )? {
-        Some((inlet_enthalpy, _capacity)) => {
-            let cp_out = reaction.products.mixture_cp(slate).value();
-            let outlet_enthalpy = mass_in * cp_out * (t_set.value() - T_REF.value());
-            outlet_enthalpy - inlet_enthalpy
+        Some(totals) => {
+            // The PRODUCTS' enthalpy at the setpoint, through the same model the
+            // inlet sum came from — so the cp shift a conversion causes is booked
+            // on one datum at both ends.
+            let outlet_enthalpy = enthalpy_model
+                .enthalpy_flux(slate, &reaction.products, KgPerSec(mass_in), t_set)?
+                .value();
+            outlet_enthalpy - totals.enthalpy_rate
         }
         None => 0.0,
     };
@@ -1425,12 +1397,13 @@ fn mix_compositions(
 /// `C_min`. Computing them in one place keeps the inlet temperature the
 /// exchanger transfers heat *from* identical to the one an uncoupled node would
 /// have mixed to.
-type InflowTotals = Option<(f64, f64)>;
+type InflowTotals = Option<InflowEnthalpy>;
 
 #[allow(clippy::too_many_arguments)]
 fn inflow_totals(
     graph: &PlantGraph,
     slate: &Slate,
+    enthalpy_model: &dyn EnthalpyModel,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
     edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
@@ -1438,8 +1411,9 @@ fn inflow_totals(
     separations: &BTreeMap<NodeId, Separation>,
     node: NodeId,
 ) -> Result<InflowTotals, SimError> {
-    let mut enthalpy = 0.0; // Σ ṁ·cp·(T − T_REF) [W]
+    let mut enthalpy = 0.0; // Σ ṁ·h(T) [W]
     let mut capacity = 0.0; // Σ ṁ·cp [W/K]
+    let mut mass_rate = 0.0; // Σ ṁ [kg/s]
 
     for (edge, _upstream, into_node) in inflow_edges(graph, edge_mass_flow, node) {
         // The transformed OUTLET, not the raw upwind node temperature: with a
@@ -1461,6 +1435,7 @@ fn inflow_totals(
         let inlet_t = edge_temperature_at(
             graph,
             slate,
+            enthalpy_model,
             temperature,
             composition,
             separations,
@@ -1469,15 +1444,22 @@ fn inflow_totals(
             dissipation_on(edge_dissipation, edge),
             node,
         )?;
-        // The same resolved-upwind cp the transform above used, through the same
-        // helper: an inlet transformed at one heat capacity and mixed at another
-        // would not conserve enthalpy across the pipe.
-        let cp = stream_cp_at(graph, slate, separations, composition, edge, flow)?;
-        enthalpy += enthalpy_flux(KgPerSec(into_node), cp, inlet_t).value();
-        capacity += into_node * cp.value();
+        let crossing = edge_composition_at(graph, separations, composition, edge, flow)?;
+        enthalpy += enthalpy_model
+            .enthalpy_flux(slate, &crossing, KgPerSec(into_node), inlet_t)?
+            .value();
+        // The same resolved-upwind composition the transform above used, at the
+        // same inlet temperature: an inlet transformed at one heat capacity and
+        // mixed at another would not conserve enthalpy across the pipe.
+        capacity += into_node * enthalpy_model.spot_cp(slate, &crossing, inlet_t)?.value();
+        mass_rate += into_node;
     }
 
-    Ok((capacity > 0.0).then_some((enthalpy, capacity)))
+    Ok((capacity > 0.0).then_some(InflowEnthalpy {
+        enthalpy_rate: enthalpy,
+        mass_rate,
+        capacity_rate: capacity,
+    }))
 }
 
 /// Enthalpy-weighted mix of a zero-volume node's inflows [K].
@@ -1485,6 +1467,7 @@ fn inflow_totals(
 fn mix_inflows(
     graph: &PlantGraph,
     slate: &Slate,
+    enthalpy_model: &dyn EnthalpyModel,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
     edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
@@ -1500,9 +1483,10 @@ fn mix_inflows(
     // all) and a furnace would be an inert pass-through.
     let heat_input = heat_load(graph.node(node)).value();
 
-    if let Some((enthalpy, capacity)) = inflow_totals(
+    if let Some(totals) = inflow_totals(
         graph,
         slate,
+        enthalpy_model,
         edge_mass_flow,
         edge_dissipation,
         temperature,
@@ -1510,7 +1494,17 @@ fn mix_inflows(
         separations,
         node,
     )? {
-        let mixed = T_REF.value() + (enthalpy + heat_input) / capacity;
+        // The heat joins the ENTHALPY sum, not the temperature: `Q/ṁ` is a rise
+        // in specific enthalpy whatever `cp` does, where `Q/(ṁ·cp)` is a rise in
+        // temperature only while `cp` is flat.
+        let heated = InflowEnthalpy {
+            enthalpy_rate: totals.enthalpy_rate + heat_input,
+            ..totals
+        };
+        let capacity = totals.capacity_rate;
+        let mixed = enthalpy_model
+            .mix_temperature(slate, mixed_composition_at(composition, node)?, heated)?
+            .value();
         // A duty that exceeds the sensible heat available in the stream drives
         // the mix below absolute zero; `checked_temperature` owns that rule for
         // this path and the tank's alike (see its docs for why it Errs).
@@ -1521,7 +1515,7 @@ fn mix_inflows(
                  sensible heat its inflow carries above 0 K. Reduce the duty or \
                  raise the flow through it.",
                 graph.node(node).name,
-                enthalpy / capacity + T_REF.value(),
+                totals.enthalpy_rate / capacity + T_REF.value(),
             )
         })
     } else {
@@ -1570,6 +1564,7 @@ fn mix_inflows(
 fn exchange_pair(
     graph: &PlantGraph,
     slate: &Slate,
+    enthalpy_model: &dyn EnthalpyModel,
     edge_mass_flow: &BTreeMap<EdgeId, f64>,
     edge_dissipation: &BTreeMap<EdgeId, Watt>,
     temperature: &BTreeMap<NodeId, Kelvin>,
@@ -1588,6 +1583,7 @@ fn exchange_pair(
     let totals_a = inflow_totals(
         graph,
         slate,
+        enthalpy_model,
         edge_mass_flow,
         edge_dissipation,
         temperature,
@@ -1598,6 +1594,7 @@ fn exchange_pair(
     let totals_b = inflow_totals(
         graph,
         slate,
+        enthalpy_model,
         edge_mass_flow,
         edge_dissipation,
         temperature,
@@ -1607,37 +1604,79 @@ fn exchange_pair(
     )?;
 
     // Positive duty = heat flowing A → B.
+    //
+    // `C_min` is a capacity RATE and stays one under a shape — the second reader
+    // of `inflow_totals`' capacity sum, and the one §20's consumer enumeration
+    // does not name. It is each side's SPOT capacity at its own inlet, for the
+    // reason `stream_cp_at` gives: the mean this would rather have is over an
+    // outlet that does not exist until the duty this is sizing is known.
     let duty = match (totals_a, totals_b) {
-        (Some((enthalpy_a, capacity_a)), Some((enthalpy_b, capacity_b))) => {
-            let inlet_a = T_REF.value() + enthalpy_a / capacity_a;
-            let inlet_b = T_REF.value() + enthalpy_b / capacity_b;
-            effectiveness * capacity_a.min(capacity_b) * (inlet_a - inlet_b)
+        (Some(a), Some(b)) => {
+            let inlet_a = enthalpy_model
+                .mix_temperature(slate, mixed_composition_at(composition, side_a)?, a)?
+                .value();
+            let inlet_b = enthalpy_model
+                .mix_temperature(slate, mixed_composition_at(composition, side_b)?, b)?
+                .value();
+            effectiveness * a.capacity_rate.min(b.capacity_rate) * (inlet_a - inlet_b)
         }
         _ => 0.0,
     };
 
     Ok((
-        exchanger_side_outlet(graph, previous, side_a, totals_a, -duty)?,
-        exchanger_side_outlet(graph, previous, side_b, totals_b, duty)?,
+        exchanger_side_outlet(
+            graph,
+            slate,
+            enthalpy_model,
+            composition,
+            previous,
+            side_a,
+            totals_a,
+            -duty,
+        )?,
+        exchanger_side_outlet(
+            graph,
+            slate,
+            enthalpy_model,
+            composition,
+            previous,
+            side_b,
+            totals_b,
+            duty,
+        )?,
     ))
 }
 
 /// One exchanger side's outlet [K]: its own inflow mix, plus whatever heat it
 /// receives — `transferred` from the partner stream, and `heat_load` from a
 /// fire, which stacks here exactly as it does on a furnace.
+#[allow(clippy::too_many_arguments)]
 fn exchanger_side_outlet(
     graph: &PlantGraph,
+    slate: &Slate,
+    enthalpy_model: &dyn EnthalpyModel,
+    composition: &BTreeMap<NodeId, Composition>,
     previous: &BTreeMap<NodeId, Kelvin>,
     node: NodeId,
     totals: InflowTotals,
     transferred: f64,
 ) -> Result<Kelvin, SimError> {
-    let Some((enthalpy, capacity)) = totals else {
+    let Some(totals) = totals else {
         // Same indeterminate-but-inert case `mix_inflows` documents.
         return Ok(previous.get(&node).copied().unwrap_or(T_AMBIENT));
     };
+    let (enthalpy, capacity) = (totals.enthalpy_rate, totals.capacity_rate);
     let heat = heat_load(graph.node(node)).value() + transferred;
-    let outlet = T_REF.value() + (enthalpy + heat) / capacity;
+    let outlet = enthalpy_model
+        .mix_temperature(
+            slate,
+            mixed_composition_at(composition, node)?,
+            InflowEnthalpy {
+                enthalpy_rate: enthalpy + heat,
+                ..totals
+            },
+        )?
+        .value();
     checked_temperature(outlet, || {
         format!(
             "exchanger side '{}' cools to {outlet:.2} K, below absolute zero: it \
@@ -1697,6 +1736,113 @@ mod tests {
     /// must agree with the real one, with nothing forcing it to. This one cannot
     /// drift because it computes nothing; if a test ever does sweep a column, it
     /// fails loudly here instead of silently grading itself against a duplicate.
+    /// The constant-capacity enthalpy model, mirroring
+    /// `solvers::ConstantEnthalpy`, and here for the reason `TestThermo` and
+    /// `NoRxn` are: `core`'s own tests depend on nothing downstream.
+    ///
+    /// **It is a second copy of an expression fork 1 exists to keep single, and
+    /// that is stated rather than hidden.** What bounds the drift is that this
+    /// copy has no readers outside this module and grades no shipped plant: every
+    /// wired scenario runs `solvers::ConstantEnthalpy`, and the regression corpus
+    /// is what says that model reproduces the pre-M16 arithmetic. A drift here
+    /// would fail these tests loudly, because the temperatures they assert are
+    /// hand calculations rather than the model's own output.
+    struct ConstantEnthalpyStub;
+    impl EnthalpyModel for ConstantEnthalpyStub {
+        fn name(&self) -> &'static str {
+            "test-constant-cp"
+        }
+        fn specific_enthalpy(
+            &self,
+            slate: &Slate,
+            composition: &Composition,
+            temperature: Kelvin,
+        ) -> Result<JPerKg, SimError> {
+            let cp = composition.mixture_cp(slate).value();
+            Ok(JPerKg(cp * (temperature.value() - T_REF.value())))
+        }
+        fn enthalpy_flux(
+            &self,
+            slate: &Slate,
+            composition: &Composition,
+            mass_flow: KgPerSec,
+            temperature: Kelvin,
+        ) -> Result<Watt, SimError> {
+            let cp = composition.mixture_cp(slate).value();
+            Ok(Watt(
+                mass_flow.value() * cp * (temperature.value() - T_REF.value()),
+            ))
+        }
+        fn enthalpy_stock(
+            &self,
+            slate: &Slate,
+            composition: &Composition,
+            mass: crate::units::Kg,
+            temperature: Kelvin,
+        ) -> Result<f64, SimError> {
+            let cp = composition.mixture_cp(slate).value();
+            Ok(mass.value() * cp * (temperature.value() - T_REF.value()))
+        }
+        fn mean_cp(
+            &self,
+            slate: &Slate,
+            composition: &Composition,
+            _t1: Kelvin,
+            _t2: Kelvin,
+        ) -> Result<JPerKgK, SimError> {
+            Ok(composition.mixture_cp(slate))
+        }
+        fn spot_cp(
+            &self,
+            slate: &Slate,
+            composition: &Composition,
+            _temperature: Kelvin,
+        ) -> Result<JPerKgK, SimError> {
+            Ok(composition.mixture_cp(slate))
+        }
+        fn specific_internal_energy(
+            &self,
+            slate: &Slate,
+            composition: &Composition,
+            temperature: Kelvin,
+        ) -> Result<JPerKg, SimError> {
+            let cv = composition.mixture_cv(slate).value();
+            let cp = composition.mixture_cp(slate).value();
+            Ok(JPerKg(cv * temperature.value() - cp * T_REF.value()))
+        }
+        fn temperature_from_enthalpy(
+            &self,
+            slate: &Slate,
+            composition: &Composition,
+            energy: f64,
+            mass: f64,
+        ) -> Result<Kelvin, SimError> {
+            let cp = composition.mixture_cp(slate).value();
+            Ok(Kelvin(T_REF.value() + energy / (mass * cp)))
+        }
+        fn temperature_from_internal_energy(
+            &self,
+            slate: &Slate,
+            composition: &Composition,
+            energy: f64,
+            mass: f64,
+        ) -> Result<Kelvin, SimError> {
+            let cv = composition.mixture_cv(slate).value();
+            let cp = composition.mixture_cp(slate).value();
+            Ok(Kelvin((energy / mass + cp * T_REF.value()) / cv))
+        }
+        fn mix_temperature(
+            &self,
+            _slate: &Slate,
+            _composition: &Composition,
+            totals: InflowEnthalpy,
+        ) -> Result<Kelvin, SimError> {
+            Ok(Kelvin(
+                T_REF.value() + totals.enthalpy_rate / totals.capacity_rate,
+            ))
+        }
+    }
+
     struct NoSeparation;
     impl SeparationModel for NoSeparation {
         fn name(&self) -> &'static str {
@@ -1840,6 +1986,7 @@ mod tests {
             &NoRxn,
             &NoSeparation,
             &TestThermo,
+            &ConstantEnthalpyStub,
             &NodeStates::default(),
         )
         .map(|states| states.temperature)
@@ -1859,6 +2006,7 @@ mod tests {
             &NoRxn,
             &NoSeparation,
             &TestThermo,
+            &ConstantEnthalpyStub,
             &NodeStates::default(),
         )
         .map(|states| states.composition)
@@ -1878,6 +2026,7 @@ mod tests {
                 molar_mass: KgPerMol(0.1),
                 density: Some(KgPerM3(800.0)),
                 cp: JPerKgK(cp),
+                cp_shape: None,
                 phase: Phase::Liquid,
             }
         }
@@ -2038,6 +2187,7 @@ mod tests {
                 &NoRxn,
                 &NoSeparation,
                 &TestThermo,
+                &ConstantEnthalpyStub,
                 &previous,
             )
             .unwrap()
@@ -2556,6 +2706,7 @@ mod tests {
             &NoRxn,
             &NoSeparation,
             &TestThermo,
+            &ConstantEnthalpyStub,
             &previous,
         )
         .unwrap()
@@ -2784,6 +2935,7 @@ mod tests {
                 molar_mass: KgPerMol(0.1),
                 density: Some(KgPerM3(800.0)),
                 cp: JPerKgK(cp),
+                cp_shape: None,
                 phase: Phase::Liquid,
             };
             Slate::new(vec![cut("feed_lump", 2000.0), cut("product_lump", 3000.0)]).unwrap()
@@ -2874,6 +3026,7 @@ mod tests {
                 &reactions,
                 &NoSeparation,
                 &TestThermo,
+                &ConstantEnthalpyStub,
                 &NodeStates::default(),
             )
             .unwrap();
@@ -2959,6 +3112,7 @@ mod tests {
                 &reactions,
                 &NoSeparation,
                 &TestThermo,
+                &ConstantEnthalpyStub,
                 &NodeStates::default(),
             )
             .unwrap();

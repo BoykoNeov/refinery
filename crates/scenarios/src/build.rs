@@ -3,7 +3,8 @@
 //! Unit conversion happens at this boundary and nowhere else (CLAUDE.md rule
 //! 4): the file speaks bar, °C and Kv; everything past `node_kind` is SI.
 
-use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
+use refinery_core::components::{Composition, CpShape, Phase, PseudoComponent, Slate};
+use refinery_core::energy::T_REF;
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
@@ -12,7 +13,8 @@ use refinery_core::graph::{
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
-    BoilOffModel, Controller, FlowSolver, ReactionModel, SeparationModel, ThermoModel,
+    BoilOffModel, Controller, EnthalpyModel, FlowSolver, ReactionModel, SeparationModel,
+    ThermoModel,
 };
 use refinery_core::units::{
     CubicMeter, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Seconds, SquareMeter, Watt,
@@ -220,11 +222,24 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         }
     };
 
+    // The heat-capacity seam (M16.2). Every pairing it cannot work in was
+    // already refused in step 0, in both directions, so this match only has to
+    // name the model.
+    let enthalpy: Box<dyn EnthalpyModel> = match scenario.fidelity.heat_capacity.as_str() {
+        "constant" => Box::new(refinery_solvers::ConstantEnthalpy),
+        "linear" => Box::new(refinery_solvers::LinearCpEnthalpy),
+        other => {
+            return Err(SimError::Scenario(format!(
+                "unknown heat capacity model '{other}' (valid: constant, linear)"
+            )))
+        }
+    };
+
     let config = EngineConfig {
         dt: refinery_core::units::Seconds(scenario.simulation.dt),
     };
     Ok(Engine::new(
-        graph, slate, config, flow, thermo, reactions, separation, boiloff,
+        graph, slate, config, flow, thermo, reactions, separation, boiloff, enthalpy,
     ))
 }
 
@@ -850,9 +865,9 @@ fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
         for (field, value) in [
             ("tb_c", def.tb_c + 273.15),
             ("molar_mass_kg_per_mol", def.molar_mass_kg_per_mol),
-            ("cp_j_per_kg_k", def.cp_j_per_kg_k),
         ]
         .into_iter()
+        .chain(def.cp_j_per_kg_k.map(|c| ("cp_j_per_kg_k", c)))
         .chain(def.density_kg_per_m3.map(|d| ("density_kg_per_m3", d)))
         {
             if !value.is_finite() || value <= 0.0 {
@@ -894,12 +909,107 @@ fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
                     tb: c_to_k(d.tb_c),
                     molar_mass: KgPerMol(d.molar_mass_kg_per_mol),
                     density: d.density_kg_per_m3.map(KgPerM3),
-                    cp: JPerKgK(d.cp_j_per_kg_k),
+                    // Under a shape the file declares no constant — the key is
+                    // refused there — so `cp` is the shape's OWN value at the
+                    // enthalpy datum. That keeps the field meaning one thing
+                    // ("this cut's capacity at `T_REF`") rather than two, and it
+                    // is a derived number rather than a declared one, which is
+                    // what fork 3's trap is actually about.
+                    cp: JPerKgK(match (d.cp_j_per_kg_k, component_cp_shape(d)?) {
+                        (Some(constant), _) => constant,
+                        (None, Some(shape)) => shape.at_datum(T_REF).0,
+                        (None, None) => {
+                            return Err(SimError::Scenario(format!(
+                                "component '{}' declares neither cp_j_per_kg_k nor a cp shape",
+                                d.name
+                            )))
+                        }
+                    }),
+                    cp_shape: component_cp_shape(d)?,
                     phase: component_phase(d)?,
                 })
             })
             .collect::<Result<Vec<_>, SimError>>()?,
     )
+}
+
+/// Parse a component's three `cp_shape_*` keys into a [`CpShape`], or `None`.
+///
+/// **All three or none**, refused otherwise: a slope with no anchor is not a
+/// partial specification but an ambiguous one, and the whole point of the anchor
+/// pair is that "which temperature is this quoted at" is never implied.
+///
+/// **Monotonicity is checked HERE, at load, and not at runtime** (§20 fork 2).
+/// With `slope >= 0` and `cp(T_REF) > 0` the capacity is positive for every
+/// `T >= T_REF`, so `h` is strictly increasing there and its inverse exists in
+/// closed form and is single valued — which is what lets the tick loop invert a
+/// quadratic instead of defending an iteration count. This project prefers a
+/// refusal at load to a diverging solve.
+fn component_cp_shape(def: &ComponentDef) -> Result<Option<CpShape>, SimError> {
+    let parts = (
+        def.cp_shape_anchor_c,
+        def.cp_shape_at_anchor_j_per_kg_k,
+        def.cp_shape_slope_j_per_kg_k2,
+    );
+    let (anchor_c, at_anchor, slope) = match parts {
+        (None, None, None) => return Ok(None),
+        (Some(a), Some(c), Some(s)) => (a, c, s),
+        _ => {
+            return Err(SimError::Scenario(format!(
+                "component '{}' declares only part of a cp shape: all three of \
+                 cp_shape_anchor_c, cp_shape_at_anchor_j_per_kg_k and \
+                 cp_shape_slope_j_per_kg_k2 are required together, because a slope with no \
+                 anchor does not say which temperature its capacity is quoted at",
+                def.name
+            )))
+        }
+    };
+    for (field, value) in [
+        ("cp_shape_anchor_c", anchor_c),
+        ("cp_shape_at_anchor_j_per_kg_k", at_anchor),
+        ("cp_shape_slope_j_per_kg_k2", slope),
+    ] {
+        if !value.is_finite() {
+            return Err(SimError::Scenario(format!(
+                "component '{}' has a non-finite {field} ({value})",
+                def.name
+            )));
+        }
+    }
+    if at_anchor <= 0.0 {
+        return Err(SimError::Scenario(format!(
+            "component '{}' has cp_shape_at_anchor_j_per_kg_k = {at_anchor}; a heat capacity \
+             must be > 0",
+            def.name
+        )));
+    }
+    if slope < 0.0 {
+        return Err(SimError::Scenario(format!(
+            "component '{}' has cp_shape_slope_j_per_kg_k2 = {slope}: a DECREASING cp is \
+             refused at this fidelity. Monotone h is what makes the inversion T(h) a closed \
+             form with one root, and a decreasing shape would need the file to declare the \
+             temperature range it stays positive over — a key that does not exist \
+             (docs/DESIGN.md §20 fork 2).",
+            def.name
+        )));
+    }
+    let shape = CpShape {
+        anchor_temperature: c_to_k(anchor_c),
+        cp_at_anchor: JPerKgK(at_anchor),
+        slope,
+    };
+    let (cp_at_datum, _) = shape.at_datum(T_REF);
+    if cp_at_datum <= 0.0 {
+        return Err(SimError::Scenario(format!(
+            "component '{}' declares a cp shape that is {cp_at_datum:.4} J/(kg·K) at the \
+             enthalpy datum {} K — non-positive, so h is not monotone over the range the \
+             engine integrates from. Raise cp_shape_at_anchor_j_per_kg_k, lower the slope, or \
+             move the anchor.",
+            def.name,
+            T_REF.value()
+        )));
+    }
+    Ok(Some(shape))
 }
 
 /// Parse a component's `phase = "..."` field. Absent is liquid.

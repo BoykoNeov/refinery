@@ -214,6 +214,7 @@ fn a_gas_orifice_is_refused_at_compile_time() {
         molar_mass: KgPerMol(0.016_043),
         density: None, // a gas has no stored density; it is P·M̄/(R·T)
         cp: JPerKgK(2220.0),
+        cp_shape: None,
         phase: refinery_core::components::Phase::Gas,
     }])
     .expect("single-component gas slate");

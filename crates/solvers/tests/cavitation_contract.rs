@@ -109,6 +109,7 @@ fn one_cut_slate() -> Slate {
         density: Some(KgPerM3(700.0)),
         phase: Phase::Liquid,
         cp: JPerKgK(2000.0),
+        cp_shape: None,
     }])
     .expect("a one-component slate is valid")
 }
@@ -171,6 +172,7 @@ fn engine_with(thermo: Box<dyn ThermoModel>) -> Engine {
         Box::new(NoReactions),
         Box::new(CutPointSplitter),
         Box::new(NoBoilOff),
+        Box::new(refinery_solvers::ConstantEnthalpy),
     )
 }
 

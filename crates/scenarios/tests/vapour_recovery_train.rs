@@ -142,7 +142,7 @@ fn holdup_energy(engine: &Engine) -> f64 {
 /// outside it — M7.4b's rule, since a reboiler duty defined to close a balance
 /// cannot then be audited by it.
 fn tank_boundary_power(engine: &Engine) -> f64 {
-    use refinery_core::energy::{stream_enthalpy_flux, T_REF};
+    use refinery_core::energy::T_REF;
     let is_tank = |id| matches!(engine.graph.node(id).kind, NodeKind::Tank(_));
     let mut power = 0.0;
     for eid in engine.graph.edge_ids() {
@@ -152,8 +152,12 @@ fn tank_boundary_power(engine: &Engine) -> f64 {
         if let Some(emitter) = pipe.leak.boiloff_vent_emitter() {
             let receiver = if from == emitter { to } else { from };
             if !is_tank(receiver) {
-                let cp = stream.composition.mixture_cp(&engine.slate);
-                power -= stream_enthalpy_flux(stream, cp).value().abs();
+                power -= engine
+                    .enthalpy()
+                    .stream_enthalpy_flux(&engine.slate, stream)
+                    .expect("the engine priced this vent during the tick")
+                    .value()
+                    .abs();
             }
             continue;
         }
@@ -249,9 +253,12 @@ fn run(src: &str, vents: &[&str]) -> Run {
                     continue;
                 };
                 let stream = &engine.graph.pipe(eid).stream;
-                let cp = stream.composition.mixture_cp(&engine.slate);
-                arriving[hop].0 +=
-                    refinery_core::energy::stream_enthalpy_flux(stream, cp).value() * DT;
+                arriving[hop].0 += engine
+                    .enthalpy()
+                    .stream_enthalpy_flux(&engine.slate, stream)
+                    .expect("the engine priced this vent during the tick")
+                    .value()
+                    * DT;
                 arriving[hop].1 +=
                     stream.mass_flow.value() * stream.latent.map_or(0.0, |l| l.value()) * DT;
             }

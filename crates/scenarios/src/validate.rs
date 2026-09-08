@@ -314,6 +314,137 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
                 .into(),
         ));
     }
+    require_compatible_heat_capacity(scenario)?;
+    Ok(())
+}
+
+/// The heat-capacity key against everything it cannot be paired with (M16.2,
+/// docs/DESIGN.md §20 forks 4 and 5).
+///
+/// **Five refusals, and the last two are this milestone's own boundary rather
+/// than a property of the physics.** `cascade.rs` computes a column's two duties
+/// and its condenser's sensible term from `mixture_cp`, and `network.rs` computes
+/// a gas valve's `γ = cp/cv` the same way; neither is reached through
+/// `EnthalpyModel`, because both sit inside a solver trait whose signature this
+/// slice deliberately did not change. A plant pairing them with a shape would
+/// integrate its holdups on `cp(T)` and size its column duties and its choked
+/// flow on a constant — a split this project refuses to ship silently. Refusing
+/// makes the gap LOUD, which is the same move `boiloff = "flash"` with
+/// `thermo = "constant"` made for a gap that was merely quiet.
+fn require_compatible_heat_capacity(scenario: &ScenarioFile) -> Result<(), SimError> {
+    let shaped = match scenario.fidelity.heat_capacity.as_str() {
+        "constant" => false,
+        "linear" => true,
+        other => {
+            return Err(SimError::Scenario(format!(
+                "unknown heat capacity model '{other}' (valid: constant, linear)"
+            )))
+        }
+    };
+
+    // (1) A declared shape that nothing reads. The mirror of the gas-density
+    //     refusal one field over: an authoritative-looking number with no effect.
+    if !shaped {
+        if let Some(def) = scenario.components.iter().find(|c| c.declares_cp_shape()) {
+            return Err(SimError::Scenario(format!(
+                "component '{}' declares a cp shape while [fidelity] heat_capacity = \"constant\", \
+                 which reads only cp_j_per_kg_k: the shape is a number nothing reads. Select \
+                 heat_capacity = \"linear\", or remove the cp_shape_* keys.",
+                def.name
+            )));
+        }
+    }
+
+    // (1b) The mirror: under the constant model the key is the only source of a
+    //      capacity, so its absence is not a default but a missing property.
+    //      Checked here rather than by serde so the message can name the pairing.
+    if !shaped {
+        if let Some(def) = scenario
+            .components
+            .iter()
+            .find(|c| c.cp_j_per_kg_k.is_none())
+        {
+            return Err(SimError::Scenario(format!(
+                "component '{}' declares no cp_j_per_kg_k while [fidelity] heat_capacity = \
+                 \"constant\", which has no other source for a heat capacity",
+                def.name
+            )));
+        }
+        return Ok(());
+    }
+
+    // (1c) And under a shape the same key has nothing left to say: the anchor
+    //      pair gives the capacity at every temperature, this one included.
+    if let Some(def) = scenario
+        .components
+        .iter()
+        .find(|c| c.cp_j_per_kg_k.is_some())
+    {
+        return Err(SimError::Scenario(format!(
+            "component '{}' declares cp_j_per_kg_k while [fidelity] heat_capacity = \"linear\", \
+             which reads the cp_shape_* anchor pair instead: the constant is a number nothing \
+             reads. Remove it, or select heat_capacity = \"constant\".",
+            def.name
+        )));
+    }
+
+    // (2) A model with no data at all — fork 5's six plants, which fall back to
+    //     `Slate::water_only()` and a `cp` hard-coded in `core` that the loader
+    //     never sees. They stay identical by construction because they cannot
+    //     select this at all.
+    if scenario.components.is_empty() {
+        return Err(SimError::Scenario(
+            "[fidelity] heat_capacity = \"linear\" on a plant with no [[components]] block: the \
+             shape is declared per component, and this plant runs the water-only slate whose cp \
+             is hard-coded in `core` and never passes through the loader (docs/DESIGN.md §20 \
+             fork 5). Declare a [[components]] table, or select heat_capacity = \"constant\"."
+                .into(),
+        ));
+    }
+
+    // (3) A model with data for only some of its components. Partial is worse
+    //     than absent: the mixture rule would silently drop a cut's contribution.
+    if let Some(def) = scenario.components.iter().find(|c| !c.declares_cp_shape()) {
+        return Err(SimError::Scenario(format!(
+            "component '{}' declares no cp shape while [fidelity] heat_capacity = \"linear\": a \
+             mixture's shape is the mass-weighted sum of its components', so one cut without one \
+             leaves the model with no answer for any mixture containing it. Declare \
+             cp_shape_anchor_c, cp_shape_at_anchor_j_per_kg_k and cp_shape_slope_j_per_kg_k2 on \
+             every component, or select heat_capacity = \"constant\".",
+            def.name
+        )));
+    }
+
+    // (4) The cascade's duties and its condenser's sensible term.
+    if scenario.fidelity.separation == "cascade" {
+        return Err(SimError::Scenario(
+            "heat_capacity = \"linear\" with separation = \"cascade\": a cascade column computes \
+             its reboiler and condenser duties, and its condenser's sensible term, from the \
+             CONSTANT mixture capacity — `SeparationModel::separate` is not handed the enthalpy \
+             model, and M16.2 deliberately did not change that signature. The plant would \
+             integrate its holdups on cp(T) and report duties on a constant. Deferred with a \
+             trigger in docs/DEFERRED.md; select separation = \"cut_point\" or heat_capacity = \
+             \"constant\"."
+                .into(),
+        ));
+    }
+
+    // (5) A gas valve's γ, computed inside the flow solve.
+    if let Some(name) = scenario.nodes.iter().find_map(|(name, def)| match def {
+        NodeDef::Valve { x_t: Some(_), .. } | NodeDef::ReliefValve { x_t: Some(_), .. } => {
+            Some(name.clone())
+        }
+        _ => None,
+    }) {
+        return Err(SimError::Scenario(format!(
+            "heat_capacity = \"linear\" with valve '{name}' declaring x_t: the compressible valve \
+             law takes γ = cp/cv from the CONSTANT mixture capacity inside the flow solve, which \
+             `FlowSolver::solve` reaches without the enthalpy model. The plant would choke on a \
+             γ its own holdups no longer use. Deferred with a trigger in docs/DEFERRED.md; remove \
+             x_t, or select heat_capacity = \"constant\"."
+        )));
+    }
+
     Ok(())
 }
 

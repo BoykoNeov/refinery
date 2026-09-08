@@ -5921,3 +5921,94 @@ meaning under a shape; the note says M16.2 must give the shaped form its own
 anchor pair rather than reuse the key. And the shaped model is **refused** on
 the six plants with no `[[components]]` block, which fall back to a `cp`
 hard-coded in `core` — so those six stay identical by construction.
+
+### M16.2 — the building slice — **LANDED** 2026-09-08
+
+The design note is DESIGN §20. It is the first slice in this milestone that
+writes code, and it is a `core` change — the widest blast radius since M11.
+**B15 is NARROWED, not struck**: the gas clause is closed, the liquid clause is
+untouched for the reason M16.1 already measured (the citation does not exist in
+usable form for a liquid).
+
+**What shipped.** `EnthalpyModel` in `core::traits` with eleven methods, two
+implementations in `solvers` (`ConstantEnthalpy`, `LinearCpEnthalpy`), a new
+`[fidelity] heat_capacity` key defaulting to `"constant"`, an optional
+`cp_shape` on `PseudoComponent` fed by three TOML keys, and
+`scenarios/fired_gas_drum.toml` — the twentieth plant and the only one that
+selects the key. The four free functions in `core::energy` that expressed the
+datum are gone; they are methods on the seam now. **No root find crossed into
+`core`**: the shape inverts in closed form, which is why fork 2 admits only
+shapes that do.
+
+**Eight things to know.**
+
+**Gate 3 holds: all nineteen pre-M16 plants are byte-identical on BOTH
+fidelities with no iteration count moved.** From here, "runs byte-identical"
+means post-M16.2 identical, which is unchanged. The new plant's own fingerprints
+reproduced across independent runs. A3 does not move — the new plant's worst is
+9 sweeps on the Newton fidelity and 7 on the game one, against
+`relief_blowdown`'s 920.
+
+**Changing the ASSOCIATION of a product is not a refactor, and that is what made
+gate 3 hard.** A probe that regrouped `(ṁ·cp)·(T − T_REF)` to `ṁ·(cp·(T − T_REF))`
+— no seam, no shape, nothing else — moved **11 of the 19 plants on each
+fidelity, and not the same 11**. So `ConstantEnthalpy` holds the pre-M16
+groupings verbatim rather than composing them out of `specific_enthalpy`, with a
+unit gate asserting the two forms agree to a few ULP so the override cannot hide
+a real disagreement.
+
+**The note's `cp_j_per_kg_k` would have been a dead number and the fix is the
+`density_kg_per_m3` rule.** Under a shape nothing reads the declared constant, so
+the key is now optional, **required** under `"constant"` and **refused** under
+`"linear"`, in both directions; `PseudoComponent::cp` is derived from the shape at
+the enthalpy datum instead.
+
+**The three consumers were measured, not just enumerated, and one of the three
+has no shipped caller.** `mean_cp` is read at exactly one site (the flash) and no
+shaped plant boils, so it is gate-only today — ledger row B24.
+`pipe_outlet_temperature` and the exchanger's `C_min` take the **spot** value,
+which is the answer M16.1's deferred list asked this slice to record.
+
+**The prediction that a single-inflow chain never mixes is FALSE.** `mix_inflows`
+runs for a holdup with one inflow too, and there the constant model's
+capacity-weighted average and the shaped model's `T(h)` are different numbers the
+moment `cp` is not flat. Substituting one for the other moves the demo's bytes
+and **diverges the game fidelity's solver at tick 170**.
+
+**The citation is methane, because that is what the corpus declares.** NIST
+WebBook CAS 74-82-8, Shomate from Chase (1998), NIST-JANAF 4th ed. The file
+declares a linear fit over the demo's own 300–800 K span; the fit's worst
+residual against the source is **1.7346%**, and gate 2's band is 1.4× of that,
+computed in-test rather than chosen. The counterfactual is the flat
+2 220 J/(kg·K) the five existing gas plants declare, which misses by more
+than 40% at the top of the range.
+
+**The demo moves published numbers by hundreds of Kelvin.** At tick 6 000 the
+surge drum settles at **802.438 K** shaped against **1 106.863 K** constant, its
+inventory at 6.559893 kg against 4.822575 kg; the worst relative movement over
+the run is **0.548 at tick 140** on the heater. **The M7/M12/M14/M15 pair pattern
+is departed from**: the refusals make the twins differ in four lines rather than
+one, so the constant twin is derived in-test rather than shipped, and the
+contrast is not runnable from the CLI. Recorded as ledger row B25, not waved
+through.
+
+**The mutation pass ran seven edits and found three gates with no power over
+their own subjects.** Two of M16.1's six mutations are not expressible and the
+substitutes are stated: "stop the inverter after one step" has no subject (the
+inversion is closed form), and "give the constant model a `mean_cp` that ignores
+its interval" **is** the shipped behaviour. Of the rest: **gate 1 was green under
+the mutation it was written for** — it measured a difference of two equal-width
+intervals, which is blind to a constant offset in where inside an interval the
+answer is read; the discarded-root gate computed both roots by hand and never
+called the model; and the refusal sweep had no case for the refusal the mutation
+deletes. All three are strengthened and all three now fire. **Every prediction
+that named an existing reference test was structurally impossible for one
+reason** — all nineteen pre-M16 plants select the constant model, so a mutation
+of the shaped one cannot reach any test written before this milestone.
+
+**Two instrument findings.** A catch set taken under `cargo test`'s default
+fail-fast is a **lower bound**, and binary ordering decides which subset is
+visible — one mutation read as two failures and is six. And the harness reported
+`corpus exit=1, 0 moved rows` three times while the corpus binary had never
+executed at all (a forward-slash relative path handed to `cmd.exe`), which reads
+exactly like a real result. Same shape as M9.1's first probe.
