@@ -181,20 +181,74 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M16 is OPEN and its first slice is a PROBE, not a design note — `docs/DEFERRED.md`
-row B15, one constant heat capacity per cut.** M16.0 landed 2026-09-08 (DESIGN §18,
-the M9.3 "LANDED, not yet a slice" precedent): it changes no number, adds no test
-and touches no crate. **M16.1 is NOT scoped by it and is not automatic** — a
-building slice is a `core` change, which is the widest blast radius since M11.
+**M16 is OPEN and its scope is `docs/DEFERRED.md` row B15 — one constant heat
+capacity per cut.** Two slices have landed and **neither wrote code**: **M16.0**
+(2026-09-08, DESIGN §18) is a scoping PROBE, barred from committing forks, on the
+M9.3 "LANDED, not yet a slice" precedent; **M16.1** (2026-09-08, DESIGN §19) is the
+design note that commits them — seven forks, seven gates, six named mutations, no
+code. **The building slice is M16.2**, and it is a `core` change: the widest blast
+radius since M11.
+
+**Read §19 before §18. The note narrows the probe in six places**, and the first is
+that the probe's rewritten trigger was read off the corpus FINGERPRINT — a hash
+over snapshot bytes, so it answers "did any bit change" and no nonzero perturbation
+can fail it. That is the OLD trigger's defect wearing a new instrument, and it is
+the **fifth column of B15 to be wrong**. Against magnitudes at 2.64% (the largest a
+gas plant's own span justifies) the clause fires on **two** of the five gas plants,
+not five — `relief_blowdown` (1.28 K, 6.6 kPa) and `vessel_pressure_control`
+(0.91 K, 1.9 kPa), against `gas_valve`'s 0.0007 K. B15 stays past its trigger; what
+changed is which plants and why.
+
+**The two that fire are exactly the two carrying a `Vessel`, so the mechanism is a
+holdup that integrates a temperature over a span — not gas-ness.** The five gas
+plants also hold the corpus's SMALLEST spans (0.02, 2.63, 4.93, 36.12, 42.42 K)
+against the 358.8 K and 527.2 K that produced the 19.45% and 25.05% figures. **The
+clause that fired has the citation and the small spans; the clause with the big
+spans has no citation.** And the anchor read at M16.0 is **n-hexane** while all five
+gas plants declare one component, `fuel_gas` at `molar_mass = 0.016043` — methane
+— so the read-from-source correlation covers **no component in the corpus** and
+M16.2's reference gate owes a methane tabulation.
+
+**§18's "`u = cv·T − cp·T_REF` becomes ILL-FORMED" is right about the expression and
+wrong about the quantity, and the correction moves the expensive part.** `R/M̄` is
+temperature-independent, so `cv(T) = cp(T) − R/M̄` holds exactly and
+`u(T) = h(T) − (R/M̄)·T` reduces bit for bit when `cp` is flat. What is costly is
+reading a temperature back OUT: `temperature_from_internal_energy` and the tank
+branch's `T = T_REF + energy/(mass·cp)` both become inversions of a monotone
+function, **per holdup per tick, inside `core`**. Fork 2 keeps that out of the sacred
+crate by putting `T(h)` on the seam's own trait (M11's precedent) and shipping a
+shape that inverts in closed form.
+
+**There are THREE consumers of `cp`, not two, and conflating them is the error this
+project keeps catching late**: the integral `h(T)`, the mean over an interval, and
+the **spot** value (`γ = cp/cv`, and the inverter's derivative). The boil-off's
+flash fraction — the path the 4.4× amplification runs through — collapses to
+`(h(T) − h(T_bub))/Δh̄_vap`, an enthalpy ratio with no capacity in it, so `h(T)`
+removes a term rather than adding one.
+
+**The seam is a NEW `[fidelity]` key and the shape comes from the FILE, not the
+engine** — coefficients declared per component, on `density_kg_per_m3`'s precedent
+("a declared constant at this fidelity"), which ships no invented number and
+collapses the blast radius to an optional field plus a new scenario file. Hanging
+`cp(T)` on `thermo` is refused: that key selects between a model with no
+vapour–liquid equilibrium at all and a latent-heat correlation, and fourteen of
+nineteen plants select the former. **It moves the citation rather than removing it**
+— the demo file still ships numbers, and by M13 gate 3's rule a shipped number with
+no outside envelope is a consistency check wearing a physics label. The demo is a
+NEW gas plant with a holdup and a wide excursion; none of the five can be it. And
+the shaped model is **refused** on the six plants with no `[[components]]` block,
+which fall back to a `cp` hard-coded in `core`.
 
 **The row's trigger could not be failed, and rewriting it is the milestone's first
 result.** It compared a percent against the tick's ~1e-13 truncation error, so it
 fired on `fcc_plant` at 527 K of span and equally on plain water at 20 K — an
-identity with a threshold attached. **Third column of that row to be wrong**, after
-M14.0 corrected its quantity and its low figure; B1 went the same way. The
-replacement rests on this project's own `smearing_k` bar (a knob must move a number
-a consumer reads) and splits: **fired** on the five `phase = "gas"` plants,
-**approaching** on the eight liquid-slate ones. **Nothing had been past a trigger
+identity with a threshold attached. **Third column of that row to be wrong** at the
+time, after M14.0 corrected its quantity and its low figure; B1 went the same way,
+and M16.1 makes it five. The replacement rests on this project's own `smearing_k`
+bar (a knob must move a number a consumer reads) and splits: **fired** on the
+`phase = "gas"` plants — **two of the five, per M16.1's magnitudes, not the five
+the probe claimed off the fingerprint** — **approaching** on the eight liquid-slate
+ones. **Nothing had been past a trigger
 since B3 fired at M12, and M11–M15 were five consecutive decisions on M11's licence
 — so a building slice here would be the first in five that is not one.**
 
@@ -242,8 +296,10 @@ arithmetic on purpose.
 **Named before building**: `cp·(T − T_REF)` becomes an enthalpy function `h(T)`, and
 §4a's datum cancellation survives only if every path integrates consistently from
 `T_REF`; **`u = cv·T − cp·T_REF` (§3a fork 3) becomes ILL-FORMED rather than
-approximate**, holding two heat capacities at two temperatures; and whether
-`PseudoComponent` stores a capacity or an enthalpy is a change in the sacred crate.
+approximate**, holding two heat capacities at two temperatures — **corrected by
+M16.1: that is true of the EXPRESSION and false of the quantity, and the expensive
+consequence is the inversion, not the formula**; and whether `PseudoComponent`
+stores a capacity or an enthalpy is a change in the sacred crate.
 
 **A3 is re-measured and unmoved**: 920 of 5 000 sweeps on `relief_blowdown`, next
 worst plant 20 — the first time since M9.1 that number was RUN rather than

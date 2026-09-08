@@ -5836,3 +5836,80 @@ a second, hard-coded `cp` site in `core` that the loader never sees; and whether
 crate — **a wider blast radius than any of M12–M15 took**, all of which added an
 optional field or a scenario file. M16.1 is therefore **not** scoped by this
 probe and is not automatic.
+
+### M16.1 — the design note — **LANDED** 2026-09-08
+
+The note is DESIGN §19: seven forks, seven gates, six named mutations, no code.
+M16.0 was barred from committing forks ("a note commits forks; this one was not
+allowed to"), so this is the slice that does. The building slice is **M16.2**.
+**Six things to know, and the first two narrow what M16.0 said had fired.**
+
+**The rewritten trigger was read off the wrong instrument, and that is the FIFTH
+column of B15 to be wrong.** M16.0 called the gas clause "fired on the five
+`phase = "gas"` plants" on the strength of the corpus fingerprint — which is a
+hash over published snapshot bytes, so it answers "did any bit change" and
+cannot be failed by any nonzero perturbation. That is the old trigger's defect
+wearing a new instrument. Re-run at **2.64%** — the largest a gas plant's own
+span justifies, rather than the round 5% — the same **13 of 19** plants move,
+`gas_valve` included. Measured against magnitudes over 600 snapshots the clause
+fires on **two** of the five: `gas_valve` **2.379e-6** (0.0007 K on a 293 K
+node), `knockout_drum` 2.178e-4, `gas_line` 4.197e-4,
+`vessel_pressure_control` **2.764e-3** (0.91 K, 1.9 kPa), `relief_blowdown`
+**3.816e-3** (1.28 K, 6.6 kPa). B15 stays past its trigger; what changed is
+which plants and why.
+
+**The two that fire are exactly the two carrying a `Vessel`, so the mechanism is
+not gas-ness.** It is **a holdup that integrates a temperature over a span**.
+And the five gas plants hold the corpus's SMALLEST spans — 0.02, 2.63, 4.93,
+36.12, 42.42 K — against the 358.8 K and 527.2 K spans that produced M16.0's
+19.45% and 25.05%. **The clause that fired has the citation and the small spans;
+the clause with the big spans has no citation.** That inversion shapes every
+fork in the note, and it is why the demo is a NEW plant rather than any of the
+five.
+
+**The anchor read at M16.0 covers no component in the corpus.** All five gas
+plants declare one component, `fuel_gas` at `molar_mass = 0.016043` — methane —
+and §18's wide-range tabulation is **n-hexane** gas (NIST WebBook C110543,
+Scott 1974). It is a real read-from-source correlation for a molecule that
+appears in no gas plant here, so M16.2's reference gate owes a **methane**
+tabulation and this note does not assume one.
+
+**§18's "`u = cv·T − cp·T_REF` becomes ILL-FORMED" is right about the expression
+and wrong about the quantity, and the correction moves the expensive part.**
+`R/M̄` is temperature-independent, so `cv(T) = cp(T) − R/M̄` holds exactly
+whatever `cp` does and `u(T) = h(T) − (R/M̄)·T` is a one-line generalisation that
+evaluates to the current expression bit for bit when `cp` is flat. What is
+actually costly is **reading a temperature back out**: both
+`temperature_from_internal_energy` and the tank branch's
+`T = T_REF + energy/(mass·cp)` become inversions of a monotone function, **per
+holdup per tick, inside `core`**. Fork 2 keeps that out of the sacred crate by
+putting `T(h)` on the seam's own trait — M11's precedent, where `Engine::tick`
+asks `ThermoModel` for a bubble pressure and the correlation lives in `solvers`
+— and by shipping a shape that inverts in closed form.
+
+**There are THREE consumers of `cp`, not two, and the flash gets simpler.** The
+integral `h(T)` (every enthalpy stock and flux), the mean over an interval
+`(h(T₂) − h(T₁))/(T₂ − T₁)` (the flash, the cascade condenser's sensible term,
+the pipe's capacity rate), and the **spot** value (`γ = cp/cv`, and the
+derivative the inverter needs). The boil-off's flash fraction `f = c̄p·ΔT/Δh̄_vap`
+— the path M16.0 measured its 4.4× amplification through — collapses to
+`(h(T) − h(T_bub))/Δh̄_vap`, an enthalpy ratio with no capacity in it at all.
+`pipe_outlet_temperature` is the awkward member and is flagged rather than
+solved: its `β = UA/(ṁ·cp)` sits inside a decay along the pipe, so the interval
+it wants a mean over is what the formula is solving for.
+
+**The seam is a new `[fidelity]` key and the shape comes from the FILE, not the
+engine.** Hanging `cp(T)` on `thermo` is refused — that key already selects
+between a model with no vapour–liquid equilibrium at all and a latent-heat
+correlation, and fourteen of nineteen plants select the former. Coefficients
+declared per component follow `density_kg_per_m3`'s precedent ("a declared
+constant at this fidelity"), ship no invented number, and collapse the blast
+radius to an optional field plus a new file — the M12–M15 pattern. **It moves
+the citation rather than removing it**: the demo file still ships numbers, and
+by M13 gate 3's rule a shipped number with no outside envelope is a consistency
+check wearing a physics label. The trap named in advance is that
+`cp_j_per_kg_k`, which nineteen files already declare, would acquire a second
+meaning under a shape; the note says M16.2 must give the shaped form its own
+anchor pair rather than reuse the key. And the shaped model is **refused** on
+the six plants with no `[[components]]` block, which fall back to a `cp`
+hard-coded in `core` — so those six stay identical by construction.

@@ -10566,3 +10566,407 @@ consumer reads — and it is now measured rather than asserted:
 were five consecutive DECISIONS on M11's licence. **If M16 continues, it is the
 first milestone in five that is not one.** The row's remaining distance is not a
 number; it is a citation.
+
+## 19. Temperature-dependent heat capacity (M16.1) — specified before building
+
+**This slice is the note. It changes no number, adds no test and touches no
+crate** — the shape §16 and §17 used, and the reason it is a slice of its own
+here is that §18 was explicitly barred from committing forks ("a note commits
+forks; this one was not allowed to"). The building slice is M16.2.
+
+### What fired, and the licence — the first milestone in five not taken on a decision
+
+M16.0 put `docs/DEFERRED.md` B15 past its trigger (§18). Nothing had been past a
+trigger since B3 fired at M12, and M11–M15 were five consecutive decisions on
+M11's licence, so this is the first milestone in five that is not one.
+
+**Two qualifications, both found by this note rather than inherited from the
+probe, and both narrow what fired.** They are in the next section because they
+are measurements, and they are the reason fork 6 does not choose any of the five
+plants §18 named.
+
+### What this note measured before arguing any fork
+
+Three probes, on the shipped tree at `5e6bb8a`, read-only except for the same
+one-line loader edit §18 used, made in a detached worktree.
+
+**(P1) The five `phase = "gas"` plants are nearly isothermal.** Worst-to-best
+node temperature over 6 000 ticks, whole plant:
+
+| plant | span [K] | shape error a constant leaves, §18's minimax table |
+|---|---:|---:|
+| `gas_valve` | 0.02 | ~0.001% |
+| `knockout_drum` | 2.63 | ~0.17% |
+| `gas_line` | 4.93 | ~0.33% |
+| `vessel_pressure_control` | 36.12 | ~2.4% |
+| `relief_blowdown` | 42.42 | **2.64%** |
+
+§18's headline figures — 19.45% at 358.8 K, 25.05% at 527.2 K — belong to spans
+`crude_column_recovery_train` has and no gas plant comes near. **The clause that
+fired has the citation and the corpus's SMALLEST spans; the clause with the big
+spans has no citation.** That inversion is the milestone's central awkwardness
+and every fork below is shaped by it.
+
+**(P2) The corpus fingerprint cannot fail this question.** Re-running §18's
+perturbation at 2.64% — the largest a gas plant's own span justifies, rather
+than the round 5% — moves **the same 13 of 19 plants**, `gas_valve` included.
+It would move them at 0.01% too: the fingerprint is a hash over published
+snapshot bytes, so it answers "did any bit change", not "did a number a consumer
+reads move". **This is the FOURTH column of B15 to be wrong**, after M14.0
+corrected its quantity and its low figure and M16.0 corrected its threshold. The
+row's own summary called all five gas plants "fired" on exactly this evidence.
+
+**(P3) Magnitudes at 2.64%, which is the bar the trigger's words actually set.**
+Worst relative movement on any published temperature, pressure or mass, over all
+600 snapshots:
+
+| plant | worst relative move | in units |
+|---|---:|---|
+| `gas_valve` | 2.379e-6 | 0.0007 K on a 293 K node |
+| `knockout_drum` | 2.178e-4 | 0.066 K |
+| `gas_line` | 4.197e-4 | 0.125 K |
+| `vessel_pressure_control` | 2.764e-3 | 0.91 K, 1.9 kPa |
+| `relief_blowdown` | 3.816e-3 | 1.28 K, 6.6 kPa |
+| `crude_column_recovery_train` | 3.353e-3 | 1.05 K on `polish_drum` |
+
+**So two of the five fire and three do not**, and the two that do are exactly the
+two carrying a `Vessel`. **The mechanism is not gas-ness; it is a holdup that
+integrates a temperature over a span.** `gas_valve` is a gas plant whose whole
+temperature field moves 0.02 K, and no heat capacity model of any fidelity can
+matter there. This is what tells fork 6 what the demo must be.
+
+**(P4, by inspection) The anchor read at M16.0 covers no shipped component.**
+All five gas plants declare one component, `fuel_gas`, `molar_mass = 0.016043`
+— methane. §18's wide-range tabulation is **n-hexane** gas (NIST WebBook
+C110543, Scott 1974). It is a real read-from-source correlation for a molecule
+that appears in no gas plant in the corpus. A build slice's reference gate needs
+a **methane** gas tabulation, and obtaining one is work M16.2 owes; it is not a
+thing this note can assume.
+
+### The correction §18 owes itself: `u` is well-formed; the closed form is not
+
+§18 says `u = cv·T − cp·T_REF` (§3a fork 3, M5.3) becomes **ill-formed rather
+than approximate**. That is right about the *expression* and wrong about the
+*quantity*, and the difference moves the expensive part of this milestone
+somewhere else.
+
+`energy.rs` fixes the relation by thermodynamics: `h − u = P/ρ = (R/M̄)·T`. The
+offset `R/M̄` is a property of the mixture's molar mass and is **temperature
+independent**, so for an ideal gas `cv(T) = cp(T) − R/M̄` holds exactly whatever
+`cp` does with temperature. The generalisation is therefore one line:
+
+```text
+u(T) = h(T) − (R/M̄)·T,     h(T) = ∫_{T_REF}^{T} cp(τ) dτ
+```
+
+and with `cp` flat it evaluates to `cv·T − cp·T_REF` bit for bit. What is
+ill-formed is only the closed form, which names two capacities at two
+temperatures and has nowhere to put a third.
+
+**The cost is not in `u`; it is in reading it back.** `energy.rs`'s
+`temperature_from_internal_energy` divides, and the tank branch in `engine.rs`
+divides too (`T = T_REF + energy_new/(mass_new·cp)`). Under `h(T)` both become
+**inversions of a monotone function**, evaluated per holdup per tick, inside
+`core`. That is the widest-blast-radius item in the milestone and it gets fork 2
+to itself.
+
+### The three consumers of `cp`, enumerated on the call sites
+
+Conflating these is the class of error this project keeps catching after the
+fact, so they are named before any of them is touched.
+
+**(a) The integral, `h(T)` — every enthalpy stock and flux.**
+`energy::enthalpy_flux` (`crates/core/src/energy.rs:83`),
+`energy::stream_enthalpy_flux` (`:113`),
+`energy::specific_internal_energy` (`:188`),
+`energy::temperature_from_internal_energy` (`:198`), the tank inventory's own
+inline stock at `crates/core/src/engine.rs:787`, `:828` and `:844`, and the
+cascade's external sensible balance at `crates/solvers/src/cascade.rs:215` and
+`:221`. The tank's inline expression is a **stock** (J), not a flux (W), so the
+module doc's "every enthalpy flux goes through `enthalpy_flux`" is true as
+written and is not the escape it looks like — but it is a second site holding
+the datum, and under `h(T)` it must integrate identically or §4a's cancellation
+stops holding.
+
+**(b) The mean over an interval, `mean_cp(T₁,T₂) = (h(T₂) − h(T₁))/(T₂ − T₁)`.**
+The flash fraction at `crates/solvers/src/boiloff.rs:188`; the cascade
+condenser's sensible term via `mixture_molar_cp` at
+`crates/solvers/src/cascade.rs:1204`; `energy::pipe_outlet_temperature`'s
+capacity rate at `crates/core/src/energy.rs:324`.
+
+**The flash gets SIMPLER, and that is worth claiming.** It is
+`f = c̄p·ΔT/Δh̄_vap` with `ΔT = T − T_bub`, so under `h(T)` it collapses to
+
+```text
+f = (h(T) − h(T_bub)) / Δh̄_vap
+```
+
+— an enthalpy ratio with no capacity in it at all. This is the path §18 measured
+its 4.4× amplification through, and `h(T)` removes a term from it rather than
+adding one.
+
+**`pipe_outlet_temperature` is the awkward member** and is flagged, not solved
+here: its `β = UA/(ṁ·cp)` sits inside an exponential decay along the pipe, so
+the interval it wants a mean over is the pipe's own temperature path, which is
+what the formula is solving for. M16.2 must either state that the inlet-to-outlet
+mean is the right approximation and say why, or leave that site on a spot value
+and say that too. Choosing silently is how a mean and a spot get conflated.
+
+**(c) The spot value, `cp(T)`.** `γ = cp/cv` at
+`crates/solvers/src/network.rs:517`, feeding `specific_heat_ratio_factor` — a
+ratio at one temperature, not over an interval. And the derivative the inverter
+in fork 2 needs, which is the same function.
+
+### Fork 1 — the object the seam owns is an ENTHALPY, not a capacity
+
+**Verdict: the seam supplies `h(T)`; both capacities are derived from it** —
+spot as `dh/dT`, mean as the difference quotient above.
+
+The alternative is to supply `cp(T)` and integrate at each consumer. It is
+rejected for the reason `mixture_cv` and `cp − R/M̄` are gated against each other
+in `components.rs`: two expressions of one quantity can drift, and here the
+drift is exactly the datum §4a's cancellation rests on ("the reference cancels
+exactly as long as mass balances"). With one function that IS the integral, a
+consumer cannot integrate it from the wrong end; with `cp(T)` and a convention,
+sixteen call sites can each get it wrong independently.
+
+The cost of the verdict is that `enthalpy_flux`'s signature changes: it becomes
+`ṁ·h` rather than `ṁ·cp·(T − T_REF)`. That is a `core` API change and is
+predicted below rather than discovered later.
+
+### Fork 2 — the inversion, and where a root find may live under rule 1
+
+`core` may not depend on `solvers` (rule 1), and `core` has no root finder;
+`crates/solvers/src/bubble.rs` has one, behind `BUBBLE_POINT_MAX_EVALUATIONS`.
+Three ways to give `core` a temperature back:
+
+1. **A monotone inverter in `core`.** New numerics in the crate that is supposed
+   to hold types, the graph, the loop and the traits. Rejected: it is the
+   sacred-crate change §18 warned about, and it is avoidable.
+2. **`T(h)` is a method on the seam's own trait.** `core` asks; the arithmetic
+   lives in `solvers`. **This has a precedent that is exactly on point**: M11
+   put a per-tick criterion in `Engine::tick` that asks `ThermoModel` for a
+   bubble pressure, and the correlation is in `solvers`. Nothing new is being
+   argued, only reused.
+3. **Admit only shapes with a closed-form inverse.** `cp` linear in `T` makes
+   `h` quadratic and the inverse a quadratic formula — no iteration, no
+   evaluation bound to justify, exact. It forecloses fitting a published
+   tabulation of higher order.
+
+**Verdict: (2) for the seam, with (3) as what the first implementation
+contains.** They compose: the trait method exists so that a later shape may
+iterate, and the shape M16.2 ships inverts in closed form so that this milestone
+does not have to defend an iteration count in the tick loop.
+
+Two things the verdict owes M16.2. **Monotonicity is a load-time refusal, not a
+runtime `Err`**: `cp > 0` makes `h` strictly increasing, the loader already
+refuses a non-positive `cp_j_per_kg_k` at `crates/scenarios/src/build.rs:853`,
+and a shape must be refused the same way over the range it will be asked about —
+this project prefers a refusal at load to a diverging solve. And **if an
+iterating shape is ever added, M9.3a's finding applies directly**: the
+resolution must sit far below the tolerance of the test grading it, not meet it,
+because a holdup temperature is differenced by the very balances that check it.
+The cost bar is A1's frame budget, and it is stricter here than for the bubble
+point: a bubble point is per solve, an inversion is **per holdup per tick**.
+
+### Fork 3 — where the shape comes from: coefficients in the file, not a correlation in the engine
+
+**Verdict: each component declares its own shape in TOML, and the engine ships
+no correlation.**
+
+The precedent is one field over: a liquid's `density_kg_per_m3` is "a declared
+constant at this fidelity" (`build.rs:874`), and nobody calls that an invented
+number, because the file's author owns it. It also collapses the blast radius to
+an optional field plus a new scenario file, which is the M12–M15 pattern, and it
+keeps the engine clear of the Watson–Nelson paraphrase §18 ruled inadmissible.
+
+**It moves the citation; it does not remove it, and M16.2 must not pretend
+otherwise.** The demo file still ships numbers, and by M13 gate 3's rule a
+shipped number with no envelope from outside the workspace is a consistency
+check wearing a physics label. The envelope is the reference gate's job, and
+per (P4) its subject is methane, not n-hexane.
+
+**The trap this fork creates, named now: `cp_j_per_kg_k` acquires a second
+meaning.** Nineteen files declare it as *the* constant. Under a shape it becomes
+an anchor value at some temperature, and which temperature is not written
+anywhere. Two ways out — reuse the key and document it as "the value at
+`energy::T_REF`", or require a shaped component to declare its own anchor pair.
+**M16.2 should take the second.** One key with two meanings selected by a
+fidelity switch elsewhere in the file is precisely the shape rule 2 exists to
+prevent, and this project has already paid for a key whose meaning was implicit
+(B17, `ambient_ua` documented as insulation and used as a condenser).
+
+### Fork 4 — the seam is a NEW key, not a new arm on `thermo`
+
+**Verdict: a new trait behind a new `[fidelity]` key, defaulting to the
+constant.**
+
+Hanging `cp(T)` on `ThermoModel` is the cheap-looking option and is refused.
+That key currently selects between `"constant"` — which has no vapour–liquid
+equilibrium at all and whose `k_value` is an `Err` — and `"trouton"`, a latent
+heat correlation. Fourteen of nineteen plants select `"constant"`. Putting a
+heat capacity there makes one key select two unrelated properties, and forces
+any plant that wants a shaped capacity to acquire a K-value model it may have no
+use for. The same argument M14 used to keep a condenser off a new key, pointed
+the other way.
+
+The key defaults to the constant model, which reproduces today's arithmetic bit
+for bit, so the nineteen shipped plants stay identical **by construction rather
+than by measurement** — and the measurement is still gate 3, because "by
+construction" has been wrong in this project before.
+
+Both directions of the pairing are refused at load, as
+`require_compatible_fidelity` already does for `separation`/`boiloff` against
+`thermo`: a shape declared while the constant model is selected is an error (a
+number nothing reads), and the shaped model selected while no component declares
+a shape is an error (a model with no data).
+
+### Fork 5 — the second `cp`, and the refusal that keeps six plants identical by construction
+
+`PseudoComponent::water()` hard-codes `cp = 4184` and is reached through
+`Slate::water_only()` when a file declares no `[[components]]` block. That is
+**six of nineteen plants** — `cooler_chiller`, `furnace_heater`,
+`heat_recovery`, `leaking_line`, `tank_level_control`, `tank_pump_valve` — and
+it is exactly why they did not move under either perturbation.
+
+**Verdict: refuse the shaped model on a plant with no `[[components]]` block.**
+Under fork 3 there is nowhere for such a plant to declare a shape, so the key
+would select a model with no data — which fork 4 already refuses in general.
+Giving water a shape instead is rejected here for two reasons: it moves six
+plants' bytes for a milestone whose demo is elsewhere, and water is the one
+substance whose liquid `cp(T)` is genuinely well published, which makes it a
+tempting *exception* to fork 3's "the engine ships no correlation". Deferred
+with a trigger below rather than smuggled in.
+
+### Fork 6 — the demo, and why none of the five fired plants can be it
+
+**Verdict: a NEW gas plant with a holdup and a wide temperature excursion.**
+
+(P1) and (P3) rule out reusing any of the five. Three of them move by less than
+half a Kelvin under a perturbation larger than their own spans justify;
+`gas_valve` moves 0.0007 K. The two that do move — `relief_blowdown` and
+`vessel_pressure_control` — are the M5.3 and M10.1 regression anchors, and
+adding a fidelity key to either moves a snapshot this project has kept still
+since those milestones. That is the same argument that has made every regulation
+and recovery slice since M8.4 ship a new file rather than wire a loop into an
+old one.
+
+The shape the demo needs is read straight off (P3): **a gas holdup whose
+temperature moves over a span where the shape error is large.** A fired heater
+on a gas stream into a vessel reaches 300 → 800 K, which is §18's 527 K row
+(25.05%) rather than the 42 K the corpus currently offers. `furnace_heater`
+exists as a plant shape and is water-only, so the demo is that shape with a gas
+slate and a holdup — a file, not a mechanism.
+
+**The demo is a GAS plant, and that is forced by the citation, not chosen.**
+B15's liquid clause stays "approaching" and its remaining distance stays a
+citation: no wide-range liquid tabulation could be read, and Watson–Nelson has
+no admissible primary source yet.
+
+### Fork 7 — `mean_cp` at `T₂ = T₁`
+
+`(h(T₂) − h(T₁))/(T₂ − T₁)` is `0/0` at an isothermal interval, and the
+workspace's no-NaN rule (rule 5) makes that a guard rather than a footnote. The
+continuous limit is the spot value `cp(T₁)`, so the guard returns a right answer
+and not a convenient one — the same standing as
+`pipe_outlet_temperature`'s zero-flow return of the inlet.
+
+**Exact equality, not a threshold**, for that function's own stated reason: a
+threshold is a magic number that also flattens legitimately small intervals. And
+the state is reachable rather than hypothetical — a tank sitting at ambient, a
+draw at its own tray temperature, a stagnant edge.
+
+### The gates, named before building, and the vacuity each one closes
+
+**Gate 1 — two equal-width spans.** Ask the model for `mean_cp` over
+`[300, 340]` and over `[700, 740]` on one component. A constant returns the same
+number twice; a shape cannot. **This is the only gate with power over the actual
+subject**, because §18's own finding is that a uniform `cp` scale cancels
+exactly in enthalpy-weighted mixing — so no mixing gate, and no plant-level
+comparison of a scaled twin, can tell a shape from a constant. Equal width is
+load-bearing: unequal intervals would be passed by an engine that merely
+reported the interval back.
+
+**Gate 2 — the reference envelope**, the demo component's declared shape against
+a published methane gas tabulation, in the manner of M13 gate 3 (`dh_vap`
+against the Antoine fit's slope, inside a band sized from named one-sided
+errors). Closes "a consistency check wearing a physics label". Its subject is
+methane per (P4), and obtaining the source is part of M16.2, not an assumption
+of this note.
+
+**Gate 3 — the regression anchor.** With the key at its default, all nineteen
+shipped plants byte-identical on both fidelities, no iteration count moved.
+Closes "the seam changed numbers on plants that did not ask for it".
+
+**Gate 4 — the inversion round-trip.** `T(h(T)) = T` across the demo's whole
+range, to a bound **derived** from the shape rather than chosen, and — M9.3a's
+rule — sitting far below the tolerance of whatever grades it.
+
+**Gate 5 — the datum.** Every path integrates from `energy::T_REF`, asserted
+against `T_REF` explicitly the way the existing invariant tests do rather than
+relying on a zero reference to make it moot. Closes the path that forgot the
+datum entirely.
+
+**Gate 6 — `h − u = (R/M̄)·T` at TWO temperatures on a gas.** Closes the
+correction above: a shaped `h` left with the old closed-form `u` agrees at one
+temperature and disagrees at the next, so a one-temperature gate is vacuous
+here.
+
+**Gate 7 — `γ` at two temperatures differs.** Closes the spot/mean conflation on
+the one site that genuinely wants a spot value.
+
+**Stated so it is not discovered later: "`h` and `mean_cp` agree" is
+self-consistency, not physics.** It belongs in the code as a debug assertion, not
+in the gate list as evidence, and this project has written the equivalent
+sentence twice before (M7.4b's tautological duty difference, M13's `dh_vap`
+tests that compare the model against itself).
+
+### What must not change, stated as a prediction that can be wrong
+
+- `Composition`, the slate's canonical order, and every snapshot field. The
+  seam adds no published key; a shape is an input, not a result.
+- `Stream::latent` and M13's saturated-liquid datum sentence. `h(T)` changes how
+  the sensible half is computed and not what the datum IS.
+- The eighteen plants that are not the demo, on both fidelities, to the byte.
+- `Snapshot` gains nothing.
+- **Predicted TO change, so the prediction can fail in both directions**:
+  `energy::enthalpy_flux`'s signature (fork 1), `specific_internal_energy` and
+  `temperature_from_internal_energy` (the correction above), and the tank
+  branch's two inline stock expressions in `engine.rs`.
+
+### The mutations this slice owes, named before building
+
+1. **Return the spot `cp(T₁)` where a mean is wanted.** Predicted caught by gate
+   1 and by the flash's own reference case.
+2. **Integrate from 0 K instead of `T_REF`.** Predicted caught by gate 5 alone —
+   which is the whole reason `T_REF` is deliberately non-zero.
+3. **Keep the old closed-form `u` under a shaped `h`.** Predicted caught by gate
+   6 and by the M5.3 blowdown reference, and predicted NOT caught by any
+   single-temperature check.
+4. **Stop the inverter after one step.** Predicted caught by gate 4 — and
+   flagged as the one whose prediction is most likely wrong, because a nearly
+   linear shape inverts almost exactly in one step, which would make gate 4 pass
+   under the mutation and make the demo's own shape the thing being tested.
+5. **Give the constant model a `mean_cp` that ignores its interval.** Predicted
+   **INERT**, and it is the control: it proves gate 1 measures shape rather than
+   plumbing. An inert result here is a pass, not an escape.
+6. **Fall back to the declared constant when a shape is absent instead of
+   refusing.** Predicted caught by the refusal sweep alone, since no plant
+   reaches the state.
+
+### Deferred, with what un-defers each
+
+- **A liquid shape.** Un-defers when a wide-range liquid `cp(T)` tabulation, or
+  a primary source for Watson–Nelson, is read rather than recalled. This is
+  B15's remaining clause and its distance is a citation, not a number.
+- **`PseudoComponent::water()`'s shape** (fork 5). Un-defers when a water-only
+  plant has a temperature span wide enough to matter — today none of the six
+  moved under either perturbation.
+- **`pipe_outlet_temperature`'s mean** (consumer (b)). Un-defers when a plant
+  carries a pipe whose inlet-to-outlet drop is a large fraction of its own
+  operating span; M16.2 must record which of the two answers it took.
+- **`fcc_plant`'s 800 K liquid cuts** (§18's own finding). No correlation of
+  either phase is valid there and a shape would make that louder, not better.
+  Adjacent to B3 and un-defers with it.
+- **A pressure-dependent `cp`.** Nothing asks; named so that "cp(T)" is not
+  silently read as "cp(T, P)" later.
