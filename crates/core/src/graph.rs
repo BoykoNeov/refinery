@@ -608,14 +608,21 @@ pub enum ControlMode {
 /// deferral survives — scoped to the node kinds it is actually true of rather
 /// than to the variable. See `PlantGraph::measure`.
 ///
-/// Temperature and flow stay deferred, and their reasons are NOT the one that
-/// was wrong here: a temperature really is a `NodeStates` quantity, and a flow
-/// lives on an edge, which nothing in `measure`'s signature can name.
+/// **The third variant, temperature, landed in M17 on the same correction made a
+/// fourth time** (docs/DESIGN.md §21). This doc used to say "a temperature really
+/// is a `NodeStates` quantity" — false for both holdups, whose `temperature` is a
+/// field on `TankState` and `VesselState`, real from load and written back every
+/// tick. It is true of a zero-volume node's temperature (a furnace's or a
+/// cooler's outlet, a junction's mix), and `measure` refuses exactly those.
+///
+/// Flow stays deferred, and its reason is not that one: a flow lives on an edge,
+/// which nothing in `measure`'s signature can name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeasuredVariable {
     Level,
     Pressure,
+    Temperature,
 }
 
 impl MeasuredVariable {
@@ -633,6 +640,7 @@ impl MeasuredVariable {
         match self {
             MeasuredVariable::Level => "setpoint_m",
             MeasuredVariable::Pressure => "setpoint_bar",
+            MeasuredVariable::Temperature => "setpoint_c",
         }
     }
 
@@ -652,6 +660,15 @@ impl MeasuredVariable {
         match self {
             MeasuredVariable::Level => "gain_per_m",
             MeasuredVariable::Pressure => "gain_per_bar",
+            // **Per KELVIN, and the setpoint's `_c` is not a typo beside it**
+            // (docs/DESIGN.md §21 fork 5). A gain multiplies a temperature
+            // DIFFERENCE, and a difference of 1 °C is 1 K, so this key converts by
+            // nothing where `setpoint_c` converts by `+ 273.15` — the inverse of
+            // the pressure pair above, where both sides convert. Copying that
+            // pattern ("convert both at one site") would add the offset to the
+            // gain. `_per_k` says there is no offset to apply; `smearing_k` is
+            // the format's precedent.
+            MeasuredVariable::Temperature => "gain_per_k",
         }
     }
 }
@@ -708,6 +725,16 @@ pub enum ControlledValue {
     Pressure {
         pa: Pascal,
     },
+    /// A holdup's temperature (M17, docs/DESIGN.md §21).
+    ///
+    /// Kelvin out where the scenario key is °C in — the format's own
+    /// `temperature_c` in, `temperature_k` out convention, as the pressure variant
+    /// follows `pressure_bar` in, `pressure_pa` out. `Kelvin` is
+    /// `#[serde(transparent)]`, so the wire form is
+    /// `{"variable":"temperature","k":333.15}`.
+    Temperature {
+        k: Kelvin,
+    },
 }
 
 impl ControlledValue {
@@ -722,6 +749,7 @@ impl ControlledValue {
         match self {
             ControlledValue::Level { .. } => MeasuredVariable::Level,
             ControlledValue::Pressure { .. } => MeasuredVariable::Pressure,
+            ControlledValue::Temperature { .. } => MeasuredVariable::Temperature,
         }
     }
 
@@ -736,6 +764,7 @@ impl ControlledValue {
         match self {
             ControlledValue::Level { m } => m.value(),
             ControlledValue::Pressure { pa } => pa.value(),
+            ControlledValue::Temperature { k } => k.value(),
         }
     }
 
@@ -798,9 +827,24 @@ pub struct ControlLoop {
     /// `PlantGraph::measure`, which is the single owner of which kinds can answer
     /// for which variable and carries a distinct reason for each refusal.
     pub measurement_node: NodeId,
-    /// The node this loop writes. A `Valve`; a `ReliefValve` is refused with its
-    /// own reason, since its opening is actuated by its own inlet pressure.
+    /// The node this loop writes. A `Valve` on a level or pressure loop, a
+    /// `Cooler` on a temperature loop (M17); the loader refuses every other
+    /// pairing with its own reason (docs/DESIGN.md §21 fork 3), and a
+    /// `ReliefValve` always, since its opening is actuated by its own inlet
+    /// pressure.
     pub actuator: NodeId,
+    /// The loop's declared authority over a DUTY actuator: the cooler duty its
+    /// full output `u = 1` stands for. `Some` exactly when the actuator is a
+    /// `Cooler`, `None` on a valve, whose opening is already a fraction.
+    ///
+    /// **On the loop, not on the cooler** (docs/DESIGN.md §21 fork 3).
+    /// `NodeSnapshot::kind` serializes `NodeKind`, so a field on the cooler would
+    /// move every published cooler plant's bytes — and it is the loop's statement
+    /// of its own range, which no other reader of a cooler has any use for.
+    /// Read only through `PlantGraph::actuator_position` and
+    /// `PlantGraph::set_actuator_position`, the single owner of "this actuator's
+    /// position as a fraction of its authority".
+    pub max_duty: Option<Watt>,
     /// The target value, and — through `ControlledValue::variable` — the
     /// declaration of what this loop measures.
     pub setpoint: ControlledValue,
@@ -826,27 +870,29 @@ pub struct ControlLoop {
     ///
     /// The two differ by one tick (fork 3), and reporting the fresh one would make
     /// a lagging loop look instantaneous, hiding the lag from exactly the person
-    /// debugging it. Real from load rather than optional: **both** variables this
-    /// engine controls are STORED quantities — a tank's mass and a vessel's mass
-    /// both live on the graph — so the loader seeds this by taking the measurement
-    /// once, and a snapshot before the first tick reports a true level or a true
-    /// pressure instead of a NaN or an absence.
+    /// debugging it. Real from load rather than optional: **all three** variables
+    /// this engine controls are STORED quantities — a tank's mass, a vessel's
+    /// mass, and either holdup's temperature all live on the graph — so the loader
+    /// seeds this by taking the measurement once, and a snapshot before the first
+    /// tick reports a true level, pressure or temperature instead of a NaN or an
+    /// absence.
     ///
     /// That contrast is sharpest on the pressure loop and is worth reading once:
     /// at tick 0 this field holds the vessel's declared pressure while
     /// `NodeSnapshot::pressure_pa` for the same node is NaN, because the solve has
     /// not run. Two different quantities that agree once the plant is running, and
     /// the fact that one exists before the other is the whole of what §12
-    /// corrected.
+    /// corrected. The temperature loop repeats it exactly: `temperature_k` is NaN
+    /// at tick 0 and this holds the declared holdup temperature (§21, gate 1).
     pub last_measurement: ControlledValue,
     /// The actuator position this loop last put on the faceplate, dimensionless
-    /// in `[0, 1]`.
+    /// in `[0, 1]` — for a cooler, a fraction of `max_duty`.
     ///
     /// In `Auto` it is the controller's output, which is also what was written to
-    /// the valve. In `Manual` the loop writes nothing and this TRACKS the
-    /// actuator's real opening, which is what a DCS faceplate shows and what makes
-    /// AUTO→MANUAL transfer free (fork 4). Seeded from the valve's declared
-    /// opening at load.
+    /// the actuator. In `Manual` the loop writes nothing and this TRACKS the
+    /// actuator's real position, which is what a DCS faceplate shows and what
+    /// makes AUTO→MANUAL transfer free (fork 4). Seeded from the actuator's
+    /// declared position at load.
     pub last_output: f64,
 }
 
@@ -1322,6 +1368,27 @@ impl PlantGraph {
                 "node '{}' is not a vessel, so it has no pressure setpoint range",
                 self.node(node).name
             ))),
+            // **Finiteness and `> 0 K` only, and the bound a reader expects is
+            // refused on purpose** (docs/DESIGN.md §21 fork 6). A boiling tank is
+            // parked on its bubble point, so a setpoint above it is unreachable —
+            // but the bubble point moves with composition, which makes it a state
+            // and not a range. A temperature has no geometric bound the way a
+            // level has a height; absolute zero is the only one it has.
+            (ControlledValue::Temperature { k }, NodeKind::Tank(_) | NodeKind::Vessel(_)) => {
+                if !k.is_finite() || k.value() <= 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "temperature setpoint {} K on '{}' is not a finite temperature above \
+                         absolute zero",
+                        k.value(),
+                        self.node(node).name
+                    )));
+                }
+                Ok(())
+            }
+            (ControlledValue::Temperature { .. }, _) => Err(SimError::InvalidCommand(format!(
+                "node '{}' is not a holdup, so it has no temperature setpoint range",
+                self.node(node).name
+            ))),
         }
     }
 
@@ -1348,9 +1415,18 @@ impl PlantGraph {
     /// never owed.
     ///
     /// The claim is true of a `Junction`, whose pressure is an unknown of the
-    /// solve, and of a temperature, which really is a `NodeStates` quantity. Both
-    /// stay deferred; the junction arm below names the missing tick-0 rule so the
-    /// refusal doubles as that deferral's own trigger.
+    /// solve, and it stays deferred there; the junction arm below names the
+    /// missing tick-0 rule so the refusal doubles as that deferral's own trigger.
+    ///
+    /// **A holdup's temperature is stored as well, and this doc used to say it
+    /// "really is a `NodeStates` quantity"** (docs/DESIGN.md §21 — the fourth
+    /// recurrence of the one error). `TankState::temperature` and
+    /// `VesselState::temperature` are on this graph, set from `temperature_c` at
+    /// load and written back every tick. A snapshot's `temperature_k` for the
+    /// same tank is one Euler step behind this reading, exactly, which is the
+    /// shape M8.5 found for a tank's pressure against its mass. What IS a
+    /// `NodeStates` quantity is a zero-volume node's temperature, and the
+    /// temperature arms below refuse those with the tick-0 rule named.
     ///
     /// Called at load to seed `ControlLoop::last_measurement` and once per loop
     /// per tick thereafter, so a loop's seeded measurement and its running one
@@ -1416,6 +1492,131 @@ impl PlantGraph {
                  regulating the scenario file rather than the plant",
                 self.node(node).name
             ))),
+            // Stored on the graph and exact from load (docs/DESIGN.md §21 fork 1).
+            // The vessel arm is argued rather than inherited: same storage, same
+            // write-back, and refusing it would be a refusal whose only reason is
+            // that no demo exercises it.
+            (MeasuredVariable::Temperature, NodeKind::Tank(t)) => {
+                Ok(ControlledValue::Temperature { k: t.temperature })
+            }
+            (MeasuredVariable::Temperature, NodeKind::Vessel(v)) => {
+                Ok(ControlledValue::Temperature { k: v.temperature })
+            }
+            // **The one set of node kinds the old claim is true of.** A
+            // zero-volume node holds nothing: its temperature is algebraic, lives
+            // in `energy::NodeStates`, and is absent before the first tick. This
+            // is the furnace-outlet loop, refused for its measurement before its
+            // actuator is even asked about; the message names the missing piece
+            // so it doubles as the deferral's trigger, as the junction pressure
+            // arm does.
+            (
+                MeasuredVariable::Temperature,
+                NodeKind::Junction
+                | NodeKind::Pump { .. }
+                | NodeKind::Valve { .. }
+                | NodeKind::ReliefValve { .. }
+                | NodeKind::Furnace { .. }
+                | NodeKind::Cooler { .. }
+                | NodeKind::HeatExchanger,
+            ) => Err(SimError::Scenario(format!(
+                "node '{}' holds no volume, so its temperature is ALGEBRAIC: it is resolved by \
+                 the tick into `NodeStates` and does not exist before the first one. \
+                 Zero-volume temperature control (a furnace or cooler outlet) is deferred on \
+                 exactly that — it needs a stated rule for what a loop measures at tick 0 \
+                 (docs/DESIGN.md §21). Measure the holdup the stream runs into instead",
+                self.node(node).name
+            ))),
+            // A column's tray temperatures are the separation model's output, and a
+            // reactor's outlet is `t_set` — a declared temperature the unit already
+            // holds exactly, so a loop on it would regulate a number that is
+            // already regulated.
+            (MeasuredVariable::Temperature, NodeKind::Column { .. } | NodeKind::Reactor { .. }) => {
+                Err(SimError::Scenario(format!(
+                    "node '{}' is a column or a reactor: it holds no temperature of its own for a \
+                     loop to regulate. A column's temperatures are its separation model's \
+                     output, and a reactor's outlet is its declared `t_set_c`, already held \
+                     exactly (docs/DESIGN.md §21 fork 1)",
+                    self.node(node).name
+                )))
+            }
+            (
+                MeasuredVariable::Temperature,
+                NodeKind::Source { .. } | NodeKind::Sink { .. } | NodeKind::Atmosphere,
+            ) => Err(SimError::Scenario(format!(
+                "node '{}' is a boundary: its temperature is pinned by declaration, so a loop on \
+                 it would be regulating the scenario file rather than the plant",
+                self.node(node).name
+            ))),
         }
     }
+
+    /// Where a loop's actuator stands, as a fraction of the loop's authority.
+    ///
+    /// **The single owner of the actuator side, as `measure` is of the
+    /// measurement side** (docs/DESIGN.md §21). Three sites read this quantity —
+    /// the loader's seed of `last_output`, pass 1 of the tick's control pass, and
+    /// the MANUAL→AUTO transfer — and if they took it by two rules, a transfer
+    /// would seed from one notion of position while the tick ran on another.
+    ///
+    /// A valve's position is its opening, read bare: no arithmetic on the valve
+    /// path, so the level and pressure loops that predate M17 read exactly what
+    /// they read before. A cooler's is `duty / max_duty`.
+    ///
+    /// # Errors
+    /// `SimError::Scenario` if the pairing of actuator and range is not one the
+    /// loader builds — a valve with a duty range, a cooler without one, or any
+    /// other kind. Reachable only from a hand-built graph, and said rather than
+    /// answered with an invented position (rule 5).
+    pub fn actuator_position(
+        &self,
+        actuator: NodeId,
+        max_duty: Option<Watt>,
+    ) -> Result<f64, SimError> {
+        match (&self.node(actuator).kind, max_duty) {
+            (NodeKind::Valve { opening, .. }, None) => Ok(*opening),
+            (NodeKind::Cooler { duty }, Some(max)) => Ok(duty.value() / max.value()),
+            _ => Err(unpaired_actuator(&self.node(actuator).name, max_duty)),
+        }
+    }
+
+    /// Put a loop's actuator at `position`, a fraction of the loop's authority —
+    /// the inverse of `actuator_position`, and its only writer.
+    ///
+    /// A valve's opening is `position` itself; a cooler's duty is
+    /// `position · max_duty`.
+    ///
+    /// # Errors
+    /// As `actuator_position`.
+    pub fn set_actuator_position(
+        &mut self,
+        actuator: NodeId,
+        max_duty: Option<Watt>,
+        position: f64,
+    ) -> Result<(), SimError> {
+        match (&mut self.node_mut(actuator).kind, max_duty) {
+            (NodeKind::Valve { opening, .. }, None) => {
+                *opening = position;
+                Ok(())
+            }
+            (NodeKind::Cooler { duty }, Some(max)) => {
+                *duty = max * position;
+                Ok(())
+            }
+            _ => Err(unpaired_actuator(&self.node(actuator).name, max_duty)),
+        }
+    }
+}
+
+/// The refusal both actuator accessors share: a pairing the loader never builds.
+fn unpaired_actuator(name: &str, max_duty: Option<Watt>) -> SimError {
+    SimError::Scenario(format!(
+        "control loop actuator '{name}' is not an actuator this loop can position: a loop writes \
+         a valve's opening (with no duty range) or a cooler's duty (with one), and this pairing \
+         is {}",
+        if max_duty.is_some() {
+            "a duty range on a node that is not a cooler"
+        } else {
+            "no duty range, on a node that is not a valve"
+        }
+    ))
 }

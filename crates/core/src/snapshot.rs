@@ -228,11 +228,16 @@ pub struct ControlSnapshot {
     /// Actuator position, dimensionless in `[0, 1]`.
     ///
     /// In `Auto` this is the controller's output and is what was written to the
-    /// valve. In `Manual` the loop writes nothing and this tracks the actuator's
-    /// real opening, which is what a DCS faceplate shows. A bare fraction rather
-    /// than a tagged value: a valve opening is dimensionless and already
-    /// validated as such by `Command::SetValveOpening`. It gains a unit question
-    /// only when an actuator that is not a valve un-defers.
+    /// actuator. In `Manual` the loop writes nothing and this tracks the
+    /// actuator's real position, which is what a DCS faceplate shows.
+    ///
+    /// **Still a bare fraction now that an actuator is not a valve** (M17,
+    /// docs/DESIGN.md §21). This doc used to say it "gains a unit question only
+    /// when an actuator that is not a valve un-defers", and a cooler is that
+    /// actuator. The answer: for a valve it is the opening, for a cooler it is the
+    /// duty as a fraction of the loop's declared `max_duty_mw`. The watts are
+    /// already published on the cooler node's own `kind.duty`, so a second copy
+    /// here would be a second owner.
     pub output: f64,
 }
 

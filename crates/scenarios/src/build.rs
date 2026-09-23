@@ -477,14 +477,22 @@ fn resolve_vent_destination(
 ///   alone (a tank, whose pressure IS its level in a worse unit; a junction, whose
 ///   pressure is genuinely solved and absent at tick 0; and the boundary kinds,
 ///   whose pressures are pinned by declaration),
-/// - a setpoint or a gain key belonging to the OTHER variable, both directions,
-/// - an actuator that is not a `Valve`, and a `ReliefValve` with its own reason.
+/// - a temperature measured on anything that is not a holdup (M17) — refused with
+///   the missing tick-0 rule named for a zero-volume node, and separately for a
+///   column or reactor and for a boundary,
+/// - a setpoint or a gain key belonging to ANOTHER variable, every direction,
+/// - an actuator the variable cannot pair with (docs/DESIGN.md §21 fork 3's table:
+///   a valve for a level or a pressure, a cooler for a temperature), each refused
+///   pairing with its own reason, and a `ReliefValve` always,
+/// - `max_duty_mw` missing on a cooler or present on a valve, not finite and
+///   positive, or a declared cooler duty outside `[0, max_duty_mw]`.
 ///
-/// Each loop is born with a real measurement rather than an empty one: both
+/// Each loop is born with a real measurement rather than an empty one: all three
 /// controlled variables are stored and true from load, so `PlantGraph::measure` is
 /// called here exactly as the tick pass calls it, and a snapshot taken before the
-/// first tick reports a true level or a true pressure. `last_output` is seeded from
-/// the valve's own declared opening, which is what MANUAL would report and what
+/// first tick reports a true level, pressure or temperature. `last_output` is
+/// seeded through `PlantGraph::actuator_position` — the reader the tick pass and
+/// the MANUAL→AUTO transfer also use — which is what MANUAL would report and what
 /// AUTO overwrites on tick 1.
 ///
 /// That same measurement is what a PI loop's memory is derived AGAINST: fork 5's
@@ -513,13 +521,17 @@ fn build_controls(
         let variable = match def.measurement.variable.as_str() {
             "level" => MeasuredVariable::Level,
             "pressure" => MeasuredVariable::Pressure,
+            "temperature" => MeasuredVariable::Temperature,
+            // This message used to say temperature control was deferred because
+            // "a temperature really is a solved quantity" — false for a holdup,
+            // whose temperature is stored on the graph (docs/DESIGN.md §21). Flow's
+            // reason was never that one.
             other => {
                 return Err(SimError::Scenario(format!(
                     "control loop '{}' measures unknown variable '{other}' (valid: level, \
-                     pressure). Temperature and flow control stay deferred, each needing a \
-                     measurement path and an actuator that exists: a temperature really is a \
-                     solved quantity, and a flow lives on an EDGE, which nothing in \
-                     `PlantGraph::measure`'s signature can name (docs/DESIGN.md §12)",
+                     pressure, temperature). Flow control stays deferred: a flow lives on an \
+                     EDGE, which nothing in `PlantGraph::measure`'s signature can name \
+                     (docs/DESIGN.md §21)",
                     def.name
                 )))
             }
@@ -556,15 +568,20 @@ fn build_controls(
                 ))
             })?;
 
-        match &graph.node(actuator).kind {
-            NodeKind::Valve { .. } => {}
+        // **The pairing table, enumerated rather than left to a fall-through**
+        // (docs/DESIGN.md §21 fork 3). Which actuators each variable accepts, and
+        // for each refused pairing its own reason — and, for the one duty
+        // actuator, the loop's declared authority over it. `max_duty_mw` is
+        // required on a cooler and refused on a valve, both directions, the
+        // `density_kg_per_m3` rule.
+        let max_duty = match (variable, &graph.node(actuator).kind) {
             // Its own reason rather than "not a valve", exactly as
             // `Command::SetValveOpening` refuses it: a relief valve IS a valve,
             // and the point is that its opening is not a setpoint at all — it is a
             // memoryless function of its own inlet pressure, recomputed every
             // solve (docs/DESIGN.md §3a fork 5). A loop pointed at one would write
             // a number the next solve overwrites.
-            NodeKind::ReliefValve { .. } => {
+            (_, NodeKind::ReliefValve { .. }) => {
                 return Err(SimError::Scenario(format!(
                     "control loop '{}' actuates '{}', a relief valve. Its opening is \
                      actuated by its own inlet pressure and is recomputed on every solve, \
@@ -572,15 +589,115 @@ fn build_controls(
                     def.name, def.actuator
                 )))
             }
-            _ => {
+            (MeasuredVariable::Level | MeasuredVariable::Pressure, NodeKind::Valve { .. }) => {
+                if def.max_duty_mw.is_some() {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' declares `max_duty_mw` on a valve actuator. That key \
+                         is a DUTY actuator's range — a cooler's — and a valve's opening is \
+                         already a fraction, so the number would be read by nothing \
+                         (docs/DESIGN.md §21 fork 3)",
+                        def.name
+                    )));
+                }
+                None
+            }
+            (MeasuredVariable::Temperature, NodeKind::Cooler { duty }) => {
+                let max_mw = require_keyed(
+                    def.max_duty_mw,
+                    &def.name,
+                    "max_duty_mw",
+                    "the cooler duty the loop's full output stands for",
+                )?;
+                if !max_mw.is_finite() || max_mw <= 0.0 {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' declares `max_duty_mw = {max_mw}`; the loop's \
+                         authority must be a finite duty above zero, since its output is a \
+                         fraction of it",
+                        def.name
+                    )));
+                }
+                let max = Watt(max_mw * 1e6);
+                // §21 fork 4, at load: a declared duty outside the loop's range is
+                // a position the loop could never have produced, and MANUAL
+                // tracking would report it as a fraction above 1.
+                if duty.value() > max.value() {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' actuates cooler '{}', whose declared duty {} MW is \
+                         above the loop's `max_duty_mw = {max_mw}`. The loop's output is a \
+                         fraction of that range, so a starting duty outside it is a position \
+                         the loop could never have produced (docs/DESIGN.md §21 fork 4)",
+                        def.name,
+                        def.actuator,
+                        duty.value() / 1e6
+                    )));
+                }
+                Some(max)
+            }
+            // **Refused with a physical reason and not ruled out**: a coolant
+            // valve is the real-world temperature actuator, but this engine's
+            // cooler is a fixed duty with no coolant side, so a valve could only
+            // move a temperature by changing a PROCESS flow — a different loop
+            // with a sign that has to be argued per plant.
+            (MeasuredVariable::Temperature, NodeKind::Valve { .. }) => {
                 return Err(SimError::Scenario(format!(
-                    "control loop '{}' actuates '{}', which is not a valve. A valve opening \
-                     is the only actuator M8.2 writes; pump speed, duty and the rest are \
-                     deferred with their own measurement paths (docs/DESIGN.md §10)",
+                    "control loop '{}' holds a temperature with valve '{}'. This engine has no \
+                     coolant stream — a cooler is a duty with no coolant side — so a valve can \
+                     move a temperature only by changing a PROCESS flow, whose sign depends \
+                     on the plant. Actuate a `cooler` instead (docs/DESIGN.md §21 fork 3)",
                     def.name, def.actuator
                 )))
             }
-        }
+            // Reverse acting: `u = clamp(K·e + b, 0, 1)` raises the output when
+            // the measurement rises, so the actuator's effect must be to LOWER
+            // the measurement. More firing raises a temperature. Mapping the duty
+            // as `(1 − u)·max` would make it run and is a negative gain in
+            // disguise, which E7's sentence forbids.
+            (MeasuredVariable::Temperature, NodeKind::Furnace { .. }) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a temperature with furnace '{}'. Raising a loop's \
+                     output must LOWER its measurement, and more firing raises it: that is \
+                     REVERSE action, which needs its own declaration rather than a sign and is \
+                     deferred as docs/DEFERRED.md E7 (docs/DESIGN.md §21 fork 2)",
+                    def.name, def.actuator
+                )))
+            }
+            (MeasuredVariable::Level, NodeKind::Cooler { .. }) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a level with cooler '{}'. A cooler moves nothing a \
+                     level loop measures: a cut's density is a constant in this engine, so a \
+                     tank's level does not depend on its temperature (docs/DESIGN.md §21 fork \
+                     3)",
+                    def.name, def.actuator
+                )))
+            }
+            // A SCOPE refusal, and the message must not claim more: a cooler DOES
+            // move a vessel's pressure (`P = m·R·T/(V·M̄)`), so the reason is that
+            // its effect runs through a temperature, not that it is inert.
+            (MeasuredVariable::Pressure, NodeKind::Cooler { .. }) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a pressure with cooler '{}'. A cooler does move a \
+                     vessel's pressure, but only THROUGH its temperature, which makes this a \
+                     cascade (docs/DEFERRED.md E2) wearing one loop's name. Refused as a scope \
+                     decision, not as physics (docs/DESIGN.md §21 fork 3)",
+                    def.name, def.actuator
+                )))
+            }
+            (MeasuredVariable::Level | MeasuredVariable::Pressure, _) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', which is not a valve. A level or pressure \
+                     loop writes a valve's opening; pump speed and the rest are deferred with \
+                     their own arguments (docs/DESIGN.md §21 fork 3)",
+                    def.name, def.actuator
+                )))
+            }
+            (MeasuredVariable::Temperature, _) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', which is not a cooler. A temperature loop \
+                     writes a cooler's duty (docs/DESIGN.md §21 fork 3)",
+                    def.name, def.actuator
+                )))
+            }
+        };
 
         if let Some((_, owner)) = claimed_actuators.iter().find(|(id, _)| *id == actuator) {
             return Err(SimError::Scenario(format!(
@@ -609,24 +726,55 @@ fn build_controls(
         // message — so by the project's own rule it is new work here rather than
         // existing coverage, and it is two refusals rather than one because
         // `setpoint_*` and `gain_per_*` are two different mistakes in a file.
+        //
+        // With three variables every loop has four foreign keys, so the refusal
+        // is a table walked in one order rather than a pair written per arm — the
+        // same four messages each arm used to write, and no arm able to forget
+        // one of the newer variable's keys.
+        for (present, key, belongs_to, instead) in [
+            (
+                def.setpoint_m.is_some(),
+                "setpoint_m",
+                MeasuredVariable::Level,
+                variable.setpoint_key(),
+            ),
+            (
+                def.gain_per_m.is_some(),
+                "gain_per_m",
+                MeasuredVariable::Level,
+                variable.gain_key(),
+            ),
+            (
+                def.setpoint_bar.is_some(),
+                "setpoint_bar",
+                MeasuredVariable::Pressure,
+                variable.setpoint_key(),
+            ),
+            (
+                def.gain_per_bar.is_some(),
+                "gain_per_bar",
+                MeasuredVariable::Pressure,
+                variable.gain_key(),
+            ),
+            (
+                def.setpoint_c.is_some(),
+                "setpoint_c",
+                MeasuredVariable::Temperature,
+                variable.setpoint_key(),
+            ),
+            (
+                def.gain_per_k.is_some(),
+                "gain_per_k",
+                MeasuredVariable::Temperature,
+                variable.gain_key(),
+            ),
+        ] {
+            if belongs_to != variable {
+                refuse_foreign_key(present, &def.name, key, belongs_to, variable, instead)?;
+            }
+        }
         let (setpoint, gain) = match variable {
             MeasuredVariable::Level => {
-                refuse_foreign_key(
-                    def.setpoint_bar.is_some(),
-                    &def.name,
-                    "setpoint_bar",
-                    MeasuredVariable::Pressure,
-                    variable,
-                    variable.setpoint_key(),
-                )?;
-                refuse_foreign_key(
-                    def.gain_per_bar.is_some(),
-                    &def.name,
-                    "gain_per_bar",
-                    MeasuredVariable::Pressure,
-                    variable,
-                    variable.gain_key(),
-                )?;
                 let setpoint = ControlledValue::Level {
                     m: Meter(require_keyed(
                         def.setpoint_m,
@@ -642,22 +790,6 @@ fn build_controls(
                 (setpoint, gain)
             }
             MeasuredVariable::Pressure => {
-                refuse_foreign_key(
-                    def.setpoint_m.is_some(),
-                    &def.name,
-                    "setpoint_m",
-                    MeasuredVariable::Level,
-                    variable,
-                    variable.setpoint_key(),
-                )?;
-                refuse_foreign_key(
-                    def.gain_per_m.is_some(),
-                    &def.name,
-                    "gain_per_m",
-                    MeasuredVariable::Level,
-                    variable,
-                    variable.gain_key(),
-                )?;
                 // **The pair.** `ControlledValue::magnitude` returns SI, so the
                 // error a controller differences is in Pascals and the gain must
                 // be per Pascal. The file declares both in bar; these two
@@ -676,6 +808,24 @@ fn build_controls(
                 let gain =
                     require_keyed(def.gain_per_bar, &def.name, variable.gain_key(), "the gain")?
                         / 1e5;
+                (setpoint, gain)
+            }
+            // **Not a pair, and that is the trap** (docs/DESIGN.md §21 fork 5).
+            // The setpoint is an absolute temperature and takes the °C → K
+            // OFFSET; the gain multiplies a temperature DIFFERENCE, and a
+            // difference of 1 °C is 1 K, so it takes nothing. The pressure arm's
+            // "convert both at one site" copied here would add 273.15 to the gain.
+            MeasuredVariable::Temperature => {
+                let setpoint = ControlledValue::Temperature {
+                    k: c_to_k(require_keyed(
+                        def.setpoint_c,
+                        &def.name,
+                        variable.setpoint_key(),
+                        "the loop's target",
+                    )?),
+                };
+                let gain =
+                    require_keyed(def.gain_per_k, &def.name, variable.gain_key(), "the gain")?;
                 (setpoint, gain)
             }
         };
@@ -773,17 +923,17 @@ fn build_controls(
             }
         };
 
-        let last_output = match &graph.node(actuator).kind {
-            NodeKind::Valve { opening, .. } => *opening,
-            // Unreachable: the kind was matched above and nothing since can have
-            // changed it.
-            _ => 0.0,
-        };
+        // Through the one reader the tick pass and the MANUAL→AUTO transfer use
+        // (docs/DESIGN.md §21, site 2). This used to be a match with a `_ => 0.0`
+        // arm commented "unreachable" — true while a valve was the only actuator,
+        // and a silent zero the moment a second kind was admitted.
+        let last_output = graph.actuator_position(actuator, max_duty)?;
 
         graph.add_control(ControlLoop {
             name: def.name.clone(),
             measurement_node,
             actuator,
+            max_duty,
             setpoint,
             mode,
             algorithm,

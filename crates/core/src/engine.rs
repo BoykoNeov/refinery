@@ -288,6 +288,44 @@ impl Engine {
             }
             Command::SetCoolerDuty { node, duty } => {
                 check_duty(duty, "cooler")?;
+                // A cooler a loop owns gets the valve's guard, and the reason is
+                // the same one: in AUTO the write survives until the top of the
+                // next tick and is then silently overwritten (docs/DESIGN.md §21,
+                // site 8). Before M17 no loop could own a cooler, so the guard was
+                // not owed.
+                //
+                // **The range refusal applies in EITHER mode** (§21 fork 4). In
+                // MANUAL a human may drive the duty — that is what MANUAL means —
+                // but not past the loop's declared authority: MANUAL tracking would
+                // then report a position above 1, and a MANUAL→AUTO transfer would
+                // back-calculate a memory from an output the loop could never have
+                // produced.
+                if let Some(owner) = self.graph.controls().iter().find(|c| c.actuator == node) {
+                    if owner.mode == ControlMode::Auto {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO: \
+                             its duty would be overwritten at the top of the next tick. Put the \
+                             loop in MANUAL first (`set_controller_mode`), or move the loop's \
+                             setpoint (`set_setpoint`)",
+                            self.graph.node(node).name,
+                            owner.name
+                        )));
+                    }
+                    if let Some(max) = owner.max_duty {
+                        if duty.value() > max.value() {
+                            return Err(SimError::InvalidCommand(format!(
+                                "cooler duty {} W on '{}' is above the {} W authority of control \
+                                 loop '{}', which owns it. The loop's output is a fraction of \
+                                 that range, so a duty outside it is a position the loop could \
+                                 never have produced and cannot transfer from",
+                                duty.value(),
+                                self.graph.node(node).name,
+                                max.value(),
+                                owner.name
+                            )));
+                        }
+                    }
+                }
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Cooler { duty: d } => {
                         *d = duty;
@@ -331,21 +369,18 @@ impl Engine {
                         control.measurement_node,
                         control.setpoint.variable(),
                     )?;
-                    let position = match &self.graph.node(control.actuator).kind {
-                        NodeKind::Valve { opening, .. } => *opening,
-                        // Rule 5's backstop, in `run_control_loops`' own shape:
-                        // the loader refuses a non-valve actuator, so this is
-                        // reachable only from a hand-built graph, and it says so
-                        // rather than seeding from an invented position.
-                        _ => {
-                            return Err(SimError::InvalidCommand(format!(
-                                "control loop '{}' actuates node '{}', which is not a valve, \
-                                 so there is no position to transfer from",
-                                control.name,
-                                self.graph.node(control.actuator).name
-                            )))
-                        }
-                    };
+                    // The SAME reader pass 1 uses (docs/DESIGN.md §21, sites 3
+                    // and 6): a transfer that seeded from one notion of position
+                    // while the tick ran on another would step the actuator.
+                    let position = self
+                        .graph
+                        .actuator_position(control.actuator, control.max_duty)
+                        .map_err(|e| {
+                            SimError::InvalidCommand(format!(
+                                "control loop '{}' has no position to transfer from: {e}",
+                                control.name
+                            ))
+                        })?;
                     Some((measurement, control.setpoint, position))
                 } else {
                     None
@@ -1333,24 +1368,19 @@ impl Engine {
                 control.measurement_node,
                 control.setpoint.variable(),
             )?;
-            let position = match &self.graph.node(control.actuator).kind {
-                NodeKind::Valve { opening, .. } => *opening,
-                // Rule 5's backstop: the loader refuses a non-valve actuator, so
-                // this is reachable only from a hand-built graph, and it says so
-                // rather than inventing a position.
-                _ => {
-                    return Err(SimError::Scenario(format!(
-                        "control loop '{}' actuates node '{}', which is not a valve",
-                        control.name,
-                        self.graph.node(control.actuator).name
-                    )))
-                }
-            };
+            // One owner of "where the actuator stands", shared with the loader's
+            // seed and the MANUAL→AUTO transfer. Its error arm is rule 5's
+            // backstop: the loader builds only valve-without-range and
+            // cooler-with-range, so it is reachable only from a hand-built graph.
+            let position = self
+                .graph
+                .actuator_position(control.actuator, control.max_duty)?;
             sampled.push((measurement, position));
         }
 
         // Pass 2 — run each controller and record what it wants written.
-        let mut writes: Vec<Option<(NodeId, f64)>> = Vec::with_capacity(sampled.len());
+        let mut writes: Vec<Option<(NodeId, Option<Watt>, f64)>> =
+            Vec::with_capacity(sampled.len());
         for (control, (measurement, position)) in self.graph.controls_mut().iter_mut().zip(sampled)
         {
             control.last_measurement = measurement;
@@ -1372,7 +1402,7 @@ impl Engine {
                         )));
                     }
                     control.last_output = output;
-                    writes.push(Some((control.actuator, output)));
+                    writes.push(Some((control.actuator, control.max_duty, output)));
                 }
                 // MANUAL writes nothing and TRACKS: the faceplate reports the
                 // actuator's real opening, which is what a DCS shows and what
@@ -1387,22 +1417,15 @@ impl Engine {
             }
         }
 
-        // Pass 3 — write the actuators.
-        for (actuator, opening) in writes.into_iter().flatten() {
-            match &mut self.graph.node_mut(actuator).kind {
-                NodeKind::Valve { opening: o, .. } => *o = opening,
-                // Unreachable: pass 1 already refused a non-valve actuator on
-                // this same id, and nothing between the two passes can change a
-                // node's kind. Left as an `Err` rather than an `unwrap` because
-                // rule 5 is about what the engine may do, not about what it can
-                // prove (`SetValveOpening`'s own arm has the same shape).
-                _ => {
-                    return Err(SimError::Scenario(format!(
-                        "control loop actuator '{}' is not a valve",
-                        self.graph.node(actuator).name
-                    )))
-                }
-            }
+        // Pass 3 — write the actuators, through the inverse of pass 1's reader:
+        // a valve's opening is the output itself, a cooler's duty is
+        // `output · max_duty`. Its error arm is unreachable — pass 1 already read
+        // this same pairing, and nothing between the two passes can change a
+        // node's kind — and is an `Err` rather than an `unwrap` because rule 5 is
+        // about what the engine may do, not about what it can prove.
+        for (actuator, max_duty, output) in writes.into_iter().flatten() {
+            self.graph
+                .set_actuator_position(actuator, max_duty, output)?;
         }
         Ok(())
     }

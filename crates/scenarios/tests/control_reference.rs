@@ -1001,10 +1001,12 @@ initial_output = 0.2
             // pressure loop on a tank is now refused for a measured reason of its
             // own (the density cancels out of `P_atm + ρ·g·h`, so it is a level
             // loop in a worse unit), which is asserted in
-            // `pressure_control_reference.rs`. `"temperature"` is the deferral
-            // that is still genuinely unknown to the loader.
+            // `pressure_control_reference.rs`. M17 then expired `"temperature"` the
+            // same way (a temperature loop pointed at this plant's valve is now
+            // refused for having no coolant stream), so the stand-in is `"flow"`,
+            // the deferral still genuinely unknown to the loader.
             "an unknown measured variable",
-            PLANT.replace(r#"variable = "level""#, r#"variable = "temperature""#),
+            PLANT.replace(r#"variable = "level""#, r#"variable = "flow""#),
             "unknown variable",
         ),
         (

@@ -1,0 +1,164 @@
+# M17.1 regulation demo: a tank of hot water held at 60 °C by a PI loop on the
+# cooler that feeds it — the project's first temperature loop, and its first loop
+# whose actuator is not a valve.
+#
+#   hot_feed (80 °C) -> chiller -> hold_tank -> drain_valve -> rundown
+#
+# **No pair file, and this says so rather than inventing one.** Every earlier
+# regulation demo is meant to be diffed against a plant without the loop
+# (`tank_level_control` against `tank_pump_valve`, `vessel_pressure_control`
+# against `relief_blowdown`). The only shipped plant with a cooler,
+# `cooler_chiller.toml`, has no holdup, so a diff against it would be the whole
+# file. The counterfactual lives in `crates/scenarios/tests/temperature_control_demo.rs`
+# instead: the same file in `mode = "manual"`.
+#
+# **A tank's temperature is STORED, and that is what makes this loop buildable.**
+# docs/DESIGN.md §10 and §12 said a temperature "really is" a solved quantity,
+# absent before the first tick. That is false for a holdup: `TankState::temperature`
+# is on the graph, exactly the declared `temperature_c` at load, so the loop has a
+# real measurement at tick 0 while the snapshot's `temperature_k` for the same
+# tank is still NaN. It is true of a zero-volume node — the chiller's own outlet —
+# which is why a loop measuring THAT is refused and this one measures the tank
+# (docs/DESIGN.md §21).
+#
+# **The actuator is on the tank's INLET, and that is correct.** The error is
+# `measurement - setpoint` and the output is `clamp(K*e + b, 0, 1)`, so a rising
+# temperature raises the output. M8.4 wrote "a level loop must actuate a drain" and
+# M10 widened it to "an outlet of the measured holdup"; an inlet cooler falsifies
+# that wording and works. What the sign convention forces is only this: **raising
+# the output must LOWER the measurement.** More cooling lowers a temperature. A
+# furnace would raise it, which is reverse action (docs/DEFERRED.md E7) and is
+# refused at load by name.
+#
+# **The setpoint is in °C and the gain is per K, and only the setpoint converts.**
+# `setpoint_c` takes the `+ 273.15` offset every `temperature_c` takes.
+# `gain_per_k` takes nothing: a gain multiplies a temperature DIFFERENCE, and 1 °C
+# of difference is 1 K. This is the inverse of the pressure demo's trap, where the
+# setpoint and the gain both convert by 1e5 — copying that pattern here would add
+# 273.15 to the gain.
+#
+# **The loop's output is a fraction of `max_duty_mw`, which lives on the LOOP.**
+# `duty = u * 2 MW`. A cooler's own fields are published on every snapshot, so a
+# range on the cooler would have moved `cooler_chiller`'s bytes; the range is the
+# loop's statement of its own authority and nothing else reads it.
+#
+# **The operating point is interior, by design.** With the drain at 0.5 the level
+# settles at 4.968 m with 14.365 kg/s through, and each MW of cooling takes
+# 16.64 K off the inflow — `1/(m_dot*cp)`, linear to four figures. Holding 60 °C
+# needs 1.202 MW, which is **u = 0.601092** of a 2 MW range, settled over 20 000
+# ticks. The tank starts at that settled level so that only the temperature moves.
+#
+# **The tank starts at the feed's 80 °C, and the cooler at 0.5 MW, both on
+# purpose.** 80 °C gives the loop a real 20 K pull-down to make instead of
+# starting at the answer. 0.5 MW (u = 0.25, declared equal to `initial_output` so
+# the loop starts without stepping its actuator) is well short of the 1.202 MW
+# the setpoint needs, so the MANUAL twin settles somewhere visibly wrong — 71.71 °C
+# — rather than at 60.04 °C, which is where 1.2 MW would have left it and which no
+# gate could tell apart from holding.
+#
+# **Measured, 6 000 ticks:** the tank is within 0.06 K of 60 °C from tick ~2 400,
+# overshoots to 59.972 °C at tick ~3 070, and reads 60.000032 °C at tick 6 000.
+# The output rises to 0.809 at tick ~640 and **never reaches either clamp**.
+# That is a choice: at `integral_time_s = 300` or below the startup pull-down
+# drives the cooler to full duty, which would exercise the anti-windup arm from
+# the shipped file — as a transient this file invented rather than one a plant
+# asked for. The arm is reached instead by a command, in the demo test: a step to
+# 45 °C, below the 46.73 °C the inflow reaches at the full 2 MW, pins the output
+# at 1 for as long as the setpoint stands.
+#
+# **The gain's upper bound is far away.** 50 per K still settles; 100 does not.
+# The one-bar-step bound the pressure demo carried has an analogue here — a 1 K
+# setpoint step moves the output by `gain_per_k` — and at the shipped 0.1 against
+# a settled 0.601 it is nowhere near either clamp.
+#
+# **What this plant does not survive, named rather than refused** (docs/DESIGN.md
+# §21 fork 6): the cooler has no coolant floor, so a saturated loop on a feed
+# throttled below ~1.4 kg/s would cool the stream toward absolute zero and fail
+# the tick; water here never freezes, because there is no solid phase.
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_temperature_control.toml --ticks 6000
+
+[meta]
+name = "tank_temperature_control"
+description = "A tank of hot water held at 60 °C by a PI loop on the cooler that feeds it."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.hot_feed]
+type = "source"
+pressure_bar = 1.6
+temperature_c = 80.0
+
+# The actuator. Its declared duty is the loop's starting position: 0.5 MW of a
+# 2 MW range is u = 0.25, and `initial_output` below says the same number.
+[nodes.chiller]
+type = "cooler"
+duty_mw = 0.5
+
+# The node the loop MEASURES. Its temperature is stored on the graph and is
+# exactly 80 °C at tick 0; the level is the settled 4.968 m, so only the
+# temperature has anywhere to go.
+[nodes.hold_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.968
+temperature_c = 80.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 150.0
+opening = 0.5
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "hot_feed"
+to = "chiller"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "cooled_line"
+from = "chiller"
+to = "hold_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "hold_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# `initial_output` is the loop's MEMORY, not a bias (docs/DESIGN.md §10 fork 5):
+# the integral term is back-calculated from it at load, so the first `update`
+# returns exactly 0.25 whatever the gain is.
+[[controls]]
+name = "tank_temperature"
+measurement = { node = "hold_tank", variable = "temperature" }
+actuator = "chiller"
+algorithm = "pi"
+mode = "auto"
+setpoint_c = 60.0
+gain_per_k = 0.1
+integral_time_s = 600.0
+initial_output = 0.25
+max_duty_mw = 2.0

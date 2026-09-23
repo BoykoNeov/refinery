@@ -927,9 +927,11 @@ pub trait Controller: Send + std::fmt::Debug {
     /// reconstructs from the same two reported numbers.
     ///
     /// The return is a **dimensionless** actuator position in `[0, 1]`, which is
-    /// what `Command::SetValveOpening` already validates a valve opening to be —
-    /// it gains a unit question only when an actuator that is not a valve
-    /// un-defers. Clamping to that interval is the implementation's job, because
+    /// what `Command::SetValveOpening` already validates a valve opening to be.
+    /// **The unit question this sentence used to defer arrived in M17** (docs/DESIGN.md
+    /// §21): a cooler's actuated quantity is a duty in watts, and the answer is that
+    /// the position stays a fraction — of the LOOP's declared `max_duty` — mapped
+    /// to watts by `PlantGraph::set_actuator_position`, never by an impl. Clamping to that interval is the implementation's job, because
     /// saturation is exactly what M8.3's anti-windup has to know about; the engine
     /// re-checks the range and refuses rather than trusting it.
     ///

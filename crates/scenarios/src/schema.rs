@@ -559,8 +559,9 @@ pub struct ControlDef {
     pub name: String,
     /// Which node's state this loop watches, and which of its variables.
     pub measurement: MeasurementDef,
-    /// Name of the node this loop writes. A `valve`; a `relief_valve` is refused
-    /// with its own reason.
+    /// Name of the node this loop writes. A `valve` on a level or pressure loop,
+    /// a `cooler` on a temperature loop (M17, docs/DESIGN.md §21 fork 3); every
+    /// other pairing is refused with its own reason, and a `relief_valve` always.
     pub actuator: String,
     /// `"p"` (M8.2) or `"pi"` (M8.3). Each has its own required tuning keys, and
     /// each refuses the other's — the two-directional refusal the separation
@@ -625,6 +626,37 @@ pub struct ControlDef {
     /// output against a hand-computed `K·e` rather than trusting either.
     #[serde(default)]
     pub gain_per_bar: Option<f64>,
+    /// The target, in °C. **Required for `variable = "temperature"` and refused
+    /// on any other variable** (M17, docs/DESIGN.md §21 fork 5).
+    ///
+    /// °C because every temperature the format declares is (`temperature_c`,
+    /// `tb_c`, `up_to_c`, `t_set_c`), converted to kelvin by `+ 273.15` at the
+    /// loader — an OFFSET, which is why `gain_per_k` beside it converts by nothing.
+    #[serde(default)]
+    pub setpoint_c: Option<f64>,
+    /// Proportional gain, per KELVIN of temperature error. **Temperature loops
+    /// only.**
+    ///
+    /// **Per K beside a setpoint in °C, and that is the slice's named trap,
+    /// inverted from `gain_per_bar`'s** (docs/DESIGN.md §21 fork 5). A gain
+    /// multiplies a temperature DIFFERENCE, and 1 °C of difference is 1 K, so
+    /// this key is passed through untouched while the setpoint gains 273.15.
+    /// Copying the pressure pair's "convert both at one site" would add the offset
+    /// to the gain — 0.05 per K becoming 273.2 per K. The key says `_k` so its
+    /// name carries the answer, as `smearing_k` does.
+    #[serde(default)]
+    pub gain_per_k: Option<f64>,
+    /// The cooler duty, in MW, that the loop's full output stands for — the
+    /// loop's authority over a DUTY actuator. **Required when the actuator is a
+    /// `cooler` and refused when it is a `valve`**, in both directions
+    /// (docs/DESIGN.md §21 fork 3), the `density_kg_per_m3` rule.
+    ///
+    /// On the loop rather than on the cooler, because the cooler's own fields are
+    /// published on every snapshot and this number is the loop's statement of its
+    /// range, read by nothing else. Must be finite and > 0; the cooler's declared
+    /// `duty_mw` must lie within `[0, max_duty_mw]` (§21 fork 4).
+    #[serde(default)]
+    pub max_duty_mw: Option<f64>,
     /// Integral time [s] — the ISA reset time, the interval in which the integral
     /// term alone repeats the proportional term's contribution.
     ///
@@ -671,9 +703,10 @@ pub struct ControlDef {
 #[serde(deny_unknown_fields)]
 pub struct MeasurementDef {
     pub node: String,
-    /// `"level"` (M8.2, a `tank`) or `"pressure"` (M10, a `vessel`). Temperature
-    /// and flow stay deferred per-variable — see `MeasuredVariable`. Which key
-    /// carries the setpoint and which carries the gain both follow from this.
+    /// `"level"` (M8.2, a `tank`), `"pressure"` (M10, a `vessel`) or
+    /// `"temperature"` (M17, a `tank` or a `vessel`). Flow stays deferred — see
+    /// `MeasuredVariable`. Which key carries the setpoint and which carries the
+    /// gain both follow from this.
     pub variable: String,
 }
 

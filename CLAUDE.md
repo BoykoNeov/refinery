@@ -87,6 +87,7 @@ cargo run -p refinery-cli -- run scenarios/vessel_pressure_control.toml --ticks 
 cargo run -p refinery-cli -- run scenarios/crude_column_boiloff.toml --ticks 6000      # the M12.1 boiling tanks
 cargo run -p refinery-cli -- run scenarios/crude_column_recovery.toml --ticks 6000     # the M14.1 recovery drum
 cargo run -p refinery-cli -- run scenarios/fired_gas_drum.toml --ticks 6000        # the M16.2 shaped heat capacity
+cargo run -p refinery-cli -- run scenarios/tank_temperature_control.toml --ticks 6000 # the M17.1 temperature loop
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -186,7 +187,8 @@ See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 `docs/DEFERRED.md` row E1b's temperature half.** Taken on a DECISION (the user's,
 on gameplay grounds); nothing was past its trigger. **M17.0 landed 2026-09-23** —
 the design note, DESIGN §21, seven forks, eight gates, eight mutations, no code.
-**M17.1, the building slice, is next.** Four things to know first.
+**M17.1 landed 2026-09-23** and built it — see the M17.1 paragraph below, and
+§21's "Corrections from building it". Four things M17.0 found first.
 
 **The deferral's reason was false — the fourth recurrence of stored-versus-solved.**
 "A temperature really is absent before the first tick" (said below in the M10 box,
@@ -208,6 +210,24 @@ an AUTO guard and a range refusal on `SetCoolerDuty`. **Unit trap, mirrored from
 M10**: `setpoint_c` takes `+273.15`, `gain_per_k` takes NOTHING (a °C difference
 is a K difference, `smearing_k`'s precedent). Demo: `tank_temperature_control.toml`,
 hot water → cooler → tank → drain, 60 °C at ~60% of a 2 MW cooler.
+
+**What M17.1 built.** `variable = "temperature"` on a `tank` or `vessel`, with
+`setpoint_c` (+273.15), `gain_per_k` (converted by nothing) and `max_duty_mw` (on
+the loop; required on a cooler, refused on a valve). The actuator side has ONE
+owner, `PlantGraph::actuator_position` / `set_actuator_position`: a valve's
+opening read bare, a cooler's `duty / max_duty`. The loader's seed, passes 1 and 3
+and the MANUAL→AUTO transfer all go through it. `SetCoolerDuty` is refused under a
+loop in AUTO, and above the loop's range in either mode. The pairing table
+refuses every other actuator per variable with its own reason, including the
+furnace, which points at E7. **All twenty pre-M17 plants are byte-identical on
+both fidelities with no iteration count moved**, the two loop plants included.
+The demo declares 0.5 MW (u = 0.25), not the 1.2 MW the note sized, because at
+1.2 MW the MANUAL twin parks at 60.04 °C and no gate could tell it from holding.
+It parks at 71.71 °C instead. The shipped tuning never clamps; the anti-windup arm
+is reached by a 45 °C setpoint command and by the vessel fixture's own startup.
+All nine mutations are caught, and the one the note predicted the demo would miss
+(MANUAL tracking the raw duty) is caught by the demo's own MANUAL twin.
+`scenarios/` holds **twenty-one** files.
 
 **M16 is CLOSED (2026-09-08), and its scope was `docs/DEFERRED.md` row B15 —
 one constant heat capacity per cut.** Three slices: **M16.0** (DESIGN §18) a
@@ -1428,11 +1448,12 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly two of the twenty files in `scenarios/` declare a `[[controls]]`
-table** — `tank_level_control.toml` (M8.4, a level) and
-`vessel_pressure_control.toml` (M10.1, a pressure). **The other seventeen were
-written before M8 (thirteen of them) or after it without a loop, and ARE the
-regression anchor**; adding a loop to one of them
+**Exactly three of the twenty-one files in `scenarios/` declare a `[[controls]]`
+table** — `tank_level_control.toml` (M8.4, a level),
+`vessel_pressure_control.toml` (M10.1, a pressure) and
+`tank_temperature_control.toml` (M17.1, a temperature). **The other eighteen
+were written before M8 (thirteen of them) or after it without a loop, and ARE
+the regression anchor**; adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file
 rather than wiring one into an existing plant. Every other plant that carries a
 loop is an inline test fixture for the same reason.

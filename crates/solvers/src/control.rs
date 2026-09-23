@@ -32,12 +32,16 @@ use refinery_core::units::Seconds;
 /// correctly.
 ///
 /// **Direct acting, and the sign lives in `ControlledValue::error`, not here.**
-/// Positive error means above setpoint, and a positive gain opens the actuator —
-/// correct for a valve that DRAINS the measured tank. A loop whose actuator fills
-/// the tank would need reverse action, which is not expressible today and is not
-/// silently available either: a negative gain is refused at load, because the one
-/// wiring this slice builds is the draining one and a reverse-acting loop needs
-/// its own declaration rather than a sign.
+/// Positive error means above setpoint, and a positive gain raises the output.
+/// What that forces on a plant is one rule, worded here for the third time
+/// (docs/DESIGN.md §21 fork 2): **raising the output must LOWER the
+/// measurement**. A drain, a vent and an inlet cooler satisfy it; a fill valve, a
+/// make-up valve and a furnace violate it. (M8.4 wrote "a level loop must actuate
+/// a drain" and M10 "an outlet of the measured holdup" — an inlet cooler
+/// falsifies the second wording and is correct.) A loop that violates it would
+/// need reverse action, which is not expressible today and is not silently
+/// available either: a negative gain is refused at load, and a reverse-acting
+/// loop needs its own declaration rather than a sign (docs/DEFERRED.md E7).
 #[derive(Debug, Clone, Copy)]
 pub struct ProportionalController {
     /// Proportional gain, in reciprocal units of the measured variable — `1/m`

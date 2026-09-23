@@ -6059,3 +6059,38 @@ both at one site" would add the offset to the gain too, turning 0.05 per K into
 The demo is `scenarios/tank_temperature_control.toml` — hot water → cooler →
 tank → drain — sized on the probe so 60 °C sits at 60% of a 2 MW cooler, interior.
 **M17.1 is the building slice.**
+
+### M17.1 — The temperature loop — **LANDED** 2026-09-23
+
+Built as DESIGN §21 specifies. The corrections are in §21's "Corrections from
+building it". A tank or vessel temperature can now be regulated by a PI or P loop
+on a cooler: `variable = "temperature"`, `setpoint_c`, `gain_per_k` and
+`max_duty_mw`. The demo is `scenarios/tank_temperature_control.toml`. Five things
+to know.
+
+**The actuator side has one owner now.** `PlantGraph::actuator_position` and
+`set_actuator_position` are the only readers and writers of "where the actuator
+stands, as a fraction of its authority": a valve's opening read bare, a cooler's
+`duty / max_duty`. The loader's seed, the tick's passes 1 and 3, and the
+MANUAL→AUTO transfer all go through them. **All twenty pre-M17 plants are
+byte-identical on both fidelities, with no iteration count moved**, including the
+two loop plants that now route through the owner.
+
+**The demo declares 0.5 MW, not the 1.2 MW the note sized.** At 1.2 MW the
+MANUAL twin settles at 60.04 °C, indistinguishable from holding. At 0.5 MW it
+parks at 71.71 °C, while the loop holds 60.000032 °C at tick 6 000 and settles at
+u = 0.601092.
+
+**The anti-windup arm is reached twice, and neither time by a tuning that invents
+a startup transient.** The shipped tuning (0.1 per K, 600 s) peaks at 0.809. The
+arm is reached by a 45 °C setpoint command, below the 46.73 °C floor at full
+duty, and by the vessel fixture's own startup, where compression heats the
+receiver as it fills.
+
+**The mutation the note predicted the demo would miss, the demo caught.** The
+demo carries its MANUAL twin, which asserts its faceplate. All nine mutations
+were caught. The one the note listed first is not expressible, for M10.1's reason
+(`measure` cannot see `NodeStates`).
+
+**`scenarios/` holds twenty-one files; three declare `[[controls]]`.** From here,
+"runs byte-identical" means post-M17.1 identical.
