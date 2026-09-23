@@ -9,7 +9,7 @@
 //! `PiController::back_calculate` and reached from both directions.
 
 use refinery_core::error::SimError;
-use refinery_core::graph::ControlledValue;
+use refinery_core::graph::{ControlAction, ControlledValue};
 use refinery_core::traits::Controller;
 use refinery_core::units::Seconds;
 
@@ -31,17 +31,17 @@ use refinery_core::units::Seconds;
 /// open the valve enough to pass the inflow. That is a proportional loop working
 /// correctly.
 ///
-/// **Direct acting, and the sign lives in `ControlledValue::error`, not here.**
-/// Positive error means above setpoint, and a positive gain raises the output.
-/// What that forces on a plant is one rule, worded here for the third time
-/// (docs/DESIGN.md §21 fork 2): **raising the output must LOWER the
-/// measurement**. A drain, a vent and an inlet cooler satisfy it; a fill valve, a
-/// make-up valve and a furnace violate it. (M8.4 wrote "a level loop must actuate
-/// a drain" and M10 "an outlet of the measured holdup" — an inlet cooler
-/// falsifies the second wording and is correct.) A loop that violates it would
-/// need reverse action, which is not expressible today and is not silently
-/// available either: a negative gain is refused at load, and a reverse-acting
-/// loop needs its own declaration rather than a sign (docs/DEFERRED.md E7).
+/// **Either direction, and the sign lives in `ControlledValue::error`, not
+/// here.** A positive error raises the output, and the LOOP's declared
+/// `ControlAction` says what a positive error is. The rule, in its fourth wording
+/// (docs/DESIGN.md §22): **a DIRECT loop's output must lower its measurement as it
+/// rises — a drain, a vent, a cooler — and a REVERSE loop's must raise it — a
+/// furnace.** (M8.4 wrote "a level loop must actuate a drain", M10 "an outlet of
+/// the measured holdup", §21 "raising the output must lower the measurement";
+/// each was a special case of the direct half.) This impl sees the action only as
+/// an argument it hands straight to `error`, and a negative gain stays refused:
+/// it would be a second way to say "reverse", and one the loader cannot check
+/// against the actuator.
 #[derive(Debug, Clone, Copy)]
 pub struct ProportionalController {
     /// Proportional gain, in reciprocal units of the measured variable — `1/m`
@@ -61,8 +61,10 @@ impl ProportionalController {
         if !gain.is_finite() || gain <= 0.0 {
             return Err(SimError::Scenario(format!(
                 "proportional gain must be finite and > 0, got {gain}. A zero gain is a \
-                 loop that does nothing, and a negative one is reverse action, which this \
-                 fidelity does not express — see `ProportionalController`"
+                 loop that does nothing, and a negative one is reverse action written as a \
+                 sign. Reverse action is DECLARED on the loop (`action = \"reverse\"`), and \
+                 a second way to say it would be one the loader cannot check — see \
+                 `ControlAction`"
             )));
         }
         Ok(Self { gain })
@@ -78,12 +80,13 @@ impl Controller for ProportionalController {
         &mut self,
         measurement: ControlledValue,
         setpoint: ControlledValue,
+        action: ControlAction,
         _dt: Seconds,
     ) -> Result<f64, SimError> {
         // The error term comes from `core`, which owns the sign convention. An
         // impl differencing the two itself would be free to disagree with the
         // value a snapshot reader reconstructs from the same two reported numbers.
-        let error = ControlledValue::error(measurement, setpoint);
+        let error = ControlledValue::error(measurement, setpoint, action);
         if !error.is_finite() {
             return Err(SimError::NonFiniteState {
                 location: format!(
@@ -117,6 +120,7 @@ impl Controller for ProportionalController {
         _output: f64,
         _measurement: ControlledValue,
         _setpoint: ControlledValue,
+        _action: ControlAction,
     ) -> Result<(), SimError> {
         Ok(())
     }
@@ -165,9 +169,12 @@ impl Controller for ProportionalController {
 /// undershoot after the load is removed — which is what gate 4 measures, on a
 /// plant built to saturate.
 ///
-/// Direct acting, like [`ProportionalController`] and for the same reason: the
-/// sign convention lives in `ControlledValue::error`, and a reverse-acting loop
-/// needs its own declaration rather than a negative gain.
+/// Either direction, like [`ProportionalController`] and by the same route: the
+/// sign lives in `ControlledValue::error`, and the loop's declared
+/// `ControlAction` is passed to it by all three writers of the memory — the
+/// load-time seed in `new`, the MANUAL→AUTO seed, and `update` (whose clamp
+/// branch back-calculates with the same signed error it just used). A seed taken
+/// against the other sign would step the first output by `2·K·e`.
 ///
 /// **Not `Clone` and not `Copy`, unlike [`ProportionalController`]**, and the
 /// asymmetry is M8.2's correction 5 one level down. That correction took `Clone`
@@ -222,12 +229,15 @@ impl PiController {
         initial_output: f64,
         measurement: ControlledValue,
         setpoint: ControlledValue,
+        action: ControlAction,
     ) -> Result<Self, SimError> {
         if !gain.is_finite() || gain <= 0.0 {
             return Err(SimError::Scenario(format!(
                 "proportional gain must be finite and > 0, got {gain}. A zero gain is a \
-                 loop that does nothing, and a negative one is reverse action, which this \
-                 fidelity does not express — see `ProportionalController`"
+                 loop that does nothing, and a negative one is reverse action written as a \
+                 sign. Reverse action is DECLARED on the loop (`action = \"reverse\"`), and \
+                 a second way to say it would be one the loader cannot check — see \
+                 `ControlAction`"
             )));
         }
         if !integral_time_s.is_finite() || integral_time_s <= 0.0 {
@@ -242,7 +252,7 @@ impl PiController {
             integral_time_s,
             integral: 0.0,
         };
-        controller.seed_from_output(initial_output, measurement, setpoint)?;
+        controller.seed_from_output(initial_output, measurement, setpoint, action)?;
         Ok(controller)
     }
 
@@ -268,11 +278,12 @@ impl Controller for PiController {
         &mut self,
         measurement: ControlledValue,
         setpoint: ControlledValue,
+        action: ControlAction,
         dt: Seconds,
     ) -> Result<f64, SimError> {
         // The error term comes from `core`, which owns the sign convention — see
         // `ProportionalController::update` for why no impl computes its own.
-        let error = ControlledValue::error(measurement, setpoint);
+        let error = ControlledValue::error(measurement, setpoint, action);
         if !error.is_finite() {
             return Err(SimError::NonFiniteState {
                 location: format!(
@@ -324,6 +335,7 @@ impl Controller for PiController {
         output: f64,
         measurement: ControlledValue,
         setpoint: ControlledValue,
+        action: ControlAction,
     ) -> Result<(), SimError> {
         if !output.is_finite() || !(0.0..=1.0).contains(&output) {
             return Err(SimError::Scenario(format!(
@@ -332,7 +344,7 @@ impl Controller for PiController {
                  already enforces on the same quantity"
             )));
         }
-        let error = ControlledValue::error(measurement, setpoint);
+        let error = ControlledValue::error(measurement, setpoint, action);
         if !error.is_finite() {
             return Err(SimError::NonFiniteState {
                 location: format!(

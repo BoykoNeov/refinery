@@ -32,7 +32,7 @@
 //! is a fixture, and the files in `scenarios/` are the regression anchor. The
 //! wired demo lives in `pressure_control_demo.rs`.
 
-use refinery_core::graph::{ControlledValue, LoopId, MeasuredVariable, NodeId};
+use refinery_core::graph::{ControlAction, ControlledValue, LoopId, MeasuredVariable, NodeId};
 use refinery_core::snapshot::Command;
 use refinery_core::units::{Meter, Pascal};
 use refinery_core::Engine;
@@ -819,6 +819,7 @@ fn a_setpoint_of_the_wrong_variable_is_refused_and_would_not_silently_subtract()
     let crossed = ControlledValue::error(
         ControlledValue::Pressure { pa: Pascal(5.0e5) },
         ControlledValue::Level { m: Meter(4.0) },
+        ControlAction::Direct,
     );
     assert!(
         crossed.is_nan(),

@@ -7,7 +7,9 @@
 
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
-use crate::graph::{CascadeSpec, ColumnDraw, ControlledValue, EdgeId, NodeId, PlantGraph};
+use crate::graph::{
+    CascadeSpec, ColumnDraw, ControlAction, ControlledValue, EdgeId, NodeId, PlantGraph,
+};
 use crate::units::{JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -920,11 +922,17 @@ pub trait Controller: Send + std::fmt::Debug {
     /// them. **An impl may assume the pair matches; it may not assume the TYPE is
     /// what guarantees it**, and neither guard may be deleted as redundant.
     ///
-    /// **The error term is `ControlledValue::error(measurement, setpoint)` and no
-    /// implementation may compute its own.** That function owns the sign
-    /// convention (positive = above setpoint), and an impl differencing the two
-    /// itself would be free to disagree with the value a snapshot reader
-    /// reconstructs from the same two reported numbers.
+    /// **The error term is `ControlledValue::error(measurement, setpoint, action)`
+    /// and no implementation may compute its own.** That function owns the sign
+    /// convention — a positive error raises the output, which is "above setpoint"
+    /// on a DIRECT loop and "below setpoint" on a REVERSE one (M18,
+    /// docs/DESIGN.md §22) — and an impl differencing the two itself would be
+    /// free to disagree with the value a snapshot reader reconstructs from the
+    /// three reported values.
+    ///
+    /// `action` is the LOOP's, passed in rather than held by the impl, so there
+    /// is one owner of a loop's direction and the snapshot publishes the same one
+    /// the arithmetic used (§22 fork 1 (c)).
     ///
     /// The return is a **dimensionless** actuator position in `[0, 1]`, which is
     /// what `Command::SetValveOpening` already validates a valve opening to be.
@@ -948,6 +956,7 @@ pub trait Controller: Send + std::fmt::Debug {
         &mut self,
         measurement: ControlledValue,
         setpoint: ControlledValue,
+        action: ControlAction,
         dt: Seconds,
     ) -> Result<f64, SimError>;
 
@@ -970,7 +979,10 @@ pub trait Controller: Send + std::fmt::Debug {
     /// the caller must read the measurement at the moment of transfer rather than
     /// reuse the loop's one-tick-old `last_measurement` — otherwise the seed is
     /// computed against a different error than it is spent against, and the
-    /// transfer is bumpless only to the extent the level stopped moving.
+    /// transfer is bumpless only to the extent the level stopped moving. And
+    /// `action` must be the one `update` will be called with, or the memory is
+    /// back-calculated against an error of the opposite sign and the first
+    /// output steps by `2·K·e`.
     ///
     /// A stateless controller implements this as an explicit no-op. There is
     /// deliberately **no default body**: an impl with memory that forgot to seed
@@ -986,5 +998,6 @@ pub trait Controller: Send + std::fmt::Debug {
         output: f64,
         measurement: ControlledValue,
         setpoint: ControlledValue,
+        action: ControlAction,
     ) -> Result<(), SimError>;
 }

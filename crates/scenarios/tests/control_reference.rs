@@ -1030,9 +1030,12 @@ initial_output = 0.2
             "finite and > 0",
         ),
         // Same branch as the zero gain, and gated separately because the type's
-        // doc makes a stronger claim than the branch does: reverse action is
-        // refused as a CONCEPT, not merely as an out-of-range number. A reader
-        // relying on that sentence needs a test that checks it.
+        // doc makes a stronger claim than the branch does. Before M18 that claim
+        // was "reverse action is refused as a concept"; since M18 reverse action
+        // is DECLARED on the loop (`action = "reverse"`), and a negative gain is
+        // refused as a second, uncheckable way of saying it (docs/DESIGN.md §22
+        // fork 1). The needle survived the change of reason, which is why the
+        // reason is also asserted in `reverse_action_reference.rs`.
         (
             "a reverse-acting gain",
             PLANT.replace("gain_per_m = 0.5", "gain_per_m = -0.5"),

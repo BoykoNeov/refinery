@@ -1,0 +1,146 @@
+# M18.1 regulation demo: a tank of cool water held at 60 °C by a PI loop on the
+# furnace that feeds it — the project's first REVERSE-acting loop.
+#
+#   cool_feed (40 °C) -> heater -> hold_tank -> drain_valve -> rundown
+#
+# **This file is `tank_temperature_control.toml` mirrored, and is meant to be
+# diffed against it.** Same hydraulics, same tank, same tuning, same range. What
+# differs is what reverse action needs: the feed at 40 °C instead of 80 °C, a
+# `furnace` where the cooler was, the tank starting at the feed's 40 °C, and
+# `action = "reverse"` on the loop — plus three names (`cool_feed`, `heater`,
+# `heated_line`), because a furnace called `chiller` would be a lie a reader has
+# to see through.
+#
+# **Reverse action is DECLARED, and the loader checks it** (docs/DESIGN.md §22).
+# A positive error always raises the output. On a direct loop — every loop before
+# this one — a positive error means "above setpoint", so the output must LOWER the
+# measurement as it rises: a drain, a vent, a cooler. More firing RAISES a
+# temperature, so a furnace loop is reverse acting: its error is
+# `setpoint - measurement`, and a cold tank fires the furnace harder. The file
+# says so in one line, `action = "reverse"`. On this plant that line is forced —
+# the loader refuses a furnace loop that leaves it out, and refuses it on a
+# cooler — and it is written anyway, because a loop whose most surprising
+# property is invisible in the file is the thing docs/DEFERRED.md E7 said reverse
+# action must not be.
+#
+# **The faceplate reads the real firing fraction.** The output is a fraction of
+# `max_duty_mw`, `duty = u * 2 MW`, exactly as the cooler's is. Running the
+# furnace at `(1 - u) * 2 MW` under a direct loop would also regulate, and was
+# refused because the snapshot would then read 0.9 while the furnace fired at
+# 10%.
+#
+# **The operating point mirrors the cooler demo's, to four figures.** Each MW of
+# firing adds 16.64 K to the inflow — `1/(m_dot*cp)` at 14.365 kg/s — so holding
+# 60 °C from a 40 °C feed needs 1.202 MW, **u = 0.600948** of the 2 MW range,
+# settled over 20 000 ticks (the cooler demo settles at 0.601092). The tank starts
+# at the settled 4.968 m level so that only the temperature moves.
+#
+# **The tank starts 20 K below setpoint, and that is a design input, not
+# decoration.** A PI loop's memory is back-calculated from `initial_output` at
+# load against the error standing then; seeded against the wrong SIGN it would
+# step the first output by `2*K*e`, which at zero error is invisible. The furnace
+# starts at 0.5 MW (u = 0.25, equal to `initial_output`, so the loop starts
+# without stepping its actuator), far short of the 1.202 MW the setpoint needs, so
+# the MANUAL twin parks visibly wrong: **48.30 °C**.
+#
+# **Measured, 6 000 ticks:** within 0.06 K of 60 °C from tick 2 391, a 0.028 K
+# overshoot at tick 3 066, 59.99997 °C at tick 6 000. The output peaks at 0.809 at
+# tick 640 and **never reaches either clamp** — the cooler demo's numbers, tick for
+# tick. The anti-windup arm is reached by a command in the demo test: a step to
+# 75 °C, above the 73.28 °C the inflow reaches at the full 2 MW, pins the output
+# at 1 for as long as the setpoint stands.
+#
+# **What this plant does not survive, named rather than refused** (docs/DESIGN.md
+# §22 fork 5): a furnace has no ceiling. A loop saturated at full duty on a feed
+# throttled by someone else heats the stream without bound, and with no boil-off
+# model selected water past 100 °C stays liquid. On a plant that boils
+# (`boiloff = "flash"`) a setpoint above the bubble point would pin the furnace
+# at full and boil the tank's inventory away through its vent.
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_temperature_heating.toml --ticks 6000
+
+[meta]
+name = "tank_temperature_heating"
+description = "A tank of cool water held at 60 °C by a reverse-acting PI loop on the furnace that feeds it."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.cool_feed]
+type = "source"
+pressure_bar = 1.6
+temperature_c = 40.0
+
+# The actuator. Its declared duty is the loop's starting position: 0.5 MW of a
+# 2 MW range is u = 0.25, and `initial_output` below says the same number.
+[nodes.heater]
+type = "furnace"
+duty_mw = 0.5
+
+# The node the loop MEASURES. Its temperature is stored on the graph and is
+# exactly 40 °C at tick 0; the level is the settled 4.968 m, so only the
+# temperature has anywhere to go.
+[nodes.hold_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.968
+temperature_c = 40.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 150.0
+opening = 0.5
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "cool_feed"
+to = "heater"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "hold_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "hold_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# `initial_output` is the loop's MEMORY, not a bias (docs/DESIGN.md §10 fork 5):
+# the integral term is back-calculated from it at load, against the REVERSE
+# error, so the first `update` returns exactly 0.25 whatever the gain is.
+[[controls]]
+name = "tank_temperature"
+measurement = { node = "hold_tank", variable = "temperature" }
+actuator = "heater"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_c = 60.0
+gain_per_k = 0.1
+integral_time_s = 600.0
+initial_output = 0.25
+max_duty_mw = 2.0

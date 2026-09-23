@@ -1,7 +1,9 @@
 //! Frontend contract: `Command` in, `Snapshot` out. Both plain serde data.
 //! Frontends never touch engine internals.
 
-use crate::graph::{ControlMode, ControlledValue, EdgeId, LoopId, NodeId, NodeKind, TankState};
+use crate::graph::{
+    ControlAction, ControlMode, ControlledValue, EdgeId, LoopId, NodeId, NodeKind, TankState,
+};
 use crate::stream::Stream;
 use crate::traits::SolveDiagnostics;
 use crate::units::{Seconds, SquareMeter, Watt};
@@ -209,6 +211,17 @@ pub struct ControlSnapshot {
     /// `Controller::name`.
     pub algorithm: String,
     pub mode: ControlMode,
+    /// Which way the output moves the measurement (M18, docs/DESIGN.md §22).
+    ///
+    /// **Skipped when `direct`**, so every loop that predates M18 publishes the
+    /// bytes it always did, and `default` reads an absent key back as direct —
+    /// admissible by M8.5's test because absence is a TRUE statement about every
+    /// such loop. Published at all because the error the controller saw is
+    /// `measurement − setpoint` on a direct loop and `setpoint − measurement` on a
+    /// reverse one: without this field a reader rebuilding it gets the wrong sign
+    /// on every furnace loop.
+    #[serde(default, skip_serializing_if = "ControlAction::is_direct")]
+    pub action: ControlAction,
     /// The target. Carries its unit in its own tagged form, because a bare
     /// `setpoint` would be a number whose unit depends on a sibling field — see
     /// [`ControlledValue`].
@@ -223,7 +236,8 @@ pub struct ControlSnapshot {
     ///
     /// Same type as `setpoint` by construction, so a loop cannot report a
     /// setpoint in one variable against a measurement in another, and the
-    /// difference a reader takes between them is the error the controller saw.
+    /// difference a reader takes between them — in the order `action` names — is
+    /// the error the controller saw.
     pub measurement: ControlledValue,
     /// Actuator position, dimensionless in `[0, 1]`.
     ///
@@ -235,9 +249,11 @@ pub struct ControlSnapshot {
     /// docs/DESIGN.md §21). This doc used to say it "gains a unit question only
     /// when an actuator that is not a valve un-defers", and a cooler is that
     /// actuator. The answer: for a valve it is the opening, for a cooler it is the
-    /// duty as a fraction of the loop's declared `max_duty_mw`. The watts are
-    /// already published on the cooler node's own `kind.duty`, so a second copy
-    /// here would be a second owner.
+    /// duty as a fraction of the loop's declared `max_duty_mw` — and for a
+    /// furnace (M18) the same, whichever way the loop acts: a reverse loop's
+    /// faceplate reads the real firing fraction, which is why the inverted
+    /// `(1 − u)·max` map was rejected. The watts are already published on the
+    /// node's own `kind.duty`, so a second copy here would be a second owner.
     pub output: f64,
 }
 

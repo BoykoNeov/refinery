@@ -768,11 +768,18 @@ impl ControlledValue {
         }
     }
 
-    /// `measurement − setpoint`, in this variable's SI unit.
+    /// The loop's error, in this variable's SI unit: `measurement − setpoint` for
+    /// a DIRECT-acting loop, `setpoint − measurement` for a REVERSE-acting one.
     ///
-    /// **The error's sign convention lives here and nowhere else.** Positive
-    /// means "above setpoint", so a loop on a tank's OUTLET valve is direct
-    /// acting: too much level opens the drain. A controller that computed its own
+    /// **The error's sign convention lives here and nowhere else**, and from M18
+    /// that includes the loop's direction of action (docs/DESIGN.md §22 fork 1).
+    /// A positive error always RAISES the output. On a direct loop that means
+    /// "above setpoint", so a drain opens on a high level and a cooler works
+    /// harder on a hot tank. On a reverse loop it means "below setpoint", so a
+    /// furnace fires harder on a cold tank. The action is an argument rather than
+    /// a second function, and not a swap of the two arguments at a call site,
+    /// because either of those would put the sign somewhere a reader cannot see
+    /// it. A controller that computed its own
     /// difference would be free to disagree with the one a snapshot reader
     /// reconstructs from the two reported values, and the mutation this slice owes
     /// ("gain applied to the measurement instead of the error") only means
@@ -797,11 +804,49 @@ impl ControlledValue {
     /// `Command::SetSetpoint` refuses a value whose variable disagrees with the
     /// loop's — those two are what make a mismatch unreachable. The `NaN` is what
     /// happens if one of them is ever removed.
-    pub fn error(measurement: Self, setpoint: Self) -> f64 {
+    ///
+    /// The direct arm is the bare subtraction it always was, not `1.0 ×` it, so
+    /// every loop written before M18 computes the same bits it did.
+    pub fn error(measurement: Self, setpoint: Self, action: ControlAction) -> f64 {
         if measurement.variable() != setpoint.variable() {
             return f64::NAN;
         }
-        measurement.magnitude() - setpoint.magnitude()
+        match action {
+            ControlAction::Direct => measurement.magnitude() - setpoint.magnitude(),
+            ControlAction::Reverse => setpoint.magnitude() - measurement.magnitude(),
+        }
+    }
+}
+
+/// Which way a loop's output moves its measurement (M18, docs/DESIGN.md §22).
+///
+/// **DIRECT: raising the output LOWERS the measurement** — a drain on a level, a
+/// vent on a pressure, a cooler on a temperature. **REVERSE: raising the output
+/// RAISES it** — a furnace on a temperature. The loop DECLARES which, and the
+/// loader checks the declaration against the actuator where the sign is physics
+/// (a cooler must be direct, a furnace reverse) and refuses reverse on a valve,
+/// whose sign is topology (`docs/DEFERRED.md` E8).
+///
+/// This is the fourth wording of the rule M8.4 first wrote as "a level loop must
+/// actuate a drain", and the first that is not a special case of the direct
+/// half. A negative gain stays refused: it would be a second way to say this.
+///
+/// `Direct` is the default because it is a TRUE statement about every loop
+/// written before M18 — reverse action was refused when they were written — and
+/// the snapshot skips the field when direct, so those loops publish the bytes
+/// they always did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlAction {
+    #[default]
+    Direct,
+    Reverse,
+}
+
+impl ControlAction {
+    /// `true` for the default, so `ControlSnapshot` can skip it.
+    pub fn is_direct(&self) -> bool {
+        *self == ControlAction::Direct
     }
 }
 
@@ -827,15 +872,22 @@ pub struct ControlLoop {
     /// `PlantGraph::measure`, which is the single owner of which kinds can answer
     /// for which variable and carries a distinct reason for each refusal.
     pub measurement_node: NodeId,
-    /// The node this loop writes. A `Valve` on a level or pressure loop, a
-    /// `Cooler` on a temperature loop (M17); the loader refuses every other
-    /// pairing with its own reason (docs/DESIGN.md §21 fork 3), and a
-    /// `ReliefValve` always, since its opening is actuated by its own inlet
-    /// pressure.
+    /// The node this loop writes. A `Valve` on a level or pressure loop; a
+    /// `Cooler` (M17) or a `Furnace` (M18) on a temperature loop. The loader
+    /// refuses every other pairing with its own reason (docs/DESIGN.md §21 fork
+    /// 3), and a `ReliefValve` always, since its opening is actuated by its own
+    /// inlet pressure.
     pub actuator: NodeId,
-    /// The loop's declared authority over a DUTY actuator: the cooler duty its
-    /// full output `u = 1` stands for. `Some` exactly when the actuator is a
-    /// `Cooler`, `None` on a valve, whose opening is already a fraction.
+    /// Which way the output moves the measurement: a furnace loop is `Reverse`,
+    /// every other loop `Direct`. Passed into `ControlledValue::error` by every
+    /// caller that reaches it — the load-time seed, the MANUAL→AUTO seed and the
+    /// tick's update — so the loop is seeded and run against one sign
+    /// (docs/DESIGN.md §22 fork 1).
+    pub action: ControlAction,
+    /// The loop's declared authority over a DUTY actuator: the cooler or furnace
+    /// duty its full output `u = 1` stands for. `Some` exactly when the actuator
+    /// is a `Cooler` or a `Furnace`, `None` on a valve, whose opening is already a
+    /// fraction.
     ///
     /// **On the loop, not on the cooler** (docs/DESIGN.md §21 fork 3).
     /// `NodeSnapshot::kind` serializes `NodeKind`, so a field on the cooler would
@@ -1560,11 +1612,15 @@ impl PlantGraph {
     ///
     /// A valve's position is its opening, read bare: no arithmetic on the valve
     /// path, so the level and pressure loops that predate M17 read exactly what
-    /// they read before. A cooler's is `duty / max_duty`.
+    /// they read before. A cooler's or a furnace's is `duty / max_duty` — the
+    /// same map for both duty actuators, whichever way the loop acts, so the
+    /// faceplate reads the real firing or cooling fraction (docs/DESIGN.md §22
+    /// fork 1 rejects the inverted `(1 − u)·max` map on exactly that ground).
     ///
     /// # Errors
     /// `SimError::Scenario` if the pairing of actuator and range is not one the
-    /// loader builds — a valve with a duty range, a cooler without one, or any
+    /// loader builds — a valve with a duty range, a cooler or furnace without
+    /// one, or any
     /// other kind. Reachable only from a hand-built graph, and said rather than
     /// answered with an invented position (rule 5).
     pub fn actuator_position(
@@ -1574,7 +1630,9 @@ impl PlantGraph {
     ) -> Result<f64, SimError> {
         match (&self.node(actuator).kind, max_duty) {
             (NodeKind::Valve { opening, .. }, None) => Ok(*opening),
-            (NodeKind::Cooler { duty }, Some(max)) => Ok(duty.value() / max.value()),
+            (NodeKind::Cooler { duty } | NodeKind::Furnace { duty }, Some(max)) => {
+                Ok(duty.value() / max.value())
+            }
             _ => Err(unpaired_actuator(&self.node(actuator).name, max_duty)),
         }
     }
@@ -1582,7 +1640,7 @@ impl PlantGraph {
     /// Put a loop's actuator at `position`, a fraction of the loop's authority —
     /// the inverse of `actuator_position`, and its only writer.
     ///
-    /// A valve's opening is `position` itself; a cooler's duty is
+    /// A valve's opening is `position` itself; a cooler's or a furnace's duty is
     /// `position · max_duty`.
     ///
     /// # Errors
@@ -1598,7 +1656,7 @@ impl PlantGraph {
                 *opening = position;
                 Ok(())
             }
-            (NodeKind::Cooler { duty }, Some(max)) => {
+            (NodeKind::Cooler { duty } | NodeKind::Furnace { duty }, Some(max)) => {
                 *duty = max * position;
                 Ok(())
             }
@@ -1611,10 +1669,10 @@ impl PlantGraph {
 fn unpaired_actuator(name: &str, max_duty: Option<Watt>) -> SimError {
     SimError::Scenario(format!(
         "control loop actuator '{name}' is not an actuator this loop can position: a loop writes \
-         a valve's opening (with no duty range) or a cooler's duty (with one), and this pairing \
-         is {}",
+         a valve's opening (with no duty range) or a cooler's or furnace's duty (with one), and \
+         this pairing is {}",
         if max_duty.is_some() {
-            "a duty range on a node that is not a cooler"
+            "a duty range on a node that is neither a cooler nor a furnace"
         } else {
             "no duty range, on a node that is not a valve"
         }

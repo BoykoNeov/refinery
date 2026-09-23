@@ -276,6 +276,10 @@ impl Engine {
             // to express, so it can only be a sign slip.
             Command::SetFurnaceDuty { node, duty } => {
                 check_duty(duty, "furnace")?;
+                // The cooler's two guards, owed since M18 made a furnace a loop's
+                // actuator (docs/DESIGN.md §22 fork 4) — and one function for both
+                // duty commands, so neither can grow a guard the other lacks.
+                self.check_loop_owned_duty(node, duty, "furnace")?;
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Furnace { duty: d } => {
                         *d = duty;
@@ -288,44 +292,7 @@ impl Engine {
             }
             Command::SetCoolerDuty { node, duty } => {
                 check_duty(duty, "cooler")?;
-                // A cooler a loop owns gets the valve's guard, and the reason is
-                // the same one: in AUTO the write survives until the top of the
-                // next tick and is then silently overwritten (docs/DESIGN.md §21,
-                // site 8). Before M17 no loop could own a cooler, so the guard was
-                // not owed.
-                //
-                // **The range refusal applies in EITHER mode** (§21 fork 4). In
-                // MANUAL a human may drive the duty — that is what MANUAL means —
-                // but not past the loop's declared authority: MANUAL tracking would
-                // then report a position above 1, and a MANUAL→AUTO transfer would
-                // back-calculate a memory from an output the loop could never have
-                // produced.
-                if let Some(owner) = self.graph.controls().iter().find(|c| c.actuator == node) {
-                    if owner.mode == ControlMode::Auto {
-                        return Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO: \
-                             its duty would be overwritten at the top of the next tick. Put the \
-                             loop in MANUAL first (`set_controller_mode`), or move the loop's \
-                             setpoint (`set_setpoint`)",
-                            self.graph.node(node).name,
-                            owner.name
-                        )));
-                    }
-                    if let Some(max) = owner.max_duty {
-                        if duty.value() > max.value() {
-                            return Err(SimError::InvalidCommand(format!(
-                                "cooler duty {} W on '{}' is above the {} W authority of control \
-                                 loop '{}', which owns it. The loop's output is a fraction of \
-                                 that range, so a duty outside it is a position the loop could \
-                                 never have produced and cannot transfer from",
-                                duty.value(),
-                                self.graph.node(node).name,
-                                max.value(),
-                                owner.name
-                            )));
-                        }
-                    }
-                }
+                self.check_loop_owned_duty(node, duty, "cooler")?;
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Cooler { duty: d } => {
                         *d = duty;
@@ -381,7 +348,7 @@ impl Engine {
                                 control.name
                             ))
                         })?;
-                    Some((measurement, control.setpoint, position))
+                    Some((measurement, control.setpoint, control.action, position))
                 } else {
                     None
                 };
@@ -389,10 +356,13 @@ impl Engine {
                     .graph
                     .control_mut(loop_id)
                     .ok_or_else(|| unknown_loop(loop_id))?;
-                if let Some((measurement, setpoint, position)) = seed {
+                if let Some((measurement, setpoint, action, position)) = seed {
+                    // The loop's own action, the one pass 2 will run with: a seed
+                    // taken against the other sign steps the first output by
+                    // `2·K·e` (docs/DESIGN.md §22 fork 1).
                     control
                         .algorithm
-                        .seed_from_output(position, measurement, setpoint)?;
+                        .seed_from_output(position, measurement, setpoint, action)?;
                     // The faceplate reports what the loop will hold, not what it
                     // held while it was sitting out: a transfer that reported the
                     // old output would show a jump the plant never made.
@@ -1386,9 +1356,12 @@ impl Engine {
             control.last_measurement = measurement;
             match control.mode {
                 ControlMode::Auto => {
-                    let output = control
-                        .algorithm
-                        .update(measurement, control.setpoint, dt)?;
+                    let output = control.algorithm.update(
+                        measurement,
+                        control.setpoint,
+                        control.action,
+                        dt,
+                    )?;
                     // Checked here rather than trusted from the seam: the range
                     // is the actuator's, not the algorithm's, and an out-of-range
                     // position reaching `Valve::opening` is a plant state
@@ -1426,6 +1399,52 @@ impl Engine {
         for (actuator, max_duty, output) in writes.into_iter().flatten() {
             self.graph
                 .set_actuator_position(actuator, max_duty, output)?;
+        }
+        Ok(())
+    }
+
+    /// The two guards a loop-owned DUTY actuator gets, shared by
+    /// `SetCoolerDuty` and `SetFurnaceDuty`: refused while the owning loop is in
+    /// AUTO, and refused above the loop's range in either mode. `unit` names the
+    /// actuator kind in the message.
+    fn check_loop_owned_duty(&self, node: NodeId, duty: Watt, unit: &str) -> Result<(), SimError> {
+        // A duty actuator a loop owns gets the valve's guard, and the reason is
+        // the same one: in AUTO the write survives until the top of the
+        // next tick and is then silently overwritten (docs/DESIGN.md §21,
+        // site 8). Before M17 no loop could own a cooler, and before M18 none
+        // could own a furnace, so the guard was not owed.
+        //
+        // **The range refusal applies in EITHER mode** (§21 fork 4). In
+        // MANUAL a human may drive the duty — that is what MANUAL means —
+        // but not past the loop's declared authority: MANUAL tracking would
+        // then report a position above 1, and a MANUAL→AUTO transfer would
+        // back-calculate a memory from an output the loop could never have
+        // produced.
+        if let Some(owner) = self.graph.controls().iter().find(|c| c.actuator == node) {
+            if owner.mode == ControlMode::Auto {
+                return Err(SimError::InvalidCommand(format!(
+                    "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO: \
+                     its duty would be overwritten at the top of the next tick. Put the \
+                     loop in MANUAL first (`set_controller_mode`), or move the loop's \
+                     setpoint (`set_setpoint`)",
+                    self.graph.node(node).name,
+                    owner.name
+                )));
+            }
+            if let Some(max) = owner.max_duty {
+                if duty.value() > max.value() {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{unit} duty {} W on '{}' is above the {} W authority of control \
+                         loop '{}', which owns it. The loop's output is a fraction of \
+                         that range, so a duty outside it is a position the loop could \
+                         never have produced and cannot transfer from",
+                        duty.value(),
+                        self.graph.node(node).name,
+                        max.value(),
+                        owner.name
+                    )));
+                }
+            }
         }
         Ok(())
     }
@@ -1535,6 +1554,7 @@ impl Engine {
                 name: c.name.clone(),
                 algorithm: c.algorithm.name().to_string(),
                 mode: c.mode,
+                action: c.action,
                 setpoint: c.setpoint,
                 measurement: c.last_measurement,
                 output: c.last_output,

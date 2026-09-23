@@ -18,7 +18,10 @@
 # controller's output is `clamp(K·e + b, 0, 1)`, so a rising level opens the
 # actuator. On a fill valve that is runaway; on a drain it is regulation. A
 # level loop in this engine therefore writes the valve the liquid leaves by, and
-# `discharge_valve` keeps M1's fixed 0.5.
+# `discharge_valve` keeps M1's fixed 0.5. (Since M18 a loop can declare
+# `action = "reverse"`, which is what a fill valve would need — but only on a
+# furnace, whose sign is physics. On a valve the sign is where it sits, which the
+# loader does not check, so reverse on a valve is refused: docs/DEFERRED.md E8.)
 #
 # **The gain has a measured upper bound, and this is where to read it.** At the
 # settled operating point below the drain sits at opening ~0.376, so a setpoint

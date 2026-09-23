@@ -26,9 +26,11 @@
 # temperature raises the output. M8.4 wrote "a level loop must actuate a drain" and
 # M10 widened it to "an outlet of the measured holdup"; an inlet cooler falsifies
 # that wording and works. What the sign convention forces is only this: **raising
-# the output must LOWER the measurement.** More cooling lowers a temperature. A
-# furnace would raise it, which is reverse action (docs/DEFERRED.md E7) and is
-# refused at load by name.
+# the output must LOWER the measurement** — on a DIRECT loop, which this one is.
+# More cooling lowers a temperature. A furnace raises it, so a furnace loop must
+# declare `action = "reverse"`; that is `tank_temperature_heating.toml`, this
+# file mirrored, and the diff between the two is what reverse action costs
+# (docs/DESIGN.md §22).
 #
 # **The setpoint is in °C and the gain is per K, and only the setpoint converts.**
 # `setpoint_c` takes the `+ 273.15` offset every `temperature_c` takes.

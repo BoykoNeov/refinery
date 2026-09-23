@@ -6142,3 +6142,32 @@ unchanged. The MANUAL twin parks near 48.3 °C, full duty tops out near 73.3 °C
 and a 75 °C command reaches the anti-windup arm. The tank starts 20 K below
 setpoint so a seed with the wrong sign is visible.
 
+### M18.1 — The reverse-acting loop — **LANDED** 2026-09-23
+
+Built as DESIGN §22 specifies; the corrections are in §22's "Corrections from
+building it". A loop declares `action = "direct" | "reverse"`; a furnace can hold
+a tank's temperature. The demo is `scenarios/tank_temperature_heating.toml`,
+`tank_temperature_control.toml` mirrored. Four things to know.
+
+**The sign has one owner and three callers.** `ControlledValue::error(measurement,
+setpoint, action)`; the constructor's seed, the MANUAL→AUTO seed and the tick's
+update all pass the loop's own action, and `ControlSnapshot::action` publishes it
+(absent when direct). **All twenty-one pre-M18 plants are byte-identical on both
+fidelities, no iteration count moved.**
+
+**The note's anti-windup gate could not see the sign.** Stepping back from the
+ceiling to the original setpoint clamps a right and a wrong memory to zero alike;
+the shipped gate steps back to a target just below the tank and asserts the
+released output by hand.
+
+**The inverted `(1 − u)·max` map regulates** — within 9 kW of the right answer in
+one gate — and only the faceplate gives it away. Fork 1's reason for refusing it,
+measured.
+
+**All ten mutations caught**, one wider than predicted (the ignored action also
+fires the anti-windup gate) and one far wider (the inverted map, seven tests).
+`scenarios/` holds twenty-two files; four declare `[[controls]]`.
+
+**M18 is CLOSED (2026-09-23) with this slice.** E7 is built for the duty
+actuators; reverse action on a valve is new row E8. The next milestone is chosen
+from `docs/DEFERRED.md` as usual.

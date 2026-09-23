@@ -88,6 +88,7 @@ cargo run -p refinery-cli -- run scenarios/crude_column_boiloff.toml --ticks 600
 cargo run -p refinery-cli -- run scenarios/crude_column_recovery.toml --ticks 6000     # the M14.1 recovery drum
 cargo run -p refinery-cli -- run scenarios/fired_gas_drum.toml --ticks 6000        # the M16.2 shaped heat capacity
 cargo run -p refinery-cli -- run scenarios/tank_temperature_control.toml --ticks 6000 # the M17.1 temperature loop
+cargo run -p refinery-cli -- run scenarios/tank_temperature_heating.toml --ticks 6000 # the M18.1 reverse-acting loop
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -183,17 +184,43 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M18 is OPEN (2026-09-23): reverse action — a furnace holding a temperature,
+**M18 is CLOSED (2026-09-23): reverse action — a furnace holding a temperature,
 `docs/DEFERRED.md` row E7 for the duty actuators.** Taken on a DECISION (the
 user's, on gameplay grounds, as M17); the demo fires E7's own trigger by being
-built. **M18.0 landed 2026-09-23** — the design note, DESIGN §22, six forks,
-eight gates, ten mutations, no code. The sign moves onto the LOOP as a declared
-`action = "direct" | "reverse"` (absent = direct) passed into
-`ControlledValue::error`, which stays the single owner; the declaration is
-checked against the actuator (cooler direct, furnace reverse); reverse on a valve
-is refused as new row E8. `SetFurnaceDuty` gains the two guards `SetCoolerDuty`
-has. Demo: `tank_temperature_heating.toml`, M17's plant mirrored — 40 °C feed,
-furnace, 60 °C at ~0.60 of 2 MW. **M18.1 builds it.**
+built. Two slices: **M18.0** (DESIGN §22, six forks, eight gates, ten mutations,
+no code) and **M18.1**, which built it — read §22's "Corrections from building
+it". Reverse action on a valve is new row **E8**; the next milestone is chosen from
+`docs/DEFERRED.md`.
+
+**What a reverse loop is.** A loop declares `action = "direct" | "reverse"`
+(absent = direct, a true statement about every pre-M18 loop). The sign has ONE
+owner, `ControlledValue::error(measurement, setpoint, action)`, and three callers
+that must all pass the loop's own action: `PiController::new`'s load-time seed,
+the MANUAL→AUTO seed in `Engine::apply`, and the tick's `update` — a seed taken
+against the other sign steps the first output by `2·K·e`. `ControlSnapshot::action`
+publishes it, skipped when direct. The declaration is CHECKED against the
+actuator: a cooler must be direct, a furnace must say reverse (a furnace loop
+with the key absent is refused, not defaulted), and reverse on a valve is refused
+(E8: a valve's sign is topology, which the loader does not check). A negative
+gain stays refused, now as a second, uncheckable way to say "reverse". The furnace
+joined `PlantGraph::actuator_position`/`set_actuator_position` with the cooler's
+map (`duty / max_duty`), and `SetFurnaceDuty` gained the cooler's two guards
+through one shared function, `Engine::check_loop_owned_duty`.
+
+**Four things the next milestone inherits.** (i) **All twenty-one pre-M18 plants
+are byte-identical on both fidelities with no iteration count moved**; "runs
+byte-identical" means post-M18.1 identical, unchanged. (ii) **A release gate
+that steps all the way back to the old setpoint cannot see a sign**: from the
+ceiling, a right and a wrong memory both clamp to zero. The shipped anti-windup
+gate steps back to just below the tank and asserts the released output by hand.
+(iii) **The inverted `(1 − u)·max` map REGULATES** — mutation 10 settled within
+9 kW of a hand-written duty — and only the faceplate gives it away, which is fork
+1's reason for refusing it, measured. (iv) "Pinned at the clamp" is not "exactly
+1 on every tick": near a ceiling the output dips a hair off and back as the error
+shrinks, so a gate that reads one tick can land either side. All ten mutations
+were caught. `scenarios/` holds **twenty-two** files; four declare
+`[[controls]]`, and `tank_temperature_heating.toml` is `tank_temperature_control.toml`
+mirrored — diff them to see what reverse action costs.
 
 **M17 is CLOSED (2026-09-23): the third controlled variable, temperature —
 `docs/DEFERRED.md` row E1b's temperature half.** Two slices, M17.0 and M17.1. The
@@ -1464,10 +1491,12 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly three of the twenty-one files in `scenarios/` declare a `[[controls]]`
+**Exactly four of the twenty-two files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
-`vessel_pressure_control.toml` (M10.1, a pressure) and
-`tank_temperature_control.toml` (M17.1, a temperature). **The other eighteen
+`vessel_pressure_control.toml` (M10.1, a pressure),
+`tank_temperature_control.toml` (M17.1, a temperature) and
+`tank_temperature_heating.toml` (M18.1, a reverse-acting temperature). **The
+other eighteen
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor**; adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file

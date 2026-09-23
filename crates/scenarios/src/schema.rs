@@ -559,9 +559,10 @@ pub struct ControlDef {
     pub name: String,
     /// Which node's state this loop watches, and which of its variables.
     pub measurement: MeasurementDef,
-    /// Name of the node this loop writes. A `valve` on a level or pressure loop,
-    /// a `cooler` on a temperature loop (M17, docs/DESIGN.md §21 fork 3); every
-    /// other pairing is refused with its own reason, and a `relief_valve` always.
+    /// Name of the node this loop writes. A `valve` on a level or pressure loop;
+    /// a `cooler` (M17, docs/DESIGN.md §21 fork 3) or a `furnace` (M18, §22) on a
+    /// temperature loop. Every other pairing is refused with its own reason, and a
+    /// `relief_valve` always.
     pub actuator: String,
     /// `"p"` (M8.2) or `"pi"` (M8.3). Each has its own required tuning keys, and
     /// each refuses the other's — the two-directional refusal the separation
@@ -569,6 +570,22 @@ pub struct ControlDef {
     pub algorithm: String,
     /// `"auto"` (the loop drives its actuator) or `"manual"` (a human does).
     pub mode: String,
+    /// `"direct"` or `"reverse"` — which way the loop's output moves its
+    /// measurement (M18, docs/DESIGN.md §22). **Direct**: raising the output
+    /// lowers the measurement (a drain, a vent, a cooler). **Reverse**: raising
+    /// it raises the measurement (a furnace).
+    ///
+    /// **Absent means direct**, and that is a true statement rather than a
+    /// guess: every loop written before M18 is direct, because reverse action was
+    /// refused when it was written. The declaration is CHECKED against the
+    /// actuator where the sign is physics, in both directions: a `cooler` must be
+    /// direct and a `furnace` must say `"reverse"` — a furnace loop with the key
+    /// absent is refused rather than defaulted, so a file's most surprising
+    /// property is never invisible. `"reverse"` on a valve is refused: a valve's
+    /// sign is its place in the plant, which the loader does not check
+    /// (docs/DEFERRED.md E8).
+    #[serde(default)]
+    pub action: Option<String>,
     /// The target, in metres. **Required for `variable = "level"` and refused on
     /// any other variable**, exactly as `up_to_c` is the splitter's and `stage`
     /// the cascade's.
@@ -646,14 +663,14 @@ pub struct ControlDef {
     /// name carries the answer, as `smearing_k` does.
     #[serde(default)]
     pub gain_per_k: Option<f64>,
-    /// The cooler duty, in MW, that the loop's full output stands for — the
-    /// loop's authority over a DUTY actuator. **Required when the actuator is a
-    /// `cooler` and refused when it is a `valve`**, in both directions
-    /// (docs/DESIGN.md §21 fork 3), the `density_kg_per_m3` rule.
+    /// The cooler or furnace duty, in MW, that the loop's full output stands for
+    /// — the loop's authority over a DUTY actuator. **Required when the actuator
+    /// is a `cooler` or a `furnace` (M18) and refused when it is a `valve`**, in
+    /// both directions (docs/DESIGN.md §21 fork 3), the `density_kg_per_m3` rule.
     ///
-    /// On the loop rather than on the cooler, because the cooler's own fields are
+    /// On the loop rather than on the unit, because the unit's own fields are
     /// published on every snapshot and this number is the loop's statement of its
-    /// range, read by nothing else. Must be finite and > 0; the cooler's declared
+    /// range, read by nothing else. Must be finite and > 0; the unit's declared
     /// `duty_mw` must lie within `[0, max_duty_mw]` (§21 fork 4).
     #[serde(default)]
     pub max_duty_mw: Option<f64>,

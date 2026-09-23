@@ -15,7 +15,7 @@
 //! anchor. The wired demo lives in `temperature_control_demo.rs`.
 
 use refinery_core::error::SimError;
-use refinery_core::graph::{ControlMode, ControlledValue, LoopId, NodeKind};
+use refinery_core::graph::{ControlAction, ControlMode, ControlledValue, LoopId, NodeKind};
 use refinery_core::snapshot::Command;
 use refinery_core::units::{Kelvin, Meter, Pascal, Watt};
 use refinery_core::Engine;
@@ -387,13 +387,13 @@ fn every_refused_temperature_loop_is_refused_for_its_own_reason() {
             "is a boundary",
         ),
         (
-            "a furnace actuating a temperature (reverse action)",
+            "a furnace actuating a temperature with no declared action",
             format!(
                 "{}{}",
                 liquid("furnace", "0.5"),
                 loop_of(PI_LINES.iter().map(|s| s.to_string()).collect())
             ),
-            "docs/DEFERRED.md E7",
+            "declares no `action`",
         ),
         (
             "a valve actuating a temperature",
@@ -667,9 +667,11 @@ fn a_cooler_transfers_from_manual_to_auto_without_a_step() {
 // --------------------------------------------- gate 8: the error's soundness
 
 /// **Gate 8. `ControlledValue::error` refuses to difference two variables — every
-/// mismatched pair of the three.** With two variants there were two pairs; the
-/// third variant adds four, and a backstop tested on the pairs that existed
-/// before it is a backstop for the variants that existed before it.
+/// mismatched pair of the three, under BOTH directions of action.** With two
+/// variants there were two pairs; the third variant adds four, and a backstop
+/// tested on the pairs that existed before it is a backstop for the variants that
+/// existed before it. M18 gave `error` a second arm (docs/DESIGN.md §22), and the
+/// same argument makes the backstop owed on that arm too.
 #[test]
 fn every_mismatched_pair_of_variables_differences_to_nan() {
     let values = [
@@ -677,13 +679,18 @@ fn every_mismatched_pair_of_variables_differences_to_nan() {
         ControlledValue::Pressure { pa: Pascal(5.0e5) },
         ControlledValue::Temperature { k: Kelvin(333.15) },
     ];
-    for a in values {
-        for b in values {
-            let e = ControlledValue::error(a, b);
-            if a.variable() == b.variable() {
-                assert_eq!(e, 0.0, "{a:?} against itself");
-            } else {
-                assert!(e.is_nan(), "{a:?} − {b:?} must be NaN, and gave {e}");
+    for action in [ControlAction::Direct, ControlAction::Reverse] {
+        for a in values {
+            for b in values {
+                let e = ControlledValue::error(a, b, action);
+                if a.variable() == b.variable() {
+                    assert_eq!(e, 0.0, "{a:?} against itself, {action:?}");
+                } else {
+                    assert!(
+                        e.is_nan(),
+                        "{a:?} − {b:?} must be NaN under {action:?}, and gave {e}"
+                    );
+                }
             }
         }
     }

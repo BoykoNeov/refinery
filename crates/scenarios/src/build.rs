@@ -8,8 +8,9 @@ use refinery_core::energy::T_REF;
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    CascadeSpec, ColumnDraw, ControlLoop, ControlMode, ControlledValue, HeatExchangerCoupling,
-    LeakRole, MeasuredVariable, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState, VesselState,
+    CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
+    HeatExchangerCoupling, LeakRole, MeasuredVariable, Node, NodeId, NodeKind, Pipe, PlantGraph,
+    TankState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -593,7 +594,8 @@ fn build_controls(
                 if def.max_duty_mw.is_some() {
                     return Err(SimError::Scenario(format!(
                         "control loop '{}' declares `max_duty_mw` on a valve actuator. That key \
-                         is a DUTY actuator's range — a cooler's — and a valve's opening is \
+                         is a DUTY actuator's range — a cooler's or a furnace's — and a valve's \
+                         opening is \
                          already a fraction, so the number would be read by nothing \
                          (docs/DESIGN.md §21 fork 3)",
                         def.name
@@ -601,12 +603,18 @@ fn build_controls(
                 }
                 None
             }
-            (MeasuredVariable::Temperature, NodeKind::Cooler { duty }) => {
+            // The two DUTY actuators share one arm: the same range key, the same
+            // load-time range check, the same position map. Which way each acts is
+            // checked below against the declared `action`, not here.
+            (
+                MeasuredVariable::Temperature,
+                NodeKind::Cooler { duty } | NodeKind::Furnace { duty },
+            ) => {
                 let max_mw = require_keyed(
                     def.max_duty_mw,
                     &def.name,
                     "max_duty_mw",
-                    "the cooler duty the loop's full output stands for",
+                    "the duty the loop's full output stands for",
                 )?;
                 if !max_mw.is_finite() || max_mw <= 0.0 {
                     return Err(SimError::Scenario(format!(
@@ -622,7 +630,7 @@ fn build_controls(
                 // tracking would report it as a fraction above 1.
                 if duty.value() > max.value() {
                     return Err(SimError::Scenario(format!(
-                        "control loop '{}' actuates cooler '{}', whose declared duty {} MW is \
+                        "control loop '{}' actuates '{}', whose declared duty {} MW is \
                          above the loop's `max_duty_mw = {max_mw}`. The loop's output is a \
                          fraction of that range, so a starting duty outside it is a position \
                          the loop could never have produced (docs/DESIGN.md §21 fork 4)",
@@ -644,20 +652,6 @@ fn build_controls(
                      coolant stream — a cooler is a duty with no coolant side — so a valve can \
                      move a temperature only by changing a PROCESS flow, whose sign depends \
                      on the plant. Actuate a `cooler` instead (docs/DESIGN.md §21 fork 3)",
-                    def.name, def.actuator
-                )))
-            }
-            // Reverse acting: `u = clamp(K·e + b, 0, 1)` raises the output when
-            // the measurement rises, so the actuator's effect must be to LOWER
-            // the measurement. More firing raises a temperature. Mapping the duty
-            // as `(1 − u)·max` would make it run and is a negative gain in
-            // disguise, which E7's sentence forbids.
-            (MeasuredVariable::Temperature, NodeKind::Furnace { .. }) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' holds a temperature with furnace '{}'. Raising a loop's \
-                     output must LOWER its measurement, and more firing raises it: that is \
-                     REVERSE action, which needs its own declaration rather than a sign and is \
-                     deferred as docs/DEFERRED.md E7 (docs/DESIGN.md §21 fork 2)",
                     def.name, def.actuator
                 )))
             }
@@ -693,11 +687,72 @@ fn build_controls(
             (MeasuredVariable::Temperature, _) => {
                 return Err(SimError::Scenario(format!(
                     "control loop '{}' actuates '{}', which is not a cooler. A temperature loop \
-                     writes a cooler's duty (docs/DESIGN.md §21 fork 3)",
+                     writes a cooler's or a furnace's duty (docs/DESIGN.md §21 fork 3, §22)",
                     def.name, def.actuator
                 )))
             }
         };
+
+        // **The direction of action, declared and checked** (docs/DESIGN.md §22
+        // fork 2). Absent means direct — a true statement about every loop
+        // written before M18 — except on a furnace, where a default would make the
+        // file's most surprising property invisible. Checked against the actuator
+        // wherever the sign is physics, in both directions; refused on a valve,
+        // whose sign is topology (docs/DEFERRED.md E8).
+        let action = match def.action.as_deref() {
+            None | Some("direct") => ControlAction::Direct,
+            Some("reverse") => ControlAction::Reverse,
+            Some(other) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' declares unknown action '{other}' (valid: direct, \
+                     reverse)",
+                    def.name
+                )))
+            }
+        };
+        match (&graph.node(actuator).kind, action, def.action.is_some()) {
+            (NodeKind::Furnace { .. }, ControlAction::Direct, false) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates furnace '{}' and declares no `action`. More \
+                     firing RAISES a temperature, so this loop is reverse acting, and that \
+                     must be declared rather than defaulted: add `action = \"reverse\"` \
+                     (docs/DESIGN.md §22 fork 2)",
+                    def.name, def.actuator
+                )))
+            }
+            (NodeKind::Furnace { .. }, ControlAction::Direct, true) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' declares `action = \"direct\"` on furnace '{}'. A \
+                     direct loop's output must LOWER its measurement as it rises, and more \
+                     firing raises a temperature: this loop would shut the furnace off the \
+                     moment the tank ran cold. Declare `action = \"reverse\"` \
+                     (docs/DESIGN.md §22 fork 2)",
+                    def.name, def.actuator
+                )))
+            }
+            (NodeKind::Cooler { .. }, ControlAction::Reverse, _) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' declares `action = \"reverse\"` on cooler '{}'. A \
+                     reverse loop's output must RAISE its measurement as it rises, and more \
+                     cooling lowers a temperature: this loop would cool hardest when the tank \
+                     is already too cold. A cooler loop is direct acting \
+                     (docs/DESIGN.md §22 fork 2)",
+                    def.name, def.actuator
+                )))
+            }
+            (NodeKind::Valve { .. }, ControlAction::Reverse, _) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' declares `action = \"reverse\"` on valve '{}'. A \
+                     valve's direction is its place in the plant, not its kind — the same \
+                     valve is direct on a drain and reverse on a fill line — and the loader \
+                     does not check which side of the measured holdup a valve sits on, so a \
+                     reverse declaration here would be a sign nothing verifies. Deferred as \
+                     docs/DEFERRED.md E8 (docs/DESIGN.md §22 fork 3)",
+                    def.name, def.actuator
+                )))
+            }
+            _ => {}
+        }
 
         if let Some((_, owner)) = claimed_actuators.iter().find(|(id, _)| *id == actuator) {
             return Err(SimError::Scenario(format!(
@@ -907,6 +962,7 @@ fn build_controls(
                         initial_output,
                         measurement,
                         setpoint,
+                        action,
                     )
                     .map_err(|e| SimError::Scenario(format!("control loop '{}': {e}", def.name)))?,
                 )
@@ -933,6 +989,7 @@ fn build_controls(
             name: def.name.clone(),
             measurement_node,
             actuator,
+            action,
             max_duty,
             setpoint,
             mode,

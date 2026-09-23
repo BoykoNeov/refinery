@@ -12110,3 +12110,91 @@ Run under `--no-fail-fast`, each catch read for why it fired.
 - **A temperature setpoint bounded by the bubble point**, now with a worse
   failure (a heated boiling tank empties) — unchanged in E1b.
 - **Flow control** — unchanged.
+
+### Corrections from building it (M18.1)
+
+M18.1 built what the forks specify: `ControlAction` in `core::graph`,
+`ControlLoop::action`, `ControlledValue::error(measurement, setpoint, action)`,
+the action threaded through `Controller::update`, `seed_from_output` and
+`PiController::new`, `ControlSnapshot::action` (skipped when direct), the furnace
+arm of the actuator owner, the declared-and-checked `action` key, one shared
+guard for both duty commands, and `scenarios/tank_temperature_heating.toml`.
+
+**The prediction most likely to be wrong was right.** All twenty-one pre-M18
+plants are byte-identical on both fidelities with no iteration count moved: 42 of
+42 corpus rows read `identical` against baselines recorded before the first code
+edit. That includes the three direct loop plants, which now pass an action into
+`error` and publish a skipped field. The new plant's own worst is 6 iterations.
+
+**Gate 4 as the note wrote it could not have caught its own mutation.** The note
+said "returning to 60 °C releases it on the next tick". From a tank near its
+73.28 °C ceiling, a step back to 60 °C drives BOTH a correctly signed memory and
+one back-calculated with the unsigned error to `u = 0` on the first tick —
+`−1.32 + 0.83` and `−1.32 + 1.17` both clamp. "Releases" cannot see the sign.
+The shipped gate steps back to **72 °C**, just below where the tank sits, and
+asserts the released output against `K·(72 − m₂) + 1 − K·(75 − m₁)` computed by
+hand from the published measurements — about 0.70, where the unsigned memory stays
+pinned at 1. The cooler demo's own release gate has the same blindness and is
+left as it is, because a direct loop has no sign to get wrong there.
+
+**"Pinned" is not "exactly 1 on every tick", and the first draft of that gate
+said it was.** At tick 14 000 the output read 0.99999943: as the tank creeps
+toward its ceiling the error shrinks, `K·e + b` dips a hair under 1, the integral
+accumulates for one tick, and the next update is back on the clamp. The cooler
+demo has the same mechanism and happens to sample a clamped tick. The gate now
+bounds the output over a 200-tick window and steps back on a tick that IS clamped,
+because the hand-computed memory is only valid right after one.
+
+**The demo is the cooler demo's mirror tick for tick.** Peak output 0.809 at tick
+640, within 0.06 K of setpoint from tick 2 391, a 0.028 K overshoot at tick 3 066,
+never on either clamp. It settles at u = 0.600948 against the cooler's 0.601092,
+and its MANUAL twin parks at 48.2963 °C. **Three node names changed** (`cool_feed`,
+`heater`, `heated_line`), which the note's list of differences did not include: a
+furnace called `chiller` is a lie a reader has to see through, and the diff is
+still the price of the feature plus three names.
+
+**Gate 8 needed a control the note did not list**: a furnace no loop owns must
+still take any duty, or a guard that refused every `SetFurnaceDuty` would pass.
+
+**The mutation pass**: ten edits, one at a time, `--no-fail-fast`, every file's
+hash checked after each restore. **All ten caught, none by a compile error**, and
+each catch was read for why it fired:
+
+| edit | predicted | caught by |
+|---|---|---|
+| 1. `error` ignores the action | gates 1, 2, 3 | gates 1, 2, 3 **and 4** |
+| 2. load-time seed passes `Direct` | gate 2 only | gate 2 only |
+| 3. MANUAL→AUTO seed passes `Direct` | gate 5 only | gate 5 only |
+| 4. anti-windup back-calculates unsigned | gate 4 | gate 4 only — **after** the correction above |
+| 5. `action` always serialized | 3 plants move, gate 6 | the three direct loop plants moved on both fidelities, and gate 6's direct half |
+| 6. `action` never serialized | gate 6 | gate 6's wired half |
+| 7. cooler-reverse refusal deleted | gate 7 only | gate 7 only (`should not have loaded`) |
+| 8. furnace-direct refusal deleted | gate 7; demo blind | gate 7 only; demo blind, as predicted |
+| 9. `SetFurnaceDuty` AUTO guard deleted | gate 8 | gate 8 only |
+| 10. `(1 − u)·max` with the action forced direct | gates 1, 3 | seven tests across both files |
+
+**Mutation 10 is the finding.** The inverted map REGULATES. In gate 8's
+counterfactual the mutated loop settled the furnace at 1.509 MW, within 9 kW of a
+duty written by hand, where the correct loop sits well away from it. What gives it
+away is the faceplate: the transfer gate reads 0.25 where the furnace holds 0.75,
+and the demo's start gate reads the inverse of the declared position. **This is
+fork 1 (b)'s argument measured rather than asserted**: a plant cannot tell the
+inverted map from reverse action, and a person reading the snapshot can.
+
+**An instrument finding.** The pass's first launch redirected its log into a
+folder the script itself was going to create, so the shell failed before the
+script ran — exit 1, no log, no rows. It was caught only because the harness
+reported a failure rather than a result. Same shape as M16.2's `exit=1, 0 moved
+rows`: an exit code with nothing behind it is not a result.
+
+The gdext binding was built and linted behind its feature
+(`--features godot --target-dir target/godot`); both are clean, and it reads no
+control type. `scenarios/` holds **twenty-two** files, four of which declare
+`[[controls]]`. **From here, "runs byte-identical" means post-M18.1 identical,
+which is unchanged.**
+
+**M18 closes with M18.1.** Its scope, E7 for the duty actuators, is built. What
+it leaves is in the ledger: reverse action on a valve (new row E8), the
+zero-volume measurement a furnace-OUTLET loop still needs, flow control, and a
+temperature setpoint bounded by a bubble point (all E1b). No row was re-measured,
+so no claim is made that any row is past its trigger.
