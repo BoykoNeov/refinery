@@ -6012,3 +6012,50 @@ visible — one mutation read as two failures and is six. And the harness report
 `corpus exit=1, 0 moved rows` three times while the corpus binary had never
 executed at all (a forward-slash relative path handed to `cmd.exe`), which reads
 exactly like a real result. Same shape as M9.1's first probe.
+
+## M17 — the third controlled variable: temperature; opened on a decision
+
+M16 closed with nothing in `docs/DEFERRED.md` past its trigger, and B24 was
+re-measured on 2026-09-23 and not taken. M17 is a **decision**, made by the user
+on 2026-09-23 on gameplay grounds: a refinery operator mostly steers
+temperatures, and the engine regulates a level and a pressure but no temperature.
+The row is **E1b**, and only its temperature half; flow stays deferred.
+
+### M17.0 — Scoping + design note — **LANDED** 2026-09-23
+
+The note is DESIGN §21, seven forks, eight gates, eight mutations, no code. Four
+things to know before the building slice.
+
+**E1b's reason for deferring temperature is FALSE, and it is the fourth
+recurrence of the stored-versus-solved error.** A tank's and a vessel's
+temperature are fields on the graph (`TankState::temperature`,
+`VesselState::temperature`), set from the file at load and written back every
+tick. So a holdup-temperature loop has an exact measurement at tick 0 and owes no
+tick-0 rule. Measured on a throwaway plant: the snapshot's `temperature_k` at
+tick `n` equals the graph's temperature at `n − 1` bit for bit on all 5 999
+pairs. The claim is true only of a zero-volume node's temperature — a furnace or
+cooler outlet — and the deferral survives there.
+
+**The furnace-outlet loop, the obvious first case, needs two things the engine
+does not have**: reverse action (E7 — more firing raises the temperature, and the
+sign convention forces "more output lowers the measurement") and a zero-volume
+measurement (absent at tick 0). So the first build is **a cooler holding a
+tank's temperature**, which needs neither. The M8.4/§12 direction rule is
+reworded a third time: not "an outlet of the holdup" but "raising the output must
+lower the measurement" — an inlet cooler satisfies it.
+
+**The actuator is the new machinery.** Eight sites assume a valve (a first count said six); a cooler's
+authority is a duty, so the loop declares `max_duty_mw` (on the loop, not on the
+cooler, or every cooler plant's published bytes move), and `SetCoolerDuty` needs
+the same AUTO guard `SetValveOpening` already has, plus a range refusal so the
+faceplate position stays in `[0, 1]`.
+
+**The unit trap is the mirror of M10's.** Temperatures are °C in the file, an
+OFFSET: `setpoint_c` takes `+ 273.15`, `gain_per_k` takes nothing, because a
+difference of 1 °C is 1 K (the `smearing_k` precedent). Copying M10's "convert
+both at one site" would add the offset to the gain too, turning 0.05 per K into
+273.2.
+
+The demo is `scenarios/tank_temperature_control.toml` — hot water → cooler →
+tank → drain — sized on the probe so 60 °C sits at 60% of a 2 MW cooler, interior.
+**M17.1 is the building slice.**

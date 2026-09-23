@@ -11294,3 +11294,370 @@ is not a result.**
 - **The cascade's duties and the compressible valve's `γ`** keep reading a
   constant. Both are refused in combination with a shape.
 - **No published key.** `Snapshot` gains nothing; a shape is an input.
+
+## 21. The third controlled variable — temperature (M17.0) — specified before building
+
+### What licensed this, stated plainly
+
+Nothing fired. `docs/DEFERRED.md` had no row past its trigger when M16 closed,
+and on 2026-09-23 the ledger's own B24 was re-measured and **not** taken. E1b —
+temperature and flow control — carries no real trigger at all ("per variable"),
+and its distance column says "neither has a plant asking". **This milestone is a
+decision**, made by the user on 2026-09-23 on gameplay grounds: an operator in a
+refinery mostly steers temperatures, and the engine can regulate a level and a
+pressure but not one temperature. That is the M11 shape — a licence, not an
+event — and it is written here first so it cannot be read later as something
+having arrived.
+
+**The recommendation that proposed it named the wrong first case.** It was
+phrased as "hold a furnace outlet temperature", the textbook refinery loop.
+Measured below: that loop needs **two** things the engine does not have — reverse
+action (E7) and a measurement that does not exist before the first tick — and
+building either beside a new variable is what §12 fork 4 refused for M10. What
+this note specifies is **a cooler holding a holdup's temperature**, which needs
+neither. The furnace loop is deferred with both of its reasons named, not
+dropped.
+
+### The premise E1b states is false, and this is its fourth recurrence
+
+E1b, the ROADMAP's M10 close-out, CLAUDE.md, the `MeasuredVariable` and `measure`
+docs in `core::graph`, and a **user-facing refusal message in
+`build_controls`** all carry the same sentence: *a temperature really is a
+`NodeStates` quantity, absent before the first tick — resolved by the tick, not
+stored on the graph.*
+
+**That is false for both holdup kinds.** `TankState::temperature` and
+`VesselState::temperature` are fields on the graph. `build.rs` sets each from
+`c_to_k(temperature_c)`, and the engine writes each back every tick (the tank arm
+through `temperature_from_enthalpy` and `checked_temperature`, the vessel arm the
+same way). So a holdup-temperature loop reads the graph, has a genuine
+measurement at tick 0 that is **exactly** the declared figure, and owes no tick-0
+rule. `measure`'s signature does not change.
+
+The claim is true of a **zero-volume** node's temperature — a furnace's or a
+cooler's outlet, a junction's mix — which is algebraic, lives only in
+`NodeStates`, and is NaN on the snapshot at tick 0. That is exactly where §12
+left pressure's deferral (a junction), scoped to the node kinds it is true of
+rather than to the variable.
+
+**Fourth time, and the third was on this exact pair.** §10 fork 3 put pressure
+*and* temperature on the solved side; §12 corrected pressure and in the same
+paragraph re-asserted the sentence for temperature, without opening `TankState`,
+whose `temperature` field sits one line below the `mass` field §12 was citing.
+**A correction made to one half of a sentence is not a check of the other half.**
+
+**Measured on a throwaway plant** (hot source → cooler → tank → drain → sink,
+`W:\temp\claude\m17\probe.toml`, 6 000 ticks at `dt = 1 s`, not shipped): the
+snapshot's `temperature_k` for the tank at tick `n` equals the graph's
+`TankState::temperature` at tick `n − 1` **bit for bit on all 5 999 consecutive
+pairs**, and at tick 1 the snapshot reports the declared 353.15 K. So the tank's
+two temperatures are one Euler step apart — the shape M8.5 found for a tank's
+pressure and mass — and **the identity is exact**, where M10.1's vessel analogue
+needed `ΔT/T` divided out. It becomes gate 2.
+
+### The actuator is the new thing, and eight sites assume a valve
+
+Every loop in the engine writes `Valve::opening`. A cooler's actuated quantity is
+a **duty in watts**, and a controller's output is a fraction in `[0, 1]`. **Eight
+sites assume the actuator is a valve — counted by grepping `NodeKind::Valve {`
+across `core` and `scenarios`, after a first count taken from the control flow
+said six and missed the two marked †.** Each needs a stated answer:
+
+1. **The loader's actuator refusal** (`build_controls`) accepts `valve` and
+   refuses `relief_valve` by name. It gains `cooler`, for temperature loops only
+   (fork 3).
+2. **† The loader's seed of `last_output`** (`build_controls`) reads the valve's
+   declared `opening`, with a `_ => 0.0` arm commented "unreachable". For a cooler
+   it is `duty / max_duty` — and that arm stops being unreachable the moment a
+   second actuator kind is admitted, so it becomes a real arm, not a default.
+3. **Pass 1 of `run_control_loops`** reads `opening` as the position. For a
+   cooler the position is `duty / max_duty`.
+4. **Pass 3** writes `opening`. For a cooler it writes `duty = u · max_duty`.
+5. **MANUAL tracking** sets `last_output` to the position pass 1 read — above 1
+   for a cooler whose duty a human drove past the loop's range. Fork 4.
+6. **† The MANUAL→AUTO transfer** in `Engine::apply`'s `SetControllerMode` arm
+   reads the actuator's position fresh to seed the memory. Same answer as site 3,
+   and it must be the SAME function, or the transfer seeds from one notion of
+   position and the tick runs on another.
+7. **`initial_output` and back-calculation** assume a position in `[0, 1]`; they
+   are unchanged provided sites 2, 5 and 6 keep it there.
+8. **`Engine::apply`** refuses `SetValveOpening` on a valve a loop owns in AUTO,
+   because the write would be silently overwritten at the top of the next tick.
+   **`SetCoolerDuty` has no such guard**, and a cooler owned by a loop makes the
+   same silent overwrite reachable. The guard is owed.
+
+Sites 2, 3 and 6 are three readers of one quantity — "this actuator's position
+as a fraction of its authority" — so M17.1 gives it one owner, the `measure`
+shape applied to the actuator side.
+
+`ControlSnapshot::output`'s doc names its own expiry: "it gains a unit question
+only when an actuator that is not a valve un-defers". This is that moment. It
+stays a **fraction of the loop's declared range**, because the watts are already
+published on the cooler node's own `kind.duty`, and a second copy would be a
+second owner.
+
+**The first actuator that does not touch the hydraulics.** A cooler is a
+pass-through in the flow solve; its duty enters only the energy sweep. So a
+temperature loop cannot stall the solver the way M8.4's slammed drain did — but it
+can fail the tick a different way (fork 6).
+
+### Fork 1 — which node kinds can answer for a temperature
+
+`measure`'s `(variable, kind)` match, as in §12 fork 1:
+
+- **`Tank` — yes.** Stored, exact from load, measured above.
+- **`Vessel` — yes, argued rather than inherited.** Same storage, same
+  write-back, one match arm. The demo will not exercise it, so a fixture covers
+  it; refusing it would be a refusal whose only reason is that nobody built a demo
+  for it, which is not a reason a file author can act on.
+- **Zero-volume kinds — refused, and this is where the old claim is true.**
+  Furnace, cooler, junction, exchanger side, pump, valve: the temperature is
+  algebraic, lives in `NodeStates`, and is absent at tick 0. The refusal names the
+  missing tick-0 rule so it doubles as the deferral's trigger, as §12's junction
+  arm does. **This is the furnace-outlet loop, refused for its measurement before
+  its actuator is even asked about.**
+- **Column, reactor — refused by the same arm**, and the reactor is worth naming:
+  its `t_set` looks like a setpoint and is one — a declared, exactly held outlet
+  temperature. A loop on it would regulate a number the unit already holds.
+- **Source, sink, atmosphere — refused as boundary conditions**, §12's catch-all
+  reason: regulating one is regulating the scenario file.
+
+### Fork 2 — direction of action, and the third rewording of M8.4's sentence
+
+`error = measurement − setpoint` and `u = clamp(K·e + b, 0, 1)`, so a rising
+measurement raises the output. M8.4 wrote "a level loop must actuate a drain";
+§12 generalised that to "the actuator must be an **outlet** of the measured
+holdup". **A cooler on a holdup's INLET falsifies that wording and is correct**:
+too hot → more duty → colder inflow → the holdup cools. The rule was never about
+topology. **What is forced is the SIGN of the actuator's effect: raising the
+output must lower the measurement.** A drain, a vent and an inlet cooler satisfy
+it; a fill valve, a make-up valve and a **furnace** violate it.
+
+So a furnace-actuated temperature loop is reverse acting — E7, refused at load in
+both controllers by design ("reverse action needs its own declaration, not a
+sign"). Mapping `duty = (1 − u)·max_duty` would make it run and is **a negative
+gain in disguise**, exactly what E7's sentence forbids. **Refused by name,
+pointing at E7.** This is the second reason the furnace loop is out, and it
+applies to a furnace heating a holdup (`fired_gas_drum.toml`'s shape) as much as
+to a furnace outlet.
+
+The sentence is rewritten at every site that carries it — the controllers'
+negative-gain refusal, the demo headers, E7's row — because one rule worded three
+ways in three files is M10.1's expired-sentence lesson waiting to recur.
+
+### Fork 3 — the pairing table, and where the actuator's range lives
+
+Which actuators each variable accepts, enumerated rather than left to a
+fall-through:
+
+| variable | valve | cooler | furnace | relief valve |
+|---|---|---|---|---|
+| level | yes | refused | refused | refused (own reason) |
+| pressure | yes | refused | refused | refused (own reason) |
+| temperature | **refused** | **yes** | refused, E7 | refused (own reason) |
+
+**A cooler on a level loop** moves nothing the loop measures — a cut's density is
+a constant in this engine, so a tank's level does not depend on its temperature —
+and it is refused with that reason. **A cooler on a pressure loop is NOT inert,
+and the first draft of this note said it was**: a vessel's pressure is
+`m·R·T/(V·M̄)`, so a colder inflow lowers it, and the loop would even be direct
+acting. It is refused as a SCOPE decision, and the message says so: no plant asks
+for it, and its effect runs through a temperature, which makes it a cascade (E2)
+wearing one loop's name. A refusal message that states the false reason would be
+the fifth expired sentence this project has shipped. **A valve on a temperature
+loop is the one to argue**: a
+coolant valve is the real-world temperature actuator, but this engine has no
+coolant stream (M2.2's cooler is a fixed duty with no coolant side), so a valve
+could only move a temperature by changing a *process* flow — a different loop with
+a sign that has to be argued per plant. Refused for M17, with that reason, not
+ruled out.
+
+**The range belongs on the loop, not on the cooler.** A duty actuator needs a
+declared maximum to map `[0, 1]` to watts. On `NodeKind::Cooler` it would move
+every published cooler plant's bytes, because `NodeSnapshot::kind` serializes
+`NodeKind` — B17's inward blast radius, measured at M15.1 — unless it were an
+`Option` with `skip_serializing_if`, which would then be a field on a unit that
+only a loop reads. On the loop it is the loop's statement of its own authority.
+**Key: `max_duty_mw`**, following `duty_mw`; required on a cooler-actuated loop
+and refused on a valve-actuated one, in both directions — the
+`density_kg_per_m3` rule.
+
+### Fork 4 — the actuator's range as a runtime invariant
+
+A human may still write a loop-owned cooler's duty in MANUAL (that is what MANUAL
+means), and `SetCoolerDuty` accepts any non-negative duty. Above the loop's
+`max_duty`, MANUAL tracking reports a position above 1, and a MANUAL→AUTO
+transfer back-calculates a memory from an out-of-range output.
+
+Three options: clamp the tracked position (the faceplate then lies about the real
+duty); let it exceed 1 (breaks the `[0, 1]` contract every downstream site
+assumes); or **refuse `SetCoolerDuty` above the range of any loop that owns the
+cooler, in either mode**. Chosen: the refusal, naming the loop and its range. A
+cooler with a loop on it has a declared authority, and a duty outside it is a
+state the loop could never have produced and cannot transfer from. At load, the
+cooler's declared `duty_mw` must lie in `[0, max_duty_mw]` for the same reason.
+
+### Fork 5 — the key units, and the trap that mirrors M10's
+
+Every temperature in the format is °C (`temperature_c`, `tb_c`, `up_to_c`,
+`t_set_c`), converted by `c_to_k` — an **offset**, not a scale. So:
+
+- **Setpoint key `setpoint_c`**, converted with `+ 273.15`.
+- **Gain key `gain_per_k`**, converted with **nothing**. A gain multiplies a
+  temperature *difference*, and a difference of 1 °C is 1 K. The precedent is the
+  column's `smearing_k`, a temperature width, whose doc says exactly this.
+
+**The trap is the inverse of §12 fork 3's.** There, setpoint and gain both
+converted, and converting one without the other was a factor of 1e5. Here,
+**copying M10's pattern is the bug**: "convert both at one site" applies the
+offset to the gain as well, and a gain of 0.05 per K becomes 273.2 per K — a loop
+that slams its cooler between zero and full on a hundredth of a kelvin of error.
+The key is `_per_k`, not `_per_c`, so its name says there is no offset to apply.
+Gate 4 measures the first output against a hand-computed `K·e`.
+
+The wire form follows the format's in/out convention, as the pressure variant
+did: `setpoint_c` in, `{"variable":"temperature","k":333.15}` out.
+
+### Fork 6 — states a controller can now reach that a human reached only by accident
+
+- **The absolute-zero failure.** A cooler has no coolant floor, and a duty larger
+  than its inflow's sensible heat above 0 K fails the tick in `mix_inflows` with a
+  diagnosed error. A saturated loop at `max_duty` on a flow that has fallen — a
+  feed throttled by someone else — reaches it. Not refusable at load (the flow is
+  solved). Named, and the demo sizes `max_duty` far below `ṁ·cp·T_in`: 2 MW
+  against ~21 MW on the probe, so the feed would have to fall from 14.4 kg/s to
+  below ~1.4 kg/s.
+- **Liquid water below 0 °C.** Well before 0 K the same saturation drives water
+  far below freezing as a liquid. There is no solid phase; a declared
+  simplification, and a demo that reached it would be sized wrongly.
+- **Zero flow.** `mix_inflows` drops a zero-volume node's heat when nothing flows
+  (its documented KNOWN LIMITATION). A loop on a stagnant line drives an actuator
+  with no effect and winds up into the clamp — the anti-windup arm's job, and a
+  reason to reach that arm deliberately in a fixture.
+- **A nearly-empty tank** below `MIN_THERMAL_MASS_KG` holds its last valid
+  temperature, so the loop sees a frozen measurement. Emerges during a run, so it
+  cannot be refused at load; named.
+- **A boiling tank under `boiloff = "flash"`** is parked on its bubble point. A
+  setpoint above that is unreachable and the loop pins at zero duty; below it is
+  ordinary cooling. Refusing at load would need the bubble point, which moves with
+  composition, so `check_setpoint` bounds a temperature by finiteness and `> 0 K`
+  only, and the demo selects no boil-off. Named.
+
+### Fork 7 — the demo plant
+
+A new file, for the regression-anchor reason every regulation slice has shipped a
+new one: `scenarios/tank_temperature_control.toml` — hot water feed → cooler →
+tank → drain valve → sink. Measured on the probe, whose whole definition is
+recorded here because the scratch file will not outlive the session: water slate,
+`thermo = "constant"`, `flow = "newton"`, `dt = 1 s`; source 1.6 bar at 80 °C;
+feed line 20 m × 0.10 m to the cooler, 10 m × 0.10 m on to the tank; tank 3 m² ×
+10 m, initial level 3.0 m at 80 °C, no ambient exchange; drain line 10 m × 0.15 m
+to a `kv = 150` valve at opening 0.5, then 10 m × 0.15 m to a sink at
+1.01325 bar. The level settles at 4.968 m with
+14.365 kg/s through, and a fixed cooler duty puts the tank's inflow at **71.68 °C
+at 0.5 MW, 60.04 °C at 1.2 MW and 46.73 °C at 2.0 MW** — linear to four figures,
+16.64 K per MW, which is `1/(ṁ·cp)` at 4 185 J/(kg·K). So a loop holding
+**60 °C with `max_duty_mw = 2.0`** sits at **u ≈ 0.60**, interior, which is
+M8.4's coverage-gap rule. The thermal time constant is the tank's residence
+time, ~1 000 s; the probe's tank is still ~1 K from its inflow at tick 3 000
+because the level is settling too, so **the demo starts its tank at the settled
+level** and lets only temperature move.
+
+The counterfactual, as M8.4 and M10.1 did: the same file in `mode = "manual"`
+holds its declared duty and settles at that duty's temperature. The gate asserts
+the AUTO run reaches 60 °C and the MANUAL run does not.
+
+**No pair file.** `cooler_chiller.toml` has no holdup, so a diff against it would
+be the whole file. This demo, like `vessel_pressure_control.toml`, stands alone
+and says so in its header.
+
+Two things M17.1 must measure rather than inherit: the gain and integral-time
+bounds on this plant (two-sided, as M10.1 found for pressure), and whether the
+anti-windup arm is reached by a wired run — M8.4's gap. A setpoint step to 45 °C,
+below the 46.73 °C floor at full duty, reaches saturation from a command.
+
+**The tank's initial temperature is a design input, to be chosen on purpose.**
+Starting it at the feed's 80 °C against a 60 °C setpoint puts a 20 K error on the
+first tick. The first output is still the seeded `initial_output` (M8.4: the
+memory is back-calculated, so a PI loop cannot slam at startup), and the
+proportional term then FALLS as the tank cools. What climbs is the integral,
+by `K·e·dt/Tᵢ` per tick: at `0.05` per K and `Tᵢ = 600 s` a 20 K error adds
+0.0017 per tick, so the 0.4 of travel above a seed of 0.6 is used up in roughly
+240 ticks if the error stays near 20 K — and whether it does depends on how fast
+a ~1 000 s tank cools, which is a race to measure, not to argue. If the output
+reaches the clamp, the anti-windup arm is exercised by the shipped file with no
+command, closing M8.4's gap for free — or it is a startup transient the file is
+inventing. M17.1 decides which, and says
+so in the header; starting at 60 °C is the other honest choice and leaves the arm
+to a fixture.
+
+### The gates, named before building, and the vacuity each one closes
+
+1. **The tick-0 measurement is the declaration.** `last_measurement` at load
+   equals `c_to_k(temperature_c)` bit for bit, while the same node's
+   `NodeSnapshot::temperature_k` is NaN at tick 0. Vacuity closed: a gate that
+   ran one tick first would pass under a loop reading `NodeStates`.
+2. **The one-step identity, exact.** Snapshot `temperature_k` at tick `n` equals
+   the graph's temperature at `n − 1`, bitwise, over the whole demo. Asserted
+   with the direction of the lag stated, because at the settled end the reversed
+   identity also holds to many digits and fails only in the transient.
+3. **The loop holds; the manual twin does not.** AUTO within a derived tolerance
+   of 60 °C by the end, MANUAL at its own duty's temperature, the output interior.
+4. **Units: the first output equals `K·e` by hand**, `K` per K and the error from
+   a Kelvin setpoint. Must fire under the offset applied to the gain AND under the
+   offset missing from the setpoint — two mutations, one gate, both run.
+5. **Wire form, on the bytes** — `{"variable":"temperature","k":…}` — because a
+   Rust match passes under any serde tag, and a new variant's tag is exactly
+   M10.1's escape.
+6. **The refusal sweep**, each case asserting a distinctive substring of its own
+   message (M16.2: a disjunction passes on its wrong half): zero-volume
+   measurement (names the tick-0 rule), furnace actuator (names E7), valve on a
+   temperature loop, cooler on a level loop, `max_duty_mw` missing on a cooler and
+   present on a valve, `setpoint_c` on a level loop and `setpoint_m` on a
+   temperature loop, a declared cooler duty outside `[0, max]`.
+7. **`SetCoolerDuty`: refused in AUTO, accepted in MANUAL, refused above range in
+   both.** The AUTO case first shows that without the guard the duty is
+   overwritten one tick later, or the gate proves only that an error is returned.
+8. **`ControlledValue::error` returns NaN for every mismatched pair** of the three
+   variants, and a vessel fixture exercises the vessel arm.
+
+### What must not change, stated as a prediction that can be wrong
+
+All twenty shipped plants byte-identical on both fidelities, no iteration count
+moved: no existing file declares a temperature loop, and `run_control_loops`
+exits early on the eighteen with no loop. The two loop plants DO run through the
+rewritten actuator dispatch in passes 1 and 3 — **that is the prediction most
+likely to be wrong**, and it is measured against a baseline recorded before the
+first edit.
+
+The gdext binding is built and linted behind its feature
+(`--features godot --target-dir target/godot`), because a new enum variant is
+exactly what breaks a feature-gated exhaustive match the workspace lint cannot
+see.
+
+### The mutations M17.1 owes, named before building
+
+1. A tank's temperature measured from `NodeStates` instead of the graph → gates 1, 2.
+2. The °C offset applied to the gain → gate 4.
+3. The offset missing from the setpoint → gates 3, 4.
+4. The new variant given `Pressure`'s serde tag → gate 5 only (M10.1's escape).
+5. The `SetCoolerDuty` AUTO guard deleted → gate 7.
+6. A furnace mapped as `(1 − u)·max` with its refusal deleted → gate 6 only.
+7. Pass 3 writes `u` instead of `u · max_duty` → gates 3, 4.
+8. MANUAL tracks `duty` instead of `duty / max_duty` → gate 7 and a transfer
+   fixture; **predicted uncaught by the demo**, which never leaves AUTO.
+
+Run under `--no-fail-fast` (M16.2's instrument finding), and read each catch for
+why it fired before counting it (M15.1's).
+
+### Deferred, with what un-defers each
+
+- **Furnace-actuated temperature control** — needs E7. A furnace heating a holdup
+  is now the concrete plant E7's trigger was missing.
+- **Zero-volume temperature measurement (a furnace outlet)** — needs a stated
+  tick-0 rule. **The textbook loop needs both of these**, which is why it is not
+  the first one built.
+- **A valve actuating a temperature** — needs a coolant stream, or a process-flow
+  loop argued with its own sign.
+- **Flow control** — unchanged: an edge quantity, and a signature change.
+- **A temperature setpoint bounded by the bubble point** on a boiling plant.

@@ -182,6 +182,33 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M17 is OPEN (2026-09-23): the third controlled variable, temperature —
+`docs/DEFERRED.md` row E1b's temperature half.** Taken on a DECISION (the user's,
+on gameplay grounds); nothing was past its trigger. **M17.0 landed 2026-09-23** —
+the design note, DESIGN §21, seven forks, eight gates, eight mutations, no code.
+**M17.1, the building slice, is next.** Four things to know first.
+
+**The deferral's reason was false — the fourth recurrence of stored-versus-solved.**
+"A temperature really is absent before the first tick" (said below in the M10 box,
+in E1b, in two `core::graph` docs and in a user-facing refusal in
+`build_controls`) is false for holdups: `TankState::temperature` and
+`VesselState::temperature` are on the graph, exact from load. Measured: the
+snapshot's `temperature_k` at tick `n` equals the graph's at `n − 1` bit for bit.
+True only of zero-volume nodes (a furnace/cooler outlet), where it stays deferred.
+
+**The first loop is a COOLER holding a TANK, not a furnace outlet.** A furnace
+actuating a temperature is reverse acting (E7), and an outlet temperature is a
+zero-volume measurement — the textbook loop needs both missing pieces. The
+direction rule is reworded a third time: "raising the output must lower the
+measurement", which an inlet cooler satisfies.
+
+**The actuator is the new machinery**: eight valve-only sites (grepped; a first count said six), a `max_duty_mw` on
+the LOOP (not the cooler — `NodeSnapshot::kind` would move every cooler plant),
+an AUTO guard and a range refusal on `SetCoolerDuty`. **Unit trap, mirrored from
+M10**: `setpoint_c` takes `+273.15`, `gain_per_k` takes NOTHING (a °C difference
+is a K difference, `smearing_k`'s precedent). Demo: `tank_temperature_control.toml`,
+hot water → cooler → tank → drain, 60 °C at ~60% of a 2 MW cooler.
+
 **M16 is CLOSED (2026-09-08), and its scope was `docs/DEFERRED.md` row B15 —
 one constant heat capacity per cut.** Three slices: **M16.0** (DESIGN §18) a
 scoping PROBE barred from committing forks, **M16.1** (DESIGN §19) the design
