@@ -11797,3 +11797,316 @@ zero-volume measurement and flow control (both E1b), and a temperature setpoint
 bounded by a bubble point. No row was re-measured by this slice, so no claim is
 made that any row is past its trigger; the next milestone is chosen from
 `docs/DEFERRED.md` as usual.
+
+## 22. Reverse action — a furnace holding a temperature (M18.0) — specified before building
+
+### What licensed this, stated plainly
+
+Nothing fired. No row in `docs/DEFERRED.md` was past its trigger when M17 closed,
+and E7's trigger — "a plant whose only actuator is upstream of what it measures"
+— names a plant no shipped file contains. **This milestone is a decision**, made
+by the user on 2026-09-23 on the same gameplay grounds as M17: a furnace is the
+temperature actuator a player reaches for first, and the engine refuses to let a
+loop drive one.
+
+**And the demo this note specifies fires E7's trigger by being built.** It is a
+furnace upstream of the tank it heats, which is exactly the plant the trigger
+waits for. That is the M13 shape (DEFERRED, "a row whose trigger names its own
+consumer can be fired by building that consumer") and it is written here so it
+cannot be read later as an event having arrived. What has to be argued instead is
+why now: M17 built the actuator side (`actuator_position`, a duty range on the
+loop, the command guard) for a cooler, so a furnace is one arm on machinery that
+exists, and **the only thing between a player and a furnace loop is the sign
+convention** — which is this note's subject.
+
+**Scope: one of the textbook furnace loop's two missing pieces, not both.** §21
+found that "hold a furnace OUTLET temperature" needs reverse action AND a
+zero-volume measurement, which does not exist before the first tick. M18 builds
+reverse action and measures a HOLDUP the furnace feeds, where the measurement is
+stored and exact from load. The outlet measurement stays deferred (E1b), and its
+refusal message is unchanged.
+
+### The sentence sites, counted before writing
+
+M17 counted eight sites that assumed a valve. The analogue here is every place
+that says reverse action is **not expressible**, because each becomes false in
+M18.1, and M10.1's lesson is that an expired sentence left on the page is what the
+next reader believes. Grepped across `crates/`, `scenarios/`, `docs/` and
+`CLAUDE.md` for `E7`, `reverse`, `not express`, `must LOWER`, `direct acting`
+and `outlet of the measured`:
+
+1. `solvers::control::ProportionalController` — the type doc ("reverse action,
+   which is not expressible today") and the `new()` refusal ("a negative one is
+   reverse action, which this fidelity does not express").
+2. `PiController` — the type doc and its `new()` refusal, same words.
+3. `build_controls`' furnace arm — "deferred as docs/DEFERRED.md E7".
+4. `ControlLoop::actuator`'s doc in `core::graph` — "a `Cooler` on a temperature
+   loop".
+5. `ControlledValue::error`'s doc — "a loop on a tank's OUTLET valve is direct
+   acting".
+6. The `Controller` trait's `update` doc — "The error term is
+   `ControlledValue::error(measurement, setpoint)`".
+7. Three scenario headers: `tank_level_control.toml` ("on a fill valve that is
+   runaway"), `vessel_pressure_control.toml` ("not expressible today"),
+   `tank_temperature_control.toml` ("reverse action … is refused").
+8. Two tests that assert on the old wording: `control_reference.rs`'s "a
+   reverse-acting gain" case (asserts the substring `reverse action`) and
+   `temperature_control_reference.rs`'s furnace case (asserts
+   `docs/DEFERRED.md E7`).
+9. The E7 and E1b rows, and CLAUDE.md's M17 box.
+
+Sites 1, 2 and the first test in 8 keep their REFUSAL — a negative gain is still
+refused — and change their REASON: reverse action is now expressible, by
+declaration, so a negative gain is refused because it would be a second way to
+say the same thing, not because the thing cannot be said. The second test in 8
+flips: the furnace case becomes an accepted plant, and the refusal it used to
+assert moves to "a furnace loop that does not declare reverse action".
+
+**The rule gets its fourth wording, and it is the last one the sign convention
+needs.** M8.4: "a level loop must actuate a drain". §12: "an outlet of the
+measured holdup". §21: "raising the output must lower the measurement". Now:
+**a DIRECT-acting loop's output must lower its measurement as it rises; a
+REVERSE-acting loop's must raise it; the loop declares which.** The three earlier
+wordings were each a special case of the direct half.
+
+### Fork 1 — where the sign lives
+
+The constraint is the one `ControlledValue::error`'s doc already states: the
+error's sign convention lives in one function, so a snapshot reader
+reconstructing the error from two published numbers can never disagree with the
+controller. Four candidate homes:
+
+- **(a) A negative gain.** Refused since M8.2 and still refused. It puts the
+  direction inside a tuning number, where it cannot be told from a typo, and
+  every doc that says "a positive gain raises the output" becomes false for half
+  the loops.
+- **(b) An inverted actuator map, `duty = (1 − u)·max`.** Refused by §21 as a
+  negative gain in disguise, and the reason is now concrete: **the faceplate
+  lies.** `last_output` would read 0.9 while the furnace fires at 10%, MANUAL
+  tracking would report the inverse of the real duty, and a human reading the
+  snapshot sees a loop "wide open" on a cold furnace. Under a declared action,
+  `actuator_position` for a furnace is `duty / max_duty`, the cooler's map, and
+  the faceplate reads the real firing fraction.
+- **(c) The action inside each controller, fixed at construction.** Two owners:
+  the controller for the arithmetic, the loop (or nothing) for the snapshot.
+  Rejected for the reason `error` exists at all.
+- **(d) The action on the LOOP, passed into the one error function.** Chosen.
+
+So: a new `ControlAction { Direct, Reverse }` in `core::graph`, a field
+`ControlLoop::action`, and **`ControlledValue::error(measurement, setpoint,
+action)`** — the existing single owner gains the argument rather than a second
+function appearing beside it. Direct returns `measurement − setpoint` exactly as
+today (the same subtraction, not `1.0 ×` it, so the direct path's bits cannot
+move); Reverse returns `setpoint − measurement`. The cross-variable `NaN`
+backstop is unchanged and applies to both.
+
+**The argument-swap trick is rejected by name.** `error(setpoint, measurement)`
+at a call site produces the reverse error today with no new type. It hides the
+direction in the order of two arguments of the same type, where a reader cannot
+see it and a refactor that "tidies" the order silently turns a furnace loop
+direct.
+
+The controller trait changes: `update(measurement, setpoint, action, dt)` and
+`seed_from_output(output, measurement, setpoint, action)`. **Three call sites
+reach the error and all three must take the action**, or the loop seeds against
+one sign and runs against the other:
+
+- `PiController::new` — the load-time seed from `initial_output` happens inside
+  the constructor, so the constructor takes the action too;
+- `Engine::apply`'s `SetControllerMode` arm — the MANUAL→AUTO seed;
+- pass 2 of `run_control_loops` — the per-tick update.
+
+The action is **published on `ControlSnapshot`**, because without it a reader
+rebuilding `measurement − setpoint` from the snapshot gets the wrong sign on
+every reverse loop — which is the property the single owner exists to protect.
+
+### Fork 2 — declared, derived, or both
+
+For the two DUTY actuators the sign is physics, not topology: more cooling lowers
+a temperature and more firing raises it, wherever the unit sits. So the loader
+COULD derive the action from the actuator's kind and no file would ever say it.
+
+**Chosen: declared and checked.** A loop declares `action = "direct" |
+"reverse"`; the loader refuses a declaration that contradicts the actuator's
+physics, in both directions:
+
+| actuator | on | direct | reverse |
+|---|---|---|---|
+| valve | level, pressure | yes | **refused** (fork 3) |
+| cooler | temperature | yes | refused: more cooling lowers a temperature |
+| furnace | temperature | refused: more firing raises it | **yes** |
+
+The argument, stated with its weakness: today the declaration is **fully
+determined** by the actuator on every legal pairing, which is close to the M16
+failure mode of a declared value nothing needs. What separates it: (i) E7's own
+sentence, written at M10.0 and repeated at M17, is that reverse action "needs its
+own declaration, not a sign" — a file whose furnace loop runs without saying so
+is a file whose most surprising property is invisible; (ii) the valve pairing
+(fork 3) is topology-dependent, and when it un-defers the declaration becomes
+free information — a format that derives the action for duty actuators and
+declares it for valves would carry two rules for one concept; (iii) the check is
+where an author's misunderstanding surfaces at load rather than as a loop that
+runs its furnace to zero. The honest cost is one line in a file that could have
+been inferred, and the demo's header says so.
+
+**Absence means direct**, via `serde(default)`, and the snapshot field is
+skipped when direct. M8.5's test for a default is whether absence is a **true
+statement**, and here it is: every loop written before M18 is direct, by the
+refusal in force when it was written. So the three existing loop files load
+unchanged and publish unchanged bytes. That is a prediction and it can fail
+(below).
+
+### Fork 3 — reverse action on a valve: refused, and a new ledger row
+
+A fill valve holding a level, or a make-up valve holding a pressure, is reverse
+acting and is the plant E7's trigger literally describes. It is refused in M18,
+with its own reason: **a valve's sign is topology, not physics** — the same valve
+is direct on a drain and reverse on a fill line, and only its place relative to
+the measured holdup says which. The loader cannot check a valve's declaration
+without walking the graph for "upstream of", which no loader site does today,
+and a declaration nothing checks is a sign in disguise again. No plant asks for
+it. **New row E8**, trigger "a plant whose only actuator on a level or pressure
+is a valve upstream of the holdup", with the check it would owe named.
+
+### Fork 4 — the furnace as an actuator: site 8 happens again
+
+M17 built the actuator owner for two kinds. The furnace is a third arm at each
+site, and each arm is a place a mutation can hide:
+
+- `PlantGraph::actuator_position` / `set_actuator_position` gain
+  `(Furnace { duty }, Some(max))`: `duty / max` and `max · position`, the
+  cooler's map verbatim. `unpaired_actuator`'s message names the furnace.
+- `build_controls`' pairing table: `(Temperature, Furnace)` requires
+  `max_duty_mw`, refuses a non-positive one, and refuses a declared `duty_mw`
+  above it (§21 fork 4's load-time check, mirrored).
+- **`Command::SetFurnaceDuty` has neither guard today**: it writes the duty with
+  no check for a loop that owns the furnace. In AUTO the write is overwritten at
+  the top of the next tick; above the loop's range in either mode it is a
+  position the loop could never have produced. Both are owed, the cooler's two
+  guards mirrored, and **written as one function shared by both duty commands**,
+  because two copies of a guard are the M17 site-count lesson waiting to recur.
+- `max_duty_mw`'s doc and its refusal on a valve name "a duty actuator's range —
+  a cooler's or a furnace's".
+
+### Fork 5 — states a reverse loop can now reach
+
+- **No ceiling.** A cooler had an absolute-zero failure; a furnace has the
+  opposite and nothing stops it: a loop saturated at `max_duty` on a falling
+  flow heats a liquid without bound, and on `boiloff = "none"` there is no
+  phase check, so water past 100 °C stays liquid. Not refusable at load (the flow
+  is solved). The demo's ceiling at full duty is 73.3 °C (below).
+- **A boiling tank.** Under `boiloff = "flash"` a heated tank parks on its bubble
+  point and the extra heat boils inventory off. A setpoint above the bubble point
+  pins the loop at full firing and the tank **drains itself through its vent**.
+  The mirror of §21's cooler case, and worse: there the loop idled, here it
+  empties a tank. Named; `check_setpoint` still bounds a temperature only by
+  finiteness and `> 0 K`, for §21's reason (the bubble point moves with
+  composition).
+- **Zero flow.** A furnace on a stagnant line heats nothing (`mix_inflows`'
+  documented limitation drops a zero-volume node's heat), so the loop winds into
+  the upper clamp — the anti-windup arm, as for the cooler.
+- **The outlet measurement stays refused.** A loop pointed at the furnace itself
+  still gets §21's zero-volume message.
+
+### Fork 6 — the demo plant
+
+`scenarios/tank_temperature_heating.toml`, a **near-twin of
+`tank_temperature_control.toml`**: same hydraulics, same tank, same tuning. The
+differences are only those reverse action requires, so the diff between the two
+files IS the cost of the feature:
+
+- the feed at **40 °C** instead of 80 °C;
+- a `furnace` in place of the `cooler`;
+- `action = "reverse"` on the loop;
+- the tank starting at the feed's 40 °C instead of 80 °C.
+
+Measured on a probe (the M17 file with the cooler turned into a furnace and the
+loop removed, 8 000 ticks, not shipped; the script is
+`W:\temp\claude\m18\probe.py` and the plant is fully described by this
+paragraph plus `tank_temperature_control.toml`). The hydraulics carry over
+unchanged, and so does the slope: from a 20 °C feed the furnace outlet reads
+**36.64 / 53.28 / 59.93 / 69.92 / 86.56 °C at 1.0 / 2.0 / 2.4 / 3.0 / 4.0 MW**,
+i.e. **16.64 K per MW**, `1/(ṁ·cp)` at 14.365 kg/s — the figure §21 measured for
+the cooler. So from 40 °C:
+
+- **setpoint 60 °C** needs ~1.20 MW, and at `max_duty_mw = 2.0` the loop settles
+  at u ≈ 0.60 — the exact mirror of M17's 80 → 60 °C at the same range;
+- **the MANUAL twin** declares 0.5 MW (`initial_output = 0.25`) and parks near
+  **48.3 °C**, far enough from 60 °C that no gate confuses it with holding;
+- **the ceiling at full duty is ~73.3 °C**, so a setpoint command to **75 °C**
+  pins `u = 1` and reaches the anti-windup arm from a command, M17's method.
+
+The mirror is deliberate and has one risk worth naming: a symmetric plant can
+hide an asymmetric bug. It does not hide the one that matters, because a furnace
+loop with the action ignored runs direct, drives the furnace to zero while the
+tank is below setpoint, and parks the tank at the feed's 40 °C.
+
+The tank starts **20 K below** setpoint, which is the design input the seed gate
+needs: at zero error the seed's sign is invisible.
+
+### The gates, named before building
+
+1. **The sign, by hand.** The first AUTO output equals
+   `K·(setpoint − measurement) + b`, computed by hand from the published numbers
+   and the published action. Fires under an ignored action.
+2. **The seed is signed.** With the tank 20 K below setpoint, the first output
+   equals the declared `initial_output` exactly. An unsigned seed back-calculates
+   `b = u − K·e` with the wrong-signed `e` and steps the first output by `2·K·e`
+   (4.0 at `K = 0.1`, clamped to 1): fires.
+3. **The loop holds, the twin does not.** AUTO within a derived tolerance of
+   60 °C by the end, u interior; MANUAL parks at its own duty's temperature,
+   faceplate 0.25.
+4. **Anti-windup on the reverse side.** A 75 °C setpoint pins `u = 1`; returning
+   to 60 °C releases it on the next tick. Fires under a sign applied to the
+   proportional term but not to the clamp branch's back-calculation.
+5. **MANUAL→AUTO is bumpless on a reverse loop**, through `Engine::apply`, with
+   the tank away from setpoint. Fires under the transfer seeding unsigned.
+6. **Wire form, on the bytes.** `"action":"reverse"` present on the demo's
+   control snapshot; the key ABSENT on all three direct loop plants. A Rust match
+   passes under any tag, which is M10.1's escape.
+7. **The refusal sweep**, each case asserting a distinctive substring of its own
+   message: furnace loop with no action; cooler declaring reverse; valve declaring
+   reverse (names E8); an unknown action string; furnace loop without
+   `max_duty_mw`; furnace declared duty above range; a negative gain (its reason
+   rewritten).
+8. **`SetFurnaceDuty`**: refused in AUTO (with the counterfactual first — written
+   straight onto the graph, the duty is overwritten one tick later), accepted in
+   MANUAL, refused above range in both.
+
+### What must not change, stated as a prediction that can be wrong
+
+All twenty-one shipped plants byte-identical on both fidelities, no iteration
+count moved, against a baseline recorded **before the first edit of M18.1**. The
+three loop plants now pass an action through `error`, and the direct arm must be
+the same subtraction. **This is the prediction most likely to fail**: a missed
+`skip_serializing_if` moves every loop plant's bytes, and a direct arm written as
+anything but the bare subtraction is a bit-level bet.
+
+### The mutations M18.1 owes, named before building
+
+1. The action ignored in `error` (Reverse returns `m − sp`) → gates 1, 2, 3.
+2. The load-time seed passes `Direct` → gate 2 only.
+3. The MANUAL→AUTO seed passes `Direct` → gate 5 only.
+4. The anti-windup back-calculation uses the unsigned error while `update`'s
+   proportional term is signed → gate 4.
+5. `action` published without `skip_serializing_if` → the byte-identity
+   prediction (three plants move) and gate 6.
+6. `action` omitted from the snapshot → gate 6.
+7. The cooler-reverse refusal deleted → gate 7 only.
+8. The furnace-direct refusal deleted → gate 7; the demo does not catch it,
+   because the demo declares reverse.
+9. The `SetFurnaceDuty` AUTO guard deleted → gate 8.
+10. The furnace mapped as `(1 − u)·max` with the action forced direct → gates 1
+    and 3 (the faceplate half).
+
+Run under `--no-fail-fast`, each catch read for why it fired.
+
+### Deferred, with what un-defers each
+
+- **Reverse action on a valve** (fill valve, make-up valve) — new row E8; needs
+  a loader check of "upstream of the holdup".
+- **Zero-volume measurement (a furnace outlet)** — unchanged in E1b; the
+  textbook loop now needs only this.
+- **A temperature setpoint bounded by the bubble point**, now with a worse
+  failure (a heated boiling tank empties) — unchanged in E1b.
+- **Flow control** — unchanged.

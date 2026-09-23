@@ -6099,3 +6099,46 @@ mutations were caught. The one the note listed first is not expressible, for M10
 half, is built. The furnace loop (E7), the zero-volume measurement and flow
 control stay in the ledger. No row was re-measured, so the next milestone is
 chosen from `docs/DEFERRED.md` as usual.
+
+## M18 — reverse action: a furnace holding a temperature; opened on a decision
+
+Taken on the user's decision (2026-09-23), on the gameplay grounds M17 was: a
+furnace is the temperature actuator a player reaches for first. Its scope is
+`docs/DEFERRED.md` row E7 for the DUTY actuators. Nothing was past its trigger,
+and the demo fires E7's own trigger by being built — said in the note's first
+paragraph rather than left to be noticed.
+
+### M18.0 — Scoping + design note — **LANDED** 2026-09-23
+
+The note is DESIGN §22: six forks, eight gates, ten mutations, no code. Four
+things to know before the building slice.
+
+**The sign lives on the LOOP and is passed into the one error function.**
+`ControlledValue::error(measurement, setpoint, action)` stays the single owner of
+the sign; a negative gain, an inverted actuator map `(1 − u)·max`, an action held
+inside each controller and swapping the two arguments at a call site are all
+rejected by name. The inverted map is rejected because **the faceplate would
+lie** — 0.9 on the panel while the furnace fires at 10%. Three call sites reach
+the error (the constructor's seed, the MANUAL→AUTO seed, the tick's update) and
+all three take the action. It is published on `ControlSnapshot`, skipped when
+direct.
+
+**Declared and checked, with the weakness stated.** `action = "direct" |
+"reverse"`, absent meaning direct. On every legal pairing today the action is
+forced by the actuator — cooler direct, furnace reverse — so the key is close to
+a value nothing needs; it is kept for E7's own "needs its own declaration"
+sentence, for the valve case where it becomes free information, and so an
+author's mistake surfaces at load. Reverse action on a VALVE is refused: its sign
+is topology, not physics, and a check the loader cannot make is a sign in
+disguise. New row **E8**.
+
+**`SetFurnaceDuty` has neither of the guards M17 gave `SetCoolerDuty`**, and both
+are owed, written once for both duty commands.
+
+**The demo is a near-twin of M17's**: `tank_temperature_heating.toml`, a 40 °C
+feed, a furnace, `action = "reverse"`, 60 °C at ~0.60 of 2 MW. Measured on a
+probe: 16.64 K per MW, the cooler's slope, so the hydraulics carry over
+unchanged. The MANUAL twin parks near 48.3 °C, full duty tops out near 73.3 °C,
+and a 75 °C command reaches the anti-windup arm. The tank starts 20 K below
+setpoint so a seed with the wrong sign is visible.
+

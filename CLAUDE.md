@@ -183,6 +183,18 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M18 is OPEN (2026-09-23): reverse action — a furnace holding a temperature,
+`docs/DEFERRED.md` row E7 for the duty actuators.** Taken on a DECISION (the
+user's, on gameplay grounds, as M17); the demo fires E7's own trigger by being
+built. **M18.0 landed 2026-09-23** — the design note, DESIGN §22, six forks,
+eight gates, ten mutations, no code. The sign moves onto the LOOP as a declared
+`action = "direct" | "reverse"` (absent = direct) passed into
+`ControlledValue::error`, which stays the single owner; the declaration is
+checked against the actuator (cooler direct, furnace reverse); reverse on a valve
+is refused as new row E8. `SetFurnaceDuty` gains the two guards `SetCoolerDuty`
+has. Demo: `tank_temperature_heating.toml`, M17's plant mirrored — 40 °C feed,
+furnace, 60 °C at ~0.60 of 2 MW. **M18.1 builds it.**
+
 **M17 is CLOSED (2026-09-23): the third controlled variable, temperature —
 `docs/DEFERRED.md` row E1b's temperature half.** Two slices, M17.0 and M17.1. The
 furnace loop (E7), the zero-volume measurement and flow control stay in the
