@@ -6087,10 +6087,15 @@ arm is reached by a 45 °C setpoint command, below the 46.73 °C floor at full
 duty, and by the vessel fixture's own startup, where compression heats the
 receiver as it fills.
 
-**The mutation the note predicted the demo would miss, the demo caught.** The
-demo carries its MANUAL twin, which asserts its faceplate. All nine mutations
-were caught. The one the note listed first is not expressible, for M10.1's reason
+**The mutation the note predicted the demo would miss, the demo caught**, through
+its MANUAL twin, and the transfer fixture the note named missed it. All nine
+mutations were caught. The one the note listed first is not expressible, for M10.1's reason
 (`measure` cannot see `NodeStates`).
 
 **`scenarios/` holds twenty-one files; three declare `[[controls]]`.** From here,
 "runs byte-identical" means post-M17.1 identical.
+
+**M17 is CLOSED (2026-09-23) with this slice.** Its scope, E1b's temperature
+half, is built. The furnace loop (E7), the zero-volume measurement and flow
+control stay in the ledger. No row was re-measured, so the next milestone is
+chosen from `docs/DEFERRED.md` as usual.

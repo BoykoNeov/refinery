@@ -11669,8 +11669,8 @@ M17.1 built what the forks specify: `MeasuredVariable::Temperature`,
 `check_setpoint`, `ControlLoop::max_duty`, `PlantGraph::actuator_position` and
 `set_actuator_position` as the single owner of the actuator side, the pairing
 table in `build_controls`, the `SetCoolerDuty` guard, and
-`scenarios/tank_temperature_control.toml`. Eight things came out differently from
-the note.
+`scenarios/tank_temperature_control.toml`. One prediction held; the rest of what
+follows came out differently from the note.
 
 **The prediction most likely to be wrong was right.** All twenty pre-M17 plants
 are byte-identical on both fidelities, and no iteration count moved: 40 of 40
@@ -11679,14 +11679,16 @@ first edit. That includes the two loop plants, which now run passes 1 and 3
 through the new owner. The valve arm of that owner reads and writes `opening`
 bare, with no `× 1` or `÷ 1` on the path, and that is why nothing moved.
 
-**Mutation 8 WAS expressible, and the demo caught it.** The note predicted that
-"MANUAL tracks the raw duty" could only be written by breaking the position
-owner, and that the demo would not catch it because it never leaves AUTO. Both
-halves were wrong. The mutation can be written at pass 2's MANUAL arm, which
-multiplies the owner's fraction back up by `max_duty`, and the owner stays
-intact. The demo's gate 3 runs a MANUAL twin, and that twin asserts its faceplate
-reads 0.25. So the mutation fires there as well as in gate 7. A demo that
-carries its own counterfactual is not an AUTO-only demo.
+**Mutation 8's prediction was one right and two wrong.** The note said "gate 7 and
+a transfer fixture; predicted uncaught by the demo". Gate 7 caught it. **The
+transfer fixture did not**: the transfer seeds from the position owner fresh and
+never reads the value MANUAL tracked, so a faceplate that tracks the raw duty
+leaves it untouched. **The demo did catch it**: gate 3 runs a MANUAL twin that
+asserts its faceplate reads 0.25, so a demo that carries its own counterfactual is
+not an AUTO-only demo. The mutation was written at pass 2's MANUAL arm, which
+multiplies the owner's fraction back up by `max_duty`, and the owner stays intact.
+A review during the build had suggested it might be inexpressible there, and it
+was not.
 
 **The demo's declared duty moved, because the note's would have made gate 3
 vacuous.** The note sized the plant so the loop settles at u ≈ 0.60. Declaring
@@ -11711,11 +11713,11 @@ feed's 80 °C, for a real 20 K pull-down.
 So the choice the note named does exist. It was decided against, for the note's
 own reason: a startup that saturates only because of how the file is tuned is a
 transient the file invented, not one the plant asked for. The anti-windup arm is
-reached **by a command** instead. A step to 45 °C sits below the 46.73 °C the
-inflow reaches at full duty, pins `u = 1`, and releases on the first tick after
-the setpoint returns. It is also reached **by the vessel fixture's own startup**
-(below), with no command at all. That closes M8.4's gap twice, and neither time
-by mistuning a shipped file.
+reached **by a command** instead, as M10.1 already did on its own shipped plant.
+A step to 45 °C sits below the 46.73 °C the inflow reaches at full duty, pins
+`u = 1`, and releases on the first tick after the setpoint returns. It is also
+reached with no command by the vessel fixture's startup (below), which is a
+fixture and not a shipped file.
 
 **The gain's upper bound is far away.** 50 per K still settles and 100 does not.
 A 1 K setpoint step moves the output by `gain_per_k`, which is nowhere near a
@@ -11735,9 +11737,11 @@ a fixed vent:
 - It holds 120 °C at u = 0.3126 of 0.1 MW. Its MANUAL twin parks at 136.49 °C.
 - The loop measures the declared 150 °C at tick 0, while the receiver's own
   `temperature_k` is NaN.
-- On the way up the receiver HEATS as it fills (the compression term), so the
-  loop saturates at full duty during startup. That is the anti-windup arm reached
-  by the physics rather than by the file.
+- The receiver runs hotter than its own feed during startup: the MANUAL twin
+  reads **167.5 °C at tick 1 000 against a 150 °C header**, and the AUTO loop
+  saturates at full duty on the way. The candidate mechanism is the vessel's
+  compression term as it fills from 12 bar. It is recorded as a candidate, not
+  isolated.
 
 **Three things were owed that the note did not list.**
 
@@ -11745,7 +11749,7 @@ a fixed vent:
   pairing broke `control_reference.rs`'s assertion of "not a valve" on a level
   loop pointed at a tank. That wording is still true for level and pressure, so
   it stays there, and a temperature loop gets "not a cooler".
-- **The unknown-variable refusal's stand-in expired a third time.** It went
+- **The unknown-variable refusal's stand-in expired a second time.** It went
   `"pressure"` → `"temperature"` → **`"flow"`**, the shape of M8.3's `"pi"` →
   `"pid"`.
 - **A table replaces the per-arm foreign-key pairs.** With three variables each
@@ -11761,13 +11765,13 @@ One tick later the duty is gone.
 **Mutation 1 is not expressible, for M10.1's reason.** `measure` takes `&self` on
 the graph, and `NodeStates` is private to `Engine`, so "read the temperature from
 `NodeStates`" cannot be written at the site. Gate 1's NaN half defends a fault
-the module boundary already prevents. That is the fifth gate in this project with
-no power over its own subject, and it is kept because it is the first thing the
+the module boundary already prevents. It joins this project's other gates with
+no power over their own subjects, and is kept because it is the first thing the
 next person will reach for.
 
 **The mutation pass**: one edit at a time, `--no-fail-fast`, every file's hash
 checked after each restore. Nine edits, the note's eight minus the inexpressible
-one, plus three range refusals. **All nine caught**:
+one, plus two range refusals. **All nine caught**:
 
 | edit | caught by |
 |---|---|
@@ -11777,7 +11781,7 @@ one, plus three range refusals. **All nine caught**:
 | `SetCoolerDuty` AUTO guard deleted (5) | gate 7 alone |
 | furnace mapped as `(1 − u)·max`, refusal deleted (6) | gate 6 alone, as predicted |
 | pass 3 writes `u` watts (7) | gate 4, the transfer fixture, four demo/vessel gates |
-| MANUAL tracks raw duty (8) | gate 7 **and the demo's MANUAL twin** — the prediction was wrong |
+| MANUAL tracks raw duty (8) | gate 7 and the demo's MANUAL twin; **not** the transfer fixture, which the note named |
 | load-time duty-range refusal deleted | gate 6 alone |
 | `SetCoolerDuty` range refusal deleted | gate 7 alone |
 
@@ -11786,3 +11790,10 @@ The gdext binding was built and linted behind its feature
 `scenarios/` holds **twenty-one** files, three of which declare `[[controls]]`.
 **From here, "runs byte-identical" means post-M17.1 identical, which is
 unchanged.**
+
+**M17 closes with M17.1.** Its scope was E1b's temperature half, and that is
+built. What it leaves is already in the ledger: the furnace loop (E7), the
+zero-volume measurement and flow control (both E1b), and a temperature setpoint
+bounded by a bubble point. No row was re-measured by this slice, so no claim is
+made that any row is past its trigger; the next milestone is chosen from
+`docs/DEFERRED.md` as usual.

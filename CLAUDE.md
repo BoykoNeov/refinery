@@ -183,8 +183,11 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M17 is OPEN (2026-09-23): the third controlled variable, temperature —
-`docs/DEFERRED.md` row E1b's temperature half.** Taken on a DECISION (the user's,
+**M17 is CLOSED (2026-09-23): the third controlled variable, temperature —
+`docs/DEFERRED.md` row E1b's temperature half.** Two slices, M17.0 and M17.1. The
+furnace loop (E7), the zero-volume measurement and flow control stay in the
+ledger; no row was re-measured, so the next milestone is chosen from
+`docs/DEFERRED.md`. Taken on a DECISION (the user's,
 on gameplay grounds); nothing was past its trigger. **M17.0 landed 2026-09-23** —
 the design note, DESIGN §21, seven forks, eight gates, eight mutations, no code.
 **M17.1 landed 2026-09-23** and built it — see the M17.1 paragraph below, and
@@ -225,8 +228,9 @@ The demo declares 0.5 MW (u = 0.25), not the 1.2 MW the note sized, because at
 1.2 MW the MANUAL twin parks at 60.04 °C and no gate could tell it from holding.
 It parks at 71.71 °C instead. The shipped tuning never clamps; the anti-windup arm
 is reached by a 45 °C setpoint command and by the vessel fixture's own startup.
-All nine mutations are caught, and the one the note predicted the demo would miss
-(MANUAL tracking the raw duty) is caught by the demo's own MANUAL twin.
+All nine mutations are caught. The one the note predicted the demo would miss
+(MANUAL tracking the raw duty) is caught by the demo's own MANUAL twin, and missed
+by the transfer fixture the note named.
 `scenarios/` holds **twenty-one** files.
 
 **M16 is CLOSED (2026-09-08), and its scope was `docs/DEFERRED.md` row B15 —

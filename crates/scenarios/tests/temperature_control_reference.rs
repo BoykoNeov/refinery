@@ -617,10 +617,12 @@ fn a_loop_owned_cooler_refuses_a_write_the_loop_would_overwrite() {
     );
 }
 
-/// **The MANUAL→AUTO transfer is bumpless on a duty actuator** — the substitute
-/// for §21's mutation 8, which is not expressible where the note put it (MANUAL
-/// tracking reads the same owner the seed and the transfer read, so "track the
-/// raw duty" can only be written by breaking all three).
+/// **The MANUAL→AUTO transfer is bumpless on a duty actuator.**
+///
+/// It catches pass 3 writing `u` watts (§21 mutation 7). It does NOT catch
+/// MANUAL tracking the raw duty (mutation 8), and cannot: the transfer seeds from
+/// the position owner fresh and never reads what MANUAL tracked. That mutation is
+/// gate 7's and the demo's MANUAL twin's.
 ///
 /// The seed and the tick read one function, so the transfer's position IS the
 /// next tick's position; the only arithmetic between them is the back-calculated
