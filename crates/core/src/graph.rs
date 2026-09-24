@@ -868,7 +868,8 @@ pub struct ControlLoop {
     /// Scenario-given name, unique per plant. What a faceplate is labelled with.
     pub name: String,
     /// The node whose state is measured. A `Tank` for a level loop, a `Vessel`
-    /// for a pressure loop; the loader refuses every other pairing through
+    /// for a pressure loop, a `Tank` or `Vessel` for a temperature loop (M17) or
+    /// a `Furnace` or `Cooler` OUTLET (M19); the loader refuses every other pairing through
     /// `PlantGraph::measure`, which is the single owner of which kinds can answer
     /// for which variable and carries a distinct reason for each refusal.
     pub measurement_node: NodeId,
@@ -922,12 +923,18 @@ pub struct ControlLoop {
     ///
     /// The two differ by one tick (fork 3), and reporting the fresh one would make
     /// a lagging loop look instantaneous, hiding the lag from exactly the person
-    /// debugging it. Real from load rather than optional: **all three** variables
-    /// this engine controls are STORED quantities — a tank's mass, a vessel's
-    /// mass, and either holdup's temperature all live on the graph — so the loader
-    /// seeds this by taking the measurement once, and a snapshot before the first
-    /// tick reports a true level, pressure or temperature instead of a NaN or an
-    /// absence.
+    /// debugging it.
+    ///
+    /// **`None` exactly when the loop had nothing it could act on** (M19,
+    /// docs/DESIGN.md §23): a furnace or cooler OUTLET before the first tick, or
+    /// while it is stagnant. Never a stand-in and never "healthy" — M11's rule for
+    /// `cavitation`. Every other measurement is a STORED quantity — a tank's mass,
+    /// a vessel's mass, a holdup's temperature all live on the graph — so for
+    /// those the loader seeds this by taking the measurement once and it is
+    /// `Some` from load: a snapshot before the first tick reports a true level,
+    /// pressure or temperature instead of a NaN or an absence. That is why the
+    /// `Option` is byte-neutral for every loop written before M19, and also why
+    /// no corpus run can defend the absent case (§23 fork 3).
     ///
     /// That contrast is sharpest on the pressure loop and is worth reading once:
     /// at tick 0 this field holds the vessel's declared pressure while
@@ -936,7 +943,7 @@ pub struct ControlLoop {
     /// the fact that one exists before the other is the whole of what §12
     /// corrected. The temperature loop repeats it exactly: `temperature_k` is NaN
     /// at tick 0 and this holds the declared holdup temperature (§21, gate 1).
-    pub last_measurement: ControlledValue,
+    pub last_measurement: Option<ControlledValue>,
     /// The actuator position this loop last put on the faceplate, dimensionless
     /// in `[0, 1]` — for a cooler, a fraction of `max_duty`.
     ///
@@ -1426,7 +1433,15 @@ impl PlantGraph {
             // but the bubble point moves with composition, which makes it a state
             // and not a range. A temperature has no geometric bound the way a
             // level has a height; absolute zero is the only one it has.
-            (ControlledValue::Temperature { k }, NodeKind::Tank(_) | NodeKind::Vessel(_)) => {
+            // A furnace or cooler OUTLET takes the same bound (M19): an outlet
+            // has no geometry either, and its ceiling is a function of the flow.
+            (
+                ControlledValue::Temperature { k },
+                NodeKind::Tank(_)
+                | NodeKind::Vessel(_)
+                | NodeKind::Furnace { .. }
+                | NodeKind::Cooler { .. },
+            ) => {
                 if !k.is_finite() || k.value() <= 0.0 {
                     return Err(SimError::InvalidCommand(format!(
                         "temperature setpoint {} K on '{}' is not a finite temperature above \
@@ -1438,7 +1453,8 @@ impl PlantGraph {
                 Ok(())
             }
             (ControlledValue::Temperature { .. }, _) => Err(SimError::InvalidCommand(format!(
-                "node '{}' is not a holdup, so it has no temperature setpoint range",
+                "node '{}' is neither a holdup nor a furnace or cooler outlet, so it has no \
+                 temperature setpoint range",
                 self.node(node).name
             ))),
         }
@@ -1467,8 +1483,9 @@ impl PlantGraph {
     /// never owed.
     ///
     /// The claim is true of a `Junction`, whose pressure is an unknown of the
-    /// solve, and it stays deferred there; the junction arm below names the
-    /// missing tick-0 rule so the refusal doubles as that deferral's own trigger.
+    /// solve. The tick-0 rule it lacked now exists (below, M19) and is not applied
+    /// to a pressure: the junction arm refuses as a scope decision, naming
+    /// `docs/DEFERRED.md` E9.
     ///
     /// **A holdup's temperature is stored as well, and this doc used to say it
     /// "really is a `NodeStates` quantity"** (docs/DESIGN.md §21 — the fourth
@@ -1476,9 +1493,26 @@ impl PlantGraph {
     /// `VesselState::temperature` are on this graph, set from `temperature_c` at
     /// load and written back every tick. A snapshot's `temperature_k` for the
     /// same tank is one Euler step behind this reading, exactly, which is the
-    /// shape M8.5 found for a tank's pressure against its mass. What IS a
-    /// `NodeStates` quantity is a zero-volume node's temperature, and the
-    /// temperature arms below refuse those with the tick-0 rule named.
+    /// shape M8.5 found for a tank's pressure against its mass.
+    ///
+    /// **What IS a `NodeStates` quantity is a zero-volume node's temperature, and
+    /// for a `Furnace` or `Cooler` outlet this reader answers from `resolved`**
+    /// (M19, docs/DESIGN.md §23). That premise was checked before it was built on,
+    /// because it had been false four times, and it is true: an outlet has no
+    /// field on this graph, is resolved by the sweep into the engine's
+    /// `NodeStates`, and does not exist before the first tick. So this is the one
+    /// reading that can be ABSENT, and `Ok(None)` is how it says so — never a
+    /// stand-in (the feed's temperature, ambient, the setpoint), because a PI loop
+    /// seeds its memory against whatever it first measures. The rule the caller
+    /// applies is "no measurement, no action" (§23 fork 2). An outlet is also
+    /// absent while it is STAGNANT: a zero-volume node with no inflow holds a
+    /// placeholder, which `NodeStates::held` records and this reader refuses to
+    /// pass off as a measurement (§23 fork 4).
+    ///
+    /// `resolved` is the last tick's states — exactly what the engine will hand
+    /// the next solve — and empty at load, which is the truth at load. Every other
+    /// arm ignores it, so the level, pressure and holdup-temperature readings
+    /// cannot have moved.
     ///
     /// Called at load to seed `ControlLoop::last_measurement` and once per loop
     /// per tick thereafter, so a loop's seeded measurement and its running one
@@ -1495,22 +1529,25 @@ impl PlantGraph {
     pub fn measure(
         &self,
         slate: &Slate,
+        resolved: &crate::energy::NodeStates,
         node: NodeId,
         variable: MeasuredVariable,
-    ) -> Result<ControlledValue, SimError> {
+    ) -> Result<Option<ControlledValue>, SimError> {
         match (variable, &self.node(node).kind) {
-            (MeasuredVariable::Level, NodeKind::Tank(t)) => Ok(ControlledValue::Level {
+            (MeasuredVariable::Level, NodeKind::Tank(t)) => Ok(Some(ControlledValue::Level {
                 m: t.level(slate),
-            }),
+            })),
             (MeasuredVariable::Level, _) => Err(SimError::Scenario(format!(
                 "node '{}' is not a tank, so it has no level to control. A level names nothing on a \
                  vessel whose state IS pressure (docs/DESIGN.md §3a fork 2)",
                 self.node(node).name
             ))),
             // Stored, exact from load, per the note above.
-            (MeasuredVariable::Pressure, NodeKind::Vessel(v)) => Ok(ControlledValue::Pressure {
-                pa: v.pressure(slate),
-            }),
+            (MeasuredVariable::Pressure, NodeKind::Vessel(v)) => {
+                Ok(Some(ControlledValue::Pressure {
+                    pa: v.pressure(slate),
+                }))
+            }
             // **Refused, and the reason is measured rather than stylistic**
             // (docs/DESIGN.md §12 fork 1). A tank's pressure is
             // `P_atm + ρ·g·h = P_atm + m·g/A`: the density cancels exactly (M8.5),
@@ -1525,13 +1562,18 @@ impl PlantGraph {
             ))),
             // **This is the one node kind fork 3's claim is actually true of.** A
             // junction holds nothing; its pressure is an unknown of the solve and
-            // does not exist before the first tick. The refusal names the missing
-            // piece, so it doubles as the deferral's own trigger.
+            // does not exist before the first tick. It used to be refused for the
+            // want of a tick-0 rule; §23 states that rule for a furnace outlet, so
+            // the refusal is now a SCOPE decision and says so (E9): applying the
+            // rule here needs `last_solution`'s pressures passed in beside
+            // `resolved`, and nothing asks for junction-pressure control.
             (MeasuredVariable::Pressure, NodeKind::Junction) => Err(SimError::Scenario(format!(
                 "node '{}' is a junction, which holds nothing: its pressure is an UNKNOWN of the \
                  network solve and lives in `last_solution`, which is empty before the first tick. \
-                 Junction-pressure control is deferred on exactly that — it needs a stated rule for \
-                 what a loop measures at tick 0 (docs/DESIGN.md §12)",
+                 The rule for a measurement that does not exist yet is stated (docs/DESIGN.md §23: \
+                 no measurement, no action) and is applied only to a furnace or cooler outlet; \
+                 junction-pressure control is not built, as a scope decision \
+                 (docs/DEFERRED.md E9)",
                 self.node(node).name
             ))),
             // The catch-all, and its reason is a third distinct one: a source's
@@ -1549,35 +1591,57 @@ impl PlantGraph {
             // write-back, and refusing it would be a refusal whose only reason is
             // that no demo exercises it.
             (MeasuredVariable::Temperature, NodeKind::Tank(t)) => {
-                Ok(ControlledValue::Temperature { k: t.temperature })
+                Ok(Some(ControlledValue::Temperature { k: t.temperature }))
             }
             (MeasuredVariable::Temperature, NodeKind::Vessel(v)) => {
-                Ok(ControlledValue::Temperature { k: v.temperature })
+                Ok(Some(ControlledValue::Temperature { k: v.temperature }))
             }
-            // **The one set of node kinds the old claim is true of.** A
-            // zero-volume node holds nothing: its temperature is algebraic, lives
-            // in `energy::NodeStates`, and is absent before the first tick. This
-            // is the furnace-outlet loop, refused for its measurement before its
-            // actuator is even asked about; the message names the missing piece
-            // so it doubles as the deferral's trigger, as the junction pressure
-            // arm does.
+            // **The furnace or cooler OUTLET — the one reading that can be absent**
+            // (docs/DESIGN.md §23). Resolved by the last tick's sweep, so absent
+            // before the first one, and absent while the unit is stagnant, when
+            // its entry is a held placeholder rather than a computed value. Both
+            // absences are `None`, and the caller holds the loop on either.
+            (MeasuredVariable::Temperature, NodeKind::Furnace { .. } | NodeKind::Cooler { .. }) => {
+                if resolved.held.contains(&node) {
+                    return Ok(None);
+                }
+                Ok(resolved
+                    .temperature
+                    .get(&node)
+                    .map(|&k| ControlledValue::Temperature { k }))
+            }
+            // **Zero-volume like the two above, and refused as a SCOPE decision,
+            // not for the want of a tick-0 rule** (§23 fork 5). The rule applies
+            // to them unchanged; no plant or fixture exercises one, and an
+            // admission nobody runs is untested. An exchanger side is further
+            // off: it resolves in the coupled-pair branch of the sweep, where the
+            // stagnant-outlet set would have to be argued separately.
             (
                 MeasuredVariable::Temperature,
                 NodeKind::Junction
                 | NodeKind::Pump { .. }
                 | NodeKind::Valve { .. }
-                | NodeKind::ReliefValve { .. }
-                | NodeKind::Furnace { .. }
-                | NodeKind::Cooler { .. }
                 | NodeKind::HeatExchanger,
             ) => Err(SimError::Scenario(format!(
-                "node '{}' holds no volume, so its temperature is ALGEBRAIC: it is resolved by \
-                 the tick into `NodeStates` and does not exist before the first one. \
-                 Zero-volume temperature control (a furnace or cooler outlet) is deferred on \
-                 exactly that — it needs a stated rule for what a loop measures at tick 0 \
-                 (docs/DESIGN.md §21). Measure the holdup the stream runs into instead",
+                "node '{}' holds no volume, so its temperature is resolved by the tick, and a \
+                 zero-volume temperature is measured only at a FURNACE or COOLER outlet \
+                 (docs/DESIGN.md §23). Other zero-volume nodes are not admitted, as a scope \
+                 decision (docs/DEFERRED.md E9). Measure the furnace or cooler itself, or the \
+                 holdup the stream runs into",
                 self.node(node).name
             ))),
+            // Its own reason: a relief valve is SHUT in normal operation, so its
+            // temperature is the no-inflow placeholder nearly always, and under
+            // §23 fork 4 a loop on it would hold forever and never act.
+            (MeasuredVariable::Temperature, NodeKind::ReliefValve { .. }) => {
+                Err(SimError::Scenario(format!(
+                    "node '{}' is a relief valve, which is shut in normal operation: with no flow \
+                     through it its temperature is a held placeholder rather than a resolved \
+                     value, so a loop measuring it would hold forever without acting \
+                     (docs/DESIGN.md §23 fork 5)",
+                    self.node(node).name
+                )))
+            }
             // A column's tray temperatures are the separation model's output, and a
             // reactor's outlet is `t_set` — a declared temperature the unit already
             // holds exactly, so a loop on it would regulate a number that is

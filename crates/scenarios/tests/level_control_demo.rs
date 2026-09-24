@@ -51,7 +51,10 @@ fn build(src: &str) -> Engine {
 /// The measurement the loop ACTED ON, which is what a snapshot reports and what
 /// the file's header quotes.
 fn level(engine: &Engine) -> f64 {
-    match engine.snapshot().controls[0].measurement {
+    match engine.snapshot().controls[0]
+        .measurement
+        .expect("a stored quantity is measured from load")
+    {
         ControlledValue::Level { m } => m.value(),
         // M10 added a second variant. A level fixture reading a pressure means
         // the loop measures something this helper cannot report, which is a

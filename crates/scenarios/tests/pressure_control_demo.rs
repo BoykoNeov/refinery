@@ -67,7 +67,10 @@ fn build_engine_or_panic(src: &str) -> Engine {
 /// the file's header quotes. Bar, because that is the unit the file is written in
 /// and every number in this test's messages should be comparable to it by eye.
 fn pressure_bar(engine: &Engine) -> f64 {
-    match engine.snapshot().controls[0].measurement {
+    match engine.snapshot().controls[0]
+        .measurement
+        .expect("a stored quantity is measured from load")
+    {
         ControlledValue::Pressure { pa } => pa.value() / 1.0e5,
         other => panic!("the demo's loop measures a pressure, not {other:?}"),
     }

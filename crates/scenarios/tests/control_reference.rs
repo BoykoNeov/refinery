@@ -201,8 +201,14 @@ fn tank_id(engine: &Engine) -> NodeId {
 fn level_now(engine: &Engine) -> f64 {
     match engine
         .graph
-        .measure(&engine.slate, tank_id(engine), MeasuredVariable::Level)
+        .measure(
+            &engine.slate,
+            engine.node_states(),
+            tank_id(engine),
+            MeasuredVariable::Level,
+        )
         .expect("the control tank has a level")
+        .expect("a level is stored, so it is measured from load")
     {
         ControlledValue::Level { m } => m.value(),
         // M10 added a second variant. A level fixture reading a pressure means
@@ -655,7 +661,10 @@ fn the_reported_measurement_is_the_one_the_controller_acted_on() {
     engine.tick().expect("tick");
     let now = level_now(&engine);
 
-    let reported = match engine.snapshot().controls[0].measurement {
+    let reported = match engine.snapshot().controls[0]
+        .measurement
+        .expect("a stored quantity is measured from load")
+    {
         ControlledValue::Level { m } => m.value(),
         // M10 added a second variant. A level fixture reading a pressure means
         // the loop measures something this helper cannot report, which is a
@@ -772,7 +781,10 @@ fn a_loop_has_a_real_measurement_before_the_first_tick() {
     let engine = engine_from(PLANT);
     let snapshot = engine.snapshot();
     assert_eq!(snapshot.tick, 0);
-    let reported = match snapshot.controls[0].measurement {
+    let reported = match snapshot.controls[0]
+        .measurement
+        .expect("a stored quantity is measured from load")
+    {
         ControlledValue::Level { m } => m.value(),
         // M10 added a second variant. A level fixture reading a pressure means
         // the loop measures something this helper cannot report, which is a

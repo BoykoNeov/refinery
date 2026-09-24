@@ -238,7 +238,18 @@ pub struct ControlSnapshot {
     /// setpoint in one variable against a measurement in another, and the
     /// difference a reader takes between them — in the order `action` names — is
     /// the error the controller saw.
-    pub measurement: ControlledValue,
+    ///
+    /// **Absent when the loop had nothing to act on** (M19, docs/DESIGN.md §23):
+    /// a furnace or cooler OUTLET before the first tick — so at load and after
+    /// tick 1 — and while it is stagnant. A frontend renders the absence as
+    /// *unknown*, never as zero; on those ticks the loop wrote nothing and
+    /// `output` is the actuator's own position. Skipped rather than written as
+    /// `null`, and `default` reads the absent key back as `None`. Every loop that
+    /// measures a stored quantity has a value from load, so this is `Some` on
+    /// every loop written before M19, and `Option<T>` holding a value serializes
+    /// exactly as `T` — their bytes cannot have moved.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<ControlledValue>,
     /// Actuator position, dimensionless in `[0, 1]`.
     ///
     /// In `Auto` this is the controller's output and is what was written to the

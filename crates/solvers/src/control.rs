@@ -147,7 +147,9 @@ impl Controller for ProportionalController {
 ///
 /// - the anti-windup clamp, when the actuator cannot answer;
 /// - MANUAL→AUTO transfer, from the position a human left the valve at;
-/// - load, from the declared `initial_output`.
+/// - load, from the declared `initial_output` — or, for a loop on a furnace or
+///   cooler OUTLET, which has no measurement at load, the first `update`, from
+///   the same declared number (docs/DESIGN.md §23).
 ///
 /// The alternative — an `∫e dt` state, a clamp on it, and a separate transfer
 /// formula — is the same behaviour written three times, and the roadmap's "built
@@ -196,25 +198,50 @@ pub struct PiController {
     /// which is why the scenario key carries seconds.
     integral_time_s: f64,
     /// The loop's memory: the share of the actuator position the integral term is
-    /// responsible for, dimensionless like the position itself.
+    /// responsible for, dimensionless like the position itself — or, until the
+    /// loop has measured anything, the declared position it is waiting to seed.
     ///
     /// Never written except through [`PiController::back_calculate`] or the
     /// accumulation in `update`, and never *born* zero — `new` requires the
-    /// declared `initial_output` and derives this from it, so fork 5's "one
-    /// declared number, no silent zero" holds by construction rather than by the
-    /// loader remembering to call something afterwards.
-    integral: f64,
+    /// declared `initial_output`, so fork 5's "one declared number, no silent
+    /// zero" holds by construction rather than by the loader remembering to call
+    /// something afterwards.
+    memory: Memory,
+}
+
+/// A PI loop's memory, seeded or waiting to be (docs/DESIGN.md §23 fork 3).
+///
+/// **Two states rather than a number with a sentinel**, because the thing the
+/// second state holds is not an integral at all. A loop measuring a furnace or
+/// cooler OUTLET has no measurement at load — the outlet is resolved by the tick
+/// and does not exist before the first one — so there is no error to
+/// back-calculate its declared `initial_output` against. Seeding against a
+/// stand-in (the setpoint, the feed's temperature) would carry an invented
+/// number into the loop's state for the rest of the run. So the declared
+/// position WAITS, and the first `update` performs the seed against the first
+/// error the loop actually measures, through the same `back_calculate` every
+/// other seed goes through. A loop on a stored quantity is `Seeded` from load.
+#[derive(Debug, Clone, Copy)]
+enum Memory {
+    /// `b`, in output units.
+    Seeded(f64),
+    /// The declared `initial_output`, not yet seeded against any error.
+    Pending { initial_output: f64 },
 }
 
 impl PiController {
     /// Build a loop's algorithm and seed its memory from the declared
     /// `initial_output`.
     ///
-    /// The measurement and setpoint standing at load are required arguments
-    /// rather than a call the caller makes next, so an unseeded `PiController` is
-    /// not a value that can exist. `initial_output` is an actuator position and is
-    /// validated as one, by the rule `Command::SetValveOpening` already applies to
-    /// the same quantity.
+    /// The measurement and setpoint standing at load are arguments rather than a
+    /// call the caller makes next, so a `PiController` whose memory nobody set is
+    /// not a value that can exist. `measurement` is `None` exactly when the loop
+    /// measures a furnace or cooler OUTLET, which does not exist at load
+    /// (docs/DESIGN.md §23): the memory is then PENDING on `initial_output`, and
+    /// the first `update` seeds it — still from the declared number, still never
+    /// zero, and never against a number nothing measured. `initial_output` is an
+    /// actuator position and is validated as one either way, by the rule
+    /// `Command::SetValveOpening` already applies to the same quantity.
     ///
     /// # Errors
     /// `SimError::Scenario` on a non-finite or non-positive gain or integral time
@@ -227,7 +254,7 @@ impl PiController {
         gain: f64,
         integral_time_s: f64,
         initial_output: f64,
-        measurement: ControlledValue,
+        measurement: Option<ControlledValue>,
         setpoint: ControlledValue,
         action: ControlAction,
     ) -> Result<Self, SimError> {
@@ -247,26 +274,42 @@ impl PiController {
                  — and a negative one integrates the error away from setpoint"
             )));
         }
+        check_output(initial_output)?;
         let mut controller = Self {
             gain,
             integral_time_s,
-            integral: 0.0,
+            memory: Memory::Pending { initial_output },
         };
-        controller.seed_from_output(initial_output, measurement, setpoint, action)?;
+        if let Some(measurement) = measurement {
+            controller.seed_from_output(initial_output, measurement, setpoint, action)?;
+        }
         Ok(controller)
     }
 
-    /// Set the memory so that the next `update` returns `output`.
+    /// The memory that makes the next output be `output`, against `error`.
     ///
-    /// **The one place `b` is solved for**, and the reason anti-windup and
-    /// bumpless transfer are one piece of code: inverting `u = K·e + b` for `b` is
-    /// the whole of both. It takes the error rather than the measurement/setpoint
-    /// pair because the caller inside `update` already holds it, and re-deriving
-    /// it here would put a second expression of the same difference in the same
-    /// function.
-    fn back_calculate(&mut self, output: f64, error: f64) {
-        self.integral = output - self.gain * error;
+    /// **The one place `b` is solved for**, and the reason anti-windup, bumpless
+    /// transfer and the pending seed are one piece of code: inverting
+    /// `u = K·e + b` for `b` is the whole of all three. It takes the error rather
+    /// than the measurement/setpoint pair because the caller inside `update`
+    /// already holds it, and re-deriving it here would put a second expression of
+    /// the same difference in the same function.
+    fn back_calculate(&self, output: f64, error: f64) -> f64 {
+        output - self.gain * error
     }
+}
+
+/// The range an actuator position must lie in, shared by the constructor (which
+/// may not seed at all, §23) and `seed_from_output`.
+fn check_output(output: f64) -> Result<(), SimError> {
+    if !output.is_finite() || !(0.0..=1.0).contains(&output) {
+        return Err(SimError::Scenario(format!(
+            "a PI loop's memory is seeded from an actuator position, and {output} is \
+             not a finite fraction in [0, 1] — the range `Command::SetValveOpening` \
+             already enforces on the same quantity"
+        )));
+    }
+    Ok(())
 }
 
 impl Controller for PiController {
@@ -296,12 +339,22 @@ impl Controller for PiController {
         // The memory standing at the TOP of the tick, not one that already
         // includes this tick's error: explicit Euler, the engine's own rule, and
         // what makes the first update after a seed return the seeded position.
-        let unclamped = self.gain * error + self.integral;
+        //
+        // A PENDING memory is seeded here, against this — the first — error the
+        // loop has measured (docs/DESIGN.md §23 fork 3), which is the load-time
+        // seed a holdup loop gets, one tick later because that is when an outlet
+        // first exists. So this update, like a holdup loop's first, returns the
+        // declared `initial_output`.
+        let mut integral = match self.memory {
+            Memory::Seeded(b) => b,
+            Memory::Pending { initial_output } => self.back_calculate(initial_output, error),
+        };
+        let unclamped = self.gain * error + integral;
         if !unclamped.is_finite() {
             return Err(SimError::NonFiniteState {
                 location: format!(
-                    "PI controller output (gain {}, integral {})",
-                    self.gain, self.integral
+                    "PI controller output (gain {}, integral {integral})",
+                    self.gain
                 ),
             });
         }
@@ -310,8 +363,8 @@ impl Controller for PiController {
             // Not on a limit: accumulate this tick's error for the next one.
             // `K/T_i` folds both gains in here, which is what keeps the memory in
             // output units — see the type's note.
-            self.integral += self.gain / self.integral_time_s * error * dt.value();
-            if !self.integral.is_finite() {
+            integral += self.gain / self.integral_time_s * error * dt.value();
+            if !integral.is_finite() {
                 return Err(SimError::NonFiniteState {
                     location: format!(
                         "PI controller integral term (dt {} s, error {error})",
@@ -325,8 +378,9 @@ impl Controller for PiController {
             // whatever makes the position actually written the answer — the same
             // inversion MANUAL→AUTO performs, which is why the two are one piece
             // of arithmetic rather than two that can disagree.
-            self.back_calculate(output, error);
+            integral = self.back_calculate(output, error);
         }
+        self.memory = Memory::Seeded(integral);
         Ok(output)
     }
 
@@ -337,13 +391,7 @@ impl Controller for PiController {
         setpoint: ControlledValue,
         action: ControlAction,
     ) -> Result<(), SimError> {
-        if !output.is_finite() || !(0.0..=1.0).contains(&output) {
-            return Err(SimError::Scenario(format!(
-                "a PI loop's memory is seeded from an actuator position, and {output} is \
-                 not a finite fraction in [0, 1] — the range `Command::SetValveOpening` \
-                 already enforces on the same quantity"
-            )));
-        }
+        check_output(output)?;
         let error = ControlledValue::error(measurement, setpoint, action);
         if !error.is_finite() {
             return Err(SimError::NonFiniteState {
@@ -354,7 +402,7 @@ impl Controller for PiController {
                 ),
             });
         }
-        self.back_calculate(output, error);
+        self.memory = Memory::Seeded(self.back_calculate(output, error));
         Ok(())
     }
 }

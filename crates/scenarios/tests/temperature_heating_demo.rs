@@ -54,7 +54,10 @@ fn run(engine: &mut Engine, ticks: u64) {
 
 /// The temperature the loop ACTED ON, in °C to match the file.
 fn measured_c(engine: &Engine) -> f64 {
-    match engine.snapshot().controls[0].measurement {
+    match engine.snapshot().controls[0]
+        .measurement
+        .expect("a stored quantity is measured from load")
+    {
         ControlledValue::Temperature { k } => k.value() - 273.15,
         other => panic!("the demo's loop measures a temperature, not {other:?}"),
     }

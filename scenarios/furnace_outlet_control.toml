@@ -1,0 +1,130 @@
+# M19.1 regulation demo: a furnace holding its own OUTLET at 60 °C — the loop a
+# refinery operator actually runs on a fired heater, and the first loop in this
+# engine whose measurement does not exist at load.
+#
+#   cool_feed (40 °C) -> heater -> hold_tank -> drain_valve -> rundown
+#
+# **This file is `tank_temperature_heating.toml` with the loop moved from the
+# tank to the heater, and is meant to be diffed against it.** Same feed, same
+# furnace, same 2 MW range, same `initial_output`, the tank still starting at
+# 40 °C. What differs is the measured node, the tuning, and the names.
+#
+# **An outlet is not stored anywhere** (docs/DESIGN.md §23). A tank's temperature
+# is a field on the graph, exact from load; a furnace outlet is resolved by each
+# tick's sweep and does not exist before the first one. So the rule is **no
+# measurement, no action**: on tick 1 the loop writes nothing, its faceplate
+# tracks the furnace's declared 0.5 MW (u = 0.25), and the snapshot carries no
+# `measurement` at all — not a zero, not a stand-in. On tick 2 it measures tick 1's
+# outlet, 48.32 °C, and its PI memory is seeded then, against that error, from the
+# declared `initial_output` — so its first output is 0.25, exactly as a tank
+# loop's is. The same rule holds the loop still if the flow through the furnace
+# ever stops: a stagnant outlet reports a held placeholder, not a measurement.
+#
+# **The tuning is NOT the tank loop's, and cannot be.** A tank integrates; an
+# outlet responds on the same tick its duty is written (16.64 K per MW, so
+# G = 33.28 K per unit of output on this 2 MW range). The loop's only dynamics is
+# the one tick it waits to measure, which makes the gain bound a STABILITY bound:
+# stable only while K*G < 1. The tank loop's `gain_per_k = 0.1` gives K*G = 3.3,
+# and moved here it swings the outlet between 40 and 73 °C on alternate ticks.
+# This file uses 0.015 (K*G = 0.5, half the bound) and `integral_time_s = 10.0`,
+# which on this plant means TEN TICKS: with no thermal mass in the coil, an
+# integral time is a count of samples (docs/DEFERRED.md E10).
+#
+# **The bound moves with flow.** G is duty over (flow x heat capacity), so halving
+# the flow doubles K*G: throttle the drain to about 7.2 kg/s and this loop
+# reaches its bound and starts to ring. A real outlet loop tuned at full rate
+# does the same at turndown.
+#
+# **Holding the outlet is slower for the TANK.** The tank loop overfires the
+# furnace (its output peaks at 0.81) to heat the tank faster; an outlet loop
+# never does, so the tank follows the 60 °C stream at its own pace — thousands of
+# ticks rather than the tank loop's 2 391. That trade-off is what cascade control
+# (docs/DEFERRED.md E2) exists for.
+#
+#   cargo run -p refinery-cli -- run scenarios/furnace_outlet_control.toml --ticks 6000
+
+[meta]
+name = "furnace_outlet_control"
+description = "A furnace holding its own outlet at 60 °C: the first loop whose measurement does not exist at load."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.cool_feed]
+type = "source"
+pressure_bar = 1.6
+temperature_c = 40.0
+
+# The actuator. Its declared duty is the loop's starting position: 0.5 MW of a
+# 2 MW range is u = 0.25, and `initial_output` below says the same number.
+[nodes.heater]
+type = "furnace"
+duty_mw = 0.5
+
+# Not measured: the tank follows the outlet at its own pace. The level is the
+# settled 4.968 m, so only the temperature has anywhere to go.
+[nodes.hold_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.968
+temperature_c = 40.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 150.0
+opening = 0.5
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "cool_feed"
+to = "heater"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "hold_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "hold_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# `initial_output` is the loop's MEMORY, not a bias (docs/DESIGN.md §10 fork 5).
+# On an outlet loop it waits: there is no error at load to back-calculate it
+# against, so the memory is seeded at the first measurement (tick 2), and the
+# first output the loop computes is exactly 0.25 whatever the gain is.
+[[controls]]
+name = "outlet_temperature"
+measurement = { node = "heater", variable = "temperature" }
+actuator = "heater"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_c = 60.0
+gain_per_k = 0.015
+integral_time_s = 10.0
+initial_output = 0.25
+max_duty_mw = 2.0

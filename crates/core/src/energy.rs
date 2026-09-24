@@ -882,6 +882,17 @@ pub struct NodeStates {
     /// to `reactor_duty` and for the same reason: an emergent diagnostic of a
     /// unit, resolved on the sweep that has the state to compute it.
     pub column_separation: BTreeMap<NodeId, Separation>,
+    /// The zero-volume nodes whose temperature was HELD this tick rather than
+    /// resolved: they had no inflow, so `mix_inflows` gave them the last value
+    /// (or `T_AMBIENT`) as a placeholder (M19, docs/DESIGN.md §23 fork 4).
+    ///
+    /// Their entry in `temperature` stays, because the next tick's solve reads
+    /// it and a hole there would be a different engine. What this set says is
+    /// that the entry is not a MEASUREMENT: nothing computed it this tick. Read
+    /// by exactly one consumer, `PlantGraph::measure`, which returns no
+    /// measurement for a node in it — so a loop on a stagnant outlet holds rather
+    /// than acting on, or seeding against, a number the sweep did not compute.
+    pub held: BTreeSet<NodeId>,
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -960,6 +971,7 @@ pub fn resolve_node_states(
     let mut composition: BTreeMap<NodeId, Composition> = BTreeMap::new();
     let mut reactor_duties: BTreeMap<NodeId, ReactorDuty> = BTreeMap::new();
     let mut separations: BTreeMap<NodeId, Separation> = BTreeMap::new();
+    let mut held: BTreeSet<NodeId> = BTreeSet::new();
 
     // 1. Inertial nodes are the roots of the sweep: known before it starts.
     //    Both fields are seeded from the SAME node, so the two boundary helpers
@@ -1130,9 +1142,21 @@ pub fn resolve_node_states(
                             &temperature,
                             &composition,
                             &separations,
-                            &previous.temperature,
                             id,
                         )?;
+                        // No inflow: indeterminate but inert (mass balance ⇒ no
+                        // outflow either), so the node HOLDS the last value it
+                        // resolved — a placeholder that keeps the field finite and
+                        // reproducible instead of dividing 0/0, and that is
+                        // recorded as held so no control loop reads it as a
+                        // measurement (docs/DESIGN.md §23 fork 4).
+                        let mixed = match mixed {
+                            Some(t) => t,
+                            None => {
+                                held.insert(id);
+                                previous.temperature.get(&id).copied().unwrap_or(T_AMBIENT)
+                            }
+                        };
                         temperature.insert(id, mixed);
 
                         // A column separates its feed once, HERE: after its own
@@ -1236,6 +1260,7 @@ pub fn resolve_node_states(
         composition,
         reactor_duty: reactor_duties,
         column_separation: separations,
+        held,
     })
 }
 
@@ -1462,7 +1487,12 @@ fn inflow_totals(
     }))
 }
 
-/// Enthalpy-weighted mix of a zero-volume node's inflows [K].
+/// Enthalpy-weighted mix of a zero-volume node's inflows [K], or `None` if the
+/// node has no inflow at all.
+///
+/// `None` rather than a fallback value, because the fallback is a placeholder and
+/// the caller is the one site that must both supply it and record that it did
+/// (`NodeStates::held`, docs/DESIGN.md §23 fork 4).
 #[allow(clippy::too_many_arguments)]
 fn mix_inflows(
     graph: &PlantGraph,
@@ -1473,9 +1503,8 @@ fn mix_inflows(
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
     separations: &BTreeMap<NodeId, Separation>,
-    previous: &BTreeMap<NodeId, Kelvin>,
     node: NodeId,
-) -> Result<Kelvin, SimError> {
+) -> Result<Option<Kelvin>, SimError> {
     // Heat — external (a fire) and a furnace's duty alike — joins the same
     // first law: for a node with no accumulation, Σ ṁ·h_in + Q = Σ ṁ·h_out.
     // Without this term `Command::SetHeatInput` would be a silent no-op on
@@ -1518,8 +1547,10 @@ fn mix_inflows(
                 totals.enthalpy_rate / capacity + T_REF.value(),
             )
         })
+        .map(Some)
     } else {
-        // No inflow: indeterminate but inert (mass balance ⇒ no outflow either).
+        // No inflow: indeterminate but inert (mass balance ⇒ no outflow either),
+        // and the caller supplies the held value.
         //
         // KNOWN LIMITATION: any `heat_input` here is dropped. A zero-volume node
         // has no thermal mass, so with no throughput there is nothing for the
@@ -1527,7 +1558,7 @@ fn mix_inflows(
         // puts it on a Tank. Energy is therefore NOT conserved in this one case,
         // which is why `energy_invariants.rs` heats only tanks: it is a gap in
         // the model, not slack the invariant should be widened to tolerate.
-        Ok(previous.get(&node).copied().unwrap_or(T_AMBIENT))
+        Ok(None)
     }
 }
 

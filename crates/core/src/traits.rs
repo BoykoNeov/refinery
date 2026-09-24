@@ -910,6 +910,13 @@ pub trait Controller: Send + std::fmt::Debug {
     /// solve and writing an actuator is an algebraic loop (fork 3). Both it and
     /// `setpoint` carry their unit in their type.
     ///
+    /// **Called only when a measurement exists** (M19, docs/DESIGN.md §23). A
+    /// furnace or cooler outlet has none before the first tick or while it is
+    /// stagnant, and on those ticks the engine does not call this at all — "no
+    /// measurement, no action" — so an impl never sees a stand-in. An impl whose
+    /// state was built without a measurement (a PI loop on an outlet) seeds it on
+    /// the first call.
+    ///
     /// **What used to stand here — "and are the same type by construction, so the
     /// difference `ControlledValue::error` takes is always dimensionally honest"
     /// — expired in M10** (docs/DESIGN.md §12). That was a property of

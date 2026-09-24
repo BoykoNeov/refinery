@@ -331,11 +331,34 @@ impl Engine {
                     .control(loop_id)
                     .ok_or_else(|| unknown_loop(loop_id))?;
                 let seed = if mode == ControlMode::Auto && control.mode == ControlMode::Manual {
-                    let measurement = self.graph.measure(
-                        &self.slate,
-                        control.measurement_node,
-                        control.setpoint.variable(),
-                    )?;
+                    // **Refused when there is nothing to measure** (docs/DESIGN.md
+                    // §23 fork 4): a furnace or cooler outlet before the first
+                    // tick, or while it is stagnant. The transfer's whole promise
+                    // is "bumpless from now", which needs the error standing now;
+                    // seeding later, at the first measurement, would be a
+                    // different promise, and seeding against a stand-in is the
+                    // fabricated number §23 fork 2 refuses.
+                    let measurement = self
+                        .graph
+                        .measure(
+                            &self.slate,
+                            &self.node_states,
+                            control.measurement_node,
+                            control.setpoint.variable(),
+                        )?
+                        .ok_or_else(|| {
+                            SimError::InvalidCommand(format!(
+                                "control loop '{}' has no measurement to transfer against: its \
+                                 measured node '{}' has no resolved temperature yet (before the \
+                                 first tick) or none this tick (no flow through it). A bumpless \
+                                 transfer back-calculates the loop's memory from the error \
+                                 standing NOW; step the plant with flow through the node first, \
+                                 or declare the loop `mode = \"auto\"` in the file \
+                                 (docs/DESIGN.md §23 fork 4)",
+                                control.name,
+                                self.graph.node(control.measurement_node).name
+                            ))
+                        })?;
                     // The SAME reader pass 1 uses (docs/DESIGN.md §21, sites 3
                     // and 6): a transfer that seeded from one notion of position
                     // while the tick ran on another would step the actuator.
@@ -1329,12 +1352,15 @@ impl Engine {
         }
 
         // Pass 1 — measure, and read each actuator's current position. Both are
-        // reads of the graph, and both are of the state BEFORE this tick's solve.
-        let mut sampled: Vec<(ControlledValue, f64)> =
+        // reads of the state BEFORE this tick's solve: the graph, and — for a
+        // furnace or cooler outlet — the last tick's resolved states, which are
+        // what this tick's solve is about to be handed (docs/DESIGN.md §23).
+        let mut sampled: Vec<(Option<ControlledValue>, f64)> =
             Vec::with_capacity(self.graph.controls().len());
         for control in self.graph.controls() {
             let measurement = self.graph.measure(
                 &self.slate,
+                &self.node_states,
                 control.measurement_node,
                 control.setpoint.variable(),
             )?;
@@ -1354,8 +1380,19 @@ impl Engine {
         for (control, (measurement, position)) in self.graph.controls_mut().iter_mut().zip(sampled)
         {
             control.last_measurement = measurement;
-            match control.mode {
-                ControlMode::Auto => {
+            match (control.mode, measurement) {
+                // **No measurement, no action** (docs/DESIGN.md §23 fork 2): a
+                // furnace or cooler outlet before the first tick, or while it is
+                // stagnant. The loop writes nothing, its faceplate TRACKS the
+                // actuator exactly as MANUAL's does, and its memory — seeded or
+                // still pending — is not touched, so it resumes from where it
+                // stood. Acting on a stand-in would be worse than waiting: a PI
+                // loop seeds against whatever it first measures.
+                (ControlMode::Auto, None) => {
+                    control.last_output = position;
+                    writes.push(None);
+                }
+                (ControlMode::Auto, Some(measurement)) => {
                     let output = control.algorithm.update(
                         measurement,
                         control.setpoint,
@@ -1383,7 +1420,7 @@ impl Engine {
                 // still taken, so the loop-off counterfactual is a run of the
                 // same plant with a truthful faceplate rather than of a plant
                 // with the loop deleted.
-                ControlMode::Manual => {
+                (ControlMode::Manual, _) => {
                     control.last_output = position;
                     writes.push(None);
                 }

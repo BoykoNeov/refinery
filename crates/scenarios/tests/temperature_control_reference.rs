@@ -262,7 +262,10 @@ fn output(engine: &Engine) -> f64 {
 }
 
 fn measured_k(engine: &Engine) -> f64 {
-    match engine.snapshot().controls[0].measurement {
+    match engine.snapshot().controls[0]
+        .measurement
+        .expect("a stored quantity is measured from load")
+    {
         ControlledValue::Temperature { k } => k.value(),
         other => panic!("this loop measures a temperature, not {other:?}"),
     }
@@ -362,17 +365,22 @@ fn every_refused_temperature_loop_is_refused_for_its_own_reason() {
         )
     };
     let cases: Vec<(&str, String, &str)> = vec![
+        // Until M19 this case measured the CHILLER — a zero-volume node refused
+        // for the want of a tick-0 rule. §23 states that rule and admits a
+        // furnace or cooler outlet, so the chiller loads now (gated in
+        // `outlet_control_reference.rs`); the zero-volume kinds still refused
+        // are refused as a scope decision, and a valve is one of them.
         (
-            "a zero-volume node's temperature (the furnace-outlet measurement)",
+            "a zero-volume node that is not a furnace or cooler outlet",
             format!(
                 "{}{}",
                 liquid("cooler", "0.5"),
                 loop_of(pi_with(
                     "measurement",
-                    Some(r#"measurement = { node = "chiller", variable = "temperature" }"#)
+                    Some(r#"measurement = { node = "drain_valve", variable = "temperature" }"#)
                 ))
             ),
-            "stated rule for what a loop measures at tick 0",
+            "Other zero-volume nodes are not admitted, as a scope decision",
         ),
         (
             "a boundary's temperature",

@@ -89,6 +89,7 @@ cargo run -p refinery-cli -- run scenarios/crude_column_recovery.toml --ticks 60
 cargo run -p refinery-cli -- run scenarios/fired_gas_drum.toml --ticks 6000        # the M16.2 shaped heat capacity
 cargo run -p refinery-cli -- run scenarios/tank_temperature_control.toml --ticks 6000 # the M17.1 temperature loop
 cargo run -p refinery-cli -- run scenarios/tank_temperature_heating.toml --ticks 6000 # the M18.1 reverse-acting loop
+cargo run -p refinery-cli -- run scenarios/furnace_outlet_control.toml --ticks 6000   # the M19.1 furnace-outlet loop
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -184,12 +185,13 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M19 is OPEN (2026-09-24): a furnace holding its own OUTLET — the zero-volume
+**M19 is CLOSED (2026-09-24): a furnace holding its own OUTLET — the zero-volume
 measurement, what `docs/DEFERRED.md` row E1b has left of temperature.** Taken on a
-DECISION (the user's, on gameplay grounds, as M17 and M18). **M19.0 landed
-2026-09-24** — DESIGN §23, seven forks, eight gates, ten mutations, no code;
-M19.1 builds it. Read §23 before touching `measure`, `ControlLoop` or
-`PiController`. Four things it settles.
+DECISION (the user's, on gameplay grounds, as M17 and M18). Two slices: **M19.0**
+(DESIGN §23, seven forks, eight gates, ten mutations, no code) and **M19.1**,
+which built it — read §23's "Corrections from building it (M19.1)" before
+touching `measure`, `ControlLoop` or `PiController`. E1b keeps flow control; the
+next milestone is chosen from `docs/DEFERRED.md`. Four things the note settles.
 
 **The premise is TRUE this time**: an outlet is resolved into `NodeStates`, has no
 field on the graph, and is absent before the first tick. The rule is **no
@@ -212,6 +214,23 @@ stable only for `K·G < 1` (new row E10). `G = 33.28 K` per unit output on the
 demo; the M18 tuning moved to the outlet is a bang-bang oscillator (hand
 simulation). Demo `scenarios/furnace_outlet_control.toml`, `K = 0.015`,
 `T_i = 10 s`; halving the flow reaches the bound.
+
+**What M19.1 found building it.** (i) **All twenty-two pre-M19 plants are
+byte-identical on both fidelities with no iteration count moved**; "runs
+byte-identical" means post-M19.1 identical, unchanged. (ii) **The hand simulation
+held on the engine**: the demo is within 0.06 K of 60 °C from tick 154, the M18
+tuning moved to the outlet rides a clamp on 393 of 400 ticks, and the bound falls
+between `K = 0.030` and `0.031`. (iii) **The stagnant-outlet hazard is the STARTUP
+placeholder, not a mid-run stall**: a furnace that has flowed holds its last
+outlet, which a settled loop reads as zero error, while one shut from load reads
+20 °C ambient and would wind a PI loop onto full firing by tick 14. Gate 6 was
+rebuilt around that case. (iv) **An outlet loop does not settle to the last bit**:
+the flow drifts with the tank's level and a PI loop follows a ramp with a lag of
+`T_i/(K·G·dt)` = 20 ticks, so gate 4's tolerance is derived from that
+(1.52e-5 K predicted, 1.66e-5 K seen), not chosen. All eleven mutations are
+caught (the note was exactly right on three); gate 1 is blind to a blind tick
+that updates against the setpoint, because a pending memory seeded at zero error
+writes the position already held. `scenarios/` holds **twenty-three** files.
 
 **M18 is CLOSED (2026-09-23): reverse action — a furnace holding a temperature,
 `docs/DEFERRED.md` row E7 for the duty actuators.** Taken on a DECISION (the
@@ -1520,11 +1539,12 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly four of the twenty-two files in `scenarios/` declare a `[[controls]]`
+**Exactly five of the twenty-three files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
-`tank_temperature_control.toml` (M17.1, a temperature) and
-`tank_temperature_heating.toml` (M18.1, a reverse-acting temperature). **The
+`tank_temperature_control.toml` (M17.1, a temperature),
+`tank_temperature_heating.toml` (M18.1, a reverse-acting temperature) and
+`furnace_outlet_control.toml` (M19.1, a furnace's own outlet). **The
 other eighteen
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor**; adding a loop to one of them

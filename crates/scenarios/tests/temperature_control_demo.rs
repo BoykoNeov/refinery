@@ -56,7 +56,10 @@ fn run(engine: &mut Engine, ticks: u64) {
 
 /// The temperature the loop ACTED ON, in °C to match the file.
 fn measured_c(engine: &Engine) -> f64 {
-    match engine.snapshot().controls[0].measurement {
+    match engine.snapshot().controls[0]
+        .measurement
+        .expect("a stored quantity is measured from load")
+    {
         ControlledValue::Temperature { k } => k.value() - 273.15,
         other => panic!("the demo's loop measures a temperature, not {other:?}"),
     }
@@ -110,7 +113,10 @@ fn tank_temperatures(engine: &Engine) -> (f64, f64) {
 fn the_loop_has_the_declared_temperature_before_the_first_tick() {
     let engine = build(DEMO);
     let expected = DECLARED_TANK_C + 273.15;
-    match engine.snapshot().controls[0].measurement {
+    match engine.snapshot().controls[0]
+        .measurement
+        .expect("a stored quantity is measured from load")
+    {
         ControlledValue::Temperature { k } => assert_eq!(
             k.value(),
             expected,
@@ -158,7 +164,10 @@ fn the_published_temperature_is_the_stored_one_one_tick_late_exactly() {
              previous tick, bit for bit — read {published} against {previous_stored}"
         );
         let measured = measured_c(&engine) + 273.15;
-        let acted_on = match engine.snapshot().controls[0].measurement {
+        let acted_on = match engine.snapshot().controls[0]
+            .measurement
+            .expect("a stored quantity is measured from load")
+        {
             ControlledValue::Temperature { k } => k.value(),
             _ => unreachable!("checked by measured_c"),
         };

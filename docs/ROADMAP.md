@@ -6223,3 +6223,46 @@ throttled drain can reach the other side of the bound. New row E10.
 against the M18 tank loop's 2 391 — the tank loop overfires to get there. The
 demo is `scenarios/furnace_outlet_control.toml`, the M18 file with the loop moved
 to the heater.
+
+### M19.1 — The furnace-outlet loop — **LANDED** 2026-09-24
+
+Built as DESIGN §23 specifies; the corrections are in §23's "Corrections from
+building it". A loop can measure a furnace's or a cooler's own outlet. The demo
+is
+`scenarios/furnace_outlet_control.toml`, `tank_temperature_heating.toml` with
+the
+loop moved to the heater. Four things to know.
+
+**No measurement, no action — built, and invisible to every existing plant.**
+The
+measurement is `Option` on the loop and on the snapshot (absent, not `null`,
+when
+there is none); `PiController`'s memory waits, PENDING, for its first
+measurement;
+the sweep records which outlets had no flow, and `measure` returns nothing for
+them. **All twenty-two pre-M19 plants are byte-identical on both fidelities, no
+iteration count moved.**
+
+**The note's hand simulation held on the engine**: within 0.06 K from tick 154,
+the M18 tuning a two-clamp ring, the bound sharp between `K = 0.030` and
+`0.031`.
+
+**The stagnant-outlet hazard is the STARTUP placeholder, not the mid-run
+stall.**
+A furnace that has been flowing holds its last outlet, which a settled loop
+reads
+as zero error. One whose feed is shut from load reads 20 °C ambient, 40 K cold,
+and would wind a loop into full firing by tick 14. The gate was rebuilt around
+that case.
+
+**All eleven mutations were caught** (§23's ten plus the sweep never filling the
+stagnant set); the note was exactly right on three. Gate 1 is blind to a blind
+tick that updates against the setpoint, because a pending memory seeded against
+zero error writes the position already held — the next seed is what breaks, and
+gate 3 sees it. `scenarios/` holds twenty-three files; five declare
+`[[controls]]`.
+
+**M19 is CLOSED (2026-09-24) with this slice.** The zero-volume measurement is
+built for a furnace or cooler outlet; the other zero-volume kinds are E9 and the
+lag-free outlet's stability bound is E10. The next milestone is chosen from
+`docs/DEFERRED.md` as usual.

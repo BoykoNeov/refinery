@@ -229,6 +229,7 @@ fn measured_pa(engine: &Engine) -> f64 {
         .first()
         .expect("the fixture declares one loop")
         .measurement
+        .expect("a stored quantity is measured from load")
     {
         ControlledValue::Pressure { pa } => pa.value(),
         other => panic!("this fixture's loop measures a pressure, not {other:?}"),
@@ -321,13 +322,17 @@ fn a_pressure_loop_has_a_real_measurement_before_the_first_tick() {
 }
 
 /// The mirror of gate 1 on the OTHER side of fork 1: a junction's pressure really
-/// is solved and absent before the first tick, and is refused for exactly that.
+/// is solved and absent before the first tick, and is still refused.
 ///
 /// This is what keeps gate 1 from reading as "pressure is stored". It is stored
-/// on the one node kind that holds mass, and the refusal below names the missing
-/// tick-0 rule, so it doubles as that deferral's own trigger.
+/// on the one node kind that holds mass. **The refusal's REASON changed in M19**
+/// (docs/DESIGN.md §23 fork 5): it used to be the missing tick-0 rule, and §23
+/// states that rule — "no measurement, no action" — for a furnace outlet. So the
+/// refusal is now a scope decision naming docs/DEFERRED.md E9, and the old
+/// sentence must be GONE: a message still saying the rule is missing would be the
+/// expired sentence M10.1 found left on the page.
 #[test]
-fn a_junction_pressure_is_refused_and_the_refusal_names_the_tick_zero_rule() {
+fn a_junction_pressure_is_refused_as_a_scope_decision_now_the_tick_zero_rule_exists() {
     // The junction sits in the vent line, so it has the two edges a junction
     // needs and the plant is otherwise the fixture.
     let plant = GAS_PLANT
@@ -360,9 +365,16 @@ diameter_m = 0.05
 
     let message = refusal(&format!("{plant}{loop_on_tee}"));
     assert!(
-        message.contains("junction") && message.contains("tick 0"),
-        "a junction's pressure is an unknown of the solve, and the refusal has to \
-         say so and name the tick-0 rule that is missing — it said: {message}"
+        message.contains("is a junction, which holds nothing")
+            && message.contains("junction-pressure control is not built, as a scope decision")
+            && message.contains("docs/DEFERRED.md E9"),
+        "a junction's pressure is an unknown of the solve, and the refusal has to say \
+         so and name itself a scope decision pointing at E9 — it said: {message}"
+    );
+    assert!(
+        !message.contains("it needs a stated rule for"),
+        "the old reason — that no tick-0 rule exists — is false since docs/DESIGN.md \
+         §23 and must not survive in the message: {message}"
     );
 }
 
@@ -846,7 +858,12 @@ fn the_measurement_and_the_setpoint_agree_on_which_kinds_answer_for_a_pressure()
     assert!(
         engine
             .graph
-            .measure(&engine.slate, receiver, MeasuredVariable::Pressure)
+            .measure(
+                &engine.slate,
+                engine.node_states(),
+                receiver,
+                MeasuredVariable::Pressure
+            )
             .is_ok()
             && engine
                 .graph
@@ -857,7 +874,12 @@ fn the_measurement_and_the_setpoint_agree_on_which_kinds_answer_for_a_pressure()
     assert!(
         engine
             .graph
-            .measure(&engine.slate, header, MeasuredVariable::Pressure)
+            .measure(
+                &engine.slate,
+                engine.node_states(),
+                header,
+                MeasuredVariable::Pressure
+            )
             .is_err()
             && engine
                 .graph

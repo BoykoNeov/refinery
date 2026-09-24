@@ -134,12 +134,22 @@ fn a_reverse_loop_fires_harder_the_colder_its_tank_is() {
          {expected}; it produced {}. Zero means the action was ignored",
         c.output
     );
-    let rebuilt = 0.05 * ControlledValue::error(c.measurement, c.setpoint, c.action);
+    let rebuilt = 0.05
+        * ControlledValue::error(
+            c.measurement
+                .expect("a stored quantity is measured from load"),
+            c.setpoint,
+            c.action,
+        );
     assert_eq!(
         rebuilt, c.output,
         "the snapshot's three values must rebuild the output the controller produced"
     );
-    let unsigned = 0.05 * (kelvin(c.measurement) - kelvin(c.setpoint));
+    let unsigned = 0.05
+        * (kelvin(
+            c.measurement
+                .expect("a stored quantity is measured from load"),
+        ) - kelvin(c.setpoint));
     assert!(
         unsigned < 0.0,
         "and a reader who ignored the published action would get {unsigned}, which \
@@ -171,7 +181,11 @@ fn a_furnace_transfers_from_manual_to_auto_without_a_step() {
         })
         .expect("in MANUAL, within range, the command drives the furnace");
     run(&mut engine, 50);
-    let cold = kelvin(control(&engine).measurement) - 273.15;
+    let cold = kelvin(
+        control(&engine)
+            .measurement
+            .expect("a stored quantity is measured from load"),
+    ) - 273.15;
     assert!(
         60.0 - cold > 15.0,
         "the gate needs a large error at transfer; the tank reads {cold} °C"

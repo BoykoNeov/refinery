@@ -12561,3 +12561,190 @@ Run under `--no-fail-fast`, each catch read for why it fired.
 The probes are `W:\temp\claude\m19\probe_gain.py`, `probe_loop.py` and
 `probe_tank.py`; each plant they run is the shipped
 `tank_temperature_heating.toml` with the substitutions the script names.
+
+### Corrections from building it (M19.1)
+
+M19.1 built what the forks specify:
+- `NodeStates::held`, filled at the one site that takes the no-inflow fallback.
+- `mix_inflows` now returns `Option` and leaves the fallback to its caller.
+- `measure(slate, resolved, node, variable) → Result<Option<ControlledValue>>`,
+  with the furnace/cooler temperature arm.
+- The four other zero-volume kinds, and the relief valve, refused each with its
+  own reason.
+- The reworded junction-pressure refusal.
+- `ControlLoop::last_measurement` and `ControlSnapshot::measurement` as
+  `Option`, the latter skipped when absent.
+- `PiController`'s memory as `Seeded(b) | Pending { initial_output }`.
+- The blind arm of the tick pass (`(Auto, None)`: write nothing, track the
+  actuator).
+- The refused MANUAL→AUTO transfer.
+- `scenarios/furnace_outlet_control.toml`.
+
+The loader measures against an empty `NodeStates`, so a holdup loop seeds at
+load exactly as before and an outlet loop starts pending.
+
+**The prediction most likely to be wrong was right.** All twenty-two pre-M19
+plants are byte-identical on both fidelities, with no iteration count moved.
+Against baselines recorded before the first code edit, 44 of 44 corpus rows read
+`identical`. That includes the four loop plants, which now carry an `Option`
+through the loop and the snapshot, and every plant with a stagnant zero-volume
+node, which now fills a set nothing publishes. The new plant's own worst is 6
+iterations per tick on both fidelities.
+
+**The hand simulation was right, on the engine**, which is what fork 6 said it
+could not yet show:
+- The shipped tuning is within 0.06 K of 60 °C from **tick 154**, never on a
+  clamp. It settles at `u = 0.600972`, against the M18 tank loop's 0.600948 —
+  the same furnace delivering the same heat.
+- The M18 tuning moved to the outlet sits on a clamp on **393 of 400** ticks,
+  alternating 40.002 / 73.286 °C.
+- `K = 0.030` stays off both clamps; `K = 0.031` reaches them.
+- Newton and the game fidelity agree.
+- The tank the outlet feeds reads 59.939 °C at tick 6 000, which is consistent
+  with probe 3's tick 6 079 from a stand-in.
+
+**Fork 4's case for the stagnant-outlet rule was half wrong, and gate 6 had to
+be rebuilt around the other half.** The note said a feed stopped MID-RUN leaves
+the loop measuring a frozen number and winding into the upper clamp. It does
+not. A furnace that has been flowing holds its LAST resolved outlet, and a loop
+at steady state last saw its own setpoint, so a loop reading that placeholder
+sees an error of zero and sits still. The first draft of gate 6 asserted the
+mid-run windup as its counterfactual and failed on the correct engine.
+
+The hazard the rule closes is the **startup** placeholder. A furnace whose feed
+is shut from load has never resolved anything, so it publishes `T_AMBIENT` — 20
+°C, 40 K below setpoint. A PI loop taking that as a measurement integrates
+`K/T_i · 40 K = 0.06` of output per tick and is on the upper clamp by tick 14.
+It would then fire full duty into the stream on the tick the valve opens.
+
+The shipped gate builds that case and asserts the counterfactual on the engine's
+own published 293.15 K first. It then asserts that the loop holds output and
+duty exactly on every stagnant tick. On the tick after the valve opens, the
+first measured output is exactly `initial_output` — the pending memory seeded as
+if the outlet had existed from tick 1. The mid-run half is kept as an assertion
+that the measurement goes away, not as a hazard. **A placeholder is dangerous in
+proportion to how far it is from the setpoint, and the last value is the one
+placeholder that is never far.**
+
+**The shutting tick acts once more, and the first draft of the mid-run check
+said it did not.** Commands are applied between ticks. The control pass that
+runs at the top of the tick that shuts the valve still measures the last FLOWING
+outlet, so the position the loop then holds is that tick's output, not the one
+before. The same holds the other way: the tick that opens the valve is solved
+with it open, so the loop that ran at its top is still blind, and the seed comes
+one tick later. Both are fork 2's one-tick sample delay, not a defect.
+
+**Gate 4's tolerance was chosen before it was measured, and it was wrong by a
+factor of sixteen.** The first draft asserted the outlet within 1e-6 K of 60 °C
+at the end of the run, on the grounds that the 0.966 slow pole has long since
+decayed. It read **1.655e-5 K**.
+
+What remains is not the transient. The flow drifts as the tank's level moves, so
+the outlet at a fixed duty drifts too, and a PI loop follows a ramp disturbance
+with a lag of `T_i/(K·G·dt)` = 20 ticks. The drift is measured on the MANUAL
+twin (same hydraulics, so the same flow) and scaled by duty, because the
+outlet's rise over the feed is `Q/(ṁ·c̄p)`. That predicts **1.523e-5 K**, a
+ratio of 1.09 to what the loop shows, and the shipped bound is twice the
+prediction. Gate 5's "settles" half inherits the same argument at `1e-3 K`, four
+orders inside the ring it is separating from.
+
+**The anti-windup arm is reached by a command, and the release sees the sign.**
+The note named the 75 °C setpoint but no gate for it. The shipped test pins the
+loop at `u ≥ 1 − 1e-9` over a window, then steps back to **72 °C** — just below
+the 73.29 °C ceiling, M18's lesson that stepping all the way back cannot see a
+sign. The signed memory releases into `(0.9, 0.99)` (about 0.955); one
+back-calculated with the unsigned error stays pinned at 1.
+
+**Gate 8's exchanger case uses `heat_recovery.toml`**, the only shipped plant
+with an exchanger. Measuring its hot side is refused with the E9 message. A
+cooler outlet, the other admitted kind, is shown accepted on the M17 cooler
+plant with its loop pointed at the cooler itself. Admitting both kinds with only
+one exercised would leave the other defended by a match pattern alone.
+
+**All eleven mutations were caught; the note's predictions were exactly right on
+three of its ten (5, 7 and 8).** Ten are §23's list; the eleventh (the sweep
+never filling `held`) was added because mutation 4 attacks only the reading end
+of that set. Run under `--no-fail-fast`, each catch read for why it fired.
+
+| edit | predicted | caught by |
+|---|---|---|
+| 1. the blind tick runs `update` against the setpoint | gates 1, 3 | gates 3, 6 |
+| 2. the pending memory seeded as `b = 0` | gate 3 | gates 3, 6 |
+| 3. the pending seed passes `Direct` | gate 3 only | gates 3, 6 |
+| 4. `measure` ignores `held` | gate 6 only | gates 6, 7 |
+| 5. `measurement` published without `skip_serializing_if` | gate 1 only; corpus blind | gate 1 only; 22 of 22 pre-M19 rows `identical` on both fidelities |
+| 6. the faceplate publishes a fresh re-read | gate 2 | 9 tests in 5 files: gates 1, 2, 3, 6, the anti-windup test, and four pre-M19 identity tests |
+| 7. the relief valve admitted | gate 8 only | gate 8 only |
+| 8. MANUAL→AUTO before the first tick seeds against the setpoint | gate 7 only | gate 7 only |
+| 9. the demo shipped with the M18 tuning | gates 4, 5 | gates 3, 4, 5, the anti-windup test |
+| 10. the junction-pressure message left as it was | gate 8's old-substring check | the M10 junction test only |
+| 11. `held` never filled at the sweep site (not in §23) | — | gates 6, 7 |
+
+**Gate 1 is blind to mutation 1, and the reason is the pending memory itself.**
+A blind tick that runs `update` against the setpoint sees an error of zero, and
+a pending memory seeded against zero error is `b = initial_output` — so the
+output it writes is exactly the position the actuator already held, and the
+snapshot still carries no measurement because the mutation never sets one. Gate
+1 asserts both and both hold. What the mutation breaks is the NEXT seed: the
+memory is already `Seeded` when the first real measurement arrives, so gate 3's
+"exactly `initial_output` after tick 2" reads `0.25 + K·e`. **A gate on the tick
+where nothing is measured cannot see a wrong answer that happens to equal "do
+nothing".**
+
+**Gate 6 is the widest catcher of the new gates**, firing on six of the eleven.
+Its assertion that the first measured output after the valve reopens is exactly
+`initial_output` is gate 3's seed assertion taken a second time, from a stagnant
+start rather than a flowing one — so every edit to the seed (1, 2, 3) fires
+both, and every edit to the stagnant set (4, 11) fires it through the
+placeholder. The "only" in predictions 3 and 4 was wrong for that reason.
+Mutation 4 and mutation 11 have the SAME catch set, which is the right answer:
+the set's writer and its reader are one mechanism, and no test should be able to
+tell which end broke.
+
+**Mutation 6 is wide because every identity test needs the acted-on value.** A
+fresh re-read after tick 1 finds tick 1's outlet, so the faceplate publishes a
+measurement the loop never acted on — gate 1 fires on that alone — and the four
+pre-M19 tests that assert "the published measurement is the one the controller
+used" (one each on the level, pressure, cooler and furnace loops) all fire,
+because a re-read after the tick sees the state the tick produced.
+
+**Mutation 9's two extra catches are the test's constants pinning the file**,
+not physics: gate 3 and the anti-windup test compute their expected outputs by
+hand from `GAIN_PER_K` and `INTEGRAL_TIME_S`, which mirror the file. That is a
+legitimate catch — a gate computing `K·e + b` by hand must agree with the tuning
+the plant ships — but it is not the ring gates 4 and 5 see.
+
+**Mutation 10's prediction named the wrong gate.** Gate 8's old-substring
+assertion runs over TEMPERATURE refusals; the junction-pressure refusal is
+reached only by a pressure loop, which gate 8 does not build. The catch is the
+M10 junction test, renamed in this slice to
+`a_junction_pressure_is_refused_as_a_scope_decision_now_the_tick_zero_rule_exists`,
+whose own negative substring check is what fires.
+
+**Mutation 5 confirms the note's sharpest prediction**: publishing an absent
+measurement as `"measurement":null` moves only the new plant — which has no
+baseline row — and leaves all twenty-two pre-M19 plants identical on both
+fidelities, because none of them has a loop without a measurement. The corpus
+cannot defend the rule; gate 1 alone does.
+
+**An instrument finding, the third of its shape.** A corpus comparison run
+during the build exited 1 with no rows. The baseline path had been interpolated
+from a shell variable inside single quotes, so the binary was handed a path that
+did not exist and reported it as a failure. It was taken for a real failure for
+one read, and it was caught only because a failure with no rows behind it is not
+a result. That is the M16.2 and M18.1 rule, which held a third time.
+
+The gdext binding was built and linted behind its feature (`--features godot
+--target-dir target/godot`), and both are clean; the bridge reads a loop's id
+and name off the snapshot and never its measurement. `scenarios/` holds
+**twenty-three** files, five of which declare `[[controls]]`. **From here, "runs
+byte-identical" means post-M19.1 identical, which is unchanged.**
+
+**M19 closes with M19.1.** Its scope, the zero-volume measurement for a furnace
+or cooler outlet, is built. What it leaves is in the ledger:
+- The tick-0 rule applied to the other zero-volume kinds and to a junction's
+  pressure (E9).
+- The lag-free furnace that makes the outlet's bound a stability bound (E10).
+- Flow control and a bubble-point-bounded setpoint (E1b).
+
+No row was re-measured, so no claim is made that any row is past its trigger.

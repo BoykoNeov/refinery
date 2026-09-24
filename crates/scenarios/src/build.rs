@@ -476,11 +476,12 @@ fn resolve_vent_destination(
 /// - a level measured on a node that is not a `Tank`, or a pressure measured on
 ///   one that is not a `Vessel` — three distinct refusals on the pressure side
 ///   alone (a tank, whose pressure IS its level in a worse unit; a junction, whose
-///   pressure is genuinely solved and absent at tick 0; and the boundary kinds,
-///   whose pressures are pinned by declaration),
-/// - a temperature measured on anything that is not a holdup (M17) — refused with
-///   the missing tick-0 rule named for a zero-volume node, and separately for a
-///   column or reactor and for a boundary,
+///   pressure is genuinely solved and absent at tick 0, refused as a scope
+///   decision since M19; and the boundary kinds, whose pressures are pinned by
+///   declaration),
+/// - a temperature measured on anything that is not a holdup (M17) or a furnace or
+///   cooler OUTLET (M19) — refused with its own reason for the other zero-volume
+///   kinds, for a relief valve, for a column or reactor and for a boundary,
 /// - a setpoint or a gain key belonging to ANOTHER variable, every direction,
 /// - an actuator the variable cannot pair with (docs/DESIGN.md §21 fork 3's table:
 ///   a valve for a level or a pressure, a cooler for a temperature), each refused
@@ -488,10 +489,14 @@ fn resolve_vent_destination(
 /// - `max_duty_mw` missing on a cooler or present on a valve, not finite and
 ///   positive, or a declared cooler duty outside `[0, max_duty_mw]`.
 ///
-/// Each loop is born with a real measurement rather than an empty one: all three
-/// controlled variables are stored and true from load, so `PlantGraph::measure` is
-/// called here exactly as the tick pass calls it, and a snapshot taken before the
-/// first tick reports a true level, pressure or temperature. `last_output` is
+/// `PlantGraph::measure` is called here exactly as the tick pass calls it, with the
+/// empty `NodeStates` that is the truth at load. For a level, a pressure or a
+/// holdup's temperature — all STORED quantities — that gives a real measurement, and
+/// a snapshot taken before the first tick reports it. For a furnace or cooler
+/// OUTLET it gives none, because an outlet is resolved by the tick and does not
+/// exist before the first one (docs/DESIGN.md §23): the loop is born without a
+/// measurement, and the tick's "no measurement, no action" rule holds it until it
+/// has one. It is never given a stand-in. `last_output` is
 /// seeded through `PlantGraph::actuator_position` — the reader the tick pass and
 /// the MANUAL→AUTO transfer also use — which is what MANUAL would report and what
 /// AUTO overwrites on tick 1.
@@ -500,7 +505,9 @@ fn resolve_vent_destination(
 /// `initial_output` says where the actuator starts, and the integral term is
 /// whatever makes the controller ask for that position given the error standing at
 /// load. So the declared number is the one a reader can check on the faceplate at
-/// tick 0, and the state behind it is derived rather than declared twice.
+/// tick 0, and the state behind it is derived rather than declared twice. An
+/// outlet loop's memory waits for its first measurement and is derived then, from
+/// the same declared number (§23 fork 3).
 fn build_controls(
     graph: &mut PlantGraph,
     slate: &Slate,
@@ -561,7 +568,12 @@ fn build_controls(
         // back-calculated against. Reading it twice would let the two drift apart
         // in a way nothing downstream could detect.
         let measurement = graph
-            .measure(slate, measurement_node, variable)
+            .measure(
+                slate,
+                &refinery_core::energy::NodeStates::default(),
+                measurement_node,
+                variable,
+            )
             .map_err(|e| {
                 SimError::Scenario(format!(
                     "control loop '{}' cannot measure {} on node '{}': {e}",
@@ -950,9 +962,11 @@ fn build_controls(
                     "the loop's initial memory",
                 )?;
                 // The setpoint and the measurement standing at load are arguments
-                // rather than a later call, so an unseeded `PiController` is not a
-                // value that can exist — fork 5's "no silent zero" holds by
-                // construction. The range check on `initial_output` lives with the
+                // rather than a later call, so a `PiController` whose memory nobody
+                // set is not a value that can exist — fork 5's "no silent zero"
+                // holds by construction. An outlet loop's measurement is `None`
+                // here, and its memory is PENDING on `initial_output` until the
+                // first tick measures the outlet (docs/DESIGN.md §23 fork 3). The range check on `initial_output` lives with the
                 // controller, beside the range check `Command::SetValveOpening`
                 // applies to the same quantity.
                 Box::new(
