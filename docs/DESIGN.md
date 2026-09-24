@@ -12198,3 +12198,366 @@ it leaves is in the ledger: reverse action on a valve (new row E8), the
 zero-volume measurement a furnace-OUTLET loop still needs, flow control, and a
 temperature setpoint bounded by a bubble point (all E1b). No row was re-measured,
 so no claim is made that any row is past its trigger.
+
+## 23. A furnace holding its own outlet — the zero-volume measurement (M19.0) — specified before building
+
+### What licensed this, stated plainly
+
+Nothing fired. No row in `docs/DEFERRED.md` was past its trigger when M18 closed;
+the nearest row that carries a number is still A3, 5.4× under its cap. **This
+milestone is a decision**, the user's, taken on 2026-09-24 from a short list of
+candidates, on the same gameplay grounds as M17 and M18: the loop a refinery
+operator actually runs on a fired heater is its COIL OUTLET temperature, and the
+engine refuses it.
+
+Its scope is what E1b has left of temperature after M17 and M18: **the
+zero-volume measurement**. M18 built the reverse action a furnace loop needs, so
+the furnace-outlet loop now lacks exactly one thing, and the refusal in
+`PlantGraph::measure` names it: "a stated rule for what a loop measures at
+tick 0".
+
+### The premise, checked first — and for once it is TRUE
+
+§12, §21 and E1b each found "this quantity is solved, so it is absent at tick 0"
+false for the variable being deferred (a vessel's pressure, a holdup's
+temperature). It was checked here first, because it has been wrong four times.
+**It is true of a furnace outlet.** `Furnace` and `Cooler` are zero-volume
+(`energy::is_zero_volume`), carry no field on the graph that holds a
+temperature, and are resolved by `energy::resolve_node_states` into
+`Engine::node_states`, which is empty before the first tick. Measured on the M18
+heating plant with its loop put in MANUAL (probe 1, below): the heater's
+resolved temperature exists from the first snapshot row, tick 1, and reads
+**48.322674 °C** at 0.5 MW — so the outlet responds on the SAME tick a duty is
+written. Nothing stores it, and nothing could be read at load.
+
+So this milestone genuinely owes the rule the earlier ones were excused from.
+
+### The sentence sites, counted before writing
+
+Grepped across `crates/`, `scenarios/`, `docs/` and `CLAUDE.md` for
+`zero-volume temperature`, `furnace-outlet`, `tick-0 rule`,
+`Real from load rather than optional`, `all three variables`,
+`born with a real measurement` and `unseeded`:
+
+1. `PlantGraph::measure` — the doc's last paragraph ("the temperature arms below
+   refuse those with the tick-0 rule named") and the zero-volume arm's refusal,
+   which says the loop is deferred "on exactly that".
+2. **The JUNCTION-PRESSURE refusal in the same function** — its doc and its
+   message defer junction pressure because "it needs a stated rule for what a
+   loop measures at tick 0". Once this note states the rule, that reason is
+   false. See fork 5.
+3. `ControlLoop::last_measurement` — "Real from load rather than optional:
+   **all three** variables this engine controls are STORED quantities".
+4. `ControlLoop::measurement_node` — "A `Tank` for a level loop, a `Vessel` for a
+   pressure loop" (stale since M17; fixed in passing).
+5. `ControlSnapshot::measurement` — documents a value that is always present.
+6. `build_controls`' doc — "Each loop is born with a real measurement rather than
+   an empty one: all three controlled variables are stored and true from load".
+7. `PiController` — "never *born* zero — `new` requires the declared
+   `initial_output` and derives this from it", and `build_controls`' "an
+   unseeded `PiController` is not a value that can exist". Both stay true in
+   spirit and change in letter: fork 3.
+8. Two tests that assert on the old wording: `temperature_control_reference.rs`'s
+   zero-volume refusal case ("stated rule for what a loop measures at tick 0")
+   and `pressure_control_reference.rs`'s junction case (asserts the message names
+   the missing rule).
+9. The E1b row, and CLAUDE.md's M17 and M18 boxes where they call the outlet loop
+   deferred.
+
+### Fork 1 — where the measurement comes from
+
+`measure(&self, slate, node, variable)` reads the graph and nothing else, and it
+is the single owner of "where a loop's measurement comes from" — the loader's
+seed, pass 1 of the tick and the MANUAL→AUTO transfer all call it. An outlet
+temperature lives in `Engine::node_states`, which the graph cannot see.
+
+- **(a) An engine-side reader beside `measure`** that handles zero-volume nodes
+  and delegates the rest. Rejected: two owners of one question, and the M17
+  lesson (three callers, one reader) says the next caller picks the wrong one.
+- **(b) Store the resolved outlet on the graph**, a field on `Furnace`. Rejected:
+  `NodeSnapshot::kind` serializes `NodeKind`, so every furnace plant's bytes
+  would move — the reason `max_duty` sits on the loop (§21 fork 3) — and it would
+  be a second copy of a number `NodeStates` already owns.
+- **(c) `measure` takes the resolved states as an argument.** Chosen:
+  `measure(&self, slate, resolved: &NodeStates, node, variable)`. The tank and
+  vessel arms ignore it, so their arithmetic cannot move; the furnace and cooler
+  arms read `resolved.temperature`. The loader passes an empty `NodeStates`,
+  which is the truth at load.
+
+### Fork 2 — the tick-0 rule
+
+Before the first tick there is no outlet temperature. Four candidates:
+
+- **(a) Resolve the plant at load** — run a hydraulic solve and a sweep inside the
+  loader to produce a tick-0 temperature. Rejected: a second path to a number the
+  tick owns, and not even the same number — tick 1's control pass writes the
+  actuator BEFORE tick 1's solve, so a load-time resolve would describe a plant
+  state that never occurs.
+- **(b) A declared initial measurement** (`initial_measurement_c`). Rejected as a
+  fabricated number — M12.1 refused a vent temperature chosen to make a balance
+  come out, and this is the same shape.
+- **(c) A stand-in** — the feed's temperature, ambient, the setpoint. Rejected
+  for the same reason, and it is worse than it looks: a PI loop seeds its memory
+  against whatever it first measures, so a stand-in is carried into the loop's
+  state for the rest of the run.
+- **(d) No measurement, no action.** Chosen. **A loop whose measurement does not
+  exist does nothing: it writes no actuator, its faceplate tracks the actuator's
+  real position (MANUAL's behaviour), and a PI loop's memory is left untouched.**
+  The first tick is therefore blind — the furnace runs at its declared duty — and
+  the loop acts from tick 2, on tick 1's resolved outlet. That is the one tick of
+  measurement lag §10 fork 3 already accepts everywhere.
+
+The rule is stated in terms of ABSENCE, not of tick numbers, and that is what
+lets it reach the second case below (fork 4) without a second rule.
+
+### Fork 3 — the type of an absent measurement, and where the PI seed goes
+
+**`ControlLoop::last_measurement` becomes `Option<ControlledValue>`, and so does
+`ControlSnapshot::measurement`**, skipped when `None`. `None` means "this loop has
+not measured anything it could act on" — never "zero" and never "healthy", M11's
+rule for `cavitation`. A NaN inside a `ControlledValue` was considered and
+rejected: `serde_json` writes NaN as `null`, and `null` does not deserialize back
+into an `f64`, so a snapshot would stop round-tripping.
+
+**This is byte-neutral for every existing loop, and that is exactly why the
+corpus cannot defend it.** `Option<T>` holding a value serializes as `T`, so the
+four shipped loop plants publish the same bytes whether the skip is written or
+not, and whether a `None` would have come out as `null` or as nothing. The
+absence appears only in the new plant's first two snapshots, and a new plant has
+no baseline — M10.1's escape. Gate 1 asserts it on the bytes.
+
+**The PI loop's seed moves from load to the first measurement.**
+`PiController::new` today requires the measurement standing at load, so that an
+unseeded controller is not a value that can exist. It takes
+`Option<ControlledValue>` instead, and the memory becomes a two-state field:
+**seeded** (`b`, as today) or **pending** (the declared `initial_output`, waiting
+for an error to be back-calculated against). The first `update` on a pending
+memory performs the seed — `b = u₀ − K·e₁`, through the same `back_calculate` —
+and then runs, so its output is `initial_output`, exactly as a holdup loop's first
+output is today. The invariant survives in the form that matters: the memory is
+never born ZERO, and never seeded against a number nothing measured. A holdup
+loop is still seeded at load through the same constructor, and its arithmetic is
+unchanged.
+
+A P loop has no memory and needs nothing: on a blind tick it holds.
+
+### Fork 4 — a stagnant outlet has no temperature either
+
+`mix_inflows` gives a zero-volume node with **no inflow** the previous tick's
+value, or `T_AMBIENT` if there is none — "indeterminate but inert", with the
+node's heat dropped. That value is a placeholder, not a measurement. On an outlet
+loop it is reachable two ways: a furnace with no flow on tick 1 reports 293.15 K,
+and a PI loop would SEED against it; and a feed stopped mid-run leaves the loop
+measuring a frozen number while its furnace heats nothing, so it winds into the
+upper clamp and fires full duty into the stream the moment flow returns.
+
+**Chosen: fork 2's rule covers it.** The sweep records which zero-volume nodes
+took the no-inflow fallback this tick (`NodeStates::held`, a `BTreeSet<NodeId>`,
+filled at the one site that takes it), and `measure` returns `None` for a node in
+that set. A stagnant outlet is then the same state as tick 0: the loop holds its
+actuator and its memory, and resumes from where it stood when flow returns.
+`NodeStates` is engine-internal and never serialized, and nothing but `measure`
+reads the new set, so no existing plant can move.
+
+What it does NOT cover is a trickle. The fallback is taken only at exactly zero
+capacity rate; a flow of `1e-9` kg/s is resolved, and its outlet temperature is
+real and enormous (§22 fork 5's "no ceiling"). That is physics the loop acts on,
+not a placeholder.
+
+**MANUAL→AUTO with no measurement is refused.** The transfer reads the
+measurement fresh to back-calculate a bumpless seed (§10 fork 4). Before the
+first tick, or while the outlet is stagnant, there is nothing to read. Deferring
+the seed to the first measurement was considered: it would seed from the
+actuator's position at a later moment than the command, which is a different
+promise from "bumpless from now". The command is refused with its reason, and a
+file that wants the loop in AUTO from the start says `mode = "auto"`.
+
+### Fork 5 — which nodes may be measured, and the junction pressure
+
+**Admitted: a `Furnace` and a `Cooler`**, the two units E1b and the refusal name.
+Both resolve through the ordinary single-node branch of the sweep
+(`mix_inflows`), so they share one code path and fork 4 covers both.
+
+**Still refused, each now with a reason that is not the tick-0 rule:**
+
+- `Junction`, `Pump`, `Valve` — the rule applies to them unchanged, but no plant
+  or fixture exercises one, and an admission nobody runs is untested (M16's lesson
+  about a declared constant nothing reads, one level up). New row **E9**, with the
+  junction pressure below.
+- `HeatExchanger` — a side resolves in the COUPLED-PAIR branch, not in
+  `mix_inflows`, so fork 4's fallback set would have to be argued for that branch
+  separately. Also E9.
+- `ReliefValve` — shut in normal operation, so its temperature is the fallback
+  nearly always; under fork 4 the loop would hold forever. Refused with that
+  reason rather than admitted into a loop that never acts.
+- `Column`, `Reactor` and the boundaries — unchanged; their reasons were never the
+  tick-0 rule.
+
+**The junction-pressure refusal is REWORDED, not built.** Its old reason ("needs a
+stated rule for what a loop measures at tick 0") is false the moment this note
+exists. The rule would apply — a junction's pressure is in `last_solution` and
+absent before the first solve — but it would need a second resolved map passed
+into `measure`, and nothing asks for junction pressure control. The message says
+the rule exists and is not applied to a pressure, and points at E9.
+
+### Fork 6 — the gain bound is now a STABILITY bound, and the plant is too fast
+
+A holdup integrates, so a level, pressure or tank-temperature loop has a real
+lag, and the demos' gain bounds were tuning bounds. **An outlet has none.** The
+engine's furnace has no thermal mass (§4a: its outlet temperature is algebraic),
+so the outlet at tick `k` is `T_in + G·u_k` with the duty written at the top of
+the same tick, and the loop's ONLY dynamics is the one-tick sample delay of §10
+fork 3. With `L = K·G` (the loop gain, dimensionless) and `a = dt/T_i`, the
+reverse error obeys
+
+```text
+e(k+2) = (1 − L)·e(k+1) + L·(1 − a)·e(k)
+z² − (1 − L)·z − L·(1 − a) = 0
+```
+
+At `a → 0` the poles are `1` and `−L`. **The loop rings with period two and is
+stable only for `L < 1`; `L = 1` is marginal**, not stable — a hand simulation at
+`L = 0.999` alternates and barely decays. Above it the ring grows until both
+clamps catch it, and the outlet swings between the feed temperature and the
+full-duty ceiling on alternate ticks. This is sampled-data control of a lag-free
+plant, not anything a furnace does: a real coil has tube-metal lag of minutes,
+and the engine's has none. New row **E10**.
+
+**Measured static gain** (probe 1: the M18 heating plant, loop in MANUAL, duty
+varied, 5 ticks each): the outlet reads **40.001605 / 48.322674 / 56.643743 /
+64.964812 / 73.285881 °C at 0 / 0.5 / 1.0 / 1.5 / 2.0 MW** — a slope of
+**16.642138 K per MW** at 14.36148 kg/s, so on a 2 MW range
+`G = 33.284 K per unit of output`. The 1.6 mK above the 40 °C feed is pipe
+dissipation.
+
+**Predicted, not measured.** Probe 2 is a hand transcription of `PiController`
+(reverse error, clamp, back-calculated anti-windup, the blind first tick) run on
+that static gain; the engine cannot run the loop until M19.1:
+
+- **The M18 demo's tuning moved to the outlet** (`K = 0.1 /K`, `T_i = 600 s`)
+  gives `L = 3.33`: from tick 2 the outlet alternates **40.002 / 73.286 °C**, on a
+  clamp on 393 of 400 ticks. A holdup tuning copied onto an outlet is a bang-bang
+  oscillator.
+- **The bound is sharp**: `K = 0.030` (`L = 0.999`) stays off the clamps and
+  rings; `K = 0.031` (`L = 1.032`) falls into the same two-clamp cycle.
+  `K_crit = 1/G = 0.03004 /K`.
+- **The demo's tuning is `K = 0.015 /K` (`L = 0.499`, half the bound) and
+  `T_i = 10 s`** — "ten ticks at `dt = 1`", said in those words because on this
+  plant an integral time is a count of samples. Poles 0.966 and −0.465: a slow
+  pole of about 29 ticks and a ring that halves each tick. Predicted within
+  0.06 K of 60 °C from **tick 154**, never on a clamp.
+
+**The bound moves with flow, and a player can reach the other side of it.**
+`G = max_duty/(ṁ·c̄p)`, so `L ∝ 1/ṁ`: at the demo's gain the loop reaches `L = 1`
+at **7.17 kg/s**, half the design flow. Throttling the drain far enough turns a
+settled outlet loop into the two-clamp ring. Not refusable at load — the flow is
+solved — and named rather than guarded. It is also, for once, what a real
+operator sees: an outlet loop tuned at full rate goes oscillatory at turndown.
+
+### Fork 7 — the demo plant
+
+`scenarios/furnace_outlet_control.toml`: the M18 heating file with the loop moved
+from the tank to the heater. The diff against `tank_temperature_heating.toml` is
+the cost of the feature — the measurement node, the gain, the integral time, and
+the names. Same feed, same furnace, same 2 MW range, same
+`initial_output = 0.25`, the tank still starting at 40 °C.
+
+- The heater starts at 0.5 MW, so the first measurement is **48.32 °C, 11.68 K
+  below setpoint**. That is the design input the seed gate needs: an unsigned
+  seed would step the first output by `2·K·e = 0.35`.
+- The MANUAL twin parks its outlet at 48.32 °C, far from 60.
+- The full-duty ceiling is 73.29 °C, so a **75 °C** setpoint command pins `u = 1`
+  and reaches the anti-windup arm from a command, M17's method. On an algebraic
+  plant the pinned outlet is constant, so the pin is steadier than on a tank — but
+  M18's finding (iv) still applies at the last bit: `K·e + (1 − K·e)` can land a
+  hair under 1.
+
+**What the tank does, from a stand-in.** Probe 3 is the heating plant in MANUAL
+at the duty that puts the outlet on 60 °C — **not the loop** — and its outlet then
+drifted 4.5 mK over 12 000 ticks as the flow moved. The tank reaches 52.38 °C at
+tick 1 000 and is within 0.06 K of 60 °C only from **tick 6 079**; the M18 tank
+loop gets the same tank there by tick 2 391. **Holding the outlet is slower for
+the tank**, because the tank loop overfires the furnace (its output peaks at
+0.809) to heat the tank faster, and an outlet loop by definition never does. That
+trade-off is what a cascade (E2) exists for, and the demo's header says so rather
+than presenting outlet control as strictly better.
+
+### The gates, named before building
+
+1. **The blind start, on the bytes.** The snapshot at load and the one after
+   tick 1 carry no `"measurement"` key on the demo's control, and no `null`
+   either; the output is 0.25 and the heater's duty is its declared 0.5 MW after
+   tick 1. Both snapshots deserialize back, with `measurement == None`.
+2. **The one-tick identity.** For every tick `n ≥ 1`, the control's published
+   measurement at `n + 1` equals the heater's published `temperature_k` at `n`,
+   bit for bit, over the whole run — M17's identity, re-derived for a zero-volume
+   node.
+3. **The seed at the first measurement is signed and exact.** The output after
+   tick 2 equals `initial_output`; the output after tick 3 equals
+   `K·(sp − m₃) + b`, with `b = 0.25 − K·(sp − m₂) + (K/T_i)·(sp − m₂)·dt`,
+   computed by hand from published numbers.
+4. **The loop holds; the twin does not.** The outlet within a derived tolerance of
+   60 °C by the end, `u` interior and never on a clamp; the MANUAL twin's outlet at
+   48.32 °C with faceplate 0.25.
+5. **Stability, both sides.** `G` computed from two PUBLISHED operating points
+   (the settled AUTO pair and the MANUAL twin's), and `K·G` asserted within
+   `[0.4, 0.6]`. A fixture at `K = 1.2/G` alternates in sign tick to tick and hits
+   both clamps; one at `K = 0.8/G` settles. Asserting the ring is what makes the
+   bound a measurement rather than a comment.
+6. **The stagnant outlet.** A fixture shuts the furnace's feed mid-run: the
+   measurement disappears, the output and the heater's duty hold exactly on every
+   stagnant tick, and on reopening the loop resumes without a step. The
+   counterfactual is asserted first: with the rule off, the output would have
+   reached the upper clamp.
+7. **MANUAL→AUTO without a measurement** is refused before the first tick and
+   while stagnant, and accepted and bumpless after the first measurement.
+8. **The refusal sweep**, each case asserting a distinctive substring of its own
+   message: a junction, pump, valve, exchanger side and relief valve measured for
+   temperature, and the junction PRESSURE case with its reworded message (the old
+   substring must be gone).
+
+### What must not change, stated as a prediction that can be wrong
+
+All twenty-two shipped plants byte-identical on both fidelities, no iteration
+count moved, against baselines recorded **before the first edit of M19.1**. Every
+existing loop measures a holdup, whose arm ignores the new argument; the `Option`
+is transparent in JSON; `NodeStates::held` is never serialized and is read by
+nothing else. **The prediction most likely to fail** is the sweep: the set is
+filled in `mix_inflows`' no-inflow branch, and an edit there that moved one
+comparison would move bits on every plant with a stagnant zero-volume node.
+
+### The mutations M19.1 owes, named before building
+
+1. The blind tick runs `update` against a stand-in (the setpoint) → gates 1, 3.
+2. The pending memory seeded as `b = 0` → gate 3.
+3. The pending seed passes `Direct` → gate 3 only.
+4. `measure` ignores `held` → gate 6 only; the demo never stagnates.
+5. `measurement` published without `skip_serializing_if` → gate 1 only; the
+   byte-identity prediction is BLIND to it, which is the point of gate 1.
+6. The faceplate publishes a fresh re-read instead of the acted-on value →
+   gate 2.
+7. The relief valve admitted → gate 8 only.
+8. MANUAL→AUTO before the first tick seeds against the setpoint instead of
+   refusing → gate 7 only.
+9. The demo shipped with the M18 tuning (`K = 0.1`) → gates 4 and 5.
+10. The junction-pressure message left as it was → gate 8's old-substring check.
+
+Run under `--no-fail-fast`, each catch read for why it fired.
+
+### Deferred, with what un-defers each
+
+- **E9 — the tick-0 rule applied elsewhere**: a junction's, pump's or valve's
+  temperature, an exchanger side's (which needs fork 4 argued for the coupled
+  branch), and a junction's PRESSURE (a second resolved map into `measure`).
+  Trigger: a plant that needs one.
+- **E10 — a furnace with no thermal mass.** The outlet loop's only dynamics is the
+  sample delay, so its stability bound `K·G < 1` is an artefact of a lag-free
+  coil, and `T_i` is a count of ticks. Trigger: a player-visible outlet response
+  that must take longer than a tick, or a tuning that must transfer to a real
+  heater.
+- **Flow control**, and **a temperature setpoint bounded by the bubble point** —
+  unchanged in E1b.
+
+The probes are `W:\temp\claude\m19\probe_gain.py`, `probe_loop.py` and
+`probe_tank.py`; each plant they run is the shipped
+`tank_temperature_heating.toml` with the substitutions the script names.

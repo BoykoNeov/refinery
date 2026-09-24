@@ -184,6 +184,35 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M19 is OPEN (2026-09-24): a furnace holding its own OUTLET — the zero-volume
+measurement, what `docs/DEFERRED.md` row E1b has left of temperature.** Taken on a
+DECISION (the user's, on gameplay grounds, as M17 and M18). **M19.0 landed
+2026-09-24** — DESIGN §23, seven forks, eight gates, ten mutations, no code;
+M19.1 builds it. Read §23 before touching `measure`, `ControlLoop` or
+`PiController`. Four things it settles.
+
+**The premise is TRUE this time**: an outlet is resolved into `NodeStates`, has no
+field on the graph, and is absent before the first tick. The rule is **no
+measurement, no action** — the loop holds its actuator, the faceplate tracks, and
+a PI loop's memory is PENDING until its first measurement, where the ordinary
+back-calculation seeds it. `measure` takes the resolved states (one owner kept);
+`last_measurement` and `ControlSnapshot::measurement` become `Option`, skipped when
+absent — byte-neutral for every existing loop, which is exactly why the corpus
+cannot defend it and gate 1 asserts it on the demo's bytes. MANUAL→AUTO with
+nothing to measure is refused.
+
+**A stagnant outlet is the same state**: the no-inflow fallback (the last value,
+or ambient) is a placeholder, so the sweep records which nodes took it and
+`measure` returns nothing for them. Only a furnace and a cooler are admitted
+(others → new row E9); the junction-PRESSURE refusal's reason ("no tick-0 rule")
+expires and is reworded.
+
+**The gain bound is a STABILITY bound**: no thermal mass, so poles `1` and `−K·G`,
+stable only for `K·G < 1` (new row E10). `G = 33.28 K` per unit output on the
+demo; the M18 tuning moved to the outlet is a bang-bang oscillator (hand
+simulation). Demo `scenarios/furnace_outlet_control.toml`, `K = 0.015`,
+`T_i = 10 s`; halving the flow reaches the bound.
+
 **M18 is CLOSED (2026-09-23): reverse action — a furnace holding a temperature,
 `docs/DEFERRED.md` row E7 for the duty actuators.** Taken on a DECISION (the
 user's, on gameplay grounds, as M17); the demo fires E7's own trigger by being

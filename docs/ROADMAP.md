@@ -6171,3 +6171,55 @@ fires the anti-windup gate) and one far wider (the inverted map, seven tests).
 **M18 is CLOSED (2026-09-23) with this slice.** E7 is built for the duty
 actuators; reverse action on a valve is new row E8. The next milestone is chosen
 from `docs/DEFERRED.md` as usual.
+
+## M19 — a furnace holding its own outlet: the zero-volume measurement; opened on a decision
+
+Taken on the user's decision (2026-09-24), on the gameplay grounds M17 and M18
+were: the loop an operator runs on a fired heater is its coil-outlet temperature.
+Its scope is what `docs/DEFERRED.md` row E1b has left of temperature — the
+zero-volume measurement, the one thing M18 left the furnace-outlet loop missing.
+Nothing was past its trigger.
+
+### M19.0 — Scoping + design note — **LANDED** 2026-09-24
+
+The note is DESIGN §23: seven forks, eight gates, ten mutations, no code. Five
+things to know before the building slice.
+
+**The premise is TRUE this time, and it was checked first because it has been
+false four times.** A furnace or cooler outlet is resolved by the sweep into
+`Engine::node_states`, has no field on the graph, and does not exist before the
+first tick. The outlet responds on the same tick its duty is written. So this
+milestone genuinely owes the tick-0 rule.
+
+**The rule: no measurement, no action.** A loop whose measurement does not exist
+writes nothing, its faceplate tracks the actuator, and a PI loop's memory waits.
+Resolving the plant at load, declaring an initial measurement and using a
+stand-in are rejected — the last because a PI loop SEEDS against whatever it
+first reads. `measure` takes the resolved states as an argument (one owner kept);
+the measurement becomes `Option` on the loop and the snapshot; `PiController`'s
+memory is seeded or PENDING and performs its seed on its first update. MANUAL→AUTO
+with nothing to measure is refused.
+
+**A stagnant outlet is the same state.** A zero-volume node with no inflow reports
+a held placeholder (the last value, or ambient), and a loop would seed against it
+or wind into the clamp. The sweep records which nodes took that fallback, and
+`measure` returns nothing for them. Only a furnace and a cooler are admitted; a
+junction, pump, valve or exchanger side stays refused (new row E9), a relief
+valve is refused because it is shut in normal operation, and the junction
+PRESSURE refusal is reworded — its old reason was "no tick-0 rule", which this
+note ends.
+
+**The gain bound is now a STABILITY bound.** The engine's furnace has no thermal
+mass, so the outlet loop's only dynamics is the one-tick sample delay: poles at
+`1` and `−K·G`, stable only for `K·G < 1`. Measured `G = 33.28 K` per unit of a
+2 MW range. **By hand simulation, not yet on the engine**: the M18 demo's own
+tuning moved to the outlet is a bang-bang oscillator between 40 and 73 °C; the
+bound is sharp at `K = 0.030`; the demo ships `K = 0.015`, `T_i = 10 s` (ten
+ticks), predicted within 0.06 K from tick 154. Halving the flow doubles `G`, so a
+throttled drain can reach the other side of the bound. New row E10.
+
+**Holding the outlet is slower for the tank.** From a stand-in (a fixed duty on
+60 °C, not the loop), the tank is within 0.06 K of 60 °C only from tick 6 079,
+against the M18 tank loop's 2 391 — the tank loop overfires to get there. The
+demo is `scenarios/furnace_outlet_control.toml`, the M18 file with the loop moved
+to the heater.
