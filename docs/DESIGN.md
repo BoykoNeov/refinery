@@ -12708,18 +12708,39 @@ pre-M19 tests that assert "the published measurement is the one the controller
 used" (one each on the level, pressure, cooler and furnace loops) all fire,
 because a re-read after the tick sees the state the tick produced.
 
-**Mutation 9's two extra catches are the test's constants pinning the file**,
-not physics: gate 3 and the anti-windup test compute their expected outputs by
-hand from `GAIN_PER_K` and `INTEGRAL_TIME_S`, which mirror the file. That is a
-legitimate catch — a gate computing `K·e + b` by hand must agree with the tuning
-the plant ships — but it is not the ring gates 4 and 5 see.
+**Mutation 9's four catches are four different reasons, and gate 5's was not
+its own.** Gate 4 fires on the ring itself: 993 of its 1 000 ticks on a clamp.
+The anti-windup test fires on it too, and earlier than its release: the M18
+tuning keeps swinging between the clamps even under an unreachable setpoint, so
+at tick 402 the output reads 0 where the window asserts full firing. Gate 3 fires
+because it computes `K·e + b` by hand from the test's constants, which mirror the
+file — a legitimate catch, but not physics. **Gate 5 fired for a reason it did
+not state.** Its `K·G` multiplied the TEST's `GAIN_PER_K` by the measured `G`, so
+the half-the-bound assertion read 0.5 whatever the file shipped; it failed only
+because its `tuned` helper's `replace` found no `gain_per_k = 0.015` to replace,
+returned the mutant demo unchanged, and the "settles at `K·G = 0.8`" case rang at
+the mutant's `K = 0.1`. A gate whose headline number is a constant it declared
+itself cannot see the thing it is named for. Both are now asserted: gate 5
+checks that the file declares the gain it multiplies by, and `tuned` checks that
+both of its substitutions land. Rerun, gate 5 fires at the first of those, with
+"the demo must declare the gain this gate multiplies by".
 
-**Mutation 10's prediction named the wrong gate.** Gate 8's old-substring
-assertion runs over TEMPERATURE refusals; the junction-pressure refusal is
-reached only by a pressure loop, which gate 8 does not build. The catch is the
-M10 junction test, renamed in this slice to
+**Mutation 10's prediction named the wrong gate and the wrong check.** Gate 8's
+old-substring assertion runs over TEMPERATURE refusals; the junction-pressure
+refusal is reached only by a pressure loop, which gate 8 does not build. The
+catch is the M10 junction test, renamed in this slice to
 `a_junction_pressure_is_refused_as_a_scope_decision_now_the_tick_zero_rule_exists`,
-whose own negative substring check is what fires.
+and it is that test's POSITIVE assertion that fires — the message no longer says
+"as a scope decision". Its negative check for the old wording would fail too, but
+the first `assert!` panics before it is reached.
+
+**The first write-up of this pass inferred three of these reasons from the gate
+code instead of reading the failures, and two were wrong** (mutation 10's check,
+and mutation 9's anti-windup and gate-5 reasons; mutation 6's grouping held on
+reading). The harness recorded test names only. It now saves each run's full
+output, and mutations 9 and 10 were rerun to read theirs. **A catch set is a list
+of names; why each one fired is in the message, and a reason written without
+reading it is a prediction.**
 
 **Mutation 5 confirms the note's sharpest prediction**: publishing an absent
 measurement as `"measurement":null` moves only the new plant — which has no

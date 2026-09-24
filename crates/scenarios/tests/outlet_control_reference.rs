@@ -112,8 +112,17 @@ fn set_setpoint_c(engine: &mut Engine, c: f64) {
         .unwrap_or_else(|e| panic!("the setpoint command must be accepted: {e}"));
 }
 
-/// The demo with its tuning replaced — the plant is untouched.
+/// The demo with its tuning replaced — the plant is untouched. Both substitutions
+/// are asserted to land: a `replace` that finds nothing returns the demo as
+/// shipped, and a gate built on it would then be testing the shipped tuning while
+/// saying it tests another (the M19.1 mutation pass found gate 5 doing exactly
+/// that).
 fn tuned(gain_per_k: f64, integral_time_s: f64) -> String {
+    assert!(
+        DEMO.contains(&format!("gain_per_k = {GAIN_PER_K}\n"))
+            && DEMO.contains("integral_time_s = 10.0\n"),
+        "the demo no longer declares the tuning this file's constants mirror"
+    );
     DEMO.replace(
         &format!("gain_per_k = {GAIN_PER_K}"),
         &format!("gain_per_k = {gain_per_k:?}"),
@@ -382,6 +391,13 @@ fn the_gain_bound_is_a_stability_bound_and_both_sides_of_it_behave_accordingly()
     run(&mut twin, 1000);
     let (u_m, t_m) = (output(&twin), outlet_k(&twin));
     let g = (t_a - t_m) / (u_a - u_m);
+    // `K` is the FILE's, not only this test's constant: without this line the
+    // product below is a number the gate declared itself, and it stays green
+    // whatever tuning the demo ships.
+    assert!(
+        DEMO.contains(&format!("gain_per_k = {GAIN_PER_K}\n")),
+        "the demo must declare the gain this gate multiplies by"
+    );
     let loop_gain = GAIN_PER_K * g;
     assert!(
         (0.4..=0.6).contains(&loop_gain),
