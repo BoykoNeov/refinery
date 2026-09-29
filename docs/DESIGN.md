@@ -13419,3 +13419,380 @@ One instrument note: the first expression of mutation 7 did not compile (a
 `filter` on the `Result`, not the `Option` inside it). It reported zero failures
 beside COMPILE-ERROR and was re-expressed. An edit that does not build is not a
 catch and not an escape; it is no observation.
+
+## 25. The game solver's stiff-pair stall — ledger row A3 (M21.0) — specified before building
+
+### What licensed this, stated plainly
+
+**This milestone is a decision**, the user's, taken on 2026-09-29 from a short
+list. By the ledger's own reading nothing had fired: A3 read "920 of 5 000, 5.4×
+under the trigger, unchanged since M9.1". **That distance was measured on a file
+that had been re-sized to avoid the trigger.** `relief_blowdown.toml`'s own
+`psv_inlet` comment and the `< 2500` gate's doc both record it: the first M5.4c
+geometry, 2 m × 100 mm (the line "a relief designer would reach for first"),
+stalled the game fidelity at its cap, and the line was lengthened and narrowed
+to 5 m × 60 mm until it stopped. Measured today, one edit to that shipped file puts
+it back past the trigger:
+
+| edit to `relief_blowdown.toml` | game fidelity (`simple`) | Newton |
+|---|---|---|
+| none (shipped) | 920 worst, ok | 10 |
+| `psv_inlet` 2 m × 0.10 m | **fails at tick 41**, 5 000 sweeps | 8 |
+| `dt = 1.0` | **fails at tick 1** | 20 |
+
+The historical record says tick 91 for the geometry edit; today it is 41. Why it
+moved is **not measured** and this note does not guess. The timestep is set by
+the scenario file alone — `crates/godot-ext` has no way to change it — so the
+third row is "one edit to a shipped file", the same class as the second, and not
+something a frontend can reach. `vessel_pressure_control.toml` with M10.1's
+first-draft vent line (2 m × 0.10 m) takes 745 sweeps and runs; the same edit at
+`dt = 1.0` **fails at tick 1**. Every one of these plants runs on Newton in at most
+20 iterations, so the plants are well posed and the defect is the game solver's.
+
+So A3's trigger ("a plant of that shape reaches the sweep cap") is one edit away
+on two shipped files, in two independent directions. The note's first artefact
+is that correction to the row's distance.
+
+### The mechanism, pinned with a closed form before any fork
+
+A3 says "the receiver's Gauss–Seidel diagonal is dominated by a fat branch".
+That is right, and it now has a number. Take the two unknowns every one of these
+plants reduces to: a vessel `v` and the zero-volume node `p` at the far end of
+its wide line (the PSV node, or the vent valve's node). Linearise at the exact
+answer: `g` is the wide line's conductance `ρ·dQ/dΔP`, `a` the make-up line's,
+`s` the PSV's or vent valve's, and `c = C/dt` the vessel's accumulation slope.
+One ascending-order sweep is linear Gauss–Seidel on a 2 × 2 system, and its
+contraction factor is
+
+```text
+ρ = g² / ((a + g + c)·(g + s))          ≈ g / (g + c)   when a, s ≪ g
+```
+
+Each sweep moves the vessel as if `p` will stay put, and `p` then follows the
+vessel almost all the way. The only things that resist the two moving TOGETHER
+are `c`, `a` and `s`, so the pair's common error decays by about `c/(g + c)` per
+sweep. The probe (`W:\temp\claude\m21\probe_crate`, listed at the end) takes
+`g`, `a`, `c` and `s` from Newton's answer every tick and compares:
+
+| plant, worst tick | `g` | `c = C/dt` | `ρ` closed form | `ρ` power iteration | sweeps: linear model / real solver |
+|---|---|---|---|---|---|
+| `relief_blowdown`, tick 93 | 1.014e-2 | 1.177e-4 | 0.98850 | 0.988502 | 1 215 / 920 |
+| `vessel_pressure_control` 2 m × 0.10 m, tick 2 | 7.126e-3 | 1.314e-4 | 0.98186 | 0.981857 | 762 / 745 |
+
+The make-up line's `a ≈ 2e-7` is three orders below `c` and does not matter.
+The linear model tracks the real sweep count within 2% on the conducting plant
+and overestimates it by 30% on the dead end (the per-node line search helps a
+little there). **`dt` enters through `c` alone**: at `dt = 1.0`, `c` is ten times
+smaller, `1 − ρ` is ten times smaller, and the sweep count is ten times larger —
+which is the timestep row of the table above.
+
+**One mechanism, two sources of a large `g`.** On the conducting plant `g` is set
+by geometry: the line carries 0.17–0.50 kg/s across a 13–67 Pa drop. On the dead
+end the drop is exactly zero and `g` is set by the square root's regularisation,
+`dQ/dΔP = 1/(2√ε)` at `ΔP = 0`. Varying `eps_dp` shows which is which:
+
+| `eps_dp` | `relief_blowdown` (dead end) | `vessel_pressure_control` 2 m × 0.10 m (conducting) |
+|---|---|---|
+| 0.01 Pa | **fails** 126 times in 1 500 ticks | 749 |
+| 1 Pa (shipped) | 920 | 745 |
+| 100 Pa | 115 | 395, and the answer moves (100 Pa of smoothing distorts a 13 Pa drop) |
+
+So on a dead end the regularisation, not the pipe, decides how stiff the pair is.
+**This is recorded and not acted on**: `eps_dp` is a constant M9.0's closed form
+already leans on, raising it trades a stall for a wrong answer on the conducting
+shape, and a fix aimed at one source of `g` leaves the other.
+
+### Fork 1 — which family of remedy
+
+What any remedy must do, and what rules each candidate out:
+
+- **Fix both sources of `g`**, not the dead end alone.
+- **No tuned threshold and no `ω`.** A7's `MAX_HALVINGS`, A6's `Σ` against `max`
+  and M9.1's `ω` are this project's record of constants that fit today's plants.
+- **Matrix-free, and about one pass over the edges per sweep.** That is the
+  whole reason the game fidelity exists.
+- **Deterministic**: ascending ids and `BTreeMap`, no new map iteration.
+- **Newton untouched.**
+
+Rejected:
+
+1. **Re-size the plant** — what M5.4c did. It moves the defect onto whoever
+   writes the next scenario, and the table above shows the price is one edit.
+2. **Change `eps_dp`** — fixes only the dead-end source, moves answers on the
+   conducting one, and is a fitted constant.
+3. **Over-relaxation (SOR, `ω > 1`).** The optimal `ω` is a function of `ρ`,
+   which is a function of the plant, the tick and the timestep. A fitted
+   constant by construction, and M9.1 measured that this solver's line search
+   now owns what `ω` used to be for.
+4. **Hand the stiff plants to Newton.** A fidelity that falls back to the other
+   fidelity is two fidelities in one trait impl — rule 2's `if simple` at one
+   remove.
+5. **Eliminate zero-volume series and dead-end nodes** (static condensation).
+   Exact, and it would clear every plant measured here — but only for a node of
+   degree ≤ 2 with no capacitance, and each elimination is a nested nonlinear
+   solve. A wide pipe between two junctions of degree three is not covered.
+
+**Chosen: additive correction** (Settari & Aziz, "A generalization of the
+additive correction methods for the iterative solution of matrix equations",
+SIAM J. Numer. Anal. 10 (1973) 506–521; Hutchinson & Raithby, "A multigrid method
+based on the additive correction strategy", Numer. Heat Transfer 9 (1986)
+511–537). After each ordinary sweep, a GROUP of unknowns is shifted by one common
+amount `δ`. A common shift leaves every edge inside the group unchanged, so the
+group's net imbalance depends only on its boundary edges and its members'
+accumulation, and one scalar Newton step on that sum is
+
+```text
+δ = Σ_{i∈K} R_i  /  ( Σ_{boundary e} g_e + Σ_{i∈K} C_i/dt )
+```
+
+That denominator is exactly what resists the slow mode, and nothing else. For a
+symmetric positive-definite linearisation — which this network's Laplacian plus
+`C/dt` is — the step is a Galerkin coarse correction with a piecewise-constant
+prolongation: an energy-norm projection that **cannot increase the error**. That
+textbook guarantee is why this family, rather than a heuristic, is the one
+argued.
+
+**The linear model says it works, and so does a copy of the real solver.** The
+probe copies `simple_flow.rs` verbatim with the correction behind a switch. With
+the switch off, the copy reproduces the shipped solver's snapshots **bit for bit
+on every tick of all twenty-four plants** — the control that makes every number
+below a statement about the correction and not about the copy.
+
+### Fork 2 — which groups: the whole connected set is NOT enough
+
+The obvious group is every connected set of unknowns. On the three problem plants
+that set is exactly the stiff pair, and it takes each of them to 2–8 sweeps. **It
+fails on the next plant a game would build.** Two vessels in one connected set,
+each with its own 2 m × 100 mm relief line, joined by a thin tie
+(`W:\temp\claude\m21\probe\two_vessel.toml`): there are now two slow modes, one
+per stiff pair, and a single common shift removes only their sum. The mode where
+one pair rises while the other falls is held back only by the two `c`s and the
+tie.
+
+| `two_vessel` | unaided (shipped) | one shift per connected set | levels of heavy-edge pairs |
+|---|---|---|---|
+| linear model, worst | 7 025 | 5 088 | — |
+| real solver copy, worst | fails at tick 47 | **4 472**, 2.24 M sweeps in all | **8**, 14 747 in all |
+
+**Chosen: a hierarchy of pairs, by greedy heavy-edge matching** (the coarsening
+step of Karypis & Kumar, "A fast and high quality multilevel scheme for
+partitioning irregular graphs", SIAM J. Sci. Comput. 20 (1998) 359–392). Level 1
+pairs each unknown with the unmatched neighbour it is most strongly coupled to,
+the weight being the edge conductance `g_e`, edges taken heaviest first with ties
+broken by aggregate index. Level 2 pairs the pairs the same way, the weight
+between two aggregates being the sum of the edges joining them. It stops when no
+aggregate has a neighbour, so the top level IS the connected set and the rejected
+option is contained in the chosen one.
+
+**It has no threshold.** A strength cutoff — "couple two nodes only if `g_ij`
+exceeds a fraction of the diagonal" — is how Notay's pairwise aggregation and
+most algebraic multigrid pick groups, and it is the fitted constant fork 1
+refuses. Matching pairs every node with its heaviest neighbour however weak, and
+an unhelpful group is paid for by the acceptance test (fork 3), not by a
+constant.
+
+Three rules come with it:
+
+- **Built once per pass**, from the pass's seed compile, at the same point the
+  anchored set is frozen (§3c). The weights move within a pass; the grouping does
+  not flap.
+- **A group of one is not a group.** A singleton's common shift is a second
+  per-node step, which changes the iterate on every plant. With singletons
+  excluded, **the fifteen shipped plants that never form a group of two are
+  byte-identical** (by snapshot hash, every tick): the five columns, the cooler,
+  both furnaces, both temperature loops, the FCC reactor, `gas_line`,
+  `gas_valve`, `heat_recovery` and `knockout_drum`.
+- **Sequential, finest level first.** Each group's shift is computed from the
+  pressures the previous group left, which makes the pass a Gauss–Seidel over the
+  coarse unknowns rather than a Jacobi one. For the linear symmetric case each
+  such step is an exact line minimisation in the energy norm, so the order
+  cannot make it diverge.
+
+### Fork 3 — the group step's acceptance test, and why it must recompile
+
+The group step gets the per-node step's Armijo test, on `|Σ R_i|`, with the same
+`ARMIJO_C` and `MAX_HALVINGS`. A group step with no test at all can accept a
+worse iterate, which is M9.1's frozen-residual shape.
+
+**Graded against the frozen coefficients, it cycles.** The per-node test grades a
+trial against the edges as compiled at the start of the sweep, and M9.1 found
+that must stay so. Copied to the group step, `relief_blowdown` at `dt = 1.0` —
+which the correction otherwise rescues from tick 1 — fails at tick 14 in a
+period-two cycle. The receiver goes 20.180 → 20.562 → 20.180 bar, the group
+residual alternates −0.468 / +0.452 kg/s, and the full step is accepted both
+times. 20–21 bar is the PSV's accumulation band, where the valve's opening is a
+steep function of its own inlet pressure. The frozen compile holds the opening
+fixed, so a 38 kPa group shift passes a test that cannot see the opening change,
+and the next recompile undoes it.
+
+**Chosen: the group step's trial recompiles the group's BOUNDARY edges at the
+trial pressures.** Only boundary edges enter a group's net imbalance: each
+internal edge appears once with each sign and cancels, and that still holds under
+a recompile, because an edge has one density whichever end reads it. So the extra
+cost is the boundary, not the plant. With it the `dt = 1.0` relief plant runs
+6 000 ticks, 17 sweeps worst.
+
+**This does not contradict M9.1, and the counts are what say so.** M9.1's finding
+is about the per-node step, which this note leaves exactly as it is. What made
+the per-node trial safe to freeze is that a node step is small and local; a group
+step moves a relief valve's inlet by tens of kPa, which is the case M9.1 never
+had. **A rejected group step moves nothing, so the worst a rejection can do is the
+shipped behaviour.** Counted over 6 000 ticks per plant:
+
+| plant | full step | cut back | rejected | rejected with residual above `tol_abs` | largest rejected residual [kg/s] |
+|---|---|---|---|---|---|
+| `relief_blowdown` | 10 836 | 0 | 0 | 0 | — |
+| `vessel_pressure_control` | 8 311 | 0 | 0 | 0 | — |
+| `cavitating_pump` | 67 | 6 | 11 977 | 0 | 6.9e-14 |
+| `fcc_plant` | 24 | 0 | 5 989 | 0 | 7.1e-15 |
+| `fired_gas_drum` | 6 286 | 117 | 2 209 | **1** | 2.1e-6 |
+| `relief_blowdown` at `dt = 1.0` | 120 | 5 734 | 1 118 | 0 | 3.2e-15 |
+| `two_vessel` | 30 272 | 649 | 13 320 | **3 220** | 1.1e-4 |
+
+On the shipped plants a rejection happens only when the group is already solved
+to the rounding floor, where the target `(1 − c·t)·|R|` is unreachable — the same
+thing the per-node step's own comment records. Only `two_vessel` rejects real
+steps, and its worst tick still takes 8 sweeps, because the other levels and the
+ordinary sweep absorb them.
+
+**The rounding-floor rejections are pure cost**: each runs the full ladder of
+nine trial evaluations, each recompiling the boundary. **The building slice skips
+the group step when every member already meets the solver's own per-node bar** —
+`grade_nodes`' test, not a new constant. It should remove nearly every rejection
+in the table. That is a prediction.
+
+### Fork 4 — where in the sweep, and what it costs
+
+After the per-node sweep and before the recompile-and-grade that ends it, so the
+convergence test grades the corrected iterate and `finalize` ships a solution
+consistent with its own coefficients (M5.3's ordering). Cost per sweep: one extra
+pass over each group's members and boundary edges per level, plus one boundary
+recompile per trial. The hierarchy costs a sort of the edge weights once per
+pass.
+
+Wall time, paired A/B/A/B in one session on the probe binary, 6 000 ticks:
+`relief_blowdown` 216/227 → 134/164 ms, and `cavitating_pump` 148/159 → 241/339 ms,
+the latter being the rejection ladder fork 3 removes. The control,
+`crude_column`, takes an identical path and read 190/291 against 157/222 ms, so
+this machine's drift is as large as most of the differences. **The absolute cost
+is at most 0.06 ms per tick** against a 16.7 ms frame, and the machine-independent
+count is the one gated. `fired_gas_drum` is the only plant whose TOTAL sweep
+count rises, 8 430 → 8 612 (+2%), with its worst unchanged at 7.
+
+### Fork 5 — what ships, and what happens to the anchor
+
+`relief_blowdown.toml` keeps its 5 m × 60 mm line: it is a regression anchor, and
+its bytes move anyway, because it forms a group. **Its `psv_inlet` comment becomes
+false** — it calls the sizing "NUMERICAL rather than process" — and is reworded:
+the line was sized to dodge a stall M21 fixed, and stays for the anchor's sake.
+The `< 2500` gate's doc makes the same claim and is re-premised (gate 1).
+
+**One new scenario file**: `scenarios/relief_twin_vessels.toml`, the two-vessel
+plant, declaring `flow = "simple"`. It is the plant that decided fork 2, and a
+shipped file is the only thing CI runs under both fidelities, so reverting fork 2
+to a whole-set shift turns CI's `corpus --solver simple` red on a clean checkout —
+which no in-test fixture does. The other probe shapes (the 2 m × 100 mm relief
+line, the `dt = 1.0` relief plant, the wide conducting vent at `dt = 1.0`) become
+in-test fixtures, built by editing the loaded file, the way the `< 2500` gate
+already switches fidelity.
+
+### The gates, named before building
+
+1. **The count no longer tracks the stiffness — the `< 2500` gate, re-premised.**
+   `relief_blowdown` under `simple` with its PSV inlet line at 5 m × 0.06 m,
+   2 m × 0.10 m and 1 m × 0.15 m: that spans more than an order of magnitude of
+   `g/c`, across which the unaided solver goes 920 → the cap (the third
+   geometry is not yet measured; the building slice measures it first). Each
+   runs 1 500 ticks; the largest worst-sweep count is at most 3× the smallest,
+   and every one is below 5× Newton's own worst. The claim is "flat in `g/c`"; a
+   bare ceiling would be the fitted margin this gate used to be.
+2. **The PSV band, at `dt = 1.0`.** The shipped relief plant at `dt = 1.0` runs
+   6 000 ticks under `simple`, and at every snapshot the receiver pressure agrees
+   with Newton's to 1e-6 relative. The frozen acceptance test fails it
+   (mutation 2).
+3. **The conducting shape.** `vessel_pressure_control` with a 2 m × 0.10 m vent
+   line at `dt = 1.0` runs 6 000 ticks under `simple` and agrees with Newton as
+   gate 2 does. It says the fix is not dead-end-specific.
+4. **Two stiff pairs in one set.** `relief_twin_vessels.toml` under `simple`: worst
+   sweep count below 5× Newton's, and agreement with Newton as gate 2. The
+   whole-set grouping fails it (mutation 1); CI's corpus defends it a second
+   time.
+5. **What must not move.** All twenty-four pre-M21 plants byte-identical on
+   Newton; the fifteen that form no group byte-identical on `simple`; the other
+   nine moving by at most 1e-5 relative on any published quantity above 1e-3,
+   over **every** snapshot, not the last (measured on the copy: 3.8e-6 worst,
+   `fired_gas_drum` tick 170). Stagnant edges and nodes — an edge carrying
+   < 1e-6 kg/s in either run, and the node it feeds — are excluded, because the
+   two fidelities already disagree there before this change (row A15 below).
+6. **A rejection moves nothing.** A fixture whose group residual sits at the
+   rounding floor: after the group step no member's pressure has changed, bit for
+   bit.
+7. **Reachability, on the proptest harnesses** (`tests/invariants.rs`, release,
+   `--nocapture`). Recorded before the change: chains 238/300 converged on Newton
+   with 232 agreeing; gas chains Simple 187/205 against Newton 202/205; spur trees
+   Simple 191/305, Newton diverged on 39; psv chains 196/400. The Simple counts
+   **must not fall**, and **are predicted to rise**, because a spur tree's dead
+   legs are this note's shape. A prediction, and this project gets about half of
+   those wrong.
+8. **Determinism.** Every plant's corpus fingerprint is identical across two runs,
+   and the new code iterates no `HashMap`.
+
+### What must not change, stated as a prediction that can be wrong
+
+Newton byte-identical everywhere (it is untouched, so this is the free check);
+the fifteen group-free plants byte-identical on `simple`; no plant's WORST sweep
+count rising (on the copy all nine fall or hold). **The prediction most likely to
+fail** is fork 3's skip rule. Deciding "already solved" by the per-node bar could
+leave undone a group step that was making progress below the bar, and so move a
+plant the copy measured as it did. If it does, the skip is argued again from the
+measurement, not adjusted to fit.
+
+### The mutations M21.1 owes, named before building
+
+1. Groups are the whole connected set only, no pair levels → gate 4 alone (4 472
+   sweeps or the cap); gates 1–3 stay green, since each of those plants has one
+   stiff pair.
+2. The group trial uses the frozen coefficients → gate 2 alone (the period-two
+   cycle at tick 14).
+3. The group step removed → gates 1–4, and gate 7's counts fall back.
+4. Singleton groups admitted → gate 5 alone (the fifteen plants move).
+5. The slope counts internal edges → the denominator is swamped by `g`, the step
+   shrinks to nothing, and it behaves like mutation 3.
+6. Lightest-edge matching instead of heaviest → gate 4, predicted: on the twin
+   plant the tie pairs before the relief lines do.
+7. Simultaneous (Jacobi) shifts within a level → **no prediction**. The shipped
+   plants' groups at each level are disjoint, so it may be inert; if so, say so.
+8. The skip rule compares against `tol_abs` alone instead of the per-node bar →
+   gate 5, or nothing. Recorded either way.
+9. A rejected group step still writes its last trial → gate 6.
+
+Run under `--no-fail-fast`, each catch read for why it fired.
+
+### Deferred, with what un-defers each
+
+- **A14 — Newton fails where the game solver now succeeds.** `two_vessel` at
+  `dt = 1.0` diverges on Newton at tick 17 and runs 6 000 ticks on the corrected
+  game solver, 93 sweeps worst. Not this row's subject; not chased. Trigger: a
+  shipped plant that needs `dt = 1.0` with two relieving vessels.
+- **A15 — a stagnant node's temperature depends on the fidelity.** At
+  `relief_blowdown` tick 125 the PSV node has no inflow. Newton puts exactly
+  0 kg/s through `psv_inlet` and the node falls back to 293.15 K; both game
+  solvers, old and new, leave a 1e-11–3e-10 kg/s trickle and the node reads the
+  receiver's 334.255 K. A 14% disagreement in a published temperature that
+  predates M21 — §23's stagnant placeholder, seen from the solver side. Trigger: a
+  frontend that draws a dead-end node's temperature, or a gate comparing
+  fidelities there.
+- **A long uniform chain.** Gauss–Seidel on `N` equal series nodes contracts at
+  about `cos²(π/(N+1))` whatever a pair does. The hierarchy should help and was
+  not measured on it; the largest shipped plant has seven nodes. Trigger: a plant
+  with a chain long enough to show it, which A12 would notice at the same time.
+- **`eps_dp` sets a dead end's stiffness.** Recorded, not changed.
+- **Why the geometry stall moved from tick 91 to tick 41.** Not measured.
+
+The probe is `W:\temp\claude\m21\probe_crate`, built into
+`W:\temp\claude\m21\probe_target`. `MODE=shipped|copy|ac|newton|cmp` selects the
+solver or the three-way every-snapshot comparison; `HONEST=1` recompiles at the
+group trial; `SINGLE=1` restricts groups to the connected set; no `MODE` with
+`BRIEF=1` runs the linear-model table. The plants are under
+`W:\temp\claude\m21\probe`, and the corpus baselines taken before any edit are
+`W:\temp\claude\m21\before_newton.json` and `before_simple.json`.

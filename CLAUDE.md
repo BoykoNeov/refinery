@@ -186,6 +186,46 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M21 is OPEN (2026-09-29): the game solver's stiff-pair stall — `docs/DEFERRED.md`
+row A3.** Taken on a DECISION (the user's). **M21.0 landed 2026-09-29**: DESIGN
+§25, five forks, eight gates, nine mutations, no code. **M21.1 builds it.**
+
+**A3's distance was wrong.** Its "5.4× under the cap" was measured on
+`relief_blowdown.toml`, whose PSV inlet had been re-sized to 5 m × 60 mm to dodge
+this stall. Two single edits each reproduce it:
+- The line at 2 m × 100 mm fails the game fidelity at tick 41.
+- `dt = 1.0` fails it at tick 1, and does the same to
+  `vessel_pressure_control.toml`.
+
+Newton solves all of them in at most 20 iterations. Only a scenario file sets `dt`.
+
+**The mechanism has a closed form.** A vessel and the zero-volume node across its
+wide line converge together at `c/(g + c)` per sweep, where `g` is the line's
+conductance and `c = C/dt`. That predicts 0.98850 against 0.988502 measured. A
+large `g` comes from geometry on a flowing line, or from `eps_dp` on a dead end.
+
+**The fix, prototyped on a bit-exact copy of the solver outside the repo:**
+- **Additive correction.** After each sweep, groups of unknowns are shifted by
+  one common amount: a scalar Newton step on the group's net imbalance (Settari &
+  Aziz 1973; Hutchinson & Raithby 1986).
+- **Groups come from a hierarchy of heavy-edge pairs**, with no threshold.
+  **One group per connected set is NOT enough**: two relieving vessels in one set
+  still take 4 472 sweeps, against 8 for the hierarchy.
+- **The group step's Armijo trial recompiles the group's BOUNDARY edges.** With
+  frozen coefficients it cycles in a PSV's accumulation band. M9.1's frozen
+  per-node test is unchanged.
+- **Groups of one are excluded**, so the fifteen shipped plants that never form a
+  group of two stay byte-identical on `simple`. The other nine move by at most
+  3.8e-6 relative over every snapshot. Newton is untouched.
+
+**Measured before any source edit:**
+- Corpus baselines: `W:\temp\claude\m21\before_newton.json` and
+  `before_simple.json`.
+- Property-test counts: gas chains Simple 187/205, spur trees Simple 191/305.
+  Both must not fall and are predicted to rise.
+- New ledger rows: A14 (Newton fails a probe the corrected game solver runs) and
+  A15 (a stagnant node's temperature differs by fidelity; this predates M21).
+
 **M20 is CLOSED (2026-09-29): the fourth controlled variable, FLOW — a valve
 holding the flow in one of its own two pipes.** Taken on a DECISION (the user's,
 2026-09-29, on the grounds of M17–M19): the commonest loop in a refinery and the
@@ -237,7 +277,8 @@ M19's "`K·G < 1`" is the `T_i → ∞` limit, and M19 measured at 600 s, so not
 was wrong. Keys `setpoint_kg_per_s` and `gain_per_kg_per_s`, with no unit
 conversion anywhere. Demo `scenarios/tank_flow_control.toml` =
 `tank_pump_valve.toml` with `dt = 1.0`, valve at 0.4, and a loop on `fill_line`
-holding 12 kg/s at `K = 0.02`, `T_i = 10`. Owes the godot-feature clippy.
+holding 12 kg/s at `K = 0.02`, `T_i = 10`. The godot-feature build and
+clippy were run at M21.0 and are clean.
 
 **M19 is CLOSED (2026-09-24): a furnace holding its own OUTLET — the zero-volume
 measurement, what `docs/DEFERRED.md` row E1b has left of temperature.** Taken on a

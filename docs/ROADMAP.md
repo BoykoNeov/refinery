@@ -6381,3 +6381,60 @@ premise, measured. The inlet-versus-outlet identity mutation is caught at any
 tolerance below the valve's own solver residual: still at 1e-12 (tick 4, 5.03e-10
 kg/s apart), not at 1e-9. That was measured after a first write-up said only bit
 equality would do.
+
+## M21 — the game solver's stiff-pair stall: ledger row A3; opened on a decision
+
+Taken on the user's decision (2026-09-29), from a short list. The ledger said A3
+was 5.4× under its trigger. Measuring it first found that distance was taken on a
+file re-sized to avoid the trigger, and one edit puts two shipped files back past
+it. Its scope is **the game fidelity's (`SimpleFlowSolver`) stall on a vessel
+joined to a zero-volume node by a very conductive line.** Newton is not touched.
+
+### M21.0 — Scoping + design note — **LANDED** 2026-09-29
+
+The note is DESIGN §25: five forks, eight gates, nine mutations, no code. It was
+prototyped in a probe crate outside the repo, on a copy of the real solver that
+reproduces the shipped one bit for bit when the correction is switched off. Six
+things to know before the building slice.
+
+**A3's distance was taken on a plant sized to dodge it.** `relief_blowdown.toml`'s
+PSV inlet line is 5 m × 60 mm because 2 m × 100 mm stalled. That edit makes the
+game fidelity fail at tick 41. Setting `dt = 1.0` fails it at tick 1, and does the
+same to `vessel_pressure_control.toml`. Newton solves all of them in at most 20
+iterations. Only the scenario file sets `dt`; the Godot binding cannot.
+
+**The mechanism has a closed form, and it matched to five digits.** A vessel and
+the node at the far end of its wide line form a pair that Gauss–Seidel can only
+move together at the rate `c/(g + c)`, where `g` is the line's conductance and
+`c = C/dt` the vessel's accumulation slope. Predicted 0.98850 against 0.988502
+measured on the relief plant, and 0.98186 against 0.981857 on the conducting
+vent. A large `g` has two sources: geometry on a line that flows, and `eps_dp`'s
+regularisation on a dead end. Varying `eps_dp` separates them, and it is recorded
+and not changed.
+
+**The fix is additive correction on a hierarchy of heavy-edge pairs.** After each
+sweep, groups of unknowns are shifted by one common amount, which is a Newton step
+on the group's net imbalance. The groups are pairs by strongest coupling, then
+pairs of pairs, up to the connected set. There is no threshold anywhere. **One
+shift per connected set is not enough**: a plant with two relieving vessels in one
+set still takes 4 472 sweeps; the hierarchy takes 8.
+
+**The group step's acceptance test must recompile the group's boundary edges.**
+Graded on frozen coefficients, it cycles inside the PSV's accumulation band
+(20.180 ↔ 20.562 bar at `dt = 1.0`). This does not contradict M9.1, whose frozen
+per-node test is unchanged. A rejected group step moves nothing. On shipped plants
+every rejection but one happens at the rounding floor (at most 6.9e-14 kg/s), so
+the building slice skips the step when the group already meets the per-node bar.
+
+**On the copy:**
+- Every shipped plant's worst sweep count falls or holds. `relief_blowdown` goes
+  920 → 8.
+- The fifteen plants that form no group of two are byte-identical on `simple`.
+- The other nine move by at most 3.8e-6 relative over every snapshot.
+- Newton is untouched.
+- A new scenario, `relief_twin_vessels.toml`, puts the two-vessel case in CI's
+  corpus.
+
+**Housekeeping from M20.1:** the Godot binding builds and lints clean behind its
+feature (`--features godot --target-dir target/godot`), which CLAUDE.md recorded
+as owed.
