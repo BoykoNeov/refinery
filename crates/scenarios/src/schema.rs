@@ -32,6 +32,12 @@ pub struct ScenarioFile {
     /// field both vanish.
     #[serde(default)]
     pub controls: Vec<ControlDef>,
+    /// The plant's trips (M22, docs/DESIGN.md §26). Optional: absent is every
+    /// scenario written before M22, which protects nothing and stays
+    /// byte-identical because an empty list makes the trip pass and the
+    /// snapshot field both vanish.
+    #[serde(default)]
+    pub trips: Vec<TripDef>,
 }
 
 /// One `[[components]]` entry: a boiling-point cut.
@@ -760,6 +766,66 @@ pub struct MeasurementDef {
     /// Which key carries the setpoint and which carries the gain both follow
     /// from this.
     pub variable: String,
+}
+
+/// One `[[trips]]` entry: a latching trip (M22, docs/DESIGN.md §26).
+///
+/// **`deny_unknown_fields`, for `ControlDef`'s reason**: every key but the name
+/// is optional at the serde level so each can be refused with its own message,
+/// and a misspelt `limit_metres` would otherwise parse, leave the real key
+/// absent, and be refused for the wrong reason.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TripDef {
+    /// Unique per plant. What the trip is labelled with in a snapshot.
+    pub name: String,
+    /// Which node's state this trip watches, and which variable — the loops'
+    /// own table. Only a tank's `level`, a vessel's `pressure` or a tank's or
+    /// vessel's `temperature` is admitted: all three exist from load. A `flow`
+    /// and a furnace or cooler outlet are refused by name (docs/DEFERRED.md E13).
+    pub measurement: MeasurementDef,
+    /// `"high"` (fires AT OR ABOVE the limit) or `"low"` (at or below).
+    /// **Required, no default**: it is the trip's most important word.
+    #[serde(default)]
+    pub direction: Option<String>,
+    /// The limit for a `level` trip, in metres, within `[0, height_m]` of the
+    /// tank.
+    #[serde(default)]
+    pub limit_m: Option<f64>,
+    /// The limit for a `pressure` trip, in bar absolute, converted to Pascals
+    /// at the SAME site as a loop's `setpoint_bar` (docs/DESIGN.md §26 fork 6).
+    #[serde(default)]
+    pub limit_bar: Option<f64>,
+    /// The limit for a `temperature` trip, in °C, given its `+ 273.15` at the
+    /// same site as a loop's `setpoint_c`.
+    #[serde(default)]
+    pub limit_c: Option<f64>,
+    /// What the trip does when it fires: one or more pieces of equipment and
+    /// each one's safe state. Required and non-empty (docs/DESIGN.md §26 fork 3).
+    #[serde(default)]
+    pub actions: Vec<TripActionDef>,
+}
+
+/// One entry of a trip's `actions` list: `{ pump = "…" }` or
+/// `{ valve = "…", position = … }`.
+///
+/// The equipment is named under the key for its KIND, so the file says what it
+/// thinks it is pointing at and a `pump` action naming a valve is refused by
+/// name rather than quietly doing a valve's job.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TripActionDef {
+    /// A pump to stop.
+    #[serde(default)]
+    pub pump: Option<String>,
+    /// A valve to put at `position`.
+    #[serde(default)]
+    pub valve: Option<String>,
+    /// The valve's safe opening in `[0, 1]`. **Required on a valve, no default**:
+    /// most trips close a valve, but a vent or dump valve trips OPEN, so the
+    /// file says which. Refused on a pump, which has no position.
+    #[serde(default)]
+    pub position: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]

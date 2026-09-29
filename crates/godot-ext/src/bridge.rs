@@ -63,7 +63,7 @@
 
 use std::collections::BTreeMap;
 
-use refinery_core::graph::{EdgeId, LoopId, NodeId};
+use refinery_core::graph::{EdgeId, LoopId, NodeId, TripId};
 use refinery_core::snapshot::Command;
 use refinery_core::{Engine, SimError};
 use serde::Serialize;
@@ -161,6 +161,11 @@ enum Referent {
     /// the day `core` gains a loop lookup that indexes, this arm is where the
     /// guard goes rather than a `_` nobody revisits.
     Loop(LoopId),
+    /// A trip (M22, docs/DESIGN.md §26). Forwarded unchecked for `Loop`'s
+    /// reason: `Engine::apply` looks a `TripId` up through `PlantGraph::trip`,
+    /// which returns `Option` and refuses an out-of-range id as an invalid
+    /// command, so there is no panic for a guard here to stand in front of.
+    Trip(TripId),
 }
 
 /// The id a command addresses, for validation before it reaches the engine.
@@ -180,6 +185,7 @@ fn referent(cmd: &Command) -> Referent {
         Command::SetCoolerDuty { node, .. } => Referent::Node(*node),
         Command::SetControllerMode { loop_id, .. } => Referent::Loop(*loop_id),
         Command::SetSetpoint { loop_id, .. } => Referent::Loop(*loop_id),
+        Command::ResetTrip { trip_id } => Referent::Trip(*trip_id),
     }
 }
 
@@ -310,6 +316,9 @@ impl Bridge {
             // edges; adding one is a frontend affordance and belongs with M8.5's
             // Godot slice, not with the engine seam.
             Referent::Loop(_) => {}
+            // The same, for a trip: its id and name travel together on
+            // `snapshot.trips`.
+            Referent::Trip(_) => {}
         }
 
         self.engine.apply(cmd).map_err(BridgeError::Sim)

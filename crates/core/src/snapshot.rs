@@ -3,6 +3,7 @@
 
 use crate::graph::{
     ControlAction, ControlMode, ControlledValue, EdgeId, LoopId, NodeId, NodeKind, TankState,
+    TripDirection, TripId, TripState,
 };
 use crate::stream::Stream;
 use crate::traits::SolveDiagnostics;
@@ -75,6 +76,19 @@ pub enum Command {
     SetSetpoint {
         loop_id: LoopId,
         value: ControlledValue,
+    },
+    /// Re-arm one latched trip (M22, docs/DESIGN.md §26 fork 4).
+    ///
+    /// **It restarts nothing.** The pump stays stopped and the valve stays where
+    /// the trip put it; the reset only lifts the refusals that held them, so a
+    /// human can then restart the equipment by hand. "The trip cleared" and
+    /// "the plant restarted" stay two events a player can see.
+    ///
+    /// Refused while the trip's condition still holds — measured FRESH at the
+    /// command, since the state standing now is what the next tick will
+    /// measure — on a trip that is not tripped, and on an id naming no trip.
+    ResetTrip {
+        trip_id: TripId,
     },
 }
 
@@ -268,6 +282,27 @@ pub struct ControlSnapshot {
     pub output: f64,
 }
 
+/// One trip, as a frontend draws it (M22, docs/DESIGN.md §26 fork 8).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TripSnapshot {
+    pub id: TripId,
+    /// Scenario-given trip name.
+    pub name: String,
+    pub direction: TripDirection,
+    /// The limit, carrying its own unit the way a loop's setpoint does.
+    pub limit: ControlledValue,
+    /// The measurement the last trip pass compared against `limit`.
+    ///
+    /// **Absent only before the first tick**, when no pass has run. Every
+    /// quantity a trip may watch exists from load (fork 2), so after tick 1 this
+    /// is always present. Skipped when absent, as a loop's is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement: Option<ControlledValue>,
+    /// `{"status":"armed"}`, or `{"status":"tripped","at_tick":…}` from the tick
+    /// whose pass fired it until a reset.
+    pub state: TripState,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeSnapshot {
     pub id: EdgeId,
@@ -392,4 +427,12 @@ pub struct Snapshot {
     /// its other half, so a snapshot written before M8.2 still deserializes.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub controls: Vec<ControlSnapshot>,
+    /// One entry per trip, in declaration order — `TripId` order and evaluation
+    /// order (M22, docs/DESIGN.md §26 fork 8).
+    ///
+    /// `controls`' shape and argument: absent where there is nothing to report,
+    /// which is every plant written before M22, and `skip_serializing_if` is what
+    /// keeps those byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trips: Vec<TripSnapshot>,
 }

@@ -4,7 +4,7 @@
 //! frontend writes, the ids it may send, the codes it branches on, and the
 //! shape of the snapshot it reads. Physics is gated in `scenarios/tests`.
 
-use refinery_core::graph::{ControlMode, ControlledValue, EdgeId, LoopId, NodeId};
+use refinery_core::graph::{ControlMode, ControlledValue, EdgeId, LoopId, NodeId, TripId};
 use refinery_core::snapshot::{Command, Snapshot};
 use refinery_core::units::{Meter, SquareMeter, Watt};
 use refinery_core::SimError;
@@ -98,6 +98,62 @@ setpoint_m = 4.0
 gain_per_m = 0.5
 "#;
 
+/// A plant with one trip that fires on tick 1 and whose condition then clears,
+/// so `reset_trip` has something legal to do (M22, docs/DESIGN.md §26).
+///
+/// The tank is declared at 5.0 m against a HIGH trip at 4.9 m, so the first trip
+/// pass fires it; its action throws the drain wide OPEN (a dump valve trips
+/// open, which is why a valve action says its position), and the tank falls
+/// under the limit within a few ticks. `TRIP_TICKS` steps well past that.
+const TRIP: &str = r#"
+[meta]
+name = "bridge_trip"
+[simulation]
+dt = 1.0
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[nodes.dump_tank]
+type = "tank"
+area_m2 = 1.0
+height_m = 10.0
+initial_level_m = 5.0
+temperature_c = 20.0
+
+[nodes.dump_valve]
+type = "valve"
+kv = 50.0
+opening = 0.1
+
+[nodes.drain]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "dump_line"
+from = "dump_tank"
+to = "dump_valve"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "dump_valve"
+to = "drain"
+length_m = 10.0
+diameter_m = 0.10
+
+[[trips]]
+name = "dump_on_high_level"
+measurement = { node = "dump_tank", variable = "level" }
+direction = "high"
+limit_m = 4.9
+actions = [{ valve = "dump_valve", position = 1.0 }]
+"#;
+const TRIP_TICKS: u32 = 50;
+
 // ------------------------------------------------ the wire format, pinned
 
 /// The exact JSON text of every `Command` variant.
@@ -127,6 +183,7 @@ fn wire_text(cmd: &Command) -> &'static str {
         Command::SetSetpoint { .. } => {
             r#"{"cmd":"set_setpoint","loop_id":0,"value":{"variable":"level","m":5.0}}"#
         }
+        Command::ResetTrip { .. } => r#"{"cmd":"reset_trip","trip_id":0}"#,
     }
 }
 
@@ -165,6 +222,7 @@ fn every_variant() -> Vec<Command> {
             loop_id: LoopId(0),
             value: ControlledValue::Level { m: Meter(5.0) },
         },
+        Command::ResetTrip { trip_id: TripId(0) },
     ]
 }
 
@@ -194,7 +252,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 8, "a Command variant was added");
+    assert_eq!(every_variant().len(), 9, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -216,6 +274,13 @@ fn fixture(cmd: &Command) -> Fixture {
         // is written above rather than shipped — see `LEVEL`.
         Command::SetControllerMode { .. } => Fixture::inline(LEVEL, "tank_level"),
         Command::SetSetpoint { .. } => Fixture::inline(LEVEL, "tank_level"),
+        // A reset is legal only on a trip that has fired and whose condition has
+        // cleared, so its plant has to be run first — see `TRIP`.
+        Command::ResetTrip { .. } => Fixture::Tripped {
+            src: TRIP,
+            trip: "dump_on_high_level",
+            ticks: TRIP_TICKS,
+        },
     }
 }
 
@@ -233,6 +298,13 @@ enum Fixture {
     Inline {
         src: &'static str,
         control: &'static str,
+    },
+    /// A trip-addressed command: the plant is stepped `ticks` times first, and
+    /// the trip's id is read off `snapshot.trips` beside its name.
+    Tripped {
+        src: &'static str,
+        trip: &'static str,
+        ticks: u32,
     },
 }
 
@@ -292,6 +364,22 @@ fn every_command_variant_is_accepted_by_a_real_engine() {
                     })
                     .unwrap_or_else(|| panic!("inline plant has no control loop '{control}'"));
                 (sim, "loop_id", id, "the inline control plant")
+            }
+            Fixture::Tripped { src, trip, ticks } => {
+                let mut sim = Bridge::load(src).expect("inline trip plant loads");
+                for _ in 0..ticks {
+                    sim.tick().expect("the inline trip plant ticks");
+                }
+                let id = snapshot_value(&sim)["trips"]
+                    .as_array()
+                    .and_then(|trips| {
+                        trips
+                            .iter()
+                            .find(|t| t["name"] == trip)
+                            .and_then(|t| t["id"].as_i64())
+                    })
+                    .unwrap_or_else(|| panic!("inline plant has no trip '{trip}'"));
+                (sim, "trip_id", id, "the inline trip plant")
             }
         };
 

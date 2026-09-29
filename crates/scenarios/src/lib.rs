@@ -21,7 +21,7 @@ mod validate;
 pub use build::build_engine;
 pub use schema::{
     load_str, CascadeDef, ComponentDef, ControlDef, DrawDef, ExchangerDef, Fidelity,
-    MeasurementDef, Meta, NodeDef, PipeDef, ScenarioFile, Simulation,
+    MeasurementDef, Meta, NodeDef, PipeDef, ScenarioFile, Simulation, TripActionDef, TripDef,
 };
 
 #[cfg(test)]

@@ -1020,6 +1020,177 @@ pub struct ControlLoop {
 }
 
 // ---------------------------------------------------------------------------
+// Trips (M22)
+// ---------------------------------------------------------------------------
+
+/// Stable handle for one trip: its index into `PlantGraph::trips`.
+///
+/// `LoopId`'s shape and reason: `Command::ResetTrip` has to name one trip from
+/// outside the engine, and a name would tie the frontend contract to a string
+/// the scenario author chose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct TripId(pub u32);
+
+/// Which side of its limit a trip guards (docs/DESIGN.md §26 fork 6).
+///
+/// Declared by the file with no default: an overfill trip and a low-level trip
+/// on one tank differ only here, so a default would make the file's most
+/// important word invisible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TripDirection {
+    /// Fires when the measurement is AT OR ABOVE the limit.
+    High,
+    /// Fires when the measurement is AT OR BELOW the limit.
+    Low,
+}
+
+impl TripDirection {
+    /// Whether `measurement` stands in this trip's condition against `limit`.
+    ///
+    /// **The single owner of the comparison, and firing and resetting both ask
+    /// it** — a trip fires when this is `true` and may be reset only when it is
+    /// `false`, so the reset test is the strict complement of the firing test by
+    /// construction rather than by a second, hand-negated comparison that could
+    /// disagree with it at the tie.
+    ///
+    /// **At the limit counts as reached** (`≥` for a high trip, `≤` for a low
+    /// one). A trip setpoint is conventionally "reached", and the tie is the side
+    /// a safety function takes. Which ties are exact on a loaded plant was
+    /// measured rather than assumed (docs/DESIGN.md §26 fork 6): a vessel's
+    /// pressure and a holdup's temperature are, a level is not always.
+    ///
+    /// # Errors
+    /// `SimError::Numerical` if the two values are of different variables — the
+    /// engine measures `limit.variable()` for exactly this call, so that is
+    /// unreachable unless the two drift apart — or if the measurement is not
+    /// finite. A NaN compares false both ways, which would read as "safe" on a
+    /// high trip and a low one alike; a safety function does not get to say
+    /// that about a number it could not compare (rule 5).
+    pub fn reached(
+        self,
+        measurement: ControlledValue,
+        limit: ControlledValue,
+    ) -> Result<bool, SimError> {
+        if measurement.variable() != limit.variable() {
+            return Err(SimError::Numerical(format!(
+                "a trip compared a {:?} measurement against a {:?} limit",
+                measurement.variable(),
+                limit.variable()
+            )));
+        }
+        let (value, bound) = (measurement.magnitude(), limit.magnitude());
+        if !value.is_finite() {
+            return Err(SimError::Numerical(format!(
+                "a trip's measurement is {value}, which cannot be compared with its limit"
+            )));
+        }
+        Ok(match self {
+            TripDirection::High => value >= bound,
+            TripDirection::Low => value <= bound,
+        })
+    }
+}
+
+/// Whether a trip is watching or has fired (docs/DESIGN.md §26 fork 8).
+///
+/// **One enum rather than a `tripped: bool` beside an `Option<u64>`**, because
+/// the pair could disagree — "tripped with no tick" and "armed at tick 400" —
+/// and this makes both unrepresentable. `CascadeProfile`'s argument (M9.3b).
+///
+/// Tagged `status`, so the wire form inside `TripSnapshot::state` is
+/// `{"status":"armed"}` or `{"status":"tripped","at_tick":1236}` rather than a
+/// `state` key nested in a `state` field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum TripState {
+    Armed,
+    /// Latched. `at_tick` is the tick whose trip pass fired it — the number a
+    /// snapshot of that tick carries — so a frontend sampling every tenth
+    /// snapshot still knows exactly when. A reset returns the trip to `Armed`
+    /// and the tick goes with it: this is "tripped now, since when", not "last
+    /// tripped at" (a trip's history is `docs/DEFERRED.md` E15).
+    Tripped {
+        at_tick: u64,
+    },
+}
+
+impl TripState {
+    pub fn is_tripped(self) -> bool {
+        matches!(self, TripState::Tripped { .. })
+    }
+}
+
+/// One piece of equipment a trip drives to its safe state (docs/DESIGN.md §26
+/// fork 3).
+///
+/// **A list of these, not one, and the reason is measured**: a stopped pump
+/// keeps its resistance and conducts both ways, so on the reference plant
+/// "stop the pump" alone sends 3 kg/s back from the higher tank. A trip that
+/// must stop a flow names the pump AND a valve.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TripAction {
+    /// Stop a pump: its safe state is `on = false`.
+    StopPump { pump: NodeId },
+    /// Put a valve at a declared opening in `[0, 1]` — usually shut, but a vent
+    /// or dump valve trips OPEN, so the file says which.
+    SetValve { valve: NodeId, position: f64 },
+}
+
+impl TripAction {
+    /// The node this action writes.
+    pub fn equipment(self) -> NodeId {
+        match self {
+            TripAction::StopPump { pump } => pump,
+            TripAction::SetValve { valve, .. } => valve,
+        }
+    }
+}
+
+/// One latching trip: what it watches, the limit, and what it does when the
+/// limit is reached (docs/DESIGN.md §26).
+///
+/// **Beside the graph, like a loop, and a plain struct rather than a trait**
+/// (fork 1). A P and a PI controller are two algorithms behind one call; a trip
+/// has no second model. It is a comparison and a latch, and everything a real
+/// safety system adds to it — a delay, voting, a bypass — is data on one trip
+/// (`docs/DEFERRED.md` E15), not an alternative algorithm for it.
+#[derive(Debug, Clone)]
+pub struct Trip {
+    /// Scenario-given name, unique per plant.
+    pub name: String,
+    /// Where the trip measures. Always a `Node` today: only a tank's level, a
+    /// vessel's pressure and a holdup's temperature are admitted, because all
+    /// three are stored and exist from load (fork 2). A trip on a quantity absent
+    /// at load owes a rule for the missing measurement (`docs/DEFERRED.md` E13).
+    pub measurement_point: MeasurementPoint,
+    pub direction: TripDirection,
+    /// The limit, and — through `ControlledValue::variable` — what is measured.
+    pub limit: ControlledValue,
+    /// Non-empty; each names one pump or valve and its safe state.
+    pub actions: Vec<TripAction>,
+    pub state: TripState,
+    /// The measurement the last trip pass compared. `None` only before the
+    /// first tick, when no pass has run.
+    pub last_measurement: Option<ControlledValue>,
+}
+
+impl Trip {
+    /// The safe opening this trip holds `valve` at, if it names that valve.
+    pub fn valve_position(&self, valve: NodeId) -> Option<f64> {
+        self.actions.iter().find_map(|a| match *a {
+            TripAction::SetValve { valve: v, position } if v == valve => Some(position),
+            _ => None,
+        })
+    }
+
+    /// Whether this trip names `node` among its equipment.
+    pub fn acts_on(&self, node: NodeId) -> bool {
+        self.actions.iter().any(|a| a.equipment() == node)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Edges (pipes)
 // ---------------------------------------------------------------------------
 
@@ -1185,6 +1356,13 @@ pub struct PlantGraph {
     /// byte-identical: the loop pass iterates nothing and `Snapshot::controls`
     /// serializes nothing.
     controls: Vec<ControlLoop>,
+    /// The plant's trips, beside the loops (docs/DESIGN.md §26 fork 1).
+    /// Declaration order is `TripId` order and evaluation order.
+    ///
+    /// Empty for every scenario written before M22, which is what keeps them
+    /// byte-identical: the trip pass takes an early return and
+    /// `Snapshot::trips` serializes nothing.
+    trips: Vec<Trip>,
 }
 
 impl PlantGraph {
@@ -1422,6 +1600,44 @@ impl PlantGraph {
 
     pub fn control_mut(&mut self, id: LoopId) -> Option<&mut ControlLoop> {
         self.controls.get_mut(id.0 as usize)
+    }
+
+    /// Append a trip. Its `TripId` is its position. Validation belongs to the
+    /// loader, which can name the offending `[[trips]]` entry.
+    pub fn add_trip(&mut self, trip: Trip) -> TripId {
+        self.trips.push(trip);
+        TripId(self.trips.len() as u32 - 1)
+    }
+
+    pub fn trips(&self) -> &[Trip] {
+        &self.trips
+    }
+
+    pub fn trips_mut(&mut self) -> &mut [Trip] {
+        &mut self.trips
+    }
+
+    /// One trip by id, or `None` if the id names no trip — `Option` for
+    /// `control`'s reason: the id arrives from outside the engine on
+    /// `Command::ResetTrip`.
+    pub fn trip(&self, id: TripId) -> Option<&Trip> {
+        self.trips.get(id.0 as usize)
+    }
+
+    pub fn trip_mut(&mut self, id: TripId) -> Option<&mut Trip> {
+        self.trips.get_mut(id.0 as usize)
+    }
+
+    /// The first LATCHED trip that holds `node`, if any.
+    ///
+    /// The one question every refusal in `Engine::apply` asks (docs/DESIGN.md
+    /// §26 fork 4). "First" is enough: the loader refuses two trips that give
+    /// one valve different positions, so every latched trip on a node demands
+    /// the same safe state of it, and a pump's is always "stopped".
+    pub fn latched_trip_on(&self, node: NodeId) -> Option<&Trip> {
+        self.trips
+            .iter()
+            .find(|t| t.state.is_tripped() && t.acts_on(node))
     }
 
     /// Is `value` a legal setpoint for a loop measuring at `point`?
@@ -1905,4 +2121,67 @@ fn unpaired_actuator(name: &str, max_duty: Option<Watt>) -> SimError {
             "no duty range, on a node that is not a valve"
         }
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The next representable value above a positive `x`, and below it.
+    fn up(x: f64) -> f64 {
+        f64::from_bits(x.to_bits() + 1)
+    }
+    fn down(x: f64) -> f64 {
+        f64::from_bits(x.to_bits() - 1)
+    }
+
+    fn pressure(pa: f64) -> ControlledValue {
+        ControlledValue::Pressure { pa: Pascal(pa) }
+    }
+
+    /// docs/DESIGN.md §26 gate 3's unit half: the comparison itself, at an exact
+    /// tie and one ULP either side, with no loader round trip in the way. A high
+    /// trip fires at `≥`, a low one at `≤`, and the tie fires both. The reset
+    /// test is `!reached`, so a trip may be reset exactly on the far side of the
+    /// tie and not at it.
+    #[test]
+    fn a_trip_fires_at_its_limit_and_one_ulp_inside_it_does_not() {
+        let limit = pressure(1.2e6);
+        for (measured, high, low) in [
+            (1.2e6, true, true),
+            (up(1.2e6), true, false),
+            (down(1.2e6), false, true),
+        ] {
+            assert_eq!(
+                TripDirection::High
+                    .reached(pressure(measured), limit)
+                    .unwrap(),
+                high,
+                "high trip at {measured:e} against 1.2e6"
+            );
+            assert_eq!(
+                TripDirection::Low
+                    .reached(pressure(measured), limit)
+                    .unwrap(),
+                low,
+                "low trip at {measured:e} against 1.2e6"
+            );
+        }
+    }
+
+    /// A NaN compares false both ways, which would read as "safe" on either
+    /// direction; and a mismatched variable is a dimensional error. Both are
+    /// refusals, not verdicts.
+    #[test]
+    fn a_trip_refuses_to_compare_what_it_cannot() {
+        let limit = pressure(1.2e6);
+        assert!(TripDirection::High
+            .reached(pressure(f64::NAN), limit)
+            .is_err());
+        assert!(TripDirection::Low
+            .reached(pressure(f64::NAN), limit)
+            .is_err());
+        let level = ControlledValue::Level { m: Meter(1.2e6) };
+        assert!(TripDirection::High.reached(level, limit).is_err());
+    }
 }

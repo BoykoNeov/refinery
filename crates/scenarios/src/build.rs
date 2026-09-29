@@ -10,7 +10,7 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{
     CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
     HeatExchangerCoupling, LeakRole, MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind,
-    Pipe, PlantGraph, TankState, VesselState,
+    Pipe, PlantGraph, TankState, Trip, TripAction, TripDirection, TripState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use crate::schema::{
     bar_to_pa, c_to_k, kv_to_cv_si, ComponentDef, ControlDef, ExchangerDef, MeasurementDef,
-    NodeDef, PipeDef, ScenarioFile,
+    NodeDef, PipeDef, ScenarioFile, TripDef,
 };
 use crate::validate::{
     plant_phases, refuse_gas_leak, require_compatible_fidelity, require_declared_iff_used,
@@ -170,6 +170,9 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // column draw. It runs after `plant_phases` because a loop's seeded
     // measurement is a real read of the finished plant, not a placeholder.
     build_controls(&mut graph, &slate, &scenario.controls, &scenario.pipes)?;
+
+    // Step 3c: the trips (M22), after every node exists, for the same reason.
+    build_trips(&mut graph, &slate, &scenario.trips, &scenario.pipes)?;
 
     // Step 4: select solver impls from [fidelity]; unknown names are errors
     // listing the valid options.
@@ -1148,6 +1151,328 @@ fn build_controls(
             last_measurement: measurement,
             last_output,
         });
+    }
+    Ok(())
+}
+
+/// Build the plant's trips from `[[trips]]`, after every node exists (M22,
+/// docs/DESIGN.md §26).
+///
+/// Declaration order is `TripId` order and evaluation order. Each refusal below
+/// closes a way a file could declare a trip that would load and then protect
+/// nothing, or protect the wrong thing:
+///
+/// - a measurement ABSENT at load — a pipe's flow, or a furnace's or cooler's
+///   outlet — refused by name (fork 2(c), `docs/DEFERRED.md` E13). The test is
+///   the engine's own: `measure` at load, with the empty states and no solution
+///   that are the truth there, must return a value. A kind `measure` cannot
+///   answer for at all is refused with `measure`'s own reason, as a loop is.
+/// - a missing or unknown `direction`, and a limit key belonging to another
+///   variable, or none for this one,
+/// - a limit outside its physical range: a level in `[0, height]`, a pressure
+///   above zero, a temperature above absolute zero. **Its own range check, not
+///   `PlantGraph::check_setpoint`** (fork 6), whose ranges were argued for
+///   regulators and whose messages say "setpoint",
+/// - an empty `actions` list; an action naming both or neither of `pump` and
+///   `valve`; equipment that does not exist, or is not the kind its key says;
+///   a relief valve (its opening is its own inlet pressure's); a furnace or
+///   cooler (`docs/DEFERRED.md` E14); a valve with no `position` or one outside
+///   `[0, 1]`, and a `position` on a pump,
+/// - two trips — or one trip twice — giving one valve DIFFERENT safe positions,
+///   which would make "the" safe state of that valve two numbers,
+/// - a duplicate trip name.
+///
+/// **A trip and a control loop on one valve are admitted** (fork 5): the trip
+/// wins, by forcing the loop to MANUAL when it fires. `docs/DEFERRED.md` E4's
+/// refusal is of two REGULATING writers, and a trip is not one.
+fn build_trips(
+    graph: &mut PlantGraph,
+    slate: &Slate,
+    defs: &[TripDef],
+    pipes: &[PipeDef],
+) -> Result<(), SimError> {
+    let mut seen_names: Vec<&str> = Vec::new();
+    // (valve, safe position, trip name) across every trip, for the conflict
+    // refusal.
+    let mut valve_positions: Vec<(NodeId, f64, &str)> = Vec::new();
+
+    for def in defs {
+        let owner = format!("trip '{}'", def.name);
+        if seen_names.contains(&def.name.as_str()) {
+            return Err(SimError::Scenario(format!(
+                "two trips are called '{}'. A trip's name is what a snapshot labels it with, \
+                 so two of them make it ambiguous",
+                def.name
+            )));
+        }
+        seen_names.push(&def.name);
+
+        let variable = match def.measurement.variable.as_str() {
+            "level" => MeasuredVariable::Level,
+            "pressure" => MeasuredVariable::Pressure,
+            "temperature" => MeasuredVariable::Temperature,
+            // Refused BEFORE the pipe is looked up, so a trip on any flow gets
+            // this reason rather than a meter-lookup one.
+            "flow" => {
+                return Err(SimError::Scenario(format!(
+                    "{owner} watches a flow. A pipe's flow does not exist before the first \
+                     tick, and for a safety function a missing measurement is not something \
+                     to hold still on (docs/DESIGN.md §26 fork 2). A trip on a quantity \
+                     absent at load is deferred until it has a stated rule for that \
+                     (docs/DEFERRED.md E13)"
+                )))
+            }
+            other => {
+                return Err(SimError::Scenario(format!(
+                    "{owner} measures unknown variable '{other}' (valid: level, pressure, \
+                     temperature)"
+                )))
+            }
+        };
+
+        let point = resolve_measurement_point(graph, &owner, &def.measurement, pipes)?;
+        let point_name = graph.point_name(point).to_owned();
+        // The admission test is the engine's own reader, called with what is
+        // true at load. `Err` is a node that cannot answer for the variable at
+        // all, in `measure`'s own words; `Ok(None)` is a quantity that exists
+        // only once the plant has run — a furnace or cooler OUTLET.
+        let measured = graph
+            .measure(
+                slate,
+                &refinery_core::energy::NodeStates::default(),
+                None,
+                point,
+                variable,
+            )
+            .map_err(|e| {
+                SimError::Scenario(format!(
+                    "{owner} cannot measure {} on '{point_name}': {e}",
+                    variable.noun()
+                ))
+            })?;
+        if measured.is_none() {
+            return Err(SimError::Scenario(format!(
+                "{owner} watches the {} of '{point_name}', which does not exist before the \
+                 first tick: a furnace's or cooler's outlet is resolved by the tick. For a \
+                 safety function a missing measurement is not something to hold still on \
+                 (docs/DESIGN.md §26 fork 2), so a trip on a quantity absent at load is \
+                 deferred until it has a stated rule for that (docs/DEFERRED.md E13). Watch \
+                 the holdup the stream runs into instead",
+                variable.noun()
+            )));
+        }
+
+        let direction = match def.direction.as_deref() {
+            Some("high") => TripDirection::High,
+            Some("low") => TripDirection::Low,
+            Some(other) => {
+                return Err(SimError::Scenario(format!(
+                    "{owner} declares unknown direction '{other}' (valid: high, low)"
+                )))
+            }
+            None => {
+                return Err(SimError::Scenario(format!(
+                    "{owner} declares no `direction`. \"high\" fires at or above the limit and \
+                     \"low\" at or below it; an overfill trip and a low-level trip on one tank \
+                     differ only in this word, so it has no default"
+                )))
+            }
+        };
+
+        // The limit: one key per variable, the loops' setpoint keys with
+        // `limit_` in place of `setpoint_`, and converted by `declared_value`,
+        // the same code that converts a setpoint (fork 6).
+        let limit_key = |v: MeasuredVariable| match v {
+            MeasuredVariable::Level => "limit_m",
+            MeasuredVariable::Pressure => "limit_bar",
+            MeasuredVariable::Temperature => "limit_c",
+            MeasuredVariable::Flow => "limit_kg_per_s",
+        };
+        for (present, belongs_to) in [
+            (def.limit_m.is_some(), MeasuredVariable::Level),
+            (def.limit_bar.is_some(), MeasuredVariable::Pressure),
+            (def.limit_c.is_some(), MeasuredVariable::Temperature),
+        ] {
+            if present && belongs_to != variable {
+                return Err(SimError::Scenario(format!(
+                    "{owner} watches a {} and declares `{}`, which is a {} trip's limit. A \
+                     limit carries its variable's unit in its key; write `{}` instead",
+                    variable.noun(),
+                    limit_key(belongs_to),
+                    belongs_to.noun(),
+                    limit_key(variable)
+                )));
+            }
+        }
+        let declared = match variable {
+            MeasuredVariable::Level => def.limit_m,
+            MeasuredVariable::Pressure => def.limit_bar,
+            MeasuredVariable::Temperature => def.limit_c,
+            MeasuredVariable::Flow => None,
+        }
+        .ok_or_else(|| {
+            SimError::Scenario(format!(
+                "{owner} watches a {} and declares no `{}`. A trip's limit has no default",
+                variable.noun(),
+                limit_key(variable)
+            ))
+        })?;
+        let limit = declared_value(variable, declared);
+        check_trip_limit(graph, &owner, point, limit)?;
+
+        if def.actions.is_empty() {
+            return Err(SimError::Scenario(format!(
+                "{owner} declares no `actions`. A trip that fires and moves nothing protects \
+                 nothing; name at least one `{{ pump = \"…\" }}` or \
+                 `{{ valve = \"…\", position = … }}`"
+            )));
+        }
+        let mut actions = Vec::with_capacity(def.actions.len());
+        for action in &def.actions {
+            let (key, name) = match (&action.pump, &action.valve) {
+                (Some(pump), None) => ("pump", pump),
+                (None, Some(valve)) => ("valve", valve),
+                (Some(_), Some(_)) => {
+                    return Err(SimError::Scenario(format!(
+                        "{owner} has an action naming both a `pump` and a `valve`. Each action \
+                         names ONE piece of equipment; list them as separate actions"
+                    )))
+                }
+                (None, None) => {
+                    return Err(SimError::Scenario(format!(
+                        "{owner} has an action naming neither a `pump` nor a `valve`"
+                    )))
+                }
+            };
+            let node = graph.find_node(name).ok_or_else(|| {
+                SimError::Scenario(format!("{owner} acts on unknown node '{name}'"))
+            })?;
+            let built = match (key, &graph.node(node).kind) {
+                // Its own reason, as `Command::SetValveOpening` refuses it: a
+                // relief valve's opening is a function of its own inlet pressure,
+                // recomputed every solve, so a trip could not hold it anywhere.
+                (_, NodeKind::ReliefValve { .. }) => {
+                    return Err(SimError::Scenario(format!(
+                        "{owner} acts on '{name}', a relief valve. Its opening is actuated by \
+                         its own inlet pressure and recomputed on every solve, so a trip could \
+                         not hold it in a safe state"
+                    )))
+                }
+                (_, NodeKind::Furnace { .. } | NodeKind::Cooler { .. }) => {
+                    return Err(SimError::Scenario(format!(
+                        "{owner} acts on '{name}', a furnace or cooler. A trip acts on pumps and \
+                         valves; a fuel cut or a cooler trip is deferred with its own trigger \
+                         (docs/DEFERRED.md E14)"
+                    )))
+                }
+                ("pump", NodeKind::Pump { .. }) => {
+                    if action.position.is_some() {
+                        return Err(SimError::Scenario(format!(
+                            "{owner} gives pump '{name}' a `position`. A pump's safe state is \
+                             stopped, and it has no position to hold"
+                        )));
+                    }
+                    TripAction::StopPump { pump: node }
+                }
+                ("valve", NodeKind::Valve { .. }) => {
+                    let position = action.position.ok_or_else(|| {
+                        SimError::Scenario(format!(
+                            "{owner} names valve '{name}' with no `position`. Most trips shut a \
+                             valve, but a vent or dump valve trips OPEN, so the file says which; \
+                             there is no default"
+                        ))
+                    })?;
+                    if !position.is_finite() || !(0.0..=1.0).contains(&position) {
+                        return Err(SimError::Scenario(format!(
+                            "{owner} gives valve '{name}' `position = {position}`, outside \
+                             [0, 1]: a valve's opening is a fraction"
+                        )));
+                    }
+                    if let Some((_, other, other_trip)) = valve_positions
+                        .iter()
+                        .find(|(v, p, _)| *v == node && *p != position)
+                    {
+                        return Err(SimError::Scenario(format!(
+                            "{owner} puts valve '{name}' at {position}, and trip '{other_trip}' \
+                             puts it at {other}. Two latched trips on one valve must demand the \
+                             same safe state, or the valve has no single one"
+                        )));
+                    }
+                    valve_positions.push((node, position, &def.name));
+                    TripAction::SetValve {
+                        valve: node,
+                        position,
+                    }
+                }
+                (key, _) => {
+                    return Err(SimError::Scenario(format!(
+                        "{owner} names '{name}' under `{key}`, and it is not a {key}. An action \
+                         names its equipment under the key for its kind: `pump` for a pump, \
+                         `valve` for a valve"
+                    )))
+                }
+            };
+            actions.push(built);
+        }
+
+        graph.add_trip(Trip {
+            name: def.name.clone(),
+            measurement_point: point,
+            direction,
+            limit,
+            actions,
+            state: TripState::Armed,
+            // No trip pass has run: absent until tick 1 (fork 8).
+            last_measurement: None,
+        });
+    }
+    Ok(())
+}
+
+/// A trip limit's physical range (docs/DESIGN.md §26 fork 6).
+///
+/// Only the physical bounds: a level in `[0, height]`, a pressure above zero,
+/// a temperature above absolute zero, each finite. A limit AT a bound is legal
+/// — a high level trip at the brim is a real design — and a limit that fires at
+/// load is legal too: the plant trips on tick 1 rather than running a tick in a
+/// condition its own file calls unsafe.
+fn check_trip_limit(
+    graph: &PlantGraph,
+    owner: &str,
+    point: MeasurementPoint,
+    limit: ControlledValue,
+) -> Result<(), SimError> {
+    let MeasurementPoint::Node(node) = point else {
+        // A pipe carries only a flow, which is refused before this runs.
+        return Err(SimError::Scenario(format!(
+            "{owner} has a trip limit on a pipe"
+        )));
+    };
+    let name = &graph.node(node).name;
+    let (value, ok, range) = match (limit, &graph.node(node).kind) {
+        (ControlledValue::Level { m }, NodeKind::Tank(t)) => (
+            m.value(),
+            m.value() >= 0.0 && m.value() <= t.height.value(),
+            format!("[0, {}] m, the tank's height", t.height.value()),
+        ),
+        (ControlledValue::Pressure { pa }, _) => {
+            (pa.value(), pa.value() > 0.0, "above 0 Pa".to_string())
+        }
+        (ControlledValue::Temperature { k }, _) => {
+            (k.value(), k.value() > 0.0, "above 0 K".to_string())
+        }
+        // `measure` admitted the pairing, so a level limit is on a tank.
+        (other, _) => {
+            return Err(SimError::Scenario(format!(
+                "{owner} has a {:?} trip limit on '{name}', which cannot carry one",
+                other.variable()
+            )))
+        }
+    };
+    if !value.is_finite() || !ok {
+        return Err(SimError::Scenario(format!(
+            "{owner} has a trip limit of {value} (in SI) on '{name}', outside its range {range}"
+        )));
     }
     Ok(())
 }

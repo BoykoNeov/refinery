@@ -1,0 +1,134 @@
+# M22.1 protection demo: the plant shuts ITSELF down before a tank overfills.
+#
+# **Meant to be diffed against `tank_level_control.toml`.** The supply tank, the
+# pump, both valves, the receiving tank and the five pipes are that file's,
+# number for number, except:
+#
+# | line | there | here | why |
+# |---|---|---|---|
+# | `level_valve.opening` | 0.2, moved by a loop | 0.1, fixed | the pump outruns this drain, so the level climbs about 3 m per 1 000 ticks — there is something to protect against |
+# | `[[controls]]` | a PI loop on the drain | none | nothing regulates this tank; the trip is the only thing standing between it and the roof |
+# | `[[trips]]` | none | one overfill trip | the subject of the file |
+#
+# **What the trip does, measured** (docs/DESIGN.md §26 fork 7). The level first
+# reaches 6 m at the end of tick 1 235, so the trip fires at the top of tick
+# 1 236: it stops the pump AND shuts the discharge valve, and `fill_line`
+# carries exactly zero from that tick's own snapshot on. The tank then drains
+# through the fixed drain, to 3.76 m by tick 3 000 and 1.15 m by tick 6 000. The
+# trip stays tripped the whole way down — it LATCHES, and only
+# `reset_trip` re-arms it. The same numbers come out on both fidelities.
+#
+# **Why both actions, and not just "stop the pump".** A stopped pump keeps its
+# resistance and loses only its head, so it conducts both ways: the receiving
+# tank sits 5 m above the pump, and on the reference plant stopping the pump
+# alone sends 3 kg/s back through it. So the trip also shuts the valve.
+#
+# **What happens without it.** Delete the `[[trips]]` block and the level passes
+# the tank's declared 10 m height at tick 2 859 and reads 15.17 m at tick 6 000.
+# The engine has no overflow (docs/DEFERRED.md B28), so that is a state the tank
+# cannot hold, reported as if it could. A trip that did NOT latch — one that
+# restored the pump and valve as soon as the level fell back below 6 m — flips
+# 3 194 times over the same run and parks the level on the limit.
+#
+# **What this file cannot show.** The CLI issues no commands, so the reset, and
+# every command refused while the trip is latched, are exercised only by the
+# fixtures in `crates/scenarios/tests/trip_reference.rs`. This plant has no
+# control loop, so the trip forcing a loop to MANUAL is exercised there too.
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_overfill_trip.toml --ticks 6000
+
+[meta]
+name = "tank_overfill_trip"
+description = "Pump fills a tank faster than it drains; a latching high-level trip stops the pump and shuts the fill valve."
+
+[simulation]
+dt = 1.0            # seconds per tick, as tank_level_control.toml
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.supply_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 20.0
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0           # metric Kv [m^3/h at 1 bar], converted to SI on load
+opening = 0.5
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 2.0
+temperature_c = 20.0
+
+# Fixed, and sized so the pump outruns it: the tank fills while the pump runs
+# and drains once the trip has stopped it.
+[nodes.level_valve]
+type = "valve"
+kv = 200.0
+opening = 0.1
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "suction"
+from = "supply_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "discharge_valve"
+length_m = 30.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "discharge_valve"
+to = "receiving_tank"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = 5.0
+
+[[pipes]]
+name = "drain_line"
+from = "receiving_tank"
+to = "level_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "level_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# Fires AT OR ABOVE 6 m. `limit_m` is converted by the same code as a loop's
+# `setpoint_m`, and a level limit must lie within the tank's own height.
+[[trips]]
+name = "receiving_high_level"
+measurement = { node = "receiving_tank", variable = "level" }
+direction = "high"
+limit_m = 6.0
+actions = [
+  { pump = "transfer_pump" },
+  { valve = "discharge_valve", position = 0.0 },
+]

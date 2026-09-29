@@ -9,10 +9,11 @@ use crate::energy::{self};
 use crate::error::SimError;
 use crate::graph::{
     ControlMode, ControlledValue, LeakRole, LoopId, MeasuredVariable, NodeId, NodeKind, PlantGraph,
+    TripAction, TripId, TripState,
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
-    NodeSnapshot, Snapshot,
+    NodeSnapshot, Snapshot, TripSnapshot,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, ReactionModel, SeparationModel,
@@ -159,6 +160,26 @@ impl Engine {
                         "valve opening {opening} outside [0,1]"
                     )));
                 }
+                // Refused while a latched trip holds this valve, unless the write
+                // IS the trip's safe position (docs/DESIGN.md §26 fork 4): shutting
+                // a shut valve moves nothing, and refusing it would make a
+                // frontend's "close" button fail on a plant that is already safe.
+                // Its own refusal, ahead of the loop guard below — a trip forces
+                // its valve's loops to MANUAL, so the loop guard would not fire.
+                if let Some(trip) = self.graph.latched_trip_on(node) {
+                    if let Some(position) = trip.valve_position(node) {
+                        if opening != position {
+                            return Err(SimError::InvalidCommand(format!(
+                                "{node:?} ('{}') is held at opening {position} by trip '{}', \
+                                 which is latched. Reset the trip first (`reset_trip`) once \
+                                 its condition has cleared; the reset moves nothing, and the \
+                                 valve can then be reopened by hand",
+                                self.graph.node(node).name,
+                                trip.name
+                            )));
+                        }
+                    }
+                }
                 // Refused when a loop in AUTO owns this opening, and the shape is
                 // the relief valve's below: a write that survives until the top of
                 // the next tick and is then silently overwritten is a command that
@@ -199,13 +220,30 @@ impl Engine {
                     _ => Err(SimError::InvalidCommand(format!("{node:?} is not a valve"))),
                 }
             }
-            Command::SetPumpOn { node, on } => match &mut self.graph.node_mut(node).kind {
-                NodeKind::Pump { on: o, .. } => {
-                    *o = on;
-                    Ok(())
+            Command::SetPumpOn { node, on } => {
+                // The first guard this command has ever had (docs/DESIGN.md §26
+                // fork 4). Only a START is refused: stopping a stopped pump moves
+                // nothing and is the safe direction.
+                if on {
+                    if let Some(trip) = self.graph.latched_trip_on(node) {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{}') is held stopped by trip '{}', which is latched. \
+                             Reset the trip first (`reset_trip`) once its condition has \
+                             cleared; the reset restarts nothing, and the pump can then be \
+                             started by hand",
+                            self.graph.node(node).name,
+                            trip.name
+                        )));
+                    }
                 }
-                _ => Err(SimError::InvalidCommand(format!("{node:?} is not a pump"))),
-            },
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Pump { on: o, .. } => {
+                        *o = on;
+                        Ok(())
+                    }
+                    _ => Err(SimError::InvalidCommand(format!("{node:?} is not a pump"))),
+                }
+            }
             // `edge` names the PIPE the scenario declared, exactly as the JSON
             // contract has always said, and the engine routes the area onto that
             // pipe's dormant orifice. The indirection is the whole of fork C: the
@@ -332,6 +370,24 @@ impl Engine {
                     .graph
                     .control(loop_id)
                     .ok_or_else(|| unknown_loop(loop_id))?;
+                // **The refusal that is easy to miss** (docs/DESIGN.md §26 fork 4).
+                // This command moves no equipment itself, but a loop in AUTO writes
+                // its valve at the top of the next tick, so AUTO on a loop whose
+                // valve a latched trip holds would reopen it one tick later. MANUAL
+                // stays admitted: it is what the trip already put the loop in.
+                if mode == ControlMode::Auto {
+                    if let Some(trip) = self.graph.latched_trip_on(control.actuator) {
+                        return Err(SimError::InvalidCommand(format!(
+                            "control loop '{}' writes '{}', which trip '{}' holds and is \
+                             latched. In AUTO the loop would move it at the top of the next \
+                             tick. Reset the trip (`reset_trip`), put the valve where the loop \
+                             should take over from, and then switch to AUTO",
+                            control.name,
+                            self.graph.node(control.actuator).name,
+                            trip.name
+                        )));
+                    }
+                }
                 let seed = if mode == ControlMode::Auto && control.mode == ControlMode::Manual {
                     // **Refused when there is nothing to measure** (docs/DESIGN.md
                     // §23 fork 4): a furnace or cooler outlet before the first
@@ -451,13 +507,77 @@ impl Engine {
                     .setpoint = value;
                 Ok(())
             }
+            // Re-arm a latched trip (docs/DESIGN.md §26 fork 4). It moves no
+            // equipment: it lifts the refusals, and a human restarts the plant.
+            Command::ResetTrip { trip_id } => {
+                let trip = self.graph.trip(trip_id).ok_or_else(|| {
+                    SimError::InvalidCommand(format!("{trip_id:?} names no trip on this plant"))
+                })?;
+                // Resetting an armed trip would do nothing, and a frontend that
+                // sends it has a wrong picture of the plant, so it is told.
+                if !trip.state.is_tripped() {
+                    return Err(SimError::InvalidCommand(format!(
+                        "trip '{}' is armed, not tripped: there is nothing to reset",
+                        trip.name
+                    )));
+                }
+                // **Read FRESH, not `last_measurement`** — the MANUAL→AUTO seed's
+                // reason (M8.3): commands land between ticks, so the state now is
+                // what the next tick's trip pass will measure. A reset against the
+                // one-tick-old reading could re-arm a trip one tick before it
+                // fires again. And through `reached`, the same comparison that
+                // fires it, so a trip may be reset exactly when it would not fire.
+                let measurement = self
+                    .graph
+                    .measure(
+                        &self.slate,
+                        &self.node_states,
+                        self.last_solution.as_ref(),
+                        trip.measurement_point,
+                        trip.limit.variable(),
+                    )?
+                    .ok_or_else(|| {
+                        SimError::Numerical(format!(
+                            "internal: trip '{}' has no {} to test its reset against, but the \
+                             loader admits only quantities that exist from load \
+                             (docs/DESIGN.md §26 fork 2)",
+                            trip.name,
+                            trip.limit.variable().noun()
+                        ))
+                    })?;
+                if trip.direction.reached(measurement, trip.limit)? {
+                    return Err(SimError::InvalidCommand(format!(
+                        "trip '{}' cannot be reset: its condition still holds ({:?} against a \
+                         {:?} limit of {:?}). A reset re-arms a trip, and one re-armed inside \
+                         its own condition would fire again on the next tick",
+                        trip.name, measurement, trip.direction, trip.limit
+                    )));
+                }
+                self.graph
+                    .trip_mut(trip_id)
+                    .ok_or_else(|| {
+                        SimError::InvalidCommand(format!("{trip_id:?} names no trip on this plant"))
+                    })?
+                    .state = TripState::Armed;
+                Ok(())
+            }
         }
     }
 
     pub fn tick(&mut self) -> Result<(), SimError> {
         let dt = self.config.dt;
 
-        // 0. Regulation (M8.2). The control loops run at the TOP of the tick, on
+        // 0a. Protection (M22). Trips run FIRST, before the loops, on the same
+        //     start-of-tick state (docs/DESIGN.md §26 fork 5). A trip that fires
+        //     forces the loops on its valves to MANUAL, so the loop pass below
+        //     already sees MANUAL and tracks the tripped position; had the loops
+        //     run first, an AUTO loop would update its memory and report an
+        //     output on the tripping tick that the trip then overwrote. And the
+        //     solve below sees the safe state, so the flow a trip stops is zero
+        //     in this tick's own snapshot.
+        self.run_trips()?;
+
+        // 0b. Regulation (M8.2). The control loops run at the TOP of the tick, on
         //    the state standing at the start of it, and write their actuators
         //    before anything is solved. See `run_control_loops` for why this is
         //    an ordering decision and not a convenience.
@@ -1334,6 +1454,135 @@ impl Engine {
         Ok(())
     }
 
+    /// Run every trip, in declaration order, on the state standing at the top of
+    /// this tick (docs/DESIGN.md §26).
+    ///
+    /// **Write once, then refuse** (fork 3). An armed trip whose condition is
+    /// reached latches and writes its safe states on this tick; after that it
+    /// does not rewrite them. What holds them is `Engine::apply`, which refuses
+    /// every command that would move tripped equipment. A trip that rewrote its
+    /// safe state every tick would hide a missing refusal: the command would
+    /// return `Ok` and be quietly undone at the next tick, which is the "command
+    /// that appears to work and does not" defect `SetValveOpening`'s loop guard
+    /// exists to prevent.
+    ///
+    /// **The hold check** backs those refusals up. On every tick a latched trip
+    /// confirms its equipment is still where it put it, and fails the tick if
+    /// not. It is unreachable while every refusal holds, and turns a missing one
+    /// into a loud failure instead of a silent restart.
+    ///
+    /// Passes as in `run_control_loops`: every trip measures and checks before any
+    /// trip writes, so two trips see the same state whatever their order.
+    fn run_trips(&mut self) -> Result<(), SimError> {
+        if self.graph.trips().is_empty() {
+            // Every plant written before M22 takes this exit, which is why they
+            // are byte-identical.
+            return Ok(());
+        }
+        // The tick this pass belongs to: the counter moves at the END of
+        // `tick`, so during tick N it still reads N - 1, and a snapshot of this
+        // tick will carry N.
+        let this_tick = self.tick + 1;
+
+        // Pass 1 — measure, and check the equipment every LATCHED trip holds.
+        let mut measured: Vec<ControlledValue> = Vec::with_capacity(self.graph.trips().len());
+        for trip in self.graph.trips() {
+            // Every quantity a trip may watch is stored and exists from load
+            // (fork 2(c)), so `None` here is the loader's admission check and
+            // `measure` disagreeing — an engine fault, not a quiet hold. A
+            // safety function holding still on a missing measurement is the
+            // wrong default (§26 fork 2), so it is not allowed to happen quietly.
+            let measurement = self
+                .graph
+                .measure(
+                    &self.slate,
+                    &self.node_states,
+                    self.last_solution.as_ref(),
+                    trip.measurement_point,
+                    trip.limit.variable(),
+                )?
+                .ok_or_else(|| {
+                    SimError::Numerical(format!(
+                        "internal: trip '{}' has no {} to compare with its limit, but the \
+                         loader admits only quantities that exist from load \
+                         (docs/DESIGN.md §26 fork 2)",
+                        trip.name,
+                        trip.limit.variable().noun()
+                    ))
+                })?;
+            measured.push(measurement);
+            if trip.state.is_tripped() {
+                for action in &trip.actions {
+                    self.check_trip_holds(&trip.name, *action)?;
+                }
+            }
+        }
+
+        // Pass 2 — latch the trips whose condition is reached, and collect what
+        // they write. A trip already latched stays latched whatever the
+        // measurement now says: that is the latch (fork 4).
+        let mut writes: Vec<TripAction> = Vec::new();
+        for (trip, measurement) in self.graph.trips_mut().iter_mut().zip(measured) {
+            trip.last_measurement = Some(measurement);
+            if trip.state == TripState::Armed && trip.direction.reached(measurement, trip.limit)? {
+                trip.state = TripState::Tripped { at_tick: this_tick };
+                writes.extend(trip.actions.iter().copied());
+            }
+        }
+
+        // Pass 3 — write the safe states, and force every loop on a tripped
+        // valve to MANUAL (fork 5). MANUAL tracks, so its faceplate shows the
+        // valve's real position from this tick, and a PI loop's memory is left
+        // alone: after a reset and a human reopening the valve, AUTO is the
+        // existing bumpless transfer, seeded from wherever the valve stands.
+        for action in writes {
+            match action {
+                TripAction::StopPump { pump } => match &mut self.graph.node_mut(pump).kind {
+                    NodeKind::Pump { on, .. } => *on = false,
+                    _ => return Err(trip_equipment_fault(&self.graph, pump, "pump")),
+                },
+                TripAction::SetValve { valve, position } => {
+                    match &mut self.graph.node_mut(valve).kind {
+                        NodeKind::Valve { opening, .. } => *opening = position,
+                        _ => return Err(trip_equipment_fault(&self.graph, valve, "valve")),
+                    }
+                    for control in self.graph.controls_mut() {
+                        if control.actuator == valve {
+                            control.mode = ControlMode::Manual;
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The hold check for one action of one latched trip: its equipment must
+    /// still be in the safe state the trip wrote (docs/DESIGN.md §26 fork 3).
+    fn check_trip_holds(&self, trip: &str, action: TripAction) -> Result<(), SimError> {
+        let moved = match (action, &self.graph.node(action.equipment()).kind) {
+            (TripAction::StopPump { .. }, NodeKind::Pump { on, .. }) => *on,
+            (TripAction::SetValve { position, .. }, NodeKind::Valve { opening, .. }) => {
+                *opening != position
+            }
+            (TripAction::StopPump { pump }, _) => {
+                return Err(trip_equipment_fault(&self.graph, pump, "pump"))
+            }
+            (TripAction::SetValve { valve, .. }, _) => {
+                return Err(trip_equipment_fault(&self.graph, valve, "valve"))
+            }
+        };
+        if moved {
+            return Err(SimError::Numerical(format!(
+                "internal: trip '{trip}' is latched and '{}' is no longer in the safe state it \
+                 wrote. Every command that could move it is refused while the trip is latched \
+                 (docs/DESIGN.md §26 fork 4), so one of those refusals is missing",
+                self.graph.node(action.equipment()).name
+            )));
+        }
+        Ok(())
+    }
+
     /// Run every control loop, in declaration order, on the state standing at
     /// the top of this tick.
     ///
@@ -1614,6 +1863,22 @@ impl Engine {
                 output: c.last_output,
             })
             .collect();
+        // One entry per trip, in declaration order. `measurement` is what the
+        // last trip pass compared, not a fresh read — the loops' rule.
+        let trips = self
+            .graph
+            .trips()
+            .iter()
+            .enumerate()
+            .map(|(i, t)| TripSnapshot {
+                id: TripId(i as u32),
+                name: t.name.clone(),
+                direction: t.direction,
+                limit: t.limit,
+                measurement: t.last_measurement,
+                state: t.state,
+            })
+            .collect();
         // The slate, in ITS OWN order — `Slate::iter` walks the declaration
         // order that `Composition`'s fractions index into, and a frontend zips
         // the two. Any reordering here (sorting by name, say) would silently
@@ -1636,6 +1901,7 @@ impl Engine {
             solver: sol.map(|s| s.diagnostics.clone()).unwrap_or_default(),
             tanks,
             controls,
+            trips,
         }
     }
 
@@ -1724,6 +1990,16 @@ fn dissipation_of(solution: &HydraulicSolution, edge: crate::graph::EdgeId) -> W
         .get(&edge)
         .copied()
         .unwrap_or(Watt::ZERO)
+}
+
+/// A trip action naming a node of the wrong kind. The loader builds only a pump
+/// under a pump action and a valve under a valve action, so this is reachable
+/// only from a hand-built graph, and said rather than skipped (rule 5).
+fn trip_equipment_fault(graph: &PlantGraph, node: NodeId, kind: &str) -> SimError {
+    SimError::Scenario(format!(
+        "a trip action names '{}' as a {kind}, and it is not one",
+        graph.node(node).name
+    ))
 }
 
 /// The refusal for a `LoopId` that names no loop.
