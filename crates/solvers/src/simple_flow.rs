@@ -825,13 +825,17 @@ mod tests {
     use refinery_core::units::{Kelvin, Meter, Pascal, Watt, WattPerKelvin, P_ATM, T_AMBIENT};
 
     /// **A rejected step writes nothing** (DESIGN §25 gate 6), asserted on the one
-    /// ladder both steps use.
+    /// ladder both steps use. It defends an edit INSIDE `armijo_step`; an edit at
+    /// a call site is not covered.
     ///
     /// §25 specified this gate as a fixture whose group residual sits at the
-    /// rounding floor. That fixture cannot see the mutation it is for: at the
-    /// floor `full = R/slope` is so small that even the ladder's last trial,
-    /// `full/256`, is below one ULP of a pressure, so a step written in error
-    /// leaves the iterate bit-identical anyway. What discriminates is a
+    /// rounding floor. On the relief plants' numbers that fixture is estimated
+    /// to be blind to the mutation it is for: at the floor `full = R/slope` is
+    /// so small that even the ladder's last trial, `full/256`, comes out below
+    /// one ULP of a pressure, so a step written in error would leave the
+    /// iterate bit-identical. That is an estimate, never run, and it scales with
+    /// `1/slope`, so a weak-boundary group could differ. What discriminates for
+    /// certain is a
     /// rejection with a LARGE step, which a residual that never decreases gives
     /// directly: every trial must be refused and the answer must be exactly
     /// zero, not the last trial. The control is a residual that is linear in the

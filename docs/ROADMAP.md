@@ -6517,9 +6517,11 @@ Newton at all.
 **Two of the design's gates had no power over their own mutations, and one
 mutation is caught by nothing.**
 - Gate 6 (a rejected group step writes nothing), written at the rounding floor,
-  cannot see a wrongly written step, because that step is below one ULP of a
-  pressure. It now tests the step-acceptance ladder directly, which the node
-  step and the group step now share.
+  is ESTIMATED to be blind on the relief plants: the wrongly written step there
+  works out below one ULP of a pressure. That was not run, and a weak liquid
+  group could differ. It now tests the step-acceptance ladder directly, which the
+  node step and the group step now share. That test is the only one that catches
+  the mutation, and that part was measured.
 - The skip rule's mutation moved nine plants and failed no test until a unit test
   was added for it.
 - Mutation 4's prediction was wrong: the fifteen plants never build a level of

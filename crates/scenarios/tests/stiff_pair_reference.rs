@@ -196,7 +196,10 @@ fn a_wide_conducting_vent_at_a_one_second_tick_agrees_with_newton() {
 /// common shift for the whole set removes only their sum, which is why the
 /// groups are a hierarchy of pairs.
 ///
-/// Two plants, because they separate the two groupings in two different ways:
+/// Two plants, in two tests (the second is
+/// `two_vessel_separates_the_groupings_by_sweep_count`, so it runs even when this
+/// one fails first), because they separate the two groupings in two different
+/// ways:
 /// - the shipped `relief_twin_vessels` (1 m × 150 mm relief lines): the old
 ///   solver and the one-shift-per-set shortcut both FAIL at tick 1, so CI's
 ///   corpus also defends this. Measured: 6 sweeps against Newton's 8.
@@ -209,7 +212,15 @@ fn two_relieving_vessels_in_one_plant_agree_with_newton() {
     let run = run_both(&mut shipped, 6000);
     assert_near_newton(&run, "relief_twin_vessels");
     assert_agrees(&run, "relief_twin_vessels");
+}
 
+/// Gate 4's second plant, in a test of its own so that it runs even when the
+/// shipped twin fails first. Under one-group-per-set it must fail on the
+/// sweep-count assertion (4 472 against Newton's 8), not on a divergence: this
+/// is the plant that tells the two groupings apart by COST, where the shipped
+/// twin tells them apart by failure.
+#[test]
+fn two_vessel_separates_the_groupings_by_sweep_count() {
     let mut two_vessel = load(TWIN);
     resize(&mut two_vessel, "psv1_inlet", 2.0, 0.10);
     resize(&mut two_vessel, "psv2_inlet", 2.0, 0.10);

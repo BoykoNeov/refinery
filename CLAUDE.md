@@ -235,9 +235,12 @@ old solver, and the one-group-per-connected-set shortcut, both fail it at tick 1
 so CI's corpus defends the hierarchy.
 
 **Four findings to carry forward.**
-- §25's gate 6, written at the rounding floor, could not see its own mutation: a
-  wrongly written step there is below one ULP of a pressure. Estimate the size of
-  what a mutation changes before writing its gate.
+- §25's gate 6, written at the rounding floor, is ESTIMATED to be blind to its own
+  mutation on the relief plants' numbers: the wrongly written step comes out below
+  one ULP of a pressure. This was estimated, not run, and a weak-boundary liquid
+  group could differ. It was moved to a test on the shared ladder, which is
+  measured to be the only thing catching it. Estimate the size of what a mutation
+  changes before writing its gate.
 - Mutation 8 (skipping on `tol_abs` alone) moved nine plants and failed no test
   until a unit test was added for it.
 - Mutation 7 (simultaneous shifts within a level) is inert and uncaught: new row

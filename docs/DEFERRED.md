@@ -463,11 +463,13 @@ time since M9.1 they were measured rather than re-asserted.
   or `dt = 1.0` on it or on `vessel_pressure_control`. **No SHIPPED plant is past
   its trigger** — only the probe files under `W:\temp\claude\m21\probe` reach the
   cap. M21 takes A3 on a decision anyway, and says so.
-- **A test written at the edge a mutation cannot cross has no power over it (M21.1,
-  2026-09-29).** DESIGN §25 specified "a rejected group step writes nothing" as a
-  fixture solved to rounding error. There, the step a mutation would wrongly write
-  is below one ULP of a pressure, so the iterate is bit-identical either way, and
-  the test would pass under the very mutation it names. **Before writing a gate,
+- **A test written where a mutation's effect rounds away has no power over it
+  (M21.1, 2026-09-29).** DESIGN §25 specified "a rejected group step writes
+  nothing" as a fixture solved to rounding error. On the relief plants' numbers,
+  the step a mutation would wrongly write there works out below one ULP of a
+  pressure. That is an estimate: it was never run, and it depends on the group's
+  boundary slope. If it holds, the iterate is bit-identical either way, and the
+  test would pass under the very mutation it names. **Before writing a gate,
   estimate the size of the thing the mutation would change, at the fixture's own
   numbers.** A3 is closed; nothing is past its trigger, and the next milestone is
   a decision taken from this table.

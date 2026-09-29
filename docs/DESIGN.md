@@ -13860,8 +13860,10 @@ is the new file. Newton is untouched.
 **The shipped solver reproduces the prototype bit for bit.** It runs against the
 prototype's `MODE=ac HONEST=1 SKIPRULE=1`, with the same worst count, total and
 hash over every snapshot of every tick, on all 35 plants tried: the 24 shipped
-files and the 11 probe files, including every stiff one. So every number this
-section quotes from the prototype is a statement about the code in the repo.
+files and the 11 probe files, including every stiff one. It was re-run on the
+committed code after the ladder was shared: 36 of 36, the new twin file included.
+So every number this section quotes from the prototype is a statement about the
+code in the repo.
 
 **Measured on what ships**, via `measure_the_stiff_pair_gates` in
 `stiff_pair_reference.rs`:
@@ -13903,11 +13905,17 @@ sees it. This was found by reading the corpus row, which printed the same
 fingerprint for both runs. All 24 other files declare Newton for the same reason,
 whether or not anyone had noticed.
 
-(ii) **Gate 6 as specified had no power over mutation 9, by arithmetic.** At the
-rounding floor the step `R/slope` is so small that the ladder's last trial,
-`full/256`, is below one ULP of a pressure. A step written in error would leave
-the iterate bit-identical anyway. Written as specified, the gate would have been
-passed by the mutation it was written for. The ladder is now one function,
+(ii) **Gate 6 as specified is estimated to have no power over mutation 9 on the
+plants that motivated it. This is an estimate, not a measurement.** At the
+rounding floor the step is `R/slope`. On the relief pair (`R` about 1e-15 kg/s,
+slope about 1e-4 kg/(s·Pa), pressure about 2 MPa) even the ladder's last trial,
+`full/256`, falls far below one ULP of a pressure. A step written in error would
+then leave the iterate bit-identical, and the gate would be passed by the mutation
+it was written for. **The estimate is not general**: the step scales with
+`1/slope`, so a liquid group near 1 bar with a weak boundary could land above one
+ULP. The rounding-floor fixture was never built and run against the mutation.
+What stands either way is that the ladder test below catches mutation 9 and no
+plant-level gate does (measured). The ladder is now one function,
 `armijo_step`, shared by the node step and the group step, so "the group step gets
 the per-node step's test" is literally true. The gate asserts on the ladder
 itself, using a residual that never decreases:
@@ -13916,8 +13924,11 @@ itself, using a residual that never decreases:
 - a linear residual is the control, taken whole at `t = 1`.
 
 Sharing the ladder is byte-neutral: all 24 fingerprints are identical before and
-after. The per-node reject-all branch, which M9.1 recorded as uncaught (A7), is now
-defended by the same test.
+after. **What the ladder test defends is an edit INSIDE `armijo_step`**, such as
+returning the last trial. The same test now covers the per-node reject-all branch
+M9.1 recorded as uncaught (A7), but only for edits inside the ladder. An edit at
+either call site, such as applying a step the ladder returned as zero some other
+way, is still undefended.
 
 (iii) **Mutation 4's prediction was wrong, and the rule it rests on is structural
 rather than filtered.** "Singletons admitted → the fifteen plants move" is false as
@@ -13971,13 +13982,13 @@ baseline, and the proptest counts:
 
 | # | mutation | predicted | caught by (read for why) |
 |---|---|---|---|
-| 1 | whole connected set only | gate 4, CI corpus | gate 4, CI corpus (twin fails tick 1), grouping unit test. Gates 1–3 green. |
+| 1 | whole connected set only | gate 4, CI corpus | gate 4 on both plants (twin fails tick 1; `two_vessel` on its sweep-count assertion, 4 472 against Newton's 8), CI corpus, grouping unit test. Gates 1–3 green. |
 | 2 | group trial on frozen coefficients | gate 2 alone | gate 2 alone (diverges at tick 14, the cycle's tick) |
 | 3 | group step removed | gates 1–4, CI, gate 7 | gates 1–4, CI; proptest back to 187/191/232 exactly |
 | 4 | singletons at the filter | gate 5 (the fifteen) | **grouping unit test alone**; the fifteen do not move, see (iii) |
 | 4b | every unknown a group at level 0 | — | grouping unit test alone; 23 of 25 plants move |
 | 5 | slope counts internal edges | behaves like 3 | as 3: gates 1–4, CI; `relief_blowdown` back to 920 |
-| 6 | lightest edge first | gate 4 | gate 4, CI, grouping unit test |
+| 6 | lightest edge first | gate 4 | gate 4 on both plants (`two_vessel` 4 606 against 8), CI, grouping unit test |
 | 7 | Jacobi within a level | no prediction | **nothing**; inert on all 24 pre-M21 plants, see (vii) |
 | 8 | skip on `tol_abs` alone | gate 5, or nothing | nothing in CI on the first pass; the new skip-rule test after (vi) |
 | 9 | rejected step writes its last trial | gate 6 | the ladder unit test alone, see (ii); moves `fired_gas_drum` and the twin |
