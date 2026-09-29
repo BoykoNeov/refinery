@@ -289,9 +289,18 @@ pub fn grade_nodes(
     let mut converged = true;
     for (residual, scale) in residual_and_scale {
         worst = worst.max(residual.abs());
-        converged = converged && residual.abs() < tol_abs + tol_rel * scale;
+        converged = converged && meets_node_bar(residual, scale, tol_abs, tol_rel);
     }
     (worst, converged)
+}
+
+/// One node's half of `grade_nodes`: does a residual `R_n` [kg/s] at a node whose
+/// own traffic is `scale_n` [kg/s] meet the bar? Split out so that the game
+/// fidelity's group correction (M21.1, DESIGN §25 fork 3) skips a group on
+/// literally the test the solve stops on, rather than on a copy of it that could
+/// drift — "no new constant" is only true if it is the same code.
+pub fn meets_node_bar(residual: f64, scale: f64, tol_abs: f64, tol_rel: f64) -> bool {
+    residual.abs() < tol_abs + tol_rel * scale
 }
 
 /// Compile one edge into its series branch. The device (if any) at the edge's

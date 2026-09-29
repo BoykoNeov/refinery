@@ -1,0 +1,136 @@
+# M21.1 demo: two relieving vessels in one connected plant, each behind a wide
+# PSV inlet line. The plant the game fidelity's stiff-pair fix is FOR.
+#
+# A vessel and the zero-volume node across a very conductive line can only move
+# TOGETHER in a node-by-node (Gauss-Seidel) sweep, and they do so at about
+# c/(g + c) per sweep, where g is the line's conductance and c = C/dt is the
+# vessel's accumulation slope (docs/DESIGN.md §25). Here both PSVs start shut,
+# so both inlet lines are dead ends, and a dead end's conductance at zero flow
+# still grows with the line's size. Before M21.1 the Simple fidelity failed this
+# plant at tick 1.
+#
+# The fix shifts GROUPS of unknowns by one common amount after each sweep, and
+# the groups are a hierarchy of pairs by strongest coupling. This plant is why it
+# is a hierarchy: with two stiff pairs in one connected set there are two slow
+# modes, and one shift for the whole set removes only their sum. That shortcut
+# also fails this plant at tick 1, so CI's `corpus --solver simple` goes red on
+# either the old solver or the shortcut.
+#
+# What it does, measured over 6000 ticks: the header fills the drum, the thin tie
+# fills the receiver, the drum's PSV lifts at tick 160 and the receiver's at tick
+# 860, and both are partly open at the end. Simple: 6 sweeps worst. Newton: 8.
+#
+# Sized on purpose, not tuned after the fact:
+#   - Relief inlets 1 m x 150 mm. At 2 m x 100 mm (the in-test `two_vessel`
+#     fixture) the one-shift-per-set shortcut survives at 4 472 sweeps, under the
+#     5000 cap, so CI would not see it; at this size it fails at tick 1.
+#   - dt = 0.1. Every dt from 0.05 to 0.5 s was run and works. At 1.0 s NEWTON
+#     fails at tick 17 (docs/DEFERRED.md A14), so CI's Newton corpus would go red.
+#
+# Declares `flow = "newton"`, like every other shipped plant, even though the
+# Simple fidelity is the one it exists to defend. CI's corpus runs each file as
+# declared and then again with `--solver simple`, so only a file that declares
+# Newton is run under BOTH; declaring `simple` would run it twice under one.
+
+[meta]
+name = "relief_twin_vessels"
+description = "Two vessels in one plant, each behind a wide PSV inlet line, both relieving to one flare."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[[components]]
+name = "fuel_gas"
+phase = "gas"
+tb_c = -161.5
+molar_mass_kg_per_mol = 0.016043
+cp_j_per_kg_k = 2220.0
+
+[nodes.header]
+type = "source"
+pressure_bar = 30.0
+temperature_c = 20.0
+
+# The first vessel, filled straight from the header.
+[nodes.drum]
+type = "vessel"
+volume_m3 = 2.0
+pressure_bar = 12.0
+temperature_c = 20.0
+
+# The second vessel, filled only through the thin tie from the drum.
+[nodes.receiver]
+type = "vessel"
+volume_m3 = 3.0
+pressure_bar = 10.0
+temperature_c = 20.0
+
+[nodes.psv1]
+type = "relief_valve"
+kv = 12.0
+set_pressure_bar = 20.0
+accumulation_bar = 1.0
+x_t = 0.72
+
+# Set lower than the drum's, so the receiver relieves too once the tie has
+# filled it.
+[nodes.psv2]
+type = "relief_valve"
+kv = 12.0
+set_pressure_bar = 18.0
+accumulation_bar = 1.0
+x_t = 0.72
+
+[nodes.flare]
+type = "sink"
+pressure_bar = 1.1
+temperature_c = 20.0
+
+[[pipes]]
+name = "make_up"
+from = "header"
+to = "drum"
+length_m = 20.0
+diameter_m = 0.021
+
+# Thin on purpose: the weak link between the two stiff pairs. Pairing it first
+# would be the wrong grouping, and heaviest-edge matching does not.
+[[pipes]]
+name = "tie"
+from = "drum"
+to = "receiver"
+length_m = 20.0
+diameter_m = 0.015
+
+[[pipes]]
+name = "psv1_inlet"
+from = "drum"
+to = "psv1"
+length_m = 1.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "psv1_out"
+from = "psv1"
+to = "flare"
+length_m = 30.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "psv2_inlet"
+from = "receiver"
+to = "psv2"
+length_m = 1.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "psv2_out"
+from = "psv2"
+to = "flare"
+length_m = 30.0
+diameter_m = 0.10

@@ -91,6 +91,7 @@ cargo run -p refinery-cli -- run scenarios/tank_temperature_control.toml --ticks
 cargo run -p refinery-cli -- run scenarios/tank_temperature_heating.toml --ticks 6000 # the M18.1 reverse-acting loop
 cargo run -p refinery-cli -- run scenarios/furnace_outlet_control.toml --ticks 6000   # the M19.1 furnace-outlet loop
 cargo run -p refinery-cli -- run scenarios/tank_flow_control.toml --ticks 6000        # the M20.1 flow loop
+cargo run -p refinery-cli -- run scenarios/relief_twin_vessels.toml --ticks 6000 --solver simple  # the M21.1 stiff pairs
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -186,50 +187,68 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M21 is OPEN (2026-09-29): the game solver's stiff-pair stall — `docs/DEFERRED.md`
-row A3.** Taken on a DECISION (the user's). **M21.0 landed 2026-09-29**: DESIGN
-§25, five forks, eight gates, nine mutations, no code. **M21.1 builds it.**
+**M21 is CLOSED (2026-09-29): the game solver's stiff-pair stall — `docs/DEFERRED.md`
+row A3, now struck.** Taken on a DECISION (the user's). **M21.0** wrote DESIGN §25
+(five forks, eight gates, nine mutations, no code) and **M21.1 landed 2026-09-29**
+and built it. Read §25's "Corrections from building it (M21.1)" before touching
+`SimpleFlowSolver`. The next milestone is chosen from `docs/DEFERRED.md`.
 
-**A3's distance was wrong.** Its "5.4× under the cap" was measured on
-`relief_blowdown.toml`, whose PSV inlet had been re-sized to 5 m × 60 mm to dodge
-this stall. Two single edits each reproduce it:
-- The line at 2 m × 100 mm fails the game fidelity at tick 41.
-- `dt = 1.0` fails it at tick 1, and does the same to
-  `vessel_pressure_control.toml`.
+**The mechanism.** A vessel and the zero-volume node across a wide line converge
+TOGETHER at `c/(g + c)` per Gauss–Seidel sweep, where `g` is the line's conductance
+and `c = C/dt`: 0.98850 predicted against 0.988502 measured. A3's old "5.4× under
+the cap" was measured on `relief_blowdown.toml`, whose PSV inlet had been re-sized to
+5 m × 60 mm to dodge this. One edit (2 m × 100 mm, or `dt = 1.0`) failed the game
+fidelity. Newton was never affected and is untouched.
 
-Newton solves all of them in at most 20 iterations. Only a scenario file sets `dt`.
+**The fix, in `SimpleFlowSolver`.** After each sweep, `correct_groups` shifts each
+group of pressures by one common amount: a scalar Newton step on the group's net
+imbalance over its BOUNDARY conductance plus its members' `C/dt` (Settari & Aziz
+1973). The groups come from `build_groups`, a hierarchy of heaviest-edge pairs
+with no threshold, built once per pass. Four rules, each defended by a test:
+- **Groups of one are excluded.** A plant with no two neighbouring unknowns builds
+  no level at all, which is why fifteen plants are byte-identical.
+- **A group whose members all meet `network::meets_node_bar` is skipped.** This is
+  the stopping test itself, split out of `grade_nodes` so it is the same code.
+- **The group step's Armijo trial RECOMPILES its boundary edges.** On frozen
+  coefficients it cycles inside a PSV's band.
+- **Both steps share one ladder, `armijo_step`**, which returns exactly `0.0` when
+  every trial is refused.
 
-**The mechanism has a closed form.** A vessel and the zero-volume node across its
-wide line converge together at `c/(g + c)` per sweep, where `g` is the line's
-conductance and `c = C/dt`. That predicts 0.98850 against 0.988502 measured. A
-large `g` comes from geometry on a flowing line, or from `eps_dp` on a dead end.
+**What it measured.**
+- It reproduces the out-of-repo prototype bit for bit on 35 plants.
+- `relief_blowdown`: 920 → 8 sweeps.
+- Every plant one edit from the cap runs and agrees with Newton to 4.72e-5 on
+  every node pressure at every snapshot.
+- Newton: byte-identical on all 24 pre-M21 plants.
+- `simple`: fifteen plants byte-identical, and the other nine
+  (`cavitating_pump`, `fcc_plant`, `fired_gas_drum`, `leaking_line`,
+  `relief_blowdown`, `tank_flow_control`, `tank_level_control`, `tank_pump_valve`,
+  `vessel_pressure_control`) move by at most 3.75e-6. **From here, "runs
+  byte-identical" means post-M21.1 identical for those nine on `simple`.**
+- Generated plants the game solver solves: gas chains 187 → 198/205, spur trees
+  191 → 264/305.
 
-**The fix, prototyped on a bit-exact copy of the solver outside the repo:**
-- **Additive correction.** After each sweep, groups of unknowns are shifted by
-  one common amount: a scalar Newton step on the group's net imbalance (Settari &
-  Aziz 1973; Hutchinson & Raithby 1986).
-- **Groups come from a hierarchy of heavy-edge pairs**, with no threshold.
-  **One group per connected set is NOT enough**: two relieving vessels in one set
-  still take 4 472 sweeps, against 8 for the hierarchy.
-- **The group step's Armijo trial recompiles the group's BOUNDARY edges.** With
-  frozen coefficients it cycles in a PSV's accumulation band. M9.1's frozen
-  per-node test is unchanged.
-- **Groups of one are excluded**, so the fifteen shipped plants that never form a
-  group of two stay byte-identical on `simple`. Without the skip rule, the other
-  nine move by at most 3.8e-6 relative over every snapshot, with stagnant edges
-  and nodes excluded. The skip rule moves eight of them again, so M21.1
-  re-measures this bound on whatever ships. Newton is untouched.
-- **The shipped twin is `twin_wide`'s geometry** (1 m × 0.15 m relief lines).
-  There, both the old solver and the one-group-per-set version fail at tick 1,
-  so CI's corpus catches either. The file lands only with the fix.
+**`scenarios/relief_twin_vessels.toml` is new** (two stiff pairs in one plant). It
+declares `flow = "newton"`, against §25, because CI runs each file as declared
+plus `--solver simple`; a file declaring `simple` is never run under Newton. The
+old solver, and the one-group-per-connected-set shortcut, both fail it at tick 1,
+so CI's corpus defends the hierarchy.
 
-**Measured before any source edit:**
-- Corpus baselines: `W:\temp\claude\m21\before_newton.json` and
-  `before_simple.json`.
-- Property-test counts: gas chains Simple 187/205, spur trees Simple 191/305.
-  Both must not fall and are predicted to rise.
-- New ledger rows: A14 (Newton fails a probe the corrected game solver runs) and
-  A15 (a stagnant node's temperature differs by fidelity; this predates M21).
+**Four findings to carry forward.**
+- §25's gate 6, written at the rounding floor, could not see its own mutation: a
+  wrongly written step there is below one ULP of a pressure. Estimate the size of
+  what a mutation changes before writing its gate.
+- Mutation 8 (skipping on `tol_abs` alone) moved nine plants and failed no test
+  until a unit test was added for it.
+- Mutation 7 (simultaneous shifts within a level) is inert and uncaught: new row
+  A16. The group step's baseline and trials come from two compiles on a gas edge:
+  new row A17.
+- The mutation harness's restore silently turned LF into CRLF (Python text mode on
+  Windows), and a checksum read back in text mode passed. **Write sources with
+  `newline=""` and check with `git diff`/`file`, not with a read through the same
+  translation.**
+
+`scenarios/` holds **twenty-five** files.
 
 **M20 is CLOSED (2026-09-29): the fourth controlled variable, FLOW — a valve
 holding the flow in one of its own two pipes.** Taken on a DECISION (the user's,
@@ -1639,14 +1658,14 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly six of the twenty-four files in `scenarios/` declare a `[[controls]]`
+**Exactly six of the twenty-five files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
 `tank_temperature_heating.toml` (M18.1, a reverse-acting temperature),
 `furnace_outlet_control.toml` (M19.1, a furnace's own outlet) and
 `tank_flow_control.toml` (M20.1, a valve's own flow). **The
-other eighteen
+other nineteen
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor**; adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file

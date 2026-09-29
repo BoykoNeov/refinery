@@ -13848,3 +13848,141 @@ than left for M21.1 to find.
 
 The skip rule's side effect (fork 3) was measured in the same pass, not
 predicted: it moves eight of the nine grouped plants.
+
+### Corrections from building it (M21.1, landed 2026-09-29)
+
+Built as specified above. `SimpleFlowSolver` gains `build_groups` (the heavy-edge
+hierarchy), `correct_groups` (one common shift per group after each sweep) and
+`group_imbalance`. `network::meets_node_bar` is split out of `grade_nodes`, so the
+skip rule and the stopping test are the same code. `scenarios/relief_twin_vessels.toml`
+is the new file. Newton is untouched.
+
+**The shipped solver reproduces the prototype bit for bit.** It runs against the
+prototype's `MODE=ac HONEST=1 SKIPRULE=1`, with the same worst count, total and
+hash over every snapshot of every tick, on all 35 plants tried: the 24 shipped
+files and the 11 probe files, including every stiff one. So every number this
+section quotes from the prototype is a statement about the code in the repo.
+
+**Measured on what ships**, via `measure_the_stiff_pair_gates` in
+`stiff_pair_reference.rs`:
+
+| gate | plant | Simple worst | Newton worst | worst node-pressure disagreement |
+|---|---|---|---|---|
+| 1 | relief inlet 5 m × 60 mm / 2 m × 100 mm / 1 m × 150 mm | 8 / 8 / 7 | 10 / 8 / 8 | 1.83e-6 / 1.43e-7 / 1.57e-8 |
+| 2 | `relief_blowdown` at `dt = 1.0` | 15 | 20 | 4.72e-5 (PSV, tick 13) |
+| 3 | vent 2 m × 100 mm at `dt = 1.0` | 5 | 9 | 1.21e-7 |
+| 4 | `relief_twin_vessels` / `two_vessel` | 6 / 8 | 8 / 8 | 1.32e-8 / 1.30e-8 |
+
+- **Gate 5.** Newton is byte-identical on all 24 pre-M21 plants. On `simple`:
+  - the fifteen plants that form no group are byte-identical;
+  - the other nine move by at most **3.75e-6** relative over every snapshot
+    (`fired_gas_drum`, tick 170), against a bound of 1e-5;
+  - `relief_blowdown` moves by 3.42e-6;
+  - stagnant edges and nodes are excluded as specified.
+- **Gate 7 rose as predicted:**
+  - gas chains: 187 → **198**/205;
+  - spur trees: 191 → **264**/305;
+  - chains agreeing with Newton: 232 → 234.
+
+  Removing the group step (mutation 3) returns exactly 187/191/232, which is the
+  control that says the rise is the correction's.
+- **Gate 8.** Two corpus runs match on all 25 fingerprints. The new code iterates
+  only `Vec`s and `BTreeMap`s.
+- **Worst sweep counts:**
+  - `relief_blowdown` 920 → 8;
+  - `vessel_pressure_control` and `tank_level_control` stay at 7 and 8;
+  - `cavitating_pump` 16;
+  - no plant's worst count rose.
+
+What building it corrected:
+
+(i) **The twin declares `flow = "newton"`, not `"simple"` as fork 5 said.** CI
+runs `corpus` as each file declares it and again with `--solver simple`. A file
+declaring `simple` is therefore run twice under one fidelity, and Newton never
+sees it. This was found by reading the corpus row, which printed the same
+fingerprint for both runs. All 24 other files declare Newton for the same reason,
+whether or not anyone had noticed.
+
+(ii) **Gate 6 as specified had no power over mutation 9, by arithmetic.** At the
+rounding floor the step `R/slope` is so small that the ladder's last trial,
+`full/256`, is below one ULP of a pressure. A step written in error would leave
+the iterate bit-identical anyway. Written as specified, the gate would have been
+passed by the mutation it was written for. The ladder is now one function,
+`armijo_step`, shared by the node step and the group step, so "the group step gets
+the per-node step's test" is literally true. The gate asserts on the ladder
+itself, using a residual that never decreases:
+- every rung must be tried;
+- the answer must be exactly `+0.0`;
+- a linear residual is the control, taken whole at `t = 1`.
+
+Sharing the ladder is byte-neutral: all 24 fingerprints are identical before and
+after. The per-node reject-all branch, which M9.1 recorded as uncaught (A7), is now
+defended by the same test.
+
+(iii) **Mutation 4's prediction was wrong, and the rule it rests on is structural
+rather than filtered.** "Singletons admitted → the fifteen plants move" is false as
+the filter would be edited: a plant with no two neighbouring unknowns builds no
+level at all, so there is nothing to admit a singleton into. Admitting them at
+the filter moves three grouped plants (`cavitating_pump`, `leaking_line`,
+`tank_level_control`). The fork's own description, "every unknown is a group of
+one at level 0" (mutation 4b), moves 23 of 25. Both are caught by the grouping
+unit test alone. No plant-level gate sees either.
+
+(iv) **The hierarchy lists an unmatched aggregate again at every level it
+survives to.** "Pairs of pairs" understated it: a pair that finds no partner at
+level 2 is listed, and corrected, a second time. The prototype measured this, and
+it ships so the bit-match holds. The skip rule makes the repeat nearly free once
+the first correction has settled the group. Removing it is a measured change, not
+a tidy-up, and the `build_groups` doc says so.
+
+(v) **The group step's baseline and its trials come from two compiles.** At
+shift 0 the prototype skips the recompile, so the baseline `Σ R_i` uses the
+sweep's frozen coefficients and every trial uses fresh ones. That is inert on a
+liquid edge. On a gas boundary edge the Armijo test compares residuals from two
+densities. It ships as measured and is recorded as ledger row A17, not changed.
+
+(vi) **Mutation 8 was defended by nothing in CI until this slice added a test.**
+Testing the skip against `tol_abs` alone fails no test and moves nine plants.
+Only the hand-run baseline saw it: a bytes claim held up by a file on the
+measurer's disk, which is M16.2's finding exactly. The new unit test,
+`a_group_already_meeting_the_node_bar_is_left_alone`, uses a group whose residual
+equals its own traffic. At `tol_rel = 2` it must come back bit-identical. At zero
+tolerances it must move, which is the control. With that test in place, the
+mutation is caught by it alone.
+
+(vii) **Mutation 7 (Jacobi shifts within a level) is inert on every pre-M21
+plant.** It moves only `relief_twin_vessels`, which still solves, and lowers spur
+trees 264 → 258. No gate catches it. The grouping unit test also failed under
+this mutation, but only on the empty level separators the mutation itself had to
+insert, which is not a catch. The prediction was "no prediction; if inert, say
+so", and it is inert. Recorded as ledger row A16, with a trigger.
+
+(viii) **The mutation harness corrupted line endings on its first run.** Python's
+text mode on Windows rewrote the solver's LF endings as CRLF on restore. The
+harness's own sha check read the file back in text mode, where the two agree, so
+the check passed. `git diff` and `file` caught it. The source was restored from
+the byte copy taken before the first write, and the harness now reads and writes
+with `newline=""`. **A restore check that reads through the same translation as
+the write cannot see the translation.**
+
+The mutation pass, against §25's predictions. Each was run under `--no-fail-fast`,
+with CI's 500-tick `simple` corpus, the 6 000-tick corpus against a post-fix
+baseline, and the proptest counts:
+
+| # | mutation | predicted | caught by (read for why) |
+|---|---|---|---|
+| 1 | whole connected set only | gate 4, CI corpus | gate 4, CI corpus (twin fails tick 1), grouping unit test. Gates 1–3 green. |
+| 2 | group trial on frozen coefficients | gate 2 alone | gate 2 alone (diverges at tick 14, the cycle's tick) |
+| 3 | group step removed | gates 1–4, CI, gate 7 | gates 1–4, CI; proptest back to 187/191/232 exactly |
+| 4 | singletons at the filter | gate 5 (the fifteen) | **grouping unit test alone**; the fifteen do not move, see (iii) |
+| 4b | every unknown a group at level 0 | — | grouping unit test alone; 23 of 25 plants move |
+| 5 | slope counts internal edges | behaves like 3 | as 3: gates 1–4, CI; `relief_blowdown` back to 920 |
+| 6 | lightest edge first | gate 4 | gate 4, CI, grouping unit test |
+| 7 | Jacobi within a level | no prediction | **nothing**; inert on all 24 pre-M21 plants, see (vii) |
+| 8 | skip on `tol_abs` alone | gate 5, or nothing | nothing in CI on the first pass; the new skip-rule test after (vi) |
+| 9 | rejected step writes its last trial | gate 6 | the ladder unit test alone, see (ii); moves `fired_gas_drum` and the twin |
+
+**Still deferred:** A14 (Newton fails the twin at `dt = 1.0`), A15 (a stagnant
+node's temperature by fidelity), the long uniform chain, `eps_dp` as a dead end's
+stiffness, and why the geometry stall moved from tick 91 to tick 41. A3 is
+closed.

@@ -6452,7 +6452,7 @@ in the first commit went beyond the measurements, and are now measured:
 - **The skip rule.** It moves eight of those nine plants, so M21.1 re-measures
   the bound on what it ships.
 
-### M21.1 — Build — **IN PROGRESS**
+### M21.1 — Build — **LANDED** 2026-09-29
 
 **Measured before any source edit (2026-09-29, at `713767b`).** Results and tables
 are in `W:\temp\claude\m21\m21_1\measurements.md`.
@@ -6487,3 +6487,50 @@ were inlet lengths 0.5/1/2 m × diameters 0.10/0.15/0.20 m, two thicker ties, an
   out until tick 47, still before either valve opens. §25 credits a dead end's
   stiffness to `eps_dp` alone, and that is only half of it. The flowing form
   comes later, and only a solver that survives tick 1 reaches it.
+
+**What was built.** Built as DESIGN §25 specifies; the corrections are in §25's
+"Corrections from building it (M21.1)". After each Gauss–Seidel sweep, the game
+solver shifts groups of pressures by one common amount. The groups are pairs by
+strongest link, then pairs of pairs. Newton is untouched. The new plant is
+`scenarios/relief_twin_vessels.toml`. Five things to know.
+
+**It reproduces the prototype bit for bit**, on all 24 shipped plants and all 11
+probe plants, over every snapshot. `relief_blowdown` goes from 920 sweeps to 8.
+Every plant one edit away from the stall now runs, and agrees with Newton to
+within 4.72e-5 on every node pressure at every snapshot. The worst case is the
+PSV inside its band at `dt = 1.0`. No plant's worst sweep count rose.
+
+**What moved.**
+- Newton: byte-identical on all 24 pre-M21 plants.
+- `simple`: the fifteen plants that form no pair are byte-identical, and the
+  other nine move by at most 3.75e-6 relative (bound 1e-5).
+- Generated plants the game solver now solves: gas chains 187 → 198 of 205, spur
+  trees 191 → 264 of 305.
+
+From here, "runs byte-identical" means post-M21.1 identical for those nine on
+`simple`.
+
+**The twin declares Newton, against the design.** CI runs each file as declared
+and again forced to `simple`. A file declaring `simple` would never be run under
+Newton at all.
+
+**Two of the design's gates had no power over their own mutations, and one
+mutation is caught by nothing.**
+- Gate 6 (a rejected group step writes nothing), written at the rounding floor,
+  cannot see a wrongly written step, because that step is below one ULP of a
+  pressure. It now tests the step-acceptance ladder directly, which the node
+  step and the group step now share.
+- The skip rule's mutation moved nine plants and failed no test until a unit test
+  was added for it.
+- Mutation 4's prediction was wrong: the fifteen plants never build a level of
+  groups, so letting single nodes in cannot reach them.
+- Mutation 7 (simultaneous shifts within a level) is inert on every existing plant
+  and caught by nothing. It is recorded as ledger row A16.
+
+**The mutation harness's own restore corrupted the tree.** Windows text mode
+turned LF into CRLF, and a checksum read back through the same translation
+passed. It was restored from a byte copy, and the harness now writes raw.
+
+**M21 is CLOSED (2026-09-29) with this slice.** A3 is struck. `scenarios/` holds
+twenty-five files, six of which declare `[[controls]]`. The next milestone is
+chosen from `docs/DEFERRED.md`.

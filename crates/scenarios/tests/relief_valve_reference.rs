@@ -190,64 +190,10 @@ fn the_settle_point_tracks_the_set_pressure() {
 // B′ — the demo under BOTH fidelities.
 // ---------------------------------------------------------------------------
 
-/// Both fidelities run the demo to the same settle point, and the Simple sweep
-/// count stays well inside its cap.
-///
-/// **This gate exists because its absence let a real failure through.** The first
-/// demo geometry diverged under `simple` at tick 91 — 5000 Gauss–Seidel sweeps,
-/// residual 5.9e-7 — while Newton took 8, and it was found by running the CLI, not
-/// by running the suite: every other gate in this file builds from the scenario
-/// file, whose `[fidelity] flow` is `newton`. So the geometry fix that cured it
-/// was protected by nothing. This is M5.3's own finding restated — the drum "had
-/// never been run under `simple` at all, and now is".
-///
-/// The mechanism is worth keeping with the gate, because it generalises past this
-/// plant: a normally-shut PSV leaves its valve node a DEAD END (`flare_line` does
-/// not conduct), so the receiver's Gauss–Seidel diagonal is dominated by a fat
-/// inlet branch carrying no net flow, and each sweep moves the vessel by almost
-/// nothing. Newton is immune — it solves the linear system exactly. Any
-/// normally-shut branch on a low-resistance line will do the same.
-///
-/// The sweep budget is asserted at half the solver's 5000 cap. Measured: 868.
-/// A margin gate rather than an exact count, because the number is a property of
-/// the geometry and would move with any legitimate re-sizing — what must not move
-/// is that it stays far from the cliff.
-#[test]
-fn both_fidelities_settle_the_relief_and_simple_stays_clear_of_its_cap() {
-    let run = |fidelity: &str| {
-        let mut file = load();
-        file.fidelity.flow = fidelity.to_string();
-        let mut engine = refinery_scenarios::build_engine(&file).expect("builds");
-        let mut worst = 0u32;
-        for i in 0..1500 {
-            engine
-                .tick()
-                .unwrap_or_else(|e| panic!("{fidelity} tick {i}: {e}"));
-            worst = worst.max(engine.snapshot().solver.iterations);
-        }
-        let receiver = engine.graph.find_node("receiver").expect("receiver");
-        let pressure = match &engine.graph.node(receiver).kind {
-            NodeKind::Vessel(v) => v.pressure(&engine.slate).value() / 1e5,
-            other => panic!("receiver must be a vessel, got {other:?}"),
-        };
-        (pressure, worst)
-    };
-
-    let (newton_p, newton_iters) = run("newton");
-    let (simple_p, simple_iters) = run("simple");
-
-    approx::assert_relative_eq!(newton_p, simple_p, max_relative = 1e-4);
-    assert!(
-        newton_iters < 25,
-        "Newton must crack this plant easily; took {newton_iters} iterations"
-    );
-    assert!(
-        simple_iters < 2500,
-        "the Simple sweep count must stay well inside its 5000 cap, or a \
-         normally-shut PSV has put its vessel back into the dead-end stall this \
-         plant's inlet line is sized to avoid. Took {simple_iters} sweeps"
-    );
-}
+// Both fidelities on this demo — and on its 2 m × 100 mm and 1 m × 150 mm
+// inlet lines, and at `dt = 1.0` — live in `stiff_pair_reference.rs` (M21.1).
+// This section used to hold a `< 2500` sweep gate defending the re-sized inlet
+// line; the solver was fixed instead and the gate re-premised there.
 
 // ---------------------------------------------------------------------------
 // C — refusals, at both doors.

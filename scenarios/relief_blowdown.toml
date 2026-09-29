@@ -85,18 +85,17 @@ to = "receiver"
 length_m = 20.0
 diameter_m = 0.021
 
-# The PSV's inlet line. Sized 5 m x 60 mm rather than the 2 m x 100 mm a relief
-# designer would reach for first, and the reason is NUMERICAL rather than
-# process — recorded here because it is the kind of thing that otherwise looks
-# arbitrary. A normally-shut PSV leaves its valve node a DEAD END: `flare_line`
-# does not conduct, so the node's only branch is this one. The receiver's
-# Gauss-Seidel diagonal is then dominated by a branch carrying no net flow, and
-# each sweep moves the vessel by almost nothing. Newton is unaffected (it solves
-# the linear system exactly, 2-8 iterations); the Simple fidelity stalled at its
-# 5000-sweep cap and failed at tick 91. Lengthening and narrowing the inlet line
-# cuts that branch's conductance and the stall with it: 868 sweeps worst case,
-# 5.7x inside the cap. It is also the more realistic geometry - API 520 limits
-# PSV inlet line pressure drop precisely because the line is not free.
+# The PSV's inlet line, 5 m x 60 mm rather than the 2 m x 100 mm a relief
+# designer would reach for first. It was sized that way (M5.4c) to dodge a stall
+# in the Simple fidelity: the receiver and the PSV node across a wide line could
+# only move together at about c/(g + c) per Gauss-Seidel sweep, and at 2 m x
+# 100 mm the solver hit its 5000-sweep cap. M21.1 fixed the solver, not the
+# plant (DESIGN §25: an additive correction over heavy-edge groups), and the
+# wide line now takes 8 sweeps. The line stays 5 m x 60 mm because this file is
+# a regression anchor, not because anything still needs it; the 2 m x 100 mm and
+# 1 m x 150 mm lines are exercised by editing this file in-test
+# (`relief_valve_reference.rs`). It is also the more realistic geometry - API 520
+# limits PSV inlet line pressure drop precisely because the line is not free.
 [[pipes]]
 name = "psv_inlet"
 from = "receiver"

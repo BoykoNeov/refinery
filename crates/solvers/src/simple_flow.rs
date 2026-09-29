@@ -26,14 +26,26 @@
 //! Properties: O(edges) per sweep, no linear algebra, warm-started from the
 //! previous tick's pressures (few sweeps at steady state). It solves the same
 //! fixed point as Newton; the only fidelity difference is the looser stopping
-//! tolerance. Non-convergence (e.g. a stiff network GS cannot crack in
-//! `max_iter` sweeps) is `Err(SolverDiverged)` — never `Ok(unconverged)`, never
-//! a NaN escape (rule 5). Cross-fidelity agreement with Newton on well-posed
-//! networks is the I5 property test.
+//! tolerance. Non-convergence within `max_iter` sweeps is `Err(SolverDiverged)`
+//! — never `Ok(unconverged)`, never a NaN escape (rule 5). Cross-fidelity
+//! agreement with Newton on well-posed networks is the I5 property test.
+//!
+//! **After each sweep, an additive correction (M21.1, DESIGN §25).** Node-wise
+//! Gauss–Seidel cannot move two tightly coupled unknowns TOGETHER: a vessel and
+//! the zero-volume node across its wide line converge jointly at about
+//! `c/(g + c)` per sweep, `g` the line's conductance and `c = C/dt` the vessel's
+//! accumulation slope — 0.98850 predicted against 0.988502 measured on
+//! `relief_blowdown`, which is why that plant took 920 sweeps and one edit to its
+//! line or its `dt` took it past the cap. So each sweep is followed by one common
+//! shift per GROUP of unknowns — a scalar Newton step on the group's net
+//! imbalance, whose slope is exactly the boundary conductance plus the members'
+//! `C/dt` (Settari & Aziz 1973; Hutchinson & Raithby 1986) — over a hierarchy of
+//! groups built by heavy-edge matching (Karypis & Kumar 1998). See
+//! `build_groups` and `correct_groups`.
 
 use crate::network::{
-    accumulation, compile_edges, edge_flows, solve_with_active_anchoring, validate_degrees,
-    AnchorPass, Capacitance, CompiledEdge, Prepared,
+    accumulation, compile_edge, compile_edges, edge_flows, meets_node_bar,
+    solve_with_active_anchoring, validate_degrees, AnchorPass, Capacitance, CompiledEdge, Prepared,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
@@ -62,6 +74,9 @@ use std::collections::BTreeMap;
 /// rises monotonically with strictness, 6% here against 53% at `2e-1`. Sharing
 /// one constant would let a re-tuning of Newton's margin move this solver
 /// silently.
+///
+/// Those figures are M9.1's, taken before M21.1's group correction, which is now
+/// what converges `relief_blowdown` (920 → 8 sweeps); the sweep was not re-run.
 ///
 /// **Do not lower it toward the relation's bare bound.** At `1e-4` the fully shut
 /// valve converges in 7 sweeps and a valve 1% open still takes 1 239, because the
@@ -114,6 +129,9 @@ pub struct SimpleFlowSolver {
     /// on every one of them, and `relief_blowdown` — whose convergence is driven
     /// by its vessel's own `−C/dt` term rather than by branch conductance — goes
     /// 920 → 1 520 → 3 035 at `ω` of 1.0, 0.75, 0.5 (DESIGN §11, M9.1 fork 3).
+    /// Measured at M9.1, before the group correction (M21.1) took that plant to 8
+    /// sweeps; not re-measured since, so read it as the reason for `1.0`, not as
+    /// today's cost.
     ///
     /// No scenario file can set this; `crates/scenarios/src` never mentions it.
     /// It is a code-level invariant, and it becomes a load-time refusal if the
@@ -227,6 +245,11 @@ impl SimpleFlowSolver {
             return AnchorPass { result, pressures };
         }
 
+        // The additive correction's groups, built ONCE per pass from the pass's
+        // seed compile — the same point the anchored set is frozen (§3c), so the
+        // grouping cannot flap while the weights move within the pass.
+        let groups = build_groups(&unknowns, &incident, &compiled, &pressures, self.eps_dp);
+
         // Nonlinear Gauss–Seidel: sweep, then measure the residual on the exact
         // edge flows the solution will report (so the returned solution provably
         // satisfies the reported bound, and matches the invariants-test balance).
@@ -296,11 +319,8 @@ impl SimpleFlowSolver {
                 // form puts within `eps_dp` of the root from any drop — so this
                 // usually costs one halving and buys a converged node.
                 let p_now = pressures[&nid];
-                let mut t = 1.0;
-                let mut step = 0.0;
-                for _ in 0..=MAX_HALVINGS {
-                    let trial = t * full;
-                    let after = node_imbalance_at(
+                let step = armijo_step(full, imbalance, |trial| {
+                    Ok::<_, std::convert::Infallible>(node_imbalance_at(
                         nid,
                         p_now + trial,
                         &incident[&nid],
@@ -309,14 +329,10 @@ impl SimpleFlowSolver {
                         capacitive.get(&nid),
                         dt.value(),
                         self.eps_dp,
-                    );
-                    if after.abs() <= (1.0 - ARMIJO_C * t) * imbalance.abs() {
-                        step = trial;
-                        break;
-                    }
-                    t *= 0.5;
-                }
-                // `step` is still 0 if nothing was acceptable: leave the node
+                    ))
+                })
+                .unwrap_or_else(|never| match never {});
+                // `step` is 0 if nothing was acceptable: leave the node
                 // where it is and let its neighbours move it, rather than apply
                 // a step the criterion has just rejected. Gauss–Seidel permits
                 // that; a global Newton could not, which is why `newton_flow`
@@ -329,6 +345,27 @@ impl SimpleFlowSolver {
                 // rounding floor on an already-converged node, where the target
                 // `(1 − c·t)·|R|` is unreachable and the dropped step is a no-op.
                 *pressures.get_mut(&nid).expect("unknown is a node") += step;
+            }
+
+            // The group correction, after the node-wise sweep and BEFORE the
+            // recompile-and-grade below, so the convergence test grades the
+            // corrected iterate and `finalize` ships a solution consistent with
+            // its own coefficients (M5.3's ordering; DESIGN §25 fork 4).
+            if let Err(e) = self.correct_groups(
+                &groups,
+                &incident,
+                &compiled,
+                &mut pressures,
+                capacitive,
+                graph,
+                slate,
+                previous_states,
+                dt.value(),
+            ) {
+                return AnchorPass {
+                    result: Err(e),
+                    pressures,
+                };
             }
 
             // Refresh the frozen density coefficients at the POST-sweep
@@ -407,6 +444,334 @@ impl SimpleFlowSolver {
             pressures,
         }
     }
+
+    /// The additive correction (DESIGN §25): for each group in `groups`, in order
+    /// (finest level first), shift every member's pressure by one common `δ`.
+    ///
+    /// A common shift leaves every edge INSIDE the group unchanged, so the group's
+    /// net imbalance `Σ_{i∈K} R_i` depends only on its boundary edges and its
+    /// members' accumulation, and one scalar Newton step on it is
+    ///
+    /// ```text
+    /// δ = Σ_{i∈K} R_i  /  ( Σ_{boundary e} g_e + Σ_{i∈K} C_i/dt )
+    /// ```
+    ///
+    /// That denominator is exactly what resists the pair's slow common mode, and
+    /// nothing else. For the symmetric positive-definite linearisation (the
+    /// network's weighted Laplacian plus `C/dt`) the step is a Galerkin coarse
+    /// correction with a piecewise-constant prolongation, an energy-norm
+    /// projection that cannot increase the error. Groups are corrected
+    /// SEQUENTIALLY, each from the pressures the previous one left — a
+    /// Gauss–Seidel over the coarse unknowns rather than a Jacobi one.
+    ///
+    /// Three rules, each measured on the prototype in §25:
+    ///
+    /// - **Skipped when every member already meets the solve's own per-node bar**
+    ///   (`network::meets_node_bar`, the stopping test itself, not a new
+    ///   constant). On the shipped plants every group step the line search
+    ///   rejected sat at the rounding floor (≤ 6.9e-14 kg/s), and each rejection
+    ///   costs the whole halving ladder of boundary recompiles.
+    /// - **The step gets the per-node step's Armijo test** on `|Σ R_i|`, same
+    ///   `ARMIJO_C` and `MAX_HALVINGS`. A rejected step writes NOTHING, so the
+    ///   worst a rejection can do is the uncorrected solver's behaviour.
+    /// - **The trial recompiles the group's BOUNDARY edges at the trial
+    ///   pressures**, where the per-node trial stays frozen (M9.1). Graded on the
+    ///   frozen coefficients, `relief_blowdown` at `dt = 1.0` cycles with period
+    ///   two inside its PSV's accumulation band (20.180 ↔ 20.562 bar): the frozen
+    ///   compile holds the valve's opening fixed, so a 38 kPa group shift passes
+    ///   a test that cannot see the opening change. A node step is small and
+    ///   local; a group step moves a relief valve's inlet by tens of kPa.
+    ///   Internal edges still cancel under a recompile, because an edge has one
+    ///   density whichever end reads it — so the cost is the boundary.
+    ///
+    /// **The baseline `Σ R_i` is taken on the frozen compile and only the trials
+    /// recompile.** On a gas boundary edge the Armijo test therefore compares two
+    /// residuals from two compiles, the baseline at the sweep's start-of-sweep
+    /// density. That is what the prototype measured and it is kept so the
+    /// shipped solver reproduces it bit for bit; it is inert on a liquid edge.
+    #[allow(clippy::too_many_arguments)]
+    fn correct_groups(
+        &self,
+        groups: &[Vec<NodeId>],
+        incident: &BTreeMap<NodeId, Vec<(EdgeId, bool)>>,
+        compiled: &BTreeMap<EdgeId, CompiledEdge>,
+        pressures: &mut BTreeMap<NodeId, f64>,
+        capacitive: &BTreeMap<NodeId, Capacitance>,
+        graph: &PlantGraph,
+        slate: &Slate,
+        previous_states: &NodeStates,
+        dt: f64,
+    ) -> Result<(), SimError> {
+        for group in groups {
+            let settled = group.iter().all(|&nid| {
+                let (mut bal, mut scale) = (0.0f64, 0.0f64);
+                for &(eid, incoming) in &incident[&nid] {
+                    let c = &compiled[&eid];
+                    let f = c.rho
+                        * c.branch
+                            .flow(pressures[&c.src] - pressures[&c.tgt], self.eps_dp);
+                    bal += if incoming { f } else { -f };
+                    scale = scale.max(f.abs());
+                }
+                if let Some(cap) = capacitive.get(&nid) {
+                    bal += accumulation(cap, pressures[&nid], dt).0;
+                }
+                meets_node_bar(bal, scale, self.tol_abs_kg_s, self.tol_rel)
+            });
+            if settled {
+                continue;
+            }
+
+            let (r0, d0) = group_imbalance(
+                group,
+                0.0,
+                None,
+                incident,
+                compiled,
+                pressures,
+                capacitive,
+                dt,
+                self.eps_dp,
+            )?;
+            let full = r0 / d0;
+            // `d0 > 0` whenever a member is a vessel or the group has a
+            // conducting boundary edge; a group with neither has no slope to
+            // step along and is left to the node-wise sweep.
+            if !full.is_finite() || d0 <= 0.0 {
+                continue;
+            }
+
+            let step = armijo_step(full, r0, |shift| {
+                let mut trial = pressures.clone();
+                for nid in group {
+                    if let Some(p) = trial.get_mut(nid) {
+                        *p += shift;
+                    }
+                }
+                let (after, _) = group_imbalance(
+                    group,
+                    shift,
+                    Some(TrialCompile {
+                        graph,
+                        slate,
+                        previous_states,
+                        pressures: &trial,
+                    }),
+                    incident,
+                    compiled,
+                    pressures,
+                    capacitive,
+                    dt,
+                    self.eps_dp,
+                )?;
+                Ok(after)
+            })?;
+            if step != 0.0 {
+                for nid in group {
+                    if let Some(p) = pressures.get_mut(nid) {
+                        *p += step;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The Armijo ladder, shared by the node-wise step and the group step so that
+/// "the group step gets the per-node step's test" (DESIGN §25 fork 3) is one
+/// function rather than two copies that could drift.
+///
+/// Tries `t·full` for `t = 1, ½, …, 2^−MAX_HALVINGS`, where `residual_at(s)` is
+/// the residual after a step `s` and `residual` the one before it, and returns
+/// the first step with `|R(t·full)| ≤ (1 − ARMIJO_C·t)·|R|`. **If none passes it
+/// returns exactly `0.0`**, and a caller writes nothing — the worst a rejection
+/// can then do is leave the iterate where it was. Returning the last trial
+/// instead is the tempting shape (the loop variable is right there) and would
+/// write a step the criterion has just refused.
+fn armijo_step<E>(
+    full: f64,
+    residual: f64,
+    mut residual_at: impl FnMut(f64) -> Result<f64, E>,
+) -> Result<f64, E> {
+    let mut t = 1.0;
+    for _ in 0..=MAX_HALVINGS {
+        let trial = t * full;
+        if residual_at(trial)?.abs() <= (1.0 - ARMIJO_C * t) * residual.abs() {
+            return Ok(trial);
+        }
+        t *= 0.5;
+    }
+    Ok(0.0)
+}
+
+/// What a group trial recompiles its boundary edges against: the trial
+/// pressures, and what `network::compile_edge` needs besides.
+struct TrialCompile<'a> {
+    graph: &'a PlantGraph,
+    slate: &'a Slate,
+    previous_states: &'a NodeStates,
+    pressures: &'a BTreeMap<NodeId, f64>,
+}
+
+/// A group's net imbalance `Σ_{i∈K} R_i` [kg/s] with every member shifted by
+/// `shift` [Pa], and its slope `Σ_boundary g_e + Σ C_i/dt` [kg/(s·Pa)].
+///
+/// Internal edges are skipped rather than summed: each appears once with each
+/// sign and cancels exactly, and counting them in the slope would swamp it with
+/// the very `g` the correction exists to step past. With `recompile` absent the
+/// boundary edges use the frozen `compiled` coefficients (the baseline); with it
+/// present each is recompiled at the trial pressures (fork 3).
+#[allow(clippy::too_many_arguments)]
+fn group_imbalance(
+    group: &[NodeId],
+    shift: f64,
+    recompile: Option<TrialCompile<'_>>,
+    incident: &BTreeMap<NodeId, Vec<(EdgeId, bool)>>,
+    compiled: &BTreeMap<EdgeId, CompiledEdge>,
+    pressures: &BTreeMap<NodeId, f64>,
+    capacitive: &BTreeMap<NodeId, Capacitance>,
+    dt: f64,
+    eps_dp: f64,
+) -> Result<(f64, f64), SimError> {
+    let in_group = |n: &NodeId| group.binary_search(n).is_ok();
+    let at = |n: NodeId| pressures[&n] + if in_group(&n) { shift } else { 0.0 };
+    let (mut imbalance, mut slope) = (0.0, 0.0);
+    for &nid in group {
+        for &(eid, incoming) in &incident[&nid] {
+            let frozen = &compiled[&eid];
+            let other = if frozen.src == nid {
+                frozen.tgt
+            } else {
+                frozen.src
+            };
+            if in_group(&other) {
+                continue;
+            }
+            let fresh;
+            let c = match &recompile {
+                Some(r) => {
+                    fresh = compile_edge(r.graph, eid, r.slate, r.previous_states, r.pressures)?;
+                    &fresh
+                }
+                None => frozen,
+            };
+            let dp = at(c.src) - at(c.tgt);
+            let mdot = c.rho * c.branch.flow(dp, eps_dp);
+            imbalance += if incoming { mdot } else { -mdot };
+            slope += c.rho * c.branch.flow_ddp(dp, eps_dp);
+        }
+        if let Some(cap) = capacitive.get(&nid) {
+            let (term, accumulation_slope) = accumulation(cap, at(nid), dt);
+            imbalance += term;
+            slope -= accumulation_slope;
+        }
+    }
+    Ok((imbalance, slope))
+}
+
+/// The additive correction's groups, finest level first: a hierarchy of pairs by
+/// greedy heavy-edge matching (the coarsening step of Karypis & Kumar, "A fast and
+/// high quality multilevel scheme for partitioning irregular graphs", SIAM J. Sci.
+/// Comput. 20 (1998) 359–392). Each returned group is sorted ascending.
+///
+/// Level 1 pairs each unknown with the unmatched neighbour it is most strongly
+/// coupled to, the weight being the edge conductance `g_e = ρ·dQ/dΔP` at the
+/// pass's seed pressures; edges are taken heaviest first, ties broken by
+/// aggregate index. Each further level pairs the previous level's aggregates the
+/// same way, the weight between two being the sum of the edges joining them. It
+/// stops when no aggregate has a neighbour, so the top level IS each connected
+/// set of unknowns.
+///
+/// **Why a hierarchy and not just the connected set** (§25 fork 2): two vessels
+/// in one set, each behind its own wide relief line, have TWO slow modes, and one
+/// common shift removes only their sum. Measured on the `two_vessel` prototype
+/// plant: 4 472 sweeps with one group per set, 8 with the hierarchy.
+///
+/// **No threshold.** A strength cutoff is how most algebraic multigrid picks
+/// groups, and it is a fitted constant. Matching pairs every node with its
+/// heaviest neighbour however weak; an unhelpful group is paid for by the
+/// acceptance test in `correct_groups`, not by a constant.
+///
+/// **A group of one is not a group.** Its common shift would be a second
+/// node-wise step, which changes the iterate on every plant; excluded, the
+/// fifteen shipped plants that never form a pair are byte-identical.
+///
+/// **Every aggregate of two or more is listed at EVERY level it exists at,**
+/// including one that found no partner at that level and so is listed again
+/// unchanged. That is what the prototype measured, and the per-node-bar skip in
+/// `correct_groups` makes the repeat nearly free once the first pass has settled
+/// the group. Removing the repeat is a measured change, not a tidy-up.
+fn build_groups(
+    unknowns: &[NodeId],
+    incident: &BTreeMap<NodeId, Vec<(EdgeId, bool)>>,
+    compiled: &BTreeMap<EdgeId, CompiledEdge>,
+    pressures: &BTreeMap<NodeId, f64>,
+    eps_dp: f64,
+) -> Vec<Vec<NodeId>> {
+    let weight_of = |eid: &EdgeId| -> f64 {
+        let c = &compiled[eid];
+        let dp = pressures[&c.src] - pressures[&c.tgt];
+        c.rho * c.branch.flow_ddp(dp, eps_dp)
+    };
+    let mut groups: Vec<Vec<NodeId>> = Vec::new();
+    let mut aggregate_of: BTreeMap<NodeId, usize> =
+        unknowns.iter().enumerate().map(|(i, n)| (*n, i)).collect();
+    let mut members: Vec<Vec<NodeId>> = unknowns.iter().map(|n| vec![*n]).collect();
+    loop {
+        // Inter-aggregate weights. Each edge is visited from both ends and
+        // counted from the lower-indexed aggregate only; edges to a pinned node,
+        // and edges inside one aggregate, are not couplings between aggregates.
+        let mut weights: BTreeMap<(usize, usize), f64> = BTreeMap::new();
+        for &nid in unknowns {
+            for &(eid, _) in &incident[&nid] {
+                let c = &compiled[&eid];
+                let other = if c.src == nid { c.tgt } else { c.src };
+                if let (Some(&a), Some(&b)) = (aggregate_of.get(&nid), aggregate_of.get(&other)) {
+                    if a < b {
+                        *weights.entry((a, b)).or_insert(0.0) += weight_of(&eid);
+                    }
+                }
+            }
+        }
+        if weights.is_empty() {
+            break;
+        }
+        let mut pairs: Vec<((usize, usize), f64)> = weights.into_iter().collect();
+        pairs.sort_by(|x, y| y.1.total_cmp(&x.1).then(x.0.cmp(&y.0)));
+        let n = members.len();
+        let mut mate: Vec<Option<usize>> = vec![None; n];
+        for &((a, b), _) in &pairs {
+            if mate[a].is_none() && mate[b].is_none() {
+                mate[a] = Some(b);
+                mate[b] = Some(a);
+            }
+        }
+        let mut merged: Vec<Vec<NodeId>> = Vec::new();
+        let mut new_index = vec![usize::MAX; n];
+        for a in 0..n {
+            if new_index[a] != usize::MAX {
+                continue;
+            }
+            let mut group = members[a].clone();
+            new_index[a] = merged.len();
+            if let Some(b) = mate[a] {
+                group.extend(members[b].iter().copied());
+                new_index[b] = merged.len();
+            }
+            group.sort();
+            merged.push(group);
+        }
+        if merged.len() == n {
+            break;
+        }
+        for index in aggregate_of.values_mut() {
+            *index = new_index[*index];
+        }
+        members = merged;
+        groups.extend(members.iter().filter(|m| m.len() > 1).cloned());
+    }
+    groups
 }
 
 /// This node's mass-balance residual at a TRIAL pressure, every neighbour held
@@ -447,5 +812,240 @@ fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimEr
         iterations,
         residual,
         residual_history,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::network::prepare;
+    use refinery_core::components::Composition;
+    use refinery_core::graph::{LeakRole, Node, NodeKind, Pipe};
+    use refinery_core::stream::Stream;
+    use refinery_core::units::{Kelvin, Meter, Pascal, Watt, WattPerKelvin, P_ATM, T_AMBIENT};
+
+    /// **A rejected step writes nothing** (DESIGN §25 gate 6), asserted on the one
+    /// ladder both steps use.
+    ///
+    /// §25 specified this gate as a fixture whose group residual sits at the
+    /// rounding floor. That fixture cannot see the mutation it is for: at the
+    /// floor `full = R/slope` is so small that even the ladder's last trial,
+    /// `full/256`, is below one ULP of a pressure, so a step written in error
+    /// leaves the iterate bit-identical anyway. What discriminates is a
+    /// rejection with a LARGE step, which a residual that never decreases gives
+    /// directly: every trial must be refused and the answer must be exactly
+    /// zero, not the last trial. The control is a residual that is linear in the
+    /// step, where the full Newton step lands on the root and is taken at `t = 1`.
+    #[test]
+    fn a_step_every_trial_refuses_is_exactly_zero() {
+        let mut probes = 0;
+        let step = armijo_step(100.0, 1.0, |s| {
+            probes += 1;
+            Ok::<_, std::convert::Infallible>(1.0 + s.abs())
+        })
+        .unwrap_or_else(|never| match never {});
+        assert_eq!(
+            step.to_bits(),
+            0.0f64.to_bits(),
+            "a step no trial passed must be exactly +0.0, got {step:e}"
+        );
+        assert_eq!(
+            probes,
+            MAX_HALVINGS + 1,
+            "every rung of the ladder must have been tried before refusing"
+        );
+
+        let control = armijo_step(100.0, 1.0, |s| {
+            Ok::<_, std::convert::Infallible>(1.0 - s / 100.0)
+        })
+        .unwrap_or_else(|never| match never {});
+        assert_eq!(
+            control, 100.0,
+            "the control: an exact Newton step is taken whole"
+        );
+    }
+
+    fn node(name: &str, kind: NodeKind) -> Node {
+        Node {
+            name: name.into(),
+            kind,
+            heat_input: Watt::ZERO,
+        }
+    }
+
+    fn pipe(name: &str, length_m: f64, diameter_m: f64) -> Pipe {
+        Pipe {
+            name: name.into(),
+            length: Meter(length_m),
+            diameter: Meter(diameter_m),
+            friction_factor: 0.02,
+            elevation_change: Meter(0.0),
+            leak: LeakRole::None,
+            ambient_ua: WattPerKelvin::ZERO,
+            stream: Stream::stagnant(1, T_AMBIENT, P_ATM),
+        }
+    }
+
+    /// Three junctions in series between a source and a sink,
+    /// `feed — a —fat— b —thin— c — out`, prepared as the solver's first pass
+    /// would see them: the cold seed puts all three at the mean of the pinned
+    /// pressures, 2 bar.
+    struct Chain {
+        graph: PlantGraph,
+        slate: Slate,
+        prep: crate::network::Prepared,
+        unknowns: Vec<NodeId>,
+        incident: BTreeMap<NodeId, Vec<(EdgeId, bool)>>,
+        a: NodeId,
+        b: NodeId,
+        c: NodeId,
+    }
+
+    fn chain() -> Chain {
+        let water = Composition::pure(1, 0);
+        let mut graph = PlantGraph::new();
+        let feed = graph.add_node(node(
+            "feed",
+            NodeKind::Source {
+                pressure: Pascal(3.0e5),
+                temperature: Kelvin(293.15),
+                composition: water.clone(),
+            },
+        ));
+        let a = graph.add_node(node("a", NodeKind::Junction));
+        let b = graph.add_node(node("b", NodeKind::Junction));
+        let c = graph.add_node(node("c", NodeKind::Junction));
+        let out = graph.add_node(node(
+            "out",
+            NodeKind::Sink {
+                pressure: Pascal(1.0e5),
+                temperature: Kelvin(293.15),
+                composition: water,
+            },
+        ));
+        graph.add_pipe(feed, a, pipe("in_line", 20.0, 0.10));
+        graph.add_pipe(a, b, pipe("fat", 1.0, 0.30));
+        graph.add_pipe(b, c, pipe("thin", 20.0, 0.02));
+        graph.add_pipe(c, out, pipe("out_line", 20.0, 0.10));
+
+        let slate = Slate::water_only();
+        let prep = prepare(&graph, &slate, &NodeStates::default(), &BTreeMap::new())
+            .expect("a liquid chain prepares");
+        let unknowns: Vec<NodeId> = prep
+            .classes
+            .free
+            .iter()
+            .copied()
+            .filter(|n| prep.anchored.contains(n))
+            .collect();
+        assert_eq!(
+            unknowns,
+            vec![a, b, c],
+            "premise: the three junctions are the unknowns"
+        );
+        let incident: BTreeMap<NodeId, Vec<(EdgeId, bool)>> = unknowns
+            .iter()
+            .map(|&n| {
+                let edges = graph
+                    .incident(n)
+                    .into_iter()
+                    .map(|(eid, _, incoming)| (eid, incoming))
+                    .collect();
+                (n, edges)
+            })
+            .collect();
+        Chain {
+            graph,
+            slate,
+            prep,
+            unknowns,
+            incident,
+            a,
+            b,
+            c,
+        }
+    }
+
+    /// **The groups are a hierarchy of heaviest-first pairs, and never a node
+    /// alone** (DESIGN §25 fork 2; mutations 1, 4 and 6).
+    ///
+    /// On `chain()`, level 1 must pair `a` with `b` across the fat line (heaviest
+    /// first) and leave `c` out rather than list it alone; level 2 must pair that
+    /// pair with `c`, which is the whole connected set. So exactly
+    /// `[[a, b], [a, b, c]]`:
+    /// - one group per connected set only (mutation 1) gives `[[a, b, c]]`;
+    /// - admitting a group of one (mutation 4) lists `[c]`. Measured: that moves
+    ///   three grouped plants and this test alone catches it. It does NOT move
+    ///   the fifteen plants that form no pair, because a plant with no two
+    ///   neighbouring unknowns never builds a level to admit anything into;
+    /// - lightest-edge matching (mutation 6) pairs `b` with `c` first.
+    #[test]
+    fn groups_pair_the_heaviest_link_first_and_never_hold_one_node() {
+        let ch = chain();
+        let groups = build_groups(
+            &ch.unknowns,
+            &ch.incident,
+            &ch.prep.compiled,
+            &ch.prep.pressures,
+            SimpleFlowSolver::default().eps_dp,
+        );
+        assert_eq!(groups, vec![vec![ch.a, ch.b], vec![ch.a, ch.b, ch.c]]);
+    }
+
+    /// **A group whose members all meet the solve's own per-node bar is not
+    /// stepped** (DESIGN §25 fork 3's skip rule; mutation 8).
+    ///
+    /// The skip is `network::meets_node_bar`, the stopping test itself. Testing
+    /// against `tol_abs` alone instead moves nine plants' numbers and fails no
+    /// plant-level gate — a bytes claim with nothing in CI defending it, which is
+    /// what this test is for.
+    ///
+    /// At the cold seed `a` takes the feed's whole inflow and passes nothing on,
+    /// so its residual EQUALS its own traffic: `|R| = scale`. A solver whose
+    /// `tol_rel` is 2 grades that as met; `tol_abs` alone never would. So the
+    /// group `[a, b]` must come back bit-identical. The control is the same call
+    /// with both tolerances at zero, where nothing is met and the group moves —
+    /// without it, a correction that did nothing at all would pass.
+    #[test]
+    fn a_group_already_meeting_the_node_bar_is_left_alone() {
+        let ch = chain();
+        let group = vec![vec![ch.a, ch.b]];
+        let correct = |tol_abs_kg_s: f64, tol_rel: f64| {
+            let solver = SimpleFlowSolver {
+                tol_abs_kg_s,
+                tol_rel,
+                ..SimpleFlowSolver::default()
+            };
+            let mut pressures = ch.prep.pressures.clone();
+            solver
+                .correct_groups(
+                    &group,
+                    &ch.incident,
+                    &ch.prep.compiled,
+                    &mut pressures,
+                    &ch.prep.classes.capacitive,
+                    &ch.graph,
+                    &ch.slate,
+                    &NodeStates::default(),
+                    0.1,
+                )
+                .expect("a liquid group corrects");
+            pressures
+        };
+        let bits = |p: &BTreeMap<NodeId, f64>| -> Vec<u64> {
+            [ch.a, ch.b].iter().map(|n| p[n].to_bits()).collect()
+        };
+
+        let seed = bits(&ch.prep.pressures);
+        assert_eq!(
+            bits(&correct(1e-8, 2.0)),
+            seed,
+            "a group every member of which meets tol_abs + tol_rel·scale must be skipped"
+        );
+        assert_ne!(
+            bits(&correct(0.0, 0.0)),
+            seed,
+            "control: with nothing met, the same group must be stepped"
+        );
     }
 }
