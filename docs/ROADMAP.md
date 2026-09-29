@@ -6469,9 +6469,11 @@ were inlet lengths 0.5/1/2 m × diameters 0.10/0.15/0.20 m, two thicker ties, an
 - **Mutations 1 and 3 turn it red at tick 1 on every variant but one.** The
   exception is 2 m × 0.10 m, which is the `two_vessel` fixture's geometry:
   unaided, it fails at tick 47; with one group per set, it runs at 4 472 sweeps.
-- **The timestep window is 0.05–0.5 s.** At 1.0 s Newton fails at tick 17 (row
-  A14), so CI's Newton corpus would go red. At 0.5 s Newton needs 25 of its 50
-  iterations. At 0.1 s it needs 8, and the shipping version 6.
+- **Every timestep tried from 0.05 s to 0.5 s works; nothing outside that range
+  was run.** At 1.0 s Newton fails at tick 17 (row A14), so CI's Newton corpus
+  would go red; the true limit lies somewhere between 0.5 and 1.0 s. At 0.5 s
+  Newton needs 25 of its 50 iterations. At 0.1 s it needs 8, and the shipping
+  version 6.
 - **Mutation 2 (frozen trial) is not caught by the twin at any usable `dt`.** It
   fails only at 1.0 s. This matches §25, which gives it to gate 2 alone.
 - **Agreement with Newton on node pressure is 1.3e-8 over every snapshot.** Gate
@@ -6479,6 +6481,9 @@ were inlet lengths 0.5/1/2 m × diameters 0.10/0.15/0.20 m, two thicker ties, an
 - **The plant does relieve.** The drum's valve opens at tick 160 and the
   receiver's at tick 860. Both are partly open at tick 6 000.
 - **CI catches the shut-valve form of the stiffness, not the flowing form.** At
-  tick 1 both valves are shut, so both relief lines are dead ends, and the
-  stiffness comes from the regularisation `eps_dp`. The flowing form comes later,
-  and only a solver that survives tick 1 reaches it.
+  tick 1 both valves are shut, so both relief lines are dead ends. A dead line's
+  conductance is its slope at zero pressure drop. That slope depends on
+  `eps_dp`, but it still grows with the pipe's size: the 2 m × 0.10 m line holds
+  out until tick 47, still before either valve opens. §25 credits a dead end's
+  stiffness to `eps_dp` alone, and that is only half of it. The flowing form
+  comes later, and only a solver that survives tick 1 reaches it.
