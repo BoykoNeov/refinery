@@ -14244,13 +14244,48 @@ The limit key is per variable, mirroring the loops' setpoint keys:
 converted at the same site, by the same code, as `setpoint_m`, `setpoint_bar`
 and `setpoint_c`**, so M10's trap (a factor of 100 000 from converting bar in one
 place and not another) and M17's (°C taking +273.15) cannot come back through a
-second copy. The limit is then range-checked by `PlantGraph::check_setpoint`,
-which already refuses a level outside the tank's own height.
+second copy. The limit then gets **its own range check, not
+`PlantGraph::check_setpoint`**. That function's ranges were argued for regulators
+and its messages say "setpoint". A trip limit needs only the physical ranges: a
+level in `[0, height]`, a pressure above zero, a temperature above zero kelvin,
+each refused with a message that says "trip limit".
+
+**Which ties are exact, measured.** A plant loaded exactly at its limit is the
+cleanest test of `≥`, so the tie was measured before relying on it (probe
+`W:\temp\claude\m22\tie`: declare a loop's setpoint equal to the node's
+declared state, tick once, compare the loop's first measurement bit for bit).
+A vessel's pressure ties exactly on 8 of 8 values from 1.2 to 28.4 bar, and a
+tank's temperature on 8 of 8 from 15 to 89.9 °C. **A level does not**: on 4 of 8
+values (0.7, 3.3, 4.968, 6.1 m) the stored level reads one ULP high, because it is
+`m/(ρ·A)` of a mass the loader built as `level·ρ·A`. So a file declaring a level
+trip at exactly its initial level gets whichever side of the tie the round trip
+lands on. That is documented, not refused.
 
 A plant loaded already inside its trip condition is **admitted, and trips on
 tick 1** before any solve, because the trip pass runs first and the stored
 measurement exists from load. A plant never runs a tick un-tripped in a condition
 its own file declares unsafe. Gate 3 uses exactly that.
+
+### Fork 8 — what a frontend sees: `TripSnapshot`
+
+`Snapshot::trips: Vec<TripSnapshot>`, one per trip in declaration order,
+`default` and `skip_serializing_if = "Vec::is_empty"` as `controls` has. Each
+entry carries `id`, `name`, `direction`, `limit` (a `ControlledValue`, so it
+carries its own unit), `measurement` and `state`.
+
+- **`state` is an enum: `Armed` or `Tripped { at_tick }`**, serde-tagged. A
+  separate `tripped: bool` beside an `Option<u64>` could disagree with it; an
+  enum makes "tripped with no tick" and "armed at tick 400" unrepresentable.
+  That is `CascadeProfile`'s argument (M9.3b).
+- **`at_tick` is the tick whose trip pass fired it**, so a frontend sampling
+  every tenth snapshot still knows the exact tick. That is the part of B10's need
+  this milestone serves.
+- **A reset clears it**: the trip goes back to `Armed` and the tick is gone. The
+  field means "tripped now, since when", not "last tripped at". A trip's history
+  is E15's first-out indication, deferred.
+- **`measurement` is `Option`, `None` only before the first tick.** Under fork
+  2(c) every admitted quantity exists from load, but the trip pass has not run
+  on a snapshot taken before tick 1. It is skipped when `None`, as a loop's is.
 
 ### Fork 7 — the demo plant, and what it cannot show
 
@@ -14292,7 +14327,7 @@ marks which mutations that leaves inert on the demo.
 ### The gates, named before building
 
 1. **The demo trips at the right tick and holds.** On both fidelities: armed
-   through tick 1 235; tripped from tick 1 236 with `tripped_at_tick = 1236`; the
+   through tick 1 235; `Tripped { at_tick: 1236 }` from tick 1 236 on; the
    pump off and the valve at 0.0 from then on; `fill_line`'s flow `== 0.0` on the
    snapshot of tick 1 236 and every tick after. The exact tick is re-measured on
    the engine's own trip before it is written into the test.
@@ -14300,10 +14335,17 @@ marks which mutations that leaves inert on the demo.
    below 6 m within a few ticks of the trip, the trip is still tripped at every
    snapshot to tick 6 000, and the level at tick 6 000 is below 2 m. Premise 4
    says a trip that does not latch leaves it at 6.00 m.
-3. **At-the-limit, both directions, exact.** A vessel fixture declared at exactly
-   `P` with a high trip at `limit_bar = P` trips on tick 1. The same with the
-   limit one bar above does not trip. A low trip mirrors both. A vessel's stored
-   pressure equals its declared figure exactly (§12), so the tie is a real tie.
+3. **At-the-limit, both directions, exact, on pressure AND temperature.** A
+   vessel declared at exactly `P` with a high trip at `limit_bar = P` trips on
+   tick 1; with the limit one bar above it does not. A tank declared at exactly
+   `T` °C with a high trip at `limit_c = T` trips on tick 1; one degree above, it
+   does not. A low trip mirrors all four. The ties are measured to be exact (fork
+   6), and **the arms that must NOT trip are the ones that catch a missing unit
+   conversion**: an unconverted `limit_bar` is 12 Pa against 1.2 MPa, and an
+   unconverted `limit_c` is 81 K against 353 K, so both would trip. Level is left
+   out, because its tie is not exact. A unit test of the comparison itself, at an
+   exact tie and one ULP either side, backs the fixtures up without depending on
+   any loader round trip.
 4. **Tick order.** On a fixture with a PI loop on the valve the trip shuts: on
    the tripping tick, the loop reports MANUAL and a faceplate output of exactly
    the trip's position. If the loops ran first, the faceplate would show the
@@ -14322,8 +14364,9 @@ marks which mutations that leaves inert on the demo.
 7. **All twenty-five pre-M22 plants byte-identical on both fidelities, with no
    iteration count moved**, against a baseline recorded before the first edit.
 8. **Wire form.** A plant with no trip emits no `trips` key, asserted on the
-   serialized bytes. The demo's snapshot round-trips, and its trip state is
-   tagged.
+   serialized bytes. The demo's snapshot round-trips, and its `state` serializes
+   tagged, asserted on the bytes (M10.1's lesson: a Rust match passes under any
+   tag).
 9. **The load-time refusal sweep**, one case per refusal, each asserting a
    distinctive substring of its own message: a flow or outlet measurement (E13),
    a furnace or cooler action (E14), a relief valve action, a `pump` action on a
@@ -14343,12 +14386,18 @@ a plant with no trip.
 
 ### The mutations M22.1 owes, named before building
 
+Sixteen rows below: thirteen named in the first commit, one of which the
+same-day correction split in two, plus two it added.
+
+
 | # | mutation | predicted catch | demo? |
 |---|---|---|---|
 | 1 | no latch: the trip clears when the measurement clears | gate 2 | yes (chatter) |
 | 2 | `≥` becomes `>` | gate 3 alone | inert |
-| 3 | low treated as high | gate 3, and the demo trips on tick 1 | yes |
-| 4 | `limit_bar` not converted to Pa | gate 3 | inert |
+| 3a | high treated as low | gate 3, and gate 1: the demo trips on tick 1 (2.0 m ≤ 6.0 m) | yes |
+| 3b | low treated as high | gate 3's low arms alone | inert (the demo has no low trip) |
+| 4 | `limit_bar` not converted to Pa | gate 3's pressure arm that must not trip | inert |
+| 4b | `limit_c` not given +273.15 | gate 3's temperature arm that must not trip | inert |
 | 5 | trips run after the loops | gate 4 alone | inert (no loop) |
 | 6 | trips run at the end of the tick | gate 1, through `tripped_at_tick` alone (1 235, not 1 236); every flow is the same | yes |
 | 7 | loop not forced to MANUAL | gate 4, and the hold check fails the next tick | inert |
@@ -14358,6 +14407,7 @@ a plant with no trip.
 | 11 | `SetPumpOn` refusal deleted | gate 6, and the hold check | inert |
 | 12 | `skip_serializing_if` removed from `trips` | gate 8 alone (CI commits no baseline) | inert |
 | 13 | the hold check deleted | nothing | inert |
+| 14 | a reset leaves `at_tick` set (or `state` and the tick disagree) | not expressible with the enum; the variant is `Armed`, which has no tick | — |
 
 Mutation 13 is predicted uncaught on purpose: the hold check backs up the
 refusals and is unreachable while they hold. A gate for it would have to delete a
@@ -14383,3 +14433,23 @@ which is why gate 8 exists.
 - **B10** keeps its own trigger. After M22.1 the latch and the reset command it
   said it lacked will exist; what it still needs is a plant measured to cavitate
   between two snapshots.
+
+### Corrected before building (M22.0, the same day)
+
+A review of the first commit found four places where the note would have misled
+the building slice. All four are fixed above; this list says what changed.
+
+- **Gate 3's exact tie was assumed, not measured.** It is now measured (fork 6):
+  exact for a vessel's pressure and a tank's temperature on 8 of 8 values each,
+  NOT exact for a level on 4 of 8. Gate 3 now uses pressure and temperature, and
+  gains a unit test of the comparison itself.
+- **The mutation table had "low treated as high" tripping the demo on tick 1.**
+  The demo has only a high trip, so that edit is inert on it. The one that trips
+  the demo on tick 1 is "high treated as low". Split into 3a and 3b.
+- **M17's +273.15 trap had no gate**, although fork 6 cites it. Gate 3 now has a
+  temperature arm, and mutation 4b names the edit.
+- **The snapshot contract was unspecified** while gates 1 and 8 asserted parts of
+  it. Fork 8 now defines `TripSnapshot`, and gate 1 asserts its `state`.
+- **Smaller:** the range check is decided (a trip's own, not `check_setpoint`),
+  and the roadmap's "a one-tick valve shut is safe" is scoped to the plant it was
+  measured on.

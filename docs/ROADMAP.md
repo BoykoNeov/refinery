@@ -6547,7 +6547,7 @@ pumps and valves, re-armed by a command that restarts nothing.**
 
 ### M22.0 — Scoping + design note — **LANDED** 2026-09-29
 
-The note is DESIGN §26: seven forks, nine gates, thirteen mutations, no code. Four
+The note is DESIGN §26: eight forks, nine gates, sixteen mutations, no code. Four
 premises were measured first, on a probe crate outside the repo
 (`W:\temp\claude\m22\probe`, numbers in `W:\temp\claude\m22\measurements.md`).
 Five things to know before the building slice.
@@ -6558,8 +6558,9 @@ plant, stopping it sends 3 kg/s back from the higher receiving tank. So a trip
 declares a LIST of actions (stop this pump, put this valve at this position), and
 the demo's trip does both.
 
-**A one-tick valve shut is safe now.** M8.4's stall is gone: exactly zero flow
-on the next tick, at most 6 iterations, on both fidelities.
+**A one-tick valve shut is safe on the reference plant.** M8.4's stall is gone
+there: exactly zero flow on the next tick, at most 6 iterations, on both
+fidelities. Measured on that plant only.
 
 **The latch is visible on the demo, and that decided the demo.**
 `scenarios/tank_overfill_trip.toml` will be `tank_level_control.toml` without its
@@ -6580,3 +6581,16 @@ latched; a latched tick that finds its equipment moved returns `Err`. A trip
 forces a loop on its valve to MANUAL, and runs before the loops in the tick. The
 CLI issues no commands, so the reset and every refusal are fixture-only, and the
 note's mutation table says which mutations that leaves inert on the demo.
+
+**Corrected the same day** (DESIGN §26, "Corrected before building"), after a
+review of the first commit:
+- **The at-the-limit gate's exact tie is now measured**, not assumed. A vessel's
+  pressure and a tank's temperature tie exactly with a same-number limit on 8 of
+  8 values each. A level does not, on 4 of 8: it reads one rounding step high. So
+  the gate uses pressure and temperature, and gains a temperature arm that
+  catches a missing °C → K conversion.
+- **Two mutation rows were wrong or missing**: "high treated as low" trips the
+  demo on tick 1, and "low treated as high" is inert on it.
+- **The snapshot contract is now fork 8**: `state` is `Armed` or
+  `Tripped { at_tick }`, and a reset clears the tick.
+- A trip limit gets its own range check rather than the setpoints'.

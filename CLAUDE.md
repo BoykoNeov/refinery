@@ -189,7 +189,7 @@ See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
 **M22 is OPEN (2026-09-29): interlocks and trips — `docs/DEFERRED.md` row E6.**
 Taken on a DECISION (the user's, on gameplay grounds). **M22.0 landed 2026-09-29**:
-DESIGN §26, seven forks, nine gates, thirteen mutations, no code. **M22.1 builds
+DESIGN §26, eight forks, nine gates, sixteen mutations, no code. **M22.1 builds
 it** — read §26 first. The shape: `PlantGraph::trips`, a plain struct (no trait),
 `[[trips]]` with `direction = "high" | "low"`, `limit_m`/`limit_bar`/`limit_c`
 converted at the setpoints' own site, and an `actions` list of `{ pump = … }` and
@@ -200,8 +200,11 @@ restarts nothing. Only quantities present from load may be watched (flow and
 outlet trips are E13). **A stopped pump conducts** (it keeps its resistance), which
 is why a trip takes a list of actions. Demo: `scenarios/tank_overfill_trip.toml`,
 trips at tick 1 236; its untripped twin fills a 10 m tank to 15.17 m (B28: no
-overflow). The Godot bridge's `referent` needs a `Trip` arm, and the
-feature-gated clippy is owed.
+overflow). `TripSnapshot::state` is `Armed | Tripped { at_tick }`, and a reset
+clears the tick. **A level does not tie exactly at load** (4 of 8 declared values
+read one ULP high), so the at-the-limit gate uses a vessel's pressure and a
+tank's temperature, which do (8 of 8 each). The Godot bridge's `referent` needs a
+`Trip` arm, and the feature-gated clippy is owed.
 
 **M21 is CLOSED (2026-09-29): the game solver's stiff-pair stall — `docs/DEFERRED.md`
 row A3, now struck.** Taken on a DECISION (the user's). **M21.0** wrote DESIGN §25
