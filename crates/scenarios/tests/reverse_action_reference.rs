@@ -47,11 +47,12 @@ fn engine_from(src: &str) -> Engine {
 }
 
 /// The text of the refusal a scenario earns, whichever stage produced it.
-fn refusal(src: &str) -> String {
+/// `what` names the case, so a plant that loads says which refusal went missing.
+fn refusal(what: &str, src: &str) -> String {
     match refinery_scenarios::load_str(src) {
         Err(e) => e.to_string(),
         Ok(file) => match refinery_scenarios::build_engine(&file) {
-            Ok(_) => panic!("this plant should not have loaded"),
+            Ok(_) => panic!("{what}: this plant should not have loaded"),
             Err(e) => e.to_string(),
         },
     }
@@ -312,7 +313,7 @@ fn every_refused_direction_is_refused_for_its_own_reason() {
         ),
     ];
     for (what, src, needle) in cases {
-        let text = refusal(&src);
+        let text = refusal(what, &src);
         assert!(
             text.contains(needle),
             "refusing {what}: the message must contain {needle:?}, and said: {text}"

@@ -6377,5 +6377,7 @@ against the controller's own three operations, bit for bit, not the literal.
 it fired. See §24 correction (xi). Three of the note's "only" predictions were
 too narrow. Reading the pipe's stored flow instead of the solve is visible only
 at load, because the tick copies the solve into that field. That is the
-premise, measured. The inlet-versus-outlet identity mutation is caught by 18 ULP
-and only because gate 2 is bit-exact.
+premise, measured. The inlet-versus-outlet identity mutation is caught at any
+tolerance below the valve's own solver residual: still at 1e-12 (tick 4, 5.03e-10
+kg/s apart), not at 1e-9. That was measured after a first write-up said only bit
+equality would do.

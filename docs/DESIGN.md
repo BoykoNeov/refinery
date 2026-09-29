@@ -13398,15 +13398,21 @@ setpoint, and the loader-made half. Where §24's table was wrong:
 - **Mutation 7 is not gate 6b only.** Gate 5's ringing fixture at 1.15× the bound
   also fires: it reaches the lower clamp, a shut valve's outlet reads a true zero,
   and a zero treated as absent leaves the ring with no measurement to record.
-- **Mutation 9 is caught by eighteen ULP.** On tick 3 `discharge` carried
-  11.086529150918457 kg/s against `fill_line`'s …475. Gate 2 catches it because
-  it is bit-exact. Any tolerance, even 1e-12, would have let it through, and (vi)
-  says why: the valve node's residual is the whole difference.
+- **Mutation 9 needs a gate tighter than the valve's own solver residual, not a
+  bit-exact one.** Gate 2 stops at its first mismatch, tick 3, where `discharge`
+  carried 11.086529150918457 kg/s against `fill_line`'s …475 (eighteen ULP). The
+  tolerance was then measured rather than inferred, by applying the mutation with
+  gate 2 rewritten to `|a − b| < tol`. At `1e-12` it is still caught, one tick
+  later: tick 4 differs by 5.03e-10 kg/s, (vi)'s largest difference. At `1e-9`
+  it passes the whole run. The first write-up of this bullet said "any tolerance,
+  even 1e-12, would have let it through". That extrapolated from the first
+  mismatch, and (vi) two paragraphs up already contradicted it.
 - **Deleting the `leak_to` refusal still refuses the plant**, through the lookup's
   ordinary-leak-role filter ("which the loader did not build as one ordinary
   edge"). The gate catches it only because it asserts the message names
   `leak_to`. Two guards, and the specific one is defended by its words.
-- Mutation 5 is also caught by M18's own reverse sweep. Pass 1 without a solution
+- Mutation 5 is also caught by M18's own reverse sweep, whose refusal helper now
+  names its case too. Pass 1 without a solution
   fails eight of the twelve flow gates, because the loop never measures at all.
 
 One instrument note: the first expression of mutation 7 did not compile (a

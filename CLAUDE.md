@@ -209,8 +209,9 @@ controller's own order of operations, not a literal. (v) **All fourteen
 mutations are caught** (§24's ten plus four), each read for why it fired. Reading
 the pipe's stored flow instead of the solve is visible ONLY at load, because
 step 2 of the tick copies the solve into that field, which is the premise
-measured. The inlet-for-outlet identity mutation is caught by 18 ULP, and only
-because gate 2 is bit-exact. `scenarios/` holds **twenty-four** files. The five
+measured. The inlet-for-outlet identity mutation is caught by any tolerance
+below the valve's own solver residual: still at 1e-12, not at 1e-9, measured
+after a first write-up wrongly said only bit equality would do. `scenarios/` holds **twenty-four** files. The five
 things §24 settled:
 
 **A pipe's flow is stored AND absent at load.** `Pipe::stream.mass_flow` is on the
