@@ -24,8 +24,8 @@ use refinery_core::units::{
 use std::collections::BTreeMap;
 
 use crate::schema::{
-    bar_to_pa, c_to_k, kv_to_cv_si, ComponentDef, ControlDef, ExchangerDef, NodeDef, PipeDef,
-    ScenarioFile,
+    bar_to_pa, c_to_k, kv_to_cv_si, ComponentDef, ControlDef, ExchangerDef, MeasurementDef,
+    NodeDef, PipeDef, ScenarioFile,
 };
 use crate::validate::{
     plant_phases, refuse_gas_leak, require_compatible_fidelity, require_declared_iff_used,
@@ -554,7 +554,12 @@ fn build_controls(
             }
         };
 
-        let point = resolve_measurement_point(graph, def, pipes)?;
+        let point = resolve_measurement_point(
+            graph,
+            &format!("control loop '{}'", def.name),
+            &def.measurement,
+            pipes,
+        )?;
         let point_name = graph.point_name(point).to_owned();
         let actuator = graph.find_node(&def.actuator).ok_or_else(|| {
             SimError::Scenario(format!(
@@ -949,14 +954,15 @@ fn build_controls(
         }
         let (setpoint, gain) = match variable {
             MeasuredVariable::Level => {
-                let setpoint = ControlledValue::Level {
-                    m: Meter(require_keyed(
+                let setpoint = declared_value(
+                    variable,
+                    require_keyed(
                         def.setpoint_m,
                         &def.name,
                         variable.setpoint_key(),
                         "the loop's target",
-                    )?),
-                };
+                    )?,
+                );
                 // Metres in, metres in the arithmetic: nothing to convert, and
                 // that is exactly why the pressure arm below needs a comment.
                 let gain =
@@ -971,14 +977,15 @@ fn build_controls(
                 // converting one without the other is a visible omission rather
                 // than an invisible one. Nothing downstream can catch it: the loop
                 // stays stable and is merely mistuned by a factor of 1e5.
-                let setpoint = ControlledValue::Pressure {
-                    pa: bar_to_pa(require_keyed(
+                let setpoint = declared_value(
+                    variable,
+                    require_keyed(
                         def.setpoint_bar,
                         &def.name,
                         variable.setpoint_key(),
                         "the loop's target",
-                    )?),
-                };
+                    )?,
+                );
                 let gain =
                     require_keyed(def.gain_per_bar, &def.name, variable.gain_key(), "the gain")?
                         / 1e5;
@@ -990,14 +997,15 @@ fn build_controls(
             // difference of 1 °C is 1 K, so it takes nothing. The pressure arm's
             // "convert both at one site" copied here would add 273.15 to the gain.
             MeasuredVariable::Temperature => {
-                let setpoint = ControlledValue::Temperature {
-                    k: c_to_k(require_keyed(
+                let setpoint = declared_value(
+                    variable,
+                    require_keyed(
                         def.setpoint_c,
                         &def.name,
                         variable.setpoint_key(),
                         "the loop's target",
-                    )?),
-                };
+                    )?,
+                );
                 let gain =
                     require_keyed(def.gain_per_k, &def.name, variable.gain_key(), "the gain")?;
                 (setpoint, gain)
@@ -1007,14 +1015,15 @@ fn build_controls(
             // so the trap the pressure pair and the temperature pair each guard
             // against has no expression here.
             MeasuredVariable::Flow => {
-                let setpoint = ControlledValue::Flow {
-                    kg_per_s: KgPerSec(require_keyed(
+                let setpoint = declared_value(
+                    variable,
+                    require_keyed(
                         def.setpoint_kg_per_s,
                         &def.name,
                         variable.setpoint_key(),
                         "the loop's target",
-                    )?),
-                };
+                    )?,
+                );
                 let gain = require_keyed(
                     def.gain_per_kg_per_s,
                     &def.name,
@@ -1146,6 +1155,10 @@ fn build_controls(
 /// Where a `[[controls]]` entry measures: a node by name, or a pipe by name among
 /// the file's DECLARED `[[pipes]]` (M20, docs/DESIGN.md §24 fork 1).
 ///
+/// `owner` is how a refusal names the entry — `control loop 'x'` or, since M22,
+/// `trip 'x'` — so a `[[trips]]` measurement is resolved by the same rules and
+/// refused in the same words (docs/DESIGN.md §26 fork 2).
+///
 /// Which point may carry which variable is not decided here — `PlantGraph::measure`
 /// owns that, and refuses a flow asked of a node or a level asked of a pipe with a
 /// message naming the other key. What is decided here is only what the NAME
@@ -1169,63 +1182,54 @@ fn build_controls(
 ///   picked up in its place.
 fn resolve_measurement_point(
     graph: &PlantGraph,
-    def: &ControlDef,
+    owner: &str,
+    measurement: &MeasurementDef,
     pipes: &[PipeDef],
 ) -> Result<MeasurementPoint, SimError> {
-    match (&def.measurement.node, &def.measurement.pipe) {
+    match (&measurement.node, &measurement.pipe) {
         (Some(node), Some(pipe)) => Err(SimError::Scenario(format!(
-            "control loop '{}' names both `node = \"{node}\"` and `pipe = \"{pipe}\"` in \
+            "{owner} names both `node = \"{node}\"` and `pipe = \"{pipe}\"` in \
              `measurement`. A loop measures at ONE point: a node for a level, pressure or \
-             temperature, a pipe for a flow (docs/DESIGN.md §24 fork 1)",
-            def.name
+             temperature, a pipe for a flow (docs/DESIGN.md §24 fork 1)"
         ))),
         (None, None) => Err(SimError::Scenario(format!(
-            "control loop '{}' names neither `node` nor `pipe` in `measurement`. A level, \
+            "{owner} names neither `node` nor `pipe` in `measurement`. A level, \
              pressure or temperature is measured at a `node`, a flow on a `pipe` \
-             (docs/DESIGN.md §24 fork 1)",
-            def.name
+             (docs/DESIGN.md §24 fork 1)"
         ))),
         (Some(node), None) => graph
             .find_node(node)
             .map(MeasurementPoint::Node)
-            .ok_or_else(|| {
-                SimError::Scenario(format!(
-                    "control loop '{}' measures unknown node '{node}'",
-                    def.name
-                ))
-            }),
+            .ok_or_else(|| SimError::Scenario(format!("{owner} measures unknown node '{node}'"))),
         (None, Some(name)) => {
             let declared: Vec<&PipeDef> = pipes.iter().filter(|p| p.name == *name).collect();
             let pipe = match declared.as_slice() {
                 [] => {
                     return Err(SimError::Scenario(format!(
-                        "control loop '{}' measures pipe '{name}', which this file does not \
+                        "{owner} measures pipe '{name}', which this file does not \
                          declare. A loop meters only a pipe the file wrote in `[[pipes]]`: the \
                          loader also makes edges of its own — a leak split's `__downstream` \
                          half and `__leak` orifice, and every boil-off vent — and those are \
-                         not meters (docs/DESIGN.md §24 fork 1)",
-                        def.name
+                         not meters (docs/DESIGN.md §24 fork 1)"
                     )))
                 }
                 [one] => *one,
                 _ => {
                     return Err(SimError::Scenario(format!(
-                        "control loop '{}' measures pipe '{name}', and this file declares {} \
+                        "{owner} measures pipe '{name}', and this file declares {} \
                          pipes by that name, so the meter is ambiguous. Rename one",
-                        def.name,
                         declared.len()
                     )))
                 }
             };
             if let Some(atmosphere) = &pipe.leak_to {
                 return Err(SimError::Scenario(format!(
-                    "control loop '{}' measures pipe '{name}', which declares `leak_to = \
+                    "{owner} measures pipe '{name}', which declares `leak_to = \
                      \"{atmosphere}\"`. The loader splits a leaking pipe at a junction and gives \
                      the declared name to the UPSTREAM half, which ends at the leak point and \
                      not at the valve — and once punctured the two halves carry different \
                      flows. A flow loop meters a pipe with no leak path (docs/DESIGN.md §24 \
-                     fork 5)",
-                    def.name
+                     fork 5)"
                 )));
             }
             let from = graph.find_node(&pipe.from);
@@ -1244,9 +1248,8 @@ fn resolve_measurement_point(
                     // its own name and endpoints, before this runs; reaching here
                     // is a loader fault, said rather than papered over (rule 5).
                     SimError::Scenario(format!(
-                        "control loop '{}' measures declared pipe '{name}', which the \
-                         loader did not build as one ordinary edge",
-                        def.name
+                        "{owner} measures declared pipe '{name}', which the \
+                         loader did not build as one ordinary edge"
                     ))
                 })
         }
@@ -1289,6 +1292,29 @@ fn refuse_foreign_key(
         )));
     }
     Ok(())
+}
+
+/// A regulated quantity as a file declares it, carried into the engine's SI unit.
+///
+/// **The one site a setpoint or a trip limit crosses from file units to SI**
+/// (docs/DESIGN.md §26 fork 6): a level's metres are metres, a pressure's bar
+/// take `× 1e5`, a temperature's °C take `+ 273.15`, a flow's kg/s are kg/s.
+/// A `[[controls]]` setpoint and a `[[trips]]` limit both come through here, so
+/// M10's trap (bar converted at one site and not another) and M17's (°C left
+/// without its offset) cannot come back through a second copy. A GAIN does not:
+/// it is a reciprocal, and its conversion stays beside the setpoint's in
+/// `build_controls`, where the pair is visible.
+fn declared_value(variable: MeasuredVariable, value: f64) -> ControlledValue {
+    match variable {
+        MeasuredVariable::Level => ControlledValue::Level { m: Meter(value) },
+        MeasuredVariable::Pressure => ControlledValue::Pressure {
+            pa: bar_to_pa(value),
+        },
+        MeasuredVariable::Temperature => ControlledValue::Temperature { k: c_to_k(value) },
+        MeasuredVariable::Flow => ControlledValue::Flow {
+            kg_per_s: KgPerSec(value),
+        },
+    }
 }
 
 fn require_keyed(
