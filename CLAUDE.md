@@ -185,6 +185,38 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M20 is OPEN: the fourth controlled variable, FLOW — a valve holding the flow in
+one of its own two pipes.** Taken on a DECISION (the user's, 2026-09-29, on the
+grounds of M17–M19): the commonest loop in a refinery and the inner half of a
+cascade. **M20.0 landed 2026-09-29** — DESIGN §24, seven forks, eight gates, ten
+mutations, no code. **M20.1 builds it; read §24 whole first.** Five things it
+settles.
+
+**A pipe's flow is stored AND absent at load.** `Pipe::stream.mass_flow` is on the
+graph, but the loader writes `Stream::stagnant`'s zero there — an initialiser, not
+a declaration. So M19's rule is reused whole (no measurement, no action; the PI
+memory stays PENDING), and `measure` reads `last_solution` (`None` at load), never
+the pipe's stream. **A loop measures at a `MeasurementPoint { Node, Pipe }`**, and
+the file says `measurement = { pipe = "…", variable = "flow" }`, looked up among
+DECLARED pipes only. A pipe with `leak_to` is refused.
+
+**The first reverse loop on a valve.** A flow loop's actuator is a valve, its
+measured pipe must be one of that valve's two edges (`validate_degrees` makes that
+one hop), and it must say `action = "reverse"`. Absent or `"direct"` is refused.
+**E8 still refuses reverse on a level or pressure loop's valve.** A meter away from
+its valve and a bypass valve are E12; reverse flow, which pins the valve open, is
+E11.
+
+**Meter the valve's OUTLET.** A device folds into its outlet edge, so a shut
+valve's outlet pipe reads exactly `0.0` and its inlet `−1.547e-11`. Zero flow is a
+real measurement (no `held` set), and the demo's shut-start gate needs the exact
+zero. **The stability bound is `K·G < 2/(2 − dt/T_i)`** — 1.053 at `T_i = 10 s`;
+M19's "`K·G < 1`" is the `T_i → ∞` limit, and M19 measured at 600 s, so nothing
+was wrong. Keys `setpoint_kg_per_s` and `gain_per_kg_per_s`, with no unit
+conversion anywhere. Demo `scenarios/tank_flow_control.toml` =
+`tank_pump_valve.toml` with `dt = 1.0`, valve at 0.4, and a loop on `fill_line`
+holding 12 kg/s at `K = 0.02`, `T_i = 10`. Owes the godot-feature clippy.
+
 **M19 is CLOSED (2026-09-24): a furnace holding its own OUTLET — the zero-volume
 measurement, what `docs/DEFERRED.md` row E1b has left of temperature.** Taken on a
 DECISION (the user's, on gameplay grounds, as M17 and M18). Two slices: **M19.0**

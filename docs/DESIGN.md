@@ -12769,3 +12769,472 @@ or cooler outlet, is built. What it leaves is in the ledger:
 - Flow control and a bubble-point-bounded setpoint (E1b).
 
 No row was re-measured, so no claim is made that any row is past its trigger.
+
+## 24. The fourth controlled variable — flow (M20.0) — specified before building
+
+### What licensed this, stated plainly
+
+Nothing fired. No row in `docs/DEFERRED.md` was past its trigger when M19 closed,
+and the nearest row that carries a number is still A3, 5.4× under its cap. **This
+milestone is a decision**, the user's, taken on 2026-09-29 from a short list, on
+the gameplay grounds M17–M19 were taken on. A flow loop is the commonest loop in a
+real refinery, and it is the inner half of almost every cascade (E2). Flow is the
+last of the four variables §10 deferred, and the only one of E1b's two remaining
+clauses with a shape every refinery has.
+
+Its scope is **a valve holding the flow in its own line**. A flow measured further
+from its valve, a bypass valve, and a flow loop as the inner half of a cascade are
+all deferred with triggers below.
+
+### The premise, checked first — and the answer is new
+
+§10, §12, §21 and §23 each had to settle "is this quantity stored or solved?", and
+the earlier deferrals had it wrong four times. Here the check gives an answer none
+of those did. **A pipe's flow is BOTH stored and solved, and the stored copy is a
+placeholder until the first tick.**
+
+- **It is on the graph.** `Pipe::stream.mass_flow` is a field on every edge.
+  `Engine::tick` writes it at step 2 from `HydraulicSolution::edge_mass_flow`, and
+  it is what `EdgeSnapshot::stream.mass_flow` publishes.
+- **At load it is not a measurement.** `build.rs` constructs every pipe with
+  `Stream::stagnant(…)`, whose `mass_flow` is `KgPerSec::ZERO`, and so does
+  `build_boiloff_vents`. That zero is an initialiser. Nothing solved it, and the
+  plant is not at zero flow: probe 1 below reads 11.086676 kg/s on the first tick
+  of a plant whose every pipe said 0.0 at load.
+
+So the earlier question splits in two. **"Is it stored?" is not enough; what
+matters is whether the value stored at load is a DECLARATION or an INITIALISER.** A
+tank's mass is declared (`initial_level_m`), a vessel's mass comes from
+`pressure_bar`, a holdup's temperature from `temperature_c`, and all three are
+measurements from load. A pipe's flow is declared by nothing, so it is absent at
+load exactly as a furnace outlet is. **M19's rule applies unchanged: no
+measurement, no action.**
+
+A reader of the graph cannot tell the loader's zero from a valve shut on tick 400.
+So the measurement is taken from `last_solution`, which is `None` until the first
+solve, rather than from the pipe's stream. Fork 2 argues this. It is also the
+mutation this note most expects the building slice to make by reflex (mutation 1).
+
+### The sentence sites, counted before writing
+
+Grepped across `crates/`, `scenarios/`, `docs/` and `CLAUDE.md` for `Flow stays
+deferred`, `flow control`, `measurement_node`, `E8`, `no resolved temperature`,
+`` beside `resolved` ``, `second resolved map` and `K·G < 1`:
+
+1. `MeasuredVariable`'s doc (`graph.rs`): "Flow stays deferred … a flow lives on
+   an edge, which nothing in `measure`'s signature can name." Fork 1 makes it
+   false.
+2. `MeasurementDef::variable`'s doc (`schema.rs`): "Flow stays deferred — see
+   `MeasuredVariable`."
+3. `build_controls`' unknown-variable refusal (`build.rs`): "Flow control stays
+   deferred: a flow lives on an EDGE …". The refusal stays, and its list of valid
+   variables and its reason change.
+4. **The junction-pressure refusal in `PlantGraph::measure`**, its comment and its
+   message: "applying the rule here needs `last_solution`'s pressures passed in
+   beside `resolved`". Fork 2 passes exactly that, so the reason becomes false a
+   second time — the first was M19's. It is reworded, not built: the path exists,
+   and junction-pressure control is still a scope decision (E9).
+5. The MANUAL→AUTO refusal in `Engine::apply`: "has no resolved temperature yet".
+   A flow loop reaches the same refusal, so the message names the missing quantity
+   by variable.
+6. `ControlLoop::measurement_node` and its doc, `check_setpoint(node, value)`, the
+   `SetSetpoint` arm, and the loader's seed. All take a node, and fork 1 changes
+   what a loop measures at.
+7. **Every sentence that says reverse action on a valve is refused (E8)**: the
+   `ControlAction` doc, the `ControlDef::action` doc, `build_controls`' valve arm
+   and its comment, the headers of `tank_level_control.toml` and
+   `vessel_pressure_control.toml`, and the E8 row. Fork 3 admits reverse on a
+   valve for FLOW only, so each sentence gains a scope: "on a level or pressure
+   loop".
+8. `ControlLoop::actuator`'s doc: "A `Valve` on a level or pressure loop."
+9. `pressure_control_reference.rs`' module doc quotes `measure`'s old three-argument
+   call, which is already stale since M19. Fixed in passing.
+10. **E10, §23 fork 6 and M19.1's gate-5 doc all say the outlet loop is "stable
+    only for `K·G < 1`".** Fork 6 narrows that sentence. It is exact only as
+    `T_i → ∞`, and M19 measured it where it is.
+11. The godot-ext crate: nothing in `src/` matches on `ControlledValue` or
+    `MeasuredVariable` (grepped); `tests/bridge.rs` builds one `Level` value. The
+    feature-gated clippy is still owed by M20.1, because a new enum variant is what
+    breaks a feature-gated exhaustive match, and the workspace lint sees none of
+    that crate.
+
+### Fork 1 — where a loop measures, and how the file names it
+
+A flow belongs to a pipe. `ControlLoop::measurement_node` names a node, and so does
+`measure`.
+
+- **(a) A second field**, `measurement_pipe: Option<EdgeId>`, beside the node.
+  Rejected. "Both" and "neither" become representable, and every reader has to
+  decide which one wins.
+- **(b) Measure the valve NODE's throughput.** This keeps `measure`'s signature
+  and makes "the flow through the valve" a node reading. Rejected on three grounds:
+  - It invents a node quantity that no snapshot publishes, so gate 2's identity
+    would have nothing to compare against.
+  - A valve's inlet and outlet pipes do not carry the same flow to the last bit:
+    their difference IS the valve node's solver residual (M9.2). Probe 3 measures
+    it at 1.8e-15 to 6.9e-14 kg/s. "The valve's flow" would have to pick one pipe
+    anyway, silently.
+  - An operator's flowmeter is on a pipe.
+- **(c) An enum.** Chosen. `MeasurementPoint { Node(NodeId), Pipe(EdgeId) }`
+  replaces `measurement_node`. `measure`, `check_setpoint` and the MANUAL→AUTO
+  message take the point. Every existing loop is `Node(_)`, and the node arms'
+  arithmetic cannot move.
+
+In the file, **`measurement = { pipe = "discharge", variable = "flow" }`**:
+`MeasurementDef` gains `pipe: Option<String>` beside `node`, exactly one of them
+required. A flow asked of a `node`, and a level, pressure or temperature asked of
+a `pipe`, are each refused with a message naming the other key.
+
+**The pipe is looked up among the file's DECLARED `[[pipes]]`, not among the
+graph's edges.** The graph also holds edges the loader made: `x__downstream` and
+`x__leak` from a leak split, and every boil-off vent. A file naming one of those
+would be measuring a pipe it never declared. Unknown to the file means refused.
+
+### Fork 2 — where the number comes from, and the tick-0 rule
+
+- **(a) The pipe's stored stream.** Rejected: at load it holds the initialiser
+  zero, and the premise says a reader cannot tell it from a real zero. A PI loop
+  seeded against it would take a 12 kg/s error into its memory on a plant already
+  flowing at 11.09.
+- **(b) The stored stream, plus a "has ticked" flag.** Rejected: two sources for
+  one reading, one of them a boolean standing in for the other's absence.
+- **(c) The last hydraulic solution.** Chosen. `measure` gains
+  `hydraulics: Option<&HydraulicSolution>`: the engine passes `last_solution`, and
+  the loader passes `None`, which is the truth at load. The flow arm returns
+  `edge_mass_flow[pipe]`, or `None` when there is no solution. It rides the same
+  argument list as M19's `resolved`. Whether the two travel as one bundle is left
+  to the building slice.
+
+**The published flow and the measured flow are one number**, and that is gate 2.
+For an ordinary pipe, step 2 copies `edge_mass_flow` into `stream.mass_flow`, and
+nothing later in the tick writes it: the other two writers are the column-draw
+post-pass and the vent pass, and fork 5 puts both out of reach of a flow loop. So
+the control's measurement at tick `n + 1` must equal the edge snapshot's
+`stream.mass_flow` at tick `n`, bit for bit.
+
+**The tick-0 rule is M19's, reused whole.** Before the first tick the loop writes
+nothing, its faceplate tracks the valve, and a PI loop's memory stays PENDING. Tick
+1 runs at the declared opening. Tick 2 seeds the memory against tick 1's flow and
+returns `initial_output`. MANUAL→AUTO before the first tick is refused. Nothing in
+`PiController` changes.
+
+### Fork 3 — direction of action: the first reverse loop on a valve
+
+In this engine a positive error raises the output. On a direct loop that error is
+`measurement − setpoint`. **A valve in series with its measured pipe is REVERSE
+acting**: opening it raises the flow. That is also the industry convention: a
+flow controller on an air-to-open valve is reverse acting. E8 refuses reverse
+action on a valve, and its reason is that "a valve's sign is topology, which the
+loader does not check".
+
+**For a flow loop the loader CAN check it, and in one hop.** Two facts make the
+sign physics here rather than topology:
+
+1. `network::validate_degrees` already requires every valve to have exactly ONE
+   inlet and ONE outlet edge, **by declared direction** (read, not assumed: it
+   counts `incoming` from `graph.incident`). A pipe touching the valve is therefore
+   its whole inlet or its whole outlet. Nothing branches between the pipe and the
+   valve.
+2. Opening a valve raises its own conductance, and in a network of monotone
+   branches — pipe friction, a pump curve falling with flow, a valve — that raises
+   the flow through that branch. Probe 1 measures it: flow rises monotonically
+   over thirteen openings from 0.05 to 1.0.
+
+So the rule is: **a flow loop's actuator must be a `Valve`, the measured pipe must
+be one of that valve's two edges, and the loop must declare
+`action = "reverse"`.** An absent `action` is refused rather than defaulted, as a
+furnace's is, so the one surprising word in the file is never invisible.
+`"direct"` is refused with the reason. Every other actuator is refused for a flow
+loop: a cooler and a furnace move no flow, a pump's `on` is not a fraction, and a
+relief valve is never an actuator.
+
+**What stays refused is E8 itself.** A level or pressure loop that declares
+`"reverse"` on a valve is still refused, because a fill valve's sign runs through a
+holdup, and the loader checks no path through a holdup. The valve arm of the
+action match becomes "reverse on a valve is refused UNLESS the loop measures that
+valve's own flow". Leaking the admission to a level loop is mutation 5.
+
+**A flow measured further from its valve is refused, as a scope decision** — for
+example the pump's discharge measured with the valve two pipes on. The sign would
+survive through a chain of one-inlet, one-outlet units, but the loader would have
+to walk that chain, and one hop is what this milestone checks. New row **E12**,
+with the bypass valve (a valve in parallel with the measured pipe is DIRECT
+acting, and its sign is genuinely topology).
+
+### Fork 4 — the key units, and for once there is no trap
+
+The format has no flow key at all today (grepped `schema.rs` for `kg_per_s`,
+`kg_s`, `m3_per_h`, `t_per_h`: none). The engine publishes kg/s
+(`EdgeSnapshot::stream.mass_flow`). **Keys: `setpoint_kg_per_s` and
+`gain_per_kg_per_s`**, following the family `gain_per_m`, `gain_per_bar`,
+`gain_per_k` — the gain is per unit of the setpoint's unit.
+
+**This is the first variable whose file unit IS its SI unit.** M10 had `×1e5` and
+`÷1e5` to keep together, and M17 had `+273.15` on a setpoint and nothing on a
+gain. Here nothing converts, so the conversion mutation M10 and M17 owed cannot be
+written. Saying so is part of the record. An operator's unit (t/h, m³/h) is a
+display conversion at the frontend, per rule 4.
+
+The payload is `ControlledValue::Flow { kg_per_s: KgPerSec }`. `KgPerSec` is
+`#[serde(transparent)]`, so the wire form is `{"variable":"flow","kg_per_s":12.0}`.
+**A tag that collides with an existing variant is M10.1's escape**: the corpus
+cannot see it, because the only plant whose bytes change is new in the same slice.
+Gate 7 asserts the wire form on the bytes.
+
+**The setpoint's range** is finite and strictly positive. A zero setpoint is "shut
+the valve", which is a MANUAL action rather than a regulation. A negative one names
+a flow against the pipe's declared direction, which fork 5 shows a series valve
+cannot regulate. There is no upper bound: the reachable flow is solved, and a
+setpoint above it pins the valve open, which the anti-windup clamp handles (gate
+6). The same range is applied at load and by `SetSetpoint`, through the one
+`check_setpoint`.
+
+### Fork 5 — which pipes, and the states a flow loop can reach
+
+**Refused as a measured pipe:**
+
+- **A pipe that declares `leak_to`.** A split gives the declared name to the
+  UPSTREAM half. On a pipe declared from the pump to the valve, that half ends at
+  the leak junction, not at the valve, and once punctured the two halves carry
+  different flows. The refusal has its own reason, checked before adjacency, so the
+  message names the leak rather than "not on the valve".
+- **A pipe that is not one of the actuator valve's two edges** (fork 3; E12).
+- **A column draw or a boil-off vent is not a refusal anybody can reach**, and none
+  is written. A draw must end at a product store (`build.rs`: tank, sink or
+  atmosphere), and a vent is built by the loader between holdups, so neither can
+  be a valve's edge. The adjacency rule excludes both structurally. This is argued
+  in a comment rather than shipped as a guard nothing reaches — the M8.2
+  precedent.
+
+**Zero flow is a MEASUREMENT, and that is the difference from M19.** A stagnant
+outlet's temperature was a held placeholder, because the temperature of no flow is
+undefined. A flow of zero is defined, and the solve computes it. So there is no
+`held` set for flow, and none must be borrowed out of habit. A loop reading zero
+below a positive setpoint winds its valve open, and the anti-windup clamp holds its
+memory at the limit. That is what a real flow controller does when its pump trips.
+(Probe 3 finds that a stopped pump on the demo plant still passes 5.66 kg/s by
+gravity, so "pump off" is not the zero case there. A valve declared shut is.)
+
+**Which of the valve's two pipes reads the zero is not a free choice, and the first
+draft of this note had it wrong.** It said "a shut branch reads exactly 0.0" and put
+the demo's meter on the valve's INLET. Probe 4 is the demo plant with the valve
+declared shut: the valve's outlet pipe reads **exactly `0.0`** on ticks 1 and 2,
+and its inlet pipe reads **`−1.547e-11` kg/s** — a residual, and a negative one.
+The reason is in `HydraulicSolution::edge_dissipation`'s doc: **a device folds into
+its OUTLET edge.** The valve's characteristic, and so its infinite resistance when
+shut, lives on the pipe leaving it. The pipe entering it carries the PUMP's curve,
+and with the valve shut it is a dead leg whose flow is whatever the solver's
+tolerance leaves. So the valve's own flow, in the solver's sense, is its outlet
+edge's. That is the one that reads a real zero when shut, and the demo measures it
+(fork 7). The loader admits either pipe, because the sign argument (fork 3) holds for
+both. What the inlet costs is an exact zero, and gate 6 needs one.
+
+**Reverse flow is the hazard, and it is named rather than guarded.** The
+measurement is signed by the pipe's declared direction. If the plant drives flow
+backwards through the valve, the loop sees a large positive error and opens the
+valve. Opening it makes the backward flow LARGER, so the sign of the plant has
+flipped under the loop. It runs to fully open and stays there. The clamp bounds
+it: it is a pinned actuator, not a divergence, and there is no NaN and no `Err`.
+**Clipping a negative flow to zero is refused**: that is a fabricated measurement,
+M12.1's and §23's rule. A real flowmeter often cannot see reverse flow, and the
+engine can. It is not refusable at load, because the direction is solved. New row
+**E11**, and gate 6 asserts the pinned state on a fixture.
+
+### Fork 6 — the plant is lag-free again, and the bound is `2/(2 − dt/T_i)`
+
+The hydraulics are quasi-steady (§3, not relitigated): a valve's opening written at
+the top of tick `k` is solved into that tick's flow. So the flow loop has exactly
+the outlet loop's dynamics — a static plant behind one sample of delay (§23
+fork 6). With `L = K·G` and `a = dt/T_i`:
+
+```text
+e(k+2) = (1 − L)·e(k+1) + L·(1 − a)·e(k)
+z² − (1 − L)·z − L·(1 − a) = 0
+```
+
+Jury's conditions on this quadratic give `L(1 − a) < 1` and, the binding one,
+`2 − 2L + a·L > 0`. **So the loop is stable for `L < 2/(2 − a)`**, which is 1 only
+as `T_i → ∞`.
+
+**This narrows §23 fork 6 and E10, and it does not correct M19's measurement.**
+§23 wrote the poles at `a → 0` and stated the bound as `K·G < 1`. M19's sweep ran
+with `integral_time_s = 600` (read from `W:\temp\claude\m19\k0.031.toml`), where
+`2/(2 − 1/600) = 1.0008`. So "sharp between `K = 0.030` and `0.031`" is right for
+what was measured. At the shipped `T_i = 10 s` the bound is `L < 1.0526`.
+Re-running M19's own hand model at `T_i = 10` puts the edge between `K = 0.0315`
+(settles, `L = 1.048`) and `0.032` (two-clamp ring, `L = 1.065`). M19.1's gate 5
+brackets with `0.8/G` and `1.2/G`, both on the correct side of either bound, so it
+stays sound. What changes is three sentences (site 10).
+
+**Measured installed gain** (probe 1: `tank_pump_valve.toml` with the discharge
+valve's opening substituted, one tick each). The table gives the slope of flow
+against opening, in kg/s per unit opening:
+
+| opening | 0.05–0.1 | 0.3–0.4 | 0.4–0.49 | 0.5–0.51 | 0.9–1.0 |
+|---|---|---|---|---|---|
+| slope | 28.06 | 27.22 | 26.70 | 26.32 | 22.55 |
+
+The installed characteristic falls as the valve opens, because the pipe and the
+pump take a growing share of the drop. So **turndown is on the SAFE side here**:
+where the furnace's `G ∝ 1/ṁ` put a throttled flow on the unstable side of its
+bound, this valve's gain is highest near shut and only 7% above the operating
+point's. The demo's bound will not move far with the plant. This is not a claim
+about every valve: a line dominated by its valve would have a flat characteristic,
+and a quick-opening trim a steep one.
+
+**Predicted, not measured.** Probe 2 transcribes `PiController` by hand — reverse
+error, clamp, back-calculated anti-windup, the pending memory, the blind first
+tick. It runs on probe 1's map with the tanks' drift folded in as a relative
+decline of 1.45e-5 per tick (from probe 3's MANUAL runs). The engine cannot run a
+flow loop until M20.1.
+
+- **The demo's tuning**: `K = 0.02 s/kg` (`L ≈ 0.53`, half the bound) and
+  `T_i = 10 s` — ten ticks, said in those words, as in §23. The flow is within
+  0.1 kg/s of 12 from **tick 64** and within 0.01 kg/s from **tick 137**. It
+  approaches from below and never overshoots, peaking at 11.9967. The valve stays
+  in `[0.400, 0.477]`, never on a clamp.
+- **The loop never settles to the last bit, and that is M19's finding (iv)
+  again.** The tanks drain and fill, so the valve must keep opening. A PI loop
+  follows a ramp in its required output with a steady error of
+  `ṙ·T_i/(K·G·dt)`, where `ṙ` is the flow's drift per tick at a fixed opening.
+  Predicted `3.3e-3 kg/s` from that formula and `3.9e-3` from the simulation (the
+  local `G` falls as the valve opens). Gate 4's tolerance is derived from this and
+  not chosen.
+- **The bound is sharp near `L = 2/(2 − a)`**: at `T_i = 10`, `L = 1.06` settles
+  and `L = 1.08` falls into the two-clamp ring from any of three starting openings.
+- **A setpoint command of 30 kg/s**, above the 25.92 kg/s the fully open valve
+  passes, pins `u = 1` within ten ticks. Stepping back to 12 recovers along the
+  slow pole, about 29 ticks, without windup.
+
+### Fork 7 — the demo plant
+
+**`scenarios/tank_flow_control.toml`**: `tank_pump_valve.toml` — the M1 reference
+plant, the file every regulation demo since M8.4 has been diffed against — with
+the discharge valve under a flow loop. **The measured pipe is `fill_line`, the
+valve's OUTLET**, because that is the edge the valve's own characteristic folds
+into and the one that reads an exact zero when the valve is shut (fork 5, probe 4).
+A real meter usually sits upstream of its valve. In this engine the upstream pipe
+belongs to the pump, and that is said in the file's header rather than hidden.
+Three lines change and one table is added:
+
+| line | there | here | why |
+|---|---|---|---|
+| `dt` | 0.1 s | 1.0 s | at 0.1 s the tanks move 0.8% of the flow over 6 000 ticks, too little to need a loop. At 1.0 s the MANUAL twin falls **11.086676 → 10.207091 kg/s** (probe 3). On a lag-free plant `T_i` is a count of ticks either way, so `dt` sets only how far the tanks move per tick |
+| `discharge_valve.opening` | 0.5 | 0.4 | the first measurement is then **11.0865 kg/s, 0.91 below setpoint**, which is what the seed gate needs: an unsigned seed would step the first output by `2·K·e = 0.037` |
+| `[[controls]]` | — | flow on `fill_line`, `setpoint_kg_per_s = 12.0`, `gain_per_kg_per_s = 0.02`, `integral_time_s = 10.0`, `initial_output = 0.4`, `action = "reverse"` | `initial_output` equal to the valve's opening, as every demo since M8.4 |
+
+The receiving tank rises from 1.0 m by about 3.6 m over the run, well inside its
+10 m. The MANUAL twin is the same file with `mode = "manual"`.
+
+### The gates, named before building
+
+1. **The blind start, on the bytes.** The load snapshot carries no `"measurement"`
+   key on the demo's control, and no `null` either. After tick 1 the valve is at
+   its declared 0.4 and the faceplate reads 0.4. After tick 2 the measurement
+   exists. Both early snapshots deserialize back. This also separates fork 2's
+   choice from mutation 1, which would publish `0.0` at load.
+2. **The one-tick identity.** For every tick `n ≥ 1`, the control's measurement at
+   `n + 1` equals the `fill_line` edge's published `stream.mass_flow` at `n`, bit
+   for bit, over the whole run. It is asserted against the MEASURED pipe only. The
+   valve's inlet, `discharge`, is shown to differ from it on at least one tick
+   (probe 3 puts the difference at 1.8e-15 to 6.9e-14 kg/s), so that an identity
+   against the wrong pipe cannot pass by accident.
+3. **The seed at the first measurement is signed and exact.** The output after
+   tick 2 equals `initial_output`. The output after tick 3 equals
+   `K·(sp − m₃) + b`, with `b = 0.4 − K·(sp − m₂) + (K/T_i)·(sp − m₂)·dt`, computed
+   by hand from published numbers.
+4. **The loop holds; the twin does not.** At the end, the flow is within the
+   derived ramp lag of 12 kg/s, and `u` is interior and never on a clamp. The
+   MANUAL twin reads within 1e-6 of 10.207091 kg/s with faceplate 0.4.
+5. **Stability, both sides of `2/(2 − a)`.** `G` is computed from two PUBLISHED
+   operating points (the settled AUTO pair and the MANUAL twin), and `K·G` asserted
+   within `[0.4, 0.6]`. With `L_crit = 2/(2 − dt/T_i)`: a fixture at
+   `K = 1.15·L_crit/G` alternates sign tick to tick and reaches both clamps, and one
+   at `K = 0.85·L_crit/G` settles. The bound is computed in-test from `T_i`, not
+   typed as 1 — the narrowing of fork 6, asserted.
+6. **Windup, a shut start, and the reversed plant.** Three fixtures:
+   - A 30 kg/s setpoint command pins `u = 1`, and the release back to 12 steps
+     without a windup overshoot (M17's method).
+   - **Zero is a measurement.** The demo with the valve declared shut
+     (`opening = 0.0`, `initial_output = 0.0`) reads exactly `0.0` kg/s on
+     `fill_line` on tick 1.
+     After tick 2 the measurement is PRESENT and equal to 0.0, not absent, and the
+     loop has begun to open the valve.
+   - **The reversed plant.** The pump off and the receiving tank the higher, so
+     flow runs backwards through the valve from tick 1. The loop reaches `u = 1`
+     and stays there. The measurement is present and negative on every tick after
+     the first, the run returns `Ok`, and it never produces a NaN.
+7. **The wire form.** A flow setpoint serializes as
+   `{"variable":"flow","kg_per_s":12.0}` and round-trips. The three existing tags
+   are unchanged.
+8. **The refusal sweep**, each case asserting a distinctive substring of its own
+   message:
+   - `pipe` and `node` both given, and neither given
+   - flow asked of a node, and a level asked of a pipe
+   - a pipe the file does not declare, including a loader-made `__downstream` name
+   - a pipe that declares `leak_to`
+   - a pipe that is not on the valve
+   - a flow loop on a cooler, a furnace and a pump
+   - `action` absent, and `action = "direct"`
+   - a setpoint of 0, a negative one and a NaN
+   - `setpoint_m` on a flow loop, and `setpoint_kg_per_s` on a level loop
+   - **E8 still refusing `"reverse"` on a level loop's valve**
+   - the reworded junction-pressure message, with its old substring gone
+
+### What must not change, stated as a prediction that can be wrong
+
+All twenty-three shipped plants byte-identical on both fidelities, no iteration
+count moved, against baselines recorded **before the first edit of M20.1**. Every
+existing loop measures a `Node(_)`, whose arms ignore the new argument, and
+`ControlSnapshot` publishes no measurement point. **The prediction most likely to
+fail** is not in the engine but in the loader. `MeasurementDef`'s
+`deny_unknown_fields` with `node` becoming optional must still refuse every file it
+refused before, and the refusal sweeps that assert on those messages are the check.
+
+### The mutations M20.1 owes, named before building
+
+1. `measure` reads `pipe.stream.mass_flow` instead of the solution — the premise's
+   own failure → gate 1 (a `0.0` measurement at load) and gate 3 (the seed taken
+   against 12 kg/s of fabricated error).
+2. The flow variant's serde tag collides with `"level"` → gate 7 only; the corpus
+   and the byte-identity prediction are blind to it.
+3. `"direct"` accepted on a flow loop → gate 8; and the demo written direct would
+   run the valve shut — gate 4.
+4. The adjacency check dropped → gate 8's not-on-the-valve case only.
+5. Reverse admitted on a valve for every variable, not only flow → gate 8's E8
+   case only.
+6. A negative flow clipped to zero → gate 6's reversed fixture (the measurement is
+   no longer negative).
+7. Zero flow treated as absent (a `held` rule borrowed from M19) → gate 6's
+   shut-start fixture only. It is caught only because the demo meters the valve's
+   OUTLET: on the inlet the shut valve reads `−1.547e-11`, which no exact-zero rule
+   touches, and the mutation would be inert (fork 5).
+8. The setpoint range refusing only negatives, admitting zero → gate 8.
+9. The identity asserted against the valve's outlet pipe instead → gate 2's
+   residual control.
+10. The junction-pressure message left as it was → gate 8's old-substring check.
+
+Run under `--no-fail-fast`, each catch read for why it fired.
+
+### Deferred, with what un-defers each
+
+- **E11 — reverse flow under a flow loop.** A series valve's sign flips when the
+  plant drives flow backwards through it, and the loop pins the valve open. There
+  is no check valve in the engine and no refusal at load (the direction is solved).
+  Trigger: a plant whose flow loop must survive a flow reversal, or a frontend that
+  must show a reversed meter as such.
+- **E12 — a flow measured further from its valve, and the bypass valve.** A chain
+  of one-inlet, one-outlet units keeps the sign, but the loader checks one hop. A
+  valve in parallel with its measured pipe is direct acting, and its sign is
+  genuinely topology (E8's shape). Trigger: a plant that meters a flow away from
+  its valve.
+- **E2 — cascaded loops** is now reachable in principle, because the inner loop it
+  names exists. Its trigger is unchanged: an inner loop fast enough to be worth
+  separating, and an execution-order rule stronger than declaration order.
+- **A bubble-point-bounded temperature setpoint** — the last clause of E1b,
+  unchanged.
+
+The probes are `W:\temp\claude\m20\probe_gain.py` (probe 1, and probes 3 and 4
+when run at `dt = 1`, the latter at `opening = 0.0`) and `probe_loop.py`
+(probe 2). Each plant they run is the shipped
+`tank_pump_valve.toml` with the substitutions the script names.

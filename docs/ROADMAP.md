@@ -6266,3 +6266,65 @@ gate 3 sees it. `scenarios/` holds twenty-three files; five declare
 built for a furnace or cooler outlet; the other zero-volume kinds are E9 and the
 lag-free outlet's stability bound is E10. The next milestone is chosen from
 `docs/DEFERRED.md` as usual.
+
+## M20 — the fourth controlled variable: flow; opened on a decision
+
+Taken on the user's decision (2026-09-29), on the gameplay grounds M17–M19 were:
+a flow loop is the commonest loop in a refinery and the inner half of almost every
+cascade. Its scope is what `docs/DEFERRED.md` row E1b has left besides a
+bubble-point-bounded setpoint: **a valve holding the flow in its own line.**
+Nothing was past its trigger.
+
+### M20.0 — Scoping + design note — **LANDED** 2026-09-29
+
+The note is DESIGN §24: seven forks, eight gates, ten mutations, no code. Six
+things to know before the building slice.
+
+**The premise has a new answer: a pipe's flow is stored AND a placeholder.**
+`Pipe::stream.mass_flow` is on the graph and is what a snapshot publishes. But the
+loader builds every pipe with `Stream::stagnant`, so at load it holds an
+initialiser zero on a plant that flows 11.09 kg/s on its first tick. The question
+the four earlier notes asked, "stored or solved?", is not enough. What decides it
+is whether the value stored at load is DECLARED or merely INITIALISED. So a flow is
+absent at load, and M19's rule — no measurement, no action — is reused whole.
+`measure` reads `last_solution` (`None` at load), not the pipe's stream. Reading the
+stream is mutation 1.
+
+**A loop measures at a point, not a node.** `MeasurementPoint { Node, Pipe }`
+replaces `measurement_node`. The file says
+`measurement = { pipe = "…", variable = "flow" }`, and the pipe is looked up among
+the DECLARED pipes, so a loader-made leak half or vent cannot be named. Measuring
+the valve node's throughput was rejected: no snapshot publishes it, and a valve's
+two pipes differ by the node's solver residual.
+
+**The first reverse loop on a valve, and E8 stays.** A valve in series with its
+own measured pipe is reverse acting, which is also the industry convention.
+`validate_degrees` already holds every valve to one inlet and one outlet by
+declared direction, so the loader can check the sign in ONE hop. A flow loop must
+measure one of its valve's two pipes and must say `action = "reverse"` (absent or
+`"direct"` refused). Reverse on a level or pressure loop's valve is still E8. A
+meter further from its valve, and a bypass valve, are new row E12.
+
+**Zero flow is a measurement, and WHICH pipe reads it is not free.** Unlike M19's
+stagnant outlet there is no placeholder, and no `held` set. But probe 4 found that
+a shut valve's OUTLET pipe reads exactly `0.0` and its INLET pipe `−1.547e-11`:
+a device folds into its outlet edge, so the inlet of a shut valve is the pump's
+dead leg. The demo meters the outlet, and the first draft of the note had it on
+the inlet. Reverse flow flips the plant's sign under the loop and pins the valve
+open. Clipping the negative flow to zero is refused, and the hazard is new row E11.
+
+**The stability bound is `K·G < 2/(2 − dt/T_i)`, which narrows M19.** The plant is
+lag-free again (quasi-steady hydraulics), so the flow loop has the outlet loop's
+dynamics. M19 stated "`K·G < 1`", the `T_i → ∞` limit. Its sweep ran at
+`T_i = 600 s`, where the two agree to 0.08%, so M19 measured nothing wrong. At the
+shipped `T_i = 10 s` the bound is 1.053. The valve's installed gain is
+26.3–26.7 kg/s per unit near the operating point and highest near shut. So,
+unlike the furnace, turndown is on the safe side.
+
+**The demo is `tank_pump_valve.toml` with the discharge valve under a flow loop**:
+`dt` 0.1 → 1.0, valve 0.5 → 0.4, and a loop holding 12 kg/s at `K = 0.02 s/kg`,
+`T_i = 10 s`. By hand simulation, not the engine, it is within 0.01 kg/s from
+tick 137 and trails the draining tanks by a derived 3–4 g/s. The MANUAL twin falls
+11.087 → 10.207 kg/s. The keys are `setpoint_kg_per_s` and `gain_per_kg_per_s`:
+the first variable whose file unit is its SI unit, so the unit-conversion mutation
+M10 and M17 owed cannot be written.
