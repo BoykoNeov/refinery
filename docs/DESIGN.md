@@ -13370,3 +13370,46 @@ engine site changed, and its message now names the missing quantity by variable.
 The new gate asserts both: refused before the first solve, naming
 `'fill_line' has no resolved flow yet` and not an outlet's "no flow through it",
 and bumpless after tick 1.
+
+**(xi) All fourteen mutations are caught: §24's ten and four more.** The four
+extra are the pipe looked up among the graph's edges before the declared pipes,
+the `leak_to` refusal deleted, the MANUAL→AUTO transfer passed no solution, and
+the tick's pass 1 passed no solution. Each ran alone under `--no-fail-fast`, the
+tree was reverted and checked clean between runs, and each catch was read for
+why it fired. The refusal sweep's "should not have loaded" panic now names its
+case. Before that, five catches read identically and could not show they fired
+for their own reason. Each was re-run with the names and each is its own case:
+`action direct`, the pipe not on the valve, E8 on a level loop, the zero
+setpoint, and the loader-made half. Where §24's table was wrong:
+
+- **Mutation 1 is visible ONLY at load, and that is the premise measured.** Step 2
+  of the tick copies the solved flow into `Pipe::stream.mass_flow`
+  (`engine.rs`), so from tick 1 the stored field and the solution carry the same
+  number. Gates 2 and 4 stay green under the mutation. What fires is everything
+  that looks at load: gate 1 (a `0.0` published before any solve), gate 3 (the
+  first output 0.2023 against the declared 0.4, a seed taken against 12 kg/s of
+  fabricated error), the MANUAL→AUTO gate (a transfer before the first solve no
+  longer refused), and gate 6b (the shut start acts at tick 1 instead of being
+  blind, so tick 2's outlet reads 0.674 kg/s). "Stored AND absent at load" is
+  exactly the window in which the two sources differ.
+- **Mutation 2 is not gate 7 only.** Gate 1's snapshot round trip also fires:
+  `{"variable":"level","kg_per_s":12.0}` does not deserialize (`missing field m`).
+  The corpus stays blind as predicted, since the demo is new in this slice.
+- **Mutation 7 is not gate 6b only.** Gate 5's ringing fixture at 1.15× the bound
+  also fires: it reaches the lower clamp, a shut valve's outlet reads a true zero,
+  and a zero treated as absent leaves the ring with no measurement to record.
+- **Mutation 9 is caught by eighteen ULP.** On tick 3 `discharge` carried
+  11.086529150918457 kg/s against `fill_line`'s …475. Gate 2 catches it because
+  it is bit-exact. Any tolerance, even 1e-12, would have let it through, and (vi)
+  says why: the valve node's residual is the whole difference.
+- **Deleting the `leak_to` refusal still refuses the plant**, through the lookup's
+  ordinary-leak-role filter ("which the loader did not build as one ordinary
+  edge"). The gate catches it only because it asserts the message names
+  `leak_to`. Two guards, and the specific one is defended by its words.
+- Mutation 5 is also caught by M18's own reverse sweep. Pass 1 without a solution
+  fails eight of the twelve flow gates, because the loop never measures at all.
+
+One instrument note: the first expression of mutation 7 did not compile (a
+`filter` on the `Result`, not the `Option` inside it). It reported zero failures
+beside COMPILE-ERROR and was re-expressed. An edit that does not build is not a
+catch and not an escape; it is no observation.

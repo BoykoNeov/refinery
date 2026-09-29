@@ -205,8 +205,13 @@ clamp it dips off for exactly one tick by `K·(e − e₊)` (M18's (iv), now ass
 to the bit). The release decays at 0.9645 per tick, which is that pole, and the
 gate asserts the band the pole spans. (iv) **"Exactly 0.024" is
 `0.023999999999999994`**: a gate against a hand formula compares against the
-controller's own order of operations, not a literal. `scenarios/` holds
-**twenty-four** files. The five things §24 settled:
+controller's own order of operations, not a literal. (v) **All fourteen
+mutations are caught** (§24's ten plus four), each read for why it fired. Reading
+the pipe's stored flow instead of the solve is visible ONLY at load, because
+step 2 of the tick copies the solve into that field, which is the premise
+measured. The inlet-for-outlet identity mutation is caught by 18 ULP, and only
+because gate 2 is bit-exact. `scenarios/` holds **twenty-four** files. The five
+things §24 settled:
 
 **A pipe's flow is stored AND absent at load.** `Pipe::stream.mass_flow` is on the
 graph, but the loader writes `Stream::stagnant`'s zero there — an initialiser, not

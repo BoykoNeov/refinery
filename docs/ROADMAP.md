@@ -6372,3 +6372,10 @@ is that pole, and that is what the gate now asserts.
 **The shut start's "exactly 0.024" is `0.023999999999999994`.** The gate compares
 against the controller's own three operations, bit for bit, not the literal.
 `scenarios/` holds twenty-four files; six declare `[[controls]]`.
+
+**All fourteen mutations are caught** (§24's ten plus four), each read for why
+it fired. See §24 correction (xi). Three of the note's "only" predictions were
+too narrow. Reading the pipe's stored flow instead of the solve is visible only
+at load, because the tick copies the solve into that field. That is the
+premise, measured. The inlet-versus-outlet identity mutation is caught by 18 ULP
+and only because gate 2 is bit-exact.
