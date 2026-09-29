@@ -198,16 +198,18 @@ it (M22.1)" before touching trips. The next milestone is chosen from
 **What M22.1 found.** (i) All twenty-five pre-M22 plants are byte-identical on
 both fidelities with no iteration count moved; "runs byte-identical" means
 post-M22.1 identical, unchanged. `corpus --baseline` compares fingerprints only,
-so iteration counts need their own comparison. (ii) **A trip's condition clears
-INSIDE the tick that fires it** (it acts before that tick's solve), so from the
-first command after a trip the LATCH holds the equipment, not the condition; the
-reset's "condition still holds" refusal needs a plant that stays inside after
-acting. (iii) `TripState` is tagged `status` (`{"status":"tripped","at_tick":…}`).
+so iteration counts need their own comparison. (ii) **A trip that fires on a
+crossing can clear its own condition INSIDE the tick that fires it** (it acts
+before that tick's solve): exactly when its action reverses the measurement by
+more than the one-tick overshoot within one tick. True on the demo (0.0006 m over,
+0.0014 m back) and on one fixture, where the LATCH then holds the equipment, not
+the condition. False on a plant loaded inside its condition or with a slow action,
+which is where the reset's "condition still holds" refusal applies. (iii) `TripState` is tagged `status` (`{"status":"tripped","at_tick":…}`).
 (iv) Nineteen mutations, eighteen caught; the hold check's deletion is uncaught on
 purpose. (v) No shipped plant passes its own tank height (B28 swept; closest
 0.859). Setpoint and limit conversion share `declared_value` in `build.rs`.
 
-The design as built: The shape: `PlantGraph::trips`, a plain struct (no trait),
+The design as built: `PlantGraph::trips`, a plain struct (no trait),
 `[[trips]]` with `direction = "high" | "low"`, `limit_m`/`limit_bar`/`limit_c`
 converted at the setpoints' own site, and an `actions` list of `{ pump = … }` and
 `{ valve = …, position = … }`. A trip fires at `≥`/`≤`, latches, writes its safe

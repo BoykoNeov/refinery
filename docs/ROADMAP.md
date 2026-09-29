@@ -6611,12 +6611,15 @@ at tick 6 000; its untripped twin reads 15.17 m in a 10 m tank.
 fidelities, iteration counts included. The CLI's `--baseline` compares
 fingerprints only, so the iteration counts were checked by a separate script.
 
-**A trip's condition clears inside the tick that fires it.** The trip acts
-before that tick's calculation, so the whole tick runs in the safe state, and the
-level is back on the safe side by the first command after the trip. From then on
-the LATCH is what holds the pump and valve, not the danger. The reset's "still
-inside the condition" refusal is reachable only on a plant that stays inside after
-acting.
+**A trip can clear its own condition inside the tick that fires it — on some
+plants.** The trip acts before that tick's calculation, so the whole tick runs in
+the safe state. If that pulls the measurement back by more than the small amount
+it had overshot the limit by, the danger has passed by the first command after the
+trip. From then on the LATCH is what holds the pump and valve. That happens on the
+demo (0.0006 m over, 0.0014 m back in one tick) and on one test plant. It does not
+happen on a plant loaded already inside its limit, or one whose action works
+slowly, and that is where the reset's "still inside the condition" refusal
+applies.
 
 **The mutation pass ran nineteen edits and caught eighteen.** The one left
 uncaught is the hold check's deletion, as predicted: it is a backstop behind

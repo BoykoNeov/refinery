@@ -14501,19 +14501,33 @@ a value, or the trip is refused naming E13. A flow is refused before the pipe na
 is even looked up, so a trip on an undeclared pipe gets the E13 reason and not a
 meter-lookup one. The tick pass still treats `None` as an engine fault.
 
-**The condition clears INSIDE the tripping tick, on every plant built so far.**
-This is the one finding the note did not anticipate. A trip compares the level
-standing at the TOP of its tick and writes its safe state before that tick's
-solve, so the whole tripping tick runs in the safe state. On the demo the level is
-5.9992 m at the end of tick 1 236, already under the 6 m limit. On gate 5's
-low-level fixture the drain is shut and the pump fills for the whole tick, and the
-level is back above 1.5 m by the first command after the trip. So **from the first
-command after a trip, the latch alone is what holds the equipment.** The reset's
-"condition still holds" refusal is reachable only on a plant that stays inside its
-condition after acting, which gate 6's fixture is built to do (declared at 2.0 m
-against a 1.5 m high trip, with only a slow drain). Gate 5 first asserted that
-refusal right after its trip and failed; it now asserts that the level HAS
-recovered, and the refusal belongs to gate 6 alone.
+**A trip that fires on a crossing can clear its own condition inside the tick
+that fires it — on some plants, and the rule for which is stated here.** This is
+the one finding the note did not anticipate. A trip compares the measurement
+standing at the TOP of its tick, so when the plant crosses the limit during a run
+the trip sees it about one tick's drift past the limit. It writes its safe state
+before that tick's solve, so the whole tripping tick runs in the safe state. **The
+condition therefore clears within that same tick exactly when the action reverses
+the measurement by more than that one-tick overshoot within one tick.**
+
+- On the demo it does: the trip compared 6.00062 m (0.0006 m past the limit), and
+  the level ended tick 1 236 at 5.99920 m (0.0014 m lower).
+- On gate 5's low-level fixture it does too: the drain is shut and the pump fills
+  for the whole tick, and the level is back above 1.5 m by the first command after
+  the trip.
+- Elsewhere it does NOT. A plant loaded already inside its condition has no small
+  overshoot to undo: gate 6's fixture is declared at 2.0 m against a 1.5 m high
+  trip and drains slowly, and its second trip (`supply_guard`) never clears. The
+  bridge's fixture takes several ticks to fall back under 4.9 m. A plant whose
+  action works slowly would not clear in one tick either.
+
+So on a plant of the first kind, from the first command after a trip it is the
+latch, not the condition, that holds the equipment. That is why fork 4's equipment
+refusals, and not the reset guard, are what protect it there. The reset's
+"condition still holds" refusal is reached on plants of the second kind, which is
+what gate 6's fixture is. Gate 5 first asserted that refusal right after its trip
+and failed; it now asserts that its level HAS recovered, and the refusal belongs to
+gate 6.
 
 **The hold check fails as `SimError::Numerical`, prefixed "internal:".** A new
 variant was not added, because the Godot bridge maps each variant to an error code
