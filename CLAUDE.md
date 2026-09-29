@@ -215,8 +215,13 @@ large `g` comes from geometry on a flowing line, or from `eps_dp` on a dead end.
   frozen coefficients it cycles in a PSV's accumulation band. M9.1's frozen
   per-node test is unchanged.
 - **Groups of one are excluded**, so the fifteen shipped plants that never form a
-  group of two stay byte-identical on `simple`. The other nine move by at most
-  3.8e-6 relative over every snapshot. Newton is untouched.
+  group of two stay byte-identical on `simple`. Without the skip rule, the other
+  nine move by at most 3.8e-6 relative over every snapshot, with stagnant edges
+  and nodes excluded. The skip rule moves eight of them again, so M21.1
+  re-measures this bound on whatever ships. Newton is untouched.
+- **The shipped twin is `twin_wide`'s geometry** (1 m × 0.15 m relief lines).
+  There, both the old solver and the one-group-per-set version fail at tick 1,
+  so CI's corpus catches either. The file lands only with the fix.
 
 **Measured before any source edit:**
 - Corpus baselines: `W:\temp\claude\m21\before_newton.json` and

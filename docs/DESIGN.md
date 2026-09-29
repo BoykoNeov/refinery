@@ -13658,8 +13658,14 @@ ordinary sweep absorb them.
 **The rounding-floor rejections are pure cost**: each runs the full ladder of
 nine trial evaluations, each recompiling the boundary. **The building slice skips
 the group step when every member already meets the solver's own per-node bar** —
-`grade_nodes`' test, not a new constant. It should remove nearly every rejection
-in the table. That is a prediction.
+`grade_nodes`' test, not a new constant. **Measured on the copy**: it would catch
+every rejection in the table on the shipped plants (11 977 of 11 977 on
+`cavitating_pump`; 2 208 of 2 209 on `fired_gas_drum`, where the one it misses is
+that plant's single real rejection). **It also skips accepted steps that were
+still making progress below the bar**, and that moves the bytes of eight of the
+nine grouped plants (all but `tank_pump_valve`). Worst sweep counts hold or fall
+(the `dt = 1.0` relief plant goes 17 → 15), and totals move by at most 8 over
+6 000 ticks. So gate 5's bound has to be re-measured on whichever version ships.
 
 ### Fork 4 — where in the sweep, and what it costs
 
@@ -13687,11 +13693,25 @@ false** — it calls the sizing "NUMERICAL rather than process" — and is rewor
 the line was sized to dodge a stall M21 fixed, and stays for the anchor's sake.
 The `< 2500` gate's doc makes the same claim and is re-premised (gate 1).
 
-**One new scenario file**: `scenarios/relief_twin_vessels.toml`, the two-vessel
-plant, declaring `flow = "simple"`. It is the plant that decided fork 2, and a
-shipped file is the only thing CI runs under both fidelities, so reverting fork 2
-to a whole-set shift turns CI's `corpus --solver simple` red on a clean checkout —
-which no in-test fixture does. The other probe shapes (the 2 m × 100 mm relief
+**One new scenario file**: `scenarios/relief_twin_vessels.toml`, a two-vessel
+plant, declaring `flow = "simple"`. It is not the `two_vessel` probe that decided
+fork 2, and the reason is a measurement. On `two_vessel` the whole-set shift
+takes 4 472 sweeps, **under** the 5 000 cap, so CI's corpus would stay green under
+mutation 1. What ships is that plant with both relief lines at 1 m × 0.15 m
+(`W:\temp\claude\m21\probe\twin_wide.toml`):
+
+| `twin_wide` | worst sweeps |
+|---|---|
+| Newton | 8 |
+| shipped game solver | fails at tick 1 |
+| whole-set shift (mutation 1) | fails at tick 1 |
+| the hierarchy | 6 |
+
+A shipped file is the only thing CI runs under both fidelities, so on this
+geometry both mutation 1 and mutation 3 turn `corpus --solver simple` red on a
+clean checkout. No in-test fixture does that. **The file can land only in the
+same commit as the fix**, because today's solver fails it on the first tick.
+The other probe shapes (the 2 m × 100 mm relief
 line, the `dt = 1.0` relief plant, the wide conducting vent at `dt = 1.0`) become
 in-test fixtures, built by editing the loaded file, the way the `< 2500` gate
 already switches fidelity.
@@ -13701,29 +13721,38 @@ already switches fidelity.
 1. **The count no longer tracks the stiffness — the `< 2500` gate, re-premised.**
    `relief_blowdown` under `simple` with its PSV inlet line at 5 m × 0.06 m,
    2 m × 0.10 m and 1 m × 0.15 m: that spans more than an order of magnitude of
-   `g/c`, across which the unaided solver goes 920 → the cap (the third
-   geometry is not yet measured; the building slice measures it first). Each
-   runs 1 500 ticks; the largest worst-sweep count is at most 3× the smallest,
-   and every one is below 5× Newton's own worst. The claim is "flat in `g/c`"; a
+   `g/c`, across which the unaided solver goes 920 → fails at tick 41 → fails at
+   tick 1. On the copy the hierarchy takes 8, 8 and 7, against Newton's 10, 8
+   and 8. Each runs 1 500 ticks; the largest worst-sweep count is at most 3× the
+   smallest, and every one is below 5× Newton's own worst. The claim is "flat in `g/c`"; a
    bare ceiling would be the fitted margin this gate used to be.
 2. **The PSV band, at `dt = 1.0`.** The shipped relief plant at `dt = 1.0` runs
-   6 000 ticks under `simple`, and at every snapshot the receiver pressure agrees
-   with Newton's to 1e-6 relative. The frozen acceptance test fails it
-   (mutation 2).
+   6 000 ticks under `simple`, and at every snapshot every node pressure agrees
+   with Newton's to 1e-4 relative, the bound the `< 2500` gate already uses.
+   Measured on the copy: 4.72e-5 worst, at the PSV node on tick 13, inside the
+   accumulation band. A first draft of this gate said 1e-6, which was never
+   measured and would fail even the shipped `dt = 0.1` relief plant, at 1.83e-6.
+   The frozen acceptance test fails it (mutation 2).
 3. **The conducting shape.** `vessel_pressure_control` with a 2 m × 0.10 m vent
    line at `dt = 1.0` runs 6 000 ticks under `simple` and agrees with Newton as
    gate 2 does. It says the fix is not dead-end-specific.
 4. **Two stiff pairs in one set.** `relief_twin_vessels.toml` under `simple`: worst
    sweep count below 5× Newton's, and agreement with Newton as gate 2. The
-   whole-set grouping fails it (mutation 1); CI's corpus defends it a second
-   time.
+   whole-set grouping fails it at tick 1 (mutation 1), and CI's corpus defends it
+   a second time. `two_vessel`'s 2 m × 0.10 m geometry stays as an in-test
+   fixture, because it separates the two groupings by sweep count (4 472 against
+   8) rather than by failure.
 5. **What must not move.** All twenty-four pre-M21 plants byte-identical on
    Newton; the fifteen that form no group byte-identical on `simple`; the other
    nine moving by at most 1e-5 relative on any published quantity above 1e-3,
-   over **every** snapshot, not the last (measured on the copy: 3.8e-6 worst,
-   `fired_gas_drum` tick 170). Stagnant edges and nodes — an edge carrying
-   < 1e-6 kg/s in either run, and the node it feeds — are excluded, because the
-   two fidelities already disagree there before this change (row A15 below).
+   over **every** snapshot, not the last. Measured on the copy without the skip
+   rule: 3.80e-6 worst, `fired_gas_drum` tick 170; `relief_blowdown` 3.42e-6.
+   Stagnant edges and nodes are excluded, because the two fidelities already
+   disagree there before this change (row A15 below). An edge is stagnant if it
+   carries < 1e-6 kg/s in either run. A node is stagnant if it has incident
+   edges and every one of them is stagnant. Excluding edges alone left
+   `relief_blowdown` at 5.68e-2, which was the PSV node's placeholder
+   temperature.
 6. **A rejection moves nothing.** A fixture whose group residual sits at the
    rounding floor: after the group step no member's pressure has changed, bit for
    bit.
@@ -13742,19 +13771,20 @@ already switches fidelity.
 Newton byte-identical everywhere (it is untouched, so this is the free check);
 the fifteen group-free plants byte-identical on `simple`; no plant's WORST sweep
 count rising (on the copy all nine fall or hold). **The prediction most likely to
-fail** is fork 3's skip rule. Deciding "already solved" by the per-node bar could
-leave undone a group step that was making progress below the bar, and so move a
-plant the copy measured as it did. If it does, the skip is argued again from the
-measurement, not adjusted to fit.
+fail was fork 3's skip rule, and it has already failed on the copy**: it moves
+eight of the nine grouped plants relative to the unskipped version (fork 3). That
+is not a defect — neither version has a baseline — but it means gate 5's number
+belongs to whichever version ships and is measured there, not carried from here.
 
 ### The mutations M21.1 owes, named before building
 
-1. Groups are the whole connected set only, no pair levels → gate 4 alone (4 472
-   sweeps or the cap); gates 1–3 stay green, since each of those plants has one
-   stiff pair.
+1. Groups are the whole connected set only, no pair levels → gate 4 (the shipped
+   twin fails at tick 1; the `two_vessel` fixture takes 4 472 sweeps) and CI's
+   corpus. Gates 1–3 stay green, since each of those plants has one stiff pair.
 2. The group trial uses the frozen coefficients → gate 2 alone (the period-two
    cycle at tick 14).
-3. The group step removed → gates 1–4, and gate 7's counts fall back.
+3. The group step removed → gates 1–4, CI's corpus (the shipped twin fails at
+   tick 1), and gate 7's counts fall back.
 4. Singleton groups admitted → gate 5 alone (the fifteen plants move).
 5. The slope counts internal edges → the denominator is swamped by `g`, the step
    shrinks to nothing, and it behaves like mutation 3.
@@ -13796,3 +13826,25 @@ group trial; `SINGLE=1` restricts groups to the connected set; no `MODE` with
 `BRIEF=1` runs the linear-model table. The plants are under
 `W:\temp\claude\m21\probe`, and the corpus baselines taken before any edit are
 `W:\temp\claude\m21\before_newton.json` and `before_simple.json`.
+
+### Corrected before building (M21.0, the same day)
+
+The first commit of this note, `d7930ed`, overstated four things. They were
+caught by reading it against its own measurements, and are fixed above rather
+than left for M21.1 to find.
+
+1. **"Reverting fork 2 turns CI red" was refuted by the note's own table.** The
+   whole-set shift takes 4 472 sweeps on `two_vessel`, which is under the cap. The
+   shipped twin is now `twin_wide`'s geometry, where that mutation fails at tick 1.
+2. **Gates 2 and 3 asserted 1e-6 agreement on pressure, and no pressure had been
+   measured.** Measured: 4.72e-5 worst. The shipped `dt = 0.1` relief plant already
+   sits at 1.83e-6. The bound is now 1e-4.
+3. **"The other nine move by at most 3.8e-6" had not been shown for
+   `relief_blowdown`.** Its worst figure was the PSV node's placeholder
+   temperature. With stagnant nodes excluded, as edges already were, it is
+   3.42e-6, and the bound holds.
+4. **Gate 1's third geometry said "not yet measured" when it cost one run.** The
+   shipped solver fails it at tick 1; the copy takes 7.
+
+The skip rule's side effect (fork 3) was measured in the same pass, not
+predicted: it moves eight of the nine grouped plants.

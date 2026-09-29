@@ -455,3 +455,9 @@ time since M9.1 they were measured rather than re-asserted.
   11.09 kg/s on its first tick. **Ask whether the stored value at load was
   DECLARED or merely INITIALISED.** Nothing is past its trigger; M20 is a decision,
   and A3 at 5.4× under its cap is still the nearest row that carries a number.
+  **Corrected 2026-09-29 by M21.0 (DESIGN §25): A3 was never 5.4× away.** That
+  figure was measured on a plant re-sized to dodge the stall. One edit to a
+  shipped file reaches the cap: `relief_blowdown`'s PSV inlet back to 2 m × 100 mm,
+  or `dt = 1.0` on it or on `vessel_pressure_control`. **No SHIPPED plant is past
+  its trigger** — only the probe files under `W:\temp\claude\m21\probe` reach the
+  cap. M21 takes A3 on a decision anyway, and says so.

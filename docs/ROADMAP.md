@@ -6438,3 +6438,16 @@ the building slice skips the step when the group already meets the per-node bar.
 **Housekeeping from M20.1:** the Godot binding builds and lints clean behind its
 feature (`--features godot --target-dir target/godot`), which CLAUDE.md recorded
 as owed.
+
+**Corrected the same day** (DESIGN §25, "Corrected before building"). Four claims
+in the first commit went beyond the measurements, and are now measured:
+- **CI coverage.** One shift per connected set takes 4 472 sweeps on the first
+  twin plant, under the cap. The shipped twin now uses 1 m × 0.15 m relief lines,
+  where that mutation fails at tick 1.
+- **Pressure agreement.** Gates 2 and 3 now hold node pressures to 1e-4 against
+  Newton. The worst measured is 4.72e-5; the 1e-6 first written was never
+  measured.
+- **The 3.8e-6 bound on the nine moved plants.** It holds for `relief_blowdown`
+  (3.42e-6) once stagnant nodes are excluded along with stagnant edges.
+- **The skip rule.** It moves eight of those nine plants, so M21.1 re-measures
+  the bound on what it ships.
