@@ -48,11 +48,14 @@ fn build(src: &str) -> Engine {
 }
 
 /// The text of the refusal a scenario earns, whichever stage produced it.
-fn refusal(src: &str) -> String {
+/// `what` names the case, so a plant that loads says WHICH refusal went
+/// missing: the mutation pass reads that line to know a catch fired for its
+/// own reason rather than for the first case in the sweep that happened to load.
+fn refusal(what: &str, src: &str) -> String {
     match refinery_scenarios::load_str(src) {
         Err(e) => e.to_string(),
         Ok(file) => match refinery_scenarios::build_engine(&file) {
-            Ok(_) => panic!("this plant should not have loaded"),
+            Ok(_) => panic!("{what}: this plant should not have loaded"),
             Err(e) => e.to_string(),
         },
     }
@@ -1027,7 +1030,7 @@ diameter_m = 0.05
         ),
     ];
     for (what, plant, expected) in cases {
-        let message = refusal(&plant);
+        let message = refusal(what, &plant);
         assert!(
             message.contains(expected),
             "{what}: expected the refusal to say `{expected}`, and it said: {message}"
