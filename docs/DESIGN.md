@@ -13997,3 +13997,389 @@ baseline, and the proptest counts:
 node's temperature by fidelity), the long uniform chain, `eps_dp` as a dead end's
 stiffness, and why the geometry stall moved from tick 91 to tick 41. A3 is
 closed.
+
+## 26. Interlocks and trips — the plant shuts itself down (M22.0) — specified before building
+
+### What licensed this, stated plainly
+
+Nothing fired. When M21 closed, no row in `docs/DEFERRED.md` was past its trigger.
+**This milestone is a decision**, the user's, taken on 2026-09-29 from a short
+list, on gameplay grounds. M17–M20 taught the plant to hold itself at a setpoint.
+A trip teaches it to protect itself when holding fails, which is what a player
+sees when something goes wrong. The row is E6, "a discrete layer", and its trigger
+("a safety case needing a plant to shut *itself* down") is fired by the demo this
+note specifies. That is B16's and M13's shape, and it is said here rather than
+left to be noticed.
+
+**The scope is a latching trip on a quantity the plant has from load, acting on
+pumps and valves.** A trip watches one measurement against one limit. When the
+limit is crossed, it drives its equipment to a declared safe state, and it stays
+tripped until a command resets it. Trips on flows and on furnace or cooler
+outlets, trips on other equipment, bypasses, voting, time delays and a manual
+trip button are all deferred with triggers below.
+
+### Four premises, measured before any fork
+
+The probe is a crate outside the repo (`W:\temp\claude\m22\probe`), built on the
+repo's `core` and `scenarios` at `f4c92ab`. It drives the engine through
+`Engine::apply`, issued after a tick's snapshot, so the command lands in the next
+tick's solve. The numbers are in `W:\temp\claude\m22\measurements.md`.
+
+**1. A stopped pump conducts, in both directions.** `network.rs` builds a stopped
+pump's branch with its shutoff head set to zero and its `a·Q²` resistance kept.
+That is a pump with no check valve, which is physically honest. On
+`tank_pump_valve.toml` at `dt = 1.0`, stopping the pump when the receiving tank
+reaches 3 m sends **−2.998 kg/s back through it** (the receiving tank sits 5 m
+higher), and the receiving level falls from 3.0006 m to 2.5975 m by tick 6 000.
+Both fidelities agree to four digits. **So "stop the pump" alone is not a safe
+state on this plant**, and a trip must be able to act on more than one piece of
+equipment. Fork 3 turns this into the actions list.
+
+**2. Shutting the valve in one tick is safe on both solvers.** M8.4 found that
+driving a branch to zero flow in one tick stalled Newton; M9.0 and M9.1 fixed it.
+Re-measured here, because a trip is exactly that event: shutting the discharge
+valve, with or without stopping the pump, gives **exactly zero flow on the next
+tick**, with at most 6 iterations on either fidelity after the action. The flow
+is sometimes written as `−0.0`, which `==` treats as zero and a bitwise
+comparison does not; the gates compare with `==`.
+
+**3. A tank has no overflow.** The untripped twin of the demo (below) passes its
+declared 10 m height after tick 2 859 and reads **15.1658 m in a 10 m tank** at
+tick 6 000, on both fidelities. A tank's `height_m` bounds setpoints and
+nothing else. That is not this milestone's to fix (new row B28), but it is the
+honest counterfactual for the demo: without the trip, the engine reports a state
+the tank cannot hold.
+
+**4. A trip that does not latch chatters.** On the demo plant, a trip that
+restores the pump and valve as soon as the level falls back below 6 m flips
+**3 194 times in 6 000 ticks** on both fidelities, and the level parks on the
+limit. The latched trip drains the tank to 1.1453 m. So the latch is visible on
+the demo itself, which is what fork 7 builds the demo around.
+
+### The sentence sites, counted before writing
+
+Grepped across `crates/`, `scenarios/`, `docs/` and `CLAUDE.md` for `interlock`,
+`trip`, `E6` and `discrete layer`:
+
+1. DESIGN §10's deferred list: "Interlocks and trips — a discrete layer, not a
+   regulating one. Un-defers with a safety case needing a plant to shut *itself*
+   down." Struck with a pointer here at M22.1.
+2. `docs/DEFERRED.md` E6. Marked as taken now; struck at M22.1.
+3. `docs/DEFERRED.md` B10 ("a latch is state and needs a reset command, which is a
+   discrete layer (E6)"). Its premise changes: after M22.1 the latch and reset
+   exist. B10's own trigger (a plant measured to cavitate between two snapshots)
+   has not fired, so its distance is updated and it is not taken.
+4. `docs/DEFERRED.md` E4 ("more than one writer of one actuator, refused at
+   load"). A trip and a loop on one valve are two writers. Fork 5 admits that pair
+   with a defined arbitration, so E4's sentence gains a scope: two REGULATING
+   writers.
+5. `crates/godot-ext/src/bridge.rs`, `referent`: wildcard-free on purpose, so a new
+   `Command` variant does not compile until it names its referent. `ResetTrip`
+   needs a `Referent::Trip` arm. The feature-gated clippy is owed at M22.1.
+6. `SetValveOpening`'s and `SetControllerMode`'s refusals in `Engine::apply`, and
+   `SetPumpOn`, which today has no guard at all. Fork 4.
+7. `ControlDef`'s doc and `build_controls`' refusals mention no trips and need
+   none. Nothing in `src/` matches on a trip today.
+
+### Fork 1 — where a trip lives, and why it is not a trait
+
+- **(a) A node kind.** Rejected for the reason §10 fork 1 rejected it for a loop:
+  a trip has no flow, pressure or volume, and every solver would have to skip it.
+- **(b) A field on the equipment it acts on.** Rejected: one trip acts on several
+  pieces of equipment (premise 1), and one piece of equipment can be held by
+  several trips.
+- **(c) A list beside the graph.** Chosen. `PlantGraph::trips: Vec<Trip>`, beside
+  `controls`, in declaration order, addressed by `TripId(u32)` with a lookup that
+  returns `Option`, as `LoopId`'s does.
+
+**It is a plain struct, not a trait.** M8.1 had to argue the `Controller` trait,
+because a P and a PI controller are two different algorithms behind one call, and
+rule 2 says a choice between models is a choice between implementations. A trip
+has no second model. It is a comparison and a latch. The features deferred below
+(a time delay, two-out-of-three voting, a bypass) are all DATA on one trip, not
+alternative algorithms for it. If one ever arrives that is a genuinely different
+decision rule, that is the day a trait is owed.
+
+### Fork 2 — what a trip may watch, and the missing measurement
+
+A trip measures through `PlantGraph::measure`, the loops' own reader, so a level
+means the same thing to a trip as to a loop. The question is what to do when
+`measure` returns nothing.
+
+For a control loop, "no measurement, no action" is right (§23 fork 2): acting on a
+stand-in is worse than waiting. **For a trip, the textbook rule is the reverse:**
+a safety system treats a failed or missing measurement as a demand and trips,
+because holding still is not the safe side. The two rules disagree, and the
+disagreement is only reachable where a measurement can be absent: a pipe's flow
+before the first tick (§24), and a furnace or cooler outlet before its first tick
+or while stagnant (§23).
+
+- **(a) "No measurement, no action", copied from the loops.** Rejected: it is the
+  wrong default for a safety function, and adopting it here would be a reflex
+  rather than a decision.
+- **(b) "No measurement, trip".** Rejected for now: on a flow, every plant would
+  trip on tick 1, because every flow is absent at load. Real low-flow trips handle
+  that with a startup bypass timer, which is a feature of its own.
+- **(c) Admit only quantities that exist from load.** Chosen. A trip may watch a
+  tank's level, a vessel's pressure, or a tank's or vessel's temperature. All
+  three are stored on the graph, declared by the file and exact from load (§12,
+  §21). A trip on a flow, or on a furnace or cooler outlet, is **refused at load
+  by name**, pointing at new row E13, whose trigger is "a low-flow or outlet
+  temperature trip", and which owes a stated rule for the missing measurement
+  when it comes.
+
+So `measure` returns `Some` for every admitted trip on every tick. The engine
+still treats `None` from it as an error rather than a quiet hold, because under
+(c) it can only mean the admission check and `measure` disagree.
+
+### Fork 3 — what a trip does: an actions list, write-once
+
+A trip declares one or more **actions**, each naming one piece of equipment and
+its safe state. Two kinds of equipment are admitted:
+
+- **A pump**: its safe state is stopped (`on = false`).
+- **A valve**: its safe state is a declared position in `[0, 1]`, **required, no
+  default**. Most trips close a valve, but a vent or dump valve trips open, so
+  "shut" is a choice the file makes, not one the loader makes for it.
+
+A relief valve is refused as trip equipment for its own reason: its opening is its
+own inlet pressure's, recomputed every solve. A furnace (fuel cut) and a cooler
+are refused with a pointer to new row E14; a furnace trip is common in real
+plants, but its natural measurement is its outlet, which fork 2 defers.
+
+**Write once, then refuse every other writer.** When a trip fires, it writes its
+safe states on that tick. After that it does not rewrite them. What holds them is
+fork 4: every path that could move tripped equipment away from its safe state is
+refused.
+
+- **(a) Rewrite the safe state on every tick while latched.** Rejected. It would
+  hide a missing refusal: a command that moves tripped equipment would return `Ok`
+  and be overwritten at the next tick. That is the "command that appears to work
+  and does not" defect `SetValveOpening`'s loop guard exists to prevent.
+- **(b) Write once and refuse, with a check.** Chosen. On every tick while a trip
+  is latched, the engine checks that its equipment is still in its safe state. If
+  it is not, the tick returns `Err`, naming the trip and the equipment. That
+  check is unreachable unless a refusal is missing. It turns a missing refusal
+  into a loud failure instead of a silent restart.
+
+### Fork 4 — the latch, the reset, and every writer refused
+
+**A trip latches.** Once tripped, it stays tripped when the measurement returns
+inside the limit. Premise 4 is what a trip that does not latch does.
+
+**`Command::ResetTrip { trip_id }` re-arms it**, and is refused in three cases:
+
+- **The condition still holds.** The measurement is read FRESH at the command,
+  for the same reason as the MANUAL→AUTO seed (§10, M8.3): commands land between
+  ticks, so the state now is what the next tick will measure. A reset against a
+  stale reading could re-arm a trip one tick before it should fire again.
+- **The trip is not tripped.** Resetting an armed trip would do nothing, and a
+  frontend that sends it has a wrong picture of the plant, so it is told.
+- **The id is unknown.** Through the `Option` lookup, as for a loop.
+
+**A reset does not restart anything.** The pump stays stopped and the valve stays
+where the trip put it. Reset only lifts the refusals, so a human can then restart
+the equipment by hand. That is how real plants work, and it keeps "the trip
+cleared" and "the plant restarted" as two separate events a player can see. A
+reset that restarts is deferred (E15).
+
+**The writers, counted.** While any latched trip holds a piece of equipment,
+these are refused when they would move it away from its safe state:
+
+1. `SetPumpOn { on: true }` on a tripped pump. Today this command has no guard at
+   all.
+2. `SetValveOpening` to any position other than the trip's, on a tripped valve.
+   The existing loop guard is a separate refusal.
+3. `SetControllerMode` to AUTO, for a loop whose actuator a latched trip holds.
+   **This is the one that is easy to miss**: the command moves no equipment
+   itself, but an AUTO loop writes its valve at the top of the next tick.
+4. The loop's own tick write. Fork 5 handles that by mode rather than by refusal.
+
+A write that EQUALS the safe state is admitted: stopping a stopped pump or
+shutting a shut valve moves nothing, and refusing it would make a frontend's
+"stop" button fail on a plant that is already safe. `SetSetpoint` on a loop in
+MANUAL is admitted: it moves nothing. When two latched trips hold one piece of
+equipment, resetting one leaves the other's refusals in place.
+
+### Fork 5 — trips and control loops
+
+A trip and a control loop may act on the same valve, and that pairing is admitted
+on purpose: an overfill trip on a tank's inlet valve, while a loop regulates that
+valve, is the ordinary case. E4 refuses two REGULATING writers of one actuator,
+because nothing says which wins. Here the rule is defined: **the trip wins, and
+the loop yields by changing mode.**
+
+When a trip fires, every loop whose actuator is one of the trip's valves is
+**forced to MANUAL**. MANUAL tracks, so its faceplate shows the valve's real,
+tripped position. A PI loop's memory is untouched, and the MANUAL→AUTO transfer
+already seeds from wherever the valve stands (M8.3). So after a reset, and after
+a human reopens the valve, putting the loop back in AUTO is the existing bumpless
+path, unchanged.
+
+- **(a) Keep the loop in AUTO and have it skip its write.** Rejected: a loop that
+  says AUTO and does nothing is a faceplate that lies, and its integral term
+  would keep winding against an error it cannot act on.
+- **(b) Force MANUAL.** Chosen. The mode change is visible in
+  `ControlSnapshot::mode`, and nothing new is needed after the reset.
+
+**Order within the tick: trips first, then loops.** Both run at the top of the
+tick, on the start-of-tick state, before the solve (§10 fork 6). If loops ran
+first, a loop still in AUTO would update its memory and report an output on the
+tripping tick, and the trip would then overwrite that output. Running trips first
+means the loop pass already sees MANUAL and tracks the tripped position. On the
+tripping tick itself, the solve sees the safe state: the flow the trip stops is
+zero in that tick's snapshot.
+
+### Fork 6 — the limit, its units, and "at the limit"
+
+`direction = "high" | "low"`, required, no default. A high trip fires when the
+measurement is **at or above** its limit (`≥`), and a low trip fires when it is at
+or below (`≤`). A trip setpoint is conventionally "reached", and at-the-limit is
+the side of the tie a safety function takes. The reset test is the strict
+complement: a high trip may be reset only when the measurement is strictly below
+its limit.
+
+The limit key is per variable, mirroring the loops' setpoint keys:
+`limit_m` (level), `limit_bar` (pressure), `limit_c` (temperature). **They are
+converted at the same site, by the same code, as `setpoint_m`, `setpoint_bar`
+and `setpoint_c`**, so M10's trap (a factor of 100 000 from converting bar in one
+place and not another) and M17's (°C taking +273.15) cannot come back through a
+second copy. The limit is then range-checked by `PlantGraph::check_setpoint`,
+which already refuses a level outside the tank's own height.
+
+A plant loaded already inside its trip condition is **admitted, and trips on
+tick 1** before any solve, because the trip pass runs first and the stored
+measurement exists from load. A plant never runs a tick un-tripped in a condition
+its own file declares unsafe. Gate 3 uses exactly that.
+
+### Fork 7 — the demo plant, and what it cannot show
+
+`scenarios/tank_overfill_trip.toml` = `tank_level_control.toml` with its
+`[[controls]]` block removed and its drain valve fixed at `opening = 0.1`, plus
+one trip:
+
+```toml
+[[trips]]
+name = "receiving_high_level"
+measurement = { node = "receiving_tank", variable = "level" }
+direction = "high"
+limit_m = 6.0
+actions = [
+  { pump = "transfer_pump" },
+  { valve = "discharge_valve", position = 0.0 },
+]
+```
+
+An action names its equipment under the key for its kind, so a `pump` action
+pointing at a valve is refused by name. The drain is sized so the pump outruns it
+(the level climbs about 3 m per 1 000 ticks) and so the tank drains after the trip.
+Measured on the probe:
+
+- The level first reaches 6 m after tick 1 235 (6.0006 m), so the trip fires at
+  the top of tick **1 236**.
+- The level then falls to 3.7584 m at tick 3 000 and 1.1453 m at tick 6 000.
+- The untripped twin passes 10 m after tick 2 859 and ends at 15.1658 m.
+- Both fidelities give the same numbers to the printed digits.
+
+It is a new file, not a trip wired into an existing one, for the reason every
+regulation slice gave: the existing files are the regression anchor.
+
+**What the demo cannot show, stated before building.** The CLI issues no
+commands (M8.4), so `ResetTrip`, every refusal in fork 4, and the loop mode change
+in fork 5 (the demo has no loop) are exercised only by fixtures. The table below
+marks which mutations that leaves inert on the demo.
+
+### The gates, named before building
+
+1. **The demo trips at the right tick and holds.** On both fidelities: armed
+   through tick 1 235; tripped from tick 1 236 with `tripped_at_tick = 1236`; the
+   pump off and the valve at 0.0 from then on; `fill_line`'s flow `== 0.0` on the
+   snapshot of tick 1 236 and every tick after. The exact tick is re-measured on
+   the engine's own trip before it is written into the test.
+2. **The latch holds after the condition clears.** On the demo: the level is
+   below 6 m within a few ticks of the trip, the trip is still tripped at every
+   snapshot to tick 6 000, and the level at tick 6 000 is below 2 m. Premise 4
+   says a trip that does not latch leaves it at 6.00 m.
+3. **At-the-limit, both directions, exact.** A vessel fixture declared at exactly
+   `P` with a high trip at `limit_bar = P` trips on tick 1. The same with the
+   limit one bar above does not trip. A low trip mirrors both. A vessel's stored
+   pressure equals its declared figure exactly (§12), so the tie is a real tie.
+4. **Tick order.** On a fixture with a PI loop on the valve the trip shuts: on
+   the tripping tick, the loop reports MANUAL and a faceplate output of exactly
+   the trip's position. If the loops ran first, the faceplate would show the
+   loop's own output for that tick instead.
+5. **The loop hand-back.** On the same fixture: `SetControllerMode` to AUTO is
+   refused while latched. After the level clears, `ResetTrip` succeeds, the pump
+   and valve are unchanged by it, a human reopens the valve and restarts the pump,
+   and AUTO is admitted and takes over without stepping the valve (M8.3's
+   transfer, unchanged).
+6. **Every refusal in fork 4.** `SetPumpOn { on: true }`, `SetValveOpening` away
+   from the safe position, AUTO on an owned loop, `ResetTrip` while the condition
+   holds, on an armed trip and on an unknown id: each is `Err` while latched, and
+   the three equipment commands are `Ok` after reset. The writes that equal the
+   safe state are `Ok` while latched. Two trips on one pump: resetting one leaves
+   the pump refused.
+7. **All twenty-five pre-M22 plants byte-identical on both fidelities, with no
+   iteration count moved**, against a baseline recorded before the first edit.
+8. **Wire form.** A plant with no trip emits no `trips` key, asserted on the
+   serialized bytes. The demo's snapshot round-trips, and its trip state is
+   tagged.
+9. **The load-time refusal sweep**, one case per refusal, each asserting a
+   distinctive substring of its own message: a flow or outlet measurement (E13),
+   a furnace or cooler action (E14), a relief valve action, a `pump` action on a
+   valve, a valve action with no position or one outside `[0, 1]`, two trips
+   giving one valve different positions, an empty actions list, a missing
+   `direction`, the wrong limit key for the variable, a level limit above the
+   tank, a duplicate trip name, an unknown key.
+
+### What must not change, stated as a prediction that can be wrong
+
+Every pre-M22 plant is byte-identical on both fidelities with no iteration count
+moved. The mechanism: the trip pass takes an early return on a plant with no
+trips, as `run_control_loops` does, and `Snapshot::trips` is
+`skip_serializing_if = "Vec::is_empty"`. The prediction can fail if the loader's
+new table changes node or edge ids, or if a refusal added to `SetPumpOn` reaches
+a plant with no trip.
+
+### The mutations M22.1 owes, named before building
+
+| # | mutation | predicted catch | demo? |
+|---|---|---|---|
+| 1 | no latch: the trip clears when the measurement clears | gate 2 | yes (chatter) |
+| 2 | `≥` becomes `>` | gate 3 alone | inert |
+| 3 | low treated as high | gate 3, and the demo trips on tick 1 | yes |
+| 4 | `limit_bar` not converted to Pa | gate 3 | inert |
+| 5 | trips run after the loops | gate 4 alone | inert (no loop) |
+| 6 | trips run at the end of the tick | gate 1, through `tripped_at_tick` alone (1 235, not 1 236); every flow is the same | yes |
+| 7 | loop not forced to MANUAL | gate 4, and the hold check fails the next tick | inert |
+| 8 | AUTO refusal deleted | gate 5, gate 6 | inert |
+| 9 | reset admitted while the condition holds | gate 6 alone | inert |
+| 10 | reset restarts the equipment | gate 5, gate 6 | inert |
+| 11 | `SetPumpOn` refusal deleted | gate 6, and the hold check | inert |
+| 12 | `skip_serializing_if` removed from `trips` | gate 8 alone (CI commits no baseline) | inert |
+| 13 | the hold check deleted | nothing | inert |
+
+Mutation 13 is predicted uncaught on purpose: the hold check backs up the
+refusals and is unreachable while they hold. A gate for it would have to delete a
+refusal first. Mutation 12 moves every plant's bytes and fails nothing but gate 8,
+which is why gate 8 exists.
+
+### Deferred, with what un-defers each
+
+- **E13 — a trip on a quantity absent at load** (a flow, a furnace or cooler
+  outlet). Needs a stated rule for the missing measurement, which for a safety
+  function is not the loops' rule, and usually a startup bypass timer. Un-defers
+  with a low-flow or outlet-temperature trip a plant needs.
+- **E14 — trip equipment beyond pumps and valves**: a furnace's fuel cut, a
+  cooler. Un-defers with E13's outlet case, or with a furnace trip on a holdup
+  temperature a plant needs.
+- **E15 — the rest of a real safety system**: a maintenance bypass, a manual trip
+  button, two-out-of-three voting, a trip delay, a first-out indication, and a
+  reset that restarts equipment. Each is data on a trip, not a new model (fork 1).
+  Un-defers with a scenario or a frontend that needs one of them.
+- **B28 — a tank has no overflow.** Premise 3. A tank past its declared height
+  keeps filling. Un-defers with a plant or frontend that must show what happens
+  at the brim, or with a trip-free plant found above its own height.
+- **B10** keeps its own trigger. After M22.1 the latch and the reset command it
+  said it lacked will exist; what it still needs is a plant measured to cavitate
+  between two snapshots.

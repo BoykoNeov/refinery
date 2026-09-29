@@ -6536,3 +6536,47 @@ passed. It was restored from a byte copy, and the harness now writes raw.
 **M21 is CLOSED (2026-09-29) with this slice.** A3 is struck. `scenarios/` holds
 twenty-five files, six of which declare `[[controls]]`. The next milestone is
 chosen from `docs/DEFERRED.md`.
+
+## M22 — interlocks and trips: the plant shuts itself down; ledger row E6; opened on a decision
+
+Taken on the user's decision (2026-09-29), from a short list, on gameplay grounds:
+M17–M20 made the plant hold its setpoints, and a trip makes it protect itself
+when holding fails. Nothing in `docs/DEFERRED.md` was past its trigger. Its scope
+is **a latching trip on a level, vessel pressure or holdup temperature, acting on
+pumps and valves, re-armed by a command that restarts nothing.**
+
+### M22.0 — Scoping + design note — **LANDED** 2026-09-29
+
+The note is DESIGN §26: seven forks, nine gates, thirteen mutations, no code. Four
+premises were measured first, on a probe crate outside the repo
+(`W:\temp\claude\m22\probe`, numbers in `W:\temp\claude\m22\measurements.md`).
+Five things to know before the building slice.
+
+**A stopped pump is not a safe state.** The solver keeps a stopped pump's
+resistance and drops only its head, so it conducts both ways. On the reference
+plant, stopping it sends 3 kg/s back from the higher receiving tank. So a trip
+declares a LIST of actions (stop this pump, put this valve at this position), and
+the demo's trip does both.
+
+**A one-tick valve shut is safe now.** M8.4's stall is gone: exactly zero flow
+on the next tick, at most 6 iterations, on both fidelities.
+
+**The latch is visible on the demo, and that decided the demo.**
+`scenarios/tank_overfill_trip.toml` will be `tank_level_control.toml` without its
+loop and with its drain fixed at 0.1. The trip fires at the top of tick 1 236 and
+the tank drains to 1.15 m. A trip that does not latch flips 3 194 times and parks
+the level on the limit. Without the trip, the tank reads 15.17 m in a 10 m shell:
+**the engine has no overflow** (new row B28).
+
+**A missing measurement is NOT copied from the loops.** For a safety function the
+textbook rule is that a missing measurement trips. M22 avoids the question by
+admitting only quantities that exist from load; flow and outlet trips are refused
+by name (E13).
+
+**Every writer is refused, and one is easy to miss.** A trip writes its safe
+state once. `SetPumpOn(true)`, `SetValveOpening` away from the safe position, and
+**`SetControllerMode` to AUTO** on a loop owning a tripped valve are refused while
+latched; a latched tick that finds its equipment moved returns `Err`. A trip
+forces a loop on its valve to MANUAL, and runs before the loops in the tick. The
+CLI issues no commands, so the reset and every refusal are fixture-only, and the
+note's mutation table says which mutations that leaves inert on the demo.

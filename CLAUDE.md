@@ -187,6 +187,22 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M22 is OPEN (2026-09-29): interlocks and trips — `docs/DEFERRED.md` row E6.**
+Taken on a DECISION (the user's, on gameplay grounds). **M22.0 landed 2026-09-29**:
+DESIGN §26, seven forks, nine gates, thirteen mutations, no code. **M22.1 builds
+it** — read §26 first. The shape: `PlantGraph::trips`, a plain struct (no trait),
+`[[trips]]` with `direction = "high" | "low"`, `limit_m`/`limit_bar`/`limit_c`
+converted at the setpoints' own site, and an `actions` list of `{ pump = … }` and
+`{ valve = …, position = … }`. A trip fires at `≥`/`≤`, latches, writes its safe
+state once, forces loops on its valves to MANUAL, runs BEFORE the loops, and is
+re-armed by `Command::ResetTrip`, which is refused while the condition holds and
+restarts nothing. Only quantities present from load may be watched (flow and
+outlet trips are E13). **A stopped pump conducts** (it keeps its resistance), which
+is why a trip takes a list of actions. Demo: `scenarios/tank_overfill_trip.toml`,
+trips at tick 1 236; its untripped twin fills a 10 m tank to 15.17 m (B28: no
+overflow). The Godot bridge's `referent` needs a `Trip` arm, and the
+feature-gated clippy is owed.
+
 **M21 is CLOSED (2026-09-29): the game solver's stiff-pair stall — `docs/DEFERRED.md`
 row A3, now struck.** Taken on a DECISION (the user's). **M21.0** wrote DESIGN §25
 (five forks, eight gates, nine mutations, no code) and **M21.1 landed 2026-09-29**
