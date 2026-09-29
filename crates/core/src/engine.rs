@@ -7,7 +7,9 @@
 use crate::components::{Composition, Slate};
 use crate::energy::{self};
 use crate::error::SimError;
-use crate::graph::{ControlMode, ControlledValue, LeakRole, LoopId, NodeId, NodeKind, PlantGraph};
+use crate::graph::{
+    ControlMode, ControlledValue, LeakRole, LoopId, MeasuredVariable, NodeId, NodeKind, PlantGraph,
+};
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
     NodeSnapshot, Snapshot,
@@ -338,25 +340,36 @@ impl Engine {
                     // seeding later, at the first measurement, would be a
                     // different promise, and seeding against a stand-in is the
                     // fabricated number §23 fork 2 refuses.
+                    // A pipe's flow is the same state before the first tick (M20,
+                    // §24 fork 2), and the message names the missing quantity by
+                    // variable rather than calling every absence a temperature.
                     let measurement = self
                         .graph
                         .measure(
                             &self.slate,
                             &self.node_states,
-                            control.measurement_node,
+                            self.last_solution.as_ref(),
+                            control.measurement_point,
                             control.setpoint.variable(),
                         )?
                         .ok_or_else(|| {
                             SimError::InvalidCommand(format!(
-                                "control loop '{}' has no measurement to transfer against: its \
-                                 measured node '{}' has no resolved temperature yet (before the \
-                                 first tick) or none this tick (no flow through it). A bumpless \
-                                 transfer back-calculates the loop's memory from the error \
-                                 standing NOW; step the plant with flow through the node first, \
-                                 or declare the loop `mode = \"auto\"` in the file \
-                                 (docs/DESIGN.md §23 fork 4)",
+                                "control loop '{}' has no measurement to transfer against: \
+                                 '{}' has no resolved {} yet (before the first tick){}. A \
+                                 bumpless transfer back-calculates the loop's memory from the \
+                                 error standing NOW; step the plant first, or declare the loop \
+                                 `mode = \"auto\"` in the file (docs/DESIGN.md §23 fork 4, §24 \
+                                 fork 2)",
                                 control.name,
-                                self.graph.node(control.measurement_node).name
+                                self.graph.point_name(control.measurement_point),
+                                control.setpoint.variable().noun(),
+                                // Only an outlet can go absent AFTER the first
+                                // tick: a flow of zero is still a measurement.
+                                if control.setpoint.variable() == MeasuredVariable::Temperature {
+                                    " or none this tick (no flow through it)"
+                                } else {
+                                    ""
+                                }
                             ))
                         })?;
                     // The SAME reader pass 1 uses (docs/DESIGN.md §21, sites 3
@@ -430,7 +443,8 @@ impl Engine {
                         value.variable()
                     )));
                 }
-                self.graph.check_setpoint(control.measurement_node, value)?;
+                self.graph
+                    .check_setpoint(control.measurement_point, value)?;
                 self.graph
                     .control_mut(loop_id)
                     .ok_or_else(|| unknown_loop(loop_id))?
@@ -1354,14 +1368,17 @@ impl Engine {
         // Pass 1 — measure, and read each actuator's current position. Both are
         // reads of the state BEFORE this tick's solve: the graph, and — for a
         // furnace or cooler outlet — the last tick's resolved states, which are
-        // what this tick's solve is about to be handed (docs/DESIGN.md §23).
+        // what this tick's solve is about to be handed (docs/DESIGN.md §23), and
+        // — for a pipe's flow — the last tick's hydraulic solution (§24), `None`
+        // on the first tick.
         let mut sampled: Vec<(Option<ControlledValue>, f64)> =
             Vec::with_capacity(self.graph.controls().len());
         for control in self.graph.controls() {
             let measurement = self.graph.measure(
                 &self.slate,
                 &self.node_states,
-                control.measurement_node,
+                self.last_solution.as_ref(),
+                control.measurement_point,
                 control.setpoint.variable(),
             )?;
             // One owner of "where the actuator stands", shared with the loader's

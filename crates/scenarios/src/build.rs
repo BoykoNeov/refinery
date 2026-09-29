@@ -9,8 +9,8 @@ use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
     CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
-    HeatExchangerCoupling, LeakRole, MeasuredVariable, Node, NodeId, NodeKind, Pipe, PlantGraph,
-    TankState, VesselState,
+    HeatExchangerCoupling, LeakRole, MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind,
+    Pipe, PlantGraph, TankState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -18,8 +18,8 @@ use refinery_core::traits::{
     ThermoModel,
 };
 use refinery_core::units::{
-    CubicMeter, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, Meter, Seconds, SquareMeter, Watt,
-    WattPerKelvin, P_ATM, T_AMBIENT,
+    CubicMeter, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, KgPerSec, Meter, Seconds, SquareMeter,
+    Watt, WattPerKelvin, P_ATM, T_AMBIENT,
 };
 use std::collections::BTreeMap;
 
@@ -169,7 +169,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // actuator defined later in the file, exactly like an exchanger coupling or a
     // column draw. It runs after `plant_phases` because a loop's seeded
     // measurement is a real read of the finished plant, not a placeholder.
-    build_controls(&mut graph, &slate, &scenario.controls)?;
+    build_controls(&mut graph, &slate, &scenario.controls, &scenario.pipes)?;
 
     // Step 4: select solver impls from [fidelity]; unknown names are errors
     // listing the valid options.
@@ -482,15 +482,25 @@ fn resolve_vent_destination(
 /// - a temperature measured on anything that is not a holdup (M17) or a furnace or
 ///   cooler OUTLET (M19) — refused with its own reason for the other zero-volume
 ///   kinds, for a relief valve, for a column or reactor and for a boundary,
+/// - a flow (M20, docs/DESIGN.md §24) measured anywhere but a pipe this file
+///   DECLARES, which is one of the actuating valve's own two pipes and declares no
+///   `leak_to`; `node` and `pipe` both given or neither, and a flow asked of a
+///   node or another variable asked of a pipe,
 /// - a setpoint or a gain key belonging to ANOTHER variable, every direction,
 /// - an actuator the variable cannot pair with (docs/DESIGN.md §21 fork 3's table:
-///   a valve for a level or a pressure, a cooler for a temperature), each refused
-///   pairing with its own reason, and a `ReliefValve` always,
+///   a valve for a level, a pressure or a flow, a cooler or furnace for a
+///   temperature), each refused pairing with its own reason, and a `ReliefValve`
+///   always,
+/// - a direction of action the actuator contradicts: a cooler must be direct, a
+///   furnace and a flow loop's valve must SAY reverse, and reverse on a level or
+///   pressure loop's valve is refused (`docs/DEFERRED.md` E8),
 /// - `max_duty_mw` missing on a cooler or present on a valve, not finite and
 ///   positive, or a declared cooler duty outside `[0, max_duty_mw]`.
 ///
 /// `PlantGraph::measure` is called here exactly as the tick pass calls it, with the
-/// empty `NodeStates` that is the truth at load. For a level, a pressure or a
+/// empty `NodeStates` and the absent hydraulic solution that are the truth at load.
+/// A pipe's flow therefore has no measurement at load either (§24 fork 2), and
+/// takes the outlet loop's rule below unchanged. For a level, a pressure or a
 /// holdup's temperature — all STORED quantities — that gives a real measurement, and
 /// a snapshot taken before the first tick reports it. For a furnace or cooler
 /// OUTLET it gives none, because an outlet is resolved by the tick and does not
@@ -512,6 +522,7 @@ fn build_controls(
     graph: &mut PlantGraph,
     slate: &Slate,
     defs: &[ControlDef],
+    pipes: &[PipeDef],
 ) -> Result<(), SimError> {
     let mut seen_names: Vec<&str> = Vec::new();
     let mut claimed_actuators: Vec<(NodeId, &str)> = Vec::new();
@@ -530,27 +541,21 @@ fn build_controls(
             "level" => MeasuredVariable::Level,
             "pressure" => MeasuredVariable::Pressure,
             "temperature" => MeasuredVariable::Temperature,
-            // This message used to say temperature control was deferred because
-            // "a temperature really is a solved quantity" — false for a holdup,
-            // whose temperature is stored on the graph (docs/DESIGN.md §21). Flow's
-            // reason was never that one.
+            // This message used to say flow control was deferred because "a flow
+            // lives on an EDGE, which nothing in `measure`'s signature can name".
+            // M20 names it: `MeasurementPoint` (docs/DESIGN.md §24 fork 1).
+            "flow" => MeasuredVariable::Flow,
             other => {
                 return Err(SimError::Scenario(format!(
                     "control loop '{}' measures unknown variable '{other}' (valid: level, \
-                     pressure, temperature). Flow control stays deferred: a flow lives on an \
-                     EDGE, which nothing in `PlantGraph::measure`'s signature can name \
-                     (docs/DESIGN.md §21)",
+                     pressure, temperature, flow)",
                     def.name
                 )))
             }
         };
 
-        let measurement_node = graph.find_node(&def.measurement.node).ok_or_else(|| {
-            SimError::Scenario(format!(
-                "control loop '{}' measures unknown node '{}'",
-                def.name, def.measurement.node
-            ))
-        })?;
+        let point = resolve_measurement_point(graph, def, pipes)?;
+        let point_name = graph.point_name(point).to_owned();
         let actuator = graph.find_node(&def.actuator).ok_or_else(|| {
             SimError::Scenario(format!(
                 "control loop '{}' actuates unknown node '{}'",
@@ -571,13 +576,19 @@ fn build_controls(
             .measure(
                 slate,
                 &refinery_core::energy::NodeStates::default(),
-                measurement_node,
+                None,
+                point,
                 variable,
             )
             .map_err(|e| {
                 SimError::Scenario(format!(
-                    "control loop '{}' cannot measure {} on node '{}': {e}",
-                    def.name, def.measurement.variable, def.measurement.node
+                    "control loop '{}' cannot measure {} on {} '{point_name}': {e}",
+                    def.name,
+                    def.measurement.variable,
+                    match point {
+                        MeasurementPoint::Node(_) => "node",
+                        MeasurementPoint::Pipe(_) => "pipe",
+                    }
                 ))
             })?;
 
@@ -602,7 +613,10 @@ fn build_controls(
                     def.name, def.actuator
                 )))
             }
-            (MeasuredVariable::Level | MeasuredVariable::Pressure, NodeKind::Valve { .. }) => {
+            (
+                MeasuredVariable::Level | MeasuredVariable::Pressure | MeasuredVariable::Flow,
+                NodeKind::Valve { .. },
+            ) => {
                 if def.max_duty_mw.is_some() {
                     return Err(SimError::Scenario(format!(
                         "control loop '{}' declares `max_duty_mw` on a valve actuator. That key \
@@ -612,6 +626,34 @@ fn build_controls(
                          (docs/DESIGN.md §21 fork 3)",
                         def.name
                     )));
+                }
+                // **One hop, and that is the whole of the sign check** (docs/DESIGN.md
+                // §24 fork 3). `validate_degrees` holds every valve to exactly one
+                // inlet and one outlet edge by declared direction, so a pipe that
+                // touches the valve IS its whole inlet or its whole outlet, with
+                // nothing branching between them — and opening the valve raises the
+                // flow through it. A meter further off, or a bypass valve beside the
+                // pipe, is E12.
+                //
+                // A column draw or a boil-off vent cannot reach here, and no guard
+                // is written for either: a draw ends at a product store and a vent
+                // runs between holdups, so neither is ever a valve's edge, and this
+                // adjacency rule excludes both structurally (the M8.2 precedent: a
+                // refusal nothing can reach is not a refusal).
+                if let MeasurementPoint::Pipe(pipe) = point {
+                    let (from, to) = graph.endpoints(pipe);
+                    if from != actuator && to != actuator {
+                        return Err(SimError::Scenario(format!(
+                            "control loop '{}' measures the flow in pipe '{point_name}', which \
+                             is not one of valve '{}''s own two pipes. A flow loop's sign is \
+                             checked in ONE hop — a valve has exactly one inlet and one outlet, \
+                             so opening it raises the flow in either — and a meter further \
+                             from its valve, or a valve bypassing the metered pipe (which is \
+                             DIRECT acting), is not admitted (docs/DEFERRED.md E12, \
+                             docs/DESIGN.md §24 fork 3)",
+                            def.name, def.actuator
+                        )));
+                    }
                 }
                 None
             }
@@ -703,14 +745,42 @@ fn build_controls(
                     def.name, def.actuator
                 )))
             }
+            (MeasuredVariable::Flow, NodeKind::Cooler { .. } | NodeKind::Furnace { .. }) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a flow with '{}', a cooler or furnace. A duty moves \
+                     heat and no mass: this engine's hydraulics do not depend on a unit's duty, \
+                     so the loop would have no effect on what it measures. A flow loop writes a \
+                     valve's opening (docs/DESIGN.md §24 fork 3)",
+                    def.name, def.actuator
+                )))
+            }
+            (MeasuredVariable::Flow, NodeKind::Pump { .. }) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a flow with pump '{}'. A pump's `on` is a switch, \
+                     not a fraction a controller can position, and pump speed is not modelled. \
+                     A flow loop writes a valve's opening (docs/DESIGN.md §24 fork 3)",
+                    def.name, def.actuator
+                )))
+            }
+            (MeasuredVariable::Flow, _) => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', which is not a valve. A flow loop writes \
+                     a valve's opening, on one of that valve's own two pipes (docs/DESIGN.md \
+                     §24 fork 3)",
+                    def.name, def.actuator
+                )))
+            }
         };
 
         // **The direction of action, declared and checked** (docs/DESIGN.md §22
         // fork 2). Absent means direct — a true statement about every loop
         // written before M18 — except on a furnace, where a default would make the
-        // file's most surprising property invisible. Checked against the actuator
-        // wherever the sign is physics, in both directions; refused on a valve,
-        // whose sign is topology (docs/DEFERRED.md E8).
+        // file's most surprising property invisible — and on a flow loop, for the
+        // same reason (M20). Checked against the actuator wherever the sign is
+        // physics, in both directions; refused on a level or pressure loop's
+        // valve, whose sign is topology (docs/DEFERRED.md E8). A valve holding the
+        // flow in its own pipe is the one valve whose sign IS physics: the pairing
+        // table above has already checked the one hop (docs/DESIGN.md §24 fork 3).
         let action = match def.action.as_deref() {
             None | Some("direct") => ControlAction::Direct,
             Some("reverse") => ControlAction::Reverse,
@@ -722,7 +792,28 @@ fn build_controls(
                 )))
             }
         };
+        let flow_loop = variable == MeasuredVariable::Flow;
         match (&graph.node(actuator).kind, action, def.action.is_some()) {
+            (NodeKind::Valve { .. }, ControlAction::Direct, false) if flow_loop => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds the flow through valve '{}' and declares no \
+                     `action`. Opening a valve RAISES the flow in its own pipe, so this loop is \
+                     reverse acting — the industry's own convention for a flow controller — \
+                     and that must be declared rather than defaulted: add `action = \
+                     \"reverse\"` (docs/DESIGN.md §24 fork 3)",
+                    def.name, def.actuator
+                )))
+            }
+            (NodeKind::Valve { .. }, ControlAction::Direct, true) if flow_loop => {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' declares `action = \"direct\"` on valve '{}', which it \
+                     holds a flow with. A direct loop's output must LOWER its measurement as it \
+                     rises, and opening a valve raises the flow in its own pipe: this loop \
+                     would shut the valve the moment the flow ran low. Declare `action = \
+                     \"reverse\"` (docs/DESIGN.md §24 fork 3)",
+                    def.name, def.actuator
+                )))
+            }
             (NodeKind::Furnace { .. }, ControlAction::Direct, false) => {
                 return Err(SimError::Scenario(format!(
                     "control loop '{}' actuates furnace '{}' and declares no `action`. More \
@@ -752,15 +843,19 @@ fn build_controls(
                     def.name, def.actuator
                 )))
             }
-            (NodeKind::Valve { .. }, ControlAction::Reverse, _) => {
+            (NodeKind::Valve { .. }, ControlAction::Reverse, _) if !flow_loop => {
                 return Err(SimError::Scenario(format!(
-                    "control loop '{}' declares `action = \"reverse\"` on valve '{}'. A \
-                     valve's direction is its place in the plant, not its kind — the same \
-                     valve is direct on a drain and reverse on a fill line — and the loader \
-                     does not check which side of the measured holdup a valve sits on, so a \
-                     reverse declaration here would be a sign nothing verifies. Deferred as \
-                     docs/DEFERRED.md E8 (docs/DESIGN.md §22 fork 3)",
-                    def.name, def.actuator
+                    "control loop '{}' declares `action = \"reverse\"` on valve '{}', holding a \
+                     {}. On a level or pressure loop a valve's direction is its place in the \
+                     plant, not its kind — the same valve is direct on a drain and reverse on \
+                     a fill line — and the loader does not check which side of the measured \
+                     holdup a valve sits on, so a reverse declaration here would be a sign \
+                     nothing verifies. Deferred as docs/DEFERRED.md E8 (docs/DESIGN.md §22 \
+                     fork 3). Only a valve holding the FLOW in its own pipe is admitted as \
+                     reverse (§24 fork 3)",
+                    def.name,
+                    def.actuator,
+                    variable.noun()
                 )))
             }
             _ => {}
@@ -794,7 +889,7 @@ fn build_controls(
         // existing coverage, and it is two refusals rather than one because
         // `setpoint_*` and `gain_per_*` are two different mistakes in a file.
         //
-        // With three variables every loop has four foreign keys, so the refusal
+        // With four variables every loop has six foreign keys, so the refusal
         // is a table walked in one order rather than a pair written per arm — the
         // same four messages each arm used to write, and no arm able to forget
         // one of the newer variable's keys.
@@ -833,6 +928,18 @@ fn build_controls(
                 def.gain_per_k.is_some(),
                 "gain_per_k",
                 MeasuredVariable::Temperature,
+                variable.gain_key(),
+            ),
+            (
+                def.setpoint_kg_per_s.is_some(),
+                "setpoint_kg_per_s",
+                MeasuredVariable::Flow,
+                variable.setpoint_key(),
+            ),
+            (
+                def.gain_per_kg_per_s.is_some(),
+                "gain_per_kg_per_s",
+                MeasuredVariable::Flow,
                 variable.gain_key(),
             ),
         ] {
@@ -895,9 +1002,30 @@ fn build_controls(
                     require_keyed(def.gain_per_k, &def.name, variable.gain_key(), "the gain")?;
                 (setpoint, gain)
             }
+            // **Nothing to convert on either side, the first variable so**
+            // (docs/DESIGN.md §24 fork 4): the file's kg/s is the engine's kg/s,
+            // so the trap the pressure pair and the temperature pair each guard
+            // against has no expression here.
+            MeasuredVariable::Flow => {
+                let setpoint = ControlledValue::Flow {
+                    kg_per_s: KgPerSec(require_keyed(
+                        def.setpoint_kg_per_s,
+                        &def.name,
+                        variable.setpoint_key(),
+                        "the loop's target",
+                    )?),
+                };
+                let gain = require_keyed(
+                    def.gain_per_kg_per_s,
+                    &def.name,
+                    variable.gain_key(),
+                    "the gain",
+                )?;
+                (setpoint, gain)
+            }
         };
         graph
-            .check_setpoint(measurement_node, setpoint)
+            .check_setpoint(point, setpoint)
             .map_err(|e| SimError::Scenario(format!("control loop '{}': {e}", def.name)))?;
 
         let mode = match def.mode.as_str() {
@@ -1001,7 +1129,7 @@ fn build_controls(
 
         graph.add_control(ControlLoop {
             name: def.name.clone(),
-            measurement_node,
+            measurement_point: point,
             actuator,
             action,
             max_duty,
@@ -1013,6 +1141,116 @@ fn build_controls(
         });
     }
     Ok(())
+}
+
+/// Where a `[[controls]]` entry measures: a node by name, or a pipe by name among
+/// the file's DECLARED `[[pipes]]` (M20, docs/DESIGN.md §24 fork 1).
+///
+/// Which point may carry which variable is not decided here — `PlantGraph::measure`
+/// owns that, and refuses a flow asked of a node or a level asked of a pipe with a
+/// message naming the other key. What is decided here is only what the NAME
+/// refers to:
+///
+/// - **Exactly one of `node` and `pipe`.** Both, or neither, is refused.
+/// - **A pipe is looked up among the declared pipes, not the graph's edges.** The
+///   graph also holds edges the loader made — a leak split's `__downstream` half and
+///   `__leak` orifice, every boil-off vent — and a file naming one would be metering
+///   a pipe it never wrote. Pipe names are not otherwise required to be unique, so a
+///   name declared twice is refused as an ambiguous meter rather than resolved to
+///   whichever came first.
+/// - **A pipe that declares `leak_to` is refused, with its own reason, before any
+///   adjacency check** (§24 fork 5): the split gives the declared name to the
+///   UPSTREAM half, which ends at the leak junction and not at the valve, and once
+///   punctured the two halves carry different flows. The message names the leak
+///   rather than "not on the valve". Since `Command::PuncturePipe` acts only on a
+///   pipe the loader split, a pipe that passes here can never be punctured mid-run.
+/// - The graph edge is then found by name AND declared endpoints AND an ordinary
+///   leak role, so a loader-made edge that happened to share the name could not be
+///   picked up in its place.
+fn resolve_measurement_point(
+    graph: &PlantGraph,
+    def: &ControlDef,
+    pipes: &[PipeDef],
+) -> Result<MeasurementPoint, SimError> {
+    match (&def.measurement.node, &def.measurement.pipe) {
+        (Some(node), Some(pipe)) => Err(SimError::Scenario(format!(
+            "control loop '{}' names both `node = \"{node}\"` and `pipe = \"{pipe}\"` in \
+             `measurement`. A loop measures at ONE point: a node for a level, pressure or \
+             temperature, a pipe for a flow (docs/DESIGN.md §24 fork 1)",
+            def.name
+        ))),
+        (None, None) => Err(SimError::Scenario(format!(
+            "control loop '{}' names neither `node` nor `pipe` in `measurement`. A level, \
+             pressure or temperature is measured at a `node`, a flow on a `pipe` \
+             (docs/DESIGN.md §24 fork 1)",
+            def.name
+        ))),
+        (Some(node), None) => graph
+            .find_node(node)
+            .map(MeasurementPoint::Node)
+            .ok_or_else(|| {
+                SimError::Scenario(format!(
+                    "control loop '{}' measures unknown node '{node}'",
+                    def.name
+                ))
+            }),
+        (None, Some(name)) => {
+            let declared: Vec<&PipeDef> = pipes.iter().filter(|p| p.name == *name).collect();
+            let pipe = match declared.as_slice() {
+                [] => {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' measures pipe '{name}', which this file does not \
+                         declare. A loop meters only a pipe the file wrote in `[[pipes]]`: the \
+                         loader also makes edges of its own — a leak split's `__downstream` \
+                         half and `__leak` orifice, and every boil-off vent — and those are \
+                         not meters (docs/DESIGN.md §24 fork 1)",
+                        def.name
+                    )))
+                }
+                [one] => *one,
+                _ => {
+                    return Err(SimError::Scenario(format!(
+                        "control loop '{}' measures pipe '{name}', and this file declares {} \
+                         pipes by that name, so the meter is ambiguous. Rename one",
+                        def.name,
+                        declared.len()
+                    )))
+                }
+            };
+            if let Some(atmosphere) = &pipe.leak_to {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' measures pipe '{name}', which declares `leak_to = \
+                     \"{atmosphere}\"`. The loader splits a leaking pipe at a junction and gives \
+                     the declared name to the UPSTREAM half, which ends at the leak point and \
+                     not at the valve — and once punctured the two halves carry different \
+                     flows. A flow loop meters a pipe with no leak path (docs/DESIGN.md §24 \
+                     fork 5)",
+                    def.name
+                )));
+            }
+            let from = graph.find_node(&pipe.from);
+            let to = graph.find_node(&pipe.to);
+            graph
+                .edge_ids()
+                .find(|&edge| {
+                    let candidate = graph.pipe(edge);
+                    candidate.name == *name
+                        && candidate.leak == LeakRole::None
+                        && Some(graph.endpoints(edge)) == from.zip(to)
+                })
+                .map(MeasurementPoint::Pipe)
+                .ok_or_else(|| {
+                    // Every declared pipe without `leak_to` was added whole, under
+                    // its own name and endpoints, before this runs; reaching here
+                    // is a loader fault, said rather than papered over (rule 5).
+                    SimError::Scenario(format!(
+                        "control loop '{}' measures declared pipe '{name}', which the \
+                         loader did not build as one ordinary edge",
+                        def.name
+                    ))
+                })
+        }
+    }
 }
 
 /// A `[[controls]]` key that is required for this loop's variable or algorithm.

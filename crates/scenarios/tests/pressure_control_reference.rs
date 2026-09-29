@@ -8,7 +8,11 @@
 //! and the answer is recorded here rather than in prose: `Engine::run_control_loops`
 //! is UNCHANGED by this milestone. It already called
 //! `measure(&slate, control.measurement_node, control.setpoint.variable())`, and
-//! that line reads a vessel's pressure without knowing it did anything new.
+//! that line reads a vessel's pressure without knowing it did anything new. (That
+//! call is quoted as it stood at M10. M19 added the resolved states and M20 the
+//! hydraulic solution and a `MeasurementPoint` in place of the node — each a new
+//! argument for a variable a vessel's arm ignores, so the claim above still holds
+//! for the pressure arm.)
 //!
 //! **The premise that deferred this variable was false, and gate 1 is the one
 //! that says so.** DESIGN §10 fork 3 split plant quantities into stored and
@@ -32,7 +36,9 @@
 //! is a fixture, and the files in `scenarios/` are the regression anchor. The
 //! wired demo lives in `pressure_control_demo.rs`.
 
-use refinery_core::graph::{ControlAction, ControlledValue, LoopId, MeasuredVariable, NodeId};
+use refinery_core::graph::{
+    ControlAction, ControlledValue, LoopId, MeasuredVariable, MeasurementPoint, NodeId,
+};
 use refinery_core::snapshot::Command;
 use refinery_core::units::{Meter, Pascal};
 use refinery_core::Engine;
@@ -375,6 +381,19 @@ diameter_m = 0.05
         !message.contains("it needs a stated rule for"),
         "the old reason — that no tick-0 rule exists — is false since docs/DESIGN.md \
          §23 and must not survive in the message: {message}"
+    );
+    // **M20 expired M19's wording in turn** (docs/DESIGN.md §24, site 4). It said
+    // the rule "is applied only to a furnace or cooler outlet", and `measure` now
+    // applies it to a pipe's flow too, from the very hydraulic solution a
+    // junction's pressure would be read from. The path exists; only the scope
+    // decision is left, and the message has to say so.
+    assert!(
+        !message.contains("is applied only to a furnace or cooler outlet"),
+        "M19's reason — the rule applied only to an outlet — is false since §24: {message}"
+    );
+    assert!(
+        message.contains("Both halves of reading one exist"),
+        "and the reworded message must say the rule AND the solution both exist: {message}"
     );
 }
 
@@ -861,13 +880,17 @@ fn the_measurement_and_the_setpoint_agree_on_which_kinds_answer_for_a_pressure()
             .measure(
                 &engine.slate,
                 engine.node_states(),
-                receiver,
+                None,
+                MeasurementPoint::Node(receiver),
                 MeasuredVariable::Pressure
             )
             .is_ok()
             && engine
                 .graph
-                .check_setpoint(receiver, ControlledValue::Pressure { pa: Pascal(15.0e5) })
+                .check_setpoint(
+                    MeasurementPoint::Node(receiver),
+                    ControlledValue::Pressure { pa: Pascal(15.0e5) }
+                )
                 .is_ok(),
         "a vessel must answer for a pressure on both paths"
     );
@@ -877,13 +900,17 @@ fn the_measurement_and_the_setpoint_agree_on_which_kinds_answer_for_a_pressure()
             .measure(
                 &engine.slate,
                 engine.node_states(),
-                header,
+                None,
+                MeasurementPoint::Node(header),
                 MeasuredVariable::Pressure
             )
             .is_err()
             && engine
                 .graph
-                .check_setpoint(header, ControlledValue::Pressure { pa: Pascal(15.0e5) })
+                .check_setpoint(
+                    MeasurementPoint::Node(header),
+                    ControlledValue::Pressure { pa: Pascal(15.0e5) }
+                )
                 .is_err(),
         "a source must be refused on both paths: one accepting it would be a loop \
          that loads and cannot be commanded, or a command that outlives its load"

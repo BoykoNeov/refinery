@@ -19,9 +19,10 @@
 # actuator. On a fill valve that is runaway; on a drain it is regulation. A
 # level loop in this engine therefore writes the valve the liquid leaves by, and
 # `discharge_valve` keeps M1's fixed 0.5. (Since M18 a loop can declare
-# `action = "reverse"`, which is what a fill valve would need — but only on a
-# furnace, whose sign is physics. On a valve the sign is where it sits, which the
-# loader does not check, so reverse on a valve is refused: docs/DEFERRED.md E8.)
+# `action = "reverse"`, which is what a fill valve would need — but only where
+# the sign is physics: a furnace, and since M20 a valve holding the FLOW in its
+# own pipe. On a level loop's valve the sign runs through the tank, which the
+# loader does not check, so reverse there is refused: docs/DEFERRED.md E8.)
 #
 # **The gain has a measured upper bound, and this is where to read it.** At the
 # settled operating point below the drain sits at opening ~0.376, so a setpoint

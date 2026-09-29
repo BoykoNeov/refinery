@@ -615,17 +615,33 @@ pub enum ControlMode {
 /// tick. It is true of a zero-volume node's temperature (a furnace's or a
 /// cooler's outlet, a junction's mix), and `measure` refuses exactly those.
 ///
-/// Flow stays deferred, and its reason is not that one: a flow lives on an edge,
-/// which nothing in `measure`'s signature can name.
+/// **The fourth variant, flow, landed in M20** (docs/DESIGN.md §24). This doc
+/// used to close "Flow stays deferred … a flow lives on an edge, which nothing in
+/// `measure`'s signature can name" — true of the signature, and paid with
+/// `MeasurementPoint`, so a loop now measures at a node OR a pipe. A pipe's flow
+/// is on the graph (`Pipe::stream.mass_flow`) but the loader stores an
+/// initialiser zero there, not a declaration, so it is ABSENT at load exactly as
+/// a furnace outlet is, and `measure` reads it from the last hydraulic solution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeasuredVariable {
     Level,
     Pressure,
     Temperature,
+    Flow,
 }
 
 impl MeasuredVariable {
+    /// The variable as a noun in a message: "has no flow yet".
+    pub fn noun(self) -> &'static str {
+        match self {
+            MeasuredVariable::Level => "level",
+            MeasuredVariable::Pressure => "pressure",
+            MeasuredVariable::Temperature => "temperature",
+            MeasuredVariable::Flow => "flow",
+        }
+    }
+
     /// The scenario key that carries this variable's setpoint, unit included.
     ///
     /// Used to phrase the loader's refusals — so a message can name the key a
@@ -641,6 +657,10 @@ impl MeasuredVariable {
             MeasuredVariable::Level => "setpoint_m",
             MeasuredVariable::Pressure => "setpoint_bar",
             MeasuredVariable::Temperature => "setpoint_c",
+            // The first variable whose file unit IS its SI unit (docs/DESIGN.md
+            // §24 fork 4): the engine publishes kg/s, and an operator's t/h is a
+            // display conversion at the frontend (rule 4).
+            MeasuredVariable::Flow => "setpoint_kg_per_s",
         }
     }
 
@@ -669,8 +689,30 @@ impl MeasuredVariable {
             // gain. `_per_k` says there is no offset to apply; `smearing_k` is
             // the format's precedent.
             MeasuredVariable::Temperature => "gain_per_k",
+            // Per kg/s, converted by nothing, and so is the setpoint: the one
+            // variable with no conversion at all, so the trap the two keys above
+            // exist to make loud cannot be written here (§24 fork 4).
+            MeasuredVariable::Flow => "gain_per_kg_per_s",
         }
     }
+}
+
+/// Where a loop's measurement is taken: at a node, or on a pipe (M20,
+/// docs/DESIGN.md §24 fork 1).
+///
+/// **An enum rather than a second field beside the node**, because with two
+/// `Option`s "both" and "neither" become representable and every reader has to
+/// decide which one wins. A level, a pressure and a temperature are read at a
+/// `Node`; a flow on a `Pipe`. `PlantGraph::measure` and
+/// `PlantGraph::check_setpoint` refuse every other pairing.
+///
+/// Measuring a valve NODE's throughput instead was rejected: no snapshot
+/// publishes such a number, and a valve's two pipes differ by that node's solver
+/// residual, so "the valve's flow" would have to pick one pipe silently anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeasurementPoint {
+    Node(NodeId),
+    Pipe(EdgeId),
 }
 
 /// A regulated quantity — a setpoint or a measurement — carrying its own unit.
@@ -735,6 +777,17 @@ pub enum ControlledValue {
     Temperature {
         k: Kelvin,
     },
+    /// A pipe's mass flow, signed by the pipe's DECLARED direction (M20,
+    /// docs/DESIGN.md §24).
+    ///
+    /// kg/s in and kg/s out — no conversion on either side, a first. `KgPerSec`
+    /// is `#[serde(transparent)]`, so the wire form is
+    /// `{"variable":"flow","kg_per_s":12.0}`. A negative value is a real
+    /// measurement of flow running backwards through the pipe, and is published
+    /// as one rather than clipped (`docs/DEFERRED.md` E11).
+    Flow {
+        kg_per_s: KgPerSec,
+    },
 }
 
 impl ControlledValue {
@@ -750,6 +803,7 @@ impl ControlledValue {
             ControlledValue::Level { .. } => MeasuredVariable::Level,
             ControlledValue::Pressure { .. } => MeasuredVariable::Pressure,
             ControlledValue::Temperature { .. } => MeasuredVariable::Temperature,
+            ControlledValue::Flow { .. } => MeasuredVariable::Flow,
         }
     }
 
@@ -765,6 +819,7 @@ impl ControlledValue {
             ControlledValue::Level { m } => m.value(),
             ControlledValue::Pressure { pa } => pa.value(),
             ControlledValue::Temperature { k } => k.value(),
+            ControlledValue::Flow { kg_per_s } => kg_per_s.value(),
         }
     }
 
@@ -822,10 +877,14 @@ impl ControlledValue {
 ///
 /// **DIRECT: raising the output LOWERS the measurement** — a drain on a level, a
 /// vent on a pressure, a cooler on a temperature. **REVERSE: raising the output
-/// RAISES it** — a furnace on a temperature. The loop DECLARES which, and the
-/// loader checks the declaration against the actuator where the sign is physics
-/// (a cooler must be direct, a furnace reverse) and refuses reverse on a valve,
-/// whose sign is topology (`docs/DEFERRED.md` E8).
+/// RAISES it** — a furnace on a temperature, a valve on the flow in its own
+/// pipe (M20). The loop DECLARES which, and the loader checks the declaration
+/// against the actuator where the sign is physics (a cooler must be direct, a
+/// furnace reverse, a valve holding its own flow reverse) and refuses reverse on
+/// a level or pressure loop's valve, whose sign runs through a holdup and is
+/// topology the loader does not check (`docs/DEFERRED.md` E8). A flow loop's
+/// sign is checkable in one hop because a valve has exactly one inlet and one
+/// outlet (docs/DESIGN.md §24 fork 3).
 ///
 /// This is the fourth wording of the rule M8.4 first wrote as "a level loop must
 /// actuate a drain", and the first that is not a special case of the direct
@@ -867,20 +926,23 @@ impl ControlAction {
 pub struct ControlLoop {
     /// Scenario-given name, unique per plant. What a faceplate is labelled with.
     pub name: String,
-    /// The node whose state is measured. A `Tank` for a level loop, a `Vessel`
-    /// for a pressure loop, a `Tank` or `Vessel` for a temperature loop (M17) or
-    /// a `Furnace` or `Cooler` OUTLET (M19); the loader refuses every other pairing through
-    /// `PlantGraph::measure`, which is the single owner of which kinds can answer
-    /// for which variable and carries a distinct reason for each refusal.
-    pub measurement_node: NodeId,
-    /// The node this loop writes. A `Valve` on a level or pressure loop; a
+    /// Where the state is measured. A `Node` for a level loop (a `Tank`), a
+    /// pressure loop (a `Vessel`), or a temperature loop (a `Tank` or `Vessel`,
+    /// M17, or a `Furnace` or `Cooler` OUTLET, M19); a `Pipe` for a flow loop
+    /// (M20, docs/DESIGN.md §24 fork 1). The loader refuses every other pairing
+    /// through `PlantGraph::measure`, which is the single owner of which points
+    /// can answer for which variable and carries a distinct reason for each
+    /// refusal.
+    pub measurement_point: MeasurementPoint,
+    /// The node this loop writes. A `Valve` on a level, pressure or flow loop —
+    /// on a flow loop, the valve whose own inlet or outlet pipe is measured; a
     /// `Cooler` (M17) or a `Furnace` (M18) on a temperature loop. The loader
     /// refuses every other pairing with its own reason (docs/DESIGN.md §21 fork
-    /// 3), and a `ReliefValve` always, since its opening is actuated by its own
-    /// inlet pressure.
+    /// 3, §24 fork 3), and a `ReliefValve` always, since its opening is actuated
+    /// by its own inlet pressure.
     pub actuator: NodeId,
-    /// Which way the output moves the measurement: a furnace loop is `Reverse`,
-    /// every other loop `Direct`. Passed into `ControlledValue::error` by every
+    /// Which way the output moves the measurement: a furnace loop and a flow loop
+    /// are `Reverse`, every other loop `Direct`. Passed into `ControlledValue::error` by every
     /// caller that reaches it — the load-time seed, the MANUAL→AUTO seed and the
     /// tick's update — so the loop is seeded and run against one sign
     /// (docs/DESIGN.md §22 fork 1).
@@ -927,7 +989,9 @@ pub struct ControlLoop {
     ///
     /// **`None` exactly when the loop had nothing it could act on** (M19,
     /// docs/DESIGN.md §23): a furnace or cooler OUTLET before the first tick, or
-    /// while it is stagnant. Never a stand-in and never "healthy" — M11's rule for
+    /// while it is stagnant, and a pipe's FLOW before the first tick (M20, §24 —
+    /// a flow of zero is a measurement, so a flow is never absent after it).
+    /// Never a stand-in and never "healthy" — M11's rule for
     /// `cavitation`. Every other measurement is a STORED quantity — a tank's mass,
     /// a vessel's mass, a holdup's temperature all live on the graph — so for
     /// those the loader seeds this by taking the measurement once and it is
@@ -1360,7 +1424,7 @@ impl PlantGraph {
         self.controls.get_mut(id.0 as usize)
     }
 
-    /// Is `value` a legal setpoint for a loop measuring `node`?
+    /// Is `value` a legal setpoint for a loop measuring at `point`?
     ///
     /// **One owner, called from both write points**: the loader, when a
     /// `[[controls]]` entry declares a setpoint, and `Engine::apply`, when
@@ -1376,7 +1440,41 @@ impl PlantGraph {
     /// # Errors
     /// `SimError::InvalidCommand` naming the range, or if the node cannot answer
     /// for that variable at all.
-    pub fn check_setpoint(&self, node: NodeId, value: ControlledValue) -> Result<(), SimError> {
+    pub fn check_setpoint(
+        &self,
+        point: MeasurementPoint,
+        value: ControlledValue,
+    ) -> Result<(), SimError> {
+        let node = match (point, value) {
+            // **Finite and strictly positive, with no upper bound** (docs/DESIGN.md
+            // §24 fork 4). Zero is "shut the valve", which is a MANUAL action and
+            // not a regulation; a negative setpoint names flow against the pipe's
+            // declared direction, which a series valve cannot regulate (E11). The
+            // reachable flow is SOLVED, so a setpoint above it is not refused: it
+            // pins the valve open, and the anti-windup clamp is what handles that.
+            (MeasurementPoint::Pipe(pipe), ControlledValue::Flow { kg_per_s }) => {
+                if !kg_per_s.is_finite() || kg_per_s.value() <= 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "flow setpoint {} kg/s on pipe '{}' is not a finite flow above zero. \
+                         Zero is \"shut the valve\", a MANUAL action rather than a regulation, \
+                         and a negative flow runs against the pipe's declared direction, which \
+                         a valve in series with it cannot regulate (docs/DESIGN.md §24 fork 4)",
+                        kg_per_s.value(),
+                        self.pipe(pipe).name
+                    )));
+                }
+                return Ok(());
+            }
+            (MeasurementPoint::Pipe(pipe), _) => {
+                return Err(SimError::InvalidCommand(format!(
+                    "pipe '{}' carries a flow and nothing else, so it has no {:?} setpoint \
+                     range",
+                    self.pipe(pipe).name,
+                    value.variable()
+                )))
+            }
+            (MeasurementPoint::Node(node), _) => node,
+        };
         match (value, &self.node(node).kind) {
             (ControlledValue::Level { m }, NodeKind::Tank(t)) => {
                 if !m.is_finite() || m.value() < 0.0 || m.value() > t.height.value() {
@@ -1457,6 +1555,11 @@ impl PlantGraph {
                  temperature setpoint range",
                 self.node(node).name
             ))),
+            (ControlledValue::Flow { .. }, _) => Err(SimError::InvalidCommand(format!(
+                "node '{}' is not a pipe, so it has no flow setpoint range: a flow belongs to a \
+                 pipe",
+                self.node(node).name
+            ))),
         }
     }
 
@@ -1514,6 +1617,19 @@ impl PlantGraph {
     /// arm ignores it, so the level, pressure and holdup-temperature readings
     /// cannot have moved.
     ///
+    /// **A pipe's flow is read from `hydraulics`, the last hydraulic solution, and
+    /// NEVER from `Pipe::stream`** (M20, docs/DESIGN.md §24 fork 2). The stream's
+    /// `mass_flow` is on the graph, but at load it holds the initialiser zero
+    /// `Stream::stagnant` wrote — not a declaration, and indistinguishable from a
+    /// valve shut on tick 400 — so a flow is ABSENT at load exactly as an outlet
+    /// is, and `hydraulics` is `None` there, which is the truth. Once a solve has
+    /// run, the solution's number is the one step 2 of the tick copied onto the
+    /// stream, so the two agree bit for bit from then on (§24 gate 2). A flow of
+    /// zero is a MEASUREMENT: the solve computes it, so there is no `held` rule
+    /// here, and none may be borrowed from the outlet arm. A negative flow is
+    /// returned as measured, never clipped (E11). Every node arm ignores this
+    /// argument.
+    ///
     /// Called at load to seed `ControlLoop::last_measurement` and once per loop
     /// per tick thereafter, so a loop's seeded measurement and its running one
     /// can never be taken by two different rules.
@@ -1530,9 +1646,39 @@ impl PlantGraph {
         &self,
         slate: &Slate,
         resolved: &crate::energy::NodeStates,
-        node: NodeId,
+        hydraulics: Option<&crate::traits::HydraulicSolution>,
+        point: MeasurementPoint,
         variable: MeasuredVariable,
     ) -> Result<Option<ControlledValue>, SimError> {
+        let node = match (point, variable) {
+            (MeasurementPoint::Pipe(pipe), MeasuredVariable::Flow) => {
+                let Some(solution) = hydraulics else {
+                    return Ok(None);
+                };
+                // A solution that exists and omits a pipe is an engine fault,
+                // not an absence: `None` would hold the loop silently, and step
+                // 2 of the tick already refuses the same omission.
+                let flow = solution.edge_mass_flow.get(&pipe).ok_or_else(|| {
+                    SimError::Numerical(format!(
+                        "the hydraulic solution has no flow for measured pipe '{}'",
+                        self.pipe(pipe).name
+                    ))
+                })?;
+                return Ok(Some(ControlledValue::Flow {
+                    kg_per_s: KgPerSec(*flow),
+                }));
+            }
+            (MeasurementPoint::Pipe(pipe), _) => {
+                return Err(SimError::Scenario(format!(
+                    "pipe '{}' carries a flow and holds nothing, so it has no {} to control. \
+                     A level, a pressure and a temperature are measured at a NODE: write \
+                     `node = \"…\"` in `measurement`, not `pipe` (docs/DESIGN.md §24 fork 1)",
+                    self.pipe(pipe).name,
+                    variable.noun()
+                )))
+            }
+            (MeasurementPoint::Node(node), _) => node,
+        };
         match (variable, &self.node(node).kind) {
             (MeasuredVariable::Level, NodeKind::Tank(t)) => Ok(Some(ControlledValue::Level {
                 m: t.level(slate),
@@ -1563,17 +1709,18 @@ impl PlantGraph {
             // **This is the one node kind fork 3's claim is actually true of.** A
             // junction holds nothing; its pressure is an unknown of the solve and
             // does not exist before the first tick. It used to be refused for the
-            // want of a tick-0 rule; §23 states that rule for a furnace outlet, so
-            // the refusal is now a SCOPE decision and says so (E9): applying the
-            // rule here needs `last_solution`'s pressures passed in beside
-            // `resolved`, and nothing asks for junction-pressure control.
+            // want of a tick-0 rule, and then (M19) for the want of the solution
+            // being passed in here. M20 passes it — `hydraulics`, for a pipe's
+            // flow — so NEITHER reason stands: the rule exists, and so does the
+            // path. The refusal is a scope decision and nothing more (E9): nothing
+            // asks for junction-pressure control.
             (MeasuredVariable::Pressure, NodeKind::Junction) => Err(SimError::Scenario(format!(
                 "node '{}' is a junction, which holds nothing: its pressure is an UNKNOWN of the \
-                 network solve and lives in `last_solution`, which is empty before the first tick. \
-                 The rule for a measurement that does not exist yet is stated (docs/DESIGN.md §23: \
-                 no measurement, no action) and is applied only to a furnace or cooler outlet; \
-                 junction-pressure control is not built, as a scope decision \
-                 (docs/DEFERRED.md E9)",
+                 network solve, absent before the first tick. Both halves of reading one exist \
+                 — the rule for a measurement that does not exist yet (docs/DESIGN.md §23: no \
+                 measurement, no action) and the last hydraulic solution, which a pipe's flow is \
+                 read from (§24). So neither is what is missing: junction-pressure control is \
+                 not built, as a scope decision (docs/DEFERRED.md E9)",
                 self.node(node).name
             ))),
             // The catch-all, and its reason is a third distinct one: a source's
@@ -1663,6 +1810,23 @@ impl PlantGraph {
                  it would be regulating the scenario file rather than the plant",
                 self.node(node).name
             ))),
+            // A node conducts; a flow belongs to one of its pipes. Naming the valve
+            // node itself was the rejected fork-1(b) (docs/DESIGN.md §24).
+            (MeasuredVariable::Flow, _) => Err(SimError::Scenario(format!(
+                "node '{}' is a node, and a flow belongs to a PIPE: write `pipe = \"…\"` in \
+                 `measurement`, not `node`, naming one of the actuating valve's own two pipes \
+                 (docs/DESIGN.md §24 fork 1)",
+                self.node(node).name
+            ))),
+        }
+    }
+
+    /// The name a faceplate or a refusal gives a measurement point: the node's
+    /// name or the pipe's.
+    pub fn point_name(&self, point: MeasurementPoint) -> &str {
+        match point {
+            MeasurementPoint::Node(node) => &self.node(node).name,
+            MeasurementPoint::Pipe(pipe) => &self.pipe(pipe).name,
         }
     }
 

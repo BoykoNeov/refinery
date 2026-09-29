@@ -1,0 +1,125 @@
+# M20.1 regulation demo: a valve holding the FLOW in its own line — the commonest
+# loop in a refinery, and the inner half of almost every cascade.
+#
+#   supply_tank -> transfer_pump -> discharge_valve -> receiving_tank
+#                               (discharge)       (fill_line: metered)
+#
+# **This file is `tank_pump_valve.toml` — the M1 reference plant — with the
+# discharge valve under a flow loop, and is meant to be diffed against it.** Three
+# lines change and one table is added: `dt` 0.1 -> 1.0, the valve's opening
+# 0.5 -> 0.4, and the `[[controls]]` table below. Nothing else moves.
+#
+# **Why `dt = 1.0`.** At 0.1 s the tanks move so little over 6 000 ticks that the
+# flow barely changes and a loop has nothing to do. At 1.0 s the supply tank
+# drains and the receiving tank fills far enough that a valve parked at 0.4 falls
+# from 11.09 to 10.21 kg/s over the run; the loop keeps opening the valve to hold
+# 12. The hydraulics are quasi-steady, so the loop's plant has no lag of its own
+# and `integral_time_s` is a count of ticks either way: `dt` only sets how far the
+# tanks move per tick.
+#
+# **A pipe's flow does not exist at load** (docs/DESIGN.md §24). Every pipe's
+# stored flow is an initialiser zero the loader writes, not a declaration, so the
+# loop measures the last hydraulic SOLUTION, which does not exist before the first
+# tick. The rule is M19's: no measurement, no action. Tick 1 runs at the declared
+# opening 0.4, and the faceplate shows no measurement at all; tick 2 measures
+# tick 1's 11.09 kg/s and seeds the PI memory against it from `initial_output`, so
+# its first output is exactly 0.4.
+#
+# **The loop is REVERSE acting, and says so.** Opening a valve raises the flow in
+# its own pipe, so a flow BELOW setpoint must open it — the industry's own
+# convention for a flow controller on an air-to-open valve. The loader checks this
+# in one hop: a valve has exactly one inlet and one outlet pipe, and the metered
+# pipe must be one of them. `action` is required here, not defaulted.
+#
+# **The meter is on the valve's OUTLET, `fill_line`, which is unusual on purpose.**
+# A real flowmeter usually sits upstream of its valve. In this engine a device's
+# characteristic folds into the pipe LEAVING it, so the upstream pipe carries the
+# pump's curve and the downstream pipe the valve's. With the valve shut, `fill_line`
+# reads an exact 0.0 kg/s, while `discharge` is the pump's dead leg and reads
+# -1.5e-11 — a solver residual. The outlet is the pipe whose flow IS the valve's.
+#
+# **Tuning.** The installed gain near the operating point is about 26.7 kg/s per
+# unit of opening, so `gain_per_kg_per_s = 0.02` gives a loop gain K*G of about
+# 0.53. With a lag-free plant and a one-tick sample delay, the loop is stable for
+# K*G < 2/(2 - dt/T_i), which is 1.053 at T_i = 10 s: this tuning sits at half the
+# bound. Unlike the furnace outlet loop, turndown is on the safe side here: the
+# valve's gain is highest near shut, and only 7% above the operating point's.
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_flow_control.toml --ticks 6000
+
+[meta]
+name = "tank_flow_control"
+description = "A valve holding the flow in its own line at 12 kg/s: the M1 reference plant under a flow loop."
+
+[simulation]
+dt = 1.0            # seconds per tick
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.supply_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 20.0
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+# The actuator. Its declared opening is the loop's starting position, and
+# `initial_output` below says the same number.
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0           # metric Kv [m^3/h at 1 bar], converted to SI on load
+opening = 0.4
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 1.0
+temperature_c = 20.0
+
+[[pipes]]
+name = "suction"
+from = "supply_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "discharge_valve"
+length_m = 30.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "discharge_valve"
+to = "receiving_tank"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = 5.0
+
+# `initial_output` is the loop's MEMORY, not a bias (docs/DESIGN.md §10 fork 5).
+# There is no flow at load to back-calculate it against, so the memory waits for
+# the first measurement (tick 2) and is seeded then; the first output the loop
+# computes is exactly 0.4 whatever the gain is.
+[[controls]]
+name = "fill_flow"
+measurement = { pipe = "fill_line", variable = "flow" }
+actuator = "discharge_valve"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_kg_per_s = 12.0
+gain_per_kg_per_s = 0.02
+integral_time_s = 10.0
+initial_output = 0.4

@@ -557,12 +557,14 @@ fn default_ambient_c() -> f64 {
 pub struct ControlDef {
     /// Unique per plant. What the loop's faceplate is labelled with.
     pub name: String,
-    /// Which node's state this loop watches, and which of its variables.
+    /// Which node's state — or, for a flow, which pipe's — this loop watches, and
+    /// which variable.
     pub measurement: MeasurementDef,
-    /// Name of the node this loop writes. A `valve` on a level or pressure loop;
-    /// a `cooler` (M17, docs/DESIGN.md §21 fork 3) or a `furnace` (M18, §22) on a
-    /// temperature loop. Every other pairing is refused with its own reason, and a
-    /// `relief_valve` always.
+    /// Name of the node this loop writes. A `valve` on a level, pressure or flow
+    /// loop — on a flow loop, the valve whose own inlet or outlet pipe is measured
+    /// (M20, docs/DESIGN.md §24 fork 3); a `cooler` (M17, §21 fork 3) or a
+    /// `furnace` (M18, §22) on a temperature loop. Every other pairing is refused
+    /// with its own reason, and a `relief_valve` always.
     pub actuator: String,
     /// `"p"` (M8.2) or `"pi"` (M8.3). Each has its own required tuning keys, and
     /// each refuses the other's — the two-directional refusal the separation
@@ -581,9 +583,12 @@ pub struct ControlDef {
     /// actuator where the sign is physics, in both directions: a `cooler` must be
     /// direct and a `furnace` must say `"reverse"` — a furnace loop with the key
     /// absent is refused rather than defaulted, so a file's most surprising
-    /// property is never invisible. `"reverse"` on a valve is refused: a valve's
-    /// sign is its place in the plant, which the loader does not check
-    /// (docs/DEFERRED.md E8).
+    /// property is never invisible. **A flow loop must say `"reverse"` too**, by
+    /// the same rule (M20, docs/DESIGN.md §24 fork 3): opening a valve raises the
+    /// flow in its own pipe, and a valve has exactly one inlet and one outlet, so
+    /// the loader checks that sign in one hop. `"reverse"` on a level or pressure
+    /// loop's valve is still refused: there the sign runs through a holdup, which
+    /// the loader does not check (docs/DEFERRED.md E8).
     #[serde(default)]
     pub action: Option<String>,
     /// The target, in metres. **Required for `variable = "level"` and refused on
@@ -663,6 +668,21 @@ pub struct ControlDef {
     /// name carries the answer, as `smearing_k` does.
     #[serde(default)]
     pub gain_per_k: Option<f64>,
+    /// The target, in kg/s, signed by the measured pipe's declared direction.
+    /// **Required for `variable = "flow"` and refused on any other variable**
+    /// (M20, docs/DESIGN.md §24 fork 4). Finite and strictly positive.
+    ///
+    /// **The first setpoint key whose file unit IS its SI unit**: the engine
+    /// publishes kg/s (`EdgeSnapshot::stream.mass_flow`), so nothing converts
+    /// here, and the conversion trap `gain_per_bar` and `gain_per_k` each guard
+    /// against cannot be written. An operator's t/h or m³/h is a display
+    /// conversion at the frontend (rule 4).
+    #[serde(default)]
+    pub setpoint_kg_per_s: Option<f64>,
+    /// Proportional gain, per kg/s of flow error. **Flow loops only.** Converted
+    /// by nothing, like its setpoint.
+    #[serde(default)]
+    pub gain_per_kg_per_s: Option<f64>,
     /// The cooler or furnace duty, in MW, that the loop's full output stands for
     /// — the loop's authority over a DUTY actuator. **Required when the actuator
     /// is a `cooler` or a `furnace` (M18) and refused when it is a `valve`**, in
@@ -711,19 +731,34 @@ pub struct ControlDef {
     pub initial_output: Option<f64>,
 }
 
-/// The `measurement = { node = "...", variable = "..." }` inline table.
+/// The `measurement = { node = "...", variable = "..." }` inline table, or
+/// `measurement = { pipe = "...", variable = "flow" }` (M20).
 ///
 /// A table rather than two flat keys, because the pair is one thing: a variable
-/// with no node names nothing, and the loader has to resolve them together to
-/// know whether the node can answer for that variable at all.
+/// with no point names nothing, and the loader has to resolve them together to
+/// know whether the point can answer for that variable at all.
+///
+/// **Exactly one of `node` and `pipe`**, refused at load in both directions
+/// (docs/DESIGN.md §24 fork 1). A flow asked of a `node`, and a level, pressure
+/// or temperature asked of a `pipe`, are each refused with a message naming the
+/// other key. `deny_unknown_fields` still refuses a key that is neither.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MeasurementDef {
-    pub node: String,
-    /// `"level"` (M8.2, a `tank`), `"pressure"` (M10, a `vessel`) or
-    /// `"temperature"` (M17, a `tank` or a `vessel`). Flow stays deferred — see
-    /// `MeasuredVariable`. Which key carries the setpoint and which carries the
-    /// gain both follow from this.
+    /// The measured node, for a level, pressure or temperature.
+    #[serde(default)]
+    pub node: Option<String>,
+    /// The measured pipe, for a flow (M20). Looked up among this file's
+    /// DECLARED `[[pipes]]` only — the graph also holds edges the loader made (a
+    /// leak split's `__downstream` half, every boil-off vent), and a file naming
+    /// one would be metering a pipe it never declared.
+    #[serde(default)]
+    pub pipe: Option<String>,
+    /// `"level"` (M8.2, a `tank`), `"pressure"` (M10, a `vessel`),
+    /// `"temperature"` (M17, a `tank` or a `vessel`; M19, a furnace or cooler
+    /// outlet) or `"flow"` (M20, one of the actuating valve's own two pipes).
+    /// Which key carries the setpoint and which carries the gain both follow
+    /// from this.
     pub variable: String,
 }
 

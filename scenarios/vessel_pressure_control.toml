@@ -31,8 +31,9 @@
 # sign convention forces is that the actuator is an outlet of the measured
 # holdup — a drain for a tank, a vent for a vessel. Throttling the make-up
 # instead would be reverse acting. Since M18 reverse action is DECLARED on a loop
-# (`action = "reverse"`) rather than smuggled in as a negative gain, but only on a
-# furnace, whose sign is physics; on a valve the sign is where it sits, which the
+# (`action = "reverse"`) rather than smuggled in as a negative gain, but only where
+# the sign is physics — a furnace, and since M20 a valve holding the flow in its
+# own pipe; on a pressure loop's valve the sign runs through the vessel, which the
 # loader does not check, so it stays refused (docs/DEFERRED.md E8).
 #
 # **The setpoint and the gain are both in bar, and that pairing is load bearing.**

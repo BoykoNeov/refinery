@@ -377,8 +377,12 @@ fn the_loop_holds_its_outlet_and_the_parked_twin_does_not() {
 /// the loop settles.**
 ///
 /// An outlet has no thermal mass, so the loop's only dynamics is the one tick it
-/// waits to measure: poles at `1` and `−K·G`, stable only for `K·G < 1`
-/// (docs/DESIGN.md §23 fork 6). `G` is taken from two operating points the demo
+/// waits to measure: poles at `1` and `−K·G` in the `T_i → ∞` limit, stable only
+/// for `K·G < 1` (docs/DESIGN.md §23 fork 6). **M20 narrowed that sentence**
+/// (§24 fork 6): with the integral term the bound is `K·G < 2/(2 − dt/T_i)`, 1.053
+/// at this demo's `T_i = 10 s`. The fixtures below bracket at 0.8 and 1.2, both on
+/// the right side of either bound, so the gate stays sound. `G` is taken from two
+/// operating points the demo
 /// publishes — the settled AUTO pair and the MANUAL twin's — so the gate does not
 /// trust the note's 33.28 K. Then the bound is exercised on both sides of itself,
 /// because a bound only asserted in prose is a comment.

@@ -12416,7 +12416,10 @@ z² − (1 − L)·z − L·(1 − a) = 0
 ```
 
 At `a → 0` the poles are `1` and `−L`. **The loop rings with period two and is
-stable only for `L < 1`; `L = 1` is marginal**, not stable — a hand simulation at
+stable only for `L < 1`; `L = 1` is marginal**, not stable (**narrowed by §24 fork
+6**: at finite `a` Jury's conditions put the edge at `L = 2/(2 − a)`, and `L < 1`
+is its `a → 0` limit — exact for M19's sweep at `T_i = 600 s`, 1.053 at the demo's
+`T_i = 10 s`) — a hand simulation at
 `L = 0.999` alternates and barely decays. Above it the ring grows until both
 clamps catch it, and the outlet swings between the feed temperature and the
 full-duty ceiling on alternate ticks. This is sampled-data control of a lag-free
@@ -12551,7 +12554,8 @@ Run under `--no-fail-fast`, each catch read for why it fired.
   branch), and a junction's PRESSURE (a second resolved map into `measure`).
   Trigger: a plant that needs one.
 - **E10 — a furnace with no thermal mass.** The outlet loop's only dynamics is the
-  sample delay, so its stability bound `K·G < 1` is an artefact of a lag-free
+  sample delay, so its stability bound `K·G < 1` (`2/(2 − dt/T_i)` at finite
+  `T_i`, §24 fork 6) is an artefact of a lag-free
   coil, and `T_i` is a count of ticks. Trigger: a player-visible outlet response
   that must take longer than a tick, or a tuning that must transfer to a real
   heater.
@@ -13271,3 +13275,98 @@ the pump off and the two tank levels swapped), `probe_loop.py` (probe 2) and
 `probe_fix.py` (the drift-free bound scan, the shut start, and M19's script at
 `T_i = 10`). Each plant they run is the shipped
 `tank_pump_valve.toml` with the substitutions the script names.
+
+### Corrections from building it (M20.1)
+
+M20.1 built §24 as specified: `MeasuredVariable::Flow`, `ControlledValue::Flow`,
+`MeasurementPoint { Node, Pipe }` in place of `ControlLoop::measurement_node`, a
+`hydraulics: Option<&HydraulicSolution>` argument on `PlantGraph::measure`, the
+`pipe` key on `MeasurementDef`, `setpoint_kg_per_s` and `gain_per_kg_per_s`, the
+demo `scenarios/tank_flow_control.toml`, and the gates in
+`crates/scenarios/tests/flow_control_reference.rs`. The forks held. What building
+it found:
+
+**(i) What must not change did not.** All twenty-three pre-M20 plants are
+byte-identical on both fidelities, with every iteration count unchanged, against
+baselines recorded before the first edit. The new plant runs on both fidelities
+(the game fidelity's worst is 14 sweeps a tick). `resolved` and `hydraulics`
+travel as two arguments rather than one bundle: no caller has one without the
+other, but every node arm ignores `hydraulics` and every pipe arm ignores
+`resolved`, so a bundle would name a pairing nothing uses.
+
+**(ii) The hand simulation held on the engine**, in every number §24 fork 6
+predicted but one. The flow is within 0.1 kg/s of 12 from tick 64 and within
+0.01 kg/s from tick 137. It approaches from below and peaks at 11.99674. The MANUAL
+twin reads 10.207091 kg/s at tick 6 000. `K·G` measured locally is
+`0.02 × 26.760 = 0.535`. The exception is the valve's band: `[0.400, 0.4783]`
+against a predicted `[0.400, 0.477]`, because the valve is still opening at tick
+6 000. The steady error there is 4.290e-3 kg/s against the note's "about
+3.9e-3", and the ramp form `Δu·T_i/(K·dt)` reproduces it to 0.05%
+(4.2919e-3 against 4.2898e-3).
+
+**(iii) "Pins `u = 1` within ten ticks" was wrong: it takes 31.** After the 30 kg/s
+command at tick 300 the proportional kick is only `K·Δsp = 0.36`, so the loop climbs
+the rest of the way onto the clamp along its SLOW pole and reaches it at tick 332.
+It then hovers on and off the clamp until tick 344, which is M18's finding (iv): a
+clamped tick back-calculates the memory to `1 − K·e`, so the next output is
+`1 + K·(e₊ − e)`, a hair under 1 whenever the error shrinks. Gate 6a asserts that
+rule to the bit rather than "exactly 1": a dip lasts one tick and is exactly
+`K·(e − e₊)` deep. **On the reversed plant the hover never stops.** The backward
+flow shrinks every tick as the two tanks close on each other, so the loop sits on
+the clamp only every other tick from tick 14 onwards. Every dip obeys the same
+rule, and gate 6c asserts it.
+
+**(iv) The release after windup recovers along the slow pole, and that is now the
+gate.** §24 said "about 29 ticks". Measured, the excess over 12 kg/s decays by
+0.9645 per tick over ticks 420–540. That is the larger root of
+`z² − (1 − L)·z − L·(1 − a)` at `L ≈ 0.53`, whose time constant is the 29 ticks.
+Gate 6a asserts the ratio inside the band that root spans over gate 5's own
+`L ∈ [0.4, 0.6]`, `[0.9616, 0.9708]`. The first draft asserted "within 0.1 kg/s
+sixty ticks after release", a number chosen rather than derived, and failed it at
+0.97 kg/s, which is what the pole predicts. The released output itself is asserted
+bit for bit against the signed memory, 0.640016. An unsigned one would release
+interior too (about 0.80), so only the exact value separates them.
+
+**(v) The shut start's "exactly 0.024" is not the literal 0.024.** The controller's
+three operations give `0.023999999999999994`. Gate 6b compares the output against
+the same three operations in the controller's order, bit for bit, and separately
+bounds its distance from 0.024 (6.9e-18, two ULPs) at 1e-15. The inlet of the shut valve reads
+`−1.547497790448645e-11` kg/s on tick 1, reproducing probe 4.
+
+**(vi) The two pipes of a flowing valve differ by far more than probe 3 said.**
+§24 put the difference between `discharge` and `fill_line` at 1.8e-15 to
+6.9e-14 kg/s. Over the shipped run they differ on 5 875 of 6 000 ticks, by up to
+5.03e-10 kg/s, with the largest on the loop's first moves. That is the valve
+node's solver residual, well inside the solver's own tolerance, and it only
+strengthens gate 2's control. It is also fork 1(b)'s point made larger: "the
+valve's flow" really would have had to pick one pipe.
+
+**(vii) Mutation 9's wording is stale.** It reads "the identity asserted against
+the valve's outlet pipe instead". That was the first draft's framing, when the
+meter was on the inlet. The meter is the outlet, so the mutation gate 2's control
+catches is the identity asserted against the INLET, `discharge`.
+
+**(viii) Three refusals §24 did not list.** A pipe NAME declared twice is refused
+as an ambiguous meter: pipe names are not otherwise required to be unique, and
+the lookup must not quietly take the first. The graph edge is then found by name,
+declared endpoints AND an ordinary leak role, so a loader-made edge sharing the
+name could never be picked in its place. And a hydraulic solution that exists but
+lacks the measured pipe is an `Err`, not `None`: `None` holds the loop silently,
+which is the wrong failure for an engine fault.
+
+**(ix) Two sentence sites §24 did not count, and one test stand-in it expired.**
+`build_controls`' header list of refusals, and the `ControlDef::actuator` doc,
+both enumerated which actuator each variable takes. The comment above the
+foreign-key table said "three variables … four foreign keys", which is now four
+and six. And `control_reference.rs` used `"flow"` as its stand-in for an unknown
+variable ("the deferral still genuinely unknown to the loader"); M20 expired it as
+M10 and M17 expired theirs, and the stand-in is now `"composition"`. The junction-
+pressure MESSAGE, not only its comment, carried the false clause ("applied only
+to a furnace or cooler outlet"). M19.1's own junction test now asserts that clause
+gone and the new wording present.
+
+**(x) A MANUAL→AUTO gate for the flow loop was missing from §24's list.** The
+engine site changed, and its message now names the missing quantity by variable.
+The new gate asserts both: refused before the first solve, naming
+`'fill_line' has no resolved flow yet` and not an outlet's "no flow through it",
+and bumpless after tick 1.

@@ -45,7 +45,9 @@
 //! are the regression anchor this milestone is measured against. The wired demo
 //! that regulates — diffable against `tank_pump_valve.toml` — is M8.4's.
 
-use refinery_core::graph::{ControlMode, ControlledValue, LoopId, MeasuredVariable, NodeId};
+use refinery_core::graph::{
+    ControlMode, ControlledValue, LoopId, MeasuredVariable, MeasurementPoint, NodeId,
+};
 use refinery_core::snapshot::Command;
 use refinery_core::units::{Meter, SquareMeter};
 use refinery_core::{Engine, SimError};
@@ -204,7 +206,8 @@ fn level_now(engine: &Engine) -> f64 {
         .measure(
             &engine.slate,
             engine.node_states(),
-            tank_id(engine),
+            None,
+            MeasurementPoint::Node(tank_id(engine)),
             MeasuredVariable::Level,
         )
         .expect("the control tank has a level")
@@ -1015,10 +1018,12 @@ initial_output = 0.2
             // loop in a worse unit), which is asserted in
             // `pressure_control_reference.rs`. M17 then expired `"temperature"` the
             // same way (a temperature loop pointed at this plant's valve is now
-            // refused for having no coolant stream), so the stand-in is `"flow"`,
-            // the deferral still genuinely unknown to the loader.
+            // refused for having no coolant stream), and M20 expired `"flow"` (a
+            // flow asked of a tank is now refused for naming a node rather than
+            // a pipe). The stand-in is `"composition"`, which no milestone has
+            // scoped, so it is genuinely unknown to the loader.
             "an unknown measured variable",
-            PLANT.replace(r#"variable = "level""#, r#"variable = "flow""#),
+            PLANT.replace(r#"variable = "level""#, r#"variable = "composition""#),
             "unknown variable",
         ),
         (

@@ -90,6 +90,7 @@ cargo run -p refinery-cli -- run scenarios/fired_gas_drum.toml --ticks 6000     
 cargo run -p refinery-cli -- run scenarios/tank_temperature_control.toml --ticks 6000 # the M17.1 temperature loop
 cargo run -p refinery-cli -- run scenarios/tank_temperature_heating.toml --ticks 6000 # the M18.1 reverse-acting loop
 cargo run -p refinery-cli -- run scenarios/furnace_outlet_control.toml --ticks 6000   # the M19.1 furnace-outlet loop
+cargo run -p refinery-cli -- run scenarios/tank_flow_control.toml --ticks 6000        # the M20.1 flow loop
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -185,12 +186,27 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M20 is OPEN: the fourth controlled variable, FLOW — a valve holding the flow in
-one of its own two pipes.** Taken on a DECISION (the user's, 2026-09-29, on the
-grounds of M17–M19): the commonest loop in a refinery and the inner half of a
-cascade. **M20.0 landed 2026-09-29** — DESIGN §24, seven forks, eight gates, ten
-mutations, no code. **M20.1 builds it; read §24 whole first.** Five things it
-settles.
+**M20 is CLOSED (2026-09-29): the fourth controlled variable, FLOW — a valve
+holding the flow in one of its own two pipes.** Taken on a DECISION (the user's,
+2026-09-29, on the grounds of M17–M19): the commonest loop in a refinery and the
+inner half of a cascade. **M20.0** wrote DESIGN §24 (seven forks, eight gates, ten
+mutations, no code); **M20.1 landed 2026-09-29** and built it — read §24's
+"Corrections from building it (M20.1)" before touching `measure`,
+`MeasurementPoint` or `build_controls`. E1b now holds only a bubble-point-bounded
+temperature setpoint; the next milestone is chosen from `docs/DEFERRED.md`.
+
+**What M20.1 found building it.** (i) **All twenty-three pre-M20 plants are
+byte-identical on both fidelities with no iteration count moved**; "runs
+byte-identical" means post-M20.1 identical, unchanged. (ii) **The hand
+simulation held**: within 0.01 kg/s from tick 137, twin at 10.207091 kg/s,
+`K·G = 0.535` measured locally. (iii) **"Pins within ten ticks" was wrong — 31**:
+a PI loop at half its bound climbs onto a clamp along its SLOW pole, and near a
+clamp it dips off for exactly one tick by `K·(e − e₊)` (M18's (iv), now asserted
+to the bit). The release decays at 0.9645 per tick, which is that pole, and the
+gate asserts the band the pole spans. (iv) **"Exactly 0.024" is
+`0.023999999999999994`**: a gate against a hand formula compares against the
+controller's own order of operations, not a literal. `scenarios/` holds
+**twenty-four** files. The five things §24 settled:
 
 **A pipe's flow is stored AND absent at load.** `Pipe::stream.mass_flow` is on the
 graph, but the loader writes `Stream::stagnant`'s zero there — an initialiser, not
@@ -1571,12 +1587,13 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly five of the twenty-three files in `scenarios/` declare a `[[controls]]`
+**Exactly six of the twenty-four files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
-`tank_temperature_heating.toml` (M18.1, a reverse-acting temperature) and
-`furnace_outlet_control.toml` (M19.1, a furnace's own outlet). **The
+`tank_temperature_heating.toml` (M18.1, a reverse-acting temperature),
+`furnace_outlet_control.toml` (M19.1, a furnace's own outlet) and
+`tank_flow_control.toml` (M20.1, a valve's own flow). **The
 other eighteen
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor**; adding a loop to one of them

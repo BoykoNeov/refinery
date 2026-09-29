@@ -6339,3 +6339,36 @@ sized its fixtures from the AUTO/MANUAL pair, which mixes two plant states and
 reads 23.3 against a local 26.7. It now measures `G` locally. (iv) The
 reversed-flow fixture had not been run. It has now, and the valve's outlet pipe
 reads −5.93 kg/s at 0.4 open and −13.86 at 1.0.
+
+### M20.1 — The flow loop — **LANDED** 2026-09-29
+
+Built as DESIGN §24 specifies; the corrections are in §24's "Corrections from
+building it (M20.1)". A loop can hold the flow in one of its own valve's two
+pipes. The demo is `scenarios/tank_flow_control.toml`: `tank_pump_valve.toml` at
+`dt = 1.0`, with the discharge valve at 0.4 and a PI loop holding 12 kg/s on
+`fill_line`. Four things to know.
+
+**A loop measures at a point, and a flow is read from the last solve.**
+`MeasurementPoint { Node, Pipe }` replaces `ControlLoop::measurement_node`, and
+`PlantGraph::measure` takes the last hydraulic solution. That is `None` at load, so
+a flow loop starts blind exactly as an outlet loop does, and M19's rule holds it.
+The file says `measurement = { pipe = "…", variable = "flow" }`, looked up among
+the pipes the file DECLARES. **All twenty-three pre-M20 plants are byte-identical
+on both fidelities, with no iteration count moved.**
+
+**The first reverse loop on a valve, checked in one hop.** A flow loop must
+actuate a valve, meter one of that valve's two pipes, and say
+`action = "reverse"`. Reverse on a level or pressure loop's valve is still
+refused (E8). Zero flow is a real measurement, and a backward flow is published
+negative and pins the valve open (E11).
+
+**The note's hand simulation held on the engine**: within 0.1 kg/s from tick 64
+and 0.01 kg/s from tick 137, the MANUAL twin at 10.207091 kg/s, and `K·G = 0.535`
+measured locally against a bound of 1.053. One prediction was wrong. The 30 kg/s
+setpoint pins the valve in 31 ticks, not ten, because the loop climbs onto the
+clamp along its slow pole. The release after it decays at 0.9645 per tick, which
+is that pole, and that is what the gate now asserts.
+
+**The shut start's "exactly 0.024" is `0.023999999999999994`.** The gate compares
+against the controller's own three operations, bit for bit, not the literal.
+`scenarios/` holds twenty-four files; six declare `[[controls]]`.
