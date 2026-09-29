@@ -13005,6 +13005,10 @@ setpoint above it pins the valve open, which the anti-windup clamp handles (gate
   be a valve's edge. The adjacency rule excludes both structurally. This is argued
   in a comment rather than shipped as a guard nothing reaches — the M8.2
   precedent.
+- **A pipe punctured at runtime is covered by the same refusal.**
+  `Command::PuncturePipe` acts only on a pipe the loader split — `LeakRole::None`
+  is refused with "declares no leak path" — so a pipe a flow loop may measure can
+  never be punctured mid-run.
 
 **Zero flow is a MEASUREMENT, and that is the difference from M19.** A stagnant
 outlet's temperature was a held placeholder, because the temperature of no flow is
@@ -13033,7 +13037,9 @@ both. What the inlet costs is an exact zero, and gate 6 needs one.
 measurement is signed by the pipe's declared direction. If the plant drives flow
 backwards through the valve, the loop sees a large positive error and opens the
 valve. Opening it makes the backward flow LARGER, so the sign of the plant has
-flipped under the loop. It runs to fully open and stays there. The clamp bounds
+flipped under the loop. That is measured, not reasoned: probe 5 is the demo plant
+with the pump off, the supply tank at 1 m and the receiving tank at 8 m, and
+`fill_line` reads **−5.926 kg/s at opening 0.4 and −13.856 kg/s at 1.0**. It runs to fully open and stays there. The clamp bounds
 it: it is a pinned actuator, not a divergence, and there is no NaN and no `Err`.
 **Clipping a negative flow to zero is refused**: that is a fabricated measurement,
 M12.1's and §23's rule. A real flowmeter often cannot see reverse flow, and the
@@ -13061,8 +13067,10 @@ as `T_i → ∞`.
 with `integral_time_s = 600` (read from `W:\temp\claude\m19\k0.031.toml`), where
 `2/(2 − 1/600) = 1.0008`. So "sharp between `K = 0.030` and `0.031`" is right for
 what was measured. At the shipped `T_i = 10 s` the bound is `L < 1.0526`.
-Re-running M19's own hand model at `T_i = 10` puts the edge between `K = 0.0315`
-(settles, `L = 1.048`) and `0.032` (two-clamp ring, `L = 1.065`). M19.1's gate 5
+M19's own hand-model script, run at `T_i = 10` (`run(0.0315, 10.0)` and
+`run(0.032, 10.0)` in `W:\temp\claude\m19\probe_loop.py`), puts the edge between
+`K = 0.0315` (`L = 1.048`: off the clamps, still ringing ±0.06 K at tick 400 and
+decaying) and `0.032` (`L = 1.065`: on a clamp on 87 of 400 ticks). M19.1's gate 5
 brackets with `0.8/G` and `1.2/G`, both on the correct side of either bound, so it
 stays sound. What changes is three sentences (site 10).
 
@@ -13078,7 +13086,9 @@ The installed characteristic falls as the valve opens, because the pipe and the
 pump take a growing share of the drop. So **turndown is on the SAFE side here**:
 where the furnace's `G ∝ 1/ṁ` put a throttled flow on the unstable side of its
 bound, this valve's gain is highest near shut and only 7% above the operating
-point's. The demo's bound will not move far with the plant. This is not a claim
+point's. **The draining tanks move it the safe way too**: they scale the whole
+valve map down, `G` included, by about 3% per 2 000 ticks and 9% over the run, so
+`L` falls as the demo runs. This is not a claim
 about every valve: a line dominated by its valve would have a flat characteristic,
 and a quick-opening trim a steep one.
 
@@ -13095,13 +13105,20 @@ flow loop until M20.1.
   in `[0.400, 0.477]`, never on a clamp.
 - **The loop never settles to the last bit, and that is M19's finding (iv)
   again.** The tanks drain and fill, so the valve must keep opening. A PI loop
-  follows a ramp in its required output with a steady error of
-  `ṙ·T_i/(K·G·dt)`, where `ṙ` is the flow's drift per tick at a fixed opening.
-  Predicted `3.3e-3 kg/s` from that formula and `3.9e-3` from the simulation (the
-  local `G` falls as the valve opens). Gate 4's tolerance is derived from this and
-  not chosen.
-- **The bound is sharp near `L = 2/(2 − a)`**: at `T_i = 10`, `L = 1.06` settles
-  and `L = 1.08` falls into the two-clamp ring from any of three starting openings.
+  follows a ramp in its required output with a steady error, and the loop's own
+  arithmetic says what it is. On an interior tick the memory grows by
+  `(K/T_i)·e·dt`, and at a steady ramp the output grows by the same amount, so
+  **`e = Δu·T_i/(K·dt)`**, where `Δu` is the output's change per tick. That needs no
+  `G` and no drift rate from a twin standing at another opening. Probe 2 puts it at
+  about `3.9e-3 kg/s` by tick 6 000. Gate 4 asserts the identity on published
+  numbers rather than a chosen tolerance.
+- **The bound is sharp at `L = 2/(2 − a)` = 1.0526.** With the tanks' drift
+  switched off, so that `G` stays at its settled 26.70 kg/s per unit, and from
+  each of three starting openings (0.4, 0.2, 0.05): `L = 1.050` settles, and
+  `L = 1.055` grows a ring that reaches ±5.6 kg/s by tick 3 000. **The first draft
+  of this note said `L = 1.06` settles.** That run had the drift on, which lowers `G`
+  by 3% per 2 000 ticks, so its real `L` slid under the bound before the ring could
+  grow. The label was a starting value, not the run's (probe `probe_fix.py`).
 - **A setpoint command of 30 kg/s**, above the 25.92 kg/s the fully open valve
   passes, pins `u = 1` within ten ticks. Stepping back to 12 recovers along the
   slow pole, about 29 ticks, without windup.
@@ -13119,7 +13136,7 @@ Three lines change and one table is added:
 
 | line | there | here | why |
 |---|---|---|---|
-| `dt` | 0.1 s | 1.0 s | at 0.1 s the tanks move 0.8% of the flow over 6 000 ticks, too little to need a loop. At 1.0 s the MANUAL twin falls **11.086676 → 10.207091 kg/s** (probe 3). On a lag-free plant `T_i` is a count of ticks either way, so `dt` sets only how far the tanks move per tick |
+| `dt` | 0.1 s | 1.0 s | at 0.1 s the tanks move under 1% of the flow over 6 000 ticks (the 1 s rate scaled by ten, not run), too little to need a loop. At 1.0 s the MANUAL twin falls **11.086676 → 10.207091 kg/s** (probe 3). On a lag-free plant `T_i` is a count of ticks either way, so `dt` sets only how far the tanks move per tick |
 | `discharge_valve.opening` | 0.5 | 0.4 | the first measurement is then **11.0865 kg/s, 0.91 below setpoint**, which is what the seed gate needs: an unsigned seed would step the first output by `2·K·e = 0.037` |
 | `[[controls]]` | — | flow on `fill_line`, `setpoint_kg_per_s = 12.0`, `gain_per_kg_per_s = 0.02`, `integral_time_s = 10.0`, `initial_output = 0.4`, `action = "reverse"` | `initial_output` equal to the valve's opening, as every demo since M8.4 |
 
@@ -13143,23 +13160,37 @@ The receiving tank rises from 1.0 m by about 3.6 m over the run, well inside its
    tick 2 equals `initial_output`. The output after tick 3 equals
    `K·(sp − m₃) + b`, with `b = 0.4 − K·(sp − m₂) + (K/T_i)·(sp − m₂)·dt`, computed
    by hand from published numbers.
-4. **The loop holds; the twin does not.** At the end, the flow is within the
-   derived ramp lag of 12 kg/s, and `u` is interior and never on a clamp. The
-   MANUAL twin reads within 1e-6 of 10.207091 kg/s with faceplate 0.4.
-5. **Stability, both sides of `2/(2 − a)`.** `G` is computed from two PUBLISHED
-   operating points (the settled AUTO pair and the MANUAL twin), and `K·G` asserted
-   within `[0.4, 0.6]`. With `L_crit = 2/(2 − dt/T_i)`: a fixture at
-   `K = 1.15·L_crit/G` alternates sign tick to tick and reaches both clamps, and one
-   at `K = 0.85·L_crit/G` settles. The bound is computed in-test from `T_i`, not
-   typed as 1 — the narrowing of fork 6, asserted.
+4. **The loop holds; the twin does not.** Over the last 1 000 ticks, `u` is
+   interior and never on a clamp, and every consecutive pair of published ticks
+   satisfies the PI update exactly, `u₊ − u = K·(e₊ − e) + (K/T_i)·e·dt` with
+   `e = sp − measurement`, to the rounding of a difference of two outputs. The
+   error itself stays below 1e-2 kg/s, and fork 6's steady-ramp form,
+   `e ≈ Δu·T_i/(K·dt)`, is what explains its size. The MANUAL twin reads within
+   1e-6 of 10.207091 kg/s with faceplate 0.4.
+5. **Stability, both sides of `2/(2 − a)`.** `G` is measured LOCALLY, as probe 1
+   did it: two one-tick MANUAL runs of the demo at openings 0.43 and 0.44, which
+   bracket the settled opening near load. `K·G` for the demo is asserted within
+   `[0.4, 0.6]`. With `L_crit = 2/(2 − dt/T_i)`: a fixture at `K = 1.15·L_crit/G`
+   alternates sign tick to tick and reaches both clamps within 400 ticks, and one at
+   `K = 0.85·L_crit/G` settles within 400 ticks. Over 400 ticks the drift moves `G`
+   by 0.6%. The bound is computed in-test from `T_i`, not typed as 1 — the
+   narrowing of fork 6, asserted. **Not from the AUTO/MANUAL pair**, which the first
+   draft used. By the end the two runs have passed about 8 t apart, so they stand
+   ~0.8 m of head apart, and the valve's curve bends between their openings: the
+   pair gives about 23.3 against a local 26.7. A settling fixture sized from it
+   would start near `L ≈ 1.04`, on the edge.
 6. **Windup, a shut start, and the reversed plant.** Three fixtures:
    - A 30 kg/s setpoint command pins `u = 1`, and the release back to 12 steps
      without a windup overshoot (M17's method).
    - **Zero is a measurement.** The demo with the valve declared shut
      (`opening = 0.0`, `initial_output = 0.0`) reads exactly `0.0` kg/s on
-     `fill_line` on tick 1.
-     After tick 2 the measurement is PRESENT and equal to 0.0, not absent, and the
-     loop has begun to open the valve.
+     `fill_line` on ticks 1 and 2. After tick 2 the measurement is PRESENT and
+     equal to 0.0, not absent. The output is still exactly 0.0, because gate 3's
+     seed returns `initial_output` on the first measured tick. **After tick 3 it is
+     exactly `K·sp·dt/T_i = 0.024`**: the memory is `b = −K·sp + (K/T_i)·sp·dt`, and
+     the error is still `sp`. That assertion also guards a quieter rule: a raw
+     output of exactly 0.0 is INSIDE `[0, 1]`, so tick 2's memory accumulates rather
+     than being back-calculated at the clamp.
    - **The reversed plant.** The pump off and the receiving tank the higher, so
      flow runs backwards through the valve from tick 1. The loop reaches `u = 1`
      and stays there. The measurement is present and negative on every tick after
@@ -13206,7 +13237,7 @@ refused before, and the refusal sweeps that assert on those messages are the che
 6. A negative flow clipped to zero → gate 6's reversed fixture (the measurement is
    no longer negative).
 7. Zero flow treated as absent (a `held` rule borrowed from M19) → gate 6's
-   shut-start fixture only. It is caught only because the demo meters the valve's
+   shut-start fixture only: the output after tick 3 stays 0.0 instead of 0.024. It is caught only because the demo meters the valve's
    OUTLET: on the inlet the shut valve reads `−1.547e-11`, which no exact-zero rule
    touches, and the mutation would be inert (fork 5).
 8. The setpoint range refusing only negatives, admitting zero → gate 8.
@@ -13235,6 +13266,8 @@ Run under `--no-fail-fast`, each catch read for why it fired.
   unchanged.
 
 The probes are `W:\temp\claude\m20\probe_gain.py` (probe 1, and probes 3 and 4
-when run at `dt = 1`, the latter at `opening = 0.0`) and `probe_loop.py`
-(probe 2). Each plant they run is the shipped
+when run at `dt = 1`, the latter at `opening = 0.0`; probe 5 is the same script with
+the pump off and the two tank levels swapped), `probe_loop.py` (probe 2) and
+`probe_fix.py` (the drift-free bound scan, the shut start, and M19's script at
+`T_i = 10`). Each plant they run is the shipped
 `tank_pump_valve.toml` with the substitutions the script names.

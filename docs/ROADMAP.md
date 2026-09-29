@@ -6328,3 +6328,14 @@ tick 137 and trails the draining tanks by a derived 3–4 g/s. The MANUAL twin f
 11.087 → 10.207 kg/s. The keys are `setpoint_kg_per_s` and `gain_per_kg_per_s`:
 the first variable whose file unit is its SI unit, so the unit-conversion mutation
 M10 and M17 owed cannot be written.
+
+**Four of the note's own claims were corrected the same day, in a second commit,
+before any code.** (i) The shut-start gate said the loop "has begun to open" after
+tick 2. Gate 3's seed makes that output exactly `initial_output`, so the valve
+first moves at tick 3, to exactly 0.024. (ii) "`L = 1.06` settles" contradicted the
+note's own bound. The hand model's tank drift lowers `G` as it runs, and with the
+drift off the edge is between 1.050 and 1.055, straddling 1.0526. (iii) Gate 5
+sized its fixtures from the AUTO/MANUAL pair, which mixes two plant states and
+reads 23.3 against a local 26.7. It now measures `G` locally. (iv) The
+reversed-flow fixture had not been run. It has now, and the valve's outlet pipe
+reads −5.93 kg/s at 0.4 open and −13.86 at 1.0.
