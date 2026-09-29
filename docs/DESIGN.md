@@ -5295,8 +5295,10 @@ because M8's remaining slice is the snapshot's, not another plant's.
   against a 600 s integral time, which is the same 1:600 ratio, so the reasoning
   survives on the plant that exists. The reason it was *incomplete* is above —
   reachability, not performance.
-- **Interlocks and trips** — a discrete layer, not a regulating one. Un-defers
-  with a safety case needing a plant to shut *itself* down.
+- ~~**Interlocks and trips** — a discrete layer, not a regulating one. Un-defers
+  with a safety case needing a plant to shut *itself* down.~~ **Built by M22.1**
+  (§26): latching trips on pumps and valves, re-armed by a reset that restarts
+  nothing.
 - **The slate on the snapshot** (M6.2's deferral) stays exactly where it is, and
   this slice does **not** trigger it. A level controller reads
   `TankState::level(ρ)` inside the engine, which already holds the slate; the
@@ -14453,3 +14455,109 @@ the building slice. All four are fixed above; this list says what changed.
 - **Smaller:** the range check is decided (a trip's own, not `check_setpoint`),
   and the roadmap's "a one-tick valve shut is safe" is scoped to the plant it was
   measured on.
+
+### Corrections from building it (M22.1)
+
+M22.1 built this note: `PlantGraph::trips`, `Trip`, `TripDirection`,
+`TripAction`, `TripState`, `Command::ResetTrip`, `Snapshot::trips`, `[[trips]]`,
+`scenarios/tank_overfill_trip.toml`, and the Godot bridge's `Referent::Trip`. The
+design held; what building it found is below.
+
+**The numbers reproduced exactly.** On the engine's own trip, both fidelities:
+armed through tick 1 235, `Tripped { at_tick: 1236 }` from 1 236, `fill_line`
+exactly zero (written `-0.0`) on that tick's own snapshot, 3.7584 m at tick 3 000,
+1.1453 m at 6 000. The untripped twin passes 10 m at tick 2 859 and ends at
+15.1658 m. Worst solver iterations over the run: 9 on Newton, 8 on the game
+solver. Gate 1's tick was re-measured on the engine before it was written into
+the test, as the gate asked.
+
+**Gate 7 holds, including the iteration counts.** All twenty-five pre-M22 plants
+are byte-identical on both fidelities, and no plant's worst or total iteration
+count moved. `refinery corpus --baseline` compares fingerprints only, so the
+iteration columns were compared by a separate script against a baseline
+recorded before the first edit. The demo is the only new row. From here, "runs
+byte-identical" means post-M22.1 identical, which is unchanged.
+
+**Two pieces of the loop loader are now shared, in a commit of their own.** Fork
+6 asks that a trip limit be converted "at the same site, by the same code" as a
+setpoint. The setpoint's conversion was written inline in each arm of
+`build_controls`, so it became `declared_value(variable, value)`, called by both
+tables. `resolve_measurement_point` now takes the owner's label ("control loop
+'x'" or "trip 'x'") rather than a `ControlDef`, keeping every loop message word
+for word. That refactor was committed and measured byte-neutral BEFORE any trip
+code existed, so a byte change in the feature commit could only have come from
+the feature.
+
+**Fork 8's tag is `status`.** The note said "serde-tagged" and named no tag. A tag
+of `state` inside a field called `state` would serialize as
+`"state":{"state":"tripped",…}`, so the wire form is `{"status":"armed"}` and
+`{"status":"tripped","at_tick":1236}`, asserted on the bytes by gate 8.
+
+**Fork 2(c)'s admission test is the engine's own reader.** At load, `measure`
+with empty resolved states and no solution returns `Ok(None)` for a furnace or
+cooler outlet, not `Err`. So asking "can this node answer?" would have admitted an
+outlet trip silently. The rule the loader applies is: `measure` at load must return
+a value, or the trip is refused naming E13. A flow is refused before the pipe name
+is even looked up, so a trip on an undeclared pipe gets the E13 reason and not a
+meter-lookup one. The tick pass still treats `None` as an engine fault.
+
+**The condition clears INSIDE the tripping tick, on every plant built so far.**
+This is the one finding the note did not anticipate. A trip compares the level
+standing at the TOP of its tick and writes its safe state before that tick's
+solve, so the whole tripping tick runs in the safe state. On the demo the level is
+5.9992 m at the end of tick 1 236, already under the 6 m limit. On gate 5's
+low-level fixture the drain is shut and the pump fills for the whole tick, and the
+level is back above 1.5 m by the first command after the trip. So **from the first
+command after a trip, the latch alone is what holds the equipment.** The reset's
+"condition still holds" refusal is reachable only on a plant that stays inside its
+condition after acting, which gate 6's fixture is built to do (declared at 2.0 m
+against a 1.5 m high trip, with only a slow drain). Gate 5 first asserted that
+refusal right after its trip and failed; it now asserts that the level HAS
+recovered, and the refusal belongs to gate 6 alone.
+
+**The hold check fails as `SimError::Numerical`, prefixed "internal:".** A new
+variant was not added, because the Godot bridge maps each variant to an error code
+and the feature-gated binding would have needed a new arm for a failure that is
+unreachable while the refusals hold.
+
+**The B28 sweep the ledger promised was run.** All twenty-six files, both
+fidelities, every snapshot over 6 000 ticks: no tank anywhere passes its own
+declared height. The closest is `crude_column`'s `distillate_tank` at 0.859 of its
+12 m, 10.31 m at tick 6 000 and still rising. So B28 stays deferred, and the demo's
+untripped twin is still the only plant that reaches it.
+
+**The mutation pass: all nineteen edits run, eighteen caught, each read for why it
+fired.** The note's sixteen rows are fifteen edits, since 14 is not expressible;
+four more were added (x1 to x4). The core, scenarios, bridge and CLI crates were run
+with `--no-fail-fast`. Each edit was restored with `git checkout`, and the tree was
+checked clean after every restore.
+
+| # | mutation | caught by | predicted | demo? |
+|---|---|---|---|---|
+| 1 | no latch | gate 2, and gate 1 (armed again at tick 1 237), and the bridge's reset acceptance (the trip had re-armed itself) | gate 2 | yes |
+| 2 | `≥` becomes `>` | gate 3's at-the-limit arms and its ULP unit test | gate 3 alone | inert |
+| 3a | high treated as low | gate 1 (trips on tick 1), gates 2, 3, 6, 8, the bridge | gates 3 and 1 | yes |
+| 3b | low treated as high | gate 3's low arms, AND gates 4, 5 and 6, whose fixtures carry low trips | gate 3's low arms alone | inert |
+| 4 | `limit_bar` not converted | gate 3's pressure arm that must not trip | as predicted | inert |
+| 4b | `limit_c` not offset | gate 3's temperature arm that must not trip | as predicted | inert |
+| 5 | trips after the loops | gate 4 alone | as predicted | inert |
+| 6 | trips at the end of the tick | gate 1 (`at_tick` 1 235) and gate 8's bytes, AND gate 3: after tick 1's integration the vessel and the tank have left their declared values, so no tie is left to test | gate 1 alone | yes |
+| 7 | loop not forced to MANUAL | gate 4 (the loop reports AUTO) and gate 5 | gate 4 and the hold check | inert |
+| 8 | AUTO refusal deleted | gate 5 alone | gates 5 and 6 | inert |
+| 9 | reset admitted inside the condition | gate 6 alone | as predicted | inert |
+| 10 | reset restarts the equipment | gates 5 and 6 | as predicted | inert |
+| 11 | `SetPumpOn` refusal deleted | gate 6, both of its tests | gate 6 and the hold check | inert |
+| 12 | `skip_serializing_if` removed | gate 8 alone | as predicted | inert |
+| 13 | hold check deleted | **nothing** | nothing | inert |
+| x1 | `SetValveOpening` trip refusal deleted | gate 6 | — | inert |
+| x2 | outlet refusal deleted | gate 9's furnace-outlet case | — | inert |
+| x3 | valve-conflict refusal deleted | gate 9's conflict case | — | inert |
+| x4 | reset reads the one-tick-old measurement | gates 5 and 6 (three tests) | — | inert |
+
+Two predictions named the hold check as a catcher (7 and 11), and in neither case
+did it get to fire. Each time an assertion on the command or the faceplate fails
+first, one tick before the hold check would. Under 7 the AUTO loop reopens the
+drain within the tripping tick itself, because the loop pass runs right after the
+trip pass. So the hold check is observed only by reading it: it stays exactly as
+predicted, a backstop no gate reaches while the refusals hold. Mutation 13 is left
+uncaught on purpose, for the reason the note gave.

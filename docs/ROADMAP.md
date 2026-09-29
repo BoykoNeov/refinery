@@ -6594,3 +6594,36 @@ review of the first commit:
 - **The snapshot contract is now fork 8**: `state` is `Armed` or
   `Tripped { at_tick }`, and a reset clears the tick.
 - A trip limit gets its own range check rather than the setpoints'.
+
+### M22.1 — Build it — **LANDED** 2026-09-29, and M22 is CLOSED
+
+Built as DESIGN §26 specifies; read its "Corrections from building it (M22.1)"
+before touching trips. `PlantGraph::trips`, `[[trips]]`,
+`Command::ResetTrip`, `Snapshot::trips`, the Godot bridge's `Referent::Trip`, and
+`scenarios/tank_overfill_trip.toml`. Nothing is past its trigger, so the next
+milestone is chosen from `docs/DEFERRED.md`. Five things to know.
+
+**The demo matches the probe to the last printed digit.** Trips at tick 1 236 on
+both fidelities, `fill_line` exactly zero from that tick's own snapshot, 1.1453 m
+at tick 6 000; its untripped twin reads 15.17 m in a 10 m tank.
+
+**Nothing old moved.** All twenty-five earlier plants are byte-identical on both
+fidelities, iteration counts included. The CLI's `--baseline` compares
+fingerprints only, so the iteration counts were checked by a separate script.
+
+**A trip's condition clears inside the tick that fires it.** The trip acts
+before that tick's calculation, so the whole tick runs in the safe state, and the
+level is back on the safe side by the first command after the trip. From then on
+the LATCH is what holds the pump and valve, not the danger. The reset's "still
+inside the condition" refusal is reachable only on a plant that stays inside after
+acting.
+
+**The mutation pass ran nineteen edits and caught eighteen.** The one left
+uncaught is the hold check's deletion, as predicted: it is a backstop behind
+refusals that all hold. Five predictions were wrong in their details, all
+recorded in §26. Two named the hold check as a catcher, and in both cases an
+earlier assertion fired first.
+
+**The overflow sweep (B28) found no shipped plant above its own tank height.** The
+closest is `crude_column`'s distillate tank at 86% of its height after 6 000
+ticks, still rising.

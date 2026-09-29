@@ -92,6 +92,7 @@ cargo run -p refinery-cli -- run scenarios/tank_temperature_heating.toml --ticks
 cargo run -p refinery-cli -- run scenarios/furnace_outlet_control.toml --ticks 6000   # the M19.1 furnace-outlet loop
 cargo run -p refinery-cli -- run scenarios/tank_flow_control.toml --ticks 6000        # the M20.1 flow loop
 cargo run -p refinery-cli -- run scenarios/relief_twin_vessels.toml --ticks 6000 --solver simple  # the M21.1 stiff pairs
+cargo run -p refinery-cli -- run scenarios/tank_overfill_trip.toml --ticks 6000       # the M22.1 overfill trip
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -187,10 +188,26 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M22 is OPEN (2026-09-29): interlocks and trips — `docs/DEFERRED.md` row E6.**
-Taken on a DECISION (the user's, on gameplay grounds). **M22.0 landed 2026-09-29**:
-DESIGN §26, eight forks, nine gates, sixteen mutations, no code. **M22.1 builds
-it** — read §26 first. The shape: `PlantGraph::trips`, a plain struct (no trait),
+**M22 is CLOSED (2026-09-29): interlocks and trips — `docs/DEFERRED.md` row E6,
+now struck.** Taken on a DECISION (the user's, on gameplay grounds). **M22.0**
+wrote DESIGN §26 (eight forks, nine gates, sixteen mutations, no code) and
+**M22.1 landed 2026-09-29** and built it — read §26's "Corrections from building
+it (M22.1)" before touching trips. The next milestone is chosen from
+`docs/DEFERRED.md`.
+
+**What M22.1 found.** (i) All twenty-five pre-M22 plants are byte-identical on
+both fidelities with no iteration count moved; "runs byte-identical" means
+post-M22.1 identical, unchanged. `corpus --baseline` compares fingerprints only,
+so iteration counts need their own comparison. (ii) **A trip's condition clears
+INSIDE the tick that fires it** (it acts before that tick's solve), so from the
+first command after a trip the LATCH holds the equipment, not the condition; the
+reset's "condition still holds" refusal needs a plant that stays inside after
+acting. (iii) `TripState` is tagged `status` (`{"status":"tripped","at_tick":…}`).
+(iv) Nineteen mutations, eighteen caught; the hold check's deletion is uncaught on
+purpose. (v) No shipped plant passes its own tank height (B28 swept; closest
+0.859). Setpoint and limit conversion share `declared_value` in `build.rs`.
+
+The design as built: The shape: `PlantGraph::trips`, a plain struct (no trait),
 `[[trips]]` with `direction = "high" | "low"`, `limit_m`/`limit_bar`/`limit_c`
 converted at the setpoints' own site, and an `actions` list of `{ pump = … }` and
 `{ valve = …, position = … }`. A trip fires at `≥`/`≤`, latches, writes its safe
@@ -203,8 +220,8 @@ trips at tick 1 236; its untripped twin fills a 10 m tank to 15.17 m (B28: no
 overflow). `TripSnapshot::state` is `Armed | Tripped { at_tick }`, and a reset
 clears the tick. **A level does not tie exactly at load** (4 of 8 declared values
 read one ULP high), so the at-the-limit gate uses a vessel's pressure and a
-tank's temperature, which do (8 of 8 each). The Godot bridge's `referent` needs a
-`Trip` arm, and the feature-gated clippy is owed.
+tank's temperature, which do (8 of 8 each). The Godot bridge's `referent` has its
+`Trip` arm, and the godot-feature build and clippy were run at M22.1 and are clean.
 
 **M21 is CLOSED (2026-09-29): the game solver's stiff-pair stall — `docs/DEFERRED.md`
 row A3, now struck.** Taken on a DECISION (the user's). **M21.0** wrote DESIGN §25
@@ -270,7 +287,7 @@ so CI's corpus defends the hierarchy.
   `newline=""` and check with `git diff`/`file`, not with a read through the same
   translation.**
 
-`scenarios/` holds **twenty-five** files.
+`scenarios/` holds **twenty-six** files (M22.1 added `tank_overfill_trip.toml`).
 
 **M20 is CLOSED (2026-09-29): the fourth controlled variable, FLOW — a valve
 holding the flow in one of its own two pipes.** Taken on a DECISION (the user's,
@@ -1680,16 +1697,17 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly six of the twenty-five files in `scenarios/` declare a `[[controls]]`
+**Exactly six of the twenty-six files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
 `tank_temperature_heating.toml` (M18.1, a reverse-acting temperature),
 `furnace_outlet_control.toml` (M19.1, a furnace's own outlet) and
 `tank_flow_control.toml` (M20.1, a valve's own flow). **The
-other nineteen
+other twenty
 were written before M8 (thirteen of them) or after it without a loop, and ARE
-the regression anchor**; adding a loop to one of them
+the regression anchor** (one, `tank_overfill_trip.toml`, carries a `[[trips]]`
+table instead); adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file
 rather than wiring one into an existing plant. Every other plant that carries a
 loop is an inline test fixture for the same reason.
