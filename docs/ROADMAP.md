@@ -6451,3 +6451,34 @@ in the first commit went beyond the measurements, and are now measured:
   (3.42e-6) once stagnant nodes are excluded along with stagnant edges.
 - **The skip rule.** It moves eight of those nine plants, so M21.1 re-measures
   the bound on what it ships.
+
+### M21.1 — Build — **IN PROGRESS**
+
+**Measured before any source edit (2026-09-29, at `713767b`).** Results and tables
+are in `W:\temp\claude\m21\m21_1\measurements.md`.
+
+**The before-results reproduce.** The corpus, re-recorded at HEAD, matches M21.0's
+baselines on all 48 rows (24 plants × both fidelities). No source changed between
+the two runs, so this doubles as a determinism check. The property-test counts
+are §25 gate 7's exactly: game solver 187/205 gas chains and 191/305 spur trees.
+
+**The twin's size and timestep, measured around the planned point.** The planned
+point is `twin_wide`: relief inlets 1 m × 0.15 m, `dt = 0.1`. The variants tried
+were inlet lengths 0.5/1/2 m × diameters 0.10/0.15/0.20 m, two thicker ties, and
+`dt` 0.05/0.1/0.2/0.5/1.0.
+- **Mutations 1 and 3 turn it red at tick 1 on every variant but one.** The
+  exception is 2 m × 0.10 m, which is the `two_vessel` fixture's geometry:
+  unaided, it fails at tick 47; with one group per set, it runs at 4 472 sweeps.
+- **The timestep window is 0.05–0.5 s.** At 1.0 s Newton fails at tick 17 (row
+  A14), so CI's Newton corpus would go red. At 0.5 s Newton needs 25 of its 50
+  iterations. At 0.1 s it needs 8, and the shipping version 6.
+- **Mutation 2 (frozen trial) is not caught by the twin at any usable `dt`.** It
+  fails only at 1.0 s. This matches §25, which gives it to gate 2 alone.
+- **Agreement with Newton on node pressure is 1.3e-8 over every snapshot.** Gate
+  4's bound is 1e-4.
+- **The plant does relieve.** The drum's valve opens at tick 160 and the
+  receiver's at tick 860. Both are partly open at tick 6 000.
+- **CI catches the shut-valve form of the stiffness, not the flowing form.** At
+  tick 1 both valves are shut, so both relief lines are dead ends, and the
+  stiffness comes from the regularisation `eps_dp`. The flowing form comes later,
+  and only a solver that survives tick 1 reaches it.
