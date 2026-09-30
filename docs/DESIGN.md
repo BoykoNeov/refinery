@@ -15689,3 +15689,367 @@ checked byte for byte:
 **Ten of eleven caught; the one left uncaught is predicted and is a cost.**
 - **Four predictions were wrong** (2, 8, 9, 10). Three name a demo or fixture gate for a rule the built driver only reaches on a stub or in a fabricated state.
 - **An inert edit and an uncaught edit are the same observation**, and so are an accidental catch and a deliberate one. Mutation 8 would have been recorded as "caught" on the strength of 0.3 µg over a floor.
+
+## 29. Cascade control — one loop sets another loop's target (M25.0) — specified before building
+
+### What licensed this, stated plainly
+
+Nothing fired. No row in `docs/DEFERRED.md` was past its trigger when M23 and M24
+closed. **This milestone is a decision**, the user's, taken on 2026-09-30 from a
+short list, on the gameplay grounds M17–M22 were taken on. The row is **E2**:
+"cascaded loops … un-defers when a plant has an inner loop fast enough to be worth
+separating; needs an execution-order rule stronger than declaration order" (§10,
+"Deferred").
+
+**The first clause is already true of a shipped plant, and M19 said so.** The
+furnace-outlet loop (§23) settles in about 150 ticks; the tank it feeds has a
+residence time of `M/ṁ = 14 872.8 / 14.3647 = 1 035 s`, and the tank loop on the
+same plant takes 2 390 ticks. §23 closed its demo with "that trade-off is what a
+cascade (E2) exists for". The second clause is a design obligation, not a
+trigger, and is fork 3.
+
+Its scope is **a primary loop whose output is a secondary loop's setpoint**, two
+levels deep, in exactly two pairings (fork 5). The demo is the heater plant, a
+tank's temperature over its furnace's outlet, and not the level-over-flow pair
+this milestone was introduced with in conversation: that pair ships too, on a
+fixture, because no shipped plant has a tank with both a feed and a metered drain
+(premise 4).
+
+### Four premises, measured before any fork
+
+The probes are in `W:\temp\claude\m25\`: `probe\` (a Rust binary on the ENGINE,
+which applies `SetHeatInput` to a settled plant), `handsim.py` (a hand
+transcription of `PiController` and the tick order on the heater plant),
+`cascade_probe.py`, `final_probe.py` and `open_probe.py`.
+
+**1. The hand model reproduces the engine on both single loops.** On
+`tank_temperature_heating.toml` the engine's tank loop peaks at output 0.8090 at
+tick 640 with the outlet at 66.92 °C, and is inside 0.06 K of 60 °C from tick 2 390;
+the hand model gives 0.8090, 640, 66.92 and 2 391. On `furnace_outlet_control.toml`
+the engine's tank reads 59.939 °C at tick 6 000, the hand model 59.938. The model:
+flow 14.3647 kg/s, tank 14 872.8 kg, 16.640 K at the outlet per MW, both loops at
+the top of the tick on start-of-tick state, the outlet algebraic, the tank explicit.
+So the cascade numbers below are predictions from a model that has earned them on
+this plant, and are labelled as predictions.
+
+**2. Each single loop fails one of two disturbances, on the engine.** A 0.3 MW
+fire (`SetHeatInput`) applied to the settled plant at tick 6 000:
+
+| loop | fire on the heater | fire on the tank |
+|---|---|---|
+| tank loop only (`tank_temperature_heating`) | tank +0.820 K at +447; outside 0.06 K until +2 046 | identical: +0.820 K, +2 046 |
+| outlet loop only (`furnace_outlet_control`) | outlet 64.99 °C for one tick, tank undisturbed | tank **+5.04 K and still rising at +6 000**: nothing measures it |
+
+The tank loop cannot tell the two fires apart — a furnace with no thermal mass
+passes a heater fire straight to the tank — so it pays for both at the tank's
+pace. The outlet loop rejects the heater fire in a tick and cannot see the tank
+fire at all. (The outlet plant's tank had not finished its startup at 6 000, 59.939
+°C, so its "undisturbed" is read from the trajectory, not from a band.)
+
+**3. The cascade does both, by hand.** Outer: the tank loop's own tuning re-expressed
+over a 40–65 °C outlet range (fork 2), `K = 0.133` per K, `T_i = 600 s`. Inner: the
+outlet loop verbatim, `K = 0.015` per K, `T_i = 10 s`, 2 MW.
+
+| | cascade (hand) | best single loop (engine) |
+|---|---|---|
+| heater fire, tank peak | **+0.0753 K**, back inside 0.06 K by +143 | +0.820 K (tank loop) |
+| tank fire, tank peak | +0.845 K, back inside 0.06 K by +2 004 | +5.04 K and never back (outlet loop) |
+| startup, inside 0.06 K of 60 °C from | tick 2 577 | 2 390 (tank loop), never within 6 000 (outlet loop) |
+| startup, hottest outlet | **64.99 °C**, under the 65 °C cap | 66.92 °C (tank loop) |
+
+**The cascade is 187 ticks SLOWER to start than the tank loop, and that is the
+cap's price, not a defect.** The outer loop clamps at the range top on 69 ticks
+between 316 and 812 (not contiguous: near a clamp the output dips a hair off and
+back, M18's (iv)). The tank loop gets there sooner by firing the outlet to 66.92 °C,
+which is exactly what a range on the outlet exists to forbid.
+
+**4. The sites that assume a loop writes a NODE**, grepped:
+
+- `ControlLoop::actuator: NodeId` (`graph.rs`), read by
+  `PlantGraph::actuator_position` and `set_actuator_position` (the single owner of
+  position), at three sites: the loader's seed (`build.rs:1226`), pass 1 of
+  `run_control_loops`, and the MANUAL→AUTO transfer.
+- `Engine::apply`: `SetValveOpening`'s AUTO-owner guard, `check_loop_owned_duty`
+  (cooler and furnace), and `SetControllerMode`'s latched-trip refusal
+  (`latched_trip_on(control.actuator)`).
+- `run_trips` pass 3: forces to MANUAL every loop whose actuator is a tripped valve.
+- `build_controls`: the pairing table, the action table, `claimed_actuators`.
+- The Godot bridge reads none of them (its `Referent::Loop` names a loop id only).
+
+**No shipped plant has a tank with both a feed and a metered drain.**
+`tank_flow_control`'s receiving tank has no outlet, so a level loop over its fill
+flow would settle at zero flow, which a flow setpoint may not be (fork 2). That is
+why the level pairing is gated on a fixture built from `tank_level_control.toml`.
+
+### The sentence sites, counted before writing
+
+1. `engine.rs`, `run_control_loops`' doc: "declaration order decides only who wins a
+   contested write. (Nothing can contest one today …)". Declaration order stops
+   deciding anything in pass 2 (fork 3).
+2. `build.rs`'s pressure-with-cooler refusal: "this a cascade (docs/DEFERRED.md E2)
+   wearing one loop's name". Still refused, now because a pressure over a
+   temperature is not an admitted pairing (fork 5); the message points at the new
+   row rather than at E2.
+3. `graph.rs`, `ControlLoop::actuator`'s doc ("The node this loop writes") and
+   `ControlLoop::max_duty`'s ("`None` on a valve").
+4. `traits.rs`, `Controller::update`'s doc: "The return is a dimensionless actuator
+   position … which is what `Command::SetValveOpening` already validates".
+5. `snapshot.rs`, `Command::SetSetpoint`'s doc, which gains the owner refusal.
+6. §10 "Deferred" (E2's entry), §23's closing trade-off paragraph, §24's E2 entry:
+   pointers here, not rewrites.
+7. `docs/DEFERRED.md` E2 (taken now, struck at M25.1); `CLAUDE.md`.
+
+### Fork 1 — where the link is declared
+
+- **(a) On the primary: `actuator = { loop = "<secondary>" }`. Chosen.** A loop
+  names what it writes, and a secondary's setpoint is what a primary writes.
+- **(b) On the secondary: `setpoint_from = "<primary>"`.** Rejected by §10 fork 1's
+  own argument: storing the writer inside the thing written makes "who owns this"
+  unanswerable where `Engine::apply` has to answer it.
+- `ControlLoop::actuator` becomes `enum Actuator { Node(NodeId), Loop(LoopId) }`,
+  for `MeasurementPoint`'s reason (§24 fork 1): two `Option`s make "both" and
+  "neither" representable. `claimed_actuators` then refuses two primaries on one
+  secondary for free, with its existing message.
+- A bare string `actuator = "heater"` keeps meaning a node, so all six loop plants
+  parse unchanged.
+
+### Fork 2 — what the primary's output means: a fraction of a declared range
+
+- **The primary's output `u ∈ [0, 1]` is the secondary's setpoint as a fraction of a
+  range declared on the PRIMARY**: `setpoint = lo + u·(hi − lo)`. It sits beside
+  `max_duty` for §21 fork 3's reason: it is the loop's statement of its own
+  authority, and nothing else reads it.
+- **`PlantGraph::actuator_position` reads it back as `(setpoint − lo)/(hi − lo)`, and
+  `set_actuator_position` writes it.** Everything that already goes through those
+  two — MANUAL tracking, the MANUAL→AUTO seed, the clamp's back-calculation, the
+  load-time seed — works on a primary with no new code. That is the fork's whole
+  argument.
+- **Keys carry the SECONDARY's unit**, because the numbers are its setpoints:
+  `range_min_c`/`range_max_c` over a temperature, `range_min_kg_per_s`/
+  `range_max_kg_per_s` over a flow. Both temperature keys take `+273.15`; a span
+  key would take none, which is why there is no span key (the `setpoint_c`/
+  `gain_per_k` trap, §21 fork 5). Required on a loop actuator, refused on a node
+  one, both directions (the `max_duty_mw` rule); the foreign-key table grows two
+  rows per variable.
+- **Both ends go through `check_setpoint` at load, and `lo < hi` strictly.** A range
+  end the secondary's own setpoint command would refuse is a position the primary
+  could reach and the engine would then refuse mid-tick.
+- **Finding: a flow range cannot start at zero.** `check_setpoint` refuses a flow
+  setpoint of 0 ("shut the valve is a MANUAL action", §24 fork 4), so a level loop
+  over a drain flow has a minimum flow, and cannot ask to shut its drain. That is
+  real practice (a minimum-flow stop) and it is stated rather than worked around.
+- **The secondary keeps its own declared setpoint**, and the primary's
+  `initial_output` should agree with it. Not enforced, as a valve's `opening` is not
+  enforced against `initial_output` (M8.4's "equal, and that is the point"): a P
+  primary has no `initial_output`, so the secondary's setpoint is the only
+  declared position a P primary has.
+
+### Fork 3 — order inside one tick, and the depth of a chain
+
+- **Pass 1 is unchanged**: every loop measures the start-of-tick state, and the
+  primary samples its position from the secondary's setpoint.
+- **Pass 2 runs primaries first, and each writes its secondary's setpoint before
+  any secondary updates.** The secondary then acts on this tick's target with no
+  added lag. **This is not an algebraic loop**, which is §10 fork 3's objection to
+  reading this tick's solve: nothing in pass 2 reads the plant, both measurements
+  are from the start of the tick, and the solve comes after.
+- **The size of getting this wrong, estimated first** (M21.1's rule): the secondary
+  running first, on last tick's target, moves the demo's tank by up to 6.9e-3 K and
+  its outlet by up to 5.6e-2 K (hand). Visible, but not a gate: a one-tick
+  comparison is (gate 3).
+- **Two levels, and that one rule is also the cycle refusal.** A loop that drives
+  another may not itself be driven. So "A drives B, B drives A" and "A drives A" are
+  refused by the depth rule, with no graph sort, and the order in pass 2 is a
+  stable partition (primaries, then the rest). Chains of three are deferred (new
+  row E17); a Kahn sort is where they would start, as `holdup_evaluation_order` did.
+- **Declaration order stops mattering.** The demo declares the primary first, so it
+  cannot defend the partition; a fixture declaring the secondary first does (M15.1:
+  a demo's own file order makes a sort inert).
+- Pass 3 writes only nodes. A loop actuator's write happened in pass 2.
+- A plant with no loop still takes `run_control_loops`' early return, and a plant
+  with no link runs the same three passes in the same order.
+
+### Fork 4 — who owns the secondary's setpoint, and the open cascade
+
+**No new `ControlMode`.** The secondary's setpoint is the primary's actuator, so
+the rules a valve already has carry over word for word:
+
+- **Primary in AUTO owns the setpoint**: `Command::SetSetpoint` on the secondary is
+  refused, with the valve guard's reason (it would be overwritten at the top of the
+  next tick).
+- **Primary in MANUAL**: a human moves the secondary's setpoint with `SetSetpoint`,
+  which is what "the primary in MANUAL" means on a DCS, and the primary's faceplate
+  tracks it through `actuator_position`.
+- **Secondary not in AUTO (a human put it in MANUAL, or a trip did): the cascade is
+  OPEN.** The secondary is not using its setpoint, so a primary writing it would
+  integrate against a plant that is not answering. The primary writes nothing,
+  its faceplate tracks the secondary's setpoint, and **its memory is re-seeded every
+  open tick by back-calculation against that tracked position**. On closing
+  (secondary back to AUTO), the primary resumes from exactly where the secondary
+  stands.
+- **Why re-seed, where §23 leaves a blind loop's memory untouched.** An outlet with
+  no measurement has no error to seed against; here the error exists and the
+  position is real. Measured by hand (`open_probe.py`): open for 300 ticks while a
+  human moves the furnace and a tank fire burns, then close. Re-seeded, the
+  secondary's setpoint moves **0.004 K** at closure (one tick of honest control);
+  left untouched, **1.37 K**, a bump an operator would see.
+- **Trips need no new rule.** A trip already forces the loops on its valve to
+  MANUAL; a secondary forced to MANUAL opens its cascade by the rule above. The
+  `SetControllerMode` latched-trip refusal asks about the loop's own NODE actuator;
+  a primary has none, and cannot move equipment, so it is exempt, and the
+  secondary's own refusal is the one that holds the valve.
+- The primary in AUTO with its secondary in MANUAL is a legal state from load or by
+  command, and is simply open.
+
+### Fork 5 — which pairings, and the primary's sign
+
+**The inner loop must measure a quantity with no holdup of its own** — a pipe's
+flow or a furnace or cooler outlet. That is what "fast enough to be worth
+separating" means in this engine: both are algebraic within a tick. An inner loop
+on a level, a pressure or a holdup's temperature is refused with that reason.
+
+**The primary's sign is topology, which is E8's problem, and is admitted only
+where the loader checks it in one hop:**
+
+| outer measures | inner measures | admitted when | outer's action |
+|---|---|---|---|
+| a tank's temperature | a furnace's or cooler's outlet temperature | the unit's outlet pipe ends at that tank | **reverse**, required (a hotter outlet setpoint heats the holdup, whichever unit it is) |
+| a tank's level | the flow on a valve's own pipe (§24) | the valve's inlet pipe starts at the tank (a drain) | **direct**, required |
+| a tank's level | same | the valve's outlet pipe ends at the tank (a fill) | **reverse**, required |
+
+- A cooler outlet over a holdup is reverse, like a furnace: raising a cooler's
+  outlet setpoint means cooling less. The loader cannot infer that from the
+  actuator kind, which is why the check is on the outer loop's variable and the
+  pipe, not on the unit.
+- **A fill-valve level loop is reverse, and this is the first one admitted.** E8
+  refuses reverse action on a level loop's VALVE because the loader cannot check the
+  side. Here it checks it, one hop, and E8 is unchanged for a single loop.
+- **Refused, each with its own reason**: a pressure over a flow (the same one-hop
+  rule would serve; no fixture, so no admission; new row E18), a VESSEL's
+  temperature over an outlet (the same, for the same reason), a temperature over a
+  flow (no coolant stream, §21 fork 3), a level over a temperature and every other
+  cross pair (nothing moves), a unit further than one hop from the holdup (E12's
+  shape), and every holdup inner loop.
+
+### Fork 6 — the inner loop saturating (deferred)
+
+- The primary's anti-windup knows only its own `[0, 1]`. If the secondary's
+  actuator saturates first (a furnace at its 2 MW while the primary asks for a
+  hotter outlet), the primary keeps integrating until its own clamp.
+- **Bounded, and that bound is the argument for deferring.** The primary's own
+  clamp holds its output inside the declared range, so windup is at most a walk to
+  the range top and back. On the demo the range top (65 °C) needs 1.50 MW of 2, so
+  the secondary cannot saturate at any setpoint the primary can write at the
+  demo's flow.
+- The textbook remedy feeds the secondary's MEASUREMENT back as the primary's
+  position (external reset feedback). New row E16; trigger: a plant whose range top
+  exceeds the inner actuator's authority at some operating flow.
+
+### Fork 7 — what a frontend sees
+
+- **`ControlSnapshot::drives: Option<LoopId>`**, skipped when `None`, so the six
+  loop plants publish the bytes they did. A faceplate needs the link to draw it,
+  and a frontend may not reach into the engine for it (rule 6).
+- The secondary's `setpoint` already publishes; it now moves every tick.
+- "Open" is not a field: it is the secondary's published `mode` read through
+  `drives`. A field saying it would be a second owner of one fact.
+- No new command. The godot-feature build and clippy are owed at M25.1, because
+  `ControlLoop` and `ControlSnapshot` change shape.
+
+### Fork 8 — the demo plant
+
+`scenarios/furnace_cascade_control.toml`, the twenty-ninth file:
+`tank_temperature_heating.toml`'s plant, unchanged, with two loops.
+
+- **Inner**: `furnace_outlet_control.toml`'s loop verbatim (`K = 0.015`,
+  `T_i = 10`, `initial_output = 0.25`, `max_duty_mw = 2.0`), with a declared
+  setpoint of 50 °C.
+- **Outer**: the tank at 60 °C, `actuator = { loop = "outlet_temperature" }`,
+  `range_min_c = 40.0` (the feed: the furnace cannot cool), `range_max_c = 65.0`,
+  `gain_per_k = 0.133` (the tank loop's 0.1 × 33.28 K per unit, over a 25 K range),
+  `T_i = 600`, `initial_output = 0.4` (the 50 °C the inner declares).
+- **The cap is chosen below the tank loop's 66.92 °C peak on purpose**, so the
+  shipped file reaches the outer loop's clamp and anti-windup (M8.4's coverage gap:
+  a wired loop that never reaches its own saturation arm).
+- **The CLI shows the startup only.** The disturbances are commands, and the CLI
+  issues none, so the fires live in the gates. The header says so.
+- Three files, one plant: diff it against `tank_temperature_heating.toml` (one loop
+  on the tank) and `furnace_outlet_control.toml` (one loop on the outlet).
+
+### The gates, named before building
+
+1. **Nothing old moves.** All twenty-eight pre-M25 plants byte-identical on both
+   fidelities, and `total_iterations` unchanged (not only the worst; M23.1's
+   lesson).
+2. **Startup, on the demo**: the tank is inside 0.06 K of 60 °C from a tick within
+   a stated band of the hand model's 2 577; the outlet never exceeds 65 °C by more
+   than the inner loop's measured overshoot; the outer output sits at 1 on some
+   tick (the clamp is reached). Controls: the two one-loop files, run in-test, peak
+   the outlet at 66.92 °C and fail to reach the band by 6 000, respectively.
+3. **Same-tick hand-off.** On a settled demo, step the PRIMARY's setpoint and
+   compare with an untouched twin: the furnace duty differs on the very next tick.
+   Under "secondary first" it is bit-identical on that tick. Repeated on a fixture
+   that declares the secondary first.
+4. **The heater fire**: cascade tank peak ≤ 0.1 K (hand 0.0753); the tank-loop twin
+   ≥ 0.8 K (engine 0.820).
+5. **The tank fire**: cascade back inside 0.06 K (hand +2 004); the outlet-loop twin
+   still ≥ 4.9 K off at +6 000 (engine 5.04).
+6. **Open and close**: the secondary to MANUAL for a span in which a human moves the
+   furnace; the primary writes nothing, its faceplate equals the secondary's
+   setpoint position to the bit, and at closing the secondary's setpoint moves by at
+   most one tick of control (hand 0.004 K), not the untouched memory's 1.37 K.
+7. **A trip opens the cascade**, on the level fixture: a trip on the flow loop's
+   valve puts the secondary in MANUAL, and the primary tracks from that tick.
+8. **Refusals, each by its own message**: `SetSetpoint` on a secondary under an AUTO
+   primary (and admitted under a MANUAL one); a three-deep chain; a self-link; a
+   mutual pair; two primaries on one secondary; the range keys missing, foreign, out
+   of `check_setpoint`, or `lo ≥ hi`; a flow range starting at 0; both admitted
+   pairings' wrong sign and missing sign, and a COOLER-outlet inner loop loading
+   under a reverse outer (the pairing the demo does not run); a unit two hops away; a holdup inner
+   loop.
+9. **The level pairing, on a fixture** from `tank_level_control.toml`: a drain case
+   (direct) and a fill case (reverse) each hold the level.
+10. **The wire form, on the bytes**: `"drives"` on the primary only; no key on any
+    loop of the six pre-M25 loop plants.
+
+### What must not change, stated as a prediction that can be wrong
+
+Every pre-M25 plant takes the same three passes in the same order, and none has a
+loop actuator, so all twenty-eight are byte-identical on both fidelities with no
+iteration count, worst or total, moved. The corpus fingerprint defends the bytes;
+iteration counts need their own comparison. **Predicted, not measured**: the demo
+can only be measured once it is built.
+
+### The mutations M25.1 owes, named before building
+
+Each with the size of what it changes, estimated first.
+
+| # | edit | size | predicted catcher |
+|---|---|---|---|
+| 1 | secondary updates before its primary | 6.9e-3 K tank, 5.6e-2 K outlet (hand) | gate 3, both halves |
+| 2 | primary's position reads the secondary's MEASUREMENT, not its setpoint | the outlet's distance from its setpoint when open: several K in gate 6 | gate 6 |
+| 3 | range map drops `lo` (`u·span`) | 40 K: the tank never reaches 60 °C | gate 2, and most others |
+| 4 | `SetSetpoint` owner guard deleted | a command that appears to work | gate 8 |
+| 5 | open cascade leaves the primary's memory untouched | 1.37 K bump at closing (hand) | gate 6 |
+| 6 | primary keeps writing while open | integrates against nothing | gate 6 (faceplate) |
+| 7 | `range_max_c` not converted `+273.15` | the range becomes 313 K to 65 K | gate 8 (`lo ≥ hi`) |
+| 8 | outlet-over-holdup sign check deleted | a direct outer loop runs away | gate 8 |
+| 9 | depth rule deleted | a three-deep chain loads | gate 8 |
+| 10 | `drives` serialized when `None` | six loop plants' bytes | gate 10 (and gate 1) |
+| 11 | a trip does not open the cascade (primary treats a tripped secondary as AUTO) | primary integrates while the valve is held | gate 7 |
+| 12 | pass-2 partition applied, but pass 3 also writes the loop actuator | a second write of the same value | **predicted inert**; stated as such |
+
+### Deferred, with what un-defers each
+
+- **E16 — the inner loop saturating** (fork 6). Trigger: a plant whose range top is
+  beyond the inner actuator's authority at some operating flow.
+- **E17 — chains deeper than two** (fork 3). Trigger: a plant with three nested
+  loops (a level over a flow over a valve with its own positioner is the textbook
+  shape, and this engine has no positioner).
+- **E18 — the other pairings** (fork 5): a pressure over a vent flow, a vessel's
+  temperature over an outlet, a unit more
+  than one hop from its holdup, and a temperature over a coolant flow once a coolant
+  side exists. Trigger: a plant that needs one.
+- **Setpoint tracking in MANUAL** — a secondary whose setpoint follows its
+  measurement while a human drives it, so closing needs no re-seed at all. A DCS
+  option, not physics. Recorded here, no row.

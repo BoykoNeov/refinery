@@ -190,6 +190,34 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M25 is OPEN (2026-09-30): cascade control — `docs/DEFERRED.md` row E2, taken on
+a DECISION (the user's).** **M25.0 landed 2026-09-30**: DESIGN §29, eight forks, ten
+gates, twelve mutations, no code. **M25.1 (build it) is next.** Read §29 before
+touching `ControlLoop::actuator` or `run_control_loops`. Five things to know.
+- **A primary declares `actuator = { loop = "…" }`**, and its output is the
+  secondary's setpoint as a fraction of `range_min_*`/`range_max_*` (the secondary's
+  unit, both `_c` keys `+273.15`, both ends through `check_setpoint`, `lo < hi`).
+  `actuator_position`/`set_actuator_position` read and write it, so tracking,
+  bumpless transfer and anti-windup reuse existing code. A flow range cannot start
+  at 0 (a zero flow setpoint is refused).
+- **Pass 2 runs primaries first**, writing each secondary's setpoint before any
+  secondary updates; pass 1 is unchanged, so it is not an algebraic loop. Two levels
+  only: a driven loop may not drive, which is also the cycle refusal.
+- **No new `ControlMode`.** A primary in AUTO owns its secondary's setpoint
+  (`SetSetpoint` refused); a secondary not in AUTO (human or trip) OPENS the cascade:
+  the primary writes nothing, tracks, and re-seeds its memory every tick.
+- **Admitted pairings**: a tank's temperature over the furnace or cooler whose outlet
+  pipe ends at it (outer REVERSE), and a tank's level over the flow on a valve whose
+  inlet starts at the tank (drain, DIRECT) or whose outlet ends at it (fill,
+  REVERSE). The inner loop must measure a flow or an outlet. The rest is E18.
+- **Demo `scenarios/furnace_cascade_control.toml`** (to be the twenty-ninth file):
+  `tank_temperature_heating.toml`'s plant, the outlet loop verbatim inside, a tank
+  loop outside over 40–65 °C at `gain_per_k = 0.133`. By hand: a 0.3 MW heater fire
+  +0.075 K (tank loop alone, on the engine: +0.82 K), startup inside 0.06 K from
+  tick 2 577 with the outlet never above 65 °C. The fires are commands, so they live
+  in the gates; the CLI shows startup only. `ControlSnapshot::drives`, skipped when
+  `None`.
+
 **M23 is CLOSED (2026-09-30): tank overflow — `docs/DEFERRED.md` row B28, now
 struck.** Taken on a DECISION (the user's), and past its trigger all along: run
 past the corpus's 6 000 ticks and six shipped plants overflow, the first at 11.7

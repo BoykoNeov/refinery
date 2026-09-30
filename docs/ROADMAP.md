@@ -6825,3 +6825,56 @@ and one catch was an accident: a start-of-tick debit was first caught only becau
 one game-solver tick left a dry tank 0.3 µg over the thermal floor. A deliberate
 gate replaced the luck. In-tick recovery and the starvation-only repeat are
 defended only by stub passes: no plant in the suite reaches either.
+
+## M25 — cascade control: one loop sets another loop's target; ledger row E2; opened on a decision
+
+Taken on the user's decision (2026-09-30), from a short list, on the gameplay
+grounds M17–M22 were taken on. Nothing was past its trigger. Its scope is **a
+primary loop whose output is a secondary loop's setpoint, two levels deep**: a
+tank's temperature over a furnace's or cooler's outlet, and a tank's level over the
+flow on a valve beside it.
+
+### M25.0 — Scoping + design note — **LANDED** 2026-09-30
+
+The note is DESIGN §29: eight forks, ten gates, twelve mutations, no code. The
+probes are in `W:\temp\claude\m25\`: an engine binary that sets fires on the two
+single-loop heater plants, and a hand model of the cascade that reproduces both
+single loops on the engine to the tick. Five things to know before the building
+slice.
+
+**The demo is the heater plant, not the level-over-flow pair, and the reason is a
+measurement.** Each single loop fails one disturbance on the engine: the tank loop
+takes a 0.3 MW heater fire to +0.82 K for 2 000 ticks, and the outlet loop leaves a
+tank fire at +5.04 K for good. The cascade (by hand) takes the heater fire to
++0.075 K and back in 143 ticks, and recovers the tank fire as the tank loop does.
+No shipped plant has a tank with both a feed and a metered drain, so the level pair
+ships on a fixture.
+
+**The link is declared on the primary, and its output is a fraction of a range.**
+`actuator = { loop = "…" }` and `range_min_*`/`range_max_*` in the secondary's own
+unit. Reading the secondary's setpoint back as a position through the existing
+`actuator_position` means MANUAL tracking, bumpless transfer and anti-windup need no
+new code. A flow range cannot start at zero, because a flow setpoint of zero is
+refused: a level loop over a drain has a minimum flow.
+
+**Primaries run first in pass 2, and there are two levels.** The secondary acts on
+this tick's target with no added lag, and it is not an algebraic loop because both
+measure the start-of-tick state. "A driven loop may not drive" is both the depth
+limit and the cycle refusal.
+
+**No new mode: the cascade is OPEN when the secondary is not in AUTO**, by a human
+or by a trip. The primary then writes nothing and re-seeds its memory every tick
+against the secondary's setpoint, so closing moves that setpoint by 0.004 K (by
+hand) where an untouched memory would move it 1.37 K. `SetSetpoint` on a secondary
+is refused while its primary is in AUTO, as a valve's opening is.
+
+**The cap costs 187 ticks of startup, on purpose.** The outer range tops out at
+65 °C, below the tank loop's 66.92 °C peak, so the cascade starts slower (2 577 ticks
+against 2 390, by hand) and the shipped file reaches the outer loop's clamp. Three
+rows are new: E16 (the inner loop saturating), E17 (chains deeper than two), E18
+(the other pairings).
+
+### M25.1 — Build it
+
+As DESIGN §29 specifies. Owes the godot-feature build and clippy, because
+`ControlLoop` and `ControlSnapshot` change shape.
