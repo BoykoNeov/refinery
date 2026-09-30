@@ -15,9 +15,10 @@
 //!    the demo's `state` is tagged, both asserted on the serialized BYTES — a
 //!    Rust match on the enum passes under any tag (M10.1's lesson).
 //!
-//! And the counterfactual the file's header quotes: without the trip, the level
-//! passes the tank's own 10 m height, because the engine has no overflow
-//! (`docs/DEFERRED.md` B28).
+//! And the counterfactual the file's header quotes: without the trip, the tank
+//! reaches its own 10 m brim and spills. Until M23.1 it passed the brim and read
+//! 15.17 m in a 10 m shell, because the engine had no overflow
+//! (`docs/DEFERRED.md` B28, now struck; docs/DESIGN.md §27 gate 10).
 //!
 //! The reset, every refusal and the loop hand-back need commands, which the CLI
 //! never issues, so they live on fixtures in `trip_reference.rs`.
@@ -28,6 +29,9 @@ use refinery_core::Engine;
 use refinery_scenarios::{build_engine, load_str};
 
 const DEMO: &str = include_str!("../../../scenarios/tank_overfill_trip.toml");
+/// The same plant with its `[[trips]]` table removed — the counterfactual, as a
+/// shipped file rather than a slice of this one (docs/DESIGN.md §27 fork 7).
+const UNTRIPPED: &str = include_str!("../../../scenarios/tank_overflow.toml");
 const NO_TRIP_PLANT: &str = include_str!("../../../scenarios/tank_level_control.toml");
 
 /// The tick whose trip pass fires, measured on the engine's own trip (and equal
@@ -186,30 +190,87 @@ fn the_trip_stays_latched_while_the_tank_drains_far_below_its_limit() {
     }
 }
 
-/// The counterfactual the file's header states: the same plant without its
-/// `[[trips]]` block runs past the tank's declared height, because nothing in
-/// the engine stops a tank filling (`docs/DEFERRED.md` B28).
+/// The counterfactual the file's header states (docs/DESIGN.md §27 gate 10).
+///
+/// **The untripped twin is a shipped file, and the test first proves it IS the
+/// twin**: `tank_overflow.toml`'s plant, from `[simulation]` on, is this file's
+/// up to its `[[trips]]` table, byte for byte. Then it runs: the level passes
+/// nothing. It reaches the 10 m brim at tick 2 859 — the tick at which, before
+/// M23.1, it passed it on its way to 15.17 m — and from then on the tank holds
+/// exactly its capacity at the end of every tick, spilling the rest.
 #[test]
-fn without_the_trip_the_tank_fills_past_its_own_height() {
-    // The line that opens the table, not the header comment that mentions it.
+fn without_the_trip_the_tank_reaches_its_brim_and_spills() {
+    fn plant(src: &str) -> &str {
+        &src[src
+            .find("[simulation]")
+            .expect("a plant declares its simulation")..]
+    }
+    // Everything before the trip table, less the comment block that introduces
+    // it (trailing comment and blank lines), is the plant both files declare.
+    fn without_trailing_comments(src: &str) -> String {
+        let mut lines: Vec<&str> = src.lines().collect();
+        while lines
+            .last()
+            .is_some_and(|l| l.trim().is_empty() || l.starts_with('#'))
+        {
+            lines.pop();
+        }
+        lines.join("\n")
+    }
     let at = DEMO.find("\n[[trips]]").expect("the demo declares a trip");
-    let untripped = &DEMO[..at];
+    assert!(
+        !UNTRIPPED.contains("\n[[trips]]"),
+        "the twin declares no trip"
+    );
+    assert_eq!(
+        without_trailing_comments(plant(UNTRIPPED)),
+        without_trailing_comments(plant(&DEMO[..at])),
+        "tank_overflow.toml is tank_overfill_trip.toml without its trip"
+    );
+
     for flow in ["newton", "simple"] {
         let from = r#"flow = "newton""#;
-        let mut engine = build(&untripped.replace(from, &format!(r#"flow = "{flow}""#)));
+        let mut engine = build(&UNTRIPPED.replace(from, &format!(r#"flow = "{flow}""#)));
         assert!(engine.snapshot().trips.is_empty());
-        let mut past_the_brim = None;
+        let tank = engine.graph.find_node("receiving_tank").unwrap();
+        let mut first_spill = None;
+        let mut spilled = 0.0;
         for t in 1..=RUN {
             tick(&mut engine);
-            if past_the_brim.is_none() && level(&engine) > TANK_HEIGHT_M {
-                past_the_brim = Some(t);
+            let spill = pipe_flow(&engine.snapshot(), "receiving_tank__overflow");
+            if spill > 0.0 {
+                first_spill.get_or_insert(t);
+                spilled += spill;
+            }
+            let NodeKind::Tank(state) = &engine.graph.node(tank).kind else {
+                panic!("receiving_tank is a tank");
+            };
+            // Never above the brim, on MASS — the comparison the engine makes.
+            assert!(
+                state.mass.value() <= state.capacity(&engine.slate).value(),
+                "{flow}, tick {t}: {} kg in a tank that holds {} kg",
+                state.mass.value(),
+                state.capacity(&engine.slate).value()
+            );
+            if first_spill.is_some() {
+                assert_eq!(
+                    state.mass.value(),
+                    state.capacity(&engine.slate).value(),
+                    "{flow}, tick {t}: a spilling tank ends the tick exactly full"
+                );
             }
         }
-        assert_eq!(past_the_brim, Some(2859), "{flow}");
+        assert_eq!(first_spill, Some(2859), "{flow}");
         assert!(
-            (level(&engine) - 15.1658).abs() < 5e-4,
+            (level(&engine) - TANK_HEIGHT_M).abs() < 1e-12,
             "{flow}: the untripped tank reads {} m in a {TANK_HEIGHT_M} m shell",
             level(&engine)
+        );
+        // `dt = 1`, so the sum of the rates is the mass. Measured 19 454.4898 kg
+        // (newton) and 19 454.4904 kg (simple).
+        assert!(
+            (spilled - 19_454.49).abs() < 0.01,
+            "{flow}: spilled {spilled} kg by tick {RUN}"
         );
     }
 }

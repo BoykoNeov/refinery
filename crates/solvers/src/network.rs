@@ -437,7 +437,9 @@ pub fn compile_edge(
     // contributes nothing to any node's residual, nothing to the throughput and
     // nothing to the per-node scale `grade_nodes` stops on. Its flow is written
     // by `Engine::tick` from the holdup's enthalpy balance (docs/DESIGN.md §14).
-    if pipe.leak.is_boiloff_vent() {
+    // A tank's OVERFLOW is the same kind of edge (M23, §27 fork 3): its flow is
+    // whatever stood above the brim at the end of the tick, written by the engine.
+    if pipe.leak.is_engine_written() {
         return Ok(CompiledEdge {
             src,
             tgt,
@@ -1334,7 +1336,7 @@ pub fn edge_flows(
     let mut throughput = 0.0f64;
     for eid in graph.edge_ids() {
         let c = &compiled[&eid];
-        let mdot = if is_column_draw_edge(graph, eid) || graph.pipe(eid).leak.is_boiloff_vent() {
+        let mdot = if is_column_draw_edge(graph, eid) || graph.pipe(eid).leak.is_engine_written() {
             0.0
         } else if anchored.contains(&c.src) && anchored.contains(&c.tgt) {
             let dp = pressures[&c.src] - pressures[&c.tgt];

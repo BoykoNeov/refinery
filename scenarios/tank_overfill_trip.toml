@@ -23,10 +23,11 @@
 # tank sits 5 m above the pump, and on the reference plant stopping the pump
 # alone sends 3 kg/s back through it. So the trip also shuts the valve.
 #
-# **What happens without it.** Delete the `[[trips]]` block and the level passes
-# the tank's declared 10 m height at tick 2 859 and reads 15.17 m at tick 6 000.
-# The engine has no overflow (docs/DEFERRED.md B28), so that is a state the tank
-# cannot hold, reported as if it could. A trip that did NOT latch — one that
+# **What happens without it.** Delete the `[[trips]]` block and the level reaches
+# the tank's declared 10 m brim at tick 2 859 and spills from then on: 19 454 kg
+# by tick 6 000. That plant ships as `tank_overflow.toml` (M23.1; before it, the
+# engine had no overflow and the level read 15.17 m in a 10 m tank at tick
+# 6 000, docs/DEFERRED.md B28). A trip that did NOT latch — one that
 # restored the pump and valve as soon as the level fell back below 6 m — flips
 # 3 194 times over the same run and parks the level on the limit.
 #

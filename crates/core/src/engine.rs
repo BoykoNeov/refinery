@@ -295,6 +295,17 @@ impl Engine {
                         "'{}' ({edge:?}) is a boil-off vent, not a pipe that can be \n                         punctured. It exists because this plant selects \n                         `[fidelity] boiloff = \"flash\"`, and its flow is prescribed \n                         by the tank's enthalpy balance rather than by any area \n                         (docs/DESIGN.md §14)",
                         self.graph.pipe(edge).name
                     ))),
+                    // Not damage either, and not commandable for the vent's
+                    // reason: its flow is whatever stood above the brim at the
+                    // end of the tick, so an area stored here is a number no
+                    // solver reads (M23, docs/DESIGN.md §27 fork 3).
+                    LeakRole::Overflow { .. } => Err(SimError::InvalidCommand(format!(
+                        "'{}' ({edge:?}) is a tank's overflow, not a pipe that can be \
+                         punctured. The loader builds one for every tank, and its flow is \
+                         whatever liquid stands above the tank's brim at the end of a tick, \
+                         not anything an area would set (docs/DESIGN.md §27)",
+                        self.graph.pipe(edge).name
+                    ))),
                 }
             }
             // A heat SOURCE, and only a source. This is the damage model's hook
@@ -734,7 +745,10 @@ impl Engine {
             // upwind rule cannot produce that value: the tank's temperature at
             // this point in the tick is the pre-boil-off one, and the vapour
             // leaves at the bubble point the flash lands on. See step 3.
-            if self.graph.pipe(eid).leak.is_boiloff_vent() {
+            //
+            // A tank's OVERFLOW likewise (M23, §27 fork 3): it leaves at the
+            // tank's END-of-tick state, which does not exist yet at this point.
+            if self.graph.pipe(eid).leak.is_engine_written() {
                 continue;
             }
             let (from, to) = self.graph.endpoints(eid);
@@ -826,6 +840,14 @@ impl Engine {
                                              // summed for every holdup so the loop below has one shape.
             let mut outflow_component_rate = vec![0.0; self.slate.len()];
             for (eid, _other, incoming) in self.graph.incident(nid) {
+                // A tank's own overflow is not a flux into its balance: the
+                // spill below debits the inventory directly, after the boil-off,
+                // and the edge carries the solve's zero at this point in the
+                // tick anyway. Skipped by OWNER, not by kind or by incidence, so
+                // the statement does not depend on that zero (M23, §27 fork 3).
+                if self.graph.pipe(eid).leak.overflow_owner() == Some(nid) {
+                    continue;
+                }
                 // A boil-off vent is two different things at its two ends, and
                 // which end this loop is standing at is the whole question
                 // (M14, docs/DESIGN.md §16 fork 3).
@@ -1000,6 +1022,17 @@ impl Engine {
             // and the temperature it left at. `None` while nothing boils, which
             // is every tick on a plant that selects `boiloff = "none"`.
             let mut vented: Option<(KgPerSec, Composition, Kelvin, JPerKg)> = None;
+            // The overflow this tank OWNS, found by owner for the vent's reason
+            // above, and what it carries this tick: a rate, and the liquid's own
+            // end-of-tick composition and temperature. `None` while the tank is
+            // at or below its brim (M23, docs/DESIGN.md §27).
+            let overflow = self
+                .graph
+                .incident(nid)
+                .into_iter()
+                .find(|(eid, _, _)| self.graph.pipe(*eid).leak.overflow_owner() == Some(nid))
+                .map(|(eid, _, _)| eid);
+            let mut spilled: Option<(KgPerSec, Composition, Kelvin)> = None;
             // What the solve did with this holdup, read before the borrow: a
             // starved tank's supply and own residual, or a vessel's own residual.
             // Both bound the empty-holdup tripwire below (§28 fork 5).
@@ -1265,6 +1298,35 @@ impl Engine {
                         boil.latent_heat,
                     ));
                 }
+
+                // The brim (M23, docs/DESIGN.md §27). An ideal overflow: whatever
+                // liquid stands above `ρ(x)·A·H` at the END of the tick leaves in
+                // that same tick, so the level never reads above the shell.
+                //
+                // - **After the boil-off** (fork 4): the flash is a property of the
+                //   whole superheated inventory, and the liquid that spills was
+                //   part of it; spilling first would leave a boiling tank below
+                //   its brim by the boiled mass.
+                // - **On MASS, strictly** (fork 4): `capacity` is `ρ·A·H` in the
+                //   loader's own association, so a tank declared exactly full ties
+                //   exactly and spills nothing. A level comparison spills a
+                //   rounding error forever on the compositions whose declared
+                //   level reads one ULP high (M22).
+                // - **At the end-of-tick composition**: the capacity is how much
+                //   of THIS liquid fits.
+                // - **Temperature and composition are not recomputed.** Removing
+                //   part of a well-mixed liquid changes neither, and the energy
+                //   that leaves is `m_spill·h(T, x)`, carried by the edge.
+                let capacity = tank.capacity(&self.slate).value();
+                if tank.mass.value() > capacity {
+                    let excess = tank.mass.value() - capacity;
+                    tank.mass = Kg(capacity);
+                    spilled = Some((
+                        KgPerSec(excess / dt.value()),
+                        tank.composition.clone(),
+                        tank.temperature,
+                    ));
+                }
             } else if let NodeKind::Vessel(vessel) = &mut self.graph.node_mut(nid).kind {
                 // The tank's balance over a compressible substance. Mass,
                 // composition and energy integrate identically — the fluxes above
@@ -1409,6 +1471,49 @@ impl Engine {
                     "tank '{node_name}' boiled off vapour but owns no vent edge. The loader                      builds one per tank — to the plant's `Atmosphere` by default, or to                      whatever that tank's `vent_to` names — when `[fidelity] boiloff`                      selects a model that can boil; a graph built by hand must do the same                      (docs/DESIGN.md §14 fork 4, §16 fork 2)"
                 )));
             }
+
+            // The overflow, written whole and written here, after the holdup
+            // update it reports, for the vent's reasons. Written on EVERY tick
+            // the edge exists, as `0.0` when nothing spills: a stale rate would
+            // keep booking a spill the tank has stopped making. `latent` is
+            // always `None` — a spill is liquid (docs/DESIGN.md §27 fork 4).
+            if let Some(eid) = overflow {
+                let (flow, composition, temperature) = spilled.unwrap_or_else(|| {
+                    (
+                        KgPerSec(0.0),
+                        self.graph.pipe(eid).stream.composition.clone(),
+                        self.graph.pipe(eid).stream.temperature,
+                    )
+                });
+                // Signed by the edge's own direction, the vent's rule: the
+                // loader stores tank → atmosphere, but a graph built by hand may
+                // not, and the far end reads the flow through `if incoming`.
+                let outward = self.graph.endpoints(eid).0 == nid;
+                let pipe = self.graph.pipe_mut(eid);
+                pipe.stream.mass_flow = if outward {
+                    flow
+                } else {
+                    KgPerSec(-flow.value())
+                };
+                pipe.stream.composition = composition;
+                pipe.stream.temperature = temperature;
+                pipe.stream.latent = None;
+                let signed = self.graph.pipe(eid).stream.mass_flow.value();
+                solution.edge_mass_flow.insert(eid, signed);
+            } else if let Some((flow, _, _)) = spilled {
+                // A tank over its brim that owns no overflow edge. Refused, for
+                // the vent's reason: dropping the excess is mass vanishing by no
+                // accounted path, and keeping it is the level above the shell
+                // this milestone exists to remove. The loader builds one per
+                // tank; a graph built by hand must do the same.
+                return Err(SimError::Numerical(format!(
+                    "tank '{node_name}' filled past its brim ({:.4e} kg/s above it) but owns \
+                     no overflow edge. The loader builds one per tank, `<tank>__overflow` to \
+                     the plant's `Atmosphere`; a graph built by hand must do the same \
+                     (docs/DESIGN.md §27 fork 2)",
+                    flow.value()
+                )));
+            }
         }
 
         // 3b. Publish each stream's composition: its upwind node's, unchanged —
@@ -1441,7 +1546,11 @@ impl Engine {
             // back onto the edge — the tank's own books would still move, but
             // every external reader, I7 included, would see the vapour leaving
             // at `x`.
-            if self.graph.pipe(eid).leak.is_boiloff_vent() {
+            //
+            // Nor an overflow, which step 3 wrote at the tank's end-of-tick
+            // composition: the upwind rule would read the resolved START-of-tick
+            // one (M23, §27 fork 4).
+            if self.graph.pipe(eid).leak.is_engine_written() {
                 continue;
             }
             let flow = self.graph.pipe(eid).stream.mass_flow.value();
@@ -1931,7 +2040,8 @@ impl Engine {
                         // EDGE, where every other prescribed flow is read.
                         LeakRole::None
                         | LeakRole::Orifice { .. }
-                        | LeakRole::BoilOffVent { .. } => 0.0,
+                        | LeakRole::BoilOffVent { .. }
+                        | LeakRole::Overflow { .. } => 0.0,
                     },
                 }
             })

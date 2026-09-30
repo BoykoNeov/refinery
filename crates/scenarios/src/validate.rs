@@ -56,11 +56,43 @@ pub(crate) fn validate_pipe_def(def: &PipeDef) -> Result<(), SimError> {
 
 pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimError> {
     if let NodeDef::Tank {
+        area_m2,
+        height_m,
+        initial_level_m,
         ambient_exchange_ua_w_per_k,
         retired_ambient_ua_w_per_k,
         ..
     } = def
     {
+        // A tank's geometry, checked for the first time at M23 (docs/DESIGN.md
+        // §27 fork 5). Once a tank has a brim, a shell with no footprint or no
+        // height has no capacity, and every level divides by the area.
+        for (key, value) in [("area_m2", area_m2), ("height_m", height_m)] {
+            if !value.is_finite() || *value <= 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "tank '{name}' has {key} = {value}: a tank's footprint and height must \
+                     be finite and > 0. A shell with no area or no height holds nothing, \
+                     and its capacity ρ·A·H is what its overflow spills above \
+                     (docs/DESIGN.md §27 fork 5)"
+                )));
+            }
+        }
+        if !initial_level_m.is_finite() || *initial_level_m < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "tank '{name}' has initial_level_m = {initial_level_m}: a level must be \
+                 finite and >= 0 (an empty tank is 0)"
+            )));
+        }
+        // Admitted at equality: a tank declared exactly full ties exactly with
+        // its capacity, because both are `TankState::mass_at_level` (fork 4).
+        if initial_level_m > height_m {
+            return Err(SimError::Scenario(format!(
+                "tank '{name}' starts over its own brim: initial_level_m = \
+                 {initial_level_m} m in a tank {height_m} m tall. It would spill the \
+                 excess on its first tick with nothing saying why, so one of the two \
+                 numbers is wrong (docs/DESIGN.md §27 fork 5)"
+            )));
+        }
         retired_ambient_ua(&format!("tank '{name}'"), *retired_ambient_ua_w_per_k)?;
         if !ambient_exchange_ua_w_per_k.is_finite() || *ambient_exchange_ua_w_per_k < 0.0 {
             return Err(SimError::Scenario(format!(

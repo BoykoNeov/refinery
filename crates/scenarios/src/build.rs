@@ -148,6 +148,12 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         }
     }
 
+    // Step 2d: every tank's overflow (M23, docs/DESIGN.md §27 fork 2). AFTER the
+    // vents, which is load-bearing rather than tidy: built first, the overflow
+    // edges take the ids the vents had, and the five boil-off plants' published
+    // edge ids move.
+    build_overflow_edges(&mut graph, slate.len())?;
+
     // Step 3: validate topology at load — a clear error here beats solve-time
     // divergence for the same structural fault.
     validate_topology(&graph, &slate)?;
@@ -381,6 +387,86 @@ fn build_boiloff_vents(
     // refused", and the two answers cannot disagree because they are one
     // function.
     graph.holdup_evaluation_order()?;
+    Ok(())
+}
+
+/// Build one overflow edge per tank, `<tank>__overflow`, to the plant's first
+/// `Atmosphere` — or to a new `overflow_atmosphere` node when the plant has none
+/// (M23, docs/DESIGN.md §27 fork 2).
+///
+/// **Every tank, not only tanks that opt in.** The brim is a property of every
+/// shell; a per-tank key would leave the default silently overfilling, which is
+/// the state this milestone exists to remove.
+///
+/// **An existing `Atmosphere` is reused**, the vents' rule, and that includes the
+/// vents' own `boiloff_atmosphere` — which is why a boil-off plant with no
+/// declared atmosphere keeps its bytes. A NEW atmosphere node is not free: the
+/// solvers seed every free node at the mean of the pinned pressures, so one more
+/// pinned node at `P_ATM` moves tick 1's starting point inside the tolerance ball
+/// (§27 premise 2). Accepted by the user; the reference was re-set once.
+///
+/// **The name is the frontend's only handle on the edge.** `EdgeSnapshot` does
+/// not publish the edge's role, so a declared pipe that took the name would be
+/// read as the spill. That is why the collision is refused rather than suffixed.
+///
+/// **Zero geometry, direction tank → atmosphere**, the vents' convention: its
+/// flow is written by the engine, and graph-positive is outward.
+fn build_overflow_edges(graph: &mut PlantGraph, components: usize) -> Result<(), SimError> {
+    let tanks: Vec<NodeId> = graph
+        .node_ids()
+        .filter(|id| matches!(graph.node(*id).kind, NodeKind::Tank(_)))
+        .collect();
+    if tanks.is_empty() {
+        return Ok(());
+    }
+    let existing_atmosphere = graph
+        .node_ids()
+        .find(|id| matches!(graph.node(*id).kind, NodeKind::Atmosphere));
+    let atmosphere = match existing_atmosphere {
+        Some(existing) => existing,
+        None => {
+            const OVERFLOW_ATMOSPHERE: &str = "overflow_atmosphere";
+            if graph.find_node(OVERFLOW_ATMOSPHERE).is_some() {
+                return Err(SimError::Scenario(format!(
+                    "this plant has tanks, whose overflow atmosphere would be named \
+                     '{OVERFLOW_ATMOSPHERE}' — and the plant already has a node by that name \
+                     which is not an atmosphere. Rename it, or declare `type = \"atmosphere\"` \
+                     on it and the overflows will use it (docs/DESIGN.md §27 fork 2)"
+                )));
+            }
+            graph.add_node(Node {
+                name: OVERFLOW_ATMOSPHERE.into(),
+                kind: NodeKind::Atmosphere,
+                heat_input: Watt::ZERO,
+            })
+        }
+    };
+    for tank in tanks {
+        let name = format!("{}__overflow", graph.node(tank).name);
+        if graph.edge_ids().any(|eid| graph.pipe(eid).name == name) {
+            return Err(SimError::Scenario(format!(
+                "tank '{}' spills over its brim through an edge named '{name}', and this \
+                 plant already has a pipe by that name. A frontend finds a tank's spill by \
+                 that name, so it cannot be shared. Rename the pipe (docs/DESIGN.md §27 \
+                 fork 2)",
+                graph.node(tank).name
+            )));
+        }
+        graph.add_pipe(
+            tank,
+            atmosphere,
+            Pipe {
+                name,
+                length: Meter(0.0),
+                diameter: Meter(0.0),
+                friction_factor: 0.0,
+                elevation_change: Meter(0.0),
+                ambient_ua: WattPerKelvin(0.0),
+                leak: LeakRole::Overflow { owner: tank },
+                stream: Stream::stagnant(components, T_AMBIENT, P_ATM),
+            },
+        );
+    }
     Ok(())
 }
 
@@ -1949,17 +2035,20 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                      is a capacitive vessel, whose state is pressure (docs/DESIGN.md §3a)"
                 )));
             }
-            // m = ρ·A·h, at the density of the tank's own contents.
-            let density = composition.mixture_density(slate);
-            let mass = Kg(density.value() * area.value() * initial_level_m);
-            NodeKind::Tank(TankState {
+            // m = ρ·A·h, at the density of the tank's own contents — through
+            // `TankState::mass_at_level`, the one owner of that product, so a
+            // tank declared exactly full holds exactly the capacity its overflow
+            // compares against (M23, docs/DESIGN.md §27 fork 4).
+            let mut tank = TankState {
                 area,
                 height: Meter(*height_m),
-                mass,
+                mass: Kg(0.0),
                 temperature: c_to_k(*temperature_c),
                 composition,
                 ambient_ua: WattPerKelvin(*ambient_exchange_ua_w_per_k),
-            })
+            };
+            tank.mass = tank.mass_at_level(slate, Meter(*initial_level_m));
+            NodeKind::Tank(tank)
         }
         NodeDef::Vessel {
             volume_m3,

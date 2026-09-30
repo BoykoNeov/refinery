@@ -113,13 +113,25 @@ fn the_supply_tank_stays_exactly_isothermal_while_the_plant_warms() {
              — it is fed a stream warmed by friction, blended into a large cold inventory"
         );
 
+        // The three DECLARED pipes. Since M23 each tank also owns an overflow
+        // edge the loader builds (docs/DESIGN.md §27 fork 2); neither tank
+        // reaches its brim here, so both carry exactly zero and no friction, and
+        // they are asserted idle rather than held to the bounds below.
         let snapshot = engine.snapshot();
+        let (overflows, pipes): (Vec<_>, Vec<_>) = snapshot
+            .edges
+            .into_iter()
+            .partition(|edge| engine.graph.pipe(edge.id).leak.overflow_owner().is_some());
+        assert_eq!(overflows.len(), 2, "one overflow per tank");
+        for overflow in &overflows {
+            assert_eq!(overflow.stream.mass_flow.value(), 0.0, "{}", overflow.name);
+        }
         assert_eq!(
-            snapshot.edges.len(),
+            pipes.len(),
             3,
             "the reference plant has three pipes; a vacuous loop would prove nothing"
         );
-        for edge in snapshot.edges {
+        for edge in pipes {
             let actual = edge.stream.temperature.value();
             assert!(
                 actual > PLANT_TEMPERATURE_K

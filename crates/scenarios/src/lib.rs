@@ -273,8 +273,13 @@ mod tests {
         let src = include_str!("../../../scenarios/tank_pump_valve.toml");
         let s = super::load_str(src).unwrap();
         let mut engine = super::build_engine(&s).expect("reference plant must build");
-        assert_eq!(engine.graph.node_count(), 4);
-        assert_eq!(engine.graph.edge_count(), 3);
+        // Four declared nodes and three declared pipes, plus what the loader
+        // adds for the brim (M23, docs/DESIGN.md §27 fork 2): one overflow edge
+        // per tank, to an `overflow_atmosphere` built because this plant
+        // declares no atmosphere of its own.
+        assert_eq!(engine.graph.node_count(), 4 + 1);
+        assert_eq!(engine.graph.edge_count(), 3 + 2);
+        assert!(engine.graph.find_node("overflow_atmosphere").is_some());
 
         let receiving_mass = |e: &refinery_core::engine::Engine| {
             let id = e.graph.find_node("receiving_tank").unwrap();

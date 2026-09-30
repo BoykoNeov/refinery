@@ -17,6 +17,7 @@
 //! the claim "declaring no leak changes nothing" is checked against a plant that
 //! does declare one, rather than asserted by the absence of a failure.
 
+use refinery_core::graph::NodeKind;
 use refinery_core::snapshot::{Command, Snapshot};
 use refinery_core::units::SquareMeter;
 
@@ -89,14 +90,36 @@ fn punctured() -> refinery_core::engine::Engine {
 
 /// A declared leak is a split pipe, a junction and a dormant orifice — exactly
 /// one node and two edges more than the same plant without the declaration.
+///
+/// **Until M23 it was two nodes more, and the difference is the atmosphere.**
+/// Every tank now owns an overflow edge to the plant's first `Atmosphere`, and a
+/// plant that declares none gains the loader's `overflow_atmosphere`
+/// (docs/DESIGN.md §27 fork 2). So BOTH plants have exactly one atmosphere — the
+/// leaky one the atmosphere it declared, the intact one the loader's — and the
+/// declaration adds only its junction. Both carry the same two overflow edges.
 #[test]
 fn a_declared_leak_splits_its_pipe_at_the_midpoint() {
     let intact = engine(INTACT).snapshot();
     let leaky = engine(LEAKY).snapshot();
 
-    // One Atmosphere node and one midpoint junction; the leak path's two halves
-    // and the orifice replace one pipe.
-    assert_eq!(leaky.nodes.len(), intact.nodes.len() + 2);
+    let atmospheres = |s: &Snapshot| {
+        s.nodes
+            .iter()
+            .filter(|n| matches!(n.kind, NodeKind::Atmosphere))
+            .map(|n| n.name.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(atmospheres(&intact), ["overflow_atmosphere"]);
+    assert_eq!(atmospheres(&leaky).len(), 1);
+    assert_ne!(
+        atmospheres(&leaky),
+        ["overflow_atmosphere"],
+        "the declared one is reused"
+    );
+
+    // One midpoint junction; the leak path's two halves and the orifice replace
+    // one pipe.
+    assert_eq!(leaky.nodes.len(), intact.nodes.len() + 1);
     assert_eq!(leaky.edges.len(), intact.edges.len() + 2);
 
     let upstream = edge(&leaky, PUNCTURED);
@@ -199,18 +222,33 @@ fn splitting_a_pipe_does_not_change_the_plant_it_describes() {
 }
 
 /// The other half of the no-churn claim: the plant that declares nothing carries
-/// no leak machinery at all — no atmosphere, no orifice, and `leak_mass_flow`
-/// flat zero on every edge.
+/// no leak machinery at all — no orifice, and `leak_mass_flow` flat zero on every
+/// edge.
+///
+/// It does carry an atmosphere since M23, and that is the overflow's, not the
+/// leak's: the loader's `overflow_atmosphere`, reached by the two tanks'
+/// overflow edges and by nothing else (docs/DESIGN.md §27 fork 2).
 #[test]
 fn a_plant_without_a_leak_is_the_plant_it_was() {
     let mut intact = engine(INTACT);
     intact.tick().expect("intact plant converges");
     let snapshot = intact.snapshot();
-    assert_eq!(
-        snapshot.edges.len(),
-        3,
-        "the reference plant has three pipes"
-    );
+    let (overflows, pipes): (Vec<_>, Vec<_>) = snapshot
+        .edges
+        .iter()
+        .partition(|e| intact.graph.pipe(e.id).leak.overflow_owner().is_some());
+    assert_eq!(pipes.len(), 3, "the reference plant has three pipes");
+    assert_eq!(overflows.len(), 2, "and one overflow per tank");
+    let atmosphere = intact.graph.find_node("overflow_atmosphere").unwrap();
+    for e in &snapshot.edges {
+        let (_, to) = intact.graph.endpoints(e.id);
+        assert_eq!(
+            to == atmosphere,
+            overflows.iter().any(|o| o.id == e.id),
+            "edge '{}': only the overflows reach the atmosphere",
+            e.name
+        );
+    }
     for e in &snapshot.edges {
         assert_eq!(
             e.leak_mass_flow, 0.0,

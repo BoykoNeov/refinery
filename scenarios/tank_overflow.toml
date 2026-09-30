@@ -1,0 +1,104 @@
+# M23.1 overflow demo: a tank fills past its brim and SPILLS.
+#
+# **Meant to be diffed against `tank_overfill_trip.toml`.** One plant, with and
+# without its protection: this file is that one with the `[[trips]]` table
+# removed, and nothing else changed. The diff is what the trip prevents.
+#
+# **What happens, measured** (docs/DESIGN.md §27 fork 7). The pump outruns the
+# fixed drain, so the receiving tank climbs about 3 m per 1 000 ticks. It
+# reaches its 10 m brim at tick 2 859, and from then on every kilogram above
+# `ρ·A·H` at the end of a tick leaves through `receiving_tank__overflow`, an edge
+# the loader builds for every tank, to an `overflow_atmosphere` node it builds
+# because this plant declares no atmosphere of its own. The level reads exactly
+# 10 m at every tick after, and by tick 6 000 the tank has spilled 19 454 kg and
+# is spilling 6.015 kg/s — the fill line's flow minus the drain's. The same
+# numbers come out on both fidelities.
+#
+# **What it exists for.** Six shipped plants overflow, but none inside the
+# corpus's 6 000 ticks, so without this file CI would never run a spill.
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_overflow.toml --ticks 6000
+
+[meta]
+name = "tank_overflow"
+description = "Pump fills a tank faster than it drains, with no trip; the tank reaches its brim and spills the excess to atmosphere."
+
+[simulation]
+dt = 1.0            # seconds per tick, as tank_level_control.toml
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.supply_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 20.0
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0           # metric Kv [m^3/h at 1 bar], converted to SI on load
+opening = 0.5
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 2.0
+temperature_c = 20.0
+
+# Fixed, and sized so the pump outruns it: the tank fills while the pump runs
+# and drains once the trip has stopped it.
+[nodes.level_valve]
+type = "valve"
+kv = 200.0
+opening = 0.1
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "suction"
+from = "supply_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "discharge_valve"
+length_m = 30.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "discharge_valve"
+to = "receiving_tank"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = 5.0
+
+[[pipes]]
+name = "drain_line"
+from = "receiving_tank"
+to = "level_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "level_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15

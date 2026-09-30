@@ -554,6 +554,26 @@ impl TankState {
         Meter((self.mass / self.density(slate)).value() / self.area.value())
     }
 
+    /// The mass `m = ρ·A·h` [kg] of this tank's own liquid standing at `level`.
+    ///
+    /// **One owner, in the loader's association, and the association is the
+    /// point** (M23, docs/DESIGN.md §27 fork 4). The loader computes a tank's
+    /// initial inventory through this method, and `capacity` is this method at
+    /// the brim, so a tank declared exactly full holds exactly its capacity —
+    /// to the bit, by construction. A level comparison would not: a level
+    /// declared at load reads one ULP high on some compositions (M22), and a
+    /// tank declared full would then spill a rounding error forever.
+    pub fn mass_at_level(&self, slate: &Slate, level: Meter) -> Kg {
+        Kg(self.density(slate).value() * self.area.value() * level.value())
+    }
+
+    /// How much of THIS liquid the shell holds, `ρ(x)·A·H` [kg]. A tank whose
+    /// contents are changing has a different capacity every tick, so the engine
+    /// asks at the end-of-tick composition.
+    pub fn capacity(&self, slate: &Slate) -> Kg {
+        self.mass_at_level(slate, self.height)
+    }
+
     /// Hydrostatic pressure at the tank bottom nozzle.
     /// P = P_atm + ρ·g·h (vented tank).
     pub fn bottom_pressure(&self, slate: &Slate) -> Pascal {
@@ -1256,14 +1276,52 @@ pub enum LeakRole {
     /// the moment a vent were ever stored the other way round, which is the
     /// shape of M12.1's own hardest bug.
     BoilOffVent { emitter: NodeId },
+    /// A tank's overflow: tank → `Atmosphere`, built by the loader for EVERY
+    /// tank (M23, docs/DESIGN.md §27 fork 2).
+    ///
+    /// Engine-written like a vent — the solve compiles it closed and reports
+    /// zero, and `Engine::tick` writes whatever liquid stood above the brim at
+    /// the end of the tick — but it is NOT a vent: it never carries `latent`,
+    /// the boil-off model never writes it, and its far end is never a holdup.
+    /// So it answers `is_engine_written` and not `is_boiloff_vent`, and an
+    /// overflow is never counted as vapour arriving at a recovery drum.
+    ///
+    /// **`owner` is stored, for `BoilOffVent::emitter`'s reason.** The per-node
+    /// loop also visits the atmosphere node the overflow ends at, and ownership
+    /// derived from anything else is how M12.1 lost 2 539 kg.
+    Overflow { owner: NodeId },
 }
 
 impl LeakRole {
     /// True for an edge whose flow the ENGINE writes rather than the hydraulic
-    /// solve. One predicate, so the several passes that must skip such an edge
-    /// cannot come to disagree about which edges those are.
+    /// solve: a boil-off vent or a tank's overflow (M23, docs/DESIGN.md §27
+    /// fork 3). One predicate, so the several passes that must skip such an
+    /// edge — the solve's compile and its flows, the transport pass and the
+    /// composition pass — cannot come to disagree about which edges those are.
+    pub fn is_engine_written(&self) -> bool {
+        matches!(
+            self,
+            LeakRole::BoilOffVent { .. } | LeakRole::Overflow { .. }
+        )
+    }
+
+    /// True for a boil-off vent and nothing else. Since M23 this is NOT "the
+    /// engine writes this edge" (that is `is_engine_written`, which an overflow
+    /// also answers); it is kept for any site that means the vapour path.
     pub fn is_boiloff_vent(&self) -> bool {
         matches!(self, LeakRole::BoilOffVent { .. })
+    }
+
+    /// The tank that owns this overflow, or `None` on any other edge.
+    ///
+    /// The single owner of "whose overflow is this", read at the two sites that
+    /// need it: the inflow loop skips the overflow its own tank owns, and the
+    /// write site finds it (docs/DESIGN.md §27 fork 3).
+    pub fn overflow_owner(&self) -> Option<NodeId> {
+        match self {
+            LeakRole::Overflow { owner } => Some(*owner),
+            _ => None,
+        }
     }
 
     /// The holdup that owns this vent, or `None` on any other edge.

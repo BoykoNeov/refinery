@@ -648,10 +648,36 @@ fn zero_flow_through_a_shut_valve_is_a_measurement_and_the_loop_opens_it() {
             "tick {t}: a shut valve's outlet pipe reads exactly zero"
         );
     }
-    assert_ne!(
-        pipe_flow(&engine, "discharge"),
-        0.0,
-        "the control: the valve's INLET is the pump's dead leg and reads a residual"
+    // The control: the valve's INLET is the pump's dead leg and reads the solve's
+    // residual there, which is not an exact zero by construction. M20.1 showed it
+    // on this plant alone (−1.547e-11 kg/s); M23.1 found that number was a
+    // property of the solver's COLD SEED, not of the valve — one more atmosphere
+    // node moved the seed and made it exactly 0.0 (docs/DESIGN.md §27). So the
+    // control is taken over several seeds (the supply level moves the pinned
+    // pressures the seed is the mean of): the outlet is exactly zero on every
+    // one, the inlet is residual-sized on every one, and not zero on all of them.
+    let mut inlet_residuals = Vec::new();
+    for supply_level in ["8.0", "7.5", "7.0", "6.5", "6.0", "5.0"] {
+        let plant = swap(
+            &with_opening(0.0),
+            "initial_level_m = 8.0\n",
+            &format!("initial_level_m = {supply_level}\n"),
+        );
+        let mut seeded = build(&plant);
+        tick(&mut seeded, 1);
+        assert_eq!(
+            pipe_flow(&seeded, "fill_line"),
+            0.0,
+            "supply at {supply_level} m"
+        );
+        let inlet = pipe_flow(&seeded, "discharge");
+        // Newton's `tol_abs`: the node carries no flow, so its bar is that alone.
+        assert!(inlet.abs() <= 1.0e-8, "supply at {supply_level} m: {inlet}");
+        inlet_residuals.push(inlet);
+    }
+    assert!(
+        inlet_residuals.iter().any(|r| *r != 0.0),
+        "the control: on some seed the inlet reads a nonzero residual, {inlet_residuals:?}"
     );
     assert_eq!(
         measured(&engine),
