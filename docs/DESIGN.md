@@ -14052,7 +14052,7 @@ declared 10 m height after tick 2 859 and reads **15.1658 m in a 10 m tank** at
 tick 6 000, on both fidelities. A tank's `height_m` bounds setpoints and
 nothing else. That is not this milestone's to fix (new row B28), but it is the
 honest counterfactual for the demo: without the trip, the engine reports a state
-the tank cannot hold.
+the tank cannot hold. *(M23.1, 2026-09-30: the engine has an overflow now. The untripped twin reaches its brim at tick 2 859 and holds exactly 10 m, spilling; it ships as `scenarios/tank_overflow.toml`. §27.)*
 
 **4. A trip that does not latch chatters.** On the demo plant, a trip that
 restores the pump and valve as soon as the level falls back below 6 m flips
@@ -14318,6 +14318,7 @@ Measured on the probe:
   the top of tick **1 236**.
 - The level then falls to 3.7584 m at tick 3 000 and 1.1453 m at tick 6 000.
 - The untripped twin passes 10 m after tick 2 859 and ends at 15.1658 m.
+  *(M23.1, 2026-09-30: the engine has an overflow now. The untripped twin reaches its brim at tick 2 859 and holds exactly 10 m, spilling; it ships as `scenarios/tank_overflow.toml`. §27.)*
 - Both fidelities give the same numbers to the printed digits.
 
 It is a new file, not a trip wired into an existing one, for the reason every
@@ -14433,7 +14434,8 @@ which is why gate 8 exists.
   Un-defers with a scenario or a frontend that needs one of them.
 - **B28 — a tank has no overflow.** Premise 3. A tank past its declared height
   keeps filling. Un-defers with a plant or frontend that must show what happens
-  at the brim, or with a trip-free plant found above its own height.
+  at the brim, or with a trip-free plant found above its own height. **Taken by
+  M23 and closed by M23.1 (2026-09-30), §27.**
 - **B10** keeps its own trigger. After M22.1 the latch and the reset command it
   said it lacked will exist; what it still needs is a plant measured to cavitate
   between two snapshots.
@@ -14540,7 +14542,9 @@ unreachable while the refusals hold.
 fidelities, every snapshot over 6 000 ticks: no tank anywhere passes its own
 declared height. The closest is `crude_column`'s `distillate_tank` at 0.859 of its
 12 m, 10.31 m at tick 6 000 and still rising. So B28 stays deferred, and the demo's
-untripped twin is still the only plant that reaches it.
+untripped twin is still the only plant that reaches it. *(M23.0 found that true
+only out to 6 000 ticks: six shipped plants pass their height by tick 30 000.
+M23.1 closed B28, §27.)*
 
 **The mutation pass: all nineteen edits run, eighteen caught, each read for why it
 fired.** The note's sixteen rows are fifteen edits, since 14 is not expressible;
@@ -15035,6 +15039,129 @@ was kept in §26.
   node. It depends on B7 (combustion). Un-defers with a scenario that must burn
   or evaporate a spill.
 
+### Corrections from building it (M23.1, 2026-09-30)
+
+M23.1 built §27 on top of M24.1 (the dry tank landed first), and the measurements
+below are from the built code. The record is in `W:\temp\claude\m23b\`
+(baselines from `HEAD` before the first edit, the plant comparison, the demo
+measurements and the mutation logs). B28 is struck. Nine things the note did not
+say, or said differently.
+
+**1. The bytes held exactly as premise 2 measured them, on one more plant.**
+Seventeen of the twenty-seven pre-M23 plants are byte-identical on Newton and
+sixteen on the game solver (`fcc_plant` moves on the game solver only). The
+eleven that move are premise 2's ten plus `tank_runs_dry`, which did not exist
+when the note was written. It gains an `overflow_atmosphere` like the others, and
+moves by 1.8e-14 (Newton) and 7.1e-15 (game). The other ten reproduce premise 2's
+worst moves to four figures: 4.9e-11 on Newton, 1.7e-8 on the game solver. No
+overflow edge on any shipped plant carries a nonzero flow inside 6 000 ticks.
+Compared M8.5's way, the added node and edges stripped from the after-run. From
+here, "runs byte-identical" means post-M23.1 identical.
+
+**2. "No iteration count moved" was false, and the probe could not have seen it.**
+The new atmosphere moves the cold seed, and the cold seed is only used on tick 1.
+That tick's solve takes one iteration more on six Newton plants
+(`furnace_outlet_control`, `tank_flow_control`, `tank_level_control`,
+`tank_overfill_trip`, `tank_temperature_control`, `tank_temperature_heating`) and
+three game-solver plants (`crude_column`, `crude_column_cascade`,
+`tank_pump_valve`), and two fewer on `tank_runs_dry` (Newton, 10 → 8). Every
+other tick is unchanged, so each plant's total moves by exactly its tick-1
+difference, and the worst count moves wherever tick 1 was the worst tick. The
+probe read iterations from snapshots taken every 10 ticks, which starts at tick
+10. **A count taken from sampled snapshots cannot see the one tick a cold seed
+touches.** The corpus's `total_iterations` counts every tick and is the column
+to compare.
+
+**3. M24.1's "worst dry tick is 10 iterations" was tick 1.** Row B38 and §28
+correction 9 quote `tank_runs_dry`'s worst as 10 (Newton) and 8 (game). Split by
+tick, the 10 was the cold solve on tick 1, before the tank is anywhere near dry.
+The worst dry tick (1 227 onwards) is **7 on Newton and 8 on the game solver**,
+before and after M23.1. The plant-wide worst is now 8 on both.
+
+**4. The seed was also what made the shut valve's inlet nonzero, and the
+control is now taken over several seeds.** Premise 2's last bullet predicted the
+M20.1 control would read exactly 0.0, and it does. The replacement runs the same
+shut-valve plant from six supply levels, which moves the pinned pressures the seed
+is the mean of. The outlet reads exactly 0.0 on all six. The inlet reads
+−7.74e-12 kg/s on two of them and 0.0 on four, always inside Newton's
+`tol_abs`. **M20.1's inlet-for-outlet catch was re-run as §27 required, and it
+survives**: on the shipped flow demo the valve's two pipes still differ on 5 877
+of 6 000 ticks (5 875 before), by up to 5.03e-10 kg/s. Only the shut-valve
+control rested on the seed.
+
+**5. Fork 6 is false in one clause: a frontend cannot identify the spill by its
+role.** `EdgeSnapshot` does not publish `LeakRole`, so the overflow edge is found
+by its NAME, `<tank>__overflow`. That makes the refusal of a declared pipe with
+that name load-bearing rather than tidiness: a pipe that took the name would be
+read as the spill. The refusal's message says so, and gate 8 asserts it.
+
+**6. The note left one engine behaviour unspecified, and the vent decides it.** A
+tank over its brim that owns no overflow edge (a graph built by hand) is an
+`Err` naming the tank. It is the vent's rule for a boil-off with nowhere to go:
+dropping the excess is mass leaving by no accounted path, and keeping it is the
+level above the shell this milestone removes. Gated by handing the demo's
+overflow to another owner (`a_tank_over_its_brim_with_no_overflow_of_its_own_is_refused`).
+No fixture in the suite, and no generated plant, fills past its height, so
+nothing else reaches it.
+
+**7. Fork 1 names its rows wrong.** It calls the finite overflow B30 and the
+roofed tank B31. The deferred list and `docs/DEFERRED.md` have routing as B30,
+the finite overflow as B31 and the roofed tank as B32. The ledger is right.
+
+**8. What the gates measured.**
+- Gate 1's plant is water in a 5 m² by 6 m tank. Its declared-full level reads
+  6.000000000000001 m, and the test asserts that control before anything else.
+- Gate 2 reproduces the probe to the digit: first spill at tick 2 859 on both
+  fidelities, and the spill equals fill minus drain to 1.82e-12 kg/s. The mixing
+  fixture (a full tank of diesel fed kerosene) holds `ρ(x_end)·A·H` bit for bit on
+  every tick, and the start-of-tick capacity differs on every one.
+- Gate 3's books close to 4 ULP of the gross traffic on both tanks, every tick
+  of 4 000. The control is now M24's own: no tank starves in the window
+  (`HydraulicSolution::starved` empty).
+- Gate 4's energy book closes to 7.3 ULP of the tank's stock (about 2.5e9 J) on
+  Newton and 7.2 on the game solver; the bound is 16. Dropping the spill's term
+  would miss by about 5e5 J per tick, about 1e12 ULP.
+- Gate 5: 6.015260 kg/s at `dt = 1` against 6.015207 at `dt = 0.5`, 8.7e-6.
+- Gate 6's boiling fixture boils and spills on the same tick from tick 202, and
+  ends every spilling tick at its capacity bit for bit. The vent and the overflow
+  share the vents' `boiloff_atmosphere`.
+- The demo's own numbers: 19 454.4898 kg spilled by tick 6 000 on Newton,
+  19 454.4904 on the game solver, 6.0153 kg/s at the end. Worst iterations 10
+  (Newton), 8 (game).
+
+**9. The mutations** — §27's table plus three (1b, 13, 14), each run alone against the whole
+workspace with `--no-fail-fast`, every file restored byte for byte and the tree
+checked with `git diff`:
+
+| # | mutation | predicted | caught by | why it fired |
+|---|---|---|---|---|
+| 1 | compare `level() > height`, spill `m − capacity` | gate 1 alone | **nothing** | The excess is still a mass difference, and for a tank declared full it is exactly 0.0, so the "spill" writes 0.0 kg/s — the correct engine's bytes. Inert, not uncaught. |
+| 1b | the whole spill in level terms: `(h − H)·ρ·A` (added) | — | gate 1, alone | The declared-full tank spills 4.43e-12 kg/s on tick 1, and every tick after: the rounding error the note described. |
+| 2 | spill at the INFLOW's composition | gate 4 alone | **nothing** at first; gate 2's mixing fixture after it was strengthened | The note already said the demo is water only, and gate 4 runs on the demo, so the prediction contradicted its own "inert". The mixing fixture now asserts the spill's composition; under the mutation it spills pure kerosene from a tank that is 99.9% diesel. |
+| 3 | capacity at the START-of-tick composition | gate 2's mixing case | gate 2's mixing case and gate 6's boiling fixture | The boiling tank's composition moves every tick as its vapour leaves, so it sees the start-of-tick capacity too. |
+| 4 | spill before the boil-off | gate 6's boiling fixture alone | gate 6's boiling fixture, alone | — |
+| 5 | overflow found by kind, not owner | gate 6's two-tank fixture | five tests: gates 1, 2 (mixing), 6 (both fixtures) and the no-overflow refusal | The ATMOSPHERE node runs last and, finding any overflow, writes a zero over it. On a one-tank fixture that is the only overflow there is, so the note's two-tank fixture was not needed to see it. The demo is blind: its atmosphere finds the supply tank's idle overflow. |
+| 6 | rate not written on a tick nothing spills | gate 7 alone | **nothing** | The solve writes its zero onto every engine-written edge at step 2 of every tick, so a rate cannot go stale: the engine's own zero is a second guard, not the only one. Inert. The same is true of the vent. |
+| 7 | rate as mass per tick | gate 5 alone | gate 5, alone | — |
+| 8 | temperature recomputed from undebited energy | gates 4 and 3 | gate 4 and gate 6's boiling fixture; **not gate 3** | Gate 3 is a MASS book and the edit moves only a temperature. The boiling tank, reheated each tick, boils differently and leaves its brim. |
+| 9 | overflows built before the vents | gate 9 alone | gate 9 and gate 6's boiling fixture | Built first, the overflow creates `overflow_atmosphere` and the vents then reuse it; the boiling fixture asserts there is no such node. |
+| 10 | `initial_level_m > height_m` refusal deleted | gate 8 alone | gate 8, alone | — |
+| 11 | overflow left in the solve | every tank plant on tick 1 | every tank plant | — |
+| 12 | the owner does not skip its own overflow | nothing | nothing, as predicted | The edge carries the solve's zero at that point in the tick. |
+| 13 | the composition pass overwrites the spill (added) | — | **nothing** at first; gate 2's mixing fixture after | It writes the tank's START-of-tick composition, which on the water demo is the same. Now caught: the spill reads the diesel the tank started the tick with. |
+| 14 | the no-overflow refusal deleted (added) | — | its own test, alone | — |
+
+**Fifteen edits (the note's twelve plus 1b, 13 and 14): twelve caught once
+the gates were strengthened, and the three left are inert rather than uncaught**
+(1, 6 and 12 change no number any plant can produce).
+- **Six predictions were wrong**: 1 and 6 (inert), 2 (its own table said the demo
+  could not see it), 5 (caught five ways, not by the fixture named), 8 (not the
+  mass book) and 9 (caught twice).
+- **Two escaped until a gate was added**, and for one reason: the demo is water
+  only, so every composition it carries is `[1.0]`. §27 found this for
+  mutation 3 and put a mixing case in gate 2, but only for the CAPACITY. The
+  spill's own composition needed the same fixture.
+
 ## 28. A tank that runs dry — the pump runs dry (M24.0) — specified before building
 
 ### What licensed this, stated plainly
@@ -15492,7 +15619,9 @@ exactly the feed, 5.0249 kg/s at 333.40 K and pure kerosene, and the tank reads
 **−210 636 Pa**. The tank's own mass book over 6 000 ticks closes to
 **−5.8e-11 kg** on Newton and **+1.38e-3 kg** on the game solver, which is row
 B36 at about 2.9e-7 kg per dry tick. Worst iterations are 10 (Newton) and 8
-(game).
+(game). *(M23.1: the 10 was tick 1's cold solve; the worst DRY tick is 7 on Newton and
+8 on the game solver, and after M23.1's seed shift the plant's worst is 8 on
+both. §27, "Corrections from building it", 3.)*
 
 **10. What the gates measured.**
 - Gate 1's fixture is `tank_flow_control` started at 0.5 m. Over 1 200 ticks the

@@ -6567,7 +6567,8 @@ fidelities. Measured on that plant only.
 loop and with its drain fixed at 0.1. The trip fires at the top of tick 1 236 and
 the tank drains to 1.15 m. A trip that does not latch flips 3 194 times and parks
 the level on the limit. Without the trip, the tank reads 15.17 m in a 10 m shell:
-**the engine has no overflow** (new row B28).
+**the engine has no overflow** (new row B28). *(Closed by M23.1: the untripped
+twin now spills at its brim, and ships as `tank_overflow.toml`.)*
 
 **A missing measurement is NOT copied from the loops.** For a safety function the
 textbook rule is that a missing measurement trips. M22 avoids the question by
@@ -6605,7 +6606,8 @@ milestone is chosen from `docs/DEFERRED.md`. Five things to know.
 
 **The demo matches the probe to the last printed digit.** Trips at tick 1 236 on
 both fidelities, `fill_line` exactly zero from that tick's own snapshot, 1.1453 m
-at tick 6 000; its untripped twin reads 15.17 m in a 10 m tank.
+at tick 6 000; its untripped twin reads 15.17 m in a 10 m tank. *(Before M23.1.
+Since, the twin holds exactly 10 m and spills.)*
 
 **Nothing old moved.** All twenty-five earlier plants are byte-identical on both
 fidelities, iteration counts included. The CLI's `--baseline` compares
@@ -6629,7 +6631,8 @@ earlier assertion fired first.
 
 **The overflow sweep (B28) found no shipped plant above its own tank height.** The
 closest is `crude_column`'s distillate tank at 86% of its height after 6 000
-ticks, still rising.
+ticks, still rising. *(True only out to 6 000 ticks: M23.0 found six plants
+overflow by tick 30 000, and M23.1 closed B28.)*
 
 ## M23 — tank overflow: the brim spills; ledger row B28; opened on a decision that turned out to be a measurement
 
@@ -6681,6 +6684,47 @@ The demo is `scenarios/tank_overflow.toml`: `tank_overfill_trip.toml` without it
 `[[trips]]` table, spilling from tick 2 859, 19 454.49 kg by tick 6 000 on the
 probe. One more premise the building slice inherits: nothing validated a tank's
 geometry at load, and fork 5 now refuses a tank started over its own brim.
+
+### M23.1 — Build it — **LANDED** 2026-09-30, and M23 is CLOSED
+
+Built as DESIGN §27 specifies, after M24.1; read its "Corrections from building
+it (M23.1)" before touching a tank's update, `LeakRole` or the edges the loader
+builds. B28 is struck. Five things to know.
+
+**Every tank spills at its brim.** Each tank owns an overflow edge the loader
+builds, `<tank>__overflow`, to the plant's first atmosphere or a new
+`overflow_atmosphere`, built after the boil-off vents so their ids do not move.
+At the end of each tick, after the boil-off, the liquid above the tank's capacity
+leaves through it. "Full" is a mass comparison in the loader's own arithmetic, so
+a tank declared exactly full spills exactly nothing. A tank over its brim with no
+overflow edge of its own is an error, and a tank's geometry is now checked at
+load. The demo, `scenarios/tank_overflow.toml`, is the trip demo without its
+trip: it reaches its brim at tick 2 859 and has spilled 19 454 kg by tick 6 000,
+on both fidelities, exactly as the probe said.
+
+**The bytes moved exactly as predicted, on one more plant.** Seventeen of the
+twenty-seven earlier plants are byte-identical on Newton and sixteen on the game
+solver. The eleven that gain a new atmosphere node shift by at most 4.9e-11
+(Newton) and 1.7e-8 (game); the eleventh is the dry-tank demo, which did not exist
+when the note was written.
+
+**The iteration counts did move, and only on tick 1.** The new node moves the
+solvers' starting point, which only the first solve uses: one iteration more on
+six Newton and three game-solver plants, two fewer on the dry-tank demo. The
+probe read counts every 10 ticks and could not see tick 1. That also corrected
+M24.1: the dry-tank demo's "worst dry tick of 10" was the tick-1 solve, and its
+worst dry tick is 7 on Newton.
+
+**One test's control had to be taken over several starting points.** The
+flow-control test that needed the shut valve's inlet to read a small nonzero
+leftover now reads exactly zero, as the note predicted. The replacement runs six
+supply levels: the outlet is exactly zero on all six, the inlet nonzero on two.
+
+**The mutations: fifteen edits, twelve caught, three inert.** Two escaped until a
+gate was added, because the demo is water only and every composition it carries
+is the same: the spill's own composition is now checked on a fixture that mixes
+two liquids. The note's "level comparison" mutation spills exactly zero as
+written; the version that spills a rounding error forever is caught.
 
 ## M24 — a tank that runs dry: the pump runs dry; ledger row B29; opened on a conservation failure
 
@@ -6740,7 +6784,8 @@ are deferred with triggers.
 Built as DESIGN §28 specifies; read its "Corrections from building it (M24.1)"
 before touching `network::solve_with_active_anchoring` or a tank's update. B29 is
 struck. M23.1 (overflow) is still unbuilt and, landing second, owes the pointer
-fixes §28 lists. Five things to know.
+fixes §28 lists. *(M23.1 landed the same day, above; it made them.)* Five things
+to know.
 
 **Nothing old moved, and the two plants that created mass no longer do.** All
 twenty-six earlier plants are byte-identical on both fidelities, with worst and

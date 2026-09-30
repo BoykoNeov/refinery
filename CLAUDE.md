@@ -94,6 +94,7 @@ cargo run -p refinery-cli -- run scenarios/tank_flow_control.toml --ticks 6000  
 cargo run -p refinery-cli -- run scenarios/relief_twin_vessels.toml --ticks 6000 --solver simple  # the M21.1 stiff pairs
 cargo run -p refinery-cli -- run scenarios/tank_overfill_trip.toml --ticks 6000       # the M22.1 overfill trip
 cargo run -p refinery-cli -- run scenarios/tank_runs_dry.toml --ticks 6000            # the M24.1 dry tank
+cargo run -p refinery-cli -- run scenarios/tank_overflow.toml --ticks 6000            # the M23.1 spill
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -189,10 +190,59 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M23 is CLOSED (2026-09-30): tank overflow — `docs/DEFERRED.md` row B28, now
+struck.** Taken on a DECISION (the user's), and past its trigger all along: run
+past the corpus's 6 000 ticks and six shipped plants overflow, the first at 11.7
+simulated minutes. **M23.0** wrote DESIGN §27 (seven forks, ten gates, twelve
+mutations, no code); **M23.1 landed 2026-09-30**, after M24.1, and built it. Read
+§27's "Corrections from building it (M23.1)" before touching a tank's update,
+`LeakRole` or the edges the loader builds. Nothing is past its trigger; the
+next milestone is chosen from `docs/DEFERRED.md`. Six things to know.
+- **Every tank owns an overflow**: a loader-built, engine-written edge
+  `<tank>__overflow`, `LeakRole::Overflow { owner }`, to the plant's first
+  `Atmosphere` or a new `overflow_atmosphere`, built AFTER the vents (gate 9). At
+  the end of each tick, AFTER the boil-off, anything above `TankState::capacity`
+  (`ρ(x_end)·A·H`) leaves through it at the tank's end-of-tick state, and the
+  tank's temperature and composition are not recomputed. "Full" is a MASS
+  comparison through `TankState::mass_at_level`, which the loader's initial
+  inventory also calls, so a tank declared full ties exactly.
+- **`LeakRole::is_engine_written()` is the solve-and-pass skip** (vent OR
+  overflow, four sites); `is_boiloff_vent()` now means the vapour path only, and
+  `overflow_owner()` is the single owner of "whose spill is this". A tank over its
+  brim with no overflow of its own is an `Err` (the note left it open), and
+  `PuncturePipe` refuses an overflow by its own message. **A frontend finds the
+  spill by NAME** — `EdgeSnapshot` has no role — so a declared pipe named
+  `<tank>__overflow` is refused. Geometry is checked at load: non-positive area or
+  height, a negative level, a level over the brim.
+- **Bytes as premise 2 measured, on one more plant**: seventeen pre-M23 plants
+  byte-identical on Newton, sixteen on the game solver; the eleven that gain a new
+  atmosphere (premise 2's ten plus `tank_runs_dry`) move by at most 4.9e-11
+  (Newton) / 1.7e-8 (game). **"No iteration count moved" was false**: the new node
+  moves the cold seed, which only tick 1 uses — +1 on six Newton and three game
+  plants, −2 on `tank_runs_dry`. The probe sampled every 10 ticks and could not
+  see it; compare the corpus's `total_iterations`. From here "runs
+  byte-identical" means post-M23.1 identical.
+- **M24.1's "worst dry tick 10 (Newton)" was that same tick-1 cold solve**; the
+  worst DRY tick is 7 (Newton) / 8 (game), corrected in B38. And the M20.1
+  shut-valve control (the inlet reads a nonzero residual) was the seed's, not the
+  valve's: it is now taken over six supply levels (outlet 0.0 on all, inlet
+  nonzero on two). M20.1's inlet-for-outlet catch survives (5 877 of 6 000 ticks).
+- **Demo `scenarios/tank_overflow.toml`** (the twenty-eighth file) is
+  `tank_overfill_trip.toml` without its trip, asserted byte for byte in
+  `trip_demo.rs`: brim at tick 2 859, then exactly full, 19 454.49 kg spilled by
+  tick 6 000 on both fidelities. Gates 1–9 are `tests/overflow_reference.rs`.
+- **The mutations: fifteen edits, twelve caught, three inert** (1, 6, 12). Six
+  predictions were wrong. The note's mutation 1 spills exactly 0.0 as written
+  (the excess is still a mass difference); 1b, the spill in level terms, spills
+  4.4e-12 kg/s forever and is caught. A rate cannot go stale (mutation 6) because
+  the solve writes zero onto every engine-written edge each tick. **Two escaped
+  until a gate was added, because the demo is water only**: the spill's own
+  composition is now asserted on a two-liquid fixture.
+
 **M24 is CLOSED (2026-09-30): a tank that runs dry — `docs/DEFERRED.md` row B29,
-now struck.** Taken on the user's instruction while M23.1 was unbuilt; **M23.1 lands
-second and owes the pointer fixes DESIGN §28 lists** (M24.1 already added pointers in
-§27). **M24.0** wrote DESIGN §28 (seven forks, ten gates, eleven mutations, no code);
+now struck.** Taken on the user's instruction while M23.1 was unbuilt; M23.1 landed
+second and made the pointer fixes DESIGN §28 lists (M24.1 had already added pointers
+in §27). **M24.0** wrote DESIGN §28 (seven forks, ten gates, eleven mutations, no code);
 **M24.1 landed 2026-09-30** and built it. Read §28's "Corrections from building it
 (M24.1)" before touching `network::solve_with_active_anchoring`, `Capacitance`, the
 sweep's starved-tank branch or a holdup's mass update. Six things to know.
@@ -236,34 +286,6 @@ sweep's starved-tank branch or a holdup's mass update. Six things to know.
   until gate 3c made it deliberate. `tank_overfill_trip` starves 1 215 ticks of
   12 500 on Newton and never repeats.
 
-**M23 is OPEN (2026-09-30): tank overflow — `docs/DEFERRED.md` row B28.**
-Taken on a DECISION (the user's), and it turned out to be past its trigger all
-along: run past the corpus's 6 000 ticks and **six shipped plants overflow**, the
-first (`crude_column`'s distillate tank) at tick 7 036, 11.7 simulated minutes.
-**M23.0 landed 2026-09-30** — DESIGN §27, seven forks, ten gates, twelve
-mutations, no code; numbers in `W:\temp\claude\m23\measurements.md`. M23.1
-builds it. Five things to know first.
-- **The design:** an ideal overflow on EVERY tank. Anything above `ρ·A·H` at the
-  end of a tick (after the boil-off) leaves through a loader-built,
-  engine-written edge `<tank>__overflow`, `LeakRole::Overflow { owner }`, to the
-  plant's first `Atmosphere`, or to a new `overflow_atmosphere` node. The edges
-  are built AFTER the vents, or the vents renumber. "Full" is a MASS comparison
-  sharing the loader's `ρ·A·h`, so a tank declared full ties exactly.
-- **The cost, accepted by the user:** a new atmosphere node moves the solvers'
-  cold seed. Sixteen plants stay byte-identical; ten move (nine on Newton) by at most 4.9e-11
-  on Newton and 1.7e-8 on `simple`, with no iteration count moved. **The seed
-  shift also turns M20.1's dead-leg residual (−1.547e-11) into exactly 0.0**, so a
-  flow-control test's control arm needs re-premising.
-- **Mass books close per TANK (1.1e-16), not per plant**: the plant-wide sum
-  misses by the solvers' own node imbalance.
-- **New row B29, a GAP and live — CLOSED by M24.1 (above): a tank that ran dry CREATED mass**
-  (`.max(0.0)` on the inventory). `tank_flow_control`, a closed 179 640 kg plant,
-  holds 379 789 kg by tick 30 000, and its own "overflow" is that created mass.
-  Not M23's (it is a hydraulic question); recommended as M24.
-- Nothing validated a tank's geometry at load; fork 5 refuses a tank started over
-  its brim, and non-positive area or height. Demo to come:
-  `scenarios/tank_overflow.toml` = `tank_overfill_trip.toml` without its trip.
-
 **M22 is CLOSED (2026-09-29): interlocks and trips — `docs/DEFERRED.md` row E6,
 now struck.** Taken on a DECISION (the user's, on gameplay grounds). **M22.0**
 wrote DESIGN §26 (eight forks, nine gates, sixteen mutations, no code) and
@@ -283,7 +305,7 @@ the condition. False on a plant loaded inside its condition or with a slow actio
 which is where the reset's "condition still holds" refusal applies. (iii) `TripState` is tagged `status` (`{"status":"tripped","at_tick":…}`).
 (iv) Nineteen mutations, eighteen caught; the hold check's deletion is uncaught on
 purpose. (v) No shipped plant passes its own tank height (B28 swept; closest
-0.859). Setpoint and limit conversion share `declared_value` in `build.rs`.
+0.859) — true only out to 6 000 ticks, and B28 is closed by M23.1. Setpoint and limit conversion share `declared_value` in `build.rs`.
 
 The design as built: `PlantGraph::trips`, a plain struct (no trait),
 `[[trips]]` with `direction = "high" | "low"`, `limit_m`/`limit_bar`/`limit_c`
@@ -294,8 +316,8 @@ re-armed by `Command::ResetTrip`, which is refused while the condition holds and
 restarts nothing. Only quantities present from load may be watched (flow and
 outlet trips are E13). **A stopped pump conducts** (it keeps its resistance), which
 is why a trip takes a list of actions. Demo: `scenarios/tank_overfill_trip.toml`,
-trips at tick 1 236; its untripped twin fills a 10 m tank to 15.17 m (B28: no
-overflow). `TripSnapshot::state` is `Armed | Tripped { at_tick }`, and a reset
+trips at tick 1 236; its untripped twin filled a 10 m tank to 15.17 m (B28: no
+overflow) until M23.1, and now spills at its brim as `tank_overflow.toml`. `TripSnapshot::state` is `Armed | Tripped { at_tick }`, and a reset
 clears the tick. **A level does not tie exactly at load** (4 of 8 declared values
 read one ULP high), so the at-the-limit gate uses a vessel's pressure and a
 tank's temperature, which do (8 of 8 each). The Godot bridge's `referent` has its
@@ -1775,17 +1797,18 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly six of the twenty-seven files in `scenarios/` declare a `[[controls]]`
+**Exactly six of the twenty-eight files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
 `tank_temperature_heating.toml` (M18.1, a reverse-acting temperature),
 `furnace_outlet_control.toml` (M19.1, a furnace's own outlet) and
 `tank_flow_control.toml` (M20.1, a valve's own flow). **The
-other twenty-one
+other twenty-two
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor** (one, `tank_overfill_trip.toml`, carries a `[[trips]]`
-table instead, and one, `tank_runs_dry.toml`, runs a tank dry); adding a loop to one of them
+table instead, one, `tank_runs_dry.toml`, runs a tank dry, and one,
+`tank_overflow.toml`, spills); adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file
 rather than wiring one into an existing plant. Every other plant that carries a
 loop is an inline test fixture for the same reason.
