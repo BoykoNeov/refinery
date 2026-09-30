@@ -6659,10 +6659,10 @@ by tick 30 000. Its own "overflow" at tick 14 978 is that created mass. Not fixe
 here, because it is a question about the hydraulic solve, and overflow is not.
 Recommended as M24.
 
-**The spill is an edge, by the user's decision, and that costs eleven plants a
+**The spill is an edge, by the user's decision, and that costs ten plants a
 rounding-level shift.** An idle overflow edge changes nothing by itself; a NEW
 atmosphere node moves the solvers' cold seed (the mean of the pinned pressures).
-Fifteen plants stay byte-identical; eleven move by at most 4.9e-11 on Newton and
+Sixteen plants stay byte-identical; ten move (nine on Newton) by at most 4.9e-11 on Newton and
 1.7e-8 on the game solver, with no iteration count moved. The overflow edges must
 be built after the boil-off vents, or the vents are renumbered.
 

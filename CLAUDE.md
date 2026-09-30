@@ -202,7 +202,7 @@ builds it. Five things to know first.
   are built AFTER the vents, or the vents renumber. "Full" is a MASS comparison
   sharing the loader's `ρ·A·h`, so a tank declared full ties exactly.
 - **The cost, accepted by the user:** a new atmosphere node moves the solvers'
-  cold seed. Fifteen plants stay byte-identical; eleven move by at most 4.9e-11
+  cold seed. Sixteen plants stay byte-identical; ten move (nine on Newton) by at most 4.9e-11
   on Newton and 1.7e-8 on `simple`, with no iteration count moved. **The seed
   shift also turns M20.1's dead-leg residual (−1.547e-11) into exactly 0.0**, so a
   flow-control test's control arm needs re-premising.

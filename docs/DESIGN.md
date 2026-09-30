@@ -14632,10 +14632,11 @@ zero-geometry edge to the plant's first `Atmosphere`, or to a new one where the
 plant has none. The edge is excluded from the solve, as a boil-off vent is. The
 probe compared all twenty-six plants on both fidelities over 6 000 ticks, with
 the new node and edges stripped from the snapshots (M8.5's method).
-- **Fifteen plants are byte-identical on both fidelities.** These are every plant
+- **Sixteen plants are byte-identical on both fidelities.** These are every plant
   without a tank and every tank plant that already had an atmosphere (the three
-  boil-off plants and `leaking_line`), plus `fcc_plant` on Newton.
-- **The eleven tank plants that gain a new atmosphere node move.** The worst
+  boil-off plants and `leaking_line`). `fcc_plant` is identical on Newton only.
+- **The ten tank plants that gain a new atmosphere node move**, nine on Newton
+  and all ten on the game solver. The worst
   relative move on any published quantity is **4.9e-11 on Newton** and **1.7e-8
   on the game solver**. No plant's worst iteration count moves.
 - **The mechanism is the cold seed.** `network::classify` starts every free node
@@ -14649,7 +14650,7 @@ the new node and edges stripped from the snapshots (M8.5's method).
   vents, and the five boil-off plants' edge ids move. After the vents they do not.
 
 **The user decided (2026-09-30) that the spill is an edge**, which is the damage
-model's own rule. The eleven-plant shift is accepted and the reference is re-set
+model's own rule. The ten-plant shift is accepted and the reference is re-set
 once. Fork 2 records the choice.
 
 **3. Nothing validates a tank's geometry.** `validate_node_def` checks a tank's
@@ -14928,17 +14929,29 @@ re-measured on the shipped code before they are written into a test.
 
 ### What must not change, stated as a prediction that can be wrong
 
-- **Fifteen plants are byte-identical on both fidelities:** every plant with no
-  tank, the four tank plants that already have an atmosphere, and `fcc_plant` on
-  Newton.
-- **The other eleven differ only by the new keys, plus a numerical shift within
+- **Sixteen plants are byte-identical on both fidelities:** the twelve with no
+  tank and the four tank plants that already have an atmosphere. `fcc_plant` is
+  identical on Newton only.
+- **The other ten differ only by the new keys, plus a numerical shift within
   premise 2's bounds** (4.9e-11 Newton, 1.7e-8 game), with no worst iteration
   count moved. The new keys are the added node and edges, stripped M8.5's way.
 - **Why it could fail.** The prediction assumes the working spill changes nothing
   while nothing spills. It could fail in two ways: if the zero write on an idle
   overflow edge differs from the probe's never-written edge (for example a `-0.0`
   against `0.0`, or a composition copied from somewhere else), or if a test
-  fixture fills past its own height inside its run.
+  fixture fills past its own height inside its run. **The first half is now
+  measured, not predicted:** the plant comparison re-run with the working spill
+  (`W:\temp\claude\m23\compare_spill.txt`) reproduces the idle-edge run on all
+  twenty-six plants, row for row. Inside 6 000 ticks, the spill itself changes
+  nothing; only the new atmosphere node does.
+
+**A recorded catch that rests on a residual's value is owed a re-run.** The seed
+shift turned a dead-leg residual into exactly zero (below). M20.1 recorded that
+its inlet-for-outlet mutation is caught only by a tolerance below the valve's own
+solver residual, which is the kind of number the shift moves. A suite that
+passes cannot show a catch that was lost. **M23.1 re-runs that mutation on the
+shifted seed**, and any other recorded catch whose mechanism is the value of a
+residual, and records the result either way.
 
 **The probe's full test suite, measured rather than predicted.** The working
 spill was run through `cargo test --workspace --no-fail-fast` in the worktree.
