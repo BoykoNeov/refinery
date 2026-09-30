@@ -181,10 +181,14 @@ impl FlowSolver for SimpleFlowSolver {
         // fidelities and one driver is what keeps them agreeing (DESIGN §3c).
         validate_degrees(graph)?;
         let mut warm_start = std::mem::take(&mut self.warm_start);
-        let out =
-            solve_with_active_anchoring(graph, slate, previous_states, &mut warm_start, |prep| {
-                self.pass(prep, graph, slate, previous_states, dt)
-            });
+        let out = solve_with_active_anchoring(
+            graph,
+            slate,
+            previous_states,
+            &mut warm_start,
+            dt,
+            |prep| self.pass(prep, graph, slate, previous_states, dt),
+        );
         self.warm_start = warm_start;
         out
     }

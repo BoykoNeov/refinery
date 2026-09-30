@@ -23,11 +23,17 @@ use crate::units::*;
 
 /// Inventory below which a tank has no meaningful temperature [kg].
 ///
-/// `T = T_REF + E/(m·cp)` is singular at `m = 0`, and explicit Euler can
-/// overshoot a nearly-empty tank into the mass clamp — at which point mass and
-/// energy have both stopped being conserved and the ratio is meaningless, not
-/// merely imprecise. Below a milligram the tank is empty for any refinery
-/// purpose, so its last temperature is held instead of dividing by ~0.
+/// `T = T_REF + E/(m·cp)` is singular at `m = 0`, so below a milligram — empty
+/// for any refinery purpose — a holdup does not divide by ~0. A wet tank holds
+/// its last temperature; a STARVED tank takes the composition and temperature
+/// of what is passing through it, which is the fluid now in its lines (M24,
+/// docs/DESIGN.md §28 fork 4).
+///
+/// Until M24 this comment said that explicit Euler could overshoot a nearly
+/// empty tank into the mass clamp, "at which point mass and energy have both
+/// stopped being conserved". That was B29, and it created 200 149 kg on
+/// `tank_flow_control`. A tank the solve would draw past empty is now starved
+/// inside the solve, and the clamp is a tripwire (`checked_holdup_mass`).
 const MIN_THERMAL_MASS_KG: f64 = 1e-6;
 
 /// How far below zero a component's remaining mass may land before it stops
@@ -613,6 +619,9 @@ impl Engine {
         // 2b. Resolve the node temperature AND composition fields: inertial
         //     nodes contribute their start-of-tick values, zero-volume nodes mix
         //     their inflows in flow order (docs/DESIGN.md §4a).
+        //     A tank the solve STARVED is a mixing point here too (M24,
+        //     docs/DESIGN.md §28 fork 4): its outflow is the mix of what it held
+        //     and what it was fed.
         let node_states = energy::resolve_node_states(
             &self.graph,
             &self.slate,
@@ -623,6 +632,7 @@ impl Engine {
             self.thermo.as_ref(),
             self.enthalpy.as_ref(),
             &self.node_states,
+            &solution.starved,
         )?;
         let node_temperature = &node_states.temperature;
 
@@ -810,6 +820,11 @@ impl Engine {
             let mut inflow_component_rate = vec![0.0; self.slate.len()];
             let mut inflow_mass_rate = 0.0; // [kg/s]
             let mut outflow_mass_rate = 0.0; // [kg/s], positive magnitude
+                                             // Per-component mass rate LEAVING [kg/s], at each outflow's own
+                                             // resolved composition. Read only for a starved tank, whose outflow
+                                             // is a mix rather than its own start-of-tick fluid (M24, §28 fork 4);
+                                             // summed for every holdup so the loop below has one shape.
+            let mut outflow_component_rate = vec![0.0; self.slate.len()];
             for (eid, _other, incoming) in self.graph.incident(nid) {
                 // A boil-off vent is two different things at its two ends, and
                 // which end this loop is standing at is the whole question
@@ -877,6 +892,12 @@ impl Engine {
                         inflow_mass_rate += into_node;
                     } else {
                         outflow_mass_rate -= into_node;
+                        for (rate, fraction) in outflow_component_rate
+                            .iter_mut()
+                            .zip(stream.composition.fractions())
+                        {
+                            *rate -= into_node * fraction;
+                        }
                     }
                     continue;
                 }
@@ -932,6 +953,11 @@ impl Engine {
                     inflow_mass_rate += into_node;
                 } else {
                     outflow_mass_rate -= into_node;
+                    for (rate, fraction) in
+                        outflow_component_rate.iter_mut().zip(crossing.fractions())
+                    {
+                        *rate -= into_node * fraction;
+                    }
                 }
             }
 
@@ -974,6 +1000,20 @@ impl Engine {
             // and the temperature it left at. `None` while nothing boils, which
             // is every tick on a plant that selects `boiloff = "none"`.
             let mut vented: Option<(KgPerSec, Composition, Kelvin, JPerKg)> = None;
+            // What the solve did with this holdup, read before the borrow: a
+            // starved tank's supply and own residual, or a vessel's own residual.
+            // Both bound the empty-holdup tripwire below (§28 fork 5).
+            let starved = solution.starved.get(&nid).copied();
+            let vessel_residual = solution.vessel_residual.get(&nid).copied();
+            // Gross traffic through the holdup over the tick [kg]: the sum the
+            // mass update's rounding lives in.
+            let gross_mass_rate = inflow_mass_rate + outflow_mass_rate;
+            // What is passing through a starved tank, for when it ends the tick
+            // below the thermal floor.
+            let passing = (
+                node_states.composition.get(&nid).cloned(),
+                node_states.temperature.get(&nid).copied(),
+            );
             if let NodeKind::Tank(tank) = &mut self.graph.node_mut(nid).kind {
                 let mass_old = tank.mass.value();
                 // The inventory's enthalpy at the composition that actually
@@ -1013,7 +1053,12 @@ impl Engine {
                 // moved, and re-normalizing `f·k` would rewrite them with a
                 // rounding error's worth of drift on every tick a tank merely
                 // drains.
-                if inflow_mass_rate > 0.0 {
+                //
+                // A STARVED tank is the one exception (M24, §28 fork 4): its
+                // outflow is the mix the sweep resolved, not its start-of-tick
+                // fluid, so it is debited at that mix, below, once its end-of-
+                // tick mass says whether it has an inventory left to describe.
+                if inflow_mass_rate > 0.0 && starved.is_none() {
                     tank.composition = energy::blended_holdup_composition(
                         &tank.composition,
                         mass_old,
@@ -1027,8 +1072,54 @@ impl Engine {
                         ))
                     })?;
                 }
-                let mass_new = (mass_old + net_mass * dt.value()).max(0.0);
+                let over_draw_allowance = starved.map_or(0.0, |report| {
+                    (-report.residual.value()).max(0.0) * dt.value()
+                });
+                let mass_new = checked_holdup_mass(
+                    &format!("tank '{node_name}'"),
+                    mass_old,
+                    mass_old + net_mass * dt.value(),
+                    mass_old + gross_mass_rate * dt.value(),
+                    over_draw_allowance,
+                )?;
                 let energy_new = energy_old + (net_enthalpy + heat_input) * dt.value();
+
+                if starved.is_some() {
+                    if mass_new > MIN_THERMAL_MASS_KG {
+                        // What is left is the inflow the solve does not see (a
+                        // column draw, a received vent) and the solve's own
+                        // residual here; debited at what left, component by
+                        // component, and bounded like the total.
+                        let weights = energy::starved_holdup_weights(
+                            &tank.composition,
+                            mass_old,
+                            &inflow_component_rate,
+                            &outflow_component_rate,
+                            dt.value(),
+                        );
+                        let mut kept = Vec::with_capacity(weights.len());
+                        for (c, weight) in weights.into_iter().enumerate() {
+                            kept.push(checked_holdup_mass(
+                                &format!("component {c} of tank '{node_name}'"),
+                                mass_old,
+                                weight,
+                                mass_old + gross_mass_rate * dt.value(),
+                                over_draw_allowance,
+                            )?);
+                        }
+                        tank.composition = Composition::from_weights(&kept).map_err(|e| {
+                            SimError::Numerical(format!(
+                                "dry tank '{node_name}' kept no valid composition: {e}"
+                            ))
+                        })?;
+                    } else if let (Some(composition), Some(temperature)) = passing.clone() {
+                        // Below the floor it is the fluid now in its lines. A
+                        // temperature loop on a dry tank reads what is passing,
+                        // not a number held from the last time it had liquid.
+                        tank.composition = composition;
+                        tank.temperature = temperature;
+                    }
+                }
 
                 tank.mass = Kg(mass_new);
                 // Guarded exactly like a zero-volume node's mix: a net heat SINK
@@ -1218,7 +1309,18 @@ impl Engine {
                         ))
                     })?;
                 }
-                let mass_new = (mass_old + net_mass * dt.value()).max(0.0);
+                // The vessel's clamp is a tripwire bounded by its own residual,
+                // chosen after measuring that no vessel in the corpus or the
+                // test suite ever comes within 0.026 kg of empty (§28 fork 5).
+                let over_draw_allowance = vessel_residual
+                    .map_or(0.0, |residual| (-residual.value()).max(0.0) * dt.value());
+                let mass_new = checked_holdup_mass(
+                    &format!("vessel '{node_name}'"),
+                    mass_old,
+                    mass_old + net_mass * dt.value(),
+                    mass_old + gross_mass_rate * dt.value(),
+                    over_draw_allowance,
+                )?;
                 let energy_new = energy_old + (net_enthalpy + heat_input) * dt.value();
 
                 vessel.mass = Kg(mass_new);
@@ -1922,6 +2024,19 @@ impl Engine {
     pub fn node_states(&self) -> &energy::NodeStates {
         &self.node_states
     }
+
+    /// The LAST tick's hydraulic solution, as the engine finished it (draw and
+    /// vent flows written in). `None` before the first tick.
+    ///
+    /// Read-only and not part of `Snapshot`, for the same reason as
+    /// `node_states`: it is engine-internal. It is public so a test can read
+    /// what the solve reported about the holdups it bounded — a starved tank's
+    /// supply and own residual, a vessel's own residual (docs/DESIGN.md §28
+    /// fork 5) — rather than re-deriving them from the snapshot's flows, which
+    /// would compare the engine's arithmetic against a copy of itself.
+    pub fn last_solution(&self) -> Option<&HydraulicSolution> {
+        self.last_solution.as_ref()
+    }
 }
 
 /// Which node kinds the cavitation criterion is about (docs/DESIGN.md §13
@@ -2009,6 +2124,46 @@ fn trip_equipment_fault(graph: &PlantGraph, node: NodeId, kind: &str) -> SimErro
 /// loop commands so the two cannot phrase the same fault differently.
 fn unknown_loop(loop_id: LoopId) -> SimError {
     SimError::InvalidCommand(format!("{loop_id:?} names no control loop on this plant"))
+}
+
+/// A holdup's end-of-tick mass [kg]: `raw` clamped at zero, but only by as
+/// much as the tick could legitimately have over-drawn it (M24,
+/// docs/DESIGN.md §28 fork 5).
+///
+/// Until M24 this was a silent `.max(0.0)`, and it created 200 149 kg on
+/// `tank_flow_control` (B29). Now:
+///
+/// - `raw ≥ 0` returns `raw` unchanged, so every holdup that does not run dry
+///   updates exactly as before.
+/// - A shortfall up to `ROUNDING_MASS_FRACTION·gross + over_draw_allowance` is
+///   clamped. `gross` is the holdup plus the tick's traffic through it
+///   (`m + Σ|ṁ|·dt`), because that is the sum the rounding is in — the boil-off
+///   guard's rule. `over_draw_allowance` is the holdup's OWN solve residual
+///   times `dt` where the solve drew more than it held (a starved tank's or a
+///   vessel's), never the plant's worst node.
+/// - Anything beyond is an `Err` naming the holdup and both numbers: a solver
+///   delivered mass the holdup did not have.
+///
+/// A wet tank's allowance is zero: the rule that starves it (`q_out·dt > m`)
+/// leaves it at most a rounding error to over-draw.
+fn checked_holdup_mass(
+    holdup: &str,
+    mass_old: f64,
+    raw: f64,
+    gross: f64,
+    over_draw_allowance: f64,
+) -> Result<f64, SimError> {
+    let bound = ROUNDING_MASS_FRACTION * gross + over_draw_allowance;
+    if raw < -bound {
+        return Err(SimError::Numerical(format!(
+            "{holdup} would end the tick at {raw:.6e} kg — drawn {:.6e} kg past empty \
+             from the {mass_old:.6e} kg it held, beyond the {bound:.6e} kg its own solve \
+             residual and rounding allow. The hydraulic solve delivered mass this holdup \
+             did not have (docs/DESIGN.md §28 fork 5)",
+            -raw
+        )));
+    }
+    Ok(raw.max(0.0))
 }
 
 /// Validate a heater/cooler duty setpoint: finite and non-negative.

@@ -56,7 +56,7 @@ use crate::error::SimError;
 use crate::graph::{ColumnDraw, EdgeId, NodeId, NodeKind, PlantGraph};
 use crate::traits::{
     ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, ReactionModel, Separation,
-    SeparationModel, ThermoModel,
+    SeparationModel, StarvedTank, ThermoModel,
 };
 use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
 use std::borrow::Cow;
@@ -108,13 +108,53 @@ pub fn blended_holdup_composition(
     dt: f64,
 ) -> Result<Composition, SimError> {
     let mut weights: Vec<f64> = inflow_component_rate.iter().map(|rate| rate * dt).collect();
-    // Clamped for the same reason the new mass is: a holdup that drains past
-    // empty within one step must not carry negative weight into a composition.
+    // A rounding guard since M24, not a licence to over-draw. A tank the solve
+    // would have drawn past empty is STARVED and never reaches this function
+    // (`starved_holdup_composition` debits it instead), and a wet tank's outflow
+    // is at most its inventory by the rule that starves it (docs/DESIGN.md §28
+    // fork 3), so `retained` can land below zero only by the rounding of the
+    // product. A vessel has never come within 0.026 kg of empty (§28 fork 5).
     let retained = (mass_old - outflow_mass_rate * dt).max(0.0);
     for (weight, fraction) in weights.iter_mut().zip(current.fractions()) {
         *weight += retained * fraction;
     }
     Composition::from_weights(&weights)
+}
+
+/// A STARVED tank's end-of-tick component masses [kg]: what it held, plus what
+/// arrived, minus what left AT WHAT LEFT (M24, docs/DESIGN.md §28 fork 4).
+///
+/// ```text
+/// m_c_new = x_c,old·m_old + (ṁ_c,in − ṁ_c,out)·dt
+/// ```
+///
+/// A wet tank's outflow leaves at its start-of-tick composition, which is why
+/// `blended_holdup_composition` debits `f_c,old·ṁ_out`. A starved tank is swept
+/// as a mixing point, so its outflow carries the MIX of what it held and what
+/// the network fed it, and debiting it at `f_c,old` would book a different
+/// fluid from the one the far end was credited with. `outflow_component_rate`
+/// is summed off the outflow edges' own resolved composition, so the two sides
+/// of every edge see one stream.
+///
+/// What remains is the inflow the solve does not see — a column draw or a
+/// received boil-off vent, written after it — plus the solve's own residual at
+/// the tank. Returned as weights rather than a composition, because the caller
+/// decides what a tank holding almost nothing is made of (below the thermal
+/// floor it takes the pass-through composition instead) and bounds any
+/// component that lands below zero.
+pub fn starved_holdup_weights(
+    current: &Composition,
+    mass_old: f64,
+    inflow_component_rate: &[f64],
+    outflow_component_rate: &[f64],
+    dt: f64,
+) -> Vec<f64> {
+    current
+        .fractions()
+        .iter()
+        .zip(inflow_component_rate.iter().zip(outflow_component_rate))
+        .map(|(fraction, (inflow, outflow))| fraction * mass_old + (inflow - outflow) * dt)
+        .collect()
 }
 
 /// Heat exchanged with the surroundings [W], SIGNED: positive into the body.
@@ -950,11 +990,19 @@ pub struct ReactorDuty {
 /// is released until that pass is stored, which is what lets
 /// `edge_composition_at` read it rather than recompute it.
 ///
+/// A **starved tank** (M24, docs/DESIGN.md §28 fork 4) is swept as a mixing
+/// point too, not seeded: its own inventory is one more inflow at its supply
+/// rate, its own composition and its own temperature, so its outflow carries
+/// the mix of what it held and what the network fed it. `starved` is the
+/// solve's own list (`HydraulicSolution::starved`), empty on every tick that
+/// starves nothing — and then this sweep is the pre-M24 one to the bit.
+///
 /// # Errors
 /// `SimError::Numerical` if a recycle among zero-volume nodes leaves the sweep
-/// with no valid order (see the module docs), if `reactions` cannot produce
-/// valid products for a reactor's feed, or if `separation` cannot split a
-/// column's feed.
+/// with no valid order (see the module docs) — with its own message when the
+/// loop runs through a starved tank — if `reactions` cannot produce valid
+/// products for a reactor's feed, or if `separation` cannot split a column's
+/// feed.
 #[allow(clippy::too_many_arguments)]
 pub fn resolve_node_states(
     graph: &PlantGraph,
@@ -966,6 +1014,7 @@ pub fn resolve_node_states(
     thermo: &dyn ThermoModel,
     enthalpy: &dyn EnthalpyModel,
     previous: &NodeStates,
+    starved: &BTreeMap<NodeId, StarvedTank>,
 ) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
     let mut composition: BTreeMap<NodeId, Composition> = BTreeMap::new();
@@ -980,8 +1029,20 @@ pub fn resolve_node_states(
     //    one field and swept in the other, and the sweep would then read an
     //    unresolved upwind and error somewhere far from the cause.
     let mut zero_volume: Vec<NodeId> = Vec::new();
+    // "Swept rather than seeded", which since M24 is a property of the node's
+    // STATE as well as its kind: a starved tank is a tank and is swept. One
+    // closure, read at all three sites that ask (this partition, the dependency
+    // count and the release below), so they cannot disagree about a dry tank.
+    let swept = |id: NodeId| {
+        is_zero_volume(&graph.node(id).kind)
+            || (starved.contains_key(&id) && matches!(graph.node(id).kind, NodeKind::Tank(_)))
+    };
     for id in graph.node_ids() {
         let kind = &graph.node(id).kind;
+        if swept(id) && !is_zero_volume(kind) {
+            zero_volume.push(id);
+            continue;
+        }
         match (
             boundary_temperature(kind),
             boundary_composition(kind, slate),
@@ -1043,7 +1104,7 @@ pub fn resolve_node_states(
         let deps = sides
             .iter()
             .flat_map(|&id| inflow_edges(graph, edge_mass_flow, id))
-            .filter(|(_, upstream, _)| is_zero_volume(&graph.node(*upstream).kind))
+            .filter(|(_, upstream, _)| swept(*upstream))
             .count();
         pending.insert(leader, deps);
     }
@@ -1069,15 +1130,26 @@ pub fn resolve_node_states(
         // to it. Heat crosses between them; mass does not, and a pair whose
         // compositions influenced each other would be modelling a leak.
         for &id in sides {
-            let mixed = mix_compositions(
-                graph,
-                slate,
-                edge_mass_flow,
-                &separations,
-                &composition,
-                previous,
-                id,
-            )?;
+            let mixed = match starved_tank(graph, starved, id) {
+                Some((tank, supply)) => starved_tank_composition(
+                    graph,
+                    edge_mass_flow,
+                    &separations,
+                    &composition,
+                    id,
+                    &tank.composition,
+                    supply,
+                )?,
+                None => mix_compositions(
+                    graph,
+                    slate,
+                    edge_mass_flow,
+                    &separations,
+                    &composition,
+                    previous,
+                    id,
+                )?,
+            };
             composition.insert(id, mixed);
         }
 
@@ -1101,6 +1173,56 @@ pub fn resolve_node_states(
             }
             _ => {
                 for &id in sides {
+                    // A starved tank mixes its own inventory in as one more
+                    // inflow, and takes NO heat term here: heat into a tank stays
+                    // on the tank's own balance, as it does for a wet one, and
+                    // adding it to the stream as well would count it twice
+                    // (docs/DESIGN.md §28 fork 4, row B35).
+                    if let Some((tank, supply)) = starved_tank(graph, starved, id) {
+                        let own = InflowEnthalpy {
+                            enthalpy_rate: enthalpy
+                                .enthalpy_flux(
+                                    slate,
+                                    &tank.composition,
+                                    KgPerSec(supply),
+                                    tank.temperature,
+                                )?
+                                .value(),
+                            mass_rate: supply,
+                            capacity_rate: supply
+                                * enthalpy
+                                    .spot_cp(slate, &tank.composition, tank.temperature)?
+                                    .value(),
+                        };
+                        let passing = inflow_totals(
+                            graph,
+                            slate,
+                            enthalpy,
+                            edge_mass_flow,
+                            edge_dissipation,
+                            &temperature,
+                            &composition,
+                            &separations,
+                            id,
+                        )?;
+                        // Nothing arriving: what passes, if anything, is what the
+                        // tank held, at exactly its own temperature — not a mix of
+                        // one term, which is the same number to within rounding.
+                        let passed = match passing {
+                            Some(totals) => enthalpy.mix_temperature(
+                                slate,
+                                mixed_composition_at(&composition, id)?,
+                                InflowEnthalpy {
+                                    enthalpy_rate: own.enthalpy_rate + totals.enthalpy_rate,
+                                    mass_rate: own.mass_rate + totals.mass_rate,
+                                    capacity_rate: own.capacity_rate + totals.capacity_rate,
+                                },
+                            )?,
+                            None => tank.temperature,
+                        };
+                        temperature.insert(id, passed);
+                        continue;
+                    }
                     // A reactor diverges from the ordinary mixing point in BOTH
                     // fields: it reacts the feed just mixed above into products,
                     // and it IMPOSES `t_set` instead of mixing a temperature. Its
@@ -1214,7 +1336,7 @@ pub fn resolve_node_states(
         // — parallel pipes decrement once each, as they should.
         for &id in sides {
             for (edge, downstream, incoming) in graph.incident(id) {
-                if downstream == id || !is_zero_volume(&graph.node(downstream).kind) {
+                if downstream == id || !swept(downstream) {
                     continue;
                 }
                 let downstream_leader = leader_of(downstream);
@@ -1246,6 +1368,28 @@ pub fn resolve_node_states(
             .filter(|id| !temperature.contains_key(id))
             .map(|id| graph.node(*id).name.clone())
             .collect();
+        // A loop through a tank that has run dry has an inventory in it — just
+        // none left to break the loop with. "Put a tank in the loop" is the wrong
+        // advice there, so it gets its own message (docs/DESIGN.md §28 fork 4,
+        // row B34).
+        let dry: Vec<String> = zero_volume
+            .iter()
+            .filter(|id| !temperature.contains_key(id) && starved.contains_key(id))
+            .map(|id| graph.node(*id).name.clone())
+            .collect();
+        if !dry.is_empty() {
+            return Err(SimError::Numerical(format!(
+                "recycle through a tank that has run dry ({}): the loop ({}) ran through \
+                 an inventory while there was one, and the tank has no liquid left to break \
+                 it this tick, so what it passes is its own outflow — a simultaneous solve \
+                 of the loop's mix, which the upwind sweep does not do. A pump's \
+                 minimum-flow line back to its own suction tank is the usual shape; keep \
+                 that tank from running dry, or break the loop at another holdup \
+                 (docs/DESIGN.md §28, DEFERRED B34).",
+                dry.join(", "),
+                stuck.join(", ")
+            )));
+        }
         return Err(SimError::Numerical(format!(
             "recycle through zero-volume nodes only ({}) — their temperatures are \
              mutually dependent with no inertial node to break the loop, which needs \
@@ -1412,6 +1556,58 @@ fn mix_compositions(
             .cloned()
             .unwrap_or_else(|| Composition::pure(slate.len(), 0)))
     }
+}
+
+/// The tank and its supply [kg/s] if `node` is a tank the solve starved, else
+/// `None` — the one test the sweep's two starved-tank branches share.
+fn starved_tank<'a>(
+    graph: &'a PlantGraph,
+    starved: &BTreeMap<NodeId, StarvedTank>,
+    node: NodeId,
+) -> Option<(&'a crate::graph::TankState, f64)> {
+    match (&graph.node(node).kind, starved.get(&node)) {
+        (NodeKind::Tank(tank), Some(report)) => Some((tank, report.supply.value())),
+        _ => None,
+    }
+}
+
+/// A starved tank's pass-through composition: its own inventory, at the supply
+/// rate, mixed by mass with whatever the network feeds it (docs/DESIGN.md §28
+/// fork 4). `mix_compositions`' rule with one more inflow, and the same weights
+/// — mass, not `ṁ·cp`.
+///
+/// With nothing arriving it is the tank's own composition exactly, rather than
+/// a one-term mix of it, which is the same fractions to within a renormalising
+/// rounding.
+fn starved_tank_composition(
+    graph: &PlantGraph,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    separations: &BTreeMap<NodeId, Separation>,
+    composition: &BTreeMap<NodeId, Composition>,
+    node: NodeId,
+    own: &Composition,
+    supply: f64,
+) -> Result<Composition, SimError> {
+    let inflows = inflow_edges(graph, edge_mass_flow, node);
+    if inflows.is_empty() {
+        return Ok(own.clone());
+    }
+    let mut weights: Vec<f64> = own.fractions().iter().map(|f| supply * f).collect();
+    for (edge, _upstream, into_node) in inflows {
+        // The raw stored flow, for the upwind pick; see `mix_compositions`.
+        let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
+        let incoming = edge_composition_at(graph, separations, composition, edge, flow)?;
+        for (weight, fraction) in weights.iter_mut().zip(incoming.fractions()) {
+            *weight += into_node * fraction;
+        }
+    }
+    Composition::from_weights(&weights).map_err(|e| {
+        SimError::Numerical(format!(
+            "mixing what dry tank '{}' held with what it was fed produced no valid \
+             composition: {e}",
+            graph.node(node).name
+        ))
+    })
 }
 
 /// A node's inflow enthalpy [W] and capacity rate [W/K], or `None` when nothing
@@ -2019,6 +2215,7 @@ mod tests {
             &TestThermo,
             &ConstantEnthalpyStub,
             &NodeStates::default(),
+            &BTreeMap::new(),
         )
         .map(|states| states.temperature)
     }
@@ -2039,6 +2236,7 @@ mod tests {
             &TestThermo,
             &ConstantEnthalpyStub,
             &NodeStates::default(),
+            &BTreeMap::new(),
         )
         .map(|states| states.composition)
     }
@@ -2220,6 +2418,7 @@ mod tests {
                 &TestThermo,
                 &ConstantEnthalpyStub,
                 &previous,
+                &BTreeMap::new(),
             )
             .unwrap()
             .composition;
@@ -2739,6 +2938,7 @@ mod tests {
             &TestThermo,
             &ConstantEnthalpyStub,
             &previous,
+            &BTreeMap::new(),
         )
         .unwrap()
         .temperature;
@@ -3059,6 +3259,7 @@ mod tests {
                 &TestThermo,
                 &ConstantEnthalpyStub,
                 &NodeStates::default(),
+                &BTreeMap::new(),
             )
             .unwrap();
 
@@ -3145,6 +3346,7 @@ mod tests {
                 &TestThermo,
                 &ConstantEnthalpyStub,
                 &NodeStates::default(),
+                &BTreeMap::new(),
             )
             .unwrap();
 

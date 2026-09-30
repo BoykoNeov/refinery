@@ -16,9 +16,9 @@ use crate::elements::{
 use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
 use refinery_core::error::SimError;
-use refinery_core::graph::{EdgeId, LeakRole, Node, NodeId, NodeKind, PlantGraph};
-use refinery_core::traits::{HydraulicSolution, SolveDiagnostics};
-use refinery_core::units::{Pascal, Watt, G, P_ATM};
+use refinery_core::graph::{EdgeId, LeakRole, Node, NodeId, NodeKind, PlantGraph, TankState};
+use refinery_core::traits::{HydraulicSolution, SolveDiagnostics, StarvedTank};
+use refinery_core::units::{KgPerSec, Pascal, Seconds, Watt, G, P_ATM};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Valve openings below this snap to fully closed, so a valve "cracked to
@@ -61,13 +61,16 @@ pub struct CompiledEdge {
 /// evaluate ρ(P,T) at, and that pressure needs the cold seed. `prepare` owns
 /// the resulting three-step order so neither solver can get it wrong.
 pub struct Classification {
-    /// Pinned pressures [Pa] for fixed nodes (Source/Sink/Atmosphere/Tank).
+    /// Pinned pressures [Pa] for fixed nodes (Source/Sink/Atmosphere, a WET
+    /// Tank, a Column).
     pub fixed: BTreeMap<NodeId, f64>,
-    /// Free node ids (Junction/Pump/Valve/Vessel), ascending — deterministic
-    /// order. A capacitive vessel is FREE: its pressure is an unknown the solve
-    /// determines, it is simply an unknown with an equation of its own.
+    /// Free node ids (Junction/Pump/Valve/Vessel, a STARVED Tank), ascending —
+    /// deterministic order. A capacitive vessel is FREE: its pressure is an
+    /// unknown the solve determines, it is simply an unknown with an equation of
+    /// its own. So is a starved tank (M24, docs/DESIGN.md §28 fork 2).
     pub free: Vec<NodeId>,
-    /// Capacitive free nodes and their `(C, Pⁿ)`, ascending. A subset of `free`.
+    /// Free nodes carrying a term of their own in their own residual, ascending.
+    /// A subset of `free`: a vessel's `(C, Pⁿ)`, or a starved tank's supply.
     pub capacitive: BTreeMap<NodeId, Capacitance>,
     /// Deterministic cold-start pressure seed: mean of the fixed pressures, or
     /// P_ATM when the network has no fixed node at all.
@@ -200,7 +203,7 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
 /// DESIGN §3a fork 2 unifies — `C → 0` is the junction, `C → ∞` the reservoir.
 pub fn capacitance(node: &Node, slate: &Slate) -> Option<Capacitance> {
     match &node.kind {
-        NodeKind::Vessel(vessel) => Some(Capacitance {
+        NodeKind::Vessel(vessel) => Some(Capacitance::Vessel {
             c: vessel.capacitance(slate),
             p_prev: vessel.pressure(slate).value(),
         }),
@@ -208,21 +211,64 @@ pub fn capacitance(node: &Node, slate: &Slate) -> Option<Capacitance> {
     }
 }
 
-/// One capacitive node's contribution to its own mass balance.
+/// One free node's own term in its own mass balance.
+///
+/// Two forms, and the second is M24's (docs/DESIGN.md §28 fork 2). Both enter
+/// the residual through `accumulation` and nowhere else, so the sites that
+/// assemble a residual — Newton's `assemble`, the Simple sweep, its grading, its
+/// group correction and its per-node trial — needed no second list to keep in
+/// step: a starved tank is one more entry in `Classification::capacitive`.
 #[derive(Debug, Clone, Copy)]
-pub struct Capacitance {
-    /// `C = dm/dP` [kg/Pa], exact at the vessel's start-of-tick `T` and `M̄`.
-    pub c: f64,
-    /// `Pⁿ` [Pa]: the pressure the START-OF-TICK inventory implies, `mⁿ/C`.
+pub enum Capacitance {
+    /// A capacitive vessel.
+    Vessel {
+        /// `C = dm/dP` [kg/Pa], exact at the vessel's start-of-tick `T` and `M̄`.
+        c: f64,
+        /// `Pⁿ` [Pa]: the pressure the START-OF-TICK inventory implies, `mⁿ/C`.
+        ///
+        /// A fact about the state, never a warm start and never the cold seed —
+        /// the accumulation term measures `m(P) − mⁿ` from here, so seeding a
+        /// vessel anywhere else would make the step integrate from a mass it
+        /// never held.
+        p_prev: f64,
+    },
+    /// A STARVED tank: one that would have been drawn past empty this tick, and
+    /// is solved instead as a free node supplying everything it holds.
     ///
-    /// A fact about the state, never a warm start and never the cold seed — the
-    /// accumulation term measures `m(P) − mⁿ` from here, so seeding a vessel
-    /// anywhere else would make the step integrate from a mass it never held.
-    pub p_prev: f64,
+    /// **Not an anchor**, unlike a vessel: its term is a constant, so its
+    /// equation says nothing about its own pressure. A starved tank with no
+    /// other pressure reference in its subnetwork floats and its edges carry
+    /// zero — which is right, because nothing is driving them (§28 gate 10).
+    /// `base_anchors` is where that is decided.
+    Starved {
+        /// `m/dt` [kg/s] (`starved_supply`): the whole start-of-tick inventory,
+        /// delivered over the tick.
+        supply: f64,
+        /// The bottom pressure [Pa] the tank would pin at while wet, `P_ATM +
+        /// ρgh(m)`. Only a SEED, used when neither the previous pass nor the
+        /// warm start has a value — it never reaches the residual.
+        p_pinned: f64,
+    },
 }
 
-/// The accumulation term `−C·(P − Pⁿ)/dt` [kg/s] and its derivative `−C/dt`
-/// w.r.t. this node's own pressure.
+/// The supply a starved tank delivers [kg/s]: its start-of-tick inventory over
+/// one tick. The single expression the classification and the solve's report
+/// share, so the rate the solve used and the rate it reports cannot differ.
+pub fn starved_supply(tank: &TankState, dt: Seconds) -> f64 {
+    tank.mass.value() / dt.value()
+}
+
+/// A free node's own term in its own residual [kg/s], and its derivative w.r.t.
+/// that node's pressure.
+///
+/// **A vessel:** the accumulation term `−C·(P − Pⁿ)/dt` and its derivative `−C/dt`.
+///
+/// **A starved tank:** `+m/dt` and a slope of exactly zero. The supply is mass
+/// ENTERING the network at that node — the sign follows the residual's
+/// convention below — and it does not depend on the pressure, because a tank
+/// that is empty by the end of the tick delivers what it held whatever its
+/// pressure. The zero slope leaves the node's diagonal to its branches, so a
+/// starved tank is conditioned exactly like a junction.
 ///
 /// Lives HERE, in the shared file, rather than in either solver: it is the same
 /// term in the same residual, and both fidelities must inherit it from one
@@ -236,7 +282,10 @@ pub struct Capacitance {
 /// improves the conditioning of `J = −L` rather than merely preserving it.
 #[inline]
 pub fn accumulation(cap: &Capacitance, pressure: f64, dt: f64) -> (f64, f64) {
-    (-cap.c * (pressure - cap.p_prev) / dt, -cap.c / dt)
+    match *cap {
+        Capacitance::Vessel { c, p_prev } => (-c * (pressure - p_prev) / dt, -c / dt),
+        Capacitance::Starved { supply, .. } => (supply, 0.0),
+    }
 }
 
 /// The convergence test both fidelities stop on, per node:
@@ -609,7 +658,15 @@ pub fn prepare(
     previous_states: &NodeStates,
     warm_start: &BTreeMap<NodeId, f64>,
 ) -> Result<Prepared, SimError> {
-    prepare_anchored(graph, slate, previous_states, warm_start, None, None)
+    prepare_anchored(
+        graph,
+        slate,
+        previous_states,
+        warm_start,
+        None,
+        None,
+        &BTreeMap::new(),
+    )
 }
 
 /// `prepare`, with the anchored set optionally SUPPLIED rather than derived.
@@ -628,6 +685,10 @@ pub fn prepare(
 /// a fine path and a meaningless report, so the pin keeps reading `warm_start` —
 /// the value the node last had while it was determinate, else atmospheric, which
 /// is the pre-M8.0 convention untouched.
+///
+/// `starved` maps each tank this pass solves as STARVED to its supply [kg/s]
+/// (`starved_supply`). It is empty on every pass of a tick that starves nothing,
+/// and then this is exactly the pre-M24 prologue (docs/DESIGN.md §28 fork 3).
 pub fn prepare_anchored(
     graph: &PlantGraph,
     slate: &Slate,
@@ -635,8 +696,9 @@ pub fn prepare_anchored(
     warm_start: &BTreeMap<NodeId, f64>,
     previous_pass: Option<&BTreeMap<NodeId, f64>>,
     anchored_override: Option<&BTreeSet<NodeId>>,
+    starved: &BTreeMap<NodeId, f64>,
 ) -> Result<Prepared, SimError> {
-    let classes = classify(graph, slate);
+    let classes = classify(graph, slate, starved);
 
     // Seed every free node before compiling, because a gas edge's density is
     // evaluated at a node pressure. Floating nodes are re-pinned below, once
@@ -669,7 +731,12 @@ pub fn prepare_anchored(
             .or_else(|| warm_start.get(&nid))
             .copied()
             .unwrap_or_else(|| match classes.capacitive.get(&nid) {
-                Some(cap) => cap.p_prev,
+                Some(Capacitance::Vessel { p_prev, .. }) => *p_prev,
+                // Reachable only when a starved pass has no previous pass to
+                // seed from, which the driver never runs: the pass that starves
+                // a tank always follows the pass that found it over-drawn. Its
+                // pinned pressure is the nearest thing it has to a history.
+                Some(Capacitance::Starved { p_pinned, .. }) => *p_pinned,
                 None => classes.cold,
             });
         pressures.insert(nid, seed);
@@ -702,13 +769,31 @@ pub fn prepare_anchored(
 /// Classify nodes into fixed/free and compute the cold-start seed.
 /// Deterministic: node ids iterate ascending, `free` is ascending, and the seed
 /// is a pure function of the pinned pressures.
-pub fn classify(graph: &PlantGraph, slate: &Slate) -> Classification {
+///
+/// A tank in `starved` (mapped to its supply [kg/s]) is FREE, with that supply
+/// as its own term, instead of pinned (docs/DESIGN.md §28 fork 2). Any other key
+/// is ignored: only a tank can starve, and the driver only ever names tanks.
+pub fn classify(
+    graph: &PlantGraph,
+    slate: &Slate,
+    starved: &BTreeMap<NodeId, f64>,
+) -> Classification {
     let mut fixed: BTreeMap<NodeId, f64> = BTreeMap::new();
     let mut free: Vec<NodeId> = Vec::new();
     let mut capacitive: BTreeMap<NodeId, Capacitance> = BTreeMap::new();
     let (mut fixed_sum, mut fixed_cnt) = (0.0, 0usize);
     for nid in graph.node_ids() {
-        if let Some(p) = fixed_pressure(graph.node(nid), slate) {
+        let starved_tank = match (&graph.node(nid).kind, starved.get(&nid)) {
+            (NodeKind::Tank(tank), Some(&supply)) => Some(Capacitance::Starved {
+                supply,
+                p_pinned: tank.bottom_pressure(slate).value(),
+            }),
+            _ => None,
+        };
+        if let Some(cap) = starved_tank {
+            free.push(nid);
+            capacitive.insert(nid, cap);
+        } else if let Some(p) = fixed_pressure(graph.node(nid), slate) {
             fixed.insert(nid, p);
             fixed_sum += p;
             fixed_cnt += 1;
@@ -735,16 +820,29 @@ pub fn classify(graph: &PlantGraph, slate: &Slate) -> Classification {
 }
 
 /// The nodes that anchor a pressure with no reference to anything outside
-/// themselves: the pinned ones AND the capacitive ones. A vessel's own equation
-/// determines its pressure, so it needs no conducting path to a reservoir
-/// (DESIGN §3a fork 2) — which is what makes a closed gas system well posed.
+/// themselves: the pinned ones AND the capacitive vessels. A vessel's own
+/// equation determines its pressure, so it needs no conducting path to a
+/// reservoir (DESIGN §3a fork 2) — which is what makes a closed gas system well
+/// posed.
+///
+/// **A starved tank is NOT an anchor** (M24, docs/DESIGN.md §28 fork 2). Its term
+/// is a constant supply, so its equation says nothing about its own pressure; it
+/// is anchored only if a conducting path reaches something that is. Counting it
+/// here would hand a dry tank with nowhere to send its supply an equation with no
+/// solution.
 ///
 /// Its own function because the active-set loop recomputes `anchored_set` from a
 /// later iterate and must hand it the SAME anchors the seed pass used. Deriving
 /// them twice from two copies of this expression is how the two would drift.
 pub fn base_anchors(classes: &Classification) -> BTreeSet<NodeId> {
     let mut anchors: BTreeSet<NodeId> = classes.fixed.keys().copied().collect();
-    anchors.extend(classes.capacitive.keys().copied());
+    anchors.extend(
+        classes
+            .capacitive
+            .iter()
+            .filter(|(_, cap)| matches!(cap, Capacitance::Vessel { .. }))
+            .map(|(nid, _)| *nid),
+    );
     anchors
 }
 
@@ -820,11 +918,54 @@ pub struct AnchorPass {
 /// next tick — a cross-tick coupling that did not exist while the set was frozen.
 /// The rule is one rule about the loop ("the final accepted pass, and only if it
 /// converged"), not two rules in two solvers free to drift apart.
+///
+/// # The second active set: starved tanks (M24, docs/DESIGN.md §28 fork 3)
+///
+/// A tank is pinned at its hydrostatic bottom pressure while it holds liquid,
+/// and a pinned node supplies whatever its edges draw — so a tank drawn faster
+/// than it holds would deliver mass it does not have, and the engine's clamp
+/// used to book that overdraw as nothing (B29: 200 149 kg created on
+/// `tank_flow_control` over 30 000 ticks). Each pass is therefore classified by
+/// a PAIR, (anchored set, starved set), in ONE loop with ONE pass budget:
+///
+/// - **Every solve starts all-wet.** No starvation state is carried between
+///   ticks, so a plant on which no tank starves runs the same passes with the
+///   same arithmetic as before this set existed.
+/// - **Wet → starved** when a CONVERGED pass's net pressure-driven outflow from
+///   the tank satisfies `q_out·dt > m`, strictly. The starved tank is then a
+///   free node supplying `m/dt` (`Capacitance::Starved`).
+/// - **Starved → wet** when a converged pass puts the starved tank's pressure
+///   above the pressure it would pin at while wet, `P_ATM + ρgh(m)`.
+/// - **A repeat that differs only in the starved set is ACCEPTED as the more
+///   starved pass**, not refused. The network's net outflow from a tank falls as
+///   the tank's pressure rises, so the pair has one answer, and a repeat can
+///   only be the boundary itself inside the solver's tolerance —
+///   `tank_overfill_trip`'s drained tank past tick 12 000 is that population. If
+///   the pass the repeat surfaced on is the LESS starved one (possible with two
+///   tanks), the union of the two sets is run once more with recovery frozen,
+///   because the pass that cannot create mass is the one to keep. A repeat that
+///   moves the anchored set is still `AnchoringUnsettled`, unchanged.
+///
+/// **"Anchoring settled" is judged against THIS pass's anchors**, and the next
+/// pass's anchored set is built from the NEXT classification's. The two differ
+/// exactly when the starved set moves, because a starved tank stops being an
+/// anchor (`base_anchors`). Judging the first against the second would read a
+/// plain starve-then-recover as an anchoring change.
+///
+/// The accepted solution carries its starved tanks (supply and own residual)
+/// and each vessel's own residual, computed HERE from the accepted pass — before
+/// `Engine::tick` overwrites the draw and vent flows it reports as zero — so the
+/// engine's empty-holdup clamp is bounded per holdup rather than by the plant's
+/// worst node (§28 fork 5).
+///
+/// **Reported cost understates a starved tick**: `SolveDiagnostics` is the
+/// accepted pass's, so the wet pass that found the overdraw is not counted.
 pub fn solve_with_active_anchoring<F>(
     graph: &PlantGraph,
     slate: &Slate,
     previous_states: &NodeStates,
     warm_start: &mut BTreeMap<NodeId, f64>,
+    dt: Seconds,
     mut pass: F,
 ) -> Result<HydraulicSolution, SimError>
 where
@@ -832,12 +973,18 @@ where
 {
     let mut previous_pass: Option<BTreeMap<NodeId, f64>> = None;
     let mut override_set: Option<BTreeSet<NodeId>> = None;
+    let mut starved: BTreeSet<NodeId> = BTreeSet::new();
+    // Set once a starvation-only repeat surfaced on the less starved of its two
+    // passes: from then on a tank may starve but not recover, so the loop can
+    // only grow toward the pass that cannot create mass.
+    let mut recovery_frozen = false;
     // Every classification this solve has run, in order. A REPEAT is a cycle and
     // is terminal: the plant has two self-consistent answers, and picking the
     // later one would be choosing between them by iteration parity.
-    let mut seen: Vec<BTreeSet<NodeId>> = Vec::new();
+    let mut seen: Vec<(BTreeSet<NodeId>, BTreeSet<NodeId>)> = Vec::new();
 
     for _ in 0..MAX_ANCHOR_PASSES {
+        let supplies = starved_supplies(graph, &starved, dt);
         let prep = prepare_anchored(
             graph,
             slate,
@@ -845,16 +992,22 @@ where
             warm_start,
             previous_pass.as_ref(),
             override_set.as_ref(),
+            &supplies,
         )?;
         // Taken before the pass consumes `prep`: the free list for the warm-start
-        // commit, and the anchors so the reclassification below runs against the
-        // SAME base set this pass was built from.
+        // commit, the anchors so the reclassification below runs against the
+        // SAME base set this pass was built from, and the own terms for the
+        // holdups' residuals.
         let used = prep.anchored.clone();
         let free = prep.classes.free.clone();
         let anchors = base_anchors(&prep.classes);
-        seen.push(used.clone());
+        let capacitive = prep.classes.capacitive.clone();
+        seen.push((used.clone(), starved.clone()));
 
-        let AnchorPass { result, pressures } = pass(prep);
+        let AnchorPass {
+            mut result,
+            pressures,
+        } = pass(prep);
 
         // A pass that failed BECAUSE its iterate went non-finite is the one case
         // the iterate cannot be reclassified from: the resulting set would be an
@@ -872,17 +1025,44 @@ where
             Err(e) => return result.and(Err(e)),
         };
         let next = anchored_set(graph, &compiled, &anchors);
+        // Starvation, like anchoring, is reclassified only from a pass that
+        // CONVERGED: a failed pass ended on a mid-flight iterate, and the flows
+        // it implies are not an answer to test an inventory against.
+        let mut next_starved = match &result {
+            Ok(solution) => {
+                reclassify_starved(graph, slate, solution, &starved, dt, recovery_frozen)
+            }
+            Err(_) => starved.clone(),
+        };
 
-        if next == used {
-            if result.is_ok() {
+        // The warm start is committed once, from the pass that is kept, and only
+        // if it converged — the pre-M24 rule, now with one more reason a pass
+        // can be discarded.
+        let accept = |result: &mut Result<HydraulicSolution, SimError>,
+                      warm_start: &mut BTreeMap<NodeId, f64>| {
+            if let Ok(solution) = result {
                 for &nid in &free {
                     if let Some(&p) = pressures.get(&nid) {
                         warm_start.insert(nid, p);
                     }
                 }
+                report_holdups(graph, solution, &supplies, &capacitive, &pressures, dt);
             }
+        };
+
+        if next == used && next_starved == starved {
+            accept(&mut result, warm_start);
             return result;
         }
+        // The anchored set the NEXT pass runs under, from the next
+        // classification's own anchors. Identical to `next` whenever the starved
+        // set is unchanged, which is every pass of every plant that starves
+        // nothing — so that path is the pre-M24 loop to the bit.
+        let mut next_override = if next_starved == starved {
+            next.clone()
+        } else {
+            next_anchored_set(graph, slate, &compiled, &next_starved, dt)
+        };
         // A repeat is a CYCLE only when the pass that produced it CONVERGED, and
         // that qualifier is a correction the code made to this slice's own design
         // note. A converged pass under `used` whose answer implies a `next` the
@@ -896,21 +1076,34 @@ where
         // Measured before the qualifier existed: 13 of 21 repeats followed a
         // failed pass, so refusing on all of them would have refused mostly on
         // guesses (ROADMAP M8.0).
-        if result.is_ok() && seen.contains(&next) {
-            return Err(SimError::AnchoringUnsettled {
-                cycled: true,
-                detail: format!(
-                    "{} has been anchored before in this tick, so the plant has two \
-                     self-consistent answers and the element(s) at {} are chattering — a \
-                     relief whose own discharge re-seats it. Element state (hysteresis) is \
-                     what would resolve it, and is deferred (docs/DESIGN.md §3a, §3c)",
-                    describe_nodes(graph, &next),
-                    describe_nodes(graph, &symmetric_difference(&used, &next)),
-                ),
-            });
+        if result.is_ok() && seen.contains(&(next_override.clone(), next_starved.clone())) {
+            if next != used {
+                return Err(SimError::AnchoringUnsettled {
+                    cycled: true,
+                    detail: format!(
+                        "{} has been anchored before in this tick, so the plant has two \
+                         self-consistent answers and the element(s) at {} are chattering — a \
+                         relief whose own discharge re-seats it. Element state (hysteresis) is \
+                         what would resolve it, and is deferred (docs/DESIGN.md §3a, §3c)",
+                        describe_nodes(graph, &next_override),
+                        describe_nodes(graph, &symmetric_difference(&used, &next_override)),
+                    ),
+                });
+            }
+            // A starvation-only repeat: the boundary itself, inside the solver's
+            // tolerance (§28 fork 3). Keep the pass that cannot create mass —
+            // this one, if it is the more starved of the two.
+            if next_starved.is_subset(&starved) {
+                accept(&mut result, warm_start);
+                return result;
+            }
+            recovery_frozen = true;
+            next_starved = starved.union(&next_starved).copied().collect();
+            next_override = next_anchored_set(graph, slate, &compiled, &next_starved, dt);
         }
         previous_pass = Some(pressures);
-        override_set = Some(next);
+        override_set = Some(next_override);
+        starved = next_starved;
     }
     Err(SimError::AnchoringUnsettled {
         cycled: false,
@@ -921,6 +1114,130 @@ where
              (docs/DESIGN.md §3c)"
         ),
     })
+}
+
+/// Each tank in `starved` mapped to its supply [kg/s], through the one
+/// expression the report shares (`starved_supply`).
+fn starved_supplies(
+    graph: &PlantGraph,
+    starved: &BTreeSet<NodeId>,
+    dt: Seconds,
+) -> BTreeMap<NodeId, f64> {
+    starved
+        .iter()
+        .filter_map(|&nid| match &graph.node(nid).kind {
+            NodeKind::Tank(tank) => Some((nid, starved_supply(tank, dt))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The anchored set a pass under `starved` starts from: reachability from THAT
+/// classification's anchors over the edges compiled at the last pass's
+/// pressures. Edges do not depend on the classification, only on pressures, so
+/// only the anchors move.
+fn next_anchored_set(
+    graph: &PlantGraph,
+    slate: &Slate,
+    compiled: &BTreeMap<EdgeId, CompiledEdge>,
+    starved: &BTreeSet<NodeId>,
+    dt: Seconds,
+) -> BTreeSet<NodeId> {
+    let classes = classify(graph, slate, &starved_supplies(graph, starved, dt));
+    anchored_set(graph, compiled, &base_anchors(&classes))
+}
+
+/// Net mass flow OUT of `node` [kg/s] over its incident edges, in the solve's own
+/// flows. Column draws and boil-off vents are zero there (`edge_flows`), so this
+/// is the pressure-driven net outflow — the quantity a tank's inventory must
+/// cover. Self-loops carry nothing anywhere and are skipped.
+fn net_outflow(graph: &PlantGraph, edge_mass_flow: &BTreeMap<EdgeId, f64>, node: NodeId) -> f64 {
+    let mut out = 0.0;
+    for (eid, other, incoming) in graph.incident(node) {
+        if other == node {
+            continue;
+        }
+        let flow = edge_mass_flow.get(&eid).copied().unwrap_or(0.0);
+        out += if incoming { -flow } else { flow };
+    }
+    out
+}
+
+/// The starved set a converged pass implies (docs/DESIGN.md §28 fork 3).
+///
+/// A wet tank starves when `q_out·dt > m`, strictly — the rule the prototype
+/// ran, and the one under which a wet tank can over-draw by rounding only. A
+/// starved tank recovers when the solve puts it above the pressure it would pin
+/// at while wet: the network is then pushing into it rather than pulling out of
+/// it, and a pinned tank is the right model again. `recovery_frozen` suppresses
+/// the second rule (see the driver).
+fn reclassify_starved(
+    graph: &PlantGraph,
+    slate: &Slate,
+    solution: &HydraulicSolution,
+    starved: &BTreeSet<NodeId>,
+    dt: Seconds,
+    recovery_frozen: bool,
+) -> BTreeSet<NodeId> {
+    let mut next = BTreeSet::new();
+    for nid in graph.node_ids() {
+        let NodeKind::Tank(tank) = &graph.node(nid).kind else {
+            continue;
+        };
+        if starved.contains(&nid) {
+            let recovers = !recovery_frozen
+                && solution
+                    .node_pressure
+                    .get(&nid)
+                    .is_some_and(|p| p.value() > tank.bottom_pressure(slate).value());
+            if !recovers {
+                next.insert(nid);
+            }
+        } else if net_outflow(graph, &solution.edge_mass_flow, nid) * dt.value() > tank.mass.value()
+        {
+            next.insert(nid);
+        }
+    }
+    next
+}
+
+/// Attach the accepted pass's per-holdup report to its solution: each starved
+/// tank's supply and own residual, and each vessel's own residual (§28 fork 5).
+///
+/// Both residuals are `R = (own term) + Σ ṁ_in − Σ ṁ_out` at the solution the
+/// solve returns — the residual convention of `accumulation`. They are the
+/// node's OWN, not `SolveDiagnostics::residual`, which is the plant's worst.
+fn report_holdups(
+    graph: &PlantGraph,
+    solution: &mut HydraulicSolution,
+    supplies: &BTreeMap<NodeId, f64>,
+    capacitive: &BTreeMap<NodeId, Capacitance>,
+    pressures: &BTreeMap<NodeId, f64>,
+    dt: Seconds,
+) {
+    for (&nid, cap) in capacitive {
+        let net_out = net_outflow(graph, &solution.edge_mass_flow, nid);
+        match cap {
+            Capacitance::Starved { supply, .. } => {
+                debug_assert_eq!(supplies.get(&nid), Some(supply));
+                solution.starved.insert(
+                    nid,
+                    StarvedTank {
+                        supply: KgPerSec(*supply),
+                        residual: KgPerSec(supply - net_out),
+                    },
+                );
+            }
+            Capacitance::Vessel { .. } => {
+                if let Some(&p) = pressures.get(&nid) {
+                    let term = accumulation(cap, p, dt.value()).0;
+                    solution
+                        .vessel_residual
+                        .insert(nid, KgPerSec(term - net_out));
+                }
+            }
+        }
+    }
 }
 
 /// Nodes in one set or the other but not both, for a diagnostic.
@@ -1159,5 +1476,9 @@ pub fn finalize(
             residual,
             converged: true,
         },
+        // Filled by the driver from the pass it ACCEPTS, never by a pass: a pass
+        // does not know whether it will be kept (`solve_with_active_anchoring`).
+        starved: BTreeMap::new(),
+        vessel_residual: BTreeMap::new(),
     })
 }

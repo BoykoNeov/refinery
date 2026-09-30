@@ -36,6 +36,39 @@ pub struct HydraulicSolution {
     /// pump's own friction appears on the edge LEAVING it, not on the node.
     pub edge_dissipation: BTreeMap<EdgeId, Watt>,
     pub diagnostics: SolveDiagnostics,
+    /// The tanks this solve STARVED: a tank whose pressure-driven net outflow
+    /// over the tick would have exceeded its inventory, re-solved as a free node
+    /// that supplies exactly `m/dt` (M24, docs/DESIGN.md §28 forks 2–3).
+    ///
+    /// Empty on every tick that starves nothing, which is every tick of every
+    /// plant in the corpus, and skipped in serialization then. Plain data crossing
+    /// the seam, like `edge_dissipation`: `core` reads it to resolve a starved tank
+    /// as a mixing point (`energy::resolve_node_states`) and to bound its own
+    /// empty-tank clamp (`Engine::tick`), and never recomputes it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub starved: BTreeMap<NodeId, StarvedTank>,
+    /// Each capacitive vessel's OWN mass residual [kg/s]: its accumulation term
+    /// plus its net inflow, at the accepted solution (§28 fork 5).
+    ///
+    /// Its own, not `SolveDiagnostics::residual`, which is the plant's WORST node
+    /// and would grade a small holdup against the largest line — M9.2's defect.
+    /// The engine's clamp on a vessel's mass is bounded by it. Empty on a plant
+    /// with no vessel.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vessel_residual: BTreeMap<NodeId, KgPerSec>,
+}
+
+/// What the solve did with one starved tank (docs/DESIGN.md §28 fork 3).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct StarvedTank {
+    /// The supply the solve used, `m/dt` [kg/s]: all the tank held at the start
+    /// of the tick, delivered over the tick.
+    pub supply: KgPerSec,
+    /// The tank's OWN residual [kg/s]: the supply minus the solved net
+    /// pressure-driven outflow. Negative means the solve drew more than the tank
+    /// held, by at most the solver's own tolerance at that node; the engine's
+    /// empty-tank clamp allows `|residual|·dt` of over-draw and refuses more.
+    pub residual: KgPerSec,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

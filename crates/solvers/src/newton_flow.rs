@@ -135,10 +135,14 @@ impl FlowSolver for NewtonFlowSolver {
         // rejects. Taking it also splits the borrow, so the closure may hold
         // `&self` for the tolerances.
         let mut warm_start = std::mem::take(&mut self.warm_start);
-        let out =
-            solve_with_active_anchoring(graph, slate, previous_states, &mut warm_start, |prep| {
-                self.pass(prep, graph, slate, previous_states, dt)
-            });
+        let out = solve_with_active_anchoring(
+            graph,
+            slate,
+            previous_states,
+            &mut warm_start,
+            dt,
+            |prep| self.pass(prep, graph, slate, previous_states, dt),
+        );
         self.warm_start = warm_start;
         out
     }

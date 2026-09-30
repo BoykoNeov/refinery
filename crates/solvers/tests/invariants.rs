@@ -2373,6 +2373,7 @@ fn an_ordinary_plant_runs_one_anchoring_pass() {
         &fluid.slate,
         &Default::default(),
         &mut warm,
+        Seconds(1.0),
         |prep| {
             passes += 1;
             stub_pass(&g, &fluid, prep, |_| {})
@@ -2411,6 +2412,7 @@ fn an_alternating_classification_is_reported_as_a_cycle() {
         &fluid.slate,
         &Default::default(),
         &mut warm,
+        Seconds(1.0),
         |prep| {
             passes += 1;
             let lift = passes == 1;
@@ -2498,6 +2500,7 @@ fn a_classification_that_never_repeats_hits_the_cap() {
         &fluid.slate,
         &Default::default(),
         &mut warm,
+        Seconds(1.0),
         |prep| {
             passes += 1;
             let bits = passes;
@@ -2552,6 +2555,7 @@ fn a_pass_that_ends_non_finite_is_not_reclassified() {
         &fluid.slate,
         &Default::default(),
         &mut warm,
+        Seconds(1.0),
         |prep| {
             passes += 1;
             stub_pass(&g, &fluid, prep, |p| {
@@ -2608,6 +2612,331 @@ fn spur_plant(fluid: &Fluid, set_pressure: f64) -> (PlantGraph, NodeId, NodeId) 
     g.add_pipe(j, psv, pipe((5.0, 0.06, 0.02, 0.0), "j_psv", fluid));
     g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", fluid));
     (g, psv, leg)
+}
+
+// --- the second active set: starved tanks (M24, DESIGN §28 fork 3) -----------
+//
+// The same stub-pass pattern as the anchoring exits above, for the same reason:
+// a real plant reaches whichever exit its physics reaches. A single tank's
+// in-tick recovery can only be the rounding boundary (every solve starts
+// all-wet, and a starved tank supplies less than the wet pass drew, so its
+// pressure falls), and the union exit needs two tanks moving against each other.
+// Neither is something a scenario can be steered into.
+
+/// A water tank of 1 m² holding `mass` kg: its bottom pressure is
+/// `P_ATM + g·m` Pa.
+fn tank_node(name: &str, mass: f64, fluid: &Fluid) -> Node {
+    Node {
+        name: name.into(),
+        kind: NodeKind::Tank(refinery_core::graph::TankState {
+            area: SquareMeter(1.0),
+            height: Meter(10.0),
+            mass: Kg(mass),
+            temperature: T_AMBIENT,
+            composition: fluid.composition.clone(),
+            ambient_ua: WattPerKelvin::ZERO,
+        }),
+        heat_input: Watt(0.0),
+    }
+}
+
+fn wet_pressure(g: &PlantGraph, fluid: &Fluid, tank: NodeId) -> f64 {
+    match &g.node(tank).kind {
+        NodeKind::Tank(t) => t.bottom_pressure(&fluid.slate).value(),
+        _ => unreachable!(),
+    }
+}
+
+/// Tanks `names` (with their masses) → one junction `j` → a 1 bar sink. The
+/// stub dictates `j`, and each starved tank, per pass.
+fn tanks_to_junction(fluid: &Fluid, tanks: &[(&str, f64)]) -> (PlantGraph, Vec<NodeId>, NodeId) {
+    let mut g = PlantGraph::new();
+    let ids: Vec<NodeId> = tanks
+        .iter()
+        .map(|(name, mass)| g.add_node(tank_node(name, *mass, fluid)))
+        .collect();
+    let j = g.add_node(Node {
+        name: "j".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    let b = g.add_node(sink(1.0e5, fluid));
+    for &t in &ids {
+        g.add_pipe(t, j, pipe((10.0, 0.10, 0.02, 0.0), "t_j", fluid));
+    }
+    g.add_pipe(j, b, pipe((10.0, 0.10, 0.02, 0.0), "j_b", fluid));
+    (g, ids, j)
+}
+
+/// Net pressure-driven outflow of `node` in a solution [kg/s].
+fn net_out(g: &PlantGraph, sol: &HydraulicSolution, node: NodeId) -> f64 {
+    g.incident(node)
+        .into_iter()
+        .map(|(e, _, incoming)| {
+            let f = sol.edge_mass_flow[&e];
+            if incoming {
+                -f
+            } else {
+                f
+            }
+        })
+        .sum()
+}
+
+/// A tank the wet pass draws past empty is re-solved STARVED, and that pass is
+/// accepted: its report carries the supply `m/dt` (one expression, shared with
+/// the classification) and the tank's own residual, and the warm start is
+/// committed from IT — the starved pass is the one the tank is free in.
+#[test]
+fn a_tank_drawn_past_empty_is_starved_and_accepted() {
+    let fluid = Fluid::liquid();
+    let (g, tanks, j) = tanks_to_junction(&fluid, &[("t", 1.0)]);
+    let t = tanks[0];
+    let wet = wet_pressure(&g, &fluid, t);
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        Seconds(0.5),
+        |prep| {
+            passes += 1;
+            let starving = passes > 1;
+            stub_pass(&g, &fluid, prep, |p| {
+                // Pass 1 pulls the junction far below the tank; pass 2 finds the
+                // starved tank below its wet pressure, as a real starved solve
+                // does.
+                p.insert(j, 0.5e5);
+                if starving {
+                    p.insert(t, wet - 1.0e3);
+                }
+            })
+        },
+    );
+    let sol = out.expect("a starved solve is an answer");
+    assert_eq!(
+        passes, 2,
+        "one wet pass finds the overdraw, one starved pass is kept"
+    );
+    let report = sol.starved.get(&t).expect("the tank is reported starved");
+    assert_eq!(
+        report.supply.value(),
+        1.0 / 0.5,
+        "the supply is m/dt, dt = 0.5"
+    );
+    assert_eq!(
+        report.residual.value(),
+        report.supply.value() - net_out(&g, &sol, t),
+        "the residual is the tank's OWN: supply minus its solved net outflow"
+    );
+    assert_eq!(
+        warm.get(&t),
+        Some(&(wet - 1.0e3)),
+        "the warm start is committed from the accepted (starved) pass"
+    );
+}
+
+/// A repeat that differs only in the starved set is ACCEPTED as the starved
+/// pass (§28 fork 3). The starved pass lands above the wet pressure — the
+/// boundary inside the solver's tolerance — so it proposes going wet again,
+/// which is the classification pass 1 already ran. Refusing it would fail
+/// `tank_overfill_trip` past tick 12 000; accepting the WET pass would create
+/// the overdraw the loop exists to remove.
+#[test]
+fn a_starvation_only_repeat_is_accepted_as_the_starved_pass() {
+    let fluid = Fluid::liquid();
+    let (g, tanks, j) = tanks_to_junction(&fluid, &[("t", 1.0)]);
+    let t = tanks[0];
+    let wet = wet_pressure(&g, &fluid, t);
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        Seconds(1.0),
+        |prep| {
+            passes += 1;
+            let starving = passes > 1;
+            stub_pass(&g, &fluid, prep, |p| {
+                p.insert(j, 0.5e5);
+                if starving {
+                    p.insert(t, wet + 1.0);
+                }
+            })
+        },
+    );
+    let sol = out.expect("a starvation-only repeat is accepted, not refused");
+    assert_eq!(passes, 2, "the repeat is caught the moment it surfaces");
+    assert!(
+        sol.starved.contains_key(&t),
+        "the kept pass is the STARVED one"
+    );
+}
+
+/// A starved tank RECOVERS inside a solve when another tank's starving changes
+/// what the network does to it. Two tanks: pass 1 over-draws only `a`; pass 2
+/// (a starved) pushes `a` above its wet pressure and over-draws `c`; pass 3 (c
+/// starved) is settled. The kept set is `{c}` — never recovering would keep
+/// `{a, c}` and starve a tank the network is pushing into.
+#[test]
+fn a_starved_tank_recovers_inside_a_solve() {
+    let fluid = Fluid::liquid();
+    let (g, tanks, j) = tanks_to_junction(&fluid, &[("a", 1.0), ("c", 1.0e3)]);
+    let (a, c) = (tanks[0], tanks[1]);
+    let (wet_a, wet_c) = (wet_pressure(&g, &fluid, a), wet_pressure(&g, &fluid, c));
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        Seconds(1.0),
+        |prep| {
+            passes += 1;
+            let pass = passes;
+            stub_pass(&g, &fluid, prep, move |p| match pass {
+                // Only `a` (1 kg) is over-drawn: `c` holds a tonne, and ~60 kg/s
+                // leaves it at this pull.
+                1 => {
+                    p.insert(j, wet_a - 5.0e4);
+                }
+                // `a` is pushed into; `c` is drawn at 1e9 Pa of head — some
+                // 8 000 kg/s, far past its tonne over one tick.
+                2 => {
+                    p.insert(a, wet_a + 1.0e5);
+                    p.insert(j, -1.0e9);
+                }
+                // `c` starved and below its wet pressure; `a` barely drawn.
+                _ => {
+                    p.insert(c, wet_c - 1.0e3);
+                    p.insert(j, wet_a - 1.0e-3);
+                }
+            })
+        },
+    );
+    let sol = out.expect("the solve settles");
+    assert_eq!(passes, 3);
+    assert_eq!(
+        sol.starved.keys().copied().collect::<Vec<_>>(),
+        vec![c],
+        "a recovered and c starved"
+    );
+}
+
+/// A starvation-only repeat that surfaces on the LESS starved of its two passes
+/// runs the union once more with recovery frozen, rather than keeping the pass
+/// that would over-draw. Pass 1 over-draws both; pass 2 ({a, c}) pushes `a` up
+/// so it would recover; pass 3 ({c}) over-draws `a` again, proposing {a, c},
+/// already run — and {c} does not contain it. Keeping pass 3 would let `a`
+/// over-draw; pass 4 runs {a, c}, where `a` may not recover, and is kept.
+#[test]
+fn a_repeat_on_the_less_starved_pass_runs_the_union() {
+    let fluid = Fluid::liquid();
+    let (g, tanks, j) = tanks_to_junction(&fluid, &[("a", 1.0), ("c", 1.0)]);
+    let (a, c) = (tanks[0], tanks[1]);
+    let wet_a = wet_pressure(&g, &fluid, a);
+    let wet_c = wet_pressure(&g, &fluid, c);
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        Seconds(1.0),
+        |prep| {
+            passes += 1;
+            let pass = passes;
+            stub_pass(&g, &fluid, prep, move |p| match pass {
+                1 | 3 => {
+                    p.insert(j, 0.5e5);
+                    if pass == 3 {
+                        p.insert(c, wet_c - 1.0e3);
+                    }
+                }
+                _ => {
+                    p.insert(a, wet_a + 1.0e5);
+                    p.insert(c, wet_c - 1.0e3);
+                    p.insert(j, 0.5e5);
+                }
+            })
+        },
+    );
+    let sol = out.expect("the union is an answer");
+    assert_eq!(passes, 4, "the union costs exactly one more pass");
+    assert_eq!(
+        sol.starved.keys().copied().collect::<Vec<_>>(),
+        vec![a, c],
+        "the kept pass is the union, where neither tank can over-draw"
+    );
+}
+
+/// **Gate 10: a starved tank is not an anchor.** A tank whose only neighbour is
+/// a dead-end junction is the plant's only pressure reference while it is wet.
+/// Starved, its equation is a constant supply and says nothing about its own
+/// pressure, so the subnetwork FLOATS: every edge carries zero and the tank
+/// keeps everything it held (its residual is its whole supply). Counting it as
+/// an anchor would ask a real solver for a supply with nowhere to go — and here
+/// would carry the wet pass's pull straight into the answer.
+#[test]
+fn a_starved_tank_with_no_other_reference_floats() {
+    let fluid = Fluid::liquid();
+    let mut g = PlantGraph::new();
+    let t = g.add_node(tank_node("t", 1.0, &fluid));
+    let j = g.add_node(Node {
+        name: "j".into(),
+        kind: NodeKind::Junction,
+        heat_input: Watt(0.0),
+    });
+    g.add_pipe(t, j, pipe((10.0, 0.10, 0.02, 0.0), "t_j", &fluid));
+
+    // The classification itself, on the real code: starved, `t` is free and
+    // not among the anchors.
+    let supplies: BTreeMap<NodeId, f64> = [(t, 1.0)].into_iter().collect();
+    let classes = refinery_solvers::network::classify(&g, &fluid.slate, &supplies);
+    assert!(classes.free.contains(&t), "a starved tank is a free node");
+    assert!(
+        refinery_solvers::network::base_anchors(&classes).is_empty(),
+        "a starved tank is not an anchor"
+    );
+
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        Seconds(1.0),
+        |prep| {
+            passes += 1;
+            let wet = passes == 1;
+            stub_pass(&g, &fluid, prep, |p| {
+                // The wet pass pulls the junction down (a stub's licence: a real
+                // dead end carries nothing); the starved pass dictates nothing.
+                if wet {
+                    p.insert(j, 0.5e5);
+                }
+            })
+        },
+    );
+    let sol = out.expect("a floating starved tank is an answer, not a failure");
+    assert_eq!(passes, 2);
+    assert!(
+        sol.edge_mass_flow.values().all(|&f| f == 0.0),
+        "a floating subnetwork carries nothing: {:?}",
+        sol.edge_mass_flow
+    );
+    let report = sol.starved[&t];
+    assert_eq!(
+        report.residual, report.supply,
+        "delivering nothing, the tank keeps its whole supply"
+    );
 }
 
 // ---------------------------------------------------------------------------

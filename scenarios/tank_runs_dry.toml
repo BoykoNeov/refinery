@@ -1,0 +1,120 @@
+# M24.1 demo: a buffer tank drawn faster than it is fed runs DRY, and from then
+# on passes its feed straight through (docs/DESIGN.md §28).
+#
+#   kerosene_feed -> feed_valve -> buffer_tank -> transfer_pump -> rundown
+#   (60 °C)                        (diesel, 20 °C)
+#
+# **What used to happen.** A tank is pinned at its hydrostatic bottom pressure
+# while it holds liquid, and a pinned node supplies whatever its edges draw. So a
+# tank drawn past empty kept delivering, and the tank update's `.max(0.0)` booked
+# the overdraw as nothing: ledger row B29, 200 149 kg created on
+# `tank_flow_control` over 30 000 ticks. Nothing in the corpus runs dry inside
+# its 6 000 ticks, which is why this file exists: without it CI never exercises
+# a dry tank at all.
+#
+# **What happens now.** On the tick the pump would draw more than the tank
+# holds, the solve re-runs with the tank as a free node supplying exactly its
+# inventory over the tick (`m/dt`) — "the pump runs dry" — and from the next tick
+# the tank is a mixing point: its outflow is its (empty) inventory plus the
+# kerosene arriving, so the pump delivers exactly what the feed valve passes, at
+# the feed's own temperature and composition. The tank shows mass zero and the
+# pressure the solve puts at its floor — well below atmospheric, a pump pulling
+# on nothing (docs/DESIGN.md §28 fork 6).
+#
+# **Two cuts, on purpose** (§28 "Corrected before building", 1). On a one-
+# component slate every composition is `[1.0]`, so nothing could tell a tank
+# passing its feed through from one draining its own contents. The tank starts
+# full of diesel and is fed kerosene, so the rundown's composition visibly turns
+# from diesel to kerosene as the tank empties and then passes the feed.
+#
+# **No fire and no ambient exchange on the tank, also on purpose** (§28, 2). A
+# dry tank's own energy book closes only when nothing heats it: heat into a tank
+# below the thermal floor has nothing to raise (row B35).
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_runs_dry.toml --ticks 6000
+
+[meta]
+name = "tank_runs_dry"
+description = "A buffer tank drawn faster than it is fed runs dry, then passes its kerosene feed straight through to the pump."
+
+[simulation]
+dt = 1.0            # seconds per tick
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[[components]]
+name = "kerosene"
+tb_c = 220.0
+molar_mass_kg_per_mol = 0.170
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2050.0
+
+[[components]]
+name = "diesel"
+tb_c = 300.0
+molar_mass_kg_per_mol = 0.220
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 2000.0
+
+[nodes.kerosene_feed]
+type = "source"
+pressure_bar = 2.0
+temperature_c = 60.0
+composition = { kerosene = 1.0 }
+
+[nodes.feed_valve]
+type = "valve"
+kv = 10.0
+opening = 1.0
+
+[nodes.buffer_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 6.0
+initial_level_m = 5.0
+temperature_c = 20.0
+composition = { diesel = 1.0 }
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+# A sink's composition is what it would push back if the flow reversed; it
+# never does here, so it names nothing that reaches the plant.
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+composition = { diesel = 1.0 }
+
+[[pipes]]
+name = "feed_line"
+from = "kerosene_feed"
+to = "feed_valve"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "into_tank"
+from = "feed_valve"
+to = "buffer_tank"
+length_m = 5.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "suction"
+from = "buffer_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "rundown"
+length_m = 30.0
+diameter_m = 0.10
