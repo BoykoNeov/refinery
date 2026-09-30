@@ -341,6 +341,28 @@ fn the_capacity_is_the_end_of_tick_compositions() {
                 "{fidelity}, tick {t}: the control — lightening lowers the capacity \
                  ({end} kg against {start} kg at the start-of-tick composition)"
             );
+
+            // Gate 4's composition half, on the one plant whose compositions
+            // differ: the demo is water only, so there every composition is
+            // `[1.0]` and a spill at the INFLOW's composition (mutation 2), or
+            // one the composition pass overwrote with the upwind START-of-tick
+            // one, reads the same bytes. Here all three differ.
+            let spilled = stream(&engine, "buffer__overflow").composition;
+            assert_eq!(
+                spilled.fractions(),
+                after.composition.fractions(),
+                "{fidelity}, tick {t}: the spill is the tank's end-of-tick liquid"
+            );
+            assert_ne!(
+                spilled.fractions(),
+                before.composition.fractions(),
+                "{fidelity}, tick {t}: the control — the tank's liquid changed this tick"
+            );
+            assert_ne!(
+                spilled.fractions(),
+                stream(&engine, "tank_line").composition.fractions(),
+                "{fidelity}, tick {t}: the control — the tank is not its inflow"
+            );
         }
     }
 }
