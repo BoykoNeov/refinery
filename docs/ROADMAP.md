@@ -6681,3 +6681,56 @@ The demo is `scenarios/tank_overflow.toml`: `tank_overfill_trip.toml` without it
 `[[trips]]` table, spilling from tick 2 859, 19 454.49 kg by tick 6 000 on the
 probe. One more premise the building slice inherits: nothing validated a tank's
 geometry at load, and fork 5 now refuses a tank started over its own brim.
+
+## M24 — a tank that runs dry: the pump runs dry; ledger row B29; opened on a conservation failure
+
+Taken on the user's instruction (2026-09-30, "work on it") while M23.1 was still
+unbuilt. B29 was never a deferral: M23.0 found that a tank that runs dry creates
+liquid from nothing, because the tank update clamps its inventory at zero after the
+solve has already delivered the outflow downstream. Its scope is **a tank that
+cannot cover a tick's outflow delivers exactly what it holds, and a dry tank that is
+still fed passes its feed through.** Whichever of M23.1 and M24.1 lands second
+corrects the other's sentences (DESIGN §28 lists them).
+
+### M24.0 — Scoping + design note — **LANDED** 2026-09-30
+
+The note is DESIGN §28: seven forks, ten gates, eleven mutations, no code. Five
+premises were measured first in a probe worktree (`W:\temp\claude\m24\wt`, numbers
+in `W:\temp\claude\m24\measurements.md`), including a working prototype of the
+whole design. Five things to know before the building slice.
+
+**Two shipped plants create two hundred tonnes each, and nothing else does.** At
+one-tick resolution over 30 000 ticks: `tank_flow_control` (a sealed plant of
+179 640 kg) creates 200 149 kg from tick 13 314, and `tank_level_control` 204 078 kg
+from tick 12 729, on both fidelities. `tank_overfill_trip`'s drained tank touches the
+clamp with solver noise (1.5e-5 kg in total). No vessel ever clamps, nothing clamps
+before tick 10 071, and no tank that runs dry is being fed at the time.
+
+**The user's three decisions.** A dry tank runs its pump dry: it delivers at most
+what it holds, which conserves mass exactly and needs no constant. A dry tank that is
+still fed passes its feed straight through, mixed with what it last held. And the
+pressure a dry tank shows is the solve's own number, about −153 kPa absolute on
+`tank_flow_control`: a pump pulling on nothing, which the engine has always
+documented as a symptom rather than hidden.
+
+**It lives in the shared solve, as a second active set beside the anchoring one.** A
+starved tank is a free node supplying `m/dt` through the same function a vessel's
+term uses, so both fidelities inherit it. It starves when its solved outflow over the
+tick exceeds its inventory, and recovers when its solved pressure rises above the
+pressure its level would pin. The prototype held `tank_flow_control`'s mass to
+1.7e-4 kg (Newton) and 1.2e-2 kg (game solver) over 30 000 ticks, against 200 t
+before. A repeat that differs only in which tanks are starved is accepted rather
+than refused, because the answer is unique and starved is the side that cannot
+create mass.
+
+**The clamp becomes a tripwire, bounded per holdup.** Using the solve's reported
+residual as a bound was proposed and rejected: it is the worst imbalance anywhere in
+the plant, so it would grade a small tank against the largest line, which is M9.2's
+defect. The solve instead reports each starved tank's own residual.
+
+**Nothing inside the corpus runs dry, so a new demo is owed.** The prototype is
+byte-identical on all twenty-six plants with no iteration count moved, and the
+generated plants in `tests/invariants.rs` build no tank. `scenarios/tank_runs_dry.toml`
+is the one CI will run. A recycle through a dry tank is refused (a pump's
+minimum-flow line to its own suction tank is the case to watch), and three more rows
+are deferred with triggers.

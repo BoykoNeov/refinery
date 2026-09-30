@@ -15008,7 +15008,8 @@ was kept in §26.
 - **B29 — a tank that runs dry creates mass** (premise 4). A gap, not a
   deferral: it was never argued, and it is live on two shipped plants.
   Recommended as the next milestone. A fix must decide what an empty tank does to
-  its outlet inside the solve.
+  its outlet inside the solve. **Taken by M24 (2026-09-30), §28**, which also lists
+  the sentences in this section that M24 makes out of date.
 - **B30 — overflow to a destination** (an `overflow_to` naming a tank, a bund or a
   slop drum). It needs the evaluation-order sort that vents already use.
   Un-defers with a plant that recovers its spill.
@@ -15021,3 +15022,324 @@ was kept in §26.
 - **B33 — what the spilled pool does**: evaporation, ignition, a fire on the
   node. It depends on B7 (combustion). Un-defers with a scenario that must burn
   or evaporate a spill.
+
+## 28. A tank that runs dry — the pump runs dry (M24.0) — specified before building
+
+### What licensed this, stated plainly
+
+`docs/DEFERRED.md` row B29 is not a deferral. M23.0 found it while measuring the
+overflow: a tank that runs dry **creates liquid from nothing**, and nothing argued
+for that. Measured at one-tick resolution over 30 000 ticks (premise 1), the
+empty-tank clamp invents **200 149 kg** on `tank_flow_control`, a sealed plant that
+holds 179 640 kg, and **204 078 kg** on `tank_level_control`, on both fidelities.
+A conservation failure on shipped plants is past any trigger. The user took it on
+2026-09-30 while M23.1 was still unbuilt ("work on it"), and made three decisions
+after the prototype's numbers existed: a dry tank **runs its pump dry** (fork 1), a
+dry tank that is still being fed **passes its feed through** (fork 4), and the
+pressure a dry tank shows is **the solve's own number** (fork 6).
+
+**Ordering with M23.** M23.1 (overflow) is designed and not built. Its premise 4,
+gate 3's control and its "artefact" line for `tank_flow_control` all describe the
+defect this milestone removes. Whichever of M23.1 and M24.1 lands second corrects
+the other's sentences; the list is under "sentence sites" below.
+
+### Five premises, measured before any fork
+
+The numbers are in `W:\temp\claude\m24\measurements.md`, from a probe worktree
+(`W:\temp\claude\m24\wt`) at `01a86b3`.
+
+**1. Two shipped plants create mass; one more touches the clamp with noise.** An
+`eprintln!` wherever `mass_old + net_mass·dt < 0`, all twenty-six plants, both
+fidelities, 30 000 ticks:
+
+| plant | tank | first clamp | clamp ticks | mass created |
+|---|---|---|---|---|
+| `tank_flow_control` | supply | 13 314 | every tick after | 200 149.43 kg |
+| `tank_level_control` | supply | 12 729 | every tick after | 204 078.27 kg |
+| `tank_overfill_trip` (Newton only) | receiving | 10 071 | every other tick | 1.5e-5 kg in total |
+
+- The two live cases agree across fidelities to 0.01 kg.
+- `tank_overfill_trip`'s events are solver noise: after the trip the tank is empty
+  and its drain carries 7.8e-9 kg/s, inside Newton's `tol_abs = 1e-8`.
+- **No vessel ever clamps. Nothing clamps before tick 10 071**, so no tank runs dry
+  inside the corpus's 6 000 ticks.
+- **No tank that runs dry is receiving inflow at the time.** The pass-through of
+  fork 4 has no shipped plant; the demo is what exercises it.
+
+**2. The clamp cannot be fixed where it is.** By the time the tank's inventory is
+updated, the solve has already credited the pump, the valve and the receiving tank
+with the outflow. Trimming it at the tank moves the hole downstream. The fix has
+to decide, inside the solve, how much an empty tank can deliver.
+
+**3. A starved tank in the shared solve closes the books** (the prototype):
+- A tank whose pressure-driven net outflow over the tick would exceed its
+  inventory is re-solved as a FREE node that supplies exactly `m/dt`.
+- `tank_flow_control`'s total holdup then moves by **1.7e-4 kg** over 30 000 ticks
+  on Newton and **1.2e-2 kg** on the game solver, against 200 t before. What is left
+  is the solvers' own node imbalance at the pump and valve, which §27 premise 4
+  already measured on another plant.
+- The dry tank and the pump's suction read **−153 138 Pa**. That was predicted by
+  hand: zero flow puts the tank at `P_recv + ρg·(5 m − 40 m)`.
+- Every starved tick costs two passes. On `tank_level_control` the game solver's
+  starved pass takes 29 sweeps, against at most 9 before.
+
+**4. A tank fed while dry passes its feed through** (the prototype's fixture: 80 °C
+feed into a 1 m² tank at 20 °C, drawn faster by a pump):
+- On the drying tick the tank held 18.55 kg, and delivered exactly 18.55 kg plus
+  that tick's 5.58 kg of inflow, at the mixed temperature 313.710 K.
+- From then on, inflow equals outflow at 5.7976 kg/s and the outflow carries the
+  feed's own 353.255 K.
+- The tank's book closes to **9.6e-11 kg** on Newton. On the game solver it closes
+  to **1.7e-3 kg** over 394 ticks: that solver over-delivers about 4.4e-6 kg per
+  tick at the starved node, inside its own promise (`tol_rel·scale` = 5.8e-6), and
+  the clamp books it as created.
+
+**5. The corpus cannot see this, and the generated plants cannot either.**
+- The prototype is byte-identical on all twenty-six plants, both fidelities, with
+  worst AND total iteration counts identical. Nothing runs dry inside 6 000 ticks,
+  so this is expected rather than a finding, and it is re-measured on the built code.
+- `tests/invariants.rs` reports identical reachability counts with the prototype
+  in (chains 238/300, gas 202/205 and 198/205, PSV chains 196/400, spur trees
+  264/305). Its generators build no tank at all, so that population cannot reach
+  the new branch. The files that do build tanks were covered by running the whole
+  suite on the prototype (cargo test --workspace --no-fail-fast): all 67 test
+  binaries pass, none fails. No existing test drains a tank past empty.
+- A recycle through a tank that has run dry is refused on the next tick by the
+  existing "recycle through zero-volume nodes only" error. Its advice ("put a tank
+  in the loop") is wrong for this case (fork 4).
+
+### The sentence sites, counted before writing
+
+1. `engine.rs`: the `MIN_THERMAL_MASS_KG` doc ("mass and energy have both stopped
+   being conserved") and both `.max(0.0)` mass updates (tank and vessel).
+2. `energy.rs`, `blended_holdup_composition`: "a holdup that drains past empty
+   within one step". A starved tank drains to empty on purpose.
+3. `network.rs`: `Classification::fixed` ("Source/Sink/Atmosphere/Tank"),
+   `fixed_pressure`, `Capacitance`, `accumulation`, `base_anchors`,
+   `solve_with_active_anchoring`, and `newton_flow.rs`'s module doc ("Tank at
+   hydrostatic bottom pressure (constant within one solve)").
+4. `crates/scenarios/src/validate.rs` lines 460 and 754, which call a tank
+   "pinned". It still is, at load, which is what those checks mean. They get a
+   pointer, not a change.
+5. `tests/invariants.rs`: four direct callers of `solve_with_active_anchoring`,
+   which take the driver's new signature.
+6. DESIGN §27: premise 1 and `W:\temp\claude\m23\measurements.md` call
+   `tank_flow_control`'s crossing at 14 978 an artefact (after M24 it does not
+   cross at all); premise 4; gate 3's control ("no tank touches the clamp"); and
+   the deferred entry for B29. Historical text gets a pointer here.
+7. `docs/DEFERRED.md` B29 (taken now, struck at M24.1); `CLAUDE.md`'s M23 box.
+8. `docs/DESIGN.md` §3's promise that a tank pins its hydrostatic pressure.
+
+### Fork 1 — what an empty tank does
+
+- **(a) The pump runs dry: a tank delivers at most what it holds.** Chosen by the
+  user. Exact mass conservation, and it needs no constant.
+- **(b) The outlet shuts when the tank is empty.** Rejected. The last tick before
+  empty still over-draws, because the tank is pinned while it has liquid, so the
+  clamp still creates mass on that tick. A tank that is fed a trickle while drawn
+  hard flips open and shut, creating mass on every other tick.
+- **(c) Trim the outflow at the tank's update.** Rejected by premise 2: it moves
+  the hole downstream.
+- **(d) Refuse.** Rejected. A tank running dry is ordinary operation in a game.
+
+### Fork 2 — where the starved tank lives in the solve
+
+- **A starved tank is a FREE node with a constant supply `m/dt` [kg/s]** in its own
+  residual, and zero slope. It is not an anchor: unlike a vessel, its equation does
+  not determine its own pressure. A starved tank whose subnetwork has no other
+  anchor floats, and its edges carry zero, which is correct.
+- **The supply enters through `network::accumulation`**, the one function both
+  fidelities already call for a vessel's term, at every site. `Capacitance` gains a
+  second form (a starved supply) beside the vessel's `(C, Pⁿ)`, and
+  `base_anchors` counts only the vessel form. So there is no second list of sites
+  to keep in step, and I5 holds by construction.
+- **The vessel's arithmetic is untouched**: its branch returns the same expression
+  it does today.
+
+### Fork 3 — when a tank starves, and when it stops
+
+**A complementarity pair, decided between passes in the shared driver.**
+- **Wet → starved** when a converged pass's solved net pressure-driven outflow
+  `q_out` satisfies `q_out·dt > m` (strict). This is the rule the prototype ran.
+- **Starved → wet** when a converged pass puts the starved tank's pressure above
+  the pressure it would pin at, `P_ATM + ρgh(m)`.
+- **Every solve starts all-wet.** No starvation state is carried between ticks.
+  That is what makes a plant on which no tank starves run the same passes with the
+  same arithmetic, and it costs one extra pass on a starved tick.
+- **One loop with the anchoring set, not two nested.** Each pass is classified by
+  the PAIR (anchored set, starved set); one pass budget (`MAX_ANCHOR_PASSES`)
+  covers both; and a set is reclassified only from a pass that CONVERGED, the
+  anchoring loop's own qualifier.
+- **The warm start is committed once, from the accepted pass.** The prototype
+  also committed the rejected wet pass's pressures. That was harmless only because
+  they were overwritten, and it breaks the driver's documented rule.
+
+**Why not use the solve's reported residual as a threshold.** It was proposed and
+rejected. `SolveDiagnostics::residual` is the worst node imbalance in the plant,
+so it would grade a small tank against the largest line: M9.2's defect again.
+
+**A repeat that differs only in the starved set is accepted, not refused.** The
+network's net outflow from a tank falls as the tank's pressure rises, so the pair
+has one answer. A repeat can only be the boundary itself, inside the solver's
+tolerance: the wet pass over-draws by noise, and the starved pass lands a hair
+above the wet pressure. `tank_overfill_trip`'s drained tank is exactly that
+population, about 10 000 noise-level events, and the prototype did not cycle only
+because its starved pressure landed exactly on 101 325 Pa. **At a starvation-only
+repeat the driver accepts the starved pass**, because it is the one that cannot
+create mass. A repeat that involves the anchored set is still
+`AnchoringUnsettled`, unchanged.
+
+**What the solve reports.** `HydraulicSolution` gains a map of the tanks it
+starved, each with **the supply it used and its own residual** (supply minus the
+solved net outflow, kg/s). This is plain data crossing the seam, like
+`edge_dissipation`. It is empty on every tick that starves nothing, and skipped in
+serialization when empty.
+
+### Fork 4 — a dry tank that is still being fed
+
+- **Chosen by the user: the feed passes through.** In the sweep, a starved tank
+  is a zero-volume vertex whose own inventory is one more inflow, at the supply
+  rate, its own composition and its own temperature. Its outflow therefore
+  carries the mix of what it held and what arrived, and the far end is credited
+  with what physically left.
+- **No `heat_load` in that mix.** Heat into a tank stays on the tank's own
+  balance, as it does for a wet tank. Adding it in the sweep as well would count it
+  twice. Below the thermal floor a fire on a dry tank has nothing to heat, and that
+  energy is not conserved, as today. New row, below.
+- **The tank's own update debits the outflow at the mix, not at its start-of-tick
+  composition**, when it is starved. The per-component remainder is the prescribed
+  inflow, which the solve does not see: a column draw or a received vent arrives
+  and is kept. A wet tank keeps today's formula and association verbatim.
+- **Below the thermal floor, a starved tank takes the pass-through composition and
+  temperature.** It is the fluid now in its lines. A temperature loop on a dry tank
+  then reads what is passing, not a number held from the last time it had liquid.
+  A dry tank with nothing passing holds, as today.
+- **A recycle through a starved tank is refused with its own message**, naming
+  the dry tank and saying why (a loop with no inventory left to break it). A
+  pump's minimum-flow line back to its own suction tank is common in real plants,
+  so this is a ledger row with a trigger, not a footnote.
+- **Prescribed inflows stay outside the supply**, and that is safe. The solve does
+  not see a column draw or a received vent, so a tank fed only that way starves one
+  tick early and delivers the draw on the next. It can never create mass.
+
+### Fork 5 — the clamp becomes a tripwire
+
+The silent `.max(0.0)` on a tank's and a vessel's mass becomes a checked clamp, in
+the shape of the boil-off's own rounding guard (`ROUNDING_MASS_FRACTION`):
+- **The bound is local to the holdup.** A starved tank may be over-drawn by its own
+  recorded residual times `dt`, plus a rounding margin. A wet tank cannot over-draw
+  beyond rounding under the strict rule of fork 3, so it gets the rounding margin
+  only. The margin is `ROUNDING_MASS_FRACTION` times the tick's gross traffic
+  through the holdup (`m + Σ|ṁ|·dt`), because the rounding is in that sum.
+- **Beyond the bound it is an `Err` naming the holdup** and both numbers.
+- **The vessel's bound is measured before it is chosen.** A vessel is a solved node
+  with its own tolerance, so a rounding-only bound could turn a legitimate
+  blowdown near vacuum into an error. M24.1 records each vessel's closest approach
+  to zero across the corpus and the relief fixtures first. The default is the
+  vessel's own residual, recorded the same way as a starved tank's.
+- **The game solver's one-signed bias is stated, not hidden.** Its starved node
+  closes inside `tol_rel·scale`, so on premise 4's fixture the clamp books about
+  4.4e-6 kg per tick. Aiming the supply below `m/dt` by the solver's tolerance
+  would bias the other way (retained, not created), and needs the solver's private
+  constants in the driver. It is deferred with a trigger.
+
+### Fork 6 — what a frontend sees
+
+- **The dry tank's pressure is the solve's own number**, by the user's decision.
+  On `tank_flow_control` that is −153 kPa absolute. It matches the pump suction
+  beside it, and a negative absolute pressure is a symptom this engine already
+  documents as a symptom (§3, M10).
+- **No "running dry" flag.** A tank's mass reading zero says it is empty. On
+  plants whose thermo can answer (`trouton`), the pump beside it is flagged
+  `cavitating`, because its pressure is below any vapour pressure. The cavitation
+  check compares a pressure against a temperature-only bubble pressure, so a
+  negative pressure cannot make it fail (checked).
+- **What else meets a negative pressure, checked.** `compile_edge` floors its
+  density pressure at 1 Pa, and a liquid's density ignores pressure anyway.
+  `finalize`'s leak refusal fires on a punctured suction line of a dry tank; that
+  is the existing refusal of a plant below atmospheric, reached one more way.
+
+### Fork 7 — the demo plant
+
+**`scenarios/tank_runs_dry.toml`**: a small buffer tank fed a hot stream through a
+valve and drawn faster by a pump, so it runs dry inside the corpus's 6 000 ticks
+and then passes its feed through. It is premise 4's fixture, re-sized so the dry
+tick comes late enough to be seen and early enough for CI. Nothing in the shipped
+set runs dry inside 6 000 ticks, so without it CI would never exercise any of this.
+
+### The gates, named before building
+
+1. **A sealed plant keeps its mass.** A closed two-tank fixture whose supply runs
+   dry inside the run. The holdup total is constant within a bound derived from the
+   solve's own residuals, on both fidelities, and the supply tank ends at zero.
+   Control: the same fixture on the pre-M24 rule creates mass (asserted by
+   computing what the clamp would have booked).
+2. **The drying tick delivers exactly what is left.** On the tick a tank starves
+   with some mass, its net outflow equals `m/dt` plus its pressure-driven inflow,
+   within its own recorded residual.
+3. **The pass-through is the mix.** On the demo, once the tank is dry, its outflow's
+   temperature and composition equal the mix of feed and supply bit for bit with
+   the sweep's own formula, and its per-tank mass, per-component and energy books
+   close within its recorded residual.
+4. **A starved tank recovers.** On a fixture, a starved tank's pump is stopped by
+   command. The tank goes wet on the next tick, its pressure is its pinned bottom
+   pressure exactly, and it refills.
+5. **The boundary does not cycle.** `tank_overfill_trip` run past tick 12 000 on
+   both fidelities, with no error, and the drained tank never over-drawn beyond its
+   bound.
+6. **The tripwire fires.** A solver stub that over-delivers from a wet tank by more
+   than rounding is an `Err` naming the tank. So is a starved tank over-drawn past
+   its own residual.
+7. **A recycle through a dry tank is refused by name**, with the new message.
+8. **Both fidelities agree** on the demo's starved flows and pressures, I5-style.
+9. **The published pressure is the solve's**: the demo's dry tank reads below
+   `P_ATM` with mass zero.
+10. **A starved tank is not an anchor**: a fixture whose only pressure reference is
+    a tank that runs dry floats with zero flow rather than failing the solve.
+
+### What must not change, stated as a prediction that can be wrong
+
+- **All twenty-six plants are byte-identical on both fidelities, with worst and
+  total iteration counts unchanged.** The prototype measured it. It could fail if
+  the built driver's flattened loop, or its warm-start commit, runs different
+  arithmetic from the old one on a plant where nothing starves. That is why it is
+  re-measured on the built code rather than inherited from the prototype.
+- **The generated plants' reachability counts are unchanged**, because the
+  generators build no tank.
+- **Reported cost understates the starved tick**: only the accepted pass's
+  iterations are reported, so the wet pass that found the overdraw is not counted.
+  Any cost quoted for a starved tick says so.
+
+### The mutations M24.1 owes, named before building
+
+| # | mutation | predicted catch | demo? |
+|---|---|---|---|
+| 1 | starve on `q_out > m` (rate against mass, no `dt`) | gate 2 on a fixture at `dt ≠ 1` | inert at `dt = 1` |
+| 2 | never un-starve | gate 4 | inert |
+| 3 | supply enters the residual with the wrong sign | every starving gate | yes |
+| 4 | sweep keeps a starved tank inertial (no pass-through) | gate 3 | yes |
+| 5 | `heat_load` added in the starved mix as well | an energy case of gate 3 with a fire on the tank | inert |
+| 6 | `base_anchors` counts a starved tank | gate 10 | inert |
+| 7 | the tripwire removed (a silent clamp again) | gate 6 | inert |
+| 8 | a starved tank debited at its start-of-tick composition | gate 3's per-component book, on a two-component demo | yes |
+| 9 | a starvation-only repeat refused instead of accepted | gate 5 | inert |
+| 10 | warm start committed from a rejected pass | nothing, predicted | inert |
+| 11 | starvation state carried from the last tick | nothing on the corpus, predicted; a cost only | inert |
+
+**Mutations 10 and 11 are predicted uncaught.** Both change the path, not the
+answer. They are kept in the table so that the pass records that, rather than
+leaving it unsaid.
+
+### Deferred, with what un-defers each
+
+- **A recycle through a tank that has run dry** is refused (fork 4). Un-defers with
+  a plant whose pump has a minimum-flow line back to a suction tank that can run
+  dry. The cost is a simultaneous solve of the loop's mix.
+- **A fire on a dry tank.** Heat into a tank below the thermal floor is not
+  conserved. Un-defers with a scenario that fires or heats a tank that runs dry.
+- **The game solver's one-signed clamp.** A starved tank on that fidelity books its
+  own tolerance as created mass, about 4.4e-6 kg per tick on the fixture. Un-defers
+  with a plant whose starved tank's book must close tighter than the game solver
+  promises.
+- **A "running dry" alarm** on the snapshot. Un-defers with a frontend that must
+  alarm on a dry tank on a plant whose thermo cannot flag the pump.
