@@ -6734,3 +6734,49 @@ generated plants in `tests/invariants.rs` build no tank. `scenarios/tank_runs_dr
 is the one CI will run. A recycle through a dry tank is refused (a pump's
 minimum-flow line to its own suction tank is the case to watch), and three more rows
 are deferred with triggers.
+
+### M24.1 — Build it — **LANDED** 2026-09-30, and M24 is CLOSED
+
+Built as DESIGN §28 specifies; read its "Corrections from building it (M24.1)"
+before touching `network::solve_with_active_anchoring` or a tank's update. B29 is
+struck. M23.1 (overflow) is still unbuilt and, landing second, owes the pointer
+fixes §28 lists. Five things to know.
+
+**Nothing old moved, and the two plants that created mass no longer do.** All
+twenty-six earlier plants are byte-identical on both fidelities, with worst and
+total iteration counts unchanged. The generated plants' reachability counts are
+identical too. Over 30 000 ticks, `tank_flow_control` (a sealed plant of
+179 640 kg) now keeps its mass to 1.7e-4 kg on Newton and 1.2e-2 kg on the game
+solver. Before, it created 200 149 kg.
+
+**A starved tank lives in the shared solve, in one loop with the anchoring set.**
+A tank the solve would draw past empty is re-solved as a free node that delivers
+exactly what it holds over the tick. Two details the note did not settle:
+- **Which anchors "settled" is judged against.** A starved tank stops being a
+  pressure reference, so the check uses the anchors of the pass just run.
+  Against the next pass's anchors, a plain starve-then-recover would look like
+  an anchoring cycle.
+- **Two tanks can repeat on the less starved pass.** A repeat that differs only
+  in which tanks are starved is accepted as the more starved pass. When it
+  surfaces on the less starved pass instead, the solve runs the union once more.
+
+**A dry tank passes its feed through.** `scenarios/tank_runs_dry.toml` is new: a
+diesel buffer tank fed kerosene and drawn faster than it is fed. It dries at tick
+1 227 with 14.2 kg left (53% kerosene) and delivers exactly that plus the feed.
+From then on the pump delivers exactly the feed: pure kerosene, at its own
+temperature. The tank reads −2.1 bar gauge, the solve's own number. Its mass book
+closes to 6e-11 kg on Newton. On the game solver it misses by 1.4e-3 kg, which
+is row B36.
+
+**The clamp is a tripwire.** A tank or vessel drawn past empty by more than
+rounding plus its own solve residual is now an error naming it. Before, it was a
+silent `.max(0.0)`. The vessel's bound was measured first: no vessel in the
+corpus or the test suite ever comes within 0.026 kg of empty.
+
+**The mutations.** Eleven edits, ten caught; the one left uncaught (carrying the
+starved set from the last tick) is a cost, as predicted, and is now row B38 — it
+would cut the demo's reported solver iterations 14×. Four predictions were wrong,
+and one catch was an accident: a start-of-tick debit was first caught only because
+one game-solver tick left a dry tank 0.3 µg over the thermal floor. A deliberate
+gate replaced the luck. In-tick recovery and the starvation-only repeat are
+defended only by stub passes: no plant in the suite reaches either.

@@ -80,7 +80,9 @@ by the element characteristic between adjacent nodes:
   the Jacobian finite (use `Q ∝ dP/sqrt(|dP|+ε)` regularization).
 - Pump: head curve `H(Q) = H0 − aQ²` (quadratic fit; per-pump params).
 - Tanks/sources/sinks pin pressure (hydrostatic head for tanks:
-  `P = P_top + ρgh(level)`).
+  `P = P_top + ρgh(level)`). **A tank pins it only while it can cover the tick's
+  outflow** (M24, §28): one the solve would draw past empty is re-solved as a
+  STARVED free node supplying `m/dt`, whose pressure is the solve's own.
 
 Solve with Newton–Raphson, analytic Jacobian, faer dense LU first (networks
 are small), sparse later if needed. Convergence: relative mass-imbalance
@@ -14624,7 +14626,9 @@ resolution. The ticks are identical on both fidelities.
 Every column plant's other two product tanks follow between 13 861 and 24 355
 ticks. **`tank_flow_control` also crosses its brim, at tick 14 978, and that
 crossing is not real.** Premise 4 explains why. No other tank passes its height
-inside 30 000 ticks.
+inside 30 000 ticks. *(M24.1, 2026-09-30: with B29 closed it does not cross at
+all — the sealed plant keeps its 179 640 kg to 1.7e-4 kg over 30 000 ticks, §28
+"Corrections from building it".)*
 
 **2. An idle overflow edge costs nothing; a new atmosphere node costs a seed
 shift.** A probe worktree (`W:\temp\claude\m23\wt`) gave every tank a
@@ -14680,6 +14684,10 @@ as nothing.
   "mass and energy have both stopped being conserved" at this clamp.
 - **The ledger has no row for it.** It is not a deferral with a trigger. It is a
   gap, and it is marked as one (new row B29).
+
+*(M24.1, 2026-09-30: closed. A tank the solve would draw past empty is starved
+inside the solve and delivers exactly what it holds, and the clamp is a tripwire;
+§28. The figures above are the pre-M24 engine's.)*
 
 This premise also shapes the gates. The demo's supply tank drains at the pump's
 rate, so any gate that ran long enough would count created mass as spill. Gate 3
@@ -14883,7 +14891,10 @@ re-measured on the shipped code before they are written into a test.
    every tank on the demo, `Δm = (Σ in − Σ out − spill)·dt` to a few ULP. The
    probe measured 1.1e-16 relative. **The control is part of the gate**: every
    tank's mass stays above zero for the whole window, because once the clamp of
-   premise 4 engages the books close on created mass. **A plant-wide sum is NOT
+   premise 4 engages the books close on created mass. *(After M24.1 the clamp
+   cannot create mass, so the control is still true of the demo but no longer
+   load-bearing for it; a tank that runs dry closes its books within its own
+   solve residual, §28 gate 3.)* **A plant-wide sum is NOT
    this gate.** It misses by the solver's own node imbalance at the pump and
    valve, measured at 6.3e-5 kg on Newton and 3.7e-3 kg on the game solver over
    the run. That measures the solver, not the spill.
@@ -15009,7 +15020,8 @@ was kept in §26.
   deferral: it was never argued, and it is live on two shipped plants.
   Recommended as the next milestone. A fix must decide what an empty tank does to
   its outlet inside the solve. **Taken by M24 (2026-09-30), §28**, which also lists
-  the sentences in this section that M24 makes out of date.
+  the sentences in this section that M24 makes out of date. **Closed by M24.1
+  (2026-09-30).**
 - **B30 — overflow to a destination** (an `overflow_to` naming a tank, a bund or a
   slop drum). It needs the evaluation-order sort that vents already use.
   Un-defers with a plant that recovers its spill.
@@ -15382,3 +15394,161 @@ changes the snapshot after all.
   promises.
 - **A "running dry" alarm** on the snapshot. Un-defers with a frontend that must
   alarm on a dry tank on a plant whose thermo cannot flag the pump.
+- **Carrying the starved set across ticks (added by M24.1, row B38).** Every
+  solve starts all-wet, which costs a wet pass on every dry tick and seeds the
+  starved pass far from its answer. Starting from last tick's set cut the
+  demo's reported iterations 14× in the mutation pass (mutation 11) and moves
+  answers only inside the tolerance. Un-defers with a plant whose dry ticks
+  press on a frame budget.
+
+### Corrections from building it (M24.1, 2026-09-30)
+
+M24.1 built §28 as specified, on top of the prototype, and the measurements below
+are from the built code. The fixed record is in `W:\temp\claude\m24b\` (baselines,
+the vessel probe, the B29 re-measurement and the mutation logs). Ten things the
+note did not say, or said differently.
+
+**1. "Runs byte-identical" held, and was re-measured rather than inherited.** All
+twenty-six pre-M24 plants are byte-identical on both fidelities, with worst AND
+total iteration counts unchanged, against a baseline recorded from `HEAD` before
+the first edit. It held twice: with the driver alone, and with the whole change.
+The generated plants' reachability counts in `tests/invariants.rs` are identical
+line for line (chains 238/300, gas 202/205 and 198/205, PSV chains 196/400, spur
+trees 264/305, leaky trees 152/400). So "runs byte-identical" means post-M24.1
+identical, which is unchanged. `scenarios/` holds **twenty-seven** files.
+
+**2. B29 is closed on the plants that showed it.** Over 30 000 ticks,
+`tank_flow_control` (sealed, 179 640 kg) now moves by **1.699e-4 kg** on Newton and
+**1.215e-2 kg** on the game solver, against 200 149 kg created before. Its supply
+tank is dry from tick 13 314 (13 315 on the game solver) and reads **−153 138 Pa**,
+the number predicted by hand at M24.0. `tank_level_control` is an open plant and
+its supply is dry from tick 12 729; nothing is created.
+
+**3. "Anchoring settled" has to be judged against the pass's OWN anchors, and
+the note did not say which.** A starved tank stops being an anchor, so the pass
+that starves a tank runs under different anchors from the pass that found the
+overdraw. The driver judges "is the anchored set a fixed point" against the
+anchors of the pass just run, and builds the NEXT pass's anchored set from the
+next classification's anchors. Comparing the second against the first reads a
+plain starve-then-recover as an anchoring change, which would end
+`tank_overfill_trip`'s first noise event in `AnchoringUnsettled`. The `seen` list
+holds (anchored, starved) pairs. When the starved set does not move, both
+computations are the pre-M24 one, which is why fact 1 holds.
+
+**4. "Accept the starved pass" is exact for one tank and wrong for two.** With
+one tank, a starvation-only repeat always surfaces on the starved pass (every
+solve starts wet, so the wet set is the one already seen). With two tanks it can
+surface on the LESS starved pass: {a, c} → {c} → {a, c}. Accepting there would
+let `a` over-draw. The rule as built: accept the current pass if its starved set
+contains the proposed one; otherwise run the union once more with recovery
+frozen, and keep that. It costs one pass and is gated on a stub
+(`a_repeat_on_the_less_starved_pass_runs_the_union`).
+
+**5. A single tank cannot recover inside a solve, except on the boundary.** Every
+solve starts all-wet, and a starved tank supplies less than the wet pass drew
+from it, so its pressure falls below the wet one. Recovery inside a tick
+therefore needs a second tank whose starving changes what the network does to
+the first. Gate 4 as specified (the pump stopped by command) does not reach it:
+the tank is wet on the next tick because the next solve starts wet, and the
+recovery rule never runs. Gate 4 now tests that, and the recovery rule has its
+own two-tank stub (`a_starved_tank_recovers_inside_a_solve`). See the mutation
+table for what each catches.
+
+**6. The starved pass is seeded from the wet pass, and that made it cheap.** The
+prototype nested a fresh anchoring loop inside the starvation loop, so its
+starved pass started from the warm start. Flattened, the starved pass seeds from
+the pass that found the overdraw. On `tank_level_control` the game solver's
+worst tick after the supply runs dry is **8 sweeps**, against the prototype's
+29 to 31 (and at most 9 before M24). Newton's worst is 9 on both plants. The
+reported count is still the accepted pass's only.
+
+**7. The vessel's bound was measured, and nothing comes near it.** Every vessel
+update in the corpus (30 000 ticks, both fidelities) and in the whole test suite
+(497 841 updates) was probed for `mass_old + net·dt`. The shipped plants never
+come within 6.5 kg of empty. The closest in the suite is **0.026 kg**, left in a
+vacuum-blowdown fixture in `capacitive_vessel_reference.rs`, and no update is ever
+negative. So the vessel's clamp takes the note's default: rounding plus its own
+residual. The solve reports each vessel's residual in
+`HydraulicSolution::vessel_residual`, computed in the driver at the same site as
+a starved tank's.
+
+**8. What crosses the seam, and what does not.** `HydraulicSolution` gained
+`starved: BTreeMap<NodeId, StarvedTank { supply, residual }>` and
+`vessel_residual`. Both are filled by the driver from the accepted pass, before
+the engine overwrites draw and vent flows, and both are skipped in serialization
+when empty. `HydraulicSolution` is not in `Snapshot`, so the published bytes do
+not change and no Godot build is owed (the note's correction 3 holds).
+`Engine::last_solution()` is new and read-only, a test accessor beside
+`node_states()`, so a gate can read the residual the solve recorded instead of
+re-deriving it from the snapshot's flows.
+
+**9. The demo dries at tick 1 227 and passes its feed from 1 228.**
+`scenarios/tank_runs_dry.toml` holds 84 932 kg of diesel in a 20 m² buffer tank,
+fed kerosene at 60 °C from a 2 bar source and drawn by the 40 m pump into a 1 atm
+rundown. On the drying tick the tank holds 14.22 kg, 53% kerosene. The pump
+delivers 19.190 kg/s, which is 14.221 kg/s of supply plus 4.969 kg/s of feed,
+and the tank's own residual is 1.0e-9 kg/s. From then on the pump delivers
+exactly the feed, 5.0249 kg/s at 333.40 K and pure kerosene, and the tank reads
+**−210 636 Pa**. The tank's own mass book over 6 000 ticks closes to
+**−5.8e-11 kg** on Newton and **+1.38e-3 kg** on the game solver, which is row
+B36 at about 2.9e-7 kg per dry tick. Worst iterations are 10 (Newton) and 8
+(game).
+
+**10. What the gates measured.**
+- Gate 1's fixture is `tank_flow_control` started at 0.5 m. Over 1 200 ticks the
+  holdup moves 1.23e-5 kg on Newton against a bound of 6.06e-5 kg. The bound is
+  three free nodes times each tick's reported worst residual, summed. On the
+  game solver it moves 8.3e-4 kg against 7.9e-3 kg. **The control is computed,
+  not remembered:** each starved tick is solved again with the supply pinned (a
+  Source at its bottom pressure), and the pre-M24 clamp would have created
+  **8 348 kg** inside the same 1 200 ticks.
+- Gate 2 runs at `dt = 1.0` and `0.5`. At 0.5 the demo dries at tick 2 453 with
+  14.00 kg left, supplying 28.004 kg/s. A tank starves because the network pulls
+  harder than it holds, so its pressure on the drying tick must be below its wet
+  pressure. The pressure clause is what separates a rule that compares a rate
+  against a mass.
+- Gate 3 checks the mix bit for bit on all 774 starved ticks of a 2 000-tick
+  run, on both fidelities. The books close to 2.7e-9 kg (mass), 8.7e-11 kg (worst
+  component) and 1.1e-5 J (energy) on Newton. On the game solver they close to
+  2.3e-4 kg, 2.3e-4 kg and 28 J. Each bound is the tank's own recorded residuals
+  plus rounding on the gross traffic. For energy the residuals are multiplied by
+  the largest specific enthalpy that left.
+- Gate 5: `tank_overfill_trip` over 12 500 ticks. **1 215 ticks starve on
+  Newton, none on the game solver**, with no error on either. The prototype's
+  "about 10 000 events" counted clamp touches under the old rule, not starved
+  ticks under the new one. **Fork 3's claim that this plant is the
+  starvation-only-repeat population is false on the built driver** (mutation 9):
+  the starved pass is seeded from the wet one, lands below it, and is accepted
+  without repeating.
+- Gate 3c is new: a starved tank that keeps mass (here, a bent solve leaves
+  5 kg) keeps what arrived. The note put that check in gate 3's books, where the
+  demo cannot reach it.
+- Gate 7's recycle runs while the tank holds liquid and is refused on the tick
+  the tank first starves: that is the first sweep in which the tank is a mixing
+  point.
+- Gate 8 compares one state solved by both solvers. At the start of the drying
+  tick the flows agree to 3.6e-7 relative and the pressures to 0.019 Pa. Long
+  dry, they agree to 5.8e-8 and 2.1e-4 Pa. The starved set and the supply are
+  identical to the bit.
+
+**The mutations** — the table from "The mutations M24.1 owes", run one at a
+time against the whole workspace with `--no-fail-fast`, every file restored and
+checked byte for byte:
+
+| # | mutation | predicted | caught by | why it fired |
+|---|---|---|---|---|
+| 1 | starve on `q_out > m` | gate 2 at `dt ≠ 1` | gate 2's `dt = 0.5` arm, alone | Starves one tick early with 47 kg left. The 94 kg/s supply pushes the tank to 3.5 bar against a 1.01 bar wet pressure, and the feed runs BACKWARDS (−3.06 kg/s). The pressure clause sees it. |
+| 2 | never recover | gate 4 | the two-tank stubs (recovery, union), **not gate 4** | A single tank cannot recover inside a solve (correction 5). Gate 4 goes wet because the next solve starts wet. |
+| 3 | supply with the wrong sign | every starving gate | eight tests | — |
+| 4 | sweep keeps a starved tank inertial | gate 3 | gates 3, 3b, 2 and 7 | 3 and 3b see the wrong state. Gate 2's game-solver arm fires the per-component tripwire (diesel drawn 1.6 kg past empty). Gate 7's loop no longer exists to refuse. |
+| 5 | heat added to the starved mix | gate 3b | gate 3b, alone | — |
+| 6 | `base_anchors` counts a starved tank | gate 10 | gate 10, alone | — |
+| 7 | tripwire removed | gate 6 | gate 6, alone | — |
+| 8 | starved tank debited at its start-of-tick fluid | gate 3's per-component book | **not gate 3**; first run: gate 2's game-solver arm only; now gate 3c | Below the thermal floor a dry tank takes the pass-through state, so its debit is overwritten on every demo tick. The first catch was an accident: one game-solver drying tick left 1.313e-6 kg, a hair over the 1e-6 kg floor. **Gate 3c was added** (a bent solve that leaves 5 kg behind). Re-run: the tank keeps 37.4% kerosene against 0.0022%. |
+| 9 | a starvation-only repeat refused | gate 5 | the stub, alone; **gate 5 green** | `tank_overfill_trip`'s 1 215 starved ticks never repeat on the built driver: the starved pass is seeded from the wet one and never lands above it. Gate 5 shows the plant does not cycle; only the stub reaches the rule. |
+| 10 | warm start committed from a rejected pass | nothing | M8.0's `an_alternating_classification_is_reported_as_a_cycle` | That test asserts a solve ending in `Err` leaves no warm start behind. Corpus byte-identical, the demo included. |
+| 11 | starved set carried from the last tick | nothing; a cost | nothing, as predicted | The suite is green and the demo's fingerprint moves inside the tolerance. Reported iterations fall **35 878 → 2 482** (Newton) and **39 425 → 6 026** (game), and the wet pass is skipped too. Row B38. (`tank_temperature_control` also moved under the harness. That was the mutation's thread-local leaking a node id from the previous plant in one corpus process, not the mutation.) |
+
+**Ten of eleven caught; the one left uncaught is predicted and is a cost.**
+- **Four predictions were wrong** (2, 8, 9, 10). Three name a demo or fixture gate for a rule the built driver only reaches on a stub or in a fabricated state.
+- **An inert edit and an uncaught edit are the same observation**, and so are an accidental catch and a deliberate one. Mutation 8 would have been recorded as "caught" on the strength of 0.3 µg over a floor.

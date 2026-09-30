@@ -167,6 +167,9 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         // The density is `TankState`'s own (`TankState::density`) rather than
         // computed here, so the level this head is built on and the level a
         // control loop measures are the same number by construction (M8.2).
+        //
+        // A WET tank. One the solve would draw past empty is classified STARVED
+        // instead, before this is asked (`classify`, M24, docs/DESIGN.md §28).
         NodeKind::Tank(t) => Some(t.bottom_pressure(slate).value()),
         // A column runs on pressure control: its operating pressure is pinned,
         // exactly like a Source/Sink/Tank, so the feed edge is an ordinary

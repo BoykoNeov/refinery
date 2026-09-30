@@ -458,7 +458,9 @@ pub(crate) fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(),
 
     // (b) Every connected component must contain at least one pressure-fixing
     //     node (Source/Sink/Atmosphere/Tank), else its hydraulic problem is
-    //     singular. Connectivity walks ALL pipes — NOT the solver's
+    //     singular. A tank is pinned AT LOAD, which is what this check asks; one
+    //     that later runs dry is starved inside the solve and floats if nothing
+    //     else anchors it (docs/DESIGN.md §28 fork 2, gate 10). Connectivity walks ALL pipes — NOT the solver's
     //     conducting-edge anchoring — so a valve closed at t=0 cannot falsely
     //     sever the network at load. Union-Find keyed on NodeId.0 (dense 0..n
     //     because the graph is freshly built with no removals).
@@ -752,6 +754,9 @@ pub(crate) fn seed_component_index(slate: &Slate, phase: Phase) -> usize {
 /// `network::fixed_pressure`:
 ///
 /// - **Pinned** (Source/Sink/Atmosphere/Tank/Column) — the pressure is imposed.
+///   A tank stops being pinned while it is STARVED (M24, docs/DESIGN.md §28), but
+///   that is a state reached during a run; at load every tank holds what it was
+///   declared with, which is the question asked here.
 /// - **Capacitive** (Vessel) — the pressure is an UNKNOWN, but the node supplies
 ///   its own equation for it (`C·(P − Pⁿ)/dt`), so the component is well posed
 ///   with no pinned node anywhere in it. This is the load-time half of

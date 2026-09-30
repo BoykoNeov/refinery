@@ -774,6 +774,81 @@ fn the_empty_holdup_tripwire_fires() {
         .expect("a rounding-sized over-draw is clamped");
 }
 
+/// **Gate 3c: a starved tank that keeps mass keeps what ARRIVED** (mutation 8).
+///
+/// On the demo a dry tank ends every starved tick at a few nanograms, below the
+/// thermal floor, where it takes the pass-through composition — so gate 3's
+/// books cannot see how a starved tank is DEBITED, and the one catch the
+/// mutation pass found for a start-of-tick debit was the game solver leaving
+/// 1.3e-6 kg on one drying tick, a hair over the 1e-6 kg floor. A starved tank
+/// keeps real mass only when something the solve does not see arrives (a column
+/// draw, a received vent) or its own residual is positive, so this gate makes
+/// the second happen on purpose: the solve reports the tank starved with a
+/// residual of +5 kg/s, and leaves those 5 kg behind.
+///
+/// The tank holds diesel and is fed kerosene. Debited at the MIX that left, it
+/// keeps almost no kerosene — the feed passed through; debited at its own
+/// start-of-tick diesel it would keep the whole tick's kerosene feed.
+#[test]
+fn a_starved_tank_that_keeps_mass_keeps_what_arrived() {
+    let mut engine = bent_engine(-5.0, Some(5.0));
+    let dt = engine.dt().value();
+    let own = tank(&engine, "buffer_tank");
+    tick(&mut engine);
+    let supply = own.mass.value() / dt;
+    let into = engine.graph.pipe(edge(&engine, "into_tank")).stream.clone();
+    let out = engine
+        .graph
+        .pipe(edge(&engine, "suction"))
+        .stream
+        .mass_flow
+        .value();
+    let fed = into.mass_flow.value();
+    // The mix that left, by the sweep's rule, and the component masses kept.
+    let mut mix: Vec<f64> = own
+        .composition
+        .fractions()
+        .iter()
+        .map(|f| supply * f)
+        .collect();
+    for (w, f) in mix.iter_mut().zip(into.composition.fractions()) {
+        *w += fed * f;
+    }
+    let total: f64 = mix.iter().sum();
+    let kept: Vec<f64> = own
+        .composition
+        .fractions()
+        .iter()
+        .zip(into.composition.fractions())
+        .zip(&mix)
+        .map(|((x, arrived), m)| x * own.mass.value() + (fed * arrived - out * m / total) * dt)
+        .collect();
+    let kept_total: f64 = kept.iter().sum();
+    let after = tank(&engine, "buffer_tank");
+    assert!(
+        (after.mass.value() - 5.0).abs() < 1e-6,
+        "premise: the solve left 5 kg behind, the tank holds {:.9} kg",
+        after.mass.value()
+    );
+    for (c, (got, want)) in after
+        .composition
+        .fractions()
+        .iter()
+        .zip(kept.iter().map(|k| k / kept_total))
+        .enumerate()
+    {
+        assert!(
+            (got - want).abs() < 1e-9,
+            "component {c}: the tank keeps {got:.12} of it, and debited at what left it keeps {want:.12}"
+        );
+    }
+    assert!(
+        after.composition.fractions()[0] < 1e-3,
+        "the kerosene passed through: {:?}",
+        after.composition.fractions()
+    );
+}
+
 // --- gate 7 -----------------------------------------------------------------
 
 /// **Gate 7: a recycle through a dry tank is refused by name** (row B34). The

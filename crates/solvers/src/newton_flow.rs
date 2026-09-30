@@ -10,7 +10,10 @@
 //!   is the suction pressure — the discharge is `P_inlet + ρgH(Q)`, computed
 //!   in post-processing if a frontend ever needs it (not stored here).
 //! - FIXED nodes pin pressure: Source/Sink at their set pressure, Atmosphere
-//!   at P_ATM, Tank at hydrostatic bottom pressure (constant within one solve).
+//!   at P_ATM, Tank at hydrostatic bottom pressure (constant within one solve)
+//!   — while it can cover the tick's outflow. A tank the solve would draw past
+//!   empty is re-solved as a FREE node supplying `m/dt` (M24, docs/DESIGN.md
+//!   §28; `network::solve_with_active_anchoring`).
 //! - Every M1 element is affine in `Q·|Q|` (`dp = α·Q|Q| + β`), so a pipe and
 //!   the device folded into it compose in closed form (`Σα, Σβ`) and invert to
 //!   `Q(dp)` with no inner solve — see `elements::QuadraticBranch`.

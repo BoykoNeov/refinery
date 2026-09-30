@@ -93,6 +93,7 @@ cargo run -p refinery-cli -- run scenarios/furnace_outlet_control.toml --ticks 6
 cargo run -p refinery-cli -- run scenarios/tank_flow_control.toml --ticks 6000        # the M20.1 flow loop
 cargo run -p refinery-cli -- run scenarios/relief_twin_vessels.toml --ticks 6000 --solver simple  # the M21.1 stiff pairs
 cargo run -p refinery-cli -- run scenarios/tank_overfill_trip.toml --ticks 6000       # the M22.1 overfill trip
+cargo run -p refinery-cli -- run scenarios/tank_runs_dry.toml --ticks 6000            # the M24.1 dry tank
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -188,40 +189,52 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M24 is OPEN (2026-09-30): a tank that runs dry — `docs/DEFERRED.md` row B29.**
-Taken on the user's instruction while M23.1 was unbuilt; whichever of M23.1 and
-M24.1 lands second corrects the other's sentences (DESIGN §28 lists them). B29 was
-a GAP, not a deferral: the tank update's `.max(0.0)` books the solve's overdraw as
-nothing, creating **200 149 kg** on `tank_flow_control` (a sealed 179 640 kg plant,
-from tick 13 314) and **204 078 kg** on `tank_level_control` (from tick 12 729) over
-30 000 ticks, both fidelities. **M24.0 landed 2026-09-30** — DESIGN §28, seven forks,
-ten gates, eleven mutations, no code; numbers and a working prototype in
-`W:\temp\claude\m24\`. M24.1 builds it. Five things to know first.
-- **The user's three decisions:** a dry tank runs its pump dry (delivers at most
-  what it holds); a dry tank still being fed passes its feed through, mixed with
-  what it held; and a dry tank publishes the solve's own pressure (about −153 kPa
-  absolute on `tank_flow_control`: a pump pulling on nothing).
-- **A starved tank is a second active set in the shared driver**, beside
-  anchoring: a FREE node supplying `m/dt` through `network::accumulation` (not an
-  anchor), starving on `q_out·dt > m` from a converged pass, recovering when its
-  solved pressure exceeds the pressure its level pins. Every solve starts all-wet,
-  one loop and one budget over the (anchored, starved) pair, warm start committed
-  once. **A starvation-only repeat is ACCEPTED as the starved pass** (the answer is
-  unique; starved cannot create mass); `tank_overfill_trip`'s drained tank past
-  tick 12 000 is the gate.
-- **Do not bound anything by `SolveDiagnostics::residual`**: it is the plant's
-  worst node, so it grades a small tank against the largest line (M9.2's defect).
-  The solve reports each starved tank's OWN residual, and the clamp becomes a
-  tripwire bounded per holdup; the vessel's bound is measured before it is chosen.
+**M24 is CLOSED (2026-09-30): a tank that runs dry — `docs/DEFERRED.md` row B29,
+now struck.** Taken on the user's instruction while M23.1 was unbuilt; **M23.1 lands
+second and owes the pointer fixes DESIGN §28 lists** (M24.1 already added pointers in
+§27). **M24.0** wrote DESIGN §28 (seven forks, ten gates, eleven mutations, no code);
+**M24.1 landed 2026-09-30** and built it. Read §28's "Corrections from building it
+(M24.1)" before touching `network::solve_with_active_anchoring`, `Capacitance`, the
+sweep's starved-tank branch or a holdup's mass update. Six things to know.
+- **A starved tank is a second active set in the shared driver**: a FREE node
+  supplying `m/dt` through `network::accumulation` (`Capacitance::Starved`, not an
+  anchor — `base_anchors` excludes it). It starves on `q_out·dt > m` from a converged
+  pass and recovers when its solved pressure exceeds the pressure its level pins.
+  Every solve starts all-wet; one loop and one budget over (anchored, starved) pairs;
+  warm start committed once, from the accepted pass. The driver now takes `dt`.
+- **"Anchoring settled" is judged against the pass's OWN anchors**, and the next
+  pass's anchored set is built from the next classification's (a starved tank stops
+  being an anchor). **A starvation-only repeat is accepted as the more starved pass;
+  if it surfaces on the less starved one (two tanks), the union runs once more with
+  recovery frozen.** A single tank cannot recover inside a solve except on the
+  boundary, so the recovery rule and the union are gated on stub passes in
+  `tests/invariants.rs`.
+- **The solve reports each starved tank's supply and OWN residual, and each vessel's
+  own residual** (`HydraulicSolution::starved`, `vessel_residual`; not in `Snapshot`,
+  so no Godot build owed). `engine::checked_holdup_mass` replaces both silent
+  `.max(0.0)` clamps: rounding (`ROUNDING_MASS_FRACTION` × gross traffic) plus that
+  residual, else an `Err` naming the holdup. `Engine::last_solution()` is a new
+  read-only test accessor. **Never bound anything by `SolveDiagnostics::residual`**
+  (the plant's worst node, M9.2's defect).
 - **The sweep resolves a starved tank as a mixing vertex** whose inventory is one
-  more inflow (no `heat_load` there); its update debits outflow at that mix. A
-  recycle through a dry tank is refused by name (a pump's minimum-flow line is the
-  case to watch).
-- **Nothing in the corpus runs dry inside 6 000 ticks**, so the prototype was
-  byte-identical on all twenty-six plants with no iteration count moved, and the
-  generated plants build no tank. Demo to come: `scenarios/tank_runs_dry.toml`,
-  a TWO-cut slate with no fire and no ambient `UA` on its buffer tank (§28's
-  "Corrected before building": a water-only demo cannot see a mixture error).
+  more inflow (no `heat_load` there, row B35); its update debits outflow at that mix;
+  below the thermal floor it takes the pass-through state. A recycle through a dry
+  tank is refused by name (B34).
+- **All twenty-six pre-M24 plants are byte-identical on both fidelities with no
+  iteration count moved**, and the generated plants' reachability counts are
+  unchanged; "runs byte-identical" means post-M24.1 identical, unchanged. Over 30 000
+  ticks `tank_flow_control` now keeps its 179 640 kg to 1.7e-4 kg (Newton) / 1.2e-2 kg
+  (game) — 200 149 kg were created before.
+- **Demo `scenarios/tank_runs_dry.toml`** (the twenty-seventh file): diesel buffer tank
+  fed kerosene, dries at tick 1 227 with 14.2 kg left and passes its feed through at
+  −210 636 Pa from 1 228.
+- **The mutation pass: eleven edits, ten caught**; carrying the starved set across
+  ticks is uncaught by design and is new row B38 (a 14× cost saving nobody needs
+  yet). Four predictions were wrong: in-tick recovery and the starvation-only
+  repeat are reachable ONLY on stub passes (`tests/invariants.rs`), and the
+  start-of-tick debit was first caught by accident (0.3 µg over the thermal floor)
+  until gate 3c made it deliberate. `tank_overfill_trip` starves 1 215 ticks of
+  12 500 on Newton and never repeats.
 
 **M23 is OPEN (2026-09-30): tank overflow — `docs/DEFERRED.md` row B28.**
 Taken on a DECISION (the user's), and it turned out to be past its trigger all
@@ -243,7 +256,7 @@ builds it. Five things to know first.
   flow-control test's control arm needs re-premising.
 - **Mass books close per TANK (1.1e-16), not per plant**: the plant-wide sum
   misses by the solvers' own node imbalance.
-- **New row B29, a GAP and live — TAKEN by M24 (above): a tank that runs dry CREATES mass**
+- **New row B29, a GAP and live — CLOSED by M24.1 (above): a tank that ran dry CREATED mass**
   (`.max(0.0)` on the inventory). `tank_flow_control`, a closed 179 640 kg plant,
   holds 379 789 kg by tick 30 000, and its own "overflow" is that created mass.
   Not M23's (it is a hydraulic question); recommended as M24.
@@ -1762,17 +1775,17 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly six of the twenty-six files in `scenarios/` declare a `[[controls]]`
+**Exactly six of the twenty-seven files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
 `tank_temperature_heating.toml` (M18.1, a reverse-acting temperature),
 `furnace_outlet_control.toml` (M19.1, a furnace's own outlet) and
 `tank_flow_control.toml` (M20.1, a valve's own flow). **The
-other twenty
+other twenty-one
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor** (one, `tank_overfill_trip.toml`, carries a `[[trips]]`
-table instead); adding a loop to one of them
+table instead, and one, `tank_runs_dry.toml`, runs a tank dry); adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file
 rather than wiring one into an existing plant. Every other plant that carries a
 loop is an inline test fixture for the same reason.
