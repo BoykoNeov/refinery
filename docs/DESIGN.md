@@ -14575,3 +14575,436 @@ drain within the tripping tick itself, because the loop pass runs right after th
 trip pass. So the hold check is observed only by reading it: it stays exactly as
 predicted, a backstop no gate reaches while the refusals hold. Mutation 13 is left
 uncaught on purpose, for the reason the note gave.
+
+## 27. Tank overflow — the brim spills (M23.0) — specified before building
+
+### What licensed this, stated plainly
+
+**The user chose it on 2026-09-30**, from a short list. Building the note then
+found that **the row was past its trigger all along**, and that the only thing
+hiding this was the corpus's length. B28's trigger includes "a trip-free plant
+found above its own height". M22.1 swept all twenty-six files for 6 000 ticks and
+found none. But 6 000 ticks is a corpus convention, not the length of a game, and
+the trigger names no horizon. Run longer, and **six shipped plants pass their own
+tank height** (premise 1). The first does it at tick 7 036, which is 11.7
+simulated minutes, and by tick 30 000 its distillate tank reads 49.5 m in a 12 m
+shell. So this milestone is a decision that turned out to be a measurement. That
+is said here rather than left to be noticed.
+
+**The scope is an ideal overflow on every tank, spilling to the atmosphere.**
+Whatever liquid is above the brim at the end of a tick leaves through an edge the
+loader builds and the engine writes. The level never reads above the tank's height.
+Routing the overflow to another tank, an overflow line with finite capacity, a
+roofed tank, and what the spilled pool does next are all deferred with triggers
+below. So is the mirror defect this note found on the way: **a tank that runs dry
+creates mass** (premise 4). It was never on the ledger. It is recorded as its own
+row and recommended as the next milestone, not fixed here, because it is a
+hydraulic problem and overflow is not (fork 1).
+
+### Four premises, measured before any fork
+
+The numbers are in `W:\temp\claude\m23\measurements.md`. The level script was
+first checked against a figure the repo already publishes: the trip demo with its
+`[[trips]]` table removed crosses 10 m at tick **2 859** and reads **15.166 m** at
+tick 6 000, which reproduces §26 premise 3.
+
+**1. Six shipped plants overflow shortly past the corpus horizon.** The table
+gives the first tick at which a tank's mass exceeds `ρ·A·H`, at 1-tick
+resolution. The ticks are identical on both fidelities.
+
+| plant | first tank over the brim | tick | simulated time |
+|---|---|---|---|
+| `crude_column` | distillate | 7 036 | 11.7 min |
+| `crude_column_cascade` | distillate | 7 116 | 11.9 min |
+| `crude_column_boiloff` | distillate | 7 730 | 12.9 min |
+| `crude_column_recovery` | distillate | 7 730 | 12.9 min |
+| `crude_column_recovery_train` | distillate | 7 730 | 12.9 min |
+| `fcc_plant` | `gas_drum` | 18 807 | 31.3 min |
+
+Every column plant's other two product tanks follow between 13 861 and 24 355
+ticks. **`tank_flow_control` also crosses its brim, at tick 14 978, and that
+crossing is not real.** Premise 4 explains why. No other tank passes its height
+inside 30 000 ticks.
+
+**2. An idle overflow edge costs nothing; a new atmosphere node costs a seed
+shift.** A probe worktree (`W:\temp\claude\m23\wt`) gave every tank a
+zero-geometry edge to the plant's first `Atmosphere`, or to a new one where the
+plant has none. The edge is excluded from the solve, as a boil-off vent is. The
+probe compared all twenty-six plants on both fidelities over 6 000 ticks, with
+the new node and edges stripped from the snapshots (M8.5's method).
+- **Fifteen plants are byte-identical on both fidelities.** These are every plant
+  without a tank and every tank plant that already had an atmosphere (the three
+  boil-off plants and `leaking_line`), plus `fcc_plant` on Newton.
+- **The eleven tank plants that gain a new atmosphere node move.** The worst
+  relative move on any published quantity is **4.9e-11 on Newton** and **1.7e-8
+  on the game solver**. No plant's worst iteration count moves.
+- **The mechanism is the cold seed.** `network::classify` starts every free node
+  at the mean of the pinned pressures. A new atmosphere at `P_ATM` moves that
+  mean, tick 1 converges to a different point inside the tolerance ball, and the
+  difference carries forward.
+- **Removing the shift would move other plants instead.** Excluding such nodes
+  from the mean would shift the three boil-off plants, whose loader-built
+  atmosphere carries only vents.
+- **Placement matters.** Built BEFORE the vents, the overflow edges renumber the
+  vents, and the five boil-off plants' edge ids move. After the vents they do not.
+
+**The user decided (2026-09-30) that the spill is an edge**, which is the damage
+model's own rule. The eleven-plant shift is accepted and the reference is re-set
+once. Fork 2 records the choice.
+
+**3. Nothing validates a tank's geometry.** `validate_node_def` checks a tank's
+`ambient_exchange_ua_w_per_k` and nothing else. `area_m2`, `height_m` and
+`initial_level_m` are unchecked. A file may start a tank over its own brim, give
+it a zero or negative height, or give it a negative level. No shipped file does.
+Once overflow exists, a tank loaded over its brim would spill the excess on tick
+1 with nothing saying why. Fork 5 refuses it. The loader computes the initial
+inventory as `density · area · initial_level_m`, so a brim capacity computed as
+`density · area · height` **in the same association** ties exactly with a tank
+declared full.
+
+**4. A tank that runs dry creates mass, on two shipped plants.** The tank update is
+`mass_new = (mass_old + net_mass·dt).max(0.0)`. Once a tank is empty its outflow
+is still whatever the start-of-tick solve said, and the clamp books the overdraw
+as nothing.
+- **`tank_flow_control` is a closed plant**: two tanks, a pump and a valve. It
+  holds 179 640 kg through tick 13 000.
+- Its supply tank reaches 0 kg by tick 13 400. The pump keeps delivering 12 kg/s
+  after that, and the plant holds **379 789 kg by tick 30 000**: about 200 t
+  created from nothing.
+- **The receiving tank holds about 199.6 t at its brim, more than the plant
+  actually contains**, so its "overflow" at tick 14 978 is created mass entirely.
+- `tank_level_control`'s supply tank empties by tick 12 800, and the created mass
+  flows out to its sink.
+- The `MIN_THERMAL_MASS_KG` doc comment in `engine.rs` already concedes that
+  "mass and energy have both stopped being conserved" at this clamp.
+- **The ledger has no row for it.** It is not a deferral with a trigger. It is a
+  gap, and it is marked as one (new row B29).
+
+This premise also shapes the gates. The demo's supply tank drains at the pump's
+rate, so any gate that ran long enough would count created mass as spill. Gate 3
+asserts, as its control, that no tank touches the clamp inside its window.
+
+### The sentence sites, counted before writing
+
+Grepped across `crates/`, `scenarios/`, `docs/` and `CLAUDE.md` for `overflow`,
+`B28`, `15.17`, `15.1658`, "bounds setpoints" and "past its trigger":
+
+1. `crates/scenarios/tests/trip_demo.rs`: the module doc (lines 19–20) and
+   `without_the_trip_the_tank_fills_past_its_own_height`, which asserts
+   15.1658 m at tick 6 000. After M23.1 the untripped twin reaches the brim at
+   tick 2 859 and then holds exactly 10 m, spilling. Rewritten, not deleted: it
+   is still the counterfactual the trip is measured against.
+2. `scenarios/tank_overfill_trip.toml`, lines 27–28 ("The engine has no
+   overflow").
+3. DESIGN §26 premise 3, its fork 7 bullet (the twin ends at 15.1658 m), its
+   deferred-list entry for B28, and the "B28 sweep" paragraph of its corrections.
+   These are historical records, so each gets a pointer to this section rather
+   than an edit.
+4. `docs/DEFERRED.md` B28 (taken now, struck at M23.1), and the "Reading the
+   ledger" bullets that say nothing is past its trigger. The last of those
+   (M22.0's) is corrected by a new bullet, not rewritten.
+5. `docs/ROADMAP.md`'s M22.0 and M22.1 paragraphs ("the engine has no overflow",
+   "found no shipped plant above its own tank height"). Pointers here.
+6. `CLAUDE.md`'s M22 box, items (v) and the demo sentence. Pointers.
+7. The `LeakRole` doc and every caller of `is_boiloff_vent()` and
+   `boiloff_vent_emitter()`, counted: engine lines 288 (`PuncturePipe`), 727
+   (edge temperatures), 841 (the inflow loop), 971 (finding a node's own vent),
+   1342 (edge compositions) and 1832 (`leak_mass_flow`); `network.rs` lines 388
+   (`compile_edge`) and 1017 (`edge_flows`); and three test files that walk vents
+   by emitter. Fork 3 says which of these the overflow edge joins.
+8. `crates/godot-ext`: nothing matches on `LeakRole` today (grepped). The
+   feature-gated build and clippy are still owed at M23.1, because the snapshot
+   gains edges.
+
+### Fork 1 — what the brim does
+
+- **(a) Refuse: a tick that overfills is an `Err`.** Rejected. A tank at its brim
+  is ordinary operation, not a failed solve. Six shipped plants would stop dead
+  inside forty minutes of play.
+- **(b) An ideal overflow.** Chosen. At the end of each tick, whatever mass is
+  above `ρ·A·H` leaves in that same tick, and the level ends at exactly `H`. This
+  is the tank's own balance with one more outflow. It needs no law and no
+  constant, and it is exact in the limit it models: an overflow nozzle big enough
+  never to back up.
+- **(c) A finite overflow, following a weir or nozzle law.** Deferred (B30). It
+  lets the level rise above the brim while the nozzle is saturated. That needs a
+  law with a constant nobody has asked for, and a level above `H` that the
+  frontend would then have to draw.
+- **(d) A roofed tank that pressurises when full.** Out of scope (B31). Every
+  `Tank` is documented as vented, and a liquid-full closed vessel is the stiff
+  incompressible case the capacitive vessel does not model.
+
+**Why running dry is not the same fork.** An ideal overflow is a step AFTER the
+holdup update. It removes mass the solve never needed to know about, because the
+solve reads the level and the level is capped. Running dry is the opposite: the
+solve set the outflow from the start-of-tick state, the downstream node has
+already been credited with it, and a correct fix has to decide what an empty
+tank does to its outlet (stop conducting, or pull vapour through the pump). That
+is a solver question with its own forks. Neither design depends on the other, so
+they are separate milestones.
+
+### Fork 2 — how the spill is represented: an edge, built for every tank
+
+**The spill is an edge**, by the user's decision (premise 2), and by the damage
+model's own rule that anything leaving the plant is a flow on an edge. A
+frontend reads a spill exactly where it reads a leak or a vent: amount,
+temperature and composition on one stream. The mass and energy books need no
+second kind of exit.
+
+- **`LeakRole::Overflow { owner: NodeId }`.** The owning tank is STORED, in the
+  shape of `BoilOffVent { emitter }` and for M14's reason: the per-node loop also
+  visits the atmosphere node, and ownership derived from anything else is how
+  M12.1 lost 2 539 kg.
+- **Every tank gets one**, not only tanks that opt in. The brim is a property of
+  every shell. A per-tank key would leave the default silently overfilling, which
+  is the state this milestone exists to remove.
+- **Destination: the plant's first `Atmosphere` node**, the vents' own rule;
+  otherwise a new node named `overflow_atmosphere`. A declared node of that name
+  that is not an atmosphere is refused, as the vents refuse
+  `boiloff_atmosphere`.
+- **Built AFTER the boil-off vents**, immediately before `validate_topology`.
+  Premise 2 measured that the other order renumbers the vents. On a boil-off
+  plant with no declared atmosphere, the overflow edges therefore land on the
+  vents' `boiloff_atmosphere`, and that plant's bytes do not move.
+- **Named `<tank>__overflow`, with zero geometry**, the vents' convention. A
+  declared pipe of that name is refused.
+- **Direction tank → atmosphere**, so a positive flow is outward and the write
+  needs no sign flip.
+
+### Fork 3 — which engine-written-edge sites the overflow joins
+
+The overflow edge is engine-written, like a vent: the solve must not see it, and
+the upwind passes must not overwrite it. But it is not a vent. It never carries
+`latent`, the boil-off model never writes it, and its far end is never a holdup.
+So the predicates split in two.
+
+- **A new predicate, `LeakRole::is_engine_written()`**, true for a vent AND an
+  overflow. It replaces `is_boiloff_vent()` at the four sites that ask "does the
+  solve or an upwind pass own this edge": `compile_edge` (closed branch),
+  `edge_flows` (zero), the edge-temperature pass and the edge-composition pass.
+  `is_boiloff_vent()` stays, for any site that means the vent specifically.
+- **A new predicate, `LeakRole::overflow_owner()`**, the one place that answers
+  "whose overflow is this". It is read at two sites. The inflow loop skips the
+  overflow its own tank owns: the edge carries the solve's zero at that point in
+  the tick, so skipping it is not a numerical change, but the owner must not
+  depend on that. The write site finds the overflow a tank owns, as `vent` is
+  found at line 971.
+- **`boiloff_vent_emitter()` is unchanged.** Its callers mean the vent, and an
+  overflow must not be counted as vapour arriving at a recovery drum.
+- **`PuncturePipe` refuses an overflow edge by name**, as it refuses a vent: it
+  has no area to command. **`leak_mass_flow` stays `0.0`**, because that field
+  means "this pipe is spraying", and the spill is on the overflow edge's own
+  stream.
+
+### Fork 4 — when a tank is full, and when in the tick it spills
+
+- **The comparison is on MASS: `m > ρ(x)·A·H`.** It is not `level() > height`,
+  because M22 measured that a level declared at load reads one ULP high on 4 of 8
+  tanks, and a tank declared full would then spill a rounding error forever. One
+  owner, `TankState::mass_at_level(slate, level)`, computes `ρ·A·h` in the
+  loader's own association. The loader's initial-mass line becomes a call to it,
+  so the tie with `initial_level_m == height_m` is exact **by construction**.
+  `TankState::capacity` is `mass_at_level(slate, height)`.
+- **Strict `>`.** A tank exactly at capacity spills nothing.
+- **The composition is the END-of-tick one**, after the blend and after any
+  boil-off. The capacity is how much of THIS liquid fits, and a tank whose
+  contents are changing has a different capacity every tick.
+- **The spill happens after the boil-off, in the same tick.** Four reasons:
+  - The flash is a property of the whole superheated inventory. The liquid that
+    spills was part of it.
+  - It keeps the invariant simple: a tank at its brim reads exactly `H` at the
+    end of every tick, whether or not it boils. Spilling first would leave a
+    boiling tank below `H` by the boiled mass.
+  - It follows M12.1's rule for algebraic constraints: no one-tick lag.
+  - The tank's temperature and composition are NOT recomputed. Removing part of
+    a well-mixed liquid changes neither. The energy that leaves is
+    `m_spill · h(T, x)`, carried by the edge.
+- **What the edge carries:** rate `excess/dt`, the tank's end-of-tick composition
+  and temperature, `latent: None`. It is written on EVERY tick an overflow edge
+  exists, as `0.0` when nothing spills. A stale rate would keep booking a spill
+  the tank has stopped making (M13's rule for the vent).
+
+### Fork 5 — a tank's geometry is checked at load
+
+It is refused, each case for its own reason, in `validate_node_def`:
+- `area_m2` or `height_m` non-finite or `≤ 0`. A tank with no footprint or no
+  height has no capacity, and every level divides by the area.
+- `initial_level_m` non-finite or `< 0`.
+- `initial_level_m > height_m`. It would spill the excess on tick 1, and a file
+  that states a level its own tank cannot hold is wrong about one of the two
+  numbers.
+
+`initial_level_m == height_m` is admitted, and gate 1 is built on it.
+
+### Fork 6 — what a frontend sees
+
+Nothing new in the snapshot's shape. Every tank plant's snapshot gains one edge
+per tank, and gains an `overflow_atmosphere` node when it had no atmosphere. The
+spill is that edge's `stream.mass_flow`, `composition` and `temperature`. A tank
+at its brim reads `mass == capacity`, so a level computed from the snapshot reads
+`H` to within the one-ULP level rounding premise 3 describes. No `spilling` flag
+is added: a positive flow on an edge the frontend can identify by its role is the
+same signal, and a second copy of it could disagree with the first.
+
+### Fork 7 — the demo plant
+
+**`scenarios/tank_overflow.toml` is `tank_overfill_trip.toml` with its `[[trips]]`
+table removed.** The two files are a pair, meant to be diffed: one plant, with and
+without the trip, and the diff is what the trip prevents. The probe's numbers,
+checked on the working spill (probe step 2 of `measurements.md`) and identical on
+both fidelities to the printed digits:
+- The receiving tank reaches its brim at tick **2 859** and holds **exactly 10 m**
+  at every tick after. The worst difference between the level and `H` is 0.0.
+- By tick 6 000 it has spilled **19 454.49 kg**, and is spilling
+  **6.0153 kg/s** at the end.
+- The supply tank stays far from empty inside the run.
+
+It exists because none of the six overflowing plants spills inside the corpus's
+6 000 ticks. Without it, CI would never run a spill.
+
+### The gates, named before building
+
+The probe's numbers below come from the working spill in the worktree and are
+re-measured on the shipped code before they are written into a test.
+
+1. **The brim tie is exact.** A tank declared at `initial_level_m == height_m`,
+   with its only outlet shut and nothing flowing in, spills exactly `0.0` on
+   every tick, on both fidelities. Its composition is chosen from M22's one-ULP
+   cases, so a level comparison WOULD spill. The same tank with a net inflow
+   spills from tick 1, and its mass after the tick equals its capacity bit for
+   bit.
+2. **At the brim, the spill is the net inflow.** On the demo, from the tick after
+   the first spill, the receiving tank's mass equals its capacity bit for bit,
+   and the spill equals fill minus drain to within a few ULP of the inventory
+   over `dt`. The probe measured 1.82e-12 kg/s, 3.0e-13 relative. First spill at
+   tick 2 859 on both fidelities.
+3. **Each tank's mass books close, tick by tick, with the spill counted.** For
+   every tank on the demo, `Δm = (Σ in − Σ out − spill)·dt` to a few ULP. The
+   probe measured 1.1e-16 relative. **The control is part of the gate**: every
+   tank's mass stays above zero for the whole window, because once the clamp of
+   premise 4 engages the books close on created mass. **A plant-wide sum is NOT
+   this gate.** It misses by the solver's own node imbalance at the pump and
+   valve, measured at 6.3e-5 kg on Newton and 3.7e-3 kg on the game solver over
+   the run. That measures the solver, not the spill.
+4. **The spilled stream is the tank's liquid, and its energy is counted.** On
+   every spilling tick, the overflow edge's temperature and composition equal the
+   tank's end-of-tick temperature and composition bit for bit, and its `latent`
+   is `None`. A tank's energy balance, in I6's form, closes with the spill
+   booked through `stream_enthalpy_flux`. The tolerance is measured at M23.1 and
+   argued, not picked.
+5. **The spill is a rate.** The demo at `dt = 0.5` for 12 000 ticks, against
+   `dt = 1.0` for 6 000: the two spill rates at `t = 6 000 s` agree to within
+   1e-4 relative. The probe measured 6.015207 against 6.015260 kg/s, 8.7e-6
+   apart. A per-tick total would differ by 2×. **This is the only gate that
+   sees that mutation, because the demo runs at `dt = 1`**, where a mass per
+   tick and a mass per second are the same number.
+6. **Ownership and order.** A fixture with two tanks draining to one declared
+   `Atmosphere` that other edges also reach, one of them spilling. Each overflow
+   edge carries only its own tank's spill, the other reads exactly `0.0`, and the
+   atmosphere's own pass writes nothing. A second fixture has a boiling tank at
+   its brim. Its vent and its overflow are both written, and its level at the end
+   of each spilling tick is exactly `H`, which is what "after the boil-off"
+   means.
+7. **A spill that stops reads zero at once.** A fixture fills past its brim, and
+   then its inflow valve is shut by command. The overflow edge reads exactly
+   `0.0` on the next tick.
+8. **The load-time refusal sweep**, one case per refusal, each asserting a
+   distinctive substring of its own message:
+   - a zero, negative or non-finite `area_m2`
+   - the same three for `height_m`
+   - a negative or non-finite `initial_level_m`
+   - `initial_level_m > height_m`
+   - a declared pipe named `<tank>__overflow`
+   - a declared node named `overflow_atmosphere` that is not an atmosphere
+
+   Beside the sweep, `PuncturePipe` on an overflow edge is refused.
+9. **The edge ids are where the bytes claim says.** On `crude_column_boiloff`,
+   the three vents keep their pre-M23 edge ids and the overflow edges are the
+   last edges in the graph. A bytes claim gets a gate (M16.2's rule), and CI
+   commits no baseline.
+10. **The trip demo's counterfactual, rewritten.** The untripped twin reaches its
+    brim at tick 2 859 and ends at exactly 10 m, having spilled what gate 2
+    measures. It shares the demo file rather than slicing the trip file.
+
+### What must not change, stated as a prediction that can be wrong
+
+- **Fifteen plants are byte-identical on both fidelities:** every plant with no
+  tank, the four tank plants that already have an atmosphere, and `fcc_plant` on
+  Newton.
+- **The other eleven differ only by the new keys, plus a numerical shift within
+  premise 2's bounds** (4.9e-11 Newton, 1.7e-8 game), with no worst iteration
+  count moved. The new keys are the added node and edges, stripped M8.5's way.
+- **Why it could fail.** The prediction assumes the working spill changes nothing
+  while nothing spills. It could fail in two ways: if the zero write on an idle
+  overflow edge differs from the probe's never-written edge (for example a `-0.0`
+  against `0.0`, or a composition copied from somewhere else), or if a test
+  fixture fills past its own height inside its run.
+
+**The probe's full test suite, measured rather than predicted.** The working
+spill was run through `cargo test --workspace --no-fail-fast` in the worktree.
+Six tests in 67 binaries fail, none because a fixture overfills, and none of the
+six blames the spill itself:
+- **Four count a plant's nodes or edges**: `build_engine_wires_and_runs_the_reference_plant`
+  (`scenarios/src/lib.rs`), `the_supply_tank_stays_exactly_isothermal_while_the_plant_warms`
+  (5 edges where it counts 3), and `leak_reference`'s
+  `a_declared_leak_splits_its_pipe_at_the_midpoint` and
+  `a_plant_without_a_leak_is_the_plant_it_was`. The leak pair is a real change of
+  premise: the intact plant now gains an atmosphere too, so "the leaky plant has
+  two more nodes" stops being true while "one more atmosphere" stays true. Each is
+  re-premised, not relaxed.
+- **One is the counterfactual this milestone removes**:
+  `without_the_trip_the_tank_fills_past_its_own_height` (sentence site 1).
+- **One is a finding.** `zero_flow_through_a_shut_valve_is_a_measurement_and_the_loop_opens_it`
+  asserts, as its control, that a shut valve's INLET pipe reads a nonzero
+  residual (M20.1 measured −1.547e-11 kg/s). With the new atmosphere node it
+  reads **exactly 0.0**. The residual was a property of the cold seed (premise
+  2), not of the valve. So one of M20.1's reasons for metering the outlet (the
+  inlet is not an exact zero) holds only for the seed it was measured on. The
+  outlet is still the right pipe to meter, because it is the one that is exact by
+  construction. But this control can no longer show it on this fixture, and
+  M23.1 must replace it with a control that does not depend on where the seed
+  lands, or record why it cannot.
+
+### The mutations M23.1 owes, named before building
+
+| # | mutation | predicted catch | demo? |
+|---|---|---|---|
+| 1 | compare `level() > height` instead of mass | gate 1 alone | inert |
+| 2 | spill at the INFLOW's composition | gate 4 alone | inert (the demo is water only) |
+| 3 | capacity at the START-of-tick composition | a mixing case of gate 2 on a fixture; inert on the demo | inert (water only) |
+| 4 | spill before the boil-off | gate 6's boiling fixture alone | inert (nothing boils) |
+| 5 | overflow edge found by kind or by incidence, not by owner | gate 6's two-tank fixture | inert (one spilling tank) |
+| 6 | rate not cleared on a tick nothing spills | gate 7 alone | inert (the demo never leaves the brim) |
+| 7 | rate written as mass per tick, not per second | gate 5 alone | **inert at `dt = 1`** |
+| 8 | tank temperature recomputed from undebited energy after the spill | gates 4 and 3 | yes |
+| 9 | overflow edges built before the vents | gate 9 alone | inert |
+| 10 | the `initial_level_m > height_m` refusal deleted | gate 8 alone | inert |
+| 11 | the overflow edge left in the solve (an ordinary zero-bore pipe) | every tank plant fails on tick 1 | yes |
+| 12 | the owner does not skip its own overflow in the inflow loop | nothing | inert |
+
+Mutation 3 exposed a gap in gate 2 as first written: the demo is water only, so
+its capacity never changes. Gate 2 therefore carries a mixing case on a fixture:
+a tank at its brim fed a different liquid, whose mass must equal `ρ(x_end)·A·H`
+bit for bit. **Mutation 12 is predicted uncaught on purpose.** The edge carries
+the solve's zero at that point in the tick, so the skip is a statement of
+ownership with no numerical effect. It is kept for the same reason the hold check
+was kept in §26.
+
+### Deferred, with what un-defers each
+
+- **B29 — a tank that runs dry creates mass** (premise 4). A gap, not a
+  deferral: it was never argued, and it is live on two shipped plants.
+  Recommended as the next milestone. A fix must decide what an empty tank does to
+  its outlet inside the solve.
+- **B30 — overflow to a destination** (an `overflow_to` naming a tank, a bund or a
+  slop drum). It needs the evaluation-order sort that vents already use.
+  Un-defers with a plant that recovers its spill.
+- **B31 — a finite overflow**: a weir or nozzle law that lets the level rise above
+  the brim. Un-defers with a frontend that must show a tank overtopping faster
+  than its overflow can carry, or a plant whose inflow exceeds any plausible
+  nozzle.
+- **B32 — a roofed tank that pressurises when full.** Un-defers with a closed
+  liquid holdup a plant needs.
+- **B33 — what the spilled pool does**: evaporation, ignition, a fire on the
+  node. It depends on B7 (combustion). Un-defers with a scenario that must burn
+  or evaporate a spill.

@@ -6630,3 +6630,54 @@ earlier assertion fired first.
 **The overflow sweep (B28) found no shipped plant above its own tank height.** The
 closest is `crude_column`'s distillate tank at 86% of its height after 6 000
 ticks, still rising.
+
+## M23 — tank overflow: the brim spills; ledger row B28; opened on a decision that turned out to be a measurement
+
+Taken on the user's decision (2026-09-30), from a short list: a tank past its
+declared height kept filling, so the engine could report 15 m of liquid in a 10 m
+shell. Building the note found that B28 was past its own trigger all along — six
+shipped plants overflow between 11.7 and 31.3 simulated minutes, just past the
+corpus's 6 000 ticks. Its scope is **an ideal overflow on every tank, spilling to
+the atmosphere through an edge the loader builds and the engine writes.**
+
+### M23.0 — Scoping + design note — **LANDED** 2026-09-30
+
+The note is DESIGN §27: seven forks, ten gates, twelve mutations, no code. Four
+premises were measured first, in a probe worktree (`W:\temp\claude\m23\wt`,
+numbers in `W:\temp\claude\m23\measurements.md`). Five things to know before the
+building slice.
+
+**Six plants overflow once the run is long enough.** `crude_column`'s distillate
+tank crosses its 12 m brim at tick 7 036 and reads 49.5 m by tick 30 000. The
+corpus never saw it because it stops at 6 000 ticks, and B28's trigger names no
+horizon.
+
+**A tank that runs dry creates mass, and that is a separate, live defect (new row
+B29).** `tank_flow_control` is a closed plant holding 179 640 kg; its supply tank
+empties by tick 13 400, the pump keeps delivering, and the plant holds 379 789 kg
+by tick 30 000. Its own "overflow" at tick 14 978 is that created mass. Not fixed
+here, because it is a question about the hydraulic solve, and overflow is not.
+Recommended as M24.
+
+**The spill is an edge, by the user's decision, and that costs eleven plants a
+rounding-level shift.** An idle overflow edge changes nothing by itself; a NEW
+atmosphere node moves the solvers' cold seed (the mean of the pinned pressures).
+Fifteen plants stay byte-identical; eleven move by at most 4.9e-11 on Newton and
+1.7e-8 on the game solver, with no iteration count moved. The overflow edges must
+be built after the boil-off vents, or the vents are renumbered.
+
+**Full is a MASS comparison, in the loader's own arithmetic.** `m > ρ·A·H`, with
+one owner shared with the loader's `ρ·A·h`, so a tank declared exactly full ties
+exactly. A level comparison would spill a rounding error forever on the tanks
+whose declared level reads one ULP high.
+
+**Mass books close per TANK, not per plant.** On the probe each tank's balance
+closes to 1.1e-16 relative per tick; the plant-wide sum misses by the solvers'
+own node imbalance (3.7e-3 kg over the run on the game solver), which measures
+the solver, not the spill. And the gate's control is that no tank touches the
+empty-tank clamp inside its window, because there the books close on created mass.
+
+The demo is `scenarios/tank_overflow.toml`: `tank_overfill_trip.toml` without its
+`[[trips]]` table, spilling from tick 2 859, 19 454.49 kg by tick 6 000 on the
+probe. One more premise the building slice inherits: nothing validated a tank's
+geometry at load, and fork 5 now refuses a tank started over its own brim.

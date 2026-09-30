@@ -188,6 +188,34 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M23 is OPEN (2026-09-30): tank overflow — `docs/DEFERRED.md` row B28.**
+Taken on a DECISION (the user's), and it turned out to be past its trigger all
+along: run past the corpus's 6 000 ticks and **six shipped plants overflow**, the
+first (`crude_column`'s distillate tank) at tick 7 036, 11.7 simulated minutes.
+**M23.0 landed 2026-09-30** — DESIGN §27, seven forks, ten gates, twelve
+mutations, no code; numbers in `W:\temp\claude\m23\measurements.md`. M23.1
+builds it. Five things to know first.
+- **The design:** an ideal overflow on EVERY tank. Anything above `ρ·A·H` at the
+  end of a tick (after the boil-off) leaves through a loader-built,
+  engine-written edge `<tank>__overflow`, `LeakRole::Overflow { owner }`, to the
+  plant's first `Atmosphere`, or to a new `overflow_atmosphere` node. The edges
+  are built AFTER the vents, or the vents renumber. "Full" is a MASS comparison
+  sharing the loader's `ρ·A·h`, so a tank declared full ties exactly.
+- **The cost, accepted by the user:** a new atmosphere node moves the solvers'
+  cold seed. Fifteen plants stay byte-identical; eleven move by at most 4.9e-11
+  on Newton and 1.7e-8 on `simple`, with no iteration count moved. **The seed
+  shift also turns M20.1's dead-leg residual (−1.547e-11) into exactly 0.0**, so a
+  flow-control test's control arm needs re-premising.
+- **Mass books close per TANK (1.1e-16), not per plant**: the plant-wide sum
+  misses by the solvers' own node imbalance.
+- **New row B29, a GAP and live: a tank that runs dry CREATES mass**
+  (`.max(0.0)` on the inventory). `tank_flow_control`, a closed 179 640 kg plant,
+  holds 379 789 kg by tick 30 000, and its own "overflow" is that created mass.
+  Not M23's (it is a hydraulic question); recommended as M24.
+- Nothing validated a tank's geometry at load; fork 5 refuses a tank started over
+  its brim, and non-positive area or height. Demo to come:
+  `scenarios/tank_overflow.toml` = `tank_overfill_trip.toml` without its trip.
+
 **M22 is CLOSED (2026-09-29): interlocks and trips — `docs/DEFERRED.md` row E6,
 now struck.** Taken on a DECISION (the user's, on gameplay grounds). **M22.0**
 wrote DESIGN §26 (eight forks, nine gates, sixteen mutations, no code) and
