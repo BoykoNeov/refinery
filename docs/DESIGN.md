@@ -15128,6 +15128,14 @@ the finite overflow as B31 and the roofed tank as B32. The ledger is right.
 - The demo's own numbers: 19 454.4898 kg spilled by tick 6 000 on Newton,
   19 454.4904 on the game solver, 6.0153 kg/s at the end. Worst iterations 10
   (Newton), 8 (game).
+- **Premise 1's six plants were run past their brims on the built engine**, which
+  no gate does: all twenty-eight files, 30 000 ticks, both fidelities, snapshots
+  every 100. Every run exits cleanly, no tank is ever above its capacity, and each
+  of the six spills from the first snapshot after premise 1's crossing tick
+  (`crude_column` 7 100, 13 900, 22 700; the cascade 7 200; the three boil-off
+  plants 7 800, 15 500, 24 400, the recovery drums included; `fcc_plant`'s
+  `gas_drum` 18 900). `tank_flow_control` never spills: after M24 there is no
+  created mass to spill.
 
 **9. The mutations** — §27's table plus three (1b, 13, 14), each run alone against the whole
 workspace with `--no-fail-fast`, every file restored byte for byte and the tree

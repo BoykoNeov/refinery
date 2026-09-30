@@ -1417,8 +1417,11 @@ impl Engine {
             // vent needs the holdup update that precedes it.
             //
             // Written on every tick a vent exists, including the ticks nothing
-            // boils: a stale rate left on the edge would keep venting mass that
-            // the inventory is no longer losing.
+            // boils. The FLOW could not go stale anyway — step 2 writes the
+            // solve's zero onto every engine-written edge at the top of each
+            // tick (measured by M23.1's mutation 6, docs/DESIGN.md §27) — so the
+            // zero here is a second guard. The `latent` it clears is not: step 2
+            // never touches it.
             if let Some(eid) = vent {
                 // The latent term is the FOURTH thing written here and it is
                 // cleared on the ticks nothing boils, for the same reason the
@@ -1474,8 +1477,11 @@ impl Engine {
 
             // The overflow, written whole and written here, after the holdup
             // update it reports, for the vent's reasons. Written on EVERY tick
-            // the edge exists, as `0.0` when nothing spills: a stale rate would
-            // keep booking a spill the tank has stopped making. `latent` is
+            // the edge exists, as `0.0` when nothing spills. A stale rate cannot
+            // survive in any case — step 2 wrote the solve's zero onto this edge
+            // at the top of the tick, which is why M23.1's mutation 6 (write only
+            // when spilling) is inert — so this zero is a second guard, kept so
+            // the edge's four fields are always written together. `latent` is
             // always `None` — a spill is liquid (docs/DESIGN.md §27 fork 4).
             if let Some(eid) = overflow {
                 let (flow, composition, temperature) = spilled.unwrap_or_else(|| {
