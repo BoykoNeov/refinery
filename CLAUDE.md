@@ -219,7 +219,9 @@ ten gates, eleven mutations, no code; numbers and a working prototype in
   case to watch).
 - **Nothing in the corpus runs dry inside 6 000 ticks**, so the prototype was
   byte-identical on all twenty-six plants with no iteration count moved, and the
-  generated plants build no tank. Demo to come: `scenarios/tank_runs_dry.toml`.
+  generated plants build no tank. Demo to come: `scenarios/tank_runs_dry.toml`,
+  a TWO-cut slate with no fire and no ambient `UA` on its buffer tank (§28's
+  "Corrected before building": a water-only demo cannot see a mixture error).
 
 **M23 is OPEN (2026-09-30): tank overflow — `docs/DEFERRED.md` row B28.**
 Taken on a DECISION (the user's), and it turned out to be past its trigger all

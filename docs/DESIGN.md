@@ -15318,10 +15318,10 @@ set runs dry inside 6 000 ticks, so without it CI would never exercise any of th
 | 2 | never un-starve | gate 4 | inert |
 | 3 | supply enters the residual with the wrong sign | every starving gate | yes |
 | 4 | sweep keeps a starved tank inertial (no pass-through) | gate 3 | yes |
-| 5 | `heat_load` added in the starved mix as well | an energy case of gate 3 with a fire on the tank | inert |
+| 5 | `heat_load` added in the starved mix as well | gate 3b (outflow equals the unheated mix; see "Corrected before building") | inert |
 | 6 | `base_anchors` counts a starved tank | gate 10 | inert |
 | 7 | the tripwire removed (a silent clamp again) | gate 6 | inert |
-| 8 | a starved tank debited at its start-of-tick composition | gate 3's per-component book, on a two-component demo | yes |
+| 8 | a starved tank debited at its start-of-tick composition | gate 3's per-component book, on the two-cut demo (see "Corrected before building") | yes |
 | 9 | a starvation-only repeat refused instead of accepted | gate 5 | inert |
 | 10 | warm start committed from a rejected pass | nothing, predicted | inert |
 | 11 | starvation state carried from the last tick | nothing on the corpus, predicted; a cost only | inert |
@@ -15329,6 +15329,45 @@ set runs dry inside 6 000 ticks, so without it CI would never exercise any of th
 **Mutations 10 and 11 are predicted uncaught.** Both change the path, not the
 answer. They are kept in the table so that the pass records that, rather than
 leaving it unsaid.
+
+### Corrected before building (M24.0, the same day)
+
+A review of the note as committed found two of its gates and one mutation row
+contradicting the rest of it. Corrected here, before M24.1, rather than found by
+building.
+
+**1. The demo carries TWO components, and gate 3's per-component book lives on
+it.** Fork 7 described the demo as premise 4's fixture re-sized, and that fixture
+is water only. On a one-component slate every composition is `[1.0]`, so
+mutation 8 (a starved tank debited at its start-of-tick composition) changes
+nothing and gate 3's per-component book has nothing to test. The mutation table
+said "yes, on a two-component demo", which fork 7 never committed to. It is §27's
+mutation 3 lesson again. **So `tank_runs_dry.toml` declares a two-cut slate, and
+its feed is a different cut from what the tank starts with**, so the pass-through
+mixture visibly changes while the tank is dry and mutation 8 moves published
+bytes.
+
+**2. Gate 3's energy book requires a tank with no heat term, and says why.**
+Fork 4 and row B35 say heat into a tank below the thermal floor is not conserved,
+by design. `heat_load` for a tank is `heat_input` PLUS its ambient exchange
+`UA·(T_amb − T)`, so gate 3's energy book closes only on a tank with no fire and
+`ambient_exchange_ua_w_per_k = 0`. The demo's buffer tank declares both, and
+gate 3 asserts them as its premise rather than finding out.
+
+**Mutation 5 needs a different gate, because no energy balance can see it.** With
+a fire on a dry tank, the correct engine does not close its energy book either
+(B35), so an energy case cannot separate the correct engine from one that also
+puts the heat into the passing stream. What separates them is the stream itself:
+**on a starved tank carrying a fire, the outflow's temperature equals the
+UNHEATED mix of feed and supply, bit for bit.** The correct engine keeps the heat
+off the stream and the mutation puts it on. This is a fixture of its own, gate 3b,
+and mutation 5's row now names it.
+
+**3. The Godot binding owes no build.** Nothing in `crates/godot-ext` constructs
+or reads a `HydraulicSolution` (grepped), and the snapshot's shape does not
+change: a dry tank publishes a pressure in the existing field. So the
+feature-gated build and clippy are not owed at M24.1 unless the build slice
+changes the snapshot after all.
 
 ### Deferred, with what un-defers each
 
