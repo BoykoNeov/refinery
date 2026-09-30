@@ -15880,8 +15880,11 @@ the rules a valve already has carry over word for word:
 - **Primary in MANUAL**: a human moves the secondary's setpoint with `SetSetpoint`,
   which is what "the primary in MANUAL" means on a DCS, and the primary's faceplate
   tracks it through `actuator_position`.
-- **Secondary not in AUTO (a human put it in MANUAL, or a trip did): the cascade is
-  OPEN.** The secondary is not using its setpoint, so a primary writing it would
+- **The cascade is OPEN whenever the secondary will not act this tick**: it is not
+  in AUTO (a human put it in MANUAL, or a trip did), OR it has no measurement — an
+  outlet before the first tick or while stagnant (§23 fork 2), a pipe's flow before
+  the first tick (§24). Pass 1 already knows both before pass 2 runs. Either way
+  the secondary is not using its setpoint, so a primary writing it would
   integrate against a plant that is not answering. The primary writes nothing,
   its faceplate tracks the secondary's setpoint, and **its memory is re-seeded every
   open tick by back-calculation against that tracked position**. On closing
@@ -15899,7 +15902,17 @@ the rules a valve already has carry over word for word:
   a primary has none, and cannot move equipment, so it is exempt, and the
   secondary's own refusal is the one that holds the valve.
 - The primary in AUTO with its secondary in MANUAL is a legal state from load or by
-  command, and is simply open.
+  command, and is simply open. **So is tick 1 of the demo**: the outlet does not
+  exist at load, the secondary writes nothing, and the primary re-seeds rather than
+  updates (1 tick later to settle by hand, 2 578 against 2 577).
+- **Why "no measurement" opens it too, measured** (`stall_probe.py`): the demo
+  settled, flow stopped for 300 ticks, and the tank setpoint raised to 62 °C when it
+  stops. Opening only on "not AUTO" lets the primary integrate the whole stall and
+  resume with the outlet setpoint at the **65 °C range top** (from 60.0), and the
+  tank overshoots to 62.025 °C. Opening on "will not act" resumes at 60.0 °C and the
+  tank does not overshoot (61.9995 °C peak). During the demo's own startup the
+  difference is small (64.61 against 65.00 °C at resume), because the primary is
+  already near its clamp.
 
 ### Fork 5 — which pairings, and the primary's sign
 
@@ -15913,7 +15926,7 @@ where the loader checks it in one hop:**
 
 | outer measures | inner measures | admitted when | outer's action |
 |---|---|---|---|
-| a tank's temperature | a furnace's or cooler's outlet temperature | the unit's outlet pipe ends at that tank | **reverse**, required (a hotter outlet setpoint heats the holdup, whichever unit it is) |
+| a tank's temperature | a furnace's or cooler's outlet temperature | the unit's outlet pipe ends at that tank | **reverse**, required (a hotter outlet setpoint heats the holdup, whichever unit it is) — the cooler case on a running fixture (gate 9) |
 | a tank's level | the flow on a valve's own pipe (§24) | the valve's inlet pipe starts at the tank (a drain) | **direct**, required |
 | a tank's level | same | the valve's outlet pipe ends at the tank (a fill) | **reverse**, required |
 
@@ -15984,8 +15997,11 @@ where the loader checks it in one hop:**
 2. **Startup, on the demo**: the tank is inside 0.06 K of 60 °C from a tick within
    a stated band of the hand model's 2 577; the outlet never exceeds 65 °C by more
    than the inner loop's measured overshoot; the outer output sits at 1 on some
-   tick (the clamp is reached). Controls: the two one-loop files, run in-test, peak
-   the outlet at 66.92 °C and fail to reach the band by 6 000, respectively.
+   tick (the clamp is reached). Controls, run in-test and read AT the cascade's own
+   settling tick: the tank-loop file peaks its outlet at 66.92 °C, and the
+   outlet-loop file's tank reads 58.32 °C there (engine, tick 2 580), 1.7 K outside
+   the band. Not at tick 6 000, where it reads 59.939 °C and misses the band by
+   0.001 K.
 3. **Same-tick hand-off.** On a settled demo, step the PRIMARY's setpoint and
    compare with an untouched twin: the furnace duty differs on the very next tick.
    Under "secondary first" it is bit-identical on that tick. Repeated on a fixture
@@ -15998,6 +16014,9 @@ where the loader checks it in one hop:**
    furnace; the primary writes nothing, its faceplate equals the secondary's
    setpoint position to the bit, and at closing the secondary's setpoint moves by at
    most one tick of control (hand 0.004 K), not the untouched memory's 1.37 K.
+   Closed in the engine's order: `SetControllerMode` seeds the secondary against
+   its CURRENT (frozen) setpoint in `apply`, and the next tick's primary moves it
+   (hand, in that order: −0.0039 K).
 7. **A trip opens the cascade**, on the level fixture: a trip on the flow loop's
    valve puts the secondary in MANUAL, and the primary tracks from that tick.
 8. **Refusals, each by its own message**: `SetSetpoint` on a secondary under an AUTO
@@ -16008,9 +16027,18 @@ where the loader checks it in one hop:**
    under a reverse outer (the pairing the demo does not run); a unit two hops away; a holdup inner
    loop.
 9. **The level pairing, on a fixture** from `tank_level_control.toml`: a drain case
-   (direct) and a fill case (reverse) each hold the level.
+   (direct) and a fill case (reverse) each hold the level. **The cooler pairing, on
+   a fixture** from `tank_temperature_control.toml` (the heater plant's mirror: 80 °C
+   feed, the cooler's outlet pipe ends at the tank): the outlet loop DIRECT inside,
+   the tank loop REVERSE outside over 55–80 °C (the feed is the top: a cooler
+   cannot heat), `gain_per_k = 0.1331`. By hand: inside 0.06 K of 60 °C from tick
+   2 580, the outer at a clamp on 69 ticks, the mirror of the demo.
 10. **The wire form, on the bytes**: `"drives"` on the primary only; no key on any
     loop of the six pre-M25 loop plants.
+11. **A stall opens the cascade**, on a fixture of the demo with a valve on its feed
+    line: shut it on a settled plant and raise the tank setpoint; the primary writes
+    nothing while the outlet is stagnant, and on reopening the outlet setpoint
+    resumes where it stood (hand: 60.0 °C, against 65.0 °C under the narrow rule).
 
 ### What must not change, stated as a prediction that can be wrong
 
@@ -16038,6 +16066,7 @@ Each with the size of what it changes, estimated first.
 | 10 | `drives` serialized when `None` | six loop plants' bytes | gate 10 (and gate 1) |
 | 11 | a trip does not open the cascade (primary treats a tripped secondary as AUTO) | primary integrates while the valve is held | gate 7 |
 | 12 | pass-2 partition applied, but pass 3 also writes the loop actuator | a second write of the same value | **predicted inert**; stated as such |
+| 13 | the cascade opens only when the secondary is not in AUTO (no-measurement ticks ignored) | 5 K of outlet setpoint on resuming from a stall (hand); +1 tick of settling on the demo | gate 11 |
 
 ### Deferred, with what un-defers each
 
@@ -16053,3 +16082,23 @@ Each with the size of what it changes, estimated first.
 - **Setpoint tracking in MANUAL** — a secondary whose setpoint follows its
   measurement while a human drives it, so closing needs no re-seed at all. A DCS
   option, not physics. Recorded here, no row.
+
+### Corrected before building (M25.0, the same day)
+
+A review of the note as first committed found three places where it would have
+misled the building slice. All three are fixed above; this list says what changed.
+
+- **"Open" was too narrow.** It opened the cascade only when the secondary was not
+  in AUTO, and missed the secondary in AUTO with nothing to measure, which writes
+  nothing (§23). A primary would integrate through a flow stoppage and resume at
+  its range top: 5 K of outlet setpoint on the stall probe. Fork 4 now opens on
+  "will not act this tick"; gate 11 and mutation 13 are new; tick 1 of the demo is
+  an open tick (settling 2 577 → 2 578, by hand). Gate 6's closing is now written
+  in the engine's order: the first probe seeded the secondary against the
+  primary's NEW setpoint, which `apply` cannot do.
+- **The scope rule contradicted itself.** Pressure and vessel pairings were refused
+  for having no running fixture, while the cooler pairing was admitted with only a
+  load check, and the cooler is where a wrong sign would hide (outer reverse over
+  a direct inner loop). It now has a running fixture (gate 9), predicted by hand.
+- **Gate 2's outlet-loop control passed by 0.001 K** at tick 6 000. It is read at
+  the cascade's own settling tick, where it misses by 1.7 K.

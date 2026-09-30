@@ -191,8 +191,8 @@ extension removed too — ignore it, the file it writes is what matters.
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
 **M25 is OPEN (2026-09-30): cascade control — `docs/DEFERRED.md` row E2, taken on
-a DECISION (the user's).** **M25.0 landed 2026-09-30**: DESIGN §29, eight forks, ten
-gates, twelve mutations, no code. **M25.1 (build it) is next.** Read §29 before
+a DECISION (the user's).** **M25.0 landed 2026-09-30**: DESIGN §29, eight forks, eleven
+gates, thirteen mutations, no code (read its "Corrected before building"). **M25.1 (build it) is next.** Read §29 before
 touching `ControlLoop::actuator` or `run_control_loops`. Five things to know.
 - **A primary declares `actuator = { loop = "…" }`**, and its output is the
   secondary's setpoint as a fraction of `range_min_*`/`range_max_*` (the secondary's
@@ -204,8 +204,9 @@ touching `ControlLoop::actuator` or `run_control_loops`. Five things to know.
   secondary updates; pass 1 is unchanged, so it is not an algebraic loop. Two levels
   only: a driven loop may not drive, which is also the cycle refusal.
 - **No new `ControlMode`.** A primary in AUTO owns its secondary's setpoint
-  (`SetSetpoint` refused); a secondary not in AUTO (human or trip) OPENS the cascade:
-  the primary writes nothing, tracks, and re-seeds its memory every tick.
+  (`SetSetpoint` refused); a secondary that will not act this tick (not in AUTO, by
+  a human or a trip, OR nothing to measure: tick 1, a stagnant outlet) OPENS the
+  cascade: the primary writes nothing, tracks, and re-seeds its memory every tick.
 - **Admitted pairings**: a tank's temperature over the furnace or cooler whose outlet
   pipe ends at it (outer REVERSE), and a tank's level over the flow on a valve whose
   inlet starts at the tank (drain, DIRECT) or whose outlet ends at it (fill,

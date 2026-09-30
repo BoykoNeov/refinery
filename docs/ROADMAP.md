@@ -6836,7 +6836,8 @@ flow on a valve beside it.
 
 ### M25.0 — Scoping + design note — **LANDED** 2026-09-30
 
-The note is DESIGN §29: eight forks, ten gates, twelve mutations, no code. The
+The note is DESIGN §29: eight forks, eleven gates, thirteen mutations, no code;
+read its "Corrected before building" first. The
 probes are in `W:\temp\claude\m25\`: an engine binary that sets fires on the two
 single-loop heater plants, and a hand model of the cascade that reproduces both
 single loops on the engine to the tick. Five things to know before the building
@@ -6848,7 +6849,7 @@ takes a 0.3 MW heater fire to +0.82 K for 2 000 ticks, and the outlet loop leave
 tank fire at +5.04 K for good. The cascade (by hand) takes the heater fire to
 +0.075 K and back in 143 ticks, and recovers the tank fire as the tank loop does.
 No shipped plant has a tank with both a feed and a metered drain, so the level pair
-ships on a fixture.
+ships on a fixture, and the cooler pair on a fixture of the heater plant's mirror.
 
 **The link is declared on the primary, and its output is a fraction of a range.**
 `actuator = { loop = "…" }` and `range_min_*`/`range_max_*` in the secondary's own
@@ -6862,8 +6863,10 @@ this tick's target with no added lag, and it is not an algebraic loop because bo
 measure the start-of-tick state. "A driven loop may not drive" is both the depth
 limit and the cycle refusal.
 
-**No new mode: the cascade is OPEN when the secondary is not in AUTO**, by a human
-or by a trip. The primary then writes nothing and re-seeds its memory every tick
+**No new mode: the cascade is OPEN when the secondary will not act this tick**:
+not in AUTO (a human or a trip), or nothing to measure (tick 1, a stalled outlet).
+Opening on "not AUTO" alone would let the primary integrate through a flow
+stoppage and resume 5 K high (by hand). The primary then writes nothing and re-seeds its memory every tick
 against the secondary's setpoint, so closing moves that setpoint by 0.004 K (by
 hand) where an untouched memory would move it 1.37 K. `SetSetpoint` on a secondary
 is refused while its primary is in AUTO, as a valve's opening is.
