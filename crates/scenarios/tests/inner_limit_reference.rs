@@ -377,7 +377,7 @@ fn a_fire_that_drives_the_furnace_to_zero_holds_its_primary_at_the_bottom() {
 /// the target, out of the limit, though the furnace began the tick at full fire.
 /// A hold blocking both directions would freeze it.
 ///
-/// **What the hold costs, stated rather than hidden** (§31, "the release"): it
+/// **What the hold costs, stated rather than hidden** (§31, correction 2): it
 /// parks the primary's memory at the held position less the standing error's
 /// proportional share, so the step's proportional kick lands lower than the
 /// unfixed rule's, which parks it at the range top. The tank then dips to

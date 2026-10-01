@@ -16598,8 +16598,10 @@ demo's 65 °C range top needs 1.50 MW of its furnace's 2 MW. **This milestone is
 decision**, the user's, taken on 2026-10-01 ("the small fixes first, then E16"). It
 was specified and built in one slice. The probes are in `W:\temp\claude\m28\`:
 `handsim28.py` (M25's hand model of the heater plant, with the inner actuator able
-to saturate and three treatments of the primary), `summ.py`, and an unfixed engine
-built in a worktree under `old\`.
+to saturate and three treatments of the primary), `summ.py`, `mutate.py`, and
+`m28_probe.rs`. The unfixed engine's numbers came from a worktree of the M27.2
+commit built under `old\` and removed after measuring; `m28_probe.rs` is the
+source of gate 3's unfixed numbers, kept beside them.
 
 ### The premise, measured before any fork
 

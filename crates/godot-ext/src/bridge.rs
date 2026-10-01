@@ -158,8 +158,10 @@ enum Referent {
     /// `LoopId` up through `PlantGraph::control`/`control_mut`, which return
     /// `Option` and refuse an out-of-range id as an invalid command. There is no
     /// panic for a guard to stand in front of. It carries its id anyway so that
-    /// the day `core` gains a loop lookup that indexes, this arm is where the
-    /// guard goes rather than a `_` nobody revisits.
+    /// the match stays wildcard-free. Since M27.1 the guard against a loop lookup
+    /// that indexes belongs in `Engine::check_command_ids`, which refuses an
+    /// unknown node or edge id the same way; this arm would add only an
+    /// `unknown_id` code for loops.
     Loop(LoopId),
     /// A trip (M22, docs/DESIGN.md §26). Forwarded unchecked for `Loop`'s
     /// reason: `Engine::apply` looks a `TripId` up through `PlantGraph::trip`,
