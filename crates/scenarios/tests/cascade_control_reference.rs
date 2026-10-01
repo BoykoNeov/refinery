@@ -20,7 +20,7 @@
 
 use refinery_core::graph::{ControlMode, ControlledValue, LoopId, NodeKind};
 use refinery_core::snapshot::{Command, ControlSnapshot};
-use refinery_core::units::{Kelvin, KgPerSec, Watt};
+use refinery_core::units::{Kelvin, Watt};
 use refinery_core::Engine;
 
 const DEMO: &str = include_str!("../../../scenarios/furnace_cascade_control.toml");
@@ -1042,7 +1042,6 @@ fn a_level_is_held_through_a_drain_flow_and_through_a_fill_flow() {
             "{label}: the primary must have moved the flow target off its declared 10 kg/s, \
              got {target}"
         );
-        let _ = KgPerSec(target);
     }
 }
 
