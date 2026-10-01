@@ -22,7 +22,11 @@
 //! - Jacobian: analytic. With branch conductance `g_e = ρ·dQ/d(dp) ≥ 0`, the
 //!   system is `J = −L`, a weighted graph Laplacian: symmetric, negative-
 //!   definite once each connected component has a pinned node ⇒ unique
-//!   solution. faer dense LU (networks are small; sparse is a later upgrade).
+//!   solution — **except in a relief valve's accumulation band**, where its
+//!   opening rises with its own inlet pressure and that derivative lands in one
+//!   column only (M26, docs/DESIGN.md §30). `J` is then not symmetric, which the
+//!   solve never assumed: faer's partial-pivot dense LU (networks are small;
+//!   sparse is a later upgrade).
 //! - Damping: halve the Newton step until ‖R‖_∞ decreases, max 8 halvings.
 //! - Convergence, per node: |R_n| < tol_abs + tol_rel·scale_n, where scale_n is
 //!   the largest |ṁ| on that node's OWN incident active edges (M9.2,
@@ -352,9 +356,16 @@ fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimEr
 /// A CAPACITIVE node adds `−C·(P − Pⁿ)/dt` to its own residual and `−C/dt` to its
 /// own diagonal, through the shared `network::accumulation` so the Simple sweep
 /// cannot end up solving a different fixed point. The term touches nothing
-/// off-diagonal: `m(P)` is a function of that node's pressure alone, so `J`
-/// stays the symmetric weighted Laplacian it was, with a strictly more negative
-/// diagonal — better conditioned, not merely still invertible.
+/// off-diagonal: `m(P)` is a function of that node's pressure alone, so it adds
+/// no asymmetry and makes the diagonal strictly more negative — better
+/// conditioned, not merely still invertible.
+///
+/// A RELIEF valve's outlet edge adds one more term, and that one is not
+/// symmetric: its opening is a function of its own inlet pressure, so
+/// `ṁ·k` (`k = CompiledEdge::relief_opening_log_slope`) belongs in the source's
+/// column alone. Zero outside the accumulation band, and skipped when zero, so a
+/// plant whose PSV never lifts assembles bit for bit what it did before M26
+/// (docs/DESIGN.md §30).
 ///
 /// This is what makes one solve an implicit-Euler step of a DAE rather than a
 /// steady state (DESIGN §3a fork 2). The convergence scale deliberately excludes
@@ -399,6 +410,17 @@ fn assemble(
         let ti = idx.get(&c.tgt).copied();
         for end in [si, ti].into_iter().flatten() {
             scale[end] = scale[end].max(mdot.abs());
+        }
+        // The relief opening's share of `∂ṁ/∂P_src`, which `g` cannot carry
+        // because the branch froze the opening. Source column only.
+        let opening_term = mdot * c.relief_opening_log_slope;
+        if opening_term != 0.0 {
+            if let Some(s) = si {
+                jac[s][s] -= opening_term;
+                if let Some(t) = ti {
+                    jac[t][s] += opening_term;
+                }
+            }
         }
         // R_src -= ṁ (outgoing), R_tgt += ṁ (incoming); J = −L.
         if let Some(s) = si {

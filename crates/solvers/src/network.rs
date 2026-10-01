@@ -10,8 +10,8 @@
 //! physics or the boundary classification.
 
 use crate::elements::{
-    fold_gas_valve, pipe_resistance, relief_opening, specific_heat_ratio_factor, QuadraticBranch,
-    CHOKE_BLEND, ORIFICE_CD,
+    fold_gas_valve, pipe_resistance, relief_opening, relief_opening_slope,
+    specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
 };
 use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
@@ -51,6 +51,17 @@ pub struct CompiledEdge {
     pub rho: f64,
     /// True if the branch can carry flow (α finite & > 0); false = closed.
     pub conducts: bool,
+    /// `d ln ṁ / d P_src` [1/Pa] through a relief valve's OPENING, which the
+    /// branch above holds frozen at the iterate it was compiled at (M26,
+    /// docs/DESIGN.md §30). Newton adds `ṁ·k` to the source column of its
+    /// Jacobian; without it, a PSV partly open on a vessel at a long timestep
+    /// makes every Newton step overshoot by about a whole step (ledger row A14).
+    ///
+    /// `0.0` on every edge that is not a relief valve's outlet, on a relief valve
+    /// outside its accumulation band (the opening's slope is exactly zero there),
+    /// and on one whose opening snapped shut below `OPEN_EPS`. The game fidelity
+    /// never reads it: its sweep and group step use `flow_ddp` alone.
+    pub relief_opening_log_slope: f64,
 }
 
 /// Boundary classification of the graph's nodes for one solve: which nodes pin
@@ -449,6 +460,7 @@ pub fn compile_edge(
             },
             rho: 1.0,
             conducts: false,
+            relief_opening_log_slope: 0.0,
         });
     }
     let upwind_node = if pressures[&src] >= pressures[&tgt] {
@@ -502,6 +514,7 @@ pub fn compile_edge(
             branch,
             rho,
             conducts,
+            relief_opening_log_slope: 0.0,
         });
     }
 
@@ -523,6 +536,10 @@ pub fn compile_edge(
     let elev_head = rho * G * pipe.elevation_change.value();
     let dp = pressures[&src] - pressures[&tgt];
     let mut branch = QuadraticBranch::pipe(k, elev_head);
+    let pipe_alpha = branch.alpha;
+    // A relief valve's `(snapped opening, d opening / d P_src)`, for the log slope
+    // below. Stays `None` on every other edge.
+    let mut relief: Option<(f64, f64)> = None;
 
     match &graph.node(src).kind {
         NodeKind::Pump { h0, a, on } => {
@@ -564,6 +581,21 @@ pub fn compile_edge(
             };
             let opening = &opening;
             let op = if *opening < OPEN_EPS { 0.0 } else { *opening };
+            if let NodeKind::ReliefValve {
+                set_pressure,
+                accumulation,
+                ..
+            } = kind
+            {
+                relief = Some((
+                    op,
+                    relief_opening_slope(
+                        pressures[&src],
+                        set_pressure.value(),
+                        accumulation.value(),
+                    ),
+                ));
+            }
             let rho_rel = rho / RHO_WATER_REF;
             let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);
             branch = match x_t {
@@ -621,13 +653,58 @@ pub fn compile_edge(
     }
 
     let conducts = branch.alpha.is_finite() && branch.alpha > 0.0;
+    let relief_opening_log_slope = match relief {
+        Some((op, slope)) => relief_log_slope(graph, src, pipe_alpha, branch.alpha, op, slope)?,
+        None => 0.0,
+    };
     Ok(CompiledEdge {
         src,
         tgt,
         branch,
         rho,
         conducts,
+        relief_opening_log_slope,
     })
+}
+
+/// A relief valve's `d ln ṁ / d P_src` through its opening [1/Pa] (M26,
+/// docs/DESIGN.md §30).
+///
+/// `ṁ ∝ α_tot^(−½)` with `α_tot = α_pipe + α_v` and `α_v ∝ op^(−2)`, so
+/// `∂ln ṁ/∂op = (α_v/α_tot)/op`, times the opening's own slope `dop/dP_src`.
+/// Exact for a liquid valve, which composes in closed form. For a gas valve
+/// `α_v` is the fold's effective resistance `α_v·(x/x_s)/Y²`, and holding that
+/// ratio fixed while the opening moves is an approximation — 1.208e-5 against a
+/// centred difference's 1.214e-5 at the twin plant's lift. It changes how fast
+/// Newton converges and never where: the line search and the stopping rule both
+/// read the true residual.
+///
+/// `0.0` outside the band (the slope is exactly zero there) and when the opening
+/// snapped shut, where the expression is `0·∞/0`. A non-finite result anywhere
+/// else is an `Err` rather than a quiet zero (rule 5): a NaN here would reach
+/// the LU and be reported as a singular Jacobian, which is the wrong diagnosis.
+fn relief_log_slope(
+    graph: &PlantGraph,
+    src: NodeId,
+    pipe_alpha: f64,
+    total_alpha: f64,
+    opening: f64,
+    opening_slope: f64,
+) -> Result<f64, SimError> {
+    if opening == 0.0 || opening_slope == 0.0 {
+        return Ok(0.0);
+    }
+    // Ohm's law for resistances in series: the valve's share of the total.
+    let log_slope = (total_alpha - pipe_alpha) / total_alpha / opening * opening_slope;
+    if !log_slope.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "relief valve '{}' has a non-finite opening slope d ln ṁ/dP = {log_slope:e} \
+             (opening {opening:e}, d opening/dP = {opening_slope:e} 1/Pa, \
+             α_pipe = {pipe_alpha:e}, α_total = {total_alpha:e})",
+            graph.node(src).name
+        )));
+    }
+    Ok(log_slope)
 }
 
 /// Compile every edge's series branch (pipe ∘ device-at-source), keyed by edge,

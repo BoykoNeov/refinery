@@ -354,6 +354,28 @@ pub fn relief_opening(p_inlet: f64, set_pressure: f64, accumulation: f64) -> f64
     t * t * (3.0 - 2.0 * t)
 }
 
+/// `d(opening)/d(p_inlet)` [1/Pa] of [`relief_opening`]: `6·t·(1 − t)/accumulation`.
+///
+/// **Exactly `0.0` outside the band**, because the smoothstep meets both limits
+/// with a vanishing slope and `t` is clamped before it is used. That is what keeps
+/// a plant whose PSV never lifts bit-identical to the solver before M26: the term
+/// this feeds is skipped when it is zero (docs/DESIGN.md §30 fork 3).
+///
+/// Newton needs it because the opening is frozen into the compiled branch, so
+/// the branch's own `flow_ddp` holds the opening fixed. On a vessel at a long
+/// timestep the missing "opens wider" share is as large as everything else
+/// holding the vessel, and leaving it out makes each Newton step overshoot by
+/// about a whole step (§30, ledger row A14).
+#[inline]
+pub fn relief_opening_slope(p_inlet: f64, set_pressure: f64, accumulation: f64) -> f64 {
+    if !accumulation.is_finite() || accumulation <= 0.0 {
+        // The degenerate step has no derivative to offer; the loader refuses it.
+        return 0.0;
+    }
+    let t = ((p_inlet - set_pressure) / accumulation).clamp(0.0, 1.0);
+    6.0 * t * (1.0 - t) / accumulation
+}
+
 /// Fold a gas valve into the pipe it discharges through, as ONE
 /// `QuadraticBranch` whose valve resistance is frozen at the current iterate.
 ///
