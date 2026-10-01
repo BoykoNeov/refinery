@@ -191,6 +191,15 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M26 is OPEN (2026-10-01): Newton's missing relief slope — `docs/DEFERRED.md`
+row A14.** Taken on a DECISION (the user's). **M26.0 landed 2026-10-01**: DESIGN
+§30, five forks, six gates, seven mutations, no code. A14's "two relieving
+vessels" was wrong: a PSV's opening is frozen into its branch and Newton's
+Jacobian omits the "opens wider" derivative, so on a vessel at a long timestep
+each step overshoots by about a whole step and Armijo accepts it. The fix is that
+one term, analytic, on relief edges only, exactly zero outside the band. M26.1
+builds it.
+
 **M25 is CLOSED (2026-10-01): cascade control — `docs/DEFERRED.md` row E2, now
 struck.** Taken on a DECISION (the user's). **M25.0** wrote DESIGN §29 (eight forks,
 eleven gates, thirteen mutations, no code); **M25.1 landed 2026-10-01** and built it.

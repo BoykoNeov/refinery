@@ -6914,3 +6914,45 @@ rule's deletion is caught by its message only: every admitted pairing puts the
 primary on a tank, so fork 5's holdup-inner refusal also refuses any chain, any
 mutual pair and any self-link. The depth rule becomes load-bearing with E18. The
 godot-feature build and clippy were run and are clean.
+
+## M26 — Newton's missing relief slope: ledger row A14; opened on a decision
+
+Taken on the user's decision (2026-10-01), from a short list. Nothing was past its
+trigger. A14 was the recommendation because it is the one row where the engine
+gives no answer on a plant someone could reasonably write: the shipped
+`relief_twin_vessels.toml` with `dt = 1.0` fails on Newton at tick 17. Its scope is
+**that failure and its cause**, not Newton's convergence on gas plants in general.
+
+### M26.0 — Scoping + design note — **LANDED** 2026-10-01
+
+The note is DESIGN §30: five forks, six gates, seven mutations, no code. The probes
+are in `W:\temp\claude\m26\`: an instrumented worktree (`wt`, env `A14=1` traces
+every Newton iteration, `A14FD=1` swaps in a centred finite-difference Jacobian,
+`A14LIFT=1` adds only the opening term), the probe plants under `probe`, and the
+corpus and proptest baselines recorded before any edit. Four things to know before
+the building slice.
+
+**The row's mechanism was wrong.** "Two relieving vessels" is not it: the twin's
+drum alone at `dt = 1.0` crawls through its lift tick in 19 iterations, and
+`relief_blowdown` at `dt = 1.0` in 20 — both under the cap of 50, so nobody looked.
+The twin only lands its lift on a worse point of the band.
+
+**The cause is one missing derivative.** A PSV's opening is read off its inlet
+pressure and frozen into the branch, and Newton's Jacobian differentiates at that
+frozen opening. On a vessel at a long timestep the missing "opens wider" term is
+as large as everything else holding the drum–PSV pair, so each Newton step
+overshoots by nearly a whole step (ratio −0.855 measured) and Armijo accepts every
+one. A finite-difference Jacobian runs the plant for 6 000 ticks; so does adding
+only the opening term, worst 7 iterations against the difference Jacobian's 8.
+
+**The fix is analytic, on relief edges only, and exactly zero outside the band.**
+So 27 of 29 shipped plants are predicted byte-identical on Newton and all 29 on
+`simple`; the two that lift move by at most 1.4e-7 relative, and their total
+iterations fall 2.5×. Raising `ARMIJO_C` or `max_iter` is rejected: both fit a
+constant to one plant, and the first breaks M9.0's relation for an unrelated reason.
+
+**The random plants were already showing it.** On the proptest harnesses, Newton
+gives up on 39 of 305 spur trees today (28 at the cap); with the opening term, 5,
+none at the cap. That is gate 5, and it is the largest effect the slice has.
+
+### M26.1 — The opening term, its gates and the mutation pass — not started

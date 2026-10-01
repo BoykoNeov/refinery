@@ -16229,3 +16229,238 @@ So today the depth rule names the fault rather than being the only thing between
 a chain and the engine; it becomes load-bearing the first time E18 admits a
 primary whose own measurement has no holdup. Gate 8 asserts each refusal's own
 message precisely so that a depth fault keeps being reported as one.
+
+## 30. Newton's missing relief slope — ledger row A14 (M26.0) — specified before building
+
+### What licensed this, stated plainly
+
+**This milestone is a decision**, the user's, taken on 2026-10-01 from a short
+list. Nothing in `docs/DEFERRED.md` was past its trigger. A14 was recommended
+because it is the one row where the engine is known to give no answer on a plant
+someone could reasonably write: `relief_twin_vessels.toml` with one key changed
+(`dt = 0.1 → 1.0`) fails on Newton at tick 17, residual 1.774e-7 kg/s, and the
+shipped file sits at `dt = 0.1` for that reason alone (its header says so).
+
+**The row's mechanism is wrong, and that is the note's first finding.** A14 says
+"two relieving vessels in one connected set". Remove the receiver, its PSV and the
+tie from the same file, keep `dt = 1.0`, and the one-vessel plant does NOT fail —
+but its lift tick (13) takes **19** Newton iterations where every earlier tick
+takes 2, then 10, 9, 8 as the PSV climbs its band. §25's own first table already
+carried the same symptom on a shipped plant: `relief_blowdown` at `dt = 1.0` takes
+**20** on Newton, recorded there under "every one of these plants runs on Newton
+in at most 20 iterations". It was affected; it was under the cap. The second
+vessel only moves the lift onto a worse point of the band. **The subject is a
+relief valve partly open on a vessel at a long timestep.**
+
+### The mechanism, measured before any fork
+
+The trace (an instrumented copy, `W:\temp\claude\m26\wt`, env `A14=1`) shows
+tick 17 is the tick the drum's PSV first lifts. From iteration 8 the iterate
+**alternates sign every step with a fixed ratio of about −0.855**, and the line
+search accepts the full step every time. That is linear convergence from an
+inexact Jacobian, not a line-search stall: from the 1e-4 kg/s residual at
+iteration 8 to the 1.1e-8 bar takes `ln(1e-4)/ln(0.855) ≈ 59` steps, and 42
+remain.
+
+**What the Jacobian leaves out is the opening.** `compile_edge` reads a PSV's
+opening off its inlet pressure (`relief_opening`, a smoothstep over the
+accumulation band) and freezes it into the branch, and `assemble` differentiates
+the branch at that frozen opening — `ρ·dQ/d(Δp)` and nothing else. The real
+outflow also rises because the valve opens wider. Per unit of the PSV node's own
+pressure:
+
+```text
+∂ṁ/∂P_src |opening   = g                                    (what J has)
+∂ṁ/∂P_src |total     = g  +  ṁ · (α_v / α_tot) · (1/op) · dop/dP_src
+dop/dP_src           = 6·t·(1 − t) / accumulation,   t = (P_src − P_set)/accumulation
+```
+
+The second line holds because `ṁ ∝ α_tot^(−½)`, `α_tot = α_pipe + α_v` and
+`α_v ∝ op^(−2)`. At tick 17 the PSV node's row gives the valve's outflow slope as
+**6.3e-8** in the shipped `J` against **1.214e-5** by centred differences through
+full recompiles — 200× — while everything else that resists the drum–PSV pair
+moving together (the drum's `C/dt`, the make-up line, the tie) sums to
+**1.19e-5**. The pair is welded by a 0.234 kg/(s·Pa) inlet line, so it moves as
+one, and on that slow mode Newton's step error multiplies by
+
+```text
+r = 1 − (true slope)/(J's slope) ≈ −s_lift / (c + a + s_dp)        ≈ −1.0 at lift
+```
+
+— a full overshoot, settling to the −0.855 seen as `t` climbs the band. Armijo at
+`ARMIJO_C = 5e-2` accepts a full step whenever `r² ≤ 1 − 2·ARMIJO_C`, i.e.
+`|r| ≤ 0.949`, so every overshoot is accepted. At `dt = 0.1` the `C/dt` term is
+ten times larger, `|r| ≈ 0.1`, and the same plant converges in a few steps —
+which is all the shipped `dt = 0.1` was buying.
+
+**Proved by substitution, both ways.** (i) A centred finite-difference Jacobian
+(`h = 1e-3` Pa absolute, two full recompiles per unknown) runs the `dt = 1.0` twin
+for 6 000 ticks, worst **8** iterations, at tick 1. A first attempt with a relative
+step (`1e-7·P`, about 0.1 Pa) failed at tick 2, because the regularised square-root
+law curves over `eps_dp = 1` Pa and a dead end sits inside it — a finite-difference
+Jacobian is not free of judgement. (ii) Adding ONLY the opening term above, and no
+density or expansion-factor derivative:
+
+| plant (all `dt = 1.0`, Newton) | shipped `J` | + opening term | full FD `J` |
+|---|---|---|---|
+| twin, 1 m × 150 mm | **fails, tick 17** | 7 worst (tick 1), 4 506 total | 8 worst, 4 234 total |
+| twin, 2 m × 100 mm (`two_vessel_dt1`) | **fails, tick 17** | 7 worst, 4 516 total | 8 worst, 4 234 total |
+| one drum, the twin's drum alone | 19 worst (tick 13) | 7 worst (tick 1) | 7 worst |
+| `relief_blowdown` | 20 worst (tick 13) | 6 worst (tick 1) | 7 worst |
+| `vessel_pressure_control` | 9 | 9, identical | 9 |
+
+Totals count only ticks that iterate. The opening term is the whole defect: every
+plant's worst tick becomes its cold start, and the lift is no harder than starting
+cold. `vessel_pressure_control`'s PSV never enters its band, so its counts are
+identical to the iteration — the first evidence for fork 4's byte prediction.
+
+### Fork 1 — which family of remedy
+
+(a) **The opening term, analytic, on relief edges only.** Chosen. It is the
+missing derivative itself, it is exactly zero outside the accumulation band (the
+smoothstep's slope vanishes at both ends), and it reaches no plant whose PSV never
+lifts.
+
+(b) **Raise `ARMIJO_C`** so the 0.855 crawl is rejected and `t = ½` lands near the
+root (`r_½ = 1 − ½·1.855 ≈ 0.07`). Rejected. It needs `ARMIJO_C ≥ 0.135` to reject
+this plant's ratio and leaves `(√(1 − 2c), 1)` open for the next plant; it changes
+M9.0's constant, which is tied to `max_iter` by a relation, for a reason that has
+nothing to do with that relation; and it moves every plant on which a full step is
+now accepted with a merit ratio in the newly rejected band. It repairs the line
+search for a fault in the direction.
+
+(c) **Raise `max_iter`.** Rejected. At `|r|` just under 0.949 the crawl needs about
+45 iterations per decade of residual, each a dense LU, and the ratio is a function
+of `dt`, the accumulation band and the valve's size, so any cap is fitted to one
+plant.
+
+(d) **A full finite-difference Jacobian.** Rejected. It also adds the upwind
+density's and the gas fold's derivatives, which moves **every gas plant** for no
+measured gain (the table's last column against its middle one); it costs `2n` full
+recompiles per iteration; and (i) above shows its step needs care near a dead end.
+
+(e) **Also add the density and expansion-factor terms analytically.** Deferred
+(new row A18, below). Measured unnecessary here, and it would move every gas plant.
+
+### Fork 2 — where the term lives
+
+`CompiledEdge` gains one field, the opening's **logarithmic** slope
+`d ln ṁ / d P_src` [1/Pa], computed in `compile_edge`'s valve arm for a
+`ReliefValve` only and `0.0` on every other edge. `assemble` adds `ṁ·k` to the
+**source column**: `J[s][s] −= ṁ·k`, and `J[t][s] += ṁ·k` when the target is an
+unknown. Storing the log slope rather than a mass slope keeps the flow out of the
+compiled data — `ṁ` is computed at `dp` in `assemble`, as it is now — so the term
+is evaluated at the same `dp` as the flow it differentiates.
+
+It goes through `assemble`, so it reaches the start-of-pass Jacobian AND every
+line-search trial (`jac = jac_t` on acceptance). `SimpleFlowSolver` reads
+`CompiledEdge` and must ignore the field: its sweep and group step use `flow_ddp`
+only, and gate 4 asserts its bytes rather than trusting that.
+
+### Fork 3 — the gas fold, approximated, and the guards
+
+A liquid relief valve composes in closed form, so the log slope is exact. A gas
+relief valve folds through `fold_gas_valve`, whose effective resistance is
+`α_v·(x/x_s)/Y²` with `x_s` and `Y` from an inner bisection that itself depends on
+the opening. The term holds `(x/x_s)/Y²` fixed, so `α_v,eff ∝ op^(−2)` and the same
+expression applies with `α_v,eff = α_tot − α_pipe`. **Measured at tick 17: 1.208e-5
+against the centred difference's 1.214e-5, 0.5%.** An approximate Jacobian moves no
+answer: the line search and the stopping rule both read the true residual, so this
+decides how fast Newton converges, never where.
+
+Two guards, both reachable:
+
+- **The snapped opening.** Just above set, `relief_opening` is positive but below
+  `OPEN_EPS`, so `compile_edge` snaps it to `0.0`, `α_v = +∞`, and the expression is
+  `0·∞/0`. The term is `0.0` whenever the snapped opening is `0.0`, and is checked
+  finite (rule 5): a non-finite slope is an `Err`, not a silent zero, because a NaN
+  there would reach the LU and surface as a singular Jacobian with the wrong
+  diagnosis.
+- **Outside the band** the smoothstep's slope is exactly `0.0`, so the term is
+  exactly `0.0`, and `assemble` skips a zero term rather than adding it, so no
+  `−0.0` can reach a diagonal.
+
+### Fork 4 — what ships, and what must not move
+
+No new scenario file. `relief_twin_vessels.toml` stays at `dt = 0.1`: changing it
+would move a regression anchor to prove what a fixture proves as well, so the
+`dt = 1.0` twin is an in-test fixture that overrides `dt` after loading the shipped
+file. The file's header loses its "Newton fails at 1.0" sentence.
+
+**Prediction, from the copy:** 27 of 29 plants byte-identical on Newton — every
+plant whose PSV never lifts, `vessel_pressure_control` included — and all 29
+byte-identical on `simple`. The two that move are `relief_blowdown` (first moved
+snapshot tick 130) and `relief_twin_vessels` (tick 160), from their first lift on,
+because the state integrates. Worst movement over all 600 snapshots, on any
+published quantity above 1e-3 excluding solver diagnostics: **9.1e-8**
+(`relief_blowdown`, a dissipation) and **1.4e-7** (`relief_twin_vessels`, a flow).
+Total iterations fall **18 562 → 7 287** and **20 782 → 7 823**; worst **10 → 6**
+and **8 → 7**.
+
+### Fork 5 — the Jacobian is no longer symmetric
+
+The term sits in one column, so `J` stops being the symmetric weighted Laplacian
+`newton_flow.rs`'s module doc describes. `solve_linear` is faer's partial-pivot LU,
+which never assumed symmetry, and the finite-difference run above solved a
+non-symmetric `J` for 6 000 ticks. Two sentences change: the module doc's
+"symmetric, negative-definite" and `assemble`'s "stays the symmetric weighted
+Laplacian it was". The capacitive term's argument (it touches only the diagonal) is
+unchanged.
+
+### The gates, named before building
+
+1. **The derivative identity.** On hand-built edges: a gas relief edge in its band,
+   the term (`ṁ·k`) against a centred difference of the full-recompile flow in
+   `P_src`, within 2% (0.5% measured); a liquid relief edge, within 1e-6 (exact);
+   below set, above set + accumulation, and in the snapped sliver, the field is
+   exactly `0.0`; every other edge kind carries `0.0`.
+2. **The `dt = 1.0` twin runs.** `relief_twin_vessels.toml` with `dt` overridden to
+   1.0 runs 6 000 ticks on Newton. The shipped solver fails it at tick 17.
+3. **The lift is no harder than starting cold.** On the same fixture and on
+   `relief_blowdown` at `dt = 1.0`: no tick's iteration count exceeds tick 1's.
+   Measured on the copy: 7 and 6, both at tick 1; shipped, 50 (fails) and 20. The
+   claim is the comparison, not a ceiling.
+4. **What must not move** (corpus, both fidelities, against
+   `W:\temp\claude\m26\before_newton.json` and `before_simple.json`, recorded before
+   any edit): fork 4's prediction, the two moved plants bounded at 1e-6 relative
+   over every snapshot, and `total_iterations` compared row by row.
+5. **Reachability on the proptest harnesses** (`tests/invariants.rs`, release,
+   `--nocapture`), recorded before any edit in
+   `W:\temp\claude\m26\before_invariants.txt`. The counts must not fall. On the
+   copy: spur trees Newton diverged **39 → 5** of 305 (cap exhausted 28 → 0); leaky
+   trees diverged **12 → 2**; gas chains Newton converged **202 → 204**, worst
+   iterations **48 → 27**; the liquid control's worst **46 → 13**; chains converged
+   **238 → 251**. Gas chains' `simple converged` reads 198 → 199 only because the
+   harness runs `simple` on the plants Newton converged on.
+6. **Determinism.** Fingerprints identical across two runs; no `HashMap`.
+
+### The mutations M26.1 owes, named before building
+
+1. The term dropped → gates 1, 2 and 3, and gate 5's counts fall back.
+2. Its sign flipped → gate 1; predicted also gate 2 (the slope is understated
+   further, so `|r|` grows).
+3. `/accumulation` dropped from `dop/dP` → gate 1 (off by 1e5); predicted gate 2
+   (an overstated slope takes tiny steps and crawls).
+4. The term put in the TARGET column instead of the source → gate 1.
+5. The snapped-opening guard removed → gate 1's sliver case (non-finite).
+6. The term written for every valve, not only a relief valve → gate 1's "every
+   other edge carries 0.0". An operator valve's opening does not depend on
+   pressure, so a nonzero term there is simply wrong.
+7. `SimpleFlowSolver` made to read the term → not expressible: neither its sweep
+   nor its group step differentiates anything but `flow_ddp`. Stated, not swapped
+   for a substitute.
+
+Run under `--no-fail-fast`, each catch read for why it fired.
+
+### Deferred, with what un-defers each
+
+- **The density and expansion-factor derivatives (new row A18).** The shipped `J`
+  freezes the upwind gas density and the fold's `(x/x_s)/Y²`. On the twin at tick
+  16, with no PSV in its band, Newton converges linearly at about 3e-3 per step —
+  harmless, because the frozen part is small against `C/dt`. Trigger: a plant whose
+  Newton count is driven by a gas line's own compressibility rather than by a
+  relief band, found the way this one was: a sign-alternating residual history at
+  a fixed ratio.
+- **PSV chatter (B6) is unchanged**: the opening is still memoryless. This note
+  makes the band solvable at long timesteps; it does not make the valve reseat
+  below set.
