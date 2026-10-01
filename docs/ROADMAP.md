@@ -6955,4 +6955,37 @@ constant to one plant, and the first breaks M9.0's relation for an unrelated rea
 gives up on 39 of 305 spur trees today (28 at the cap); with the opening term, 5,
 none at the cap. That is gate 5, and it is the largest effect the slice has.
 
-### M26.1 — The opening term, its gates and the mutation pass — not started
+### M26.1 — The opening term, its gates and the mutation pass — **LANDED** 2026-10-01
+
+`CompiledEdge::relief_opening_log_slope` (computed in `compile_edge` for a relief
+valve only), `ṁ·k` in the source column of Newton's Jacobian, and
+`tests/relief_slope_reference.rs` (gates 1–3). A14 is struck; M26 is closed. Read
+§30's "Corrections from building it" first. Five things to know.
+
+**It reproduced the probe to the bit.** The shipped code and the probe's
+`A14LIFT=1` copy give the same fingerprints. 27 of 29 plants are byte-identical on
+Newton with worst and total iterations unchanged, and all 29 on `simple`.
+`relief_blowdown` and `relief_twin_vessels` move by at most 1.4e-7 from their first
+lift, and their total iterations fall 18 562 → 7 287 and 20 782 → 7 823. The twin
+at `dt = 1.0` runs (worst 7, at tick 1); at `dt = 0.5`, where M21.1 recorded 25
+iterations, it takes 7.
+
+**Gate 1 as written measured the wrong thing.** Differencing in the PSV's own
+pressure also measures the gas density and the fold's pressure dependence (row
+A18's terms, omitted on purpose), which are 4% of the slope near full lift. The
+gate now differences in the SET pressure, which moves only the opening: gas within
+1.7e-3, liquid within 7.6e-9.
+
+**The random plants are the largest effect, and now a gate.** Newton gave up on 39
+of 305 random spur trees (28 at its iteration cap); now 5, none at the cap. The
+existing bound allowed 50, which the unfixed solver passes, so it was tightened to
+15 with a second bound on cap exhaustion; removing the fix now fails it.
+
+**Seven mutations, six caught, one inert as predicted.** Three of the note's
+predictions were wrong. Dropping or flipping the term in `assemble` is invisible to
+gate 1, which tests the compiled field, not its use. And the term in the wrong
+column lands on the flare, which has no column, so it vanishes like a drop.
+
+**Nothing on the game fidelity moved**, and the thirteen extra random chains Newton
+now solves are all ones the game solver could not solve either. No two answers
+disagree anywhere.

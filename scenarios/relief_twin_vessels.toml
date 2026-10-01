@@ -24,8 +24,11 @@
 #   - Relief inlets 1 m x 150 mm. At 2 m x 100 mm (the in-test `two_vessel`
 #     fixture) the one-shift-per-set shortcut survives at 4 472 sweeps, under the
 #     5000 cap, so CI would not see it; at this size it fails at tick 1.
-#   - dt = 0.1. Every dt from 0.05 to 0.5 s was run and works. At 1.0 s NEWTON
-#     fails at tick 17 (docs/DEFERRED.md A14), so CI's Newton corpus would go red.
+#   - dt = 0.1. Chosen at M21.1, when Newton failed this plant at 1.0 s (tick 17,
+#     docs/DEFERRED.md A14). M26.1 fixed that — Newton's Jacobian was missing the
+#     PSV opening's own slope (docs/DESIGN.md §30) — and the plant now runs at
+#     1.0 s too, as a test fixture. The file keeps 0.1 s because changing it would
+#     move this plant's regression anchor.
 #
 # Declares `flow = "newton"`, like every other shipped plant, even though the
 # Simple fidelity is the one it exists to defend. CI's corpus runs each file as

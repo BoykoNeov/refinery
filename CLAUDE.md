@@ -191,14 +191,38 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M26 is OPEN (2026-10-01): Newton's missing relief slope — `docs/DEFERRED.md`
-row A14.** Taken on a DECISION (the user's). **M26.0 landed 2026-10-01**: DESIGN
-§30, five forks, six gates, seven mutations, no code. A14's "two relieving
-vessels" was wrong: a PSV's opening is frozen into its branch and Newton's
-Jacobian omits the "opens wider" derivative, so on a vessel at a long timestep
-each step overshoots by about a whole step and Armijo accepts it. The fix is that
-one term, analytic, on relief edges only, exactly zero outside the band. M26.1
-builds it.
+**M26 is CLOSED (2026-10-01): Newton's missing relief slope — `docs/DEFERRED.md`
+row A14, now struck.** Taken on a DECISION (the user's). **M26.0** wrote DESIGN §30
+(five forks, six gates, seven mutations, no code); **M26.1 landed 2026-10-01** and
+built it. Read §30's "Corrections from building it (M26.1)" before touching
+`assemble`, `compile_edge`'s valve arm or `CompiledEdge`. Nothing is past its
+trigger; the next milestone is chosen from `docs/DEFERRED.md`. Five things to know.
+- **A14's "two relieving vessels" was wrong.** A PSV's opening is frozen into its
+  compiled branch, so `flow_ddp` holds it fixed and Newton's Jacobian never saw the
+  valve open wider. On a vessel at a long timestep that share is as large as
+  everything else holding the vessel, so each step overshot by about a whole step
+  (ratio −0.855) and Armijo accepted it. One relief plant crawled 20 of 50
+  iterations through its lift and was recorded as unaffected.
+- **`CompiledEdge::relief_opening_log_slope`** is `d ln ṁ/dP_src` through the
+  opening, set for a relief valve only (exact for liquid; the gas fold's
+  `(x/x_s)/Y²` held fixed); Newton adds `ṁ·k` to the SOURCE column, so `J` is not
+  symmetric in a band. Exactly `+0.0` outside the band and when the opening snaps
+  shut (where it would be `0·∞/0`); a non-finite value is an `Err`. The game
+  solver never reads it.
+- **Measured**: 27 of 29 plants byte-identical on Newton with worst and total
+  iterations unchanged, all 29 on `simple`; `relief_blowdown` and
+  `relief_twin_vessels` move by at most 1.4e-7 from their first lift, total
+  iterations 18 562 → 7 287 and 20 782 → 7 823. "Runs byte-identical" means
+  post-M26.1 identical for those two on Newton. The twin runs at `dt = 1.0` (a
+  fixture; the file stays at 0.1). Random spur trees Newton gives up on: 39 → 5.
+- **Gate 1 differences in the SET pressure, not the inlet pressure**: the inlet
+  pressure also moves the gas density and the fold (row A18, omitted on purpose,
+  4% of the slope near full lift). Gas within 1.7e-3, liquid within 7.6e-9.
+- **Seven mutations, six caught, one inert as predicted.** Dropping or flipping
+  the term in `assemble` is invisible to gate 1 (it tests the field) and caught by
+  the plant gates. The spur-tree bound in `invariants.rs` was tightened 50 → 15
+  because the unfixed solver (39) passed it. Gates are
+  `tests/relief_slope_reference.rs`.
 
 **M25 is CLOSED (2026-10-01): cascade control — `docs/DEFERRED.md` row E2, now
 struck.** Taken on a DECISION (the user's). **M25.0** wrote DESIGN §29 (eight forks,

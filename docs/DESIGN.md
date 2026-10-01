@@ -16464,3 +16464,83 @@ Run under `--no-fail-fast`, each catch read for why it fired.
 - **PSV chatter (B6) is unchanged**: the opening is still memoryless. This note
   makes the band solvable at long timesteps; it does not make the valve reseat
   below set.
+
+### Corrections from building it (M26.1, landed 2026-10-01)
+
+The building slice reproduced the copy to the bit: the shipped code and the
+`A14LIFT=1` copy give the same fingerprints on both moved plants, and every number
+fork 4 and gate 5 quote held. Five things the note did not get right.
+
+1. **Gate 1 as specified measured the wrong thing near full lift.** "The term
+   against a centred difference of the full-recompile flow in `P_src`, within 2%"
+   failed at `t = 0.9`, off by 3.9%, and the miss climbs to 47% at full lift —
+   with the term behaving exactly as designed. Differencing in `P_src` measures
+   everything that follows the source pressure, including the upwind density and
+   the fold's `x = s/p_up`, which are row A18's terms and which Newton omits on
+   purpose. Above the band, where the opening term is exactly zero, those terms
+   are 2.2e-7 against `g`'s 2.5e-7; in the band they are a fixed absolute amount,
+   so they are a small share where the opening term is large (0.1% at `t = 0.1`)
+   and a large one where it shrinks toward full lift. A first repair, adding the
+   ideal-gas density share `ṁ/P` back by hand, overshot by about two: the fold's
+   own pressure dependence cancels roughly half of it. **What ships differences in
+   the SET pressure**, which moves the opening exactly as `P_src` does and moves
+   nothing else, so the gate compares the term with the opening's own share. Gas:
+   1.7e-3 worst over the band (`t = 0.95`), which is the fold approximation
+   alone, against a 1% bound. Liquid: 7.6e-9, against 1e-6. **A difference taken
+   in the variable the physics names can measure terms the gate is not about;
+   take it in a variable only the term depends on.**
+2. **"Gas within 0.5%" was one point.** The fold approximation's error grows
+   across the band, 1.3e-6 at `t = 0.1` to 1.7e-3 at `t = 0.95` — the 0.5% in the
+   note was the full-slope comparison at the twin's lift, which also carried A18's
+   share. The approximation is ten times better than the note said.
+3. **Mutation 4's prediction was wrong** (see the mutation table below). The
+   term in the TARGET column of a PSV's outlet lands on the flare, which is a
+   fixed node with no column, so the term vanishes and the mutation behaves as
+   mutation 1. Gate 1 cannot see it — gate 1 tests the compiled field, not where
+   `assemble` puts it — and gates 2 and 3 do.
+4. **The chains' agreement count did not follow the convergence count, and the
+   reason is benign.** Newton now converges on 251 of 300 random liquid chains
+   against 238, while `simple` agrees on 236 against 234. Splitting the count:
+   every non-agreeing case is one where `simple` FAILS (4 before, 15 after); in no
+   case do both converge and disagree. The thirteen chains Newton newly solves
+   are ones the game solver could not solve before either.
+5. **Two pre-existing assertion messages in `newton_flow.rs`'s
+   `armijo_c_closes_the_shut_in_stall_window` carry runs of spaces where a line
+   continuation was lost**, in HEAD before this slice. Recorded, not changed: the
+   test's logic is untouched and the fix belongs to a slice that touches it.
+
+### The mutation pass (M26.1)
+
+Seven edits, run one at a time under `cargo test --workspace --no-fail-fast` with
+a lock and a git restore after each (`W:\temp\claude\m26\mutate.py`); the two
+that could move bytes also ran the corpus against the post-fix baseline. Six
+caught, the seventh inert as predicted; the note's mutation 7 (the game solver
+reading the term) has no expression, as the note said, and is numbered out rather
+than replaced. Each catch was read for why it fired.
+
+| # | edit | caught by | the note predicted |
+|---|---|---|---|
+| 1 | the term dropped in `assemble` | gates 2 and 3 only | gates 1, 2, 3 — **wrong on gate 1**, which tests the compiled field and not its use |
+| 2 | its sign flipped in `assemble` | gates 2 and 3, the relief arm proptest (too few partial lifts), and two of §25's stiff-pair gates (Newton gives up after 2 iterations: the direction stops being a descent direction) | gates 1 and 2 — **wrong on gate 1**, for the same reason |
+| 3 | `/accumulation` dropped from `dop/dP` | 14 tests: both halves of gate 1 (off by 1e5 and 3e4), gates 2 and 3, and every relief plant in `relief_valve_reference.rs` and §25 | gates 1 and 2 — right, and the reach was wider |
+| 4 | the term in the TARGET column | gates 2 and 3, and the relief arm proptest's spur-tree bound (55 fail) | gate 1 — **wrong**: on a PSV's outlet the target is the flare, which has no column, so the term vanishes (correction 3) |
+| 5 | the snapped-opening guard removed | gate 1's sliver case alone (the edge refuses to compile) | gate 1's sliver case — right |
+| 6 | the term written for every valve | gate 1's "every other edge", and `closed_plant_conserves_mass_over_the_acceptance_run` by 1.1e-8 kg against a 1e-8 budget; 14 plants move | gate 1 — right; the conservation catch is an accident of a tight budget seeing a different answer inside the solver's tolerance, not a gate on this |
+| 8 | the skip-when-zero removed (always add) | nothing; corpus identical on all 29 | inert — right: `x − 0.0` is `x`, and a `−0.0` written off the diagonal changes no LU result on any shipped plant |
+
+**Gate 5 was a counter and is now a gate.** `the_relief_arm_lifts_relieves_and_floats`
+already bounded Newton's spur-tree failures at one in six (50), from 42 measured
+at M8.0. That bound passes mutation 1, whose 39 failures are this slice's
+"before". It is tightened to one in twenty (15) against the 5 measured, with a
+second bound on cap exhaustion (at most one in a hundred, against none), and
+mutation 1 now fails it at exactly 39 and 28. The note listed gate 5 as a
+measurement; left so, the slice's largest effect would have been defended by
+nothing but the two plant gates.
+
+**And the twin at `dt = 0.5`**, which M21.1 recorded as needing 25 of Newton's 50
+iterations, takes 7 — the band was costing it eighteen iterations at the timestep
+the file was declared safe at.
+
+**From here, "runs byte-identical" means post-M26.1 identical for
+`relief_blowdown` and `relief_twin_vessels` on Newton.** Every other plant, and
+every plant on `simple`, is unchanged.
