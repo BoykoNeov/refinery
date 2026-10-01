@@ -39,7 +39,8 @@
 # furnace (its output peaks at 0.81) to heat the tank faster; an outlet loop
 # never does, so the tank follows the 60 °C stream at its own pace — thousands of
 # ticks rather than the tank loop's 2 391. That trade-off is what cascade control
-# (docs/DEFERRED.md E2) exists for.
+# (docs/DEFERRED.md E2) exists for, and M25 built it on this plant:
+# `scenarios/furnace_cascade_control.toml` runs this loop inside a tank loop.
 #
 #   cargo run -p refinery-cli -- run scenarios/furnace_outlet_control.toml --ticks 6000
 

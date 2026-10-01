@@ -979,7 +979,11 @@ pub trait Controller: Send + std::fmt::Debug {
     /// **The unit question this sentence used to defer arrived in M17** (docs/DESIGN.md
     /// §21): a cooler's actuated quantity is a duty in watts, and the answer is that
     /// the position stays a fraction — of the LOOP's declared `max_duty` — mapped
-    /// to watts by `PlantGraph::set_actuator_position`, never by an impl. Clamping to that interval is the implementation's job, because
+    /// to watts by `PlantGraph::set_actuator_position`, never by an impl. On a
+    /// cascade PRIMARY (M25, docs/DESIGN.md §29 fork 2) it is a fraction of the
+    /// primary's declared setpoint range, mapped to the secondary's SETPOINT by the
+    /// same function — so an impl never knows whether it positions a valve, a duty
+    /// or another loop's target. Clamping to that interval is the implementation's job, because
     /// saturation is exactly what M8.3's anti-windup has to know about; the engine
     /// re-checks the range and refuses rather than trusting it.
     ///

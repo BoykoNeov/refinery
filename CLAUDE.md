@@ -95,6 +95,7 @@ cargo run -p refinery-cli -- run scenarios/relief_twin_vessels.toml --ticks 6000
 cargo run -p refinery-cli -- run scenarios/tank_overfill_trip.toml --ticks 6000       # the M22.1 overfill trip
 cargo run -p refinery-cli -- run scenarios/tank_runs_dry.toml --ticks 6000            # the M24.1 dry tank
 cargo run -p refinery-cli -- run scenarios/tank_overflow.toml --ticks 6000            # the M23.1 spill
+cargo run -p refinery-cli -- run scenarios/furnace_cascade_control.toml --ticks 6000  # the M25.1 cascade
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -190,34 +191,46 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-**M25 is OPEN (2026-09-30): cascade control — `docs/DEFERRED.md` row E2, taken on
-a DECISION (the user's).** **M25.0 landed 2026-09-30**: DESIGN §29, eight forks, eleven
-gates, thirteen mutations, no code (read its "Corrected before building"). **M25.1 (build it) is next.** Read §29 before
-touching `ControlLoop::actuator` or `run_control_loops`. Five things to know.
-- **A primary declares `actuator = { loop = "…" }`**, and its output is the
-  secondary's setpoint as a fraction of `range_min_*`/`range_max_*` (the secondary's
-  unit, both `_c` keys `+273.15`, both ends through `check_setpoint`, `lo < hi`).
-  `actuator_position`/`set_actuator_position` read and write it, so tracking,
-  bumpless transfer and anti-windup reuse existing code. A flow range cannot start
-  at 0 (a zero flow setpoint is refused).
-- **Pass 2 runs primaries first**, writing each secondary's setpoint before any
-  secondary updates; pass 1 is unchanged, so it is not an algebraic loop. Two levels
-  only: a driven loop may not drive, which is also the cycle refusal.
-- **No new `ControlMode`.** A primary in AUTO owns its secondary's setpoint
-  (`SetSetpoint` refused); a secondary that will not act this tick (not in AUTO, by
-  a human or a trip, OR nothing to measure: tick 1, a stagnant outlet) OPENS the
-  cascade: the primary writes nothing, tracks, and re-seeds its memory every tick.
-- **Admitted pairings**: a tank's temperature over the furnace or cooler whose outlet
-  pipe ends at it (outer REVERSE), and a tank's level over the flow on a valve whose
-  inlet starts at the tank (drain, DIRECT) or whose outlet ends at it (fill,
-  REVERSE). The inner loop must measure a flow or an outlet. The rest is E18.
-- **Demo `scenarios/furnace_cascade_control.toml`** (to be the twenty-ninth file):
-  `tank_temperature_heating.toml`'s plant, the outlet loop verbatim inside, a tank
-  loop outside over 40–65 °C at `gain_per_k = 0.133`. By hand: a 0.3 MW heater fire
-  +0.075 K (tank loop alone, on the engine: +0.82 K), startup inside 0.06 K from
-  tick 2 577 with the outlet never above 65 °C. The fires are commands, so they live
-  in the gates; the CLI shows startup only. `ControlSnapshot::drives`, skipped when
-  `None`.
+**M25 is CLOSED (2026-10-01): cascade control — `docs/DEFERRED.md` row E2, now
+struck.** Taken on a DECISION (the user's). **M25.0** wrote DESIGN §29 (eight forks,
+eleven gates, thirteen mutations, no code); **M25.1 landed 2026-10-01** and built it.
+Read §29's "Corrections from building it (M25.1)" before touching
+`ControlLoop::actuator`, `run_control_loops` or `link_cascades`. Nothing is past its
+trigger; the next milestone is chosen from `docs/DEFERRED.md`. Six things to know.
+- **A primary declares `actuator = { loop = "…" }`** (`Actuator::Loop`), and its
+  output is the secondary's setpoint as a fraction of `range_min_*`/`range_max_*`
+  (`SetpointRange`, the secondary's unit, both `_c` keys `+273.15`, both ends through
+  `check_setpoint`, `min < max` after conversion). `actuator_position`/
+  `set_actuator_position` read and write it, so tracking, bumpless transfer and
+  anti-windup reuse existing code. **The write is clamped to the range**, or the
+  round trip can read `1.0000000000000002` at the clamp; only a unit test defends it
+  (the demo's `40 + 1·25` rounds exactly). A flow range cannot start at 0.
+- **Pass 2 runs in two halves**: primaries first, their setpoint writes applied, then
+  every other loop (`step_loop`). Two levels only, refused by `link_cascades` after
+  every loop is built (a file may declare the secondary first). **Deleting the depth
+  rule is caught only by its message**: every admitted pairing puts the primary on a
+  tank, so the pairing rule's holdup-inner refusal also refuses every chain; E18 is
+  where the depth rule becomes load-bearing.
+- **Open = the secondary will not act this tick** (not AUTO, by a human or a trip, or
+  nothing to measure: tick 1, a stagnant outlet). An open primary writes nothing,
+  tracks, and re-seeds. A stall is seen ONE tick after the flow stops (a loop reads
+  last tick's outlet), so a setpoint raised in the same command batch gets one
+  closed tick and the proportional kick (gate 11 raises it a tick later).
+- **Two refusals beyond the note**: a secondary declared outside its primary's range
+  (tick 1 is open and would fail the re-seed), and `SetSetpoint` outside the range
+  under a MANUAL primary (`check_loop_owned_duty`'s rule). Every primary must DECLARE
+  its action, a drain's included.
+- **Measured**: all twenty-eight earlier plants byte-identical on both fidelities,
+  worst AND total iterations unchanged ("runs byte-identical" means post-M25.1,
+  unchanged). The demo matches the hand model: settles from tick 2 579 (2 578),
+  outlet ≤ 64.9925 °C, outer clamp 69 ticks, heater fire +0.0753 K, tank fire back
+  inside +2 006, closing −0.0039 K (1.366 K with the memory untouched). Seventeen
+  mutations, sixteen caught, #12 inert as predicted. Godot build and clippy clean.
+- **Demo `scenarios/furnace_cascade_control.toml`** (the twenty-ninth file):
+  `tank_temperature_heating.toml`'s plant, the outlet loop inside, a tank loop outside
+  over 40–65 °C. Gates are `tests/cascade_control_reference.rs`; the level pairing
+  (drain and fill) and the cooler pairing run on fixtures there.
+  `ControlSnapshot::drives`, skipped when `None`.
 
 **M23 is CLOSED (2026-09-30): tank overflow — `docs/DEFERRED.md` row B28, now
 struck.** Taken on a DECISION (the user's), and past its trigger all along: run
@@ -1826,13 +1839,14 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly six of the twenty-eight files in `scenarios/` declare a `[[controls]]`
+**Exactly seven of the twenty-nine files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
 `tank_temperature_heating.toml` (M18.1, a reverse-acting temperature),
-`furnace_outlet_control.toml` (M19.1, a furnace's own outlet) and
-`tank_flow_control.toml` (M20.1, a valve's own flow). **The
+`furnace_outlet_control.toml` (M19.1, a furnace's own outlet),
+`tank_flow_control.toml` (M20.1, a valve's own flow) and
+`furnace_cascade_control.toml` (M25.1, a cascade: two loops). **The
 other twenty-two
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor** (one, `tank_overfill_trip.toml`, carries a `[[trips]]`

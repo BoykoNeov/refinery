@@ -5282,7 +5282,8 @@ because M8's remaining slice is the snapshot's, not another plant's.
   pressure, and a relief-free vessel currently has no way to be held anywhere.
 - **Cascaded loops** — a loop whose setpoint is another loop's output.
   Un-defers when a plant has an inner loop fast enough to be worth separating;
-  it needs an execution-order rule stronger than declaration order.
+  it needs an execution-order rule stronger than declaration order. **Built by
+  M25 (§29)**: two levels, primaries first in pass 2, in two admitted pairings.
 - **Derivative action.** Deferred because a D term on a measurement this project
   reports with one tick of lag and no noise model is tuning theatre — it would
   move numbers no gate could interpret. Un-defers with a plant whose loop is
@@ -11467,7 +11468,8 @@ and the first draft of this note said it was**: a vessel's pressure is
 `m·R·T/(V·M̄)`, so a colder inflow lowers it, and the loop would even be direct
 acting. It is refused as a SCOPE decision, and the message says so: no plant asks
 for it, and its effect runs through a temperature, which makes it a cascade (E2)
-wearing one loop's name. A refusal message that states the false reason would be
+wearing one loop's name. (Since M25 the refusal points at E18: a pressure over a
+temperature is not one of §29's admitted cascade pairings either.) A refusal message that states the false reason would be
 the fifth expired sentence this project has shipped. **A valve on a temperature
 loop is the one to argue**: a
 coolant valve is the real-world temperature actuator, but this engine has no
@@ -12487,7 +12489,8 @@ loop gets the same tank there by tick 2 391. **Holding the outlet is slower for
 the tank**, because the tank loop overfires the furnace (its output peaks at
 0.809) to heat the tank faster, and an outlet loop by definition never does. That
 trade-off is what a cascade (E2) exists for, and the demo's header says so rather
-than presenting outlet control as strictly better.
+than presenting outlet control as strictly better. **M25 built that cascade on this
+plant** (§29, `scenarios/furnace_cascade_control.toml`).
 
 ### The gates, named before building
 
@@ -13269,7 +13272,8 @@ Run under `--no-fail-fast`, each catch read for why it fired.
   its valve.
 - **E2 — cascaded loops** is now reachable in principle, because the inner loop it
   names exists. Its trigger is unchanged: an inner loop fast enough to be worth
-  separating, and an execution-order rule stronger than declaration order.
+  separating, and an execution-order rule stronger than declaration order. **Taken
+  and built by M25 (§29)**; a level over this flow loop ships on a fixture.
 - **A bubble-point-bounded temperature setpoint** — the last clause of E1b,
   unchanged.
 
@@ -16102,3 +16106,126 @@ misled the building slice. All three are fixed above; this list says what change
   a direct inner loop). It now has a running fixture (gate 9), predicted by hand.
 - **Gate 2's outlet-loop control passed by 0.001 K** at tick 6 000. It is read at
   the cascade's own settling tick, where it misses by 1.7 K.
+
+### Corrections from building it (M25.1)
+
+M25.1 landed 2026-10-01: `Actuator { Node, Loop }` and `SetpointRange` in
+`core::graph`, the two-half pass 2 and the open-cascade arm in
+`Engine::run_control_loops` (`step_loop`), the owner and range guards on
+`Command::SetSetpoint`, `link_cascades` and `cascade_pairing` in the loader,
+`ControlSnapshot::drives`, `scenarios/furnace_cascade_control.toml` (the
+twenty-ninth file) and `crates/scenarios/tests/cascade_control_reference.rs`.
+Nine things to know.
+
+**1. The prediction held: nothing old moved.** All twenty-eight pre-M25 plants are
+byte-identical on both fidelities, and BOTH iteration columns — worst and total —
+are unchanged on every row, compared field by field from the corpus's JSON
+(`corpus --baseline` compares fingerprints only). From here "runs byte-identical"
+means post-M25.1 identical, unchanged. The demo runs 6 000 ticks on both fidelities
+(Newton worst 7, total 2 828; game solver worst 6, total 6 005 — the heater plant's
+own numbers, since a loop moves no hydraulics).
+
+**2. The hand model held on the engine, to the tick in most places.**
+
+| | hand (§29) | engine |
+|---|---|---|
+| startup: inside 0.06 K of 60 °C from tick | 2 578 | 2 579 |
+| hottest outlet in startup | 64.99 °C | 64.9925 °C |
+| ticks the outer loop sits at a clamp | 69 | 69 |
+| heater fire: tank peak / back inside after | 0.0753 K / +143 | 0.0753 K / +145 |
+| tank fire: back inside after | +2 004 | +2 006 |
+| closing after a MANUAL span: inner setpoint moves | −0.0039 K | −0.003927 K |
+| ... with the primary's memory left untouched (mutation 5) | 1.37 K | 1.366 K |
+| cooler fixture: inside from / ticks at a clamp | 2 580 / 69 | 2 580 / 69 |
+
+The gates assert bands stated beside each number, not the numbers.
+
+**3. "5.04 K" for the outlet-loop plant's tank fire was measured from that plant's
+OWN pre-fire temperature**, 59.939 °C, because it had not finished its startup at
+tick 6 000. From 60 °C the same run reads 4.977 K, inside 0.08 K of gate 5's
+"≥ 4.9". The gate reads it as the note meant it, from the pre-fire temperature
+(5.04 measured).
+
+**4. Two refusals the note did not list, both owed by its own fork 4.**
+- **At load, a secondary whose declared setpoint lies outside its primary's
+  range is refused.** The demo's tick 1 is an OPEN tick (the outlet does not exist
+  yet), and an open primary re-seeds against the secondary's setpoint as a
+  position. Outside the range that position is outside `[0, 1]`, which
+  `seed_from_output` refuses — so the TICK would fail, not the load.
+- **`SetSetpoint` on a secondary is refused outside the range even under a MANUAL
+  primary** — `check_loop_owned_duty`'s rule for a duty, which applies in either
+  mode. Without it the primary's faceplate tracks a position above 1 and its
+  MANUAL→AUTO transfer is refused with a message about seeding.
+Both are mutated (15 and 16 below).
+
+**5. The range map is clamped on the way IN, and that is what makes the round trip
+safe.** `SetpointRange::setpoint_at(u)` is `min + u·(max − min)` clamped to
+`[min, max]`. Unclamped, `u = 1` need not round to `max`, and a setpoint one ULP
+past it reads back through `position` as `1.0000000000000002` — a position the seed
+refuses on the tick a cascade opens or its primary goes to AUTO, and the demo
+reaches the clamp on purpose. With the write clamped, `position` stays inside
+`[0, 1]` because the subtraction and the division round monotonically. A unit
+test sweeps 64 positions next to each end on the demo's kelvin range and on a
+flow range.
+
+**6. A stall is seen ONE TICK after the flow stops, and gate 11's command order is
+the correction.** A loop measures the previous tick's outlet, so the tick on which
+a valve shuts the feed is still a closed tick. The hand probe (`stall_probe.py`)
+made that tick open, and raised the tank setpoint in the same instant. On the
+engine, raising the setpoint in the same command batch lets the primary act once
+on the 2 K step: its proportional term adds `K·Δe` = 0.27 of the range and the
+outlet target clamps at 65 °C before the stall is ever seen. That is a setpoint
+kick — ordinary PI behaviour — not an open-cascade defect. Gate 11 shuts the feed,
+ticks once, then raises the setpoint, and its two halves are then the note's: the
+target is bit-identical through 300 open ticks, and resumes one tick of control
+away from where it stood. Resuming also takes two ticks, not one: the first tick
+after reopening still reads the stagnant outlet the stall left.
+
+**7. Every primary must DECLARE its action, including a drain's.** A drain primary
+is direct, and "absent means direct" would be true there; it is refused anyway, so
+that both admitted pairings refuse a missing sign as gate 8 asks, and because a
+primary's sign is topology — the furnace and flow-loop rule (§22 fork 2, §24 fork
+3): a property the loader checked must be visible in the file.
+
+**8. Two smaller findings.** The `actuator` key is an untagged serde enum, so a
+misspelt link table (`{ loops = "…" }`) is refused with serde's "did not match any
+variant" rather than by the key's name; accepted and said in the schema. And the
+pressure-with-cooler refusal (sentence site 2) keeps its "wearing one loop's
+name" text, which a test asserts, and now points at E18. The godot-feature build and
+clippy (`--features godot --target-dir target/godot`) were run at M25.1 and are
+clean: the bridge reads no field of `ControlLoop` and builds no `ControlSnapshot`.
+
+**9. The mutation pass: seventeen edits, sixteen caught, one inert as predicted.**
+The note's thirteen, plus four for what the build added (14–17). Each catch was
+read for WHY it fired; the run is `W:\temp\claude\m25\m25_1\mutate.py`, sources
+written with `newline=""` and `git status` checked clean after every restore.
+
+| # | edit | caught by | read |
+|---|---|---|---|
+| 1 | secondary updates before its primary | gate 3 alone | the furnace duty is bit-identical on the hand-off tick, as predicted |
+| 2 | primary's position reads the secondary's MEASUREMENT | gates 6, 7 and the command gate | the faceplate no longer equals the setpoint's position, in all three |
+| 3 | range map drops `min` | eight tests, the range unit test first | the outlet target collapses to the bottom of the range |
+| 4 | `SetSetpoint` owner guard deleted | the command gate alone | as predicted |
+| 5 | open primary's memory left untouched | gates 6 and 11 | closing steps the target 1.366 K (hand 1.37); after the stall, +5.0 K to the range top |
+| 6 | primary keeps writing while open | gates 6, 7, 11 and the tick-1 gate | the target moves on an open tick |
+| 7 | `range_max_c` not converted | fourteen tests | the loader's `min < max`, AFTER conversion, refuses the demo — so every test that builds it fails for one reason |
+| 8 | outlet-over-holdup sign check deleted | gate 8 alone | a wrong-sign primary loads |
+| 9 | depth rule deleted | gate 8, **by its message only** | see below |
+| 10 | `drives` serialized when `None` | gate 10, and M19.1's blind-start gate (which forbids any `null` on an outlet loop's faceplate) | as predicted; the corpus would also see it, but `cargo test` does not run the corpus |
+| 11 | a trip does not open the cascade | gates 7 and 6 | gate 6's secondary is in MANUAL too: a trip and a human open it by the same rule |
+| 12 | pass 3 also writes the loop actuator | **nothing — inert, as predicted** | the second write writes the same value |
+| 13 | open only when the secondary is not in AUTO | gate 11 and the tick-1 gate | the stalled target jumps to exactly 65.0 °C (hand: 65); on tick 1 the primary updates and writes 0.3999999999999999 for 0.4, one ULP — caught because that gate compares bits. Gate 2 cannot see it: +1 tick of settling inside a ±50 band |
+| 14 | the range map's clamp removed | the range unit test alone | **the demo never needs it**: `40 + 1·25` rounds exactly, so only the swept ends see it |
+| 15 | the MANUAL-primary range guard deleted | the command gate | as intended |
+| 16 | the load-time "secondary inside its range" refusal deleted | the range-refusal gate | the plant loads |
+| 17 | the primary's load-time seed not written (left NaN) | gate 10 and the tick-1 gate | gate 10 by the bytes: a NaN serializes as `null` and does not read back |
+
+**Mutation 9 is caught by its MESSAGE, and that is a finding about fork 5, not a
+weak gate.** With the depth rule deleted the three-deep chain is still refused —
+as "an inner loop on a holdup". Every admitted pairing puts the PRIMARY on a
+tank, so the middle loop of any chain is a primary measuring a tank, and fork 5
+refuses a holdup inner loop. The same holds for a self-link and a mutual pair.
+So today the depth rule names the fault rather than being the only thing between
+a chain and the engine; it becomes load-bearing the first time E18 admits a
+primary whose own measurement has no holdup. Gate 8 asserts each refusal's own
+message precisely so that a depth fault keeps being reported as one.

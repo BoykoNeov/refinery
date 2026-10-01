@@ -6877,7 +6877,40 @@ against 2 390, by hand) and the shipped file reaches the outer loop's clamp. Thr
 rows are new: E16 (the inner loop saturating), E17 (chains deeper than two), E18
 (the other pairings).
 
-### M25.1 — Build it
+### M25.1 — Build it — **LANDED** 2026-10-01
 
-As DESIGN §29 specifies. Owes the godot-feature build and clippy, because
-`ControlLoop` and `ControlSnapshot` change shape.
+Built as DESIGN §29 specifies; read its "Corrections from building it (M25.1)".
+`Actuator { Node, Loop }` and `SetpointRange` in `core::graph`, the two-half pass 2
+and the open-cascade arm in `run_control_loops`, `SetSetpoint`'s owner and range
+guards, `link_cascades`/`cascade_pairing` in the loader, `ControlSnapshot::drives`,
+`scenarios/furnace_cascade_control.toml` (the twenty-ninth file) and
+`tests/cascade_control_reference.rs` (fifteen tests: gates 2–11 plus the open
+first tick). E2 is struck; M25 is closed. Five things to know.
+
+**Nothing old moved.** All twenty-eight earlier plants are byte-identical on both
+fidelities with worst AND total iteration counts unchanged, compared field by field
+from the corpus JSON.
+
+**The hand model held on the engine.** Startup inside 0.06 K from tick 2 579 (hand
+2 578), outlet never above 64.9925 °C, outer clamp on 69 ticks (69); heater fire
++0.0753 K (0.0753); tank fire back inside after +2 006 (+2 004); closing after a
+MANUAL span moves the inner target −0.0039 K (−0.0039), and 1.366 K with the
+memory left untouched (1.37). The cooler fixture: 2 580 and 69, exactly.
+
+**Two refusals the note did not list, both owed by its fork 4**: a secondary
+declared outside its primary's range is refused at load (tick 1 is an open tick
+and would fail on the re-seed), and `SetSetpoint` outside the range is refused
+under a MANUAL primary too. And the range map is clamped on the way in, so the
+round trip stays inside [0, 1] at the clamp; the demo happens not to need it
+(`40 + 1·25` rounds exactly), so only a unit test defends it.
+
+**A stall is seen one tick after the flow stops**, because a loop measures the
+last tick's outlet. Raise the tank setpoint in the same command batch and the
+primary's proportional kick clamps the outlet target at 65 °C before the stall is
+seen; gate 11 raises it one tick later.
+
+**Seventeen mutations, sixteen caught, the predicted-inert one inert.** The depth
+rule's deletion is caught by its message only: every admitted pairing puts the
+primary on a tank, so fork 5's holdup-inner refusal also refuses any chain, any
+mutual pair and any self-link. The depth rule becomes load-bearing with E18. The
+godot-feature build and clippy were run and are clean.

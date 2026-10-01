@@ -73,6 +73,13 @@ pub enum Command {
     /// 4). Range- and finiteness-checked like every other command argument: a
     /// level setpoint must be finite and within the tank's own height, since a
     /// target the plant cannot reach is a loop pinned at saturation forever.
+    ///
+    /// **A cascade SECONDARY's setpoint is its primary's actuator** (M25,
+    /// docs/DESIGN.md §29 fork 4), so it takes a valve's two guards: refused while
+    /// the primary is in AUTO (the write would be overwritten at the top of the
+    /// next tick), and refused outside the primary's declared range in either mode
+    /// (the primary's faceplate would read a position it could never produce). A
+    /// human moves a secondary's target by putting its primary in MANUAL.
     SetSetpoint {
         loop_id: LoopId,
         value: ControlledValue,
