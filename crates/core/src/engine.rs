@@ -8,8 +8,8 @@ use crate::components::{Composition, Slate};
 use crate::energy::{self};
 use crate::error::SimError;
 use crate::graph::{
-    Actuator, ControlLoop, ControlMode, ControlledValue, LeakRole, LoopId, MeasuredVariable,
-    NodeId, NodeKind, PlantGraph, SetpointRange, TripAction, TripId, TripState,
+    Actuator, ControlAction, ControlLoop, ControlMode, ControlledValue, LeakRole, LoopId,
+    MeasuredVariable, NodeId, NodeKind, PlantGraph, SetpointRange, TripAction, TripId, TripState,
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
@@ -1941,6 +1941,20 @@ impl Engine {
             .map(|(c, (measurement, _))| c.mode == ControlMode::Auto && measurement.is_some())
             .collect();
 
+        // Each primary's secondary's ACTION, read before pass 2a borrows the
+        // loops mutably: it decides which way the secondary's limit blocks.
+        let inner_action: Vec<Option<ControlAction>> = self
+            .graph
+            .controls()
+            .iter()
+            .map(|c| {
+                c.actuator
+                    .driven_loop()
+                    .and_then(|l| self.graph.controls().get(l.0 as usize))
+                    .map(|secondary| secondary.action)
+            })
+            .collect();
+
         // Pass 2a — the cascade primaries, each writing its secondary's setpoint
         // before any secondary updates (§29 fork 3).
         let mut setpoint_writes: Vec<(Actuator, Option<SetpointRange>, f64)> = Vec::new();
@@ -1955,7 +1969,11 @@ impl Engine {
                     control.name
                 ))
             })?;
-            if let Some(output) = step_loop(control, measurement, position, open, dt)? {
+            // The inner loop's limit (M28, docs/DESIGN.md §31): read off pass 1's
+            // start-of-tick sample, beside `open`, and for the same reason — it is
+            // a fact about the secondary that the primary must know before it acts.
+            let hold = inner_limit(sampled[secondary.0 as usize].1, inner_action[i]);
+            if let Some(output) = step_loop(control, measurement, position, open, hold, dt)? {
                 setpoint_writes.push((control.actuator, control.setpoint_range, output));
             }
         }
@@ -1971,7 +1989,7 @@ impl Engine {
             if control.actuator.driven_loop().is_some() {
                 continue;
             }
-            if let Some(output) = step_loop(control, measurement, position, false, dt)? {
+            if let Some(output) = step_loop(control, measurement, position, false, None, dt)? {
                 writes.push((control.actuator, control.max_duty, output));
             }
         }
@@ -2347,11 +2365,71 @@ fn trip_equipment_fault(graph: &PlantGraph, node: NodeId, kind: &str) -> SimErro
 /// `open` is true only for a cascade primary whose secondary will not act this
 /// tick (docs/DESIGN.md §29 fork 4). Every other loop passes `false` and runs the
 /// arithmetic every loop ran before M25.
+/// Which way a cascade primary may not move its secondary's setpoint this tick,
+/// because the secondary's own actuator is already at a limit (M28,
+/// docs/DESIGN.md §31). `None` everywhere else.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InnerLimit {
+    /// The primary may not RAISE the secondary's setpoint.
+    NoRaise,
+    /// The primary may not LOWER the secondary's setpoint.
+    NoLower,
+}
+
+impl InnerLimit {
+    /// Does moving the primary from `position` to `output` push the secondary
+    /// further into its limit? Both are fractions of the primary's range, which
+    /// maps onto the secondary's setpoint increasing (`SetpointRange`).
+    fn blocks(self, position: f64, output: f64) -> bool {
+        match self {
+            InnerLimit::NoRaise => output > position,
+            InnerLimit::NoLower => output < position,
+        }
+    }
+}
+
+/// The limit a secondary at `position` puts on its primary, given the
+/// secondary's `action`; `None` for a loop that drives no other.
+///
+/// **Exact comparisons, on purpose.** A loop's output is clamped with
+/// `f64::clamp`, which returns exactly `0.0` or `1.0` on a limit, and the
+/// position is read back bare (a valve) or as `duty / max_duty` of a duty written
+/// as `output · max_duty` — `(1·d)/d` and `0/d` are exact in IEEE arithmetic.
+///
+/// **The exact test LEAKS, measured** (docs/DESIGN.md §31, ledger row E19). Near
+/// a limit a PI output dips a hair off and back (M18's (iv)): on a furnace held
+/// cold by a fire, the outlet drifts with the flow, and on each tick it drifts
+/// toward its target the inner output rises off zero and the primary is free for
+/// that tick. Held on 984 of 2 000 ticks, the target walked 7.6 K where the
+/// unfixed rule walked 20 K. Closing it needs a "near enough to the limit"
+/// tolerance, which is a constant nothing here derives, so it is a ledger row.
+///
+/// **The direction is the secondary's action.** A REVERSE secondary's output
+/// rises with its setpoint (the error is `setpoint − measurement`), so at its
+/// top the primary may not raise the setpoint; a DIRECT one's output falls as its
+/// setpoint rises, so at its top the primary may not lower it. A P secondary is
+/// treated the same: its output clamps the same way.
+fn inner_limit(position: f64, action: Option<ControlAction>) -> Option<InnerLimit> {
+    let action = action?;
+    let at_top = position == 1.0;
+    let at_bottom = position == 0.0;
+    match (action, at_top, at_bottom) {
+        (ControlAction::Reverse, true, _) | (ControlAction::Direct, _, true) => {
+            Some(InnerLimit::NoRaise)
+        }
+        (ControlAction::Direct, true, _) | (ControlAction::Reverse, _, true) => {
+            Some(InnerLimit::NoLower)
+        }
+        _ => None,
+    }
+}
+
 fn step_loop(
     control: &mut ControlLoop,
     measurement: Option<ControlledValue>,
     position: f64,
     open: bool,
+    hold: Option<InnerLimit>,
     dt: Seconds,
 ) -> Result<Option<f64>, SimError> {
     control.last_measurement = measurement;
@@ -2388,6 +2466,25 @@ fn step_loop(
                 control
                     .algorithm
                     .update(measurement, control.setpoint, control.action, dt)?;
+            // **The inner loop at its limit** (M28, docs/DESIGN.md §31): the
+            // primary may not push its secondary's setpoint further in the
+            // direction that saturated it. Its own clamp's conditional
+            // integration, extended to the inner actuator's limit, and written as
+            // the open cascade's arm because that is what it is in one direction:
+            // nothing is written, the faceplate tracks, and the memory is
+            // back-calculated against the held position — so the primary resumes
+            // from where the setpoint stands, with no surplus to spend. Moving
+            // the other way, out of the limit, is untouched.
+            if hold.is_some_and(|h| h.blocks(position, output)) {
+                control.algorithm.seed_from_output(
+                    position,
+                    measurement,
+                    control.setpoint,
+                    control.action,
+                )?;
+                control.last_output = position;
+                return Ok(None);
+            }
             // Checked here rather than trusted from the seam: the range is the
             // actuator's, not the algorithm's, and an out-of-range position
             // reaching `Valve::opening` is a plant state `Command::SetValveOpening`

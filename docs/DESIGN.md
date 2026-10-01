@@ -15988,6 +15988,12 @@ where the loader checks it in one hop:**
 - The textbook remedy feeds the secondary's MEASUREMENT back as the primary's
   position (external reset feedback). New row E16; trigger: a plant whose range top
   exceeds the inner actuator's authority at some operating flow.
+- **Taken by M28 (2026-10-01, §31), with a different remedy.** External reset
+  feedback would move the demo, and is the edit M25.1's gates 6 and 7 catch as
+  mutation 2. What ships is the primary's own clamp extended to the inner
+  actuator's limit: while the secondary sits at a limit, the primary may not push
+  its setpoint further that way. "Bounded" understated it: the cost grows with the
+  range (0.39 K of overshoot at 40–65 °C, 1.50 K at 40–90 °C, on a 1.3 MW furnace).
 
 ### Fork 7 — what a frontend sees
 
@@ -16581,3 +16587,187 @@ the file was declared safe at.
 **From here, "runs byte-identical" means post-M26.1 identical for
 `relief_blowdown` and `relief_twin_vessels` on Newton.** Every other plant, and
 every plant on `simple`, is unchanged.
+
+## 31. A cascade primary held by its secondary's limit — ledger row E16 (M28)
+
+### What licensed this, stated plainly
+
+Nothing fired. E16's trigger, "a plant whose range top exceeds the inner
+actuator's authority at some operating flow", is reached by no shipped plant: the
+demo's 65 °C range top needs 1.50 MW of its furnace's 2 MW. **This milestone is a
+decision**, the user's, taken on 2026-10-01 ("the small fixes first, then E16"). It
+was specified and built in one slice. The probes are in `W:\temp\claude\m28\`:
+`handsim28.py` (M25's hand model of the heater plant, with the inner actuator able
+to saturate and three treatments of the primary), `summ.py`, and an unfixed engine
+built in a worktree under `old\`.
+
+### The premise, measured before any fork
+
+**The hand model reproduces the shipped (unfixed) engine on a plant that reaches
+E16's trigger.** The demo with its furnace cut to 1.3 MW (outlet ceiling 61.6 °C,
+under the 65 °C range top):
+
+| 1.3 MW furnace, unfixed | hand | engine |
+|---|---|---|
+| ticks the furnace sits at full fire | 1 694 | 1 694 |
+| ticks the primary sits at its own clamp | 348 | 348 |
+| tank peak | 60.3947 °C | 60.3947 °C |
+| inside 0.06 K of 60 °C from | 4 444 | 4 445 |
+
+So the windup E16 describes is real: the primary walks the outlet target to the
+range top while the furnace cannot follow, then walks it back, and the tank
+overshoots by 0.39 K and settles 1 866 ticks later than the demo. **The cost grows
+with the range**, which the deferral's "bounded" hid: with the range widened to
+40–75 °C (gain rescaled to keep the loop's tuning) the overshoot is 1.27 K and
+settling 6 036; at 40–90 °C, 1.50 K and 7 115 (hand).
+
+### Fork 1 — which remedy
+
+- **(a) External reset feedback, as E16 named it** — the primary's memory driven
+  by the secondary's MEASUREMENT. Rejected. Always on, it changes the primary's
+  dynamics when nothing saturates, so the demo's bytes would move for a plant that
+  never had the problem; and M25's mutation 2 — the primary's position read from
+  the secondary's measurement — is caught by three gates, because the faceplate
+  must be the setpoint as a position (§29 gate 6). A variant switched on only
+  while the secondary is limited was hand-modelled and **does nothing**: the
+  proportional term pushes the output back to the clamp on the next free tick
+  (1.3 MW: 0.3942 K over, against 0.3947 unfixed).
+- **(b) "Track"**: while the secondary is limited, the primary's position is the
+  secondary's measurement as a fraction of the range. Hand: the same as (c) on
+  every case (1.3 MW: 60.0038 °C, inside from 3 302 against 3 301). Rejected for
+  costing more for nothing: it maps a measurement into the range, which can fall
+  outside `[0, 1]` and is absent on a stagnant tick (§23).
+- **(c) Freeze. Chosen.** While the secondary's actuator sits at a limit, the
+  primary may not move the secondary's setpoint further in the direction that
+  saturated it. It is the primary's own clamp — conditional integration performed
+  by the back-calculation (M8.3) — extended to the inner actuator's limit. Hand,
+  1.3 MW: 0.0038 K over, inside from 3 301, and **independent of the range**,
+  because the primary never reaches it (3 301 at 40–65, 40–75 and 40–90 alike).
+
+### Fork 2 — where it lives: the open cascade's arm, in one direction
+
+A held primary does exactly what an open one does (§29 fork 4): it writes nothing,
+its faceplate tracks the secondary's setpoint as a position, and its memory is
+back-calculated against that position. So the hold is one branch in `step_loop`'s
+closed AUTO arm, after `update`: if the output would move the setpoint further
+into the limit, seed, track, and return `None`. Three consequences:
+
+- **Writing nothing, rather than writing the held position back**, keeps the
+  secondary's setpoint bit-identical: `setpoint_at(position(sp))` need not round
+  to `sp`.
+- The faceplate, the (non-)write and the memory come from one branch, so they
+  cannot disagree. A hold that clamped the written value after `step_loop` would
+  leave `last_output` showing a value never written (mutation 5).
+- No trait changes: `seed_from_output` is the back-calculation, and a P primary
+  implements it as a no-op, so a P primary is held with no memory to seed.
+
+### Fork 3 — the signal: the secondary's start-of-tick position, compared exactly
+
+`inner_limit` reads pass 1's sample of the secondary's position — the same
+start-of-tick fact `open` is read from — and compares it with `1.0` and `0.0`
+exactly. `f64::clamp` returns exactly those values on a limit, a valve reads its
+opening bare, and a duty reads back as `(u·d)/d`, exact for `u` of 0 or 1.
+
+**The direction is the secondary's ACTION.** A reverse secondary's output rises
+with its setpoint (its error is `setpoint − measurement`); a direct one's falls:
+
+| secondary | at its top (1) | at its bottom (0) |
+|---|---|---|
+| reverse (a furnace outlet, a flow) | may not RAISE the setpoint | may not LOWER it |
+| direct (a cooler outlet) | may not LOWER it | may not RAISE it |
+
+The primary's range maps onto the setpoint increasing, so "raise" is
+`output > position`. Moving the other way, out of the limit, is never blocked.
+
+### Fork 4 — what a frontend sees: nothing new
+
+"Held" is not a field, for §29 fork 7's reason that "open" is not one: it is the
+secondary's published `output` at 0 or 1, read through the primary's `drives`. A
+field saying it would be a second owner of one fact. No snapshot changes, so no
+plant's bytes move and the Godot bridge is untouched.
+
+### Fork 5 — fixtures, not scenario files
+
+No shipped plant reaches the rule, and a thirtieth file holding a weakened furnace
+would ship a plant that exists only to be badly sized. The four fixtures are
+derived in-test from shipped files (§29 gate 9's precedent), so CI runs them
+through `cargo test`.
+
+### Gates — `crates/scenarios/tests/inner_limit_reference.rs`
+
+One per row of fork 3's table, plus the release:
+
+1. **A reverse secondary at its top**: the 1.3 MW furnace. The setpoint never rises
+   on a tick the furnace began at full fire; on every held tick the faceplate is the
+   setpoint as a position, to the bit; the tank peaks under 0.02 K over (engine
+   0.0038, unfixed 0.395) and is inside from 3 250–3 350 (engine 3 302, unfixed
+   4 445); 300–370 ticks at full fire (engine 332, unfixed 1 694).
+2. **A direct secondary at its top**: §29 gate 9's cooler pairing with a 1.3 MW
+   cooler. The setpoint never FALLS at full duty; inside from 3 255–3 355 (engine
+   3 305, unfixed 4 448).
+3. **A reverse secondary at its bottom**: the demo settled, then 1.5 MW of fire on
+   the heater for 2 000 ticks, which holds the furnace at zero. The setpoint never
+   falls on a tick the furnace began cold; after the fire the tank dips under
+   0.1 K (engine 0.074, unfixed 1.48) and is back inside after 1 782–1 882 ticks
+   (engine 1 832, unfixed 2 485).
+4. **Out of the limit at once**: a 1.1 MW furnace that cannot reach 60 °C at all,
+   then the tank's setpoint stepped to 55 °C. The primary lowers the target on that
+   very tick, though the furnace began it at full fire.
+
+### What must not change, measured
+
+All twenty-nine plants are byte-identical on both fidelities, with worst and total
+iterations unchanged, against a baseline taken after M27.2; the demo's furnace is
+at a limit on no tick. M25's fifteen cascade gates pass unchanged, and none of
+them reaches the hold (counted with a temporary print: zero events). "Runs
+byte-identical" means post-M28 identical, unchanged.
+
+### Corrections from building it (M28)
+
+**1. The exact test leaks, and the hand model could not see it.** Gate 3 was first
+written with the hand model's number: the target held near 58.3 °C, where the
+furnace went cold. The engine held it at **52.37 °C**. The hand model's flow is a
+constant; the engine's drifts with the tank's level, so the cold furnace's outlet
+drifts, and on each tick it drifts toward its target the inner output rises a hair
+off zero (M18's (iv)). That tick the primary is free and steps the target down by
+one tick of control. Held on 984 of the 2 000 fire ticks, the target walked 7.6 K
+where the unfixed rule walked the whole 20 K to the range bottom. The outcome
+mostly survives (0.074 K under after the fire, against 0.005 by hand and 1.48
+unfixed), and gate 3's bands are the engine's. Closing it needs a "near enough"
+tolerance that no number here derives: new row E19. The first comment on
+`inner_limit` called those free ticks "right"; it is corrected.
+
+**2. The release is where the hold costs something, and the prediction that it
+would favour the hold was wrong.** On the 1.1 MW plant, stuck at full fire, the
+hold parks the primary's memory at the held position less the standing error's
+proportional share; the unfixed rule parks it at the range top less the same share.
+When the setpoint steps down to 55 °C the proportional kick is the same, and it
+lands lower from the hold's memory: the tank dips to **54.08 °C** (hand) against
+the unfixed 54.87, and is inside from +2 318 against +1 909 at 40–65 °C. Only the
+range top's position makes the unfixed rule win: at 40–90 °C it takes +2 865 and
+the hold +2 318. Recorded as row E20 rather than gated as a defect; gate 4 asserts
+the dip's band, so that changing it is a decision.
+
+**3. The mutation pass: six edits, six caught, each by the gate written for it.**
+Run by `W:\temp\claude\m28\mutate.py`, sources written with `newline=""` and the
+file compared byte for byte with its pre-pass copy afterwards. M25's cascade gates
+ran beside each and fired on none.
+
+| # | edit | caught by |
+|---|---|---|
+| 1 | the hold deleted | gates 1–4 |
+| 2 | the secondary's action ignored (every secondary treated as reverse) | gate 2 alone |
+| 3 | held at the top only | gate 3 alone |
+| 4 | both directions blocked | gates 4 and 1 |
+| 5 | the faceplate shows the unwritten output | gate 1 alone (its bit identity) |
+| 6 | the memory not re-seeded on a held tick | gates 1–4 |
+
+### Deferred, with what un-defers each
+
+- **E19 — the hold leaks near a limit.** Trigger: a plant where the leak decides an
+  outcome a gate cares about. Distance: on gate 3's fire the target walks 7.6 K
+  (unfixed 20 K), and the tank's dip after the fire is 0.074 K.
+- **E20 — where a held primary's memory parks on a sustained limit.** Trigger: a
+  plant whose setpoint sits beyond the inner actuator's authority long enough that
+  the release from it is what a player sees. Distance: gate 4, 0.92 K under a
+  55 °C target after the step, against 0.13 K unfixed.

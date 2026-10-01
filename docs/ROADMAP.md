@@ -7019,3 +7019,25 @@ until its pump starts (both fidelities). Flagging by mass fails the third and on
 the third; never flagging fails all three. Of 29 plants only `tank_runs_dry` moves,
 on both fidelities, and stripping the key reproduces its before-file byte for byte
 (478 flagged snapshots); no iteration count moved. B37 is struck.
+
+## M28 — a cascade primary held by its secondary's limit: ledger row E16; opened on a decision
+
+### M28 — specified and built in one slice — **LANDED** 2026-10-01, and M28 is CLOSED
+
+Taken on the user's decision; E16 was not past its trigger, and no shipped plant
+reaches it. The note is DESIGN §31. While a cascade secondary's own actuator sits
+at a limit, its primary may not move the secondary's setpoint further in the
+direction that saturated it: the open cascade's arm (§29 fork 4) applied in one
+direction, inside `step_loop`, with the direction taken from the secondary's
+action. The remedy E16 named, external reset feedback, was rejected because it
+would move the demo and is the edit M25.1 already catches as mutation 2.
+
+Measured on a 1.3 MW furnace (the demo's 2 MW never saturates): overshoot
+0.395 K → 0.004 K, settled from tick 4 445 → 3 302, and the gain no longer
+depends on the outer range (unfixed: 1.50 K at 40–90 °C). Four gates in
+`tests/inner_limit_reference.rs`, one per row of the direction table plus the
+release; six mutations, six caught. All twenty-nine plants byte-identical on both
+fidelities with no iteration count moved. Two findings became rows: the exact
+limit test leaks on a drifting plant (E19, the target walks 7.6 K where it used to
+walk 20), and a sustained limit parks the memory where a later setpoint step dips
+deeper (E20, 0.92 K against 0.13).

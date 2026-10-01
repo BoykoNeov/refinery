@@ -191,6 +191,27 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M28 is CLOSED (2026-10-01): a cascade primary held by its secondary's limit —
+`docs/DEFERRED.md` row E16, now struck.** Taken on a DECISION (the user's). One
+slice, note and build together: DESIGN §31. Read its "Corrections from building it"
+before touching `step_loop` or `inner_limit`.
+- **The rule**: while a secondary's actuator sits EXACTLY at 0 or 1 (pass 1's
+  start-of-tick sample), its primary may not move the secondary's setpoint further
+  that way. Which way is the SECONDARY's action: a reverse secondary's output rises
+  with its setpoint. A held primary is the open cascade's arm: writes nothing,
+  faceplate tracks, memory back-calculated. No trait or snapshot change.
+- **E16's named remedy (external reset feedback) was rejected**: it moves the demo,
+  and it is M25.1's mutation 2. "Bounded" understated the cost, which grows with
+  the outer range (1.3 MW furnace: 0.39 K overshoot at 40–65 °C, 1.50 K at 40–90;
+  held, 0.004 K at any range).
+- **No shipped plant reaches it**; the four gates (`tests/inner_limit_reference.rs`)
+  run on fixtures derived in-test, one per row of the direction table plus the
+  release. All 29 plants byte-identical, no iteration count moved. Six mutations,
+  six caught.
+- **Two new rows.** E19: the exact test LEAKS on a drifting plant (a hair off the
+  limit frees the primary for a tick; the hand model, at constant flow, could not
+  see it). E20: a sustained limit parks the memory where a later step dips deeper.
+
 **M27 is CLOSED (2026-10-01): two small fixes — `docs/DEFERRED.md` rows F1 and
 B37, both struck.** Taken on a DECISION (the user's: "the small fixes first, then
 E16"); neither was past its trigger. No separate design section: each is a
