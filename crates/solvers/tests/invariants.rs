@@ -1960,12 +1960,29 @@ fn the_relief_arm_lifts_relieves_and_floats() {
     // and now converges 57/305. The remaining `newton_diverged` is dominated by
     // ordinary stiffness, which is why the cap split is still reported: a rise
     // here means one of two different things and the split says which.
+    //
+    // Tightened again by M26.1 (docs/DESIGN.md §30), for the same reason. The
+    // "ordinary stiffness" was mostly not: it was a PSV partly open with its
+    // opening frozen into Newton's Jacobian, so every step overshot. Measured
+    // immediately before M26.1: 39/305 failing, 28 at the cap. After: 5/305,
+    // none at the cap. Left at `* 6` (50) the bound would pass with the fix
+    // removed (39), which is the counter-with-nothing-behind-it this file keeps
+    // being caught by; at `* 20` (15) removing it fails, and so does putting
+    // the term in the wrong column (55).
     assert!(
-        newton_diverged * 6 <= spur_trees,
+        newton_diverged * 20 <= spur_trees,
         "Newton fails on {newton_diverged}/{spur_trees} spur trees ({newton_hit_the_cap} of \
-         them by exhausting the {newton_max_iter}-iteration cap), against 42 measured when \
-         the active-set loop landed. Either the anchoring loop has regressed or the \
-         iteration cap has become the binding constraint; the split says which"
+         them by exhausting the {newton_max_iter}-iteration cap), against 5 (none at the cap) \
+         measured when M26.1 gave the Jacobian a relief valve's opening slope, and 39 (28 at \
+         the cap) before it. A rise in the cap share is that slope's signature (DESIGN §30); \
+         a rise in the rest is the anchoring loop"
+    );
+    assert!(
+        newton_hit_the_cap * 100 <= spur_trees,
+        "{newton_hit_the_cap}/{spur_trees} spur trees exhausted Newton's \
+         {newton_max_iter}-iteration cap, against none after M26.1 and 28 before it — a PSV \
+         in its band whose opening slope is missing from the Jacobian crawls exactly like \
+         this (DESIGN §30)"
     );
     assert!(
         simple_ok * 7 >= spur_trees,
