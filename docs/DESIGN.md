@@ -15421,6 +15421,17 @@ the shape of the boil-off's own rounding guard (`ROUNDING_MASS_FRACTION`):
   `cavitating`, because its pressure is below any vapour pressure. The cavitation
   check compares a pressure against a temperature-only bubble pressure, so a
   negative pressure cannot make it fail (checked).
+  **Reversed by M27 (2026-10-01), on the user's decision — DEFERRED row B37.**
+  `NodeSnapshot::running_dry` now carries the flag, read from the accepted solve's
+  `HydraulicSolution::starved` and skipped when false. "Mass reads zero" was not
+  the same signal, in both directions. On the drying tick the tank began with
+  inventory. And an empty tank nothing draws on is empty, not running dry: M27's
+  gate 3 declares the demo's tank empty with its feed shut and pump stopped, and
+  flagging by mass fails there and nowhere else (run). Gates are the three
+  `running_dry` tests in `tests/dry_tank_reference.rs`, on both fidelities where
+  it matters. Of 29 plants only `tank_runs_dry` moves on either fidelity, and
+  stripping the key reproduces its before-file byte for byte. No iteration count
+  moved.
 - **What else meets a negative pressure, checked.** `compile_edge` floors its
   density pressure at 1 Pa, and a liquid's density ignores pressure anyway.
   `finalize`'s leak refusal fires on a punctured suction line of a dry tank; that

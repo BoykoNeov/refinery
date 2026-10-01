@@ -191,6 +191,21 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
+**M27 is CLOSED (2026-10-01): two small fixes — `docs/DEFERRED.md` rows F1 and
+B37, both struck.** Taken on a DECISION (the user's: "the small fixes first, then
+E16"); neither was past its trigger. No separate design section: each is a
+correction to the note that deferred it (DESIGN §8, §28 fork 6).
+- **M27.1: `Engine::apply` refuses an unknown node or edge id** as
+  `InvalidCommand` (`check_command_ids`, wildcard-free over `Command`, run before
+  any arm) instead of panicking. The Godot bridge KEEPS its own guard: it is what
+  gives a stale id the `unknown_id` code rather than `invalid_command`. The old
+  characterization test is now `core_refuses_an_out_of_range_id`.
+- **M27.2: `NodeSnapshot::running_dry`**, true on a tank the last solve starved,
+  skipped when false. The solve's verdict, NOT "mass reads zero": an empty tank
+  nothing draws on is not flagged, and that gate is the only one a mass-based flag
+  fails. Only `tank_runs_dry` moves (both fidelities, the key only); "runs
+  byte-identical" means post-M27.2 identical for it.
+
 **M26 is CLOSED (2026-10-01): Newton's missing relief slope — `docs/DEFERRED.md`
 row A14, now struck.** Taken on a DECISION (the user's). **M26.0** wrote DESIGN §30
 (five forks, six gates, seven mutations, no code); **M26.1 landed 2026-10-01** and

@@ -978,3 +978,145 @@ fn a_dry_tank_publishes_the_solve_s_own_pressure() {
     );
     assert!(tank(&engine, "buffer_tank").mass.value() <= THERMAL_FLOOR_KG);
 }
+
+// --- M27: the "running dry" flag (DEFERRED B37) ------------------------------
+
+/// The flag as PUBLISHED, by node name, read off the snapshot rather than off
+/// the solve, because the snapshot is what a frontend gets.
+fn published_dry(engine: &Engine) -> Vec<String> {
+    engine
+        .snapshot()
+        .nodes
+        .iter()
+        .filter(|n| n.running_dry)
+        .map(|n| n.name.clone())
+        .collect()
+}
+
+/// **M27 gate 1: the flag goes up on the drying tick, on the tank, and stays.**
+///
+/// Absent before the first tick and on every tick before the tank dries. Present
+/// on the drying tick itself, when the tank began the tick holding inventory —
+/// asserted, so the gate cannot pass on a flag raised a tick late — and on the
+/// tank alone. Both fidelities, because the solve's starved set comes from the
+/// shared driver and the game solver must reach it too.
+#[test]
+fn the_running_dry_flag_rises_on_the_drying_tick() {
+    for (src, fidelity) in [(DEMO.to_string(), "newton"), (on_simple(DEMO), "simple")] {
+        let mut engine = build(&src);
+        assert!(
+            published_dry(&engine).is_empty(),
+            "{fidelity}: nothing has run dry before the first tick"
+        );
+        let mut drying = None;
+        for _ in 0..6_000 {
+            let before = tank(&engine, "buffer_tank").mass.value();
+            tick(&mut engine);
+            let flagged = published_dry(&engine);
+            if starved(&engine, "buffer_tank").is_none() {
+                assert!(
+                    flagged.is_empty(),
+                    "{fidelity}, tick {}: flagged {flagged:?} before the tank dried",
+                    engine.snapshot().tick
+                );
+                continue;
+            }
+            assert_eq!(flagged, ["buffer_tank"], "{fidelity}: the tank, alone");
+            drying = Some((engine.snapshot().tick, before));
+            break;
+        }
+        let (at, held) = drying.unwrap_or_else(|| panic!("{fidelity}: never dried"));
+        assert!(
+            held > 1.0,
+            "{fidelity}: on the drying tick ({at}) the tank began with {held:.3} kg — \
+             the flag is the solve's verdict, raised before the mass reads zero"
+        );
+        for _ in 0..100 {
+            tick(&mut engine);
+            assert_eq!(
+                published_dry(&engine),
+                ["buffer_tank"],
+                "{fidelity}: still dry, still flagged"
+            );
+        }
+    }
+}
+
+/// **M27 gate 2: the flag clears when the tank recovers.** Gate 4's stop: the
+/// tick after the pump stops, the tank is wet and nothing is flagged. Catches a
+/// flag that latches, or one read from the previous tick's solve.
+#[test]
+fn the_running_dry_flag_clears_when_the_tank_recovers() {
+    let mut engine = build(DEMO);
+    run_to_drying_tick(&mut engine, "buffer_tank", 6_000);
+    tick(&mut engine);
+    assert_eq!(
+        published_dry(&engine),
+        ["buffer_tank"],
+        "dry before the stop"
+    );
+    let pump = node(&engine, "transfer_pump");
+    engine
+        .apply(Command::SetPumpOn {
+            node: pump,
+            on: false,
+        })
+        .expect("stopping a pump is legal");
+    tick(&mut engine);
+    assert!(
+        starved(&engine, "buffer_tank").is_none(),
+        "premise: the tank is wet again"
+    );
+    assert!(
+        published_dry(&engine).is_empty(),
+        "a recovered tank is not flagged: {:?}",
+        published_dry(&engine)
+    );
+}
+
+/// **M27 gate 3: an empty tank nothing draws on is not running dry.** The demo's
+/// tank declared empty, its feed shut and its pump stopped: mass zero, and no
+/// flag, because nothing asks it for anything. Starting the pump raises the flag
+/// on the next tick with the mass unchanged. This is the case that tells the
+/// solve's verdict from "mass is zero", which the demo alone cannot: there, the
+/// tank's END-of-tick mass is zero on every flagged tick.
+#[test]
+fn an_empty_tank_nothing_draws_on_is_not_flagged() {
+    let idle = swap(
+        &swap(
+            &swap(DEMO, "initial_level_m = 5.0", "initial_level_m = 0.0"),
+            "opening = 1.0",
+            "opening = 0.0",
+        ),
+        "on = true",
+        "on = false",
+    );
+    for (src, fidelity) in [(idle.clone(), "newton"), (on_simple(&idle), "simple")] {
+        let mut engine = build(&src);
+        for _ in 0..5 {
+            tick(&mut engine);
+        }
+        assert!(
+            tank(&engine, "buffer_tank").mass.value() <= THERMAL_FLOOR_KG,
+            "{fidelity}: premise: the tank is empty"
+        );
+        assert!(
+            published_dry(&engine).is_empty(),
+            "{fidelity}: an empty, idle tank is flagged: {:?}",
+            published_dry(&engine)
+        );
+        let pump = node(&engine, "transfer_pump");
+        engine
+            .apply(Command::SetPumpOn {
+                node: pump,
+                on: true,
+            })
+            .expect("starting a pump is legal");
+        tick(&mut engine);
+        assert_eq!(
+            published_dry(&engine),
+            ["buffer_tank"],
+            "{fidelity}: a pump pulling on an empty tank runs it dry"
+        );
+    }
+}

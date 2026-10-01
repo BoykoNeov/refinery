@@ -2112,6 +2112,9 @@ impl Engine {
                     // three different sentences a frontend must read as
                     // "unknown" — see `NodeSnapshot::cavitation`.
                     cavitation: self.last_cavitation.get(&id).copied(),
+                    // The solve's own verdict, never the tank's mass — see
+                    // `NodeSnapshot::running_dry`.
+                    running_dry: sol.is_some_and(|s| s.starved.contains_key(&id)),
                 }
             })
             .collect();

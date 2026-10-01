@@ -174,6 +174,26 @@ pub struct NodeSnapshot {
     /// both made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cavitation: Option<CavitationSnapshot>,
+    /// This tank ran dry in the last tick's solve: the network drew more than it
+    /// held, so the solve took everything left as the tank's supply and from then
+    /// on the tank passes its feed straight through (M24, docs/DESIGN.md §28).
+    /// M27 added it, reversing §28 fork 6's "no flag" (DEFERRED row B37).
+    ///
+    /// **The solve's own verdict (`HydraulicSolution::starved`), not "mass is
+    /// zero".** The two differ in both directions. On the tick a tank dries it
+    /// still held inventory when the tick began. And an empty tank nothing draws
+    /// on is empty, not running dry, and is not flagged. Mass alone was the
+    /// reading §28 fork 6 left a frontend, and on a plant whose thermo cannot
+    /// flag the pump beside the tank as cavitating it was the only one.
+    ///
+    /// **Absent means the last solve did not starve this node**, which covers
+    /// every node that is not a tank and every tick before the first, when there
+    /// has been no solve. Unlike `cavitation`'s absence this is not "unknown": a
+    /// tank runs dry only inside a solve, so before one there is nothing to
+    /// report. Skipped when false, which keeps every tick of every plant that
+    /// never runs dry byte-identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub running_dry: bool,
 }
 
 /// The cavitation criterion at one node — see [`NodeSnapshot::cavitation`].

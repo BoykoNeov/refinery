@@ -7006,3 +7006,16 @@ guard, which is what gives a stale id the `unknown_id` code. The characterizatio
 test that asserted the panic is now `core_refuses_an_out_of_range_id`, with a node
 id on two arms and an edge id on one; deleting the edge half of the check fails it.
 DESIGN §8 carries the correction; F1 is struck.
+
+### M27.2 — a "running dry" flag on the snapshot — **LANDED** 2026-10-01, and M27 is CLOSED
+
+`NodeSnapshot::running_dry` is true on a tank the last tick's solve starved, and
+skipped otherwise. It reverses DESIGN §28 fork 6's "no flag". It is the solve's
+verdict, not "mass reads zero": on the drying tick the tank began with inventory,
+and an empty tank nothing draws on is not running dry. Three gates in
+`tests/dry_tank_reference.rs`: the flag rises on the drying tick and stays (both
+fidelities), clears when the pump stops, and stays down on an empty idle tank
+until its pump starts (both fidelities). Flagging by mass fails the third and only
+the third; never flagging fails all three. Of 29 plants only `tank_runs_dry` moves,
+on both fidelities, and stripping the key reproduces its before-file byte for byte
+(478 flagged snapshots); no iteration count moved. B37 is struck.
