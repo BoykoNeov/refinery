@@ -133,8 +133,9 @@ fn assert_near_newton(run: &BothFidelities, what: &str) {
 /// the gate runs three inlet lines spanning more than an order of magnitude of
 /// `g/c` and asserts the claim itself: the sweep count is FLAT across them
 /// (largest at most 3× the smallest), each is within 5× of Newton's, and every
-/// snapshot agrees with Newton. Measured: 8, 8 and 7 sweeps against Newton's 10,
-/// 8 and 8.
+/// snapshot agrees with Newton. Measured: 8, 8 and 7 sweeps against Newton's 6,
+/// 7 and 7 — 10, 8 and 8 before M26.1 gave Newton's Jacobian the PSV opening's
+/// slope (docs/DESIGN.md §30), which tightened the 5× bound without moving a sweep.
 #[test]
 fn the_simple_sweep_count_is_flat_in_the_relief_lines_stiffness() {
     let mut worsts = Vec::new();
@@ -202,7 +203,8 @@ fn a_wide_conducting_vent_at_a_one_second_tick_agrees_with_newton() {
 /// ways:
 /// - the shipped `relief_twin_vessels` (1 m × 150 mm relief lines): the old
 ///   solver and the one-shift-per-set shortcut both FAIL at tick 1, so CI's
-///   corpus also defends this. Measured: 6 sweeps against Newton's 8.
+///   corpus also defends this. Measured: 6 sweeps against Newton's 7 (8 before
+///   M26.1).
 /// - `two_vessel`, the same plant at 2 m × 100 mm: the old solver failed at tick
 ///   47, while the shortcut SURVIVES at 4 472 sweeps — under the cap, so only a
 ///   sweep-count assertion sees it. The hierarchy takes 8.
@@ -216,7 +218,7 @@ fn two_relieving_vessels_in_one_plant_agree_with_newton() {
 
 /// Gate 4's second plant, in a test of its own so that it runs even when the
 /// shipped twin fails first. Under one-group-per-set it must fail on the
-/// sweep-count assertion (4 472 against Newton's 8), not on a divergence: this
+/// sweep-count assertion (4 472 against Newton's 7), not on a divergence: this
 /// is the plant that tells the two groupings apart by COST, where the shipped
 /// twin tells them apart by failure.
 #[test]

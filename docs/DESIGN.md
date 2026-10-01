@@ -16469,7 +16469,7 @@ Run under `--no-fail-fast`, each catch read for why it fired.
 
 The building slice reproduced the copy to the bit: the shipped code and the
 `A14LIFT=1` copy give the same fingerprints on both moved plants, and every number
-fork 4 and gate 5 quote held. Five things the note did not get right.
+fork 4 and gate 5 quote held. Six things the note did not get right.
 
 1. **Gate 1 as specified measured the wrong thing near full lift.** "The term
    against a centred difference of the full-recompile flow in `P_src`, within 2%"
@@ -16508,6 +16508,16 @@ fork 4 and gate 5 quote held. Five things the note did not get right.
    `armijo_c_closes_the_shut_in_stall_window` carry runs of spaces where a line
    continuation was lost**, in HEAD before this slice. Recorded, not changed: the
    test's logic is untouched and the fix belongs to a slice that touches it.
+6. **A faster Newton tightened §25's gates without moving a sweep.** §25's
+   stiff-pair gates bound the game solver at `simple_worst < 5 × newton_worst`,
+   so Newton's own count is the yardstick. Re-measured with their measurement
+   test: Newton 10, 8, 8 → **6, 7, 7** on gate 1's three geometries and 8 → **7**
+   on both twins, while every `simple` count is unchanged. On the shipped relief
+   geometry the bound falls from 50 to 30 against 8 sweeps. Still passing with
+   margin, and still far below the 4 472 the one-group-per-set mutation takes;
+   recorded because a tighter bound is a different gate than the one §25 wrote.
+   The quoted counts in `stiff_pair_reference.rs`, the twin file's header and
+   CLAUDE.md's M21 box ("Newton was never affected") were corrected.
 
 ### The mutation pass (M26.1)
 

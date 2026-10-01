@@ -409,7 +409,9 @@ TOGETHER at `c/(g + c)` per Gauss–Seidel sweep, where `g` is the line's conduc
 and `c = C/dt`: 0.98850 predicted against 0.988502 measured. A3's old "5.4× under
 the cap" was measured on `relief_blowdown.toml`, whose PSV inlet had been re-sized to
 5 m × 60 mm to dodge this. One edit (2 m × 100 mm, or `dt = 1.0`) failed the game
-fidelity. Newton was never affected and is untouched.
+fidelity. Newton was untouched by M21 — and was affected after all, under the
+cap: `relief_blowdown` at `dt = 1.0` took 20 of 50 iterations and the twin failed
+(A14). M26.1 fixed that; see DESIGN §30.
 
 **The fix, in `SimpleFlowSolver`.** After each sweep, `correct_groups` shifts each
 group of pressures by one common amount: a scalar Newton step on the group's net

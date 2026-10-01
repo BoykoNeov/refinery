@@ -18,7 +18,8 @@
 #
 # What it does, measured over 6000 ticks: the header fills the drum, the thin tie
 # fills the receiver, the drum's PSV lifts at tick 160 and the receiver's at tick
-# 860, and both are partly open at the end. Simple: 6 sweeps worst. Newton: 8.
+# 860, and both are partly open at the end. Simple: 6 sweeps worst. Newton: 7
+# (8 before M26.1).
 #
 # Sized on purpose, not tuned after the fact:
 #   - Relief inlets 1 m x 150 mm. At 2 m x 100 mm (the in-test `two_vessel`
