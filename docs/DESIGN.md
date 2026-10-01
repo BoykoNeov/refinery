@@ -4406,6 +4406,22 @@ appears, or if any in-repo caller gains the ability to construct an
 out-of-range id; `core_panics_on_an_out_of_range_id` is a characterization test
 that fires if `core` changes underneath the guard.
 
+**Corrected by M27 (2026-10-01), on the user's decision — DEFERRED row F1.**
+`core` now refuses an out-of-range node or edge id itself:
+`Engine::check_command_ids` runs at the top of `apply`, before any arm, through a
+wildcard-free match on `Command`, and returns `SimError::InvalidCommand`. Neither
+trigger had fired. What decides it is that the tie above was never really a tie:
+rule 1 forbids changing `core` *to suit a frontend*, and this change suits rule 5,
+which `core` owes whoever calls it. One check at the top rather than one per arm,
+because three arms reached the graph before their own lookup (the trip guard's
+message, `check_loop_owned_duty`, `PuncturePipe`'s `pipe(edge)`). **The bridge's
+guard stays**, for a reason this paragraph did not need before: it is what gives
+a stale id the `unknown_id` code. Without it the same mistake would reach a scene
+as `invalid_command`, the code a valve opening of 1.5 also gets. The
+characterization test became `core_refuses_an_out_of_range_id`. It asserts a node
+id on two arms and an edge id on one. Deleting the edge half of the check
+panics `PuncturePipe` and fails it (run).
+
 **No second command format.** `Command` addresses nodes and edges by numeric
 id and that JSON shape is a contract (§7, §3b), so the bridge does not add a
 name-addressed variant of it — two wire formats for one action is how they

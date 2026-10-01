@@ -8,21 +8,21 @@
 //!
 //! # What this module is responsible for
 //!
-//! 1. **The trust boundary.** `Engine::apply` indexes its graph directly
-//!    (`core/src/graph.rs:552-563`), so an out-of-range `NodeId`/`EdgeId`
-//!    **panics**. Every in-repo caller takes its ids from a snapshot and is
-//!    in-range by construction; a frontend holding a stale id is not. Ids are
-//!    therefore validated *here*, against the set this bridge read from the
-//!    engine, and an id that fails is never forwarded. See
-//!    `core_panics_on_an_out_of_range_id` in the tests — a characterization
-//!    test that pins the behaviour this guard exists for, so the guard cannot
-//!    quietly become decorative.
+//! 1. **The trust boundary.** Ids are validated *here*, against the set this
+//!    bridge read from the engine, and an id that fails is never forwarded —
+//!    it comes back as `unknown_id`, a stable code a scene can branch on.
 //!
-//!    Not fixed in `core`, deliberately: CLAUDE.md rule 1 says a change to
-//!    `core` needed to satisfy a frontend means the *adapter* is wrong, and
-//!    the reachability above says untrusted input is the only way in.
-//!    **Un-defers if** a second untrusted-input frontend appears, or any
-//!    in-repo caller gains the ability to construct an out-of-range id.
+//!    Until M27 this guard was the only thing standing between a stale id and
+//!    a panic, because `Engine::apply` indexed its graph directly. M27 moved a
+//!    refusal into `core` (rule 5: the engine never panics), so an
+//!    out-of-range id reaching the engine is now an ordinary
+//!    `SimError::InvalidCommand`. **The guard stays anyway, and is not
+//!    redundant**: without it the same mistake would reach a scene as
+//!    `invalid_command`, the code that also means "a valve opening above 1",
+//!    and a scene could no longer tell "your id is stale, re-resolve the name"
+//!    from "your value is wrong". `core_refuses_an_out_of_range_id` in the
+//!    tests pins the engine half; `an_out_of_range_id_is_refused_by_the_bridge_
+//!    not_forwarded` pins this one.
 //!
 //! 2. **Names.** `Command` addresses nodes and edges by numeric id, and that
 //!    JSON shape is a frontend contract (DESIGN §7, §3b) — so this module does
@@ -172,8 +172,9 @@ enum Referent {
 ///
 /// **Wildcard-free on purpose.** A new `Command` variant does not compile
 /// until its referent is declared here, which is the only thing standing
-/// between a future command and the unvalidated-id panic described at the top
-/// of this module. If a variant is ever added that addresses nothing, add a
+/// between a future command and an id that reaches a scene as the wrong error
+/// code (see the top of this module). `Engine::apply`'s own check is
+/// wildcard-free for the same reason. If a variant is ever added that addresses nothing, add a
 /// `Referent::None` arm — deliberately, not by falling through a `_`.
 fn referent(cmd: &Command) -> Referent {
     match cmd {

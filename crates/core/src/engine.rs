@@ -159,6 +159,13 @@ impl Engine {
     }
 
     pub fn apply(&mut self, cmd: Command) -> Result<(), SimError> {
+        // **An id naming nothing is refused here, before any arm runs** (M27,
+        // docs/DESIGN.md §8). The graph indexes directly, so an out-of-range id
+        // used to panic — rule 5's failure. One check at the top rather than one
+        // per arm, because several arms reach the graph before their own lookup:
+        // the trip guard's message, `check_loop_owned_duty`, `PuncturePipe`'s
+        // `pipe(edge)`. Loops and trips are looked up through `Option` already.
+        self.check_command_ids(&cmd)?;
         match cmd {
             Command::SetValveOpening { node, opening } => {
                 if !(0.0..=1.0).contains(&opening) || !opening.is_finite() {
@@ -1987,6 +1994,38 @@ impl Engine {
     /// `SetCoolerDuty` and `SetFurnaceDuty`: refused while the owning loop is in
     /// AUTO, and refused above the loop's range in either mode. `unit` names the
     /// actuator kind in the message.
+    /// Refuse a command whose node or edge id this plant does not hold.
+    ///
+    /// The match has no `_` arm on purpose — the bridge's `referent` does the
+    /// same — so a new `Command` variant does not build until it says what it
+    /// addresses, and cannot slip past this check by default. Loop and trip ids
+    /// are not checked here: their arms look them up through `Option` and refuse
+    /// a miss with their own messages.
+    fn check_command_ids(&self, cmd: &Command) -> Result<(), SimError> {
+        let missing = match *cmd {
+            Command::SetValveOpening { node, .. }
+            | Command::SetPumpOn { node, .. }
+            | Command::SetHeatInput { node, .. }
+            | Command::SetFurnaceDuty { node, .. }
+            | Command::SetCoolerDuty { node, .. } => {
+                (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
+            }
+            Command::PuncturePipe { edge, .. } => {
+                (!self.graph.has_edge(edge)).then(|| format!("{edge:?} names no pipe"))
+            }
+            Command::SetControllerMode { .. }
+            | Command::SetSetpoint { .. }
+            | Command::ResetTrip { .. } => None,
+        };
+        match missing {
+            Some(what) => Err(SimError::InvalidCommand(format!(
+                "{what} on this plant. Ids come from the plant's own snapshot; an id \
+                 from another plant, or from before a reload, addresses nothing"
+            ))),
+            None => Ok(()),
+        }
+    }
+
     fn check_loop_owned_duty(&self, node: NodeId, duty: Watt, unit: &str) -> Result<(), SimError> {
         // A duty actuator a loop owns gets the valve's guard, and the reason is
         // the same one: in AUTO the write survives until the top of the

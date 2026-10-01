@@ -6989,3 +6989,20 @@ column lands on the flare, which has no column, so it vanishes like a drop.
 **Nothing on the game fidelity moved**, and the thirteen extra random chains Newton
 now solves are all ones the game solver could not solve either. No two answers
 disagree anywhere.
+
+## M27 — two small fixes: ledger rows F1 and B37; opened on a decision
+
+Taken on the user's decision (2026-10-01): "do the small fixes first, then E16".
+Neither row was past its trigger. Both are small enough that the design argument
+is a correction to the note that deferred them, not a section of its own.
+
+### M27.1 — the engine refuses an unknown id — **LANDED** 2026-10-01
+
+`Engine::apply` used to index its graph directly, so a command naming a node or
+edge the plant does not hold panicked — rule 5's failure, kept unreachable only by
+the Godot bridge's guard. `Engine::check_command_ids` now runs first, through a
+wildcard-free match, and refuses one as `InvalidCommand`. The bridge keeps its
+guard, which is what gives a stale id the `unknown_id` code. The characterization
+test that asserted the panic is now `core_refuses_an_out_of_range_id`, with a node
+id on two arms and an edge id on one; deleting the edge half of the check fails it.
+DESIGN §8 carries the correction; F1 is struck.

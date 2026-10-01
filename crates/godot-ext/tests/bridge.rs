@@ -503,34 +503,59 @@ fn each_command_has_its_documented_effect() {
 
 // ------------------------------------------------------- the trust boundary
 
-/// Characterization test: `Engine::apply` **panics** on an out-of-range id.
+/// `Engine::apply` **refuses** an out-of-range node or edge id (M27).
 ///
-/// This is not a wish. It is the behaviour the bridge's id validation exists
-/// to keep unreachable, recorded so the guard cannot quietly become
-/// decorative — if `core` ever starts returning `Err` here, this test fails
-/// and the guard's justification (and the deferral in `bridge.rs`'s module
-/// docs) gets revisited on purpose rather than by accident.
+/// Until M27 this was a characterization test asserting that it PANICKED, the
+/// behaviour the bridge's guard existed to keep unreachable. `core` now checks
+/// every node and edge id a command names before any arm touches the graph
+/// (rule 5), so the engine half of the trust boundary is an ordinary
+/// `InvalidCommand`. Both kinds of id are asserted because they are two checks:
+/// deleting the edge half alone used to leave `PuncturePipe` panicking.
+///
+/// The bridge's own guard stays — it is what gives a stale id the `unknown_id`
+/// code rather than `invalid_command` (see `src/bridge.rs`).
 #[test]
-fn core_panics_on_an_out_of_range_id() {
+fn core_refuses_an_out_of_range_id() {
     let file = refinery_scenarios::load_str(&scenario_src(LEAKY)).unwrap();
     let mut engine = refinery_scenarios::build_engine(&file).unwrap();
 
-    let hushed = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        engine.apply(Command::SetPumpOn {
-            node: NodeId(9999),
-            on: false,
-        })
-    }));
-    std::panic::set_hook(hushed);
-
-    assert!(
-        outcome.is_err(),
-        "core no longer panics on an out-of-range node id — good news, but the \
-         bridge's guard and its written deferral now need re-deciding \
-         (see src/bridge.rs)"
-    );
+    let commands = [
+        (
+            Command::SetPumpOn {
+                node: NodeId(9999),
+                on: false,
+            },
+            "NodeId(9999) names no node",
+        ),
+        // The trip guard reads the node's NAME for its message before the arm's
+        // own lookup, so this one reached the graph first.
+        (
+            Command::SetValveOpening {
+                node: NodeId(9999),
+                opening: 0.5,
+            },
+            "NodeId(9999) names no node",
+        ),
+        (
+            Command::PuncturePipe {
+                edge: EdgeId(9999),
+                area: SquareMeter(1.0e-4),
+            },
+            "EdgeId(9999) names no pipe",
+        ),
+    ];
+    for (cmd, expected) in commands {
+        let what = format!("{cmd:?}");
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| engine.apply(cmd)));
+        match outcome {
+            Ok(Err(SimError::InvalidCommand(message))) => assert!(
+                message.contains(expected),
+                "{what}: refused, but not by the id check: {message}"
+            ),
+            Ok(other) => panic!("{what}: expected an InvalidCommand, got {other:?}"),
+            Err(_) => panic!("{what}: core panicked on an out-of-range id (rule 5)"),
+        }
+    }
 }
 
 #[test]

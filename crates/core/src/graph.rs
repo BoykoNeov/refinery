@@ -1540,6 +1540,17 @@ impl PlantGraph {
         EdgeId(self.g.add_edge(from.into(), to.into(), pipe).index() as u32)
     }
 
+    /// Does this plant have a node with this id? The check `Engine::apply` makes
+    /// before a command touches the graph, because [`Self::node`] indexes
+    /// directly and panics on an id it does not hold (M27, docs/DESIGN.md §8).
+    pub fn has_node(&self, id: NodeId) -> bool {
+        self.g.node_weight(NodeIndex::from(id)).is_some()
+    }
+    /// Does this plant have an edge with this id? See [`Self::has_node`].
+    pub fn has_edge(&self, id: EdgeId) -> bool {
+        self.g.edge_weight(EdgeIndex::from(id)).is_some()
+    }
+
     pub fn node(&self, id: NodeId) -> &Node {
         &self.g[NodeIndex::from(id)]
     }

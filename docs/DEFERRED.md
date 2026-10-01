@@ -155,7 +155,7 @@ time since M9.1 they were measured rather than re-asserted.
 
 | # | item | argued in | un-defers when |
 |---|---|---|---|
-| F1 | Out-of-range ids in a `Command` are validated in `bridge`, not `core`; `core` still panics on one. | §8, "The translation layer" | A second untrusted-input frontend, or an in-repo caller that can construct an out-of-range id. `core_panics_on_an_out_of_range_id` fires if `core` changes underneath. |
+| ~~F1~~ | **CLOSED by M27**, 2026-10-01, on the user's decision; the note is DESIGN §8's M27 correction. ~~Out-of-range ids in a `Command` are validated in `bridge`, not `core`; `core` still panics on one.~~ `Engine::apply` refuses one as `InvalidCommand`; the bridge keeps its guard for the `unknown_id` code. | §8, "The translation layer" | A second untrusted-input frontend, or an in-repo caller that can construct an out-of-range id. `core_panics_on_an_out_of_range_id` fires if `core` changes underneath. |
 
 ## Reading the ledger
 
