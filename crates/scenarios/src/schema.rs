@@ -571,7 +571,12 @@ pub struct ControlDef {
     /// (M20, docs/DESIGN.md §24 fork 3); a `cooler` (M17, §21 fork 3) or a
     /// `furnace` (M18, §22) on a temperature loop. Every other pairing is refused
     /// with its own reason, and a `relief_valve` always.
-    pub actuator: String,
+    ///
+    /// **Or `{ loop = "<name>" }`** (M25, docs/DESIGN.md §29 fork 1): this loop is
+    /// a cascade PRIMARY and its output is the named loop's setpoint, as a
+    /// fraction of the `range_min_*`/`range_max_*` keys below. A bare string keeps
+    /// meaning a node, so every file written before M25 parses unchanged.
+    pub actuator: ActuatorDef,
     /// `"p"` (M8.2) or `"pi"` (M8.3). Each has its own required tuning keys, and
     /// each refuses the other's — the two-directional refusal the separation
     /// fidelities established.
@@ -700,6 +705,30 @@ pub struct ControlDef {
     /// `duty_mw` must lie within `[0, max_duty_mw]` (§21 fork 4).
     #[serde(default)]
     pub max_duty_mw: Option<f64>,
+    /// A cascade primary's range over a TEMPERATURE secondary, in °C: the
+    /// secondary setpoints its output `0` and `1` stand for (M25, docs/DESIGN.md
+    /// §29 fork 2). **Required on a primary whose secondary measures a
+    /// temperature, refused everywhere else**, both directions — the
+    /// `max_duty_mw` rule. Each end takes `+ 273.15`, as `setpoint_c` does; there
+    /// is no span key, which would take nothing (the `setpoint_c`/`gain_per_k`
+    /// trap, §21 fork 5). Both ends must pass the secondary's own setpoint check,
+    /// with `min < max` strictly, and the secondary's declared setpoint must lie
+    /// between them.
+    #[serde(default)]
+    pub range_min_c: Option<f64>,
+    /// The top of `range_min_c`'s range, in °C.
+    #[serde(default)]
+    pub range_max_c: Option<f64>,
+    /// A cascade primary's range over a FLOW secondary, in kg/s, converted by
+    /// nothing (M25, §29 fork 2). As `range_min_c`, for a flow. **It cannot start
+    /// at zero**: a flow setpoint of zero is refused ("shut the valve" is a MANUAL
+    /// action, §24 fork 4), so a level loop over a drain's flow has a minimum
+    /// flow — a minimum-flow stop, which is real practice.
+    #[serde(default)]
+    pub range_min_kg_per_s: Option<f64>,
+    /// The top of `range_min_kg_per_s`'s range, in kg/s.
+    #[serde(default)]
+    pub range_max_kg_per_s: Option<f64>,
     /// Integral time [s] — the ISA reset time, the interval in which the integral
     /// term alone repeats the proportional term's contribution.
     ///
@@ -735,6 +764,43 @@ pub struct ControlDef {
     /// have to declare a key it is then refused.
     #[serde(default)]
     pub initial_output: Option<f64>,
+}
+
+/// What a `[[controls]]` entry writes: a node by bare name, or another loop's
+/// setpoint by `{ loop = "<name>" }` (M25, docs/DESIGN.md §29 fork 1).
+///
+/// **Untagged, so the bare string keeps its pre-M25 meaning**, and every file
+/// written before cascade control parses unchanged. The price is serde's message
+/// for a table that is neither shape — `{ loops = "…" }` is refused, but as "did
+/// not match any variant of untagged enum ActuatorDef" rather than by the key's
+/// name. Accepted: the refusal is still a refusal, and the table's own
+/// `deny_unknown_fields` is what makes it one.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ActuatorDef {
+    /// A valve, cooler or furnace, by node name.
+    Node(String),
+    /// A cascade secondary, by loop name.
+    Loop(LoopActuatorDef),
+}
+
+/// The `{ loop = "<name>" }` inline table of [`ActuatorDef::Loop`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoopActuatorDef {
+    /// The secondary loop's `name`.
+    #[serde(rename = "loop")]
+    pub name: String,
+}
+
+impl std::fmt::Display for ActuatorDef {
+    /// What a refusal calls the actuator: the node's name, or `loop '<name>'`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ActuatorDef::Node(name) => f.write_str(name),
+            ActuatorDef::Loop(def) => write!(f, "loop '{}'", def.name),
+        }
+    }
 }
 
 /// The `measurement = { node = "...", variable = "..." }` inline table, or

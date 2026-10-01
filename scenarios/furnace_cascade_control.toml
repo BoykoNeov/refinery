@@ -1,0 +1,156 @@
+# M25.1 regulation demo: CASCADE control — a tank's temperature held at 60 °C by
+# a loop that does not touch the furnace at all. It moves the TARGET of a second
+# loop, and that loop holds the furnace's outlet.
+#
+#   cool_feed (40 °C) -> heater -> hold_tank -> drain_valve -> rundown
+#
+#   tank_temperature (outer, the PRIMARY) --sets the setpoint of-->
+#   outlet_temperature (inner, the SECONDARY) --fires--> heater
+#
+# **Three files, one plant, and they are meant to be diffed.** The plant is
+# `tank_temperature_heating.toml`'s, unchanged. That file holds the tank with one
+# loop on the furnace; `furnace_outlet_control.toml` holds the outlet with one loop
+# on the furnace; this file runs both, one inside the other (docs/DESIGN.md §29).
+#
+# **Why two loops are better than either.** A furnace has no thermal mass, so a
+# change in its firing reaches its outlet in the same tick, while the tank takes
+# about 1 000 s to follow its feed. The outlet loop alone rejects a disturbance at
+# the heater in a tick but cannot see one at the tank; the tank loop alone sees
+# both, at the tank's slow pace. The cascade gives each loop the job it is fast
+# at: the inner loop fixes heater disturbances before the tank notices, and the
+# outer loop corrects what reaches the tank by moving the inner loop's target.
+#
+# **What the outer loop's output means.** It is the inner loop's setpoint as a
+# fraction of a declared range: `setpoint = 40 + u * (65 - 40)` °C. The bottom is
+# the feed, because a furnace cannot cool; the top, 65 °C, is a CAP on the outlet
+# below the 66.92 °C the tank loop alone fires it to during startup. So startup is
+# slower than the tank loop's — the outer loop rides its clamp at 65 °C for a
+# while — and the outlet never runs hotter than the cap. That is the range doing
+# its job, and it is why the shipped file reaches the outer loop's clamp and
+# anti-windup at all.
+#
+# **The outer loop's sign is REVERSE, and the loader checks it.** A hotter outlet
+# target heats the tank, because the heater's outlet pipe ends at that tank (one
+# hop). A wrong or missing `action` on the outer loop is refused.
+#
+# **Tick 1 is an open cascade.** The outlet does not exist before the first tick,
+# so the inner loop has nothing to measure and writes nothing (docs/DESIGN.md §23).
+# A primary whose secondary will not act this tick writes nothing either: its
+# faceplate tracks the inner setpoint (50 °C, u = 0.4) and its memory is re-seeded
+# there, so it resumes without a bump when the inner loop starts acting on tick 2.
+#
+# **The tuning.** Inner: `furnace_outlet_control.toml`'s loop, verbatim. Outer: the
+# tank loop's own tuning re-expressed over the range — its `gain_per_k = 0.1` per
+# unit of furnace output is 0.1 x 33.28 K of outlet per unit of firing, spread
+# over a 25 K range, which is 0.133; `integral_time_s = 600` unchanged.
+# `initial_output = 0.4` is the 50 °C the inner loop declares.
+#
+# **The CLI shows the startup only.** The disturbances a cascade exists for — a
+# fire at the heater, a fire at the tank, the inner loop put in MANUAL — are
+# commands, and the CLI issues none, so they live in
+# `crates/scenarios/tests/cascade_control_reference.rs`.
+#
+#   cargo run -p refinery-cli -- run scenarios/furnace_cascade_control.toml --ticks 6000
+
+[meta]
+name = "furnace_cascade_control"
+description = "A tank held at 60 °C by a primary loop that moves the setpoint of the furnace's outlet loop: cascade control."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.cool_feed]
+type = "source"
+pressure_bar = 1.6
+temperature_c = 40.0
+
+# The equipment. Its declared duty is the inner loop's starting position: 0.5 MW
+# of a 2 MW range is u = 0.25, and the inner loop's `initial_output` says the same.
+[nodes.heater]
+type = "furnace"
+duty_mw = 0.5
+
+# The node the OUTER loop measures. Stored on the graph and exactly 40 °C at tick
+# 0; the level is the settled 4.968 m, so only the temperature has anywhere to go.
+[nodes.hold_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.968
+temperature_c = 40.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 150.0
+opening = 0.5
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "cool_feed"
+to = "heater"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "hold_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "hold_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# The PRIMARY. Its actuator is a loop, not a node: its output is the inner loop's
+# setpoint, `40 + u * 25` °C. `range_min_c`/`range_max_c` carry the INNER loop's
+# unit, and each end takes + 273.15 at the loader as a setpoint does.
+[[controls]]
+name = "tank_temperature"
+measurement = { node = "hold_tank", variable = "temperature" }
+actuator = { loop = "outlet_temperature" }
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_c = 60.0
+gain_per_k = 0.133
+integral_time_s = 600.0
+initial_output = 0.4
+range_min_c = 40.0
+range_max_c = 65.0
+
+# The SECONDARY: `furnace_outlet_control.toml`'s loop verbatim, but for its
+# declared setpoint, which is now only where it starts — the primary writes it
+# every tick from tick 2. Its own refusal of `set_setpoint` while the primary is
+# in AUTO is what tells a frontend who owns it.
+[[controls]]
+name = "outlet_temperature"
+measurement = { node = "heater", variable = "temperature" }
+actuator = "heater"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_c = 50.0
+gain_per_k = 0.015
+integral_time_s = 10.0
+initial_output = 0.25
+max_duty_mw = 2.0

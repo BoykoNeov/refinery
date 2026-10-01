@@ -735,6 +735,89 @@ pub enum MeasurementPoint {
     Pipe(EdgeId),
 }
 
+/// What a loop writes: a piece of equipment, or another loop's setpoint (M25,
+/// docs/DESIGN.md §29 fork 1).
+///
+/// **An enum for `MeasurementPoint`'s reason**: two `Option`s would make "both"
+/// and "neither" representable. A `Node` is a valve's opening or a cooler's or
+/// furnace's duty, as every loop before M25 wrote. A `Loop` is a CASCADE: this loop
+/// is the primary, and its output is the named secondary's setpoint, as a fraction
+/// of this loop's `setpoint_range`. The loader admits two levels only — a loop that
+/// drives another may not itself be driven — which is also its cycle refusal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Actuator {
+    Node(NodeId),
+    Loop(LoopId),
+}
+
+impl Actuator {
+    /// The node this actuator writes, or `None` for a cascade primary, which
+    /// writes no equipment at all.
+    pub fn node(self) -> Option<NodeId> {
+        match self {
+            Actuator::Node(node) => Some(node),
+            Actuator::Loop(_) => None,
+        }
+    }
+
+    /// The loop this actuator drives, or `None` for an equipment actuator.
+    pub fn driven_loop(self) -> Option<LoopId> {
+        match self {
+            Actuator::Loop(id) => Some(id),
+            Actuator::Node(_) => None,
+        }
+    }
+}
+
+/// A cascade primary's authority over its secondary's setpoint: the setpoints
+/// its output `0` and `1` stand for (M25, docs/DESIGN.md §29 fork 2).
+///
+/// **In the SECONDARY's variable and unit**, because the numbers are its
+/// setpoints. Both ends pass the secondary's own `PlantGraph::check_setpoint` at
+/// load and `min < max` strictly, so every setpoint the primary can write is one
+/// `Command::SetSetpoint` would also accept. It sits beside `max_duty` for §21 fork
+/// 3's reason: it is the loop's statement of its own range, and nothing else reads
+/// it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SetpointRange {
+    pub min: ControlledValue,
+    pub max: ControlledValue,
+}
+
+impl SetpointRange {
+    /// Where `setpoint` sits in the range, as a fraction: `(sp − min)/(max − min)`.
+    ///
+    /// Inside `[0, 1]` for every setpoint inside the range, end points included,
+    /// because the subtraction and the division both round monotonically and
+    /// `max − min` is the largest numerator possible. A setpoint outside the range
+    /// reads outside `[0, 1]`; the loader and `Command::SetSetpoint` refuse one.
+    pub fn position(self, setpoint: ControlledValue) -> f64 {
+        let min = self.min.magnitude();
+        (setpoint.magnitude() - min) / (self.max.magnitude() - min)
+    }
+
+    /// The setpoint a position stands for: `min + u·(max − min)`, **clamped to
+    /// the range**.
+    ///
+    /// The clamp is not cosmetic. At `u = 1` the sum need not round to `max`
+    /// exactly, and a setpoint one ULP past it reads back through `position` as
+    /// `1.0000000000000002` — a position `seed_from_output` refuses, on the tick a
+    /// cascade opens or a primary goes to AUTO. Clamping to `[min, max]` keeps the
+    /// round trip inside `[0, 1]` by `position`'s own argument.
+    pub fn setpoint_at(self, position: f64) -> ControlledValue {
+        let min = self.min.magnitude();
+        let max = self.max.magnitude();
+        self.min
+            .with_magnitude((min + position * (max - min)).clamp(min, max))
+    }
+
+    /// Whether `setpoint` lies in `[min, max]`, end points included.
+    pub fn contains(self, setpoint: ControlledValue) -> bool {
+        setpoint.variable() == self.min.variable()
+            && (self.min.magnitude()..=self.max.magnitude()).contains(&setpoint.magnitude())
+    }
+}
+
 /// A regulated quantity — a setpoint or a measurement — carrying its own unit.
 ///
 /// **The unit is in the type because it cannot be in the field name**
@@ -840,6 +923,22 @@ impl ControlledValue {
             ControlledValue::Pressure { pa } => pa.value(),
             ControlledValue::Temperature { k } => k.value(),
             ControlledValue::Flow { kg_per_s } => kg_per_s.value(),
+        }
+    }
+
+    /// The same variable with a different magnitude, in its SI unit — the inverse
+    /// of `magnitude`, and the one place a bare number becomes a typed value again
+    /// (a cascade primary's range map, M25).
+    pub fn with_magnitude(self, value: f64) -> Self {
+        match self {
+            ControlledValue::Level { .. } => ControlledValue::Level { m: Meter(value) },
+            ControlledValue::Pressure { .. } => ControlledValue::Pressure { pa: Pascal(value) },
+            ControlledValue::Temperature { .. } => {
+                ControlledValue::Temperature { k: Kelvin(value) }
+            }
+            ControlledValue::Flow { .. } => ControlledValue::Flow {
+                kg_per_s: KgPerSec(value),
+            },
         }
     }
 
@@ -954,13 +1053,14 @@ pub struct ControlLoop {
     /// can answer for which variable and carries a distinct reason for each
     /// refusal.
     pub measurement_point: MeasurementPoint,
-    /// The node this loop writes. A `Valve` on a level, pressure or flow loop —
-    /// on a flow loop, the valve whose own inlet or outlet pipe is measured; a
-    /// `Cooler` (M17) or a `Furnace` (M18) on a temperature loop. The loader
-    /// refuses every other pairing with its own reason (docs/DESIGN.md §21 fork
-    /// 3, §24 fork 3), and a `ReliefValve` always, since its opening is actuated
-    /// by its own inlet pressure.
-    pub actuator: NodeId,
+    /// What this loop writes. A NODE: a `Valve` on a level, pressure or flow
+    /// loop — on a flow loop, the valve whose own inlet or outlet pipe is
+    /// measured; a `Cooler` (M17) or a `Furnace` (M18) on a temperature loop. The
+    /// loader refuses every other pairing with its own reason (docs/DESIGN.md §21
+    /// fork 3, §24 fork 3), and a `ReliefValve` always, since its opening is
+    /// actuated by its own inlet pressure. Or a LOOP (M25, §29): this loop is a
+    /// cascade primary and writes that loop's setpoint, through `setpoint_range`.
+    pub actuator: Actuator,
     /// Which way the output moves the measurement: a furnace loop and a flow loop
     /// are `Reverse`, every other loop `Direct`. Passed into `ControlledValue::error` by every
     /// caller that reaches it — the load-time seed, the MANUAL→AUTO seed and the
@@ -970,7 +1070,7 @@ pub struct ControlLoop {
     /// The loop's declared authority over a DUTY actuator: the cooler or furnace
     /// duty its full output `u = 1` stands for. `Some` exactly when the actuator
     /// is a `Cooler` or a `Furnace`, `None` on a valve, whose opening is already a
-    /// fraction.
+    /// fraction, and on a cascade primary, whose authority is `setpoint_range`.
     ///
     /// **On the loop, not on the cooler** (docs/DESIGN.md §21 fork 3).
     /// `NodeSnapshot::kind` serializes `NodeKind`, so a field on the cooler would
@@ -980,6 +1080,10 @@ pub struct ControlLoop {
     /// `PlantGraph::set_actuator_position`, the single owner of "this actuator's
     /// position as a fraction of its authority".
     pub max_duty: Option<Watt>,
+    /// A cascade primary's declared authority over its secondary's setpoint (M25,
+    /// docs/DESIGN.md §29 fork 2): `Some` exactly when `actuator` is a `Loop`.
+    /// Read only through the same two accessors as `max_duty`.
+    pub setpoint_range: Option<SetpointRange>,
     /// The target value, and — through `ControlledValue::variable` — the
     /// declaration of what this loop measures.
     pub setpoint: ControlledValue,
@@ -1627,7 +1731,9 @@ impl PlantGraph {
     }
 
     /// Append a control loop. Its `LoopId` is its position, so declaration order
-    /// in the scenario file is both the id order and the execution order.
+    /// in the scenario file is the id order — and the execution order within each
+    /// half of the tick's control pass, where cascade primaries run before every
+    /// other loop (M25, docs/DESIGN.md §29 fork 3).
     ///
     /// Validation of the two node kinds it names, and of one-writer-per-actuator,
     /// belongs to the loader, which can name the offending `[[controls]]` entry;
@@ -2119,17 +2225,33 @@ impl PlantGraph {
     /// faceplate reads the real firing or cooling fraction (docs/DESIGN.md §22
     /// fork 1 rejects the inverted `(1 − u)·max` map on exactly that ground).
     ///
+    /// **A cascade primary's position is its secondary's SETPOINT** (M25,
+    /// docs/DESIGN.md §29 fork 2), as a fraction of the primary's declared range:
+    /// `(sp − min)/(max − min)`. That is the fork's whole argument — MANUAL
+    /// tracking, the MANUAL→AUTO seed, the clamp's back-calculation and the
+    /// open-cascade re-seed all go through this reader, so none of them needed new
+    /// code for a primary.
+    ///
     /// # Errors
     /// `SimError::Scenario` if the pairing of actuator and range is not one the
     /// loader builds — a valve with a duty range, a cooler or furnace without
-    /// one, or any
-    /// other kind. Reachable only from a hand-built graph, and said rather than
+    /// one, a loop without a setpoint range (or a node with one), or any other
+    /// kind. Reachable only from a hand-built graph, and said rather than
     /// answered with an invented position (rule 5).
     pub fn actuator_position(
         &self,
-        actuator: NodeId,
+        actuator: Actuator,
         max_duty: Option<Watt>,
+        range: Option<SetpointRange>,
     ) -> Result<f64, SimError> {
+        let actuator = match (actuator, range) {
+            (Actuator::Node(node), None) => node,
+            (Actuator::Loop(id), Some(range)) => {
+                let secondary = self.control(id).ok_or_else(|| unpaired_loop(id))?;
+                return Ok(range.position(secondary.setpoint));
+            }
+            (actuator, _) => return Err(unranged_actuator(self, actuator)),
+        };
         match (&self.node(actuator).kind, max_duty) {
             (NodeKind::Valve { opening, .. }, None) => Ok(*opening),
             (NodeKind::Cooler { duty } | NodeKind::Furnace { duty }, Some(max)) => {
@@ -2143,16 +2265,27 @@ impl PlantGraph {
     /// the inverse of `actuator_position`, and its only writer.
     ///
     /// A valve's opening is `position` itself; a cooler's or a furnace's duty is
-    /// `position · max_duty`.
+    /// `position · max_duty`; a cascade secondary's setpoint is
+    /// `SetpointRange::setpoint_at(position)`, clamped to the range.
     ///
     /// # Errors
     /// As `actuator_position`.
     pub fn set_actuator_position(
         &mut self,
-        actuator: NodeId,
+        actuator: Actuator,
         max_duty: Option<Watt>,
+        range: Option<SetpointRange>,
         position: f64,
     ) -> Result<(), SimError> {
+        let actuator = match (actuator, range) {
+            (Actuator::Node(node), None) => node,
+            (Actuator::Loop(id), Some(range)) => {
+                let secondary = self.control_mut(id).ok_or_else(|| unpaired_loop(id))?;
+                secondary.setpoint = range.setpoint_at(position);
+                return Ok(());
+            }
+            (actuator, _) => return Err(unranged_actuator(self, actuator)),
+        };
         match (&mut self.node_mut(actuator).kind, max_duty) {
             (NodeKind::Valve { opening, .. }, None) => {
                 *opening = position;
@@ -2165,6 +2298,39 @@ impl PlantGraph {
             _ => Err(unpaired_actuator(&self.node(actuator).name, max_duty)),
         }
     }
+
+    /// The loop driving `secondary` as its cascade primary, if any (M25).
+    ///
+    /// One at most: the loader refuses two primaries on one secondary, by the
+    /// rule that refuses two loops on one valve.
+    pub fn primary_of(&self, secondary: LoopId) -> Option<&ControlLoop> {
+        self.controls
+            .iter()
+            .find(|c| c.actuator == Actuator::Loop(secondary))
+    }
+}
+
+/// The refusal both actuator accessors share for a cascade link to no loop.
+fn unpaired_loop(id: LoopId) -> SimError {
+    SimError::Scenario(format!(
+        "a cascade primary drives {id:?}, which names no loop on this plant"
+    ))
+}
+
+/// The refusal both actuator accessors share when a setpoint range is on the
+/// wrong kind of actuator: present on a node, or absent on a loop.
+fn unranged_actuator(graph: &PlantGraph, actuator: Actuator) -> SimError {
+    SimError::Scenario(match actuator {
+        Actuator::Node(node) => format!(
+            "control loop actuator '{}' is a node, and a setpoint range is a cascade \
+             primary's authority over another loop's setpoint (docs/DESIGN.md §29 fork 2)",
+            graph.node(node).name
+        ),
+        Actuator::Loop(id) => format!(
+            "a cascade primary drives {id:?} with no setpoint range: its output is a \
+             fraction of that range, so without one it stands for no setpoint"
+        ),
+    })
 }
 
 /// The refusal both actuator accessors share: a pairing the loader never builds.
@@ -2241,5 +2407,59 @@ mod tests {
             .is_err());
         let level = ControlledValue::Level { m: Meter(1.2e6) };
         assert!(TripDirection::High.reached(level, limit).is_err());
+    }
+
+    /// docs/DESIGN.md §29 fork 2: a cascade primary's range map round-trips inside
+    /// `[0, 1]` at both ends, on the demo's kelvin range and on a flow range. At
+    /// `u = 1` the unclamped sum `min + u·(max − min)` need not round to `max`,
+    /// and a setpoint one ULP past it reads back as `1.0000000000000002` — a
+    /// position `seed_from_output` refuses on the tick a cascade opens. The sweep
+    /// also takes every position a near-1 output can be, in both directions.
+    #[test]
+    fn a_setpoint_range_round_trips_inside_the_unit_interval_at_both_ends() {
+        let kelvin = SetpointRange {
+            min: ControlledValue::Temperature {
+                k: Kelvin(40.0 + 273.15),
+            },
+            max: ControlledValue::Temperature {
+                k: Kelvin(65.0 + 273.15),
+            },
+        };
+        let flow = SetpointRange {
+            min: ControlledValue::Flow {
+                kg_per_s: KgPerSec(0.3),
+            },
+            max: ControlledValue::Flow {
+                kg_per_s: KgPerSec(17.1),
+            },
+        };
+        for range in [kelvin, flow] {
+            assert_eq!(range.setpoint_at(0.0), range.min, "u = 0 is the bottom");
+            assert_eq!(
+                range.setpoint_at(1.0),
+                range.max,
+                "u = 1 is the top, exactly"
+            );
+            assert_eq!(range.position(range.min), 0.0);
+            assert_eq!(range.position(range.max), 1.0);
+            let mut u = 1.0_f64;
+            let mut v = 0.0_f64;
+            for _ in 0..64 {
+                for x in [u, v] {
+                    let back = range.position(range.setpoint_at(x));
+                    assert!(
+                        (0.0..=1.0).contains(&back),
+                        "{range:?}: u = {x:e} reads back as {back:e}"
+                    );
+                    assert!(range.contains(range.setpoint_at(x)));
+                }
+                u = down(u);
+                v = up(v.max(f64::MIN_POSITIVE));
+            }
+        }
+        // The clamp is load bearing on an end, not decoration: a position past
+        // 1 writes the top, and one below 0 the bottom.
+        assert_eq!(kelvin.setpoint_at(up(1.0)), kelvin.max);
+        assert_eq!(kelvin.setpoint_at(-1e-12), kelvin.min);
     }
 }

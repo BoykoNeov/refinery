@@ -279,7 +279,26 @@ pub struct ControlSnapshot {
     /// faceplate reads the real firing fraction, which is why the inverted
     /// `(1 − u)·max` map was rejected. The watts are already published on the
     /// node's own `kind.duty`, so a second copy here would be a second owner.
+    ///
+    /// On a cascade primary (M25) it is the secondary's setpoint as a fraction
+    /// of the primary's declared range; the setpoint itself is published on the
+    /// secondary's own faceplate, so it is not copied here either.
     pub output: f64,
+    /// The loop whose setpoint this one writes, when this loop is a cascade
+    /// PRIMARY (M25, docs/DESIGN.md §29 fork 7).
+    ///
+    /// A faceplate needs the link to draw it, and a frontend may not reach into
+    /// the engine for it (rule 6). **Skipped when `None`**, so every loop that
+    /// writes equipment — every loop before M25 — publishes the bytes it always
+    /// did, and `default` reads the absent key back as `None`, a true statement
+    /// about those loops.
+    ///
+    /// **"Open" is not a field.** A cascade is open whenever its secondary will
+    /// not act — not in AUTO, or nothing to measure — and both are already on the
+    /// secondary's faceplate (`mode`, `measurement`), read through this link. A
+    /// field saying it would be a second owner of one fact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub drives: Option<LoopId>,
 }
 
 /// One trip, as a frontend draws it (M22, docs/DESIGN.md §26 fork 8).

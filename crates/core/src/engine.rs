@@ -8,8 +8,8 @@ use crate::components::{Composition, Slate};
 use crate::energy::{self};
 use crate::error::SimError;
 use crate::graph::{
-    ControlMode, ControlledValue, LeakRole, LoopId, MeasuredVariable, NodeId, NodeKind, PlantGraph,
-    TripAction, TripId, TripState,
+    Actuator, ControlLoop, ControlMode, ControlledValue, LeakRole, LoopId, MeasuredVariable,
+    NodeId, NodeKind, PlantGraph, SetpointRange, TripAction, TripId, TripState,
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
@@ -196,7 +196,7 @@ impl Engine {
                     .graph
                     .controls()
                     .iter()
-                    .find(|c| c.actuator == node && c.mode == ControlMode::Auto)
+                    .find(|c| c.actuator == Actuator::Node(node) && c.mode == ControlMode::Auto)
                 {
                     return Err(SimError::InvalidCommand(format!(
                         "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO: its \
@@ -392,17 +392,24 @@ impl Engine {
                 // its valve at the top of the next tick, so AUTO on a loop whose
                 // valve a latched trip holds would reopen it one tick later. MANUAL
                 // stays admitted: it is what the trip already put the loop in.
+                //
+                // A cascade PRIMARY has no node to ask about and is exempt
+                // (docs/DESIGN.md §29 fork 4): it moves no equipment, and the
+                // secondary's own refusal is the one that holds the valve — a
+                // primary in AUTO over a tripped secondary is simply open.
                 if mode == ControlMode::Auto {
-                    if let Some(trip) = self.graph.latched_trip_on(control.actuator) {
-                        return Err(SimError::InvalidCommand(format!(
-                            "control loop '{}' writes '{}', which trip '{}' holds and is \
-                             latched. In AUTO the loop would move it at the top of the next \
-                             tick. Reset the trip (`reset_trip`), put the valve where the loop \
-                             should take over from, and then switch to AUTO",
-                            control.name,
-                            self.graph.node(control.actuator).name,
-                            trip.name
-                        )));
+                    if let Some(node) = control.actuator.node() {
+                        if let Some(trip) = self.graph.latched_trip_on(node) {
+                            return Err(SimError::InvalidCommand(format!(
+                                "control loop '{}' writes '{}', which trip '{}' holds and is \
+                                 latched. In AUTO the loop would move it at the top of the next \
+                                 tick. Reset the trip (`reset_trip`), put the valve where the \
+                                 loop should take over from, and then switch to AUTO",
+                                control.name,
+                                self.graph.node(node).name,
+                                trip.name
+                            )));
+                        }
                     }
                 }
                 let seed = if mode == ControlMode::Auto && control.mode == ControlMode::Manual {
@@ -447,10 +454,16 @@ impl Engine {
                         })?;
                     // The SAME reader pass 1 uses (docs/DESIGN.md §21, sites 3
                     // and 6): a transfer that seeded from one notion of position
-                    // while the tick ran on another would step the actuator.
+                    // while the tick ran on another would step the actuator. On a
+                    // cascade primary this is its secondary's setpoint, as a
+                    // fraction of the primary's range (§29 fork 2).
                     let position = self
                         .graph
-                        .actuator_position(control.actuator, control.max_duty)
+                        .actuator_position(
+                            control.actuator,
+                            control.max_duty,
+                            control.setpoint_range,
+                        )
                         .map_err(|e| {
                             SimError::InvalidCommand(format!(
                                 "control loop '{}' has no position to transfer from: {e}",
@@ -518,6 +531,39 @@ impl Engine {
                 }
                 self.graph
                     .check_setpoint(control.measurement_point, value)?;
+                // **A cascade secondary's setpoint is its primary's actuator**
+                // (M25, docs/DESIGN.md §29 fork 4), so it takes a valve's two
+                // guards, word for word. Refused while the primary is in AUTO: the
+                // write would be overwritten at the top of the next tick, a
+                // command that appears to work and does not. In MANUAL a human
+                // moves it — that is what "the primary in MANUAL" means — but not
+                // outside the primary's range, `check_loop_owned_duty`'s rule:
+                // the primary's faceplate would track a position outside [0, 1],
+                // and its MANUAL→AUTO transfer would back-calculate from an
+                // output it could never have produced.
+                if let Some(primary) = self.graph.primary_of(loop_id) {
+                    if primary.mode == ControlMode::Auto {
+                        return Err(SimError::InvalidCommand(format!(
+                            "control loop '{}' has its setpoint written by cascade primary \
+                             '{}', which is in AUTO: the setpoint would be overwritten at the \
+                             top of the next tick. Put '{}' in MANUAL first \
+                             (`set_controller_mode`), or move ITS setpoint (`set_setpoint`)",
+                            control.name, primary.name, primary.name
+                        )));
+                    }
+                    if let Some(range) = primary.setpoint_range {
+                        if !range.contains(value) {
+                            return Err(SimError::InvalidCommand(format!(
+                                "setpoint {:?} for control loop '{}' is outside the range of \
+                                 cascade primary '{}', which owns it ({:?} to {:?}). The \
+                                 primary's output is a fraction of that range, so a setpoint \
+                                 outside it is a position the primary could never have \
+                                 produced and cannot transfer from (docs/DESIGN.md §29 fork 4)",
+                                value, control.name, primary.name, range.min, range.max
+                            )));
+                        }
+                    }
+                }
                 self.graph
                     .control_mut(loop_id)
                     .ok_or_else(|| unknown_loop(loop_id))?
@@ -1764,7 +1810,7 @@ impl Engine {
                         _ => return Err(trip_equipment_fault(&self.graph, valve, "valve")),
                     }
                     for control in self.graph.controls_mut() {
-                        if control.actuator == valve {
+                        if control.actuator == Actuator::Node(valve) {
                             control.mode = ControlMode::Manual;
                         }
                     }
@@ -1800,8 +1846,9 @@ impl Engine {
         Ok(())
     }
 
-    /// Run every control loop, in declaration order, on the state standing at
-    /// the top of this tick.
+    /// Run every control loop on the state standing at the top of this tick:
+    /// cascade primaries first, then every other loop, each half in declaration
+    /// order.
     ///
     /// **Before the hydraulic solve, and that is a decision rather than an
     /// ordering convenience** (docs/DESIGN.md §10 fork 3). A loop reading *this*
@@ -1821,9 +1868,26 @@ impl Engine {
     /// opening mutates a node — one fused loop would hold a node reference
     /// across a controller call. Splitting them also makes the ordering explicit:
     /// **every loop measures before any loop writes**, so two loops on one plant
-    /// see the same start-of-tick state regardless of declaration order, and
-    /// declaration order decides only who wins a contested write. (Nothing can
-    /// contest one today — the loader refuses two loops on one actuator.)
+    /// see the same start-of-tick state regardless of declaration order.
+    ///
+    /// **Pass 2 runs in two halves since M25** (docs/DESIGN.md §29 fork 3). A
+    /// cascade primary's actuator is its secondary's SETPOINT, so every primary
+    /// runs and writes that setpoint before any other loop updates, and the
+    /// secondary acts on this tick's target with no added lag. That is not the
+    /// algebraic loop above: nothing in pass 2 reads the plant, both measurements
+    /// are from pass 1, and the solve comes after. Declaration order decides
+    /// nothing a reader could see: the loader admits two levels only and one
+    /// writer per actuator, so no write can be contested and no primary reads
+    /// another primary's output. A plant with no cascade runs its loops in
+    /// declaration order through the same arithmetic it always did.
+    ///
+    /// **A primary whose secondary will not act this tick is OPEN** (§29 fork 4):
+    /// the secondary is not in AUTO — a human or a trip put it in MANUAL — or it
+    /// has no measurement, an outlet before the first tick or while stagnant, a
+    /// pipe's flow before the first tick. Pass 1 already knows both. An open
+    /// primary writes nothing, its faceplate tracks the secondary's setpoint, and
+    /// its memory is RE-SEEDED against that position every open tick, so on
+    /// closing it resumes from exactly where the secondary stands.
     fn run_control_loops(&mut self, dt: Seconds) -> Result<(), SimError> {
         if self.graph.controls().is_empty() {
             // The pre-M8 plants take this exit, which is why they are
@@ -1836,7 +1900,8 @@ impl Engine {
         // furnace or cooler outlet — the last tick's resolved states, which are
         // what this tick's solve is about to be handed (docs/DESIGN.md §23), and
         // — for a pipe's flow — the last tick's hydraulic solution (§24), `None`
-        // on the first tick.
+        // on the first tick. A cascade primary's position is its secondary's
+        // setpoint as it stood at the top of the tick (§29 fork 3).
         let mut sampled: Vec<(Option<ControlledValue>, f64)> =
             Vec::with_capacity(self.graph.controls().len());
         for control in self.graph.controls() {
@@ -1849,76 +1914,71 @@ impl Engine {
             )?;
             // One owner of "where the actuator stands", shared with the loader's
             // seed and the MANUAL→AUTO transfer. Its error arm is rule 5's
-            // backstop: the loader builds only valve-without-range and
-            // cooler-with-range, so it is reachable only from a hand-built graph.
-            let position = self
-                .graph
-                .actuator_position(control.actuator, control.max_duty)?;
+            // backstop: the loader builds only the pairings it accepts, so it is
+            // reachable only from a hand-built graph.
+            let position = self.graph.actuator_position(
+                control.actuator,
+                control.max_duty,
+                control.setpoint_range,
+            )?;
             sampled.push((measurement, position));
         }
+        // Whether each loop will ACT this tick — AUTO, with something to measure.
+        // Taken from pass 1 alone, after the trips have run, so a secondary a trip
+        // forced to MANUAL this tick already reads as not acting.
+        let will_act: Vec<bool> = self
+            .graph
+            .controls()
+            .iter()
+            .zip(&sampled)
+            .map(|(c, (measurement, _))| c.mode == ControlMode::Auto && measurement.is_some())
+            .collect();
 
-        // Pass 2 — run each controller and record what it wants written.
-        let mut writes: Vec<Option<(NodeId, Option<Watt>, f64)>> =
-            Vec::with_capacity(sampled.len());
-        for (control, (measurement, position)) in self.graph.controls_mut().iter_mut().zip(sampled)
-        {
-            control.last_measurement = measurement;
-            match (control.mode, measurement) {
-                // **No measurement, no action** (docs/DESIGN.md §23 fork 2): a
-                // furnace or cooler outlet before the first tick, or while it is
-                // stagnant. The loop writes nothing, its faceplate TRACKS the
-                // actuator exactly as MANUAL's does, and its memory — seeded or
-                // still pending — is not touched, so it resumes from where it
-                // stood. Acting on a stand-in would be worse than waiting: a PI
-                // loop seeds against whatever it first measures.
-                (ControlMode::Auto, None) => {
-                    control.last_output = position;
-                    writes.push(None);
-                }
-                (ControlMode::Auto, Some(measurement)) => {
-                    let output = control.algorithm.update(
-                        measurement,
-                        control.setpoint,
-                        control.action,
-                        dt,
-                    )?;
-                    // Checked here rather than trusted from the seam: the range
-                    // is the actuator's, not the algorithm's, and an out-of-range
-                    // position reaching `Valve::opening` is a plant state
-                    // `Command::SetValveOpening` would have refused from a human.
-                    if !output.is_finite() || !(0.0..=1.0).contains(&output) {
-                        return Err(SimError::Numerical(format!(
-                            "control loop '{}' ({}) produced actuator position {output}, \
-                             which is not a finite fraction in [0, 1]",
-                            control.name,
-                            control.algorithm.name()
-                        )));
-                    }
-                    control.last_output = output;
-                    writes.push(Some((control.actuator, control.max_duty, output)));
-                }
-                // MANUAL writes nothing and TRACKS: the faceplate reports the
-                // actuator's real opening, which is what a DCS shows and what
-                // makes AUTO→MANUAL transfer free (fork 4). The measurement is
-                // still taken, so the loop-off counterfactual is a run of the
-                // same plant with a truthful faceplate rather than of a plant
-                // with the loop deleted.
-                (ControlMode::Manual, _) => {
-                    control.last_output = position;
-                    writes.push(None);
-                }
+        // Pass 2a — the cascade primaries, each writing its secondary's setpoint
+        // before any secondary updates (§29 fork 3).
+        let mut setpoint_writes: Vec<(Actuator, Option<SetpointRange>, f64)> = Vec::new();
+        for (i, &(measurement, position)) in sampled.iter().enumerate() {
+            let control = &mut self.graph.controls_mut()[i];
+            let Actuator::Loop(secondary) = control.actuator else {
+                continue;
+            };
+            let open = !*will_act.get(secondary.0 as usize).ok_or_else(|| {
+                SimError::Numerical(format!(
+                    "internal: cascade primary '{}' drives {secondary:?}, which names no loop",
+                    control.name
+                ))
+            })?;
+            if let Some(output) = step_loop(control, measurement, position, open, dt)? {
+                setpoint_writes.push((control.actuator, control.setpoint_range, output));
+            }
+        }
+        for (actuator, range, output) in setpoint_writes {
+            self.graph
+                .set_actuator_position(actuator, None, range, output)?;
+        }
+
+        // Pass 2b — every other loop, a cascade secondary on this tick's target.
+        let mut writes: Vec<(Actuator, Option<Watt>, f64)> = Vec::with_capacity(sampled.len());
+        for (i, &(measurement, position)) in sampled.iter().enumerate() {
+            let control = &mut self.graph.controls_mut()[i];
+            if control.actuator.driven_loop().is_some() {
+                continue;
+            }
+            if let Some(output) = step_loop(control, measurement, position, false, dt)? {
+                writes.push((control.actuator, control.max_duty, output));
             }
         }
 
-        // Pass 3 — write the actuators, through the inverse of pass 1's reader:
+        // Pass 3 — write the equipment, through the inverse of pass 1's reader:
         // a valve's opening is the output itself, a cooler's duty is
         // `output · max_duty`. Its error arm is unreachable — pass 1 already read
         // this same pairing, and nothing between the two passes can change a
         // node's kind — and is an `Err` rather than an `unwrap` because rule 5 is
-        // about what the engine may do, not about what it can prove.
-        for (actuator, max_duty, output) in writes.into_iter().flatten() {
+        // about what the engine may do, not about what it can prove. A cascade
+        // primary's write happened in pass 2a, and only equipment is written here.
+        for (actuator, max_duty, output) in writes {
             self.graph
-                .set_actuator_position(actuator, max_duty, output)?;
+                .set_actuator_position(actuator, max_duty, None, output)?;
         }
         Ok(())
     }
@@ -1940,7 +2000,12 @@ impl Engine {
         // then report a position above 1, and a MANUAL→AUTO transfer would
         // back-calculate a memory from an output the loop could never have
         // produced.
-        if let Some(owner) = self.graph.controls().iter().find(|c| c.actuator == node) {
+        if let Some(owner) = self
+            .graph
+            .controls()
+            .iter()
+            .find(|c| c.actuator == Actuator::Node(node))
+        {
             if owner.mode == ControlMode::Auto {
                 return Err(SimError::InvalidCommand(format!(
                     "{node:?} ('{}') is actuated by control loop '{}', which is in AUTO: \
@@ -2079,6 +2144,7 @@ impl Engine {
                 setpoint: c.setpoint,
                 measurement: c.last_measurement,
                 output: c.last_output,
+                drives: c.actuator.driven_loop(),
             })
             .collect();
         // One entry per trip, in declaration order. `measurement` is what the
@@ -2231,6 +2297,80 @@ fn trip_equipment_fault(graph: &PlantGraph, node: NodeId, kind: &str) -> SimErro
         "a trip action names '{}' as a {kind}, and it is not one",
         graph.node(node).name
     ))
+}
+
+/// One loop's pass-2 step: what it records on its faceplate, and the position it
+/// wants written, if any.
+///
+/// `open` is true only for a cascade primary whose secondary will not act this
+/// tick (docs/DESIGN.md §29 fork 4). Every other loop passes `false` and runs the
+/// arithmetic every loop ran before M25.
+fn step_loop(
+    control: &mut ControlLoop,
+    measurement: Option<ControlledValue>,
+    position: f64,
+    open: bool,
+    dt: Seconds,
+) -> Result<Option<f64>, SimError> {
+    control.last_measurement = measurement;
+    match (control.mode, measurement) {
+        // **No measurement, no action** (docs/DESIGN.md §23 fork 2): a furnace or
+        // cooler outlet before the first tick, or while it is stagnant. The loop
+        // writes nothing, its faceplate TRACKS the actuator exactly as MANUAL's
+        // does, and its memory — seeded or still pending — is not touched, so it
+        // resumes from where it stood. Acting on a stand-in would be worse than
+        // waiting: a PI loop seeds against whatever it first measures.
+        (ControlMode::Auto, None) => {
+            control.last_output = position;
+            Ok(None)
+        }
+        // **An open cascade** (§29 fork 4): the secondary is not using its
+        // setpoint, so writing it would integrate against a plant that is not
+        // answering. The primary writes nothing and tracks — and, unlike the blind
+        // loop above, RE-SEEDS its memory against the tracked position: here the
+        // error exists and the position is real, and leaving the memory untouched
+        // closes the cascade with a bump (1.37 K of outlet setpoint on the hand
+        // probe, against one tick of control).
+        (ControlMode::Auto, Some(measurement)) if open => {
+            control.algorithm.seed_from_output(
+                position,
+                measurement,
+                control.setpoint,
+                control.action,
+            )?;
+            control.last_output = position;
+            Ok(None)
+        }
+        (ControlMode::Auto, Some(measurement)) => {
+            let output =
+                control
+                    .algorithm
+                    .update(measurement, control.setpoint, control.action, dt)?;
+            // Checked here rather than trusted from the seam: the range is the
+            // actuator's, not the algorithm's, and an out-of-range position
+            // reaching `Valve::opening` is a plant state `Command::SetValveOpening`
+            // would have refused from a human.
+            if !output.is_finite() || !(0.0..=1.0).contains(&output) {
+                return Err(SimError::Numerical(format!(
+                    "control loop '{}' ({}) produced actuator position {output}, which is not \
+                     a finite fraction in [0, 1]",
+                    control.name,
+                    control.algorithm.name()
+                )));
+            }
+            control.last_output = output;
+            Ok(Some(output))
+        }
+        // MANUAL writes nothing and TRACKS: the faceplate reports the actuator's
+        // real opening, which is what a DCS shows and what makes AUTO→MANUAL
+        // transfer free (fork 4). The measurement is still taken, so the loop-off
+        // counterfactual is a run of the same plant with a truthful faceplate
+        // rather than of a plant with the loop deleted.
+        (ControlMode::Manual, _) => {
+            control.last_output = position;
+            Ok(None)
+        }
+    }
 }
 
 /// The refusal for a `LoopId` that names no loop.

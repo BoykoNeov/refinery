@@ -8,9 +8,10 @@ use refinery_core::energy::T_REF;
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
-    HeatExchangerCoupling, LeakRole, MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind,
-    Pipe, PlantGraph, TankState, Trip, TripAction, TripDirection, TripState, VesselState,
+    Actuator, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
+    HeatExchangerCoupling, LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node, NodeId,
+    NodeKind, Pipe, PlantGraph, SetpointRange, TankState, Trip, TripAction, TripDirection,
+    TripState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -24,8 +25,8 @@ use refinery_core::units::{
 use std::collections::BTreeMap;
 
 use crate::schema::{
-    bar_to_pa, c_to_k, kv_to_cv_si, ComponentDef, ControlDef, ExchangerDef, MeasurementDef,
-    NodeDef, PipeDef, ScenarioFile, TripDef,
+    bar_to_pa, c_to_k, kv_to_cv_si, ActuatorDef, ComponentDef, ControlDef, ExchangerDef,
+    MeasurementDef, NodeDef, PipeDef, ScenarioFile, TripDef,
 };
 use crate::validate::{
     plant_phases, refuse_gas_leak, require_compatible_fidelity, require_declared_iff_used,
@@ -614,7 +615,7 @@ fn build_controls(
     pipes: &[PipeDef],
 ) -> Result<(), SimError> {
     let mut seen_names: Vec<&str> = Vec::new();
-    let mut claimed_actuators: Vec<(NodeId, &str)> = Vec::new();
+    let mut claimed_actuators: Vec<(Actuator, &str)> = Vec::new();
 
     for def in defs {
         if seen_names.contains(&def.name.as_str()) {
@@ -626,22 +627,7 @@ fn build_controls(
         }
         seen_names.push(&def.name);
 
-        let variable = match def.measurement.variable.as_str() {
-            "level" => MeasuredVariable::Level,
-            "pressure" => MeasuredVariable::Pressure,
-            "temperature" => MeasuredVariable::Temperature,
-            // This message used to say flow control was deferred because "a flow
-            // lives on an EDGE, which nothing in `measure`'s signature can name".
-            // M20 names it: `MeasurementPoint` (docs/DESIGN.md §24 fork 1).
-            "flow" => MeasuredVariable::Flow,
-            other => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' measures unknown variable '{other}' (valid: level, \
-                     pressure, temperature, flow)",
-                    def.name
-                )))
-            }
-        };
+        let variable = parse_variable(def)?;
 
         let point = resolve_measurement_point(
             graph,
@@ -650,12 +636,6 @@ fn build_controls(
             pipes,
         )?;
         let point_name = graph.point_name(point).to_owned();
-        let actuator = graph.find_node(&def.actuator).ok_or_else(|| {
-            SimError::Scenario(format!(
-                "control loop '{}' actuates unknown node '{}'",
-                def.name, def.actuator
-            ))
-        })?;
 
         // The measured node must be able to answer for the variable. Asking the
         // graph rather than matching the kind here is deliberate: `measure` is the
@@ -686,195 +666,6 @@ fn build_controls(
                 ))
             })?;
 
-        // **The pairing table, enumerated rather than left to a fall-through**
-        // (docs/DESIGN.md §21 fork 3). Which actuators each variable accepts, and
-        // for each refused pairing its own reason — and, for the one duty
-        // actuator, the loop's declared authority over it. `max_duty_mw` is
-        // required on a cooler and refused on a valve, both directions, the
-        // `density_kg_per_m3` rule.
-        let max_duty = match (variable, &graph.node(actuator).kind) {
-            // Its own reason rather than "not a valve", exactly as
-            // `Command::SetValveOpening` refuses it: a relief valve IS a valve,
-            // and the point is that its opening is not a setpoint at all — it is a
-            // memoryless function of its own inlet pressure, recomputed every
-            // solve (docs/DESIGN.md §3a fork 5). A loop pointed at one would write
-            // a number the next solve overwrites.
-            (_, NodeKind::ReliefValve { .. }) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' actuates '{}', a relief valve. Its opening is \
-                     actuated by its own inlet pressure and is recomputed on every solve, \
-                     so a controller writing it would be overwritten before the tick ended",
-                    def.name, def.actuator
-                )))
-            }
-            (
-                MeasuredVariable::Level | MeasuredVariable::Pressure | MeasuredVariable::Flow,
-                NodeKind::Valve { .. },
-            ) => {
-                if def.max_duty_mw.is_some() {
-                    return Err(SimError::Scenario(format!(
-                        "control loop '{}' declares `max_duty_mw` on a valve actuator. That key \
-                         is a DUTY actuator's range — a cooler's or a furnace's — and a valve's \
-                         opening is \
-                         already a fraction, so the number would be read by nothing \
-                         (docs/DESIGN.md §21 fork 3)",
-                        def.name
-                    )));
-                }
-                // **One hop, and that is the whole of the sign check** (docs/DESIGN.md
-                // §24 fork 3). `validate_degrees` holds every valve to exactly one
-                // inlet and one outlet edge by declared direction, so a pipe that
-                // touches the valve IS its whole inlet or its whole outlet, with
-                // nothing branching between them — and opening the valve raises the
-                // flow through it. A meter further off, or a bypass valve beside the
-                // pipe, is E12.
-                //
-                // A column draw or a boil-off vent cannot reach here, and no guard
-                // is written for either: a draw ends at a product store and a vent
-                // runs between holdups, so neither is ever a valve's edge, and this
-                // adjacency rule excludes both structurally (the M8.2 precedent: a
-                // refusal nothing can reach is not a refusal).
-                if let MeasurementPoint::Pipe(pipe) = point {
-                    let (from, to) = graph.endpoints(pipe);
-                    if from != actuator && to != actuator {
-                        return Err(SimError::Scenario(format!(
-                            "control loop '{}' measures the flow in pipe '{point_name}', which \
-                             is not one of valve '{}''s own two pipes. A flow loop's sign is \
-                             checked in ONE hop — a valve has exactly one inlet and one outlet, \
-                             so opening it raises the flow in either — and a meter further \
-                             from its valve, or a valve bypassing the metered pipe (which is \
-                             DIRECT acting), is not admitted (docs/DEFERRED.md E12, \
-                             docs/DESIGN.md §24 fork 3)",
-                            def.name, def.actuator
-                        )));
-                    }
-                }
-                None
-            }
-            // The two DUTY actuators share one arm: the same range key, the same
-            // load-time range check, the same position map. Which way each acts is
-            // checked below against the declared `action`, not here.
-            (
-                MeasuredVariable::Temperature,
-                NodeKind::Cooler { duty } | NodeKind::Furnace { duty },
-            ) => {
-                let max_mw = require_keyed(
-                    def.max_duty_mw,
-                    &def.name,
-                    "max_duty_mw",
-                    "the duty the loop's full output stands for",
-                )?;
-                if !max_mw.is_finite() || max_mw <= 0.0 {
-                    return Err(SimError::Scenario(format!(
-                        "control loop '{}' declares `max_duty_mw = {max_mw}`; the loop's \
-                         authority must be a finite duty above zero, since its output is a \
-                         fraction of it",
-                        def.name
-                    )));
-                }
-                let max = Watt(max_mw * 1e6);
-                // §21 fork 4, at load: a declared duty outside the loop's range is
-                // a position the loop could never have produced, and MANUAL
-                // tracking would report it as a fraction above 1.
-                if duty.value() > max.value() {
-                    return Err(SimError::Scenario(format!(
-                        "control loop '{}' actuates '{}', whose declared duty {} MW is \
-                         above the loop's `max_duty_mw = {max_mw}`. The loop's output is a \
-                         fraction of that range, so a starting duty outside it is a position \
-                         the loop could never have produced (docs/DESIGN.md §21 fork 4)",
-                        def.name,
-                        def.actuator,
-                        duty.value() / 1e6
-                    )));
-                }
-                Some(max)
-            }
-            // **Refused with a physical reason and not ruled out**: a coolant
-            // valve is the real-world temperature actuator, but this engine's
-            // cooler is a fixed duty with no coolant side, so a valve could only
-            // move a temperature by changing a PROCESS flow — a different loop
-            // with a sign that has to be argued per plant.
-            (MeasuredVariable::Temperature, NodeKind::Valve { .. }) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' holds a temperature with valve '{}'. This engine has no \
-                     coolant stream — a cooler is a duty with no coolant side — so a valve can \
-                     move a temperature only by changing a PROCESS flow, whose sign depends \
-                     on the plant. Actuate a `cooler` instead (docs/DESIGN.md §21 fork 3)",
-                    def.name, def.actuator
-                )))
-            }
-            (MeasuredVariable::Level, NodeKind::Cooler { .. }) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' holds a level with cooler '{}'. A cooler moves nothing a \
-                     level loop measures: a cut's density is a constant in this engine, so a \
-                     tank's level does not depend on its temperature (docs/DESIGN.md §21 fork \
-                     3)",
-                    def.name, def.actuator
-                )))
-            }
-            // A SCOPE refusal, and the message must not claim more: a cooler DOES
-            // move a vessel's pressure (`P = m·R·T/(V·M̄)`), so the reason is that
-            // its effect runs through a temperature, not that it is inert.
-            (MeasuredVariable::Pressure, NodeKind::Cooler { .. }) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' holds a pressure with cooler '{}'. A cooler does move a \
-                     vessel's pressure, but only THROUGH its temperature, which makes this a \
-                     cascade (docs/DEFERRED.md E2) wearing one loop's name. Refused as a scope \
-                     decision, not as physics (docs/DESIGN.md §21 fork 3)",
-                    def.name, def.actuator
-                )))
-            }
-            (MeasuredVariable::Level | MeasuredVariable::Pressure, _) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' actuates '{}', which is not a valve. A level or pressure \
-                     loop writes a valve's opening; pump speed and the rest are deferred with \
-                     their own arguments (docs/DESIGN.md §21 fork 3)",
-                    def.name, def.actuator
-                )))
-            }
-            (MeasuredVariable::Temperature, _) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' actuates '{}', which is not a cooler. A temperature loop \
-                     writes a cooler's or a furnace's duty (docs/DESIGN.md §21 fork 3, §22)",
-                    def.name, def.actuator
-                )))
-            }
-            (MeasuredVariable::Flow, NodeKind::Cooler { .. } | NodeKind::Furnace { .. }) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' holds a flow with '{}', a cooler or furnace. A duty moves \
-                     heat and no mass: this engine's hydraulics do not depend on a unit's duty, \
-                     so the loop would have no effect on what it measures. A flow loop writes a \
-                     valve's opening (docs/DESIGN.md §24 fork 3)",
-                    def.name, def.actuator
-                )))
-            }
-            (MeasuredVariable::Flow, NodeKind::Pump { .. }) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' holds a flow with pump '{}'. A pump's `on` is a switch, \
-                     not a fraction a controller can position, and pump speed is not modelled. \
-                     A flow loop writes a valve's opening (docs/DESIGN.md §24 fork 3)",
-                    def.name, def.actuator
-                )))
-            }
-            (MeasuredVariable::Flow, _) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' actuates '{}', which is not a valve. A flow loop writes \
-                     a valve's opening, on one of that valve's own two pipes (docs/DESIGN.md \
-                     §24 fork 3)",
-                    def.name, def.actuator
-                )))
-            }
-        };
-
-        // **The direction of action, declared and checked** (docs/DESIGN.md §22
-        // fork 2). Absent means direct — a true statement about every loop
-        // written before M18 — except on a furnace, where a default would make the
-        // file's most surprising property invisible — and on a flow loop, for the
-        // same reason (M20). Checked against the actuator wherever the sign is
-        // physics, in both directions; refused on a level or pressure loop's
-        // valve, whose sign is topology (docs/DEFERRED.md E8). A valve holding the
-        // flow in its own pipe is the one valve whose sign IS physics: the pairing
-        // table above has already checked the one hop (docs/DESIGN.md §24 fork 3).
         let action = match def.action.as_deref() {
             None | Some("direct") => ControlAction::Direct,
             Some("reverse") => ControlAction::Reverse,
@@ -886,20 +677,236 @@ fn build_controls(
                 )))
             }
         };
-        let flow_loop = variable == MeasuredVariable::Flow;
-        match (&graph.node(actuator).kind, action, def.action.is_some()) {
-            (NodeKind::Valve { .. }, ControlAction::Direct, false) if flow_loop => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' holds the flow through valve '{}' and declares no \
+
+        // **What the loop writes: a node, or another loop's setpoint** (M25,
+        // docs/DESIGN.md §29 fork 1). A cascade primary's keys are checked here,
+        // against its secondary's DECLARATION; the link itself — the depth rule,
+        // the pairing, the sign, the range against the secondary's own setpoint
+        // check — is checked by `link_cascades` once every loop is built, because
+        // a file may declare the secondary after its primary.
+        let (actuator, max_duty, setpoint_range) = match &def.actuator {
+            ActuatorDef::Loop(link) => {
+                let (secondary, range) = cascade_link_keys(def, defs, &link.name)?;
+                (Actuator::Loop(secondary), None, Some(range))
+            }
+            ActuatorDef::Node(actuator_name) => {
+                refuse_range_keys_on_node(def)?;
+                let actuator = graph.find_node(actuator_name).ok_or_else(|| {
+                    SimError::Scenario(format!(
+                        "control loop '{}' actuates unknown node '{}'",
+                        def.name, def.actuator
+                    ))
+                })?;
+
+                // **The pairing table, enumerated rather than left to a fall-through**
+                // (docs/DESIGN.md §21 fork 3). Which actuators each variable accepts, and
+                // for each refused pairing its own reason — and, for the one duty
+                // actuator, the loop's declared authority over it. `max_duty_mw` is
+                // required on a cooler and refused on a valve, both directions, the
+                // `density_kg_per_m3` rule.
+                let max_duty = match (variable, &graph.node(actuator).kind) {
+                    // Its own reason rather than "not a valve", exactly as
+                    // `Command::SetValveOpening` refuses it: a relief valve IS a valve,
+                    // and the point is that its opening is not a setpoint at all — it is a
+                    // memoryless function of its own inlet pressure, recomputed every
+                    // solve (docs/DESIGN.md §3a fork 5). A loop pointed at one would write
+                    // a number the next solve overwrites.
+                    (_, NodeKind::ReliefValve { .. }) => {
+                        return Err(SimError::Scenario(format!(
+                            "control loop '{}' actuates '{}', a relief valve. Its opening is \
+                     actuated by its own inlet pressure and is recomputed on every solve, \
+                     so a controller writing it would be overwritten before the tick ended",
+                            def.name, def.actuator
+                        )))
+                    }
+                    (
+                        MeasuredVariable::Level
+                        | MeasuredVariable::Pressure
+                        | MeasuredVariable::Flow,
+                        NodeKind::Valve { .. },
+                    ) => {
+                        if def.max_duty_mw.is_some() {
+                            return Err(SimError::Scenario(format!(
+                        "control loop '{}' declares `max_duty_mw` on a valve actuator. That key \
+                         is a DUTY actuator's range — a cooler's or a furnace's — and a valve's \
+                         opening is \
+                         already a fraction, so the number would be read by nothing \
+                         (docs/DESIGN.md §21 fork 3)",
+                        def.name
+                    )));
+                        }
+                        // **One hop, and that is the whole of the sign check** (docs/DESIGN.md
+                        // §24 fork 3). `validate_degrees` holds every valve to exactly one
+                        // inlet and one outlet edge by declared direction, so a pipe that
+                        // touches the valve IS its whole inlet or its whole outlet, with
+                        // nothing branching between them — and opening the valve raises the
+                        // flow through it. A meter further off, or a bypass valve beside the
+                        // pipe, is E12.
+                        //
+                        // A column draw or a boil-off vent cannot reach here, and no guard
+                        // is written for either: a draw ends at a product store and a vent
+                        // runs between holdups, so neither is ever a valve's edge, and this
+                        // adjacency rule excludes both structurally (the M8.2 precedent: a
+                        // refusal nothing can reach is not a refusal).
+                        if let MeasurementPoint::Pipe(pipe) = point {
+                            let (from, to) = graph.endpoints(pipe);
+                            if from != actuator && to != actuator {
+                                return Err(SimError::Scenario(format!(
+                            "control loop '{}' measures the flow in pipe '{point_name}', which \
+                             is not one of valve '{}''s own two pipes. A flow loop's sign is \
+                             checked in ONE hop — a valve has exactly one inlet and one outlet, \
+                             so opening it raises the flow in either — and a meter further \
+                             from its valve, or a valve bypassing the metered pipe (which is \
+                             DIRECT acting), is not admitted (docs/DEFERRED.md E12, \
+                             docs/DESIGN.md §24 fork 3)",
+                            def.name, def.actuator
+                        )));
+                            }
+                        }
+                        None
+                    }
+                    // The two DUTY actuators share one arm: the same range key, the same
+                    // load-time range check, the same position map. Which way each acts is
+                    // checked below against the declared `action`, not here.
+                    (
+                        MeasuredVariable::Temperature,
+                        NodeKind::Cooler { duty } | NodeKind::Furnace { duty },
+                    ) => {
+                        let max_mw = require_keyed(
+                            def.max_duty_mw,
+                            &def.name,
+                            "max_duty_mw",
+                            "the duty the loop's full output stands for",
+                        )?;
+                        if !max_mw.is_finite() || max_mw <= 0.0 {
+                            return Err(SimError::Scenario(format!(
+                                "control loop '{}' declares `max_duty_mw = {max_mw}`; the loop's \
+                         authority must be a finite duty above zero, since its output is a \
+                         fraction of it",
+                                def.name
+                            )));
+                        }
+                        let max = Watt(max_mw * 1e6);
+                        // §21 fork 4, at load: a declared duty outside the loop's range is
+                        // a position the loop could never have produced, and MANUAL
+                        // tracking would report it as a fraction above 1.
+                        if duty.value() > max.value() {
+                            return Err(SimError::Scenario(format!(
+                                "control loop '{}' actuates '{}', whose declared duty {} MW is \
+                         above the loop's `max_duty_mw = {max_mw}`. The loop's output is a \
+                         fraction of that range, so a starting duty outside it is a position \
+                         the loop could never have produced (docs/DESIGN.md §21 fork 4)",
+                                def.name,
+                                def.actuator,
+                                duty.value() / 1e6
+                            )));
+                        }
+                        Some(max)
+                    }
+                    // **Refused with a physical reason and not ruled out**: a coolant
+                    // valve is the real-world temperature actuator, but this engine's
+                    // cooler is a fixed duty with no coolant side, so a valve could only
+                    // move a temperature by changing a PROCESS flow — a different loop
+                    // with a sign that has to be argued per plant.
+                    (MeasuredVariable::Temperature, NodeKind::Valve { .. }) => {
+                        return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a temperature with valve '{}'. This engine has no \
+                     coolant stream — a cooler is a duty with no coolant side — so a valve can \
+                     move a temperature only by changing a PROCESS flow, whose sign depends \
+                     on the plant. Actuate a `cooler` instead (docs/DESIGN.md §21 fork 3)",
+                    def.name, def.actuator
+                )))
+                    }
+                    (MeasuredVariable::Level, NodeKind::Cooler { .. }) => {
+                        return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a level with cooler '{}'. A cooler moves nothing a \
+                     level loop measures: a cut's density is a constant in this engine, so a \
+                     tank's level does not depend on its temperature (docs/DESIGN.md §21 fork \
+                     3)",
+                    def.name, def.actuator
+                )))
+                    }
+                    // A SCOPE refusal, and the message must not claim more: a cooler DOES
+                    // move a vessel's pressure (`P = m·R·T/(V·M̄)`), so the reason is that
+                    // its effect runs through a temperature, not that it is inert.
+                    (MeasuredVariable::Pressure, NodeKind::Cooler { .. }) => {
+                        return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a pressure with cooler '{}'. A cooler does move a \
+                     vessel's pressure, but only THROUGH its temperature, which makes this a \
+                     cascade wearing one loop's name — and a pressure over a temperature is not \
+                     an admitted cascade pairing either (docs/DEFERRED.md E18). Refused as a \
+                     scope decision, not as physics (docs/DESIGN.md §21 fork 3, §29 fork 5)",
+                    def.name, def.actuator
+                )))
+                    }
+                    (MeasuredVariable::Level | MeasuredVariable::Pressure, _) => {
+                        return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', which is not a valve. A level or pressure \
+                     loop writes a valve's opening; pump speed and the rest are deferred with \
+                     their own arguments (docs/DESIGN.md §21 fork 3)",
+                    def.name, def.actuator
+                )))
+                    }
+                    (MeasuredVariable::Temperature, _) => {
+                        return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', which is not a cooler. A temperature loop \
+                     writes a cooler's or a furnace's duty (docs/DESIGN.md §21 fork 3, §22)",
+                    def.name, def.actuator
+                )))
+                    }
+                    (
+                        MeasuredVariable::Flow,
+                        NodeKind::Cooler { .. } | NodeKind::Furnace { .. },
+                    ) => {
+                        return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a flow with '{}', a cooler or furnace. A duty moves \
+                     heat and no mass: this engine's hydraulics do not depend on a unit's duty, \
+                     so the loop would have no effect on what it measures. A flow loop writes a \
+                     valve's opening (docs/DESIGN.md §24 fork 3)",
+                    def.name, def.actuator
+                )))
+                    }
+                    (MeasuredVariable::Flow, NodeKind::Pump { .. }) => {
+                        return Err(SimError::Scenario(format!(
+                    "control loop '{}' holds a flow with pump '{}'. A pump's `on` is a switch, \
+                     not a fraction a controller can position, and pump speed is not modelled. \
+                     A flow loop writes a valve's opening (docs/DESIGN.md §24 fork 3)",
+                    def.name, def.actuator
+                )))
+                    }
+                    (MeasuredVariable::Flow, _) => {
+                        return Err(SimError::Scenario(format!(
+                    "control loop '{}' actuates '{}', which is not a valve. A flow loop writes \
+                     a valve's opening, on one of that valve's own two pipes (docs/DESIGN.md \
+                     §24 fork 3)",
+                    def.name, def.actuator
+                )))
+                    }
+                };
+
+                // **The direction of action, declared and checked** (docs/DESIGN.md §22
+                // fork 2). Absent means direct — a true statement about every loop
+                // written before M18 — except on a furnace, where a default would make the
+                // file's most surprising property invisible — and on a flow loop, for the
+                // same reason (M20). Checked against the actuator wherever the sign is
+                // physics, in both directions; refused on a level or pressure loop's
+                // valve, whose sign is topology (docs/DEFERRED.md E8). A valve holding the
+                // flow in its own pipe is the one valve whose sign IS physics: the pairing
+                // table above has already checked the one hop (docs/DESIGN.md §24 fork 3).
+                let flow_loop = variable == MeasuredVariable::Flow;
+                match (&graph.node(actuator).kind, action, def.action.is_some()) {
+                    (NodeKind::Valve { .. }, ControlAction::Direct, false) if flow_loop => {
+                        return Err(SimError::Scenario(format!(
+                            "control loop '{}' holds the flow through valve '{}' and declares no \
                      `action`. Opening a valve RAISES the flow in its own pipe, so this loop is \
                      reverse acting — the industry's own convention for a flow controller — \
                      and that must be declared rather than defaulted: add `action = \
                      \"reverse\"` (docs/DESIGN.md §24 fork 3)",
-                    def.name, def.actuator
-                )))
-            }
-            (NodeKind::Valve { .. }, ControlAction::Direct, true) if flow_loop => {
-                return Err(SimError::Scenario(format!(
+                            def.name, def.actuator
+                        )))
+                    }
+                    (NodeKind::Valve { .. }, ControlAction::Direct, true) if flow_loop => {
+                        return Err(SimError::Scenario(format!(
                     "control loop '{}' declares `action = \"direct\"` on valve '{}', which it \
                      holds a flow with. A direct loop's output must LOWER its measurement as it \
                      rises, and opening a valve raises the flow in its own pipe: this loop \
@@ -907,38 +914,38 @@ fn build_controls(
                      \"reverse\"` (docs/DESIGN.md §24 fork 3)",
                     def.name, def.actuator
                 )))
-            }
-            (NodeKind::Furnace { .. }, ControlAction::Direct, false) => {
-                return Err(SimError::Scenario(format!(
+                    }
+                    (NodeKind::Furnace { .. }, ControlAction::Direct, false) => {
+                        return Err(SimError::Scenario(format!(
                     "control loop '{}' actuates furnace '{}' and declares no `action`. More \
                      firing RAISES a temperature, so this loop is reverse acting, and that \
                      must be declared rather than defaulted: add `action = \"reverse\"` \
                      (docs/DESIGN.md §22 fork 2)",
                     def.name, def.actuator
                 )))
-            }
-            (NodeKind::Furnace { .. }, ControlAction::Direct, true) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' declares `action = \"direct\"` on furnace '{}'. A \
+                    }
+                    (NodeKind::Furnace { .. }, ControlAction::Direct, true) => {
+                        return Err(SimError::Scenario(format!(
+                            "control loop '{}' declares `action = \"direct\"` on furnace '{}'. A \
                      direct loop's output must LOWER its measurement as it rises, and more \
                      firing raises a temperature: this loop would shut the furnace off the \
                      moment the tank ran cold. Declare `action = \"reverse\"` \
                      (docs/DESIGN.md §22 fork 2)",
-                    def.name, def.actuator
-                )))
-            }
-            (NodeKind::Cooler { .. }, ControlAction::Reverse, _) => {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' declares `action = \"reverse\"` on cooler '{}'. A \
+                            def.name, def.actuator
+                        )))
+                    }
+                    (NodeKind::Cooler { .. }, ControlAction::Reverse, _) => {
+                        return Err(SimError::Scenario(format!(
+                            "control loop '{}' declares `action = \"reverse\"` on cooler '{}'. A \
                      reverse loop's output must RAISE its measurement as it rises, and more \
                      cooling lowers a temperature: this loop would cool hardest when the tank \
                      is already too cold. A cooler loop is direct acting \
                      (docs/DESIGN.md §22 fork 2)",
-                    def.name, def.actuator
-                )))
-            }
-            (NodeKind::Valve { .. }, ControlAction::Reverse, _) if !flow_loop => {
-                return Err(SimError::Scenario(format!(
+                            def.name, def.actuator
+                        )))
+                    }
+                    (NodeKind::Valve { .. }, ControlAction::Reverse, _) if !flow_loop => {
+                        return Err(SimError::Scenario(format!(
                     "control loop '{}' declares `action = \"reverse\"` on valve '{}', holding a \
                      {}. On a level or pressure loop a valve's direction is its place in the \
                      plant, not its kind — the same valve is direct on a drain and reverse on \
@@ -951,18 +958,31 @@ fn build_controls(
                     def.actuator,
                     variable.noun()
                 )))
+                    }
+                    _ => {}
+                }
+                (Actuator::Node(actuator), max_duty, None)
             }
-            _ => {}
-        }
+        };
 
         if let Some((_, owner)) = claimed_actuators.iter().find(|(id, _)| *id == actuator) {
-            return Err(SimError::Scenario(format!(
-                "control loops '{owner}' and '{}' both actuate '{}'. Two writers of one \
-                 opening have no defined resolution order, and declaration order is not \
-                 one — split-range, override and feedforward control are real and are \
-                 deferred together, with an arbitration (docs/DESIGN.md §10)",
-                def.name, def.actuator
-            )));
+            // Two primaries on one secondary is the same refusal one level up
+            // (docs/DESIGN.md §29 fork 1): two writers of one setpoint.
+            return Err(SimError::Scenario(match &def.actuator {
+                ActuatorDef::Loop(link) => format!(
+                    "cascade primaries '{owner}' and '{}' both write the setpoint of loop \
+                     '{}'. Two writers of one setpoint have no defined resolution order, \
+                     exactly as two loops on one valve have none (docs/DESIGN.md §29 fork 1)",
+                    def.name, link.name
+                ),
+                ActuatorDef::Node(_) => format!(
+                    "control loops '{owner}' and '{}' both actuate '{}'. Two writers of one \
+                     opening have no defined resolution order, and declaration order is not \
+                     one — split-range, override and feedforward control are real and are \
+                     deferred together, with an arbitration (docs/DESIGN.md §10)",
+                    def.name, def.actuator
+                ),
+            }));
         }
         claimed_actuators.push((actuator, &def.name));
 
@@ -1223,7 +1243,14 @@ fn build_controls(
         // (docs/DESIGN.md §21, site 2). This used to be a match with a `_ => 0.0`
         // arm commented "unreachable" — true while a valve was the only actuator,
         // and a silent zero the moment a second kind was admitted.
-        let last_output = graph.actuator_position(actuator, max_duty)?;
+        //
+        // A cascade primary's position is its secondary's setpoint, which may not
+        // be built yet; `link_cascades` seeds it once every loop is. NaN until
+        // then, never a plausible zero: a seed that was missed would surface.
+        let last_output = match actuator {
+            Actuator::Node(_) => graph.actuator_position(actuator, max_duty, None)?,
+            Actuator::Loop(_) => f64::NAN,
+        };
 
         graph.add_control(ControlLoop {
             name: def.name.clone(),
@@ -1231,6 +1258,7 @@ fn build_controls(
             actuator,
             action,
             max_duty,
+            setpoint_range,
             setpoint,
             mode,
             algorithm,
@@ -1238,7 +1266,7 @@ fn build_controls(
             last_output,
         });
     }
-    Ok(())
+    link_cascades(graph, defs)
 }
 
 /// Build the plant's trips from `[[trips]]`, after every node exists (M22,
@@ -1687,6 +1715,456 @@ fn resolve_measurement_point(
 /// second variable existed: "unknown key" and "that is the pressure loop's key"
 /// are different mistakes, and telling an author the first when the second is
 /// true sends them looking for a typo they did not make.
+/// The variable a `[[controls]]` entry measures, from its `measurement.variable`.
+///
+/// One function because a cascade primary reads its SECONDARY's variable too,
+/// before that loop is built, to know which unit its range keys carry.
+fn parse_variable(def: &ControlDef) -> Result<MeasuredVariable, SimError> {
+    match def.measurement.variable.as_str() {
+        "level" => Ok(MeasuredVariable::Level),
+        "pressure" => Ok(MeasuredVariable::Pressure),
+        "temperature" => Ok(MeasuredVariable::Temperature),
+        // This message used to say flow control was deferred because "a flow
+        // lives on an EDGE, which nothing in `measure`'s signature can name".
+        // M20 names it: `MeasurementPoint` (docs/DESIGN.md §24 fork 1).
+        "flow" => Ok(MeasuredVariable::Flow),
+        other => Err(SimError::Scenario(format!(
+            "control loop '{}' measures unknown variable '{other}' (valid: level, pressure, \
+             temperature, flow)",
+            def.name
+        ))),
+    }
+}
+
+/// The four range keys, with the variable each one's unit belongs to.
+fn range_keys(def: &ControlDef) -> [(Option<f64>, &'static str, MeasuredVariable); 4] {
+    [
+        (
+            def.range_min_c,
+            "range_min_c",
+            MeasuredVariable::Temperature,
+        ),
+        (
+            def.range_max_c,
+            "range_max_c",
+            MeasuredVariable::Temperature,
+        ),
+        (
+            def.range_min_kg_per_s,
+            "range_min_kg_per_s",
+            MeasuredVariable::Flow,
+        ),
+        (
+            def.range_max_kg_per_s,
+            "range_max_kg_per_s",
+            MeasuredVariable::Flow,
+        ),
+    ]
+}
+
+/// A range key on a loop that writes a NODE is refused (M25, docs/DESIGN.md §29
+/// fork 2) — the `max_duty_mw` rule, the other direction.
+fn refuse_range_keys_on_node(def: &ControlDef) -> Result<(), SimError> {
+    if let Some((_, key, _)) = range_keys(def).into_iter().find(|(v, _, _)| v.is_some()) {
+        return Err(SimError::Scenario(format!(
+            "control loop '{}' declares `{key}` and actuates node '{}'. A setpoint range is a \
+             cascade PRIMARY's authority over another loop's setpoint (`actuator = {{ loop = \
+             \"…\" }}`); a loop writing equipment would read it nowhere (docs/DESIGN.md §29 \
+             fork 2)",
+            def.name, def.actuator
+        )));
+    }
+    Ok(())
+}
+
+/// The refusal for a cascade whose inner loop measures a HOLDUP (docs/DESIGN.md
+/// §29 fork 5): a level, a pressure, or a tank's or vessel's temperature.
+fn holdup_inner_refusal(primary: &str, secondary: &str, noun: &str) -> SimError {
+    SimError::Scenario(format!(
+        "cascade primary '{primary}' drives loop '{secondary}', which measures a holdup's \
+         {noun}. An inner loop must measure a quantity with no holdup of its own — a pipe's \
+         flow, or a furnace's or cooler's outlet — because that is what makes it fast enough \
+         to be worth separating: both settle within the tick (docs/DESIGN.md §29 fork 5)"
+    ))
+}
+
+/// A cascade primary's keys, checked against its secondary's DECLARATION (M25,
+/// docs/DESIGN.md §29 fork 2): which loop it drives, and its range in that loop's
+/// unit.
+///
+/// The secondary's `LoopId` is its position in `defs`, which is the id
+/// `add_control` gives it — every entry is added once, in order, or the load
+/// fails. `link_cascades` asserts that before reading any link.
+fn cascade_link_keys(
+    def: &ControlDef,
+    defs: &[ControlDef],
+    secondary_name: &str,
+) -> Result<(LoopId, SetpointRange), SimError> {
+    let index = defs
+        .iter()
+        .position(|d| d.name == secondary_name)
+        .ok_or_else(|| {
+            SimError::Scenario(format!(
+                "control loop '{}' drives unknown loop '{secondary_name}'. `actuator = {{ loop = \
+                 \"…\" }}` names another `[[controls]]` entry by its `name`",
+                def.name
+            ))
+        })?;
+    if def.max_duty_mw.is_some() {
+        return Err(SimError::Scenario(format!(
+            "control loop '{}' declares `max_duty_mw` and drives loop '{secondary_name}'. That key \
+             is a DUTY actuator's range; a cascade primary's authority is a range of its \
+             secondary's setpoints (`range_min_*`/`range_max_*`, docs/DESIGN.md §29 fork 2)",
+            def.name
+        )));
+    }
+    let secondary_variable = parse_variable(&defs[index])?;
+    let (min_key, max_key, min, max) = match secondary_variable {
+        MeasuredVariable::Temperature => (
+            "range_min_c",
+            "range_max_c",
+            def.range_min_c,
+            def.range_max_c,
+        ),
+        MeasuredVariable::Flow => (
+            "range_min_kg_per_s",
+            "range_max_kg_per_s",
+            def.range_min_kg_per_s,
+            def.range_max_kg_per_s,
+        ),
+        MeasuredVariable::Level | MeasuredVariable::Pressure => {
+            return Err(holdup_inner_refusal(
+                &def.name,
+                secondary_name,
+                secondary_variable.noun(),
+            ))
+        }
+    };
+    for (value, key, belongs_to) in range_keys(def) {
+        if value.is_some() && belongs_to != secondary_variable {
+            return Err(SimError::Scenario(format!(
+                "control loop '{}' declares `{key}`, a range over a {} secondary, and drives \
+                 loop '{secondary_name}', which measures a {}. The range carries its \
+                 SECONDARY's unit: write `{min_key}` and `{max_key}` (docs/DESIGN.md §29 fork \
+                 2)",
+                def.name,
+                belongs_to.noun(),
+                secondary_variable.noun()
+            )));
+        }
+    }
+    let what = "the secondary setpoint the primary's output stands for at that end";
+    let min = require_keyed(min, &def.name, min_key, what)?;
+    let max = require_keyed(max, &def.name, max_key, what)?;
+    let range = SetpointRange {
+        min: declared_value(secondary_variable, min),
+        max: declared_value(secondary_variable, max),
+    };
+    // Compared AFTER conversion, so a range end that missed its conversion — the
+    // `+ 273.15` on one temperature key and not the other — is caught here as
+    // an empty range rather than shipped as one 300 K wide (§29 mutation 7).
+    let (lo, hi) = (range.min.magnitude(), range.max.magnitude());
+    if !lo.is_finite() || !hi.is_finite() || lo >= hi {
+        return Err(SimError::Scenario(format!(
+            "control loop '{}' declares `{min_key} = {min}` and `{max_key} = {max}`. A cascade \
+             primary's range must be finite with its bottom strictly below its top: its output \
+             is a fraction of that span, and an empty or inverted span is a primary with no \
+             authority or with its sign hidden in a range (docs/DESIGN.md §29 fork 2)",
+            def.name
+        )));
+    }
+    Ok((LoopId(index as u32), range))
+}
+
+/// Check every cascade link once all loops exist, and seed each primary's
+/// faceplate from its secondary's setpoint (M25, docs/DESIGN.md §29).
+///
+/// After the build rather than inside it, because a file may declare the
+/// secondary after its primary — and a fixture does, since a demo's own file
+/// order makes the pass-2 partition inert (§29 fork 3). In order, for each
+/// primary: the depth rule, which is also the cycle refusal (a self-link, a
+/// mutual pair and a three-deep chain each with its own message); the pairing
+/// and the primary's sign (fork 5); both range ends through the secondary's own
+/// `check_setpoint`; the secondary's declared setpoint inside the range; and the
+/// seed.
+fn link_cascades(graph: &mut PlantGraph, defs: &[ControlDef]) -> Result<(), SimError> {
+    if graph.controls().len() != defs.len() {
+        return Err(SimError::Scenario(format!(
+            "internal: {} `[[controls]]` entries built {} loops, so a loop's position in the \
+             file is not its id and no cascade link can be resolved",
+            defs.len(),
+            graph.controls().len()
+        )));
+    }
+    for (index, def) in defs.iter().enumerate() {
+        let primary_id = LoopId(index as u32);
+        let primary = &graph.controls()[index];
+        let Actuator::Loop(secondary_id) = primary.actuator else {
+            continue;
+        };
+        let range = primary.setpoint_range.ok_or_else(|| {
+            SimError::Scenario(format!(
+                "internal: cascade primary '{}' was built with no setpoint range",
+                primary.name
+            ))
+        })?;
+        if secondary_id == primary_id {
+            return Err(SimError::Scenario(format!(
+                "control loop '{}' drives itself. A loop whose output is its own setpoint \
+                 regulates nothing — and a loop that drives another may not itself be driven, \
+                 which is the rule that refuses this (docs/DESIGN.md §29 fork 3)",
+                primary.name
+            )));
+        }
+        let secondary = graph.control(secondary_id).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "internal: cascade primary '{}' drives {secondary_id:?}, which names no loop",
+                primary.name
+            ))
+        })?;
+        if let Actuator::Loop(third) = secondary.actuator {
+            if third == primary_id {
+                return Err(SimError::Scenario(format!(
+                    "control loops '{}' and '{}' drive each other. Each would write the other's \
+                     setpoint, which is a cycle with no answer — refused by the depth rule: a \
+                     loop that drives another may not itself be driven (docs/DESIGN.md §29 fork \
+                     3)",
+                    primary.name, secondary.name
+                )));
+            }
+            return Err(SimError::Scenario(format!(
+                "control loop '{}' drives loop '{}', which itself drives another loop: a chain \
+                 three deep. Cascades are two levels only — a loop that drives another may not \
+                 itself be driven (docs/DESIGN.md §29 fork 3, docs/DEFERRED.md E17)",
+                primary.name, secondary.name
+            )));
+        }
+        if let Some(driver) = graph.primary_of(primary_id) {
+            return Err(SimError::Scenario(format!(
+                "control loop '{}' drives loop '{}' and is itself driven by '{}': a chain three \
+                 deep. Cascades are two levels only — a loop that drives another may not itself \
+                 be driven (docs/DESIGN.md §29 fork 3, docs/DEFERRED.md E17)",
+                primary.name, secondary.name, driver.name
+            )));
+        }
+        let required = cascade_pairing(graph, primary, secondary)?;
+        match (def.action.is_some(), primary.action == required) {
+            (false, _) => {
+                return Err(SimError::Scenario(format!(
+                    "cascade primary '{}' declares no `action`. Its sign is topology — which \
+                     way a higher target for '{}' moves its own measurement — and the loader \
+                     checked it in one hop: this primary is {} acting, which must be declared \
+                     rather than defaulted. Add `action = \"{}\"` (docs/DESIGN.md §29 fork 5)",
+                    primary.name,
+                    secondary.name,
+                    action_word(required),
+                    action_word(required)
+                )))
+            }
+            (true, false) => {
+                return Err(SimError::Scenario(format!(
+                    "cascade primary '{}' declares `action = \"{}\"`, and the plant makes it {} \
+                     acting: a higher target for '{}' {} its measurement. With the wrong sign \
+                     the primary would push its secondary the wrong way and run away. Declare \
+                     `action = \"{}\"` (docs/DESIGN.md §29 fork 5)",
+                    primary.name,
+                    action_word(primary.action),
+                    action_word(required),
+                    secondary.name,
+                    if required == ControlAction::Reverse {
+                        "RAISES"
+                    } else {
+                        "LOWERS"
+                    },
+                    action_word(required)
+                )))
+            }
+            (true, true) => {}
+        }
+        for (end, value) in [("bottom", range.min), ("top", range.max)] {
+            graph
+                .check_setpoint(secondary.measurement_point, value)
+                .map_err(|e| {
+                    SimError::Scenario(format!(
+                        "cascade primary '{}': the {end} of its range is a setpoint loop '{}' \
+                         would refuse, so the primary could reach a position the engine then \
+                         refuses mid-tick (docs/DESIGN.md §29 fork 2): {e}",
+                        primary.name, secondary.name
+                    ))
+                })?;
+        }
+        // Not in the note, and owed by its own fork 4: a cascade OPEN at load —
+        // the demo's tick 1, whose outlet does not exist yet — re-seeds the
+        // primary against this position, and a position outside [0, 1] is one
+        // the seed refuses. So the tick would fail, not the load.
+        if !range.contains(secondary.setpoint) {
+            return Err(SimError::Scenario(format!(
+                "loop '{}' declares setpoint {:?}, outside the range of its cascade primary \
+                 '{}' ({:?} to {:?}). The primary's position IS that setpoint as a fraction of \
+                 its range, so a setpoint outside it is a position the primary could never have \
+                 produced (docs/DESIGN.md §29 fork 2)",
+                secondary.name, secondary.setpoint, primary.name, range.min, range.max
+            )));
+        }
+        let position = graph.actuator_position(primary.actuator, None, Some(range))?;
+        graph
+            .control_mut(primary_id)
+            .ok_or_else(|| SimError::Scenario(format!("internal: {primary_id:?} names no loop")))?
+            .last_output = position;
+    }
+    Ok(())
+}
+
+fn action_word(action: ControlAction) -> &'static str {
+    match action {
+        ControlAction::Direct => "direct",
+        ControlAction::Reverse => "reverse",
+    }
+}
+
+/// The admitted cascade pairings, and the sign each one forces on the primary
+/// (docs/DESIGN.md §29 fork 5's table). Every other pairing is refused with its
+/// own reason.
+///
+/// The sign is topology — which way a higher secondary setpoint moves the
+/// primary's measurement — so a pairing is admitted only where the loader can
+/// check it in ONE hop:
+///
+/// - a tank's temperature over a furnace's or cooler's outlet whose outlet pipe
+///   ends at that tank: REVERSE, whichever unit it is (a hotter outlet target
+///   heats the tank, and a cooler's hotter target is less cooling);
+/// - a tank's level over the flow on a valve whose inlet pipe starts at the tank
+///   (a drain): DIRECT;
+/// - a tank's level over the flow on a valve whose outlet pipe ends at the tank (a
+///   fill): REVERSE — the first reverse level loop on a valve admitted, because
+///   here the side IS checked (`docs/DEFERRED.md` E8 is unchanged for a single
+///   loop).
+fn cascade_pairing(
+    graph: &PlantGraph,
+    primary: &ControlLoop,
+    secondary: &ControlLoop,
+) -> Result<ControlAction, SimError> {
+    let one_hop =
+        |from: NodeId, to: NodeId| graph.edge_ids().any(|e| graph.endpoints(e) == (from, to));
+    let outer = primary.setpoint.variable();
+    let inner = secondary.setpoint.variable();
+    let holdup = match primary.measurement_point {
+        MeasurementPoint::Node(node) => Some((node, &graph.node(node).kind)),
+        MeasurementPoint::Pipe(_) => None,
+    };
+    match (secondary.measurement_point, inner) {
+        // The inner loop measures a holdup: refused whatever the outer loop is.
+        (MeasurementPoint::Node(node), _)
+            if matches!(
+                graph.node(node).kind,
+                NodeKind::Tank(_) | NodeKind::Vessel(_)
+            ) =>
+        {
+            Err(holdup_inner_refusal(
+                &primary.name,
+                &secondary.name,
+                inner.noun(),
+            ))
+        }
+        // A furnace's or cooler's OUTLET.
+        (MeasurementPoint::Node(unit), MeasuredVariable::Temperature) => match (outer, holdup) {
+            (MeasuredVariable::Temperature, Some((tank, NodeKind::Tank(_)))) => {
+                if one_hop(unit, tank) {
+                    Ok(ControlAction::Reverse)
+                } else {
+                    Err(SimError::Scenario(format!(
+                        "cascade primary '{}' holds tank '{}' over the outlet of '{}', \
+                             whose outlet pipe does not end at that tank. The primary's sign is \
+                             checked in ONE hop — the unit's outlet running straight into the \
+                             tank — and a unit further off is not admitted (docs/DESIGN.md §29 \
+                             fork 5, docs/DEFERRED.md E18)",
+                        primary.name,
+                        graph.node(tank).name,
+                        graph.node(unit).name
+                    )))
+                }
+            }
+            (MeasuredVariable::Temperature, Some((vessel, NodeKind::Vessel(_)))) => {
+                Err(SimError::Scenario(format!(
+                    "cascade primary '{}' holds the temperature of VESSEL '{}' over an \
+                         outlet. The same one-hop rule would serve, but no plant or fixture runs \
+                         it, so it is not admitted (docs/DEFERRED.md E18, docs/DESIGN.md §29 \
+                         fork 5)",
+                    primary.name,
+                    graph.node(vessel).name
+                )))
+            }
+            _ => Err(not_admitted(graph, primary, secondary)),
+        },
+        // A pipe's flow, on the secondary's own valve.
+        (MeasurementPoint::Pipe(_), MeasuredVariable::Flow) => match (outer, holdup) {
+            (MeasuredVariable::Level, Some((tank, NodeKind::Tank(_)))) => {
+                let valve = secondary.actuator.node().ok_or_else(|| {
+                    SimError::Scenario(format!(
+                        "internal: flow loop '{}' writes no valve",
+                        secondary.name
+                    ))
+                })?;
+                match (one_hop(tank, valve), one_hop(valve, tank)) {
+                    (true, false) => Ok(ControlAction::Direct),
+                    (false, true) => Ok(ControlAction::Reverse),
+                    (false, false) => Err(SimError::Scenario(format!(
+                        "cascade primary '{}' holds the level of tank '{}' over the flow \
+                         through valve '{}', which is neither a drain (its inlet pipe starting \
+                         at the tank) nor a fill (its outlet pipe ending at it). The primary's \
+                         sign is checked in ONE hop, and a valve further off is not admitted \
+                         (docs/DESIGN.md §29 fork 5, docs/DEFERRED.md E18)",
+                        primary.name,
+                        graph.node(tank).name,
+                        graph.node(valve).name
+                    ))),
+                    (true, true) => Err(SimError::Scenario(format!(
+                        "cascade primary '{}' holds the level of tank '{}' over the flow \
+                         through valve '{}', which both drains the tank and fills it, so \
+                         opening it moves the level neither way the loader can name \
+                         (docs/DESIGN.md §29 fork 5)",
+                        primary.name,
+                        graph.node(tank).name,
+                        graph.node(valve).name
+                    ))),
+                }
+            }
+            (MeasuredVariable::Pressure, _) => Err(SimError::Scenario(format!(
+                "cascade primary '{}' holds a pressure over the flow of loop '{}'. The same \
+                 one-hop rule would serve a vent's flow, but no plant or fixture runs it, so it \
+                 is not admitted (docs/DEFERRED.md E18, docs/DESIGN.md §29 fork 5)",
+                primary.name, secondary.name
+            ))),
+            (MeasuredVariable::Temperature, _) => Err(SimError::Scenario(format!(
+                "cascade primary '{}' holds a temperature over the flow of loop '{}'. This \
+                 engine has no coolant stream — a cooler is a duty with no coolant side — so a \
+                 flow moves a temperature only by changing a PROCESS flow, whose sign depends on \
+                 the plant (docs/DESIGN.md §21 fork 3, §29 fork 5, docs/DEFERRED.md E18)",
+                primary.name, secondary.name
+            ))),
+            _ => Err(not_admitted(graph, primary, secondary)),
+        },
+        _ => Err(not_admitted(graph, primary, secondary)),
+    }
+}
+
+/// Every cross pairing fork 5 does not admit and does not name: a level over a
+/// temperature, a pressure over an outlet, a primary on a pipe or an outlet.
+fn not_admitted(graph: &PlantGraph, primary: &ControlLoop, secondary: &ControlLoop) -> SimError {
+    SimError::Scenario(format!(
+        "cascade primary '{}' holds the {} of '{}' over loop '{}', which holds the {} of '{}'. \
+         That is not an admitted cascade pairing: a tank's temperature over a furnace's or \
+         cooler's outlet, and a tank's level over the flow through a valve beside it, are the \
+         two this engine checks the sign of (docs/DESIGN.md §29 fork 5, docs/DEFERRED.md E18)",
+        primary.name,
+        primary.setpoint.variable().noun(),
+        graph.point_name(primary.measurement_point),
+        secondary.name,
+        secondary.setpoint.variable().noun(),
+        graph.point_name(secondary.measurement_point)
+    ))
+}
+
 fn refuse_foreign_key(
     present: bool,
     loop_name: &str,
