@@ -1990,10 +1990,6 @@ impl Engine {
         Ok(())
     }
 
-    /// The two guards a loop-owned DUTY actuator gets, shared by
-    /// `SetCoolerDuty` and `SetFurnaceDuty`: refused while the owning loop is in
-    /// AUTO, and refused above the loop's range in either mode. `unit` names the
-    /// actuator kind in the message.
     /// Refuse a command whose node or edge id this plant does not hold.
     ///
     /// The match has no `_` arm on purpose — the bridge's `referent` does the
@@ -2026,6 +2022,10 @@ impl Engine {
         }
     }
 
+    /// The two guards a loop-owned DUTY actuator gets, shared by
+    /// `SetCoolerDuty` and `SetFurnaceDuty`: refused while the owning loop is in
+    /// AUTO, and refused above the loop's range in either mode. `unit` names the
+    /// actuator kind in the message.
     fn check_loop_owned_duty(&self, node: NodeId, duty: Watt, unit: &str) -> Result<(), SimError> {
         // A duty actuator a loop owns gets the valve's guard, and the reason is
         // the same one: in AUTO the write survives until the top of the
