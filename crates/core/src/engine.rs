@@ -346,6 +346,23 @@ impl Engine {
             // to express, so it can only be a sign slip.
             Command::SetFurnaceDuty { node, duty } => {
                 check_duty(duty, "furnace")?;
+                // Refused while a latched trip has cut this furnace's fuel, unless
+                // the write IS the cut (M32, docs/DESIGN.md §35): zero on a cut
+                // furnace moves nothing, as stopping a stopped pump does. Ahead of
+                // the loop guard, for `SetValveOpening`'s reason — the trip forced
+                // the loop to MANUAL, so the loop guard would not fire.
+                if duty.value() != 0.0 {
+                    if let Some(trip) = self.graph.latched_trip_on(node) {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{}') has its fuel cut by trip '{}', which is latched. \
+                             Reset the trip first (`reset_trip`) once its condition has \
+                             cleared; the reset relights nothing, and the furnace can then be \
+                             fired by hand",
+                            self.graph.node(node).name,
+                            trip.name
+                        )));
+                    }
+                }
                 // The cooler's two guards, owed since M18 made a furnace a loop's
                 // actuator (docs/DESIGN.md §22 fork 4) — and one function for both
                 // duty commands, so neither can grow a guard the other lacks.
@@ -1826,6 +1843,12 @@ impl Engine {
                         _ => return Err(trip_equipment_fault(&self.graph, valve, "valve")),
                     }
                 }
+                TripAction::CutFurnace { furnace } => {
+                    match &mut self.graph.node_mut(furnace).kind {
+                        NodeKind::Furnace { duty } => *duty = Watt::ZERO,
+                        _ => return Err(trip_equipment_fault(&self.graph, furnace, "furnace")),
+                    }
+                }
             }
             let equipment = action.equipment();
             for control in self.graph.controls_mut() {
@@ -1845,11 +1868,15 @@ impl Engine {
             (TripAction::SetValve { position, .. }, NodeKind::Valve { opening, .. }) => {
                 *opening != position
             }
+            (TripAction::CutFurnace { .. }, NodeKind::Furnace { duty }) => *duty != Watt::ZERO,
             (TripAction::StopPump { pump }, _) => {
                 return Err(trip_equipment_fault(&self.graph, pump, "pump"))
             }
             (TripAction::SetValve { valve, .. }, _) => {
                 return Err(trip_equipment_fault(&self.graph, valve, "valve"))
+            }
+            (TripAction::CutFurnace { furnace }, _) => {
+                return Err(trip_equipment_fault(&self.graph, furnace, "furnace"))
             }
         };
         if moved {

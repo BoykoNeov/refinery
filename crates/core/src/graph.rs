@@ -1297,6 +1297,11 @@ pub enum TripAction {
     /// Put a valve at a declared opening in `[0, 1]` — usually shut, but a vent
     /// or dump valve trips OPEN, so the file says which.
     SetValve { valve: NodeId, position: f64 },
+    /// Cut a furnace's fuel: its safe state is zero duty (M32,
+    /// docs/DESIGN.md §35). One safe state, so no position: a furnace held at
+    /// some lower firing is not a cut, and two trips on one furnace cannot
+    /// disagree about it. The stream still flows through, unheated.
+    CutFurnace { furnace: NodeId },
 }
 
 impl TripAction {
@@ -1305,6 +1310,7 @@ impl TripAction {
         match self {
             TripAction::StopPump { pump } => pump,
             TripAction::SetValve { valve, .. } => valve,
+            TripAction::CutFurnace { furnace } => furnace,
         }
     }
 }
@@ -1329,7 +1335,7 @@ pub struct Trip {
     pub direction: TripDirection,
     /// The limit, and — through `ControlledValue::variable` — what is measured.
     pub limit: ControlledValue,
-    /// Non-empty; each names one pump or valve and its safe state.
+    /// Non-empty; each names one pump, valve or furnace and its safe state.
     pub actions: Vec<TripAction>,
     pub state: TripState,
     /// The measurement the last trip pass compared. `None` only before the

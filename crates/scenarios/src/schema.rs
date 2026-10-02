@@ -885,8 +885,8 @@ pub struct TripDef {
     pub actions: Vec<TripActionDef>,
 }
 
-/// One entry of a trip's `actions` list: `{ pump = "…" }` or
-/// `{ valve = "…", position = … }`.
+/// One entry of a trip's `actions` list: `{ pump = "…" }`,
+/// `{ valve = "…", position = … }` or `{ furnace = "…" }`.
 ///
 /// The equipment is named under the key for its KIND, so the file says what it
 /// thinks it is pointing at and a `pump` action naming a valve is refused by
@@ -900,6 +900,10 @@ pub struct TripActionDef {
     /// A valve to put at `position`.
     #[serde(default)]
     pub valve: Option<String>,
+    /// A furnace whose fuel to cut: its safe state is zero duty, so it takes no
+    /// `position` (M32, docs/DESIGN.md §35).
+    #[serde(default)]
+    pub furnace: Option<String>,
     /// The valve's safe opening in `[0, 1]`. **Required on a valve, no default**:
     /// most trips close a valve, but a vent or dump valve trips OPEN, so the
     /// file says which. Refused on a pump, which has no position.

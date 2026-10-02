@@ -34,6 +34,7 @@ const HOT_TANK: &str = include_str!("../../../scenarios/tank_temperature_control
 const LEVEL_LOOP: &str = include_str!("../../../scenarios/tank_level_control.toml");
 const FURNACE: &str = include_str!("../../../scenarios/furnace_outlet_control.toml");
 const RELIEF: &str = include_str!("../../../scenarios/relief_blowdown.toml");
+const HEATING: &str = include_str!("../../../scenarios/tank_temperature_heating.toml");
 
 /// The demo's own trip block, verbatim, so a swap into it must land.
 const DEMO_TRIP: &str = r#"[[trips]]
@@ -461,6 +462,22 @@ actions = [{ pump = "transfer_pump" }]"#,
 
 // ------------------------------------------------------------------ gate 9
 
+/// A high-temperature trip on `tank_temperature_heating.toml`'s tank with one
+/// `action`, for the furnace cases of the sweep (M32, docs/DESIGN.md §35).
+fn furnace_trip(action: &str) -> String {
+    with_trip(
+        HEATING,
+        &format!(
+            r#"[[trips]]
+name = "overheat"
+measurement = {{ node = "hold_tank", variable = "temperature" }}
+direction = "high"
+limit_c = 75.0
+actions = [{action}]"#
+        ),
+    )
+}
+
 #[test]
 fn every_trip_the_loader_cannot_honour_is_refused_for_its_own_reason() {
     let demo_with = |block: &str| swap(DEMO, DEMO_TRIP, block);
@@ -498,7 +515,45 @@ direction = "high"
 limit_c = 95.0
 actions = [{ valve = "chiller", position = 0.0 }]"#,
             ),
-            "E14",
+            "losing cooling",
+        ),
+        (
+            "a cooler under the furnace key",
+            with_trip(
+                HOT_TANK,
+                r#"[[trips]]
+name = "cooler"
+measurement = { node = "hold_tank", variable = "temperature" }
+direction = "high"
+limit_c = 95.0
+actions = [{ furnace = "chiller" }]"#,
+            ),
+            "losing cooling",
+        ),
+        (
+            "a furnace with a position",
+            furnace_trip(r#"{ furnace = "heater", position = 0.0 }"#),
+            "is its fuel cut",
+        ),
+        (
+            "a furnace under the valve key",
+            furnace_trip(r#"{ valve = "heater", position = 0.0 }"#),
+            "it is not a valve",
+        ),
+        (
+            "a furnace under the pump key",
+            furnace_trip(r#"{ pump = "heater" }"#),
+            "it is not a pump",
+        ),
+        (
+            "the furnace key on a valve",
+            furnace_trip(r#"{ furnace = "drain_valve" }"#),
+            "it is not a furnace",
+        ),
+        (
+            "a furnace and a valve in one action",
+            furnace_trip(r#"{ furnace = "heater", valve = "drain_valve", position = 0.0 }"#),
+            "more than one of",
         ),
         (
             "a relief valve as equipment",
@@ -566,12 +621,12 @@ actions = [{ valve = "vent_valve", position = 1.0 }]"#,
                 r#"{ pump = "transfer_pump" }"#,
                 r#"{ pump = "transfer_pump", valve = "discharge_valve" }"#,
             ),
-            "both a `pump` and a `valve`",
+            "more than one of a `pump`, a `valve` and",
         ),
         (
             "an action naming neither",
             action(r#"{ pump = "transfer_pump" }"#, "{ }"),
-            "neither a `pump` nor a `valve`",
+            "none of a `pump`, a `valve` or a",
         ),
         (
             "unknown equipment",

@@ -1451,24 +1451,33 @@ fn build_trips(
         if def.actions.is_empty() {
             return Err(SimError::Scenario(format!(
                 "{owner} declares no `actions`. A trip that fires and moves nothing protects \
-                 nothing; name at least one `{{ pump = \"…\" }}` or \
-                 `{{ valve = \"…\", position = … }}`"
+                 nothing; name at least one `{{ pump = \"…\" }}`, \
+                 `{{ valve = \"…\", position = … }}` or `{{ furnace = \"…\" }}`"
             )));
         }
         let mut actions = Vec::with_capacity(def.actions.len());
         for action in &def.actions {
-            let (key, name) = match (&action.pump, &action.valve) {
-                (Some(pump), None) => ("pump", pump),
-                (None, Some(valve)) => ("valve", valve),
-                (Some(_), Some(_)) => {
+            let named: Vec<(&str, &String)> = [
+                ("pump", &action.pump),
+                ("valve", &action.valve),
+                ("furnace", &action.furnace),
+            ]
+            .into_iter()
+            .filter_map(|(key, name)| name.as_ref().map(|name| (key, name)))
+            .collect();
+            let (key, name) = match named.as_slice() {
+                [one] => *one,
+                [] => {
                     return Err(SimError::Scenario(format!(
-                        "{owner} has an action naming both a `pump` and a `valve`. Each action \
-                         names ONE piece of equipment; list them as separate actions"
+                        "{owner} has an action naming none of a `pump`, a `valve` or a \
+                         `furnace`"
                     )))
                 }
-                (None, None) => {
+                _ => {
                     return Err(SimError::Scenario(format!(
-                        "{owner} has an action naming neither a `pump` nor a `valve`"
+                        "{owner} has an action naming more than one of a `pump`, a `valve` and \
+                         a `furnace`. Each action names ONE piece of equipment; list them as \
+                         separate actions"
                     )))
                 }
             };
@@ -1493,12 +1502,26 @@ fn build_trips(
                          could not hold it in a safe state"
                     )))
                 }
-                (_, NodeKind::Furnace { .. } | NodeKind::Cooler { .. }) => {
+                // Its own reason (M32, docs/DESIGN.md §35 fork 1): a cooler has
+                // no safe state a trip could write. Cutting it is LOSING cooling,
+                // the failure a trip is meant to answer, and running it flat out is
+                // a regulator's job done at the wrong layer.
+                (_, NodeKind::Cooler { .. }) => {
                     return Err(SimError::Scenario(format!(
-                        "{owner} acts on '{name}', a furnace or cooler. A trip acts on pumps and \
-                         valves; a fuel cut or a cooler trip is deferred with its own trigger \
-                         (docs/DEFERRED.md E14)"
+                        "{owner} acts on '{name}', a cooler. A cooler has no safe state a trip \
+                         could write: cutting its duty is losing cooling, which is the hazard \
+                         rather than the protection. A cooler trip is deferred with its own \
+                         trigger (docs/DEFERRED.md E14)"
                     )))
+                }
+                ("furnace", NodeKind::Furnace { .. }) => {
+                    if action.position.is_some() {
+                        return Err(SimError::Scenario(format!(
+                            "{owner} gives furnace '{name}' a `position`. A furnace's safe state \
+                             is its fuel cut, zero duty, and it has no position to hold"
+                        )));
+                    }
+                    TripAction::CutFurnace { furnace: node }
                 }
                 ("pump", NodeKind::Pump { .. }) => {
                     if action.position.is_some() {
@@ -1543,7 +1566,7 @@ fn build_trips(
                     return Err(SimError::Scenario(format!(
                         "{owner} names '{name}' under `{key}`, and it is not a {key}. An action \
                          names its equipment under the key for its kind: `pump` for a pump, \
-                         `valve` for a valve"
+                         `valve` for a valve, `furnace` for a furnace"
                     )))
                 }
             };

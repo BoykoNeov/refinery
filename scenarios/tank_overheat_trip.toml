@@ -1,0 +1,121 @@
+# M32 protection demo: a furnace with nobody minding it, and a trip that cuts its
+# fuel before the tank it feeds gets too hot.
+#
+#   cool_feed (40 °C) -> heater (3 MW) -> hold_tank -> drain_valve -> rundown
+#
+# **Meant to be diffed against `tank_temperature_heating.toml`.** Same plant, line
+# for line, except:
+#
+# | line | there | here | why |
+# |---|---|---|---|
+# | `heater.duty_mw` | 0.5, moved by a loop | 3.0, fixed | fired hard and left: the tank heads for ~90 °C, so there is something to protect against |
+# | `[[controls]]` | a reverse PI loop on the furnace | none | nothing regulates the firing; the trip is the only thing between the tank and its feed's temperature |
+# | `[[trips]]` | none | one high-temperature trip | the subject of the file |
+#
+# **A fuel cut is the furnace's ONE safe state** (docs/DESIGN.md §35). The action
+# is `{ furnace = "heater" }` with no position: the trip writes zero duty, and the
+# stream keeps flowing through the furnace, unheated. Measured: at zero duty the
+# furnace's outlet is its inlet stream's temperature exactly.
+#
+# **What the trip does, measured on both fidelities** (§35). The tank first passes
+# 75 °C at the end of tick 1 250 (75.0007 °C), so the trip fires at the top of
+# tick 1 251 and the furnace reads zero duty on that tick's own snapshot. Until
+# then the plant is bit for bit its own untripped twin. The tank then cools
+# toward its feed: 46.45 °C by tick 3 000, 40.36 °C by tick 6 000. The trip stays
+# tripped the whole way down — it LATCHES, and only `reset_trip` re-arms it.
+#
+# **The condition clears inside the tick that trips** (§26, M22.1's finding). The
+# trip compares the start-of-tick 75.0007 °C, and the whole tick then runs on cold
+# feed: the tank ends tick 1 251 at 74.967 °C. From then on it is the LATCH, not
+# the temperature, that keeps the fire out.
+#
+# **What happens without it.** Delete the `[[trips]]` block and the tank reads
+# 89.77 °C at tick 6 000, still climbing toward the 89.93 °C its inflow carries.
+# Water stays liquid there; on a plant with a hotter feed, or a stronger furnace,
+# the same unattended firing would pass 100 °C, which a plant that does not
+# select a boil-off model reports as liquid.
+#
+# **What this file cannot show.** The CLI issues no commands, so the reset, the
+# refused relight, and a loop on the furnace yielding to the trip are exercised
+# by the fixtures in `crates/scenarios/tests/furnace_trip_reference.rs`.
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_overheat_trip.toml --ticks 6000
+
+[meta]
+name = "tank_overheat_trip"
+description = "A furnace fired by hand heats a tank; a latching high-temperature trip cuts the furnace's fuel."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.cool_feed]
+type = "source"
+pressure_bar = 1.6
+temperature_c = 40.0
+
+# Fired by hand at 3 MW and left there: nothing regulates it. 3 MW adds 49.93 K
+# to the 14.36 kg/s feed, so the tank heads for about 90 °C.
+[nodes.heater]
+type = "furnace"
+duty_mw = 3.0
+
+# The node the trip WATCHES. Its temperature is stored on the graph and exists
+# from load (docs/DESIGN.md §26 fork 2); the level is the settled 4.968 m, so only
+# the temperature has anywhere to go.
+[nodes.hold_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.968
+temperature_c = 40.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 150.0
+opening = 0.5
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "cool_feed"
+to = "heater"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "hold_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "hold_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# Fires AT OR ABOVE 75 °C (docs/DESIGN.md §26 fork 6) and cuts the furnace's
+# fuel. A furnace action takes no `position`: its only safe state is zero duty.
+[[trips]]
+name = "tank_high_temperature"
+measurement = { node = "hold_tank", variable = "temperature" }
+direction = "high"
+limit_c = 75.0
+actions = [{ furnace = "heater" }]
