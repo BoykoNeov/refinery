@@ -10,8 +10,8 @@
 //! physics or the boundary classification.
 
 use crate::elements::{
-    fold_gas_valve, pipe_resistance, relief_opening, relief_opening_slope,
-    specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
+    check_opening, check_opening_slope, fold_gas_valve, pipe_resistance, relief_opening,
+    relief_opening_slope, specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
 };
 use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
@@ -62,6 +62,40 @@ pub struct CompiledEdge {
     /// and on one whose opening snapped shut below `OPEN_EPS`. The game fidelity
     /// never reads it: its sweep and group step use `flow_ddp` alone.
     pub relief_opening_log_slope: f64,
+    /// `d ln ṁ / dS` [1/Pa] through a CHECK valve's opening, `S` being the
+    /// forward drive across its branch (M30, docs/DESIGN.md §33). The relief
+    /// term's sibling with one difference that matters: the disc reads
+    /// `P_src − P_tgt`, not `P_src` alone, so Newton adds `ṁ·k` to the edge's
+    /// CONDUCTANCE — both columns, symmetrically — rather than to the source
+    /// column. `0.0` everywhere the relief term is, for the same reasons.
+    pub check_opening_log_slope: f64,
+}
+
+impl CompiledEdge {
+    /// The edge's conductance `dṁ/d(P_src − P_tgt)` [kg/(s·Pa)] at drop `dp`:
+    /// the frozen branch's `ρ·dQ/ddp`, plus a check valve's opening share `ṁ·k`
+    /// (docs/DESIGN.md §33). The ONE owner of that sum, read by Newton's
+    /// assembly and by the game solver's node step, group step and grouping
+    /// alike, so the two fidelities cannot differentiate a check valve two ways.
+    ///
+    /// The share is added only when nonzero, so every edge that is not a check
+    /// valve inside its band returns `ρ·dQ/ddp` bit for bit. The game solver
+    /// NEEDS it, which the relief term's history did not predict: a check valve
+    /// sits inside its band in ordinary running, its opening moves with its
+    /// own drop, and a node step on the frozen slope overshoots by the ratio of
+    /// the two — about three on the M30 fixture, which diverged at tick 959.
+    pub fn conductance(&self, dp: f64, eps: f64) -> f64 {
+        let frozen = self.rho * self.branch.flow_ddp(dp, eps);
+        if self.check_opening_log_slope == 0.0 {
+            return frozen;
+        }
+        let opening_share = self.rho * self.branch.flow(dp, eps) * self.check_opening_log_slope;
+        if opening_share != 0.0 {
+            frozen + opening_share
+        } else {
+            frozen
+        }
+    }
 }
 
 /// Boundary classification of the graph's nodes for one solve: which nodes pin
@@ -144,6 +178,8 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
             // into its single outlet edge, so exactly one of each is what makes
             // the fold well defined.
             | NodeKind::ReliefValve { .. }
+            // So is a check valve, for the same reason.
+            | NodeKind::CheckValve { .. }
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
             // A reactor is the furnace's process constraint too: "the stream it
@@ -199,6 +235,7 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
         | NodeKind::ReliefValve { .. }
+        | NodeKind::CheckValve { .. }
         | NodeKind::Junction
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
@@ -461,6 +498,7 @@ pub fn compile_edge(
             rho: 1.0,
             conducts: false,
             relief_opening_log_slope: 0.0,
+            check_opening_log_slope: 0.0,
         });
     }
     let upwind_node = if pressures[&src] >= pressures[&tgt] {
@@ -515,6 +553,7 @@ pub fn compile_edge(
             rho,
             conducts,
             relief_opening_log_slope: 0.0,
+            check_opening_log_slope: 0.0,
         });
     }
 
@@ -540,6 +579,8 @@ pub fn compile_edge(
     // A relief valve's `(snapped opening, d opening / d P_src)`, for the log slope
     // below. Stays `None` on every other edge.
     let mut relief: Option<(f64, f64)> = None;
+    // A check valve's `(snapped opening, d opening / dS)`, likewise.
+    let mut check: Option<(f64, f64)> = None;
 
     match &graph.node(src).kind {
         NodeKind::Pump { h0, a, on } => {
@@ -649,12 +690,38 @@ pub fn compile_edge(
                 }
             };
         }
+        // A check valve is a liquid valve whose opening is read off the FORWARD
+        // DRIVE across this branch, `S = dp − β` with `β` the outlet pipe's static
+        // head (M30, docs/DESIGN.md §33). `flow` has the sign of `S`, so "shut at
+        // `S ≤ 0`" is exactly "would run backwards": reverse flow is zero by
+        // `α = +∞`, not by a threshold.
+        NodeKind::CheckValve { cv_max, full_open } => {
+            // The SECOND door on the gas refusal, for `compile_edge`'s usual
+            // reason: the invariant proptests build graphs without the loader.
+            if pipe.stream.composition.phase(slate)? == Phase::Gas {
+                return Err(SimError::Numerical(format!(
+                    "check valve '{}' carries a gas-phase stream. It is a liquid valve only \
+                     (docs/DEFERRED.md E24)",
+                    graph.node(src).name
+                )));
+            }
+            let drive = dp - branch.beta;
+            let opening = check_opening(drive, full_open.value());
+            let op = if opening < OPEN_EPS { 0.0 } else { opening };
+            check = Some((op, check_opening_slope(drive, full_open.value())));
+            let rho_rel = rho / RHO_WATER_REF;
+            branch = branch.in_series(QuadraticBranch::valve(*cv_max, op, rho_rel));
+        }
         _ => {}
     }
 
     let conducts = branch.alpha.is_finite() && branch.alpha > 0.0;
     let relief_opening_log_slope = match relief {
-        Some((op, slope)) => relief_log_slope(graph, src, pipe_alpha, branch.alpha, op, slope)?,
+        Some((op, slope)) => opening_log_slope(graph, src, pipe_alpha, branch.alpha, op, slope)?,
+        None => 0.0,
+    };
+    let check_opening_log_slope = match check {
+        Some((op, slope)) => opening_log_slope(graph, src, pipe_alpha, branch.alpha, op, slope)?,
         None => 0.0,
     };
     Ok(CompiledEdge {
@@ -664,11 +731,13 @@ pub fn compile_edge(
         rho,
         conducts,
         relief_opening_log_slope,
+        check_opening_log_slope,
     })
 }
 
-/// A relief valve's `d ln ṁ / d P_src` through its opening [1/Pa] (M26,
-/// docs/DESIGN.md §30).
+/// A pressure-actuated valve's `d ln ṁ` through its opening [1/Pa], per pascal of
+/// whatever the opening reads: `P_src` for a relief valve (M26, docs/DESIGN.md
+/// §30), the branch's forward drive for a check valve (M30, §33).
 ///
 /// `ṁ ∝ α_tot^(−½)` with `α_tot = α_pipe + α_v` and `α_v ∝ op^(−2)`, so
 /// `∂ln ṁ/∂op = (α_v/α_tot)/op`, times the opening's own slope `dop/dP_src`.
@@ -683,7 +752,7 @@ pub fn compile_edge(
 /// snapped shut, where the expression is `0·∞/0`. A non-finite result anywhere
 /// else is an `Err` rather than a quiet zero (rule 5): a NaN here would reach
 /// the LU and be reported as a singular Jacobian, which is the wrong diagnosis.
-fn relief_log_slope(
+fn opening_log_slope(
     graph: &PlantGraph,
     src: NodeId,
     pipe_alpha: f64,
@@ -698,7 +767,7 @@ fn relief_log_slope(
     let log_slope = (total_alpha - pipe_alpha) / total_alpha / opening * opening_slope;
     if !log_slope.is_finite() {
         return Err(SimError::Numerical(format!(
-            "relief valve '{}' has a non-finite opening slope d ln ṁ/dP = {log_slope:e} \
+            "valve '{}' has a non-finite opening slope d ln ṁ/dP = {log_slope:e} \
              (opening {opening:e}, d opening/dP = {opening_slope:e} 1/Pa, \
              α_pipe = {pipe_alpha:e}, α_total = {total_alpha:e})",
             graph.node(src).name
@@ -1476,10 +1545,12 @@ pub fn is_column_draw_edge(graph: &PlantGraph, edge: EdgeId) -> bool {
 /// and wrong — DESIGN §5's silent hazard in the one place the code predicted it.
 /// Of the four resolutions DESIGN §3b prices, this is the cheap one. Pinning a
 /// real air composition is a change to every slate that owns an Atmosphere
-/// (the FCC slate has no air-like cut); a one-way orifice is a check valve,
-/// hence a C¹ break at `dp = 0` and a `conducts` that depends on the sign of the
-/// pressure iterate, which would drag in M5's frozen-anchoring deferral; and
-/// back-feeding the plant's own composition models air ingress as nothing
+/// (the FCC slate has no air-like cut); a one-way orifice is a check valve on a
+/// hole, which is not physics — a hole admits air, and pretending it does not is
+/// the last option in other clothes (the numerical objection once recorded here,
+/// a `conducts` that depends on the pressure iterate, expired with M8.0's
+/// active-set anchoring, and M30 built exactly such an element as
+/// `NodeKind::CheckValve`); and back-feeding the plant's own composition models air ingress as nothing
 /// happening. Refusing costs a game that pulls a leaking line below atmospheric
 /// a hard error instead of a plausible picture, and buys the guarantee that no
 /// invented composition ever enters the plant.

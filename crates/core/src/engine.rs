@@ -230,6 +230,12 @@ impl Engine {
                         "{node:?} is a relief valve: its opening is actuated by its own inlet \
                          pressure, not by command, and would be recomputed on the next solve"
                     ))),
+                    // The relief valve's reason, with the disc's own trigger: the
+                    // forward drive across it (docs/DESIGN.md §33).
+                    NodeKind::CheckValve { .. } => Err(SimError::InvalidCommand(format!(
+                        "{node:?} is a check valve: its disc is moved by the forward drive \
+                         across it, not by command, and would be recomputed on the next solve"
+                    ))),
                     _ => Err(SimError::InvalidCommand(format!("{node:?} is not a valve"))),
                 }
             }
@@ -2304,6 +2310,9 @@ fn cavitation_subject(kind: &NodeKind) -> bool {
         NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
         | NodeKind::ReliefValve { .. }
+        // A check valve's node is its INLET, upstream of the disc, so what
+        // flashes there is what the line delivers to it — a throttle's reason.
+        | NodeKind::CheckValve { .. }
         | NodeKind::Junction
         | NodeKind::HeatExchanger => true,
         // A fired heater's outlet is where a refiner expects a liquid to boil —

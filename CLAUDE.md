@@ -97,6 +97,7 @@ cargo run -p refinery-cli -- run scenarios/tank_runs_dry.toml --ticks 6000      
 cargo run -p refinery-cli -- run scenarios/tank_overflow.toml --ticks 6000            # the M23.1 spill
 cargo run -p refinery-cli -- run scenarios/furnace_cascade_control.toml --ticks 6000  # the M25.1 cascade
 cargo run -p refinery-cli -- run scenarios/tank_level_fill_control.toml --ticks 6000  # the M29 fill-valve loop
+cargo run -p refinery-cli -- run scenarios/tank_level_fill_check_valve.toml --ticks 6000  # the M30 check valve
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -191,6 +192,38 @@ extension removed too — ignore it, the file it writes is what matters.
 ## Current milestone
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
+
+**M30 is CLOSED (2026-10-02): a check valve — `docs/DEFERRED.md` row E22, now
+struck.** Taken on a DECISION (the user's). One slice, note and build together:
+DESIGN §33. Read its "Corrections from building it" before touching
+`CompiledEdge::conductance`, `compile_edge`'s check arm or the game solver's sweep.
+- **`NodeKind::CheckValve { cv_max, full_open }`** (`type = "check_valve"`, `kv`,
+  `full_open_bar`, required, > 0): the relief valve's smoothstep read on the
+  FORWARD DRIVE `S = dp − β` across its branch. Shut at `S ≤ 0` is exact (the
+  flow has the sign of `S`), so reverse flow is exactly zero by `α = +∞`. `β` is
+  load-bearing (an uphill outlet). Liquid only (gas refused at load and in
+  `compile_edge`, E24); a loop, a trip and `SetValveOpening` each refuse a disc.
+- **The opening's slope is a share of the CONDUCTANCE, on both solvers**, through
+  one owner, `CompiledEdge::conductance` (`ṁ·k`, symmetric, `0.0` outside the band
+  and added only when nonzero). Without it Newton diverges in the band (A14 again)
+  and the game solver diverged with the pump running. The game solver also reads a
+  disc FRESH inside its sweep (`fresh_check_edge`), which halved its band cost;
+  what remains is row A19.
+- **Demo `scenarios/tank_level_fill_check_valve.toml`** (the thirty-first file):
+  M29's plant, a disc after the discharge line with 1 m of outlet, and a
+  low-suction-level trip that stops the pump at tick 2 142. Shut on exactly every
+  tick to 3 160, then reopens; its plain-valve twin runs backwards at 3.52 kg/s.
+  **The tank is not kept**: higher while the disc is shut (2.27 m against 1.87 m
+  at 3 000), lower at the end (0.947 m against 0.985 m). Gates are
+  `tests/check_valve_reference.rs`. All 30 earlier plants byte-identical, no
+  iteration count moved; a new `NodeKind` variant, so the Godot build and clippy
+  were run and are clean.
+- **Twenty mutations, eighteen caught**; the game solver's frozen read and its
+  node step's share alone are uncaught by design (cost, not correctness). New rows
+  E23 (cracking pressure), E24 (gas), E25 (restart surge into the pinned fill,
+  24.80 against 6.90 kg/s), E26 (the disc reads its branch's drive), A19; A8
+  re-measured (the shut stretch costs Newton 14–18 iterations a tick, and a plain
+  valve shut there costs the same).
 
 **M29 is CLOSED (2026-10-02): a fill valve holding a level — `docs/DEFERRED.md`
 row E8, now struck.** Taken on a DECISION (the user's, on gameplay grounds). One
@@ -1933,15 +1966,17 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly eight of the thirty files in `scenarios/` declare a `[[controls]]`
+**Exactly nine of the thirty-one files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
 `tank_temperature_heating.toml` (M18.1, a reverse-acting temperature),
 `furnace_outlet_control.toml` (M19.1, a furnace's own outlet),
 `tank_flow_control.toml` (M20.1, a valve's own flow) and
-`furnace_cascade_control.toml` (M25.1, a cascade: two loops) and
-`tank_level_fill_control.toml` (M29, a level on its FILL valve). **The
+`furnace_cascade_control.toml` (M25.1, a cascade: two loops),
+`tank_level_fill_control.toml` (M29, a level on its FILL valve) and
+`tank_level_fill_check_valve.toml` (M30, the same loop behind a check valve,
+with a trip). **The
 other twenty-two
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor** (one, `tank_overfill_trip.toml`, carries a `[[trips]]`

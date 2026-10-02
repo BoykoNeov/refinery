@@ -7064,3 +7064,29 @@ inertly first, `let _ = f()?;`, and rewritten). All twenty-nine earlier plants
 byte-identical on both fidelities with no iteration count moved. Two rows are new:
 E21 (a valve beyond one pipe) and E22 (a stopped pump drains the tank back through
 its pinned fill).
+
+## M30 — a check valve: ledger row E22; opened on a decision
+
+### M30 — specified and built in one slice — **LANDED** 2026-10-02, and M30 is CLOSED
+
+Taken on the user's decision after M29 closed; E22 was not past its trigger. The
+note is DESIGN §33. A `check_valve` node is a liquid valve whose opening is a
+memoryless function of the forward drive across its branch: shut at or below zero
+(reverse flow exactly zero, by `α = +∞`), fully open at a declared
+`full_open_bar`, the relief valve's smoothstep between. The opening's slope is a
+share of the edge's conductance on BOTH solvers through one owner,
+`CompiledEdge::conductance` — without it the game solver diverged with the pump
+running — and the game solver reads a disc fresh inside its sweep, which halved
+its cost in the band. Liquid only; nothing actuates a disc.
+
+Demo `scenarios/tank_level_fill_check_valve.toml`, the thirty-first file: M29's
+plant with a disc after the discharge line and a low-suction-level trip that
+stops the pump at tick 2 142. The disc is shut on exactly every tick to 3 160 and
+reopens when the supply's head turns the flow forward; its plain-valve twin runs
+backwards at 3.52 kg/s. The tank stands higher while the disc is shut (2.27 m
+against 1.87 m at 3 000) and is not kept (0.947 m against 0.985 m at 6 000). Seven
+gates in `tests/check_valve_reference.rs`; twenty mutations, eighteen caught, two (the game solver's frozen read, and its node step's share alone) uncaught by design as costs. All thirty earlier
+plants byte-identical on both fidelities with no iteration count moved. New rows:
+E23 (cracking pressure, closing dynamics), E24 (gas service), E25 (restart surge
+into the pinned fill, 24.80 kg/s against 6.90), E26 (the disc reads its branch's
+drive), A19 (the game solver's band cost at low flow); A8 re-measured.

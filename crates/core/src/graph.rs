@@ -173,6 +173,38 @@ pub enum NodeKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x_t: Option<f64>,
     },
+    /// Check (non-return) valve: passes flow one way and shuts against the other
+    /// (M30, docs/DESIGN.md §33, ledger row E22).
+    ///
+    /// The relief valve's sibling, and for the same reason a kind rather than a
+    /// flag on `Valve`: its opening is not an operator setpoint but a memoryless
+    /// function of the plant state. Where a PSV's spring reads its own inlet
+    /// pressure, a check valve's disc reads the FORWARD DRIVE across its branch,
+    /// `S = P_in − P_out − β` (the outlet pipe's static head folded in): shut at
+    /// or below zero, fully open at `full_open`, and the relief valve's cubic
+    /// smoothstep in between, so the characteristic stays C¹ where it meets both
+    /// limits.
+    ///
+    /// **"Shut at `S ≤ 0`" is exact, not a threshold**: the branch's flow has the
+    /// sign of `S`, so a shut disc is exactly a branch that would otherwise run
+    /// backwards. Reverse flow is exactly zero, by `α = +∞`.
+    ///
+    /// **The disc reads the whole branch's drive, not its own drop**, because a
+    /// device folds into its outlet pipe and the compiled edge sees only the
+    /// total. The two are equal at zero flow — where the disc decides whether to
+    /// open — and differ by the pipe's friction once it flows, which moves only
+    /// how far into the band the disc sits.
+    ///
+    /// Liquid only, refused at load in gas service (ledger row E24). Opens from
+    /// zero: a spring that holds the disc shut against a nonzero cracking
+    /// pressure is ledger row E23.
+    CheckValve {
+        /// Coefficient at full lift, in `Valve::cv_max`'s SI form.
+        cv_max: f64,
+        /// Forward drive [Pa] at which the disc reaches full lift. Positive: a
+        /// zero band is a step, which the Jacobian is not entitled to.
+        full_open: Pascal,
+    },
     /// Zero-volume mixing point.
     Junction,
     /// Fired heater: a duty delivered into the stream passing through it.
@@ -2160,6 +2192,10 @@ impl PlantGraph {
                 NodeKind::Junction
                 | NodeKind::Pump { .. }
                 | NodeKind::Valve { .. }
+                // A check valve is a valve that is OPEN in normal operation, so
+                // the relief valve's reason below does not apply to it: it is
+                // refused with the other pass-throughs, on scope alone.
+                | NodeKind::CheckValve { .. }
                 | NodeKind::HeatExchanger,
             ) => Err(SimError::Scenario(format!(
                 "node '{}' holds no volume, so its temperature is resolved by the tick, and a \

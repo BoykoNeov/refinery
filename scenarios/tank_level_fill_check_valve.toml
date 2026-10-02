@@ -1,0 +1,161 @@
+# M30 demo: a CHECK VALVE on a pump's discharge — docs/DEFERRED.md row E22,
+# closed by docs/DESIGN.md §33.
+#
+# **Meant to be diffed against `tank_level_fill_control.toml`.** It is that file's
+# plant with three additions, and nothing else changed:
+#
+# | addition | what | why |
+# |---|---|---|
+# | `discharge_check` | a check valve, after the 30 m discharge line | the subject |
+# | `check_outlet` | 1 m of pipe from it to the fill valve | a device needs an outlet pipe |
+# | `[[trips]]` | low supply level stops the pump | something has to stop the pump |
+#
+# The extra node and pipe move every number a little, so this is NOT the M29
+# plant bit for bit while the pump runs; the level loop holds 4 m as it does
+# there.
+#
+# **The hazard it closes (E22).** A stopped pump still conducts, and the
+# receiving tank sits 5 m above the supply's floor. Without the check valve the
+# tank drains BACKWARDS through its fill when the pump stops; the level loop
+# opens the fill (the right sign for a low level) and pins it wide open,
+# speeding the drain. With it, the disc shuts the moment the forward drive
+# across it reaches zero, and the backward flow through it is exactly zero.
+#
+# **What it does NOT do, measured rather than claimed:** the receiving tank
+# still drains forward through its own drain valve, so its level still falls;
+# the loop still pins the fill valve wide open with nothing coming through it;
+# and once the receiving tank has fallen far enough the supply's head pushes
+# forward again through the stopped pump and the reopening disc. Restarting the
+# pump into that wide-open fill valve is a surge (DEFERRED E25).
+#
+# Measured (both fidelities): the trip fires at tick 2142; the disc is shut on
+# every tick to 3160 and reopens; the twin with a plain valve here runs
+# backwards at 3.52 kg/s. The tank stands 2.27 m against the twin's 1.87 m at
+# tick 3000 and 0.947 m against 0.985 m at 6000. Pinned by
+# `crates/scenarios/tests/check_valve_reference.rs`.
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_level_fill_check_valve.toml --ticks 6000
+
+[meta]
+name = "tank_level_fill_check_valve"
+description = "A fill-valve level loop whose pump trips on low suction level; a check valve stops the tank draining back through the stopped pump."
+
+[simulation]
+dt = 1.0            # seconds per tick
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.supply_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 20.0
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+# A check valve: shut at or below zero forward drive across it (it then passes
+# exactly nothing backwards), fully open at `full_open_bar`, a smooth ramp
+# between. `full_open_bar` is the forward pressure difference at full lift.
+[nodes.discharge_check]
+type = "check_valve"
+kv = 200.0
+full_open_bar = 0.015
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0           # metric Kv [m^3/h at 1 bar], converted to SI on load
+opening = 0.5       # the ACTUATOR here; equal to `initial_output` below
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 2.0
+temperature_c = 20.0
+
+[nodes.level_valve]
+type = "valve"
+kv = 200.0
+opening = 0.2
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "suction"
+from = "supply_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "discharge_check"
+length_m = 30.0
+diameter_m = 0.10
+
+# Short on purpose: the disc reads the forward drive across its whole branch —
+# itself plus this pipe — so a short outlet keeps that drive close to the
+# valve's own drop.
+[[pipes]]
+name = "check_outlet"
+from = "discharge_check"
+to = "discharge_valve"
+length_m = 1.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "discharge_valve"
+to = "receiving_tank"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = 5.0
+
+[[pipes]]
+name = "drain_line"
+from = "receiving_tank"
+to = "level_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "level_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+[[controls]]
+name = "receiving_level"
+measurement = { node = "receiving_tank", variable = "level" }
+actuator = "discharge_valve"
+action = "reverse"
+algorithm = "pi"
+mode = "auto"
+setpoint_m = 4.0
+gain_per_m = 0.5
+integral_time_s = 600.0
+initial_output = 0.5
+
+# A pump-protection trip: stop the transfer pump before it draws its suction
+# tank dry. It is what stops the pump in this demo, so the check valve has
+# something to do inside a CLI run, which issues no commands.
+[[trips]]
+name = "supply_low_level"
+measurement = { node = "supply_tank", variable = "level" }
+direction = "low"
+limit_m = 7.0
+actions = [
+  { pump = "transfer_pump" },
+]

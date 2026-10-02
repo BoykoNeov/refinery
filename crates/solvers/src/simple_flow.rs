@@ -50,7 +50,7 @@ use crate::network::{
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
 use refinery_core::error::SimError;
-use refinery_core::graph::{EdgeId, NodeId, PlantGraph};
+use refinery_core::graph::{EdgeId, NodeId, NodeKind, PlantGraph};
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
 use refinery_core::units::Seconds;
 use std::collections::BTreeMap;
@@ -273,10 +273,25 @@ impl SimpleFlowSolver {
                 let mut imbalance = 0.0;
                 let mut g_sum = 0.0;
                 for &(eid, incoming) in &incident[&nid] {
-                    let c = &compiled[&eid];
+                    // A check valve's edge is read FRESH, at the pressures this
+                    // sweep has already moved (`fresh_check_edge`, §33).
+                    let fresh;
+                    let c = match fresh_check_edge(graph, eid, slate, previous_states, &pressures) {
+                        Ok(Some(f)) => {
+                            fresh = f;
+                            &fresh
+                        }
+                        Ok(None) => &compiled[&eid],
+                        Err(e) => {
+                            return AnchorPass {
+                                result: Err(e),
+                                pressures,
+                            }
+                        }
+                    };
                     let dp = pressures[&c.src] - pressures[&c.tgt];
                     let mdot = c.rho * c.branch.flow(dp, self.eps_dp);
-                    g_sum += c.rho * c.branch.flow_ddp(dp, self.eps_dp); // ≥ 0
+                    g_sum += c.conductance(dp, self.eps_dp); // ≥ 0
                     imbalance += if incoming { mdot } else { -mdot };
                 }
                 // A capacitive node carries its own accumulation, through the
@@ -323,8 +338,8 @@ impl SimpleFlowSolver {
                 // form puts within `eps_dp` of the root from any drop — so this
                 // usually costs one halving and buys a converged node.
                 let p_now = pressures[&nid];
-                let step = armijo_step(full, imbalance, |trial| {
-                    Ok::<_, std::convert::Infallible>(node_imbalance_at(
+                let step = match armijo_step(full, imbalance, |trial| {
+                    node_imbalance_at(
                         nid,
                         p_now + trial,
                         &incident[&nid],
@@ -333,9 +348,17 @@ impl SimpleFlowSolver {
                         capacitive.get(&nid),
                         dt.value(),
                         self.eps_dp,
-                    ))
-                })
-                .unwrap_or_else(|never| match never {});
+                        (graph, slate, previous_states),
+                    )
+                }) {
+                    Ok(step) => step,
+                    Err(e) => {
+                        return AnchorPass {
+                            result: Err(e),
+                            pressures,
+                        }
+                    }
+                };
                 // `step` is 0 if nothing was acceptable: leave the node
                 // where it is and let its neighbours move it, rather than apply
                 // a step the criterion has just rejected. Gauss–Seidel permits
@@ -663,7 +686,7 @@ fn group_imbalance(
             let dp = at(c.src) - at(c.tgt);
             let mdot = c.rho * c.branch.flow(dp, eps_dp);
             imbalance += if incoming { mdot } else { -mdot };
-            slope += c.rho * c.branch.flow_ddp(dp, eps_dp);
+            slope += c.conductance(dp, eps_dp);
         }
         if let Some(cap) = capacitive.get(&nid) {
             let (term, accumulation_slope) = accumulation(cap, at(nid), dt);
@@ -716,7 +739,7 @@ fn build_groups(
     let weight_of = |eid: &EdgeId| -> f64 {
         let c = &compiled[eid];
         let dp = pressures[&c.src] - pressures[&c.tgt];
-        c.rho * c.branch.flow_ddp(dp, eps_dp)
+        c.conductance(dp, eps_dp)
     };
     let mut groups: Vec<Vec<NodeId>> = Vec::new();
     let mut aggregate_of: BTreeMap<NodeId, usize> =
@@ -786,7 +809,9 @@ fn build_groups(
 /// grade a step by a residual nobody is solving, which is M5.3's finding in this
 /// very file one paragraph down. So `capacitive` is threaded through and enters
 /// via the SAME `network::accumulation`, and the edge flows come from the SAME
-/// frozen `compiled` coefficients the step was differentiated against.
+/// frozen `compiled` coefficients the step was differentiated against — except a
+/// check valve's edge, which the step differentiated FRESH and which is
+/// therefore recompiled at the trial too (`fresh_check_edge`, M30).
 #[allow(clippy::too_many_arguments)]
 fn node_imbalance_at(
     nid: NodeId,
@@ -797,10 +822,25 @@ fn node_imbalance_at(
     capacitive: Option<&Capacitance>,
     dt: f64,
     eps_dp: f64,
-) -> f64 {
+    (graph, slate, previous_states): (&PlantGraph, &Slate, &NodeStates),
+) -> Result<f64, SimError> {
     let mut imbalance = 0.0;
+    // The trial's pressures, built only when a check valve's edge needs them —
+    // every other node evaluates its trial exactly as it did before M30.
+    let mut trial_pressures: Option<BTreeMap<NodeId, f64>> = None;
     for &(eid, incoming) in incident {
-        let c = &compiled[&eid];
+        let fresh;
+        let c = if is_check_edge(graph, eid) {
+            let at_trial = trial_pressures.get_or_insert_with(|| {
+                let mut t = pressures.clone();
+                t.insert(nid, p_trial);
+                t
+            });
+            fresh = compile_edge(graph, eid, slate, previous_states, at_trial)?;
+            &fresh
+        } else {
+            &compiled[&eid]
+        };
         let at = |n: NodeId| if n == nid { p_trial } else { pressures[&n] };
         let mdot = c.rho * c.branch.flow(at(c.src) - at(c.tgt), eps_dp);
         imbalance += if incoming { mdot } else { -mdot };
@@ -808,7 +848,38 @@ fn node_imbalance_at(
     if let Some(cap) = capacitive {
         imbalance += accumulation(cap, p_trial, dt).0;
     }
-    imbalance
+    Ok(imbalance)
+}
+
+/// True for the outlet edge of a check valve: the one edge whose opening is a
+/// function of its own drop (docs/DESIGN.md §33).
+fn is_check_edge(graph: &PlantGraph, eid: EdgeId) -> bool {
+    let (src, _) = graph.endpoints(eid);
+    matches!(graph.node(src).kind, NodeKind::CheckValve { .. })
+}
+
+/// A check valve's edge compiled at `pressures`, or `None` for any other edge.
+///
+/// **The node-wise sweep reads a check valve fresh, where it reads every other
+/// edge off the coefficients frozen at the top of the sweep** (M30,
+/// docs/DESIGN.md §33). The node step's slope carries the opening's share
+/// (`CompiledEdge::conductance`), so a frozen opening in the step's own line
+/// search judges a Newton step on the true function against a different one —
+/// and on the M30 fixture each sweep then made about a third of the progress it
+/// should, ~11 sweeps a tick against 3 for a plain valve. M21's group step
+/// recompiles its trials for the same reason. Scoped to check valves so every
+/// plant without one sweeps bit for bit as before.
+fn fresh_check_edge(
+    graph: &PlantGraph,
+    eid: EdgeId,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pressures: &BTreeMap<NodeId, f64>,
+) -> Result<Option<CompiledEdge>, SimError> {
+    if !is_check_edge(graph, eid) {
+        return Ok(None);
+    }
+    compile_edge(graph, eid, slate, previous_states, pressures).map(Some)
 }
 
 fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimError {

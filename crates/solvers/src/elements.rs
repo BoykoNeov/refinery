@@ -376,6 +376,25 @@ pub fn relief_opening_slope(p_inlet: f64, set_pressure: f64, accumulation: f64) 
     6.0 * t * (1.0 - t) / accumulation
 }
 
+/// A check valve's opening at forward drive `drive` [Pa] across its branch (M30,
+/// docs/DESIGN.md §33).
+///
+/// The relief valve's curve with its set point at zero: shut at or below no
+/// forward drive, full lift at `full_open`, the cubic smoothstep between. One
+/// shape for both pressure-actuated discs, so the two cannot drift apart in the
+/// part that keeps this file's C¹ contract.
+#[inline]
+pub fn check_opening(drive: f64, full_open: f64) -> f64 {
+    relief_opening(drive, 0.0, full_open)
+}
+
+/// `d(opening)/d(drive)` [1/Pa] of [`check_opening`]. Exactly `0.0` outside the
+/// band, as [`relief_opening_slope`] is.
+#[inline]
+pub fn check_opening_slope(drive: f64, full_open: f64) -> f64 {
+    relief_opening_slope(drive, 0.0, full_open)
+}
+
 /// Fold a gas valve into the pipe it discharges through, as ONE
 /// `QuadraticBranch` whose valve resistance is frozen at the current iterate.
 ///

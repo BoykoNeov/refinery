@@ -365,7 +365,10 @@ fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimEr
 /// `ṁ·k` (`k = CompiledEdge::relief_opening_log_slope`) belongs in the source's
 /// column alone. Zero outside the accumulation band, and skipped when zero, so a
 /// plant whose PSV never lifts assembles bit for bit what it did before M26
-/// (docs/DESIGN.md §30).
+/// (docs/DESIGN.md §30). A CHECK valve's term is its sibling and IS symmetric:
+/// the disc reads the drop across its own branch, so `ṁ·k`
+/// (`k = CompiledEdge::check_opening_log_slope`) is added to the edge's
+/// conductance `g` (M30, §33).
 ///
 /// This is what makes one solve an implicit-Euler step of a DAE rather than a
 /// steady state (DESIGN §3a fork 2). The convergence scale deliberately excludes
@@ -405,7 +408,10 @@ fn assemble(
         }
         let dp = pressures[&c.src] - pressures[&c.tgt];
         let mdot = c.rho * c.branch.flow(dp, eps);
-        let g = c.rho * c.branch.flow_ddp(dp, eps); // conductance ≥ 0
+        // Conductance ≥ 0. A check valve's opening reads this branch's own drop,
+        // so its share of the slope is a share of THIS term — both columns,
+        // symmetric (docs/DESIGN.md §33) — and `conductance` owns the sum.
+        let g = c.conductance(dp, eps);
         let si = idx.get(&c.src).copied();
         let ti = idx.get(&c.tgt).copied();
         for end in [si, ti].into_iter().flatten() {

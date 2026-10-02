@@ -526,6 +526,7 @@ fn resolve_vent_destination(
         | NodeKind::Pump { .. }
         | NodeKind::Valve { .. }
         | NodeKind::ReliefValve { .. }
+        | NodeKind::CheckValve { .. }
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::HeatExchanger => {
@@ -718,6 +719,16 @@ fn build_controls(
                             "control loop '{}' actuates '{}', a relief valve. Its opening is \
                      actuated by its own inlet pressure and is recomputed on every solve, \
                      so a controller writing it would be overwritten before the tick ended",
+                            def.name, def.actuator
+                        )))
+                    }
+                    // The relief valve's reason, with the disc's own trigger
+                    // (docs/DESIGN.md §33).
+                    (_, NodeKind::CheckValve { .. }) => {
+                        return Err(SimError::Scenario(format!(
+                            "control loop '{}' actuates '{}', a check valve. Its disc is moved \
+                     by the forward drive across it and is recomputed on every solve, so a \
+                     controller writing it would be overwritten before the tick ended",
                             def.name, def.actuator
                         )))
                     }
@@ -1473,6 +1484,13 @@ fn build_trips(
                         "{owner} acts on '{name}', a relief valve. Its opening is actuated by \
                          its own inlet pressure and recomputed on every solve, so a trip could \
                          not hold it in a safe state"
+                    )))
+                }
+                (_, NodeKind::CheckValve { .. }) => {
+                    return Err(SimError::Scenario(format!(
+                        "{owner} acts on '{name}', a check valve. Its disc is moved by the \
+                         forward drive across it and recomputed on every solve, so a trip \
+                         could not hold it in a safe state"
                     )))
                 }
                 (_, NodeKind::Furnace { .. } | NodeKind::Cooler { .. }) => {
@@ -2704,6 +2722,29 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                 set_pressure: bar_to_pa(*set_pressure_bar),
                 accumulation: bar_to_pa(*accumulation_bar),
                 x_t: *x_t,
+            }
+        }
+        NodeDef::CheckValve { kv, full_open_bar } => {
+            if !full_open_bar.is_finite() || *full_open_bar <= 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "check valve '{name}' has full_open_bar = {full_open_bar}, which must be > 0. \
+                     A zero band makes the opening a STEP in the forward drive, and a \
+                     discontinuous characteristic is exactly what elements.rs promises not to \
+                     hand the Newton Jacobian (docs/DESIGN.md §33)"
+                )));
+            }
+            // Refused where a control valve's is not, because a valve's opening
+            // can carry the shut-off and a check valve has no opening to declare:
+            // `kv = 0` would be a blind flange wearing a check valve's name.
+            if !kv.is_finite() || *kv <= 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "check valve '{name}' has kv = {kv}, which must be > 0. A check valve \
+                     with no flow coefficient passes nothing in either direction"
+                )));
+            }
+            NodeKind::CheckValve {
+                cv_max: kv_to_cv_si(*kv),
+                full_open: bar_to_pa(*full_open_bar),
             }
         }
         NodeDef::Furnace { duty_mw } => NodeKind::Furnace {

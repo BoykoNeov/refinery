@@ -653,6 +653,20 @@ pub(crate) fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Res
         // requirement or a PSV could reach the gas branch with no `x_T`.
         let x_t = match &node.kind {
             NodeKind::Valve { x_t, .. } | NodeKind::ReliefValve { x_t, .. } => x_t,
+            // A check valve has its OWN arm in `compile_edge`, a liquid one, so
+            // gas service is refused rather than given an `x_T` nothing would read
+            // (docs/DESIGN.md §33, ledger row E24).
+            NodeKind::CheckValve { .. } => {
+                if phases[nid.0 as usize] == Phase::Gas {
+                    return Err(SimError::Scenario(format!(
+                        "check valve '{}' is in gas service. A check valve is a liquid valve \
+                         only: the compressible law and its choke are not wired to a disc that \
+                         reads its own drop (docs/DEFERRED.md E24)",
+                        node.name
+                    )));
+                }
+                continue;
+            }
             _ => continue,
         };
         match (phases[nid.0 as usize], x_t) {

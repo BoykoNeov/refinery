@@ -410,6 +410,16 @@ pub enum NodeDef {
         accumulation_bar: f64,
         x_t: Option<f64>,
     },
+    /// Check (non-return) valve (M30, docs/DESIGN.md §33). Liquid only: there is
+    /// no `x_t`, and gas service is refused at load (docs/DEFERRED.md E24).
+    CheckValve {
+        kv: f64,
+        /// Forward pressure difference [bar] across the valve at which the disc
+        /// reaches full lift; it opens from zero. Required, no default: a
+        /// datasheet number, and a silent default would be an invented one.
+        /// Must be > 0, for the relief valve's `accumulation_bar` reason.
+        full_open_bar: f64,
+    },
     /// Fired heater. Duty in MW — the unit refinery heaters are actually
     /// specified in, converted to W at this boundary like every other
     /// human-friendly quantity in the file.

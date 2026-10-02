@@ -16930,3 +16930,250 @@ then caught.
   trip that stops the pump feeding a fill loop and must not lose the tank. The
   textbook answer is a check valve or an interlock that parks the loop, neither
   modelled.
+
+## 33. A check valve — ledger row E22 (M30)
+
+### What licensed this, stated plainly
+
+Nothing fired. E22's trigger, "a plant or trip that stops the pump feeding a
+fill loop and must not lose the tank", names no shipped plant. **This milestone
+is a decision**, the user's, taken on 2026-10-02 after M29 closed: a check valve
+on a pump's discharge is the textbook answer E22 names, it is ordinary plant
+equipment, and it builds on the trips (M22) and the fill loop (M29) that just
+landed. Specified and built in one slice, as M28 and M29 were. The probes are in
+`W:\temp\claude\m30\` (`probe1.txt`–`probe9.txt`, `mutate.py`, the before/after
+corpus files).
+
+### The premise, measured before any fork
+
+**The objection on record was already spent.** `network::finalize`'s back-feed
+paragraph rejected a one-way orifice in M5 because "a `conducts` that depends on
+the sign of the pressure iterate … would drag in M5's frozen-anchoring
+deferral". M8.0's active-set anchoring (§3c) closed that deferral for the
+relief valve, whose `conducts` already depends on the iterate. So the machinery
+a check valve needs on the hydraulic side existed; what it lacked was an element.
+That paragraph is corrected (leaks stay refused, for the physical reason: a hole
+admits air).
+
+**And E22's own fixture was measured with a disc in it before any gate was
+written.** On M29's plant with a check valve on the pump's discharge and the pump
+stopped at tick 3 001: the disc's pipe carries exactly zero for 1 204 ticks, the
+receiving tank drains through its own drain only, and once it has fallen below
+the supply's head the flow turns forward through the stopped pump and the
+reopening disc. That is the threshold case the advisor asked for, and the plant
+reaches it on its own.
+
+### Fork 1 — a kind, not a flag
+
+`NodeKind::CheckValve { cv_max, full_open }`, beside `ReliefValve`, for the
+reason that kept the relief valve off `Valve` (§3a fork 5): its opening is not an
+operator setpoint but a memoryless function of the plant state, and the intent
+belongs in the name. A pump with a built-in non-return flag was considered and
+rejected: a check valve also sits on lines with no pump, and a flag on `Pump`
+would put a second characteristic inside the pump's fold.
+
+### Fork 2 — the disc reads the branch's forward drive
+
+The opening is the relief valve's smoothstep with its set point at zero, read on
+the **forward drive** `S = dp − β` across the compiled branch, `β` being the
+outlet pipe's static head (`elements::check_opening`, which calls
+`relief_opening(S, 0, full_open)`; one curve for both pressure-actuated discs).
+
+- **"Shut at `S ≤ 0`" is exact, not a threshold.** The branch's flow has the
+  sign of `S` (`QuadraticBranch::flow`), so a shut disc is exactly a branch that
+  would otherwise run backwards. Reverse flow is zero by `α = +∞`, the same IEEE
+  path a shut valve takes.
+- **`β` is load-bearing.** On an uphill outlet a raw drop between `0` and `β`
+  is forward and the flow is backward; a disc reading `dp` would open onto a
+  backward flow. Gate 4's fixture is uphill for that reason, and mutation 2 is
+  caught by it alone.
+- **The disc reads the whole branch's drive, not its own drop.** A device folds
+  into its outlet pipe, so the compiled edge knows only the total. The two agree
+  at zero flow, which is where the disc decides whether to open, and differ by
+  the outlet pipe's friction once it flows, which moves only how far into the
+  band it sits. The demo keeps its outlet pipe at 1 m for that reason; ledger
+  row E26.
+- **One declared number**, `full_open_bar`: the forward difference at full
+  lift. Required, no serde default, refused at or below zero (a zero band is a
+  step, which the Jacobian is not entitled to). It opens from zero: a spring
+  holding the disc shut against a nonzero cracking pressure is row E23.
+
+### Fork 3 — the opening's slope is a share of the conductance, on BOTH solvers
+
+The opening is frozen into the compiled branch, as the relief valve's is, so
+`flow_ddp` misses `dṁ/dS` through the opening. Unlike the relief valve's (which
+reads `P_src` alone and goes in the source column, §30), the disc reads
+`P_src − P_tgt`: its share `ṁ·k`, `k = CompiledEdge::check_opening_log_slope`,
+is an addition to the edge's conductance, symmetric. **`CompiledEdge::conductance`
+is the single owner of that sum**, read by Newton's assembly and by the game
+solver's node step, group step and grouping, so the two fidelities cannot
+differentiate a disc two ways. It is exactly `0.0` outside the band and when the
+opening snaps below `OPEN_EPS`, and added only when nonzero, so every other edge
+returns `ρ·dQ/ddp` bit for bit.
+
+**The relief valve's history predicted the game solver would not need it, and
+that was wrong.** A disc sits inside its band in ordinary running wherever its
+running drop is below `full_open`; the frozen slope then understates the true one
+about threefold, and the node-wise step overshoots by that ratio. The first probe
+(band 0.1 bar, the disc ahead of a 30 m pipe) **diverged at tick 959 with the
+pump running**. With the share in the node step it runs.
+
+### Fork 4 — the game solver reads a disc FRESH inside its sweep
+
+With the share in, the game solver still took ~11 sweeps a tick where a plain
+valve took 3. The cause, traced rather than guessed: the sweep compiles every
+edge once at its top, so the node step's Armijo test judged a Newton step on the
+true function (the share is in its slope) against a frozen-opening function. Each
+sweep made about a third of the progress it should. `fresh_check_edge` recompiles
+a disc's edge at the pressures the sweep has already moved, for the step and for
+its trials — M21's group step recompiles its trials for the same reason. Scoped
+to disc edges, so no other plant's sweep changes. Measured on the band sweep
+(band 0.02 bar): 80 904 → 35 700 total sweeps over 9 000 ticks.
+
+What remains is ordinary Gauss–Seidel: after the pump stops and gravity pushes a
+slow forward flow, the disc rides deep in its band and the sweep contracts by a
+steady 0.44 per pass — 9–10 sweeps a tick against 2–3 for a fully open disc
+(cap 5 000). Newton is untouched (2–3). Row A19.
+
+### Fork 5 — liquid only, and nothing actuates a disc
+
+Gas service is refused at both doors: the loader (`require_gas_valve_x_t`, from
+M5.2's single-phase analysis) and `compile_edge`, for the proptests that bypass
+the loader. Wiring the ISA compressible fold to a disc that reads its own drop is
+row E24. A loop, a trip and `Command::SetValveOpening` each refuse a disc with
+the relief valve's reason (its opening is recomputed every solve) and their own
+message. A disc is a cavitation subject (its node is its inlet, a throttle's
+reason), a zero-volume pass-through in all three energy lists, and 1-in-1-out in
+`validate_degrees` — the last two are `_ =>`-terminated or `matches!` sites the
+compiler would not have flagged.
+
+### Fork 6 — the demo, and what it is diffed against
+
+`scenarios/tank_level_fill_check_valve.toml` (the thirty-first file) is
+`tank_level_fill_control.toml` plus three things: a disc (`kv` 200,
+`full_open_bar` 0.015) after the 30 m discharge line, 1 m of pipe from it to the
+fill valve, and a pump-protection trip — supply level low at 7.0 m stops the
+pump — because the CLI issues no commands and something has to stop the pump.
+`full_open_bar` was chosen from the measured running drive (1 623–6 427 Pa across
+a plain valve in that spot): at 0.015 bar the disc is at full lift whenever the
+pump runs, so its band is paid for only around stops and starts. The extra node
+and pipe move every number a little, so the file is not M29's plant bit for bit.
+
+Measured over 6 000 ticks, both fidelities identically to the reported digits:
+the trip fires at tick **2 142**; the disc is shut on exactly every tick from
+there to **3 160** (1 018 ticks) and reopens; its twin (a plain valve held open
+in its place) runs backwards at up to **3.52 kg/s**. While the disc is shut the
+tank falls only through its own drain — **2.27 m against the twin's 1.87 m** at
+tick 3 000 — and it is **not kept**: by tick 6 000 the twin stands a little
+higher (**0.985 m against 0.947 m**), the water it pushed back into the supply
+having come forward again.
+
+### Gates — `crates/scenarios/tests/check_valve_reference.rs`
+
+1. **The disc stops the backflow its twin drains through**, both fidelities: no
+   negative flow ever; exactly zero on every tick from the trip (2 142) to the
+   reopening (3 160); the twin below −3 kg/s; the tank 0.3 m above the twin's at
+   tick 3 000 and neither kept.
+2. **At full lift it is a plain valve**: until the trip the demo and its twin
+   agree within ten times each fidelity's own `tol_rel` (measured 2.4e-9 Newton,
+   1.3e-6 game) and after it they differ at order one. **Not bit for bit**, which
+   was the first draft's claim and failed at tick 1: the cold start's iterates
+   cross the band, so the two solves take different paths to one root.
+3. **The disc reopens** — folded into gate 1, which asserts the reopening tick.
+4. **The slope is the flow's derivative**: `conductance` against a centred
+   difference of the FULLY recompiled flow at 0.2, 0.5 and 0.8 of the band
+   (relative 2.3e-7 to 2.0e-6, bound 1e-5), the share more than half again the
+   frozen slope; exactly zero above the band, where the branch's `α` is a plain
+   valve's at opening 1 bit for bit; shut and carrying exactly nothing at a
+   negative drive and at a forward raw drop short of an uphill `β`; and the
+   `compile_edge` gas door.
+5. **A disc riding its band runs on both fidelities**: band 0.1 bar, no trip,
+   drive 5 295–7 966 Pa for the whole run.
+6. **Every refusal on its own message**: zero and negative band, missing band,
+   `kv = 0`, a loop or a trip on the disc, two outlets, gas service, and the
+   command.
+7. **E25, characterised**: stopped at 3 001, restarted at 6 001 into the fill the
+   loop pinned open, the fill peaks at 24.80 kg/s against 6.90 settled.
+
+### What must not change, measured
+
+All thirty earlier plants byte-identical on both fidelities, worst AND total
+iterations unchanged, against baselines taken before the first edit — measured
+twice, after the element and again after the game solver's two changes. A new
+`NodeKind` variant changes no existing plant's bytes. "Runs byte-identical" means
+post-M30 identical, unchanged.
+
+### Corrections from building it (M30)
+
+**1. "The game solver never reads it" did not carry over from the relief valve.**
+The first probe diverged at tick 959 with the pump running, because the disc
+sat inside its band in ordinary operation and the node step's slope missed the
+opening. Fork 3 is that correction, and fork 4 is the second half of it.
+
+**2. Gate 2 was written bit for bit and failed at tick 1.** The cold start's
+iterates cross the band on the way to full lift, so the demo and its twin reach
+one root along two paths and stop inside their own tolerance of it. The
+branch-level identity IS bit for bit (gate 4 asserts `α`); the plant-level one
+is now a tolerance sized from each fidelity's `tol_rel`.
+
+**3. The disc's first placement put its band inside the running drop.** Ahead of
+the 30 m discharge line, the disc's branch drive included that line's friction
+(fork 2's approximation, at its worst) and a 0.1 bar band sat at 0.66 in
+ordinary running. The demo puts the disc after the long line with 1 m of outlet,
+and sizes the band from the measured drive.
+
+**4. The shut stretch costs Newton 14–18 iterations a tick, and the disc is not
+why.** A plain valve shut by hand in the disc's place costs the same, tick for
+tick (the two histograms agree count for count from 13 iterations up): the dead
+leg behind any shut valve, hung off a tank that falls ~22 Pa a tick. Row A8,
+re-measured; the mechanism is not confirmed.
+
+**5. The mutation pass: twenty edits, eighteen caught, two uncaught by design.**
+Predictions were written before the run; five were wrong.
+
+| # | edit | predicted | caught by |
+|---|---|---|---|
+| 1 | the disc's arm compiles a bare pipe (the `_ =>` fall-through) | gates 1, 4 | gates 1, 2, 4 |
+| 2 | the drive ignores the static head | gate 4 alone | gate 4 alone (the uphill tail) |
+| 3 | `conductance` drops the opening share | gates 4, 5 | gates 1, 4, 5, 7 |
+| 4 | Newton assembles the frozen slope | **uncaught (cost)** | **gates 1, 5, 7: Newton diverges** at 50 iterations inside the band (§30's A14 again) |
+| 5 | the game sweep reads the disc frozen | uncaught (cost) | **uncaught**: gate 5's sweeps 6 835 → 31 348 |
+| 6 | the game node step drops the share (group step keeps it) | **gate 5 diverges** | **uncaught**: 6 835 → 15 970 sweeps; the fresh read carries it |
+| 7 | the degree rule misses the disc | gate 6 | gate 6 |
+| 8 | the loader's gas refusal gone | gate 6 | gate 6 |
+| 9 | `compile_edge`'s gas door gone | gate 4 | gate 4 |
+| 10 | the `kv` refusal gone | gate 6 | gate 6 |
+| 11 | the band refusal gone | gate 6 | gate 6 |
+| 12 | the loop-actuator refusal gone | gate 6 | gate 6 |
+| 13 | the trip refusal gone | gate 6 | gate 6 |
+| 14 | the command refusal gone | gate 6 | gate 6 |
+| 15 | the disc opens both ways (on the drive's magnitude) | gates 1, 4 | gates 1, 2, 4, 7 |
+| 16 | a step, not a smoothstep | gate 4 (+5?) | gate 4 alone; Newton's worst rose 11 → 42, inside the cap |
+| 17 | `is_zero_volume` misses the disc | **unknown** | gates 1, 2, 5, 7 |
+| 18 | the disc is not a cavitation subject | inert | **uncaught**: every shipped and fixture plant here declares `thermo = "constant"`, which has no criterion |
+| 19 | no `OPEN_EPS` snap on the disc | **inert** | gate 4: at a nominal zero drive, `P − β` rounds to a hair above zero, and without the snap that hair is a finite `α` and a disc that "conducts" |
+| 20 | the share subtracted | gates 4, 5 | gates 1, 4, 5, 7 |
+
+Mutations 5 and 6 are left uncaught **on purpose**: each is a cost, not a wrong
+answer, and a gate for either would assert a sweep count fitted to today's
+plant (M9.3b's reason). The defence is that undoing both at once (3) is caught
+by four gates. Mutation 18 is uncaught because no plant that can evaluate the
+criterion carries a disc; it is recorded rather than gated.
+
+### Deferred, with what un-defers each
+
+- **E23 — a disc held shut against a cracking pressure**, and closing
+  dynamics (hysteresis, slam). Trigger: a plant whose answer depends on the disc
+  staying shut below a nonzero forward difference.
+- **E24 — a check valve in gas service.** Refused at load and in `compile_edge`.
+  Trigger: a gas plant that needs one.
+- **E25 — restarting into a fill valve the loop pinned open.** While the disc is
+  shut the level loop sees a falling level and winds the fill to 1; a restart
+  then drives the pump curve through it. Trigger: a plant or trip that restarts
+  the pump and must not surge. The textbook answer is a loop that tracks (or a
+  trip that parks it) while its supply is stopped.
+- **E26 — the disc reads its branch's drive, not its own drop.** Trigger: a disc
+  whose outlet pipe's friction is comparable to its band.
+- **A19 — the game solver's cost while a disc rides its band at low flow**: 9–10
+  sweeps a tick, contracting 0.44 per pass, against 2–3 at full lift. Trigger: a
+  plant whose disc-in-band ticks press on a frame budget.
