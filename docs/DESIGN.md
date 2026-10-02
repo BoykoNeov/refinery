@@ -5317,7 +5317,7 @@ because M8's remaining slice is the snapshot's, not another plant's.
 - ~~**Interlocks and trips** — a discrete layer, not a regulating one. Un-defers
   with a safety case needing a plant to shut *itself* down.~~ **Built by M22.1**
   (§26): latching trips on pumps and valves, re-armed by a reset that restarts
-  nothing.
+  nothing. *(M32, 2026-10-02: and on a furnace's fuel, §35.)*
 - **The slate on the snapshot** (M6.2's deferral) stays exactly where it is, and
   this slice does **not** trigger it. A level controller reads
   `TankState::level(ρ)` inside the engine, which already holds the slate; the
@@ -14171,7 +14171,9 @@ its safe state. Two kinds of equipment are admitted:
 A relief valve is refused as trip equipment for its own reason: its opening is its
 own inlet pressure's, recomputed every solve. A furnace (fuel cut) and a cooler
 are refused with a pointer to new row E14; a furnace trip is common in real
-plants, but its natural measurement is its outlet, which fork 2 defers.
+plants, but its natural measurement is its outlet, which fork 2 defers. *(M32,
+2026-10-02: a furnace is trip equipment now, its fuel cut on a holdup's
+temperature, §35; a cooler stays refused, for its own reason.)*
 
 **Write once, then refuse every other writer.** When a trip fires, it writes its
 safe states on that tick. After that it does not rewrite them. What holds them is
@@ -14396,7 +14398,7 @@ marks which mutations that leaves inert on the demo.
    tag).
 9. **The load-time refusal sweep**, one case per refusal, each asserting a
    distinctive substring of its own message: a flow or outlet measurement (E13),
-   a furnace or cooler action (E14), a relief valve action, a `pump` action on a
+   a furnace or cooler action (E14; M32 admits the furnace, §35), a relief valve action, a `pump` action on a
    valve, a valve action with no position or one outside `[0, 1]`, two trips
    giving one valve different positions, an empty actions list, a missing
    `direction`, the wrong limit key for the variable, a level limit above the
@@ -14449,7 +14451,8 @@ which is why gate 8 exists.
   with a low-flow or outlet-temperature trip a plant needs.
 - **E14 — trip equipment beyond pumps and valves**: a furnace's fuel cut, a
   cooler. Un-defers with E13's outlet case, or with a furnace trip on a holdup
-  temperature a plant needs.
+  temperature a plant needs. *(M32, 2026-10-02: the furnace clause is closed,
+  §35; the cooler clause stays open.)*
 - **E15 — the rest of a real safety system**: a maintenance bypass, a manual trip
   button, two-out-of-three voting, a trip delay, a first-out indication, and a
   reset that restarts equipment. Each is data on a trip, not a new model (fork 1).

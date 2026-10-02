@@ -1301,11 +1301,12 @@ fn build_controls(
 ///   above zero, a temperature above absolute zero. **Its own range check, not
 ///   `PlantGraph::check_setpoint`** (fork 6), whose ranges were argued for
 ///   regulators and whose messages say "setpoint",
-/// - an empty `actions` list; an action naming both or neither of `pump` and
-///   `valve`; equipment that does not exist, or is not the kind its key says;
-///   a relief valve (its opening is its own inlet pressure's); a furnace or
-///   cooler (`docs/DEFERRED.md` E14); a valve with no `position` or one outside
-///   `[0, 1]`, and a `position` on a pump,
+/// - an empty `actions` list; an action naming more than one, or none, of
+///   `pump`, `valve` and `furnace`; equipment that does not exist, or is not the
+///   kind its key says; a relief valve (its opening is its own inlet
+///   pressure's); a cooler (`docs/DEFERRED.md` E14: cutting it is the hazard);
+///   a valve with no `position` or one outside `[0, 1]`, and a `position` on a
+///   pump or a furnace (M32, docs/DESIGN.md §35),
 /// - two trips — or one trip twice — giving one valve DIFFERENT safe positions,
 ///   which would make "the" safe state of that valve two numbers,
 /// - a duplicate trip name.
