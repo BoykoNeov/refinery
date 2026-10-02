@@ -24,7 +24,7 @@
 # say reverse). A valve that is neither is refused in either direction.
 #
 # **In AUTO it holds 4 m**: peak 4.0075 m, inside 0.01 m of the setpoint from
-# tick 1580, the fill valve never leaving [0.26, 0.51]. The numbers are pinned by
+# tick 1580, the fill valve never leaving [0.2598, 0.5099]. The numbers are pinned by
 # `crates/scenarios/tests/fill_valve_reference.rs`.
 #
 # **A one-metre setpoint step DOWN shuts the fill, for one tick**: the settled
