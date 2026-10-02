@@ -11988,7 +11988,9 @@ the measured holdup says which. The loader cannot check a valve's declaration
 without walking the graph for "upstream of", which no loader site does today,
 and a declaration nothing checks is a sign in disguise again. No plant asks for
 it. **New row E8**, trigger "a plant whose only actuator on a level or pressure
-is a valve upstream of the holdup", with the check it would owe named.
+is a valve upstream of the holdup", with the check it would owe named. **Closed by
+M29 (§32)**: the check existed in M25.1's cascade linker, and it now holds the
+default to the side as well as `"reverse"`.
 
 ### Fork 4 — the furnace as an actuator: site 8 happens again
 
@@ -16773,3 +16775,158 @@ ran beside each and fired on none.
   plant whose setpoint sits beyond the inner actuator's authority long enough that
   the release from it is what a player sees. Distance: gate 4, 0.92 K under a
   55 °C target after the step, against 0.13 K unfixed.
+
+## 32. A fill valve holding a level — reverse action on a valve, ledger row E8 (M29)
+
+### What licensed this, stated plainly
+
+Nothing fired. E8's trigger, "a plant whose only actuator on a level or pressure
+is a valve upstream of the holdup", names no shipped plant. **This milestone is a
+decision**, the user's, taken on 2026-10-02 on gameplay grounds: a fill valve
+holding a tank is the commonest level loop there is, and the engine refused it.
+Specified and built in one slice, as M28 was. The probes are in
+`W:\temp\claude\m29\` (`summ.py`, `sweep.py`, `press.py`, `mutate.py`, and the
+before/after corpus files).
+
+### The premise, measured before any fork
+
+**The check E8 said "no loader site performs" already existed, one function
+over.** M25.1's `cascade_pairing` classifies a valve as a tank's drain or fill
+in one hop — inlet pipe starting at the tank, or outlet pipe ending at it — to
+sign a level primary over a flow loop. So the machinery was built; it was only
+not offered to a single loop.
+
+**And the half of the rule nobody refused was the unchecked one.** Before M29
+`build_controls` refused `"reverse"` on a level or pressure loop's valve and
+checked nothing else: an absent action defaulted to direct wherever the valve
+sat. A direct loop on a fill valve is the runaway M8.4 describes (it opens wider
+the fuller the tank), and M10.1's mutation that rewired the vent into the
+make-up line loaded and ran. E8 objected to an unchecked `"reverse"` as "a sign
+in disguise"; the default was the same disguise, worn by every valve loop.
+
+### Fork 1 — one hop, by declared direction, one owner
+
+`valve_side(graph, holdup, valve)` returns `Drain`, `Fill`, `Neither` or `Both`,
+judged by the declared direction of the valve's own two pipes.
+`validate_degrees` holds a valve to exactly one inlet and one outlet, so a pipe
+touching the holdup is the whole of the valve's inlet or outlet. It is the single
+owner of "drain or fill": `cascade_pairing` now calls it instead of its own
+match, so a single loop and a cascade cannot disagree about one valve. It works
+for a `Vessel` as for a `Tank`. A valve further off, through a pump or a cooler,
+is `Neither` — the walk is row E21. `Both` is a valve recycling the holdup to
+itself, and has no sign.
+
+### Fork 2 — the declaration held to the side, both ways
+
+| side | absent | `"direct"` | `"reverse"` |
+|---|---|---|---|
+| drain | admitted | admitted | refused |
+| fill | refused: declare it | refused | **admitted** |
+| both | refused | refused | refused |
+| neither | refused | refused | refused (E21) |
+
+`check_holdup_valve_action` owns the table, each refusal with its own message.
+**Two cells narrow what loads**: a direct loop on a fill, and a direct loop on a
+valve that is neither. Both loaded before. Measured, not assumed: with the rule
+in, the only failures in the workspace were the two tests asserting E8's old
+message, so no shipped plant and no fixture had either shape.
+
+### Fork 3 — a fill must SAY reverse
+
+Absent on a fill is refused rather than defaulted, as on a furnace (§22 fork 2)
+and a flow loop (§24 fork 3): the default is a true statement about a drain and
+a false one about a fill, so a file's most surprising property is never left
+implicit.
+
+### Fork 4 — pressure is admitted, on a fixture
+
+E8 names a make-up valve on a vessel too. The same table serves, and gate 5 runs
+it: `vessel_pressure_control.toml` with a valve put on the make-up line, the
+loop moved onto it, the vent fixed. A pressure demo FILE is not shipped; nothing
+asks for one, and the fixture is derived in-test so CI runs it.
+
+### Fork 5 — the demo, and what it is diffed against
+
+`scenarios/tank_level_fill_control.toml` (the thirtieth file) is
+`tank_level_control.toml` with the loop moved from the drain to the fill:
+`action = "reverse"`, `initial_output` equal to the fill's 0.5, gain 0.5/m,
+`T_i` 600 s (the fastest pair in a K 0.25–1.0 × T_i 300–600 s sweep that
+overshoots by under a centimetre). **Parked, the two files are one plant** —
+fill 0.5, drain 0.2, nothing writing — so the loop-off counterfactual is shared
+(9.19 m at tick 6 000, still rising), and gate 2 asserts the two parked runs
+bit-identical node for node on every tick.
+
+### Gates — `crates/scenarios/tests/fill_valve_reference.rs`
+
+1. **It holds where its parked twin runs to the roof**, both fidelities: peak
+   4.007483 m, inside 0.01 m from tick ~1 580, fill in [0.2598, 0.5099], action
+   published as reverse.
+2. **Parked, it is the drain demo bit for bit**, 6 000 ticks.
+3. **No step at load or on MANUAL→AUTO**: both seeds use the loop's own sign.
+   Exact in both; the wrong sign would step by `2·K·e`, a full stroke here.
+4. **A 1 m step down shuts the fill on exactly one tick** (3 001) and recovers:
+   2.989823 m trough, inside 0.01 m of 3 m from ~4 724.
+5. **A make-up valve holds a vessel at 20 bar** (peak 20.0109, inside 0.01 bar
+   from ~2 060, `dt` = 0.1) where its parked twin settles at 23.45.
+6. **Every refusing cell of fork 2's table**, level and pressure, each on a
+   substring of its own message.
+7. **E22, characterised**: a stopped pump drains the tank back through the fill,
+   and the loop pins it open.
+
+### What must not change, measured
+
+All twenty-nine earlier plants byte-identical on both fidelities, worst AND total
+iterations unchanged, against baselines taken before the first edit. No snapshot
+field changed (`ControlSnapshot::action` exists since M18), so the Godot bridge
+is untouched and its build is not owed. "Runs byte-identical" means post-M29
+identical, unchanged.
+
+### Corrections from building it (M29)
+
+**1. A step down shuts the fill for ONE tick, not a stretch.** The first header
+said the anti-windup clamp would bring the output back "as the level arrives".
+The back-calculation parks the memory exactly at the clamp, so the next tick's
+output leaves 0 by `K·Δe` — the level has fallen a hair — and the fill then opens
+only as fast as the level falls (M18's (iv) again).
+
+**2. The stopped-pump hazard turns around.** The first draft said the tank drains
+backwards through the pinned fill. It does (−3.96 kg/s 300 ticks after the stop,
+the fill at 1 by 600), and then, once the receiving tank has fallen far enough,
+the supply's head pushes forward again through the stopped pump: forward by 900
+ticks, the level settling near 0.95 m with the fill still pinned open. Row E22.
+
+**3. A text substitution landed in a comment.** Two refusal cases first loaded,
+because `action = "reverse"` is quoted in the demo's and the pressure demo's
+header comments and the substitution edited the first match. Anchored on the
+loop's own `actuator` line; a refusal case that "should not have loaded" and did
+is the symptom.
+
+**4. The mutation pass: six edits, six caught — one only on the second try.**
+
+| # | edit | caught by |
+|---|---|---|
+| 1 | `valve_side`'s drain and fill swapped | 57 tests (every valve loop, the cascade's level pairings) |
+| 2 | direct left unchecked (the pre-M29 rule) | gate 6 alone |
+| 3 | absent on a fill admitted | gate 6 alone |
+| 4 | adjacency tested without direction | 57 tests |
+| 5 | direct on a `Neither` valve admitted | gate 6 alone |
+| 6 | the check's result discarded | gate 6 and the two re-pointed E8 cases |
+
+Mutation 6 was first written as `let _ = check(…)?;`, which still propagates
+the error through `?` and is not a mutation at all: it "passed everything". An
+inert edit and an uncaught edit read the same; it was rewritten as `.ok()` and
+then caught.
+
+### Deferred, with what un-defers each
+
+- **E21 — a level or pressure loop's valve further than one pipe from its
+  holdup** (through a pump, a cooler, a junction). Refused in either direction.
+  Trigger: a plant that needs one. The walk is E12's for a flow loop, through
+  one-inlet one-outlet units, and a junction is where the sign stops being
+  checkable.
+- **E22 — a stopped pump under a fill-valve loop.** A stopped pump conducts
+  (M22), so the tank drains backwards through its fill; the loop opens the fill
+  (right for a low level) and pins it, speeding the drain. Trigger: a plant or
+  trip that stops the pump feeding a fill loop and must not lose the tank. The
+  textbook answer is a check valve or an interlock that parks the loop, neither
+  modelled.

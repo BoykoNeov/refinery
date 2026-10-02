@@ -7041,3 +7041,26 @@ fidelities with no iteration count moved. Two findings became rows: the exact
 limit test leaks on a drifting plant (E19, the target walks 7.6 K where it used to
 walk 20), and a sustained limit parks the memory where a later setpoint step dips
 deeper (E20, 0.92 K against 0.13).
+
+## M29 — a fill valve holding a level: ledger row E8; opened on a decision
+
+### M29 — specified and built in one slice — **LANDED** 2026-10-02, and M29 is CLOSED
+
+Taken on the user's decision, on gameplay grounds; E8 was not past its trigger.
+The note is DESIGN §32. A level or pressure loop's valve is classified as a drain
+or a fill of its holdup in one hop by `valve_side` (lifted out of M25.1's
+`cascade_pairing`, which now calls it), and `check_holdup_valve_action` holds the
+loop's declared action to that side both ways: a drain is direct, a fill must SAY
+reverse, a valve that is neither or both is refused. The unchecked default was the
+larger hole — a direct loop on a fill loaded and ran away — and closing it
+narrowed nothing any plant or fixture used.
+
+Demo `scenarios/tank_level_fill_control.toml`, the thirtieth file: the M8.4 plant
+with its loop moved to the fill (reverse, K 0.5/m, T_i 600 s). Peak 4.0075 m,
+inside 0.01 m from tick ~1 580 on both fidelities; parked, it is the drain demo
+bit for bit. A make-up valve holding a vessel at 20 bar runs on a fixture. Seven
+gates in `tests/fill_valve_reference.rs`; six mutations, six caught (one written
+inertly first, `let _ = f()?;`, and rewritten). All twenty-nine earlier plants
+byte-identical on both fidelities with no iteration count moved. Two rows are new:
+E21 (a valve beyond one pipe) and E22 (a stopped pump drains the tank back through
+its pinned fill).

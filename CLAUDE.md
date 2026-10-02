@@ -96,6 +96,7 @@ cargo run -p refinery-cli -- run scenarios/tank_overfill_trip.toml --ticks 6000 
 cargo run -p refinery-cli -- run scenarios/tank_runs_dry.toml --ticks 6000            # the M24.1 dry tank
 cargo run -p refinery-cli -- run scenarios/tank_overflow.toml --ticks 6000            # the M23.1 spill
 cargo run -p refinery-cli -- run scenarios/furnace_cascade_control.toml --ticks 6000  # the M25.1 cascade
+cargo run -p refinery-cli -- run scenarios/tank_level_fill_control.toml --ticks 6000  # the M29 fill-valve loop
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -190,6 +191,28 @@ extension removed too — ignore it, the file it writes is what matters.
 ## Current milestone
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
+
+**M29 is CLOSED (2026-10-02): a fill valve holding a level — `docs/DEFERRED.md`
+row E8, now struck.** Taken on a DECISION (the user's, on gameplay grounds). One
+slice, note and build together: DESIGN §32.
+- **The rule**: a level or pressure loop's valve is a DRAIN of its holdup (inlet
+  pipe starts there: direct, the default) or a FILL (outlet pipe ends there: must
+  SAY `action = "reverse"`), judged in one hop by `valve_side` in `build.rs`, the
+  single owner — `cascade_pairing` calls it too. `check_holdup_valve_action` owns
+  the table; a valve that is neither or both is refused either way.
+- **The unchecked default was the larger hole**: before M29 a direct loop on a fill
+  valve loaded and ran away. Refusing it (and direct on a valve two hops off)
+  narrowed nothing any plant or fixture used — measured by the full suite.
+- **Demo `scenarios/tank_level_fill_control.toml`** (the thirtieth file):
+  `tank_level_control.toml` with the loop on the fill; parked, the two files are
+  one plant bit for bit. A make-up valve on a vessel runs on a fixture. Gates are
+  `tests/fill_valve_reference.rs`. All 29 earlier plants byte-identical, no
+  iteration count moved; no snapshot change, so no Godot build owed.
+- **Two new rows.** E21: a valve beyond one pipe (the walk). E22: a stopped pump
+  drains the tank back through its fill, which the loop pins wide open.
+- **A refusal case that "should not have loaded" and did** was a substitution
+  landing in a header comment that quotes the same text: anchor swaps on the
+  loop's own lines. And `let _ = f()?;` is not a mutation of `f()?;`.
 
 **M28 is CLOSED (2026-10-01): a cascade primary held by its secondary's limit —
 `docs/DEFERRED.md` row E16, now struck.** Taken on a DECISION (the user's). One
@@ -1910,14 +1933,15 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly seven of the twenty-nine files in `scenarios/` declare a `[[controls]]`
+**Exactly eight of the thirty files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
 `tank_temperature_heating.toml` (M18.1, a reverse-acting temperature),
 `furnace_outlet_control.toml` (M19.1, a furnace's own outlet),
 `tank_flow_control.toml` (M20.1, a valve's own flow) and
-`furnace_cascade_control.toml` (M25.1, a cascade: two loops). **The
+`furnace_cascade_control.toml` (M25.1, a cascade: two loops) and
+`tank_level_fill_control.toml` (M29, a level on its FILL valve). **The
 other twenty-two
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor** (one, `tank_overfill_trip.toml`, carries a `[[trips]]`

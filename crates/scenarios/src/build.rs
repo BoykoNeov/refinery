@@ -582,8 +582,10 @@ fn resolve_vent_destination(
 ///   temperature), each refused pairing with its own reason, and a `ReliefValve`
 ///   always,
 /// - a direction of action the actuator contradicts: a cooler must be direct, a
-///   furnace and a flow loop's valve must SAY reverse, and reverse on a level or
-///   pressure loop's valve is refused (`docs/DEFERRED.md` E8),
+///   furnace and a flow loop's valve must SAY reverse, and a level or pressure
+///   loop's valve must be a drain of its holdup (direct, the default) or a fill
+///   that SAYS reverse — one hop, both ways, and a valve that is neither is
+///   refused in either direction (M29, docs/DESIGN.md §32),
 /// - `max_duty_mw` missing on a cooler or present on a valve, not finite and
 ///   positive, or a declared cooler duty outside `[0, max_duty_mw]`.
 ///
@@ -889,10 +891,26 @@ fn build_controls(
                 // written before M18 — except on a furnace, where a default would make the
                 // file's most surprising property invisible — and on a flow loop, for the
                 // same reason (M20). Checked against the actuator wherever the sign is
-                // physics, in both directions; refused on a level or pressure loop's
-                // valve, whose sign is topology (docs/DEFERRED.md E8). A valve holding the
-                // flow in its own pipe is the one valve whose sign IS physics: the pairing
-                // table above has already checked the one hop (docs/DESIGN.md §24 fork 3).
+                // physics, in both directions. A valve holding the flow in its own pipe
+                // is a valve whose sign IS physics: the pairing table above has already
+                // checked the one hop (docs/DESIGN.md §24 fork 3). On a level or pressure
+                // loop a valve's sign is topology, and since M29 the loader reads it —
+                // drain or fill, one hop — and holds the declaration to it both ways
+                // (docs/DESIGN.md §32, `check_holdup_valve_action`).
+                if let (
+                    MeasuredVariable::Level | MeasuredVariable::Pressure,
+                    MeasurementPoint::Node(holdup),
+                    NodeKind::Valve { .. },
+                ) = (variable, point, &graph.node(actuator).kind)
+                {
+                    check_holdup_valve_action(
+                        def,
+                        variable,
+                        &point_name,
+                        valve_side(graph, holdup, actuator),
+                        action,
+                    )?;
+                }
                 let flow_loop = variable == MeasuredVariable::Flow;
                 match (&graph.node(actuator).kind, action, def.action.is_some()) {
                     (NodeKind::Valve { .. }, ControlAction::Direct, false) if flow_loop => {
@@ -943,21 +961,6 @@ fn build_controls(
                      (docs/DESIGN.md §22 fork 2)",
                             def.name, def.actuator
                         )))
-                    }
-                    (NodeKind::Valve { .. }, ControlAction::Reverse, _) if !flow_loop => {
-                        return Err(SimError::Scenario(format!(
-                    "control loop '{}' declares `action = \"reverse\"` on valve '{}', holding a \
-                     {}. On a level or pressure loop a valve's direction is its place in the \
-                     plant, not its kind — the same valve is direct on a drain and reverse on \
-                     a fill line — and the loader does not check which side of the measured \
-                     holdup a valve sits on, so a reverse declaration here would be a sign \
-                     nothing verifies. Deferred as docs/DEFERRED.md E8 (docs/DESIGN.md §22 \
-                     fork 3). Only a valve holding the FLOW in its own pipe is admitted as \
-                     reverse (§24 fork 3)",
-                    def.name,
-                    def.actuator,
-                    variable.noun()
-                )))
                     }
                     _ => {}
                 }
@@ -2015,6 +2018,106 @@ fn link_cascades(graph: &mut PlantGraph, defs: &[ControlDef]) -> Result<(), SimE
     Ok(())
 }
 
+/// Which side of a holdup a valve sits on, judged in ONE hop by declared pipe
+/// direction (docs/DESIGN.md §32 fork 1).
+///
+/// `validate_degrees` holds every valve to exactly one inlet and one outlet edge,
+/// so a valve whose inlet pipe starts at the holdup is the whole of a drain, and
+/// one whose outlet pipe ends there is the whole of a fill. **The single owner of
+/// "drain or fill"**: a level or pressure loop's own sign (M29) and a cascade
+/// primary's sign over a flow loop (§29 fork 5) both read it, so the two cannot
+/// disagree about one valve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ValveSide {
+    /// The valve's inlet pipe starts at the holdup: opening it lowers the holdup.
+    Drain,
+    /// The valve's outlet pipe ends at the holdup: opening it raises the holdup.
+    Fill,
+    /// Neither pipe touches the holdup; the sign would need a walk (E21).
+    Neither,
+    /// Both do (a valve recycling the holdup to itself); no sign exists.
+    Both,
+}
+
+fn valve_side(graph: &PlantGraph, holdup: NodeId, valve: NodeId) -> ValveSide {
+    let one_hop =
+        |from: NodeId, to: NodeId| graph.edge_ids().any(|e| graph.endpoints(e) == (from, to));
+    match (one_hop(holdup, valve), one_hop(valve, holdup)) {
+        (true, false) => ValveSide::Drain,
+        (false, true) => ValveSide::Fill,
+        (false, false) => ValveSide::Neither,
+        (true, true) => ValveSide::Both,
+    }
+}
+
+/// **A level or pressure loop's direction of action, checked against where its
+/// valve sits** (M29, docs/DESIGN.md §32 fork 2; this was `docs/DEFERRED.md` E8).
+///
+/// A valve's sign on a holdup is topology — the same valve is direct on a drain
+/// and reverse on a fill — so the loader reads the side through `valve_side` and
+/// holds the declaration to it, BOTH ways. Before M29 only `"reverse"` was
+/// refused and the default went unchecked, so a direct loop on a fill valve (a
+/// runaway: it opens wider the fuller the tank) loaded and ran:
+///
+/// | side | absent | `"direct"` | `"reverse"` |
+/// |---|---|---|---|
+/// | drain | admitted | admitted | refused |
+/// | fill | refused: declare it | refused | admitted |
+/// | both, neither | refused | refused | refused |
+///
+/// A fill's action must be DECLARED, as a furnace's and a flow loop's must: the
+/// default is a true statement about a drain and a false one about a fill.
+fn check_holdup_valve_action(
+    def: &ControlDef,
+    variable: MeasuredVariable,
+    holdup_name: &str,
+    side: ValveSide,
+    action: ControlAction,
+) -> Result<(), SimError> {
+    let noun = variable.noun();
+    let refusal = match (side, action, def.action.is_some()) {
+        (ValveSide::Drain, ControlAction::Direct, _)
+        | (ValveSide::Fill, ControlAction::Reverse, _) => return Ok(()),
+        (ValveSide::Drain, ControlAction::Reverse, _) => format!(
+            "control loop '{}' declares `action = \"reverse\"` on valve '{}', which DRAINS \
+             '{holdup_name}' (its inlet pipe starts there). Opening a drain lowers the {noun}, \
+             so this loop is direct acting: it would shut the valve the moment the {noun} ran \
+             high. Remove the key or declare `action = \"direct\"` (docs/DESIGN.md §32 fork 2)",
+            def.name, def.actuator
+        ),
+        (ValveSide::Fill, ControlAction::Direct, false) => format!(
+            "control loop '{}' holds the {noun} of '{holdup_name}' with valve '{}', which FILLS \
+             it (its outlet pipe ends there), and declares no `action`. Opening a fill valve \
+             RAISES the {noun}, so this loop is reverse acting, and that must be declared \
+             rather than defaulted: add `action = \"reverse\"` (docs/DESIGN.md §32 fork 2)",
+            def.name, def.actuator
+        ),
+        (ValveSide::Fill, ControlAction::Direct, true) => format!(
+            "control loop '{}' declares `action = \"direct\"` on valve '{}', which FILLS \
+             '{holdup_name}' (its outlet pipe ends there). A direct loop's output must LOWER \
+             its measurement as it rises, and opening a fill valve raises the {noun}: this \
+             loop would open the valve wider the higher the {noun} ran. Declare `action = \
+             \"reverse\"` (docs/DESIGN.md §32 fork 2)",
+            def.name, def.actuator
+        ),
+        (ValveSide::Both, _, _) => format!(
+            "control loop '{}' holds the {noun} of '{holdup_name}' with valve '{}', which both \
+             drains it and fills it, so opening it moves the {noun} neither way the loader can \
+             name (docs/DESIGN.md §32 fork 1)",
+            def.name, def.actuator
+        ),
+        (ValveSide::Neither, _, _) => format!(
+            "control loop '{}' holds the {noun} of '{holdup_name}' with valve '{}', which is \
+             neither a drain (its inlet pipe starting at '{holdup_name}') nor a fill (its \
+             outlet pipe ending there). A level or pressure loop's sign is checked in ONE hop, \
+             and a valve further off is not admitted in either direction of action \
+             (docs/DEFERRED.md E21, docs/DESIGN.md §32 fork 1)",
+            def.name, def.actuator
+        ),
+    };
+    Err(SimError::Scenario(refusal))
+}
+
 fn action_word(action: ControlAction) -> &'static str {
     match action {
         ControlAction::Direct => "direct",
@@ -2036,9 +2139,8 @@ fn action_word(action: ControlAction) -> &'static str {
 /// - a tank's level over the flow on a valve whose inlet pipe starts at the tank
 ///   (a drain): DIRECT;
 /// - a tank's level over the flow on a valve whose outlet pipe ends at the tank (a
-///   fill): REVERSE — the first reverse level loop on a valve admitted, because
-///   here the side IS checked (`docs/DEFERRED.md` E8 is unchanged for a single
-///   loop).
+///   fill): REVERSE — the first reverse level loop on a valve admitted. M29 admits
+///   the same side for a single loop, through the same `valve_side`.
 fn cascade_pairing(
     graph: &PlantGraph,
     primary: &ControlLoop,
@@ -2105,10 +2207,10 @@ fn cascade_pairing(
                         secondary.name
                     ))
                 })?;
-                match (one_hop(tank, valve), one_hop(valve, tank)) {
-                    (true, false) => Ok(ControlAction::Direct),
-                    (false, true) => Ok(ControlAction::Reverse),
-                    (false, false) => Err(SimError::Scenario(format!(
+                match valve_side(graph, tank, valve) {
+                    ValveSide::Drain => Ok(ControlAction::Direct),
+                    ValveSide::Fill => Ok(ControlAction::Reverse),
+                    ValveSide::Neither => Err(SimError::Scenario(format!(
                         "cascade primary '{}' holds the level of tank '{}' over the flow \
                          through valve '{}', which is neither a drain (its inlet pipe starting \
                          at the tank) nor a fill (its outlet pipe ending at it). The primary's \
@@ -2118,7 +2220,7 @@ fn cascade_pairing(
                         graph.node(tank).name,
                         graph.node(valve).name
                     ))),
-                    (true, true) => Err(SimError::Scenario(format!(
+                    ValveSide::Both => Err(SimError::Scenario(format!(
                         "cascade primary '{}' holds the level of tank '{}' over the flow \
                          through valve '{}', which both drains the tank and fills it, so \
                          opening it moves the level neither way the loader can name \

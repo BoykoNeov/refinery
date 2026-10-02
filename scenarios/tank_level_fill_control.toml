@@ -1,0 +1,148 @@
+# M29 regulation demo: a FILL valve holding a tank's level — a reverse-acting
+# level loop on a valve, docs/DEFERRED.md row E8, closed by docs/DESIGN.md §32.
+#
+# **Meant to be diffed against `tank_level_control.toml`.** It is that file's
+# plant number for number, with the loop moved from the drain to the fill:
+#
+# | line | there | here | why |
+# |---|---|---|---|
+# | actuator | `level_valve` (the drain) | `discharge_valve` (the fill) | the subject |
+# | `action` | absent (direct) | `"reverse"` | opening a fill RAISES the level |
+# | `initial_output` | 0.2 | 0.5 | each equals its own actuator's declared opening |
+# | `gain_per_m` | 0.25 | 0.5 | see the tuning note at the loop |
+#
+# **With both loops in MANUAL the two files are the same plant**: the fill at
+# 0.5, the drain at 0.2, and the level running to 9.19 m by tick 6000, still
+# rising. So the loop-off counterfactual is shared, and a test asserts the two
+# parked runs are bit-identical node for node.
+#
+# **What makes this loop reverse is where its valve sits, and the loader reads
+# that.** A valve's sign on a holdup is topology — the same valve is direct on a
+# drain and reverse on a fill — so since M29 the loader classifies a level or
+# pressure loop's valve by its pipes, one hop: inlet pipe starting at the tank
+# is a drain (direct, the default), outlet pipe ending at it is a fill (must
+# say reverse). A valve that is neither is refused in either direction.
+#
+# **In AUTO it holds 4 m**: peak 4.0075 m, inside 0.01 m of the setpoint from
+# tick 1580, the fill valve never leaving [0.26, 0.51]. The numbers are pinned by
+# `crates/scenarios/tests/fill_valve_reference.rs`.
+#
+# **A one-metre setpoint step DOWN shuts the fill, for one tick**: the settled
+# fill sits near 0.26, so the step subtracts `gain_per_m x 1` = 0.5 and the
+# output clamps at 0. The back-calculation parks the memory at the clamp, so the
+# next tick the output leaves 0 by the gain times the error's change, and the
+# fill then opens only as fast as the level falls (2.99 m trough, inside 0.01 m
+# of 3 m by tick ~4 724). A gate runs it.
+#
+# **Hazard, recorded rather than fixed (docs/DEFERRED.md E22):** a stopped pump
+# still conducts, and this tank sits 5 m above the supply's floor, so with the
+# pump stopped it drains BACKWARDS through the fill (about -4 kg/s). The level
+# falls under the setpoint, the loop opens the fill — the right sign for a low
+# level — and it pins wide open, speeding the drain until the two tanks
+# balance; the level settles near 0.95 m. The clamp bounds it (no NaN, no
+# error).
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_level_fill_control.toml --ticks 6000
+
+[meta]
+name = "tank_level_fill_control"
+description = "Pump fills a tank whose level is held by a reverse-acting PI loop on its fill valve."
+
+[simulation]
+dt = 1.0            # seconds per tick
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.supply_tank]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 20.0
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0           # metric Kv [m^3/h at 1 bar], converted to SI on load
+opening = 0.5       # the ACTUATOR here; equal to `initial_output` below
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 2.0
+temperature_c = 20.0
+
+# FIXED here, at the opening the drain demo declares and its loop starts from.
+[nodes.level_valve]
+type = "valve"
+kv = 200.0
+opening = 0.2
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "suction"
+from = "supply_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "discharge_valve"
+length_m = 30.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "discharge_valve"
+to = "receiving_tank"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = 5.0
+
+[[pipes]]
+name = "drain_line"
+from = "receiving_tank"
+to = "level_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "level_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# `action = "reverse"` is REQUIRED, not decoration: `discharge_valve`'s outlet
+# pipe ends at `receiving_tank`, so the loader reads it as a fill, and a fill
+# with the key absent is refused rather than defaulted (docs/DESIGN.md §32).
+#
+# `initial_output` equals `discharge_valve.opening`, so the loop starts without
+# stepping its actuator. `gain_per_m = 0.5` and `integral_time_s = 600` were
+# picked from a sweep (K 0.25–1.0, T_i 300–600 s): the fastest pair that does
+# not overshoot by more than a centimetre.
+[[controls]]
+name = "receiving_level"
+measurement = { node = "receiving_tank", variable = "level" }
+actuator = "discharge_valve"
+action = "reverse"
+algorithm = "pi"
+mode = "auto"
+setpoint_m = 4.0
+gain_per_m = 0.5
+integral_time_s = 600.0
+initial_output = 0.5

@@ -275,7 +275,7 @@ fn every_refused_direction_is_refused_for_its_own_reason() {
             "unknown action 'inverse'",
         ),
         (
-            "a valve declared reverse (a fill valve's sign is topology)",
+            "a drain valve declared reverse (a valve's sign is its side, M29)",
             format!(
                 "{}\n{}",
                 DEMO.split("[[controls]]").next().expect("demo has a loop"),
@@ -283,7 +283,7 @@ fn every_refused_direction_is_refused_for_its_own_reason() {
                  variable = \"level\" }\nactuator = \"drain_valve\"\nalgorithm = \"p\"\nmode \
                  = \"auto\"\naction = \"reverse\"\nsetpoint_m = 5.0\ngain_per_m = 0.2\n"
             ),
-            "docs/DEFERRED.md E8",
+            "which DRAINS 'hold_tank'",
         ),
         (
             "a furnace loop with no `max_duty_mw`",

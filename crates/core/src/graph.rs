@@ -999,11 +999,12 @@ impl ControlledValue {
 /// RAISES it** — a furnace on a temperature, a valve on the flow in its own
 /// pipe (M20). The loop DECLARES which, and the loader checks the declaration
 /// against the actuator where the sign is physics (a cooler must be direct, a
-/// furnace reverse, a valve holding its own flow reverse) and refuses reverse on
-/// a level or pressure loop's valve, whose sign runs through a holdup and is
-/// topology the loader does not check (`docs/DEFERRED.md` E8). A flow loop's
-/// sign is checkable in one hop because a valve has exactly one inlet and one
-/// outlet (docs/DESIGN.md §24 fork 3).
+/// furnace reverse, a valve holding its own flow reverse). On a level or
+/// pressure loop a valve's sign runs through the holdup and is TOPOLOGY: since
+/// M29 the loader reads it in one hop — a drain is direct, a fill must say
+/// reverse — and refuses a valve that is neither (docs/DESIGN.md §32). Both
+/// checks are one hop because a valve has exactly one inlet and one outlet
+/// (docs/DESIGN.md §24 fork 3).
 ///
 /// This is the fourth wording of the rule M8.4 first wrote as "a level loop must
 /// actuate a drain", and the first that is not a special case of the direct

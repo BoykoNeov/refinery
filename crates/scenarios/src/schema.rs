@@ -597,9 +597,10 @@ pub struct ControlDef {
     /// property is never invisible. **A flow loop must say `"reverse"` too**, by
     /// the same rule (M20, docs/DESIGN.md §24 fork 3): opening a valve raises the
     /// flow in its own pipe, and a valve has exactly one inlet and one outlet, so
-    /// the loader checks that sign in one hop. `"reverse"` on a level or pressure
-    /// loop's valve is still refused: there the sign runs through a holdup, which
-    /// the loader does not check (docs/DEFERRED.md E8).
+    /// the loader checks that sign in one hop. **A level or pressure loop's valve
+    /// is held to its side of the holdup** (M29, docs/DESIGN.md §32): a drain is
+    /// direct (absent or `"direct"`), a fill must say `"reverse"`, and a valve
+    /// that is neither, one pipe away, is refused either way.
     #[serde(default)]
     pub action: Option<String>,
     /// The target, in metres. **Required for `variable = "level"` and refused on

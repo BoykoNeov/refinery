@@ -10,8 +10,9 @@
 //!
 //! **The first reverse loop on a valve.** Opening a valve raises the flow in its
 //! own pipe; a valve has exactly one inlet and one outlet, so the loader checks
-//! that sign in ONE hop and the loop must declare `action = "reverse"`. Reverse
-//! on a level or pressure loop's valve stays refused (`docs/DEFERRED.md` E8).
+//! that sign in ONE hop and the loop must declare `action = "reverse"`. (Since
+//! M29 a level or pressure loop's valve is held to its side of the holdup the
+//! same way: a fill must say reverse, a drain may not — docs/DESIGN.md §32.)
 //!
 //! **Zero flow is a measurement**, unlike M19's stagnant outlet: the solve
 //! computes it. And a flow running BACKWARDS is published as measured, never
@@ -1046,13 +1047,13 @@ diameter_m = 0.05
             "declares `setpoint_kg_per_s`, which is the Flow loop's key",
         ),
         (
-            "E8: reverse on a level loop's valve",
+            "reverse on a level loop's drain (E8's input; M29 refuses it by side)",
             swap(
                 LEVEL_DEMO,
                 "gain_per_m = 0.25\n",
                 "gain_per_m = 0.25\naction = \"reverse\"\n",
             ),
-            "Deferred as docs/DEFERRED.md E8",
+            "which DRAINS 'receiving_tank'",
         ),
     ];
     for (what, plant, expected) in cases {

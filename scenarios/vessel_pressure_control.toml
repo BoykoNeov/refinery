@@ -33,8 +33,9 @@
 # instead would be reverse acting. Since M18 reverse action is DECLARED on a loop
 # (`action = "reverse"`) rather than smuggled in as a negative gain, but only where
 # the sign is physics — a furnace, and since M20 a valve holding the flow in its
-# own pipe; on a pressure loop's valve the sign runs through the vessel, which the
-# loader does not check, so it stays refused (docs/DEFERRED.md E8).
+# own pipe. Since M29 a pressure loop's valve is held to its side of the vessel,
+# one pipe away: this vent is a drain and is direct; a make-up valve feeding the
+# vessel would have to declare `action = "reverse"` (docs/DESIGN.md §32).
 #
 # **The setpoint and the gain are both in bar, and that pairing is load bearing.**
 # Every pressure this format declares is in bar, so `setpoint_bar` follows the
