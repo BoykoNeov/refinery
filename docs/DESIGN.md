@@ -17401,3 +17401,175 @@ written.
   check valve's choke point.
 - **E26 now covers gas.** The fold computes the valve's own share of the drive;
   the disc still reads the whole branch's. Trigger unchanged.
+
+## 35. A trip that cuts a furnace's fuel — ledger row E14, the furnace clause (M32)
+
+### What licensed this, stated plainly
+
+Nothing fired. E14's trigger ("E13's outlet case, or a furnace trip on a holdup
+temperature a plant needs") names no shipped plant. **This milestone is a
+decision**, the user's, taken on 2026-10-02 after M31 closed, on gameplay grounds:
+a furnace overheats its tank and the safety system puts the fire out. Specified
+and built in one slice, as M28–M31 were. The demo fires the trigger's second
+clause by being built (M13's shape). The probes, the corpus files and the
+mutation harness are in `W:\temp\claude\m32\`.
+
+**The scope is one more kind of trip equipment, and nothing else.** What a trip
+may WATCH is unchanged (§26 fork 2(c): a tank's level, a vessel's pressure, a
+holdup's temperature — quantities that exist from load). A trip on a furnace's
+own outlet stays E13: that is a quantity absent at load, and it owes a rule for the
+missing measurement this slice does not write.
+
+### The writers of a furnace's duty, counted before writing a refusal
+
+Grepped for every mutable `Furnace { duty` and every `set_actuator_position`
+path:
+
+1. `Command::SetFurnaceDuty` (`Engine::apply`). Refused above zero while latched.
+2. A loop's tick write, through `PlantGraph::set_actuator_position`. Not refused:
+   the trip forces the loop to MANUAL (fork 3), and MANUAL does not write.
+3. `Command::SetControllerMode` to AUTO on that loop. Already refused by M22's
+   generic guard, which asks `latched_trip_on(node)` of any equipment; its words
+   said "valve" and now say "equipment".
+4. The loader's declared `duty_mw`. Load time, before any trip can latch.
+
+`Command::SetHeatInput` on a tripped furnace writes `heat_input`, not `duty`. It
+is the damage model's fire, not fuel, and stays admitted: a trip cuts fuel, it
+does not put out a fire burning on the equipment.
+
+### Fork 1 — which units are trip equipment
+
+- **A furnace: admitted, with one safe state, zero duty.** `{ furnace = "…" }`
+  takes no `position`, and one is refused by name. A furnace held at some lower
+  firing is not a cut, and a single safe state means two trips on one furnace
+  cannot disagree, so the valve's "two trips, two positions" refusal has no
+  furnace analogue to write.
+- **A cooler: still refused, now for its own reason.** Cutting a cooler is LOSING
+  cooling — the failure a trip answers, not the protection — and driving it flat
+  out is a regulator's job done at the wrong layer. The refusal used to share the
+  furnace's words; it now says this, and still points at E14, which stays open on
+  its cooler clause (narrowed, not struck: B13's and B15's precedent).
+
+### Fork 2 — what a cut furnace does to its stream
+
+Nothing but stop heating it. A furnace is a zero-volume node whose outlet is its
+inlet plus `heat_load` (§4); at zero duty `heat_load` is zero, and the stream
+passes through. **Measured, not assumed:** on the demo the furnace node's resolved
+temperature equals its inlet stream's temperature bit for bit on every tick after
+the cut, both fidelities. The next pipe reads 0.0008 K warmer — its own friction
+heating — which is why the gate compares the furnace node and not `heated_line`.
+
+### Fork 3 — the loops yield, by the rule that already existed
+
+§26 fork 5: the trip wins, and every loop on its equipment is forced to MANUAL.
+M22.1 wrote that for a valve only. **It now applies to every action's equipment**,
+in a commit of its own that was measured byte-neutral on all thirty-two plants
+before any furnace code existed (no loop can actuate a pump, so nothing moved). A
+cascade needs no new rule: the furnace's loop is the INNER one, MANUAL opens the
+cascade (§29 fork 4), and the primary writes nothing from the tripping tick.
+
+### Fork 4 — the demo, and what it is diffed against
+
+`scenarios/tank_overheat_trip.toml` (the thirty-third file) is
+`tank_temperature_heating.toml` without its loop, the furnace fired by hand at
+3 MW, and a 75 °C high-temperature trip on the tank whose one action is
+`{ furnace = "heater" }`. 3 MW adds 49.93 K to the 14.36 kg/s feed, so the
+untripped tank heads for ~90 °C. Measured over 6 000 ticks, both fidelities alike
+to ten digits:
+
+- The tank first passes 75 °C at the end of tick 1 250 (75.0007 °C), so the trip
+  fires at the top of tick **1 251**. Until then the demo's nodes and edges
+  serialise identically to its untripped twin's on every tick.
+- From tick 1 251 the furnace reads zero duty on that tick's own snapshot and
+  passes its stream through unheated (fork 2).
+- **The condition clears inside the tripping tick** (§26, M22.1's first kind of
+  plant): the trip compared 75.0007 °C and the tick then ran on 40 °C feed, so
+  the tank ends it at 74.967 °C. Rising at 0.0144 K a tick before, falling at
+  0.0338 after. From then on the LATCH keeps the fire out.
+- 46.45 °C at tick 3 000 and 40.36 °C at 6 000, still tripped. The twin reads
+  89.77 °C at 6 000.
+- Cost: Newton 2 828 iterations over the run (worst 7), the game solver 6 005
+  (worst 6).
+
+### Gates — `crates/scenarios/tests/furnace_trip_reference.rs`
+
+1. **The demo cuts on its tick**, both fidelities: armed and bit-identical to its
+   twin through tick 1 250; `Tripped { at_tick: 1251 }` from 1 251; zero duty and
+   the furnace's outlet equal to its inlet stream exactly from then on.
+2. **The latch holds**: the tank is past 75 °C at the end of 1 250 and below it at
+   the end of 1 251; tripped to tick 6 000; below 41 °C there, the twin above 89.
+3. **Tick order with a loop on the furnace**: `tank_temperature_heating.toml`
+   with a 65 °C trip and its setpoint raised to 72 °C, so the loop itself drives
+   the tank into the trip while firing at 0.9996 of its range. Trips at tick
+   1 443; on that tick's snapshot the loop is MANUAL with a faceplate of exactly
+   0.0.
+4. **Every writer refused, the cut admitted, the hand-back**: relighting by hand
+   and AUTO refused while latched; zero duty and MANUAL admitted; the latch holds
+   the next tick; after the tank cools, the reset relights nothing and leaves the
+   loop in MANUAL; a human fires 1.2 MW and hands back, and AUTO takes over at
+   0.6 within 1e-12 (M8.3's transfer). This fixture is also of the first kind:
+   it ends its tripping tick at 64.977 °C.
+5. **A reset inside the condition is refused**, on the demo declared at 80 °C: it
+   cuts on tick 1 before any solve, refuses the reset and a relight, and clears at
+   tick 139; after the reset the furnace is still cut and a relight is admitted.
+6. **A fuel cut opens a cascade**: `furnace_cascade_control.toml` with a 62 °C
+   trip, settled for 4 000 ticks, then its outer target raised to 64 °C. Trips at
+   tick 4 549 with the furnace at 1.50 MW the tick before. From the tripping tick
+   the inner loop is MANUAL at 0.0, the primary stays AUTO, and the inner target
+   does not move. After a reset, a relight and the inner loop to AUTO, the
+   primary writes again by one tick of control (+0.0023 K, onto the top of its
+   range).
+7. **The load-time sweep** (`trip_reference.rs`): a cooler under `valve` and
+   under `furnace` (own reason), a furnace with a `position`, a furnace under
+   `valve` and under `pump`, the `furnace` key on a valve, and a furnace and a
+   valve in one action.
+
+### What must not change, measured
+
+All thirty-two earlier plants byte-identical on both fidelities, worst AND total
+iterations unchanged, against baselines taken before the first edit — once after
+the refactor alone and again with everything in. "Runs byte-identical" means
+post-M32 identical, unchanged. **No Godot build is owed**: `TripAction` is not
+serialised (`TripSnapshot` carries no actions), no `Command` variant was added,
+and the bridge matches on neither.
+
+### Corrections from building it (M32)
+
+**1. A cascade hand-back can show a 13.2 K jump that is not a bump.** Gate 6's first
+draft moved the outer target back from 64 to 60 °C in the same command batch as
+the inner loop's return to AUTO, and the inner target then moved 13.24 K on the
+closing tick. That is the primary's proportional kick, `K·Δe` (0.133 × 4 K of
+error, × 25 K of range), which M25.1 already recorded for a setpoint moved in
+the batch that closes a cascade. It is not the trip's. The gate now moves the
+target on the tripping tick, while the cascade is open and re-seeding every tick,
+and the close lands at +0.0023 K.
+
+**2. Both command fixtures turned out to be M22's first kind of plant**: the
+condition clears inside the tripping tick (gate 4's fixture ends it at
+64.977 °C against a 65 °C limit). So the reset's "condition still holds" refusal
+needed a plant loaded inside its condition, gate 5's, exactly as M22.1 found for
+the pump.
+
+### The mutation pass (M32)
+
+Seven edits, predicted before the run, each restored from git after its run
+(`W:\temp\claude\m32\mutate.py`, `cargo test --release --no-fail-fast` on `core`
+and `scenarios`). Six caught, one uncaught as predicted.
+
+| # | edit | predicted | caught by |
+|---|---|---|---|
+| 1 | MANUAL forced on a valve's loops only | gates 3, 4, 6 | gates 3, 4, 6 |
+| 2 | `SetFurnaceDuty`'s trip refusal deleted | gates 4, 5 | gates 4, 5 |
+| 3 | the furnace's hold check never fires | **uncaught** | uncaught: it backs up the refusals and is unreachable while they hold (M22's mutation 13) |
+| 4 | a `position` on a furnace accepted | the sweep | the sweep |
+| 5 | the cooler's own refusal deleted | the sweep | the sweep (a cooler falls to the wrong-key refusal) |
+| 6 | the cut writes nothing | gates 1, 3, 5, 6 | gates 1, 3, 5, 6 |
+| 7 | zero duty refused too | gate 4 | gate 4 |
+
+### Deferred, with what un-defers each
+
+- **E14, the cooler clause.** A cooler as trip equipment, refused for its own
+  reason. Trigger: a cooler whose trip state is a declared duty a plant needs —
+  a quench or emergency cooling a trip turns ON.
+- **E13 is unchanged**: a trip on a furnace's own OUTLET temperature is a trip on
+  a quantity absent at load.

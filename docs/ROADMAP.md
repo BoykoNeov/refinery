@@ -7117,3 +7117,27 @@ one-sided choke detector, a static head too small to see on a level gas line, an
 untested `skip_serializing_if`), each closed by a test change and re-run, so
 eight caught. All thirty-one earlier plants byte-identical on both fidelities
 with no iteration count moved; the Godot build and clippy are clean.
+
+## M32 — a trip that cuts a furnace's fuel: ledger row E14, the furnace clause; opened on a decision
+
+### M32 — specified and built in one slice — **LANDED** 2026-10-02, and M32 is CLOSED
+
+Taken on the user's decision after M31 closed, on gameplay grounds; E14 was not
+past its trigger. The note is DESIGN §35. A trip action `{ furnace = "…" }` writes
+zero duty, the furnace's one safe state, and forces the furnace's loops to
+MANUAL; a relight is refused while the trip is latched and zero is admitted. A
+cooler stays refused, now for its own reason (cutting it is losing cooling), and
+E14 stays open on that clause. The force-MANUAL rule was generalised from valves
+to every action's equipment in a commit of its own, measured byte-neutral first.
+
+Demo `scenarios/tank_overheat_trip.toml`, the thirty-third file:
+`tank_temperature_heating.toml` without its loop, fired by hand at 3 MW, with a
+75 °C trip on the tank. It cuts at tick 1 251 on both fidelities, is its own
+untripped twin to the bit until then, clears its condition inside the tripping
+tick, and cools to 40.36 °C by tick 6 000 against the twin's 89.77. Six gates in
+`tests/furnace_trip_reference.rs` (the demo, the latch, a furnace loop yielding,
+every refusal and the hand-back, a reset refused inside its condition, a cascade
+opened by the cut) and seven refusal cases in `trip_reference.rs`'s sweep. Seven
+mutations, six caught; the hold check's deletion is uncaught as predicted. All
+thirty-two earlier plants byte-identical on both fidelities with no iteration
+count moved; no Godot build owed (no serialised or command change).
