@@ -1069,7 +1069,13 @@ fn valve_edge_is_choked(
     // populations are nonetheless cleanly separated — choked edges measure
     // q/plateau ≥ 0.999997 and the closest unchoked one 0.954 — so this
     // threshold has ~30x margin below the noise and ~460x above the gap.
-    q >= plateau * (1.0 - 1e-4)
+    //
+    // TWO-SIDED since M31: a flow ABOVE its plateau is not choked, it is a valve
+    // that never folded at all (the incompressible law overshoots the cap). The
+    // one-sided test counted that fault as a choke, and the gas check-valve arm
+    // was blind to it (docs/DESIGN.md §34, mutation 2). On the correct engine the
+    // flow never exceeds the plateau, so no recorded count moved.
+    q >= plateau * (1.0 - 1e-4) && q <= plateau * (1.0 + 1e-4)
 }
 
 #[test]

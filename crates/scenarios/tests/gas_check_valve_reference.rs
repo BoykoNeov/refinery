@@ -15,7 +15,8 @@
 //!    into the header. The two then settle to one answer.
 //! 2. **At full lift it IS a plain gas valve, bit for bit, and the fold is
 //!    really in it**: the disc's branch equals a `Valve`'s at opening 1 with the
-//!    same `kv` and `x_t`, at a drop where the gas law matters and at the choke —
+//!    same `kv` and `x_t`, on a RISING tail (so the static head is not a few
+//!    pascals), at a drop where the gas law matters and at the choke —
 //!    and differs from the incompressible branch there, which is the control
 //!    that catches a disc that skipped the fold.
 //! 3. **The opening's share of the slope is right in gas**, unchoked and choked:
@@ -26,6 +27,7 @@
 //! 4. **Every refusal, each on its own message.**
 //! 5. **The demo never comes near the choke**, measured, so the file's claim
 //!    that the fold is exercised elsewhere is a number rather than a hope.
+//! 6. **A disc publishes `x_t` only in gas service**, on the serialized bytes.
 
 use refinery_core::energy::NodeStates;
 use refinery_core::graph::{EdgeId, NodeId, NodeKind, PlantGraph};
@@ -305,8 +307,22 @@ fn incompressible(engine: &Engine, c: &CompiledEdge) -> QuadraticBranch {
 
 #[test]
 fn at_full_lift_it_is_a_plain_gas_valve_and_the_fold_is_in_it() {
-    let engine = build(DISC);
-    let plain = plain_at(DISC, DISC_DECL, 1.0, "0.72");
+    // The tail RISES, so the branch carries a static head and the fold's own
+    // `|dp − β|` is not the disc's drive `dp − β` read twice: handing the fold
+    // the drive instead of the drop is invisible on a level gas line, where
+    // `β` is a few pascals (M31's mutation 6, uncaught until this rise).
+    let risen = swap(
+        DISC,
+        "length_m = 1.0
+diameter_m = 0.05
+",
+        "length_m = 1.0
+diameter_m = 0.05
+elevation_change_m = 30.0
+",
+    );
+    let engine = build(&risen);
+    let plain = plain_at(&risen, DISC_DECL, 1.0, "0.72");
     let eps = NewtonFlowSolver::default().eps_dp;
 
     // (p_disc, p_drain): a 3 bar drop off 20 bar, where `Y` is visibly below
@@ -315,6 +331,11 @@ fn at_full_lift_it_is_a_plain_gas_valve_and_the_fold_is_in_it() {
         let (disc, dp) = tail(&engine, p_disc, p_drain);
         let (valve, _) = tail(&plain, p_disc, p_drain);
         assert_eq!(disc.check_opening_log_slope, 0.0, "{label}: full lift");
+        assert!(
+            disc.branch.beta > 1.0e3,
+            "{label}: the tail's static head is not a rounding term, β = {} Pa",
+            disc.branch.beta
+        );
         assert_eq!(
             disc.branch.alpha.to_bits(),
             valve.branch.alpha.to_bits(),
@@ -592,4 +613,36 @@ fn the_demo_never_comes_near_the_choke() {
         worst < 0.1,
         "the demo stays on the Y → 1 tail, x/x_choke ≤ {worst}"
     );
+}
+
+// ------------------------------------------------------------------ gate 6
+
+/// The kind's `x_t` on the wire: absent on a liquid disc, so M30's demo
+/// publishes the bytes it always did, and present on a gas one. Asserted on the
+/// serialized snapshot, because a Rust match on the field passes whatever the
+/// serde attribute says (M31's mutation 5, uncaught until this gate).
+#[test]
+fn a_disc_publishes_x_t_only_in_gas_service() {
+    let disc_kind = |src: &str, name: &str| {
+        let engine = build(src);
+        let json = serde_json::to_value(engine.snapshot()).expect("a snapshot serializes");
+        json["nodes"]
+            .as_array()
+            .expect("nodes")
+            .iter()
+            .find(|n| n["name"] == name)
+            .unwrap_or_else(|| panic!("the plant declares '{name}'"))["kind"]
+            .clone()
+    };
+    let liquid = disc_kind(
+        include_str!("../../../scenarios/tank_level_fill_check_valve.toml"),
+        "discharge_check",
+    );
+    assert_eq!(liquid["type"], "check_valve");
+    assert!(
+        liquid.get("x_t").is_none(),
+        "a liquid disc publishes no x_t key: {liquid}"
+    );
+    let gas = disc_kind(DEMO, "make_up_check");
+    assert_eq!(gas["x_t"], 0.72, "a gas disc publishes its x_t: {gas}");
 }
