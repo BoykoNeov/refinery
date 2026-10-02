@@ -7084,8 +7084,9 @@ plant with a disc after the discharge line and a low-suction-level trip that
 stops the pump at tick 2 142. The disc is shut on exactly every tick to 3 160 and
 reopens when the supply's head turns the flow forward; its plain-valve twin runs
 backwards at 3.52 kg/s. The tank stands higher while the disc is shut (2.27 m
-against 1.87 m at 3 000) and is not kept (0.947 m against 0.985 m at 6 000). Seven
-gates in `tests/check_valve_reference.rs`; twenty mutations, eighteen caught, two (the game solver's frozen read, and its node step's share alone) uncaught by design as costs. All thirty earlier
+against 1.87 m at 3 000) and is not kept (0.947 m against 0.985 m at 6 000). Eight
+gates in `tests/check_valve_reference.rs` and a random arm in
+`solvers/tests/invariants.rs` (400 chains, the disc shut 176 / in band 133 / full 57); twenty mutations, eighteen caught, two (the game solver's frozen read, and its node step's share alone) uncaught by design as costs. All thirty earlier
 plants byte-identical on both fidelities with no iteration count moved. New rows:
 E23 (cracking pressure, closing dynamics), E24 (gas service), E25 (restart surge
 into the pinned fill, 24.80 kg/s against 6.90), E26 (the disc reads its branch's

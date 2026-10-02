@@ -17094,6 +17094,21 @@ having come forward again.
    command.
 7. **E25, characterised**: stopped at 3 001, restarted at 6 001 into the fill the
    loop pinned open, the fill peaks at 24.80 kg/s against 6.90 settled.
+8. **A disc publishes a cavitation criterion**: the demo under `thermo =
+   "trouton"`, with the plain fill valve beside it as the control. Added after
+   the mutation pass found mutation 18 uncaught, because every other gate runs
+   the constant model, which has no criterion.
+9. **The random arm** — `the_check_valve_arm_shuts_lifts_and_conserves` in
+   `crates/solvers/tests/invariants.rs`, its own test so no existing generator's
+   recorded counts move: a disc in a random liquid chain with independent end
+   pressures, both fidelities. A legal termination (I3), nothing non-finite (I2),
+   one flow along a converged chain to ten times the fidelity's own tolerance
+   (I1), never a backward flow through the disc, and exactly zero wherever the
+   drive net of `β` is not forward. Measured on 400 deterministic samples:
+   Newton converges 366, the game solver 355; on Newton the disc is shut 176
+   (164 of them with the sink above the source), inside its band 133, at full
+   lift 57. Floors on all three states and both convergence rates. It catches
+   mutations 1, 2 and 15 on its own.
 
 ### What must not change, measured
 
@@ -17129,12 +17144,18 @@ leg behind any shut valve, hung off a tank that falls ~22 Pa a tick. Row A8,
 re-measured; the mechanism is not confirmed.
 
 **5. The mutation pass: twenty edits, eighteen caught, two uncaught by design.**
-Predictions were written before the run; five were wrong.
+Predictions were written before the run; five were wrong. **The first write-up
+said "eighteen caught" when the pass had caught seventeen** — it missed that
+mutation 18 escaped. Gate 8 was then written for it, and the count is eighteen
+now. One edit named before the pass was NOT run: Newton putting the disc's share
+in the source column only (the relief valve's pattern). Because
+`CompiledEdge::conductance` owns the sum, that would be a rewrite of the
+assembly rather than a slip in it; the table does not cover it.
 
 | # | edit | predicted | caught by |
 |---|---|---|---|
-| 1 | the disc's arm compiles a bare pipe (the `_ =>` fall-through) | gates 1, 4 | gates 1, 2, 4 |
-| 2 | the drive ignores the static head | gate 4 alone | gate 4 alone (the uphill tail) |
+| 1 | the disc's arm compiles a bare pipe (the `_ =>` fall-through) | gates 1, 4 | gates 1, 2, 4, 9 |
+| 2 | the drive ignores the static head | gate 4 alone | gate 4 (the uphill tail), and gate 9 once it existed |
 | 3 | `conductance` drops the opening share | gates 4, 5 | gates 1, 4, 5, 7 |
 | 4 | Newton assembles the frozen slope | **uncaught (cost)** | **gates 1, 5, 7: Newton diverges** at 50 iterations inside the band (§30's A14 again) |
 | 5 | the game sweep reads the disc frozen | uncaught (cost) | **uncaught**: gate 5's sweeps 6 835 → 31 348 |
@@ -17147,18 +17168,18 @@ Predictions were written before the run; five were wrong.
 | 12 | the loop-actuator refusal gone | gate 6 | gate 6 |
 | 13 | the trip refusal gone | gate 6 | gate 6 |
 | 14 | the command refusal gone | gate 6 | gate 6 |
-| 15 | the disc opens both ways (on the drive's magnitude) | gates 1, 4 | gates 1, 2, 4, 7 |
+| 15 | the disc opens both ways (on the drive's magnitude) | gates 1, 4 | gates 1, 2, 4, 7, 9 |
 | 16 | a step, not a smoothstep | gate 4 (+5?) | gate 4 alone; Newton's worst rose 11 → 42, inside the cap |
 | 17 | `is_zero_volume` misses the disc | **unknown** | gates 1, 2, 5, 7 |
-| 18 | the disc is not a cavitation subject | inert | **uncaught**: every shipped and fixture plant here declares `thermo = "constant"`, which has no criterion |
+| 18 | the disc is not a cavitation subject | inert | uncaught in the pass (every gate then ran `thermo = "constant"`, which has no criterion); **gate 8 added for it, and catches it** |
 | 19 | no `OPEN_EPS` snap on the disc | **inert** | gate 4: at a nominal zero drive, `P − β` rounds to a hair above zero, and without the snap that hair is a finite `α` and a disc that "conducts" |
 | 20 | the share subtracted | gates 4, 5 | gates 1, 4, 5, 7 |
 
 Mutations 5 and 6 are left uncaught **on purpose**: each is a cost, not a wrong
 answer, and a gate for either would assert a sweep count fitted to today's
 plant (M9.3b's reason). The defence is that undoing both at once (3) is caught
-by four gates. Mutation 18 is uncaught because no plant that can evaluate the
-criterion carries a disc; it is recorded rather than gated.
+by four gates. Gates 8 and 9 were added after the pass, at the final review, and
+mutations 1, 2, 15 and 18 were re-run against them.
 
 ### Deferred, with what un-defers each
 

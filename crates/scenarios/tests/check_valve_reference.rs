@@ -26,6 +26,7 @@
 //! 6. **Every refusal, each on its own message.**
 //! 7. **E25, characterised**: restarting the pump into the fill valve the loop
 //!    pinned open while the disc was shut is a surge.
+//! 8. **A disc publishes a cavitation criterion** under a model that has one.
 
 use refinery_core::energy::NodeStates;
 use refinery_core::graph::{EdgeId, NodeId, NodeKind, PlantGraph, TripState};
@@ -697,5 +698,41 @@ fn restarting_into_the_pinned_fill_is_a_surge() {
     assert!(
         peak > 3.0 * settled,
         "the restart surges: peak {peak} kg/s against {settled} kg/s settled"
+    );
+}
+
+// ------------------------------------------------------------------ gate 8
+
+/// **A disc is a cavitation subject** (`cavitation_subject`, DESIGN §33 fork 5):
+/// its node is its inlet, upstream of the disc, so what flashes there is what
+/// the line delivers. Every other gate here runs `thermo = "constant"`, which
+/// has no criterion at all, so excluding the disc would pass all of them; this
+/// gate selects the model that can answer, with the plain fill valve beside it
+/// as the control that the switch took effect.
+#[test]
+fn a_disc_publishes_a_cavitation_criterion() {
+    let mut engine = build(&swap(DEMO, "thermo = \"constant\"", "thermo = \"trouton\""));
+    for t in 1..=5 {
+        tick(&mut engine, "trouton", t);
+    }
+    let snap = engine.snapshot();
+    let criterion = |name: &str| {
+        snap.nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap_or_else(|| panic!("the plant declares '{name}'"))
+            .cavitation
+            .as_ref()
+            .map(|c| c.cavitating)
+    };
+    assert_eq!(
+        criterion("discharge_valve"),
+        Some(false),
+        "the control: a plain valve publishes a criterion under this model"
+    );
+    assert_eq!(
+        criterion("discharge_check"),
+        Some(false),
+        "and so does the disc"
     );
 }

@@ -41,6 +41,9 @@
 # level — and it pins wide open, speeding the drain until the two tanks
 # balance; the level settles near 0.95 m. The clamp bounds it (no NaN, no
 # error).
+# **E22 is closed by M30** (docs/DESIGN.md §33): `tank_level_fill_check_valve.toml`
+# is this plant with a check valve on the pump's discharge, which stops the
+# backward drain. This file keeps the hazard on purpose, as that one's twin.
 #
 #   cargo run -p refinery-cli -- run scenarios/tank_level_fill_control.toml --ticks 6000
 

@@ -3096,3 +3096,204 @@ fn the_leak_arm_conducts_and_is_refused_both_ways() {
          the leak arm proves the GENERATOR works and proves nothing about the gate"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The CHECK VALVE arm (M30, docs/DESIGN.md §33).
+//
+// Its own test rather than a new `Mid` variant: widening `mid_strategy` would
+// reshuffle every chain the existing gates draw and move their recorded
+// reachability counts. Liquid only, because a disc in gas service is refused
+// (`compile_edge`'s gas door, ledger row E24).
+// ---------------------------------------------------------------------------
+
+/// One generated disc chain: `Source → before* → DISC → after* → Sink`, the end
+/// pressures drawn independently so the drive across the disc runs backwards
+/// about as often as forwards, and a pump among the mids can push either way.
+#[allow(clippy::type_complexity)]
+fn disc_chain_strategy() -> impl Strategy<
+    Value = (
+        Vec<Mid>,
+        Vec<Mid>,
+        (f64, f64),
+        Vec<(f64, f64, f64, f64)>,
+        f64,
+        f64,
+    ),
+> {
+    (
+        prop::collection::vec(mid_strategy(), 0..3usize),
+        prop::collection::vec(mid_strategy(), 0..3usize),
+        (1e-4..5e-3f64, 0.1e5..1.0e5f64),
+        prop::collection::vec(pipe_strategy(), 7usize..8),
+        1.0e5..8.0e5f64,
+        1.0e5..8.0e5f64,
+    )
+}
+
+/// Builds the chain and returns it with its ordered edges and the disc's id.
+fn build_disc_chain(
+    before: &[Mid],
+    after: &[Mid],
+    (cv, full_open): (f64, f64),
+    pipes: &[(f64, f64, f64, f64)],
+    p_src: f64,
+    p_snk: f64,
+    fluid: &Fluid,
+) -> (PlantGraph, Vec<refinery_core::graph::EdgeId>, NodeId) {
+    let mut g = PlantGraph::new();
+    let mut chain = vec![g.add_node(source(p_src, fluid))];
+    for (i, m) in before.iter().enumerate() {
+        chain.push(g.add_node(mid_node(m, i, fluid)));
+    }
+    let disc = g.add_node(Node {
+        name: "disc".into(),
+        kind: NodeKind::CheckValve {
+            cv_max: cv,
+            full_open: Pascal(full_open),
+        },
+        heat_input: Watt(0.0),
+    });
+    chain.push(disc);
+    for (i, m) in after.iter().enumerate() {
+        chain.push(g.add_node(mid_node(m, before.len() + i, fluid)));
+    }
+    chain.push(g.add_node(sink(p_snk, fluid)));
+    let mut edges = Vec::new();
+    for i in 0..chain.len() - 1 {
+        edges.push(g.add_pipe(
+            chain[i],
+            chain[i + 1],
+            pipe(pipes[i], &format!("pipe{i}"), fluid),
+        ));
+    }
+    (g, edges, disc)
+}
+
+/// **A disc in a random liquid chain**, on both fidelities: the solve terminates
+/// legally (I3) with nothing non-finite (I2); a converged series chain carries one
+/// flow (I1); the disc's own outlet never carries a backward flow; and wherever the
+/// drive across its branch, net of the outlet pipe's static head, is not forward,
+/// it carries EXACTLY zero. Counted, with floors, so the arm cannot pass on a
+/// generator that never shuts the disc, never lifts it fully, or never leaves it
+/// inside its band.
+#[test]
+fn the_check_valve_arm_shuts_lifts_and_conserves() {
+    const SAMPLES: usize = 400;
+    let fluid = Fluid::liquid();
+    let mut runner = TestRunner::deterministic();
+    let strat = disc_chain_strategy();
+    let mut converged = [0usize; 2];
+    let (mut shut, mut partial, mut full) = (0usize, 0usize, 0usize);
+    let mut backward_drive_shut = 0usize;
+    for _ in 0..SAMPLES {
+        let (before, after, disc_spec, pipes, p_src, p_snk) = strat
+            .new_tree(&mut runner)
+            .expect("strategy produces a value")
+            .current();
+        let (g, edges, disc) =
+            build_disc_chain(&before, &after, disc_spec, &pipes, p_src, p_snk, &fluid);
+        let outlet = outlet_of(&g, disc).expect("the disc has an outlet").0;
+        for (k, which) in ["newton", "simple"].into_iter().enumerate() {
+            let outcome = if k == 0 {
+                NewtonFlowSolver::default().solve(
+                    &g,
+                    &fluid.slate,
+                    &Default::default(),
+                    Seconds(0.1),
+                )
+            } else {
+                SimpleFlowSolver::default().solve(
+                    &g,
+                    &fluid.slate,
+                    &Default::default(),
+                    Seconds(0.1),
+                )
+            };
+            let sol = match outcome {
+                Ok(sol) => sol,
+                Err(SimError::SolverDiverged { .. }) | Err(SimError::AnchoringUnsettled { .. }) => {
+                    continue
+                }
+                Err(other) => panic!("{which}: unexpected error: {other}"),
+            };
+            assert!(
+                sol.diagnostics.converged && all_finite(&sol),
+                "{which}: I2/I3"
+            );
+            converged[k] += 1;
+
+            // I1 on a series chain: one flow, to the fidelity's own tolerance.
+            let (tol_abs, tol_rel) = if k == 0 {
+                let s = NewtonFlowSolver::default();
+                (s.tol_abs_kg_s, s.tol_rel)
+            } else {
+                let s = SimpleFlowSolver::default();
+                (s.tol_abs_kg_s, s.tol_rel)
+            };
+            let flows: Vec<f64> = edges.iter().map(|e| sol.edge_mass_flow[e]).collect();
+            let throughput = flows.iter().fold(0.0f64, |m, f| m.max(f.abs()));
+            let (lo, hi) = flows
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(lo, hi), &f| (lo.min(f), hi.max(f)));
+            assert!(
+                hi - lo <= 10.0 * (tol_abs + tol_rel * throughput),
+                "{which}: one flow along the chain, spread {} at throughput {throughput}",
+                hi - lo
+            );
+
+            // The disc itself, read against its OWN branch at the answer.
+            let pressures = pressures_of(&sol);
+            let c = refinery_solvers::network::compile_edge(
+                &g,
+                outlet,
+                &fluid.slate,
+                &Default::default(),
+                &pressures,
+            )
+            .expect("the disc's edge compiles at the answer");
+            let drive = pressures[&c.src] - pressures[&c.tgt] - c.branch.beta;
+            let flow = sol.edge_mass_flow[&outlet];
+            assert!(
+                flow >= 0.0,
+                "{which}: the disc passed {flow} kg/s backwards"
+            );
+            if drive <= 0.0 {
+                assert_eq!(
+                    flow, 0.0,
+                    "{which}: a disc with drive {drive} Pa carries nothing"
+                );
+            }
+            if k == 0 {
+                let NodeKind::CheckValve { full_open, .. } = g.node(disc).kind else {
+                    unreachable!("the disc is a check valve")
+                };
+                if drive <= 0.0 {
+                    shut += 1;
+                    if p_snk > p_src {
+                        backward_drive_shut += 1;
+                    }
+                } else if drive < full_open.value() {
+                    partial += 1;
+                } else {
+                    full += 1;
+                }
+            }
+        }
+    }
+    eprintln!(
+        "check-valve chains: converged newton {}/{SAMPLES}, simple {}/{SAMPLES}; disc on \
+         newton shut {shut} (with the sink above the source {backward_drive_shut}) / inside \
+         its band {partial} / full lift {full}",
+        converged[0], converged[1]
+    );
+    assert!(
+        shut >= SAMPLES / 8 && partial >= SAMPLES / 40 && full >= SAMPLES / 8,
+        "the arm must reach all three states: shut {shut}, in band {partial}, full {full}"
+    );
+    assert!(
+        converged[0] * 4 >= SAMPLES * 3 && converged[1] * 2 >= SAMPLES,
+        "converged newton {} simple {} of {SAMPLES}",
+        converged[0],
+        converged[1]
+    );
+}

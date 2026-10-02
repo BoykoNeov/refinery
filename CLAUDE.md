@@ -215,7 +215,9 @@ DESIGN §33. Read its "Corrections from building it" before touching
   tick to 3 160, then reopens; its plain-valve twin runs backwards at 3.52 kg/s.
   **The tank is not kept**: higher while the disc is shut (2.27 m against 1.87 m
   at 3 000), lower at the end (0.947 m against 0.985 m). Gates are
-  `tests/check_valve_reference.rs`. All 30 earlier plants byte-identical, no
+  `tests/check_valve_reference.rs` (eight) plus a random arm in
+  `solvers/tests/invariants.rs` (`the_check_valve_arm_shuts_lifts_and_conserves`,
+  its own test so no recorded generator count moves). All 30 earlier plants byte-identical, no
   iteration count moved; a new `NodeKind` variant, so the Godot build and clippy
   were run and are clean.
 - **Twenty mutations, eighteen caught**; the game solver's frozen read and its
