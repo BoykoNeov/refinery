@@ -7091,3 +7091,29 @@ plants byte-identical on both fidelities with no iteration count moved. New rows
 E23 (cracking pressure, closing dynamics), E24 (gas service), E25 (restart surge
 into the pinned fill, 24.80 kg/s against 6.90), E26 (the disc reads its branch's
 drive), A19 (the game solver's band cost at low flow); A8 re-measured.
+
+## M31 — a check valve in gas service: ledger row E24; opened on a decision
+
+### M31 — specified and built in one slice — **LANDED** 2026-10-02, and M31 is CLOSED
+
+Taken on the user's decision after M30 closed; E24 was not past its trigger. The
+note is DESIGN §34. A `check_valve` takes `x_t` under `Valve`'s rule (required in
+gas service, refused in liquid, inside (0, 1)), and its valve folds through the
+ISA compressible law through `network::fold_gas_service`, now the one owner for
+all three valve kinds. The row's premise was a circularity that is not there: the
+opening is read off the branch's drive first and the fold splits that drive
+afterwards. The shaped-heat-capacity refusal (B23) covers the disc.
+
+Demo `scenarios/gas_receiver_check_valve.toml`, the thirty-second file:
+`vessel_pressure_control.toml` without its loop, the receiver charged at 30 bar
+above a 20 bar header, and a disc on the make-up line. The disc is shut on ticks
+1–300, crosses its band in 301–352 and runs at full lift after; its plain-valve
+twin blows up to 0.462 kg/s back into the header for 174 ticks. Both settle to
+16.49 bar. The demo never chokes (`x/x_choke` ≤ 0.0385) and borrows a globe
+valve's `x_t` (new row E27); the fold is carried by seven gates in
+`tests/gas_check_valve_reference.rs` and a gas half of the random disc arm (400
+chains, 33 discs choked). Eight mutations; three escaped the first pass (a
+one-sided choke detector, a static head too small to see on a level gas line, an
+untested `skip_serializing_if`), each closed by a test change and re-run, so
+eight caught. All thirty-one earlier plants byte-identical on both fidelities
+with no iteration count moved; the Godot build and clippy are clean.

@@ -98,6 +98,7 @@ cargo run -p refinery-cli -- run scenarios/tank_overflow.toml --ticks 6000      
 cargo run -p refinery-cli -- run scenarios/furnace_cascade_control.toml --ticks 6000  # the M25.1 cascade
 cargo run -p refinery-cli -- run scenarios/tank_level_fill_control.toml --ticks 6000  # the M29 fill-valve loop
 cargo run -p refinery-cli -- run scenarios/tank_level_fill_check_valve.toml --ticks 6000  # the M30 check valve
+cargo run -p refinery-cli -- run scenarios/gas_receiver_check_valve.toml --ticks 6000      # the M31 gas check valve
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -192,6 +193,38 @@ extension removed too — ignore it, the file it writes is what matters.
 ## Current milestone
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
+
+**M31 is CLOSED (2026-10-02): a check valve in gas service — `docs/DEFERRED.md`
+row E24, now struck.** Taken on a DECISION (the user's). One slice, note and build
+together: DESIGN §34. Read its "Corrections from building it" before touching
+`fold_gas_service` or the random arm's choke detector.
+- **`NodeKind::CheckValve::x_t`** (skipped when `None`, so no liquid plant's
+  bytes move) under `Valve`'s rule in `require_gas_valve_x_t`: required in gas,
+  refused in liquid, inside (0, 1). The shaped-heat-capacity refusal (B23)
+  covers the disc. E24's "a disc that reads its own drop" was not a coupling:
+  the opening is read off the branch's drive first, the fold splits it after.
+- **`network::fold_gas_service` is the one owner of the compressible law** for
+  all three valve kinds, the gas-without-`x_t` door included. Moved without
+  reordering a single operation: all 31 earlier plants byte-identical on both
+  fidelities, worst and total iterations unchanged.
+- **Demo `scenarios/gas_receiver_check_valve.toml`** (the thirty-second file):
+  `vessel_pressure_control.toml` without its loop, the receiver charged at 30 bar
+  above a 20 bar header. Disc shut ticks 1–300; its twin blows 0.462 kg/s back
+  into the header for 174 ticks; both settle at 16.49 bar. **It never chokes**
+  (`x/x_choke` ≤ 0.0385) and BORROWS a globe valve's `x_t` (new row E27, no
+  published `x_T` for a check valve). The fold is carried by
+  `tests/gas_check_valve_reference.rs` (seven gates, a choked-in-band fixture
+  among them) and `the_check_valve_arm_in_gas_service_...` in
+  `solvers/tests/invariants.rs` (33 of 400 discs choked); the liquid arm is the
+  same function with its draws unchanged.
+- **Eight mutations, three escaped the first pass, all closed and re-run.**
+  `valve_edge_is_choked` was one-sided and counted an UNFOLDED valve (flow above
+  the plateau) as choked — now two-sided, no count moved. "The fold handed the
+  drive, not the drop" was predicted inert and is not on a rising gas line (gate
+  2's tail rises 30 m). An untested `skip_serializing_if` (gate 6 reads the
+  serialized bytes). A choked valve's frozen Newton slope is entirely spurious
+  (A18, re-measured): inside a choked disc's band the opening share is the whole
+  true derivative. The Godot build and clippy were run and are clean.
 
 **M30 is CLOSED (2026-10-02): a check valve — `docs/DEFERRED.md` row E22, now
 struck.** Taken on a DECISION (the user's). One slice, note and build together:
@@ -1968,7 +2001,7 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly nine of the thirty-one files in `scenarios/` declare a `[[controls]]`
+**Exactly nine of the thirty-two files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
@@ -1979,11 +2012,12 @@ table** — `tank_level_control.toml` (M8.4, a level),
 `tank_level_fill_control.toml` (M29, a level on its FILL valve) and
 `tank_level_fill_check_valve.toml` (M30, the same loop behind a check valve,
 with a trip). **The
-other twenty-two
+other twenty-three
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor** (one, `tank_overfill_trip.toml`, carries a `[[trips]]`
-table instead, one, `tank_runs_dry.toml`, runs a tank dry, and one,
-`tank_overflow.toml`, spills); adding a loop to one of them
+table instead, one, `tank_runs_dry.toml`, runs a tank dry, one,
+`tank_overflow.toml`, spills, and one, `gas_receiver_check_valve.toml`, puts a
+check valve in gas service); adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file
 rather than wiring one into an existing plant. Every other plant that carries a
 loop is an inline test fixture for the same reason.

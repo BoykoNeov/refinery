@@ -17187,7 +17187,7 @@ mutations 1, 2, 15 and 18 were re-run against them.
   dynamics (hysteresis, slam). Trigger: a plant whose answer depends on the disc
   staying shut below a nonzero forward difference.
 - **E24 — a check valve in gas service.** Refused at load and in `compile_edge`.
-  Trigger: a gas plant that needs one.
+  Trigger: a gas plant that needs one. **Closed by M31 (§34)**, on a decision.
 - **E25 — restarting into a fill valve the loop pinned open.** While the disc is
   shut the level loop sees a falling level and winds the fill to 1; a restart
   then drives the pump curve through it. Trigger: a plant or trip that restarts
@@ -17198,3 +17198,202 @@ mutations 1, 2, 15 and 18 were re-run against them.
 - **A19 — the game solver's cost while a disc rides its band at low flow**: 9–10
   sweeps a tick, contracting 0.44 per pass, against 2–3 at full lift. Trigger: a
   plant whose disc-in-band ticks press on a frame budget.
+
+## 34. A check valve in gas service — ledger row E24 (M31)
+
+### What licensed this, stated plainly
+
+Nothing fired. E24's trigger, "a gas plant that needs one", names no shipped
+plant. **This milestone is a decision**, the user's, taken on 2026-10-02 after M30
+closed. Specified and built in one slice, as M28–M30 were. The probes are in
+`W:\temp\claude\m31\` (`probe\`, `mutate.py`, the before/after corpus files).
+
+### The premise, measured before any fork
+
+**E24's sentence implies a circularity that is not there.** It read "the ISA
+compressible fold is not wired to a disc that reads its own drop", as if the
+opening and the fold each needed the other. As built they do not: the opening is
+read off the branch's forward drive `S = dp − β` first, from the iterate; it sets
+the valve's coefficient; the fold then splits the drive between valve and pipe
+exactly as it does for a `Valve`. The disc never reads the valve's own share the
+fold computes — that would need a nested solve — so E26 (the disc reads its
+branch's drive, not its own drop) now covers gas too. Nothing about the fold
+changes; what the check valve lacked was a route to it.
+
+**And the route already existed twice.** The relief valve shares `Valve`'s arm in
+`compile_edge` for exactly the reason a third copy must not be written: two
+copies of the element physics can drift apart. So the gas law moved into one
+function both arms call.
+
+### Fork 1 — one owner for the compressible law
+
+`network::fold_gas_service` composes a valve of ANY kind with its outlet pipe:
+in closed form in liquid service, through `fold_gas_valve` in gas service, and an
+`Err` for a gas stream with no `x_t` (the second door, now shared). The
+valve/relief arm and the check-valve arm both call it. **The arithmetic order is
+unchanged**, and the corpus is the proof: all seven gas plants (and the other
+twenty-four) are byte-identical on both fidelities with worst and total
+iterations unchanged, measured against baselines taken before the first edit.
+
+### Fork 2 — `x_t` under `Valve`'s rule
+
+`NodeKind::CheckValve` gains `x_t: Option<f64>`, serialised only when present, so
+M30's liquid demo publishes the same bytes. `require_gas_valve_x_t` now matches
+all three valve kinds in one arm: required in gas service, refused in liquid,
+inside `(0, 1)`. Its special check-valve refusal is gone. The shaped-heat-capacity
+refusal (row B23: the choke's `γ` is read from the constant capacity) matches the
+disc too — the one site the compiler would not have flagged, since it is a
+`find_map` over declarations with a `_ => None` arm.
+
+### Fork 3 — what `x_t` a check valve gets
+
+**No published `x_T` for a check valve was found.** IEC 60534-2-1's typical
+values are tabulated by control-valve style and trim; a swing or lift check is
+not among them, and this workspace has not read the standard (the only `x_T` in
+the repo, 0.72, is a globe valve's on a secondary citation). The key is
+therefore required and per-valve, as for every other valve, with no default; the
+demo BORROWS 0.72 and says so in its own comment. It is tolerable there because
+the demo's disc never comes near its choke (fork 4) — the number moves almost
+nothing. New row E27.
+
+### Fork 4 — the demo, and what it is diffed against
+
+`scenarios/gas_receiver_check_valve.toml` (the thirty-second file) is
+`vessel_pressure_control.toml` without its loop, with the receiver declared at
+30 bar above a 20 bar header, the vent valve fixed at 0.30, and a disc on the
+make-up line with 1 m of 50 mm spool to the receiver. **A receiver charged above
+its supply is the plant that needs one**: a plain valve on the make-up line would
+blow it back into the header. The CLI issues no commands, so the dynamics have to
+come from the declared state, and this is the shape that gives them.
+
+- **The spool is wide because of E26.** At the make-up line's 21 mm the spool's
+  friction at full flow would be ~19 kPa, nearly twice the 10 kPa band; at
+  50 mm it is ~0.25 kPa. The first probe used 21 mm and was resized.
+- **`full_open_bar = 0.1`** from the measured running drive, ~0.44 bar across the
+  branch at the settle: the disc runs at full lift and pays for its band only
+  while it reopens.
+
+Measured over 6 000 ticks, both fidelities identically to the reported digits:
+the disc's outlet carries exactly zero on every tick from 1 to **300**, never a
+backward flow, crosses its band in ticks 301–352 and runs at full lift from there.
+Its twin (a plain valve held fully open, same `kv` and `x_t`) runs backwards into
+the header for **174** ticks at up to **0.462 kg/s**, and holds the receiver at
+**23.10 bar** at tick 100 against the disc's **26.16**. Both settle to one answer,
+**16.49 bar**, 29 Pa apart at tick 6 000 and closing (560 Pa at 3 000). Cost: Newton worst 7, total 12 645;
+the game solver worst 7, total 13 828, and ~0.04 ms a tick of wall time more than
+its twin for the fresh read (a 60-step fold per trial).
+
+**The demo never chokes, and that is measured rather than hoped**: the disc's own
+`x/x_choke` peaks at **0.0385**, where the compressible law is the liquid one to
+about a percent. So the fold is carried by the fixtures and the random arm, and
+gate 2's control is what shows the demo's disc really takes it.
+
+### Gates — `crates/scenarios/tests/gas_check_valve_reference.rs`
+
+1. **The disc keeps the receiver out of its header**, both fidelities: never a
+   backward flow, exactly zero on ticks 1–300 and positive from 301; the twin
+   below −0.4 kg/s over more than 150 ticks; the receiver more than 2 bar higher
+   with the disc at tick 100; and one answer at the settle (gap under 1e-4
+   relative at 6 000 and under a tenth of the gap at 3 000).
+2. **At full lift it IS a plain gas valve, and the fold is in it**: on a
+   gas fixture whose tail rises 30 m (correction 1), at a 3 bar drop off 20 bar and past the choke, the disc's branch
+   `α` and `β` equal a `Valve`'s at opening 1 bit for bit, with no opening share.
+   **The control**: the gas branch carries 0.927× (unchoked) and 0.613× (choked)
+   the incompressible branch's flow on the same density — so a disc that skipped the fold could not
+   pass the identity. And the choked point is a plateau: 3.7e-8 relative rise as
+   the drain falls 0.5 bar (the `eps_dp` regularisation's shortfall), where the
+   incompressible flow rises 3.1%.
+3. **The opening's share of the slope is right in gas**, unchoked and choked.
+   The fold's own frozen-`x` derivative error (row A18) is in every gas valve's
+   `flow_ddp`, so a centred difference of the disc's flow cannot be compared with
+   `conductance` directly. The gate compares the SHARE: `conductance − frozen`
+   against the disc's centred difference less a plain valve's at the same fixed
+   opening, moving the drain so the density and the fold's `p_up` hold still.
+   Unchoked (20 bar, band 0.1 bar, at 0.2/0.5/0.8 of it): within 4.8e-7–1.5e-5,
+   bound 1e-3, and the share is more than half the true slope. Choked inside the
+   band (1.2 bar, `x_t` 0.2, band 0.5 bar — a corner the random arm visits once
+   in 400): within 5.7e-4 and 1.1e-3, bound 2e-2. Inside the band the disc's
+   branch equals a plain valve's at its own opening bit for bit. A shut gas disc
+   carries exactly nothing, including at zero drive.
+4. **Every gas refusal on its own message**: a gas disc with no `x_t`, a liquid
+   disc declaring one, `x_t` at 1.2 and at 0, and a shaped heat capacity with a
+   gas disc. M30's two gas assertions are re-premised rather than deleted: a gas
+   disc without `x_t` is refused for that reason, at the loader and at
+   `compile_edge`.
+5. **The demo never comes near the choke** (`x/x_choke < 0.1`, measured 0.0385).
+6. **A disc publishes `x_t` only in gas service**, on the serialized snapshot
+   (added after the mutation pass, correction 1).
+7. **The random arm in gas** —
+   `the_check_valve_arm_in_gas_service_shuts_lifts_chokes_and_conserves` in
+   `crates/solvers/tests/invariants.rs`, M30's disc chain over the gas arm's
+   two-cut slate and `x_T` range with the coefficient scaled by `GAS_CV_SCALE`.
+   The liquid arm is the same function with the fluid fixed, so its draws and
+   counts are exactly M30's (366/355; 176/133/57). Gas, 400 samples: Newton
+   converges 369, the game solver 371; the disc shut 198 (181 with the sink above
+   the source), in its band 90, at full lift 81, **choked 33** (one of them inside
+   its band). Floor on the choked count, 10. Its choke detector is now two-sided (correction 1).
+
+### One finding about the solver, not the disc
+
+**A choked valve's frozen slope is entirely spurious.** On the choked-in-band
+fixture a plain valve at the disc's fixed opening has a true slope against its
+downstream pressure of 1.2e-11 kg/(s·Pa) and a frozen `ρ·dQ/ddp` of 3.0e-7: the
+plateau does not answer the drain at all, and Newton's Jacobian says it does.
+Inside its band a choked disc's flow answers the drain ONLY through its opening,
+so there the opening share is the whole of the true slope. This is row A18 at its
+extreme, re-measured; it costs convergence speed and never the answer.
+
+### What must not change, measured
+
+All thirty-one earlier plants byte-identical on both fidelities, worst AND total
+iterations unchanged, against baselines taken before the first edit — measured
+once after the refactor alone and again with everything in. "Runs
+byte-identical" means post-M31 identical, unchanged. The Godot feature build and
+its clippy were run (a `NodeKind` field changed) and are clean.
+
+### Corrections from building it (M31)
+
+**1. Three of the eight mutations escaped the first pass, and one of the three
+was predicted inert and is not.** Predictions were written before the run; four
+were wrong. Each escape is closed by a test change, and all three were re-run
+against it.
+
+- **The random arm's choke detector was one-sided.** It counted a valve as
+  choked when its flow reached the plateau, so a disc that never folded — whose
+  incompressible flow OVERSHOOTS the plateau — read as choked, and the gas arm
+  was blind to mutation 2. The detector is now two-sided; on the correct engine
+  the flow never exceeds its plateau, and no recorded count moved (gas chains
+  39/108, trees 29 and 31, gas discs 33).
+- **"Handing the fold the drive instead of the drop" was predicted inert** on
+  the grounds that a gas line's static head is a few pascals. It is a few
+  pascals on a level line and a few kilopascals on a rising one, and the random
+  arm draws ±5 m. Gate 2's tail now rises 30 m (β ≈ 2–4 kPa), and the arm
+  catches it too, through the two-sided detector.
+- **A `skip_serializing_if` nothing tested.** Dropping it moves M30's demo's
+  bytes and fails no test; only a baseline on the measurer's disk would see it,
+  and CI commits none. Gate 6 asserts the key on the serialized snapshot.
+
+| # | edit | predicted | caught by |
+|---|---|---|---|
+| 1 | the check arm passes no `x_t` | gas gates, gas arm | gates 1, 2, 3, 5, the shut test, the gas arm |
+| 2 | the check arm composes incompressibly in gas | gates 2, 3, gas arm; gate 1 unsure | gates 1, 2, 3, M30's gate 4 (the gas door now compiles); **the gas arm only after the detector was made two-sided** |
+| 3 | the loader's `x_t` rule skips the disc | gate 4 | gate 4, M30's gate 6 |
+| 4 | the shaped-heat-capacity refusal skips the disc | gate 4 | gate 4 |
+| 5 | `x_t` always serialised | **uncaught** | uncaught in the pass; **gate 6 added for it** |
+| 6 | the fold is handed the drive, not the drop | **inert** | uncaught in the pass and NOT inert; **gate 2's rise added**, and the gas arm |
+| 7 | the opening share dropped | gas gate 3, M30's gates | gates 1, 3, 5 and M30's gates 1, 4, 5, 7 |
+| 8 | `fold_gas_service`'s gas door gone | M30's gate 4 | M30's gate 4 and the relief valve's own (the door is shared now) |
+
+**2. The first demo outlet was the trap E26 names.** The probe put the disc 1 m of
+the make-up line's own 21 mm pipe short of the receiver; that pipe's friction at
+full flow is ~19 kPa against a 5 kPa band. Resized to 50 mm before any gate was
+written.
+
+
+### Deferred, with what un-defers each
+
+- **E27 — no published `x_T` for a check valve.** The key is required and the
+  demo borrows a globe valve's 0.72. Trigger: a plant whose answer depends on a
+  check valve's choke point.
+- **E26 now covers gas.** The fold computes the valve's own share of the drive;
+  the disc still reads the whole branch's. Trigger unchanged.
