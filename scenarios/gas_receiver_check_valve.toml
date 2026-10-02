@@ -108,8 +108,8 @@ diameter_m = 0.021
 
 # A short, wide spool from the disc to the receiver. The disc reads the drive
 # across its whole branch — itself AND this pipe (docs/DEFERRED.md E26) — so the
-# spool's friction must stay small against the band: about 0.25 kPa at full
-# flow against 10 kPa. At the make-up line's own 21 mm it would be ~19 kPa.
+# spool's friction must stay small against the band: about 0.24 kPa at full
+# flow against 10 kPa. At the make-up line's own 21 mm it would be ~18 kPa.
 [[pipes]]
 name = "check_outlet"
 from = "make_up_check"

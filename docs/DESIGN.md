@@ -17267,8 +17267,9 @@ blow it back into the header. The CLI issues no commands, so the dynamics have t
 come from the declared state, and this is the shape that gives them.
 
 - **The spool is wide because of E26.** At the make-up line's 21 mm the spool's
-  friction at full flow would be ~19 kPa, nearly twice the 10 kPa band; at
-  50 mm it is ~0.25 kPa. The first probe used 21 mm and was resized.
+  friction at full flow would be ~18 kPa, nearly twice the 10 kPa band; at
+  50 mm it is ~0.24 kPa (Darcy–Weisbach by hand at the settled 0.226 kg/s and
+  11.1 kg/m³). The first probe used 21 mm and was resized.
 - **`full_open_bar = 0.1`** from the measured running drive, ~0.44 bar across the
   branch at the settle: the disc runs at full lift and pays for its band only
   while it reopens.
@@ -17279,9 +17280,12 @@ backward flow, crosses its band in ticks 301–352 and runs at full lift from th
 Its twin (a plain valve held fully open, same `kv` and `x_t`) runs backwards into
 the header for **174** ticks at up to **0.462 kg/s**, and holds the receiver at
 **23.10 bar** at tick 100 against the disc's **26.16**. Both settle to one answer,
-**16.49 bar**, 29 Pa apart at tick 6 000 and closing (560 Pa at 3 000). Cost: Newton worst 7, total 12 645;
-the game solver worst 7, total 13 828, and ~0.04 ms a tick of wall time more than
-its twin for the fresh read (a 60-step fold per trial).
+**16.49 bar**, 29 Pa apart at tick 6 000 and closing (560 Pa at 3 000). Cost,
+against the shipped twin: Newton 12 645 iterations against 12 516 (+1.0%, worst 7
+against 8), the game solver 13 828 sweeps against 13 631 (+1.4%, worst 7 against
+9). Wall time, paired A/B/A/B in one session: no difference on Newton, and the
+game solver 1.4× its twin (≈ 64 ms over 6 000 ticks, 0.011 ms a tick) — the
+fresh read recompiles the disc's gas edge, a 60-step fold, at every trial.
 
 **The demo never chokes, and that is measured rather than hoped**: the disc's own
 `x/x_choke` peaks at **0.0385**, where the compressible law is the liquid one to
@@ -17386,7 +17390,7 @@ against it.
 
 **2. The first demo outlet was the trap E26 names.** The probe put the disc 1 m of
 the make-up line's own 21 mm pipe short of the receiver; that pipe's friction at
-full flow is ~19 kPa against a 5 kPa band. Resized to 50 mm before any gate was
+full flow is ~18 kPa against a 5 kPa band. Resized to 50 mm before any gate was
 written.
 
 
