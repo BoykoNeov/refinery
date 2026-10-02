@@ -195,15 +195,20 @@ pub enum NodeKind {
     /// open — and differ by the pipe's friction once it flows, which moves only
     /// how far into the band the disc sits.
     ///
-    /// Liquid only, refused at load in gas service (ledger row E24). Opens from
-    /// zero: a spring that holds the disc shut against a nonzero cracking
-    /// pressure is ledger row E23.
+    /// In gas service it takes `x_t` and folds through the same ISA compressible
+    /// law a `Valve` does (M31, docs/DESIGN.md §34): the opening is read off the
+    /// branch's drive first, and the valve it sets is then folded like any other.
+    /// Opens from zero: a spring that holds the disc shut against a nonzero
+    /// cracking pressure is ledger row E23.
     CheckValve {
         /// Coefficient at full lift, in `Valve::cv_max`'s SI form.
         cv_max: f64,
         /// Forward drive [Pa] at which the disc reaches full lift. Positive: a
         /// zero band is a step, which the Jacobian is not entitled to.
         full_open: Pascal,
+        /// As `Valve::x_t` — required in gas service, refused in liquid.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        x_t: Option<f64>,
     },
     /// Zero-volume mixing point.
     Junction,

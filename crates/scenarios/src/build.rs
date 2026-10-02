@@ -2724,7 +2724,11 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                 x_t: *x_t,
             }
         }
-        NodeDef::CheckValve { kv, full_open_bar } => {
+        NodeDef::CheckValve {
+            kv,
+            full_open_bar,
+            x_t,
+        } => {
             if !full_open_bar.is_finite() || *full_open_bar <= 0.0 {
                 return Err(SimError::Scenario(format!(
                     "check valve '{name}' has full_open_bar = {full_open_bar}, which must be > 0. \
@@ -2745,6 +2749,7 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             NodeKind::CheckValve {
                 cv_max: kv_to_cv_si(*kv),
                 full_open: bar_to_pa(*full_open_bar),
+                x_t: *x_t,
             }
         }
         NodeDef::Furnace { duty_mw } => NodeKind::Furnace {

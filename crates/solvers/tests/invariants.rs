@@ -1009,6 +1009,29 @@ fn valve_edge_is_choked(
             ),
             x_t,
         ),
+        // A check valve chokes on the same law too (M31); its opening is read
+        // off the forward drive across its branch, net of the static head.
+        NodeKind::CheckValve {
+            cv_max,
+            full_open,
+            x_t: Some(x_t),
+        } => {
+            let Ok(c) = refinery_solvers::network::compile_edge(
+                graph,
+                eid,
+                &fluid.slate,
+                &Default::default(),
+                &pressures,
+            ) else {
+                return false;
+            };
+            let drive = pressures[&src] - pressures[&tgt] - c.branch.beta;
+            (
+                cv_max,
+                refinery_solvers::elements::check_opening(drive, full_open.value()),
+                x_t,
+            )
+        }
         _ => return false,
     };
     // A SHUT valve must be rejected before the plateau is computed, or it counts
@@ -3102,8 +3125,9 @@ fn the_leak_arm_conducts_and_is_refused_both_ways() {
 //
 // Its own test rather than a new `Mid` variant: widening `mid_strategy` would
 // reshuffle every chain the existing gates draw and move their recorded
-// reachability counts. Liquid only, because a disc in gas service is refused
-// (`compile_edge`'s gas door, ledger row E24).
+// reachability counts. The GAS half (M31, docs/DESIGN.md §34) is a second test
+// over the same chain builder, for the same reason: the liquid test's draws
+// and counts stay exactly as M30 recorded them.
 // ---------------------------------------------------------------------------
 
 /// One generated disc chain: `Source → before* → DISC → after* → Sink`, the end
@@ -3148,8 +3172,9 @@ fn build_disc_chain(
     let disc = g.add_node(Node {
         name: "disc".into(),
         kind: NodeKind::CheckValve {
-            cv_max: cv,
+            cv_max: valve_cv(cv, fluid),
             full_open: Pascal(full_open),
+            x_t: fluid.x_t,
         },
         heat_input: Watt(0.0),
     });
@@ -3178,18 +3203,113 @@ fn build_disc_chain(
 /// inside its band.
 #[test]
 fn the_check_valve_arm_shuts_lifts_and_conserves() {
-    const SAMPLES: usize = 400;
-    let fluid = Fluid::liquid();
+    // Liquid: the fluid is fixed, so the runner draws exactly what M30 recorded.
+    let counts = run_disc_arm(&mut |_| Fluid::liquid());
+    eprintln!(
+        "check-valve chains: converged newton {}/{DISC_SAMPLES}, simple {}/{DISC_SAMPLES}; disc \
+         on newton shut {} (with the sink above the source {}) / inside its band {} / full \
+         lift {}",
+        counts.converged[0],
+        counts.converged[1],
+        counts.shut,
+        counts.backward_drive_shut,
+        counts.partial,
+        counts.full
+    );
+    counts.assert_floors();
+}
+
+/// **The same arm in gas service** (M31, docs/DESIGN.md §34, ledger row E24):
+/// the disc's valve folds through the ISA compressible law, with `x_T` and the
+/// two-cut slate drawn as the gas arm draws them and the coefficient scaled by
+/// `GAS_CV_SCALE` so the valve, not the pipes, takes the drop. The same
+/// invariants and the same floors, and one more: the disc must reach its
+/// choked plateau in a share of the samples, or the arm runs on the `Y → 1`
+/// tail where the gas fold is the liquid one and proves nothing about it.
+#[test]
+fn the_check_valve_arm_in_gas_service_shuts_lifts_chokes_and_conserves() {
+    let gas = (0.05..0.95f64, 0.1..0.9f64).prop_map(|(w, x_t)| Fluid::gas(w, x_t));
+    let counts = run_disc_arm(&mut |runner| {
+        gas.new_tree(runner)
+            .expect("strategy produces a value")
+            .current()
+    });
+    eprintln!(
+        "gas check-valve chains: converged newton {}/{DISC_SAMPLES}, simple {}/{DISC_SAMPLES}; \
+         disc on newton shut {} (with the sink above the source {}) / inside its band {} / \
+         full lift {} / choked {} (inside its band {})",
+        counts.converged[0],
+        counts.converged[1],
+        counts.shut,
+        counts.backward_drive_shut,
+        counts.partial,
+        counts.full,
+        counts.choked,
+        counts.choked_in_band
+    );
+    counts.assert_floors();
+    assert!(
+        counts.choked >= DISC_SAMPLES / 40,
+        "the gas disc must reach its choked plateau: {} of {DISC_SAMPLES}",
+        counts.choked
+    );
+}
+
+const DISC_SAMPLES: usize = 400;
+
+/// What one run of the disc arm reached, counted on Newton's answers.
+struct DiscCounts {
+    converged: [usize; 2],
+    shut: usize,
+    partial: usize,
+    full: usize,
+    backward_drive_shut: usize,
+    choked: usize,
+    /// Choked while the disc is still inside its band.
+    choked_in_band: usize,
+}
+
+impl DiscCounts {
+    fn assert_floors(&self) {
+        let (shut, partial, full) = (self.shut, self.partial, self.full);
+        assert!(
+            shut >= DISC_SAMPLES / 8 && partial >= DISC_SAMPLES / 40 && full >= DISC_SAMPLES / 8,
+            "the arm must reach all three states: shut {shut}, in band {partial}, full {full}"
+        );
+        assert!(
+            self.converged[0] * 4 >= DISC_SAMPLES * 3 && self.converged[1] * 2 >= DISC_SAMPLES,
+            "converged newton {} simple {} of {DISC_SAMPLES}",
+            self.converged[0],
+            self.converged[1]
+        );
+    }
+}
+
+/// A disc in a random chain of `next_fluid`'s fluid, on both fidelities: the
+/// solve terminates legally (I3) with nothing non-finite (I2); a converged
+/// series chain carries one flow (I1); the disc's own outlet never carries a
+/// backward flow; and wherever the drive across its branch, net of the outlet
+/// pipe's static head, is not forward, it carries EXACTLY zero. Counted, with
+/// floors, so the arm cannot pass on a generator that never shuts the disc,
+/// never lifts it fully, or never leaves it inside its band.
+fn run_disc_arm(next_fluid: &mut dyn FnMut(&mut TestRunner) -> Fluid) -> DiscCounts {
     let mut runner = TestRunner::deterministic();
     let strat = disc_chain_strategy();
-    let mut converged = [0usize; 2];
-    let (mut shut, mut partial, mut full) = (0usize, 0usize, 0usize);
-    let mut backward_drive_shut = 0usize;
-    for _ in 0..SAMPLES {
+    let mut counts = DiscCounts {
+        converged: [0; 2],
+        shut: 0,
+        partial: 0,
+        full: 0,
+        backward_drive_shut: 0,
+        choked: 0,
+        choked_in_band: 0,
+    };
+    for _ in 0..DISC_SAMPLES {
         let (before, after, disc_spec, pipes, p_src, p_snk) = strat
             .new_tree(&mut runner)
             .expect("strategy produces a value")
             .current();
+        let fluid = next_fluid(&mut runner);
         let (g, edges, disc) =
             build_disc_chain(&before, &after, disc_spec, &pipes, p_src, p_snk, &fluid);
         let outlet = outlet_of(&g, disc).expect("the disc has an outlet").0;
@@ -3220,7 +3340,7 @@ fn the_check_valve_arm_shuts_lifts_and_conserves() {
                 sol.diagnostics.converged && all_finite(&sol),
                 "{which}: I2/I3"
             );
-            converged[k] += 1;
+            counts.converged[k] += 1;
 
             // I1 on a series chain: one flow, to the fidelity's own tolerance.
             let (tol_abs, tol_rel) = if k == 0 {
@@ -3268,32 +3388,23 @@ fn the_check_valve_arm_shuts_lifts_and_conserves() {
                     unreachable!("the disc is a check valve")
                 };
                 if drive <= 0.0 {
-                    shut += 1;
+                    counts.shut += 1;
                     if p_snk > p_src {
-                        backward_drive_shut += 1;
+                        counts.backward_drive_shut += 1;
                     }
                 } else if drive < full_open.value() {
-                    partial += 1;
+                    counts.partial += 1;
                 } else {
-                    full += 1;
+                    counts.full += 1;
+                }
+                if valve_edge_is_choked(&g, &sol, &fluid, outlet) {
+                    counts.choked += 1;
+                    if drive < full_open.value() {
+                        counts.choked_in_band += 1;
+                    }
                 }
             }
         }
     }
-    eprintln!(
-        "check-valve chains: converged newton {}/{SAMPLES}, simple {}/{SAMPLES}; disc on \
-         newton shut {shut} (with the sink above the source {backward_drive_shut}) / inside \
-         its band {partial} / full lift {full}",
-        converged[0], converged[1]
-    );
-    assert!(
-        shut >= SAMPLES / 8 && partial >= SAMPLES / 40 && full >= SAMPLES / 8,
-        "the arm must reach all three states: shut {shut}, in band {partial}, full {full}"
-    );
-    assert!(
-        converged[0] * 4 >= SAMPLES * 3 && converged[1] * 2 >= SAMPLES,
-        "converged newton {} simple {} of {SAMPLES}",
-        converged[0],
-        converged[1]
-    );
+    counts
 }

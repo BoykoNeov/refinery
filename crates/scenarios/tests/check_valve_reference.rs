@@ -493,13 +493,17 @@ fn the_opening_slope_is_the_flow_derivative_and_vanishes_outside_the_band() {
         );
     }
 
-    // The gas door at `compile_edge`: a graph built past the loader.
+    // The gas door at `compile_edge`: a graph built past the loader. Since M31 a
+    // disc in gas service compiles when it carries `x_t` (docs/DESIGN.md §34,
+    // `gas_check_valve_reference.rs`); without one it is the incompressible law
+    // on a compressible fluid, refused as every other valve kind refuses it.
     let gas = include_str!("../../../scenarios/gas_valve.toml");
     let mut gas_plant = build(gas);
     let valve = node(&gas_plant.graph, "control_valve");
     gas_plant.graph.node_mut(valve).kind = NodeKind::CheckValve {
         cv_max: 1e-3,
         full_open: Pascal(1e4),
+        x_t: None,
     };
     let p: BTreeMap<NodeId, f64> = gas_plant.graph.node_ids().map(|n| (n, 5e5)).collect();
     let eid = pipe(&gas_plant.graph, "outlet_run");
@@ -511,9 +515,10 @@ fn the_opening_slope_is_the_flow_derivative_and_vanishes_outside_the_band() {
         &p,
     )
     .err()
-    .expect("a check valve in gas service does not compile");
+    .expect("a check valve in gas service with no x_T does not compile");
     assert!(
-        err.to_string().contains("is a liquid valve only"),
+        err.to_string()
+            .contains("carries a gas-phase stream but has no x_T"),
         "refused for its own reason: {err}"
     );
 }
@@ -623,13 +628,13 @@ fn every_refusal_names_its_own_reason() {
             "must have exactly 1 inlet + 1 outlet",
         ),
         (
-            "a disc in gas service",
+            "a disc in gas service with no x_t",
             swap(
                 include_str!("../../../scenarios/gas_valve.toml"),
                 "type = \"valve\"\nkv = 25.0\nopening = 1.0\nx_t = 0.72",
                 "type = \"check_valve\"\nkv = 25.0\nfull_open_bar = 0.1",
             ),
-            "is in gas service. A check valve is a liquid valve only",
+            "is in gas service and must declare `x_t`",
         ),
     ];
     for (what, src, needle) in cases {

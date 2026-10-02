@@ -463,9 +463,9 @@ fn require_compatible_heat_capacity(scenario: &ScenarioFile) -> Result<(), SimEr
 
     // (5) A gas valve's γ, computed inside the flow solve.
     if let Some(name) = scenario.nodes.iter().find_map(|(name, def)| match def {
-        NodeDef::Valve { x_t: Some(_), .. } | NodeDef::ReliefValve { x_t: Some(_), .. } => {
-            Some(name.clone())
-        }
+        NodeDef::Valve { x_t: Some(_), .. }
+        | NodeDef::ReliefValve { x_t: Some(_), .. }
+        | NodeDef::CheckValve { x_t: Some(_), .. } => Some(name.clone()),
         _ => None,
     }) {
         return Err(SimError::Scenario(format!(
@@ -648,25 +648,14 @@ pub(crate) fn refuse_gas_leak(graph: &PlantGraph, phases: &[Phase]) -> Result<()
 pub(crate) fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);
-        // Both valve kinds, for one reason: they share `compile_edge`'s arm and
-        // therefore the same compressible law, so they must share the same
-        // requirement or a PSV could reach the gas branch with no `x_T`.
+        // All three valve kinds, for one reason: they reach the same compressible
+        // law through `compile_edge` (`fold_gas_service`), so they must share the
+        // same requirement or one of them could reach the gas branch with no
+        // `x_T`. The check valve joined at M31 (docs/DESIGN.md §34).
         let x_t = match &node.kind {
-            NodeKind::Valve { x_t, .. } | NodeKind::ReliefValve { x_t, .. } => x_t,
-            // A check valve has its OWN arm in `compile_edge`, a liquid one, so
-            // gas service is refused rather than given an `x_T` nothing would read
-            // (docs/DESIGN.md §33, ledger row E24).
-            NodeKind::CheckValve { .. } => {
-                if phases[nid.0 as usize] == Phase::Gas {
-                    return Err(SimError::Scenario(format!(
-                        "check valve '{}' is in gas service. A check valve is a liquid valve \
-                         only: the compressible law and its choke are not wired to a disc that \
-                         reads its own drop (docs/DEFERRED.md E24)",
-                        node.name
-                    )));
-                }
-                continue;
-            }
+            NodeKind::Valve { x_t, .. }
+            | NodeKind::ReliefValve { x_t, .. }
+            | NodeKind::CheckValve { x_t, .. } => x_t,
             _ => continue,
         };
         match (phases[nid.0 as usize], x_t) {

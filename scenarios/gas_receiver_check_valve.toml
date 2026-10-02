@@ -1,0 +1,132 @@
+# M31 demo: a CHECK VALVE in GAS service — docs/DEFERRED.md row E24,
+# docs/DESIGN.md §34.
+#
+# `vessel_pressure_control.toml`'s plant without its loop, and with three things
+# changed: the receiver is declared ABOVE its make-up header (30 bar against 20),
+# the vent valve is left where that file's loop starts it (0.30), and a check
+# valve sits on the make-up line, 1 m of spool short of the receiver. Diff the
+# two files to see what a non-return valve on a make-up line costs.
+#
+# | node            | what it is                                   | role        |
+# |-----------------|----------------------------------------------|-------------|
+# | `header`        | a 20 bar fuel-gas header                     | the supply  |
+# | `make_up_check` | a check valve, gas service                   | the subject |
+# | `receiver`      | a 2 m³ receiver charged to 30 bar            | the holdup  |
+# | `vent_valve`    | the receiver's consumer, fixed at 0.30       | the draw    |
+# | `flare`         | 1.1 bar                                      | the sink    |
+#
+# The receiver starts above its own supply — charged from somewhere higher, or
+# left over from a run at a higher header pressure. A plain valve on the make-up
+# line would blow it back into the header until the two met. With the check
+# valve, the disc reads a backward drive and shuts: the make-up line carries
+# exactly nothing while the receiver blows down through its vent, and the disc
+# lifts the moment the receiver falls below what the header can push.
+#
+# Measured (both fidelities, identically to the digits reported): the disc's
+# outlet carries exactly zero on every tick from 1 to 300 and never carries a
+# backward flow; it crosses its band in ticks 301–352 and runs at full lift from
+# there, against a running drive of about 0.44 bar. Its twin — a plain valve held
+# fully open in its place — runs backwards into the header for 174 ticks, at up to
+# 0.462 kg/s, and holds the receiver at 23.10 bar at tick 100 against the disc's
+# 26.16. Both settle to one answer (at full lift the disc IS that valve): 16.49 bar
+# at tick 6 000, within 29 Pa of each other and closing.
+#
+# The disc never chokes on this plant: its own drop is a few hundredths of the
+# 20 bar it sees, where the compressible law is the liquid one to within a
+# percent. The fold that makes gas service legal is exercised at the choke by
+# the reference fixtures (`crates/scenarios/tests/gas_check_valve_reference.rs`)
+# and the random arm in `crates/solvers/tests/invariants.rs`, not here.
+#
+#   cargo run -p refinery-cli -- run scenarios/gas_receiver_check_valve.toml --ticks 6000
+
+[meta]
+name = "gas_receiver_check_valve"
+description = "A gas receiver charged above its make-up header blows down behind a check valve that keeps it out of the header."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[[components]]
+name = "fuel_gas"
+phase = "gas"
+tb_c = -161.5
+molar_mass_kg_per_mol = 0.016043
+cp_j_per_kg_k = 2220.0
+
+[nodes.header]
+type = "source"
+pressure_bar = 20.0
+temperature_c = 20.0
+
+# The disc: shut at or below no forward drive (so a branch that would run
+# backwards carries exactly nothing), fully open at `full_open_bar`, a smooth
+# ramp between. 0.1 bar is chosen from the measured running drive (~0.44 bar):
+# the disc runs at full lift and pays for its band only while it reopens.
+#
+# `x_t` is required because the disc is in gas service, and it is BORROWED, not
+# cited. No published table of `x_T` for check valves was found; IEC 60534-2-1's
+# typical values are for control-valve trim. 0.72 is the globe-valve figure
+# `gas_valve.toml` records (single-port, parabolic plug, flow-to-open), on the
+# same secondary citation. On this plant it moves almost nothing — the disc
+# never comes near its choke — which is why a borrowed number is tolerable here
+# and would not be on a plant that chokes it (docs/DEFERRED.md E27).
+[nodes.make_up_check]
+type = "check_valve"
+kv = 12.0
+full_open_bar = 0.1
+x_t = 0.72
+
+# Charged ABOVE the header: the reason this plant needs a check valve.
+[nodes.receiver]
+type = "vessel"
+volume_m3 = 2.0
+pressure_bar = 30.0
+temperature_c = 20.0
+
+[nodes.vent_valve]
+type = "valve"
+kv = 12.0
+opening = 0.30
+x_t = 0.72
+
+[nodes.flare]
+type = "sink"
+pressure_bar = 1.1
+temperature_c = 20.0
+
+[[pipes]]
+name = "make_up"
+from = "header"
+to = "make_up_check"
+length_m = 20.0
+diameter_m = 0.021
+
+# A short, wide spool from the disc to the receiver. The disc reads the drive
+# across its whole branch — itself AND this pipe (docs/DEFERRED.md E26) — so the
+# spool's friction must stay small against the band: about 0.25 kPa at full
+# flow against 10 kPa. At the make-up line's own 21 mm it would be ~19 kPa.
+[[pipes]]
+name = "check_outlet"
+from = "make_up_check"
+to = "receiver"
+length_m = 1.0
+diameter_m = 0.05
+
+[[pipes]]
+name = "vent_line"
+from = "receiver"
+to = "vent_valve"
+length_m = 10.0
+diameter_m = 0.05
+
+[[pipes]]
+name = "flare_line"
+from = "vent_valve"
+to = "flare"
+length_m = 30.0
+diameter_m = 0.10

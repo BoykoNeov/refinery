@@ -16,7 +16,7 @@ use crate::elements::{
 use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
 use refinery_core::error::SimError;
-use refinery_core::graph::{EdgeId, LeakRole, Node, NodeId, NodeKind, PlantGraph, TankState};
+use refinery_core::graph::{EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState};
 use refinery_core::traits::{HydraulicSolution, SolveDiagnostics, StarvedTank};
 use refinery_core::units::{KgPerSec, Pascal, Seconds, Watt, G, P_ATM};
 use std::collections::{BTreeMap, BTreeSet};
@@ -639,78 +639,31 @@ pub fn compile_edge(
             }
             let rho_rel = rho / RHO_WATER_REF;
             let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);
-            branch = match x_t {
-                // Gas service: fold through the ISA compressible law instead of
-                // composing in closed form. `p_up` is the UPWIND node's pressure,
-                // deliberately not `src`'s — the fold-at-source convention puts
-                // `src` right here, and it is the valve's inlet only while the
-                // flow runs forward. In reverse the inlet is `tgt`, and `x` is
-                // taken from `|dp − β|` against whichever end is upwind so the
-                // branch stays odd about `β` (DESIGN §3a fork 6). `ρ` needs no
-                // such care: it is already the upwind value by construction.
-                Some(x_t) => {
-                    let comp = &pipe.stream.composition;
-                    let gamma = comp.mixture_cp(slate).value() / comp.mixture_cv(slate).value();
-                    let x_choke = specific_heat_ratio_factor(gamma) * x_t;
-                    if !x_choke.is_finite() || x_choke <= 0.0 {
-                        return Err(SimError::Numerical(format!(
-                            "valve '{}' has a non-positive critical pressure-drop ratio \
-                             F_k·x_T = {x_choke:.3e} (γ = {gamma:.4}, x_T = {x_t})",
-                            graph.node(src).name
-                        )));
-                    }
-                    fold_gas_valve(branch, liquid, dp, upwind, x_choke, CHOKE_BLEND)
-                }
-                // No `x_T`. For a LIQUID stream that is correct and the branch is
-                // bit-identical to pre-M5.4. For a GAS stream it is the silent
-                // wrong number this milestone exists to refuse — the
-                // incompressible law on a compressible fluid, finite,
-                // deterministic, mass-conserving and overpredicting exactly where
-                // a relief is read.
-                //
-                // The loader already refuses that pairing (`require_gas_valve_x_t`,
-                // off M5.2's topological analysis), so this is a SECOND door on the
-                // same correspondence — and it exists because the loader is not the
-                // only way in: the invariant proptests build a `PlantGraph`
-                // directly and never call `build_engine`. Every generator uses
-                // `Slate::water_only()` today, so no generated plant can reach
-                // this arm; that is a fact about the current generators, not about
-                // the type, and a gas-valve arm added to one of them later must
-                // not be able to slip through.
-                None => {
-                    if pipe.stream.composition.phase(slate)? == Phase::Gas {
-                        return Err(SimError::Numerical(format!(
-                            "valve '{}' carries a gas-phase stream but has no x_T, so the \
-                             incompressible sizing law would be applied to a compressible \
-                             fluid (docs/DESIGN.md §3a fork 4)",
-                            graph.node(src).name
-                        )));
-                    }
-                    branch.in_series(liquid)
-                }
-            };
+            branch = fold_gas_service(graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind)?;
         }
-        // A check valve is a liquid valve whose opening is read off the FORWARD
-        // DRIVE across this branch, `S = dp − β` with `β` the outlet pipe's static
-        // head (M30, docs/DESIGN.md §33). `flow` has the sign of `S`, so "shut at
+        // A check valve is a valve whose opening is read off the FORWARD DRIVE
+        // across this branch, `S = dp − β` with `β` the outlet pipe's static head
+        // (M30, docs/DESIGN.md §33). `flow` has the sign of `S`, so "shut at
         // `S ≤ 0`" is exactly "would run backwards": reverse flow is zero by
         // `α = +∞`, not by a threshold.
-        NodeKind::CheckValve { cv_max, full_open } => {
-            // The SECOND door on the gas refusal, for `compile_edge`'s usual
-            // reason: the invariant proptests build graphs without the loader.
-            if pipe.stream.composition.phase(slate)? == Phase::Gas {
-                return Err(SimError::Numerical(format!(
-                    "check valve '{}' carries a gas-phase stream. It is a liquid valve only \
-                     (docs/DEFERRED.md E24)",
-                    graph.node(src).name
-                )));
-            }
+        //
+        // In gas service the valve that opening sets is folded exactly as a
+        // `Valve`'s is (M31, §34): the opening comes first, from the drive, and
+        // the fold splits the drive between valve and pipe afterwards, so nothing
+        // is circular. The disc still reads the whole branch's drive rather than
+        // the valve's own share the fold computes (row E26, gas or liquid).
+        NodeKind::CheckValve {
+            cv_max,
+            full_open,
+            x_t,
+        } => {
             let drive = dp - branch.beta;
             let opening = check_opening(drive, full_open.value());
             let op = if opening < OPEN_EPS { 0.0 } else { opening };
             check = Some((op, check_opening_slope(drive, full_open.value())));
             let rho_rel = rho / RHO_WATER_REF;
-            branch = branch.in_series(QuadraticBranch::valve(*cv_max, op, rho_rel));
+            let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);
+            branch = fold_gas_service(graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind)?;
         }
         _ => {}
     }
@@ -733,6 +686,78 @@ pub fn compile_edge(
         relief_opening_log_slope,
         check_opening_log_slope,
     })
+}
+
+/// Compose a valve of any kind with the pipe it discharges through: in closed
+/// form in liquid service, through the ISA compressible fold in gas service.
+///
+/// **One owner for all three valve kinds** (M31, docs/DESIGN.md §34). The
+/// relief valve shares `Valve`'s arm for exactly this reason — two copies of the
+/// element physics can drift apart — and the check valve, which has its own arm
+/// because its opening reads a different quantity, reaches the same law here
+/// rather than through a copy of it.
+///
+/// `x_t = Some`: gas service. `p_up` is the UPWIND node's pressure, deliberately
+/// not `src`'s — the fold-at-source convention puts `src` at the valve, and it
+/// is the valve's inlet only while the flow runs forward. In reverse the inlet is
+/// `tgt`, and `x` is taken from `|dp − β|` against whichever end is upwind so the
+/// branch stays odd about `β` (DESIGN §3a fork 6). `ρ` needs no such care: it is
+/// already the upwind value by construction.
+///
+/// `x_t = None`: for a LIQUID stream that is correct and the branch is
+/// bit-identical to pre-M5.4. For a GAS stream it is the silent wrong number
+/// M5.4 exists to refuse — the incompressible law on a compressible fluid,
+/// finite, deterministic, mass-conserving and overpredicting exactly where a
+/// relief is read. The loader already refuses that pairing
+/// (`require_gas_valve_x_t`, off M5.2's topological analysis), so this is a
+/// SECOND door on the same correspondence — and it exists because the loader is
+/// not the only way in: the invariant proptests build a `PlantGraph` directly
+/// and never call `build_engine`.
+#[allow(clippy::too_many_arguments)]
+fn fold_gas_service(
+    graph: &PlantGraph,
+    src: NodeId,
+    pipe: &Pipe,
+    slate: &Slate,
+    branch: QuadraticBranch,
+    liquid: QuadraticBranch,
+    x_t: Option<f64>,
+    dp: f64,
+    upwind: f64,
+) -> Result<QuadraticBranch, SimError> {
+    match x_t {
+        Some(x_t) => {
+            let comp = &pipe.stream.composition;
+            let gamma = comp.mixture_cp(slate).value() / comp.mixture_cv(slate).value();
+            let x_choke = specific_heat_ratio_factor(gamma) * x_t;
+            if !x_choke.is_finite() || x_choke <= 0.0 {
+                return Err(SimError::Numerical(format!(
+                    "valve '{}' has a non-positive critical pressure-drop ratio \
+                     F_k·x_T = {x_choke:.3e} (γ = {gamma:.4}, x_T = {x_t})",
+                    graph.node(src).name
+                )));
+            }
+            Ok(fold_gas_valve(
+                branch,
+                liquid,
+                dp,
+                upwind,
+                x_choke,
+                CHOKE_BLEND,
+            ))
+        }
+        None => {
+            if pipe.stream.composition.phase(slate)? == Phase::Gas {
+                return Err(SimError::Numerical(format!(
+                    "valve '{}' carries a gas-phase stream but has no x_T, so the \
+                     incompressible sizing law would be applied to a compressible \
+                     fluid (docs/DESIGN.md §3a fork 4)",
+                    graph.node(src).name
+                )));
+            }
+            Ok(branch.in_series(liquid))
+        }
+    }
 }
 
 /// A pressure-actuated valve's `d ln ṁ` through its opening [1/Pa], per pascal of
