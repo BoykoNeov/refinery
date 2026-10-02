@@ -402,8 +402,8 @@ impl Engine {
                     .ok_or_else(|| unknown_loop(loop_id))?;
                 // **The refusal that is easy to miss** (docs/DESIGN.md §26 fork 4).
                 // This command moves no equipment itself, but a loop in AUTO writes
-                // its valve at the top of the next tick, so AUTO on a loop whose
-                // valve a latched trip holds would reopen it one tick later. MANUAL
+                // its actuator at the top of the next tick, so AUTO on a loop whose
+                // actuator a latched trip holds would move it one tick later. MANUAL
                 // stays admitted: it is what the trip already put the loop in.
                 //
                 // A cascade PRIMARY has no node to ask about and is exempt
@@ -416,8 +416,8 @@ impl Engine {
                             return Err(SimError::InvalidCommand(format!(
                                 "control loop '{}' writes '{}', which trip '{}' holds and is \
                                  latched. In AUTO the loop would move it at the top of the next \
-                                 tick. Reset the trip (`reset_trip`), put the valve where the \
-                                 loop should take over from, and then switch to AUTO",
+                                 tick. Reset the trip (`reset_trip`), put the equipment where \
+                                 the loop should take over from, and then switch to AUTO",
                                 control.name,
                                 self.graph.node(node).name,
                                 trip.name
@@ -1806,11 +1806,14 @@ impl Engine {
             }
         }
 
-        // Pass 3 — write the safe states, and force every loop on a tripped
-        // valve to MANUAL (fork 5). MANUAL tracks, so its faceplate shows the
-        // valve's real position from this tick, and a PI loop's memory is left
-        // alone: after a reset and a human reopening the valve, AUTO is the
-        // existing bumpless transfer, seeded from wherever the valve stands.
+        // Pass 3 — write the safe states, and force every loop on tripped
+        // equipment to MANUAL (fork 5). MANUAL tracks, so its faceplate shows the
+        // equipment's real position from this tick, and a PI loop's memory is
+        // left alone: after a reset and a human restoring the equipment, AUTO is
+        // the existing bumpless transfer, seeded from wherever it stands. The
+        // mode change is asked of EVERY action's equipment, not of a valve's
+        // alone, so a kind a loop can actuate cannot be added to the actions
+        // without its loops yielding.
         for action in writes {
             match action {
                 TripAction::StopPump { pump } => match &mut self.graph.node_mut(pump).kind {
@@ -1822,11 +1825,12 @@ impl Engine {
                         NodeKind::Valve { opening, .. } => *opening = position,
                         _ => return Err(trip_equipment_fault(&self.graph, valve, "valve")),
                     }
-                    for control in self.graph.controls_mut() {
-                        if control.actuator == Actuator::Node(valve) {
-                            control.mode = ControlMode::Manual;
-                        }
-                    }
+                }
+            }
+            let equipment = action.equipment();
+            for control in self.graph.controls_mut() {
+                if control.actuator == Actuator::Node(equipment) {
+                    control.mode = ControlMode::Manual;
                 }
             }
         }
