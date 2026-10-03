@@ -18531,9 +18531,11 @@ the same coil climbed at 1 K/s without limit.
 
 The FLUID on the dry ticks is the coil to within §37 correction 2's rounding step
 over a vanishing capacity rate: the game solver leaves a ~1e-11 kg/s residual
-trickle through the valve line, on which that step is a few kelvin, and the fluid
-briefly reads ABOVE the flame (1 954.5 °C at tick 20 000). The coil, the state,
-never does; the file says to read the coil.
+trickle through the valve line, on which that step is up to 23.7 K either side of
+the coil over the dry ticks of a 20 000-tick run (0.37 K on Newton, whose trickle is
+smaller), and the fluid reads ABOVE the flame on some of them (1 954.5 °C at tick
+20 000). The coil, the state, never does; the file says to read the coil, and
+`dry_fired_reference.rs` gates both bounds.
 
 ### What must not change, stated as a prediction that can be wrong
 

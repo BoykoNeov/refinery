@@ -27,10 +27,11 @@
 # fidelities to the printed digit.
 #
 # **What it does not show.** Real tubes fail far below the flame, and a burn-out
-# is the next slice (docs/DEFERRED.md B40's burn-out clause). The FLUID's temperature on the
-# dry ticks is the coil's to within one rounding step spread over a vanishing
-# capacity rate (§37 correction 2), which on the game solver's 1e-11 kg/s
-# residual trickle is a few kelvin; read the coil, which is the state.
+# is the next slice (docs/DEFERRED.md B40's burn-out clause). The FLUID's
+# temperature on the dry ticks is the coil's to within one rounding step spread
+# over a vanishing capacity rate (§37 correction 2): within 0.37 K on Newton, but
+# up to 23.7 K either side on the game solver's 1e-11 kg/s residual trickle, which
+# puts it above the flame on some ticks. Read the coil, which is the state.
 #
 #   cargo run -p refinery-cli -- run scenarios/furnace_dry_fired.toml --ticks 20000
 
