@@ -182,6 +182,9 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
         coil_ua_kw_per_k,
         coil_temperature_c,
         flame_temperature_c,
+        tube_failure_c,
+        tube_rupture_area_cm2,
+        fluid_heating_value_mj_per_kg,
         ..
     } = def
     {
@@ -215,6 +218,25 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
                  finite and above the combustion air's {:.2} °C. A flame no hotter than the \
                  air it burns in heats nothing.",
                 T_AMBIENT.value() - 273.15
+            )));
+        }
+        // The tubes (M37, docs/DESIGN.md §42). A limit at or below the loaded
+        // coil would burst the tubes on tick 1's pass, before the plant has run
+        // at all; a limit at or above the flame is admitted and is a coil that
+        // fuel alone can never burn out.
+        if !tube_failure_c.is_finite() || *tube_failure_c <= *coil_temperature_c {
+            return Err(SimError::Scenario(format!(
+                "furnace '{name}' has tube_failure_c = {tube_failure_c}: it must be finite and                  above its coil_temperature_c = {coil_temperature_c}. Tubes loaded at or past                  their failure limit would burst before the plant has run."
+            )));
+        }
+        if !tube_rupture_area_cm2.is_finite() || *tube_rupture_area_cm2 <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "furnace '{name}' has tube_rupture_area_cm2 = {tube_rupture_area_cm2}: it must                  be finite and > 0. A burn-out that opens no hole is not a burn-out."
+            )));
+        }
+        if !fluid_heating_value_mj_per_kg.is_finite() || *fluid_heating_value_mj_per_kg < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "furnace '{name}' has fluid_heating_value_mj_per_kg =                  {fluid_heating_value_mj_per_kg}: it must be finite and >= 0 (0 for a fluid                  that does not burn, such as water)."
             )));
         }
     }

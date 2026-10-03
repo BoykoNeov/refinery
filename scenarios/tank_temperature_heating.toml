@@ -101,6 +101,15 @@ coil_temperature_c = 49.48
 # burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.985 at load,
 # and the rest goes up the stack.
 flame_temperature_c = 1951.1
+# Tubes (docs/DESIGN.md §42): past `tube_failure_c` the coil bursts, opening a
+# hole of `tube_rupture_area_cm2` in the outlet pipe; while burst, what leaks
+# burns in the firebox at `fluid_heating_value_mj_per_kg`. The limit and the
+# hole are ROUND GAME-TUNING VALUES, not a cited metal limit: 550 °C, far above
+# anything this coil reaches in service; a 1 cm² hole. The heating value is 0:
+# water does not burn, so a hole leaks but lights nothing.
+tube_failure_c = 550.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 0.0
 
 # The node the loop MEASURES. Its temperature is stored on the graph and is
 # exactly 40 °C at tick 0; the level is the settled 4.968 m, so only the

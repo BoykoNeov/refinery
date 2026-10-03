@@ -1279,6 +1279,7 @@ pub fn resolve_node_states(
                         duty,
                         coil,
                         flame_temperature,
+                        ..
                     } = &graph.node(id).kind
                     {
                         // A furnace heats its fluid through its coil (M34,

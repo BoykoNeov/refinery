@@ -910,7 +910,9 @@ fn every_malformed_flow_loop_is_refused_for_its_own_reason() {
         // takes none.
         let coil = if kind == "furnace" {
             "coil_heat_capacity_mj_per_k = 1.0\ncoil_ua_kw_per_k = 100.0\n\
-             coil_temperature_c = 20.0\nflame_temperature_c = 1951.1\n"
+             coil_temperature_c = 20.0\nflame_temperature_c = 1951.1\n\
+             tube_failure_c = 3000.0\ntube_rupture_area_cm2 = 1.0\n\
+             fluid_heating_value_mj_per_kg = 0.0\n"
         } else {
             ""
         };

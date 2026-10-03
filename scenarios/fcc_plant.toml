@@ -89,6 +89,15 @@ coil_temperature_c = 347.00
 # burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.831 at load,
 # and the rest goes up the stack.
 flame_temperature_c = 1951.1
+# Tubes (docs/DESIGN.md §42): past `tube_failure_c` the coil bursts, opening a
+# hole of `tube_rupture_area_cm2` in the outlet pipe; while burst, what leaks
+# burns in the firebox at `fluid_heating_value_mj_per_kg`. The limit and the
+# hole are ROUND GAME-TUNING VALUES, not a cited metal limit: 550 °C, far above
+# anything this coil reaches in service; a 1 cm² hole. The heating value is 42.8
+# MJ/kg, the lower heating value of gas oil, Engineering ToolBox.
+tube_failure_c = 550.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.8
 
 # The riser, held at a cracking ROT. Zero-volume and hydraulically a
 # pass-through; the duty needed to hold t_set against the endotherm is emergent

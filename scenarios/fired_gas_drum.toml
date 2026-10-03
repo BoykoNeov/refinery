@@ -89,6 +89,9 @@ temperature_c = 20.0
 # must still ABSORB the 0.56 MW that settles the drum there, and at its settled
 # 1 000.6 K it absorbs only 0.634 of the firing, so the heater fires 0.8837 MW —
 # solved for on the engine, 150 000 ticks per trial, to the drum's 802.437 K.
+# Since M37 the drum settles at 803.858 K on that same duty, not re-tuned: the
+# heater's outlet line is split for its burn-out hole (docs/DESIGN.md §42), and
+# its second half's gas, read at the hotter junction, drops more pressure.
 [nodes.heater]
 type = "furnace"
 duty_mw = 0.8837
@@ -104,6 +107,15 @@ coil_temperature_c = 483.34
 # burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.760 at load,
 # and the rest goes up the stack.
 flame_temperature_c = 1951.1
+# Tubes (docs/DESIGN.md §42): past `tube_failure_c` the coil bursts, opening a
+# hole of `tube_rupture_area_cm2` in the outlet pipe; while burst, what leaks
+# burns in the firebox at `fluid_heating_value_mj_per_kg`. The limit and the
+# hole are ROUND GAME-TUNING VALUES, not a cited metal limit: 850 °C, above the
+# 727.4 °C this coil settles at; a 1 cm² hole. The heating value is 50.0 MJ/kg,
+# the lower heating value of methane, Engineering ToolBox.
+tube_failure_c = 850.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 50.0
 
 # The holdup, and the reason the plant has one. A vessel integrates a
 # temperature over a span, which is what converts a wrong capacity into a moved

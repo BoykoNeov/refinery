@@ -888,9 +888,12 @@ fn puncturing_an_overflow_is_refused() {
 // --- Gate 9 -------------------------------------------------------------------
 
 /// **Gate 9. The edge ids are where the bytes claim says.** On
-/// `crude_column_boiloff` the three vents keep their pre-M23 ids 5, 6, 7 and the
-/// overflows are the last edges in the graph, one per tank in node order, all
-/// on the vents' own atmosphere. Built before the vents they would take 5–7 and
+/// `crude_column_boiloff` the three vents come straight after the declared pipes
+/// and the overflows are the last edges in the graph, one per tank in node order,
+/// all on the vents' own atmosphere. (The vents kept their pre-M23 ids 5, 6, 7
+/// until M37, whose burn-out hole splits the furnace's outlet pipe in the
+/// declared-pipe loop and so adds two edges ahead of them: 7, 8, 9 since,
+/// docs/DESIGN.md §42. The order is the claim, and it is unchanged.) Built before the vents they would take 5–7 and
 /// renumber the vents — five boil-off plants' published bytes (§27 premise 2).
 /// A bytes claim gets a gate, and CI commits no baseline.
 #[test]
@@ -903,14 +906,14 @@ fn the_overflows_are_built_after_the_vents() {
         .map(|e| (e.id.0, e.name.as_str()))
         .collect();
     assert_eq!(
-        &ids[5..],
+        &ids[7..],
         [
-            (5, "naphtha_tank__boiloff_vent"),
-            (6, "distillate_tank__boiloff_vent"),
-            (7, "bottoms_tank__boiloff_vent"),
-            (8, "naphtha_tank__overflow"),
-            (9, "distillate_tank__overflow"),
-            (10, "bottoms_tank__overflow"),
+            (7, "naphtha_tank__boiloff_vent"),
+            (8, "distillate_tank__boiloff_vent"),
+            (9, "bottoms_tank__boiloff_vent"),
+            (10, "naphtha_tank__overflow"),
+            (11, "distillate_tank__overflow"),
+            (12, "bottoms_tank__overflow"),
         ]
     );
     let air = engine.graph.find_node("boiloff_atmosphere").unwrap();

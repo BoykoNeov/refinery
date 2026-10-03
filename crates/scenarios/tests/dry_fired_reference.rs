@@ -25,6 +25,13 @@ const DUTY_W: f64 = 0.6e6;
 const COIL_C_J_PER_K: f64 = 0.6e6;
 const DT_S: f64 = 1.0;
 const TICKS: u64 = 20_000;
+/// The feed is DRY below the Newton solve's absolute mass tolerance [kg/s]: a
+/// flow under it is not resolved, only rounded. Until M37 the feed reached
+/// exactly zero (tick 1 749 Newton, 1 819 game); since M37 splits the outlet for
+/// its burn-out hole (docs/DESIGN.md §42), Newton has one more free node and
+/// settles the dry line to residual noise, ±2.6e-12 kg/s, that never lands on
+/// zero. A trickle this size carries ~4e-5 W/K out of the coil: nothing.
+const DRY_KG_S: f64 = 1.0e-8;
 
 fn build(solver: &str) -> Engine {
     let src = DEMO.replacen(r#"flow = "newton""#, &format!(r#"flow = "{solver}""#), 1);
@@ -60,7 +67,7 @@ fn run(solver: &str) -> (Vec<f64>, u64, f64) {
             .stream
             .mass_flow
             .value();
-        if dry_from.is_none() && feed == 0.0 {
+        if dry_from.is_none() && feed.abs() < DRY_KG_S {
             dry_from = Some(t);
         }
         let c = coil_c(&engine);
@@ -79,8 +86,8 @@ fn run(solver: &str) -> (Vec<f64>, u64, f64) {
     (coil, dry_from.expect("the charge runs out"), worst_gap)
 }
 
-/// **The demo, on both fidelities.** Dry from tick 1 749 (Newton) and 1 819
-/// (game); the coil at 539.0 °C on Newton's dry tick, 1 794.8 °C at 6 000 and
+/// **The demo, on both fidelities.** Dry from tick 1 743 (Newton) and 1 744
+/// (game), by `DRY_KG_S`; the coil at 538.82 °C at tick 1 749, 1 794.8 °C at 6 000 and
 /// 1 950.99 °C at 20 000 — on the closed form from the dry tick on, and below
 /// its 1 951.1 °C flame on every tick. The two fidelities differ only in when
 /// the trickle ends, and the coil does not see that: they agree to 1e-3 K.
@@ -89,7 +96,7 @@ fn the_dry_fired_coil_levels_off_under_its_flame_on_both_fidelities() {
     let flame_c = FLAME_K - 273.15;
     let tau = COIL_C_J_PER_K * (FLAME_K - AIR_K) / DUTY_W;
     let mut runs = Vec::new();
-    for (solver, expected_dry, gap_bound) in [("newton", 1749, 0.5), ("simple", 1819, 25.0)] {
+    for (solver, expected_dry, gap_bound) in [("newton", 1743, 0.5), ("simple", 1744, 25.0)] {
         let (coil, dry_from, worst_gap) = run(solver);
         assert_eq!(dry_from, expected_dry, "{solver}: the feed reaches zero");
         for (i, c) in coil.iter().enumerate() {
@@ -130,8 +137,8 @@ fn the_dry_fired_coil_levels_off_under_its_flame_on_both_fidelities() {
         runs.push(coil);
     }
     assert!(
-        (runs[0][1_748] - 539.0).abs() < 0.05,
-        "newton: 539.0 °C on the dry tick, got {}",
+        (runs[0][1_748] - 538.82).abs() < 0.01,
+        "newton: 538.82 °C at tick 1 749 (539.0 before M37 split the outlet), got {}",
         runs[0][1_748]
     );
     for t in [3_000, 6_000, 20_000] {

@@ -148,12 +148,15 @@ fn the_two_demos_split_the_same_rates_into_different_products() {
     );
 
     // Isothermal draws next door; a real profile here.
-    let feed = temperature(&splitter, "hot_feed_line");
+    // The column is fed by the feed line's DOWNSTREAM half: since M37 every
+    // furnace outlet is split for its burn-out hole (docs/DESIGN.md §42), and the
+    // declared name ends at the hole's junction, half a pipe of friction short.
+    let feed = temperature(&splitter, "hot_feed_line__downstream");
     for draw in DRAWS {
         approx::assert_relative_eq!(temperature(&splitter, draw), feed, max_relative = 1e-12);
     }
     let profile: Vec<f64> = DRAWS.iter().map(|d| temperature(&cascade, d)).collect();
-    let cascade_feed = temperature(&cascade, "hot_feed_line");
+    let cascade_feed = temperature(&cascade, "hot_feed_line__downstream");
     assert!(
         profile[0] < profile[1] && profile[1] < profile[2],
         "a cascade's draws are strictly ordered top to bottom, got {profile:?}"
@@ -299,7 +302,7 @@ fn the_cascade_demo_feeds_its_column_a_saturated_liquid_from_the_first_tick() {
         engine
             .tick()
             .unwrap_or_else(|e| panic!("tick {tick} must converge, not refuse the feed: {e}"));
-        let offset = temperature(&engine, "hot_feed_line") - bubble;
+        let offset = temperature(&engine, "hot_feed_line__downstream") - bubble;
         if tick == 1 {
             first = offset;
         }

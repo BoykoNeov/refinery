@@ -236,7 +236,12 @@ const SETTLED_TICKS: u64 = 150_000;
 /// `smearing_k` bar for whether a fidelity key is real.
 ///
 /// Measured settled (6 000 ticks before M34, `SETTLED_TICKS` since): the drum
-/// settles at **802.4 K** under the shape and **1063.2 K** under the constant,
+/// settles at **803.9 K** under the shape and **1066.7 K** under the constant
+/// (802.4 K and 1063.2 K before M37, docs/DESIGN.md §42: the heater's outlet line
+/// is split for its burn-out hole, so the gas in its second half is evaluated at
+/// the hotter, lower-pressure junction rather than at the heater; the line's drop
+/// rises 77.3 → 79.1 kPa, the flow falls 0.35 %, and the same firing lands the
+/// drum 1.4 K hotter — a finer-resolved gas line, kept rather than re-tuned away),
 /// and holds **6.56 kg** against **5.01 kg**. (1106.9 K and 4.82 kg before M36's
 /// flame, docs/DESIGN.md §40: the demo's fired duty was re-derived so the SHAPED
 /// drum still settles at 802.4 K, and the twin, firing the same fuel, runs a
@@ -256,8 +261,8 @@ fn the_shaped_demo_settles_hundreds_of_kelvin_from_its_constant_twin() {
     let (heater, drum, mass, flow) = run(DEMO, SETTLED_TICKS);
     let (heater_c, drum_c, mass_c, flow_c) = run(&constant_twin(), SETTLED_TICKS);
 
-    approx::assert_relative_eq!(drum, 802.4378, max_relative = 1e-4);
-    approx::assert_relative_eq!(drum_c, 1063.1675, max_relative = 1e-4);
+    approx::assert_relative_eq!(drum, 803.8583, max_relative = 1e-4);
+    approx::assert_relative_eq!(drum_c, 1066.7313, max_relative = 1e-4);
     assert!(
         drum_c - drum > 250.0,
         "the two models must part company by hundreds of Kelvin: {drum} vs {drum_c}"

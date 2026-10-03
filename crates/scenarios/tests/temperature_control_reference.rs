@@ -403,7 +403,9 @@ fn every_refused_temperature_loop_is_refused_for_its_own_reason() {
                 liquid(
                     "furnace",
                     "0.5\ncoil_heat_capacity_mj_per_k = 2.0\ncoil_ua_kw_per_k = 120.0\n\
-                     coil_temperature_c = 40.0\nflame_temperature_c = 1951.1",
+                     coil_temperature_c = 40.0\nflame_temperature_c = 1951.1\n\
+                     tube_failure_c = 3000.0\ntube_rupture_area_cm2 = 1.0\n\
+                     fluid_heating_value_mj_per_kg = 0.0",
                 ),
                 loop_of(PI_LINES.iter().map(|s| s.to_string()).collect())
             ),

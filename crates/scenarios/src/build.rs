@@ -9,9 +9,9 @@ use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
     Actuator, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
-    FurnaceCoil, HeatExchangerCoupling, LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node,
-    NodeId, NodeKind, Pipe, PlantGraph, SetpointRange, TankState, Trip, TripAction, TripDirection,
-    TripState, VesselState,
+    EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling, LeakRole, LoopId, MeasuredVariable,
+    MeasurementPoint, Node, NodeId, NodeKind, Pipe, PlantGraph, SetpointRange, TankState, Trip,
+    TripAction, TripDirection, TripState, TubeState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -19,7 +19,7 @@ use refinery_core::traits::{
     ThermoModel,
 };
 use refinery_core::units::{
-    CubicMeter, JPerK, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, KgPerSec, Meter, Seconds,
+    CubicMeter, JPerK, JPerKg, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, KgPerSec, Meter, Seconds,
     SquareMeter, Watt, WattPerKelvin, P_ATM, T_AMBIENT,
 };
 use std::collections::BTreeMap;
@@ -112,19 +112,38 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
             // ambient / atmospheric.
             stream: Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
         };
-        match &pipe.leak_to {
+        // Every furnace's OUTLET pipe carries the hole its tubes burst into (M37,
+        // docs/DESIGN.md §42), built here, dormant, exactly as a declared
+        // `leak_to` is — the shape of the plant cannot change mid-run. A pipe
+        // that already declares one shares it; one that does not vents to the
+        // plant's outside (`burnout_atmosphere_for`).
+        let furnace_outlet = matches!(
+            scenario.nodes.get(&pipe.from),
+            Some(NodeDef::Furnace { .. })
+        );
+        let atmosphere = match (&pipe.leak_to, furnace_outlet) {
+            (Some(declared), _) => Some(declared.clone()),
+            (None, true) => Some(burnout_atmosphere_for(&mut graph, scenario, vents_holdups)?),
+            (None, false) => None,
+        };
+        match atmosphere {
             None => {
                 graph.add_pipe(from, to, whole);
             }
-            Some(atmosphere) => split_for_leak(
-                &mut graph,
-                &scenario.nodes,
-                pipe,
-                from,
-                to,
-                whole,
-                atmosphere,
-            )?,
+            Some(atmosphere) => {
+                let hole = split_for_leak(
+                    &mut graph,
+                    &scenario.nodes,
+                    pipe,
+                    from,
+                    to,
+                    whole,
+                    &atmosphere,
+                )?;
+                if let NodeKind::Furnace { tubes, .. } = &mut graph.node_mut(from).kind {
+                    tubes.hole = Some(hole);
+                }
+            }
         }
     }
 
@@ -1799,6 +1818,17 @@ fn resolve_measurement_point(
                      (docs/DESIGN.md §24 fork 5)"
                 )));
             }
+            // A furnace's OUTLET is split for its burn-out hole (M37, §42) whether
+            // or not the file says `leak_to`, so it is refused for the same
+            // reason, and named as the furnace's rather than as a loader fault.
+            if let Some(furnace) = graph.find_node(&pipe.from) {
+                if matches!(graph.node(furnace).kind, NodeKind::Furnace { .. }) {
+                    return Err(SimError::Scenario(format!(
+                        "{owner} measures pipe '{name}', the outlet of furnace '{}'. Every                          furnace's outlet is split at load for the hole its tubes burst into                          (docs/DESIGN.md §42), and once that hole is open the two halves carry                          different flows, so the name no longer names one flow. Meter the                          furnace's flow on its inlet pipe",
+                        pipe.from
+                    )));
+                }
+            }
             let from = graph.find_node(&pipe.from);
             let to = graph.find_node(&pipe.to);
             graph
@@ -2164,9 +2194,36 @@ enum ValveSide {
     Both,
 }
 
+/// Whether ONE DECLARED pipe runs from `from` to `to` — the hop a loop's or a
+/// cascade's sign is judged over.
+///
+/// **A pipe the loader split for a leak path is still that one pipe** (M37,
+/// docs/DESIGN.md §42): every furnace's outlet since M37, and any pipe declaring
+/// `leak_to`. Its upstream half (`Punctureable`) ends at the leak junction, and
+/// its `__downstream` half runs on to the declared end. The hole does not change
+/// which way a higher outlet target or a wider opening moves the holdup, so the
+/// sign judged across the split is the sign of the declared pipe.
+fn declared_hop(graph: &PlantGraph, from: NodeId, to: NodeId) -> bool {
+    graph.edge_ids().any(|e| {
+        let (start, end) = graph.endpoints(e);
+        if start != from {
+            return false;
+        }
+        if end == to {
+            return true;
+        }
+        let LeakRole::Punctureable { .. } = graph.pipe(e).leak else {
+            return false;
+        };
+        let downstream = format!("{}__downstream", graph.pipe(e).name);
+        graph
+            .edge_ids()
+            .any(|d| graph.endpoints(d) == (end, to) && graph.pipe(d).name == downstream)
+    })
+}
+
 fn valve_side(graph: &PlantGraph, holdup: NodeId, valve: NodeId) -> ValveSide {
-    let one_hop =
-        |from: NodeId, to: NodeId| graph.edge_ids().any(|e| graph.endpoints(e) == (from, to));
+    let one_hop = |from: NodeId, to: NodeId| declared_hop(graph, from, to);
     match (one_hop(holdup, valve), one_hop(valve, holdup)) {
         (true, false) => ValveSide::Drain,
         (false, true) => ValveSide::Fill,
@@ -2271,8 +2328,7 @@ fn cascade_pairing(
     primary: &ControlLoop,
     secondary: &ControlLoop,
 ) -> Result<ControlAction, SimError> {
-    let one_hop =
-        |from: NodeId, to: NodeId| graph.edge_ids().any(|e| graph.endpoints(e) == (from, to));
+    let one_hop = |from: NodeId, to: NodeId| declared_hop(graph, from, to);
     let outer = primary.setpoint.variable();
     let inner = secondary.setpoint.variable();
     let holdup = match primary.measurement_point {
@@ -2866,6 +2922,9 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             coil_ua_kw_per_k,
             coil_temperature_c,
             flame_temperature_c,
+            tube_failure_c,
+            tube_rupture_area_cm2,
+            fluid_heating_value_mj_per_kg,
         } => NodeKind::Furnace {
             duty: Watt(*duty_mw * 1e6),
             coil: FurnaceCoil {
@@ -2874,6 +2933,15 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                 temperature: c_to_k(*coil_temperature_c),
             },
             flame_temperature: c_to_k(*flame_temperature_c),
+            // The hole is written once the outlet pipe is split (`build_engine`,
+            // step 2); intact from load.
+            tubes: FurnaceTubes {
+                failure_temperature: c_to_k(*tube_failure_c),
+                rupture_area: SquareMeter(*tube_rupture_area_cm2 * 1e-4),
+                heating_value: JPerKg(*fluid_heating_value_mj_per_kg * 1e6),
+                hole: None,
+                state: TubeState::Intact,
+            },
         },
         NodeDef::Cooler { duty_mw } => NodeKind::Cooler {
             duty: Watt(*duty_mw * 1e6),
@@ -2961,7 +3029,7 @@ fn split_for_leak(
     to: NodeId,
     whole: Pipe,
     atmosphere: &str,
-) -> Result<(), SimError> {
+) -> Result<EdgeId, SimError> {
     let vent = graph.find_node(atmosphere).ok_or_else(|| {
         SimError::Scenario(format!(
             "pipe '{}' declares leak_to = '{atmosphere}', which is not a node in this plant",
@@ -3062,7 +3130,55 @@ fn split_for_leak(
         },
     );
     graph.pipe_mut(upstream).leak = LeakRole::Punctureable { orifice };
-    Ok(())
+    Ok(orifice)
+}
+
+/// Where a furnace's burn-out hole vents when its outlet pipe declares no
+/// `leak_to` (M37, docs/DESIGN.md §42): the plant's first DECLARED atmosphere;
+/// else the one the loader creates, under the name the plant's FIRST
+/// loader-made atmosphere would have had without it — `boiloff_atmosphere` on a
+/// plant whose tanks get boil-off vents, `overflow_atmosphere` on one whose tanks
+/// do not, so the vents and overflows built after this find it and reuse it, and
+/// a plant keeps ONE outside under the name it always had. `burnout_atmosphere`
+/// on a plant with no tank. Created once; a name already taken by a node that is
+/// not an atmosphere is refused, as the overflow's is.
+fn burnout_atmosphere_for(
+    graph: &mut PlantGraph,
+    scenario: &ScenarioFile,
+    vents_holdups: bool,
+) -> Result<String, SimError> {
+    if let Some((name, _)) = scenario
+        .nodes
+        .iter()
+        .find(|(_, def)| matches!(def, NodeDef::Atmosphere))
+    {
+        return Ok(name.clone());
+    }
+    let has_tanks = scenario
+        .nodes
+        .values()
+        .any(|def| matches!(def, NodeDef::Tank { .. }));
+    let name = match (has_tanks, vents_holdups) {
+        (true, true) => "boiloff_atmosphere",
+        (true, false) => "overflow_atmosphere",
+        (false, _) => "burnout_atmosphere",
+    };
+    match graph.find_node(name) {
+        Some(existing) if matches!(graph.node(existing).kind, NodeKind::Atmosphere) => {}
+        Some(_) => {
+            return Err(SimError::Scenario(format!(
+                "this plant has a furnace, whose burn-out hole would vent to an atmosphere                  named '{name}' — and the plant already has a node by that name which is not                  an atmosphere. Rename it, or declare an atmosphere node and the hole will                  use it (docs/DESIGN.md §42)"
+            )));
+        }
+        None => {
+            graph.add_node(Node {
+                name: name.into(),
+                kind: NodeKind::Atmosphere,
+                heat_input: Watt::ZERO,
+            });
+        }
+    }
+    Ok(name.into())
 }
 
 /// Resolve the `[[exchangers]]` table into graph couplings, rejecting every way

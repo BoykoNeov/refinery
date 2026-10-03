@@ -452,6 +452,18 @@ pub enum NodeDef {
         /// up the stack. REQUIRED, no default, like the coil keys. Finite and
         /// above the combustion air's 20 °C.
         flame_temperature_c: f64,
+        /// The tubes' failure limit [°C] (M37, docs/DESIGN.md §42): at or past
+        /// it the coil bursts, opening a hole in the furnace's outlet pipe.
+        /// REQUIRED on every furnace, no default. Finite and above
+        /// `coil_temperature_c` (a coil loaded at its limit would fail on tick
+        /// 1); at or above the flame is admitted and means "never".
+        tube_failure_c: f64,
+        /// The area of the hole a burn-out opens [cm²]. REQUIRED. Finite and > 0.
+        tube_rupture_area_cm2: f64,
+        /// Lower heating value of the fluid this furnace heats [MJ/kg]: what a
+        /// leaked kilogram releases burning in the firebox. REQUIRED. Finite and
+        /// >= 0; 0 is a fluid that does not burn (water).
+        fluid_heating_value_mj_per_kg: f64,
     },
     /// Cooler. Duty in MW REMOVED from the stream — a positive magnitude, like
     /// a furnace's. Use this rather than a negative `furnace` duty; the loader

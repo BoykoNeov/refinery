@@ -297,14 +297,23 @@ fn a_furnace_at_zero_duty_is_an_exact_pass_through() {
     );
 
     let snapshot = engine.snapshot();
+    // Two declared pipes, the outlet split in two for the furnace's burn-out hole
+    // (M37, docs/DESIGN.md §42), and the hole itself.
     assert_eq!(
         snapshot.edges.len(),
-        2,
-        "the furnace plant has two pipes; a vacuous loop would prove nothing"
+        4,
+        "the furnace plant has two pipes, one split for its hole; a vacuous loop would \
+         prove nothing"
     );
     // And nothing anywhere may move by more than the plant's own friction, which
     // bounds any stray term two orders below the duty this plant normally carries.
-    for edge in snapshot.edges {
+    // The dormant hole carries no stream at all (exactly zero flow, its seeded
+    // ambient state), so it is not a stream friction could have warmed.
+    for edge in snapshot
+        .edges
+        .into_iter()
+        .filter(|e| e.name != "transfer_line__leak")
+    {
         let t = edge.stream.temperature.value();
         assert!(
             t > FEED_K && t - FEED_K < FRICTION_BOUND_K,
@@ -603,6 +612,11 @@ coil_heat_capacity_mj_per_k = 1
 coil_ua_kw_per_k = 464.3
 coil_temperature_c = 25.0
 flame_temperature_c = 1951.1
+# Above any flame: this fixture drives its coil dry and hot on purpose, and its
+# gates are not about a burn-out (docs/DESIGN.md §42).
+tube_failure_c = 3000.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 0.0
 
 [nodes.product]
 type = "sink"
@@ -854,6 +868,57 @@ fn every_malformed_coil_is_refused_for_its_own_reason() {
             "flame_temperature_c = 1951.1\n",
             "flame_temperature_c = inf\n",
             "heats nothing",
+        ),
+        // The tubes (M37, docs/DESIGN.md §42): three required keys.
+        (
+            "tube_failure_c = 550.0\n",
+            "",
+            "missing field `tube_failure_c`",
+        ),
+        (
+            "tube_failure_c = 550.0\n",
+            "tube_failure_c = 24.99\n",
+            "would burst before the plant has run",
+        ),
+        (
+            "tube_failure_c = 550.0\n",
+            "tube_failure_c = 20.0\n",
+            "would burst before the plant has run",
+        ),
+        (
+            "tube_failure_c = 550.0\n",
+            "tube_failure_c = nan\n",
+            "would burst before the plant has run",
+        ),
+        (
+            "tube_rupture_area_cm2 = 1.0\n",
+            "",
+            "missing field `tube_rupture_area_cm2`",
+        ),
+        (
+            "tube_rupture_area_cm2 = 1.0\n",
+            "tube_rupture_area_cm2 = 0.0\n",
+            "not a burn-out",
+        ),
+        (
+            "tube_rupture_area_cm2 = 1.0\n",
+            "tube_rupture_area_cm2 = inf\n",
+            "not a burn-out",
+        ),
+        (
+            "fluid_heating_value_mj_per_kg = 0.0\n",
+            "",
+            "missing field `fluid_heating_value_mj_per_kg`",
+        ),
+        (
+            "fluid_heating_value_mj_per_kg = 0.0\n",
+            "fluid_heating_value_mj_per_kg = -1.0\n",
+            "does not burn",
+        ),
+        (
+            "fluid_heating_value_mj_per_kg = 0.0\n",
+            "fluid_heating_value_mj_per_kg = nan\n",
+            "does not burn",
         ),
     ];
     for (from, to, says) in cases {

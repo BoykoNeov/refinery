@@ -245,6 +245,9 @@ pub enum NodeKind {
         /// would reach keeping all the heat, and so the hottest the coil can
         /// get. Above the combustion air's `T_AMBIENT`.
         flame_temperature: Kelvin,
+        /// The tubes' failure limit, the hole a failure opens, and whether they
+        /// have failed (M37, docs/DESIGN.md §42).
+        tubes: FurnaceTubes,
     },
     /// Cooler: a duty *removed* from the stream passing through it.
     ///
@@ -513,6 +516,59 @@ pub struct HeatExchangerCoupling {
     /// violation — so it is rejected at every entry point. ε = 0 is a nonsense
     /// exchanger (use a plain pipe) and is likewise refused.
     pub effectiveness: f64,
+}
+
+/// A furnace's tubes as something that can FAIL (M37, docs/DESIGN.md §42): the
+/// burn-out, damage the engine raises from a state rather than a command.
+///
+/// Past `failure_temperature` the coil bursts: on the next tick's top pass the
+/// engine opens `hole` — a leak orifice the loader built on the furnace's outlet
+/// pipe, dormant until then — to `rupture_area`, and latches `state`. While the
+/// tubes are FAILED, whatever leaks out of that hole burns in the firebox, at
+/// `heating_value` per kilogram, as extra FUEL (it passes through the flame law
+/// like the duty). A player patches the hole with `Command::PuncturePipe` at area
+/// zero, which puts the fire out with it, and then replaces the tubes
+/// (`Command::ReplaceTubes`), which re-arms them.
+///
+/// The limit is compared with the LUMPED coil temperature (`FurnaceCoil`), not a
+/// peak tube-skin temperature, and as an instant failure point, where a real
+/// tube's life at temperature is a creep-rupture time. Both are the model's
+/// simplifications, said in §42.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FurnaceTubes {
+    /// Coil temperature at or above which the tubes fail [K].
+    pub failure_temperature: Kelvin,
+    /// Area of the hole a failure opens [m²]. Positive.
+    pub rupture_area: SquareMeter,
+    /// Lower heating value of the fluid the furnace heats [J/kg]: what a
+    /// kilogram of it releases burning in the firebox. Zero for a fluid that
+    /// does not burn (water). Non-negative.
+    pub heating_value: JPerKg,
+    /// The orifice edge the burn-out opens, on the furnace's outlet pipe.
+    /// Written by the loader once it has split that pipe, so `None` only on a
+    /// graph built by hand without one — which the burn-out pass refuses rather
+    /// than skips (rule 5: a furnace that can fail must have somewhere to leak).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole: Option<EdgeId>,
+    pub state: TubeState,
+}
+
+/// Whether a furnace's tubes have burnt out (M37, docs/DESIGN.md §42).
+///
+/// Latched: `Failed` from the tick whose top pass found the coil at or past its
+/// limit, until `Command::ReplaceTubes`. Patching the hole does not clear it, so
+/// a hole punched again by hand on failed tubes burns again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum TubeState {
+    Intact,
+    Failed { at_tick: u64 },
+}
+
+impl TubeState {
+    pub fn is_failed(self) -> bool {
+        matches!(self, TubeState::Failed { .. })
+    }
 }
 
 /// A furnace's tube coil: the metal the duty heats, and through which the duty
