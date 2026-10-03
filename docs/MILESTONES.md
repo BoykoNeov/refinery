@@ -3,13 +3,27 @@
 Every milestone's close-out report, moved here verbatim from `CLAUDE.md` on
 2026-10-03 so the project guide stays under Claude Code's instruction-size
 limit. Newest first (with the order the guide had, not strictly by date).
-`CLAUDE.md` keeps only the latest milestone in full; when a new one closes,
-move the previous box here, to the top of the list below.
+Since M35 (2026-10-03), `CLAUDE.md` keeps only a one-line pointer to the
+latest milestone; each close-out box is written here, at the top of the list
+below, when its milestone closes.
 
 References elsewhere in the repo to "CLAUDE.md's M17 box" and the like (mostly
 in `docs/DESIGN.md`) now point at this file.
 
 ---
+
+**M35 is CLOSED (2026-10-03): a trip on a furnace's coil and outlet — `docs/DEFERRED.md`
+E13 narrowed to the cooler's outlet.** The user's DECISION, with M34's. DESIGN §39.
+- **`{ coil = "…", variable = "temperature" }`**: a new measurement POINT, the
+  coil state M34 writes every tick; present from load, so compared from tick 1.
+  Trips only — a loop on a coil (a skin override) is refused by name.
+- **A furnace's OUTLET** takes M33's flow rule (blind on tick 1's pass only); the
+  exemption grows by exactly that case. A cooler's outlet stays refused.
+- **Demo `furnace_coil_trip.toml`** (35th file): the M19 loop on a FOULED coil. The
+  100 °C skin trip cuts at tick 72 with the outlet at 55.53 °C; the 70 °C outlet trip
+  never fires; the untripped twin holds 60 °C with its tubes at 117.3 °C.
+- Six gates, `tests/coil_trip_reference.rs`; seven mutations, six caught. All 34
+  earlier plants byte-identical. M34's coil and its E19 fix: docs/MILESTONES.md.
 
 **M34 is CLOSED (2026-10-03): a furnace's tube coil — `docs/DEFERRED.md` row B39
 struck, E10 narrowed to coolers, new row B40.** Taken on a DECISION (the user's):
@@ -1887,8 +1901,9 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-(The census of scenario files that declare a `[[controls]]` table lived here;
-it is now kept in `CLAUDE.md`, where each milestone updates it.)
+(The census of scenario files that declare a `[[controls]]` table lived here,
+then in `CLAUDE.md`; it is no longer kept by hand. `grep -l '\[\[controls\]\]'
+scenarios/*.toml` lists them.)
 
 **M8.5 landed 2026-08-26, and M8 is closed** — `Snapshot::slate`, so a frontend
 can turn a tank's mass into a fill level. Four things to know.

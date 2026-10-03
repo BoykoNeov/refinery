@@ -4,8 +4,8 @@ Headless, deterministic oil-refinery simulation engine in Rust with swappable
 fidelity (game ↔ research), consumed by a Godot 4 game, a CLI batch runner,
 and future dashboards.
 
-- **Start here:** [CLAUDE.md](CLAUDE.md) — project rules, conventions, and the
-  current milestone's state
+- **Start here:** [CLAUDE.md](CLAUDE.md) — project rules and conventions; the
+  latest milestone's close-out is at the top of [docs/MILESTONES.md](docs/MILESTONES.md)
 - **Architecture & physics:** [docs/DESIGN.md](docs/DESIGN.md) — every design
   note, written before its slice was built and corrected after
 - **Milestones:** [docs/ROADMAP.md](docs/ROADMAP.md) — M1–M8 closed, M9 open
