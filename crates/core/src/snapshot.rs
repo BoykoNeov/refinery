@@ -339,9 +339,12 @@ pub struct TripSnapshot {
     pub limit: ControlledValue,
     /// The measurement the last trip pass compared against `limit`.
     ///
-    /// **Absent only before the first tick**, when no pass has run. Every
-    /// quantity a trip may watch exists from load (fork 2), so after tick 1 this
-    /// is always present. Skipped when absent, as a loop's is.
+    /// **Absent before the first tick**, when no pass has run. A level, a
+    /// pressure and a holdup's temperature exist from load (fork 2), so after
+    /// tick 1 they are always present. **A flow is also absent on tick 1's
+    /// snapshot** (M33, docs/DESIGN.md §36): that tick's pass ran before any
+    /// solve, so it had nothing to read, and the trip compared nothing. From
+    /// tick 2 on it is always present. Skipped when absent, as a loop's is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measurement: Option<ControlledValue>,
     /// `{"status":"armed"}`, or `{"status":"tripped","at_tick":…}` from the tick

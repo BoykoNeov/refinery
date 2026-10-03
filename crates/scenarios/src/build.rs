@@ -1290,11 +1290,17 @@ fn build_controls(
 /// closes a way a file could declare a trip that would load and then protect
 /// nothing, or protect the wrong thing:
 ///
-/// - a measurement ABSENT at load — a pipe's flow, or a furnace's or cooler's
-///   outlet — refused by name (fork 2(c), `docs/DEFERRED.md` E13). The test is
-///   the engine's own: `measure` at load, with the empty states and no solution
-///   that are the truth there, must return a value. A kind `measure` cannot
-///   answer for at all is refused with `measure`'s own reason, as a loop is.
+/// - a furnace's or cooler's OUTLET, absent at load and again whenever the unit
+///   stagnates — refused by name (fork 2(c), `docs/DEFERRED.md` E13). The test
+///   is the engine's own: `measure` at load, with the empty states and no
+///   solution that are the truth there, must return a value — **except a
+///   declared pipe's flow** (M33, docs/DESIGN.md §36), which is absent before
+///   the first solve and nowhere else, so the trip skips tick 1's pass and
+///   compares from tick 2. A kind `measure` cannot answer for at all is refused
+///   with `measure`'s own reason, as a loop is. A flow trip may watch ANY
+///   declared pipe: the loops' "one of its valve's own two pipes" rule (§24,
+///   `docs/DEFERRED.md` E12) is about a loop's sign, and a trip actuates
+///   nothing through the pipe it watches,
 /// - a missing or unknown `direction`, and a limit key belonging to another
 ///   variable, or none for this one,
 /// - a limit outside its physical range: a level in `[0, height]`, a pressure
@@ -1340,21 +1346,11 @@ fn build_trips(
             "level" => MeasuredVariable::Level,
             "pressure" => MeasuredVariable::Pressure,
             "temperature" => MeasuredVariable::Temperature,
-            // Refused BEFORE the pipe is looked up, so a trip on any flow gets
-            // this reason rather than a meter-lookup one.
-            "flow" => {
-                return Err(SimError::Scenario(format!(
-                    "{owner} watches a flow. A pipe's flow does not exist before the first \
-                     tick, and for a safety function a missing measurement is not something \
-                     to hold still on (docs/DESIGN.md §26 fork 2). A trip on a quantity \
-                     absent at load is deferred until it has a stated rule for that \
-                     (docs/DEFERRED.md E13)"
-                )))
-            }
+            "flow" => MeasuredVariable::Flow,
             other => {
                 return Err(SimError::Scenario(format!(
                     "{owner} measures unknown variable '{other}' (valid: level, pressure, \
-                     temperature)"
+                     temperature, flow)"
                 )))
             }
         };
@@ -1362,9 +1358,13 @@ fn build_trips(
         let point = resolve_measurement_point(graph, &owner, &def.measurement, pipes)?;
         let point_name = graph.point_name(point).to_owned();
         // The admission test is the engine's own reader, called with what is
-        // true at load. `Err` is a node that cannot answer for the variable at
+        // true at load. `Err` is a point that cannot answer for the variable at
         // all, in `measure`'s own words; `Ok(None)` is a quantity that exists
-        // only once the plant has run — a furnace or cooler OUTLET.
+        // only once the plant has run. For a pipe's flow that absence ends with
+        // the first solve, and the trip pass skips exactly that one pass (§36
+        // fork 1). For a furnace or cooler OUTLET it does not end there: a
+        // stagnant unit's outlet is absent mid-run, which is exactly when a
+        // safety function would need it, so it stays refused (E13).
         let measured = graph
             .measure(
                 slate,
@@ -1379,14 +1379,16 @@ fn build_trips(
                     variable.noun()
                 ))
             })?;
-        if measured.is_none() {
+        if measured.is_none() && !matches!(point, MeasurementPoint::Pipe(_)) {
             return Err(SimError::Scenario(format!(
                 "{owner} watches the {} of '{point_name}', which does not exist before the \
-                 first tick: a furnace's or cooler's outlet is resolved by the tick. For a \
-                 safety function a missing measurement is not something to hold still on \
-                 (docs/DESIGN.md §26 fork 2), so a trip on a quantity absent at load is \
-                 deferred until it has a stated rule for that (docs/DEFERRED.md E13). Watch \
-                 the holdup the stream runs into instead",
+                 first tick, and not while the unit is stagnant either: a furnace's or \
+                 cooler's outlet is resolved by the tick, from its inflow. For a safety \
+                 function a missing measurement is not something to hold still on \
+                 (docs/DESIGN.md §26 fork 2), and this one goes missing exactly when the \
+                 flow stops, so an outlet trip is deferred until it has a stated rule for \
+                 that (docs/DEFERRED.md E13). Watch the holdup the stream runs into, or \
+                 the flow through the unit, instead",
                 variable.noun()
             )));
         }
@@ -1421,6 +1423,7 @@ fn build_trips(
             (def.limit_m.is_some(), MeasuredVariable::Level),
             (def.limit_bar.is_some(), MeasuredVariable::Pressure),
             (def.limit_c.is_some(), MeasuredVariable::Temperature),
+            (def.limit_kg_per_s.is_some(), MeasuredVariable::Flow),
         ] {
             if present && belongs_to != variable {
                 return Err(SimError::Scenario(format!(
@@ -1437,7 +1440,7 @@ fn build_trips(
             MeasuredVariable::Level => def.limit_m,
             MeasuredVariable::Pressure => def.limit_bar,
             MeasuredVariable::Temperature => def.limit_c,
-            MeasuredVariable::Flow => None,
+            MeasuredVariable::Flow => def.limit_kg_per_s,
         }
         .ok_or_else(|| {
             SimError::Scenario(format!(
@@ -1591,21 +1594,43 @@ fn build_trips(
 /// A trip limit's physical range (docs/DESIGN.md §26 fork 6).
 ///
 /// Only the physical bounds: a level in `[0, height]`, a pressure above zero,
-/// a temperature above absolute zero, each finite. A limit AT a bound is legal
-/// — a high level trip at the brim is a real design — and a limit that fires at
-/// load is legal too: the plant trips on tick 1 rather than running a tick in a
-/// condition its own file calls unsafe.
+/// a temperature above absolute zero, a flow any finite number (M33), each
+/// finite. A limit AT a bound is legal — a high level trip at the brim is a real
+/// design — and a limit that fires at load is legal too: the plant trips on
+/// tick 1 rather than running a tick in a condition its own file calls unsafe.
+///
+/// **A flow's limit has no sign bound** (docs/DESIGN.md §36 fork 2). The flow is
+/// signed by the pipe's declared direction and measured as solved, never
+/// clipped (§24, E11), so a low trip at or below zero is a reverse-flow trip and
+/// a real design.
 fn check_trip_limit(
     graph: &PlantGraph,
     owner: &str,
     point: MeasurementPoint,
     limit: ControlledValue,
 ) -> Result<(), SimError> {
-    let MeasurementPoint::Node(node) = point else {
-        // A pipe carries only a flow, which is refused before this runs.
-        return Err(SimError::Scenario(format!(
-            "{owner} has a trip limit on a pipe"
-        )));
+    let node = match (point, limit) {
+        (MeasurementPoint::Node(node), _) => node,
+        (MeasurementPoint::Pipe(pipe), ControlledValue::Flow { kg_per_s }) => {
+            if !kg_per_s.value().is_finite() {
+                return Err(SimError::Scenario(format!(
+                    "{owner} has a trip limit of {} kg/s on pipe '{}', which is not a number \
+                     a flow can be compared with",
+                    kg_per_s.value(),
+                    graph.pipe(pipe).name
+                )));
+            }
+            return Ok(());
+        }
+        // `measure` admits only a flow on a pipe, and refused this pairing
+        // before the limit was built.
+        (MeasurementPoint::Pipe(pipe), other) => {
+            return Err(SimError::Scenario(format!(
+                "{owner} has a {:?} trip limit on pipe '{}', which carries only a flow",
+                other.variable(),
+                graph.pipe(pipe).name
+            )))
+        }
     };
     let name = &graph.node(node).name;
     let (value, ok, range) = match (limit, &graph.node(node).kind) {
@@ -1691,7 +1716,7 @@ fn resolve_measurement_point(
                 [] => {
                     return Err(SimError::Scenario(format!(
                         "{owner} measures pipe '{name}', which this file does not \
-                         declare. A loop meters only a pipe the file wrote in `[[pipes]]`: the \
+                         declare. A flow is metered only on a pipe the file wrote in `[[pipes]]`: the \
                          loader also makes edges of its own — a leak split's `__downstream` \
                          half and `__leak` orifice, and every boil-off vent — and those are \
                          not meters (docs/DESIGN.md §24 fork 1)"
@@ -1710,10 +1735,10 @@ fn resolve_measurement_point(
                 return Err(SimError::Scenario(format!(
                     "{owner} measures pipe '{name}', which declares `leak_to = \
                      \"{atmosphere}\"`. The loader splits a leaking pipe at a junction and gives \
-                     the declared name to the UPSTREAM half, which ends at the leak point and \
-                     not at the valve — and once punctured the two halves carry different \
-                     flows. A flow loop meters a pipe with no leak path (docs/DESIGN.md §24 \
-                     fork 5)"
+                     the declared name to the UPSTREAM half, which ends at the leak point — \
+                     and once punctured the two halves carry different flows, so the name \
+                     no longer names one flow. A flow is metered on a pipe with no leak path \
+                     (docs/DESIGN.md §24 fork 5)"
                 )));
             }
             let from = graph.find_node(&pipe.from);

@@ -1,0 +1,114 @@
+# M33 protection demo: a furnace fired by hand on a feed that fades, and a trip
+# that cuts its fuel when the flow through it gets too low.
+#
+#   charge_tank (by gravity) -> feed_valve -> heater (0.6 MW) -> product
+#
+# **Why a low-flow trip exists.** A furnace's outlet is its inlet plus `Q/(ṁ·cp)`
+# (docs/DESIGN.md §4). Fired at a fixed duty on a falling flow, the outlet climbs
+# as the flow falls, without bound; on a real heater that is the tubes burning
+# out. The trip watches the FEED, not the outlet: the flow is what fails, and an
+# outlet trip is still deferred (docs/DEFERRED.md E13).
+#
+# **What drives the flow down here.** Nothing but the plant: the charge tank
+# drains by gravity through a fully open valve, so its head, and the feed with
+# it, falls from 4.89 kg/s on tick 1 to 2.0 kg/s near tick 3 016 and to zero when
+# the tank runs dry. No command is issued; the CLI issues none.
+#
+# **The rule for the missing measurement** (§36 fork 1). A pipe's flow is read
+# from the last hydraulic solve, and before tick 1 there is none. The trip stays
+# armed and compares nothing on tick 1's pass — its snapshot carries no
+# `measurement` — and compares on every tick from 2. A flow is absent for that
+# one pass only: from tick 2 every flow is a measurement, zero included.
+#
+# **What the trip does, measured on both fidelities** (§36). The feed ends tick
+# 3 016 at 1.99951 kg/s, so the pass at the top of tick 3 017 fires and the
+# furnace reads zero duty on that tick's own snapshot. Until then the plant is
+# bit for bit its own untripped twin. From the cut on, the furnace's outlet IS
+# its inlet stream's temperature, exactly: 91.72 °C at the end of 3 016, 20.004 °C
+# at the end of 3 017.
+#
+# **The cut moves no flow.** At constant density nothing hydraulic reads a
+# furnace's duty, so the feed keeps fading exactly as the twin's does, every flow
+# equal to the bit to tick 6 000. The condition therefore never clears on this
+# plant, and a reset is refused all the way down. The LATCH is shown on a fixture
+# whose feed can be restored, in `crates/scenarios/tests/flow_trip_reference.rs`.
+#
+# **What happens without it.** Delete the `[[trips]]` block and the furnace keeps
+# firing on the trickle: its outlet passes 100 °C at tick 3 232, reads 155.9 °C at
+# 4 000 and 1 521 °C at 5 000, and keeps climbing as the tank empties. What the
+# engine then reports for a furnace fired on a vanishing flow is a gap of its own
+# (docs/DEFERRED.md B39), not a number this file stands behind.
+#
+# **What this file cannot show.** The CLI issues no commands, so the refused
+# relight, the reset, and the cold start the latch makes a start permissive are
+# exercised by the fixtures in `flow_trip_reference.rs`.
+#
+#   cargo run -p refinery-cli -- run scenarios/furnace_low_flow_trip.toml --ticks 6000
+
+[meta]
+name = "furnace_low_flow_trip"
+description = "A furnace fired by hand on a feed that fades as its tank empties; a latching low-flow trip cuts the fuel."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+# 12.5 t of water at 10 m: the plant's only supply. Nothing refills it.
+[nodes.charge_tank]
+type = "tank"
+area_m2 = 1.25
+height_m = 12.0
+initial_level_m = 10.0
+temperature_c = 20.0
+
+# Fully open and never moved. Its Kv is what sets the feed: 4.89 kg/s at the full
+# 10 m of head, falling with the head as the tank drains.
+[nodes.feed_valve]
+type = "valve"
+kv = 18.0
+opening = 1.0
+
+# Fired by hand at 0.6 MW and left there: 29 K on the starting feed, 72 K at the
+# 2 kg/s the trip is set to.
+[nodes.heater]
+type = "furnace"
+duty_mw = 0.6
+
+[nodes.product]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "charge_tank"
+to = "feed_valve"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "valve_line"
+from = "feed_valve"
+to = "heater"
+length_m = 5.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "product"
+length_m = 20.0
+diameter_m = 0.10
+
+# Fires AT OR BELOW 2 kg/s on the feed (docs/DESIGN.md §26 fork 6) and cuts the
+# furnace's fuel. The flow is the last solve's, so on tick 1 there is none and
+# the trip compares nothing (§36 fork 1); from tick 2 it compares every tick.
+[[trips]]
+name = "heater_low_flow"
+measurement = { pipe = "feed_line", variable = "flow" }
+direction = "low"
+limit_kg_per_s = 2.0
+actions = [{ furnace = "heater" }]

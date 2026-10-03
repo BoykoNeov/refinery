@@ -35,6 +35,7 @@ const LEVEL_LOOP: &str = include_str!("../../../scenarios/tank_level_control.tom
 const FURNACE: &str = include_str!("../../../scenarios/furnace_outlet_control.toml");
 const RELIEF: &str = include_str!("../../../scenarios/relief_blowdown.toml");
 const HEATING: &str = include_str!("../../../scenarios/tank_temperature_heating.toml");
+const LEAKING: &str = include_str!("../../../scenarios/leaking_line.toml");
 
 /// The demo's own trip block, verbatim, so a swap into it must land.
 const DEMO_TRIP: &str = r#"[[trips]]
@@ -483,13 +484,68 @@ fn every_trip_the_loader_cannot_honour_is_refused_for_its_own_reason() {
     let demo_with = |block: &str| swap(DEMO, DEMO_TRIP, block);
     let action = |from: &str, to: &str| demo_with(&swap(DEMO_TRIP, from, to));
     let cases: Vec<(&str, String, &str)> = vec![
+        // M33 (docs/DESIGN.md §36) admits a flow. What used to be refused here
+        // as E13 is now refused for the key: `limit_m` is a level's limit.
         (
-            "a flow",
+            "a flow with a level's limit key",
             action(
                 r#"{ node = "receiving_tank", variable = "level" }"#,
                 r#"{ pipe = "fill_line", variable = "flow" }"#,
             ),
-            "E13",
+            "write `limit_kg_per_s` instead",
+        ),
+        (
+            "a flow with no limit",
+            action(
+                r#"measurement = { node = "receiving_tank", variable = "level" }
+direction = "high"
+limit_m = 6.0"#,
+                r#"measurement = { pipe = "fill_line", variable = "flow" }
+direction = "low""#,
+            ),
+            "declares no `limit_kg_per_s`",
+        ),
+        (
+            "a flow limit that is not a number",
+            action(
+                r#"measurement = { node = "receiving_tank", variable = "level" }
+direction = "high"
+limit_m = 6.0"#,
+                r#"measurement = { pipe = "fill_line", variable = "flow" }
+direction = "low"
+limit_kg_per_s = nan"#,
+            ),
+            "not a number a flow can be compared with",
+        ),
+        (
+            "a flow on a pipe the file does not declare",
+            action(
+                r#"measurement = { node = "receiving_tank", variable = "level" }
+direction = "high"
+limit_m = 6.0"#,
+                r#"measurement = { pipe = "receiving_tank__overflow", variable = "flow" }
+direction = "low"
+limit_kg_per_s = 1.0"#,
+            ),
+            "which this file does not declare",
+        ),
+        (
+            "a flow on a leaking pipe",
+            with_trip(
+                LEAKING,
+                r#"[[trips]]
+name = "low_fill"
+measurement = { pipe = "fill_line", variable = "flow" }
+direction = "low"
+limit_kg_per_s = 1.0
+actions = [{ pump = "transfer_pump" }]"#,
+            ),
+            "A flow is metered on a pipe with no leak path",
+        ),
+        (
+            "a flow's limit key on a level",
+            action("limit_m = 6.0", "limit_kg_per_s = 6.0"),
+            "write `limit_m` instead",
         ),
         (
             "a furnace outlet",
@@ -502,7 +558,7 @@ direction = "high"
 limit_c = 90.0
 actions = [{ valve = "drain_valve", position = 0.0 }]"#,
             ),
-            "does not exist before the",
+            "not while the unit is stagnant",
         ),
         (
             "a cooler as equipment",

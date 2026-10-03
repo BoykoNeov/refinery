@@ -1327,10 +1327,13 @@ impl TripAction {
 pub struct Trip {
     /// Scenario-given name, unique per plant.
     pub name: String,
-    /// Where the trip measures. Always a `Node` today: only a tank's level, a
-    /// vessel's pressure and a holdup's temperature are admitted, because all
-    /// three are stored and exist from load (fork 2). A trip on a quantity absent
-    /// at load owes a rule for the missing measurement (`docs/DEFERRED.md` E13).
+    /// Where the trip measures. A `Node` for a tank's level, a vessel's pressure
+    /// or a holdup's temperature, which are stored and exist from load (fork 2);
+    /// a declared `Pipe` for a flow (M33, docs/DESIGN.md §36), which is absent
+    /// for exactly one trip pass, tick 1's, before any solve — the trip stays
+    /// armed and compares nothing on that pass. A furnace's or cooler's outlet,
+    /// absent again whenever the unit stagnates, is refused
+    /// (`docs/DEFERRED.md` E13).
     pub measurement_point: MeasurementPoint,
     pub direction: TripDirection,
     /// The limit, and — through `ControlledValue::variable` — what is measured.
@@ -1339,7 +1342,8 @@ pub struct Trip {
     pub actions: Vec<TripAction>,
     pub state: TripState,
     /// The measurement the last trip pass compared. `None` only before the
-    /// first tick, when no pass has run.
+    /// first tick, when no pass has run — and, for a flow trip, still `None` on
+    /// tick 1's snapshot, whose pass had no solution to read (§36).
     pub last_measurement: Option<ControlledValue>,
 }
 

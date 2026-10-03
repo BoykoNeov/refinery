@@ -9,7 +9,8 @@ use crate::energy::{self};
 use crate::error::SimError;
 use crate::graph::{
     Actuator, ControlAction, ControlLoop, ControlMode, ControlledValue, LeakRole, LoopId,
-    MeasuredVariable, NodeId, NodeKind, PlantGraph, SetpointRange, TripAction, TripId, TripState,
+    MeasuredVariable, MeasurementPoint, NodeId, NodeKind, PlantGraph, SetpointRange, TripAction,
+    TripId, TripState,
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
@@ -632,8 +633,9 @@ impl Engine {
                     .ok_or_else(|| {
                         SimError::Numerical(format!(
                             "internal: trip '{}' has no {} to test its reset against, but the \
-                             loader admits only quantities that exist from load \
-                             (docs/DESIGN.md §26 fork 2)",
+                             loader admits only quantities that exist from load, and a flow, \
+                             which is absent only before the first solve — when no trip can \
+                             be tripped yet (docs/DESIGN.md §26 fork 2, §36)",
                             trip.name,
                             trip.limit.variable().noun()
                         ))
@@ -1778,31 +1780,36 @@ impl Engine {
         let this_tick = self.tick + 1;
 
         // Pass 1 — measure, and check the equipment every LATCHED trip holds.
-        let mut measured: Vec<ControlledValue> = Vec::with_capacity(self.graph.trips().len());
+        let mut measured: Vec<Option<ControlledValue>> =
+            Vec::with_capacity(self.graph.trips().len());
         for trip in self.graph.trips() {
-            // Every quantity a trip may watch is stored and exists from load
-            // (fork 2(c)), so `None` here is the loader's admission check and
-            // `measure` disagreeing — an engine fault, not a quiet hold. A
-            // safety function holding still on a missing measurement is the
-            // wrong default (§26 fork 2), so it is not allowed to happen quietly.
-            let measurement = self
-                .graph
-                .measure(
-                    &self.slate,
-                    &self.node_states,
-                    self.last_solution.as_ref(),
-                    trip.measurement_point,
-                    trip.limit.variable(),
-                )?
-                .ok_or_else(|| {
-                    SimError::Numerical(format!(
-                        "internal: trip '{}' has no {} to compare with its limit, but the \
-                         loader admits only quantities that exist from load \
-                         (docs/DESIGN.md §26 fork 2)",
-                        trip.name,
-                        trip.limit.variable().noun()
-                    ))
-                })?;
+            let measurement = self.graph.measure(
+                &self.slate,
+                &self.node_states,
+                self.last_solution.as_ref(),
+                trip.measurement_point,
+                trip.limit.variable(),
+            )?;
+            // **One absence is admitted, and it is exactly one trip pass long**
+            // (M33, docs/DESIGN.md §36 fork 1): a pipe's flow before the first
+            // solve. That is not a failed instrument but a plant that has not run
+            // yet, and from tick 2 on every flow is measured — zero included. The
+            // trip stays armed and compares nothing on that pass. Every OTHER
+            // absence is the loader's admission check and `measure` disagreeing
+            // — an engine fault, not a quiet hold: a safety function holding
+            // still on a missing measurement is the wrong default (§26 fork 2),
+            // so it is not allowed to happen quietly.
+            let before_first_solve = matches!(trip.measurement_point, MeasurementPoint::Pipe(_))
+                && self.last_solution.is_none();
+            if measurement.is_none() && !before_first_solve {
+                return Err(SimError::Numerical(format!(
+                    "internal: trip '{}' has no {} to compare with its limit, but the \
+                     loader admits only quantities that exist from load, and a flow, which \
+                     is absent only before the first solve (docs/DESIGN.md §26 fork 2, §36)",
+                    trip.name,
+                    trip.limit.variable().noun()
+                )));
+            }
             measured.push(measurement);
             if trip.state.is_tripped() {
                 for action in &trip.actions {
@@ -1816,6 +1823,11 @@ impl Engine {
         // measurement now says: that is the latch (fork 4).
         let mut writes: Vec<TripAction> = Vec::new();
         for (trip, measurement) in self.graph.trips_mut().iter_mut().zip(measured) {
+            // Pass 1 let through only a flow before the first solve: the trip
+            // stays armed and its snapshot shows no measurement, as before tick 1.
+            let Some(measurement) = measurement else {
+                continue;
+            };
             trip.last_measurement = Some(measurement);
             if trip.state == TripState::Armed && trip.direction.reached(measurement, trip.limit)? {
                 trip.state = TripState::Tripped { at_tick: this_tick };

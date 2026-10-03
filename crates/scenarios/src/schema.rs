@@ -858,10 +858,12 @@ pub struct MeasurementDef {
 pub struct TripDef {
     /// Unique per plant. What the trip is labelled with in a snapshot.
     pub name: String,
-    /// Which node's state this trip watches, and which variable — the loops'
-    /// own table. Only a tank's `level`, a vessel's `pressure` or a tank's or
-    /// vessel's `temperature` is admitted: all three exist from load. A `flow`
-    /// and a furnace or cooler outlet are refused by name (docs/DEFERRED.md E13).
+    /// Which node's state or pipe's flow this trip watches, and which variable —
+    /// the loops' own table. A tank's `level`, a vessel's `pressure` and a
+    /// tank's or vessel's `temperature` exist from load; a declared pipe's
+    /// `flow` (M33, docs/DESIGN.md §36) is absent on tick 1 alone, and the trip
+    /// first compares on tick 2. A furnace or cooler outlet is refused by name
+    /// (docs/DEFERRED.md E13).
     pub measurement: MeasurementDef,
     /// `"high"` (fires AT OR ABOVE the limit) or `"low"` (at or below).
     /// **Required, no default**: it is the trip's most important word.
@@ -879,6 +881,11 @@ pub struct TripDef {
     /// same site as a loop's `setpoint_c`.
     #[serde(default)]
     pub limit_c: Option<f64>,
+    /// The limit for a `flow` trip, in kg/s, signed by the pipe's declared
+    /// direction (M33). Any finite value: a low trip at or below zero fires on
+    /// a flow running backwards.
+    #[serde(default)]
+    pub limit_kg_per_s: Option<f64>,
     /// What the trip does when it fires: one or more pieces of equipment and
     /// each one's safe state. Required and non-empty (docs/DESIGN.md §26 fork 3).
     #[serde(default)]
