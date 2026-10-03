@@ -10,8 +10,9 @@
 //! physics or the boundary classification.
 
 use crate::elements::{
-    check_opening, check_opening_slope, fold_gas_valve, pipe_resistance, relief_opening,
-    relief_opening_slope, specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
+    check_opening, check_opening_slope, fold_gas_valve, gas_orifice, pipe_resistance,
+    relief_opening, relief_opening_slope, specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND,
+    ORIFICE_CD,
 };
 use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
@@ -525,25 +526,35 @@ pub fn compile_edge(
     // `QuadraticBranch::orifice` for what depends on that, and
     // `finalize`'s back-feed refusal for who.
     if let LeakRole::Orifice { area } = pipe.leak {
-        // The SECOND door on the gas refusal. The loader refuses a leak declared
-        // on a gas line, but the loader is not the only way in — the invariant
-        // proptests build a `PlantGraph` directly and never call `build_engine`
-        // (the same reason `compile_edge` re-refuses a gas valve with no `x_T`
-        // below). A leak arm added to a generator later must not be able to size
-        // an orifice with the incompressible law: an orifice venting a
-        // pressurised gas line to atmosphere is choked over essentially its whole
-        // operating range, so Torricelli would overpredict exactly where a leak
-        // is read. Un-defers with an orifice `x_T` and a published anchor.
+        let mut branch = QuadraticBranch::orifice(area.value(), ORIFICE_CD, rho);
+        // In GAS service the hole is the isentropic nozzle law (M37,
+        // docs/DESIGN.md §41): a hole venting a pressurised gas line to
+        // atmosphere chokes above a drop of about half its absolute pressure, and
+        // Torricelli there would overpredict exactly the number a leak exists to
+        // report — the reason M6 refused it, here and at load, until now. The
+        // branch keeps `beta = 0` and the sign of `dp`, so the back-feed refusal
+        // below is unchanged; a dormant hole is returned closed before `γ` is
+        // read.
         if pipe.stream.composition.phase(slate)? == Phase::Gas {
-            return Err(SimError::Numerical(format!(
-                "leak orifice '{}' ({eid:?}) carries a gas-phase stream: the \
-                 incompressible orifice law Q = Cd·A·√(2·dp/ρ) would be applied to a \
-                 compressible fluid venting to atmosphere, which is choked over its \
-                 whole useful range (docs/DESIGN.md §3b)",
-                pipe.name
-            )));
+            let comp = &pipe.stream.composition;
+            let gamma = comp.mixture_cp(slate).value() / comp.mixture_cv(slate).value();
+            if !gamma.is_finite() || gamma <= 1.0 {
+                return Err(SimError::Numerical(format!(
+                    "leak orifice '{}' ({eid:?}) carries a gas whose cp/cv = {gamma:.4} \
+                     is not above 1, so it has no choke to size the hole by",
+                    pipe.name
+                )));
+            }
+            let dp = pressures[&src] - pressures[&tgt];
+            branch = gas_orifice(branch, dp, upwind, gamma);
+            if branch.alpha.is_nan() || branch.alpha <= 0.0 {
+                return Err(SimError::Numerical(format!(
+                    "leak orifice '{}' ({eid:?}) compiled to a resistance of {:e} in gas \
+                     service (γ = {gamma:.4}, upstream {upwind:e} Pa)",
+                    pipe.name, branch.alpha
+                )));
+            }
         }
-        let branch = QuadraticBranch::orifice(area.value(), ORIFICE_CD, rho);
         debug_assert_eq!(branch.beta, 0.0, "an orifice branch must carry no offset");
         let conducts = branch.alpha.is_finite() && branch.alpha > 0.0;
         return Ok(CompiledEdge {

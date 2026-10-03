@@ -534,15 +534,20 @@ leak_to = "outside"
     );
 }
 
-/// A leak on a gas line is refused at LOAD, naming the file — the first of the
-/// two doors (`network::compile_edge` is the second, gated in
-/// `orifice.rs::a_gas_orifice_is_refused_at_compile_time`).
+/// A leak on a GAS line (M37, docs/DESIGN.md §41). Refused at load until M37,
+/// because the orifice law was incompressible; now the hole is the isentropic
+/// nozzle law, pinned against a hand calculation in the solvers crate
+/// (`orifice.rs`). What only a loaded plant can show is checked here: the file
+/// builds, the punctured hole carries gas out on both fidelities, the hole is
+/// CHOKED at the junction pressure the network settles to (so this gate runs the
+/// regime M6 refused for), and the mass balances at the split — what the header
+/// line brings to the junction leaves through the hole and the downstream half.
 #[test]
-fn a_leak_on_a_gas_line_is_refused_at_load() {
+fn a_leak_on_a_gas_line_chokes_and_balances() {
     const GAS_PLANT: &str = r#"
 [meta]
 name = "gas_leak"
-description = "A fuel gas header with a hole in it — refused: the orifice law is incompressible."
+description = "A fuel gas header with a hole in it: the isentropic nozzle law (M37)."
 [simulation]
 dt = 0.1
 [fidelity]
@@ -580,11 +585,66 @@ length_m = 50.0
 diameter_m = 0.20
 leak_to = "outside"
 "#;
-    let err = expect_refusal(GAS_PLANT, "a leak on a gas line must be refused at load");
-    assert!(
-        err.contains("choked"),
-        "the refusal must say why the incompressible law is wrong: {err}"
-    );
+    /// `x* = 1 − (2/(γ+1))^(γ/(γ−1))` for this methane (γ = 1.304 548), by hand
+    /// in `orifice.rs`'s header: the drop ratio above which the hole is choked.
+    const X_CHOKE: f64 = 0.455_092_813_653_145;
+    /// A 1 cm² hole: big enough to take a visible share of the header's flow.
+    const GAS_HOLE_M2: f64 = 1.0e-4;
+    for solver in ["newton", "simple"] {
+        let src = GAS_PLANT.replacen(r#"flow = "newton""#, &format!(r#"flow = "{solver}""#), 1);
+        let mut engine = engine(&src);
+        let id = edge(&engine.snapshot(), "header_line").id;
+        engine
+            .apply(Command::PuncturePipe {
+                edge: id,
+                area: SquareMeter(GAS_HOLE_M2),
+            })
+            .expect("a gas line declared punctureable can be punctured");
+        let mut worst_iterations = 0;
+        for t in 1..=50 {
+            engine
+                .tick()
+                .unwrap_or_else(|e| panic!("{solver}, tick {t}: {e}"));
+            worst_iterations = worst_iterations.max(engine.snapshot().solver.iterations);
+        }
+        let snapshot = engine.snapshot();
+        let into_junction = edge(&snapshot, "header_line").stream.mass_flow.value();
+        let leak = edge(&snapshot, "header_line__leak")
+            .stream
+            .mass_flow
+            .value();
+        let onward = edge(&snapshot, "header_line__downstream")
+            .stream
+            .mass_flow
+            .value();
+        let junction = snapshot
+            .nodes
+            .iter()
+            .find(|n| n.name == "header_line__leak_point")
+            .expect("the leak junction")
+            .pressure_pa;
+        let drop_ratio = (junction - refinery_core::units::P_ATM.value()) / junction;
+        assert!(
+            leak > 0.0 && drop_ratio > X_CHOKE,
+            "{solver}: the hole must vent, choked: leak {leak} kg/s at a drop ratio {drop_ratio} (choke at {X_CHOKE})"
+        );
+        // The junction is a free node, so it balances to the solve's own
+        // convergence and no better: its imbalance is bounded by the WORST node
+        // residual the solver reports (measured equal to it, to eight digits, on
+        // Newton — the junction is that node).
+        let imbalance = into_junction - leak - onward;
+        assert!(
+            imbalance.abs() <= snapshot.solver.residual * (1.0 + 1e-6),
+            "{solver}: the split must balance to the solve's residual: {imbalance:e} kg/s against {:e}",
+            snapshot.solver.residual
+        );
+        // Recorded for docs/DEFERRED.md A18: a choked hole against a pinned
+        // atmosphere is where the frozen gas slope is the whole slope.
+        println!(
+            "{solver}: leak {leak:.6} kg/s of {into_junction:.6}, junction {:.4} bara, x = {drop_ratio:.4}, worst iterations {worst_iterations}",
+            junction / 1e5
+        );
+    }
 }
 
 /// A leak declared on a COLUMN's feed or draw is refused, and the refusal is

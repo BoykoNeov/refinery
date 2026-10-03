@@ -29,9 +29,8 @@ use crate::schema::{
     MeasurementDef, NodeDef, PipeDef, ScenarioFile, TripDef,
 };
 use crate::validate::{
-    plant_phases, refuse_gas_leak, require_compatible_fidelity, require_declared_iff_used,
-    require_gas_valve_x_t, seed_component_index, validate_node_def, validate_pipe_def,
-    validate_topology,
+    plant_phases, require_compatible_fidelity, require_declared_iff_used, require_gas_valve_x_t,
+    seed_component_index, validate_node_def, validate_pipe_def, validate_topology,
 };
 
 /// Build a runnable engine from a scenario. Steps:
@@ -165,7 +164,6 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // is a tick-1 density seed only (see `seed_component_index`).
     let phases = plant_phases(&graph, &slate)?;
     require_gas_valve_x_t(&graph, &phases)?;
-    refuse_gas_leak(&graph, &phases)?;
     for eid in graph.edge_ids().collect::<Vec<_>>() {
         let (src, _) = graph.endpoints(eid);
         let index = seed_component_index(&slate, phases[src.0 as usize]);

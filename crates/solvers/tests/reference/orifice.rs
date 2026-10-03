@@ -203,12 +203,33 @@ fn a_zero_area_orifice_carries_exactly_no_flow() {
     assert_eq!(solve_leak(0.0, &mut SimpleFlowSolver::default()), 0.0);
 }
 
-/// The second door on the gas refusal, at the point of compilation rather than
-/// at load — the door a generated plant reaches, since the proptests build a
-/// `PlantGraph` directly and never call `build_engine`.
-#[test]
-fn a_gas_orifice_is_refused_at_compile_time() {
-    let slate = Slate::new(vec![refinery_core::components::PseudoComponent {
+// --- The hole in GAS service (M37, docs/DESIGN.md §41) ------------------------
+//
+// Until M37 a gas orifice was refused here. It is now the isentropic nozzle law,
+// `ṁ = Cd·A·√(2·ρ·p·ψ(x))`, and the gates below pin it against a hand
+// calculation carried out in 30-digit arithmetic OUTSIDE the workspace
+// (`W:\temp\claude\m37`, mpmath), with every input restated here:
+//
+//   methane: M = 0.016043 kg/mol, cp = 2220 J/(kg·K), R = 8.31446261815324
+//   cv = cp − R/M = 1701.740 9…      γ = cp/cv = 1.304 547 943 859 438
+//   r* = (2/(γ+1))^(γ/(γ−1)) = 0.544 907 186 346 855   x* = 1 − r* = 0.455 092 813 653 145
+//   T = 293.15 K (the source), Cd = 0.61, A = 1e-4 m², downstream P_ATM
+//
+//   CHOKED, p = 10 bara: ρ = p·M/(R·T) = 6.582 054 893 351 58 kg/m³, x = 0.898 675 > x*
+//     ψ(x*) = γ/(γ−1)·(r*^(2/γ) − r*^((γ+1)/γ)) = 0.223 167 460 739 304
+//     ṁ = Cd·A·√(2·ρ·p·ψ) = 0.104 554 088 154 429 kg/s
+//     and by the classical choked form, ṁ* = Cd·A·p·√(γ·M/(R·T))·(2/(γ+1))^((γ+1)/(2(γ−1))),
+//     the same 0.104 554 088 154 429 to all thirty digits — two algebraic routes
+//     to one number, so the gate is not the code's own expression read back.
+//     Torricelli at the same state would say 0.209 810 kg/s: twice the truth.
+//
+//   SUBCRITICAL, p = 1.5 bara: ρ = 0.987 308 234 002 737, x = 0.3245 < x*
+//     ψ(x) = 0.205 439 671 497 131      ṁ = 0.015 047 314 489 232 kg/s
+//     (Torricelli: 0.018 911 kg/s, 26% high.)
+
+/// Methane as a one-component gas slate, the fixture's declared numbers.
+fn methane() -> Slate {
+    Slate::new(vec![refinery_core::components::PseudoComponent {
         name: "methane".into(),
         tb: Kelvin(111.7),
         molar_mass: KgPerMol(0.016_043),
@@ -217,14 +238,94 @@ fn a_gas_orifice_is_refused_at_compile_time() {
         cp_shape: None,
         phase: refinery_core::components::Phase::Gas,
     }])
-    .expect("single-component gas slate");
-    let (graph, _) = orifice_plant(AREA_M2);
-    let err = NewtonFlowSolver::default()
-        .solve(&graph, &slate, &Default::default(), Seconds(0.1))
-        .expect_err("an orifice on a gas stream must be refused, not sized");
-    let message = err.to_string();
-    assert!(
-        message.contains("gas-phase") && message.contains("choked"),
-        "the refusal must say why the incompressible law is wrong here: {message}"
+    .expect("single-component gas slate")
+}
+
+/// Source at `upstream_pa` → hole of `area` → Atmosphere, in methane.
+fn solve_gas_leak(area: f64, upstream_pa: f64, solver: &mut dyn FlowSolver) -> f64 {
+    let (mut graph, hole) = orifice_plant(area);
+    let line = graph.find_node("line").expect("the source");
+    if let NodeKind::Source { pressure, .. } = &mut graph.node_mut(line).kind {
+        *pressure = Pascal(upstream_pa);
+    }
+    let solution = solver
+        .solve(&graph, &methane(), &Default::default(), Seconds(0.1))
+        .expect("a gas hole solves");
+    solution.edge_mass_flow[&hole]
+}
+
+/// Choked: the hand calculation above, to the regularization's derived shortfall
+/// `ε/(2·Δp) = 1/(2·898 675) = 5.6e-7`, with headroom.
+#[test]
+fn a_choked_gas_hole_matches_the_isentropic_hand_calculation() {
+    approx::assert_relative_eq!(
+        solve_gas_leak(AREA_M2, 1.0e6, &mut NewtonFlowSolver::default()),
+        0.104_554_088_154_429,
+        max_relative = 1.0e-6
     );
+}
+
+/// Below the choke: shortfall `1/(2·48 675) = 1.03e-5`, with headroom. This is
+/// the gate that fails if the compressibility correction is dropped (Torricelli
+/// is 26% high here) or if the clamp is applied below the choke.
+#[test]
+fn a_subcritical_gas_hole_matches_the_isentropic_hand_calculation() {
+    approx::assert_relative_eq!(
+        solve_gas_leak(AREA_M2, 1.5e5, &mut NewtonFlowSolver::default()),
+        0.015_047_314_489_232,
+        max_relative = 1.3e-5
+    );
+}
+
+/// Choked, the flow is set by the UPSTREAM state alone: at fixed temperature
+/// `ṁ* ∝ p·√(ρ/p) ∝ p`, so doubling the line pressure doubles the leak — where
+/// an unchoked square-root law would give `√(ρ·Δp)`, a ratio of about 2.1 here.
+#[test]
+fn a_choked_gas_hole_scales_with_the_upstream_pressure_alone() {
+    let mut solver = NewtonFlowSolver::default();
+    let ten = solve_gas_leak(AREA_M2, 1.0e6, &mut solver);
+    let twenty = solve_gas_leak(AREA_M2, 2.0e6, &mut solver);
+    approx::assert_relative_eq!(twenty / ten, 2.0, max_relative = 1.0e-6);
+}
+
+/// Shared element definition: both fidelities produce the same bits in gas too.
+#[test]
+fn both_fidelities_size_the_gas_hole_identically() {
+    for upstream in [1.5e5, 1.0e6] {
+        let newton = solve_gas_leak(AREA_M2, upstream, &mut NewtonFlowSolver::default());
+        let simple = solve_gas_leak(AREA_M2, upstream, &mut SimpleFlowSolver::default());
+        assert_eq!(newton.to_bits(), simple.to_bits(), "{newton} vs {simple}");
+    }
+}
+
+/// A dormant gas hole is closed before `γ` is read: exactly no flow.
+#[test]
+fn a_zero_area_gas_hole_carries_exactly_no_flow() {
+    assert_eq!(
+        solve_gas_leak(0.0, 1.0e6, &mut NewtonFlowSolver::default()),
+        0.0
+    );
+    assert_eq!(
+        solve_gas_leak(0.0, 1.0e6, &mut SimpleFlowSolver::default()),
+        0.0
+    );
+}
+
+/// The back-feed refusal survives the gas law: a gas line below atmospheric with
+/// an open hole would draw the Atmosphere's stand-in composition in, and is
+/// refused exactly as a liquid one is (`network::finalize`). This holds only
+/// because the gas branch keeps `beta = 0` and the sign of the drop.
+#[test]
+fn a_gas_hole_below_atmospheric_is_still_refused() {
+    let err = {
+        let (mut graph, _) = orifice_plant(AREA_M2);
+        let line = graph.find_node("line").expect("the source");
+        if let NodeKind::Source { pressure, .. } = &mut graph.node_mut(line).kind {
+            *pressure = Pascal(0.5e5);
+        }
+        NewtonFlowSolver::default()
+            .solve(&graph, &methane(), &Default::default(), Seconds(0.1))
+            .expect_err("a gas hole drawing atmosphere in must be refused")
+    };
+    assert!(err.to_string().contains("back-feeds"), "{err}");
 }

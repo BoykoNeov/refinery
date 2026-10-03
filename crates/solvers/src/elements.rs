@@ -472,10 +472,164 @@ pub fn fold_gas_valve(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Compressible (gas) leak orifice — the isentropic nozzle law (M37,
+// docs/DESIGN.md §41).
+// ---------------------------------------------------------------------------
+
+/// The isentropic critical pressure-DROP ratio `x* = 1 − (2/(γ+1))^(γ/(γ−1))`:
+/// the drop, as a fraction of the absolute upstream pressure, at which an ideal
+/// nozzle chokes (the throat reaches sonic velocity). 0.4717 for `γ = 1.4`.
+///
+/// Derived, not declared: the textbook result for isentropic flow of a perfect
+/// gas through a converging nozzle (Saint-Venant and Wantzel's law), with `γ`
+/// taken from the slate as `fold_gas_service` takes it. Nothing to invent and
+/// nothing in a TOML file.
+#[inline]
+pub fn isentropic_critical_drop_ratio(gamma: f64) -> f64 {
+    // `−expm1(ln(r*))`: exact to round-off at every γ, including γ → 1⁺.
+    -((gamma / (gamma - 1.0)) * (2.0 / (gamma + 1.0)).ln()).exp_m1()
+}
+
+/// The isentropic flow function `ψ(x) = γ/(γ−1)·(r^(2/γ) − r^((γ+1)/γ))`,
+/// `r = 1 − x`, with `x` clamped at the choke `x*` — so that the mass flow of a
+/// gas through a nozzle of effective area `Cd·A` from upstream state `(p, ρ)` is
+///
+/// ```text
+/// ṁ = Cd·A·√(2·ρ·p·ψ(x))        (Saint-Venant–Wantzel; choked for x ≥ x*)
+/// ```
+///
+/// **`ψ(x) → x` as `x → 0`**, which is Torricelli: `Cd·A·√(2·ρ·Δp)`. **And `ψ` has
+/// zero slope at `x*`** — the unclamped `ψ` is MAXIMAL there, which is what makes
+/// the throat sonic — so the clamp meets the plateau with no kink, and the
+/// element is C¹ through the choke with no blend at all (the property
+/// `CHOKE_BLEND` documents for the valve's `Y`, holding here for the same kind of
+/// reason).
+///
+/// Computed as `e^{b·L}·expm1((a−b)·L)`, `L = ln(1 − x)`, `a = 2/γ`,
+/// `b = (γ+1)/γ`, rather than as the difference of two powers: near `x = 0` both
+/// powers are ≈ 1 and their difference would cancel to noise, which is exactly
+/// the small-leak regime this function must reduce to Torricelli in.
+#[inline]
+pub fn isentropic_flow_function(x: f64, gamma: f64) -> f64 {
+    let x_s = x.min(isentropic_critical_drop_ratio(gamma));
+    let log_r = (-x_s).ln_1p();
+    let a = 2.0 / gamma;
+    let b = (gamma + 1.0) / gamma;
+    gamma / (gamma - 1.0) * (b * log_r).exp() * ((a - b) * log_r).exp_m1()
+}
+
+/// A leak orifice in GAS service, as the branch `compile_edge` hands the solvers:
+/// its liquid branch (`QuadraticBranch::orifice`, Torricelli) with an effective
+/// resistance that reproduces the isentropic nozzle law at drop `dp`.
+///
+/// `Q = √(dp/α_eff)` must equal `ṁ/ρ` with `ṁ` from [`isentropic_flow_function`],
+/// so `α_eff = α_liquid · x/ψ(x)`, `x = |dp|/p_up`. Below the choke `x/ψ` is a
+/// compressibility correction that rises from exactly 1; above it `ψ` is the
+/// plateau and `α_eff` grows in proportion to the drop — the mass flow stops
+/// rising with the drop and rises only with the upstream state.
+///
+/// **Two properties the back-feed refusal (`network::finalize`) relies on are
+/// kept by construction**: `beta = 0`, and the flow keeps the sign of `dp`
+/// (`α_eff > 0` scales the magnitude only). **A dormant hole stays closed**:
+/// `α_liquid = +∞` is returned untouched, before anything else is read. **A zero
+/// drop is the liquid branch bit for bit**: the `x → 0` limit, taken rather than
+/// evaluated as `0/0`.
+///
+/// `p_up` is the UPWIND absolute pressure and `rho` the upwind density
+/// (`compile_edge` already evaluates it there), i.e. the stagnation state of
+/// whichever end the gas leaves. The Jacobian freezes `α_eff` at the iterate, as
+/// it does a gas valve's (`docs/DEFERRED.md` A18).
+pub fn gas_orifice(liquid: QuadraticBranch, dp: f64, p_up: f64, gamma: f64) -> QuadraticBranch {
+    if !liquid.alpha.is_finite() || liquid.alpha <= 0.0 || !p_up.is_finite() || p_up <= 0.0 {
+        return liquid;
+    }
+    let x = dp.abs() / p_up;
+    if !x.is_finite() || x <= 0.0 {
+        return liquid;
+    }
+    // `ψ > 0` for every `x > 0` and `γ > 1` (both factors are positive). A
+    // degenerate `γ` gives a non-finite or non-positive `α_eff`, which the caller
+    // (`compile_edge`) refuses by name rather than handing to a solver.
+    QuadraticBranch {
+        alpha: liquid.alpha * (x / isentropic_flow_function(x, gamma)),
+        beta: 0.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    /// The air value by hand: `1 − (2/2.4)^3.5 = 1 − (5/6)^3.5`.
+    #[test]
+    fn the_critical_drop_ratio_for_air_is_the_textbook_one() {
+        assert_relative_eq!(
+            isentropic_critical_drop_ratio(1.4),
+            1.0 - (5.0f64 / 6.0).powf(3.5),
+            max_relative = 1e-14
+        );
+    }
+
+    /// `ψ(x)/x → 1` as `x → 0` — the gas hole is Torricelli for a small drop —
+    /// and the leading correction is `−3x/(2γ)`: expanding `r^a − r^b` to second
+    /// order gives `(b−a)·x + (a−b)(a+b−1)·x²/2` with `b − a = (γ−1)/γ` and
+    /// `a + b − 1 = 3/γ`. The cancellation-free form must still resolve it at 1e-12,
+    /// where the difference of the two powers would be pure noise.
+    #[test]
+    fn the_flow_function_reduces_to_torricelli_at_small_drops() {
+        let gamma = 1.3;
+        for x in [1e-12f64, 1e-9, 1e-6, 1e-3] {
+            let ratio = isentropic_flow_function(x, gamma) / x;
+            assert_relative_eq!(
+                ratio,
+                1.0 - 3.0 * x / (2.0 * gamma),
+                max_relative = x * x + 1e-14
+            );
+        }
+    }
+
+    /// C¹ through the choke with no blend: the one-sided slopes of `ψ` meet at
+    /// zero, because the unclamped `ψ` is maximal at `x*`.
+    #[test]
+    fn the_flow_function_is_flat_where_it_meets_the_choke() {
+        for gamma in [1.1f64, 1.3, 1.4, 1.67] {
+            let xc = isentropic_critical_drop_ratio(gamma);
+            let h = 1e-6;
+            let below =
+                (isentropic_flow_function(xc, gamma) - isentropic_flow_function(xc - h, gamma)) / h;
+            let above =
+                (isentropic_flow_function(xc + h, gamma) - isentropic_flow_function(xc, gamma)) / h;
+            assert!(below.abs() < 1e-5, "γ = {gamma}: slope below {below:e}");
+            assert_eq!(above, 0.0, "γ = {gamma}: the plateau is exactly flat");
+        }
+    }
+
+    /// A zero drop is the liquid branch bit for bit; a dormant hole stays closed.
+    #[test]
+    fn a_gas_hole_at_zero_drop_or_zero_area_is_its_liquid_self() {
+        let liquid = QuadraticBranch::orifice(1e-4, ORIFICE_CD, 5.0);
+        let at_zero = gas_orifice(liquid, 0.0, 1e6, 1.3);
+        assert_eq!(at_zero.alpha.to_bits(), liquid.alpha.to_bits());
+        assert_eq!(at_zero.beta, 0.0);
+        let dormant = QuadraticBranch::orifice(0.0, ORIFICE_CD, 5.0);
+        assert!(gas_orifice(dormant, 9e5, 1e6, 1.3).alpha.is_infinite());
+    }
+
+    /// `beta = 0` and a resistance even in `dp`, so the flow keeps the sign of
+    /// the drop — the two facts `network::finalize`'s back-feed refusal needs.
+    #[test]
+    fn a_gas_hole_is_odd_in_the_drop() {
+        let liquid = QuadraticBranch::orifice(1e-4, ORIFICE_CD, 5.0);
+        for dp in [1e3f64, 3e5, 9e5] {
+            let fwd = gas_orifice(liquid, dp, 1e6, 1.3);
+            let rev = gas_orifice(liquid, -dp, 1e6, 1.3);
+            assert_eq!(fwd.beta, 0.0);
+            assert_eq!(fwd.alpha.to_bits(), rev.alpha.to_bits());
+            assert_eq!(fwd.flow(dp, 1.0), -rev.flow(-dp, 1.0));
+        }
+    }
 
     #[test]
     fn smooth_sqrt_matches_sqrt_away_from_zero() {

@@ -108,6 +108,7 @@ use refinery_core::graph::{LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph};
 use refinery_core::stream::Stream;
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
 use refinery_core::units::*;
+use refinery_solvers::elements::isentropic_critical_drop_ratio;
 use refinery_solvers::{NewtonFlowSolver, SimpleFlowSolver};
 use std::collections::BTreeMap;
 
@@ -281,11 +282,11 @@ fn leak_pipe(bore: f64, name: &str, fluid: &Fluid) -> Pipe {
 /// land where the balance gate can actually see the difference.
 ///
 /// A leak is generated WITHOUT regard to phase, deliberately. Half of
-/// `fluid_strategy`'s plants are gas, and a hole in one is refused by
-/// `compile_edge`'s second door — the door that exists precisely because
-/// generators build a `PlantGraph` and never call `build_engine`. Suppressing
-/// gas leaks here would leave that door untested by the only kind of plant it
-/// guards against.
+/// `fluid_strategy`'s plants are gas. Until M37 a hole in one was refused by
+/// `compile_edge`'s second door; since M37 it is the isentropic nozzle law
+/// (docs/DESIGN.md §41), and the same draws now reach the balance gate in gas —
+/// counted, choked ones among them, in
+/// `the_leak_arm_conducts_and_is_refused_both_ways`.
 fn leak_strategy() -> impl Strategy<Value = Option<f64>> {
     prop_oneof![
         3 => Just(None),
@@ -293,17 +294,17 @@ fn leak_strategy() -> impl Strategy<Value = Option<f64>> {
     ]
 }
 
-/// The refusals a LEAK makes legal, and they are two different kinds of legal.
+/// The refusal a LEAK makes legal.
 ///
 /// A back-feed refusal is an ASSERTION that fired: the plant went below
 /// atmospheric with a hole open, and `finalize` refused to draw an arbitrary
-/// composition into it rather than reporting a plausible number (DESIGN §3b). A
-/// gas refusal is the second door on the incompressible orifice law. Neither is
-/// a divergence, so neither may be swallowed by the `SolverDiverged` arm; both
-/// are counted in the meta-test below so they cannot quietly become the *only*
-/// thing the leak arm produces.
+/// composition into it rather than reporting a plausible number (DESIGN §3b). It
+/// is not a divergence, so it may not be swallowed by the `SolverDiverged` arm;
+/// it is counted in the meta-test below so it cannot quietly become the *only*
+/// thing the leak arm produces. (The gas refusal that stood beside it until M37
+/// is gone: a gas hole is now sized, docs/DESIGN.md §41.)
 fn is_legal_leak_refusal(e: &SimError) -> bool {
-    matches!(e, SimError::Numerical(m) if m.contains("back-feeds") || m.contains("gas-phase"))
+    matches!(e, SimError::Numerical(m) if m.contains("back-feeds"))
 }
 
 fn all_finite(sol: &HydraulicSolution) -> bool {
@@ -1356,9 +1357,9 @@ proptest! {
                 }
             }
             Err(SimError::SolverDiverged { .. }) => { /* acceptable per I3 */ }
-            // A leak's two refusals are legal outcomes but NOT divergences, so
-            // they are admitted by name rather than folded into the arm above —
-            // and their rate is floored in
+            // A leak's back-feed refusal is a legal outcome but NOT a divergence,
+            // so it is admitted by name rather than folded into the arm above —
+            // and the solved rate is floored in
             // `the_leak_arm_conducts_and_is_refused_both_ways`, so a change that
             // made every leaky tree refuse would fail there instead of quietly
             // emptying this gate.
@@ -3012,7 +3013,10 @@ fn the_leak_arm_conducts_and_is_refused_both_ways() {
     let mut runner = TestRunner::deterministic();
     let strat = tree_inputs_strategy();
 
-    let (mut leaky_trees, mut gas_refused, mut back_fed) = (0usize, 0usize, 0usize);
+    let (mut leaky_trees, mut back_fed) = (0usize, 0usize);
+    // The gas half (M37): holes on gas plants that discriminate, and how many of
+    // those vent CHOKED — the regime M6 refused for.
+    let (mut gas_discriminating, mut gas_choked) = (0usize, 0usize);
     let (mut diverged, mut solved) = (0usize, 0usize);
     let (mut leaks_seen, mut conducting, mut discriminating) = (0usize, 0usize, 0usize);
 
@@ -3034,7 +3038,6 @@ fn the_leak_arm_conducts_and_is_refused_both_ways() {
 
         match NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
         {
-            Err(SimError::Numerical(m)) if m.contains("gas-phase") => gas_refused += 1,
             Err(SimError::Numerical(m)) if m.contains("back-feeds") => back_fed += 1,
             Ok(sol) if sol.diagnostics.converged => {
                 solved += 1;
@@ -3061,6 +3064,19 @@ fn the_leak_arm_conducts_and_is_refused_both_ways() {
                     let without = with + flow;
                     if with.abs() <= tol && without.abs() > tol {
                         discriminating += 1;
+                        if fluid.is_gas() {
+                            gas_discriminating += 1;
+                            // The hole vents from its junction: its drop ratio
+                            // against the choke for this gas.
+                            let p = sol.node_pressure[&junction].value();
+                            let x = (p - P_ATM.value()) / p;
+                            let comp = &g.pipe(hole).stream.composition;
+                            let gamma = comp.mixture_cp(&fluid.slate).value()
+                                / comp.mixture_cv(&fluid.slate).value();
+                            if flow > 0.0 && x > isentropic_critical_drop_ratio(gamma) {
+                                gas_choked += 1;
+                            }
+                        }
                     }
                 }
             }
@@ -3069,10 +3085,10 @@ fn the_leak_arm_conducts_and_is_refused_both_ways() {
     }
 
     println!(
-        "leaky trees {leaky_trees}/{SAMPLES}: solved {solved}, refused gas {gas_refused}, \
-         refused back-feed {back_fed}, diverged {diverged}; of {leaks_seen} holes on solved \
-         plants {conducting} conduct >1% of throughput, {discriminating} of them decisively \
-         (the balance gate fails without the leak edge)"
+        "leaky trees {leaky_trees}/{SAMPLES}: solved {solved}, refused back-feed {back_fed}, \
+         diverged {diverged}; of {leaks_seen} holes on solved plants {conducting} conduct >1% \
+         of throughput, {discriminating} of them decisively (the balance gate fails without the \
+         leak edge), {gas_discriminating} of those in gas and {gas_choked} of those choked"
     );
 
     // (1) The arm is sampled at all.
@@ -3084,25 +3100,30 @@ fn the_leak_arm_conducts_and_is_refused_both_ways() {
     // leak the mass balance never sees, which is precisely the state M6.0 found
     // the feature in — present, reachable-looking, and never exercised.
     //
-    // Set at a quarter against a measured 36%, and the ceiling is why: half of
-    // `fluid_strategy`'s plants are gas and every leak on one is refused, so ~50%
-    // is the most this can ever be. A quarter is two thirds of what is reachable,
-    // which leaves room for an honest generator change without leaving room for
-    // the arm to hollow out.
+    // Set at a quarter. It was measured at 36% while every gas leak was refused
+    // (a ceiling of ~50%); since M37 sizes a gas hole, it is 143 of 152. The
+    // floor was not raised with it: a quarter still catches the arm hollowing
+    // out, and the gas half has its own floors below.
     assert!(
         solved * 4 >= leaky_trees,
-        "only {solved}/{leaky_trees} leaky trees actually SOLVED ({gas_refused} refused for \
-         gas, {back_fed} for back-feed, {diverged} diverged) — the arm is generating holes \
-         nothing ever flows through"
+        "only {solved}/{leaky_trees} leaky trees actually SOLVED ({back_fed} refused for \
+         back-feed, {diverged} diverged) — the arm is generating holes nothing ever flows \
+         through"
     );
-    // (3) The gas door fires on GENERATED plants, not merely on the hand case in
-    // `orifice.rs`. It exists because generators build a `PlantGraph` directly
-    // and never call `build_engine`, so a zero here means it is guarding nothing
-    // this file can reach.
+    // (3) The GAS hole reaches the balance gate, and does so CHOKED (M37,
+    // docs/DESIGN.md §41). Until M37 every one of these was refused by
+    // `compile_edge`'s second door; this is that door's replacement — the
+    // generated population is where a gas hole whose mass went unbooked, or a
+    // choked branch the solvers could not carry, would show. Measured 93 gas
+    // holes that discriminate and 78 of them choked (of 400 samples); floored at
+    // about half of each, for the reason (2) gives. One gas tree in the measured
+    // population diverges with its hole open and solves with it sealed (one
+    // liquid tree does the same) — a legal outcome under I3, recorded against
+    // docs/DEFERRED.md A18 rather than floored on.
     assert!(
-        gas_refused >= 20,
-        "the compile-time gas refusal fired on only {gas_refused} generated plants — the \
-         second door is not being reached by the kind of plant it exists for"
+        gas_discriminating >= 45 && gas_choked >= 40,
+        "only {gas_discriminating} gas holes reach the balance gate decisively and \
+         {gas_choked} of them choked — the gas half of the leak arm has hollowed out"
     );
     // `back_fed` is REPORTED and deliberately not floored. It is 3 of 400 — the
     // generator does reach a junction below `P_ATM` (a relief spur's flare may

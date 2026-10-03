@@ -6,7 +6,7 @@
 
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::error::SimError;
-use refinery_core::graph::{LeakRole, Node, NodeId, NodeKind, PlantGraph};
+use refinery_core::graph::{Node, NodeId, NodeKind, PlantGraph};
 use refinery_core::units::T_AMBIENT;
 use std::collections::BTreeMap;
 
@@ -645,48 +645,6 @@ pub(crate) fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(),
 /// a silent default would be an invented value in disguise: the sizing gate and
 /// the choked-plateau gate would both pass for whatever it was, which is the
 /// circularity that defers pump `η`.
-/// Refuse a leak path declared on a gas line, naming the file that declared it.
-///
-/// The orifice law this milestone ships is Torricelli, `Q = Cd·A·√(2·dp/ρ)`,
-/// which is the incompressible one. A hole venting a pressurised gas line to
-/// atmosphere is choked over essentially its entire useful range — the critical
-/// ratio is ~0.53 of absolute inlet pressure for a diatomic gas, so anything
-/// above ~1.9 bara chokes — and applying the incompressible law there
-/// overpredicts the escape rate: finite, deterministic and wrong, in the one
-/// number a damage model exists to report. It is refused rather than
-/// approximated for exactly the reason M5.4 refused an incompressible gas VALVE.
-///
-/// This is the FIRST of two doors. `network::compile_edge` re-refuses it, because
-/// the loader is not the only way in: the invariant proptests build a
-/// `PlantGraph` directly and never call `build_engine`. This one exists to name
-/// the scenario file; that one exists to catch a generator.
-///
-/// It un-defers with an orifice `x_T` and a published anchor to size it against.
-pub(crate) fn refuse_gas_leak(graph: &PlantGraph, phases: &[Phase]) -> Result<(), SimError> {
-    for eid in graph.edge_ids() {
-        let pipe = graph.pipe(eid);
-        if !matches!(pipe.leak, LeakRole::Orifice { .. }) {
-            continue;
-        }
-        // The orifice's SOURCE is the midpoint junction, i.e. the plant side —
-        // the phase of the line being punctured, which is what the law has to
-        // suit. Its target is the Atmosphere, which declares no composition and
-        // votes on nothing.
-        let (plant_side, _) = graph.endpoints(eid);
-        if phases[plant_side.0 as usize] == Phase::Gas {
-            return Err(SimError::Scenario(format!(
-                "leak path '{}' is on a gas line. The orifice law is incompressible \
-                 (Q = Cd·A·√(2·dp/ρ)), and a hole venting gas to atmosphere is choked \
-                 over its whole useful range, so it would report a leak rate that is \
-                 too high — the compressible-law-on-a-compressible-fluid refusal M5.4 \
-                 made for valves (docs/DESIGN.md §3b)",
-                pipe.name
-            )));
-        }
-    }
-    Ok(())
-}
-
 pub(crate) fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);
