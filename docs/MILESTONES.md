@@ -12,6 +12,29 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M37 is CLOSED (2026-10-03): a furnace's tube burn-out — `docs/DEFERRED.md` B40's
+burn-out clause struck (B40 narrows to the commanded fire), new rows B41–B44.**
+The user's DECISIONS, each against the recommendation: keys on the furnace, on EVERY
+furnace, the fire FED BY THE LEAK, patch-then-reset, gas holes built, round
+game-tuning limits. DESIGN §41 (gas holes) and §42 (the burn-out).
+- **M37.0, a hole in a gas line** (§41): the isentropic nozzle law with the liquid
+  `Cd`, its choke derived from `γ`; both of M6.1's refusals removed. 0.104 554 kg/s
+  choked through 1 cm² at 10 bara methane, against a 30-digit hand calculation.
+  No plant moved.
+- **The burn-out** (§42): `FurnaceTubes` on every furnace; the loader splits every
+  furnace's outlet for a dormant hole. A coil at or past `tube_failure_c` bursts the
+  tubes on the next tick's top pass (latched); the leak burns as FUEL through the
+  flame law (`tube_fire_w`); `PuncturePipe` at zero patches, `ReplaceTubes` re-arms.
+- **Shipped values**: 550 °C (850 °C on the gas drum, which settles at 727.4 °C),
+  1 cm², heating values crude 42.686 (GREET), gas oil 42.8 and methane 50.0
+  (Engineering ToolBox) MJ/kg, water 0. Round game values, not API 530 (B43).
+- **Corrections it forced**: a column's FEED takes a hole (only a draw is refused);
+  a split pipe is still the declared pipe for one-hop signs; a furnace outlet
+  cannot be metered. The gas drum settles 1.43 K hotter (two gas segments), kept.
+- **Demo `furnace_burnout.toml`** (37th file): bursts on tick 1 145, a 34.9 MW fire,
+  the coil at 1 781.2 °C under its flame. The dry-fired demo bursts at 1 766, dry.
+- 21 plants byte-identical, 15 moved, 1 new. Fourteen mutations, thirteen caught and the strict comparison uncaught as predicted.
+
 **M36 is CLOSED (2026-10-03): a furnace's flame ceiling — `docs/DEFERRED.md` B40's
 ceiling clause struck, the burn-out clause open.** The user's DECISION: both of B40's
 remedies, the ceiling first, on every furnace. DESIGN §40.

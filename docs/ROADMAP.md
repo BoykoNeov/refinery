@@ -7319,4 +7319,21 @@ back-feed refusal still fires in gas; the generated leak arm now solves its gas
 draws (93 that the balance gate needs, 78 choked). Six mutations, all caught. All
 36 plants byte-identical on both fidelities. New row B41.
 
-### M37.1 — the burn-out on every furnace — next
+### M37.1 — the burn-out on every furnace — **LANDED** 2026-10-03, and M37 is CLOSED
+
+The note is DESIGN §42. Every furnace carries three required keys (a failure
+limit, a rupture area, the heated fluid's heating value) and a dormant hole the
+loader builds on its outlet pipe; at the top of a tick, a coil at or past its limit
+bursts the tubes, opening the hole and latching them failed; what leaks out burns
+in the firebox as fuel, through the flame law; `PuncturePipe` at zero patches it
+and `ReplaceTubes` re-arms the tubes. A column's feed now takes a hole (only a draw
+is refused), and a split pipe is still the declared pipe for a loop's sign.
+
+Demo `scenarios/furnace_burnout.toml`, the thirty-seventh file: gas oil through a
+fouled furnace over-fired at 1.5 MW; the tubes burst on tick 1 145 on both
+fidelities, 0.815 kg/s burns at 34.9 MW, and the coil levels off at 1 781.2 °C under
+its flame. The dry-fired demo bursts on tick 1 766 with nothing to burn. Eleven
+gates in `tests/burnout_reference.rs`. Fourteen mutations, thirteen caught and the strict comparison uncaught as predicted. 21 furnace-free plants
+byte-identical on both fidelities, the fifteen furnace plants moved, as chosen; the
+Godot feature build and its clippy are clean. B40 narrows to the commanded fire;
+new rows B42–B44.

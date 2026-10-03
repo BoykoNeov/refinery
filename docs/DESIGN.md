@@ -18817,3 +18817,249 @@ catch #4 (they gate `ψ`, not the direction it is applied in).
   orifice in choked flow to size it against.
 - **B7 (air ingress) is unchanged**: a gas hole below atmospheric is refused, as a
   liquid one is.
+
+## 42. A furnace's tube burn-out — damage the engine raises from a state, ledger row B40's burn-out clause (M37.1)
+
+### What licensed this, stated plainly
+
+The user's decisions, taken on 2026-10-03 after M36 closed, each asked in plain
+words before any code. The recommended option was declined on every one, so each
+choice is recorded with what it cost:
+
+1. **Keys on the FURNACE**, not a general "failure" block any plant could declare.
+   A burn-out is a property of a furnace's tubes; a vessel bursting from pressure
+   is not reachable from this design and would be its own.
+2. **On EVERY furnace**, not only plants that ask. Told — after a first answer that
+   understated it — that this builds a sealed hole into every furnace's outlet, so
+   all fifteen furnace plants move before anything fails, the user kept it.
+3. **The fire is FED BY THE LEAK**: leak flow times a heating value, not a fixed
+   power. A dry furnace leaks nothing and so burns nothing. It costs a third key
+   per furnace and a fire the engine recomputes every tick, so it is NOT
+   `heat_input` (which `SetHeatInput` owns and a frontend can put out).
+4. **Patch, then reset**: the hole is patched with the existing `PuncturePipe` at
+   area zero, which puts the fire out with it, and a new `ReplaceTubes` re-arms the
+   tubes.
+5. **Gas holes built** (the gas drum heats methane): M37.0, §41.
+6. **Round game-tuning limits**, not a cited metal limit. API 530's Table 5
+   ("Limiting Design Metal Temperature for Heater-tube Alloys") is paywalled and
+   no copy could be read; asked whether to ship recalled figures marked
+   unverified, wait for the table, or use round numbers, the user chose round
+   numbers, said so in every file.
+
+The probes, baselines and mutation harnesses are in `W:\temp\claude\m37\`.
+
+### Fork 1 — where the hole is: on the furnace's outlet pipe
+
+Every solver treats a furnace as one way in and one way out (`network.rs`: "Every
+Pump/Valve/Furnace/Cooler/HeatExchanger node must have one inlet and one outlet"),
+so a hole IN the furnace would rework all of them. The hole is instead M6's leak
+path on the furnace's outlet pipe, built at load exactly as a declared `leak_to`
+is — split at its midpoint, a junction `<pipe>__leak_point`, a dormant orifice
+`<pipe>__leak` — so the snapshot's shape never changes mid-run, the existing
+`PuncturePipe` patches it, and a player can also puncture any furnace's outlet by
+hand. A pipe that already declares `leak_to` shares its hole.
+
+**Where it vents** (`burnout_atmosphere_for`): the plant's first declared
+`Atmosphere`; else the one the loader creates, under the name the plant's FIRST
+loader-made atmosphere would have had without it — `boiloff_atmosphere` on a plant
+whose tanks get vents, `overflow_atmosphere` on one whose tanks do not — so the
+vents and overflows built after find it and reuse it and a plant keeps one outside
+under the name it always had; `burnout_atmosphere` on a plant with no tank (two:
+`furnace_heater`, `fired_gas_drum`). A name taken by another kind of node is
+refused, as the overflow's is.
+
+The named approximations: the hole sits at the outlet pipe's midpoint, not in the
+firebox; the leaked fluid goes to the outside air while its heat lands in the
+firebox.
+
+### Fork 2 — the burst: a latched state, read at the top of the tick
+
+`NodeKind::Furnace` carries `tubes: FurnaceTubes { failure_temperature,
+rupture_area, heating_value, hole: Option<EdgeId>, state: TubeState }`. The hole is
+`Option` because it does not exist when the furnace node is built (nodes before
+pipes); the loader writes it after the split, every loaded furnace has one (gated
+over the whole repo), and a failure with none is refused, not skipped (rule 5).
+
+`Engine::run_burnouts`, after the trips at the top of every tick, on the same
+start-of-tick state: an intact furnace whose coil stands AT OR PAST its limit opens
+its hole to `max(open area, rupture_area)` — a burst never shrinks a wider hand
+hole — and latches `Failed { at_tick }`. Nothing is then HELD (a trip's hold check
+has no analogue): a burst tube is damage, and patching is the player's. A trip on
+the coil and a burn-out reached on one tick both happen; neither reads what the
+other writes.
+
+**What the limit is compared with, said once**: the LUMPED coil temperature
+(§37), not a peak tube-skin temperature, and as an instant failure point where a
+real tube fails by creep over time at temperature. New row B42.
+
+### Fork 3 — the fire is FUEL, and fires through the flame law
+
+While the tubes are failed, what flows OUT of the hole on this tick's solve burns
+in the firebox: `L = max(ṁ_hole, 0)·LHV`. It is the process fluid burning in the
+burners' air, so it fires beside the duty: `K_f = (Q + L)/(T_f − T_a)` in the flame
+law (§40) and `L` in the heat into the metal. **This is not §40 fork 2 reopened**:
+that fork kept a COMMANDED fire (`SetHeatInput`) out of the flame law because a
+commanded fire has no flame temperature, and that stands — a commanded fire on a
+dry furnace still climbs at `Q_fire/C` (B40 keeps that clause). The burn-out fire
+burns at the furnace's one declared flame, the named approximation.
+
+Read off THIS tick's solve, which never reads a duty: nothing circular, nothing
+stored, nothing in `heat_input`. Patching the hole puts it out on the next solve;
+punching it again by hand on still-failed tubes relights it; a hole punched by
+hand in INTACT tubes leaks and burns nothing. Published as `NodeSnapshot::
+tube_fire_w`, absent off furnaces (so the 21 furnace-free plants are untouched),
+and counted in the books.
+
+### Fork 4 — `ReplaceTubes`
+
+Re-arms the tubes and moves nothing else, `ResetTrip`'s shape. Refused, in the
+player's order: on a node that is not a furnace; on intact tubes; while the hole is
+still open (naming the pipe to patch); while the coil is still at or past its limit
+(read fresh: new tubes there burst on the next tick). Measured on the demo: patched
+and cut at tick 1 155, the coil is below 550 °C after 242 ticks; replaced and relit
+at the same 1.5 MW, the new tubes burst again 4 ticks later (tick 1 401) — the coil
+was still at its limit.
+
+### Fork 5 — the three keys, on every furnace
+
+`tube_failure_c` (finite, above `coil_temperature_c`; at or above the flame is
+admitted and means "never"), `tube_rupture_area_cm2` (finite, > 0),
+`fluid_heating_value_mj_per_kg` (finite, ≥ 0; 0 for water). Required, no default.
+The fifteen shipped furnaces: **550 °C** everywhere but the gas drum, **850 °C**
+there (it settles at 727.4 °C, measured over 60 000 ticks); a **1 cm²** hole; and
+heating values crude **42.686 MJ/kg** (GREET 1.8d.1, Argonne, "Lower and Higher
+Heating Values of Gas, Liquid and Solid Fuels"), FCC gas oil **42.8** and methane
+**50.0** (Engineering ToolBox, "Fuels — Higher and Lower Calorific Values"), water
+**0**. Test fixtures not about a burn-out take 3 000 °C, above any flame.
+
+### What else the hole on every furnace forced (corrections from building it)
+
+1. **A column's FEED was refused a hole, on a claim never run** (§3b). It is
+   admitted now; only a draw is refused (own commit, no plant moved).
+2. **A split pipe is still the declared pipe** for the one-hop sign checks
+   (`declared_hop`, shared by `valve_side` and `cascade_pairing`): the furnace
+   cascades read their tank across the split outlet. Without it all five
+   cascade-control fixtures were refused at load.
+3. **A furnace's outlet cannot be metered by flow**: refused by name, as a
+   `leak_to` pipe is (the two halves carry different flows once it bursts). No
+   shipped plant did.
+4. **The gas drum settles 1.43 K hotter, kept rather than re-tuned**: its outlet line
+   is now two gas segments, the second evaluated at the hotter, lower-pressure
+   junction, so the line drops 79.1 kPa, not 77.3; the flow falls 0.35 % and the
+   same firing lands the drum at 803.86 K (802.44 before), its constant-`cp` twin at
+   1 066.73 K (1 063.17). The fit's 300–800 K range is passed by 3.9 K, where its
+   own drum outlet already ran at 885 K.
+5. **The dry-fired line no longer reaches exactly zero on Newton**: one more free
+   node, and the dry line settles to ±2.6e-12 kg/s of residual. Its gate now reads
+   "dry" below the solve's own 1e-8 kg/s floor: dry from 1 743 (Newton) and 1 744
+   (game); the coil 538.82 °C at tick 1 749 (539.0 before); every later number
+   unchanged.
+6. **Two test-shape fixes**: the crude cascade gates read the column's feed off the
+   DOWNSTREAM half (the declared name now ends half a pipe of friction short); the
+   overflow-ordering gate's ids shift by two. The M33 trip gate's untripped twin
+   now bursts at tick 5 253 and its rounding-level hole broke "the cut moves no
+   flow", so that comparison takes the never-burst limit.
+7. **An outflow's friction is a source** in a hand-kept energy book: the burn-out
+   books first missed exactly the outlet's 4.99 W and the hole's 89.9 W — the
+   gate's own ledger, not the engine.
+
+### The demo: `scenarios/furnace_burnout.toml` (the thirty-seventh file)
+
+Gas oil from 6 bar through a FOULED (UA 2 kW/K, a sixth of the feed's capacity
+rate) furnace fired at 1.5 MW into a 2 bar product. The coil climbs from 150 °C,
+ends tick 1 144 at 550.08 °C, and the tubes burst on tick **1 145** on both
+fidelities: 0.815 kg/s sprays from the ~2 bar line and burns at **34.9 MW**,
+twenty-three times the duty; the coil climbs to **1 781.2 °C** under its 1 951.1 °C
+flame, 33.2 MW up the stack, the oil leaving at 304.5 °C. The two fidelities agree
+to the printed digit.
+
+The M36 dry-fired demo bursts too, on tick **1 766** on both fidelities, with
+nothing to burn: water through a dry line, a hole carrying at most 7.8e-11 kg/s and
+a fire exactly zero; its coil still levels off at 1 950.99 °C. A gas furnace bursts
+and burns its gas: the gas drum with a 600 °C test limit bursts on tick 3 178, and
+methane vents CHOKED (drop ratio 0.857) at 0.0476 kg/s from 7.1 bara — a 2.38 MW
+fire.
+
+### Gates (`crates/scenarios/tests/burnout_reference.rs`, eleven)
+
+1. The tubes burst on the tick AFTER the coil first ends one at or past its limit,
+   to exactly the declared area, on both fidelities (tick 1 145).
+2. The fire is the leak times the heating value to the bit, and zero on intact
+   ticks.
+3. The fire is fuel: settled, the stack is `(Q + L)·(T_c − T_a)/(T_f − T_a)` to
+   1e-9, twenty-odd times the duty-only value; the coil never passes its flame.
+4. The books close with the fire counted (coil storage against boundary enthalpy,
+   duty, fire, stack and friction, to 1e-9 of the firing, from load to 200 ticks
+   past the burst) and miss by more than half the firing without it.
+5. A hand hole in intact tubes leaks and does not burn; in failed tubes it burns.
+6. A burst keeps a wider hand hole.
+7. `ReplaceTubes`: four refusals, success that moves no hole, a second burst.
+8. Every furnace in the repo owns a hole (sixteen); the tank-less plant gets
+   `burnout_atmosphere`.
+9. The loader refuses a metered furnace outlet and a taken atmosphere name.
+10. A gas furnace bursts and burns choked methane.
+11. The dry-fired demo bursts with nothing to burn.
+
+The Godot bridge's wire-format and acceptance sweeps gained `replace_tubes`
+(`{"cmd":"replace_tubes","node":…}`), applied to the demo burst, patched and
+cooled through the bridge itself.
+
+### What moved, measured
+
+Against baselines taken before the first M37 edit, both fidelities, 6 000 ticks:
+**21 furnace-free plants byte-identical, the fifteen furnace plants moved, the new
+file new** — exactly as predicted, in two steps: the structure alone (keys, holes)
+moved all fifteen, and switching the burn-out on moved no iteration count of any
+shipped plant. The extra junction costs iterations, measured: Newton's worst rises
+4 → 7 on the five crude plants, total 2 828 → 2 885 on the five warm-water loop
+plants; the game solver's totals rise most on `furnace_low_flow_trip` (15 528 →
+21 631) and `furnace_dry_fired` (9 716 → 12 940); `furnace_heater`, which had no
+free node, now takes 6 on tick 1.
+
+### The mutation pass (M37.1)
+
+Fourteen edits, each running its predicted test file only
+(`W:\temp\claude\m37\mutate_burnout.py`, release); the tree was checked restored
+after the pass. **Thirteen caught, one uncaught as predicted.**
+
+| # | edit | caught by |
+|---|---|---|
+| 1 | the burn-out pass never runs | seven gates, and the wider-hole gate HUNG (below) |
+| 2 | the limit compared strictly (`>`) | **uncaught, as predicted**: no coil lands exactly on its limit |
+| 3 | a burst shrinks a wider hand hole | the wider-hole gate |
+| 4 | the burst never latches | eight gates, and the wider-hole gate HUNG |
+| 5 | the fire burns on intact tubes too | the hand-hole gate |
+| 6 | the fire kept out of the flame law | the flame-law gate |
+| 7 | the fire never reaches the coil | the books, the replace gate |
+| 8 | the fire ignores the heating value | seven gates, the dry-fired one among them (its rounding leak then burns) |
+| 9 | `ReplaceTubes` does not check the hole | the replace gate |
+| 10 | `ReplaceTubes` does not check the coil | the replace gate |
+| 11 | `ReplaceTubes` does not re-arm | the replace gate |
+| 12 | no hole built on a furnace outlet | every burn-out gate and the every-furnace gate |
+| 13 | a furnace outlet may be metered | the loader-refusal gate |
+| 14 | a split pipe is not the declared pipe | the cascade-control gates (`cascade_control_reference.rs`) |
+
+**Two predictions were wrong, and one gate was broken.** Gate 2 does not catch #5
+(an intact tube leaks nothing, so its fire is zero either way — only a hand hole
+can tell), and the flame-law gate does not catch #7 (the stack is computed from the
+fuel, which still includes the fire). **The wider-hole gate waited for a burst in
+an unbounded loop**, so on #1 and #4 it spun for ever instead of failing; the two
+hung test processes were stopped by PID, the loop bounded, and #1 and #4 re-run:
+the gate now fails on both.
+
+### Deferred, with what un-defers each
+
+- **B40, narrowed to the commanded fire**: a `SetHeatInput` fire on a dry furnace
+  still climbs at `Q_fire/C` (§40 fork 2 kept it out of the flame law, and this
+  slice leaves it there). The burn-out clause is closed.
+- **B42 (new): the burn-out is an instant failure at a lumped temperature.** A real
+  tube fails by creep — a rupture TIME that falls with temperature (API 530's
+  Larson–Miller curves) — at its hottest skin, not at the coil's average. Trigger:
+  a plant or game that needs a tube to survive a short excursion past its limit, or
+  a hot spot a lumped coil cannot show.
+- **B43 (new): the round limits.** Every shipped furnace's limit and hole are game
+  values, not API 530's Table 5 (paywalled, unread). Trigger: a copy of the table.
+- **B44 (new): one flame for the leak.** The burn-out fire burns at the furnace's
+  declared flame, not the leaked fluid's own. Trigger: a plant whose answer depends
+  on what the leaked fluid's flame is.
+- **A hole's discharge in gas is still B41** (§41).
