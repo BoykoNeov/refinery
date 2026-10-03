@@ -204,38 +204,24 @@ When a milestone closes, its box goes here and the previous one moves there.
 
 **M33 is CLOSED (2026-10-03): a trip on a pipe's flow, the low-flow furnace trip —
 `docs/DEFERRED.md` row E13's flow clause, struck; the outlet clause stays open.**
-Taken on a DECISION (the user's, on gameplay grounds). One slice, note and build
-together: DESIGN §36.
-- **A trip may watch `{ pipe = "…", variable = "flow" }`** with `limit_kg_per_s`,
-  any finite sign (at or below zero is a reverse-flow trip). Any DECLARED pipe:
-  the loops' one-hop rule (E12) is about a loop's sign and is not copied.
-- **The rule for the missing measurement** M22 left open: a flow is read from the
-  last solve, so it is absent for exactly ONE trip pass, tick 1's. The trip stays
-  armed and compares nothing on it; every other absence is still an engine fault
-  (the exemption needs a pipe AND no solution). The price, pinned by a gate: a
-  plant loaded lit on too little flow fires tick 1 unprotected, trips on tick 2.
-- **No startup bypass.** A cold start (feed shut, furnace out) trips on tick 2
-  with nothing to cut, and the latch is the start permissive: no light-off until
-  the feed is established, a solve has seen it, and the trip is reset. The timer
-  stays E15. A reset reads the LAST SOLVE, so one sent with the reopening command
-  is refused and one a tick later is admitted.
-- **A furnace or cooler OUTLET is still refused**, for its own reason now: it is
+Taken on a DECISION (the user's, on gameplay grounds). One slice: DESIGN §36.
+- **`{ pipe = "…", variable = "flow" }`** on any declared pipe, `limit_kg_per_s`
+  of any finite sign (at or below zero is a reverse-flow trip).
+- **The missing measurement**: a flow is read from the last solve, so it is absent
+  for exactly ONE trip pass, tick 1's; the trip stays armed and compares nothing
+  on it. Every other absence is still an engine fault. A plant loaded lit on too
+  little flow therefore fires tick 1 unprotected and trips on tick 2 (gated).
+- **No startup bypass** (stays E15): a cold start trips on tick 2 with nothing to
+  cut, and the latch is the start permissive. An OUTLET trip stays refused: it is
   absent again whenever the unit stagnates, which is the low-flow condition.
-- **Demo `scenarios/furnace_low_flow_trip.toml`** (the thirty-fourth file): a
-  charge tank drains by gravity through a furnace fired by hand at 0.6 MW; a
-  2 kg/s low-flow trip on the feed. The feed ends tick 3 016 at 1.99951 kg/s, the
-  fuel is cut at tick 3 017 on both fidelities, the plant its untripped twin to
-  the bit until then. **The cut moves no flow** (constant density), so every flow
-  equals the twin's to tick 6 000, the condition never clears, and the demo
-  cannot show the latch: a fixture with a restorable feed does. The twin's outlet
-  reads 1 521 °C at tick 5 000 and then runs away (new row B39, unbounded outlet
-  on a vanishing flow; no gate reads it).
-- **Gates** `tests/flow_trip_reference.rs` (six) plus seven sweep cases in
-  `trip_reference.rs`. Eight mutations, seven caught; widening the tick-1
-  exemption to every absence is uncaught as predicted (a backstop nothing
-  reaches), and deleting the latch is inert on the demo, caught by the fixtures.
-  All 33 earlier plants byte-identical on both fidelities, no iteration count
-  moved; no Godot build owed.
+- **Demo `scenarios/furnace_low_flow_trip.toml`** (the thirty-fourth file): a tank
+  drains by gravity through a furnace fired at 0.6 MW; the 2 kg/s trip cuts at
+  tick 3 017 on both fidelities, its twin to the bit until then. The cut moves no
+  flow, so the demo cannot show the latch; a restorable-feed fixture does. The
+  twin's outlet runs away on the vanishing trickle (new row B39, ungated).
+- **Gates** `tests/flow_trip_reference.rs` (six) plus seven sweep cases. Eight
+  mutations, seven caught; widening the exemption is uncaught as predicted. All
+  33 earlier plants byte-identical, no iteration count moved; no Godot build owed.
 
 **Exactly nine of the thirty-four files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
