@@ -18347,3 +18347,321 @@ reason to expect, at the user's request: a full suite per edit cost 2–3 minute
   between two loops on one actuator.
 - **A coil trip on a dry-fired heater is the protection B40 leaves a plant**: the
   coil still has no radiant limit and no burn-out.
+
+## 40. A furnace's flame ceiling — the fired duty is a firing rate, ledger row B40's ceiling clause (M36)
+
+### What licensed this, stated plainly
+
+Nothing fired. B40 (a lit coil with no flow rises without bound, §37 fork 4) was
+reached only by M33's untripped twin. **This milestone is a decision**, the
+user's, taken on 2026-10-03 after M35 closed, asked as "work on" B40. Two choices
+were the user's, asked in plain words before any code:
+
+1. **Both of B40's remedies, the ceiling first.** A ceiling (the tubes can never
+   be hotter than the flame that heats them) is what stops the climb; a burn-out
+   (the tubes fail past a temperature) does not stop it by itself, and needs
+   damage the ENGINE raises from a state, which nothing does today (`PuncturePipe`
+   and `SetHeatInput` are commanded from outside). This note is the ceiling alone;
+   the burn-out is the next slice, and B40 narrows to it.
+2. **Every furnace**, rather than a model selected per plant that would have kept
+   every shipped plant byte-identical. Chosen knowing it moves the fourteen plants
+   with a furnace, edits each of their files again, and changes what a furnace's
+   duty MEANS (fork 4).
+
+The probes, the corpus files and the mutation harness are in `W:\temp\claude\m36\`.
+
+### Fork 1 — the model: a well-stirred firebox that radiates perfectly
+
+The duty `Q` is now the heat the burners RELEASE. It leaves the firebox two ways:
+into the coil, and up the stack in the flue gas. Two assumptions make that a law
+with one new constant:
+
+- **The flue's capacity rate is proportional to the firing**: at a fixed fuel and
+  fixed excess air, every watt fired makes the same mass of flue gas. Write it
+  `W_g = Q/(T_f − T_a)`, which DEFINES `T_f` as the adiabatic flame temperature —
+  the temperature the flue reaches if it keeps all the heat — and `T_a` as the
+  combustion air's (the engine's one ambient, `T_AMBIENT`, 293.15 K).
+- **The firebox gas leaves at the coil's temperature**: a well-stirred firebox
+  whose radiant exchange with the tubes is complete (Hottel's well-stirred
+  furnace, in the limit of an infinite gas-to-tube conductance).
+
+Then the stack carries `W_g·(T_c − T_a)` and the coil absorbs the rest:
+
+```text
+Q_absorbed = Q·(T_f − T_c)/(T_f − T_a)        Q_flue = Q·(T_c − T_a)/(T_f − T_a)
+```
+
+**The ceiling**: with no flow the coil heats until it absorbs nothing, which is at
+`T_c = T_f`. It approaches it exponentially, never crosses it, and a coil loaded
+above the flame (allowed, fork 5) gives heat back to the firebox.
+
+**What the second assumption costs, said as one.** A real firebox's gas leaves
+hotter than the tubes, so a real heater loses more up the stack than this one:
+the efficiency `(T_f − T_c)/(T_f − T_a)` is an UPPER BOUND — 0.92 on the crude
+preheater, 0.83 on the FCC preheater, 0.98–0.997 on the warm-water loop plants,
+where a flue leaving at 50 °C is a condensing boiler, not a refinery heater. The
+CEILING does not depend on it: with a finite gas-to-tube conductance `K_r` the
+absorbed heat is `Q·(T_f − T_c)/(T_f − T_a + Q/K_r)`, which still vanishes exactly
+at `T_f`. `K_r` would set the efficiency and the approach rate, not the bound.
+
+Rejected: a Stefan–Boltzmann `T⁴` exchange with a finite `K_r` (a second key, and a
+nonlinearity that loses fork 2's exact step); a firebox gas temperature as a state;
+air preheat; excess air as a key. Each is a fidelity step, and the one property the
+ledger row asks for — a ceiling — needs none of them.
+
+### Fork 2 — the step stays exact
+
+The flue term is linear in `T_c`: write it `K_f·(T_c − T_a)`, `K_f = Q/(T_f − T_a)`.
+The coil's equation stays linear,
+
+```text
+C·dT_c/dt = Q − K_f·(T_c − T_a) − G·(T_c − T_in)
+```
+
+and §37 fork 2's exact step carries over with the total conductance:
+`x = (G + K_f)·dt/C`,
+`T_c(dt) = T_c + (Q − K_f·(T_c − T_a) − G·(T_c − T_in))·dt/C·φ(x)`. Still
+unconditionally stable, still never divides by a conductance.
+
+**An unlit furnace is the M34 arithmetic exactly**: `Q = 0` makes `K_f = 0`, the
+flue term `−0·(T_c − T_a)` and `x` unchanged, so an unlit furnace, and every pass a
+cut furnace makes, is bit for bit what it was.
+
+**A fire is not fuel.** `Command::SetHeatInput` on a furnace still stacks a fixed
+heat into the metal, outside the flame law: a fire has no flame temperature
+anywhere in the engine (a tank's fire has none either). So a dry furnace with a
+fire on it still climbs without bound, at `Q_fire/C`; that stays in B40's
+burn-out clause, where a fire is part of what a burn-out does.
+
+### Fork 3 — the first law at the furnace, now four terms
+
+Fired in, stored in the metal, carried by the fluid, and lost up the stack. §37
+fork 3 closed the first two against the third by construction (the fluid takes
+`Q − C·ΔT_c/dt` from the STORED change, its correction 2); that stays, and the
+flue is taken out of the fluid's share first:
+
+- **The flue's share is computed from the tick's AVERAGE coil temperature**, out
+  of the same exact solution: `T̄_c = T_c + (rate at the start)·dt/C·ψ(x)`,
+  `ψ(x) = (1 − φ(x))/x = (x − 1 + e^(−x))/x²`, `ψ(0) = ½`; `Q_flue = K_f·(T̄_c − T_a)`.
+- **The fluid takes the remainder**: `Q − C·ΔT_c/dt − Q_flue`. So the books close
+  whatever rounding does to `ψ`: an error there moves heat between the flue and
+  the fluid, never creates it.
+
+**The flue loss is published**, because a plant's energy books are kept from the
+snapshot (`boiloff_reference.rs`) and do not close without it:
+`NodeSnapshot::flue_loss_w`, present on a furnace from its first tick, absent on
+every other node and before the first tick (the shape of `column_duty`, and its
+argument). Its absence everywhere else keeps the 21 furnace-free plants'
+snapshots byte-identical. A frontend reads the heater's efficiency off it. The
+snapshot changed shape, so a Godot feature build is owed.
+
+### Fork 4 — what a duty means now
+
+A furnace's duty was "heat into the coil" (§37) and, before that, "heat into the
+fluid". It is now **the heat the burners release**, and every place that said
+otherwise is reworded: `NodeKind::Furnace`, `Command::SetFurnaceDuty`, the loader's
+`duty_mw`, a loop's `max_duty_mw` (now a maximum FIRING rate). Consequences, each
+a measured number below rather than a claim:
+
+- **A plant fired by hand runs cooler** at the same duty, by the stack loss.
+- **An outlet loop fires harder** for the same outlet, and its static gain falls by
+  the efficiency: 0.985 on the M19 demo, so the shipped `K·G` ≈ 0.5 tuning stands.
+- **A trip's cut is unchanged**: zero is still zero (fork 2).
+
+### Fork 5 — the shipped flame, and the coils re-settled
+
+A required key, no default: `flame_temperature_c`. Refused at load if not finite,
+or not ABOVE the combustion air's 20 °C (`T_f ≤ T_a` would make the flue law
+divide by zero or run backwards). A coil loaded at or above its flame is admitted:
+it is a state, and fork 1 says what it does.
+
+**Every shipped furnace declares 1951.1 °C (2224.25 K)**: methane burned in air at
+the stoichiometric ratio, chemical equilibrium, reactants at 298.15 K and 1 atm —
+O. A. Marzouk, "Adiabatic Flame Temperatures for Oxy-Methane, Oxy-Hydrogen,
+Air-Methane, and Air-Hydrogen Stoichiometric Combustion using the NASA CEARUN Tool,
+GRI-Mech 3.0 Reaction Mechanism, and Cantera Python Package", *Engineering,
+Technology & Applied Science Research* 13(4), 2023, pp. 11437–11444,
+doi:10.48084/etasr.6132 (CEARUN, chemical equilibrium). Real heaters fire with
+excess air, which lowers the flame, so as a ceiling 2224 K is an upper bound; a
+plant that knows its fuel and its air declares its own. The citation's reactants
+enter at 298.15 K and the engine's air at 293.15 K: 5 K of a 1 931 K rise, left.
+
+**The coils are re-settled by §37's rule, with the new law**: `T_c` at load is the
+steady coil at the load flow, now the root of `Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)`,
+
+```text
+T_c = (Q·T_f/(T_f − T_a) + G·T_in) / (Q/(T_f − T_a) + G),      G = ε·W
+```
+
+with M34's tick-2 `W` and `T_in`, and `C` and `UA` unchanged.
+
+| plant | duty MW | `T_c` was °C | `T_c` now °C | efficiency at load |
+|---|---:|---:|---:|---:|
+| `crude_column` | 8 | 173.78 | 171.92 | 0.921 |
+| the four cascade crude plants | 2.1051 → **2.2607** | 152.89 | 152.89 | 0.931 |
+| `fcc_plant` | 4 | 356.55 | 347.00 | 0.831 |
+| `fired_gas_drum` | 0.56 → **0.8837** | 407.99 | 483.34 | 0.760 |
+| the three 2 MW-range loop plants | 0.5 | 49.62 | 49.48 | 0.985 |
+| `furnace_coil_trip` (fouled) | 0.5 | 72.15 | 71.29 | 0.973 |
+| `furnace_heater` | 1 | 25.00 | 24.99 | 0.997 |
+| `furnace_low_flow_trip` | 0.6 | 53.94 | 53.36 | 0.983 |
+| `tank_overheat_trip` | 3 | 97.74 | 95.48 | 0.961 |
+
+`fired_gas_drum`'s is a constant-`W` estimate of a shaped-`cp` gas, as in §37.
+
+**Five duties were re-derived, not kept** (correction 1): the four cascade crude
+plants and `fired_gas_drum` declare a duty DERIVED for a design target — a feed
+on its bubble point, a drum at the top of its `cp` fit — and a fixed firing that
+now lost its stack share would have moved each file off the premise it exists
+for. Each now fires the duty whose ABSORBED share is the old duty. Every other
+fixed-duty plant keeps its number and runs cooler, as the user was told. The
+coil keeps the metal it was sized on (`C` per absorbed MW).
+
+### Fork 6 — the demo
+
+`scenarios/furnace_dry_fired.toml`, the thirty-sixth file: a furnace fired by hand
+on a feed that runs out, and no trip — the plant B40 described, with the climb
+ending: M33's plant with a tenth of the charge (1 m of level, not 10) and its
+`[[trips]]` block gone. Measured on both fidelities: the feed reaches exactly zero
+at tick 1 749 (Newton; 1 819 on the game solver) with the coil at 539.0 °C; from
+there it is the closed form, 1 212.3 °C at 3 000, 1 794.8 °C at 6 000 with 552 kW
+of the 600 going up the stack, and 1 950.99 °C at 20 000, under the 1 951.1 °C
+flame. The coil agrees on both fidelities to the printed digit. Under M34's law
+the same coil climbed at 1 K/s without limit.
+
+The FLUID on the dry ticks is the coil to within §37 correction 2's rounding step
+over a vanishing capacity rate: the game solver leaves a ~1e-11 kg/s residual
+trickle through the valve line, on which that step is a few kelvin, and the fluid
+briefly reads ABOVE the flame (1 954.5 °C at tick 20 000). The coil, the state,
+never does; the file says to read the coil.
+
+### What must not change, stated as a prediction that can be wrong
+
+- **The 21 plants with no furnace are byte-identical** on both fidelities, and no
+  iteration count moves on them.
+- **On the fourteen with one, no iteration count moves except `fired_gas_drum`'s**,
+  the one plant whose hydraulics read a furnace's temperature.
+- **The M33 trip still cuts at tick 3 017**: it watches a flow, and nothing
+  hydraulic reads a duty at constant density.
+- **An unlit furnace is an exact pass-through, and a cut furnace's passes are
+  M34's**, bit for bit (fork 2).
+
+### Gates, named before building
+
+1. **One tick against the textbook solution** — coil, outlet and flue loss, the
+   coil in `T_eq + (T_c − T_eq)·e^(−x)` form and the flue as the closed-form
+   integral, neither in the engine's form.
+2. **A dry-fired coil levels off at the flame**: from load, with no flow, `T_c(t)
+   = T_f − (T_f − T_c,0)·e^(−t/τ)`, `τ = C·(T_f − T_a)/Q`, every tick for many
+   time constants, and never above `T_f`.
+3. **The settled efficiency is the hand calculation**: after the coil settles, the
+   fluid's gain equals `Q·(T_f − T_c)/(T_f − T_a)` and the published flue the rest.
+4. **The plant's energy books close with the flue counted**, and do NOT close
+   without it (`boiloff_reference.rs`'s books, counterfactual by construction).
+5. **Every malformed flame is refused for its own reason.**
+6. **An unlit furnace is an exact pass-through**, and a fire on a dry furnace still
+   rises at exactly `Q_fire/C` (fork 2's two exceptions, pinned).
+
+### The mutations, named before building
+
+| # | edit | predicted |
+|---|---|---|
+| 1 | `K_f` left out of `x` (the flue term explicit) | gates 1, 2 |
+| 2 | the flue from the START coil, not the average | gate 1 |
+| 3 | the air at the fluid's inlet, not ambient | gates 1, 2, 3 |
+| 4 | the fire through the flame law | gate 6 |
+| 5 | the flue not subtracted from the fluid | gates 1, 3, 4 |
+| 6 | `T_f ≤ T_a` admitted | gate 5 |
+| 7 | the flue never published (always absent) | gate 4 |
+
+### What moved, measured
+
+- **The corpus, against baselines taken before the first edit, on both
+  fidelities**: the 21 plants with no furnace byte-identical; the fourteen with
+  one moved, as the user chose; the new file joins them. **Every iteration count
+  is unchanged except `fired_gas_drum`'s** (total 13 074 → 13 047 Newton,
+  13 305 → 13 327 game; worst 9 and 7 unchanged), the one plant whose hydraulics
+  read a furnace's temperature. The prediction held.
+- **The M33 trip still cuts at tick 3 017.** Its twin's outlet reads 368 °C at
+  5 000 (419 before), and its dry coil 1 000.5 °C at 6 000 (1 405 before).
+- **The M32 trip fires at tick 1 355, not 1 251**: 4 % of its 3 MW goes up the
+  stack, so the tank heats more slowly; it peaks at 75.110 °C and is back under
+  from the end of 1 393. The twin nears 87.97 °C, not 89.93.
+- **The M35 skin trip fires at tick 75, not 72**, with the outlet at 55.52 °C;
+  the twin still holds 60 °C with its tubes at 117.3 °C, now firing 1.27 MW.
+- **The outlet and tank loops fire harder for the same target** (the M18.1 demo
+  settles at u = 0.614675, not 0.600948), and every ceiling at full firing is
+  lower: 72.29 °C, not 73.29, on the M19 demo; 57.92 °C, not 58.31, on the
+  1.1 MW cascade fixture, whose dip after the setpoint step deepens to
+  53.89 °C. The undersized-furnace cascade settles from tick 3 552, not 3 309.
+- **`fired_gas_drum`** settles on its pre-M34 802.44 K, by correction 1; its
+  constant-`cp` twin, firing the same fuel through a hotter coil, settles at
+  1 063.2 K, not 1 106.9 — the stack is a negative feedback the wrong capacity now
+  pushes against, and the two models part by 261 K rather than 304.
+
+### Gates (`furnace_reference.rs`, `boiloff_reference.rs`)
+
+All six named above, built as named. Rewritten, each a claim the flame made false,
+restated rather than relaxed: `furnace_reference.rs`'s duty-to-stream gate (now the
+settled absorbed heat, plus the published flue), its affine-in-duty gate (now
+`outlet_temperature_rise_follows_the_flame_law_in_duty`: each duty's rise is its
+hand-calculated absorbed heat, and the second MW adds LESS than the first), its
+fire gate, its cold-coil gate and its dry gate; `outlet_control_reference.rs` gates
+4, 6 and the anti-windup ceiling (now from the flame law);
+`temperature_heating_demo.rs`'s settled output, parked twin and ceiling;
+`inner_limit_reference.rs` gates 1 and 4; `coil_trip_reference.rs` gates 1 and 3;
+`flow_trip_reference.rs`'s demo gate; `furnace_trip_reference.rs` gate 1;
+`methane_cp_reference.rs`'s twin; `crude_column_cascade.rs` passes again on the
+re-derived duty. The energy books in `boiloff_reference.rs` count the published
+stack loss and close at the same 1e-9 as before; the new counterfactual drops it
+and does not close.
+
+### Corrections from building it
+
+1. **Five plants' duties were design targets** (fork 5). The cascade crude feed
+   missed its bubble point by 0.37 K — its own gate says the duty is derived and
+   names the edit — and the gas drum settled at 675.9 K, not 802.4. Re-derived on
+   the engine: the crude plants in closed form (the coil's settled temperature is
+   unchanged when the absorbed duty is), the gas drum by secant on 150 000-tick
+   runs, three trials. At its settled 1 000.6 K coil the gas heater absorbs only
+   0.634 of its firing.
+2. **A fire worth the duty adds a hair MORE than the duty, not less.** The first
+   draft of the fire gate bracketed the rise under double "by the duty's extra
+   stack loss"; measured, 8.59367 K against 2 × 4.29681. The duty's own rise was
+   already short by its stack share and the fire's is not, which outweighs the
+   duty's extra loss at the hotter coil. The bracket was wrong, not the engine;
+   the gate is the hand calculation of both terms.
+
+### The mutation pass (M36)
+
+Seven edits, predicted before the run (the table above), each applied to the
+built feature and restored from the copy read before it
+(`W:\temp\claude\m36\mutate.py`; only the predicted test files run per edit; the
+tree diffed clean against a copy taken before the pass). **All seven caught**,
+each by the gate predicted:
+
+| # | edit | caught by |
+|---|---|---|
+| 1 | `K_f` left out of `x` | the cold-coil gate, the dry gate |
+| 2 | the flue from the start coil | the cold-coil gate, the dry gate |
+| 3 | the air at the fluid's inlet | cold-coil, dry, duty-to-stream, fire, flame-law-in-duty |
+| 4 | the fire through the flame law | the fire-on-a-dry-unlit gate, the fire gate |
+| 5 | the flue not subtracted from the fluid | the books and their counterfactual, cold-coil, duty-to-stream, fire, flame-law-in-duty |
+| 6 | `T_f ≤ T_a` admitted | the refusal sweep |
+| 7 | the flue never published | the books, and every gate that reads `flue_loss_w` |
+
+The Godot feature build and its clippy are clean (the snapshot gained a field);
+the Godot demo runs `leaking_line`, which has no furnace and did not move.
+
+### Deferred, with what un-defers each
+
+- **B40, narrowed to its burn-out clause.** A coil past its metal's limit fails —
+  a leak, a fire — as damage the ENGINE raises from a state, which nothing does
+  today. The next slice, by the user's decision. A fire on a dry furnace (fork 2)
+  still climbs at `Q_fire/C` and belongs to it.
+- **A finite radiant exchange** (fork 1): a gas-to-tube conductance, a `T⁴` law, a
+  radiant and a convective section. They set the efficiency and the approach, not
+  the ceiling. Trigger: a plant whose answer depends on a heater's efficiency to
+  better than the upper bound fork 1 gives.
+- **Excess air, fuel and air preheat**: one flame per furnace, declared. Trigger:
+  a plant that varies its air or its fuel, or recovers its stack heat.

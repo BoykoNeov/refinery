@@ -12,6 +12,26 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M36 is CLOSED (2026-10-03): a furnace's flame ceiling — `docs/DEFERRED.md` B40's
+ceiling clause struck, the burn-out clause open.** The user's DECISION: both of B40's
+remedies, the ceiling first, on every furnace. DESIGN §40.
+- **The duty is a FIRING rate now.** The coil absorbs `Q·(T_f − T_c)/(T_f − T_a)`
+  (a well-stirred firebox whose flue leaves at the coil's temperature); the rest is
+  the stack loss, published as `NodeSnapshot::flue_loss_w`. The step stays exact
+  (a second conductance in M34's form); an unlit furnace is M34's arithmetic bit
+  for bit; a fire is not fuel and goes into the metal whole.
+- **`flame_temperature_c`**, required, no default, above the 20 °C air. Every
+  shipped furnace: 1 951.1 °C, methane in air at the stoichiometric ratio
+  (Marzouk 2023, doi:10.48084/etasr.6132). Coils re-settled at load by the new law.
+- **Five duties re-derived** for their design targets (the four cascade crude plants
+  2.1051 → 2.2607 MW, `fired_gas_drum` 0.56 → 0.8837 MW); the rest run cooler.
+- **Demo `furnace_dry_fired.toml`** (36th file): M33's plant on a tenth of the charge,
+  no trip. Dry from tick 1 749; the coil reaches 1 794.8 °C at 6 000 and 1 950.99 °C at
+  20 000, under its flame, on both fidelities.
+- 21 plants byte-identical, 14 moved, only `fired_gas_drum`'s iterations moved. M32's
+  trip now fires at 1 355 (was 1 251), M35's at 75 (was 72), M33's still at 3 017.
+  Seven mutations, all caught; Godot feature build and clippy clean.
+
 **M35 is CLOSED (2026-10-03): a trip on a furnace's coil and outlet — `docs/DEFERRED.md`
 E13 narrowed to the cooler's outlet.** The user's DECISION, with M34's. DESIGN §39.
 - **`{ coil = "…", variable = "temperature" }`**: a new measurement POINT, the

@@ -7268,3 +7268,31 @@ Six gates in `tests/coil_trip_reference.rs`; the trip sweep keeps its cooler-out
 case. Seven mutations, six caught, widening the exemption to every absence uncaught
 as predicted. All thirty-four earlier plants byte-identical on both fidelities; no
 Godot build owed (no snapshot type changed shape), feature clippy clean.
+
+## M36 — a furnace's flame ceiling: ledger row B40's ceiling clause; opened on a decision
+
+### M36 — specified and built in one slice — **LANDED** 2026-10-03, and M36 is CLOSED
+
+The user's decision, asked as "work on" B40 (a lit coil with no flow rises without
+bound): both of its remedies, the ceiling first, and on every furnace rather than
+as a model a plant opts into. The note is DESIGN §40. A furnace's duty is now what
+its burners release; its coil absorbs `Q·(T_f − T_c)/(T_f − T_a)` of it, the share a
+well-stirred firebox whose flue leaves at the coil's temperature passes to the
+tubes, and the rest leaves up the stack, published as `flue_loss_w`. So a dry coil
+levels off at its flame. The flame is a required key, `flame_temperature_c`, and
+every shipped furnace declares 1 951.1 °C, methane in air at the stoichiometric
+ratio (Marzouk 2023, doi:10.48084/etasr.6132). The coil's step stays exact, the
+energy books close with the stack counted, and a fire is not fuel.
+
+Every shipped coil was re-settled at load by the new law, and five duties that were
+derived for a design target (the four cascade crude plants' saturated feed, the gas
+drum's 800 K) were re-derived to fire the duty whose absorbed share is the old one;
+the other fixed-duty plants run cooler, as the user was told. Demo
+`scenarios/furnace_dry_fired.toml`, the thirty-sixth file: M33's plant on a tenth
+of the charge and with no trip, whose coil climbs from the moment the feed fails
+(tick 1 749) to 1 794.8 °C at 6 000 and 1 950.99 °C at 20 000, under its flame.
+
+All 21 furnace-free plants byte-identical on both fidelities; the fourteen with a
+furnace moved, and only `fired_gas_drum`'s iteration counts with them. Seven
+mutations, all caught. The snapshot gained a field: the Godot feature build and
+its clippy are clean. B40 narrows to the burn-out, which is the next slice.

@@ -144,8 +144,8 @@ godot --headless --path . -- --auto          # the M6.2 demo; ends at t=350
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M35
-(2026-10-03)** — trips on a furnace's coil and outlet. Its close-out report and
+Work only on the current milestone unless asked. **Latest closed: M36
+(2026-10-03)** — a furnace's flame ceiling: its duty is a firing rate. Its close-out report and
 every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
