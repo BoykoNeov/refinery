@@ -11,6 +11,27 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M33 is CLOSED (2026-10-03): a trip on a pipe's flow, the low-flow furnace trip —
+`docs/DEFERRED.md` row E13's flow clause, struck; the outlet clause stays open.**
+Taken on a DECISION (the user's, on gameplay grounds). One slice: DESIGN §36.
+- **`{ pipe = "…", variable = "flow" }`** on any declared pipe, `limit_kg_per_s`
+  of any finite sign (at or below zero is a reverse-flow trip).
+- **The missing measurement**: a flow is read from the last solve, so it is absent
+  for exactly ONE trip pass, tick 1's; the trip stays armed and compares nothing
+  on it. Every other absence is still an engine fault. A plant loaded lit on too
+  little flow therefore fires tick 1 unprotected and trips on tick 2 (gated).
+- **No startup bypass** (stays E15): a cold start trips on tick 2 with nothing to
+  cut, and the latch is the start permissive. An OUTLET trip stays refused: it is
+  absent again whenever the unit stagnates, which is the low-flow condition.
+- **Demo `scenarios/furnace_low_flow_trip.toml`** (the thirty-fourth file): a tank
+  drains by gravity through a furnace fired at 0.6 MW; the 2 kg/s trip cuts at
+  tick 3 017 on both fidelities, its twin to the bit until then. The cut moves no
+  flow, so the demo cannot show the latch; a restorable-feed fixture does. The
+  twin's outlet runs away on the vanishing trickle (new row B39, ungated).
+- **Gates** `tests/flow_trip_reference.rs` (six) plus seven sweep cases. Eight
+  mutations, seven caught; widening the exemption is uncaught as predicted. All
+  33 earlier plants byte-identical, no iteration count moved; no Godot build owed.
+
 **M32 is CLOSED (2026-10-02): a trip that cuts a furnace's fuel — `docs/DEFERRED.md`
 row E14's furnace clause, struck; the cooler clause stays open.** Taken on a
 DECISION (the user's, on gameplay grounds). One slice, note and build together:

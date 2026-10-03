@@ -17811,3 +17811,285 @@ clean after the pass). Seven caught, one uncaught as predicted.
   what anything derives. Fixing it needs tube-metal thermal mass (E10's subject)
   or a refusal with a stated bound, and either moves a reported number on any
   plant that fires a near-stagnant furnace.
+
+## 37. A furnace's tube coil — the furnace gets a temperature of its own, ledger rows B39 and E10 (M34)
+
+### What licensed this, stated plainly
+
+Nothing fired. B39 (a fired zero-volume unit on a vanishing flow) was reached only
+by M33's untripped twin, and E10 (a furnace with no thermal mass) by no plant a
+frontend asks about. **This milestone is a decision**, the user's, taken on
+2026-10-03 after M33 closed, asked as "work on" E13's outlet clause and B39. The
+two share one cause, and the note starts there:
+
+- **B39**: a furnace's outlet was `T_in + Q/(ṁ·cp)` with nothing to hold heat,
+  so on a vanishing flow it grew as `1/ṁ` (the twin: 1 521 °C at tick 5 000), and
+  at exactly zero flow the unit was HELD at its last value while its duty was
+  DROPPED (2.1e10 °C and 1.0e14 °C on the two fidelities).
+- **E13, the outlet clause**: an outlet trip was refused because the outlet is
+  absent whenever the unit stagnates (§36 fork 3), which is the low-flow
+  condition itself.
+
+Both are the furnace having no temperature of its own. Give it one and B39's
+runaway is a physical rate, and the outlet exists with no flow.
+
+Two decisions were the user's, asked in plain words before any code:
+
+1. **Every furnace gets a coil**, rather than an opt-in key that would have kept
+   every shipped plant byte-identical. Chosen knowing it moves thirteen plants
+   and invalidates the outlet-loop demos' lag-free premise (E10).
+2. **A trip may watch the coil and the outlet both** — the second slice, M35. This
+   note is the coil alone (one unit model per change, as CLAUDE.md asks); M35
+   builds the trip on it.
+
+A third came up while building and is recorded under "Corrections": the coil
+fired E19's trigger, and the user chose to close E19 at once, before M35.
+
+The probes, the corpus files and the mutation harness are in `W:\temp\claude\m34\`.
+
+### Fork 1 — the model: a lumped coil behind a film
+
+The coil is one lumped body at one temperature `T_c`, with a heat capacity `C`
+[J/K] and a metal-to-process conductance `UA` [W/K] (`FurnaceCoil`). The duty,
+and any fire on the node, goes into the metal; the fluid takes what the metal
+gives.
+
+- **The fluid sees a tube wall at uniform `T_c`**, so its outlet is the
+  constant-surface-temperature result for flow in a tube (Incropera & DeWitt,
+  *Fundamentals of Heat and Mass Transfer*, 6th ed., eq. 8.42b):
+  `T_out = T_c − (T_c − T_in)·exp(−UA/W)`, `W = Σ ṁ·cp` the inlet capacity rate.
+  The heat it takes is `G·(T_c − T_in)` with `G = W·(1 − exp(−UA/W))`.
+- **The metal is a lumped capacitance** (ibid. §5.1):
+  `C·dT_c/dt = Q − G·(T_c − T_in)`.
+
+Rejected: a radiant section, a convective section, a tube-wall gradient, a film
+coefficient that falls with flow (`h ∝ Re^0.8`). Each is a fidelity step, and the
+one property the ledger rows ask for — a furnace that holds heat — needs none of
+them. `UA` is constant; at low flow a real film coefficient falls, so the coil
+here gives up its heat more readily than a real one on a trickle.
+
+### Fork 2 — the step, and why no coil is refused for being light
+
+With `Q`, `G` and `T_in` frozen across a tick the ODE is linear in `T_c`, and its
+exact solution is `T_c(dt) = T_eq + (T_c − T_eq)·e^(−x)`, `x = G·dt/C`. That form
+divides by `G` (in `T_eq = T_in + Q/G`), and a vanishing flow drives `G` to zero,
+so the engine computes the same thing as
+
+`T_c(dt) = T_c + (Q − G·(T_c − T_in))·dt/C·φ(x)`,  `φ(x) = (1 − e^(−x))/x`, `φ(0) = 1`,
+
+with `expm1` for `φ` and for the effectiveness. **Exact means unconditionally
+stable**: an explicit Euler step would ring for `x > 2` and diverge, and a load-time
+refusal would have needed a bound per plant; neither is built. At `G = 0` the step
+is `Q·dt/C`, exactly.
+
+**Where the step runs.** In the sweep (`energy::furnace_coil`), because it is the
+one site with the coil's inlet in hand, and from the coil's START-of-tick
+temperature, which is on the graph. The result goes into `NodeStates::coil_temperature`
+and `Engine::tick` writes it back at the end of the tick, with every other state.
+So `FurnaceCoil::temperature` is a state like a tank's: set from the file at load,
+present before the first tick, and reading the END of the last tick.
+
+`resolve_node_states` gained a `dt` argument for it. `boundary_temperature` and
+`boundary_composition` still return `None` for a furnace: its FLUID is still
+zero-volume and still swept; only the metal is a state.
+
+### Fork 3 — the first law at the furnace, closed by construction
+
+The tick's average heat into the fluid is `Q − C·(T_c,end − T_c,start)/dt`, added
+to the inflow ENTHALPY sum the way a duty used to be (so a shaped `cp` is honoured,
+§20). `Q` in, `C·ΔT_c` stored, the rest carried away: no slack. An energy balance
+over a plant now counts the coil as one more inventory, and
+`boiloff_reference.rs`'s books, which close on a plant with a furnace, were
+widened to count `C·T_c` and nothing else (no tolerance moved).
+
+**From the STORED change, not the increment before it was added.** Correction 2
+below: the other form moves energy the coil state never lost.
+
+**The outlet never leaves the band between the inlet and the coil**, because the
+fluid's rise is `ε` times the tick's average `T_c − T_in`, `ε ≤ 1`. Two
+qualifications, both gated: the coil the snapshot shows is the END of the tick,
+and on a tick the coil cools the outlet can sit above that end value (it is below
+the START value); and on a vanishing flow one rounding step of the stored coil,
+`C·ulp(T_c)/dt`, spread over a capacity rate near zero, can put the outlet that
+far outside the band (correction 2). The gates widen by exactly that.
+
+### Fork 4 — no flow: nothing dropped, nothing held
+
+With no inflow `G = 0`: the coil takes the whole duty, `ΔT_c = Q·dt/C`, and the
+fluid standing in the tubes is reported at the coil's end-of-tick temperature.
+That closes both halves of B39:
+
+- **The dropped duty**: a furnace was the one zero-volume unit whose duty the
+  no-inflow branch threw away (`mix_inflows`' documented gap). It now goes into
+  the metal, and the gate is that the coil rises by exactly `Q·dt/C` per tick for
+  600 ticks (`furnace_reference.rs`, 1 MW into 1 MJ/K: 1 K/s).
+- **The runaway**: on a trickle the outlet is bounded by the coil, and the coil
+  rises at most `Q/C`. The M33 twin reads **419 °C** at tick 5 000, not 1 521 °C,
+  and once its flow is exactly zero (tick 5 238 Newton, 5 306 game, unchanged:
+  the hydraulics never read a duty) its coil climbs at exactly 1 K/s, to about
+  1 405 °C at tick 6 000, rather than to 2.1e10 °C.
+
+**What stays open (new row B40)**: a lit coil with no flow still rises without
+bound, at a physical rate. A real one is bounded by the firebox (radiant exchange
+saturates as `T_c` nears the flame) and ends in a burn-out. Neither is modelled:
+the duty is a fixed heat into the metal, not a radiant exchange. A trip on the
+coil (M35) is the protection a plant gets.
+
+**A furnace is never `held` now.** `NodeStates::held` and the stagnant-outlet rule
+of §23 fork 4 survive for the COOLER, which has no coil. Consequences, each a gate
+moved rather than deleted:
+
+- An outlet loop on a stagnant furnace MEASURES its coil, and acts: below setpoint
+  it fires harder and the coil heats until the loop backs off (§23's gate 6,
+  rewritten). The held-outlet behaviour is gated on a cooler instead (gate 6b).
+- MANUAL→AUTO onto a stagnant furnace is admitted and bumpless (gate 7).
+- A stall no longer opens a furnace cascade (§29 gate 11, moved to the cooler
+  pairing; gate 11b pins the furnace).
+- The outlet-trip refusal's reason, "absent whenever the unit stagnates", is now
+  false for a furnace. The refusal stays (M35's job) and says so, for each unit
+  in its own words (`trip_reference.rs` gained the cooler case).
+
+### Fork 5 — the shipped coils, and the rule they were sized by
+
+Required keys, no defaults (nothing in the engine derives a coil from a duty):
+`coil_heat_capacity_mj_per_k`, `coil_ua_kw_per_k`, `coil_temperature_c`. Refused
+at load: a capacity or conductance not finite and positive, a temperature not
+finite or not above absolute zero; a missing key is serde's "missing field".
+
+Every shipped furnace was given a coil by one stated rule, written into its file:
+
+- **`C` = 1 MJ/K per MW of rated duty** (the loop's `max_duty_mw` where a loop owns
+  the furnace, the declared duty otherwise). From a typical average radiant flux
+  of about 30 kW/m² of tube (API 560's range for crude heaters), 6-inch schedule
+  40 tube at about 53 kg of steel per m² of outside surface, and steel's ~0.5
+  kJ/(kg·K): 33 m² and 1.8 t per MW, 0.9 MJ/K, rounded. An order-of-magnitude
+  sizing, said as one.
+- **`UA` = twice the load flow's capacity rate** (NTU = 2 at load, `ε` = 0.865).
+  Chosen, not derived.
+- **`T_c` at load = the steady coil at the load flow**, `T_in + Q/(ε·W)`, so a plant
+  loaded settled stays settled. The load flow is TICK 2's (correction 1).
+
+| plant | `C` MJ/K | `UA` kW/K | `T_c` °C | `C/G` s |
+|---|---:|---:|---:|---:|
+| `crude_column` | 8 | 784 | 173.78 | 23.6 |
+| the four 2.105 MW crude plants | 2.105 | 784 | 152.89 | 6.2 |
+| `fcc_plant` | 4 | 164 | 356.55 | 56.4 |
+| `fired_gas_drum` | 0.56 | 3.4 | 407.99 | 377.9 |
+| `furnace_heater` | 1 | 464.3 | 25.00 | 5.0 |
+| `furnace_low_flow_trip` | 0.6 | 40.9 | 53.94 | 33.9 |
+| the three 2 MW-range loop plants | 2 | 120.2 | 49.62 | 38.5 |
+| `tank_overheat_trip` | 3 | 120.2 | 97.74 | 57.7 |
+
+### Fork 6 — E10: the outlet loop has a lag again, and the old bound is gone
+
+E10 said the engine's outlet loop had no dynamics but its one-tick sample delay,
+so it rang at period two above `K·G ≈ 1.05`, and that a real coil has minutes of
+lag. The coil is that lag: `C/G` = 38.5 s on the M19 demo. Measured on the demo
+with only the gain changed (2 000 ticks): **every gain from `K·G` = 0.5 to 60
+settles on 60 °C**; the shipped 0.5 peaks at 61.76 °C and is inside 0.1 K from
+tick 247; 1.2, which rang between both clamps before, now never touches one. A
+proportional loop on a first-order lag behind one tick of delay rings near
+`K·G ≈ 1/(1 − e^(−G·dt/C))`, about 39; the clamps catch every swing first, so no
+ring was found up to 60, and no new bound is asserted. The static gain is
+unchanged (settled, the coil stores nothing), so the shipped tuning still reads
+`K·G` ≈ 0.5 off two operating points.
+
+E10 is **narrowed to coolers**: a cooler is still lag-free, and its loop still
+carries the period-two bound.
+
+### What moved, measured
+
+- **The corpus**: the 21 plants with no furnace byte-identical on both fidelities,
+  against baselines taken before the first edit. The thirteen with one moved, as
+  the user chose. **No iteration count moved except `fired_gas_drum`'s**, the one
+  plant whose hydraulics read the furnace's temperature (through the gas density):
+  total 4 571 → 13 074 (Newton) and 8 604 → 13 305 (game), worst unchanged at 9
+  and 7. Its coil's 378 s keeps the plant in transient for the whole run.
+- **Steady states did not move.** `fired_gas_drum` settles on the pre-M34 802.4378 K
+  (shape) and 1106.86 K (constant twin) to 1e-4, but in 150 000 ticks, not 6 000:
+  the coil coupled to the drum gives slowest modes of about 870 s and 1 165 s.
+  The coil also removed the shaped heater's start-up overshoot (999 K before; it
+  now rises to its settled 792 K without passing it).
+- **The M33 demo**: cut at tick 3 017 on both fidelities, as before. After the cut
+  the coil, still at 90 °C, warms the feed while it cools: 89.09 °C at the end of
+  3 017, 20.003 °C by 4 000.
+- **The M32 demo**: cut at tick 1 251, as before, but the condition no longer clears
+  inside the tripping tick: the coil's stored heat carries the tank to 75.138 °C,
+  and it is back under 75 °C from the end of tick 1 294. M22.1 named this case — a
+  trip whose action is SLOW — and the coil makes a fuel cut one. 40.39 °C at 6 000.
+
+### Gates
+
+`furnace_reference.rs` (three new, three re-read as settled):
+
+1. **One tick of a cold coil against the textbook solution** — the coil and the
+   outlet to 1e-9 K, computed in the textbook `T_eq + (T_c − T_eq)·e^(−x)` form the
+   engine does not use, so agreement checks the algebra rather than copying it.
+2. **A furnace fired with no flow stores its whole duty**: the coil rises by exactly
+   `Q·dt/C` for 600 ticks, the fluid reads the coil every tick, never held.
+3. **Every malformed coil is refused for its own reason** (ten cases).
+4. The three pre-M34 gates (the duty reaches the stream; the rise is affine in duty;
+   an unlit furnace is an exact pass-through) now read after 4 000 ticks, 80 of the
+   coil's time constants, where the coil stores nothing and they hold exactly again.
+
+Rewritten, each a claim the coil made false, restated rather than relaxed:
+`outlet_control_reference.rs` gates 5, 6, 6b (new), 7 and the anti-windup arm;
+`cascade_control_reference.rs` gates 2, 11 and 11b (new); `flow_trip_reference.rs`
+gates 1, 3, 4; `furnace_trip_reference.rs` gate 1; `methane_cp_reference.rs`'s two
+settling gates; `inner_limit_reference.rs` gates 3 and 4 (correction 3).
+
+### Corrections from building it
+
+1. **The load flow is tick 2's, not tick 1's.** The first coil sizing used tick-1
+   flows, and the crude plants' cascade gate missed its bubble point by 0.35 K. On
+   tick 1 a pipe's transport density is its born composition's, so their feed steps
+   9 % between ticks 1 and 2 (`crude_column_cascade.rs` says so); the coil, sized
+   for the tick-1 flow, was 0.6 K off its steady value at the real one. Re-derived
+   from tick 2 on the pre-M34 engine (built from HEAD in a worktree, so the probe
+   read the old furnace, not the new one).
+2. **The fluid's share is the STORED change.** A first build took it from the
+   increment before rounding added it to `T_c`, to keep the outlet inside the band
+   on a trickle. That moved energy the coil state never lost: an unlit furnace sat
+   1.2e-12 K above its inlet (the coil stalls a few ulp from its inlet, and the
+   fluid kept receiving `G·d`), and the inner-limit gate 3, whose leak turns on
+   hair-level dips, moved by 1.3 K. Reverted; the band's gates widen by one
+   rounding step of the stored coil instead, derived per tick.
+3. **The coil fired E19's trigger.** A cascade whose furnace is held at full fire
+   (inner-limit gate 4's 1.1 MW furnace) has its secondary's output at exactly 1 on
+   only 4 444 of 8 000 ticks: the lag makes the back-calculated memory one tick
+   behind a creeping outlet, so the output dips a hair under 1 for runs of one to
+   three ticks, and on each the primary is free. Its target walks to the 65 °C range
+   top, and the dip after the step reads the UNFIXED 54.876 °C, not the held
+   54.08. The user chose to close E19 before M35 (§38). In M34's own commit gate 4
+   asserts the leaked number, saying why.
+
+### The mutation pass (M34)
+
+Nine edits, predicted before the run, each applied to the committed feature and
+restored from the copy read before it (`W:\temp\claude\m34\mutate.py`,
+`cargo test --release --no-fail-fast` on `core` and `scenarios`; the tree diffed
+clean against a copy taken before the pass). **All nine caught**, each by the gate
+predicted and most by more.
+
+| # | edit | predicted | caught by |
+|---|---|---|---|
+| 1 | `φ = 1`: an Euler-like step, not the exact one | the cold-coil gate | the cold-coil gate; the M32 demo; inner-limit gates 1 and 3 |
+| 2 | the fluid gets the whole duty (the coil stores, gives nothing back) | the cold-coil gate, the energy books, the cut's zero-duty first law | all three, and five more |
+| 3 | a stagnant furnace HELD again | the dry gate, outlet gates 6 and 7, cascade 11b | exactly those four |
+| 4 | effectiveness = 1 (`UA` ignored) | the cold-coil gate only | the cold-coil gate, and five gates whose numbers moved with it (the crude cascade's bubble point among them) |
+| 5 | the coil never written back | the dry gate, the cold-coil gate, most demos | 31 tests |
+| 6 | MJ/K read as kJ/K at load | the cold-coil gate, the dry gate | both, and eight more |
+| 7 | `UA = 0` accepted at load | the refusal sweep | the refusal sweep alone |
+| 8 | a fire bypasses the coil (duty only) | `a_fire_stacks_on_top_of_the_operating_duty` | it, the cascade's heater-fire gate, inner-limit gate 3 |
+| 9 | `G = UA` (no effectiveness, no capacity cap) | the cold-coil gate; the trickle bounds | 36 tests, the boil-off plants' among them |
+
+### Deferred, with what un-defers each
+
+- **B40 — a lit coil with no flow rises without bound.** Trigger: a plant or
+  frontend that must show what a dry-fired heater does past the point a trip would
+  cut it — a radiant limit, a burn-out as a damage event.
+- **E10, narrowed to coolers** (fork 6). A cooler's outlet loop is still lag-free.
+- **E13's outlet clause** — M35, next, on the coil this note builds.
+- **E19** — closed next (§38): the coil reached its trigger.
+- **The sizing rule is an order of magnitude** (fork 5). A plant that needs a
+  specific heater's coil declares it.

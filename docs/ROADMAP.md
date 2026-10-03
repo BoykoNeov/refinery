@@ -7176,3 +7176,50 @@ tick-1 exemption to every absence is uncaught as predicted, and deleting the
 latch is inert on the demo and caught by the fixture. All thirty-three earlier
 plants byte-identical on both fidelities with no iteration count moved; no Godot
 build owed (no type, field or command changed shape).
+
+## M34 — a furnace's tube coil: ledger rows B39 and E10; opened on a decision
+
+### M34 — specified and built in one slice — **LANDED** 2026-10-03, and M34 is CLOSED
+
+Taken on the user's decision after M33 closed, asked as "work on" E13's outlet
+clause and B39, which share one cause: a furnace had no temperature of its own.
+The user chose to give EVERY furnace one (not an opt-in key that would have kept
+the corpus byte-identical) and to let a trip watch the coil and the outlet both,
+which is M35's slice. The note is DESIGN §37.
+
+Every furnace now has a tube coil, `FurnaceCoil`: one lumped metal body with a
+heat capacity, a metal-to-process `UA` and a temperature that is a STATE. The duty
+and any fire go into the metal; the fluid, seeing a tube wall at the coil's
+temperature, takes `G·(T_c − T_in)` with `G = W·(1 − e^(−UA/W))` (Incropera &
+DeWitt eq. 8.42b). The step is the ODE's exact solution, in a form that never
+divides by `G`, so no coil is too light for `dt`; the fluid gets `Q − C·ΔT_c/dt`,
+so the first law closes at the furnace by construction. Three required keys,
+no defaults: `coil_heat_capacity_mj_per_k`, `coil_ua_kw_per_k`,
+`coil_temperature_c`. The thirteen shipped furnaces were sized by one stated rule
+(1 MJ/K per rated MW; `UA` twice the load capacity rate; the coil loaded at its
+steady value on the tick-2 flow).
+
+B39 is CLOSED: with no flow the coil takes the whole duty and the fluid reads the
+coil (nothing dropped, nothing held), and on a trickle the outlet is bounded by
+the coil. The M33 twin reads 419 °C at tick 5 000 (1 521 before) and its dry coil
+climbs at exactly 1 K/s, where it read 2.1e10 °C. What is left is new row B40 (a
+dry coil has no radiant limit and no burn-out). E10 is narrowed to coolers: the
+M19 outlet loop now settles at every gain tried up to `K·G` = 60. A furnace is
+never `held`, so an outlet loop on a stagnant furnace measures its coil, a stall
+no longer opens a furnace cascade, and the outlet-trip refusal now gives each unit
+its own reason.
+
+The 21 plants without a furnace are byte-identical on both fidelities; the 13 with
+one moved, and only `fired_gas_drum`'s iterations moved with them (its gas density
+reads the heater's temperature). Steady states did not move. Two demos' claims
+changed and were restated: M32's trip no longer clears its condition inside the
+tripping tick (the coil's heat carries the tank to 75.138 °C; it clears at 1 294),
+and M33's cut furnace warms its feed while its coil cools. The coil also reached
+E19's trigger (a cascade furnace held at full fire leaks its hold), and the user
+chose to close E19 next, before M35. Godot feature clippy run and clean (the
+furnace's `kind` changed shape on the snapshot; the GDScript reads none of it).
+
+Three new gates in `furnace_reference.rs` (a cold coil's tick against the
+textbook solution, a dry-fired coil storing its whole duty, the ten malformed
+coils), a cooler case in `trip_reference.rs`'s sweep, and every gate the coil made
+false restated. Nine mutations, all caught.

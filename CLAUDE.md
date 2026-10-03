@@ -197,31 +197,31 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-The full close-out report of every earlier milestone (M1–M31), with what each
+The full close-out report of every earlier milestone (M1–M33), with what each
 one measured and corrected, is in `docs/MILESTONES.md`. It is not loaded
 automatically: read the relevant box there before touching that milestone's code.
 When a milestone closes, its box goes here and the previous one moves there.
 
-**M33 is CLOSED (2026-10-03): a trip on a pipe's flow, the low-flow furnace trip —
-`docs/DEFERRED.md` row E13's flow clause, struck; the outlet clause stays open.**
-Taken on a DECISION (the user's, on gameplay grounds). One slice: DESIGN §36.
-- **`{ pipe = "…", variable = "flow" }`** on any declared pipe, `limit_kg_per_s`
-  of any finite sign (at or below zero is a reverse-flow trip).
-- **The missing measurement**: a flow is read from the last solve, so it is absent
-  for exactly ONE trip pass, tick 1's; the trip stays armed and compares nothing
-  on it. Every other absence is still an engine fault. A plant loaded lit on too
-  little flow therefore fires tick 1 unprotected and trips on tick 2 (gated).
-- **No startup bypass** (stays E15): a cold start trips on tick 2 with nothing to
-  cut, and the latch is the start permissive. An OUTLET trip stays refused: it is
-  absent again whenever the unit stagnates, which is the low-flow condition.
-- **Demo `scenarios/furnace_low_flow_trip.toml`** (the thirty-fourth file): a tank
-  drains by gravity through a furnace fired at 0.6 MW; the 2 kg/s trip cuts at
-  tick 3 017 on both fidelities, its twin to the bit until then. The cut moves no
-  flow, so the demo cannot show the latch; a restorable-feed fixture does. The
-  twin's outlet runs away on the vanishing trickle (new row B39, ungated).
-- **Gates** `tests/flow_trip_reference.rs` (six) plus seven sweep cases. Eight
-  mutations, seven caught; widening the exemption is uncaught as predicted. All
-  33 earlier plants byte-identical, no iteration count moved; no Godot build owed.
+**M34 is CLOSED (2026-10-03): a furnace's tube coil — `docs/DEFERRED.md` row B39
+struck, E10 narrowed to coolers, new row B40.** Taken on a DECISION (the user's):
+every furnace gets one, knowing it moves thirteen plants. One slice: DESIGN §37.
+- **`FurnaceCoil`** on `NodeKind::Furnace`: heat capacity, metal-to-process `UA`,
+  and a temperature that is a STATE (written back at the end of every tick). Duty
+  and fire go into the metal; the fluid takes `G·(T_c − T_in)`,
+  `G = W·(1 − e^(−UA/W))`. Exact step (never divides by `G`), and the fluid gets
+  `Q − C·ΔT_c/dt` from the STORED change, so the first law closes at the furnace.
+- **Three required keys**, no defaults: `coil_heat_capacity_mj_per_k`,
+  `coil_ua_kw_per_k`, `coil_temperature_c`. Shipped coils: 1 MJ/K per rated MW,
+  `UA` = 2 × the load capacity rate, loaded at the steady coil on TICK 2's flow.
+- **A furnace is never `held`**: with no flow the fluid reads the coil. Outlet
+  loops act on a stagnant coil; a stall no longer opens a furnace cascade; the
+  held-outlet rule survives for COOLERS and is gated there. Outlet trips stay
+  refused, each unit for its own reason (M35 builds the furnace's).
+- **21 plants byte-identical, 13 moved**; only `fired_gas_drum`'s iterations moved
+  (4 571 → 13 074 Newton). Steady states unchanged. M32's trip now clears at tick
+  1 294, not inside its tripping tick; M33's twin reads 419 °C at 5 000, not 1 521.
+- **The coil reached E19's trigger** (a cascade furnace at full fire dips a hair
+  off its limit for 1–3 ticks; the hold leaks). Closed next, before M35.
 
 **Exactly nine of the thirty-four files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
