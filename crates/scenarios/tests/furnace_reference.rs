@@ -45,6 +45,23 @@ const DUTY_W: f64 = 1.0e6;
 /// own, in the tests at the bottom.
 const TICKS: u64 = 4_000;
 
+/// The flame the TOML declares, `flame_temperature_c = 1951.1`, in SI and by
+/// hand for the reason `DUTY_W` is (M36, docs/DESIGN.md §40).
+const FLAME_K: f64 = 2224.25;
+/// The combustion air: the engine's one ambient, 20 °C.
+const AIR_K: f64 = 293.15;
+
+/// The SETTLED coil of a furnace firing `duty` [W] plus a fire `fire` [W] on
+/// an inflow at `inlet` [K] with capacity rate `capacity_rate` [W/K] (§40
+/// fork 5): the root of `Q·(T_f − T_c)/(T_f − T_a) + F = G·(T_c − T_in)`,
+/// `G = W·(1 − exp(−UA/W))`. Returns `(T_c, G)`.
+fn settled_coil(duty: f64, fire: f64, inlet: f64, capacity_rate: f64) -> (f64, f64) {
+    let span = FLAME_K - AIR_K;
+    let conductance = capacity_rate * (1.0 - (-COIL_UA_W_PER_K / capacity_rate).exp());
+    let coil = (duty * FLAME_K / span + fire + conductance * inlet) / (duty / span + conductance);
+    (coil, conductance)
+}
+
 /// The temperature field is built from products and one division of
 /// O(1)-magnitude doubles, so relative error is a few ulp. 1e-9 K on a ~300 K
 /// value is ~1e-12 relative — far below any modelling defect, far above float
@@ -106,13 +123,16 @@ fn node_temperature(engine: &Engine, name: &str) -> f64 {
 /// relaxed to a bound.
 const FRICTION_BOUND_K: f64 = 0.5;
 
-/// First law across the heater: `T_out = T_in + Q/(ṁ·cp)`.
+/// First law across the heater: `T_out = T_in + Q_abs/(ṁ·cp)`, with the coil
+/// absorbing `Q_abs = Q·(T_f − T_c)/(T_f − T_a)` of the duty and the published
+/// `flue_loss_w` the rest (M36, docs/DESIGN.md §40 gate 3).
 ///
 /// The flow is read from the solution rather than predicted — this plant's
 /// hydraulics are M1's business and already pinned by `kv_reference`. What is
-/// *not* read from the engine is the duty: `DUTY_W` comes from the TOML's
-/// human-facing number converted by hand, so the loader's MW→W step is under
-/// test rather than assumed.
+/// *not* read from the engine is the duty, the flame or the settled coil:
+/// `DUTY_W` and `FLAME_K` come from the TOML's human-facing numbers converted by
+/// hand, and the coil from `settled_coil`, so the loader's conversions and the
+/// flame law are under test rather than assumed.
 #[test]
 fn the_furnace_delivers_its_duty_to_the_stream() {
     let engine = run(1.0);
@@ -134,12 +154,33 @@ fn the_furnace_delivers_its_duty_to_the_stream() {
     // so this stays an EXACT first law instead of an approximate one carrying
     // slack for a nuisance term.
     let arriving = inlet.stream.temperature.value();
-    let expected = arriving + DUTY_W / (mass_flow * cp);
+    let (coil, _) = settled_coil(DUTY_W, 0.0, arriving, mass_flow * cp);
+    let absorbed = DUTY_W * (FLAME_K - coil) / (FLAME_K - AIR_K);
+    let expected = arriving + absorbed / (mass_flow * cp);
     let heated = node_temperature(&engine, "heater");
     assert!(
         (heated - expected).abs() < TOLERANCE_K,
         "the heater must resolve to {expected} K (= {arriving} arriving + \
-         {DUTY_W}/({mass_flow}·{cp})), got {heated}"
+         {absorbed}/({mass_flow}·{cp}), the {DUTY_W} W fired less its stack loss), got \
+         {heated}"
+    );
+    assert!(
+        absorbed < DUTY_W && DUTY_W - absorbed > 1.0e3,
+        "the stack must take a real share of the duty for the line above to test the \
+         flame law, got {absorbed} W absorbed of {DUTY_W}"
+    );
+    // The stack loss is published, and it is the rest of the duty.
+    let flue = engine
+        .snapshot()
+        .nodes
+        .into_iter()
+        .find(|n| n.name == "heater")
+        .and_then(|n| n.flue_loss_w)
+        .expect("a fired furnace publishes its stack loss");
+    assert!(
+        (flue - (DUTY_W - absorbed)).abs() < 1e-9 * DUTY_W,
+        "the published stack loss must be the duty's unabsorbed {} W, got {flue}",
+        DUTY_W - absorbed
     );
 
     // Direction: heat goes DOWNSTREAM. The upwind pick writes the furnace's
@@ -160,24 +201,23 @@ fn the_furnace_delivers_its_duty_to_the_stream() {
     );
 }
 
-/// ΔT must be exactly AFFINE in duty, with the intercept being friction alone.
+/// The rise follows the flame law at every duty, with the intercept being
+/// friction alone (M36, docs/DESIGN.md §40).
 ///
-/// This is the gate that needs no flow reading at all, and so has no shared term
-/// with the test above. The hydraulics here are temperature-independent (constant
-/// density and viscosity at M2), so ṁ, cp and every edge's `Φ` are bit-identical
-/// across the three runs: the frictional part of the rise is the SAME number in
-/// each and cancels out of a second difference.
+/// The hydraulics here are temperature-independent (constant density and
+/// viscosity at M2), so ṁ, cp and every edge's `Φ` are bit-identical across the
+/// three runs: the frictional part of the rise is the SAME number in each and
+/// cancels out of a difference.
 ///
-/// Before M5.1 this was `ΔT(2 MW) = 2·ΔT(1 MW)`, which friction breaks — it adds
-/// a duty-independent intercept. The equal-second-difference form below is that
-/// claim with the intercept divided out, and it is strictly stronger: it pins
-/// linearity AND identifies the intercept as exactly the unlit rise, so a term
-/// that scaled with duty while also leaking a constant fails here where the old
-/// ratio could absorb it. A duty proportional to something else — a squared term,
-/// a unit slip that is only *linear* — still breaks it while producing a
-/// plausible number.
+/// Before M36 the claim was that each extra MW adds exactly the same rise. The
+/// flame law makes that false, and the gate says so rather than relaxing: a
+/// hotter coil loses more of each extra watt up the stack, so the rise is
+/// CONCAVE in duty, and each duty's rise over the unlit run is exactly its
+/// hand-calculated absorbed heat over `ṁ·cp`. A duty proportional to something
+/// else — a unit slip, a squared term, a stack loss read off the wrong
+/// temperature — misses that at every duty while producing a plausible number.
 #[test]
-fn outlet_temperature_rise_is_affine_in_duty() {
+fn outlet_temperature_rise_follows_the_flame_law_in_duty() {
     let flow_of = |e: &Engine| edge(e, "feed_line").stream.mass_flow.value();
     let rise_of = |e: &Engine| edge(e, "transfer_line").stream.temperature.value() - FEED_K;
 
@@ -197,16 +237,33 @@ fn outlet_temperature_rise_is_affine_in_duty() {
          same intercept the other two carry"
     );
 
+    let inlet = edge(&one, "feed_line");
+    let capacity_rate =
+        inlet.stream.mass_flow.value() * inlet.stream.composition.mixture_cp(&one.slate).value();
+    let arriving = inlet.stream.temperature.value();
+    let rise_by_hand = |duty: f64| {
+        let (coil, _) = settled_coil(duty, 0.0, arriving, capacity_rate);
+        duty * (FLAME_K - coil) / (FLAME_K - AIR_K) / capacity_rate
+    };
+
     let (rise_zero, rise_one, rise_two) = (rise_of(&zero), rise_of(&one), rise_of(&two));
     assert!(
         rise_one - rise_zero > 1.0,
         "1 MW must produce a rise big enough to be worth differencing, got {} K",
         rise_one - rise_zero
     );
+    for (duty, rise) in [(DUTY_W, rise_one), (2.0 * DUTY_W, rise_two)] {
+        assert!(
+            (rise - rise_zero - rise_by_hand(duty)).abs() < TOLERANCE_K,
+            "{duty} W must add exactly its absorbed {} K over the unlit run, added {}",
+            rise_by_hand(duty),
+            rise - rise_zero
+        );
+    }
     assert!(
-        (rise_two - rise_one - (rise_one - rise_zero)).abs() < TOLERANCE_K,
-        "each extra MW must add exactly the same rise: {rise_zero} K unlit, \
-         {rise_one} K at 1 MW, {rise_two} K at 2 MW"
+        rise_two - rise_one < rise_one - rise_zero,
+        "the second MW must add LESS than the first — its coil is hotter and loses more \
+         up the stack: {rise_zero} K unlit, {rise_one} K at 1 MW, {rise_two} K at 2 MW"
     );
     // The intercept is this plant's own friction — named, rather than left as an
     // unexplained constant the test quietly tolerates.
@@ -337,6 +394,15 @@ fn negative_furnace_duty_is_refused() {
 /// `SetHeatInput` would silently zero the operator's setpoint — the plant
 /// would run *colder* during a fire — and every other test in this file would
 /// still pass, because none of them sets both.
+///
+/// Since M36 a fire is not fuel (docs/DESIGN.md §40 fork 2): it goes into the
+/// metal whole, while the duty loses its stack share — a little more of it at
+/// the coil the fire made hotter. So a fire worth the duty no longer exactly
+/// doubles the rise: measured, it adds a hair MORE than the duty did (8.59367 K
+/// against 2 × 4.29681), because the duty's own rise was already short by its
+/// stack loss and the fire's is not. The gate is the hand calculation of both
+/// terms together, which a fire that overwrote the duty misses by half and a
+/// fire passed through the flame law misses by its own stack loss.
 #[test]
 fn a_fire_stacks_on_top_of_the_operating_duty() {
     use refinery_core::snapshot::Command;
@@ -379,12 +445,26 @@ fn a_fire_stacks_on_top_of_the_operating_duty() {
 
     let rise_with_fire =
         edge(&burning, "transfer_line").stream.temperature.value() - FEED_K - friction;
+    let inlet = edge(&burning, "feed_line");
+    let capacity_rate = inlet.stream.mass_flow.value()
+        * inlet.stream.composition.mixture_cp(&burning.slate).value();
+    let (coil, conductance) = settled_coil(
+        DUTY_W,
+        DUTY_W,
+        inlet.stream.temperature.value(),
+        capacity_rate,
+    );
+    let expected = conductance * (coil - inlet.stream.temperature.value()) / capacity_rate;
     assert!(
-        (rise_with_fire - 2.0 * rise_from_duty).abs() < TOLERANCE_K,
-        "a fire of Q on a furnace already firing Q must double the rise \
-         ({rise_from_duty} K → expected {}), got {rise_with_fire} K — if it \
-         merely matched, the fire overwrote the duty",
-        2.0 * rise_from_duty
+        (rise_with_fire - expected).abs() < TOLERANCE_K,
+        "a fire of Q on a furnace already firing Q must add itself whole and cost the \
+         duty a little more stack loss: expected {expected} K, got {rise_with_fire} K \
+         ({rise_from_duty} K from the duty alone; if it merely matched that, the fire \
+         overwrote the duty)"
+    );
+    assert!(
+        rise_with_fire > 1.9 * rise_from_duty,
+        "the fire must nearly double the rise: {rise_from_duty} K → {rise_with_fire} K"
     );
 }
 
@@ -416,20 +496,24 @@ fn set_coil_temperature(engine: &mut Engine, kelvin: f64) {
 }
 
 /// **One tick of a cold coil, against the textbook solution** (M34,
-/// docs/DESIGN.md §37).
+/// docs/DESIGN.md §37; the flue since M36, §40 gate 1).
 ///
 /// A lit furnace whose coil starts at the feed temperature (20 °C, against a
 /// settled 25 °C) must, after one tick, hold exactly what the lumped-capacitance
-/// ODE `C·dT_c/dt = Q − G·(T_c − T_in)` says, solved in its TEXTBOOK form,
-/// `T_c(dt) = T_eq + (T_c0 − T_eq)·exp(−G·dt/C)` with `T_eq = T_in + Q/G`
-/// (Incropera & DeWitt 6th ed. §5.3), and `G = W·(1 − exp(−UA/W))` for flow in
-/// a tube at uniform wall temperature (ibid. eq. 8.42b). The engine computes the
-/// same step in a different form, one that never divides by `G`, so agreeing to
-/// 1e-9 K is a check of the algebra rather than a copy of it.
+/// ODE `C·dT_c/dt = Q − K_f·(T_c − T_a) − G·(T_c − T_in)` says, `K_f = Q/(T_f −
+/// T_a)`, solved in its TEXTBOOK form, `T_c(dt) = T_eq + (T_c0 − T_eq)·exp(−x)`,
+/// `x = (G + K_f)·dt/C`, with `T_eq` the settled coil (Incropera & DeWitt 6th ed.
+/// §5.3), and `G = W·(1 − exp(−UA/W))` for flow in a tube at uniform wall
+/// temperature (ibid. eq. 8.42b). The engine computes the same step in a
+/// different form, one that never divides by a conductance, so agreeing to 1e-9 K
+/// is a check of the algebra rather than a copy of it.
 ///
-/// The fluid must then carry exactly what the coil gave up — `Q` less the
-/// metal's `C·ΔT_c/dt` — which on a cold coil is well short of the duty: the
-/// outlet lags its settled value, which is the whole of what the coil is for.
+/// The stack loss is the flue's `K_f·(T̄_c − T_a)` at the tick's average coil,
+/// here from the closed-form integral `T̄_c = T_eq + (T_c0 − T_eq)·(1 − e^−x)/x`
+/// rather than the engine's `ψ`. The fluid must then carry exactly what is left
+/// — `Q` less the metal's `C·ΔT_c/dt` less the flue — which on a cold coil is
+/// well short of the duty: the outlet lags its settled value, which is the whole
+/// of what the coil is for.
 #[test]
 fn a_cold_coil_takes_one_tick_exactly_as_the_textbook_solution_says() {
     let mut engine = build(1.0);
@@ -440,10 +524,10 @@ fn a_cold_coil_takes_one_tick_exactly_as_the_textbook_solution_says() {
     let arriving = inlet.stream.temperature.value();
     let capacity_rate =
         inlet.stream.mass_flow.value() * inlet.stream.composition.mixture_cp(&engine.slate).value();
-    let conductance = capacity_rate * (1.0 - (-COIL_UA_W_PER_K / capacity_rate).exp());
-    let equilibrium = arriving + DUTY_W / conductance;
-    let expected_coil =
-        equilibrium + (FEED_K - equilibrium) * (-conductance * DT_S / COIL_C_J_PER_K).exp();
+    let (equilibrium, conductance) = settled_coil(DUTY_W, 0.0, arriving, capacity_rate);
+    let flue_conductance = DUTY_W / (FLAME_K - AIR_K);
+    let x = (conductance + flue_conductance) * DT_S / COIL_C_J_PER_K;
+    let expected_coil = equilibrium + (FEED_K - equilibrium) * (-x).exp();
     let coil = coil_temperature(&engine);
     assert!(
         (coil - expected_coil).abs() < TOLERANCE_K,
@@ -451,7 +535,22 @@ fn a_cold_coil_takes_one_tick_exactly_as_the_textbook_solution_says() {
          {equilibrium} K), got {coil}"
     );
 
-    let to_fluid = DUTY_W - COIL_C_J_PER_K * (expected_coil - FEED_K) / DT_S;
+    let average = equilibrium + (FEED_K - equilibrium) * (1.0 - (-x).exp()) / x;
+    let expected_flue = flue_conductance * (average - AIR_K);
+    let flue = engine
+        .snapshot()
+        .nodes
+        .into_iter()
+        .find(|n| n.name == "heater")
+        .and_then(|n| n.flue_loss_w)
+        .expect("a fired furnace publishes its stack loss");
+    assert!(
+        (flue - expected_flue).abs() < 1e-9 * expected_flue,
+        "the stack must take {expected_flue} W at the tick's average coil {average} K, \
+         took {flue}"
+    );
+
+    let to_fluid = DUTY_W - COIL_C_J_PER_K * (expected_coil - FEED_K) / DT_S - expected_flue;
     let expected_outlet = arriving + to_fluid / capacity_rate;
     let outlet = node_temperature(&engine, "heater");
     assert!(
@@ -459,7 +558,7 @@ fn a_cold_coil_takes_one_tick_exactly_as_the_textbook_solution_says() {
         "the fluid must carry what the coil gave up, {to_fluid} W, to {expected_outlet} K; \
          got {outlet}"
     );
-    let settled = arriving + DUTY_W / capacity_rate;
+    let settled = arriving + conductance * (equilibrium - arriving) / capacity_rate;
     assert!(
         settled - outlet > 1.0,
         "a cold coil must hold the outlet well short of its settled {settled} K on the \
@@ -503,6 +602,7 @@ duty_mw = 1.0
 coil_heat_capacity_mj_per_k = 1
 coil_ua_kw_per_k = 464.3
 coil_temperature_c = 25.0
+flame_temperature_c = 1951.1
 
 [nodes.product]
 type = "sink"
@@ -531,21 +631,29 @@ length_m = 20.0
 diameter_m = 0.10
 "#;
 
-/// **A furnace fired with no flow puts its whole duty into its coil** — the
-/// first half of DEFERRED B39, closed by M34 (docs/DESIGN.md §37).
+/// **A furnace fired with no flow keeps what it absorbs, and levels off at its
+/// flame** — DEFERRED B39's first half (M34, docs/DESIGN.md §37) and B40's
+/// ceiling (M36, §40 gate 2).
 ///
 /// Before M34 a furnace with no inflow was a held placeholder whose duty was
-/// DROPPED (energy not conserved), and on a vanishing trickle its outlet grew as
-/// `1/ṁ` without bound. Now the coil stores the duty: it rises by exactly
-/// `Q·dt/C` per tick, a fixed physical rate — 0.1 K per tick, 1 K/s, here — and
-/// the fluid standing in the tubes is reported at the coil's temperature, as a
-/// computed value and not a held one.
+/// DROPPED; M34 put the duty into the coil, which then climbed at `Q/C` for
+/// ever. Under the flame law the coil absorbs `Q·(T_f − T_c)/(T_f − T_a)`, so
+/// with no flow it follows `T_c(t) = T_f − (T_f − T_c,0)·exp(−t/τ)`,
+/// `τ = C·(T_f − T_a)/Q`: 1 931 s on this coil, so the fixture runs at
+/// `dt = 1.0` for ten time constants. Every tick: the coil on the closed form,
+/// never above the flame, the fluid standing in the tubes reported at it (as a
+/// computed value and not a held one), and the stack taking the rest of the
+/// duty — fired less stored, with no fluid to take any.
 #[test]
-fn a_furnace_fired_with_no_flow_stores_its_whole_duty_in_its_coil() {
-    let file = refinery_scenarios::load_str(DRY).expect("the dry plant must parse");
+fn a_furnace_fired_with_no_flow_levels_off_at_its_flame() {
+    let src = DRY.replacen("dt = 0.1", "dt = 1.0", 1);
+    let file = refinery_scenarios::load_str(&src).expect("the dry plant must parse");
     let mut engine = refinery_scenarios::build_engine(&file).expect("the dry plant must build");
+    let dt = 1.0;
     let start = coil_temperature(&engine);
-    let ticks = 600;
+    let tau = COIL_C_J_PER_K * (FLAME_K - AIR_K) / DUTY_W;
+    let ticks = (10.0 * tau / dt).ceil() as u64;
+    let mut previous = start;
     for tick in 1..=ticks {
         engine
             .tick()
@@ -556,6 +664,16 @@ fn a_furnace_fired_with_no_flow_stores_its_whole_duty_in_its_coil() {
             "tick {tick}: the shut valve must pass exactly nothing"
         );
         let coil = coil_temperature(&engine);
+        let expected = FLAME_K - (FLAME_K - start) * (-(tick as f64) * dt / tau).exp();
+        assert!(
+            (coil - expected).abs() < 1e-9 * FLAME_K,
+            "tick {tick}: the dry coil must sit on T_f − (T_f − T_c0)·exp(−t/τ) = \
+             {expected} K, got {coil}"
+        );
+        assert!(
+            coil < FLAME_K,
+            "tick {tick}: the coil passed its flame: {coil} K"
+        );
         assert_eq!(
             node_temperature(&engine, "heater"),
             coil,
@@ -568,21 +686,82 @@ fn a_furnace_fired_with_no_flow_stores_its_whole_duty_in_its_coil() {
                 .contains(&engine.graph.find_node("heater").expect("a 'heater' node")),
             "tick {tick}: a furnace's temperature is computed with no flow, never held"
         );
+        let flue = engine
+            .snapshot()
+            .nodes
+            .into_iter()
+            .find(|n| n.name == "heater")
+            .and_then(|n| n.flue_loss_w)
+            .expect("a fired furnace publishes its stack loss");
+        let stored = COIL_C_J_PER_K * (coil - previous) / dt;
+        assert!(
+            (flue + stored - DUTY_W).abs() < 1e-6 * DUTY_W,
+            "tick {tick}: with no fluid the duty is stored or lost up the stack, and \
+             nothing else: {stored} W stored + {flue} W lost against {DUTY_W} W fired"
+        );
+        previous = coil;
+    }
+    assert!(
+        FLAME_K - coil_temperature(&engine) < 1e-4 * (FLAME_K - start),
+        "after ten time constants the coil must have levelled off at its {FLAME_K} K \
+         flame, and sits at {}",
+        coil_temperature(&engine)
+    );
+}
+
+/// **A fire is not fuel** (M36, docs/DESIGN.md §40 fork 2 and gate 6): on an
+/// UNLIT furnace with no flow, a fire goes into the metal whole, so the coil
+/// still rises by exactly `F·dt/C` per tick — the climb B40's burn-out clause
+/// keeps — and the stack takes nothing, because nothing is burning in the
+/// firebox.
+#[test]
+fn a_fire_on_a_dry_unlit_furnace_is_not_fuel() {
+    use refinery_core::snapshot::Command;
+    use refinery_core::units::Watt;
+
+    let src = DRY.replacen("duty_mw = 1.0", "duty_mw = 0.0", 1);
+    let file = refinery_scenarios::load_str(&src).expect("the dry plant must parse");
+    let mut engine = refinery_scenarios::build_engine(&file).expect("the dry plant must build");
+    let heater = engine.graph.find_node("heater").expect("a 'heater' node");
+    engine
+        .apply(Command::SetHeatInput {
+            node: heater,
+            power: Watt(DUTY_W),
+        })
+        .expect("a fire on a furnace is a valid command");
+    let start = coil_temperature(&engine);
+    let ticks = 600;
+    for tick in 1..=ticks {
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("tick {tick} on fire failed: {e:?}"));
+        let flue = engine
+            .snapshot()
+            .nodes
+            .into_iter()
+            .find(|n| n.name == "heater")
+            .and_then(|n| n.flue_loss_w)
+            .expect("an unlit furnace still publishes its stack loss, as zero");
+        assert_eq!(
+            flue, 0.0,
+            "tick {tick}: an unlit furnace loses nothing up its stack"
+        );
     }
     let rise = coil_temperature(&engine) - start;
     let expected = DUTY_W * DT_S * ticks as f64 / COIL_C_J_PER_K;
     assert!(
         (rise - expected).abs() < 1e-9 * expected,
-        "{ticks} ticks at {DUTY_W} W into {COIL_C_J_PER_K} J/K must raise the coil by \
-         exactly {expected} K, got {rise}"
+        "{ticks} ticks of a {DUTY_W} W fire into {COIL_C_J_PER_K} J/K must raise the coil \
+         by exactly {expected} K, got {rise}"
     );
 }
 
-/// **The coil's three keys are required, and each is refused outside its
-/// physical range** (M34, docs/DESIGN.md §37): a heat capacity and a conductance
-/// must be finite and positive, a temperature finite and above absolute zero. A
-/// missing key is refused by name rather than defaulted — nothing derives a
-/// coil from a duty.
+/// **The coil's three keys and the flame are required, and each is refused
+/// outside its physical range** (M34, docs/DESIGN.md §37; the flame M36, §40
+/// gate 5): a heat capacity and a conductance must be finite and positive, a
+/// temperature finite and above absolute zero, a flame finite and above the
+/// combustion air. A missing key is refused by name rather than defaulted —
+/// nothing derives a coil from a duty, or a flame from a fuel.
 #[test]
 fn every_malformed_coil_is_refused_for_its_own_reason() {
     let refusal = |from: &str, to: &str| -> String {
@@ -612,7 +791,7 @@ fn every_malformed_coil_is_refused_for_its_own_reason() {
             "missing field `coil_ua_kw_per_k`",
         ),
         (
-            "coil_temperature_c = 25.00\n",
+            "coil_temperature_c = 24.99\n",
             "",
             "missing field `coil_temperature_c`",
         ),
@@ -642,14 +821,39 @@ fn every_malformed_coil_is_refused_for_its_own_reason() {
             "heats nothing",
         ),
         (
-            "coil_temperature_c = 25.00\n",
+            "coil_temperature_c = 24.99\n",
             "coil_temperature_c = -300.0\n",
             "above absolute zero",
         ),
         (
-            "coil_temperature_c = 25.00\n",
+            "coil_temperature_c = 24.99\n",
             "coil_temperature_c = nan\n",
             "above absolute zero",
+        ),
+        (
+            "flame_temperature_c = 1951.1\n",
+            "",
+            "missing field `flame_temperature_c`",
+        ),
+        (
+            "flame_temperature_c = 1951.1\n",
+            "flame_temperature_c = 20.0\n",
+            "heats nothing",
+        ),
+        (
+            "flame_temperature_c = 1951.1\n",
+            "flame_temperature_c = -50.0\n",
+            "heats nothing",
+        ),
+        (
+            "flame_temperature_c = 1951.1\n",
+            "flame_temperature_c = nan\n",
+            "heats nothing",
+        ),
+        (
+            "flame_temperature_c = 1951.1\n",
+            "flame_temperature_c = inf\n",
+            "heats nothing",
         ),
     ];
     for (from, to, says) in cases {

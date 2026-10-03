@@ -7,6 +7,7 @@
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::error::SimError;
 use refinery_core::graph::{LeakRole, Node, NodeId, NodeKind, PlantGraph};
+use refinery_core::units::T_AMBIENT;
 use std::collections::BTreeMap;
 
 use crate::schema::{c_to_k, CascadeDef, DrawDef, NodeDef, PipeDef, ScenarioFile};
@@ -180,6 +181,7 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
         coil_heat_capacity_mj_per_k,
         coil_ua_kw_per_k,
         coil_temperature_c,
+        flame_temperature_c,
         ..
     } = def
     {
@@ -202,6 +204,17 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
             return Err(SimError::Scenario(format!(
                 "furnace '{name}' has coil_temperature_c = {coil_temperature_c}: it must be \
                  finite and above absolute zero (−273.15 °C)."
+            )));
+        }
+        // The flame (M36, docs/DESIGN.md §40): the flue law divides by
+        // `T_f − T_a`, so a flame at or below the combustion air's temperature
+        // would divide by zero or send the stack loss backwards.
+        if !flame_temperature_c.is_finite() || c_to_k(*flame_temperature_c) <= T_AMBIENT {
+            return Err(SimError::Scenario(format!(
+                "furnace '{name}' has flame_temperature_c = {flame_temperature_c}: it must be \
+                 finite and above the combustion air's {:.2} °C. A flame no hotter than the \
+                 air it burns in heats nothing.",
+                T_AMBIENT.value() - 273.15
             )));
         }
     }

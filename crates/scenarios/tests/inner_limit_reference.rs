@@ -212,6 +212,13 @@ fn inside_from(trajectory: &[(u64, f64)], target_c: f64, start: u64) -> u64 {
 /// approach the hand model (lag-free) puts at 331 ticks, and the output dips off
 /// the limit between.
 ///
+/// **Since M36's flame** (docs/DESIGN.md §40) the 1.3 MW is a FIRING rate and
+/// about 2 % of it goes up the stack, so full fire tops the outlet out at
+/// 61.1 °C rather than 61.6, and the furnace runs out of authority sooner and for
+/// longer: 60.0026 °C, inside from 3 552, its authority spent on 864 ticks. The
+/// hand model (§31) has neither the coil nor the flame; its numbers stay quoted
+/// as the lag-free, loss-free reference they are.
+///
 /// On every tick the furnace's loop is latched at the top the setpoint does not
 /// RISE (a reverse secondary's output rises with its setpoint), and on every tick
 /// it is held the primary's faceplate is the setpoint as a position, to the bit —
@@ -262,17 +269,19 @@ fn a_furnace_too_small_for_its_range_holds_its_primary() {
     let peak = trajectory.iter().map(|(_, c)| *c).fold(f64::MIN, f64::max);
     assert!(
         peak - TANK_SETPOINT_C < 0.02,
-        "hand 0.0038 K over 60 °C (engine 0.0039), unfixed 0.395 K: {:.4} K",
+        "hand 0.0038 K over 60 °C (engine 0.0026), unfixed 0.395 K: {:.4} K",
         peak - TANK_SETPOINT_C
     );
     let settled = inside_from(&trajectory, TANK_SETPOINT_C, 0);
     assert!(
-        (3259..=3359).contains(&settled),
-        "engine inside 0.06 K from tick 3 309 (hand 3 301), unfixed 4 445: {settled}"
+        (3502..=3602).contains(&settled),
+        "engine inside 0.06 K from tick 3 552 (3 309 before M36's flame; hand 3 301), \
+         unfixed 4 445: {settled}"
     );
     assert!(
-        (615..=715).contains(&spent),
-        "the furnace's authority is spent on 665 ticks (hand, lag-free, 331), unfixed \
+        (814..=914).contains(&spent),
+        "the furnace's authority is spent on 864 ticks (665 before M36's flame; hand, \
+         lag-free, 331), unfixed \
          1 694: {spent}"
     );
 }
@@ -422,7 +431,8 @@ fn a_fire_that_drives_the_furnace_to_zero_holds_its_primary_at_the_bottom() {
 
 /// **Gate 4. The hold blocks one direction only.**
 ///
-/// A 1.1 MW furnace cannot reach 60 °C at all (its outlet tops out at 58.3 °C),
+/// A 1.1 MW furnace cannot reach 60 °C at all (its outlet tops out at 57.92 °C;
+/// 58.3 °C before M36 sent part of its firing up the stack, docs/DESIGN.md §40),
 /// so after 8 000 ticks it sits at full fire with its primary held. The tank's
 /// setpoint is then stepped down to 55 °C: on that very tick the primary LOWERS
 /// the target, out of the limit, though the furnace began the tick at full fire.
@@ -433,7 +443,8 @@ fn a_fire_that_drives_the_furnace_to_zero_holds_its_primary_at_the_bottom() {
 /// proportional share, so the step's proportional kick lands lower than the
 /// unfixed rule's, which parks it at the range top. The tank then dips to
 /// 54.08 °C on a 55 °C target (hand), against the unfixed 54.87. The band
-/// asserts that, so that a change to it is a decision.
+/// asserts that, so that a change to it is a decision — and M36 took one: with
+/// the flame the held target is lower (57.92 °C) and the dip deeper, 53.89 °C.
 ///
 /// **Since M34 the furnace is not at full fire on every tick of the hold**
 /// (docs/DESIGN.md §37). Its coil lags the duty, so a pinned loop's output lands a
@@ -451,11 +462,12 @@ fn a_held_primary_moves_out_of_the_limit_at_once() {
     }
     // The case M34 found (docs/DESIGN.md §37, correction 3; §38): held at full
     // fire this long, the leaking rule let the primary's target walk to the 65 °C
-    // range top. The latch holds it where the furnace's 58.3 °C ceiling put it.
+    // range top. The latch holds it where the furnace's 57.92 °C ceiling put it
+    // (58.31 °C before M36's flame, docs/DESIGN.md §40).
     let target_c = setpoint_k(&engine) - 273.15;
     assert!(
-        (58.0..=58.6).contains(&target_c),
-        "the latch holds the outlet target at the furnace's ceiling, 58.31 °C (the \
+        (57.6..=58.2).contains(&target_c),
+        "the latch holds the outlet target at the furnace's ceiling, 57.92 °C (the \
          leaking rule walked it to 65): {target_c} °C"
     );
     for _ in 0..100 {
@@ -496,10 +508,12 @@ fn a_held_primary_moves_out_of_the_limit_at_once() {
     }
     // M34's coil broke this band for one commit (the leak walked the target to the
     // range top, and the dip read the unfixed 54.876 °C); E19's latch restores it:
-    // 54.0778 °C (docs/DESIGN.md §38).
+    // 54.0778 °C (docs/DESIGN.md §38). M36's flame lowers the furnace's ceiling,
+    // so the held target and the dip after the step are lower: 53.8927 °C (§40).
     assert!(
-        (53.98..=54.18).contains(&coldest),
-        "hand 54.08 °C, engine 54.0778 (unfixed, and leaked, 54.87): {coldest:.4} °C"
+        (53.79..=53.99).contains(&coldest),
+        "engine 53.8927 °C (54.0778 before M36's flame; hand, loss-free, 54.08; \
+         unfixed, and leaked, 54.87): {coldest:.4} °C"
     );
 }
 

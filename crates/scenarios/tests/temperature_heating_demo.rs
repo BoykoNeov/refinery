@@ -9,7 +9,8 @@
 //! 1. **It starts without stepping its furnace**, although the tank starts 20 K
 //!    BELOW setpoint — the design input that makes a wrongly-signed seed visible
 //!    (docs/DESIGN.md §22, gate 2).
-//! 2. **It holds 60 °C, and parked it holds 48.30 °C** (gate 3).
+//! 2. **It holds 60 °C, and parked it holds 48.17 °C** (gate 3; 48.30 before
+//!    M36 sent part of every furnace's duty up the stack, docs/DESIGN.md §40).
 //! 3. **Its anti-windup arm is reachable by a command**, and the release after it
 //!    lands where the SIGNED back-calculation says (gate 4).
 //! 4. **It says `reverse` on the wire** (gate 6's wired half).
@@ -33,12 +34,14 @@ const GAIN_PER_K: f64 = 0.1;
 const MAX_DUTY_W: f64 = 2.0e6;
 
 /// Where the shipped file settles, measured over 20 000 ticks before any
-/// assertion here was written: u = 0.600948, i.e. 1.202 MW.
-const SETTLED_OUTPUT: f64 = 0.600948;
+/// assertion here was written: u = 0.600948, i.e. 1.202 MW. Since M36 the duty is
+/// a firing rate and 2 % of it goes up the stack (docs/DESIGN.md §40), so the loop
+/// fires harder for the same 60 °C: u = 0.614675, 1.229 MW, re-measured.
+const SETTLED_OUTPUT: f64 = 0.614675;
 
 /// Where the MANUAL twin settles at the declared 0.5 MW, measured the same way
-/// (48.2963 °C at tick 6 000).
-const MANUAL_SETTLED_C: f64 = 48.2963;
+/// (48.2963 °C at tick 6 000 before M36; 48.1697 °C since, docs/DESIGN.md §40).
+const MANUAL_SETTLED_C: f64 = 48.1697;
 
 fn build(src: &str) -> Engine {
     let file = refinery_scenarios::load_str(src).expect("a shipped scenario must parse");
@@ -199,7 +202,8 @@ fn the_demo_reports_reverse_action_on_the_wire() {
 /// **Gate 4. The anti-windup arm on the reverse side, reached by a command, and
 /// released where the SIGNED back-calculation says.**
 ///
-/// 75 °C is above the 73.28 °C the inflow reaches at the full 2 MW, so the loop
+/// 75 °C is above the 72.29 °C the inflow reaches at the full 2 MW (73.28 before
+/// M36's stack loss, docs/DESIGN.md §40), so the loop
 /// pins at `u = 1`. While pinned, the clamp branch sets its memory to
 /// `b = 1 − K·e` with `e = setpoint − measurement` — the same signed error the
 /// proportional term used. Stepping back to 72 °C, just below where the tank sits,
@@ -251,8 +255,8 @@ fn a_saturated_furnace_pins_at_full_firing_and_releases_where_the_signed_memory_
     );
     let ceiling = measured_c(&engine);
     assert!(
-        ceiling < 75.0 && (ceiling - 73.28).abs() < 0.05,
-        "the tank settles on the hottest inflow full firing can make, ~73.28 °C; it \
+        ceiling < 75.0 && (ceiling - 72.29).abs() < 0.05,
+        "the tank settles on the hottest inflow full firing can make, ~72.29 °C; it \
          reads {ceiling}"
     );
 

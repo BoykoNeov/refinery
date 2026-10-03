@@ -2859,6 +2859,7 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             coil_heat_capacity_mj_per_k,
             coil_ua_kw_per_k,
             coil_temperature_c,
+            flame_temperature_c,
         } => NodeKind::Furnace {
             duty: Watt(*duty_mw * 1e6),
             coil: FurnaceCoil {
@@ -2866,6 +2867,7 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                 conductance: WattPerKelvin(*coil_ua_kw_per_k * 1e3),
                 temperature: c_to_k(*coil_temperature_c),
             },
+            flame_temperature: c_to_k(*flame_temperature_c),
         },
         NodeDef::Cooler { duty_mw } => NodeKind::Cooler {
             duty: Watt(*duty_mw * 1e6),

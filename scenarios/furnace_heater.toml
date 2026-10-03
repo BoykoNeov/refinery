@@ -29,14 +29,20 @@ temperature_c = 20.0
 
 [nodes.heater]
 type = "furnace"
-duty_mw = 1.0       # fired into the coil [MW], converted to W on load; all of it
-                    # reaches the fluid once the coil has settled (DESIGN §37)
+duty_mw = 1.0       # released by the burners [MW], converted to W on load; what
+                    # the coil absorbs reaches the fluid once it has settled (§40)
 # Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 1 MW); UA twice
 # the load flow's 232.13 kW/K capacity rate; and the coil's steady temperature
-# at load, 20.02 + 1000/(0.8647·232.13) °C, so the plant starts settled.
+# at load, the root of Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)
+# (§40 fork 5; Q = 1000 kW, G = 0.8647·232.13 kW/K, T_in = 20.02 °C), so the plant starts settled.
 coil_heat_capacity_mj_per_k = 1
 coil_ua_kw_per_k = 464.3
-coil_temperature_c = 25.00
+coil_temperature_c = 24.99
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132). The duty is what the
+# burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.997 at load,
+# and the rest goes up the stack.
+flame_temperature_c = 1951.1
 
 [nodes.product]
 type = "sink"

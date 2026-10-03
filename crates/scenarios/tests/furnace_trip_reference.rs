@@ -2,8 +2,8 @@
 //! E14's furnace clause).
 //!
 //! - **gate 1**, the demo (`tank_overheat_trip.toml`) on both fidelities: armed
-//!   through tick 1 250 and bit for bit its own untripped twin until then;
-//!   `Tripped { at_tick: 1251 }` from 1 251 on; the furnace at zero duty from that
+//!   through tick 1 354 and bit for bit its own untripped twin until then;
+//!   `Tripped { at_tick: 1355 }` from 1 355 on (1 251 before M36's flame); the furnace at zero duty from that
 //!   tick's own snapshot; and its outlet EXACTLY its inlet stream's temperature.
 //! - **gate 2**, the latch on the demo: the condition clears inside the tripping
 //!   tick, the trip stays tripped to tick 6 000, the tank cools toward its feed,
@@ -43,13 +43,16 @@ actions = [{ furnace = "heater" }]
 "#;
 
 /// The tick whose trip pass fires the demo's trip, measured on the engine on
-/// both fidelities before it was written here: the tank ends tick 1 250 at
-/// 75.0007 °C (75.0009 since M34's coil, docs/DESIGN.md §37).
-const DEMO_TRIP_TICK: u64 = 1251;
+/// both fidelities before it was written here: the tank ends tick 1 354 at
+/// 75.0034 °C. (Tick 1 250 at 75.0007 °C before M34's coil, 75.0009 with it; M36's
+/// flame sends part of the 3 MW up the stack, so the tank heats more slowly and
+/// trips 104 ticks later, docs/DESIGN.md §40.)
+const DEMO_TRIP_TICK: u64 = 1355;
 /// The first tick at whose end the tank is back under its limit, measured on
-/// both fidelities: the coil's stored heat carries it to 75.138 °C after the cut
-/// (M34). Before the coil the condition cleared inside the tripping tick itself.
-const CLEARS_AT_TICK: u64 = 1294;
+/// both fidelities: the coil's stored heat carries it to 75.110 °C after the cut
+/// (M34; 75.138 °C and tick 1 294 before M36). Before the coil the condition
+/// cleared inside the tripping tick itself.
+const CLEARS_AT_TICK: u64 = 1393;
 const DEMO_LIMIT_C: f64 = 75.0;
 
 fn build(src: &str) -> Engine {
@@ -288,7 +291,7 @@ fn the_demo_cuts_the_fuel_on_its_tick_and_the_latch_holds_it_out() {
                 assert!(tank_c(&demo) >= DEMO_LIMIT_C, "{solver}, tick {t}");
             }
             if t == CLEARS_AT_TICK {
-                // It peaks at 75.138 °C and is back under the limit from the end
+                // It peaks at 75.110 °C and is back under the limit from the end
                 // of this tick; only the latch held the cut until then and after.
                 assert!(
                     tank_c(&demo) < DEMO_LIMIT_C,
@@ -297,10 +300,11 @@ fn the_demo_cuts_the_fuel_on_its_tick_and_the_latch_holds_it_out() {
                 );
             }
         }
-        // Cooled toward its 40 °C feed (40.39 °C measured), while the twin, still
-        // fired, nears the 89.93 °C its inflow carries (89.77 °C measured).
+        // Cooled toward its 40 °C feed (40.43 °C measured), while the twin, still
+        // fired, nears the 87.97 °C its inflow carries (87.82 °C measured; 89.93
+        // and 89.77 before M36's stack loss, docs/DESIGN.md §40).
         assert!(tank_c(&demo) < 41.0, "{solver}: {}", tank_c(&demo));
-        assert!(tank_c(&twin) > 89.0, "{solver}: {}", tank_c(&twin));
+        assert!(tank_c(&twin) > 87.0, "{solver}: {}", tank_c(&twin));
     }
 }
 
@@ -310,8 +314,8 @@ const LOOP_LIMIT_C: f64 = 65.0;
 
 /// `tank_temperature_heating.toml` — a reverse PI loop holding 60 °C on the
 /// furnace — with a 65 °C trip on the tank that cuts the furnace, and the
-/// loop's setpoint raised to 72 °C (inside the 73.28 °C full firing reaches), so
-/// the loop itself drives the tank into the trip with the furnace firing hard.
+/// loop's setpoint raised to 72 °C (inside the 72.29 °C full firing reaches;
+/// 73.28 before M36), so the loop itself drives the tank into the trip with the furnace firing hard.
 fn loop_fixture() -> Engine {
     let block = format!(
         r#"[[trips]]

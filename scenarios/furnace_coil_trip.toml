@@ -14,8 +14,8 @@
 # which is what the loop holds, need not move at all. So a heater can be on its
 # outlet target with its tubes over their limit, and only a trip on the TUBES can
 # see it. Measured on the untripped twin (this file without its `[[trips]]`): the
-# loop settles the outlet on 60.0 °C, overshooting to 63.5 °C on the way, and the
-# coil settles at 117.3 °C.
+# loop settles the outlet on 60.0 °C, overshooting to 63.1 °C on the way, and the
+# coil settles at 117.3 °C, firing 1.27 MW of which 64 kW goes up the stack (§40).
 #
 # **The two trips, and why both are here.** `tube_skin_high` watches the coil
 # (`measurement = { coil = "heater", variable = "temperature" }`): a STATE, present
@@ -27,13 +27,14 @@
 # anything the loop does, it never fires here; that is the demonstration.
 #
 # **What the trips do, measured on both fidelities** (§39). The loop fires hard to
-# lift the outlet from 48.32 °C, its tubes climb faster than its outlet, and the
-# coil ends tick 71 at 100.21 °C. The pass at the top of tick 72 fires
+# lift the outlet from 48.10 °C, its tubes climb faster than its outlet, and the
+# coil ends tick 74 at 100.18 °C. The pass at the top of tick 75 fires
 # `tube_skin_high` and the furnace reads zero duty on that tick's own snapshot,
-# with the outlet at 55.53 °C — below its own setpoint, and 14.47 K below
+# with the outlet at 55.52 °C — below its own setpoint, and 14.48 K below
 # `outlet_high`. The cut forces the furnace's loop to MANUAL (§35); the coil gives
-# its heat back to the stream and the plant cools to its 40 °C feed. Until tick 72
-# the plant is its untripped twin to the bit.
+# its heat back to the stream and the plant cools to its 40 °C feed. Until tick 75
+# the plant is its untripped twin to the bit. (Before M36 every watt fired reached
+# the tubes, and the trip fired three ticks sooner, at 72: §40.)
 #
 #   cargo run -p refinery-cli -- run scenarios/furnace_coil_trip.toml --ticks 6000
 
@@ -63,11 +64,17 @@ duty_mw = 0.5
 # §37's rule says. The UA does NOT follow the rule, and that is the point of the
 # file: 18 kW/K, 0.3 of the load flow's 60.09 kW/K capacity rate where a clean
 # coil gets twice it — a FOULED coil, effectiveness 0.259 instead of 0.865. The
-# coil's steady temperature at load, 40 + 500/(0.2589·60.09) °C, so the plant
+# coil's steady temperature at load, the root of Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)
+# (§40 fork 5; Q = 500 kW, G = 0.2589·60.09 kW/K, T_in = 40 °C), so the plant
 # starts settled at the declared 0.5 MW.
 coil_heat_capacity_mj_per_k = 2
 coil_ua_kw_per_k = 18.0
-coil_temperature_c = 72.15
+coil_temperature_c = 71.29
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132). The duty is what the
+# burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.973 at load,
+# and the rest goes up the stack.
+flame_temperature_c = 1951.1
 
 # Not measured: the tank follows the outlet at its own pace. The level is the
 # settled 4.968 m, so only the temperature has anywhere to go.

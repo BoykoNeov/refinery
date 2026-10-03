@@ -236,8 +236,13 @@ const SETTLED_TICKS: u64 = 150_000;
 /// `smearing_k` bar for whether a fidelity key is real.
 ///
 /// Measured settled (6 000 ticks before M34, `SETTLED_TICKS` since): the drum
-/// settles at **802.4 K** under the shape and **1106.9 K** under the constant,
-/// and holds **6.56 kg** against **4.82 kg**. Before M34 the transient was wider
+/// settles at **802.4 K** under the shape and **1063.2 K** under the constant,
+/// and holds **6.56 kg** against **5.01 kg**. (1106.9 K and 4.82 kg before M36's
+/// flame, docs/DESIGN.md §40: the demo's fired duty was re-derived so the SHAPED
+/// drum still settles at 802.4 K, and the twin, firing the same fuel, runs a
+/// hotter coil that loses more of it up the stack. That is a negative feedback
+/// the constant model's error now has to push against, so the two models part by
+/// 261 K rather than 304 — still hundreds.) Before M34 the transient was wider
 /// still — the constant model took the heater through 2209 K where the shape said
 /// 999 K, the same duty divided by a capacity 43% too low. The coil removed that
 /// overshoot: it delivers the duty at its own pace, and the shaped heater now
@@ -252,13 +257,13 @@ fn the_shaped_demo_settles_hundreds_of_kelvin_from_its_constant_twin() {
     let (heater_c, drum_c, mass_c, flow_c) = run(&constant_twin(), SETTLED_TICKS);
 
     approx::assert_relative_eq!(drum, 802.4378, max_relative = 1e-4);
-    approx::assert_relative_eq!(drum_c, 1106.8628, max_relative = 1e-4);
+    approx::assert_relative_eq!(drum_c, 1063.1675, max_relative = 1e-4);
     assert!(
-        drum_c - drum > 300.0,
+        drum_c - drum > 250.0,
         "the two models must part company by hundreds of Kelvin: {drum} vs {drum_c}"
     );
     assert!(
-        heater_c > heater + 280.0,
+        heater_c > heater + 240.0,
         "and at the heater too: {heater} vs {heater_c}"
     );
     // The inventory moves with it — a vessel's mass is `P·V·M̄/(R·T)`, so a

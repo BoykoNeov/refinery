@@ -42,6 +42,12 @@ const DT_S: f64 = 1.0;
 const MAX_DUTY_W: f64 = 2.0e6;
 /// The coil's `coil_heat_capacity_mj_per_k = 2`, in SI (M34).
 const COIL_C_J_PER_K: f64 = 2.0e6;
+/// The demo's coil conductance, `coil_ua_kw_per_k = 120.2`, by hand.
+const COIL_UA_W_PER_K: f64 = 120.2e3;
+/// The demo's flame, `flame_temperature_c = 1951.1`, and the combustion air's
+/// 20 °C, by hand (M36, docs/DESIGN.md §40).
+const FLAME_K: f64 = 2224.25;
+const AIR_K: f64 = 293.15;
 
 // ------------------------------------------------------------------- helpers
 
@@ -316,7 +322,8 @@ fn the_memory_is_seeded_at_the_first_measurement_with_the_loops_own_sign() {
 // ------------------------------------------ gate 4: holds; the twin does not
 
 /// **Gate 4. The loop holds the outlet on 60 °C, off both clamps; the MANUAL twin
-/// parks at its own duty's 48.32 °C.**
+/// parks at its own duty's 48.19 °C** (48.32 °C before M36 sent part of the duty
+/// up the stack, docs/DESIGN.md §40).
 ///
 /// The tolerance is DERIVED, and the first draft of it was wrong. The loop's slow
 /// pole is 0.966 per tick, so the 11.68 K it starts from has decayed to nothing
@@ -351,8 +358,8 @@ fn the_loop_holds_its_outlet_and_the_parked_twin_does_not() {
     tick(&mut twin, 1000);
     let parked_c = outlet_k(&twin) - 273.15;
     assert!(
-        (parked_c - 48.32).abs() < 0.01,
-        "parked at 0.5 MW the outlet sits at 48.32 °C, and it sits at {parked_c}"
+        (parked_c - 48.19).abs() < 0.01,
+        "parked at 0.5 MW the outlet sits at 48.19 °C, and it sits at {parked_c}"
     );
     assert_eq!(
         output(&twin),
@@ -462,8 +469,11 @@ fn the_coil_lets_a_gain_that_rang_without_it_settle() {
 /// flowed), which the loop was refused as a measurement, and the duty was dropped
 /// (docs/DESIGN.md §23 fork 4, ledger row B39). Now the duty goes into the coil
 /// (§37), which has a temperature whether or not anything flows, so there is
-/// nothing to hold: from tick 2 the loop measures the coil, and the coil rises by
-/// exactly `Q·dt/C` per tick under whatever duty the loop writes. The placeholder
+/// nothing to hold: from tick 2 the loop measures the coil, and the coil keeps
+/// exactly what its flame lets it absorb under whatever duty the loop writes —
+/// `T_f − (T_f − T_c)·exp(−Q·dt/(C·(T_f − T_a)))` over a tick, the dry coil's
+/// exact step (M36, docs/DESIGN.md §40; `Q·dt/C` before, when the coil kept the
+/// whole duty). The placeholder
 /// rule survives for a COOLER, which has no coil (gate 6b).
 ///
 /// What a loop does with that reading is what a real outlet controller on a
@@ -492,11 +502,14 @@ fn a_furnace_with_no_flow_is_measured_at_its_coil() {
             coil,
             "tick {t}: the fluid standing in the tubes is at the coil's temperature"
         );
-        // The whole duty written at the top of this tick went into the metal.
-        let expected_rise = heater_duty_w(&engine) * DT_S / COIL_C_J_PER_K;
+        // Everything the flame let the metal absorb under the duty written at the
+        // top of this tick stayed in it: the dry coil's exact step.
+        let tau = COIL_C_J_PER_K * (FLAME_K - AIR_K) / heater_duty_w(&engine);
+        let expected_rise = (FLAME_K - previous_coil) * -(-DT_S / tau).exp_m1();
         assert!(
             (coil - previous_coil - expected_rise).abs() < 1.0e-9,
-            "tick {t}: the coil rises by exactly Q·dt/C = {expected_rise} K, and rose {}",
+            "tick {t}: the coil rises by exactly (T_f − T_c)·(1 − e^(−dt/τ)) = \
+             {expected_rise} K, and rose {}",
             coil - previous_coil
         );
         // Blind on tick 1 only, as every outlet loop is; then it measures the
@@ -742,13 +755,14 @@ fn manual_to_auto_is_refused_without_a_measurement_and_bumpless_with_one() {
 /// `u = 1`; stepping back just below where the outlet sits releases it where the
 /// SIGNED memory says.**
 ///
-/// Full duty puts the outlet at 73.29 °C, so 75 °C is unreachable and the loop
+/// Full duty puts the outlet at 72.29 °C (73.29 before M36's stack loss,
+/// docs/DESIGN.md §40), so 75 °C is unreachable and the loop
 /// must sit on its clamp, back-calculating its memory every tick rather than
 /// integrating (§23 fork 7, M17's method). The release target is 72 °C — just
 /// below the ceiling, because M18 found that stepping all the way back cannot see
 /// a sign: from the clamp, a right and a wrong memory both fall to zero. At 72 °C
-/// the signed memory `b ≈ 1 − K·(75 − 73.29)` releases to about 0.955; a memory
-/// back-calculated with the UNSIGNED error, `1 + K·1.71`, stays pinned at 1.
+/// the signed memory `b ≈ 1 − K·(75 − 72.29)` releases to about 0.955; a memory
+/// back-calculated with the UNSIGNED error, `1 + K·2.71`, stays pinned at 1.
 ///
 /// Since M34 the coil puts 38.5 s of lag between the duty and the outlet
 /// (docs/DESIGN.md §37), so the loop takes longer to reach its clamp and the
@@ -773,26 +787,32 @@ fn an_unreachable_setpoint_pins_the_furnace_and_the_release_is_signed() {
         let u = output(&engine);
         assert!(
             u >= 1.0 - 1.0e-6,
-            "tick {t}: 75 °C is above full firing's 73.29 °C, so the loop sits on its \
+            "tick {t}: 75 °C is above full firing's 72.29 °C, so the loop sits on its \
              clamp — it read {u}"
         );
     }
-    // The ceiling from this tick's own published feed, `T_in + Q_max/(ṁ·cp)`:
-    // 73.29 °C at tick 450, where this was read before M34, and 0.01 K lower by
-    // tick 750 because the tank's level moves the flow (gate 4's drift).
+    // The ceiling from this tick's own published feed: the outlet a settled coil
+    // gives at full firing, `T_in + G·(T_c − T_in)/(ṁ·cp)` with `T_c` the root of
+    // `Q_max·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)` (M36, §40). It was
+    // `T_in + Q_max/(ṁ·cp)`, 73.29 °C at tick 450, before M36; it is 72.29 °C now,
+    // and drifts by hundredths because the tank's level moves the flow (gate 4).
     let feed = engine
         .snapshot()
         .edges
         .into_iter()
         .find(|e| e.name == "feed_line")
         .expect("the demo's feed line");
-    let ceiling_k = feed.stream.temperature.value()
-        + MAX_DUTY_W
-            / (feed.stream.mass_flow.value()
-                * feed.stream.composition.mixture_cp(&engine.slate).value());
+    let inlet_k = feed.stream.temperature.value();
+    let capacity_rate =
+        feed.stream.mass_flow.value() * feed.stream.composition.mixture_cp(&engine.slate).value();
+    let conductance = capacity_rate * -(-COIL_UA_W_PER_K / capacity_rate).exp_m1();
+    let span = FLAME_K - AIR_K;
+    let coil_k =
+        (MAX_DUTY_W * FLAME_K / span + conductance * inlet_k) / (MAX_DUTY_W / span + conductance);
+    let ceiling_k = inlet_k + conductance * (coil_k - inlet_k) / capacity_rate;
     let pinned_c = outlet_k(&engine) - 273.15;
     assert!(
-        (pinned_c - (ceiling_k - 273.15)).abs() < 1.0e-3 && (pinned_c - 73.29).abs() < 0.05,
+        (pinned_c - (ceiling_k - 273.15)).abs() < 1.0e-3 && (pinned_c - 72.29).abs() < 0.05,
         "pinned at 2 MW the outlet sits at its full-firing ceiling, {} °C, and reads          {pinned_c}",
         ceiling_k - 273.15
     );

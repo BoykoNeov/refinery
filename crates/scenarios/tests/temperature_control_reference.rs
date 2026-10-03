@@ -398,11 +398,12 @@ fn every_refused_temperature_loop_is_refused_for_its_own_reason() {
             "a furnace actuating a temperature with no declared action",
             format!(
                 "{}{}",
-                // The duty line carries the coil keys a furnace requires (M34).
+                // The duty line carries the coil keys and the flame a furnace
+                // requires (M34, M36).
                 liquid(
                     "furnace",
                     "0.5\ncoil_heat_capacity_mj_per_k = 2.0\ncoil_ua_kw_per_k = 120.0\n\
-                     coil_temperature_c = 40.0",
+                     coil_temperature_c = 40.0\nflame_temperature_c = 1951.1",
                 ),
                 loop_of(PI_LINES.iter().map(|s| s.to_string()).collect())
             ),

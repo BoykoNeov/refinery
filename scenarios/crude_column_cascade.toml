@@ -35,9 +35,10 @@
 #    splitter, which has no phase in it, and inadmissible here. That is the one
 #    respect in which the two plants cannot be identical.
 #
-#    `duty_mw` is therefore DERIVED, not chosen: `Q = ṁ·c̄p·ΔT` at the steady feed
-#    rate of 192.685 kg/s and `c̄p = 2034.5 J/(kg·K)`. It is also why the heater
-#    is small on purpose — the first tick runs at 176.478 kg/s (a pipe's density
+#    `duty_mw` is therefore DERIVED, not chosen: `ṁ·c̄p·ΔT` ABSORBED at the steady
+#    feed rate of 192.685 kg/s and `c̄p = 2034.5 J/(kg·K)`, fired at `1/η` of that
+#    (DESIGN §40: some of the fuel's heat goes up the stack). It is also why the
+#    heater is small on purpose — the first tick runs at 176.478 kg/s (a pipe's density
 #    comes from its STORED composition, which is one tick behind on tick 1 only),
 #    so a 9.2% flow step lands on the furnace's rise. A 5.5 K rise puts tick 1
 #    0.53 K above saturation, inside the window; a 30 K preheat would put it 2.7 K
@@ -118,13 +119,22 @@ composition = { light_naphtha = 0.12, heavy_naphtha = 0.18, kerosene = 0.25, die
 
 [nodes.preheater]
 type = "furnace"
-duty_mw = 2.1051
+duty_mw = 2.2607
+# Fired, not absorbed (docs/DESIGN.md §40): the coil absorbs the 2.1051 MW the
+# feed's trim to saturation needs, which at its 0.9312 efficiency is 2.2607 MW
+# released by the burners. The coil keeps the 2.105 MW metal it was sized on.
 # Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 2.105 MW); UA twice
 # the load flow's 392.02 kW/K capacity rate; and the coil's steady temperature
-# at load, 146.68 + 2105/(0.8647·392.02) °C, so the plant starts settled.
+# at load, the root of Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)
+# (§40 fork 5; Q = 2260.7 kW, G = 0.8647·392.02 kW/K, T_in = 146.68 °C), so the plant starts settled.
 coil_heat_capacity_mj_per_k = 2.105
 coil_ua_kw_per_k = 784
 coil_temperature_c = 152.89
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132). The duty is what the
+# burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.931 at load,
+# and the rest goes up the stack.
+flame_temperature_c = 1951.1
 
 [nodes.column]
 type = "column"

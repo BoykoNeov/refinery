@@ -424,13 +424,17 @@ pub enum NodeDef {
     },
     /// Fired heater. Duty in MW — the unit refinery heaters are actually
     /// specified in, converted to W at this boundary like every other
-    /// human-friendly quantity in the file.
+    /// human-friendly quantity in the file. The duty is what the burners
+    /// RELEASE (M36, docs/DESIGN.md §40); the coil absorbs the share its flame
+    /// allows and the rest goes up the stack.
     ///
     /// The three `coil_*` keys are its tube coil (M34, docs/DESIGN.md §37):
     /// the metal the duty heats, and through which it reaches the fluid. All
     /// three are REQUIRED, with no default: nothing in the engine derives a
     /// coil's mass or its film coefficient from a duty, and a default would be
-    /// an invented number on every furnace that forgot it.
+    /// an invented number on every furnace that forgot it. So is
+    /// `flame_temperature_c`, for the same reason: nothing derives a flame from
+    /// a fuel.
     Furnace {
         duty_mw: f64,
         /// Heat capacity of the tube metal [MJ/K] — its mass times steel's
@@ -442,6 +446,12 @@ pub enum NodeDef {
         /// The coil's temperature at load [°C]: a STATE, like a tank's
         /// `temperature_c`. Finite and above absolute zero.
         coil_temperature_c: f64,
+        /// Adiabatic flame temperature of the firing [°C] (M36,
+        /// docs/DESIGN.md §40): the hottest the coil can be heated, since the
+        /// share of the duty it absorbs falls to zero there and the rest leaves
+        /// up the stack. REQUIRED, no default, like the coil keys. Finite and
+        /// above the combustion air's 20 °C.
+        flame_temperature_c: f64,
     },
     /// Cooler. Duty in MW REMOVED from the stream — a positive magnitude, like
     /// a furnace's. Use this rather than a negative `furnace` duty; the loader
@@ -730,7 +740,9 @@ pub struct ControlDef {
     /// On the loop rather than on the unit, because the unit's own fields are
     /// published on every snapshot and this number is the loop's statement of its
     /// range, read by nothing else. Must be finite and > 0; the unit's declared
-    /// `duty_mw` must lie within `[0, max_duty_mw]` (§21 fork 4).
+    /// `duty_mw` must lie within `[0, max_duty_mw]` (§21 fork 4). On a furnace it
+    /// is a maximum FIRING rate since M36: what the burners release, of which
+    /// the coil absorbs only its flame's share (docs/DESIGN.md §40).
     #[serde(default)]
     pub max_duty_mw: Option<f64>,
     /// A cascade primary's range over a TEMPERATURE secondary, in °C: the

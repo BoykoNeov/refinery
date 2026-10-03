@@ -20,22 +20,24 @@
 # until the coil reaches the feed's temperature.
 #
 # **What the trip does, measured on both fidelities** (§35). The tank first passes
-# 75 °C at the end of tick 1 250 (75.0009 °C), so the trip fires at the top of
-# tick 1 251 and the furnace reads zero duty on that tick's own snapshot. Until
+# 75 °C at the end of tick 1 354 (75.0034 °C), so the trip fires at the top of
+# tick 1 355 and the furnace reads zero duty on that tick's own snapshot. Until
 # then the plant is bit for bit its own untripped twin. The tank then cools
-# toward its feed: 47.00 °C by tick 3 000, 40.39 °C by tick 6 000. The trip stays
+# toward its feed: 47.71 °C by tick 3 000, 40.43 °C by tick 6 000. (Before M36
+# every watt fired reached the tubes and the trip fired at 1 251; now 4 % of the
+# 3 MW goes up the stack, docs/DESIGN.md §40.) The trip stays
 # tripped the whole way down — it LATCHES, and only `reset_trip` re-arms it.
 #
 # **The condition does NOT clear inside the tick that trips — since M34.** Before
 # the furnace had a coil, the whole tripping tick ran on cold feed and the tank
 # ended it at 74.967 °C (§26, M22.1's finding). Now the coil (docs/DESIGN.md §37)
-# is at 98 °C when the fuel goes and keeps warming the feed while it cools: a fuel
-# cut is M22.1's SLOW action, and the tank goes on to 75.138 °C and is back under
-# 75 °C from the end of tick 1 294. Throughout, and after, it is the LATCH, not
+# is at 95.5 °C when the fuel goes and keeps warming the feed while it cools: a
+# fuel cut is M22.1's SLOW action, and the tank goes on to 75.110 °C and is back
+# under 75 °C from the end of tick 1 393. Throughout, and after, it is the LATCH, not
 # the temperature, that keeps the fire out.
 #
 # **What happens without it.** Delete the `[[trips]]` block and the tank reads
-# 89.77 °C at tick 6 000, still climbing toward the 89.93 °C its inflow carries.
+# 87.82 °C at tick 6 000, still climbing toward the 87.97 °C its inflow carries.
 # Water stays liquid there; on a plant with a hotter feed, or a stronger furnace,
 # the same unattended firing would pass 100 °C, which a plant that does not
 # select a boil-off model reports as liquid.
@@ -63,17 +65,24 @@ type = "source"
 pressure_bar = 1.6
 temperature_c = 40.0
 
-# Fired by hand at 3 MW and left there: nothing regulates it. 3 MW adds 49.93 K
-# to the 14.36 kg/s feed, so the tank heads for about 90 °C.
+# Fired by hand at 3 MW and left there: nothing regulates it. The 2.88 MW its
+# coil absorbs adds 47.97 K to the 14.36 kg/s feed, so the tank heads for about
+# 88 °C.
 [nodes.heater]
 type = "furnace"
 duty_mw = 3.0
 # Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 3 MW); UA twice
 # the load flow's 60.09 kW/K capacity rate; and the coil's steady temperature
-# at load, 40 + 3000/(0.8647·60.09) °C, so the plant starts settled.
+# at load, the root of Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)
+# (§40 fork 5; Q = 3000 kW, G = 0.8647·60.09 kW/K, T_in = 40 °C), so the plant starts settled.
 coil_heat_capacity_mj_per_k = 3
 coil_ua_kw_per_k = 120.2
-coil_temperature_c = 97.74
+coil_temperature_c = 95.48
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132). The duty is what the
+# burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.961 at load,
+# and the rest goes up the stack.
+flame_temperature_c = 1951.1
 
 # The node the trip WATCHES. Its temperature is stored on the graph and exists
 # from load (docs/DESIGN.md §26 fork 2); the level is the settled 4.968 m, so only

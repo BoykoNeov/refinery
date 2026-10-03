@@ -946,6 +946,11 @@ pub struct NodeStates {
     /// writes it back to `FurnaceCoil::temperature`, which is where it is read
     /// from. Empty on a plant with no furnace.
     pub coil_temperature: BTreeMap<NodeId, Kelvin>,
+    /// Each furnace's stack loss [W], the tick's average (M36,
+    /// docs/DESIGN.md §40): the share of its duty the coil did not absorb. A
+    /// DIAGNOSTIC like `reactor_duty` — nothing in the forward solve reads it —
+    /// published because a plant's energy books do not close without it.
+    pub flue_loss: BTreeMap<NodeId, Watt>,
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -1032,6 +1037,7 @@ pub fn resolve_node_states(
 ) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
     let mut coil_temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
+    let mut flue_loss: BTreeMap<NodeId, Watt> = BTreeMap::new();
     let mut composition: BTreeMap<NodeId, Composition> = BTreeMap::new();
     let mut reactor_duties: BTreeMap<NodeId, ReactorDuty> = BTreeMap::new();
     let mut separations: BTreeMap<NodeId, Separation> = BTreeMap::new();
@@ -1269,7 +1275,12 @@ pub fn resolve_node_states(
                         composition.insert(id, products);
                         temperature.insert(id, t_set);
                         reactor_duties.insert(id, duty);
-                    } else if let NodeKind::Furnace { coil, .. } = &graph.node(id).kind {
+                    } else if let NodeKind::Furnace {
+                        duty,
+                        coil,
+                        flame_temperature,
+                    } = &graph.node(id).kind
+                    {
                         // A furnace heats its fluid through its coil (M34,
                         // docs/DESIGN.md §37), so it is never HELD: with no
                         // inflow the fluid in its tubes sits at the coil's own
@@ -1284,11 +1295,14 @@ pub fn resolve_node_states(
                             &composition,
                             &separations,
                             id,
+                            *duty,
                             coil,
+                            *flame_temperature,
                             dt,
                         )?;
                         temperature.insert(id, pass.fluid);
                         coil_temperature.insert(id, pass.coil);
+                        flue_loss.insert(id, pass.flue);
                     } else {
                         let mixed = mix_inflows(
                             graph,
@@ -1441,6 +1455,7 @@ pub fn resolve_node_states(
         column_separation: separations,
         held,
         coil_temperature,
+        flue_loss,
     })
 }
 
@@ -1804,47 +1819,57 @@ struct CoilPass {
     fluid: Kelvin,
     /// The coil's temperature at the END of the tick [K].
     coil: Kelvin,
+    /// The tick's average stack loss [W] (M36, docs/DESIGN.md §40).
+    flue: Watt,
 }
 
 /// Integrate a furnace's coil across one tick and heat its fluid with what the
-/// coil gives up (M34, docs/DESIGN.md §37).
+/// coil gives up (M34, docs/DESIGN.md §37), the coil absorbing only the share of
+/// the duty its flame allows (M36, §40).
 ///
 /// The model is `FurnaceCoil`'s: the fluid sees a tube wall at uniform `T_c`,
 /// so the heat it takes is `G·(T_c − T_in)` with
 /// `G = W·(1 − exp(−UA/W))`, `W = Σ ṁ·cp` its inlet capacity rate
 /// (constant-surface-temperature tube flow, Incropera & DeWitt 6th ed.,
 /// eq. 8.42b), and the coil is a lumped capacitance taking the rest
-/// (ibid. §5.1):
+/// (ibid. §5.1). The duty `Q` is what the burners release: a well-stirred
+/// firebox whose gas leaves at the coil's temperature, with a flue capacity
+/// rate `Q/(T_f − T_a)` proportional to the firing, loses `K_f·(T_c − T_a)` up
+/// the stack, `K_f = Q/(T_f − T_a)` (§40 fork 1). A fire `F` is a fixed heat
+/// into the metal, outside the flame law:
 ///
 /// ```text
-/// C·dT_c/dt = Q − G·(T_c − T_in)
+/// C·dT_c/dt = Q + F − K_f·(T_c − T_a) − G·(T_c − T_in)
 /// ```
 ///
-/// With `Q`, `G` and `T_in` frozen across the tick that is linear in `T_c`, and
-/// its exact solution is
+/// With everything but `T_c` frozen across the tick that is linear in `T_c`,
+/// and its exact solution is
 ///
 /// ```text
-/// T_c(dt) = T_c + (Q − G·(T_c − T_in)) · dt/C · φ(G·dt/C),   φ(x) = (1 − e^−x)/x
+/// T_c(dt) = T_c + r₀ · dt/C · φ(x),   x = (G + K_f)·dt/C,   φ(x) = (1 − e^−x)/x
 /// ```
 ///
-/// which is what is computed — in that form, with `φ(0) = 1`, because the
-/// textbook form `T_eq + (T_c − T_eq)·e^−x` divides by `G` and a vanishing
-/// flow drives `G` to zero. Exact means unconditionally stable: no coil is too
-/// light for `dt`, and none is refused for it.
+/// with `r₀` the right-hand side at the start of the tick — computed in that
+/// form, with `φ(0) = 1`, because the textbook form `T_eq + (T_c − T_eq)·e^−x`
+/// divides by `G + K_f`, and an unlit furnace with no flow has both at zero.
+/// Exact means unconditionally stable: no coil is too light for `dt`, and none
+/// is refused for it. With no flow the coil approaches `T_f` (plus `F/K_f`)
+/// and never crosses it: the ceiling.
 ///
-/// **The fluid gets the difference, by construction**: the tick's average
-/// heat into the fluid is `Q − C·ΔT_c/dt`, added to the inflow ENTHALPY sum
-/// as a furnace's duty used to be. So the first law closes at the furnace with
-/// no slack — `Q` in, `C·ΔT_c` stored, the rest carried away — and an energy
-/// balance over a plant counts the coil as one more inventory.
+/// **The first law, four terms**: fired in, `C·ΔT_c` stored, the flue's
+/// `K_f·(T̄_c − T_a)` at the tick's AVERAGE coil `T̄_c = T_c + r₀·dt/C·ψ(x)`
+/// from the same exact solution, and the fluid takes what is left, added to the
+/// inflow ENTHALPY sum as a furnace's duty used to be. A remainder rather than
+/// its own formula, so an error in `ψ` moves heat between the flue and the
+/// fluid but never creates it.
 ///
 /// **The outlet never exceeds the coil's hotter end of the tick.** The fluid's
 /// rise is `ε` times the tick's average `T_c − T_in`, with `ε ≤ 1`. It CAN sit
 /// above the coil's end-of-tick value on a tick when the coil is cooling, which
 /// is the value a snapshot shows (`FurnaceCoil::temperature`).
 ///
-/// **No flow**: `G = 0`, so the coil takes the whole duty, `ΔT_c = Q·dt/C`, and
-/// the fluid standing in the tubes is reported at the coil's end-of-tick
+/// **No flow**: `G = 0`, so the coil keeps everything the flame lets it absorb,
+/// and the fluid standing in the tubes is reported at the coil's end-of-tick
 /// temperature. Nothing is dropped and nothing is held.
 #[allow(clippy::too_many_arguments)]
 fn furnace_coil(
@@ -1857,13 +1882,19 @@ fn furnace_coil(
     composition: &BTreeMap<NodeId, Composition>,
     separations: &BTreeMap<NodeId, Separation>,
     node: NodeId,
+    duty: Watt,
     coil: &FurnaceCoil,
+    flame_temperature: Kelvin,
     dt: Seconds,
 ) -> Result<CoilPass, SimError> {
     let name = &graph.node(node).name;
     // Duty and any fire alike go into the metal: `heat_load` is still the one
-    // owner of how much heat enters this node.
+    // owner of how much heat enters this node. Only the duty is fuel, so only
+    // the duty has a flue (§40 fork 2).
     let fired = heat_load(graph.node(node)).value();
+    let air = T_AMBIENT.value();
+    // Flue conductance, K_f = Q/(T_f − T_a) (§40 fork 1). Exactly zero unlit.
+    let flue_conductance = duty.value() / (flame_temperature.value() - air);
     let capacity = coil.heat_capacity.value();
     let ua = coil.conductance.value();
     let start = coil.temperature.value();
@@ -1895,10 +1926,12 @@ fn furnace_coil(
         None => (start, 0.0),
     };
 
-    // The exact step, in the form that never divides by `G` (see the docs).
-    let x = conductance * dt.value() / capacity;
+    // The exact step, in the form that never divides by a conductance (see the
+    // docs). `rate` is the right-hand side at the start of the tick [W].
+    let x = (conductance + flue_conductance) * dt.value() / capacity;
+    let rate = fired - flue_conductance * (start - air) - conductance * (start - inlet);
     let phi = if x > 0.0 { -(-x).exp_m1() / x } else { 1.0 };
-    let end = start + (fired - conductance * (start - inlet)) * dt.value() / capacity * phi;
+    let end = start + rate * dt.value() / capacity * phi;
     if !end.is_finite() {
         return Err(SimError::Numerical(format!(
             "furnace '{name}' coil temperature is not finite ({end}) after a tick fired \
@@ -1912,14 +1945,24 @@ fn furnace_coil(
         )
     })?;
 
+    // The stack loss at the tick's average coil (§40 fork 3). Zero unlit.
+    let flue = if flue_conductance > 0.0 {
+        let average = start + rate * dt.value() / capacity * psi(x);
+        flue_conductance * (average - air)
+    } else {
+        0.0
+    };
+
     let Some(totals) = totals else {
         return Ok(CoilPass {
             fluid: coil_end,
             coil: coil_end,
+            flue: Watt(flue),
         });
     };
-    // What the coil gave up this tick, as an average power [W]: fired in, less
-    // what it now stores. The first law at the furnace, closed by construction.
+    // What the coil gave the fluid this tick, as an average power [W]: fired
+    // in, less what it now stores and what went up the stack. The first law at
+    // the furnace, closed by construction.
     //
     // From the STORED change, `end − start` (exact: the two are close), not from
     // the increment before it was added: the bits of the increment that
@@ -1927,7 +1970,7 @@ fn furnace_coil(
     // the coil. The price is on a vanishing flow, where one rounding step of the
     // coil, `C·ulp(T_c)/dt`, is spread over a capacity rate near zero and can
     // put the outlet that far above the coil.
-    let to_fluid = fired - capacity * (end - start) / dt.value();
+    let to_fluid = fired - capacity * (end - start) / dt.value() - flue;
     let heated = InflowEnthalpy {
         enthalpy_rate: totals.enthalpy_rate + to_fluid,
         ..totals
@@ -1945,7 +1988,20 @@ fn furnace_coil(
     Ok(CoilPass {
         fluid,
         coil: coil_end,
+        flue: Watt(flue),
     })
+}
+
+/// `ψ(x) = (1 − φ(x))/x = (x − 1 + e^−x)/x²`, `ψ(0) = ½`: the weight that turns
+/// a linear relaxation's initial rate into its average displacement over a
+/// step (§40 fork 3). The series below `1e-3`, where the closed form cancels.
+fn psi(x: f64) -> f64 {
+    if x < 1.0e-3 {
+        // ψ(x) = ½ − x/6 + x²/24 − x³/120 + …; the next term is x⁴/720.
+        0.5 - x / 6.0 + x * x / 24.0 - x * x * x / 120.0
+    } else {
+        (x + (-x).exp_m1()) / (x * x)
+    }
 }
 
 /// Both outlet temperatures of a coupled `HeatExchanger` pair [K].

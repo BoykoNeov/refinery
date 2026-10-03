@@ -35,8 +35,10 @@ pub enum Command {
         node: NodeId,
         power: Watt,
     },
-    /// Operating setpoint of a fired heater [W delivered to the process fluid].
-    /// Must be >= 0; 0 shuts it down.
+    /// Operating setpoint of a fired heater [W released by its burners]: a firing
+    /// rate, of which the coil absorbs the share its flame allows and the rest
+    /// leaves up the stack (M36, docs/DESIGN.md §40). Must be >= 0; 0 shuts it
+    /// down.
     SetFurnaceDuty {
         node: NodeId,
         duty: Watt,
@@ -194,6 +196,23 @@ pub struct NodeSnapshot {
     /// never runs dry byte-identical.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub running_dry: bool,
+    /// A furnace's stack loss [W] over the last tick: the share of its duty
+    /// that went up the flue rather than into its coil (M36, docs/DESIGN.md
+    /// §40). `duty − flue_loss_w` is what the coil absorbed, so a frontend reads
+    /// the heater's efficiency off it.
+    ///
+    /// **Absent, not zero, wherever there is nothing to report**: on every node
+    /// that is not a furnace, and on a furnace before its first tick, when no
+    /// sweep has computed one — `column_duty`'s shape and its argument. An
+    /// unlit furnace reports `0.0`, which IS computed: nothing fired, nothing
+    /// lost. Skipped when absent, which keeps every plant with no furnace
+    /// byte-identical.
+    ///
+    /// A DIAGNOSTIC: nothing in the forward solve reads it. It is here because
+    /// a plant's energy books, kept from published state, do not close without
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flue_loss_w: Option<f64>,
 }
 
 /// The cavitation criterion at one node — see [`NodeSnapshot::cavitation`].

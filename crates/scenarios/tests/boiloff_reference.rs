@@ -803,6 +803,7 @@ fn boundary_power(
     slate: &refinery_core::components::Slate,
     enthalpy: &dyn refinery_core::traits::EnthalpyModel,
     with_latent: bool,
+    with_flue: bool,
 ) -> f64 {
     use refinery_core::graph::NodeKind;
     let kind_of =
@@ -847,6 +848,11 @@ fn boundary_power(
     }
     for n in &s.nodes {
         power += n.heat_input_w;
+        // A furnace's duty is what its burners release since M36 (docs/DESIGN.md
+        // §40); what its coil did not absorb left the plant up the stack.
+        if with_flue {
+            power -= n.flue_loss_w.unwrap_or(0.0);
+        }
         match &n.kind {
             NodeKind::Furnace { duty, .. } => power += duty.value(),
             NodeKind::Cooler { duty } => power -= duty.value(),
@@ -889,11 +895,11 @@ fn energy_books(src: &str, ticks: u64) -> ((f64, f64), (f64, f64)) {
         let accumulation = (energy - previous) / dt;
         let scale = accumulation.abs().max(1.0);
 
-        let with = accumulation - boundary_power(&now, &slate, engine.enthalpy(), true);
+        let with = accumulation - boundary_power(&now, &slate, engine.enthalpy(), true, true);
         cumulative_with += with * dt;
         worst_with = worst_with.max(with.abs() / scale);
 
-        let without = accumulation - boundary_power(&now, &slate, engine.enthalpy(), false);
+        let without = accumulation - boundary_power(&now, &slate, engine.enthalpy(), false, true);
         cumulative_without += without * dt;
         worst_without = worst_without.max(without.abs() / scale);
 
@@ -974,6 +980,45 @@ fn the_external_energy_books_close_on_a_boiling_plant() {
         worst_twin <= ENERGY_BOOKS_TOLERANCE,
         "the non-boiling twin's books do not close either ({worst_twin:.4e} relative), so \
          the balance above is mis-stated rather than measuring a latent term"
+    );
+}
+
+/// The worst per-tick relative residual of the boundary balance with the
+/// furnace's stack loss LEFT OUT [−]: the counterfactual for M36's flue term.
+fn worst_without_the_flue(src: &str, ticks: u64) -> f64 {
+    let mut engine = build(src);
+    let slate = engine.slate.clone();
+    let dt = 0.1;
+    let mut previous = holdup_energy(&engine.snapshot(), &slate);
+    let mut worst = 0.0_f64;
+    for t in 1..=ticks {
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("the plant must run: tick {t}: {e}"));
+        let now = engine.snapshot();
+        let energy = holdup_energy(&now, &slate);
+        let accumulation = (energy - previous) / dt;
+        let scale = accumulation.abs().max(1.0);
+        let residual = accumulation - boundary_power(&now, &slate, engine.enthalpy(), true, false);
+        worst = worst.max(residual.abs() / scale);
+        previous = energy;
+    }
+    worst
+}
+
+/// **The books need the furnace's stack loss** (M36, docs/DESIGN.md §40 gate
+/// 4). Since M36 a furnace's duty is what its burners release, and the share
+/// its coil did not absorb leaves the plant up the stack, published as
+/// `flue_loss_w`. Gate 1 counts it and closes on both plants; this is the
+/// counterfactual — the same sum with the stack loss dropped, on the twin that
+/// does not boil, so the latent term cannot stand in for it — and it must not
+/// close.
+#[test]
+fn the_books_do_not_close_without_the_stack_loss() {
+    let worst = worst_without_the_flue(ANCHOR, TICKS);
+    assert!(
+        worst > 1.0e-3,
+        "dropping the stack loss leaves a worst residual of {worst:.4e} on the twin,          indistinguishable from a closed balance — so the furnace is not losing heat up          its stack and gate 1 closes for the wrong reason"
     );
 }
 

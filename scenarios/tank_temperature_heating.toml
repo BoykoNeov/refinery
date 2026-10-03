@@ -29,10 +29,13 @@
 # refused because the snapshot would then read 0.9 while the furnace fired at
 # 10%.
 #
-# **The operating point mirrors the cooler demo's, to four figures.** Each MW of
-# firing adds 16.64 K to the inflow — `1/(m_dot*cp)` at 14.365 kg/s — so holding
-# 60 °C from a 40 °C feed needs 1.202 MW, **u = 0.600948** of the 2 MW range,
-# settled over 20 000 ticks (the cooler demo settles at 0.601092). The tank starts
+# **The operating point mirrors the cooler demo's, less the stack.** Each MW the
+# coil ABSORBS adds 16.64 K to the inflow — `1/(m_dot*cp)` at 14.365 kg/s — so
+# holding 60 °C from a 40 °C feed needs 1.202 MW absorbed. Since M36 a duty is
+# what the burners release and about 2 % of it goes up the stack (docs/DESIGN.md
+# §40), so the loop fires 1.229 MW, **u = 0.614675** of the 2 MW range, settled
+# over 20 000 ticks (0.600948 before M36, a mirror of the cooler demo's 0.601092
+# to four figures). The tank starts
 # at the settled 4.968 m level so that only the temperature moves.
 #
 # **The tank starts 20 K below setpoint, and that is a design input, not
@@ -40,23 +43,25 @@
 # load against the error standing then; seeded against the wrong SIGN it would
 # step the first output by `2*K*e`, which at zero error is invisible. The furnace
 # starts at 0.5 MW (u = 0.25, equal to `initial_output`, so the loop starts
-# without stepping its actuator), far short of the 1.202 MW the setpoint needs, so
-# the MANUAL twin parks visibly wrong: **48.30 °C**.
+# without stepping its actuator), far short of the 1.229 MW the setpoint needs, so
+# the MANUAL twin parks visibly wrong: **48.17 °C** (48.30 before M36).
 #
-# **Measured, 6 000 ticks:** within 0.06 K of 60 °C from tick 2 404, a 0.014 K
-# overshoot at tick 3 135, 59.999994 °C at tick 6 000. The output peaks at 0.833
-# at tick 583 and **never reaches either clamp**. Until M34 these were the cooler
+# **Measured, 6 000 ticks:** within 0.06 K of 60 °C from tick 2 346, a 0.024 K
+# overshoot at tick 3 006, 59.999972 °C at tick 6 000. The output peaks at 0.851
+# at tick 602 and **never reaches either clamp**. (Before M36: 2 404, 0.014 K at
+# 3 135, and a 0.833 peak at 583.) Until M34 these were the cooler
 # demo's numbers tick for tick (2 391, 0.028 K, 0.809); the furnace's coil
 # (docs/DESIGN.md §37) puts 38.5 s between a firing change and the stream, which
 # the cooler does not have, so the mirror holds at the operating point and not in
 # the transient. The anti-windup arm is reached by a command in the demo test: a step to
-# 75 °C, above the 73.28 °C the inflow reaches at the full 2 MW, pins the output
+# 75 °C, above the 72.29 °C the inflow reaches at the full 2 MW, pins the output
 # at 1 for as long as the setpoint stands.
 #
 # **What this plant does not survive, named rather than refused** (docs/DESIGN.md
-# §22 fork 5): a furnace has no ceiling. A loop saturated at full duty on a feed
-# throttled by someone else heats the stream without bound, and with no boil-off
-# model selected water past 100 °C stays liquid. On a plant that boils
+# §22 fork 5): a furnace's only ceiling is its flame (docs/DESIGN.md §40). A loop
+# saturated at full duty on a feed throttled by someone else heats the stream
+# toward 1 951 °C, and with no boil-off model selected water past 100 °C stays
+# liquid. On a plant that boils
 # (`boiloff = "flash"`) a setpoint above the bubble point would pin the furnace
 # at full and boil the tank's inventory away through its vent.
 #
@@ -86,10 +91,16 @@ type = "furnace"
 duty_mw = 0.5
 # Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its loop's 2 MW range); UA twice
 # the load flow's 60.09 kW/K capacity rate; and the coil's steady temperature
-# at load, 40 + 500/(0.8647·60.09) °C, so the plant starts settled.
+# at load, the root of Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)
+# (§40 fork 5; Q = 500 kW, G = 0.8647·60.09 kW/K, T_in = 40 °C), so the plant starts settled.
 coil_heat_capacity_mj_per_k = 2
 coil_ua_kw_per_k = 120.2
-coil_temperature_c = 49.62
+coil_temperature_c = 49.48
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132). The duty is what the
+# burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.985 at load,
+# and the rest goes up the stack.
+flame_temperature_c = 1951.1
 
 # The node the loop MEASURES. Its temperature is stored on the graph and is
 # exactly 40 °C at tick 0; the level is the settled 4.968 m, so only the

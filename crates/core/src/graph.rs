@@ -222,21 +222,30 @@ pub enum NodeKind {
     /// through a declared conductance. So the outlet is no longer
     /// `T_in + Q/(ṁ·cp)` on every tick: that is where it settles, and the coil's
     /// heat capacity is how long it takes to get there. With no flow the coil
-    /// keeps the duty, rising at `Q/C`, rather than the fluid's temperature
-    /// growing as `1/ṁ` (DEFERRED B39). Hydraulically it is a plain
-    /// pass-through at M2: the tube-side pressure drop belongs to the connecting
-    /// pipes' resistance, not to a device characteristic.
+    /// keeps what it absorbs, rather than the fluid's temperature growing as
+    /// `1/ṁ` (DEFERRED B39), and it levels off at the flame (M36, §40).
+    /// Hydraulically it is a plain pass-through at M2: the tube-side pressure
+    /// drop belongs to the connecting pipes' resistance, not to a device
+    /// characteristic.
     ///
-    /// `duty` is the heat fired into the coil [W], not a firing rate —
-    /// combustion efficiency is a later fidelity step. Duty 0 is an unlit
-    /// furnace; there is no separate `on` flag because there is nothing for one
-    /// to express that 0 does not.
+    /// `duty` is the heat the burners RELEASE [W], a firing rate (M36,
+    /// docs/DESIGN.md §40). The coil absorbs `Q·(T_f − T_c)/(T_f − T_a)` of it
+    /// and the rest leaves up the stack, so the coil can never be heated past
+    /// `flame_temperature`. Duty 0 is an unlit furnace; there is no separate
+    /// `on` flag because there is nothing for one to express that 0 does not.
     ///
     /// Deliberately NOT stored in `Node::heat_input`: that field is the damage
     /// model's hook (fires), and a fire on a furnace must ADD to its duty, not
     /// overwrite the operator's setpoint. See `energy::heat_load`. Both reach
-    /// the coil, not the fluid.
-    Furnace { duty: Watt, coil: FurnaceCoil },
+    /// the coil, not the fluid; only the duty passes through the flame law.
+    Furnace {
+        duty: Watt,
+        coil: FurnaceCoil,
+        /// Adiabatic flame temperature of the firing, `T_f` [K]: what the flue
+        /// would reach keeping all the heat, and so the hottest the coil can
+        /// get. Above the combustion air's `T_AMBIENT`.
+        flame_temperature: Kelvin,
+    },
     /// Cooler: a duty *removed* from the stream passing through it.
     ///
     /// Structurally the furnace's mirror — zero-volume, hydraulically a

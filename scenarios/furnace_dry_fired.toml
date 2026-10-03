@@ -1,0 +1,108 @@
+# M36 demo: a furnace fired by hand on a charge that runs out, and NO trip —
+# what a dry-fired heater does once nothing protects it.
+#
+#   charge_tank (by gravity) -> feed_valve -> heater (0.6 MW) -> product
+#
+# **Meant to be diffed against `furnace_low_flow_trip.toml`** (M33). Same plant,
+# line for line, except: the charge is a tenth (1 m of level, not 10), so the
+# tank runs dry inside a corpus run; and the `[[trips]]` block is gone, so
+# nothing cuts the fuel when the feed fails.
+#
+# **Why the climb ends** (docs/DESIGN.md §40). A furnace's duty is the heat its
+# burners release. Its tubes absorb `Q·(T_f − T_c)/(T_f − T_a)` of it — the rest
+# leaves up the stack in the flue gas — so the hotter the tubes, the less they
+# take, and at the flame temperature `T_f` they take nothing. With no flow to
+# carry heat away the coil climbs toward `T_f` and levels off there, with a time
+# constant `C·(T_f − T_a)/Q`: 1 931 s on this coil. Before M36 every watt fired
+# reached the tubes, and a dry coil climbed at `Q/C`, 1 K/s here, for ever
+# (docs/DEFERRED.md B40).
+#
+# **What it does, measured on both fidelities.** The feed falls from 1.55 kg/s as
+# the head falls, and the coil, sized for M33's three-times larger feed, climbs
+# from the start: past 100 °C at tick 140, 539.0 °C when the feed reaches exactly
+# zero (tick 1 749 on Newton, 1 819 on the game solver). From there it is the
+# closed form `T_f − (T_f − T_c)·e^(−t/τ)`: 1 212.3 °C at tick 3 000, 1 794.8 °C
+# at 6 000 — 552 kW of the 600 going up the stack — and 1 950.99 °C at 20 000,
+# under the 1 951.1 °C flame it never crosses. The coil's numbers agree on both
+# fidelities to the printed digit.
+#
+# **What it does not show.** Real tubes fail far below the flame, and a burn-out
+# is the next slice (docs/DEFERRED.md B40's burn-out clause). The FLUID's temperature on the
+# dry ticks is the coil's to within one rounding step spread over a vanishing
+# capacity rate (§37 correction 2), which on the game solver's 1e-11 kg/s
+# residual trickle is a few kelvin; read the coil, which is the state.
+#
+#   cargo run -p refinery-cli -- run scenarios/furnace_dry_fired.toml --ticks 20000
+
+[meta]
+name = "furnace_dry_fired"
+description = "A furnace fired by hand on a charge that runs out, with no trip: its tubes climb toward the flame and level off there."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+# 1.25 t of water at 1 m — a tenth of M33's charge, so it runs out early.
+[nodes.charge_tank]
+type = "tank"
+area_m2 = 1.25
+height_m = 12.0
+initial_level_m = 1.0
+temperature_c = 20.0
+
+# Fully open and never moved. Its Kv is what sets the feed: 1.55 kg/s at the
+# 1 m of head, falling with the head as the tank drains.
+[nodes.feed_valve]
+type = "valve"
+kv = 18.0
+opening = 1.0
+
+# Fired by hand at 0.6 MW and left there. M33's heater, coil and all: the coil
+# was sized for M33's 4.89 kg/s, so on this smaller feed it does not start
+# settled, and that does not matter here — it is about to run dry.
+[nodes.heater]
+type = "furnace"
+duty_mw = 0.6
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 0.6 MW); UA twice
+# the load flow's 20.46 kW/K capacity rate; and the coil's steady temperature
+# at load, the root of Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)
+# (§40 fork 5; Q = 600 kW, G = 0.8645·20.46 kW/K, T_in = 20.02 °C): settled on
+# M33's feed, not on this one.
+coil_heat_capacity_mj_per_k = 0.6
+coil_ua_kw_per_k = 40.9
+coil_temperature_c = 53.36
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132). The duty is what the
+# burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.983 at load,
+# and the rest goes up the stack.
+flame_temperature_c = 1951.1
+
+[nodes.product]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "charge_tank"
+to = "feed_valve"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "valve_line"
+from = "feed_valve"
+to = "heater"
+length_m = 5.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "product"
+length_m = 20.0
+diameter_m = 0.10
+

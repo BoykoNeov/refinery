@@ -2227,6 +2227,10 @@ impl Engine {
                     // The solve's own verdict, never the tank's mass — see
                     // `NodeSnapshot::running_dry`.
                     running_dry: sol.is_some_and(|s| s.starved.contains_key(&id)),
+                    // The last sweep's, absent before the first tick and on
+                    // every node that is not a furnace — see
+                    // `NodeSnapshot::flue_loss_w`.
+                    flue_loss_w: self.node_states.flue_loss.get(&id).map(|w| w.value()),
                 }
             })
             .collect();

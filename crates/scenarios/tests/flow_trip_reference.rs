@@ -213,9 +213,10 @@ fn expect_refused(result: Result<(), String>, what: &str, says: &str) {
 /// whole run.
 ///
 /// **Before M34 the outlet equalled the inlet exactly from the cut on.** With a
-/// coil, the metal is still at 90 °C when the fuel goes, so the fluid keeps
-/// warming while it cools: 89.09 °C at the end of the cutting tick, 20.003 °C by
-/// tick 4 000. That is asserted as the first law with zero duty, every tick.
+/// coil, the metal is still at 87.7 °C when the fuel goes, so the fluid keeps
+/// warming while it cools: 86.73 °C at the end of the cutting tick, 20.003 °C by
+/// tick 4 000 (89.09 °C on the cutting tick before M36's flame, docs/DESIGN.md
+/// §40). That is asserted as the first law with zero duty, every tick.
 #[test]
 fn the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow() {
     for solver in ["newton", "simple"] {
@@ -355,11 +356,12 @@ fn the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow() {
             }
             if t == 5000 {
                 // What the trip prevents: the twin, still fired on a 0.096 kg/s
-                // trickle, reads 419 °C at its furnace outlet (measured; 1 521 °C
-                // before M34's coil, which now bounds the outlet by its own
+                // trickle, reads 368 °C at its furnace outlet (measured; 419 °C
+                // before M36's flame sent part of the duty up the stack, and
+                // 1 521 °C before M34's coil, which bounds the outlet by its own
                 // temperature instead of letting it grow as 1/ṁ).
                 assert!(
-                    outlet_c(&twin_snapshot) > 400.0,
+                    outlet_c(&twin_snapshot) > 350.0,
                     "{solver}: {}",
                     outlet_c(&twin_snapshot)
                 );

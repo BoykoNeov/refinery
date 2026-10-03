@@ -906,10 +906,11 @@ fn every_malformed_flow_loop_is_refused_for_its_own_reason() {
             r#"actuator = "discharge_valve""#,
             r#"actuator = "unit""#,
         );
-        // A furnace's coil keys are required (M34); a cooler takes none.
+        // A furnace's coil keys and its flame are required (M34, M36); a cooler
+        // takes none.
         let coil = if kind == "furnace" {
             "coil_heat_capacity_mj_per_k = 1.0\ncoil_ua_kw_per_k = 100.0\n\
-             coil_temperature_c = 20.0\n"
+             coil_temperature_c = 20.0\nflame_temperature_c = 1951.1\n"
         } else {
             ""
         };

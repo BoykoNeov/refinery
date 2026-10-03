@@ -48,8 +48,8 @@ actions = [{ furnace = "heater" }]
 "#;
 
 /// The tick whose trip pass fires `tube_skin_high`, measured on both fidelities
-/// before it was written here: the coil ends tick 71 at 100.21 °C.
-const DEMO_TRIP_TICK: u64 = 72;
+/// before it was written here: the coil ends tick 74 at 100.18 °C (71 at 100.21 before M36, §40).
+const DEMO_TRIP_TICK: u64 = 75;
 const SKIN_LIMIT_C: f64 = 100.0;
 const OUTLET_LIMIT_C: f64 = 70.0;
 
@@ -128,9 +128,10 @@ fn measured_c(snapshot: &Snapshot, trip: usize) -> Option<f64> {
 /// outlet still under its own setpoint, and the outlet trip never fires.**
 ///
 /// Bit-identical to its untripped twin until the cut; the coil crosses 100 °C at
-/// the end of tick 71 and the pass at the top of 72 fires; on that tick's own
-/// snapshot the furnace reads zero duty and the outlet is 55.53 °C — below the
-/// loop's 60 °C setpoint and 14.47 K below `outlet_high`. That trip compares
+/// the end of tick 74 and the pass at the top of 75 fires (72 before M36's flame,
+/// docs/DESIGN.md §40); on that tick's own snapshot the furnace reads zero duty
+/// and the outlet is 55.52 °C — below the loop's 60 °C setpoint and 14.48 K below
+/// `outlet_high`. That trip compares
 /// nothing on tick 1 and a measurement on every tick after, and stays armed to
 /// tick 6 000. The twin, with no trips, settles its outlet on 60 °C with its coil
 /// at 117.3 °C: the outlet never shows what the tubes are doing.
@@ -262,13 +263,13 @@ fn the_coil_trip_measures_on_tick_one_and_the_outlet_trip_from_tick_two() {
 /// the graph from load, so there is nothing to wait for.
 #[test]
 fn a_coil_loaded_over_its_limit_trips_on_tick_one() {
-    // The coil loads at 72.15 °C; a 70 °C skin limit is already reached.
+    // The coil loads at 71.29 °C; a 70 °C skin limit is already reached.
     let mut engine = build(&swap(DEMO, "limit_c = 100.0", "limit_c = 70.0"));
     tick(&mut engine);
     let one = engine.snapshot();
     assert_eq!(one.trips[0].state, TripState::Tripped { at_tick: 1 });
     assert_eq!(duty_w(&engine), 0.0, "cut on tick 1");
-    assert!(measured_c(&one, 0).is_some_and(|c| c > 72.0));
+    assert!(measured_c(&one, 0).is_some_and(|c| c > 71.0));
 }
 
 /// **Gate 4, the outlet's one-tick window.** A furnace whose outlet is already

@@ -15,9 +15,9 @@
 # measurement, no action**: on tick 1 the loop writes nothing, its faceplate
 # tracks the furnace's declared 0.5 MW (u = 0.25), and the snapshot carries no
 # `measurement` at all — not a zero, not a stand-in. On tick 2 it measures tick 1's
-# outlet, 48.32 °C, and its PI memory is seeded then, against that error, from the
-# declared `initial_output` — so its first output is 0.25, exactly as a tank
-# loop's is. The same rule holds the loop still if the flow through the furnace
+# outlet, 48.20 °C (48.32 before M36's stack loss), and its PI memory is seeded
+# then, against that error, from the declared `initial_output` — so its first
+# output is 0.25, exactly as a tank loop's is. The same rule holds the loop still if the flow through the furnace
 # ever stops — or did until M34: a furnace with no flow now reports its COIL, a
 # state (docs/DESIGN.md §37), so the loop measures and acts on it.
 #
@@ -65,10 +65,16 @@ type = "furnace"
 duty_mw = 0.5
 # Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its loop's 2 MW range); UA twice
 # the load flow's 60.09 kW/K capacity rate; and the coil's steady temperature
-# at load, 40 + 500/(0.8647·60.09) °C, so the plant starts settled.
+# at load, the root of Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)
+# (§40 fork 5; Q = 500 kW, G = 0.8647·60.09 kW/K, T_in = 40 °C), so the plant starts settled.
 coil_heat_capacity_mj_per_k = 2
 coil_ua_kw_per_k = 120.2
-coil_temperature_c = 49.62
+coil_temperature_c = 49.48
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132). The duty is what the
+# burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.985 at load,
+# and the rest goes up the stack.
+flame_temperature_c = 1951.1
 
 # Not measured: the tank follows the outlet at its own pace. The level is the
 # settled 4.968 m, so only the temperature has anywhere to go.
