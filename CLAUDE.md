@@ -101,6 +101,7 @@ cargo run -p refinery-cli -- run scenarios/tank_level_fill_control.toml --ticks 
 cargo run -p refinery-cli -- run scenarios/tank_level_fill_check_valve.toml --ticks 6000  # the M30 check valve
 cargo run -p refinery-cli -- run scenarios/gas_receiver_check_valve.toml --ticks 6000      # the M31 gas check valve
 cargo run -p refinery-cli -- run scenarios/tank_overheat_trip.toml --ticks 6000            # the M32 fuel cut
+cargo run -p refinery-cli -- run scenarios/furnace_low_flow_trip.toml --ticks 6000         # the M33 low-flow trip
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -201,34 +202,42 @@ one measured and corrected, is in `docs/MILESTONES.md`. It is not loaded
 automatically: read the relevant box there before touching that milestone's code.
 When a milestone closes, its box goes here and the previous one moves there.
 
-**M32 is CLOSED (2026-10-02): a trip that cuts a furnace's fuel — `docs/DEFERRED.md`
-row E14's furnace clause, struck; the cooler clause stays open.** Taken on a
-DECISION (the user's, on gameplay grounds). One slice, note and build together:
-DESIGN §35.
-- **`TripAction::CutFurnace`** (`actions = [{ furnace = "…" }]`, no `position`,
-  refused if given): writes zero duty, the furnace's ONE safe state. The hold
-  check fails a tick on a lit furnace a latched trip holds; `SetFurnaceDuty`
-  above zero is refused while latched, zero admitted. `SetHeatInput` (a fire) is
-  not fuel and stays admitted.
-- **The trip forces MANUAL on EVERY action's equipment** now, not a valve's
-  alone (its own commit, byte-neutral). A furnace loop yields; on a cascade the
-  furnace's loop is the inner one, so the cut opens the cascade with no new rule.
-- **A cooler is still refused, for its own reason**: cutting it is losing
-  cooling, the hazard rather than the protection. E14 stays open on that clause.
-- **Demo `scenarios/tank_overheat_trip.toml`** (the thirty-third file):
-  `tank_temperature_heating.toml` without its loop, 3 MW by hand, a 75 °C trip.
-  Cuts at tick 1 251 on both fidelities, bit-identical to its twin until then,
-  clears its condition inside the tripping tick (74.967 °C), 40.36 °C at 6 000
-  against the twin's 89.77. At zero duty the furnace's outlet IS its inlet
-  stream's temperature, bit for bit; the next pipe is 0.0008 K warmer (friction).
-- **Gates** `tests/furnace_trip_reference.rs` (six) plus seven sweep cases in
-  `trip_reference.rs`. A cascade hand-back test must move the outer target while
-  the cascade is OPEN: moved in the closing batch it lands a 13.2 K proportional
-  kick (M25's), which reads like a bump and is not the trip's. Seven mutations,
-  six caught, the hold check's deletion uncaught as predicted. All 32 earlier
-  plants byte-identical, no iteration count moved; no Godot build owed.
+**M33 is CLOSED (2026-10-03): a trip on a pipe's flow, the low-flow furnace trip —
+`docs/DEFERRED.md` row E13's flow clause, struck; the outlet clause stays open.**
+Taken on a DECISION (the user's, on gameplay grounds). One slice, note and build
+together: DESIGN §36.
+- **A trip may watch `{ pipe = "…", variable = "flow" }`** with `limit_kg_per_s`,
+  any finite sign (at or below zero is a reverse-flow trip). Any DECLARED pipe:
+  the loops' one-hop rule (E12) is about a loop's sign and is not copied.
+- **The rule for the missing measurement** M22 left open: a flow is read from the
+  last solve, so it is absent for exactly ONE trip pass, tick 1's. The trip stays
+  armed and compares nothing on it; every other absence is still an engine fault
+  (the exemption needs a pipe AND no solution). The price, pinned by a gate: a
+  plant loaded lit on too little flow fires tick 1 unprotected, trips on tick 2.
+- **No startup bypass.** A cold start (feed shut, furnace out) trips on tick 2
+  with nothing to cut, and the latch is the start permissive: no light-off until
+  the feed is established, a solve has seen it, and the trip is reset. The timer
+  stays E15. A reset reads the LAST SOLVE, so one sent with the reopening command
+  is refused and one a tick later is admitted.
+- **A furnace or cooler OUTLET is still refused**, for its own reason now: it is
+  absent again whenever the unit stagnates, which is the low-flow condition.
+- **Demo `scenarios/furnace_low_flow_trip.toml`** (the thirty-fourth file): a
+  charge tank drains by gravity through a furnace fired by hand at 0.6 MW; a
+  2 kg/s low-flow trip on the feed. The feed ends tick 3 016 at 1.99951 kg/s, the
+  fuel is cut at tick 3 017 on both fidelities, the plant its untripped twin to
+  the bit until then. **The cut moves no flow** (constant density), so every flow
+  equals the twin's to tick 6 000, the condition never clears, and the demo
+  cannot show the latch: a fixture with a restorable feed does. The twin's outlet
+  reads 1 521 °C at tick 5 000 and then runs away (new row B39, unbounded outlet
+  on a vanishing flow; no gate reads it).
+- **Gates** `tests/flow_trip_reference.rs` (six) plus seven sweep cases in
+  `trip_reference.rs`. Eight mutations, seven caught; widening the tick-1
+  exemption to every absence is uncaught as predicted (a backstop nothing
+  reaches), and deleting the latch is inert on the demo, caught by the fixtures.
+  All 33 earlier plants byte-identical on both fidelities, no iteration count
+  moved; no Godot build owed.
 
-**Exactly nine of the thirty-three files in `scenarios/` declare a `[[controls]]`
+**Exactly nine of the thirty-four files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
@@ -239,10 +248,10 @@ table** — `tank_level_control.toml` (M8.4, a level),
 `tank_level_fill_control.toml` (M29, a level on its FILL valve) and
 `tank_level_fill_check_valve.toml` (M30, the same loop behind a check valve,
 with a trip). **The
-other twenty-four
+other twenty-five
 were written before M8 (thirteen of them) or after it without a loop, and ARE
-the regression anchor** (two, `tank_overfill_trip.toml` and
-`tank_overheat_trip.toml`, carry a `[[trips]]` table instead, one, `tank_runs_dry.toml`, runs a tank dry, one,
+the regression anchor** (three, `tank_overfill_trip.toml`,
+`tank_overheat_trip.toml` and `furnace_low_flow_trip.toml`, carry a `[[trips]]` table instead, one, `tank_runs_dry.toml`, runs a tank dry, one,
 `tank_overflow.toml`, spills, and one, `gas_receiver_check_valve.toml`, puts a
 check valve in gas service); adding a loop to one of them
 would move its snapshot, which is why each regulation slice ships a NEW file

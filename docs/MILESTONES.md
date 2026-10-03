@@ -11,6 +11,33 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M32 is CLOSED (2026-10-02): a trip that cuts a furnace's fuel — `docs/DEFERRED.md`
+row E14's furnace clause, struck; the cooler clause stays open.** Taken on a
+DECISION (the user's, on gameplay grounds). One slice, note and build together:
+DESIGN §35.
+- **`TripAction::CutFurnace`** (`actions = [{ furnace = "…" }]`, no `position`,
+  refused if given): writes zero duty, the furnace's ONE safe state. The hold
+  check fails a tick on a lit furnace a latched trip holds; `SetFurnaceDuty`
+  above zero is refused while latched, zero admitted. `SetHeatInput` (a fire) is
+  not fuel and stays admitted.
+- **The trip forces MANUAL on EVERY action's equipment** now, not a valve's
+  alone (its own commit, byte-neutral). A furnace loop yields; on a cascade the
+  furnace's loop is the inner one, so the cut opens the cascade with no new rule.
+- **A cooler is still refused, for its own reason**: cutting it is losing
+  cooling, the hazard rather than the protection. E14 stays open on that clause.
+- **Demo `scenarios/tank_overheat_trip.toml`** (the thirty-third file):
+  `tank_temperature_heating.toml` without its loop, 3 MW by hand, a 75 °C trip.
+  Cuts at tick 1 251 on both fidelities, bit-identical to its twin until then,
+  clears its condition inside the tripping tick (74.967 °C), 40.36 °C at 6 000
+  against the twin's 89.77. At zero duty the furnace's outlet IS its inlet
+  stream's temperature, bit for bit; the next pipe is 0.0008 K warmer (friction).
+- **Gates** `tests/furnace_trip_reference.rs` (six) plus seven sweep cases in
+  `trip_reference.rs`. A cascade hand-back test must move the outer target while
+  the cascade is OPEN: moved in the closing batch it lands a 13.2 K proportional
+  kick (M25's), which reads like a bump and is not the trip's. Seven mutations,
+  six caught, the hold check's deletion uncaught as predicted. All 32 earlier
+  plants byte-identical, no iteration count moved; no Godot build owed.
+
 **M31 is CLOSED (2026-10-02): a check valve in gas service — `docs/DEFERRED.md`
 row E24, now struck.** Taken on a DECISION (the user's). One slice, note and build
 together: DESIGN §34. Read its "Corrections from building it" before touching

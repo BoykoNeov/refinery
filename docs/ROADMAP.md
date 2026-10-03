@@ -7141,3 +7141,38 @@ opened by the cut) and seven refusal cases in `trip_reference.rs`'s sweep. Seven
 mutations, six caught; the hold check's deletion is uncaught as predicted. All
 thirty-two earlier plants byte-identical on both fidelities with no iteration
 count moved; no Godot build owed (no serialised or command change).
+
+## M33 — a trip on a pipe's flow, the low-flow furnace trip: ledger row E13, the flow clause; opened on a decision
+
+### M33 — specified and built in one slice — **LANDED** 2026-10-03, and M33 is CLOSED
+
+Taken on the user's decision after M32 closed, from a short list, on gameplay
+grounds; E13 was not past its trigger. The note is DESIGN §36. A trip may watch a
+declared pipe's `flow`, with a `limit_kg_per_s` of any finite sign. The rule for
+the missing measurement, which M22 left open: a flow is read from the last solve,
+so it is absent for exactly ONE trip pass, tick 1's, and the trip stays armed and
+compares nothing on it; every other absence stays an engine fault. No startup
+bypass is built: on a cold start the trip latches on tick 2 with nothing to cut,
+and the latch is then the start permissive (no light-off until the feed is
+established and the trip reset), so the timer stays in E15. A furnace's or
+cooler's OUTLET stays refused, now for its own reason (it is absent again
+whenever the unit stagnates, which is the low-flow condition itself), and E13
+stays open on that clause.
+
+Demo `scenarios/furnace_low_flow_trip.toml`, the thirty-fourth file: a charge
+tank draining by gravity through a furnace fired by hand at 0.6 MW, and a 2 kg/s
+low-flow trip on the feed. The feed fades from 4.89 kg/s; it ends tick 3 016 at
+1.99951, and the fuel is cut at tick **3 017** on both fidelities, the plant its
+own untripped twin to the bit until then. The cut moves no flow (every flow equals
+the twin's to tick 6 000), so the demo cannot show the latch, and a fixture with
+a restorable feed does. The twin's outlet reads 1 521 °C at tick 5 000 and then
+runs away as the trickle vanishes, a gap of its own (new row B39).
+
+Six gates in `tests/flow_trip_reference.rs` (the demo; the wire form; the latch,
+the lag and the hand-back on a restorable feed; the one-tick window on a plant
+loaded lit; the cold start as a start permissive; a reverse-flow limit) and seven
+cases in `trip_reference.rs`'s sweep. Eight mutations, seven caught; widening the
+tick-1 exemption to every absence is uncaught as predicted, and deleting the
+latch is inert on the demo and caught by the fixture. All thirty-three earlier
+plants byte-identical on both fidelities with no iteration count moved; no Godot
+build owed (no type, field or command changed shape).

@@ -14152,7 +14152,9 @@ or while stagnant (§23).
   §21). A trip on a flow, or on a furnace or cooler outlet, is **refused at load
   by name**, pointing at new row E13, whose trigger is "a low-flow or outlet
   temperature trip", and which owes a stated rule for the missing measurement
-  when it comes.
+  when it comes. *(M33, 2026-10-03: a flow is admitted now, §36. It is absent
+  for exactly one trip pass, tick 1's, which the trip skips; the outlet stays
+  refused, because it is absent again whenever the unit stagnates.)*
 
 So `measure` returns `Some` for every admitted trip on every tick. The engine
 still treats `None` from it as an error rather than a quiet hold, because under
@@ -14448,7 +14450,9 @@ which is why gate 8 exists.
 - **E13 — a trip on a quantity absent at load** (a flow, a furnace or cooler
   outlet). Needs a stated rule for the missing measurement, which for a safety
   function is not the loops' rule, and usually a startup bypass timer. Un-defers
-  with a low-flow or outlet-temperature trip a plant needs.
+  with a low-flow or outlet-temperature trip a plant needs. *(M33, 2026-10-03:
+  the flow clause is closed, §36, with no bypass timer; the outlet clause stays
+  open.)*
 - **E14 — trip equipment beyond pumps and valves**: a furnace's fuel cut, a
   cooler. Un-defers with E13's outlet case, or with a furnace trip on a holdup
   temperature a plant needs. *(M32, 2026-10-02: the furnace clause is closed,
@@ -14528,7 +14532,8 @@ cooler outlet, not `Err`. So asking "can this node answer?" would have admitted 
 outlet trip silently. The rule the loader applies is: `measure` at load must return
 a value, or the trip is refused naming E13. A flow is refused before the pipe name
 is even looked up, so a trip on an undeclared pipe gets the E13 reason and not a
-meter-lookup one. The tick pass still treats `None` as an engine fault.
+meter-lookup one. *(M33, 2026-10-03: a flow is admitted now and resolved
+through the shared meter lookup, §36 fork 2.)* The tick pass still treats `None` as an engine fault.
 
 **A trip that fires on a crossing can clear its own condition inside the tick
 that fires it — on some plants, and the rule for which is stated here.** This is
@@ -17575,4 +17580,234 @@ and `scenarios`). Six caught, one uncaught as predicted.
   reason. Trigger: a cooler whose trip state is a declared duty a plant needs —
   a quench or emergency cooling a trip turns ON.
 - **E13 is unchanged**: a trip on a furnace's own OUTLET temperature is a trip on
-  a quantity absent at load.
+  a quantity absent at load. *(M33, 2026-10-03: E13's flow clause is closed, §36;
+  this outlet clause stays open, for the reason §36 fork 3 gives.)*
+
+## 36. A trip on a pipe's flow — the low-flow furnace trip, ledger row E13's flow clause (M33)
+
+### What licensed this, stated plainly
+
+Nothing fired. E13's trigger ("a low-flow or outlet-temperature trip a plant
+needs") names no shipped plant. **This milestone is a decision**, the user's,
+taken on 2026-10-03 after M32 closed, from a short list, on gameplay grounds: M32
+cut a furnace's fuel when its tank got too hot, and the protection a real fired
+heater carries first is the one that cuts the fuel when the flow through its
+tubes fails. Specified and built in one slice, as M28–M32 were. The demo fires
+the trigger's first clause by being built (M13's shape). The probes, the corpus
+files and the mutation harness are in `W:\temp\claude\m33\`.
+
+**The scope is one more thing a trip may watch: a declared pipe's flow.** The
+equipment is unchanged (a pump, a valve, a furnace). A trip on a furnace's or
+cooler's own OUTLET stays refused, and E13 stays open on that clause (fork 3).
+
+### Fork 1 — the rule for the missing measurement (the crux)
+
+§26 fork 2 refused a flow because it is absent at load and the two candidate rules
+disagree: a loop's "no measurement, no action" is the wrong default for a safety
+function, and the textbook "a missing measurement trips" would fire every flow
+trip on tick 1, which real plants answer with a startup bypass timer. M22 left
+the choice to the slice that needed it. **What decides it is when, exactly, a
+flow is absent**, and that was read off the code rather than assumed:
+
+- `PlantGraph::measure` reads a flow from the last hydraulic solution, never from
+  `Pipe::stream` (§24 fork 2). It returns `None` only when there is no solution.
+- `Engine::last_solution` is `None` at load and `Some` after every successful
+  tick. A tick that fails returns `Err`, and the plant is not run on.
+- So **a flow is absent for exactly one trip pass: tick 1's**, which runs before
+  tick 1's solve. From tick 2 every flow is a measurement, and zero is one (a shut
+  valve's flow is computed, §24).
+
+The textbook rule exists for a FAILED instrument: a transmitter that has stopped
+answering, mid-run, while the plant runs on. This engine has no failed
+instruments, and the one absence a flow has is not one. It is a plant that has
+not run yet. So:
+
+- **(a) "Missing trips."** Rejected: every flow trip would fire on tick 1, before
+  the plant had produced a flow to judge. That is the cost a startup bypass
+  exists to pay.
+- **(b) A startup bypass timer** (a declared time the trip is held off). Rejected
+  for this slice: it is E15's, and fork 5 shows the plant does not need it. The
+  latch already does the job a bypass is usually wanted for, and more strictly.
+- **(c) Skip exactly tick 1's pass, for a flow; every other absence stays an
+  engine fault.** Chosen. The trip stays armed and compares nothing on tick 1,
+  and its snapshot carries no `measurement` (§26 fork 8, unchanged in shape). The
+  exemption is keyed on BOTH "the point is a pipe" and "there is no solution", so
+  a node or outlet reading that slipped past the loader is still an `Err` on
+  tick 1, as before.
+
+**The price of (c), stated rather than hidden.** A plant LOADED with a lit furnace
+on too little flow fires for tick 1 unprotected and trips on tick 2. Exactly one
+tick, and only on a plant whose own file declares the unsafe state. Gate 4 pins
+it: about 1.5 kg/s under 0.6 MW is an outlet above 80 °C on tick 1's snapshot,
+and the cut is on tick 2's.
+
+**One tick of lag on every crossing, which is not new.** A trip compares the state
+standing at the top of its tick (§26 fork 5). For a stored quantity that is the
+end of the last tick's integration; for a flow it is the last tick's solve. So a
+flow trip cuts one tick after the solve that crossed its limit (gate 3 measures
+the furnace firing that one tick on the throttled feed), exactly as a level trip
+fires one tick after the integration that crossed its limit.
+
+### Fork 2 — what a flow trip may watch, and its limit
+
+- **Any declared pipe.** `resolve_measurement_point` is shared with the loops, so
+  a trip meters only a pipe the file wrote, never a loader-made edge, never a
+  name declared twice, and never a pipe with `leak_to` (§24 fork 5: once
+  punctured, the declared name no longer names one flow). Two of those refusals
+  said "a loop" or "a flow loop" and now say "a flow".
+- **NOT the loops' one-hop rule.** A flow loop must meter one of its own valve's
+  two pipes (§24, E12), because the sign of its plant is topology. A trip
+  actuates nothing through the pipe it watches, so no such rule applies, and none
+  is copied across.
+- **`limit_kg_per_s`, any finite value.** Converted by `declared_value`, the one
+  site a setpoint or a limit crosses into SI (§26 fork 6), and range-checked by a
+  new flow arm in `check_trip_limit`. **No sign bound**: the flow is signed by the
+  pipe's declared direction and never clipped (§24, E11), so a low trip at or
+  below zero fires on reverse flow, which is a real design. `nan` is refused.
+- The wrong-key refusal gains the fourth key, both ways: a flow trip declaring
+  `limit_m` is told to write `limit_kg_per_s`, and a level trip declaring
+  `limit_kg_per_s` is told to write `limit_m`.
+
+### Fork 3 — why the outlet clause stays open
+
+A furnace's or cooler's outlet is ALSO absent at load, but not only then. It is
+absent while the unit is stagnant (§23 fork 4: a zero-volume node with no inflow
+holds a placeholder, which `measure` refuses to report). For a furnace that is
+exactly the low-flow condition, mid-run: the moment a safety function needs the
+reading, it has none. Fork 1's argument ("absent once, before the plant has run")
+does not cover that, so the outlet keeps its refusal, now worded with this reason
+and pointing at the flow through the unit as what to watch instead. E13 is
+narrowed to its outlet clause, not struck (B13's and E14's precedent).
+
+### Fork 4 — the demo, and what it is diffed against
+
+`scenarios/furnace_low_flow_trip.toml` (the thirty-fourth file). A 1.25 m² charge
+tank holding 10 m of 20 °C water drains by gravity through a fully open valve
+(`kv = 18`) and a furnace fired by hand at 0.6 MW, into a sink. No command is
+issued: the feed fades because the tank's head does. One trip,
+`{ pipe = "feed_line", variable = "flow" }`, low, 2.0 kg/s, cutting the furnace.
+Measured over 6 000 ticks, both fidelities alike to the printed digits:
+
+- Tick 1: 4.892 kg/s, outlet 49.34 °C, the trip armed with no measurement. From
+  tick 2 it measures every tick.
+- The feed ends tick 3 016 at 1.99951 kg/s (2.00047 at the end of 3 015), so the
+  pass at the top of tick **3 017** fires. Until then the demo's nodes and edges
+  serialise identically to its untripped twin's on every tick.
+- From tick 3 017 the furnace reads zero duty on that tick's own snapshot, and
+  its outlet equals its inlet stream's temperature bit for bit (91.72 °C at the
+  end of 3 016, 20.004 °C at the end of 3 017).
+- **The cut moves no flow.** At constant density nothing hydraulic reads a
+  furnace's duty, so every flow on every tick to 6 000 equals the twin's to the
+  bit, and the solver's iterations are the twin's to the count (Newton 16 057,
+  worst 8; the game solver 15 528, worst 7). The feed never comes back above its
+  limit, so the condition never clears and a reset is refused all the way down.
+  **So the demo cannot show the latch** (deleting it changes nothing here), and
+  the latch is gated on a fixture whose feed can be restored (gate 3).
+- The twin's outlet passes 100 °C at tick 3 232, reads 155.9 °C at 4 000, 269 °C
+  at 4 500 and 1 521 °C at 5 000 (on 0.0955 kg/s). Past that the trickle vanishes
+  and the number stops meaning anything (new row B39); no gate reads it.
+
+### Fork 5 — the cold start, and why no startup bypass is built
+
+A plant loaded with its feed valve shut and its furnace out trips on tick 2 (the
+flow is a measured zero) with nothing to cut, and the hold check finds the
+furnace out on every tick after. The latch is then a **start permissive**: a
+light-off is refused until the feed is open, a solve has seen it, and the trip is
+reset. That is the sequence a real low-flow interlock imposes on a light-off. A
+timer that held the trip off would admit the opposite: a human lighting the
+furnace with no flow for as long as the timer ran. So the bypass stays E15's, for
+a plant or frontend that needs one for another reason.
+
+### What a reset reads
+
+Unchanged, and now visible on a flow: the reset reads the measurement FRESH (§26
+fork 4), which for a flow is the last solve. So a reset sent in the same breath
+as the command that reopens the feed is refused, because no solve has seen the
+valve move, and one tick later it is admitted. The reset's internal "no
+measurement" error stays unreachable: before tick 1 every trip is armed, and an
+armed trip's reset is refused first.
+
+### Gates — `crates/scenarios/tests/flow_trip_reference.rs`
+
+1. **The demo cuts on its tick and moves no flow**, both fidelities: no
+   measurement on tick 1 and one on every tick after; armed, lit and
+   bit-identical to its twin through tick 3 016; the feed above 2 kg/s at the end
+   of 3 015 and at or below it at the end of 3 016; `Tripped { at_tick: 3017 }`
+   from 3 017 to 6 000; zero duty and the outlet equal to its inlet stream
+   exactly; every flow equal to the twin's on every tick; a reset refused at
+   3 117; at tick 5 000 the twin's outlet above 1 000 °C and the demo's at its
+   feed temperature.
+2. **The wire form**, on the bytes: no `measurement` key on tick 1 (skipped, not
+   `null`); `"limit":{"variable":"flow","kg_per_s":2.0}`; from tick 2 a
+   `"measurement":{"variable":"flow",…}`.
+3. **The latch, the lag and the hand-back**, both fidelities, on the demo with its
+   tank swapped for a 2 bar source: throttling the feed valve to 0.2 lands in the
+   next solve, the furnace fires that tick on the low flow (outlet more than 20 K
+   hotter), and the next tick cuts; a relight and a reset are refused; the cut
+   itself is admitted; with the feed reopened, a reset in the same breath is
+   refused; for ten ticks the flow is back above 4 kg/s and the LATCH holds the
+   cut; the reset is then admitted, relights nothing, and a human relight heats
+   the outlet again.
+4. **The one-tick window**: loaded lit on a 0.2-open feed, tick 1 has no
+   measurement, a lit furnace and an outlet above 80 °C; tick 2 trips and cuts.
+5. **The cold start**: loaded shut and out, armed with no measurement on tick 1,
+   `Tripped { at_tick: 2 }` with a measured `Flow { 0.0 }` on tick 2, the furnace
+   out for five more ticks; a light-off and a reset refused; opening the valve
+   does not admit a light-off; one tick later the reset is admitted, then the
+   light-off, and the outlet heats.
+6. **A reverse-flow limit** (`-0.5`) loads, as fork 2 says.
+7. **The load-time sweep** (`trip_reference.rs`): a flow with a level's limit key
+   (this case asserted E13 before M33), a flow with no limit, a `nan` flow limit,
+   a flow on a loader-made edge, a flow on a leaking pipe, a flow's key on a
+   level, and the furnace outlet, now refused for the stagnation reason.
+
+### What must not change, measured
+
+All thirty-three earlier plants byte-identical on both fidelities, worst AND total
+iterations unchanged, against baselines taken before the first edit. The
+mechanism: the exemption is reached only by a trip on a pipe, and no earlier
+plant has one; the loader's new admission is reached only by a `flow` trip,
+which no earlier file declares. "Runs byte-identical" means post-M33 identical,
+unchanged. **No Godot build is owed**: no type, field or `Command` changed shape
+(a flow limit is a `ControlledValue` the wire already carried for flow loops),
+and the bridge matches on neither.
+
+### The mutation pass (M33)
+
+Eight edits, predicted before the run, each applied to the committed feature and
+restored from the copy read before it (`W:\temp\claude\m33\mutate.py`,
+`cargo test --release --no-fail-fast` on `core` and `scenarios`; the tree checked
+clean after the pass). Seven caught, one uncaught as predicted.
+
+| # | edit | predicted | caught by |
+|---|---|---|---|
+| 1 | a missing flow TRIPS (fork 1's rejected (a)) | gate 1: the demo trips on tick 1 | gates 1, 2, 3, 4, 5 |
+| 2 | the tick-1 exemption widened to every absence | **uncaught** | uncaught: it backs up the loader's admission, and nothing that loads reaches it |
+| 3 | no latch: a trip re-arms when its condition clears | inert on the demo; gate 3 | gate 3, and the M22, M30 and M32 latch gates; NOT gate 1 (the demo's feed never recovers) |
+| 4 | the loader refuses a flow again | every flow fixture fails to load | gates 1–6 and the sweep |
+| 5 | the outlet refusal deleted | the sweep's outlet case | the sweep |
+| 6 | a `nan` flow limit accepted | the sweep's `nan` case | the sweep |
+| 7 | `limit_kg_per_s` ignored | every flow fixture fails to load | gates 1–6 and the sweep |
+| 8 | the reset reads the last PASS's measurement, not the last solve | gate 5 | gate 5, and M22's and M32's reset gates; NOT gate 3, whose reset comes ten ticks after the feed is back, when the two readings agree |
+
+### Deferred, with what un-defers each
+
+- **E13, the outlet clause** (fork 3). Trigger unchanged: an outlet-temperature
+  trip a plant needs. It owes a rule for an absence that happens mid-run.
+- **E15** keeps the startup bypass (fork 5), with the rest of a real safety
+  system. It needs a reason other than light-off, which the latch already
+  sequences.
+- **B39 — a fired zero-volume unit on a vanishing flow.** A furnace's outlet is
+  `T_in + Q/(ṁ·cp)` with no thermal mass, so under a lit furnace the outlet grows
+  without bound as the flow goes to zero (the twin: 22 157 °C at tick 5 100), and
+  once the flow is exactly zero the unit is stagnant and HOLDS the last such
+  value, while its duty is dropped (`energy::mix_inflows`' documented gap).
+  Measured on the demo's untripped twin: the flow reaches exactly zero at tick
+  5 238 (Newton) and 5 306 (the game solver), each after a different trickle
+  (A15's shape), and the held outlets read about 2.1e10 °C and 1.0e14 °C. Nothing
+  Errs: `checked_temperature` bounds a mix only from below. Trigger: a plant or
+  frontend that must show what a furnace fired dry does (tube-metal temperature,
+  a burn-out as a damage event), or a gate that reads an outlet on a flow below
+  what anything derives. Fixing it needs tube-metal thermal mass (E10's subject)
+  or a refusal with a stated bound, and either moves a reported number on any
+  plant that fires a near-stagnant furnace.
