@@ -1,0 +1,114 @@
+# M37 demo: a furnace's tubes burn out — damage the engine raises on its own.
+#
+#   charge (gas oil, 6 bar) -> feed_valve -> heater (1.5 MW, FOULED coil) -> product (2 bar)
+#
+# **What happens, measured on both fidelities** (docs/DESIGN.md §42). The coil
+# is fouled — its `UA` is 2 kW/K, a sixth of the 12.6 kW/K the feed carries,
+# where §37's rule for a clean coil is twice it — so at 1.5 MW it cannot pass
+# its heat to the oil and climbs from 150 °C. At the end of tick 1 144 it stands
+# past its tubes' 550 °C limit, and on tick 1 145's top pass the tubes BURST:
+# the engine opens the 1 cm² hole the loader built, dormant, on the outlet pipe.
+# Gas oil sprays out of it at 0.815 kg/s from the ~2 bar line and burns in the
+# firebox at 42.8 MJ/kg — a 34.9 MW fire, twenty-three times the burners' duty.
+# The fire is FUEL, so it fires through the flame law with the duty: the coil
+# climbs to 1 781.2 °C and levels off under its 1 951.1 °C flame, with 33.2 MW
+# going up the stack and the oil leaving at 304.5 °C.
+#
+# **What it cannot show, because a scenario file cannot command**: the player's
+# side. Patching the hole (`puncture_pipe` at area 0 on `heated_line`) puts the
+# fire out; replacing the tubes (`replace_tubes` on `heater`) re-arms them, and
+# is refused while the hole is open or the coil is still past its limit. Those
+# are gated on this file in `crates/scenarios/tests/burnout_reference.rs`.
+#
+# **What the numbers are.** The limit and the hole are ROUND GAME-TUNING VALUES,
+# not a cited metal limit (the user's decision, 2026-10-03). The heating value
+# is gas oil's lower heating value, 42.8 MJ/kg (Engineering ToolBox, "Fuels -
+# Higher and Lower Calorific Values"); the gas oil itself is `fcc_plant.toml`'s.
+# The limit is compared with the coil's LUMPED temperature, and as an instant
+# failure point — a real tube fails by creep over time at temperature
+# (docs/DEFERRED.md B42).
+#
+#   cargo run -p refinery-cli -- run scenarios/furnace_burnout.toml --ticks 3000
+
+[meta]
+name = "furnace_burnout"
+description = "A fouled furnace over-fired on gas oil: its tubes burst at 550 °C, the leak burns in the firebox, and the coil climbs to the flame."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+# `fcc_plant.toml`'s gas oil: a liquid throughout (its 400 °C boiling point is
+# never reached in the line; `thermo = "constant"` does not boil anyway).
+[[components]]
+name = "gasoil"
+tb_c = 400.0
+molar_mass_kg_per_mol = 0.300
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 2000.0
+
+[nodes.charge]
+type = "source"
+pressure_bar = 6.0
+temperature_c = 50.0
+composition = { gasoil = 1.0 }
+
+# Fully open and never moved: 6.29 kg/s of gas oil through the heater.
+[nodes.feed_valve]
+type = "valve"
+kv = 12.0
+opening = 1.0
+
+# Fired by hand at 1.5 MW on a FOULED coil, and left there.
+[nodes.heater]
+type = "furnace"
+duty_mw = 1.5
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW; UA a sixth of the feed's
+# 12.6 kW/K capacity rate (fouled — §37's clean coil is twice it); loaded at
+# 150 °C, far below where this firing settles it.
+coil_heat_capacity_mj_per_k = 1.5
+coil_ua_kw_per_k = 2.0
+coil_temperature_c = 150.0
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132).
+flame_temperature_c = 1951.1
+# Tubes (docs/DESIGN.md §42): round game-tuning values, a 550 °C limit and a
+# 1 cm² hole; gas oil burns at 42.8 MJ/kg (Engineering ToolBox).
+tube_failure_c = 550.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.8
+
+[nodes.product]
+type = "sink"
+pressure_bar = 2.0
+temperature_c = 50.0
+composition = { gasoil = 1.0 }
+
+[[pipes]]
+name = "feed_line"
+from = "charge"
+to = "feed_valve"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "valve_line"
+from = "feed_valve"
+to = "heater"
+length_m = 5.0
+diameter_m = 0.10
+
+# The heater's outlet: split at load for its burn-out hole, which vents to the
+# loader-made `burnout_atmosphere` (this plant has no tank and declares no
+# atmosphere). The declared name is the upstream half, and is what a player
+# punctures, or patches.
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "product"
+length_m = 20.0
+diameter_m = 0.10

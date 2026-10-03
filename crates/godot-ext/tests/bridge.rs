@@ -184,6 +184,7 @@ fn wire_text(cmd: &Command) -> &'static str {
             r#"{"cmd":"set_setpoint","loop_id":0,"value":{"variable":"level","m":5.0}}"#
         }
         Command::ResetTrip { .. } => r#"{"cmd":"reset_trip","trip_id":0}"#,
+        Command::ReplaceTubes { .. } => r#"{"cmd":"replace_tubes","node":1}"#,
     }
 }
 
@@ -223,6 +224,7 @@ fn every_variant() -> Vec<Command> {
             value: ControlledValue::Level { m: Meter(5.0) },
         },
         Command::ResetTrip { trip_id: TripId(0) },
+        Command::ReplaceTubes { node: NodeId(1) },
     ]
 }
 
@@ -252,7 +254,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 9, "a Command variant was added");
+    assert_eq!(every_variant().len(), 10, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -281,6 +283,14 @@ fn fixture(cmd: &Command) -> Fixture {
             trip: "dump_on_high_level",
             ticks: TRIP_TICKS,
         },
+        // New tubes are legal only on burst ones whose hole is patched and whose
+        // coil has cooled, so the M37 demo is burst, patched and cooled first —
+        // see `Fixture::Burnt`.
+        Command::ReplaceTubes { .. } => Fixture::Burnt {
+            plant: "furnace_burnout.toml",
+            furnace: "heater",
+            outlet: "heated_line",
+        },
     }
 }
 
@@ -305,6 +315,14 @@ enum Fixture {
         src: &'static str,
         trip: &'static str,
         ticks: u32,
+    },
+    /// A furnace whose tubes have burst (M37, docs/DESIGN.md §42): the shipped
+    /// plant is run past its burst (tick 1 145), its hole patched and its fuel
+    /// cut through the bridge, and run on until the coil is cold.
+    Burnt {
+        plant: &'static str,
+        furnace: &'static str,
+        outlet: &'static str,
     },
 }
 
@@ -380,6 +398,30 @@ fn every_command_variant_is_accepted_by_a_real_engine() {
                     })
                     .unwrap_or_else(|| panic!("inline plant has no trip '{trip}'"));
                 (sim, "trip_id", id, "the inline trip plant")
+            }
+            Fixture::Burnt {
+                plant,
+                furnace,
+                outlet,
+            } => {
+                let mut sim = bridge(plant);
+                for _ in 0..1_160 {
+                    sim.tick().expect("the burn-out demo ticks");
+                }
+                let heater = sim.node_id(furnace).expect("the furnace");
+                let pipe = sim.edge_id(outlet).expect("its outlet");
+                sim.apply_command_json(&format!(
+                    r#"{{"cmd":"puncture_pipe","edge":{pipe},"area":0.0}}"#
+                ))
+                .expect("the patch");
+                sim.apply_command_json(&format!(
+                    r#"{{"cmd":"set_furnace_duty","node":{heater},"duty":0.0}}"#
+                ))
+                .expect("the cut");
+                for _ in 0..600 {
+                    sim.tick().expect("the cooling plant ticks");
+                }
+                (sim, "node", heater, plant)
             }
         };
 

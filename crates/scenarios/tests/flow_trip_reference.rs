@@ -220,8 +220,13 @@ fn expect_refused(result: Result<(), String>, what: &str, says: &str) {
 #[test]
 fn the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow() {
     for solver in ["newton", "simple"] {
-        let mut demo = build(&with_solver(DEMO, solver));
-        let mut twin = build(&with_solver(&swap(DEMO, DEMO_TRIP, ""), solver));
+        // Neither may burst its tubes (M37, docs/DESIGN.md §42): the untripped
+        // twin's dry coil passes the shipped 550 °C at tick 5 253, and the hole
+        // that opens carries ~1e-10 kg/s of rounding — damage, not the cut this
+        // gate compares. So both take a limit above their flame.
+        let never = |src: &str| swap(src, "tube_failure_c = 550.0", "tube_failure_c = 3000.0");
+        let mut demo = build(&with_solver(&never(DEMO), solver));
+        let mut twin = build(&with_solver(&never(&swap(DEMO, DEMO_TRIP, "")), solver));
         assert!(twin.snapshot().trips.is_empty(), "the twin has no trip");
 
         let mut previous_coil = coil_k(&demo);

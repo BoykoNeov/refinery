@@ -19,15 +19,23 @@
 #
 # **What it does, measured on both fidelities.** The feed falls from 1.55 kg/s as
 # the head falls, and the coil, sized for M33's three-times larger feed, climbs
-# from the start: past 100 °C at tick 140, 539.0 °C when the feed reaches exactly
-# zero (tick 1 749 on Newton, 1 819 on the game solver). From there it is the
+# from the start: past 100 °C at tick 140, and the feed is dry — below the solve's
+# 1e-8 kg/s floor — from tick 1 743 (Newton) and 1 744 (game); 538.82 °C at tick
+# 1 749. (Until M37 the feed reached exactly zero, at 1 749 and 1 819; since M37
+# splits the outlet for its burn-out hole, Newton settles the dry line to
+# ±2.6e-12 kg/s of residual.) From there it is the
 # closed form `T_f − (T_f − T_c)·e^(−t/τ)`: 1 212.3 °C at tick 3 000, 1 794.8 °C
 # at 6 000 — 552 kW of the 600 going up the stack — and 1 950.99 °C at 20 000,
 # under the 1 951.1 °C flame it never crosses. The coil's numbers agree on both
 # fidelities to the printed digit.
 #
-# **What it does not show.** Real tubes fail far below the flame, and a burn-out
-# is the next slice (docs/DEFERRED.md B40's burn-out clause). The FLUID's
+# **Its tubes burst, with nothing to burn** (M37, docs/DESIGN.md §42). The coil
+# passes its 550 °C limit once the feed is dry, so the tubes burst on tick 1 766 on
+# both fidelities and the hole opens on the outlet pipe — but the line is dry and
+# the fluid is water: the hole carries at most 7.8e-11 kg/s of rounding and the
+# fire is exactly zero. The coil climbs on to its flame as before.
+#
+# **What it does not show.** The FLUID's
 # temperature on the dry ticks is the coil's to within one rounding step spread
 # over a vanishing capacity rate (§37 correction 2): within 0.37 K on Newton, but
 # up to 23.7 K either side on the game solver's 1e-11 kg/s residual trickle, which

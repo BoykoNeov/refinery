@@ -1824,7 +1824,11 @@ fn resolve_measurement_point(
             if let Some(furnace) = graph.find_node(&pipe.from) {
                 if matches!(graph.node(furnace).kind, NodeKind::Furnace { .. }) {
                     return Err(SimError::Scenario(format!(
-                        "{owner} measures pipe '{name}', the outlet of furnace '{}'. Every                          furnace's outlet is split at load for the hole its tubes burst into                          (docs/DESIGN.md §42), and once that hole is open the two halves carry                          different flows, so the name no longer names one flow. Meter the                          furnace's flow on its inlet pipe",
+                        "{owner} measures pipe '{name}', the outlet of furnace '{}'. Every \
+                         furnace's outlet is split at load for the hole its tubes burst into \
+                         (docs/DESIGN.md §42), and once that hole is open the two halves carry \
+                         different flows, so the name no longer names one flow. Meter the \
+                         furnace's flow on its inlet pipe",
                         pipe.from
                     )));
                 }
@@ -3167,7 +3171,10 @@ fn burnout_atmosphere_for(
         Some(existing) if matches!(graph.node(existing).kind, NodeKind::Atmosphere) => {}
         Some(_) => {
             return Err(SimError::Scenario(format!(
-                "this plant has a furnace, whose burn-out hole would vent to an atmosphere                  named '{name}' — and the plant already has a node by that name which is not                  an atmosphere. Rename it, or declare an atmosphere node and the hole will                  use it (docs/DESIGN.md §42)"
+                "this plant has a furnace, whose burn-out hole would vent to an atmosphere \
+                 named '{name}' — and the plant already has a node by that name which is not \
+                 an atmosphere. Rename it, or declare an atmosphere node and the hole will \
+                 use it (docs/DESIGN.md §42)"
             )));
         }
         None => {

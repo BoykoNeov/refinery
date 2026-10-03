@@ -10,7 +10,7 @@ use crate::error::SimError;
 use crate::graph::{
     Actuator, ActuatorLimit, ControlAction, ControlLoop, ControlMode, ControlledValue, LeakRole,
     LoopId, MeasuredVariable, MeasurementPoint, NodeId, NodeKind, PlantGraph, SetpointRange,
-    TripAction, TripId, TripState,
+    TripAction, TripId, TripState, TubeState,
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
@@ -601,6 +601,58 @@ impl Engine {
                     .setpoint = value;
                 Ok(())
             }
+            // Replace burst tubes (M37, docs/DESIGN.md §42): re-arm the burn-out
+            // and nothing else. The hole is patched first, by `PuncturePipe` at
+            // zero, so "the leak stopped" and "the tubes were replaced" stay two
+            // events a player can see — `ResetTrip`'s shape.
+            Command::ReplaceTubes { node } => {
+                let name = self.graph.node(node).name.clone();
+                let NodeKind::Furnace { coil, tubes, .. } = &self.graph.node(node).kind else {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') is not a furnace, so it has no tubes to replace"
+                    )));
+                };
+                if !tubes.state.is_failed() {
+                    return Err(SimError::InvalidCommand(format!(
+                        "furnace '{name}' has intact tubes: there is nothing to replace"
+                    )));
+                }
+                // The player's order: patch the hole, let the coil cool, replace.
+                let hole = self.burnout_hole(node, tubes.hole)?;
+                if let LeakRole::Orifice { area } = self.graph.pipe(hole).leak {
+                    if area.value() > 0.0 {
+                        let pipe = self
+                            .graph
+                            .edge_ids()
+                            .find(|&e| {
+                                self.graph.pipe(e).leak == LeakRole::Punctureable { orifice: hole }
+                            })
+                            .map(|e| self.graph.pipe(e).name.clone())
+                            .unwrap_or_default();
+                        return Err(SimError::InvalidCommand(format!(
+                            "furnace '{name}' still leaks through a {:.2} cm² hole: patch it \
+                             first (`puncture_pipe` at area 0 on '{pipe}'), then replace the \
+                             tubes",
+                            area.value() * 1e4
+                        )));
+                    }
+                }
+                // Measured FRESH: the coil is a state, and the one standing now is
+                // what the next tick's burn-out pass will compare.
+                if coil.temperature >= tubes.failure_temperature {
+                    return Err(SimError::InvalidCommand(format!(
+                        "furnace '{name}' coil is at {:.1} °C, at or past its tubes' {:.1} °C \
+                         limit: new tubes would burst on the next tick. Let the coil cool \
+                         first (cut the fuel)",
+                        coil.temperature.value() - 273.15,
+                        tubes.failure_temperature.value() - 273.15
+                    )));
+                }
+                if let NodeKind::Furnace { tubes, .. } = &mut self.graph.node_mut(node).kind {
+                    tubes.state = TubeState::Intact;
+                }
+                Ok(())
+            }
             // Re-arm a latched trip (docs/DESIGN.md §26 fork 4). It moves no
             // equipment: it lifts the refusals, and a human restarts the plant.
             Command::ResetTrip { trip_id } => {
@@ -671,6 +723,15 @@ impl Engine {
         //     solve below sees the safe state, so the flow a trip stops is zero
         //     in this tick's own snapshot.
         self.run_trips()?;
+
+        // 0a′. Damage the plant does to itself (M37, docs/DESIGN.md §42). A
+        //     furnace whose coil stands at or past its tubes' limit bursts them,
+        //     on the same start-of-tick state the trips read. After the trips,
+        //     and it does not matter which way round: a trip writes pumps,
+        //     valves and duties, a burn-out writes a hole, and neither reads what
+        //     the other writes. So a trip on a coil and a burn-out reached on the
+        //     same tick both happen — protection does not un-burst a tube.
+        self.run_burnouts()?;
 
         // 0b. Regulation (M8.2). The control loops run at the TOP of the tick, on
         //    the state standing at the start of it, and write their actuators
@@ -1898,6 +1959,73 @@ impl Engine {
         Ok(())
     }
 
+    /// Burst the tubes of every furnace whose coil stands at or past their
+    /// limit, on the state standing at the top of this tick (M37,
+    /// docs/DESIGN.md §42).
+    ///
+    /// **Write once, latch, hold nothing.** An intact furnace at its limit opens
+    /// its burn-out hole to `rupture_area` — or leaves it wider, if a hand
+    /// puncture already opened it more — and latches `Failed` with this tick.
+    /// Unlike a trip, nothing is then held: a burst tube is damage, and patching
+    /// the hole (`PuncturePipe` at zero) is the player's to do. Failed tubes
+    /// stay failed until `Command::ReplaceTubes`, so a hole opened again by
+    /// hand on them burns again.
+    ///
+    /// Measure then write, like the trips: every furnace is checked before any
+    /// hole is opened, though no burn-out reads what another writes.
+    fn run_burnouts(&mut self) -> Result<(), SimError> {
+        let this_tick = self.tick + 1;
+        let mut bursts: Vec<(NodeId, Option<crate::graph::EdgeId>, SquareMeter)> = Vec::new();
+        for nid in self.graph.node_ids() {
+            if let NodeKind::Furnace { coil, tubes, .. } = &self.graph.node(nid).kind {
+                if !tubes.state.is_failed() && coil.temperature >= tubes.failure_temperature {
+                    bursts.push((nid, tubes.hole, tubes.rupture_area));
+                }
+            }
+        }
+        for (nid, hole, rupture_area) in bursts {
+            let hole = self.burnout_hole(nid, hole)?;
+            let open = match self.graph.pipe(hole).leak {
+                LeakRole::Orifice { area } => area,
+                _ => unreachable!("`burnout_hole` returns only a leak orifice"),
+            };
+            self.graph.pipe_mut(hole).leak = LeakRole::Orifice {
+                area: SquareMeter(open.value().max(rupture_area.value())),
+            };
+            if let NodeKind::Furnace { tubes, .. } = &mut self.graph.node_mut(nid).kind {
+                tubes.state = TubeState::Failed { at_tick: this_tick };
+            }
+        }
+        Ok(())
+    }
+
+    /// A furnace's burn-out hole, checked to be a leak orifice in this graph.
+    /// The loader builds one on every furnace; a graph built by hand without one
+    /// is refused when its tubes fail rather than skipped (rule 5).
+    fn burnout_hole(
+        &self,
+        furnace: NodeId,
+        hole: Option<crate::graph::EdgeId>,
+    ) -> Result<crate::graph::EdgeId, SimError> {
+        let name = &self.graph.node(furnace).name;
+        let hole = hole.ok_or_else(|| {
+            SimError::Scenario(format!(
+                "furnace '{name}' has burst its tubes but owns no burn-out hole. The loader \
+                 builds one on every furnace's outlet pipe; a graph built by hand must do the \
+                 same (docs/DESIGN.md §42)"
+            ))
+        })?;
+        if !self.graph.has_edge(hole)
+            || !matches!(self.graph.pipe(hole).leak, LeakRole::Orifice { .. })
+        {
+            return Err(SimError::Numerical(format!(
+                "internal: furnace '{name}' names {hole:?} as its burn-out hole, which is not \
+                 a leak orifice in this plant (docs/DESIGN.md §42)"
+            )));
+        }
+        Ok(hole)
+    }
+
     /// The hold check for one action of one latched trip: its equipment must
     /// still be in the safe state the trip wrote (docs/DESIGN.md §26 fork 3).
     fn check_trip_holds(&self, trip: &str, action: TripAction) -> Result<(), SimError> {
@@ -2121,6 +2249,9 @@ impl Engine {
             Command::PuncturePipe { edge, .. } => {
                 (!self.graph.has_edge(edge)).then(|| format!("{edge:?} names no pipe"))
             }
+            Command::ReplaceTubes { node } => {
+                (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
+            }
             Command::SetControllerMode { .. }
             | Command::SetSetpoint { .. }
             | Command::ResetTrip { .. } => None,
@@ -2231,6 +2362,8 @@ impl Engine {
                     // every node that is not a furnace — see
                     // `NodeSnapshot::flue_loss_w`.
                     flue_loss_w: self.node_states.flue_loss.get(&id).map(|w| w.value()),
+                    // Likewise — see `NodeSnapshot::tube_fire_w`.
+                    tube_fire_w: self.node_states.tube_fire.get(&id).map(|w| w.value()),
                 }
             })
             .collect();

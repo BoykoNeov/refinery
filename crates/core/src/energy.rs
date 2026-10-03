@@ -53,7 +53,7 @@
 
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
-use crate::graph::{ColumnDraw, EdgeId, FurnaceCoil, NodeId, NodeKind, PlantGraph};
+use crate::graph::{ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, NodeId, NodeKind, PlantGraph};
 use crate::traits::{
     ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, ReactionModel, Separation,
     SeparationModel, StarvedTank, ThermoModel,
@@ -951,6 +951,12 @@ pub struct NodeStates {
     /// DIAGNOSTIC like `reactor_duty` — nothing in the forward solve reads it —
     /// published because a plant's energy books do not close without it.
     pub flue_loss: BTreeMap<NodeId, Watt>,
+    /// Each furnace's burn-out fire [W] this tick (M37, docs/DESIGN.md §42):
+    /// what leaked out of its burst tubes, times the fluid's heating value,
+    /// burning in its firebox. Zero on intact tubes and on a patched hole. A
+    /// DIAGNOSTIC like `flue_loss`, and for the same reason: the books do not
+    /// close without it. Empty on a plant with no furnace.
+    pub tube_fire: BTreeMap<NodeId, Watt>,
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -1038,6 +1044,7 @@ pub fn resolve_node_states(
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
     let mut coil_temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
     let mut flue_loss: BTreeMap<NodeId, Watt> = BTreeMap::new();
+    let mut tube_fire: BTreeMap<NodeId, Watt> = BTreeMap::new();
     let mut composition: BTreeMap<NodeId, Composition> = BTreeMap::new();
     let mut reactor_duties: BTreeMap<NodeId, ReactorDuty> = BTreeMap::new();
     let mut separations: BTreeMap<NodeId, Separation> = BTreeMap::new();
@@ -1279,7 +1286,7 @@ pub fn resolve_node_states(
                         duty,
                         coil,
                         flame_temperature,
-                        ..
+                        tubes,
                     } = &graph.node(id).kind
                     {
                         // A furnace heats its fluid through its coil (M34,
@@ -1299,11 +1306,13 @@ pub fn resolve_node_states(
                             *duty,
                             coil,
                             *flame_temperature,
+                            tubes,
                             dt,
                         )?;
                         temperature.insert(id, pass.fluid);
                         coil_temperature.insert(id, pass.coil);
                         flue_loss.insert(id, pass.flue);
+                        tube_fire.insert(id, pass.fire);
                     } else {
                         let mixed = mix_inflows(
                             graph,
@@ -1457,6 +1466,7 @@ pub fn resolve_node_states(
         held,
         coil_temperature,
         flue_loss,
+        tube_fire,
     })
 }
 
@@ -1822,6 +1832,8 @@ struct CoilPass {
     coil: Kelvin,
     /// The tick's average stack loss [W] (M36, docs/DESIGN.md §40).
     flue: Watt,
+    /// The burn-out fire [W] (M37, docs/DESIGN.md §42).
+    fire: Watt,
 }
 
 /// Integrate a furnace's coil across one tick and heat its fluid with what the
@@ -1836,11 +1848,13 @@ struct CoilPass {
 /// (ibid. §5.1). The duty `Q` is what the burners release: a well-stirred
 /// firebox whose gas leaves at the coil's temperature, with a flue capacity
 /// rate `Q/(T_f − T_a)` proportional to the firing, loses `K_f·(T_c − T_a)` up
-/// the stack, `K_f = Q/(T_f − T_a)` (§40 fork 1). A fire `F` is a fixed heat
-/// into the metal, outside the flame law:
+/// the stack, `K_f = Q/(T_f − T_a)` (§40 fork 1). A burn-out fire `L` (M37,
+/// §42) — what leaks from burst tubes, times its heating value — is fuel too,
+/// so it fires beside the duty: `K_f = (Q + L)/(T_f − T_a)`. A commanded fire
+/// `F` is a fixed heat into the metal, outside the flame law:
 ///
 /// ```text
-/// C·dT_c/dt = Q + F − K_f·(T_c − T_a) − G·(T_c − T_in)
+/// C·dT_c/dt = Q + L + F − K_f·(T_c − T_a) − G·(T_c − T_in)
 /// ```
 ///
 /// With everything but `T_c` frozen across the tick that is linear in `T_c`,
@@ -1886,16 +1900,43 @@ fn furnace_coil(
     duty: Watt,
     coil: &FurnaceCoil,
     flame_temperature: Kelvin,
+    tubes: &FurnaceTubes,
     dt: Seconds,
 ) -> Result<CoilPass, SimError> {
     let name = &graph.node(node).name;
-    // Duty and any fire alike go into the metal: `heat_load` is still the one
-    // owner of how much heat enters this node. Only the duty is fuel, so only
-    // the duty has a flue (§40 fork 2).
-    let fired = heat_load(graph.node(node)).value();
+    // The burn-out fire (M37, docs/DESIGN.md §42): while the tubes are FAILED,
+    // what flows out of their hole this tick burns in the firebox. It is FUEL —
+    // the process fluid burning in the burners' air — so unlike a commanded
+    // fire it fires through the flame law below, as extra firing beside the
+    // duty. Read off THIS tick's solve, which never reads a duty, so nothing is
+    // circular and nothing is stored. Only an OUTWARD flow burns; a hole the
+    // plant draws in through is refused by the solve before it gets here.
+    let leak_fire = if tubes.state.is_failed() {
+        let hole = tubes.hole.ok_or_else(|| {
+            SimError::Scenario(format!(
+                "furnace '{name}' has burst tubes but owns no burn-out hole. The loader \
+                 builds one on every furnace's outlet pipe; a graph built by hand must do \
+                 the same (docs/DESIGN.md §42)"
+            ))
+        })?;
+        let leaked = edge_mass_flow.get(&hole).copied().ok_or_else(|| {
+            SimError::Numerical(format!(
+                "furnace '{name}': the solve reported no flow for its burn-out hole {hole:?}"
+            ))
+        })?;
+        leaked.max(0.0) * tubes.heating_value.value()
+    } else {
+        0.0
+    };
+    // Duty, burn-out fire and any commanded fire all go into the metal:
+    // `heat_load` is still the one owner of the duty and the commanded fire.
+    // The duty and the burn-out fire are fuel, so they have a flue; a
+    // commanded fire is not, and has none (§40 fork 2).
+    let fired = heat_load(graph.node(node)).value() + leak_fire;
     let air = T_AMBIENT.value();
-    // Flue conductance, K_f = Q/(T_f − T_a) (§40 fork 1). Exactly zero unlit.
-    let flue_conductance = duty.value() / (flame_temperature.value() - air);
+    // Flue conductance, K_f = Q/(T_f − T_a) (§40 fork 1), with Q the FUEL
+    // fired: the duty plus the burn-out fire. Exactly zero unlit and intact.
+    let flue_conductance = (duty.value() + leak_fire) / (flame_temperature.value() - air);
     let capacity = coil.heat_capacity.value();
     let ua = coil.conductance.value();
     let start = coil.temperature.value();
@@ -1959,6 +2000,7 @@ fn furnace_coil(
             fluid: coil_end,
             coil: coil_end,
             flue: Watt(flue),
+            fire: Watt(leak_fire),
         });
     };
     // What the coil gave the fluid this tick, as an average power [W]: fired
@@ -1990,6 +2032,7 @@ fn furnace_coil(
         fluid,
         coil: coil_end,
         flue: Watt(flue),
+        fire: Watt(leak_fire),
     })
 }
 

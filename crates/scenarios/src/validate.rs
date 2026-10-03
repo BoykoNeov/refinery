@@ -226,17 +226,22 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
         // fuel alone can never burn out.
         if !tube_failure_c.is_finite() || *tube_failure_c <= *coil_temperature_c {
             return Err(SimError::Scenario(format!(
-                "furnace '{name}' has tube_failure_c = {tube_failure_c}: it must be finite and                  above its coil_temperature_c = {coil_temperature_c}. Tubes loaded at or past                  their failure limit would burst before the plant has run."
+                "furnace '{name}' has tube_failure_c = {tube_failure_c}: it must be finite and \
+                 above its coil_temperature_c = {coil_temperature_c}. Tubes loaded at or past \
+                 their failure limit would burst before the plant has run."
             )));
         }
         if !tube_rupture_area_cm2.is_finite() || *tube_rupture_area_cm2 <= 0.0 {
             return Err(SimError::Scenario(format!(
-                "furnace '{name}' has tube_rupture_area_cm2 = {tube_rupture_area_cm2}: it must                  be finite and > 0. A burn-out that opens no hole is not a burn-out."
+                "furnace '{name}' has tube_rupture_area_cm2 = {tube_rupture_area_cm2}: it must \
+                 be finite and > 0. A burn-out that opens no hole is not a burn-out."
             )));
         }
         if !fluid_heating_value_mj_per_kg.is_finite() || *fluid_heating_value_mj_per_kg < 0.0 {
             return Err(SimError::Scenario(format!(
-                "furnace '{name}' has fluid_heating_value_mj_per_kg =                  {fluid_heating_value_mj_per_kg}: it must be finite and >= 0 (0 for a fluid                  that does not burn, such as water)."
+                "furnace '{name}' has fluid_heating_value_mj_per_kg = \
+                 {fluid_heating_value_mj_per_kg}: it must be finite and >= 0 (0 for a fluid \
+                 that does not burn, such as water)."
             )));
         }
     }

@@ -86,6 +86,18 @@ pub enum Command {
         loop_id: LoopId,
         value: ControlledValue,
     },
+    /// Replace a furnace's burst tubes (M37, docs/DESIGN.md §42): re-arms the
+    /// burn-out, so the tubes can fail again.
+    ///
+    /// **It mends nothing else**, like `ResetTrip`: the hole is patched by
+    /// `PuncturePipe` at area zero on the furnace's outlet pipe, FIRST, and that
+    /// is what puts the fire out. Refused on a node that is not a furnace, on
+    /// tubes that have not failed, while the hole is still open, and while the
+    /// coil is still at or past its failure limit (read fresh at the command):
+    /// new tubes there would burst on the next tick.
+    ReplaceTubes {
+        node: NodeId,
+    },
     /// Re-arm one latched trip (M22, docs/DESIGN.md §26 fork 4).
     ///
     /// **It restarts nothing.** The pump stays stopped and the valve stays where
@@ -213,6 +225,18 @@ pub struct NodeSnapshot {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flue_loss_w: Option<f64>,
+    /// A furnace's burn-out fire [W] over the last tick (M37, docs/DESIGN.md
+    /// §42): what leaked out of its burst tubes, times the fluid's heating
+    /// value, burning in its firebox as extra fuel. `0.0` on intact tubes and on
+    /// a patched hole — computed, so reported. Whether the tubes HAVE failed is
+    /// on `kind` (`tubes.state`).
+    ///
+    /// **Absent, not zero, wherever there is nothing to report**, exactly as
+    /// `flue_loss_w`: every node that is not a furnace, and a furnace before its
+    /// first tick. Skipped when absent, which keeps every plant with no furnace
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tube_fire_w: Option<f64>,
 }
 
 /// The cavitation criterion at one node — see [`NodeSnapshot::cavitation`].
