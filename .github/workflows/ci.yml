@@ -39,7 +39,7 @@ jobs:
       # baseline from an earlier run (`corpus --out before.json`, then
       # `--baseline before.json`), which is made by hand per slice and is not
       # committed — a committed baseline would have to be regenerated on every
-      # deliberate numeric change, and CLAUDE.md records those per milestone
+      # deliberate numeric change, and docs/MILESTONES.md records those per milestone
       # instead. Do not add "and nothing moved" to this comment without adding
       # the baseline file that would make it true.
       - run: cargo run --release -p refinery-cli -- corpus scenarios --ticks 500
