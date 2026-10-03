@@ -18939,7 +18939,12 @@ Heating Values of Gas, Liquid and Solid Fuels"), FCC gas oil **42.8** and methan
 2. **A split pipe is still the declared pipe** for the one-hop sign checks
    (`declared_hop`, shared by `valve_side` and `cascade_pairing`): the furnace
    cascades read their tank across the split outlet. Without it all five
-   cascade-control fixtures were refused at load.
+   cascade-control fixtures were refused at load. **This ADMITS plants that were
+   refused**: a level loop on a valve whose fill or drain pipe declares `leak_to`
+   was judged "neither" and refused before M37; it is now judged across the split,
+   so it loads in the right action and is refused in the wrong one
+   (`leak_reference.rs`, `a_leak_on_a_fill_line_keeps_its_valve_a_fill`). The sign
+   argument is the declared pipe's, so this is a correction, not a relaxation.
 3. **A furnace's outlet cannot be metered by flow**: refused by name, as a
    `leak_to` pipe is (the two halves carry different flows once it bursts). No
    shipped plant did.
@@ -19037,7 +19042,7 @@ after the pass. **Thirteen caught, one uncaught as predicted.**
 | 11 | `ReplaceTubes` does not re-arm | the replace gate |
 | 12 | no hole built on a furnace outlet | every burn-out gate and the every-furnace gate |
 | 13 | a furnace outlet may be metered | the loader-refusal gate |
-| 14 | a split pipe is not the declared pipe | the cascade-control gates (`cascade_control_reference.rs`) |
+| 14 | a split pipe is not the declared pipe | the cascade-control gates (`cascade_control_reference.rs`); since, also the fill-line gate added after the pass |
 
 **Two predictions were wrong, and one gate was broken.** Gate 2 does not catch #5
 (an intact tube leaks nothing, so its fire is zero either way — only a hand hole
@@ -19063,3 +19068,9 @@ the gate now fails on both.
   declared flame, not the leaked fluid's own. Trigger: a plant whose answer depends
   on what the leaked fluid's flame is.
 - **A hole's discharge in gas is still B41** (§41).
+- **B7 is now reachable by the ENGINE.** Until M37 a hole existed only where a file
+  declared `leak_to`, on a line its author placed above atmospheric. A burst opens
+  a hole on a line nobody chose, and one below atmospheric stops the run with the
+  back-feed refusal (`network::finalize`) rather than drawing air in. No shipped
+  plant reaches it: the closest, the dry-fired demo, bursts on a line at
+  atmospheric and its hole carries at most 7.8e-11 kg/s, OUTWARD.

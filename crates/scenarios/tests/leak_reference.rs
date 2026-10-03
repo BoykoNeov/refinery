@@ -754,3 +754,44 @@ fn a_leak_to_an_unknown_node_is_refused() {
         "the refusal must name the missing node: {err}"
     );
 }
+
+/// **A leak path does not hide a valve's side from its level loop** (M37,
+/// docs/DESIGN.md §42 correction 2). `valve_side` judges a fill or a drain over
+/// ONE declared pipe, and since M37 a pipe split for a leak path is still that
+/// pipe (`declared_hop`). Before M37, `leak_to` on a fill line made its valve
+/// "neither" and the loop was refused; now the M29 fill demo with a punctureable
+/// fill line loads in reverse — and is still refused in direct, so the valve is
+/// judged a FILL across the split, not merely admitted.
+#[test]
+fn a_leak_on_a_fill_line_keeps_its_valve_a_fill() {
+    const FILL: &str = include_str!("../../../scenarios/tank_level_fill_control.toml");
+    let leaky = FILL
+        .replacen(
+            "[[pipes]]",
+            "[nodes.outside]\ntype = \"atmosphere\"\n\n[[pipes]]",
+            1,
+        )
+        .replacen(
+            "name = \"fill_line\"",
+            "name = \"fill_line\"\nleak_to = \"outside\"",
+            1,
+        );
+    let file = refinery_scenarios::load_str(&leaky).expect("it parses");
+    assert!(
+        refinery_scenarios::build_engine(&file).is_ok(),
+        "a reverse loop on a fill valve whose fill line declares a leak path must load"
+    );
+    // The key itself, not the comment above it that quotes it.
+    let direct = leaky.replacen(
+        "action = \"reverse\"
+algorithm",
+        "action = \"direct\"
+algorithm",
+        1,
+    );
+    assert_ne!(direct, leaky, "the substitution must land on the loop");
+    expect_refusal(
+        &direct,
+        "a direct loop on a FILL valve is still refused across the split",
+    );
+}
