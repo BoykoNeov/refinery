@@ -18093,3 +18093,108 @@ predicted and most by more.
 - **E19** — closed next (§38): the coil reached its trigger.
 - **The sizing rule is an order of magnitude** (fork 5). A plant that needs a
   specific heater's coil declares it.
+
+## 38. A cascade secondary's saturation latch — the inner-limit hold stops leaking, ledger row E19
+
+### What licensed this, stated plainly
+
+**E19's trigger fired, measured, and the user chose to close it at once.** M28
+(§31) held a cascade primary from pushing its secondary further into a limit, and
+read "at the limit" exactly — the secondary's position at 0 or 1 — knowing the test
+leaked (§31, correction 1): near a limit a PI output dips a hair off and back, and
+on each such tick the primary was free. The trigger was "a plant where the leak
+decides an outcome a gate cares about". M34's coil (§37, correction 3) built one:
+the inner-limit gate 4 fixture, a 1.1 MW furnace that cannot reach its target, was
+at exactly full fire on 4 444 of 8 000 ticks, off by a hair on the rest in runs of
+one to three, and its primary's target walked to the 65 °C range top — the step's
+dip then read the UNFIXED 54.876 °C, where the hold gives 54.08. Asked whether to
+record that or fix it, the user chose to fix it before M35.
+
+### The mechanism, which is the whole of the fix
+
+A pinned PI loop back-calculates its memory so that this tick's output is exactly
+the limit: `b = 1 − K·e_n`. Next tick it measures `e_{n+1}`; on a lagging plant
+whose measurement is still creeping toward the target, `e_{n+1} < e_n`, and the
+output lands at `1 − K·(e_n − e_{n+1})`, a hair inside the limit. That tick is
+unclamped, so it integrates, and a tick or two later it is back on the clamp. The
+actuator's authority was spent the whole time and the measurement never reached
+its target; only the position, which is what M28 read, said otherwise.
+
+So the condition to read is not the position but what the dip leaves intact: **the
+sign of the secondary's error**. At the top, a positive error (`ControlledValue::error`
+with the loop's own action) is the loop still wanting more; at the bottom, a
+negative one is the loop still wanting less.
+
+### Fork 1 — the rule
+
+`ControlLoop::saturated: Option<ActuatorLimit>`, a latch each loop keeps, updated
+in pass 1 from the start-of-tick sample and the setpoint standing then
+(`saturation_latch`):
+
+- **Set** whenever the position is exactly at a limit (M28's test, exact for M28's
+  reason: `f64::clamp` and `(1·d)/d` are exact).
+- **Held** off the limit while the error keeps the sign that drove the loop there.
+- **Cleared** when the error reaches or crosses zero — the measurement has caught
+  its target and the loop is regulating again — when the loop is not acting
+  (MANUAL, or nothing to measure: an open cascade has nothing to hold), or by the
+  other limit, which sets that one instead.
+
+The hold reads the latch where it read the position (`inner_limit`), with M28's
+direction table unchanged. **No constant**: §31 declined a "near enough to the
+limit" tolerance because nothing derives one, and none is introduced. Rejected:
+
+- **"At the limit this tick or the previous one"** — the first idea, argued from a
+  dip lasting exactly one tick. Measured before it was offered: the dips run to
+  three ticks, so it would not have closed the leak, and a window of three would be
+  a number fitted to one fixture.
+- **Conditional integration in the PI** (freeze `b` instead of back-calculating):
+  it would remove the dip at its source, and move every loop plant that ever
+  saturates, which M28's external-reset rejection already ruled out.
+
+**Engine state, off the wire.** `ControlLoop` is not serialized, and the snapshot
+gains nothing; a frontend sees the hold, as before, in the primary's faceplate.
+
+### What moved, measured
+
+- **The corpus**: all 34 plants byte-identical on both fidelities, against the M34
+  baselines. The shipped cascade's furnace never reaches a limit, as M28 found; only
+  fixtures move.
+- **Gate 4** (1.1 MW, held at full fire): the target held at **58.31 °C** after
+  8 000 ticks — the furnace's 58.3 °C ceiling — where the leaking rule walked it to
+  65; the dip after the step **54.0778 °C** (hand 54.08; leaked and unfixed 54.876).
+- **Gate 3** (a fire drives the furnace to zero): latched on 1 958 of the fire's
+  2 000 ticks, the target **59.04 °C** (leaked 52.37, hand without drift 58.3,
+  unfixed 40); after the fire **0.0045 K** under 60 °C (hand 0.005, leaked 0.074),
+  back inside after **1 915** ticks (hand 1 834). §31's original leak, reached on
+  the bottom limit before the coil, is closed with it.
+- **Gate 1** (1.3 MW): inside from 3 309 (hand 3 301), 0.0039 K over (hand 0.0038).
+  Its "ticks at full fire" became "ticks the authority is spent", the latch's count:
+  665, of which 169 at exactly 1 — the hand model is lag-free (331).
+- **Gate 2** (the cooler, no coil): inside from 3 306, where it was 3 305.
+
+The per-tick assertions of gates 1–3 now read the latch, so they cover the dip
+ticks; each also checks the latch is set on every tick the position is exactly at
+its limit. Gate 5 is new (the mutation pass below): out of AUTO, the latch is
+forgotten.
+
+### The mutation pass (E19)
+
+Four edits, predicted before the run (`W:\temp\claude\m34\mutate_e19.py`), each
+restored after; the tree diffed clean against a copy taken before the pass.
+**Three caught as predicted; the fourth was uncaught, as predicted, and a gate was
+written for it** — a secondary taken out of AUTO forgets its saturation (gate 5):
+a human who turns a saturated furnace down by hand and hands it back has given it
+authority, and a latch that survived the MANUAL tick would hold the primary on a
+furnace at 27 %. With gate 5 it is caught.
+
+| # | edit | predicted | caught by |
+|---|---|---|---|
+| 1 | the latch never HOLDS (M28's exact test again) | gates 4 and 3 | gates 1, 3 and 4 |
+| 2 | the latch never CLEARS while acting | gates 1 and 2 | gates 1, 2, 3 and 4 |
+| 3 | the error's sign read backwards | gates 3 and 4 | gates 1, 3 and 4 |
+| 4 | the latch kept while the loop is not acting | uncaught, or the furnace-trip cascade hand-back | uncaught; then gate 5, written for it |
+
+### Deferred
+
+- **E19 is closed.** Nothing new is deferred: the latch has no parameter. What it
+  inherits is M28's scope (E17's depth, E18's pairings), unchanged.

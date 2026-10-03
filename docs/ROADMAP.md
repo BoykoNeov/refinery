@@ -7223,3 +7223,20 @@ Three new gates in `furnace_reference.rs` (a cold coil's tick against the
 textbook solution, a dry-fired coil storing its whole duty, the ten malformed
 coils), a cooler case in `trip_reference.rs`'s sweep, and every gate the coil made
 false restated. Nine mutations, all caught.
+
+### M34, follow-up — ledger row E19 closed: the inner-limit hold stops leaking — **LANDED** 2026-10-03
+
+M34's coil reached E19's trigger, and the user chose to close it before M35. The
+note is DESIGN §38. M28's hold read "the secondary is at its limit" off its exact
+position, and on a lagging plant a pinned PI output dips a hair off the limit for
+one to three ticks at a time, freeing the primary on each: a 1.1 MW furnace held
+at full fire let its primary walk to the 65 °C range top. The hold now reads a
+latch each loop keeps (`ControlLoop::saturated`, engine state, off the wire): set
+at the limit, held while the secondary's error keeps the sign that drove it there,
+cleared when the error reaches zero, the loop stops acting, or the other limit is
+reached. No constant. The target now holds at the furnace's 58.31 °C ceiling and
+the step's dip is 54.0778 °C (hand 54.08); §31's original bottom-limit leak (the
+fire, gate 3) is closed with it. All 34 plants byte-identical on both fidelities:
+the shipped cascade never saturates. Four mutations; three caught, the fourth
+(the latch kept through MANUAL) uncaught as predicted and gated by a new fifth
+gate. M35, the outlet and coil trips, is next.

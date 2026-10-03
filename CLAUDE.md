@@ -221,7 +221,7 @@ every furnace gets one, knowing it moves thirteen plants. One slice: DESIGN §37
   (4 571 → 13 074 Newton). Steady states unchanged. M32's trip now clears at tick
   1 294, not inside its tripping tick; M33's twin reads 419 °C at 5 000, not 1 521.
 - **The coil reached E19's trigger** (a cascade furnace at full fire dips a hair
-  off its limit for 1–3 ticks; the hold leaks). Closed next, before M35.
+  off its limit for 1–3 ticks); closed by a saturation latch, DESIGN §38.
 
 **Exactly nine of the thirty-four files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
