@@ -1450,6 +1450,8 @@ directly — which is not hypothetical, since M6.1 added a leak arm to the
 invariant generators (they build a `PlantGraph` and never call `build_engine`)
 and the compile-time door now fires on 81 of 400 generated samples. It un-defers
 with an orifice `x_T` and a published anchor to size it against.
+**Superseded by M37.0 (§41)**: both doors are gone, and a gas hole is the
+isentropic nozzle law, its choke derived from `γ` rather than from an `x_T`.
 
 **`ORIFICE_CD = 0.61` is a bracket, not a transcription.** Every standard
 treatment of a sharp-edged orifice lands in 0.60–0.62, and it is quoted at that
@@ -18667,3 +18669,144 @@ the Godot demo runs `leaking_line`, which has no furnace and did not move.
   better than the upper bound fork 1 gives.
 - **Excess air, fuel and air preheat**: one flame per furnace, declared. Trigger:
   a plant that varies its air or its fuel, or recovers its stack heat.
+
+## 41. A hole in a gas line — the isentropic nozzle law (M37.0, the first half of the tube burn-out)
+
+### What licensed this, stated plainly
+
+The user's decision, taken on 2026-10-03 while scoping the tube burn-out (B40's
+burn-out clause; §42 when it lands). The burn-out was decided as: furnace-only
+keys, on EVERY furnace, the fire fed by the leak, and a reset ("tubes replaced").
+A fire fed by the leak needs a hole on every furnace, and `fired_gas_drum`'s
+furnace heats methane — and a hole in a gas line was refused at two doors since
+M6.1 (§3b: Torricelli on a compressible fluid). Asked in plain words whether a gas
+furnace should be exempt, flag-only, or get gas holes built, **the user chose to
+build gas holes**. So M37 is two slices: this one, which moves no plant (no file
+could declare a gas hole before it), and the burn-out on top of it.
+
+The probes, baselines and mutation harness are in `W:\temp\claude\m37\`.
+
+### Fork 1 — the law: an ideal nozzle with the hole's discharge coefficient
+
+The hole is the converging-nozzle law for a perfect gas (Saint-Venant and
+Wantzel), with the same `Cd = 0.61` the liquid hole carries:
+
+```text
+ṁ = Cd·A·√(2·ρ·p·ψ(x)),   ψ(x) = γ/(γ−1)·(r^(2/γ) − r^((γ+1)/γ)),   r = 1 − x,   x = Δp/p
+x clamped at x* = 1 − (2/(γ+1))^(γ/(γ−1))    (choked above it; 0.4717 for γ = 1.4)
+```
+
+`p` and `ρ` are the upwind state (the plant side, for a hole that vents), `γ =
+cp/cv` from the slate exactly as `fold_gas_service` takes it. **No new constant
+and no new key**: `x*` is derived, not declared — §3b's un-defer trigger asked
+for "an orifice `x_T` and a published anchor", and the isentropic critical ratio
+is that anchor without the `x_T`.
+
+**Rejected: the valve's ISA expansion with an `x_T` for the hole** (the cheaper
+reuse, and the first one proposed). `Y = 1 − x/(3·F_k·x_T)` reaches the plateau
+at `Y = 2/3`, which cannot match the isentropic choke point AND the choked mass
+flux at once: matching the point leaves the choked flux 5.4 % low at `γ = 1.4`
+(`(2/3)·√(2x*) = 0.648` against `√(γ·(2/(γ+1))^((γ+1)/(γ−1))) = 0.685`). The
+nozzle law matches both by construction, for every `γ`.
+
+**What it costs, said once.** A sharp-edged hole is not a nozzle: its vena
+contracta keeps contracting less as the drop grows, so its effective `Cd` rises
+deep in choke where this model holds 0.61. The model therefore UNDER-predicts a
+deeply choked gas leak. New row B41.
+
+### Fork 2 — how the solvers carry it: an effective resistance, frozen
+
+`compile_edge`'s orifice arm builds the liquid branch as before and, in gas,
+replaces its `α` by `α·x/ψ(x)` (`elements::gas_orifice`): the resistance that
+makes `Q = √(Δp/α_eff)` equal `ṁ/ρ`. `x/ψ` is exactly 1 at zero drop and grows in
+proportion to the drop past the choke — the plateau, written as a coefficient,
+as `fold_gas_valve` writes a valve's. Three properties are kept by construction,
+and each is gated:
+
+- **`beta = 0` and the flow takes the sign of `Δp`** (`α_eff` is even in `Δp`), so
+  `finalize`'s back-feed refusal still fires exactly when the plant side is below
+  `P_ATM` — in gas too (`a_gas_hole_below_atmospheric_is_still_refused`).
+- **A dormant hole is closed before `γ` is read** (`α = +∞` returned untouched), so
+  an intact plant is on the same arm as before, bit for bit.
+- **C¹ with no blend.** `ψ` is maximal at `x*` (that is what makes the throat
+  sonic), so the clamp meets the plateau with zero slope; the one-sided slopes are
+  gated to meet at zero for four values of `γ`.
+
+`ψ` is evaluated as `e^{bL}·expm1((a−b)L)`, `L = ln(1−x)`, never as a difference
+of two powers that cancel to noise at a small drop. Its small-drop expansion is
+`ψ/x = 1 − 3x/(2γ) + O(x²)`, gated down to `x = 1e-12`.
+
+The Jacobian freezes `α_eff` at the iterate (A18), as it does a gas valve's.
+**Measured, it costs nothing here**: a 10 bar methane header (`leak_reference`'s
+fixture) takes 57 Newton and 80 game iterations over 50 ticks with its hole
+sealed, 1 cm² open or 10 cm² open, worst 17 and 13 (tick 1's cold start) in all
+three.
+
+### Fork 3 — both refusals removed, not relaxed
+
+`validate::refuse_gas_leak` (the loader's door) is deleted, and `compile_edge`'s
+refusal becomes the gas branch. Nothing replaced them with a narrower refusal: a
+gas hole has no case the law does not cover. `γ ≤ 1` (no choke to size by) and a
+non-positive or NaN `α_eff` are refused by name; no slate the loader accepts can
+reach either.
+
+### Gates
+
+- `solvers/tests/reference/orifice.rs`: a CHOKED hole (10 bara methane through
+  1 cm²: **0.104 554 088 kg/s**) and a SUBCRITICAL one (1.5 bara: **0.015 047 314
+  kg/s**), against a hand calculation in 30-digit arithmetic outside the workspace.
+  The choked value is reached by two algebraic routes (`ψ(x*)`, and the classical
+  `ṁ* = Cd·A·p·√(γM/RT)·(2/(γ+1))^((γ+1)/(2(γ−1)))`), equal to all thirty digits.
+  Torricelli would say 0.2098 and 0.0189. Tolerances are the `√` regularization's
+  derived shortfall `ε/(2Δp)`, as for the liquid gate. Plus: choked flow doubles
+  with the upstream pressure; both fidelities bit-identical; a dormant gas hole
+  carries exactly zero; back-feed refused in gas.
+- `elements.rs` unit tests: `x*` for air by hand; the small-drop expansion; flat
+  at the choke; zero drop and zero area are the liquid branch; odd in the drop.
+- `scenarios/tests/leak_reference.rs`: `a_leak_on_a_gas_line_is_refused_at_load`
+  is now `a_leak_on_a_gas_line_chokes_and_balances` — the same file, punctured,
+  vents 0.066 249 kg/s at a junction drop ratio of 0.846 (choked), on both
+  fidelities, and the split balances to the solve's own reported residual (the
+  junction IS the worst node: measured equal to eight digits).
+- `solvers/tests/invariants.rs`: the leak arm's gas draws, unchanged, now SOLVE
+  instead of being refused. `the_leak_arm_conducts_and_is_refused_both_ways` now
+  floors the gas half — measured 93 gas holes the balance gate needs in order to
+  balance, 78 of them choked (of 400 samples; floors 45 and 40) — where it used to
+  floor the refusal. Leaky trees solved: 143 of 152 (36 % before, when every gas
+  one was refused). **One gas tree diverges with its hole open and solves with it
+  sealed** (one liquid tree does the same): a legal outcome under I3, recorded on
+  A18 rather than floored.
+
+### What moved, measured
+
+Nothing. All 36 plants byte-identical on both fidelities against baselines taken
+before the first edit (`refinery corpus --baseline`, 72 rows "identical").
+
+### The mutation pass (M37.0)
+
+Six edits, each running its predicted test files only
+(`W:\temp\claude\m37\mutate.py`). **All six caught by the primary prediction**:
+
+| # | edit | caught by |
+|---|---|---|
+| 1 | the gas branch skipped (Torricelli in gas) | `orifice_reference` (3 gates) |
+| 2 | no clamp at the choke | `orifice_reference`, the flat-at-choke unit test |
+| 3 | the critical ratio's exponent inverted | `orifice_reference`, two unit tests |
+| 4 | the compressibility ratio inverted | `orifice_reference` (3 gates) |
+| 5 | the signed drop instead of its magnitude | the odd-in-the-drop unit test |
+| 6 | `γ` taken as `cp/cp` | `orifice_reference` (6 gates, by the `γ ≤ 1` refusal) |
+
+Two SECONDARY predictions were wrong, and they say what those tests do not pin:
+the generated leak arm does not catch #1 (it gates booking and the choked regime,
+not the law — a Torricelli hole balances too), and the element unit tests do not
+catch #4 (they gate `ψ`, not the direction it is applied in).
+
+### Deferred, with what un-defers each
+
+- **B41 (new): a gas hole is an ideal nozzle with the liquid `Cd`** (fork 1). A
+  sharp-edged hole's `Cd` rises deep in choke, so a deeply choked gas leak is
+  under-predicted. Trigger: a plant or frontend whose answer depends on a choked
+  gas leak rate to better than that, or a published `Cd(x)` for a sharp-edged
+  orifice in choked flow to size it against.
+- **B7 (air ingress) is unchanged**: a gas hole below atmospheric is refused, as a
+  liquid one is.

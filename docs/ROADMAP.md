@@ -7296,3 +7296,27 @@ All 21 furnace-free plants byte-identical on both fidelities; the fourteen with 
 furnace moved, and only `fired_gas_drum`'s iteration counts with them. Seven
 mutations, all caught. The snapshot gained a field: the Godot feature build and
 its clippy are clean. B40 narrows to the burn-out, which is the next slice.
+
+## M37 — a furnace's tube burn-out: ledger row B40's burn-out clause; opened on a decision
+
+The user's decision, asked in plain words before any code (2026-10-03): the
+burn-out is declared by keys on the FURNACE (not a general failure block), on
+EVERY furnace (not only plants that ask for it), the fire is FED BY THE LEAK
+(leak flow times a heating value, not a fixed power), and the player can PATCH the
+hole with the existing puncture command and then RESET the tubes ("tubes
+replaced"). Told that every furnace then gains a sealed hole on its outlet line,
+so all fourteen furnace plants move slightly before anything fails, the user kept
+"every furnace". Told that a hole in a gas line was refused (the gas drum's
+furnace heats methane), the user chose to build gas holes too. Two slices.
+
+### M37.0 — a hole in a gas line — **LANDED** 2026-10-03
+
+The note is DESIGN §41. A leak orifice in gas service is the isentropic nozzle law
+(Saint-Venant–Wantzel) with the liquid hole's `Cd`, its choke derived from the
+slate's `γ`; both of M6.1's refusals are removed. Gated against a 30-digit hand
+calculation, choked (0.104 554 kg/s, 10 bara methane, 1 cm²) and subcritical; the
+back-feed refusal still fires in gas; the generated leak arm now solves its gas
+draws (93 that the balance gate needs, 78 choked). Six mutations, all caught. All
+36 plants byte-identical on both fidelities. New row B41.
+
+### M37.1 — the burn-out on every furnace — next
