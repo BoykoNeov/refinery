@@ -12,10 +12,11 @@
 # loop on the furnace; `furnace_outlet_control.toml` holds the outlet with one loop
 # on the furnace; this file runs both, one inside the other (docs/DESIGN.md §29).
 #
-# **Why two loops are better than either.** A furnace has no thermal mass, so a
-# change in its firing reaches its outlet in the same tick, while the tank takes
-# about 1 000 s to follow its feed. The outlet loop alone rejects a disturbance at
-# the heater in a tick but cannot see one at the tank; the tank loop alone sees
+# **Why two loops are better than either.** A change in the furnace's firing
+# reaches its outlet in about 40 s (its coil, docs/DESIGN.md §37; before M34, in
+# the same tick), while the tank takes about 1 000 s to follow its feed. The
+# outlet loop alone rejects a disturbance at the heater quickly but cannot see one
+# at the tank; the tank loop alone sees
 # both, at the tank's slow pace. The cascade gives each loop the job it is fast
 # at: the inner loop fixes heater disturbances before the tank notices, and the
 # outer loop corrects what reaches the tank by moving the inner loop's target.
@@ -25,7 +26,9 @@
 # the feed, because a furnace cannot cool; the top, 65 °C, is a CAP on the outlet
 # below the 66.92 °C the tank loop alone fires it to during startup. So startup is
 # slower than the tank loop's — the outer loop rides its clamp at 65 °C for a
-# while — and the outlet never runs hotter than the cap. That is the range doing
+# while — and the outlet's TARGET never exceeds the cap. (The outlet itself
+# overshoots it by 0.18 K at most since M34: the furnace's coil lags its firing by
+# 38.5 s, docs/DESIGN.md §37.) That is the range doing
 # its job, and it is why the shipped file reaches the outer loop's clamp and
 # anti-windup at all.
 #
@@ -74,6 +77,12 @@ temperature_c = 40.0
 [nodes.heater]
 type = "furnace"
 duty_mw = 0.5
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its loop's 2 MW range); UA twice
+# the load flow's 60.09 kW/K capacity rate; and the coil's steady temperature
+# at load, 40 + 500/(0.8647·60.09) °C, so the plant starts settled.
+coil_heat_capacity_mj_per_k = 2
+coil_ua_kw_per_k = 120.2
+coil_temperature_c = 49.62
 
 # The node the OUTER loop measures. Stored on the graph and exactly 40 °C at tick
 # 0; the level is the settled 4.968 m, so only the temperature has anywhere to go.

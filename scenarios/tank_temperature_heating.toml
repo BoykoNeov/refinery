@@ -43,10 +43,13 @@
 # without stepping its actuator), far short of the 1.202 MW the setpoint needs, so
 # the MANUAL twin parks visibly wrong: **48.30 °C**.
 #
-# **Measured, 6 000 ticks:** within 0.06 K of 60 °C from tick 2 391, a 0.028 K
-# overshoot at tick 3 066, 59.99997 °C at tick 6 000. The output peaks at 0.809 at
-# tick 640 and **never reaches either clamp** — the cooler demo's numbers, tick for
-# tick. The anti-windup arm is reached by a command in the demo test: a step to
+# **Measured, 6 000 ticks:** within 0.06 K of 60 °C from tick 2 404, a 0.014 K
+# overshoot at tick 3 135, 59.999994 °C at tick 6 000. The output peaks at 0.833
+# at tick 583 and **never reaches either clamp**. Until M34 these were the cooler
+# demo's numbers tick for tick (2 391, 0.028 K, 0.809); the furnace's coil
+# (docs/DESIGN.md §37) puts 38.5 s between a firing change and the stream, which
+# the cooler does not have, so the mirror holds at the operating point and not in
+# the transient. The anti-windup arm is reached by a command in the demo test: a step to
 # 75 °C, above the 73.28 °C the inflow reaches at the full 2 MW, pins the output
 # at 1 for as long as the setpoint stands.
 #
@@ -81,6 +84,12 @@ temperature_c = 40.0
 [nodes.heater]
 type = "furnace"
 duty_mw = 0.5
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its loop's 2 MW range); UA twice
+# the load flow's 60.09 kW/K capacity rate; and the coil's steady temperature
+# at load, 40 + 500/(0.8647·60.09) °C, so the plant starts settled.
+coil_heat_capacity_mj_per_k = 2
+coil_ua_kw_per_k = 120.2
+coil_temperature_c = 49.62
 
 # The node the loop MEASURES. Its temperature is stored on the graph and is
 # exactly 40 °C at tick 0; the level is the settled 4.968 m, so only the

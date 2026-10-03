@@ -84,7 +84,7 @@ fn control(engine: &Engine) -> ControlSnapshot {
 fn heater_duty_w(engine: &Engine) -> f64 {
     let id = engine.graph.find_node("heater").expect("heater");
     match engine.graph.node(id).kind {
-        NodeKind::Furnace { duty } => duty.value(),
+        NodeKind::Furnace { duty, .. } => duty.value(),
         ref other => panic!("heater is a furnace, not {other:?}"),
     }
 }
@@ -336,7 +336,9 @@ fn a_loop_owned_furnace_refuses_a_write_the_loop_would_overwrite() {
     let heater = engine.graph.find_node("heater").expect("heater");
     run(&mut engine, 5);
 
-    engine.graph.node_mut(heater).kind = NodeKind::Furnace { duty: Watt(1.5e6) };
+    if let NodeKind::Furnace { duty, .. } = &mut engine.graph.node_mut(heater).kind {
+        *duty = Watt(1.5e6);
+    }
     engine.tick().expect("tick");
     let after = heater_duty_w(&engine);
     assert!(

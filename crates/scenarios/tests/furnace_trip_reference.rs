@@ -44,8 +44,12 @@ actions = [{ furnace = "heater" }]
 
 /// The tick whose trip pass fires the demo's trip, measured on the engine on
 /// both fidelities before it was written here: the tank ends tick 1 250 at
-/// 75.0007 °C.
+/// 75.0007 °C (75.0009 since M34's coil, docs/DESIGN.md §37).
 const DEMO_TRIP_TICK: u64 = 1251;
+/// The first tick at whose end the tank is back under its limit, measured on
+/// both fidelities: the coil's stored heat carries it to 75.138 °C after the cut
+/// (M34). Before the coil the condition cleared inside the tripping tick itself.
+const CLEARS_AT_TICK: u64 = 1294;
 const DEMO_LIMIT_C: f64 = 75.0;
 
 fn build(src: &str) -> Engine {
@@ -74,10 +78,22 @@ fn tick(engine: &mut Engine) {
 fn duty_w(engine: &Engine) -> f64 {
     let id = engine.graph.find_node("heater").expect("a heater");
     match engine.graph.node(id).kind {
-        NodeKind::Furnace { duty } => duty.value(),
+        NodeKind::Furnace { duty, .. } => duty.value(),
         ref other => panic!("'heater' is a furnace, not {other:?}"),
     }
 }
+
+/// The furnace's coil temperature, K (M34, docs/DESIGN.md §37).
+fn coil_k(engine: &Engine) -> f64 {
+    let id = engine.graph.find_node("heater").expect("a heater");
+    match &engine.graph.node(id).kind {
+        NodeKind::Furnace { coil, .. } => coil.temperature.value(),
+        other => panic!("'heater' is a furnace, not {other:?}"),
+    }
+}
+
+/// The demo's `coil_heat_capacity_mj_per_k = 3`, in SI.
+const COIL_C_J_PER_K: f64 = 3.0e6;
 
 /// The tank's stored temperature, °C: what the trip compares.
 fn tank_c(engine: &Engine) -> f64 {
@@ -160,9 +176,16 @@ fn until(engine: &mut Engine, budget: u64, what: &str, done: impl Fn(&Engine) ->
 // ------------------------------------------------------------- gates 1 and 2
 
 /// **Gates 1 and 2, on both fidelities.** The fuel cut lands on the measured
-/// tick, the furnace passes its stream through unheated from that tick's own
-/// snapshot, the trip latches all the way down, and the untripped twin shows
-/// what it prevented.
+/// tick, the furnace adds no heat of its own from that tick's own snapshot, the
+/// trip latches all the way down, and the untripped twin shows what it
+/// prevented.
+///
+/// **"No heat of its own" since M34** (docs/DESIGN.md §37): before the coil, a
+/// cut furnace passed its stream through with its outlet equal to its inlet to
+/// the bit. Now the coil is still hot when the fuel goes, and its fluid keeps
+/// warming while it cools, so what is asserted is the first law with zero duty:
+/// the coil only cools, the fluid leaves between its inlet and the coil, and the
+/// fluid gains exactly what the coil gives.
 #[test]
 fn the_demo_cuts_the_fuel_on_its_tick_and_the_latch_holds_it_out() {
     for solver in ["newton", "simple"] {
@@ -170,6 +193,7 @@ fn the_demo_cuts_the_fuel_on_its_tick_and_the_latch_holds_it_out() {
         let mut twin = build(&with_solver(&swap(DEMO, DEMO_TRIP, ""), solver));
         assert!(twin.snapshot().trips.is_empty(), "the twin has no trip");
 
+        let mut previous_coil = coil_k(&demo);
         for t in 1..=6000u64 {
             tick(&mut demo);
             tick(&mut twin);
@@ -211,15 +235,37 @@ fn the_demo_cuts_the_fuel_on_its_tick_and_the_latch_holds_it_out() {
                     "{solver}, tick {t}: tripped on its tick, and latched"
                 );
                 assert_eq!(duty_w(&demo), 0.0, "{solver}, tick {t}: the fuel is cut");
-                // A furnace at zero duty passes its stream through: its outlet is
-                // its inlet exactly. (`heated_line` reads 0.0008 K warmer, its own
-                // friction, which is why the furnace NODE is compared.)
-                assert_eq!(
-                    heater.temperature_k,
-                    feed.stream.temperature.value(),
-                    "{solver}, tick {t}: a cut furnace adds no heat"
+                // A cut furnace adds no heat of its own: the furnace NODE against
+                // its feed (`heated_line` carries its own friction on top).
+                let coil = coil_k(&demo);
+                let (outlet, inlet) = (heater.temperature_k, feed.stream.temperature.value());
+                // Only cools — or, once it has cooled to its inlet within rounding, is
+                // warmed back to it and no further: never above the larger of the two.
+                assert!(
+                    coil <= previous_coil.max(inlet),
+                    "{solver}, tick {t}: a cut coil only cools"
+                );
+                // Between its inlet and the coil, in either order: late in a run the
+                // coil has cooled to its inlet within rounding and may sit a hair
+                // below. Widened by what one rounding step of the STORED coil
+                // carries into the fluid, `C·ulp(T_c)/(dt·ṁ·cp)` (energy::furnace_coil).
+                let cp_in = feed.stream.composition.mixture_cp(&demo.slate).value();
+                let rounding = COIL_C_J_PER_K * previous_coil * f64::EPSILON
+                    / (feed.stream.mass_flow.value() * cp_in);
+                let (low, high) = (inlet.min(previous_coil), inlet.max(previous_coil));
+                assert!(
+                    low - rounding <= outlet && outlet <= high + rounding,
+                    "{solver}, tick {t}: the fluid leaves at {outlet} K, outside its inlet                      {inlet} K and the coil's {previous_coil} K"
+                );
+                let cp = feed.stream.composition.mixture_cp(&demo.slate).value();
+                let gained = feed.stream.mass_flow.value() * cp * (outlet - inlet);
+                let released = COIL_C_J_PER_K * (previous_coil - coil);
+                assert!(
+                    (gained - released).abs() <= 1.0e-6 * released.max(1.0),
+                    "{solver}, tick {t}: the fluid gained {gained} W, the coil gave {released} W"
                 );
             }
+            previous_coil = coil_k(&demo);
             if t == DEMO_TRIP_TICK - 1 {
                 assert!(
                     tank_c(&demo) >= DEMO_LIMIT_C,
@@ -228,17 +274,30 @@ fn the_demo_cuts_the_fuel_on_its_tick_and_the_latch_holds_it_out() {
                 );
             }
             if t == DEMO_TRIP_TICK {
-                // The trip compared 75.0007 °C at the top of this tick and the whole
-                // tick then ran on cold feed: the condition clears INSIDE the tick
-                // that trips (§26, M22.1), and only the latch holds the cut.
+                // Before M34 the whole tripping tick ran on cold feed and the
+                // condition cleared INSIDE it (§26, M22.1). The coil makes the cut
+                // a SLOW action — M22.1's other case — and its stored heat goes on
+                // warming the feed: the tank is still over the limit here.
+                assert!(
+                    tank_c(&demo) >= DEMO_LIMIT_C,
+                    "{solver}: the coil's heat carries the tank on past the cut: {}",
+                    tank_c(&demo)
+                );
+            }
+            if t == CLEARS_AT_TICK - 1 {
+                assert!(tank_c(&demo) >= DEMO_LIMIT_C, "{solver}, tick {t}");
+            }
+            if t == CLEARS_AT_TICK {
+                // It peaks at 75.138 °C and is back under the limit from the end
+                // of this tick; only the latch held the cut until then and after.
                 assert!(
                     tank_c(&demo) < DEMO_LIMIT_C,
-                    "{solver}: the condition clears within the tripping tick: {}",
+                    "{solver}: the condition clears at the end of tick {t}: {}",
                     tank_c(&demo)
                 );
             }
         }
-        // Cooled toward its 40 °C feed (40.36 °C measured), while the twin, still
+        // Cooled toward its 40 °C feed (40.39 °C measured), while the twin, still
         // fired, nears the 89.93 °C its inflow carries (89.77 °C measured).
         assert!(tank_c(&demo) < 41.0, "{solver}: {}", tank_c(&demo));
         assert!(tank_c(&twin) > 89.0, "{solver}: {}", tank_c(&twin));

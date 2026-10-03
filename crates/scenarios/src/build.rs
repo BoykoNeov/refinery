@@ -9,8 +9,8 @@ use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
     Actuator, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
-    HeatExchangerCoupling, LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node, NodeId,
-    NodeKind, Pipe, PlantGraph, SetpointRange, TankState, Trip, TripAction, TripDirection,
+    FurnaceCoil, HeatExchangerCoupling, LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node,
+    NodeId, NodeKind, Pipe, PlantGraph, SetpointRange, TankState, Trip, TripAction, TripDirection,
     TripState, VesselState,
 };
 use refinery_core::stream::Stream;
@@ -19,8 +19,8 @@ use refinery_core::traits::{
     ThermoModel,
 };
 use refinery_core::units::{
-    CubicMeter, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, KgPerSec, Meter, Seconds, SquareMeter,
-    Watt, WattPerKelvin, P_ATM, T_AMBIENT,
+    CubicMeter, JPerK, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, KgPerSec, Meter, Seconds,
+    SquareMeter, Watt, WattPerKelvin, P_ATM, T_AMBIENT,
 };
 use std::collections::BTreeMap;
 
@@ -783,7 +783,7 @@ fn build_controls(
                     // checked below against the declared `action`, not here.
                     (
                         MeasuredVariable::Temperature,
-                        NodeKind::Cooler { duty } | NodeKind::Furnace { duty },
+                        NodeKind::Cooler { duty } | NodeKind::Furnace { duty, .. },
                     ) => {
                         let max_mw = require_keyed(
                             def.max_duty_mw,
@@ -1290,8 +1290,10 @@ fn build_controls(
 /// closes a way a file could declare a trip that would load and then protect
 /// nothing, or protect the wrong thing:
 ///
-/// - a furnace's or cooler's OUTLET, absent at load and again whenever the unit
-///   stagnates — refused by name (fork 2(c), `docs/DEFERRED.md` E13). The test
+/// - a furnace's or cooler's OUTLET, absent at load — and a cooler's again
+///   whenever it stagnates; a furnace's not since its coil (M34,
+///   docs/DESIGN.md §37) — refused by name, each for its own reason (fork 2(c),
+///   `docs/DEFERRED.md` E13). The test
 ///   is the engine's own: `measure` at load, with the empty states and no
 ///   solution that are the truth there, must return a value — **except a
 ///   declared pipe's flow** (M33, docs/DESIGN.md §36), which is absent before
@@ -1362,9 +1364,10 @@ fn build_trips(
         // all, in `measure`'s own words; `Ok(None)` is a quantity that exists
         // only once the plant has run. For a pipe's flow that absence ends with
         // the first solve, and the trip pass skips exactly that one pass (§36
-        // fork 1). For a furnace or cooler OUTLET it does not end there: a
-        // stagnant unit's outlet is absent mid-run, which is exactly when a
-        // safety function would need it, so it stays refused (E13).
+        // fork 1). For a COOLER's outlet it does not end there: a stagnant
+        // cooler's outlet is absent mid-run, which is exactly when a safety
+        // function would need it. A FURNACE's ends with the first tick since its
+        // coil (§37), but no rule admits it yet. Both stay refused (E13).
         let measured = graph
             .measure(
                 slate,
@@ -1380,17 +1383,32 @@ fn build_trips(
                 ))
             })?;
         if measured.is_none() && !matches!(point, MeasurementPoint::Pipe(_)) {
-            return Err(SimError::Scenario(format!(
-                "{owner} watches the {} of '{point_name}', which does not exist before the \
-                 first tick, and not while the unit is stagnant either: a furnace's or \
-                 cooler's outlet is resolved by the tick, from its inflow. For a safety \
-                 function a missing measurement is not something to hold still on \
-                 (docs/DESIGN.md §26 fork 2), and this one goes missing exactly when the \
-                 flow stops, so an outlet trip is deferred until it has a stated rule for \
-                 that (docs/DEFERRED.md E13). Watch the holdup the stream runs into, or \
-                 the flow through the unit, instead",
-                variable.noun()
-            )));
+            let furnace = matches!(
+                point,
+                MeasurementPoint::Node(n) if matches!(graph.node(n).kind, NodeKind::Furnace { .. })
+            );
+            return Err(SimError::Scenario(if furnace {
+                format!(
+                    "{owner} watches the {} of '{point_name}', a furnace's outlet, which \
+                     does not exist before the first tick: it is resolved by the tick. Since \
+                     its coil (docs/DESIGN.md §37) it exists on every tick after, flowing or \
+                     not, but a trip on it is not admitted yet (docs/DEFERRED.md E13). Watch \
+                     the flow through the unit, or the holdup the stream runs into, instead",
+                    variable.noun()
+                )
+            } else {
+                format!(
+                    "{owner} watches the {} of '{point_name}', which does not exist before \
+                     the first tick, and not while the unit is stagnant either: a cooler's \
+                     outlet is resolved by the tick, from its inflow. For a safety function \
+                     a missing measurement is not something to hold still on \
+                     (docs/DESIGN.md §26 fork 2), and this one goes missing exactly when the \
+                     flow stops, so an outlet trip is deferred until it has a stated rule for \
+                     that (docs/DEFERRED.md E13). Watch the holdup the stream runs into, or \
+                     the flow through the unit, instead",
+                    variable.noun()
+                )
+            }));
         }
 
         let direction = match def.direction.as_deref() {
@@ -2801,8 +2819,18 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                 x_t: *x_t,
             }
         }
-        NodeDef::Furnace { duty_mw } => NodeKind::Furnace {
+        NodeDef::Furnace {
+            duty_mw,
+            coil_heat_capacity_mj_per_k,
+            coil_ua_kw_per_k,
+            coil_temperature_c,
+        } => NodeKind::Furnace {
             duty: Watt(*duty_mw * 1e6),
+            coil: FurnaceCoil {
+                heat_capacity: JPerK(*coil_heat_capacity_mj_per_k * 1e6),
+                conductance: WattPerKelvin(*coil_ua_kw_per_k * 1e3),
+                temperature: c_to_k(*coil_temperature_c),
+            },
         },
         NodeDef::Cooler { duty_mw } => NodeKind::Cooler {
             duty: Watt(*duty_mw * 1e6),

@@ -82,6 +82,12 @@ unit!(/// Overall heat transfer coefficient times area, `UA` [W/K].
     /// model, no radiation — so splitting them would invent two quantities the
     /// model cannot tell apart (docs/DESIGN.md §4a).
     WattPerKelvin);
+unit!(/// Heat capacity of a body [J/K] — mass times specific heat, lumped.
+    ///
+    /// One number for the same reason `WattPerKelvin` is one: a furnace's tube
+    /// metal (M34, docs/DESIGN.md §37) is a single lumped body at this
+    /// fidelity, so its mass and its steel's `cp` are never read apart.
+    JPerK);
 unit!(/// Molar mass [kg/mol].
     KgPerMol);
 unit!(/// Molar enthalpy [J/mol]. Used for a component's heat of vaporization

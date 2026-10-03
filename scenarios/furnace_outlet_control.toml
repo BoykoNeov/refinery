@@ -18,27 +18,24 @@
 # outlet, 48.32 °C, and its PI memory is seeded then, against that error, from the
 # declared `initial_output` — so its first output is 0.25, exactly as a tank
 # loop's is. The same rule holds the loop still if the flow through the furnace
-# ever stops: a stagnant outlet reports a held placeholder, not a measurement.
+# ever stops — or did until M34: a furnace with no flow now reports its COIL, a
+# state (docs/DESIGN.md §37), so the loop measures and acts on it.
 #
-# **The tuning is NOT the tank loop's, and cannot be.** A tank integrates; an
-# outlet responds on the same tick its duty is written (16.64 K per MW, so
-# G = 33.28 K per unit of output on this 2 MW range). The loop's only dynamics is
-# the one tick it waits to measure, which makes the gain bound a STABILITY bound:
-# stable only while K*G < 1. The tank loop's `gain_per_k = 0.1` gives K*G = 3.3,
-# and moved here it swings the outlet between 40 and 73 °C on alternate ticks.
-# This file uses 0.015 (K*G = 0.5, half the bound) and `integral_time_s = 10.0`,
-# which on this plant means TEN TICKS: with no thermal mass in the coil, an
-# integral time is a count of samples (docs/DEFERRED.md E10).
-#
-# **The bound moves with flow.** G is duty over (flow x heat capacity), so halving
-# the flow doubles K*G: throttle the drain to about 7.2 kg/s and this loop
-# reaches its bound and starts to ring. A real outlet loop tuned at full rate
-# does the same at turndown.
+# **The tuning was chosen for an outlet with no lag, and the outlet has one now.**
+# Settled, the outlet rises 16.64 K per MW (G = 33.28 K per unit of output on this
+# 2 MW range). Until M34 it got there on the SAME tick its duty was written, so
+# the loop's only dynamics was the one tick it waits to measure, and the gain bound
+# was a STABILITY bound, K*G < 1: the tank loop's `gain_per_k = 0.1` (K*G = 3.3)
+# swung the outlet between 40 and 73 °C on alternate ticks. This file took 0.015
+# (K*G = 0.5) and `integral_time_s = 10.0`. Since M34 the furnace's coil
+# (docs/DESIGN.md §37) puts 38.5 s between a firing change and the outlet, and
+# that bound is gone: every gain tried up to K*G = 60 settles. The shipped tuning
+# peaks at 61.75 °C at tick 103 and is inside 0.1 K of 60 °C from tick 247.
 #
 # **Holding the outlet is slower for the TANK.** The tank loop overfires the
-# furnace (its output peaks at 0.81) to heat the tank faster; an outlet loop
+# furnace (its output peaks at 0.83) to heat the tank faster; an outlet loop
 # never does, so the tank follows the 60 °C stream at its own pace — thousands of
-# ticks rather than the tank loop's 2 391. That trade-off is what cascade control
+# ticks rather than the tank loop's 2 404. That trade-off is what cascade control
 # (docs/DEFERRED.md E2) exists for, and M25 built it on this plant:
 # `scenarios/furnace_cascade_control.toml` runs this loop inside a tank loop.
 #
@@ -66,6 +63,12 @@ temperature_c = 40.0
 [nodes.heater]
 type = "furnace"
 duty_mw = 0.5
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its loop's 2 MW range); UA twice
+# the load flow's 60.09 kW/K capacity rate; and the coil's steady temperature
+# at load, 40 + 500/(0.8647·60.09) °C, so the plant starts settled.
+coil_heat_capacity_mj_per_k = 2
+coil_ua_kw_per_k = 120.2
+coil_temperature_c = 49.62
 
 # Not measured: the tank follows the outlet at its own pace. The level is the
 # settled 4.968 m, so only the temperature has anywhere to go.

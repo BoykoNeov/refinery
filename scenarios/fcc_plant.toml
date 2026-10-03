@@ -77,6 +77,12 @@ composition = { gasoil = 1.0 }
 [nodes.preheater]
 type = "furnace"
 duty_mw = 4.0
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 4 MW); UA twice
+# the load flow's 81.98 kW/K capacity rate; and the coil's steady temperature
+# at load, 300.13 + 4000/(0.8647·81.98) °C, so the plant starts settled.
+coil_heat_capacity_mj_per_k = 4
+coil_ua_kw_per_k = 164
+coil_temperature_c = 356.55
 
 # The riser, held at a cracking ROT. Zero-volume and hydraulically a
 # pass-through; the duty needed to hold t_set against the endotherm is emergent

@@ -222,22 +222,34 @@ fn constant_twin() -> String {
     out
 }
 
+/// Ticks to the SETTLED drum. 6 000 (ten minutes) until M34; its coil
+/// (docs/DESIGN.md §37) settles in about 380 s on its own and, coupled to the
+/// drum, the plant's slowest mode is about 870 s, so at 6 000 ticks the drum sat
+/// 92 K short of where it settles. The constant-`cp` twin is slower still, about
+/// 1 165 s (0.38 K short at 80 000 ticks, 0.012 K at 120 000). 150 000 ticks is
+/// thirteen of the twin's time constants, and both land on the settled values
+/// the pre-M34 engine reached by tick 6 000, inside the gates' 1e-4: the coil
+/// moves the road to the steady state, not the steady state.
+const SETTLED_TICKS: u64 = 150_000;
+
 /// The knob moves a number a consumer reads, which is this project's own
 /// `smearing_k` bar for whether a fidelity key is real.
 ///
-/// Measured over 6 000 ticks: the drum settles at **802.4 K** under the shape and
-/// **1106.9 K** under the constant, and holds **6.56 kg** against **4.82 kg**.
-/// The transient is wider still — the constant model takes the heater through
-/// 2209 K where the shape says 999 K, because the same duty divided by a capacity
-/// that is 43% too low is a temperature rise that is 76% too large.
+/// Measured settled (6 000 ticks before M34, `SETTLED_TICKS` since): the drum
+/// settles at **802.4 K** under the shape and **1106.9 K** under the constant,
+/// and holds **6.56 kg** against **4.82 kg**. Before M34 the transient was wider
+/// still — the constant model took the heater through 2209 K where the shape said
+/// 999 K, the same duty divided by a capacity 43% too low. The coil removed that
+/// overshoot: it delivers the duty at its own pace, and the shaped heater now
+/// rises to its settled 792 K without passing it.
 ///
 /// This is what §20's clause required of a demo and none of the five existing gas
 /// plants could deliver: a HOLDUP whose temperature moves over a span where the
 /// shape error is large.
 #[test]
 fn the_shaped_demo_settles_hundreds_of_kelvin_from_its_constant_twin() {
-    let (heater, drum, mass, flow) = run(DEMO, 6_000);
-    let (heater_c, drum_c, mass_c, flow_c) = run(&constant_twin(), 6_000);
+    let (heater, drum, mass, flow) = run(DEMO, SETTLED_TICKS);
+    let (heater_c, drum_c, mass_c, flow_c) = run(&constant_twin(), SETTLED_TICKS);
 
     approx::assert_relative_eq!(drum, 802.4378, max_relative = 1e-4);
     approx::assert_relative_eq!(drum_c, 1106.8628, max_relative = 1e-4);
@@ -264,7 +276,7 @@ fn the_shaped_demo_settles_hundreds_of_kelvin_from_its_constant_twin() {
 #[test]
 fn the_demo_actually_traverses_the_span_its_shape_is_fitted_over() {
     let (_, start, _, _) = run(DEMO, 1);
-    let (_, settled, _, _) = run(DEMO, 6_000);
+    let (_, settled, _, _) = run(DEMO, SETTLED_TICKS);
     assert!(
         start < 400.0,
         "the drum must start near ambient, got {start} K"

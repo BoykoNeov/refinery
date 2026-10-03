@@ -53,12 +53,12 @@
 
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
-use crate::graph::{ColumnDraw, EdgeId, NodeId, NodeKind, PlantGraph};
+use crate::graph::{ColumnDraw, EdgeId, FurnaceCoil, NodeId, NodeKind, PlantGraph};
 use crate::traits::{
     ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, ReactionModel, Separation,
     SeparationModel, StarvedTank, ThermoModel,
 };
-use crate::units::{JPerKgK, Kelvin, KgPerSec, Watt, WattPerKelvin, T_AMBIENT};
+use crate::units::{JPerKgK, Kelvin, KgPerSec, Seconds, Watt, WattPerKelvin, T_AMBIENT};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -657,7 +657,7 @@ pub fn stream_cp_at(
 /// is its own change to how transport works (docs/DESIGN.md §4a).
 pub fn heat_load(node: &crate::graph::Node) -> Watt {
     let unit_term = match &node.kind {
-        NodeKind::Furnace { duty } => duty.value(),
+        NodeKind::Furnace { duty, .. } => duty.value(),
         NodeKind::Cooler { duty } => -duty.value(),
         // The tank's temperature is its START-of-tick value here, which is what
         // makes this an explicit-Euler term like every other slow state.
@@ -935,7 +935,17 @@ pub struct NodeStates {
     /// by exactly one consumer, `PlantGraph::measure`, which returns no
     /// measurement for a node in it — so a loop on a stagnant outlet holds rather
     /// than acting on, or seeding against, a number the sweep did not compute.
+    ///
+    /// **Never a furnace, since M34** (docs/DESIGN.md §37): a furnace with no
+    /// inflow reports its coil's temperature, which IS computed — the coil is a
+    /// state, and it took the tick's duty.
     pub held: BTreeSet<NodeId>,
+    /// Each furnace's coil temperature [K] at the END of this tick (M34,
+    /// docs/DESIGN.md §37), integrated on this sweep because it is the one site
+    /// with the coil's inlet in hand. A RESULT, not a state: `Engine::tick`
+    /// writes it back to `FurnaceCoil::temperature`, which is where it is read
+    /// from. Empty on a plant with no furnace.
+    pub coil_temperature: BTreeMap<NodeId, Kelvin>,
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -1018,8 +1028,10 @@ pub fn resolve_node_states(
     enthalpy: &dyn EnthalpyModel,
     previous: &NodeStates,
     starved: &BTreeMap<NodeId, StarvedTank>,
+    dt: Seconds,
 ) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
+    let mut coil_temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
     let mut composition: BTreeMap<NodeId, Composition> = BTreeMap::new();
     let mut reactor_duties: BTreeMap<NodeId, ReactorDuty> = BTreeMap::new();
     let mut separations: BTreeMap<NodeId, Separation> = BTreeMap::new();
@@ -1257,6 +1269,26 @@ pub fn resolve_node_states(
                         composition.insert(id, products);
                         temperature.insert(id, t_set);
                         reactor_duties.insert(id, duty);
+                    } else if let NodeKind::Furnace { coil, .. } = &graph.node(id).kind {
+                        // A furnace heats its fluid through its coil (M34,
+                        // docs/DESIGN.md §37), so it is never HELD: with no
+                        // inflow the fluid in its tubes sits at the coil's own
+                        // temperature, which is a state, not a placeholder.
+                        let pass = furnace_coil(
+                            graph,
+                            slate,
+                            enthalpy,
+                            edge_mass_flow,
+                            edge_dissipation,
+                            &temperature,
+                            &composition,
+                            &separations,
+                            id,
+                            coil,
+                            dt,
+                        )?;
+                        temperature.insert(id, pass.fluid);
+                        coil_temperature.insert(id, pass.coil);
                     } else {
                         let mixed = mix_inflows(
                             graph,
@@ -1408,6 +1440,7 @@ pub fn resolve_node_states(
         reactor_duty: reactor_duties,
         column_separation: separations,
         held,
+        coil_temperature,
     })
 }
 
@@ -1704,11 +1737,12 @@ fn mix_inflows(
     separations: &BTreeMap<NodeId, Separation>,
     node: NodeId,
 ) -> Result<Option<Kelvin>, SimError> {
-    // Heat — external (a fire) and a furnace's duty alike — joins the same
-    // first law: for a node with no accumulation, Σ ṁ·h_in + Q = Σ ṁ·h_out.
-    // Without this term `Command::SetHeatInput` would be a silent no-op on
-    // every junction (the damage model's "fire on a node" would do nothing at
-    // all) and a furnace would be an inert pass-through.
+    // Heat — external (a fire) and a cooler's duty alike — joins the same first
+    // law: for a node with no accumulation, Σ ṁ·h_in + Q = Σ ṁ·h_out. Without
+    // this term `Command::SetHeatInput` would be a silent no-op on every
+    // junction (the damage model's "fire on a node" would do nothing at all).
+    // A FURNACE does not come through here since M34: its heat goes into its
+    // coil first (`furnace_coil`, docs/DESIGN.md §37).
     let heat_input = heat_load(graph.node(node)).value();
 
     if let Some(totals) = inflow_totals(
@@ -1756,9 +1790,162 @@ fn mix_inflows(
         // heat to raise — the honest model of a fire against stagnant inventory
         // puts it on a Tank. Energy is therefore NOT conserved in this one case,
         // which is why `energy_invariants.rs` heats only tanks: it is a gap in
-        // the model, not slack the invariant should be widened to tolerate.
+        // the model, not slack the invariant should be widened to tolerate. A
+        // FURNACE is the one zero-volume unit that no longer has the gap: its
+        // coil is the thermal mass (M34, docs/DESIGN.md §37, DEFERRED B39).
         Ok(None)
     }
+}
+
+/// What one tick does to a furnace: its fluid's temperature and its coil's.
+struct CoilPass {
+    /// The fluid's temperature [K]: the outlet when something flows, the coil's
+    /// own end-of-tick temperature when nothing does.
+    fluid: Kelvin,
+    /// The coil's temperature at the END of the tick [K].
+    coil: Kelvin,
+}
+
+/// Integrate a furnace's coil across one tick and heat its fluid with what the
+/// coil gives up (M34, docs/DESIGN.md §37).
+///
+/// The model is `FurnaceCoil`'s: the fluid sees a tube wall at uniform `T_c`,
+/// so the heat it takes is `G·(T_c − T_in)` with
+/// `G = W·(1 − exp(−UA/W))`, `W = Σ ṁ·cp` its inlet capacity rate
+/// (constant-surface-temperature tube flow, Incropera & DeWitt 6th ed.,
+/// eq. 8.42b), and the coil is a lumped capacitance taking the rest
+/// (ibid. §5.1):
+///
+/// ```text
+/// C·dT_c/dt = Q − G·(T_c − T_in)
+/// ```
+///
+/// With `Q`, `G` and `T_in` frozen across the tick that is linear in `T_c`, and
+/// its exact solution is
+///
+/// ```text
+/// T_c(dt) = T_c + (Q − G·(T_c − T_in)) · dt/C · φ(G·dt/C),   φ(x) = (1 − e^−x)/x
+/// ```
+///
+/// which is what is computed — in that form, with `φ(0) = 1`, because the
+/// textbook form `T_eq + (T_c − T_eq)·e^−x` divides by `G` and a vanishing
+/// flow drives `G` to zero. Exact means unconditionally stable: no coil is too
+/// light for `dt`, and none is refused for it.
+///
+/// **The fluid gets the difference, by construction**: the tick's average
+/// heat into the fluid is `Q − C·ΔT_c/dt`, added to the inflow ENTHALPY sum
+/// as a furnace's duty used to be. So the first law closes at the furnace with
+/// no slack — `Q` in, `C·ΔT_c` stored, the rest carried away — and an energy
+/// balance over a plant counts the coil as one more inventory.
+///
+/// **The outlet never exceeds the coil's hotter end of the tick.** The fluid's
+/// rise is `ε` times the tick's average `T_c − T_in`, with `ε ≤ 1`. It CAN sit
+/// above the coil's end-of-tick value on a tick when the coil is cooling, which
+/// is the value a snapshot shows (`FurnaceCoil::temperature`).
+///
+/// **No flow**: `G = 0`, so the coil takes the whole duty, `ΔT_c = Q·dt/C`, and
+/// the fluid standing in the tubes is reported at the coil's end-of-tick
+/// temperature. Nothing is dropped and nothing is held.
+#[allow(clippy::too_many_arguments)]
+fn furnace_coil(
+    graph: &PlantGraph,
+    slate: &Slate,
+    enthalpy_model: &dyn EnthalpyModel,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    edge_dissipation: &BTreeMap<EdgeId, Watt>,
+    temperature: &BTreeMap<NodeId, Kelvin>,
+    composition: &BTreeMap<NodeId, Composition>,
+    separations: &BTreeMap<NodeId, Separation>,
+    node: NodeId,
+    coil: &FurnaceCoil,
+    dt: Seconds,
+) -> Result<CoilPass, SimError> {
+    let name = &graph.node(node).name;
+    // Duty and any fire alike go into the metal: `heat_load` is still the one
+    // owner of how much heat enters this node.
+    let fired = heat_load(graph.node(node)).value();
+    let capacity = coil.heat_capacity.value();
+    let ua = coil.conductance.value();
+    let start = coil.temperature.value();
+
+    let totals = inflow_totals(
+        graph,
+        slate,
+        enthalpy_model,
+        edge_mass_flow,
+        edge_dissipation,
+        temperature,
+        composition,
+        separations,
+        node,
+    )?;
+    // The fluid's inlet temperature and the coil's conductance to it. With no
+    // inflow there is no fluid to heat: `G = 0` and the inlet is never read.
+    let (inlet, conductance) = match totals {
+        Some(totals) => {
+            let inlet = enthalpy_model
+                .mix_temperature(slate, mixed_composition_at(composition, node)?, totals)?
+                .value();
+            // ε = 1 − exp(−NTU), NTU = UA/W (Incropera & DeWitt eq. 8.42b).
+            // `-expm1(-ntu)` rather than `1 - exp(-ntu)`: exact at small NTU,
+            // and exactly 1 when a vanishing flow sends NTU to infinity.
+            let effectiveness = -(-ua / totals.capacity_rate).exp_m1();
+            (inlet, totals.capacity_rate * effectiveness)
+        }
+        None => (start, 0.0),
+    };
+
+    // The exact step, in the form that never divides by `G` (see the docs).
+    let x = conductance * dt.value() / capacity;
+    let phi = if x > 0.0 { -(-x).exp_m1() / x } else { 1.0 };
+    let end = start + (fired - conductance * (start - inlet)) * dt.value() / capacity * phi;
+    if !end.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "furnace '{name}' coil temperature is not finite ({end}) after a tick fired \
+             at {fired:.4e} W from {start:.2} K"
+        )));
+    }
+    let coil_end = checked_temperature(end, || {
+        format!(
+            "furnace '{name}' coil cools to {end:.2} K, below absolute zero, from \
+             {start:.2} K on a fired heat of {fired:.4e} W"
+        )
+    })?;
+
+    let Some(totals) = totals else {
+        return Ok(CoilPass {
+            fluid: coil_end,
+            coil: coil_end,
+        });
+    };
+    // What the coil gave up this tick, as an average power [W]: fired in, less
+    // what it now stores. The first law at the furnace, closed by construction.
+    //
+    // From the STORED change, `end − start` (exact: the two are close), not from
+    // the increment before it was added: the bits of the increment that
+    // rounding drops from `end` would otherwise reach the fluid without leaving
+    // the coil. The price is on a vanishing flow, where one rounding step of the
+    // coil, `C·ulp(T_c)/dt`, is spread over a capacity rate near zero and can
+    // put the outlet that far above the coil.
+    let to_fluid = fired - capacity * (end - start) / dt.value();
+    let heated = InflowEnthalpy {
+        enthalpy_rate: totals.enthalpy_rate + to_fluid,
+        ..totals
+    };
+    let outlet = enthalpy_model
+        .mix_temperature(slate, mixed_composition_at(composition, node)?, heated)?
+        .value();
+    let fluid = checked_temperature(outlet, || {
+        format!(
+            "furnace '{name}' outlet {outlet:.2} K is below absolute zero: its coil gave \
+             {to_fluid:.4e} W to an inflow of {:.4e} W/K",
+            totals.capacity_rate
+        )
+    })?;
+    Ok(CoilPass {
+        fluid,
+        coil: coil_end,
+    })
 }
 
 /// Both outlet temperatures of a coupled `HeatExchanger` pair [K].
@@ -2219,6 +2406,7 @@ mod tests {
             &ConstantEnthalpyStub,
             &NodeStates::default(),
             &BTreeMap::new(),
+            Seconds(1.0),
         )
         .map(|states| states.temperature)
     }
@@ -2240,6 +2428,7 @@ mod tests {
             &ConstantEnthalpyStub,
             &NodeStates::default(),
             &BTreeMap::new(),
+            Seconds(1.0),
         )
         .map(|states| states.composition)
     }
@@ -2422,6 +2611,7 @@ mod tests {
                 &ConstantEnthalpyStub,
                 &previous,
                 &BTreeMap::new(),
+                Seconds(1.0),
             )
             .unwrap()
             .composition;
@@ -2942,6 +3132,7 @@ mod tests {
             &ConstantEnthalpyStub,
             &previous,
             &BTreeMap::new(),
+            Seconds(1.0),
         )
         .unwrap()
         .temperature;
@@ -3263,6 +3454,7 @@ mod tests {
                 &ConstantEnthalpyStub,
                 &NodeStates::default(),
                 &BTreeMap::new(),
+                Seconds(1.0),
             )
             .unwrap();
 
@@ -3350,6 +3542,7 @@ mod tests {
                 &ConstantEnthalpyStub,
                 &NodeStates::default(),
                 &BTreeMap::new(),
+                Seconds(1.0),
             )
             .unwrap();
 

@@ -119,6 +119,12 @@ composition = { light_naphtha = 0.12, heavy_naphtha = 0.18, kerosene = 0.25, die
 [nodes.preheater]
 type = "furnace"
 duty_mw = 2.1051
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 2.105 MW); UA twice
+# the load flow's 392.02 kW/K capacity rate; and the coil's steady temperature
+# at load, 146.68 + 2105/(0.8647·392.02) °C, so the plant starts settled.
+coil_heat_capacity_mj_per_k = 2.105
+coil_ua_kw_per_k = 784
+coil_temperature_c = 152.89
 
 [nodes.column]
 type = "column"

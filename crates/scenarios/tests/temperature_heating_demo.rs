@@ -73,7 +73,7 @@ fn heater_duty_w(engine: &Engine) -> f64 {
         .find_node("heater")
         .expect("the demo has a heater");
     match engine.graph.node(id).kind {
-        NodeKind::Furnace { duty } => duty.value(),
+        NodeKind::Furnace { duty, .. } => duty.value(),
         ref other => panic!("heater is a furnace, not {other:?}"),
     }
 }

@@ -33,10 +33,17 @@ const FEED_K: f64 = 293.15;
 /// own conversion would make the test agree with any bug in it.
 const DUTY_W: f64 = 1.0e6;
 
-/// Ticks to run before reading. The plant has no inventory, so the hydraulic
-/// solve is at steady state from tick 1; a handful of ticks just confirms it
-/// stays there rather than creeping.
-const TICKS: u64 = 20;
+/// Ticks to run before reading. The hydraulic solve is at steady state from
+/// tick 1, but since M34 the furnace's COIL is a state (docs/DESIGN.md §37): its
+/// distance from its own steady value shrinks by `exp(−G·dt/C)` per tick, with
+/// `C/G` about 5 s on this plant (1 MJ/K over `0.865 × 232 kW/K`), which at its
+/// `dt = 0.1 s` is 50 ticks. The gates in this file are claims about the
+/// SETTLED furnace — where the coil stores nothing and `T_out = T_in + Q/(ṁ·cp)`
+/// again holds exactly — so they read after 80 time constants, which leaves the
+/// coil's start-up offset (a few kelvin at most) below one ulp. Twenty ticks, the
+/// pre-M34 number, leave two thirds of it. The coil's transient is gated on its
+/// own, in the tests at the bottom.
+const TICKS: u64 = 4_000;
 
 /// The temperature field is built from products and one division of
 /// O(1)-magnitude doubles, so relative error is a few ulp. 1e-9 K on a ~300 K
@@ -52,7 +59,7 @@ fn build(duty_mw: f64) -> Engine {
         .get_mut("heater")
         .expect("the scenario must define a 'heater' node")
     {
-        NodeDef::Furnace { duty_mw: d } => *d = duty_mw,
+        NodeDef::Furnace { duty_mw: d, .. } => *d = duty_mw,
         other => panic!("'heater' must be a furnace, got {other:?}"),
     }
     refinery_scenarios::build_engine(&file).expect("the furnace plant must build")
@@ -281,7 +288,7 @@ fn negative_furnace_duty_is_refused() {
     // At load. `Engine` is not `Debug`, so unwrap the Result by hand.
     let mut file: ScenarioFile = refinery_scenarios::load_str(SCENARIO).expect("must parse");
     match file.nodes.get_mut("heater").expect("a 'heater' node") {
-        NodeDef::Furnace { duty_mw: d } => *d = -1.0,
+        NodeDef::Furnace { duty_mw: d, .. } => *d = -1.0,
         other => panic!("'heater' must be a furnace, got {other:?}"),
     }
     match refinery_scenarios::build_engine(&file) {
@@ -379,4 +386,280 @@ fn a_fire_stacks_on_top_of_the_operating_duty() {
          merely matched, the fire overwrote the duty",
         2.0 * rise_from_duty
     );
+}
+
+/// The coil's declared parameters, in SI, read from the TOML by hand for the
+/// reason `DUTY_W` is: `coil_heat_capacity_mj_per_k = 1` and
+/// `coil_ua_kw_per_k = 464.3`, so a dropped or doubled conversion in the loader
+/// misses the hand calculations below by orders of magnitude.
+const COIL_C_J_PER_K: f64 = 1.0e6;
+const COIL_UA_W_PER_K: f64 = 464.3e3;
+/// The plant's timestep [s], `dt = 0.1` in the file.
+const DT_S: f64 = 0.1;
+
+fn coil_temperature(engine: &Engine) -> f64 {
+    let id = engine.graph.find_node("heater").expect("a 'heater' node");
+    match &engine.graph.node(id).kind {
+        refinery_core::graph::NodeKind::Furnace { coil, .. } => coil.temperature.value(),
+        other => panic!("'heater' must be a furnace, got {other:?}"),
+    }
+}
+
+fn set_coil_temperature(engine: &mut Engine, kelvin: f64) {
+    let id = engine.graph.find_node("heater").expect("a 'heater' node");
+    match &mut engine.graph.node_mut(id).kind {
+        refinery_core::graph::NodeKind::Furnace { coil, .. } => {
+            coil.temperature = refinery_core::units::Kelvin(kelvin)
+        }
+        other => panic!("'heater' must be a furnace, got {other:?}"),
+    }
+}
+
+/// **One tick of a cold coil, against the textbook solution** (M34,
+/// docs/DESIGN.md §37).
+///
+/// A lit furnace whose coil starts at the feed temperature (20 °C, against a
+/// settled 25 °C) must, after one tick, hold exactly what the lumped-capacitance
+/// ODE `C·dT_c/dt = Q − G·(T_c − T_in)` says, solved in its TEXTBOOK form,
+/// `T_c(dt) = T_eq + (T_c0 − T_eq)·exp(−G·dt/C)` with `T_eq = T_in + Q/G`
+/// (Incropera & DeWitt 6th ed. §5.3), and `G = W·(1 − exp(−UA/W))` for flow in
+/// a tube at uniform wall temperature (ibid. eq. 8.42b). The engine computes the
+/// same step in a different form, one that never divides by `G`, so agreeing to
+/// 1e-9 K is a check of the algebra rather than a copy of it.
+///
+/// The fluid must then carry exactly what the coil gave up — `Q` less the
+/// metal's `C·ΔT_c/dt` — which on a cold coil is well short of the duty: the
+/// outlet lags its settled value, which is the whole of what the coil is for.
+#[test]
+fn a_cold_coil_takes_one_tick_exactly_as_the_textbook_solution_says() {
+    let mut engine = build(1.0);
+    set_coil_temperature(&mut engine, FEED_K);
+    engine.tick().expect("tick 1");
+
+    let inlet = edge(&engine, "feed_line");
+    let arriving = inlet.stream.temperature.value();
+    let capacity_rate =
+        inlet.stream.mass_flow.value() * inlet.stream.composition.mixture_cp(&engine.slate).value();
+    let conductance = capacity_rate * (1.0 - (-COIL_UA_W_PER_K / capacity_rate).exp());
+    let equilibrium = arriving + DUTY_W / conductance;
+    let expected_coil =
+        equilibrium + (FEED_K - equilibrium) * (-conductance * DT_S / COIL_C_J_PER_K).exp();
+    let coil = coil_temperature(&engine);
+    assert!(
+        (coil - expected_coil).abs() < TOLERANCE_K,
+        "the coil must end tick 1 at {expected_coil} K (from {FEED_K} K toward \
+         {equilibrium} K), got {coil}"
+    );
+
+    let to_fluid = DUTY_W - COIL_C_J_PER_K * (expected_coil - FEED_K) / DT_S;
+    let expected_outlet = arriving + to_fluid / capacity_rate;
+    let outlet = node_temperature(&engine, "heater");
+    assert!(
+        (outlet - expected_outlet).abs() < TOLERANCE_K,
+        "the fluid must carry what the coil gave up, {to_fluid} W, to {expected_outlet} K; \
+         got {outlet}"
+    );
+    let settled = arriving + DUTY_W / capacity_rate;
+    assert!(
+        settled - outlet > 1.0,
+        "a cold coil must hold the outlet well short of its settled {settled} K on the \
+         first tick, got {outlet}"
+    );
+    assert!(
+        outlet <= coil,
+        "the fluid cannot leave hotter than a coil that only warmed this tick: \
+         outlet {outlet} K, coil {coil} K"
+    );
+}
+
+/// The furnace plant with its feed SHUT: a valve at zero opening between the
+/// source and the heater, so exactly nothing flows through it.
+const DRY: &str = r#"
+[meta]
+name = "furnace_fired_dry"
+description = "A lit furnace behind a shut valve."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[nodes.cold_feed]
+type = "source"
+pressure_bar = 3.0
+temperature_c = 20.0
+
+[nodes.feed_valve]
+type = "valve"
+kv = 18.0
+opening = 0.0
+
+[nodes.heater]
+type = "furnace"
+duty_mw = 1.0
+coil_heat_capacity_mj_per_k = 1
+coil_ua_kw_per_k = 464.3
+coil_temperature_c = 25.0
+
+[nodes.product]
+type = "sink"
+pressure_bar = 1.0
+temperature_c = 20.0
+
+[[pipes]]
+name = "valve_line"
+from = "cold_feed"
+to = "feed_valve"
+length_m = 1.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "feed_line"
+from = "feed_valve"
+to = "heater"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "transfer_line"
+from = "heater"
+to = "product"
+length_m = 20.0
+diameter_m = 0.10
+"#;
+
+/// **A furnace fired with no flow puts its whole duty into its coil** — the
+/// first half of DEFERRED B39, closed by M34 (docs/DESIGN.md §37).
+///
+/// Before M34 a furnace with no inflow was a held placeholder whose duty was
+/// DROPPED (energy not conserved), and on a vanishing trickle its outlet grew as
+/// `1/ṁ` without bound. Now the coil stores the duty: it rises by exactly
+/// `Q·dt/C` per tick, a fixed physical rate — 0.1 K per tick, 1 K/s, here — and
+/// the fluid standing in the tubes is reported at the coil's temperature, as a
+/// computed value and not a held one.
+#[test]
+fn a_furnace_fired_with_no_flow_stores_its_whole_duty_in_its_coil() {
+    let file = refinery_scenarios::load_str(DRY).expect("the dry plant must parse");
+    let mut engine = refinery_scenarios::build_engine(&file).expect("the dry plant must build");
+    let start = coil_temperature(&engine);
+    let ticks = 600;
+    for tick in 1..=ticks {
+        engine
+            .tick()
+            .unwrap_or_else(|e| panic!("tick {tick} fired dry failed: {e:?}"));
+        let flow = edge(&engine, "feed_line").stream.mass_flow.value();
+        assert_eq!(
+            flow, 0.0,
+            "tick {tick}: the shut valve must pass exactly nothing"
+        );
+        let coil = coil_temperature(&engine);
+        assert_eq!(
+            node_temperature(&engine, "heater"),
+            coil,
+            "tick {tick}: the fluid standing in the tubes sits at the coil's temperature"
+        );
+        assert!(
+            !engine
+                .node_states()
+                .held
+                .contains(&engine.graph.find_node("heater").expect("a 'heater' node")),
+            "tick {tick}: a furnace's temperature is computed with no flow, never held"
+        );
+    }
+    let rise = coil_temperature(&engine) - start;
+    let expected = DUTY_W * DT_S * ticks as f64 / COIL_C_J_PER_K;
+    assert!(
+        (rise - expected).abs() < 1e-9 * expected,
+        "{ticks} ticks at {DUTY_W} W into {COIL_C_J_PER_K} J/K must raise the coil by \
+         exactly {expected} K, got {rise}"
+    );
+}
+
+/// **The coil's three keys are required, and each is refused outside its
+/// physical range** (M34, docs/DESIGN.md §37): a heat capacity and a conductance
+/// must be finite and positive, a temperature finite and above absolute zero. A
+/// missing key is refused by name rather than defaulted — nothing derives a
+/// coil from a duty.
+#[test]
+fn every_malformed_coil_is_refused_for_its_own_reason() {
+    let refusal = |from: &str, to: &str| -> String {
+        assert_eq!(
+            SCENARIO.matches(from).count(),
+            1,
+            "the edit must land: {from}"
+        );
+        let src = SCENARIO.replacen(from, to, 1);
+        match refinery_scenarios::load_str(&src) {
+            Err(e) => e.to_string(),
+            Ok(file) => match refinery_scenarios::build_engine(&file) {
+                Ok(_) => panic!("a furnace with `{to}` must not load"),
+                Err(e) => e.to_string(),
+            },
+        }
+    };
+    let cases = [
+        (
+            "coil_heat_capacity_mj_per_k = 1\n",
+            "",
+            "missing field `coil_heat_capacity_mj_per_k`",
+        ),
+        (
+            "coil_ua_kw_per_k = 464.3\n",
+            "",
+            "missing field `coil_ua_kw_per_k`",
+        ),
+        (
+            "coil_temperature_c = 25.00\n",
+            "",
+            "missing field `coil_temperature_c`",
+        ),
+        (
+            "coil_heat_capacity_mj_per_k = 1\n",
+            "coil_heat_capacity_mj_per_k = 0.0\n",
+            "A coil with no metal",
+        ),
+        (
+            "coil_heat_capacity_mj_per_k = 1\n",
+            "coil_heat_capacity_mj_per_k = nan\n",
+            "A coil with no metal",
+        ),
+        (
+            "coil_ua_kw_per_k = 464.3\n",
+            "coil_ua_kw_per_k = 0.0\n",
+            "heats nothing",
+        ),
+        (
+            "coil_ua_kw_per_k = 464.3\n",
+            "coil_ua_kw_per_k = -1.0\n",
+            "heats nothing",
+        ),
+        (
+            "coil_ua_kw_per_k = 464.3\n",
+            "coil_ua_kw_per_k = inf\n",
+            "heats nothing",
+        ),
+        (
+            "coil_temperature_c = 25.00\n",
+            "coil_temperature_c = -300.0\n",
+            "above absolute zero",
+        ),
+        (
+            "coil_temperature_c = 25.00\n",
+            "coil_temperature_c = nan\n",
+            "above absolute zero",
+        ),
+    ];
+    for (from, to, says) in cases {
+        let message = refusal(from, to);
+        assert!(
+            message.contains(says),
+            "replacing `{}` with `{}`: expected the refusal to say `{says}`, and it said: \
+             {message}",
+            from.trim(),
+            to.trim()
+        );
+    }
 }

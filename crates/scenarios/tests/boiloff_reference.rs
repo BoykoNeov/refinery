@@ -770,6 +770,12 @@ fn holdup_energy(s: &Snapshot, slate: &refinery_core::components::Slate) -> f64 
             let cp = t.composition.mixture_cp(slate).value();
             total += t.mass.value() * cp * (t.temperature.value() - T_REF.value());
         }
+        // A furnace's coil is an inventory too since M34 (docs/DESIGN.md §37):
+        // its duty goes into the metal, and only what the metal gives up reaches
+        // the fluid, so the books close only with the metal's own `C·T` counted.
+        if let refinery_core::graph::NodeKind::Furnace { coil, .. } = &n.kind {
+            total += coil.heat_capacity.value() * (coil.temperature.value() - T_REF.value());
+        }
     }
     total
 }
@@ -842,7 +848,7 @@ fn boundary_power(
     for n in &s.nodes {
         power += n.heat_input_w;
         match &n.kind {
-            NodeKind::Furnace { duty } => power += duty.value(),
+            NodeKind::Furnace { duty, .. } => power += duty.value(),
             NodeKind::Cooler { duty } => power -= duty.value(),
             NodeKind::Tank(t) => {
                 power +=

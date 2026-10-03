@@ -369,7 +369,7 @@ impl Engine {
                 // duty commands, so neither can grow a guard the other lacks.
                 self.check_loop_owned_duty(node, duty, "furnace")?;
                 match &mut self.graph.node_mut(node).kind {
-                    NodeKind::Furnace { duty: d } => {
+                    NodeKind::Furnace { duty: d, .. } => {
                         *d = duty;
                         Ok(())
                     }
@@ -722,6 +722,7 @@ impl Engine {
             self.enthalpy.as_ref(),
             &self.node_states,
             &solution.starved,
+            dt,
         )?;
         let node_temperature = &node_states.temperature;
 
@@ -1742,6 +1743,16 @@ impl Engine {
             );
         }
 
+        // 5. Furnace coils (M34, docs/DESIGN.md §37). The sweep integrated each
+        //    coil across the tick, from its start-of-tick temperature, because
+        //    the sweep is where its inlet is known; the result is committed here,
+        //    with every other state, so nothing above read a half-written tick.
+        for (&nid, &end) in &node_states.coil_temperature {
+            if let NodeKind::Furnace { coil, .. } = &mut self.graph.node_mut(nid).kind {
+                coil.temperature = end;
+            }
+        }
+
         self.node_states = node_states;
         self.last_solution = Some(solution);
         self.last_cavitation = cavitation;
@@ -1857,7 +1868,7 @@ impl Engine {
                 }
                 TripAction::CutFurnace { furnace } => {
                     match &mut self.graph.node_mut(furnace).kind {
-                        NodeKind::Furnace { duty } => *duty = Watt::ZERO,
+                        NodeKind::Furnace { duty, .. } => *duty = Watt::ZERO,
                         _ => return Err(trip_equipment_fault(&self.graph, furnace, "furnace")),
                     }
                 }
@@ -1880,7 +1891,7 @@ impl Engine {
             (TripAction::SetValve { position, .. }, NodeKind::Valve { opening, .. }) => {
                 *opening != position
             }
-            (TripAction::CutFurnace { .. }, NodeKind::Furnace { duty }) => *duty != Watt::ZERO,
+            (TripAction::CutFurnace { .. }, NodeKind::Furnace { duty, .. }) => *duty != Watt::ZERO,
             (TripAction::StopPump { pump }, _) => {
                 return Err(trip_equipment_fault(&self.graph, pump, "pump"))
             }

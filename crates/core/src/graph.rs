@@ -212,23 +212,31 @@ pub enum NodeKind {
     },
     /// Zero-volume mixing point.
     Junction,
-    /// Fired heater: a duty delivered into the stream passing through it.
+    /// Fired heater: a duty fired into a tube coil, and the coil heating the
+    /// stream passing through it.
     ///
-    /// Zero-volume like a pump or valve — a furnace's tube inventory is
-    /// negligible against its duty, so its outlet temperature is algebraic
-    /// (`T_out = T_in + Q/(ṁ·cp)`) rather than a state. Hydraulically it is a
-    /// plain pass-through at M2: the tube-side pressure drop belongs to the
-    /// connecting pipes' resistance, not to a device characteristic.
+    /// Zero-volume in its FLUID like a pump or valve — the tube inventory is
+    /// negligible against the throughput — but not in its METAL (M34,
+    /// docs/DESIGN.md §37). The duty goes into the coil, a lumped body with a
+    /// temperature of its own (`FurnaceCoil`), and the coil heats the fluid
+    /// through a declared conductance. So the outlet is no longer
+    /// `T_in + Q/(ṁ·cp)` on every tick: that is where it settles, and the coil's
+    /// heat capacity is how long it takes to get there. With no flow the coil
+    /// keeps the duty, rising at `Q/C`, rather than the fluid's temperature
+    /// growing as `1/ṁ` (DEFERRED B39). Hydraulically it is a plain
+    /// pass-through at M2: the tube-side pressure drop belongs to the connecting
+    /// pipes' resistance, not to a device characteristic.
     ///
-    /// `duty` is the heat actually delivered to the process fluid [W], not a
-    /// firing rate — combustion efficiency is a later fidelity step. Duty 0 is
-    /// an unlit furnace; there is no separate `on` flag because there is
-    /// nothing for one to express that 0 does not.
+    /// `duty` is the heat fired into the coil [W], not a firing rate —
+    /// combustion efficiency is a later fidelity step. Duty 0 is an unlit
+    /// furnace; there is no separate `on` flag because there is nothing for one
+    /// to express that 0 does not.
     ///
     /// Deliberately NOT stored in `Node::heat_input`: that field is the damage
     /// model's hook (fires), and a fire on a furnace must ADD to its duty, not
-    /// overwrite the operator's setpoint. See `energy::heat_load`.
-    Furnace { duty: Watt },
+    /// overwrite the operator's setpoint. See `energy::heat_load`. Both reach
+    /// the coil, not the fluid.
+    Furnace { duty: Watt, coil: FurnaceCoil },
     /// Cooler: a duty *removed* from the stream passing through it.
     ///
     /// Structurally the furnace's mirror — zero-volume, hydraulically a
@@ -496,6 +504,45 @@ pub struct HeatExchangerCoupling {
     /// violation — so it is rejected at every entry point. ε = 0 is a nonsense
     /// exchanger (use a plain pipe) and is likewise refused.
     pub effectiveness: f64,
+}
+
+/// A furnace's tube coil: the metal the duty heats, and through which the duty
+/// reaches the fluid (M34, docs/DESIGN.md §37).
+///
+/// One lumped body at one temperature — no radiant and convective sections, no
+/// wall-thickness gradient, no tube-to-tube spread. Its two parameters are
+/// declared per furnace, with no default: nothing in the engine derives a
+/// coil's mass or its film coefficient from a duty.
+///
+/// **The fluid sees a tube wall at uniform temperature `T_c`**, so its outlet is
+/// the constant-surface-temperature result for flow in a tube (Incropera &
+/// DeWitt, *Fundamentals of Heat and Mass Transfer*, 6th ed., eq. 8.42b):
+///
+/// ```text
+/// T_out = T_c − (T_c − T_in)·exp(−UA/(ṁ·cp))
+/// ```
+///
+/// and the metal is a lumped capacitance (ibid. §5.1) holding the difference:
+///
+/// ```text
+/// C·dT_c/dt = Q − G·(T_c − T_in),   G = ṁ·cp·(1 − exp(−UA/(ṁ·cp)))
+/// ```
+///
+/// `energy::furnace_coil` integrates that exactly across a tick (it is linear
+/// in `T_c` with everything else frozen), so no coil is too light for `dt`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FurnaceCoil {
+    /// Heat capacity of the tube metal, `C` [J/K]. Positive.
+    pub heat_capacity: JPerK,
+    /// Metal-to-process conductance, `UA` [W/K]: the inside film coefficient
+    /// times the wetted area. Positive — a coil that passes no heat heats
+    /// nothing. Constant: it does not fall with the flow, which a real film
+    /// coefficient does (`h ∝ Re^0.8`).
+    pub conductance: WattPerKelvin,
+    /// Metal temperature, `T_c` [K]: a STATE, set from `coil_temperature_c` at
+    /// load and written back at the end of every tick, so it is present before
+    /// the first tick and reads the END of the last one.
+    pub temperature: Kelvin,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2046,10 +2093,11 @@ impl PlantGraph {
     /// reading that can be ABSENT, and `Ok(None)` is how it says so — never a
     /// stand-in (the feed's temperature, ambient, the setpoint), because a PI loop
     /// seeds its memory against whatever it first measures. The rule the caller
-    /// applies is "no measurement, no action" (§23 fork 2). An outlet is also
-    /// absent while it is STAGNANT: a zero-volume node with no inflow holds a
-    /// placeholder, which `NodeStates::held` records and this reader refuses to
-    /// pass off as a measurement (§23 fork 4).
+    /// applies is "no measurement, no action" (§23 fork 2). A COOLER's outlet is
+    /// also absent while it is STAGNANT: a zero-volume node with no inflow holds
+    /// a placeholder, which `NodeStates::held` records and this reader refuses to
+    /// pass off as a measurement (§23 fork 4). A FURNACE's is not, since M34: with
+    /// no flow it reads its coil, a state the tick computed (docs/DESIGN.md §37).
     ///
     /// `resolved` is the last tick's states — exactly what the engine will hand
     /// the next solve — and empty at load, which is the truth at load. Every other
@@ -2184,9 +2232,10 @@ impl PlantGraph {
             }
             // **The furnace or cooler OUTLET — the one reading that can be absent**
             // (docs/DESIGN.md §23). Resolved by the last tick's sweep, so absent
-            // before the first one, and absent while the unit is stagnant, when
-            // its entry is a held placeholder rather than a computed value. Both
-            // absences are `None`, and the caller holds the loop on either.
+            // before the first one, and — for a cooler — absent while the unit is
+            // stagnant, when its entry is a held placeholder rather than a
+            // computed value. Both absences are `None`, and the caller holds the
+            // loop on either. A furnace is never held since its coil (M34, §37).
             (MeasuredVariable::Temperature, NodeKind::Furnace { .. } | NodeKind::Cooler { .. }) => {
                 if resolved.held.contains(&node) {
                     return Ok(None);
@@ -2317,7 +2366,7 @@ impl PlantGraph {
         };
         match (&self.node(actuator).kind, max_duty) {
             (NodeKind::Valve { opening, .. }, None) => Ok(*opening),
-            (NodeKind::Cooler { duty } | NodeKind::Furnace { duty }, Some(max)) => {
+            (NodeKind::Cooler { duty } | NodeKind::Furnace { duty, .. }, Some(max)) => {
                 Ok(duty.value() / max.value())
             }
             _ => Err(unpaired_actuator(&self.node(actuator).name, max_duty)),
@@ -2354,7 +2403,7 @@ impl PlantGraph {
                 *opening = position;
                 Ok(())
             }
-            (NodeKind::Cooler { duty } | NodeKind::Furnace { duty }, Some(max)) => {
+            (NodeKind::Cooler { duty } | NodeKind::Furnace { duty, .. }, Some(max)) => {
                 *duty = max * position;
                 Ok(())
             }

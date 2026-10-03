@@ -115,7 +115,7 @@ fn demo_position(setpoint_k: f64) -> f64 {
 fn duty_w(engine: &Engine, unit: &str) -> f64 {
     let id = engine.graph.find_node(unit).expect("the unit exists");
     match engine.graph.node(id).kind {
-        NodeKind::Furnace { duty } | NodeKind::Cooler { duty } => duty.value(),
+        NodeKind::Furnace { duty, .. } | NodeKind::Cooler { duty } => duty.value(),
         ref other => panic!("'{unit}' is a furnace or cooler, not {other:?}"),
     }
 }
@@ -193,19 +193,27 @@ fn secondary_first() -> String {
 /// The demo with a FEED VALVE between the source and the heater, so the furnace
 /// can be starved of flow (M19.1's fixture, on the cascade).
 fn with_feed_valve() -> String {
+    feed_valve_before(DEMO, "cool_feed", "heater", "furnace")
+}
+
+/// `src` with a FEED VALVE between its source and `unit`, so the unit can be
+/// starved of flow. `src`'s controls are kept, so a cascade comes with it.
+fn feed_valve_before(src: &str, source: &str, unit: &str, kind: &str) -> String {
     let plant = sub(
-        DEMO,
-        "[nodes.heater]\ntype = \"furnace\"",
-        "[nodes.feed_valve]\ntype = \"valve\"\nkv = 150.0\nopening = 1.0\n\n\
-         [nodes.heater]\ntype = \"furnace\"",
+        src,
+        &format!("[nodes.{unit}]\ntype = \"{kind}\""),
+        &format!(
+            "[nodes.feed_valve]\ntype = \"valve\"\nkv = 150.0\nopening = 1.0\n\n\
+             [nodes.{unit}]\ntype = \"{kind}\""
+        ),
     );
     let plant = sub(
         &plant,
-        "name = \"feed_line\"\nfrom = \"cool_feed\"\nto = \"heater\"",
-        "name = \"feed_line\"\nfrom = \"cool_feed\"\nto = \"feed_valve\"",
+        &format!("name = \"feed_line\"\nfrom = \"{source}\"\nto = \"{unit}\""),
+        &format!("name = \"feed_line\"\nfrom = \"{source}\"\nto = \"feed_valve\""),
     );
     format!(
-        "{plant}\n[[pipes]]\nname = \"valve_line\"\nfrom = \"feed_valve\"\nto = \"heater\"\n\
+        "{plant}\n[[pipes]]\nname = \"valve_line\"\nfrom = \"feed_valve\"\nto = \"{unit}\"\n\
          length_m = 2.0\ndiameter_m = 0.10\n"
     )
 }
@@ -372,6 +380,16 @@ fn inside_from(engine: &mut Engine, ticks: u64, name: &str, target_c: f64) -> u6
 /// widened by an order of magnitude so a tuning-preserving refactor of the tick
 /// does not trip it, and still far inside the two controls below.
 ///
+/// **Since M34 the cap is on the outlet's TARGET, and the outlet overshoots it by
+/// what the coil's lag lets through** (docs/DESIGN.md §37). The primary clamps
+/// the secondary's setpoint at 65 °C exactly, as before; the outlet, which used to
+/// sit on its target on the next tick, now answers it over the coil's 38.5 s and
+/// overshoots a rising target the way the M19 loop overshoots a step (gate 5 of
+/// `outlet_control_reference.rs`): measured 65.177 °C at its hottest. The gate
+/// holds the target to the cap exactly and the outlet to the cap plus 0.25 K.
+/// The settling tick did not move outside its band: the tank's own lag, minutes,
+/// dwarfs the coil's.
+///
 /// **The controls are read AT the cascade's own settling tick** (§29, "Corrected
 /// before building"): the tank-loop file has already fired its outlet to
 /// 66.92 °C, past the cap, and the outlet-loop file's tank reads 58.32 °C there,
@@ -382,6 +400,7 @@ fn the_cascade_starts_up_under_its_cap_and_reaches_its_own_clamp() {
     let mut engine = build(DEMO);
     let primary = "tank_temperature";
     let mut hottest_outlet = f64::MIN;
+    let mut highest_target = f64::MIN;
     let mut at_top = 0;
     let mut last_out = 0;
     for _ in 0..6000 {
@@ -391,6 +410,7 @@ fn the_cascade_starts_up_under_its_cap_and_reaches_its_own_clamp() {
             last_out = t;
         }
         hottest_outlet = hottest_outlet.max(node_c(&engine, "heater"));
+        highest_target = highest_target.max(setpoint_k(&engine, "outlet_temperature") - 273.15);
         if faceplate(&engine, primary).output == 1.0 {
             at_top += 1;
         }
@@ -401,9 +421,14 @@ fn the_cascade_starts_up_under_its_cap_and_reaches_its_own_clamp() {
         "the hand model puts the tank inside 0.06 K from tick 2 578; the engine from {settled}"
     );
     assert!(
-        hottest_outlet <= RANGE_MAX_C,
-        "the outlet must never run hotter than the primary's range top, 65 °C: it reached \
-         {hottest_outlet} °C"
+        highest_target <= RANGE_MAX_C,
+        "the outlet's target must never exceed the primary's range top, 65 °C: it reached \
+         {highest_target} °C"
+    );
+    assert!(
+        hottest_outlet <= RANGE_MAX_C + 0.25,
+        "the outlet may overshoot its capped target only by the coil's lag (measured \
+         65.177 °C): it reached {hottest_outlet} °C"
     );
     assert!(
         at_top > 0,
@@ -1126,7 +1151,15 @@ fn only_a_primary_publishes_what_it_drives() {
 
 // ------------------------------------------------- gate 11: a stall opens it
 
-/// **Gate 11. A stall opens the cascade**, on the demo with a valve on its feed.
+/// **Gate 11. A stall opens the cascade**, on the COOLER pairing with a valve on
+/// its feed.
+///
+/// Before M34 this ran on the heater demo. A furnace is measured at its coil when
+/// nothing flows (docs/DESIGN.md §37), so a stall no longer opens a furnace
+/// cascade — the gate below this one pins that — and the rule this gate is about,
+/// "no measurement, the primary writes nothing", lives on for a cooler, which has
+/// no coil. The numbers in the next paragraph are the heater demo's, from the hand
+/// probe; the mechanism is the same mirrored.
 ///
 /// Shut the feed on a settled plant: from the next tick the outlet is stagnant,
 /// the secondary has nothing to measure, and its primary is open. The tank's
@@ -1145,7 +1178,13 @@ fn only_a_primary_publishes_what_it_drives() {
 /// kick, not an open-cascade defect, and it is not what this gate is about.
 #[test]
 fn a_stall_opens_the_cascade_and_the_target_resumes_where_it_stood() {
-    let mut engine = demo_after(&with_feed_valve(), 6000);
+    let plant = feed_valve_before(
+        &cooler_cascade("action = \"reverse\""),
+        "hot_feed",
+        "chiller",
+        "cooler",
+    );
+    let mut engine = demo_after(&plant, 6000);
     set_valve(&mut engine, "feed_valve", 0.0);
     tick(&mut engine);
     set_setpoint_c(&mut engine, "tank_temperature", 62.0)
@@ -1183,4 +1222,24 @@ fn a_stall_opens_the_cascade_and_the_target_resumes_where_it_stood() {
          it moved {moved:+e} K from {} °C",
         stood - 273.15
     );
+}
+
+/// **Gate 11b. A stall does NOT open a FURNACE cascade any more** (M34,
+/// docs/DESIGN.md §37). With the heater's feed shut on a settled plant, the
+/// secondary measures the heater on every tick — the fluid standing in its tubes,
+/// at its coil's temperature — so the primary stays closed and keeps writing.
+#[test]
+fn a_stall_leaves_a_furnace_cascade_closed_on_its_coil() {
+    let mut engine = demo_after(&with_feed_valve(), 6000);
+    set_valve(&mut engine, "feed_valve", 0.0);
+    for _ in 0..300 {
+        tick(&mut engine);
+        assert!(
+            faceplate(&engine, "outlet_temperature")
+                .measurement
+                .is_some(),
+            "tick {}: a furnace with no flow is measured at its coil",
+            engine.snapshot().tick
+        );
+    }
 }

@@ -906,8 +906,15 @@ fn every_malformed_flow_loop_is_refused_for_its_own_reason() {
             r#"actuator = "discharge_valve""#,
             r#"actuator = "unit""#,
         );
+        // A furnace's coil keys are required (M34); a cooler takes none.
+        let coil = if kind == "furnace" {
+            "coil_heat_capacity_mj_per_k = 1.0\ncoil_ua_kw_per_k = 100.0\n\
+             coil_temperature_c = 20.0\n"
+        } else {
+            ""
+        };
         format!(
-            "{plant}\n[nodes.unit]\ntype = \"{kind}\"\nduty_mw = 0.0\n\n[[pipes]]\n\
+            "{plant}\n[nodes.unit]\ntype = \"{kind}\"\nduty_mw = 0.0\n{coil}\n[[pipes]]\n\
              name = \"unit_line\"\nfrom = \"unit\"\nto = \"receiving_tank\"\n\
              length_m = 1.0\ndiameter_m = 0.10\n"
         )

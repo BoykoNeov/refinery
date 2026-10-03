@@ -7,13 +7,20 @@
 //! is absent before the first one. The rule §23 states is **no measurement, no
 //! action**: the loop writes nothing, its faceplate tracks the actuator, and a PI
 //! loop's memory waits — PENDING on its declared `initial_output` — until the
-//! first measurement seeds it. A stagnant outlet, whose entry is a held
+//! first measurement seeds it. A stagnant COOLER outlet, whose entry is a held
 //! placeholder, is the same state.
 //!
 //! The demo is `scenarios/furnace_outlet_control.toml`, the M18 heating file with
 //! the loop moved from the tank to the heater. Its gates are here beside the
 //! fixtures because every one of them is about the same new thing — an absent
-//! measurement, and a plant with no lag — rather than about the demo's numbers.
+//! measurement — rather than about the demo's numbers.
+//!
+//! **Since M34 the furnace has a coil** (docs/DESIGN.md §37): its duty heats tube
+//! metal with a temperature of its own, so the outlet lags the duty by the coil's
+//! `C/G` (38.5 s here) instead of answering on the same tick, and a furnace with
+//! no flow is measured at its coil rather than held. Gate 5 and gate 6 were
+//! rewritten for that; the stagnant-outlet rule they used to gate on the furnace
+//! is gated on a COOLER in gate 6b, the unit it still applies to.
 //!
 //! `Engine` is not `Debug` (boxed solver traits), so failures are unwrapped by
 //! hand rather than with `expect` on the engine itself.
@@ -33,6 +40,8 @@ const GAIN_PER_K: f64 = 0.015;
 const INTEGRAL_TIME_S: f64 = 10.0;
 const DT_S: f64 = 1.0;
 const MAX_DUTY_W: f64 = 2.0e6;
+/// The coil's `coil_heat_capacity_mj_per_k = 2`, in SI (M34).
+const COIL_C_J_PER_K: f64 = 2.0e6;
 
 // ------------------------------------------------------------------- helpers
 
@@ -96,7 +105,7 @@ fn heater_duty_w(engine: &Engine) -> f64 {
         .find_node("heater")
         .expect("the demo has a heater");
     match engine.graph.node(id).kind {
-        NodeKind::Furnace { duty } => duty.value(),
+        NodeKind::Furnace { duty, .. } => duty.value(),
         ref other => panic!("heater is a furnace, not {other:?}"),
     }
 }
@@ -370,24 +379,28 @@ fn the_loop_holds_its_outlet_and_the_parked_twin_does_not() {
     );
 }
 
-// ---------------------------------------- gate 5: the stability bound, both sides
+// ------------------------------- gate 5: the coil removed the lag-free bound
 
-/// **Gate 5. The loop gain `K·G` is computed from PUBLISHED numbers and sits at
-/// half its bound; above the bound the loop rings between both clamps, below it
-/// the loop settles.**
+/// **Gate 5. The loop gain `K·G` from PUBLISHED numbers still sits near 0.5, and
+/// the gain that rang between both clamps before M34 now settles.**
 ///
-/// An outlet has no thermal mass, so the loop's only dynamics is the one tick it
-/// waits to measure: poles at `1` and `−K·G` in the `T_i → ∞` limit, stable only
-/// for `K·G < 1` (docs/DESIGN.md §23 fork 6). **M20 narrowed that sentence**
-/// (§24 fork 6): with the integral term the bound is `K·G < 2/(2 − dt/T_i)`, 1.053
-/// at this demo's `T_i = 10 s`. The fixtures below bracket at 0.8 and 1.2, both on
-/// the right side of either bound, so the gate stays sound. `G` is taken from two
-/// operating points the demo
-/// publishes — the settled AUTO pair and the MANUAL twin's — so the gate does not
-/// trust the note's 33.28 K. Then the bound is exercised on both sides of itself,
-/// because a bound only asserted in prose is a comment.
+/// Before M34 the outlet had no thermal mass, so the loop's only dynamics was the
+/// one tick it waits to measure: poles at `1` and `−K·G`, stable only for
+/// `K·G < 2/(2 − dt/T_i)`, 1.053 here (docs/DESIGN.md §23 fork 6, §24 fork 6),
+/// and this gate drove `K·G = 1.2` into a period-two ring caught by both clamps
+/// (ledger row E10). **The coil is the lag that row said a real heater has**
+/// (docs/DESIGN.md §37): `C/G` is 38.5 s on this plant, so the outlet answers a
+/// duty step over tens of ticks, and the same 1.2 now settles on 60 °C without
+/// touching either clamp. The bound is not relocated here: a proportional loop on
+/// a first-order lag behind one tick of delay rings at `K·G ≈ 1/(1 − e^(−G·dt/C))`,
+/// about 39, and §37's sweep found the clamps catching every gain up to 60 before
+/// any ring could grow.
+///
+/// `G` is still the STATIC gain, read off two published operating points (the
+/// settled AUTO pair and the MANUAL twin's), and it is unchanged by the coil:
+/// settled, the coil stores nothing and the outlet is `T_in + Q/(ṁ·cp)` again.
 #[test]
-fn the_gain_bound_is_a_stability_bound_and_both_sides_of_it_behave_accordingly() {
+fn the_coil_lets_a_gain_that_rang_without_it_settle() {
     let mut auto = build(DEMO);
     run(&mut auto, 1000);
     let (u_a, t_a) = (output(&auto), outlet_k(&auto));
@@ -406,90 +419,167 @@ fn the_gain_bound_is_a_stability_bound_and_both_sides_of_it_behave_accordingly()
     assert!(
         (0.4..=0.6).contains(&loop_gain),
         "K·G from the published operating points is {loop_gain} (G = {g} K per unit \
-         output); the shipped tuning sits at half the bound"
+         output); the coil leaves the static gain where it was"
     );
 
-    // Above the bound: the ring grows until both clamps catch it.
-    let mut ringing = build(&tuned(1.2 / g, INTEGRAL_TIME_S));
-    run(&mut ringing, 200);
-    let mut outlets = Vec::new();
-    let (mut hit_low, mut hit_high) = (false, false);
-    for t in 201..=240 {
-        tick(&mut ringing, t);
-        outlets.push(outlet_k(&ringing));
-        let u = output(&ringing);
-        hit_low |= u == 0.0;
-        hit_high |= u == 1.0;
-    }
-    let steps: Vec<f64> = outlets.windows(2).map(|w| w[1] - w[0]).collect();
-    assert!(
-        steps.windows(2).all(|w| w[0] * w[1] < 0.0),
-        "at K·G = 1.2 the outlet must alternate direction on every tick (the −K·G \
-         pole): {outlets:?}"
-    );
-    assert!(
-        hit_low && hit_high,
-        "and the ring must be caught by BOTH clamps, bang-bang between the feed and \
-         full firing"
-    );
-
-    // Below the bound: the same plant settles.
-    let mut settling = build(&tuned(0.8 / g, INTEGRAL_TIME_S));
-    let mut clamped = 0;
-    for t in 1..=2000 {
-        tick(&mut settling, t);
-        let u = output(&settling);
-        if u <= 0.0 || u >= 1.0 {
-            clamped += 1;
+    for target in [0.8, 1.2] {
+        let mut engine = build(&tuned(target / g, INTEGRAL_TIME_S));
+        let mut outlets = Vec::new();
+        let mut clamped = 0;
+        for t in 1..=2000 {
+            tick(&mut engine, t);
+            outlets.push(outlet_k(&engine));
+            let u = output(&engine);
+            if u <= 0.0 || u >= 1.0 {
+                clamped += 1;
+            }
         }
+        assert_eq!(
+            clamped, 0,
+            "at K·G = {target} the loop never touches a clamp"
+        );
+        // The pre-M34 signature, gone: a ring alternates direction on EVERY tick.
+        let late = &outlets[200..240];
+        let steps: Vec<f64> = late.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(
+            !steps.windows(2).all(|w| w[0] * w[1] < 0.0),
+            "at K·G = {target} the outlet must not alternate tick by tick: {late:?}"
+        );
+        let settled_c = outlet_k(&engine) - 273.15;
+        assert!(
+            (settled_c - SETPOINT_C).abs() < 1.0e-3,
+            "at K·G = {target} the loop settles on 60 °C, and reads {settled_c}"
+        );
     }
-    let settled_c = outlet_k(&settling) - 273.15;
-    assert!(
-        // The ramp lag of gate 4 applies here too; 1e-3 K is what separates
-        // "settled" from a ring between 40 and 73 °C, by four orders.
-        (settled_c - SETPOINT_C).abs() < 1.0e-3,
-        "at K·G = 0.8 the loop still settles on 60 °C, and it reads {settled_c}"
-    );
-    assert_eq!(clamped, 0, "and never touches a clamp");
 }
 
-// ------------------------------------------------ gate 6: the stagnant outlet
+// ---------------------------------- gate 6: a furnace with no flow is measured
 
-/// **Gate 6. A furnace with no flow through it has no measurement, and the loop
+/// **Gate 6. A furnace with no flow through it IS measured: the fluid standing in
+/// its tubes sits at its coil's temperature, and the loop acts on it.**
+///
+/// Before M34 a stagnant furnace held a placeholder (`T_AMBIENT` if it had never
+/// flowed), which the loop was refused as a measurement, and the duty was dropped
+/// (docs/DESIGN.md §23 fork 4, ledger row B39). Now the duty goes into the coil
+/// (§37), which has a temperature whether or not anything flows, so there is
+/// nothing to hold: from tick 2 the loop measures the coil, and the coil rises by
+/// exactly `Q·dt/C` per tick under whatever duty the loop writes. The placeholder
+/// rule survives for a COOLER, which has no coil (gate 6b).
+///
+/// What a loop does with that reading is what a real outlet controller on a
+/// stagnant coil does: below setpoint it fires harder, and the coil heats until
+/// the loop backs off. A low-flow trip is the protection against that, not the
+/// loop (`flow_trip_reference.rs`).
+#[test]
+fn a_furnace_with_no_flow_is_measured_at_its_coil() {
+    let mut engine = build(&with_feed_valve("0.0", "auto"));
+    let heater = engine.graph.find_node("heater").expect("a heater");
+    let coil_k = |engine: &Engine| match &engine.graph.node(heater).kind {
+        NodeKind::Furnace { coil, .. } => coil.temperature.value(),
+        other => panic!("heater is a furnace, not {other:?}"),
+    };
+    let mut previous_coil = coil_k(&engine);
+    let mut previous_outlet = None;
+    for t in 1..=40 {
+        tick(&mut engine, t);
+        assert!(
+            !engine.node_states().held.contains(&heater),
+            "tick {t}: a furnace is never held"
+        );
+        let coil = coil_k(&engine);
+        assert_eq!(
+            outlet_k(&engine),
+            coil,
+            "tick {t}: the fluid standing in the tubes is at the coil's temperature"
+        );
+        // The whole duty written at the top of this tick went into the metal.
+        let expected_rise = heater_duty_w(&engine) * DT_S / COIL_C_J_PER_K;
+        assert!(
+            (coil - previous_coil - expected_rise).abs() < 1.0e-9,
+            "tick {t}: the coil rises by exactly Q·dt/C = {expected_rise} K, and rose {}",
+            coil - previous_coil
+        );
+        // Blind on tick 1 only, as every outlet loop is; then it measures the
+        // outlet the previous tick resolved — the coil.
+        assert_eq!(
+            measured_k(&engine),
+            previous_outlet,
+            "tick {t}: the loop acts on the outlet the previous tick resolved"
+        );
+        previous_coil = coil;
+        previous_outlet = Some(outlet_k(&engine));
+    }
+    assert!(
+        output(&engine) > DECLARED_OUTPUT,
+        "a stagnant coil below setpoint draws more firing, and the loop wrote {}",
+        output(&engine)
+    );
+}
+
+// --------------------------------- gate 6b: a stagnant COOLER is still held
+
+/// The demo with its furnace swapped for a COOLER holding a 30 °C outlet on the
+/// 40 °C feed — direct action — so the stagnant-outlet rule, which a cooler still
+/// needs (it has no coil), stays gated.
+fn as_cooler(src: &str) -> String {
+    let coil_lines: String = src
+        .lines()
+        .filter(|line| !line.starts_with("coil_") && !line.starts_with("# Tube coil"))
+        .filter(|line| !line.starts_with("# the load flow's") && !line.starts_with("# at load,"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let plant = coil_lines
+        .replace(
+            "[nodes.heater]\ntype = \"furnace\"",
+            "[nodes.heater]\ntype = \"cooler\"",
+        )
+        .replace(r#"action = "reverse""#, r#"action = "direct""#)
+        .replace("setpoint_c = 60.0", "setpoint_c = 30.0");
+    assert!(
+        plant.contains("type = \"cooler\"")
+            && plant.contains(r#"action = "direct""#)
+            && plant.contains("setpoint_c = 30.0")
+            && !plant.contains("coil_"),
+        "the cooler fixture's substitutions must all land"
+    );
+    plant
+}
+
+fn cooler_duty_w(engine: &Engine) -> f64 {
+    let id = engine.graph.find_node("heater").expect("the unit");
+    match engine.graph.node(id).kind {
+        NodeKind::Cooler { duty } => duty.value(),
+        ref other => panic!("the fixture's unit is a cooler, not {other:?}"),
+    }
+}
+
+/// **Gate 6b. A COOLER with no flow through it has no measurement, and the loop
 /// holds — including its PENDING memory — until flow comes.**
 ///
-/// A zero-volume node with no inflow reports a held placeholder, not a computed
-/// temperature (docs/DESIGN.md §23 fork 4). The case that makes the placeholder
-/// dangerous is the one this gate builds: the feed valve shut from LOAD, so the
-/// heater has never resolved anything and its placeholder is `T_AMBIENT`, 20 °C —
-/// 40 K below setpoint.
+/// The pre-M34 gate 6, moved to the unit it still applies to. A cooler has no
+/// coil, so a zero-volume cooler with no inflow reports a held placeholder, not a
+/// computed temperature (docs/DESIGN.md §23 fork 4). The dangerous case is the
+/// one built here: the feed shut from LOAD, so the cooler has never resolved
+/// anything and its placeholder is `T_AMBIENT`, 20 °C — 10 K below setpoint.
 ///
 /// **The counterfactual is asserted first, on the engine's own published
-/// number**: the heater's `temperature_k` really does read 293.15 K throughout,
-/// and a PI loop that took it as a measurement would seed against a 40 K error
-/// and integrate `K/T_i · 40 K = 0.06` of output per tick — into the upper clamp
-/// in about thirteen ticks, firing full duty into the stream the moment the valve
-/// opens. What the loop does instead: no measurement on any stagnant tick, the
-/// output and the heater's duty exactly as declared, and — because its memory was
-/// never seeded — a first measured output after the valve opens of exactly
-/// `initial_output`, the same seed a loop gets whose outlet existed from tick 1.
-///
-/// **§23 fork 4 said the MID-RUN stall winds up too, and it does not**, which is
-/// the other half of this gate. A furnace that has been flowing holds its LAST
-/// resolved outlet, and a loop at steady state last saw its own setpoint — so a
-/// loop reading that placeholder would sit still, not wind. The rule still
-/// removes the measurement there (asserted below), but the hazard it closes is
-/// the startup placeholder, not the stall.
+/// number**: a direct-acting loop that took that placeholder as a measurement
+/// would seed against a −10 K error and integrate its cooling down to zero inside
+/// the outage, so the plant would get no cooling the moment flow returned. What
+/// the loop does instead: no measurement on any stagnant tick, the output and the
+/// duty exactly as declared, and a first measured output after the valve opens of
+/// exactly `initial_output`.
 #[test]
-fn a_stagnant_outlet_has_no_measurement_and_the_loop_holds_until_flow_returns() {
-    let mut engine = build(&with_feed_valve("0.0", "auto"));
+fn a_stagnant_cooler_outlet_has_no_measurement_and_the_loop_holds_until_flow_returns() {
+    let setpoint_c = 30.0;
+    let mut engine = build(&as_cooler(&with_feed_valve("0.0", "auto")));
     let outage: u64 = 40;
     for t in 1..=outage {
         tick(&mut engine, t);
         let placeholder_c = outlet_k(&engine) - 273.15;
         assert_eq!(
             placeholder_c, 20.0,
-            "tick {t}: a heater that has never had flow publishes the ambient \
+            "tick {t}: a cooler that has never had flow publishes the ambient \
              placeholder — the number a stand-in would have seeded against"
         );
         assert_eq!(
@@ -503,20 +593,20 @@ fn a_stagnant_outlet_has_no_measurement_and_the_loop_holds_until_flow_returns() 
             "tick {t}: the output holds"
         );
         assert_eq!(
-            heater_duty_w(&engine),
+            cooler_duty_w(&engine),
             DECLARED_OUTPUT * MAX_DUTY_W,
-            "tick {t}: the heater holds its declared duty"
+            "tick {t}: the cooler holds its declared duty"
         );
     }
 
-    // The counterfactual, from the loop's own law against the placeholder: seeded
-    // at 0.25 on the first stagnant tick it read, and integrating from there.
-    let placeholder_error = (SETPOINT_C + 273.15) - (20.0 + 273.15);
+    // The counterfactual, from the loop's own direct-acting law against the
+    // placeholder: seeded at 0.25 on the first stagnant tick, integrating down.
+    let placeholder_error = (20.0 + 273.15) - (setpoint_c + 273.15);
     let mut b = DECLARED_OUTPUT - GAIN_PER_K * placeholder_error;
     let mut wound_at = None;
     for n in 1..outage {
         let u = GAIN_PER_K * placeholder_error + b;
-        if u >= 1.0 {
+        if u <= 0.0 {
             wound_at = Some(n);
             break;
         }
@@ -527,8 +617,8 @@ fn a_stagnant_outlet_has_no_measurement_and_the_loop_holds_until_flow_returns() 
     });
     assert!(
         wound_at < outage / 2,
-        "a loop reading the placeholder would have been pinned at full firing from \
-         tick {wound_at} of the outage"
+        "a loop reading the placeholder would have cut all cooling from tick \
+         {wound_at} of the outage"
     );
 
     // Flow returns. The tick that opens the valve is solved with it open, so the
@@ -540,7 +630,7 @@ fn a_stagnant_outlet_has_no_measurement_and_the_loop_holds_until_flow_returns() 
     tick(&mut engine, outage + 2);
     let first = measured_k(&engine).expect("flow is back, so is the measurement");
     assert!(
-        (first - (SETPOINT_C + 273.15)).abs() > 1.0,
+        (first - (setpoint_c + 273.15)).abs() > 1.0,
         "the seed's first error must be visible for this to mean anything: {first} K"
     );
     assert_eq!(
@@ -579,8 +669,10 @@ fn a_stagnant_outlet_has_no_measurement_and_the_loop_holds_until_flow_returns() 
 /// measure, and is bumpless once there is.**
 ///
 /// The transfer back-calculates the loop's memory from the error standing NOW
-/// (§10 fork 4). Before the first tick, and while the outlet is stagnant, there is
-/// no error, and seeding against a stand-in is the fabricated number §23 refuses.
+/// (§10 fork 4). Before the first tick there is no error, and seeding against a
+/// stand-in is the fabricated number §23 refuses. A stagnant COOLER is the same
+/// state; a stagnant FURNACE is not, since M34 — its coil is a measurement — and
+/// the transfer onto it is admitted and bumpless.
 #[test]
 fn manual_to_auto_is_refused_without_a_measurement_and_bumpless_with_one() {
     let to_auto = Command::SetControllerMode {
@@ -618,14 +710,26 @@ fn manual_to_auto_is_refused_without_a_measurement_and_bumpless_with_one() {
         output(&engine)
     );
 
-    // Stagnant: refused again.
-    let mut starved = build(&with_feed_valve("0.0", "manual"));
+    // A stagnant furnace: admitted, and bumpless, against its coil.
+    let mut dry = build(&with_feed_valve("0.0", "manual"));
+    run(&mut dry, 3);
+    dry.apply(to_auto.clone())
+        .unwrap_or_else(|e| panic!("a stagnant furnace is measured at its coil: {e}"));
+    tick(&mut dry, 4);
+    assert!(
+        (output(&dry) - DECLARED_OUTPUT).abs() < 1.0e-12,
+        "the transfer onto a stagnant furnace is bumpless too, and output {}",
+        output(&dry)
+    );
+
+    // A stagnant cooler: refused, as every stagnant outlet was before M34.
+    let mut starved = build(&as_cooler(&with_feed_valve("0.0", "manual")));
     run(&mut starved, 3);
     let stagnant = starved
         .apply(to_auto)
         .err()
         .map(|e| e.to_string())
-        .unwrap_or_else(|| panic!("a transfer against a stagnant outlet must be refused"));
+        .unwrap_or_else(|| panic!("a transfer against a stagnant cooler must be refused"));
     assert!(
         stagnant.contains("has no measurement to transfer against"),
         "{stagnant}"
@@ -646,35 +750,55 @@ fn manual_to_auto_is_refused_without_a_measurement_and_bumpless_with_one() {
 /// the signed memory `b ≈ 1 − K·(75 − 73.29)` releases to about 0.955; a memory
 /// back-calculated with the UNSIGNED error, `1 + K·1.71`, stays pinned at 1.
 ///
-/// On an algebraic plant the pinned outlet is constant, so "pinned" is steadier
-/// here than on a tank — but M18's finding (iv) still applies at the last bit:
-/// `K·e + (1 − K·e)` can land a hair under 1, so the window is bounded rather
-/// than asserted equal.
+/// Since M34 the coil puts 38.5 s of lag between the duty and the outlet
+/// (docs/DESIGN.md §37), so the loop takes longer to reach its clamp and the
+/// outlet longer to settle under it: the step is held for 400 ticks, ten time
+/// constants, before the pinned window is read. **And "pinned" is no longer
+/// exact.** M18's finding (iv) applies at more than the last bit on a lagging
+/// plant: the back-calculated memory is one tick behind an outlet still creeping
+/// up toward its ceiling, so the output lands under 1 by `K` times that creep —
+/// 1.3e-7 at tick 702, where the lag-free plant held it within 1e-9. The window
+/// is bounded at 1e-6, which still separates "on the clamp" from the 0.045 the
+/// release below moves by.
 #[test]
 fn an_unreachable_setpoint_pins_the_furnace_and_the_release_is_signed() {
     let mut engine = build(DEMO);
     run(&mut engine, 300);
     set_setpoint_c(&mut engine, 75.0);
-    for t in 301..=400 {
+    for t in 301..=700 {
         tick(&mut engine, t);
     }
-    for t in 401..=450 {
+    for t in 701..=750 {
         tick(&mut engine, t);
         let u = output(&engine);
         assert!(
-            u >= 1.0 - 1.0e-9,
+            u >= 1.0 - 1.0e-6,
             "tick {t}: 75 °C is above full firing's 73.29 °C, so the loop sits on its \
              clamp — it read {u}"
         );
     }
-    let ceiling_c = outlet_k(&engine) - 273.15;
+    // The ceiling from this tick's own published feed, `T_in + Q_max/(ṁ·cp)`:
+    // 73.29 °C at tick 450, where this was read before M34, and 0.01 K lower by
+    // tick 750 because the tank's level moves the flow (gate 4's drift).
+    let feed = engine
+        .snapshot()
+        .edges
+        .into_iter()
+        .find(|e| e.name == "feed_line")
+        .expect("the demo's feed line");
+    let ceiling_k = feed.stream.temperature.value()
+        + MAX_DUTY_W
+            / (feed.stream.mass_flow.value()
+                * feed.stream.composition.mixture_cp(&engine.slate).value());
+    let pinned_c = outlet_k(&engine) - 273.15;
     assert!(
-        (ceiling_c - 73.29).abs() < 0.01,
-        "pinned at 2 MW the outlet sits at 73.29 °C, and reads {ceiling_c}"
+        (pinned_c - (ceiling_k - 273.15)).abs() < 1.0e-3 && (pinned_c - 73.29).abs() < 0.05,
+        "pinned at 2 MW the outlet sits at its full-firing ceiling, {} °C, and reads          {pinned_c}",
+        ceiling_k - 273.15
     );
 
     set_setpoint_c(&mut engine, 72.0);
-    tick(&mut engine, 451);
+    tick(&mut engine, 751);
     let released = output(&engine);
     assert!(
         (0.9..0.99).contains(&released),

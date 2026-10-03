@@ -29,7 +29,14 @@ temperature_c = 20.0
 
 [nodes.heater]
 type = "furnace"
-duty_mw = 1.0       # delivered to the process fluid [MW], converted to W on load
+duty_mw = 1.0       # fired into the coil [MW], converted to W on load; all of it
+                    # reaches the fluid once the coil has settled (DESIGN §37)
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 1 MW); UA twice
+# the load flow's 232.13 kW/K capacity rate; and the coil's steady temperature
+# at load, 20.02 + 1000/(0.8647·232.13) °C, so the plant starts settled.
+coil_heat_capacity_mj_per_k = 1
+coil_ua_kw_per_k = 464.3
+coil_temperature_c = 25.00
 
 [nodes.product]
 type = "sink"

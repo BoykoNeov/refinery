@@ -14,19 +14,24 @@
 #
 # **A fuel cut is the furnace's ONE safe state** (docs/DESIGN.md §35). The action
 # is `{ furnace = "heater" }` with no position: the trip writes zero duty, and the
-# stream keeps flowing through the furnace, unheated. Measured: at zero duty the
-# furnace's outlet is its inlet stream's temperature exactly.
+# stream keeps flowing through the furnace. Since M34 the furnace has a coil
+# (docs/DESIGN.md §37), so a cut furnace adds no heat of its own but goes on
+# giving back what its coil holds: the fluid gains exactly what the coil loses
+# until the coil reaches the feed's temperature.
 #
 # **What the trip does, measured on both fidelities** (§35). The tank first passes
-# 75 °C at the end of tick 1 250 (75.0007 °C), so the trip fires at the top of
+# 75 °C at the end of tick 1 250 (75.0009 °C), so the trip fires at the top of
 # tick 1 251 and the furnace reads zero duty on that tick's own snapshot. Until
 # then the plant is bit for bit its own untripped twin. The tank then cools
-# toward its feed: 46.45 °C by tick 3 000, 40.36 °C by tick 6 000. The trip stays
+# toward its feed: 47.00 °C by tick 3 000, 40.39 °C by tick 6 000. The trip stays
 # tripped the whole way down — it LATCHES, and only `reset_trip` re-arms it.
 #
-# **The condition clears inside the tick that trips** (§26, M22.1's finding). The
-# trip compares the start-of-tick 75.0007 °C, and the whole tick then runs on cold
-# feed: the tank ends tick 1 251 at 74.967 °C. From then on it is the LATCH, not
+# **The condition does NOT clear inside the tick that trips — since M34.** Before
+# the furnace had a coil, the whole tripping tick ran on cold feed and the tank
+# ended it at 74.967 °C (§26, M22.1's finding). Now the coil (docs/DESIGN.md §37)
+# is at 98 °C when the fuel goes and keeps warming the feed while it cools: a fuel
+# cut is M22.1's SLOW action, and the tank goes on to 75.138 °C and is back under
+# 75 °C from the end of tick 1 294. Throughout, and after, it is the LATCH, not
 # the temperature, that keeps the fire out.
 #
 # **What happens without it.** Delete the `[[trips]]` block and the tank reads
@@ -63,6 +68,12 @@ temperature_c = 40.0
 [nodes.heater]
 type = "furnace"
 duty_mw = 3.0
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 3 MW); UA twice
+# the load flow's 60.09 kW/K capacity rate; and the coil's steady temperature
+# at load, 40 + 3000/(0.8647·60.09) °C, so the plant starts settled.
+coil_heat_capacity_mj_per_k = 3
+coil_ua_kw_per_k = 120.2
+coil_temperature_c = 97.74
 
 # The node the trip WATCHES. Its temperature is stored on the graph and exists
 # from load (docs/DESIGN.md §26 fork 2); the level is the settled 4.968 m, so only

@@ -558,6 +558,23 @@ direction = "high"
 limit_c = 90.0
 actions = [{ valve = "drain_valve", position = 0.0 }]"#,
             ),
+            // Since M34 a furnace's outlet exists on every tick after the first
+            // (its coil, docs/DESIGN.md §37); the refusal says so and stays.
+            "a trip on it is not admitted yet",
+        ),
+        (
+            // A cooler has no coil: its outlet still goes missing whenever it
+            // stagnates, and that is still the reason it is refused.
+            "a cooler outlet",
+            with_trip(
+                HOT_TANK,
+                r#"[[trips]]
+name = "outlet"
+measurement = { node = "chiller", variable = "temperature" }
+direction = "high"
+limit_c = 90.0
+actions = [{ valve = "drain_valve", position = 0.0 }]"#,
+            ),
             "not while the unit is stagnant",
         ),
         (

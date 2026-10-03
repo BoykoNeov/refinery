@@ -425,8 +425,23 @@ pub enum NodeDef {
     /// Fired heater. Duty in MW — the unit refinery heaters are actually
     /// specified in, converted to W at this boundary like every other
     /// human-friendly quantity in the file.
+    ///
+    /// The three `coil_*` keys are its tube coil (M34, docs/DESIGN.md §37):
+    /// the metal the duty heats, and through which it reaches the fluid. All
+    /// three are REQUIRED, with no default: nothing in the engine derives a
+    /// coil's mass or its film coefficient from a duty, and a default would be
+    /// an invented number on every furnace that forgot it.
     Furnace {
         duty_mw: f64,
+        /// Heat capacity of the tube metal [MJ/K] — its mass times steel's
+        /// specific heat. Must be finite and > 0.
+        coil_heat_capacity_mj_per_k: f64,
+        /// Metal-to-process conductance `UA` [kW/K]: inside film coefficient
+        /// times wetted area. Must be finite and > 0.
+        coil_ua_kw_per_k: f64,
+        /// The coil's temperature at load [°C]: a STATE, like a tank's
+        /// `temperature_c`. Finite and above absolute zero.
+        coil_temperature_c: f64,
     },
     /// Cooler. Duty in MW REMOVED from the stream — a positive magnitude, like
     /// a furnace's. Use this rather than a negative `furnace` duty; the loader

@@ -88,6 +88,12 @@ temperature_c = 20.0
 [nodes.heater]
 type = "furnace"
 duty_mw = 0.56
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 0.56 MW); UA twice
+# the load flow's 1.72 kW/K capacity rate; and the coil's steady temperature
+# at load, 30.06 + 560/(0.8615·1.72) °C, so the plant starts settled.
+coil_heat_capacity_mj_per_k = 0.56
+coil_ua_kw_per_k = 3.4
+coil_temperature_c = 407.99
 
 # The holdup, and the reason the plant has one. A vessel integrates a
 # temperature over a span, which is what converts a wrong capacity into a moved

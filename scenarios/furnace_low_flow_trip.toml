@@ -3,11 +3,13 @@
 #
 #   charge_tank (by gravity) -> feed_valve -> heater (0.6 MW) -> product
 #
-# **Why a low-flow trip exists.** A furnace's outlet is its inlet plus `Q/(ṁ·cp)`
-# (docs/DESIGN.md §4). Fired at a fixed duty on a falling flow, the outlet climbs
-# as the flow falls, without bound; on a real heater that is the tubes burning
-# out. The trip watches the FEED, not the outlet: the flow is what fails, and an
-# outlet trip is still deferred (docs/DEFERRED.md E13).
+# **Why a low-flow trip exists.** A furnace's settled outlet is its inlet plus
+# `Q/(ṁ·cp)`. Fired at a fixed duty on a falling flow, the outlet climbs as the
+# flow falls, and with no flow the duty all goes into the tubes, whose metal
+# climbs at `Q/C` (1 K/s here) for as long as the fire stays lit (the coil,
+# docs/DESIGN.md §37); on a real heater that is the tubes burning out. The trip
+# watches the FEED, not the outlet: the flow is what fails, and an outlet trip is
+# still deferred (docs/DEFERRED.md E13).
 #
 # **What drives the flow down here.** Nothing but the plant: the charge tank
 # drains by gravity through a fully open valve, so its head, and the feed with
@@ -23,9 +25,11 @@
 # **What the trip does, measured on both fidelities** (§36). The feed ends tick
 # 3 016 at 1.99951 kg/s, so the pass at the top of tick 3 017 fires and the
 # furnace reads zero duty on that tick's own snapshot. Until then the plant is
-# bit for bit its own untripped twin. From the cut on, the furnace's outlet IS
-# its inlet stream's temperature, exactly: 91.72 °C at the end of 3 016, 20.004 °C
-# at the end of 3 017.
+# bit for bit its own untripped twin. From the cut on the furnace adds no heat of
+# its own; its coil, at 90 °C when the fuel goes, warms the feed while it cools,
+# and the fluid gains exactly what the coil loses: 89.55 °C at the end of 3 016,
+# 89.09 °C at the end of 3 017, 20.003 °C by 4 000. (Before M34 the outlet fell to
+# the feed's temperature on the cutting tick itself.)
 #
 # **The cut moves no flow.** At constant density nothing hydraulic reads a
 # furnace's duty, so the feed keeps fading exactly as the twin's does, every flow
@@ -34,10 +38,11 @@
 # whose feed can be restored, in `crates/scenarios/tests/flow_trip_reference.rs`.
 #
 # **What happens without it.** Delete the `[[trips]]` block and the furnace keeps
-# firing on the trickle: its outlet passes 100 °C at tick 3 232, reads 155.9 °C at
-# 4 000 and 1 521 °C at 5 000, and keeps climbing as the tank empties. What the
-# engine then reports for a furnace fired on a vanishing flow is a gap of its own
-# (docs/DEFERRED.md B39), not a number this file stands behind.
+# firing on the trickle: its outlet passes 100 °C at tick 3 308, reads 143.2 °C at
+# 4 000 and 419 °C at 5 000, and once the tank is dry and the flow exactly zero
+# (tick 5 238 on Newton) the coil takes the whole duty and climbs at 1 K/s, to
+# about 1 405 °C by 6 000. Nothing in the engine limits that climb: a real firebox
+# would, and the tubes would fail first (docs/DEFERRED.md B40).
 #
 # **What this file cannot show.** The CLI issues no commands, so the refused
 # relight, the reset, and the cold start the latch makes a start permissive are
@@ -77,6 +82,12 @@ opening = 1.0
 [nodes.heater]
 type = "furnace"
 duty_mw = 0.6
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 0.6 MW); UA twice
+# the load flow's 20.46 kW/K capacity rate; and the coil's steady temperature
+# at load, 20.02 + 600/(0.8645·20.46) °C, so the plant starts settled.
+coil_heat_capacity_mj_per_k = 0.6
+coil_ua_kw_per_k = 40.9
+coil_temperature_c = 53.94
 
 [nodes.product]
 type = "sink"

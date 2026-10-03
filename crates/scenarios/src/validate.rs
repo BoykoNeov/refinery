@@ -176,8 +176,37 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
             )));
         }
     }
+    if let NodeDef::Furnace {
+        coil_heat_capacity_mj_per_k,
+        coil_ua_kw_per_k,
+        coil_temperature_c,
+        ..
+    } = def
+    {
+        // The coil (M34, docs/DESIGN.md §37). Its step is exact, so no value is
+        // refused for being small against `dt`; these are the physical bounds.
+        if !coil_heat_capacity_mj_per_k.is_finite() || *coil_heat_capacity_mj_per_k <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "furnace '{name}' has coil_heat_capacity_mj_per_k = \
+                 {coil_heat_capacity_mj_per_k}: it must be finite and > 0. A coil with no \
+                 metal has no temperature of its own, which is the furnace this key replaced."
+            )));
+        }
+        if !coil_ua_kw_per_k.is_finite() || *coil_ua_kw_per_k <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "furnace '{name}' has coil_ua_kw_per_k = {coil_ua_kw_per_k}: it must be finite \
+                 and > 0. A coil that passes no heat to its fluid heats nothing."
+            )));
+        }
+        if !coil_temperature_c.is_finite() || c_to_k(*coil_temperature_c).value() <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "furnace '{name}' has coil_temperature_c = {coil_temperature_c}: it must be \
+                 finite and above absolute zero (−273.15 °C)."
+            )));
+        }
+    }
     let duty = match def {
-        NodeDef::Furnace { duty_mw } => Some(("furnace", *duty_mw)),
+        NodeDef::Furnace { duty_mw, .. } => Some(("furnace", *duty_mw)),
         NodeDef::Cooler { duty_mw } => Some(("cooler", *duty_mw)),
         _ => None,
     };
