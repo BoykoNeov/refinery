@@ -18258,7 +18258,7 @@ coil's temperature. Either is a computed value, never a held one.
 
 ### Fork 3 — the demo, and why it is a FOULED furnace
 
-The advisor's check before building, measured rather than assumed: the outlet
+A check made before building, measured rather than assumed: the outlet
 sits below the coil by `(T_c − T_in)·e^(−UA/W)`, so on a fading feed (`W → 0`, an
 M33-style plant) the outlet converges on the coil and the two trips would fire
 within a tick of each other — nothing a low-flow trip does not already show. The
