@@ -1278,6 +1278,7 @@ fn build_controls(
             algorithm,
             last_measurement: measurement,
             last_output,
+            saturated: None,
         });
     }
     link_cascades(graph, defs)

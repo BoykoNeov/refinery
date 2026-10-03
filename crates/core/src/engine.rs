@@ -8,9 +8,9 @@ use crate::components::{Composition, Slate};
 use crate::energy::{self};
 use crate::error::SimError;
 use crate::graph::{
-    Actuator, ControlAction, ControlLoop, ControlMode, ControlledValue, LeakRole, LoopId,
-    MeasuredVariable, MeasurementPoint, NodeId, NodeKind, PlantGraph, SetpointRange, TripAction,
-    TripId, TripState,
+    Actuator, ActuatorLimit, ControlAction, ControlLoop, ControlMode, ControlledValue, LeakRole,
+    LoopId, MeasuredVariable, MeasurementPoint, NodeId, NodeKind, PlantGraph, SetpointRange,
+    TripAction, TripId, TripState,
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
@@ -2001,6 +2001,24 @@ impl Engine {
             .map(|(c, (measurement, _))| c.mode == ControlMode::Auto && measurement.is_some())
             .collect();
 
+        // Each loop's saturation latch (E19, docs/DESIGN.md §38), updated from
+        // this pass's sample and the setpoint standing at the top of the tick —
+        // before any primary writes a new one — and then read, as a whole, by
+        // pass 2a. Every loop keeps one; only a cascade secondary's is read.
+        let mut saturation: Vec<Option<ActuatorLimit>> = Vec::with_capacity(sampled.len());
+        for (i, &(measurement, position)) in sampled.iter().enumerate() {
+            let control = &mut self.graph.controls_mut()[i];
+            control.saturated = saturation_latch(
+                control.saturated,
+                will_act[i],
+                measurement,
+                control.setpoint,
+                control.action,
+                position,
+            );
+            saturation.push(control.saturated);
+        }
+
         // Each primary's secondary's ACTION, read before pass 2a borrows the
         // loops mutably: it decides which way the secondary's limit blocks.
         let inner_action: Vec<Option<ControlAction>> = self
@@ -2029,10 +2047,11 @@ impl Engine {
                     control.name
                 ))
             })?;
-            // The inner loop's limit (M28, docs/DESIGN.md §31): read off pass 1's
-            // start-of-tick sample, beside `open`, and for the same reason — it is
-            // a fact about the secondary that the primary must know before it acts.
-            let hold = inner_limit(sampled[secondary.0 as usize].1, inner_action[i]);
+            // The inner loop's limit (M28, docs/DESIGN.md §31): its saturation
+            // latch from pass 1 (E19, §38), beside `open`, and for the same reason
+            // — it is a fact about the secondary that the primary must know before
+            // it acts.
+            let hold = inner_limit(saturation[secondary.0 as usize], inner_action[i]);
             if let Some(output) = step_loop(control, measurement, position, open, hold, dt)? {
                 setpoint_writes.push((control.actuator, control.setpoint_range, output));
             }
@@ -2451,38 +2470,79 @@ impl InnerLimit {
     }
 }
 
-/// The limit a secondary at `position` puts on its primary, given the
-/// secondary's `action`; `None` for a loop that drives no other.
+/// The limit a saturated secondary puts on its primary, given the secondary's
+/// `action`; `None` for a secondary that is not saturated, and for a loop that
+/// drives no other.
 ///
-/// **Exact comparisons, on purpose.** A loop's output is clamped with
-/// `f64::clamp`, which returns exactly `0.0` or `1.0` on a limit, and the
-/// position is read back bare (a valve) or as `duty / max_duty` of a duty written
-/// as `output · max_duty` — `(1·d)/d` and `0/d` are exact in IEEE arithmetic.
-///
-/// **The exact test LEAKS, measured** (docs/DESIGN.md §31, ledger row E19). Near
-/// a limit a PI output dips a hair off and back (M18's (iv)): on a furnace held
-/// cold by a fire, the outlet drifts with the flow, and on each tick it drifts
-/// toward its target the inner output rises off zero and the primary is free for
-/// that tick. Held on 984 of 2 000 ticks, the target walked 7.6 K where the
-/// unfixed rule walked 20 K. Closing it needs a "near enough to the limit"
-/// tolerance, which is a constant nothing here derives, so it is a ledger row.
+/// **What "saturated" means is the secondary's latch** (`saturation_latch`, E19,
+/// docs/DESIGN.md §38), not its position on this tick. M28 read the position
+/// exactly, and the exact test LEAKED (§31, row E19): near a limit a PI output
+/// dips a hair off and back, and on each such tick the primary was free. M34's
+/// coil made the leak decide an outcome — a furnace held at full fire was at
+/// exactly 1 on 4 444 of 8 000 ticks, and its primary walked to its range top.
+/// The latch closes it without the "near enough" tolerance §31 declined to
+/// invent.
 ///
 /// **The direction is the secondary's action.** A REVERSE secondary's output
 /// rises with its setpoint (the error is `setpoint − measurement`), so at its
 /// top the primary may not raise the setpoint; a DIRECT one's output falls as its
 /// setpoint rises, so at its top the primary may not lower it. A P secondary is
 /// treated the same: its output clamps the same way.
-fn inner_limit(position: f64, action: Option<ControlAction>) -> Option<InnerLimit> {
-    let action = action?;
-    let at_top = position == 1.0;
-    let at_bottom = position == 0.0;
-    match (action, at_top, at_bottom) {
-        (ControlAction::Reverse, true, _) | (ControlAction::Direct, _, true) => {
-            Some(InnerLimit::NoRaise)
-        }
-        (ControlAction::Direct, true, _) | (ControlAction::Reverse, _, true) => {
-            Some(InnerLimit::NoLower)
-        }
+fn inner_limit(
+    saturated: Option<ActuatorLimit>,
+    action: Option<ControlAction>,
+) -> Option<InnerLimit> {
+    match (action?, saturated?) {
+        (ControlAction::Reverse, ActuatorLimit::Top)
+        | (ControlAction::Direct, ActuatorLimit::Bottom) => Some(InnerLimit::NoRaise),
+        (ControlAction::Direct, ActuatorLimit::Top)
+        | (ControlAction::Reverse, ActuatorLimit::Bottom) => Some(InnerLimit::NoLower),
+    }
+}
+
+/// A loop's saturation latch for this tick (E19, docs/DESIGN.md §38), from last
+/// tick's latch and this tick's start-of-tick sample.
+///
+/// **Set** whenever the position is exactly at a limit — M28's test, and exact
+/// for M28's reason: a loop's output is clamped with `f64::clamp`, which returns
+/// exactly `0.0` or `1.0`, and the position is read back bare (a valve) or as
+/// `duty / max_duty` of a duty written as `output · max_duty`, which IEEE
+/// arithmetic returns exactly.
+///
+/// **Held** off the limit while the loop's error keeps the sign that drove it
+/// there: positive at the top (the loop still wants more), negative at the
+/// bottom. That is the leak's whole mechanism stated as a condition. A pinned PI
+/// loop back-calculates its memory against this tick's error, and on a lagging
+/// plant next tick's error has shrunk a little, so its output lands a hair inside
+/// the limit — for one to three ticks at a time on M34's coil — while the
+/// actuator's authority is still spent and the measurement still short of its
+/// target. No threshold is involved: the sign of the error is the loop's own.
+///
+/// **Cleared** when the error reaches zero or crosses it (the measurement has
+/// caught its target, and the loop is regulating again), when the loop is not
+/// acting (MANUAL, or nothing to measure — an open cascade has nothing to hold),
+/// or by reaching the other limit, which sets that one instead.
+fn saturation_latch(
+    previous: Option<ActuatorLimit>,
+    acting: bool,
+    measurement: Option<ControlledValue>,
+    setpoint: ControlledValue,
+    action: ControlAction,
+    position: f64,
+) -> Option<ActuatorLimit> {
+    if !acting {
+        return None;
+    }
+    if position == 1.0 {
+        return Some(ActuatorLimit::Top);
+    }
+    if position == 0.0 {
+        return Some(ActuatorLimit::Bottom);
+    }
+    let error = ControlledValue::error(measurement?, setpoint, action);
+    match previous {
+        Some(ActuatorLimit::Top) if error > 0.0 => Some(ActuatorLimit::Top),
+        Some(ActuatorLimit::Bottom) if error < 0.0 => Some(ActuatorLimit::Bottom),
         _ => None,
     }
 }

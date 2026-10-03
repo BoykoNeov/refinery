@@ -1226,6 +1226,28 @@ pub struct ControlLoop {
     /// makes AUTO→MANUAL transfer free (fork 4). Seeded from the actuator's
     /// declared position at load.
     pub last_output: f64,
+    /// The limit this loop's actuator is SATURATED at, for a cascade primary's
+    /// hold (M28's rule, latched by E19's fix, docs/DESIGN.md §38). `None` at
+    /// load and whenever the loop is not acting.
+    ///
+    /// Set on any tick the loop's position is exactly at a limit, which is
+    /// M28's whole test. **Cleared only when the loop's own measurement reaches
+    /// its setpoint** — when the error that drove it to the limit changes sign —
+    /// or when it stops acting, or reaches the other limit. Not on the tick its
+    /// output merely dips off the limit: on a lagging plant a pinned PI loop's
+    /// back-calculated memory is one tick behind a measurement still creeping
+    /// toward the target, so its output lands a hair inside the limit for a few
+    /// ticks at a time while the actuator's authority is still spent. Engine
+    /// state; never on the wire.
+    pub saturated: Option<ActuatorLimit>,
+}
+
+/// Which end of its range a loop's actuator is saturated at (docs/DESIGN.md
+/// §38): `Top` at output 1, `Bottom` at output 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActuatorLimit {
+    Top,
+    Bottom,
 }
 
 // ---------------------------------------------------------------------------

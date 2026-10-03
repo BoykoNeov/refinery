@@ -16,10 +16,18 @@
 //! unfixed rule to one tick; the unfixed engine's own numbers are quoted beside
 //! them as the counterfactual each band excludes.
 //!
+//! **Since E19's fix (docs/DESIGN.md §38) the hold reads the secondary's
+//! saturation LATCH, not its position on the tick.** M34's coil gave the furnace a
+//! lag, and a pinned PI output on a lagging plant dips a hair off its limit for
+//! one to three ticks at a time; M28's exact test let the primary move on each.
+//! The latch is set at the limit and held while the secondary's error keeps the
+//! sign that drove it there. The per-tick assertions below read it
+//! (`ControlLoop::saturated`), so they cover the dip ticks too.
+//!
 //! `Engine` is not `Debug` (boxed solver traits), so failures are unwrapped by
 //! hand rather than with `expect` on the engine itself.
 
-use refinery_core::graph::ControlledValue;
+use refinery_core::graph::{ActuatorLimit, ControlledValue};
 use refinery_core::snapshot::{Command, ControlSnapshot};
 use refinery_core::units::{Kelvin, Watt};
 use refinery_core::Engine;
@@ -139,10 +147,24 @@ max_duty_mw = {max_duty_mw}
     )
 }
 
+/// The secondary's saturation latch as THIS tick's hold read it: set in pass 1
+/// of the tick from its start-of-tick sample, and standing until the next.
+fn latch(engine: &Engine) -> Option<ActuatorLimit> {
+    engine
+        .graph
+        .controls()
+        .iter()
+        .find(|c| c.name == SECONDARY)
+        .expect("the secondary")
+        .saturated
+}
+
 /// What one tick did to the cascade, read around it.
 struct Step {
-    /// The secondary's output at the TOP of the tick — what the rule reads.
+    /// The secondary's output at the TOP of the tick.
     inner_before: f64,
+    /// The secondary's latch as this tick's hold read it — what the rule reads.
+    latched: Option<ActuatorLimit>,
     setpoint_before: f64,
     setpoint_after: f64,
     /// The primary's faceplate after the tick.
@@ -155,6 +177,7 @@ fn step(engine: &mut Engine) -> Step {
     tick(engine);
     Step {
         inner_before,
+        latched: latch(engine),
         setpoint_before,
         setpoint_after: setpoint_k(engine),
         primary_output: faceplate(engine, PRIMARY).output,
@@ -181,27 +204,40 @@ fn inside_from(trajectory: &[(u64, f64)], target_c: f64, start: u64) -> u64 {
 /// top while the furnace sat at full fire for 1 694 ticks, and then had to walk it
 /// back: 0.395 K over 60 °C, inside 0.06 K from tick 4 445 (unfixed engine). With
 /// the hold: 60.0038 °C, inside from 3 301, 331 ticks at full fire (hand); the
-/// engine gives 3 302 and 332.
+/// engine gave 3 302 and 332 before M34's coil.
 ///
-/// On every tick the furnace began at full fire the setpoint does not RISE (a
-/// reverse secondary's output rises with its setpoint), and on every tick it is
-/// held the primary's faceplate is the setpoint as a position, to the bit — the
-/// open cascade's identity (§29 gate 6), which catches a hold that clamps the
+/// **Since the coil and E19's latch** (docs/DESIGN.md §38): 60.0039 °C and inside
+/// from 3 309. The furnace's authority is spent — its loop latched at the top —
+/// on 665 ticks, of which it is at exactly full fire on 169: the lag stretches the
+/// approach the hand model (lag-free) puts at 331 ticks, and the output dips off
+/// the limit between.
+///
+/// On every tick the furnace's loop is latched at the top the setpoint does not
+/// RISE (a reverse secondary's output rises with its setpoint), and on every tick
+/// it is held the primary's faceplate is the setpoint as a position, to the bit —
+/// the open cascade's identity (§29 gate 6), which catches a hold that clamps the
 /// written value but reports the one it did not write.
 #[test]
 fn a_furnace_too_small_for_its_range_holds_its_primary() {
     let mut engine = build(&furnace("1.3"));
     let mut trajectory = Vec::new();
     let mut held = 0;
-    let mut at_full_fire = 0;
+    let mut spent = 0;
     for _ in 0..8000 {
         let s = step(&mut engine);
         let t = engine.snapshot().tick;
         trajectory.push((t, tank_c(&engine)));
-        if faceplate(&engine, SECONDARY).output == 1.0 {
-            at_full_fire += 1;
+        if latch(&engine) == Some(ActuatorLimit::Top) {
+            spent += 1;
         }
         if s.inner_before == 1.0 {
+            assert_eq!(
+                s.latched,
+                Some(ActuatorLimit::Top),
+                "tick {t}: at full fire, latched"
+            );
+        }
+        if s.latched == Some(ActuatorLimit::Top) {
             assert!(
                 s.setpoint_after <= s.setpoint_before,
                 "tick {t}: the furnace was at full fire and the primary raised its target \
@@ -226,17 +262,18 @@ fn a_furnace_too_small_for_its_range_holds_its_primary() {
     let peak = trajectory.iter().map(|(_, c)| *c).fold(f64::MIN, f64::max);
     assert!(
         peak - TANK_SETPOINT_C < 0.02,
-        "hand 0.0038 K over 60 °C, unfixed 0.395 K: {:.4} K",
+        "hand 0.0038 K over 60 °C (engine 0.0039), unfixed 0.395 K: {:.4} K",
         peak - TANK_SETPOINT_C
     );
     let settled = inside_from(&trajectory, TANK_SETPOINT_C, 0);
     assert!(
-        (3250..=3350).contains(&settled),
-        "hand inside 0.06 K from tick 3 301, unfixed 4 445: {settled}"
+        (3259..=3359).contains(&settled),
+        "engine inside 0.06 K from tick 3 309 (hand 3 301), unfixed 4 445: {settled}"
     );
     assert!(
-        (300..=370).contains(&at_full_fire),
-        "hand 331 ticks at full fire, unfixed 1 694: {at_full_fire}"
+        (615..=715).contains(&spent),
+        "the furnace's authority is spent on 665 ticks (hand, lag-free, 331), unfixed \
+         1 694: {spent}"
     );
 }
 
@@ -249,7 +286,9 @@ fn a_furnace_too_small_for_its_range_holds_its_primary() {
 /// secondary's action would block the raise instead and let the primary lower
 /// the target into deeper saturation, which is what the first assertion sees.
 /// Unfixed: 1 695 ticks at full duty, inside from 4 448. Engine with the hold:
-/// 333 and 3 305 — the furnace's numbers mirrored.
+/// 333 and 3 305 — the furnace's numbers mirrored; with E19's latch, inside from
+/// 3 306. The cooler has no coil, so its numbers barely moved: the latch is
+/// reached by its dips too, but they were rarer.
 #[test]
 fn a_cooler_too_small_for_its_range_holds_its_primary_the_other_way() {
     let mut engine = build(&cooler("1.3"));
@@ -259,7 +298,7 @@ fn a_cooler_too_small_for_its_range_holds_its_primary_the_other_way() {
         let s = step(&mut engine);
         let t = engine.snapshot().tick;
         trajectory.push((t, tank_c(&engine)));
-        if s.inner_before == 1.0 {
+        if s.latched == Some(ActuatorLimit::Top) {
             assert!(
                 s.setpoint_after >= s.setpoint_before,
                 "tick {t}: the cooler was at full duty and the primary LOWERED its target \
@@ -278,8 +317,8 @@ fn a_cooler_too_small_for_its_range_holds_its_primary_the_other_way() {
     );
     let settled = inside_from(&trajectory, TANK_SETPOINT_C, 0);
     assert!(
-        (3255..=3355).contains(&settled),
-        "engine inside 0.06 K from tick 3 305, unfixed 4 448: {settled}"
+        (3256..=3356).contains(&settled),
+        "engine inside 0.06 K from tick 3 306, unfixed 4 448: {settled}"
     );
 }
 
@@ -295,15 +334,17 @@ fn a_cooler_too_small_for_its_range_holds_its_primary_the_other_way() {
 /// inside (unfixed engine; hand 58.52 and 2 484). A rule that held only at the
 /// TOP fails this gate's first assertion.
 ///
-/// **The hold LEAKS here, and the bands are the engine's, not the hand model's**
-/// (§31, "Corrections from building it"). The flow through the furnace drifts
-/// with the tank's level, so the cold furnace's outlet drifts too, and on a tick
-/// it drifts toward its target the inner loop's output rises a hair off zero.
-/// That tick the primary is free, and it steps the target down by one tick of
-/// control. Held on 984 of the 2 000 ticks, the target ends at 52.37 °C — not
-/// the hand model's 58.3 (constant flow, no drift), and not the unfixed 40. After
-/// the fire: 0.074 K under 60 °C (hand 0.005, unfixed 1.48), back inside after
-/// 1 832 ticks (hand 1 834). Row E19 carries the leak.
+/// **The hold LEAKED here, and E19's latch closes it** (§31, "Corrections from
+/// building it"; §38). The flow through the furnace drifts with the tank's level,
+/// so the cold furnace's outlet drifts too, and on a tick it drifts toward its
+/// target the inner loop's output rises a hair off zero. Under M28's exact test
+/// the primary was free on that tick: held on 984 of 2 000 ticks, the target
+/// ended at 52.37 °C — not the hand model's 58.3 (constant flow, no drift), and
+/// not the unfixed 40. The latch holds through those ticks (the outlet is still
+/// above its target), so it is latched on 1 958 of the 2 000 and the target
+/// stands at 59.04 °C. After the fire: 0.0045 K under 60 °C (hand 0.005; leaked
+/// 0.074, unfixed 1.48), back inside after 1 915 ticks (hand 1 834; leaked 1 832
+/// before M34's coil, 1 719 with it).
 ///
 /// **Re-measured at M34** (docs/DESIGN.md §37), whose coil puts 38.5 s of lag
 /// between the furnace's duty and its outlet: back inside after 1 719 ticks, and
@@ -329,6 +370,9 @@ fn a_fire_that_drives_the_furnace_to_zero_holds_its_primary_at_the_bottom() {
     for _ in 0..2000 {
         let s = step(&mut engine);
         if s.inner_before == 0.0 {
+            assert_eq!(s.latched, Some(ActuatorLimit::Bottom), "cold, latched");
+        }
+        if s.latched == Some(ActuatorLimit::Bottom) {
             assert!(
                 s.setpoint_after >= s.setpoint_before,
                 "tick {}: the furnace was cold and the primary lowered its target {} -> {} K",
@@ -347,9 +391,9 @@ fn a_fire_that_drives_the_furnace_to_zero_holds_its_primary_at_the_bottom() {
     );
     let held_at = setpoint_k(&engine) - 273.15;
     assert!(
-        (51.5..=53.5).contains(&held_at),
-        "the target leaks down to 52.37 °C (engine; hand without the drift 58.3, unfixed \
-         40, the range bottom): {held_at} °C"
+        (58.5..=59.5).contains(&held_at),
+        "the latch holds the target at 59.04 °C (hand without the drift 58.3; leaked \
+         52.37; unfixed 40, the range bottom): {held_at} °C"
     );
 
     fire(&mut engine, 0.0);
@@ -361,14 +405,16 @@ fn a_fire_that_drives_the_furnace_to_zero_holds_its_primary_at_the_bottom() {
     }
     let coldest = trajectory.iter().map(|(_, c)| *c).fold(f64::MAX, f64::min);
     assert!(
-        TANK_SETPOINT_C - coldest < 0.1,
-        "after the fire, engine 0.074 K under 60 °C (hand 0.005), unfixed 1.48 K: {:.4} K",
+        TANK_SETPOINT_C - coldest < 0.01,
+        "after the fire, engine 0.0045 K under 60 °C (hand 0.005; leaked 0.074), unfixed \
+         1.48 K: {:.4} K",
         TANK_SETPOINT_C - coldest
     );
     let settled = inside_from(&trajectory, TANK_SETPOINT_C, start);
     assert!(
-        (1669..=1769).contains(&settled),
-        "engine back inside 0.06 K after 1 719 ticks (1 832 before M34's coil; hand          1 834), unfixed 2 485: {settled}"
+        (1865..=1965).contains(&settled),
+        "engine back inside 0.06 K after 1 915 ticks (hand 1 834; leaked 1 719), unfixed \
+         2 485: {settled}"
     );
 }
 
@@ -403,6 +449,15 @@ fn a_held_primary_moves_out_of_the_limit_at_once() {
     for _ in 0..8000 {
         tick(&mut engine);
     }
+    // The case M34 found (docs/DESIGN.md §37, correction 3; §38): held at full
+    // fire this long, the leaking rule let the primary's target walk to the 65 °C
+    // range top. The latch holds it where the furnace's 58.3 °C ceiling put it.
+    let target_c = setpoint_k(&engine) - 273.15;
+    assert!(
+        (58.0..=58.6).contains(&target_c),
+        "the latch holds the outlet target at the furnace's ceiling, 58.31 °C (the \
+         leaking rule walked it to 65): {target_c} °C"
+    );
     for _ in 0..100 {
         if faceplate(&engine, SECONDARY).output == 1.0 {
             break;
@@ -439,15 +494,73 @@ fn a_held_primary_moves_out_of_the_limit_at_once() {
         tick(&mut engine);
         coldest = coldest.min(tank_c(&engine));
     }
-    // **M34 broke this band, and it is restated rather than relaxed** (docs/DESIGN.md
-    // §37, ledger row E19). The coil's lag makes the secondary's pinned output dip
-    // a hair under 1 for one to three ticks at a time (4 444 ticks at the limit,
-    // 3 455 off it, over the 8 000), and on each dip the primary is free: its
-    // target walks to the 65 °C range top, exactly where the unfixed rule parks
-    // it, and the dip after the step is then the unfixed one. The hold's guarantee
-    // on a furnace held at full fire is gone until E19 is closed.
+    // M34's coil broke this band for one commit (the leak walked the target to the
+    // range top, and the dip read the unfixed 54.876 °C); E19's latch restores it:
+    // 54.0778 °C (docs/DESIGN.md §38).
     assert!(
-        (54.77..=54.97).contains(&coldest),
-        "M34's coil leaks the hold to the unfixed 54.87 °C (hand with the hold          54.08): {coldest:.4} °C"
+        (53.98..=54.18).contains(&coldest),
+        "hand 54.08 °C, engine 54.0778 (unfixed, and leaked, 54.87): {coldest:.4} °C"
+    );
+}
+
+// ------------------------------- gate 5: out of AUTO, the latch is forgotten
+
+/// **Gate 5 (E19, docs/DESIGN.md §38). A secondary taken out of AUTO forgets its
+/// saturation.**
+///
+/// The latch is held only while the secondary is ACTING. Here the 1.1 MW furnace
+/// has sat latched at full fire for 8 000 ticks; a human puts its loop in MANUAL,
+/// turns the furnace down to 0.3 MW, and hands it back. Its authority is no longer
+/// spent — it has 0.8 MW to give — so on the first tick back the primary must be
+/// free to ask for more, and it does: the tank is still below 60 °C. A latch that
+/// survived the MANUAL tick would still read "at full fire" (the outlet is still
+/// short of its target), and would hold the primary on a furnace firing at 27 %.
+#[test]
+fn a_secondary_taken_out_of_auto_forgets_its_saturation() {
+    use refinery_core::graph::ControlMode;
+    let mut engine = build(&furnace("1.1"));
+    for _ in 0..8000 {
+        tick(&mut engine);
+    }
+    assert_eq!(
+        latch(&engine),
+        Some(ActuatorLimit::Top),
+        "premise: latched at full fire"
+    );
+    let secondary = faceplate(&engine, SECONDARY).id;
+    let heater = engine.graph.find_node("heater").expect("a heater");
+    let mode = |engine: &mut Engine, mode: ControlMode| {
+        engine
+            .apply(Command::SetControllerMode {
+                loop_id: secondary,
+                mode,
+            })
+            .unwrap_or_else(|e| panic!("the secondary's mode: {e}"));
+    };
+    mode(&mut engine, ControlMode::Manual);
+    engine
+        .apply(Command::SetFurnaceDuty {
+            node: heater,
+            duty: Watt(0.3e6),
+        })
+        .unwrap_or_else(|e| panic!("a MANUAL furnace takes a duty: {e}"));
+    tick(&mut engine);
+    assert_eq!(latch(&engine), None, "not acting, so nothing latched");
+
+    mode(&mut engine, ControlMode::Auto);
+    let s = step(&mut engine);
+    assert_eq!(
+        s.latched, None,
+        "back in AUTO at 27 % of its range: not saturated"
+    );
+    assert!(
+        tank_c(&engine) < TANK_SETPOINT_C,
+        "premise: the tank is still short of 60 °C"
+    );
+    assert!(
+        s.setpoint_after > s.setpoint_before,
+        "the primary is free to raise its target again: {} -> {} K",
+        s.setpoint_before,
+        s.setpoint_after
     );
 }
