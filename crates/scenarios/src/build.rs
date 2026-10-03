@@ -638,6 +638,17 @@ fn build_controls(
             &def.measurement,
             pipes,
         )?;
+        if let MeasurementPoint::Coil(furnace) = point {
+            return Err(SimError::Scenario(format!(
+                "control loop '{}' measures the coil of '{}'. A coil is watched by TRIPS \
+                 (docs/DESIGN.md §39), not regulated: a loop holding a tube-metal \
+                 temperature is a skin-temperature override, which no slice has admitted. \
+                 A loop on the furnace's outlet measures `node = \"{}\"`",
+                def.name,
+                graph.node(furnace).name,
+                graph.node(furnace).name
+            )));
+        }
         let point_name = graph.point_name(point).to_owned();
 
         // The measured node must be able to answer for the variable. Asking the
@@ -665,6 +676,7 @@ fn build_controls(
                     match point {
                         MeasurementPoint::Node(_) => "node",
                         MeasurementPoint::Pipe(_) => "pipe",
+                        MeasurementPoint::Coil(_) => "coil",
                     }
                 ))
             })?;
@@ -1291,10 +1303,10 @@ fn build_controls(
 /// closes a way a file could declare a trip that would load and then protect
 /// nothing, or protect the wrong thing:
 ///
-/// - a furnace's or cooler's OUTLET, absent at load — and a cooler's again
-///   whenever it stagnates; a furnace's not since its coil (M34,
-///   docs/DESIGN.md §37) — refused by name, each for its own reason (fork 2(c),
-///   `docs/DEFERRED.md` E13). The test
+/// - a COOLER's outlet, absent at load and again whenever it stagnates — refused
+///   by name (fork 2(c), `docs/DEFERRED.md` E13). A FURNACE's outlet is absent
+///   only before the first tick since its coil (M34, §37), and is admitted beside
+///   a flow (M35, §39); its COIL (`coil = "…"`) is a state, present from load. The test
 ///   is the engine's own: `measure` at load, with the empty states and no
 ///   solution that are the truth there, must return a value — **except a
 ///   declared pipe's flow** (M33, docs/DESIGN.md §36), which is absent before
@@ -1365,10 +1377,11 @@ fn build_trips(
         // all, in `measure`'s own words; `Ok(None)` is a quantity that exists
         // only once the plant has run. For a pipe's flow that absence ends with
         // the first solve, and the trip pass skips exactly that one pass (§36
-        // fork 1). For a COOLER's outlet it does not end there: a stagnant
-        // cooler's outlet is absent mid-run, which is exactly when a safety
-        // function would need it. A FURNACE's ends with the first tick since its
-        // coil (§37), but no rule admits it yet. Both stay refused (E13).
+        // fork 1). A FURNACE's outlet is the same since its coil (§37): absent
+        // only before the first tick, admitted since M35 (§39). For a COOLER's
+        // outlet it does not end there: a stagnant cooler's outlet is absent
+        // mid-run, which is exactly when a safety function would need it, so it
+        // stays refused (E13). A furnace's COIL is a state and never absent.
         let measured = graph
             .measure(
                 slate,
@@ -1383,23 +1396,17 @@ fn build_trips(
                     variable.noun()
                 ))
             })?;
-        if measured.is_none() && !matches!(point, MeasurementPoint::Pipe(_)) {
-            let furnace = matches!(
-                point,
-                MeasurementPoint::Node(n) if matches!(graph.node(n).kind, NodeKind::Furnace { .. })
-            );
-            return Err(SimError::Scenario(if furnace {
-                format!(
-                    "{owner} watches the {} of '{point_name}', a furnace's outlet, which \
-                     does not exist before the first tick: it is resolved by the tick. Since \
-                     its coil (docs/DESIGN.md §37) it exists on every tick after, flowing or \
-                     not, but a trip on it is not admitted yet (docs/DEFERRED.md E13). Watch \
-                     the flow through the unit, or the holdup the stream runs into, instead",
-                    variable.noun()
-                )
-            } else {
-                format!(
-                    "{owner} watches the {} of '{point_name}', which does not exist before \
+        // A furnace's OUTLET is admitted beside a flow (M35, docs/DESIGN.md §39):
+        // absent before the first tick and on no tick after, since its coil (§37)
+        // makes a stagnant furnace read its metal. The trip pass skips tick 1's
+        // compare for both, by the same rule (§36 fork 1).
+        let furnace_outlet = matches!(
+            point,
+            MeasurementPoint::Node(n) if matches!(graph.node(n).kind, NodeKind::Furnace { .. })
+        ) && variable == MeasuredVariable::Temperature;
+        if measured.is_none() && !matches!(point, MeasurementPoint::Pipe(_)) && !furnace_outlet {
+            return Err(SimError::Scenario(format!(
+                "{owner} watches the {} of '{point_name}', which does not exist before \
                      the first tick, and not while the unit is stagnant either: a cooler's \
                      outlet is resolved by the tick, from its inflow. For a safety function \
                      a missing measurement is not something to hold still on \
@@ -1407,9 +1414,8 @@ fn build_trips(
                      flow stops, so an outlet trip is deferred until it has a stated rule for \
                      that (docs/DEFERRED.md E13). Watch the holdup the stream runs into, or \
                      the flow through the unit, instead",
-                    variable.noun()
-                )
-            }));
+                variable.noun()
+            )));
         }
 
         let direction = match def.direction.as_deref() {
@@ -1629,7 +1635,9 @@ fn check_trip_limit(
     limit: ControlledValue,
 ) -> Result<(), SimError> {
     let node = match (point, limit) {
-        (MeasurementPoint::Node(node), _) => node,
+        // A coil's limit is a temperature (`measure` refused anything else) and
+        // takes the node arm's absolute-zero bound below.
+        (MeasurementPoint::Node(node) | MeasurementPoint::Coil(node), _) => node,
         (MeasurementPoint::Pipe(pipe), ControlledValue::Flow { kg_per_s }) => {
             if !kg_per_s.value().is_finite() {
                 return Err(SimError::Scenario(format!(
@@ -1714,6 +1722,31 @@ fn resolve_measurement_point(
     measurement: &MeasurementDef,
     pipes: &[PipeDef],
 ) -> Result<MeasurementPoint, SimError> {
+    if let Some(furnace) = &measurement.coil {
+        let others: Vec<&str> = [
+            measurement.node.as_ref().map(|_| "node"),
+            measurement.pipe.as_ref().map(|_| "pipe"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !others.is_empty() {
+            return Err(SimError::Scenario(format!(
+                "{owner} names `coil = \"{furnace}\"` and `{}` in `measurement`. A \
+                 measurement is taken at ONE point: a node, a pipe, or a furnace's coil \
+                 (docs/DESIGN.md §24 fork 1, §39)",
+                others.join("` and `")
+            )));
+        }
+        return graph
+            .find_node(furnace)
+            .map(MeasurementPoint::Coil)
+            .ok_or_else(|| {
+                SimError::Scenario(format!(
+                    "{owner} measures the coil of unknown node '{furnace}'"
+                ))
+            });
+    }
     match (&measurement.node, &measurement.pipe) {
         (Some(node), Some(pipe)) => Err(SimError::Scenario(format!(
             "{owner} names both `node = \"{node}\"` and `pipe = \"{pipe}\"` in \
@@ -1722,8 +1755,8 @@ fn resolve_measurement_point(
         ))),
         (None, None) => Err(SimError::Scenario(format!(
             "{owner} names neither `node` nor `pipe` in `measurement`. A level, \
-             pressure or temperature is measured at a `node`, a flow on a `pipe` \
-             (docs/DESIGN.md §24 fork 1)"
+             pressure or temperature is measured at a `node`, a flow on a `pipe`, and a \
+             trip may watch a furnace's `coil` (docs/DESIGN.md §24 fork 1, §39)"
         ))),
         (Some(node), None) => graph
             .find_node(node)
@@ -2238,7 +2271,8 @@ fn cascade_pairing(
     let inner = secondary.setpoint.variable();
     let holdup = match primary.measurement_point {
         MeasurementPoint::Node(node) => Some((node, &graph.node(node).kind)),
-        MeasurementPoint::Pipe(_) => None,
+        // A loop on a coil is refused before any cascade is linked.
+        MeasurementPoint::Pipe(_) | MeasurementPoint::Coil(_) => None,
     };
     match (secondary.measurement_point, inner) {
         // The inner loop measures a holdup: refused whatever the outer loop is.

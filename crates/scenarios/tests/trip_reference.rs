@@ -32,7 +32,6 @@ const DEMO: &str = include_str!("../../../scenarios/tank_overfill_trip.toml");
 const VESSEL: &str = include_str!("../../../scenarios/vessel_pressure_control.toml");
 const HOT_TANK: &str = include_str!("../../../scenarios/tank_temperature_control.toml");
 const LEVEL_LOOP: &str = include_str!("../../../scenarios/tank_level_control.toml");
-const FURNACE: &str = include_str!("../../../scenarios/furnace_outlet_control.toml");
 const RELIEF: &str = include_str!("../../../scenarios/relief_blowdown.toml");
 const HEATING: &str = include_str!("../../../scenarios/tank_temperature_heating.toml");
 const LEAKING: &str = include_str!("../../../scenarios/leaking_line.toml");
@@ -546,21 +545,6 @@ actions = [{ pump = "transfer_pump" }]"#,
             "a flow's limit key on a level",
             action("limit_m = 6.0", "limit_kg_per_s = 6.0"),
             "write `limit_m` instead",
-        ),
-        (
-            "a furnace outlet",
-            with_trip(
-                FURNACE,
-                r#"[[trips]]
-name = "outlet"
-measurement = { node = "heater", variable = "temperature" }
-direction = "high"
-limit_c = 90.0
-actions = [{ valve = "drain_valve", position = 0.0 }]"#,
-            ),
-            // Since M34 a furnace's outlet exists on every tick after the first
-            // (its coil, docs/DESIGN.md §37); the refusal says so and stays.
-            "a trip on it is not admitted yet",
         ),
         (
             // A cooler has no coil: its outlet still goes missing whenever it

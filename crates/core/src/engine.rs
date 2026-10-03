@@ -1810,13 +1810,28 @@ impl Engine {
             // — an engine fault, not a quiet hold: a safety function holding
             // still on a missing measurement is the wrong default (§26 fork 2),
             // so it is not allowed to happen quietly.
-            let before_first_solve = matches!(trip.measurement_point, MeasurementPoint::Pipe(_))
-                && self.last_solution.is_none();
+            //
+            // **A furnace's OUTLET is the second such quantity** (M35,
+            // docs/DESIGN.md §39): resolved by the sweep, so absent before the first
+            // tick, and since the coil (§37) present on every tick after, flowing or
+            // not. The exemption names it exactly — a furnace node, measured for
+            // temperature — so a cooler's outlet, absent whenever it stagnates,
+            // could not slip through it even if the loader let one in.
+            let solved_only = match trip.measurement_point {
+                MeasurementPoint::Pipe(_) => true,
+                MeasurementPoint::Node(node) => {
+                    matches!(self.graph.node(node).kind, NodeKind::Furnace { .. })
+                        && trip.limit.variable() == MeasuredVariable::Temperature
+                }
+                MeasurementPoint::Coil(_) => false,
+            };
+            let before_first_solve = solved_only && self.last_solution.is_none();
             if measurement.is_none() && !before_first_solve {
                 return Err(SimError::Numerical(format!(
                     "internal: trip '{}' has no {} to compare with its limit, but the \
-                     loader admits only quantities that exist from load, and a flow, which \
-                     is absent only before the first solve (docs/DESIGN.md §26 fork 2, §36)",
+                     loader admits only quantities that exist from load, a flow and a \
+                     furnace's outlet, which are absent only before the first tick \
+                     (docs/DESIGN.md §26 fork 2, §36, §39)",
                     trip.name,
                     trip.limit.variable().noun()
                 )));

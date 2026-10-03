@@ -813,10 +813,17 @@ impl MeasuredVariable {
 /// Measuring a valve NODE's throughput instead was rejected: no snapshot
 /// publishes such a number, and a valve's two pipes differ by that node's solver
 /// residual, so "the valve's flow" would have to pick one pipe silently anyway.
+///
+/// **A `Coil` is a furnace's tube metal** (M35, docs/DESIGN.md §39), read for a
+/// temperature by a TRIP only: the tube-skin temperature a real heater trips on.
+/// It is a point of its own rather than a second variable on the furnace node,
+/// because the node's `temperature` is its OUTLET and a variable has one meaning
+/// per point. A loop on a coil is refused by the loader, by name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MeasurementPoint {
     Node(NodeId),
     Pipe(EdgeId),
+    Coil(NodeId),
 }
 
 /// What a loop writes: a piece of equipment, or another loop's setpoint (M25,
@@ -1981,6 +1988,15 @@ impl PlantGraph {
                     value.variable()
                 )))
             }
+            // A coil is watched by trips only, which range-check their own limits
+            // (`check_trip_limit`); a loop on one is refused at load. Rule 5's
+            // backstop, not a message anyone should meet.
+            (MeasurementPoint::Coil(node), _) => {
+                return Err(SimError::InvalidCommand(format!(
+                    "the coil of '{}' is watched by trips only, so it has no setpoint range",
+                    self.node(node).name
+                )))
+            }
             (MeasurementPoint::Node(node), _) => node,
         };
         match (value, &self.node(node).kind) {
@@ -2186,6 +2202,30 @@ impl PlantGraph {
                     variable.noun()
                 )))
             }
+            // **A furnace's coil: a STATE, present from load** (M35, docs/DESIGN.md
+            // §39). Read off the graph, where `Engine::tick` writes it at the end of
+            // every tick, so it is never absent — not before the first tick, not
+            // with no flow.
+            (MeasurementPoint::Coil(node), MeasuredVariable::Temperature) => {
+                return match &self.node(node).kind {
+                    NodeKind::Furnace { coil, .. } => Ok(Some(ControlledValue::Temperature {
+                        k: coil.temperature,
+                    })),
+                    _ => Err(SimError::Scenario(format!(
+                        "'{}' is not a furnace, so it has no coil: a coil is a furnace's tube \
+                         metal (docs/DESIGN.md §37)",
+                        self.node(node).name
+                    ))),
+                };
+            }
+            (MeasurementPoint::Coil(node), _) => {
+                return Err(SimError::Scenario(format!(
+                    "the coil of '{}' is metal with a temperature, and has no {}: a coil \
+                     is measured for its temperature only (docs/DESIGN.md §39)",
+                    self.node(node).name,
+                    variable.noun()
+                )))
+            }
             (MeasurementPoint::Node(node), _) => node,
         };
         match (variable, &self.node(node).kind) {
@@ -2336,10 +2376,10 @@ impl PlantGraph {
     }
 
     /// The name a faceplate or a refusal gives a measurement point: the node's
-    /// name or the pipe's.
+    /// name or the pipe's — and a coil's, its furnace's.
     pub fn point_name(&self, point: MeasurementPoint) -> &str {
         match point {
-            MeasurementPoint::Node(node) => &self.node(node).name,
+            MeasurementPoint::Node(node) | MeasurementPoint::Coil(node) => &self.node(node).name,
             MeasurementPoint::Pipe(pipe) => &self.pipe(pipe).name,
         }
     }

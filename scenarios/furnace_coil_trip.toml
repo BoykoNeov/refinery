@@ -1,0 +1,151 @@
+# M35 protection demo: a FOULED furnace holding its own outlet at 60 °C, and a
+# tube-skin trip that cuts its fuel while the outlet is still on target.
+#
+#   cool_feed (40 °C) -> heater -> hold_tank -> drain_valve -> rundown
+#
+# `furnace_outlet_control.toml` (M19.1) with two changes: its furnace's coil passes
+# heat poorly (a fouled coil, `coil_ua_kw_per_k` 18 where a clean one gets 120.2),
+# and two trips watch it. Everything else — the plant, the loop, its tuning — is
+# that file's, line for line.
+#
+# **Why a tube-skin trip exists** (docs/DESIGN.md §39). A furnace's duty goes
+# into its tubes and the tubes heat the stream (§37). To deliver a duty through a
+# fouled coil, the metal must run hotter than through a clean one; the outlet,
+# which is what the loop holds, need not move at all. So a heater can be on its
+# outlet target with its tubes over their limit, and only a trip on the TUBES can
+# see it. Measured on the untripped twin (this file without its `[[trips]]`): the
+# loop settles the outlet on 60.0 °C, overshooting to 63.5 °C on the way, and the
+# coil settles at 117.3 °C.
+#
+# **The two trips, and why both are here.** `tube_skin_high` watches the coil
+# (`measurement = { coil = "heater", variable = "temperature" }`): a STATE, present
+# from load, so it needs no rule for a missing reading. `outlet_high` watches the
+# furnace's outlet (`node = "heater"`), the reading an operator trips on more
+# often: it is resolved by the tick, so it is absent on tick 1's pass, which
+# compares nothing and leaves the trip armed — M33's rule for a flow (§36 fork 1),
+# and the only absence a furnace's outlet has since its coil. Set at 70 °C, above
+# anything the loop does, it never fires here; that is the demonstration.
+#
+# **What the trips do, measured on both fidelities** (§39). The loop fires hard to
+# lift the outlet from 48.32 °C, its tubes climb faster than its outlet, and the
+# coil ends tick 71 at 100.21 °C. The pass at the top of tick 72 fires
+# `tube_skin_high` and the furnace reads zero duty on that tick's own snapshot,
+# with the outlet at 55.53 °C — below its own setpoint, and 14.47 K below
+# `outlet_high`. The cut forces the furnace's loop to MANUAL (§35); the coil gives
+# its heat back to the stream and the plant cools to its 40 °C feed. Until tick 72
+# the plant is its untripped twin to the bit.
+#
+#   cargo run -p refinery-cli -- run scenarios/furnace_coil_trip.toml --ticks 6000
+
+[meta]
+name = "furnace_coil_trip"
+description = "A fouled furnace holds its outlet at 60 °C while its tubes run hot; a tube-skin trip cuts the fuel that an outlet trip never would."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.cool_feed]
+type = "source"
+pressure_bar = 1.6
+temperature_c = 40.0
+
+# The actuator. Its declared duty is the loop's starting position: 0.5 MW of a
+# 2 MW range is u = 0.25, and `initial_output` below says the same number.
+[nodes.heater]
+type = "furnace"
+duty_mw = 0.5
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its loop's 2 MW range), as
+# §37's rule says. The UA does NOT follow the rule, and that is the point of the
+# file: 18 kW/K, 0.3 of the load flow's 60.09 kW/K capacity rate where a clean
+# coil gets twice it — a FOULED coil, effectiveness 0.259 instead of 0.865. The
+# coil's steady temperature at load, 40 + 500/(0.2589·60.09) °C, so the plant
+# starts settled at the declared 0.5 MW.
+coil_heat_capacity_mj_per_k = 2
+coil_ua_kw_per_k = 18.0
+coil_temperature_c = 72.15
+
+# Not measured: the tank follows the outlet at its own pace. The level is the
+# settled 4.968 m, so only the temperature has anywhere to go.
+[nodes.hold_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.968
+temperature_c = 40.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 150.0
+opening = 0.5
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "cool_feed"
+to = "heater"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "hold_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "hold_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# `initial_output` is the loop's MEMORY, not a bias (docs/DESIGN.md §10 fork 5).
+# On an outlet loop it waits: there is no error at load to back-calculate it
+# against, so the memory is seeded at the first measurement (tick 2), and the
+# first output the loop computes is exactly 0.25 whatever the gain is.
+[[controls]]
+name = "outlet_temperature"
+measurement = { node = "heater", variable = "temperature" }
+actuator = "heater"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_c = 60.0
+gain_per_k = 0.015
+integral_time_s = 10.0
+initial_output = 0.25
+max_duty_mw = 2.0
+
+# Fires AT OR ABOVE 100 °C on the coil — the tube metal — and cuts the fuel. The
+# coil is a state on the graph (docs/DESIGN.md §37), present from load.
+[[trips]]
+name = "tube_skin_high"
+measurement = { coil = "heater", variable = "temperature" }
+direction = "high"
+limit_c = 100.0
+actions = [{ furnace = "heater" }]
+
+# Fires AT OR ABOVE 70 °C on the furnace's outlet. Absent on tick 1's pass only
+# (docs/DESIGN.md §39). Never reached here: the outlet loop holds 60 °C.
+[[trips]]
+name = "outlet_high"
+measurement = { node = "heater", variable = "temperature" }
+direction = "high"
+limit_c = 70.0
+actions = [{ furnace = "heater" }]

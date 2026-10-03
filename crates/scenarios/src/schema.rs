@@ -854,6 +854,11 @@ pub struct MeasurementDef {
     /// one would be metering a pipe it never declared.
     #[serde(default)]
     pub pipe: Option<String>,
+    /// The measured furnace's COIL, for its tube-metal temperature (M35,
+    /// docs/DESIGN.md §39): the furnace's name. Trips only; a loop on a coil is
+    /// refused.
+    #[serde(default)]
+    pub coil: Option<String>,
     /// `"level"` (M8.2, a `tank`), `"pressure"` (M10, a `vessel`),
     /// `"temperature"` (M17, a `tank` or a `vessel`; M19, a furnace or cooler
     /// outlet) or `"flow"` (M20, one of the actuating valve's own two pipes).
