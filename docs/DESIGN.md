@@ -1437,6 +1437,13 @@ the guard silently stops applying and the draw becomes a pressure-driven number
 reasonably. The feed is refused alongside it: `validate_degrees` would reject a
 split feed anyway (a column is 1-in-N-out), but with a message about edge
 degrees that names the wrong cause, so the gate checks *which* refusal fires.
+**Corrected by M37 (§42): the feed is admitted.** The claim above was never run,
+and it is false: a split feed leaves the column one inflow (from the leak
+junction), and a feed's flow is pressure-driven like any pipe's. Measured on all
+six plants that feed a column or reactor from a furnace, both fidelities, with a
+1 cm² hole opened at tick 1 000: each leaks and its junction balances (e.g.
+`crude_column` 192.83 kg/s in, 0.89 out of the hole, 191.94 on). Only a DRAW is
+refused now, recognised from the column's declared outlets either way round.
 
 **A leak on a GAS line — refused, at two doors.** The orifice law shipped here
 is incompressible, and a hole venting a pressurised gas line to atmosphere is

@@ -116,7 +116,15 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
             None => {
                 graph.add_pipe(from, to, whole);
             }
-            Some(atmosphere) => split_for_leak(&mut graph, pipe, from, to, whole, atmosphere)?,
+            Some(atmosphere) => split_for_leak(
+                &mut graph,
+                &scenario.nodes,
+                pipe,
+                from,
+                to,
+                whole,
+                atmosphere,
+            )?,
         }
     }
 
@@ -2947,6 +2955,7 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
 /// `leak_mass_flow` is reported.
 fn split_for_leak(
     graph: &mut PlantGraph,
+    nodes: &indexmap::IndexMap<String, NodeDef>,
     def: &PipeDef,
     from: NodeId,
     to: NodeId,
@@ -2968,7 +2977,7 @@ fn split_for_leak(
             graph.node(vent).kind
         )));
     }
-    // A COLUMN's pipes cannot be split, and this refusal is here because the
+    // A column's DRAW cannot be split, and this refusal is here because the
     // failure it prevents is silent. `network::is_column_draw_edge` recognises a
     // draw by its two endpoints — column at one end, one of that column's
     // declared outlets at the other — and `edge_flows` guards a draw's flow to
@@ -2977,19 +2986,28 @@ fn split_for_leak(
     // Split that edge and neither half matches any more, so the guard silently
     // stops applying and the draw becomes a pressure-driven number that is
     // finite, deterministic, mass-conserving and wrong — DESIGN §5's silent
-    // hazard, reached by a scenario line that looks entirely reasonable. The feed
-    // is refused with it: a column is 1-in-N-out by `validate_degrees`, so a
-    // split feed would fail there anyway, but with a message about degrees that
-    // names the wrong cause.
-    for end in [from, to] {
-        if matches!(graph.node(end).kind, NodeKind::Column { .. }) {
+    // hazard, reached by a scenario line that looks entirely reasonable.
+    //
+    // **The FEED is admitted (M37).** Until M37 it was refused with the draws, on
+    // the claim that a split feed would fail `validate_degrees` anyway. It does
+    // not: the column still has one inflow, from the leak junction, and a feed's
+    // flow is pressure-driven like any pipe's. Measured on all six plants that
+    // feed a column or reactor from a furnace, both fidelities, a hole opened
+    // mid-run (docs/DESIGN.md §3b, corrected; §42). Draws are not resolved yet
+    // when pipes are split, so a draw is recognised from the column's DECLARED
+    // outlets, either way round — a draw may be stored outlet → column.
+    for (column, other) in [(from, to), (to, from)] {
+        let Some(NodeDef::Column { draws, .. }) = nodes.get(&graph.node(column).name) else {
+            continue;
+        };
+        if draws.iter().any(|d| d.outlet == graph.node(other).name) {
             return Err(SimError::Scenario(format!(
-                "pipe '{}' declares a leak path but connects to column '{}'. A column's \
-                 feed and draw pipes cannot be split: a draw's flow is prescribed by the \
-                 feed split, not by pressure, and splitting it would silently turn it \
-                 into a pressure-driven flow (docs/DESIGN.md §3b, §5)",
+                "pipe '{}' declares a leak path but is a draw of column '{}'. A column's \
+                 draw pipes cannot be split: a draw's flow is prescribed by the feed split, \
+                 not by pressure, and splitting it would silently turn it into a \
+                 pressure-driven flow (docs/DESIGN.md §3b, §5)",
                 def.name,
-                graph.node(end).name
+                graph.node(column).name
             )));
         }
     }

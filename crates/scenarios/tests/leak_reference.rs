@@ -647,8 +647,8 @@ leak_to = "outside"
     }
 }
 
-/// A leak declared on a COLUMN's feed or draw is refused, and the refusal is
-/// this file's most load-bearing one because the failure it prevents is silent.
+/// A leak declared on a COLUMN's draw is refused, and the refusal is this file's
+/// most load-bearing one because the failure it prevents is silent.
 ///
 /// `network::is_column_draw_edge` recognises a draw by its two endpoints, and
 /// `edge_flows` guards a draw's flow to zero on the strength of that — a draw's
@@ -656,31 +656,77 @@ leak_to = "outside"
 /// Split the draw and neither half matches any more, so the guard stops applying
 /// and the draw silently becomes a pressure-driven number: finite, deterministic,
 /// mass-conserving and wrong, reached by a scenario line that reads perfectly
-/// reasonably.
-///
-/// The assertion checks WHICH refusal fires, not merely that one does.
-/// `validate_topology` would reject a split feed too — a column is 1-in-N-out —
-/// but with a message about edge degrees, naming a cause that is not the reason.
-/// An error that misdirects the next reader is barely better than none.
+/// reasonably. The assertion checks WHICH refusal fires, not merely that one does.
 #[test]
-fn a_leak_on_a_column_pipe_is_refused() {
+fn a_leak_on_a_column_draw_is_refused() {
     const COLUMN: &str = include_str!("../../../scenarios/crude_column.toml");
     let with_atmosphere = COLUMN.replacen(
         "[[pipes]]",
         "[nodes.outside]\ntype = \"atmosphere\"\n\n[[pipes]]",
         1,
     );
-    for line in ["naphtha_draw", "hot_feed_line"] {
-        let bad = with_atmosphere.replacen(
-            &format!("name = \"{line}\""),
-            &format!("name = \"{line}\"\nleak_to = \"outside\""),
+    let bad = with_atmosphere.replacen(
+        "name = \"naphtha_draw\"",
+        "name = \"naphtha_draw\"\nleak_to = \"outside\"",
+        1,
+    );
+    let err = expect_refusal(&bad, "a column's draws cannot carry a leak path");
+    assert!(
+        err.contains("is a draw of column") && err.contains("prescribed by the feed split"),
+        "the draw must be refused for the reason it is refused: {err}"
+    );
+}
+
+/// A leak on a column's FEED is admitted (M37, docs/DESIGN.md §3b corrected).
+/// Until M37 it was refused with the draws, on the claim that a split feed would
+/// fail the degree check anyway; it does not. The column keeps one inflow (from
+/// the leak junction), and a feed's flow is pressure-driven like any pipe's — so
+/// a hole there leaks, and the junction balances, on both fidelities. This is
+/// the pipe a furnace's burn-out opens on every crude plant (§42).
+#[test]
+fn a_leak_on_a_column_feed_leaks_and_balances() {
+    const COLUMN: &str = include_str!("../../../scenarios/crude_column.toml");
+    let leaky = COLUMN
+        .replacen(
+            "[[pipes]]",
+            "[nodes.outside]\ntype = \"atmosphere\"\n\n[[pipes]]",
+            1,
+        )
+        .replacen(
+            "name = \"hot_feed_line\"",
+            "name = \"hot_feed_line\"\nleak_to = \"outside\"",
             1,
         );
-        let err = expect_refusal(&bad, "a column's pipes cannot carry a leak path");
+    for solver in ["newton", "simple"] {
+        let src = leaky.replacen(r#"flow = "newton""#, &format!(r#"flow = "{solver}""#), 1);
+        let mut engine = engine(&src);
+        let id = edge(&engine.snapshot(), "hot_feed_line").id;
+        engine
+            .apply(Command::PuncturePipe {
+                edge: id,
+                area: SquareMeter(1.0e-4),
+            })
+            .expect("a column feed declared punctureable can be punctured");
+        for t in 1..=200 {
+            engine
+                .tick()
+                .unwrap_or_else(|e| panic!("{solver}, tick {t}: {e}"));
+        }
+        let snapshot = engine.snapshot();
+        let into_junction = edge(&snapshot, "hot_feed_line").stream.mass_flow.value();
+        let leak = edge(&snapshot, "hot_feed_line__leak")
+            .stream
+            .mass_flow
+            .value();
+        let to_column = edge(&snapshot, "hot_feed_line__downstream")
+            .stream
+            .mass_flow
+            .value();
+        assert!(leak > 0.1, "{solver}: the hole must leak: {leak} kg/s");
         assert!(
-            err.contains("prescribed by the feed split"),
-            "'{line}' must be refused for the reason it is refused, not incidentally by \
-             the degree check: {err}"
+            (into_junction - leak - to_column).abs() <= snapshot.solver.residual * (1.0 + 1e-6),
+            "{solver}: the split must balance to the solve's residual: {into_junction} in, \
+             {leak} out of the hole, {to_column} on to the column"
         );
     }
 }
