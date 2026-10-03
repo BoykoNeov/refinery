@@ -18198,3 +18198,152 @@ furnace at 27 %. With gate 5 it is caught.
 
 - **E19 is closed.** Nothing new is deferred: the latch has no parameter. What it
   inherits is M28's scope (E17's depth, E18's pairings), unchanged.
+
+## 39. A trip on a furnace's coil and on its outlet — ledger row E13's outlet clause, for furnaces (M35)
+
+### What licensed this, stated plainly
+
+The user's decision, taken with M34's (§37): asked what an over-temperature trip
+on a furnace should watch once the furnace had a coil, the user chose **both** —
+the coil's own temperature and the outlet. M34 was the coil alone (one unit model
+per change); this is the trip on it. E13's outlet clause had been refused for one
+reason since §26: a furnace's or cooler's outlet is absent whenever the unit
+stagnates, which for a furnace is the low-flow condition itself (§36 fork 3). §37
+removed that reason for a FURNACE — with no flow it reads its coil — and left it
+standing for a cooler. The probes and the mutation harness are in
+`W:\temp\claude\m34\`.
+
+### Fork 1 — the coil is a measurement POINT, not a variable
+
+`MeasurementPoint::Coil(NodeId)`, written `measurement = { coil = "heater",
+variable = "temperature" }`. A furnace node's `temperature` already means its
+OUTLET, to the loops (§23) and now to trips, and a variable has one meaning per
+point; so the tube metal is a point of its own beside a node and a pipe, as a flow
+is a pipe's and not a node's (§24 fork 1). Rejected: a `coil_temperature`
+variable on the furnace node, which would have needed a limit type of its own for
+what is a temperature, and a second meaning for "a furnace's temperature".
+
+`PlantGraph::measure` reads it off the graph: `FurnaceCoil::temperature`, the
+state §37 writes back at the end of every tick. **It is never absent** — not
+before the first tick, not with no flow — so a coil trip needs no rule for a
+missing reading and is compared from tick 1's pass. Every `match` on the point
+has a coil arm that answers or refuses; none is `unreachable!`.
+
+**Trips only.** A loop on a coil is refused by the loop builder, by name: a loop
+holding a tube-metal temperature is a skin-temperature OVERRIDE, a selector
+between two loops on one furnace, which E4 (one writer per actuator) and no
+slice has taken. Also refused: a coil on a node that is not a furnace (in
+`measure`'s words), a coil with any variable but temperature, and a coil named
+beside a node or a pipe. A coil's limit is `limit_c`, bounded above absolute zero
+like any temperature limit.
+
+### Fork 2 — the furnace's outlet, and the one case the tick-1 rule grows by
+
+A furnace's outlet is resolved by the sweep, so it is absent before the first
+tick — and, since §37, on no tick after. That is exactly a flow's shape (§36 fork
+1: absent for one trip pass, tick 1's), so the rule is the same, not a new one:
+the trip stays armed and compares nothing on tick 1, its snapshot carries no
+`measurement`, and from tick 2 it compares every tick.
+
+The exemption in `run_trips` grows by **exactly this case and no more**: a pipe,
+or a FURNACE node measured for temperature, and only while there is no solution
+yet. Every other absence is still an engine fault. The loader admits a furnace's
+outlet beside a flow, and still refuses a COOLER's outlet — absent again whenever
+the cooler stagnates — for that reason, in its own words (E13 narrows to it).
+M34's "not admitted yet" refusal branch for the furnace is deleted.
+
+**What reading the outlet means since §37.** On a flowing furnace it is the
+fluid leaving; on a stagnant one it is the fluid standing in the tubes, at the
+coil's temperature. Either is a computed value, never a held one.
+
+### Fork 3 — the demo, and why it is a FOULED furnace
+
+The advisor's check before building, measured rather than assumed: the outlet
+sits below the coil by `(T_c − T_in)·e^(−UA/W)`, so on a fading feed (`W → 0`, an
+M33-style plant) the outlet converges on the coil and the two trips would fire
+within a tick of each other — nothing a low-flow trip does not already show. The
+coil leads the outlet only while the effectiveness is well below 1, i.e. while the
+throughput is high against the coil's `UA`. A fouled coil is that case, and it is
+a real one: fouling raises tube-metal temperature at constant duty, and it is why
+heaters carry skin thermocouples.
+
+`scenarios/furnace_coil_trip.toml` (the thirty-fifth file) is
+`furnace_outlet_control.toml` with its coil's `UA` cut from 120.2 to 18 kW/K —
+0.3 of the load capacity rate where §37's rule gives 2, said so in the file —
+and two trips: `tube_skin_high` (coil, 100 °C) and `outlet_high` (outlet, 70 °C),
+each cutting the furnace. Measured on both fidelities, identically:
+
+- The loop fires hard to lift the outlet from 48.32 °C; the coil, behind a poor
+  film, climbs faster than the outlet and ends tick 71 at 100.21 °C. The pass at the
+  top of tick **72** fires `tube_skin_high`: zero duty on that tick's snapshot, the
+  outlet at **55.53 °C** — under its own 60 °C setpoint, 14.47 K under
+  `outlet_high`. Bit-identical to the untripped twin until then.
+- `outlet_high` compares nothing on tick 1, a measurement on every tick after, and
+  never fires.
+- **The twin** (no trips) settles its outlet on 60.0 °C, overshooting to 63.5 °C,
+  with its coil at **117.3 °C**. An outlet trip set anywhere an operator would set
+  one never sees it.
+
+### What a reset reads
+
+Unchanged in rule, and gated on an outlet for the first time: the reset reads the
+measurement fresh, which for an outlet is the last tick's resolved state (§26
+fork 4). On a 45 °C outlet trip cut on tick 2, the reset is refused on every tick
+that ended at or over 45 °C and admitted on the first that ended under, with no
+extra tick.
+
+### What must not change, measured
+
+All thirty-four earlier plants byte-identical on both fidelities, against the
+post-M34 baselines; no iteration count moved. None declares a coil or a furnace
+outlet trip. **No Godot build is owed**: no snapshot type changed shape — a trip
+publishes its limit and its measurement, both temperatures already on the wire,
+and never its measurement point — and the bridge matches on none of it. The
+`--features godot` clippy was run and is clean.
+
+### Gates — `crates/scenarios/tests/coil_trip_reference.rs`
+
+1. **The demo**, both fidelities: the skin trip at tick 72, the outlet under its
+   setpoint there and 14 K under the outlet trip; bit-identical to the twin
+   before; the outlet trip blind on tick 1 only and never fired; the twin on 60 °C
+   with its coil over 115 °C; the plant cooled to its feed by 6 000.
+2. **The wire form**, on the bytes: on tick 1 the coil trip carries a temperature
+   measurement and the outlet trip no `measurement` key; from tick 2 both.
+3. **The coil has no window**: loaded over its limit, it trips on tick 1.
+4. **The outlet's one-tick window**: loaded over its limit, armed and blind on
+   tick 1, tripped on tick 2.
+5. **A reset on an outlet trip reads the last resolved outlet**, fresh.
+6. **The refusals**: a coil on a non-furnace, on an unknown node, with a level, beside
+   a node; a loop on a coil.
+
+`trip_reference.rs`'s sweep loses its furnace-outlet case (now admitted, gate 4)
+and keeps the cooler's.
+
+### The mutation pass (M35)
+
+Seven edits, predicted before the run (`W:\temp\claude\m34\mutate_m35.py`), each
+restored after; the tree diffed clean against a copy taken before the pass. **Six
+caught; the seventh uncaught, as predicted.** (Run on the whole `core` and
+`scenarios` suite, as every earlier pass was. From the next pass on, a mutation
+runs only the test files it is predicted to reach, plus any file there is a stated
+reason to expect, at the user's request: a full suite per edit cost 2–3 minutes.)
+
+| # | edit | predicted | caught by |
+|---|---|---|---|
+| 1 | the tick-1 exemption widened to every absence | **uncaught** (M33's mutation 2) | uncaught: it backs up the loader, and nothing that loads reaches it |
+| 2 | the exemption no longer covers a furnace outlet | gates 1, 2, 4, 5 | gates 1–5 (tick 1 is an engine fault on every fixture with the outlet trip) |
+| 3 | the loader refuses a furnace outlet again | every gate on the demo | gates 1–5 |
+| 4 | a loop on a coil admitted | gate 6's loop case | gate 6 |
+| 5 | a coil read as the furnace's outlet | gates 2 and 3 | gates 1–5 |
+| 6 | a coil named beside a node accepted (the coil wins) | gate 6's both-points case | gate 6 |
+| 7 | a cooler's outlet admitted beside a furnace's | `trip_reference.rs`'s cooler case | it alone |
+
+### Deferred, with what un-defers each
+
+- **E13, narrowed to the COOLER's outlet.** Trigger unchanged in kind: a cooler
+  outlet trip a plant needs. It owes a rule for an absence that happens mid-run,
+  or a cooler with thermal mass of its own (E10's cooler half).
+- **A loop on a coil** — a skin-temperature override — joins E4: a selector
+  between two loops on one actuator.
+- **A coil trip on a dry-fired heater is the protection B40 leaves a plant**: the
+  coil still has no radiant limit and no burn-out.

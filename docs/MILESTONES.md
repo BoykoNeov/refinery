@@ -11,6 +11,27 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M34 is CLOSED (2026-10-03): a furnace's tube coil — `docs/DEFERRED.md` row B39
+struck, E10 narrowed to coolers, new row B40.** Taken on a DECISION (the user's):
+every furnace gets one, knowing it moves thirteen plants. One slice: DESIGN §37.
+- **`FurnaceCoil`** on `NodeKind::Furnace`: heat capacity, metal-to-process `UA`,
+  and a temperature that is a STATE (written back at the end of every tick). Duty
+  and fire go into the metal; the fluid takes `G·(T_c − T_in)`,
+  `G = W·(1 − e^(−UA/W))`. Exact step (never divides by `G`), and the fluid gets
+  `Q − C·ΔT_c/dt` from the STORED change, so the first law closes at the furnace.
+- **Three required keys**, no defaults: `coil_heat_capacity_mj_per_k`,
+  `coil_ua_kw_per_k`, `coil_temperature_c`. Shipped coils: 1 MJ/K per rated MW,
+  `UA` = 2 × the load capacity rate, loaded at the steady coil on TICK 2's flow.
+- **A furnace is never `held`**: with no flow the fluid reads the coil. Outlet
+  loops act on a stagnant coil; a stall no longer opens a furnace cascade; the
+  held-outlet rule survives for COOLERS and is gated there. Outlet trips stay
+  refused, each unit for its own reason (M35 builds the furnace's).
+- **21 plants byte-identical, 13 moved**; only `fired_gas_drum`'s iterations moved
+  (4 571 → 13 074 Newton). Steady states unchanged. M32's trip now clears at tick
+  1 294, not inside its tripping tick; M33's twin reads 419 °C at 5 000, not 1 521.
+- **The coil reached E19's trigger** (a cascade furnace at full fire dips a hair
+  off its limit for 1–3 ticks); closed by a saturation latch, DESIGN §38.
+
 **M33 is CLOSED (2026-10-03): a trip on a pipe's flow, the low-flow furnace trip —
 `docs/DEFERRED.md` row E13's flow clause, struck; the outlet clause stays open.**
 Taken on a DECISION (the user's, on gameplay grounds). One slice: DESIGN §36.

@@ -102,6 +102,7 @@ cargo run -p refinery-cli -- run scenarios/tank_level_fill_check_valve.toml --ti
 cargo run -p refinery-cli -- run scenarios/gas_receiver_check_valve.toml --ticks 6000      # the M31 gas check valve
 cargo run -p refinery-cli -- run scenarios/tank_overheat_trip.toml --ticks 6000            # the M32 fuel cut
 cargo run -p refinery-cli -- run scenarios/furnace_low_flow_trip.toml --ticks 6000         # the M33 low-flow trip
+cargo run -p refinery-cli -- run scenarios/furnace_coil_trip.toml --ticks 6000             # the M35 tube-skin trip
 cargo test -p refinery-solvers --release              # slow property tests
 
 # The corpus: every shipped scenario, worst solver iterations per tick, wall
@@ -197,33 +198,25 @@ extension removed too — ignore it, the file it writes is what matters.
 
 See `docs/ROADMAP.md`. Work only on the current milestone unless asked.
 
-The full close-out report of every earlier milestone (M1–M33), with what each
+The full close-out report of every earlier milestone (M1–M34), with what each
 one measured and corrected, is in `docs/MILESTONES.md`. It is not loaded
 automatically: read the relevant box there before touching that milestone's code.
 When a milestone closes, its box goes here and the previous one moves there.
 
-**M34 is CLOSED (2026-10-03): a furnace's tube coil — `docs/DEFERRED.md` row B39
-struck, E10 narrowed to coolers, new row B40.** Taken on a DECISION (the user's):
-every furnace gets one, knowing it moves thirteen plants. One slice: DESIGN §37.
-- **`FurnaceCoil`** on `NodeKind::Furnace`: heat capacity, metal-to-process `UA`,
-  and a temperature that is a STATE (written back at the end of every tick). Duty
-  and fire go into the metal; the fluid takes `G·(T_c − T_in)`,
-  `G = W·(1 − e^(−UA/W))`. Exact step (never divides by `G`), and the fluid gets
-  `Q − C·ΔT_c/dt` from the STORED change, so the first law closes at the furnace.
-- **Three required keys**, no defaults: `coil_heat_capacity_mj_per_k`,
-  `coil_ua_kw_per_k`, `coil_temperature_c`. Shipped coils: 1 MJ/K per rated MW,
-  `UA` = 2 × the load capacity rate, loaded at the steady coil on TICK 2's flow.
-- **A furnace is never `held`**: with no flow the fluid reads the coil. Outlet
-  loops act on a stagnant coil; a stall no longer opens a furnace cascade; the
-  held-outlet rule survives for COOLERS and is gated there. Outlet trips stay
-  refused, each unit for its own reason (M35 builds the furnace's).
-- **21 plants byte-identical, 13 moved**; only `fired_gas_drum`'s iterations moved
-  (4 571 → 13 074 Newton). Steady states unchanged. M32's trip now clears at tick
-  1 294, not inside its tripping tick; M33's twin reads 419 °C at 5 000, not 1 521.
-- **The coil reached E19's trigger** (a cascade furnace at full fire dips a hair
-  off its limit for 1–3 ticks); closed by a saturation latch, DESIGN §38.
+**M35 is CLOSED (2026-10-03): a trip on a furnace's coil and outlet — `docs/DEFERRED.md`
+E13 narrowed to the cooler's outlet.** The user's DECISION, with M34's. DESIGN §39.
+- **`{ coil = "…", variable = "temperature" }`**: a new measurement POINT, the
+  coil state M34 writes every tick; present from load, so compared from tick 1.
+  Trips only — a loop on a coil (a skin override) is refused by name.
+- **A furnace's OUTLET** takes M33's flow rule (blind on tick 1's pass only); the
+  exemption grows by exactly that case. A cooler's outlet stays refused.
+- **Demo `furnace_coil_trip.toml`** (35th file): the M19 loop on a FOULED coil. The
+  100 °C skin trip cuts at tick 72 with the outlet at 55.53 °C; the 70 °C outlet trip
+  never fires; the untripped twin holds 60 °C with its tubes at 117.3 °C.
+- Six gates, `tests/coil_trip_reference.rs`; seven mutations, six caught. All 34
+  earlier plants byte-identical. M34's coil and its E19 fix: docs/MILESTONES.md.
 
-**Exactly nine of the thirty-four files in `scenarios/` declare a `[[controls]]`
+**Exactly ten of the thirty-five files in `scenarios/` declare a `[[controls]]`
 table** — `tank_level_control.toml` (M8.4, a level),
 `vessel_pressure_control.toml` (M10.1, a pressure),
 `tank_temperature_control.toml` (M17.1, a temperature),
@@ -233,7 +226,8 @@ table** — `tank_level_control.toml` (M8.4, a level),
 `furnace_cascade_control.toml` (M25.1, a cascade: two loops),
 `tank_level_fill_control.toml` (M29, a level on its FILL valve) and
 `tank_level_fill_check_valve.toml` (M30, the same loop behind a check valve,
-with a trip). **The
+with a trip), `furnace_coil_trip.toml` (M35, M19's loop on a fouled coil, with
+two trips). **The
 other twenty-five
 were written before M8 (thirteen of them) or after it without a loop, and ARE
 the regression anchor** (three, `tank_overfill_trip.toml`,

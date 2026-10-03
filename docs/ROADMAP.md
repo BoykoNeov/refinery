@@ -7240,3 +7240,31 @@ fire, gate 3) is closed with it. All 34 plants byte-identical on both fidelities
 the shipped cascade never saturates. Four mutations; three caught, the fourth
 (the latch kept through MANUAL) uncaught as predicted and gated by a new fifth
 gate. M35, the outlet and coil trips, is next.
+
+## M35 — a trip on a furnace's coil and on its outlet: ledger row E13's outlet clause, for furnaces; opened on a decision
+
+### M35 — specified and built in one slice — **LANDED** 2026-10-03, and M35 is CLOSED
+
+The user's decision, taken with M34's: a trip on a furnace watches its coil and its
+outlet both. The note is DESIGN §39. The coil is a measurement POINT of its own,
+`measurement = { coil = "…", variable = "temperature" }`, read off the state M34
+writes every tick, so it is present from load and compared from tick 1; trips only
+(a loop on a coil, a skin-temperature override, is refused by name, as are a coil
+on a non-furnace, with any other variable, or beside a node or pipe). A furnace's
+OUTLET is admitted under M33's rule for a flow — absent on tick 1's pass only, since
+the coil makes a stagnant furnace read its metal — and the trip exemption grows by
+exactly that case. A cooler's outlet stays refused, and E13 narrows to it.
+
+Demo `scenarios/furnace_coil_trip.toml`, the thirty-fifth file: the M19 outlet loop
+on a FOULED coil (`UA` 18 kW/K, 0.3 of the load capacity rate, against §37's rule
+of 2), a 100 °C tube-skin trip and a 70 °C outlet trip. The skin trip cuts the fuel
+at tick 72 on both fidelities with the outlet at 55.53 °C, under its own setpoint;
+the outlet trip never fires; the untripped twin holds 60 °C at its outlet with its
+tubes at 117.3 °C. The check that the demo separates the two trips was measured
+first: on a fading feed the outlet converges on the coil, so an M33-style plant
+would not have.
+
+Six gates in `tests/coil_trip_reference.rs`; the trip sweep keeps its cooler-outlet
+case. Seven mutations, six caught, widening the exemption to every absence uncaught
+as predicted. All thirty-four earlier plants byte-identical on both fidelities; no
+Godot build owed (no snapshot type changed shape), feature clippy clean.
