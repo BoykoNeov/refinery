@@ -11,33 +11,6 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
-**M32 is CLOSED (2026-10-02): a trip that cuts a furnace's fuel — `docs/DEFERRED.md`
-row E14's furnace clause, struck; the cooler clause stays open.** Taken on a
-DECISION (the user's, on gameplay grounds). One slice, note and build together:
-DESIGN §35.
-- **`TripAction::CutFurnace`** (`actions = [{ furnace = "…" }]`, no `position`,
-  refused if given): writes zero duty, the furnace's ONE safe state. The hold
-  check fails a tick on a lit furnace a latched trip holds; `SetFurnaceDuty`
-  above zero is refused while latched, zero admitted. `SetHeatInput` (a fire) is
-  not fuel and stays admitted.
-- **The trip forces MANUAL on EVERY action's equipment** now, not a valve's
-  alone (its own commit, byte-neutral). A furnace loop yields; on a cascade the
-  furnace's loop is the inner one, so the cut opens the cascade with no new rule.
-- **A cooler is still refused, for its own reason**: cutting it is losing
-  cooling, the hazard rather than the protection. E14 stays open on that clause.
-- **Demo `scenarios/tank_overheat_trip.toml`** (the thirty-third file):
-  `tank_temperature_heating.toml` without its loop, 3 MW by hand, a 75 °C trip.
-  Cuts at tick 1 251 on both fidelities, bit-identical to its twin until then,
-  clears its condition inside the tripping tick (74.967 °C), 40.36 °C at 6 000
-  against the twin's 89.77. At zero duty the furnace's outlet IS its inlet
-  stream's temperature, bit for bit; the next pipe is 0.0008 K warmer (friction).
-- **Gates** `tests/furnace_trip_reference.rs` (six) plus seven sweep cases in
-  `trip_reference.rs`. A cascade hand-back test must move the outer target while
-  the cascade is OPEN: moved in the closing batch it lands a 13.2 K proportional
-  kick (M25's), which reads like a bump and is not the trip's. Seven mutations,
-  six caught, the hold check's deletion uncaught as predicted. All 32 earlier
-  plants byte-identical, no iteration count moved; no Godot build owed.
-
 **M31 is CLOSED (2026-10-02): a check valve in gas service — `docs/DEFERRED.md`
 row E24, now struck.** Taken on a DECISION (the user's). One slice, note and build
 together: DESIGN §34. Read its "Corrections from building it" before touching
@@ -1845,26 +1818,8 @@ endpoint failed identically — and **M9.0 fixed it in the solver** (see the M9 
 below). A level loop no longer needs a gain gentle enough to avoid clamping; it
 still wants one, for tuning reasons.
 
-**Exactly nine of the thirty-three files in `scenarios/` declare a `[[controls]]`
-table** — `tank_level_control.toml` (M8.4, a level),
-`vessel_pressure_control.toml` (M10.1, a pressure),
-`tank_temperature_control.toml` (M17.1, a temperature),
-`tank_temperature_heating.toml` (M18.1, a reverse-acting temperature),
-`furnace_outlet_control.toml` (M19.1, a furnace's own outlet),
-`tank_flow_control.toml` (M20.1, a valve's own flow) and
-`furnace_cascade_control.toml` (M25.1, a cascade: two loops),
-`tank_level_fill_control.toml` (M29, a level on its FILL valve) and
-`tank_level_fill_check_valve.toml` (M30, the same loop behind a check valve,
-with a trip). **The
-other twenty-four
-were written before M8 (thirteen of them) or after it without a loop, and ARE
-the regression anchor** (two, `tank_overfill_trip.toml` and
-`tank_overheat_trip.toml`, carry a `[[trips]]` table instead, one, `tank_runs_dry.toml`, runs a tank dry, one,
-`tank_overflow.toml`, spills, and one, `gas_receiver_check_valve.toml`, puts a
-check valve in gas service); adding a loop to one of them
-would move its snapshot, which is why each regulation slice ships a NEW file
-rather than wiring one into an existing plant. Every other plant that carries a
-loop is an inline test fixture for the same reason.
+(The census of scenario files that declare a `[[controls]]` table lived here;
+it is now kept in `CLAUDE.md`, where each milestone updates it.)
 
 **M8.5 landed 2026-08-26, and M8 is closed** — `Snapshot::slate`, so a frontend
 can turn a tank's mass into a fill level. Four things to know.
