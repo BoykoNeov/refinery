@@ -16,4 +16,4 @@ proptest.workspace = true
 
 [lints.clippy]
 # Determinism guardrails — HashMap iteration order is nondeterministic.
-disallowed-types = "deny"
+disallowed_types = "deny"
