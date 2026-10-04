@@ -263,7 +263,8 @@ fn the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow() {
                 assert_eq!(
                     trip.state,
                     TripState::Tripped {
-                        at_tick: DEMO_TRIP_TICK
+                        at_tick: DEMO_TRIP_TICK,
+                        by_hand: false
                     },
                     "{solver}, tick {t}: tripped on its tick, and latched"
                 );
@@ -467,7 +468,8 @@ fn a_restored_feed_leaves_the_cut_latched_until_a_reset_and_a_relight() {
         assert_eq!(
             state(&engine),
             TripState::Tripped {
-                at_tick: throttled_tick + 1
+                at_tick: throttled_tick + 1,
+                by_hand: false
             },
             "{solver}"
         );
@@ -563,7 +565,13 @@ fn a_plant_loaded_lit_on_a_low_feed_fires_for_tick_one_and_trips_on_tick_two() {
     assert!(outlet_k(&one) <= after_one, "{}", outlet_c(&one));
 
     tick(&mut engine);
-    assert_eq!(state(&engine), TripState::Tripped { at_tick: 2 });
+    assert_eq!(
+        state(&engine),
+        TripState::Tripped {
+            at_tick: 2,
+            by_hand: false
+        }
+    );
     assert_eq!(duty_w(&engine), 0.0);
     assert!(coil_k(&engine) < after_one, "cut, the coil only cools");
 }
@@ -585,7 +593,13 @@ fn a_cold_start_trips_with_nothing_to_cut_and_the_latch_is_the_start_permissive(
     assert_eq!(engine.snapshot().trips[0].measurement, None);
     assert_eq!(state(&engine), TripState::Armed);
     tick(&mut engine);
-    assert_eq!(state(&engine), TripState::Tripped { at_tick: 2 });
+    assert_eq!(
+        state(&engine),
+        TripState::Tripped {
+            at_tick: 2,
+            by_hand: false
+        }
+    );
     assert_eq!(
         engine.snapshot().trips[0].measurement,
         Some(ControlledValue::Flow {

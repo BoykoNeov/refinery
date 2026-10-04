@@ -113,7 +113,7 @@ fn edge_flow(engine: &Engine, name: &str) -> f64 {
 fn tripped_at(engine: &Engine) -> Option<u64> {
     match engine.snapshot().trips[0].state {
         TripState::Armed => None,
-        TripState::Tripped { at_tick } => Some(at_tick),
+        TripState::Tripped { at_tick, .. } => Some(at_tick),
     }
 }
 

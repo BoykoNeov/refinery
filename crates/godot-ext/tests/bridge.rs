@@ -185,6 +185,7 @@ fn wire_text(cmd: &Command) -> &'static str {
         }
         Command::ResetTrip { .. } => r#"{"cmd":"reset_trip","trip_id":0}"#,
         Command::ReplaceTubes { .. } => r#"{"cmd":"replace_tubes","node":1}"#,
+        Command::ManualTrip { .. } => r#"{"cmd":"manual_trip","trip_id":0}"#,
     }
 }
 
@@ -225,6 +226,7 @@ fn every_variant() -> Vec<Command> {
         },
         Command::ResetTrip { trip_id: TripId(0) },
         Command::ReplaceTubes { node: NodeId(1) },
+        Command::ManualTrip { trip_id: TripId(0) },
     ]
 }
 
@@ -254,7 +256,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 10, "a Command variant was added");
+    assert_eq!(every_variant().len(), 11, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -286,6 +288,13 @@ fn fixture(cmd: &Command) -> Fixture {
         // New tubes are legal only on burst ones whose hole is patched and whose
         // coil has cooled, so the M37 demo is burst, patched and cooled first —
         // see `Fixture::Burnt`.
+        // A press is legal only on an ARMED trip, so the same plant is pressed
+        // before its first tick, ahead of the trip pass that would fire it.
+        Command::ManualTrip { .. } => Fixture::Tripped {
+            src: TRIP,
+            trip: "dump_on_high_level",
+            ticks: 0,
+        },
         Command::ReplaceTubes { .. } => Fixture::Burnt {
             plant: "furnace_burnout.toml",
             furnace: "heater",

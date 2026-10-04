@@ -190,6 +190,7 @@ fn referent(cmd: &Command) -> Referent {
         Command::SetSetpoint { loop_id, .. } => Referent::Loop(*loop_id),
         Command::ReplaceTubes { node } => Referent::Node(*node),
         Command::ResetTrip { trip_id } => Referent::Trip(*trip_id),
+        Command::ManualTrip { trip_id } => Referent::Trip(*trip_id),
     }
 }
 

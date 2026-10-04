@@ -185,7 +185,8 @@ fn the_tube_skin_trip_cuts_the_fuel_with_the_outlet_on_target() {
                 assert_eq!(
                     snapshot.trips[0].state,
                     TripState::Tripped {
-                        at_tick: DEMO_TRIP_TICK
+                        at_tick: DEMO_TRIP_TICK,
+                        by_hand: false
                     },
                     "{solver}, tick {t}: tripped on its tick, and latched"
                 );
@@ -267,7 +268,13 @@ fn a_coil_loaded_over_its_limit_trips_on_tick_one() {
     let mut engine = build(&swap(DEMO, "limit_c = 100.0", "limit_c = 70.0"));
     tick(&mut engine);
     let one = engine.snapshot();
-    assert_eq!(one.trips[0].state, TripState::Tripped { at_tick: 1 });
+    assert_eq!(
+        one.trips[0].state,
+        TripState::Tripped {
+            at_tick: 1,
+            by_hand: false
+        }
+    );
     assert_eq!(duty_w(&engine), 0.0, "cut on tick 1");
     assert!(measured_c(&one, 0).is_some_and(|c| c > 71.0));
 }
@@ -290,7 +297,10 @@ fn a_furnace_loaded_over_its_outlet_limit_trips_on_tick_two() {
     tick(&mut engine);
     assert_eq!(
         engine.snapshot().trips[1].state,
-        TripState::Tripped { at_tick: 2 }
+        TripState::Tripped {
+            at_tick: 2,
+            by_hand: false
+        }
     );
     assert_eq!(duty_w(&engine), 0.0);
 }

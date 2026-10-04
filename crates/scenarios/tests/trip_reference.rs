@@ -194,7 +194,7 @@ fn trips_on_tick_one(plant: &str, block: &str) -> bool {
     let mut engine = build(&with_trip(plant, block));
     tick(&mut engine);
     match state(&engine, 0) {
-        TripState::Tripped { at_tick } => {
+        TripState::Tripped { at_tick, .. } => {
             assert_eq!(at_tick, 1, "a trip fired on tick 1 says so");
             true
         }
@@ -286,7 +286,7 @@ fn trips_run_before_the_loops_so_the_tripping_tick_reports_manual_and_the_trip_p
         last_auto_output = Some(snapshot.controls[0].output);
     }
     let snapshot = engine.snapshot();
-    let TripState::Tripped { at_tick } = snapshot.trips[0].state else {
+    let TripState::Tripped { at_tick, .. } = snapshot.trips[0].state else {
         panic!("the lowered loop never drove the level into the trip");
     };
     assert_eq!(at_tick, snapshot.tick, "the snapshot of the tripping tick");
@@ -371,7 +371,13 @@ actions = [{ pump = "transfer_pump" }]"#,
 fn every_writer_of_tripped_equipment_is_refused_until_the_reset_and_the_reset_restarts_nothing() {
     let mut engine = refusal_fixture();
     tick(&mut engine);
-    assert_eq!(state(&engine, 0), TripState::Tripped { at_tick: 1 });
+    assert_eq!(
+        state(&engine, 0),
+        TripState::Tripped {
+            at_tick: 1,
+            by_hand: false
+        }
+    );
     assert_eq!(state(&engine, 1), TripState::Armed);
 
     expect_refused(
@@ -405,7 +411,10 @@ fn every_writer_of_tripped_equipment_is_refused_until_the_reset_and_the_reset_re
     );
     assert_eq!(
         state(&engine, 0),
-        TripState::Tripped { at_tick: 1 },
+        TripState::Tripped {
+            at_tick: 1,
+            by_hand: false
+        },
         "tick {cleared}"
     );
 

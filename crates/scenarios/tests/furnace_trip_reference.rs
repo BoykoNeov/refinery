@@ -233,7 +233,8 @@ fn the_demo_cuts_the_fuel_on_its_tick_and_the_latch_holds_it_out() {
                 assert_eq!(
                     snapshot.trips[0].state,
                     TripState::Tripped {
-                        at_tick: DEMO_TRIP_TICK
+                        at_tick: DEMO_TRIP_TICK,
+                        by_hand: false
                     },
                     "{solver}, tick {t}: tripped on its tick, and latched"
                 );
@@ -347,7 +348,7 @@ fn the_tripping_tick_reports_the_furnace_loop_in_manual_at_zero() {
         last_auto_output = Some(face.output);
     }
     let snapshot = engine.snapshot();
-    let TripState::Tripped { at_tick } = snapshot.trips[0].state else {
+    let TripState::Tripped { at_tick, .. } = snapshot.trips[0].state else {
         panic!("the raised setpoint never drove the tank into the trip");
     };
     assert_eq!(at_tick, snapshot.tick, "the snapshot of the tripping tick");
@@ -434,7 +435,13 @@ fn a_plant_loaded_inside_its_condition_cuts_on_tick_one_and_refuses_the_reset_un
     );
     let mut engine = build(&hot);
     tick(&mut engine);
-    assert_eq!(state(&engine), TripState::Tripped { at_tick: 1 });
+    assert_eq!(
+        state(&engine),
+        TripState::Tripped {
+            at_tick: 1,
+            by_hand: false
+        }
+    );
     assert_eq!(
         duty_w(&engine),
         0.0,

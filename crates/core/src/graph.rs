@@ -1403,19 +1403,36 @@ impl TripDirection {
 ///
 /// Tagged `status`, so the wire form inside `TripSnapshot::state` is
 /// `{"status":"armed"}` or `{"status":"tripped","at_tick":1236}` rather than a
-/// `state` key nested in a `state` field.
+/// `state` key nested in a `state` field. A trip pressed by hand adds
+/// `"by_hand":true` (M38, docs/DESIGN.md §43); a trip its measurement fired
+/// writes the M22 form unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum TripState {
     Armed,
-    /// Latched. `at_tick` is the tick whose trip pass fired it — the number a
-    /// snapshot of that tick carries — so a frontend sampling every tenth
+    /// Latched. `at_tick` is the first tick that runs in the safe state — for a
+    /// trip its measurement fired, the tick whose trip pass fired it, the number
+    /// a snapshot of that tick carries — so a frontend sampling every tenth
     /// snapshot still knows exactly when. A reset returns the trip to `Armed`
     /// and the tick goes with it: this is "tripped now, since when", not "last
     /// tripped at" (a trip's history is `docs/DEFERRED.md` E15).
+    ///
+    /// **A press lands between ticks** (`Command::ManualTrip`, M38), so its
+    /// `at_tick` is the tick AFTER the snapshot standing when it was pressed:
+    /// the next tick is the first to run in the safe state, exactly as for a
+    /// trip that fires on that tick's pass.
     Tripped {
         at_tick: u64,
+        /// Pressed by hand rather than fired by the measurement. Skipped on the
+        /// wire when false, so every trip a measurement fires serializes as it
+        /// did before M38.
+        #[serde(default, skip_serializing_if = "is_false")]
+        by_hand: bool,
     },
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 impl TripState {

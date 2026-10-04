@@ -136,7 +136,10 @@ fn the_demo_trips_at_its_tick_and_the_flow_stops_on_that_ticks_own_snapshot() {
             } else {
                 assert_eq!(
                     state,
-                    TripState::Tripped { at_tick: TRIP_TICK },
+                    TripState::Tripped {
+                        at_tick: TRIP_TICK,
+                        by_hand: false
+                    },
                     "{flow}: tick {t} is at or after the trip"
                 );
                 assert!(!pump_on(&engine), "{flow}: the pump is stopped at tick {t}");

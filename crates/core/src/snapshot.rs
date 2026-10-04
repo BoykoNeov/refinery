@@ -111,6 +111,23 @@ pub enum Command {
     ResetTrip {
         trip_id: TripId,
     },
+    /// Fire one armed trip by hand: the emergency-stop button (M38,
+    /// docs/DESIGN.md §43).
+    ///
+    /// **It does exactly what the trip does when its measurement fires it**,
+    /// and does it at the command rather than at the next tick: the trip
+    /// latches, every action's equipment goes to its safe state, the loops on
+    /// that equipment go to MANUAL, and every writer that would move it is
+    /// refused from here on. The state records `by_hand: true` and, as its
+    /// tick, the next one — the first to run in the safe state.
+    ///
+    /// Cleared by `ResetTrip` like any latched trip, under the same rule: a
+    /// press on a healthy plant can be reset at once, one on a plant already
+    /// past its limit cannot. Refused on a trip that is already tripped, and
+    /// on an id naming no trip.
+    ManualTrip {
+        trip_id: TripId,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

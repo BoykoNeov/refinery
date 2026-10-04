@@ -708,6 +708,32 @@ impl Engine {
                     .state = TripState::Armed;
                 Ok(())
             }
+            // Fire one trip by hand (M38, docs/DESIGN.md §43): the trip's own
+            // latch and safe states, written NOW rather than at the next trip
+            // pass. A press that returned `Ok` and left the pump startable until
+            // the next tick would be a command that appears to work and does not
+            // (§10 fork 4), so the refusals hold from the moment it lands.
+            Command::ManualTrip { trip_id } => {
+                let at_tick = self.tick + 1;
+                let trip = self.graph.trip_mut(trip_id).ok_or_else(|| {
+                    SimError::InvalidCommand(format!("{trip_id:?} names no trip on this plant"))
+                })?;
+                // Pressing a latched trip would do nothing, and a frontend that
+                // sends it has a wrong picture of the plant — `ResetTrip`'s
+                // refusal of an armed trip, the other way round.
+                if trip.state.is_tripped() {
+                    return Err(SimError::InvalidCommand(format!(
+                        "trip '{}' is already tripped: there is nothing to press",
+                        trip.name
+                    )));
+                }
+                trip.state = TripState::Tripped {
+                    at_tick,
+                    by_hand: true,
+                };
+                let writes = trip.actions.clone();
+                self.write_trip_actions(writes)
+            }
         }
     }
 
@@ -1917,19 +1943,30 @@ impl Engine {
             };
             trip.last_measurement = Some(measurement);
             if trip.state == TripState::Armed && trip.direction.reached(measurement, trip.limit)? {
-                trip.state = TripState::Tripped { at_tick: this_tick };
+                trip.state = TripState::Tripped {
+                    at_tick: this_tick,
+                    by_hand: false,
+                };
                 writes.extend(trip.actions.iter().copied());
             }
         }
 
-        // Pass 3 — write the safe states, and force every loop on tripped
-        // equipment to MANUAL (fork 5). MANUAL tracks, so its faceplate shows the
-        // equipment's real position from this tick, and a PI loop's memory is
-        // left alone: after a reset and a human restoring the equipment, AUTO is
-        // the existing bumpless transfer, seeded from wherever it stands. The
-        // mode change is asked of EVERY action's equipment, not of a valve's
-        // alone, so a kind a loop can actuate cannot be added to the actions
-        // without its loops yielding.
+        // Pass 3 — write the safe states.
+        self.write_trip_actions(writes)
+    }
+
+    /// Write tripped equipment's safe states, and force every loop on it to
+    /// MANUAL (docs/DESIGN.md §26 fork 5). Shared by the trip pass and a press
+    /// (`Command::ManualTrip`, §43), so a trip does the same thing however it
+    /// fired.
+    ///
+    /// MANUAL tracks, so its faceplate shows the equipment's real position from
+    /// this tick, and a PI loop's memory is left alone: after a reset and a human
+    /// restoring the equipment, AUTO is the existing bumpless transfer, seeded
+    /// from wherever it stands. The mode change is asked of EVERY action's
+    /// equipment, not of a valve's alone, so a kind a loop can actuate cannot be
+    /// added to the actions without its loops yielding.
+    fn write_trip_actions(&mut self, writes: Vec<TripAction>) -> Result<(), SimError> {
         for action in writes {
             match action {
                 TripAction::StopPump { pump } => match &mut self.graph.node_mut(pump).kind {
@@ -2254,7 +2291,8 @@ impl Engine {
             }
             Command::SetControllerMode { .. }
             | Command::SetSetpoint { .. }
-            | Command::ResetTrip { .. } => None,
+            | Command::ResetTrip { .. }
+            | Command::ManualTrip { .. } => None,
         };
         match missing {
             Some(what) => Err(SimError::InvalidCommand(format!(
