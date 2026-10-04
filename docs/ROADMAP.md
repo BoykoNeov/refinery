@@ -7337,3 +7337,24 @@ gates in `tests/burnout_reference.rs`. Fourteen mutations, thirteen caught and t
 byte-identical on both fidelities, the fifteen furnace plants moved, as chosen; the
 Godot feature build and its clippy are clean. B40 narrows to the commanded fire;
 new rows B42–B44.
+
+## M38 — a trip pressed by hand, the emergency-stop button: ledger row E15's manual-trip clause; opened on a decision
+
+The user asked for "a relatively small batch that can be done now" (2026-10-04),
+was offered this, a trip delay, and a Godot screen for the furnace demos, and said
+"go with your recommendation". Told first that E15's trigger has NOT fired — the
+Godot demo shows no trip — so this is groundwork for a frontend that will need it.
+One slice.
+
+### M38 — `Command::ManualTrip` — **LANDED** 2026-10-04, and M38 is CLOSED
+
+The note is DESIGN §43. A press fires one ARMED trip at the command: it latches,
+writes every action's safe state and hands the loops on that equipment to MANUAL
+(the trip pass's own write, factored out as `write_trip_actions`), so every
+refusal holds from the moment it lands. Its state records the next tick — the
+first to run in the safe state — and `by_hand: true`, which is written to the wire
+only when true, so a measured trip serializes exactly as before. The reset is
+unchanged: a press on a healthy plant resets at once, one past its limit cannot.
+Refused on a tripped trip and an unknown id. No loader key, no scenario file: seven
+gates on shipped plants in `tests/manual_trip_reference.rs`, and the Godot bridge's
+sweeps gained `manual_trip`. All 37 plants byte-identical on both fidelities.

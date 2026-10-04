@@ -12,6 +12,24 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M38 is CLOSED (2026-10-04): a trip pressed by hand, the emergency-stop button —
+`docs/DEFERRED.md` E15's manual-trip clause struck, the rest of E15 open.** The
+user's DECISION ("a relatively small batch"), told first that E15's trigger has not
+fired: the Godot demo shows no trip, so this is groundwork. DESIGN §43.
+- **`Command::ManualTrip { trip_id }`** fires one ARMED trip AT the command: it
+  latches, writes every action's safe state and hands the loops on that equipment
+  to MANUAL — the trip pass's own write, factored out as `write_trip_actions` — so
+  every refusal holds from the moment it lands, not from the next tick.
+- **`TripState::Tripped` gains `by_hand`**, written only when true: a measured trip
+  serializes as M22's form, so no fingerprint moved. A press records the NEXT tick,
+  the first to run in the safe state, as a measured trip does.
+- **The reset is unchanged**: a press on a healthy plant resets at once, one past
+  its limit cannot. Refused on a tripped trip and an unknown id; a trip whose
+  measurement does not exist yet (a furnace outlet before tick 1) can be pressed.
+- No loader key, no scenario file. Seven gates, `tests/manual_trip_reference.rs`;
+  the bridge's sweeps gained `manual_trip`. Seven mutations, all caught.
+- **All 37 plants byte-identical on both fidelities**; Godot feature clippy clean.
+
 **M37 is CLOSED (2026-10-03): a furnace's tube burn-out — `docs/DEFERRED.md` B40's
 burn-out clause struck (B40 narrows to the commanded fire), new rows B41–B44.**
 The user's DECISIONS, each against the recommendation: keys on the furnace, on EVERY

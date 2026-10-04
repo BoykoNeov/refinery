@@ -14469,7 +14469,9 @@ which is why gate 8 exists.
 - **E15 — the rest of a real safety system**: a maintenance bypass, a manual trip
   button, two-out-of-three voting, a trip delay, a first-out indication, and a
   reset that restarts equipment. Each is data on a trip, not a new model (fork 1).
-  Un-defers with a scenario or a frontend that needs one of them.
+  Un-defers with a scenario or a frontend that needs one of them. *(M38, 2026-10-04:
+  the manual trip button is built, §43, ahead of its trigger; the rest stays
+  open.)*
 - **B28 — a tank has no overflow.** Premise 3. A tank past its declared height
   keeps filling. Un-defers with a plant or frontend that must show what happens
   at the brim, or with a trip-free plant found above its own height. **Taken by
@@ -19074,3 +19076,117 @@ the gate now fails on both.
   back-feed refusal (`network::finalize`) rather than drawing air in. No shipped
   plant reaches it: the closest, the dry-fired demo, bursts on a line at
   atmospheric and its hole carries at most 7.8e-11 kg/s, OUTWARD.
+
+## 43. A trip pressed by hand — the emergency-stop button, ledger row E15's manual-trip clause (M38)
+
+### What licensed this, stated plainly
+
+The user asked on 2026-10-04 for "a relatively small batch that can be done now",
+was offered this, a trip delay and a Godot screen for the furnace demos, and chose
+this. **E15's trigger has not fired**: it reads "a scenario or frontend that needs
+one", and the Godot demo still shows only the leaking line, with no trip on screen.
+That was said before the choice; this is groundwork for a frontend that will
+need it, not an answer to one that does. Baselines and logs are in
+`W:\temp\claude\m38\`.
+
+### Fork 1 — at the command, not at the next trip pass
+
+A press could be a DEMAND the next tick's trip pass treats as "reached", which
+reuses the pass whole. Rejected: between the press and that tick the trip would
+still read armed, so `SetPumpOn { on: true }` would return `Ok` and be undone at
+the top of the tick — the command that appears to work and does not (§10 fork 4),
+which every one of fork 4's refusals in §26 exists to prevent. The press therefore
+latches the trip and writes its safe states AT the command, through the same
+`write_trip_actions` the pass now calls (pass 3, factored out unchanged): the safe
+states, and every loop on the equipment forced to MANUAL. The refusals hold from
+the moment it lands. The next tick's pass sees a latched trip and runs only its
+hold check.
+
+### Fork 2 — the tick it records
+
+`at_tick` was "the tick whose trip pass fired it", which is also the first tick to
+run in the safe state. A press lands between ticks, so it takes the second
+reading: **`self.tick + 1`, the next tick**. A press on a plant standing at
+snapshot 100 records 101, and the snapshot of tick 101 is the first that carries
+it — what a measured trip on tick 101's pass would record. Before the first tick
+that is 1, as for a trip that fires on tick 1's pass. The one cost: the snapshot
+taken between the press and the next tick shows an `at_tick` one ahead of its own.
+
+### Fork 3 — who fired it, on the state and off the wire for every old trip
+
+`TripState::Tripped` gains `by_hand: bool`. On the variant, not beside it on the
+trip, for §26 fork 8's reason: a reset returns the trip to `Armed` and the cause
+must go with the tick. Serialized only when true (`skip_serializing_if`), so a
+measured trip writes M22's `{"status":"tripped","at_tick":1236}` unchanged and
+every shipped plant's snapshot bytes — the corpus fingerprint — stay the same;
+the old form reads back with `by_hand: false`. A press writes
+`{"status":"tripped","at_tick":1,"by_hand":true}`.
+
+This is NOT E15's first-out indication (which of several trips fired first); that
+stays open.
+
+### Fork 4 — refusals, and the reset
+
+`Command::ManualTrip { trip_id }` is refused on an unknown id (the `Option`
+lookup, as `ResetTrip`) and on a trip already tripped — pressed or fired — which
+is `ResetTrip`'s refusal of an armed trip the other way round. It needs no
+measurement, so a trip whose measurement does not exist yet (a flow or a furnace
+outlet before tick 1, §36, §39) can be pressed.
+
+**The reset is unchanged**, and that gives the behaviour a player sees: the
+condition is read fresh, so a press on a healthy plant resets at once, and one on
+a plant already past its limit cannot be reset until the condition clears.
+
+No loader key and no scenario file: a file cannot press a button, so the gates are
+shipped plants with commands applied (`tests/manual_trip_reference.rs`).
+
+### The gates
+
+1. The press writes every safe state at the command, before any tick, and the
+   ticks after it run in them (the M22 demo, its feed cut, the tank drains).
+2. A press at snapshot 100 records 101, and tick 101's snapshot carries it.
+3. Every writer of the pressed equipment is refused; safe-state writes admitted;
+   a second press, a press of a fired trip and an unknown id refused.
+4. A press on a healthy plant resets at once and restarts nothing; restored by
+   hand, the trip then fires by its measurement on the demo's tick 1 236.
+5. A press inside the condition cannot be reset, and the pass whose measurement
+   reaches the limit keeps the press's record (`at_tick` 1, `by_hand`).
+6. The wire form, both ways, and through a real snapshot.
+7. A furnace trip (`furnace_coil_trip.toml`'s outlet trip, unmeasurable until tick
+   1): the press cuts the fuel, the outlet loop goes to MANUAL, relighting and AUTO
+   are refused, and the run holds.
+
+The Godot bridge's wire-format and acceptance sweeps gained `manual_trip`
+(`{"cmd":"manual_trip","trip_id":…}`), pressed on the bridge's trip plant before
+its first tick.
+
+### What moved, measured
+
+Against baselines taken before the first M38 edit, both fidelities, 6 000 ticks:
+**all 37 plants byte-identical**, as predicted — no file presses a button, and a
+measured trip's state serializes exactly as before. Workspace tests, clippy, fmt
+and the Godot-feature clippy are clean.
+
+### The mutation pass (M38)
+
+Seven edits, each running its predicted test files only
+(`W:\temp\claude\m38\mutate_manual_trip.py`, release), the source restored byte
+for byte after each. **Seven caught.**
+
+| # | edit | caught by |
+|---|---|---|
+| 1 | the press writes no safe state | gates 1, 2, 4, 5, 7 |
+| 2 | the press records the standing tick, not the next | gates 1, 2, 3, 5, 6, 7 |
+| 3 | the press records `by_hand: false` | gates 1, 2, 3, 5, 6, 7 |
+| 4 | a second press is admitted | gate 3 |
+| 5 | tripped equipment's loops stay in AUTO | gate 7; `trip_reference.rs` gates 4 and 5 |
+| 6 | `by_hand` always on the wire | gate 6 (and it would move every trip plant's fingerprint) |
+| 7 | the trip pass re-latches a latched trip | gate 5; `trip_reference.rs` gate 6 |
+
+### Deferred, with what un-defers each
+
+- **E15, the rest**: a maintenance bypass, voting, a trip delay, a first-out
+  indication, a reset that restarts equipment, a startup bypass timer. Unchanged
+  triggers.
+- **A press on the Godot screen.** The bridge accepts `manual_trip`; no scene
+  sends it. Un-defers with a scene that shows a trip.
