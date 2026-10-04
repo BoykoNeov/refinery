@@ -7355,6 +7355,7 @@ refusal holds from the moment it lands. Its state records the next tick — the
 first to run in the safe state — and `by_hand: true`, which is written to the wire
 only when true, so a measured trip serializes exactly as before. The reset is
 unchanged: a press on a healthy plant resets at once, one past its limit cannot.
-Refused on a tripped trip and an unknown id. No loader key, no scenario file: seven
-gates on shipped plants in `tests/manual_trip_reference.rs`, and the Godot bridge's
+Refused on a tripped trip and an unknown id; a flow or furnace-outlet trip pressed
+before tick 1 cannot be reset until a tick has run. No loader key, no scenario
+file: eight gates on shipped plants in `tests/manual_trip_reference.rs`, and the Godot bridge's
 sweeps gained `manual_trip`. All 37 plants byte-identical on both fidelities.

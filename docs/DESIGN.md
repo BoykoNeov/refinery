@@ -19137,6 +19137,22 @@ outlet before tick 1, §36, §39) can be pressed.
 condition is read fresh, so a press on a healthy plant resets at once, and one on
 a plant already past its limit cannot be reset until the condition clears.
 
+**One exception, found by review after the first commit.** A trip on a flow or a
+furnace's outlet pressed BEFORE THE FIRST TICK is tripped with nothing to compare:
+those readings do not exist until tick 1 (§36, §39). The reset used to treat a
+missing reading as an engine fault, on the premise that nothing could be tripped
+before the first solve — which the press made false. It is now refused as a
+command ("run a tick, then reset"); after the first solve a missing reading is
+still an engine fault. Refusing the reset rather than the press keeps the button
+working whenever the trip is armed, and re-arming a safety function on a missing
+reading is the wrong default (§26 fork 2). Gate 8.
+
+**The faceplate lags the press by one tick.** A loop's output is written by the
+loop pass at the top of a tick, so between the press and the next tick the loop
+reads MANUAL but its output is still its last AUTO value; from the next tick it
+tracks the safe state. Any write between ticks — a valve moved by hand in MANUAL —
+shows the same lag, so no new rule.
+
 No loader key and no scenario file: a file cannot press a button, so the gates are
 shipped plants with commands applied (`tests/manual_trip_reference.rs`).
 
@@ -19155,6 +19171,8 @@ shipped plants with commands applied (`tests/manual_trip_reference.rs`).
 7. A furnace trip (`furnace_coil_trip.toml`'s outlet trip, unmeasurable until tick
    1): the press cuts the fuel, the outlet loop goes to MANUAL, relighting and AUTO
    are refused, and the run holds.
+8. That trip's reset before tick 1 is refused as a command, and goes through one
+   tick later.
 
 The Godot bridge's wire-format and acceptance sweeps gained `manual_trip`
 (`{"cmd":"manual_trip","trip_id":…}`), pressed on the bridge's trip plant before

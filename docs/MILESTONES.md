@@ -25,8 +25,10 @@ fired: the Godot demo shows no trip, so this is groundwork. DESIGN §43.
   the first to run in the safe state, as a measured trip does.
 - **The reset is unchanged**: a press on a healthy plant resets at once, one past
   its limit cannot. Refused on a tripped trip and an unknown id; a trip whose
-  measurement does not exist yet (a furnace outlet before tick 1) can be pressed.
-- No loader key, no scenario file. Seven gates, `tests/manual_trip_reference.rs`;
+  measurement does not exist yet (a furnace outlet before tick 1) can be pressed —
+  and its reset is refused until a tick has run (found by review: it was an
+  engine fault, gate 8, fixed in its own commit).
+- No loader key, no scenario file. Eight gates, `tests/manual_trip_reference.rs`;
   the bridge's sweeps gained `manual_trip`. Seven mutations, all caught.
 - **All 37 plants byte-identical on both fidelities**; Godot feature clippy clean.
 

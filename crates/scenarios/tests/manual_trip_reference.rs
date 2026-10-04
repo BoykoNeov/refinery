@@ -19,6 +19,8 @@
 //!   unchanged on a measured trip.
 //! - **gate 7**, a furnace trip: the press cuts the fuel and hands the loop on
 //!   the furnace to MANUAL, on a trip whose measurement does not exist yet.
+//! - **gate 8**, that trip's reset before tick 1 is refused as a command — it has
+//!   nothing to compare — and goes through one tick later.
 
 use refinery_core::graph::{ControlMode, LoopId, NodeId, NodeKind, TripId, TripState};
 use refinery_core::snapshot::Command;
@@ -357,4 +359,38 @@ fn a_press_on_a_furnace_trip_cuts_the_fuel_and_hands_its_loop_to_manual() {
     }
     assert_eq!(state(&engine, 1), pressed(1));
     assert_eq!(duty(&engine, "heater"), Watt::ZERO);
+    // MANUAL tracks: from the first tick after the press, the faceplate reads
+    // the cut fuel (between the press and that tick it still reads the last
+    // AUTO output, as after any write between ticks — DESIGN §43 fork 4).
+    assert_eq!(engine.snapshot().controls[0].output, 0.0);
+}
+
+// ------------------------------------------------------------------ gate 8
+
+/// A trip pressed before its measurement exists cannot be reset until it does:
+/// the reset compares a fresh reading, and before tick 1 a furnace's outlet has
+/// none. Refused as a command, not raised as an engine fault.
+#[test]
+fn a_press_before_the_first_tick_on_an_unmeasured_trip_resets_only_after_a_tick() {
+    let mut engine = build(FURNACE);
+    press(&mut engine, 1).expect("the outlet trip is armed");
+    let refused = engine.apply(Command::ResetTrip { trip_id: TripId(1) });
+    match refused {
+        Err(refinery_core::SimError::InvalidCommand(message)) => assert!(
+            message.contains("after the first tick"),
+            "refused for another reason: {message}"
+        ),
+        other => panic!("a reset with nothing to compare must be refused: {other:?}"),
+    }
+    assert_eq!(
+        state(&engine, 1),
+        pressed(1),
+        "the refused reset moved nothing"
+    );
+
+    // One tick later the outlet exists, sits far under its 70 °C limit with the
+    // fuel cut, and the reset goes through.
+    tick(&mut engine);
+    reset(&mut engine, 1).expect("the outlet is measured and under its limit");
+    assert_eq!(state(&engine, 1), TripState::Armed);
 }

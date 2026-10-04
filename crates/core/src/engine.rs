@@ -673,25 +673,38 @@ impl Engine {
                 // one-tick-old reading could re-arm a trip one tick before it
                 // fires again. And through `reached`, the same comparison that
                 // fires it, so a trip may be reset exactly when it would not fire.
-                let measurement = self
-                    .graph
-                    .measure(
-                        &self.slate,
-                        &self.node_states,
-                        self.last_solution.as_ref(),
-                        trip.measurement_point,
-                        trip.limit.variable(),
-                    )?
-                    .ok_or_else(|| {
-                        SimError::Numerical(format!(
-                            "internal: trip '{}' has no {} to test its reset against, but the \
-                             loader admits only quantities that exist from load, and a flow, \
-                             which is absent only before the first solve — when no trip can \
-                             be tripped yet (docs/DESIGN.md §26 fork 2, §36)",
+                let Some(measurement) = self.graph.measure(
+                    &self.slate,
+                    &self.node_states,
+                    self.last_solution.as_ref(),
+                    trip.measurement_point,
+                    trip.limit.variable(),
+                )?
+                else {
+                    // **Before the first solve this is a press, not a fault**
+                    // (M38, docs/DESIGN.md §43 fork 4). A flow and a furnace's
+                    // outlet are absent until tick 1 (§36, §39), and a trip
+                    // pressed by hand before then is tripped with nothing to
+                    // compare. Refused, not guessed: re-arming a safety function
+                    // on a missing reading is the wrong default (§26 fork 2).
+                    if self.last_solution.is_none() {
+                        return Err(SimError::InvalidCommand(format!(
+                            "trip '{}' cannot be reset yet: its {} is measured only after \
+                             the first tick, and a reset compares a fresh reading against \
+                             the limit. Run a tick, then reset",
                             trip.name,
                             trip.limit.variable().noun()
-                        ))
-                    })?;
+                        )));
+                    }
+                    return Err(SimError::Numerical(format!(
+                        "internal: trip '{}' has no {} to test its reset against, but the \
+                         loader admits only quantities that exist from load, a flow and a \
+                         furnace's outlet, which are absent only before the first solve \
+                         (docs/DESIGN.md §26 fork 2, §36, §39)",
+                        trip.name,
+                        trip.limit.variable().noun()
+                    )));
+                };
                 if trip.direction.reached(measurement, trip.limit)? {
                     return Err(SimError::InvalidCommand(format!(
                         "trip '{}' cannot be reset: its condition still holds ({:?} against a \
@@ -1936,8 +1949,9 @@ impl Engine {
         // measurement now says: that is the latch (fork 4).
         let mut writes: Vec<TripAction> = Vec::new();
         for (trip, measurement) in self.graph.trips_mut().iter_mut().zip(measured) {
-            // Pass 1 let through only a flow before the first solve: the trip
-            // stays armed and its snapshot shows no measurement, as before tick 1.
+            // Pass 1 let through only a flow or a furnace's outlet before the
+            // first solve: the trip stays as it stands — armed, or latched by a
+            // press (M38) — and its snapshot shows no measurement, as before tick 1.
             let Some(measurement) = measurement else {
                 continue;
             };

@@ -123,8 +123,10 @@ pub enum Command {
     ///
     /// Cleared by `ResetTrip` like any latched trip, under the same rule: a
     /// press on a healthy plant can be reset at once, one on a plant already
-    /// past its limit cannot. Refused on a trip that is already tripped, and
-    /// on an id naming no trip.
+    /// past its limit cannot. **One exception**: a trip on a flow or a
+    /// furnace's outlet pressed before the first tick has no reading yet, and
+    /// its reset is refused until a tick has run. Refused on a trip that is
+    /// already tripped, and on an id naming no trip.
     ManualTrip {
         trip_id: TripId,
     },
