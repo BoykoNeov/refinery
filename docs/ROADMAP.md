@@ -7654,3 +7654,59 @@ Release property tests 223/223. Godot feature build and clippy clean.
   kept in E28.
 - **A restart asks no trip that does not hold the equipment**: E28's other
   clause, unchanged.
+
+## M42 — a burst during a stop makes its restart a person's: ledger row E28's replaced-tubes clause; opened on a decision
+
+M41 refused a trip's restart onto tubes that are burst, asking the tubes in
+place, and left one question in E28: tubes that burst while a trip holds the
+furnace dark, and are replaced before it lets go, are intact at the release, so
+an `auto` or `manual_restart` trip relit them. The user's decision (2026-10-05):
+a burst during a stop makes that stop's restart a person's, and new tubes do not
+undo it. One commit of code; the note is DESIGN §47.
+
+### M42.0 — the burst marks the stop — **LANDED** 2026-10-05, and M42 is CLOSED
+
+When the burn-out pass bursts a furnace's tubes and a trip is holding that
+furnace dark, it clears the trips' record of the stop for a restart
+(`HeldEquipment::restartable`, M40) — the same flag a hand-pressed stop or a
+`manual` trip clears. The trip still re-arms when it lets go; the furnace stays
+dark, its loop in MANUAL, for a person. The record is the stop's: it is dropped
+when the last trip lets go, so a burst on a LIT furnace marks nothing and the
+next stop restarts as before. `Command::ReplaceTubes` does not touch it. Three
+lines in `run_burnouts`, with three comments brought up to date.
+
+**Gates.** `crates/scenarios/tests/burst_during_stop_reference.rs`, four, on
+shipped plants edited in memory (M41's two fixtures):
+1. `furnace_coil_trip` with an `auto` tube trip and tubes failing at 100.1 °C:
+   they burst on tick 75, the trip's own tick; at 80 the hole is patched and new
+   tubes fitted with the trip still holding. The trip re-arms on tick 128 as its
+   550 °C twin does, with the tubes INTACT — M41's rule alone would relight — and
+   the furnace stays dark, loop in MANUAL, to 600, where the twin relit on 128.
+2. The same plant with `manual_restart`: burst during the stop, hole patched and
+   new tubes at 150, a person's reset re-arms the trip and relights nothing to
+   200; a person's AUTO then fires the new tubes.
+3. `tank_overheat_trip` with `manual_restart` and tubes failing at 100 °C: stop
+   one clears at 1 594 and the reset hands back the 3 MW; a 50 MW fire on the LIT
+   furnace bursts the tubes on 1 618 with the trip armed; fire out, new tubes at
+   1 717; the tank trips again on 1 907, clears at 2 145, and the reset hands
+   back the 3 MW: the earlier burst marked no stop.
+4. `furnace_coil_trip` with `manual_restart` on its own 550 °C tubes, no burst:
+   the reset at 150 relights through the AUTO loop, which fires ten ticks on.
+
+**Mutations**, four, run against the new file: all caught, each by the gates
+predicted —
+delete the mark (gates 1, 2); mark an unheld furnace by inserting a record
+(gate 3); `ReplaceTubes` sets the record back to restartable (gates 1, 2); ask at
+the latch whether the tubes are already failed, instead of marking at the burst
+(gates 1, 2).
+
+**Corpus.** All 38 plants byte-identical on both fidelities, against baselines taken
+before the change (6 000 ticks). No shipped plant bursts tubes during a stop,
+and the CLI issues no commands.
+
+Release property tests 223/223. The Godot binding did not change.
+
+#### Findings
+
+- None new. E28 narrows to its last clause: a restart still asks no trip that
+  does not hold the equipment.

@@ -19389,3 +19389,43 @@ both". The full write-up, with the recorded runs, is ROADMAP M41.
 **Deferred.** E28 narrows to its remainder: a restart does not ask any trip that
 does not hold the equipment, and a burst during a stop does not by itself make
 the restart a person's once the tubes are replaced.
+
+## 47. A burst during a stop makes its restart a person's — ledger row E28's replaced-tubes clause (M42)
+
+Taken on the user's decision (2026-10-05), on the question M41 left in E28:
+should any burst during a stop make the restart a person's, even after new
+tubes? Yes. The full write-up is ROADMAP M42.
+
+**Interfaces.** None. No field, no command, no loader key, no scenario file. The
+burn-out pass now also narrows the trips' per-equipment record of the stop
+(`HeldEquipment::restartable`, §45) when it bursts a furnace a trip holds.
+
+**Forks.**
+
+1. **The mark is on the stop, not on the furnace.** `restartable` already meant
+   "this stop may end in a restart" and was already cleared for good by one
+   `manual` trip or one emergency stop (§45). A burst is a third way to clear
+   it. The record lives exactly as long as the stop: written when the first
+   trip latches, dropped when the last lets go. So the mark needs no reset of
+   its own, and the next stop starts clean.
+2. **Written at the burst, not read at the release.** M41's check asks the
+   tubes IN PLACE when the trip lets go, and new tubes answer "intact". Only
+   the burn-out pass sees the burst happen while the stop is on, so the mark is
+   written there. Mutation 4 moves the question to the latch (narrow the record
+   if the tubes are already failed when the trip latches) and fails gates 1 and
+   2, whose burst comes on the trip's own tick, after it.
+3. **Only a furnace a trip holds.** `get_mut`, never an insert: a lit furnace
+   has no stop to mark. Mutation 2 inserts a non-restartable record for an
+   unheld furnace and fails gate 3, where the tubes burst between two stops.
+4. **New tubes do not undo it.** `Command::ReplaceTubes` leaves the record
+   alone. Mutation 3 has it set `restartable` back; gates 1 and 2 catch it.
+5. **The burst on the trip's own tick counts as during the stop.** In a tick
+   the trips run before the burn-outs (§42), so a trip that latches on the
+   tick the tubes burst already holds the furnace when the burn-out pass runs.
+   That is M41's gate-1 timeline, and M42's gates 1 and 2.
+6. **M41's check stays.** It covers what the mark cannot: tubes that are about
+   to burst when the trip lets go (a fire on the dark coil), and tubes that
+   burst before the stop began and were never replaced.
+
+**Deferred.** E28 narrows to its last clause: a restart still asks no trip that
+does not hold the equipment.

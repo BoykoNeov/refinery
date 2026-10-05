@@ -12,6 +12,27 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M42 is CLOSED (2026-10-05): a burst during a stop makes its restart a
+person's — `docs/DEFERRED.md` E28's replaced-tubes clause struck (its last clause
+open).** The user's DECISION, on the question M41 left in E28: a burst while a
+trip holds the furnace dark makes that stop's restart a person's, even after new
+tubes. DESIGN §47.
+- **The burst marks the stop** (M42.0): the burn-out pass clears the trips'
+  record of the stop for a restart (`HeldEquipment::restartable`, the flag a
+  hand-pressed stop already clears) when it bursts a furnace a trip holds. The
+  trip still re-arms; the furnace stays dark, its loop in MANUAL. New tubes do
+  not undo it; a burst on a lit furnace marks nothing, so the next stop restarts
+  as before. Three lines in `run_burnouts`; no interface changed.
+- Four gates, `tests/burst_during_stop_reference.rs` (burst on the trip's tick
+  75, new tubes at 80, dark past the self-reset at 128 where the intact twin
+  relights; the same through a person's reset, then a person's AUTO fires the new
+  tubes; a fire bursts the LIT tubes between two stops and the second still
+  relights at 3 MW; a stop with no burst relights). Four mutations, all caught
+  by the gates predicted.
+- All 38 plants byte-identical on both fidelities. Release property tests
+  223/223; the Godot binding did not change. Left open (E28): a restart asks no
+  trip that does not hold the equipment.
+
 **M41 is CLOSED (2026-10-05): no restart onto burst tubes, and what a loop
 watches — `docs/DEFERRED.md` E28's tube clause struck (the rest open), F3 struck.**
 The user's DECISION, on M40's two findings: "yes, fix both". DESIGN §46.
