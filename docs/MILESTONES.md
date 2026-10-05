@@ -14,7 +14,8 @@ in `docs/DESIGN.md`) now point at this file.
 
 **M39 is CLOSED (2026-10-05): the furnace screen — a Godot scene for M34–M38.**
 The user's DECISION, from four directions offered with nothing past its trigger:
-the recommendation. No engine, loader, binding or scenario change. ROADMAP M39.
+the recommendation. No engine, loader, binding or scenario change. ROADMAP M39;
+DESIGN §44 (no interface change; it records the scene's rules).
 - **`demo/furnace.tscn`** draws `furnace_coil_trip` (key 1) or `furnace_burnout`
   (key 2): flames sized by the duty and by `tube_fire_w`, the coil coloured by its
   temperature and broken when burst, a coil thermometer marked with the burst

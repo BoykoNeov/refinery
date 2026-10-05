@@ -7452,7 +7452,9 @@ tubes burst on tick 1 145 and spray 0.815 kg/s into a 34.9 MW fire, and so does
 the 1 200 line. Those numbers were measured by the CLI; here they came through
 the GDExtension and GDScript. The patch puts the fire out on the next tick (the
 1 400 line reads 0.000 kg/s and 0 MW), and the 0.5 MW coil takes about 1 200
-ticks to fall under 550 °C, as its `C/UA` = 750 s and its ~1 600 °C start say.
+ticks to fall under 550 °C. That roughly agrees with its `C/UA` of 750 s; the
+flame law makes the decay only approximately exponential, so it is a sanity
+check, not a derivation. The note is DESIGN §44.
 
 #### Findings — for the user's decision, none built
 

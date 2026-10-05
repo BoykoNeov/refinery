@@ -19208,3 +19208,39 @@ for byte after each. **Seven caught.**
   triggers.
 - **A press on the Godot screen.** The bridge accepts `manual_trip`; no scene
   sends it. Un-defers with a scene that shows a trip.
+
+## 44. The furnace screen — a Godot scene for M34–M38 (M39)
+
+No interface changes: the scene reads the snapshot and sends `Command`s exactly as
+§8 and §7 already define them, through the unchanged binding. This note records
+the scene's rules and what drawing it found. The full write-up, with the recorded
+runs, is ROADMAP M39.
+
+1. **The scene computes no physics (§8's M6.2 rule, kept).** Flame and fire sizes
+   are `kind.duty` and `tube_fire_w`; the coil thermometer's marks are
+   `tubes.failure_temperature` and `flame_temperature`; each trip's line is its own
+   `measurement` against its own `limit`. The only arithmetic is display units
+   (K → °C, W → MW), which CLAUDE.md rule 4 places at the frontend.
+2. **Refusals are shown in the engine's words.** A command's `{code, message}` is
+   printed on screen as it came back. "Let the coil cool first (cut the fuel)" is
+   the most useful line the burn-out plant has, and the scene does not paraphrase it.
+3. **Ids read from the snapshot are cast to integers before they are sent.**
+   GDScript's JSON parser reads every number as a float, and serde refuses `0.0`
+   for a `u32` id (`bad_json`). `crates/godot-ext/tests/furnace_screen.rs` sends the
+   scene's command text byte for byte and fails on a float id.
+4. **The emergency stop is the scene's, not the engine's.** E presses every ARMED
+   trip, one `Command::ManualTrip` each. §43's command still names one trip, and a
+   plant-wide stop stays a frontend decision until a plant needs it in data.
+5. **The scene draws the last solved tick.** It does not re-read the snapshot after
+   a command, so a patch shows on the next tick. That is the honest choice, because
+   a snapshot read between a command and a solve mixes commanded state with the
+   previous solve's flows.
+
+**Deferred.**
+- **F2: a trip's snapshot does not say what it watches** (coil, outlet, flow), so a
+  gauge cannot carry a trip's limit. Written as a wire-format option in DEFERRED.md.
+- **E15's "a reset that restarts equipment"** is now visible on screen (t=902–950
+  on the trip plant). Its trigger asks for a frontend that NEEDS it, and showing
+  the gap is not a need, so it stays the user's decision.
+- §43's last bullet, "a press on the Godot screen", is met: the E key sends
+  `manual_trip`.

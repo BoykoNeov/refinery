@@ -125,6 +125,12 @@ const NEW_TUBES: &str = r#"{"cmd":"replace_tubes","node":2}"#;
 #[test]
 fn the_trip_plant_timeline_tells_its_story() {
     let mut screen = Screen::load("furnace_coil_trip.toml", "cool_feed", "hold_tank");
+    // The constants above carry ids the scene looks up by name at run time; a
+    // plant edit that moves one should fail here, not as a puzzling refusal.
+    let snap = screen.snap();
+    assert_eq!(snap["trips"][0]["name"], "tube_skin_high");
+    assert_eq!(snap["trips"][1]["name"], "outlet_high");
+    assert_eq!(snap["controls"][0]["name"], "outlet_temperature");
 
     // By itself, at tick 75, with the outlet trip still armed.
     screen.run_to(74);
@@ -188,6 +194,12 @@ fn the_trip_plant_timeline_tells_its_story() {
 fn the_burnout_timeline_tells_its_story() {
     let mut screen = Screen::load("furnace_burnout.toml", "charge", "product");
     let pipe = screen.session.edge_id("heated_line") as usize;
+    // PATCH, DUTY_HALF_MW and NEW_TUBES carry these ids; see the trip test.
+    assert_eq!(pipe, 2, "heated_line moved: update PATCH");
+    assert_eq!(
+        screen.heater, 2,
+        "heater moved: update the duty and tubes commands"
+    );
     let tubes = |s: &Screen| s.heater()["kind"]["tubes"]["state"].clone();
     let leak = |s: &Screen| s.snap()["edges"][pipe]["leak_mass_flow"].as_f64().unwrap();
     let fire = |s: &Screen| s.heater()["tube_fire_w"].as_f64().unwrap();
