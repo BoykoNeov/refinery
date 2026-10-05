@@ -7710,3 +7710,87 @@ Release property tests 223/223. The Godot binding did not change.
 
 - None new. E28 narrows to its last clause: a restart still asks no trip that
   does not hold the equipment.
+
+## M43 — why a stop did not restart, in the snapshot: the frontend gap M42 left; opened on a decision
+
+A review of M42 found that the new rule could not be seen: a burst during a
+stop keeps the furnace dark for a person, but the engine kept the reason in a
+private record dropped at the moment the trip let go. A player saw new tubes, a
+cleared trip and a dark furnace with nothing on screen to explain it. The
+user's decision (2026-10-05): "fix this, let the player have an indication or
+message or information". The note is DESIGN §48.
+
+### M43.0 — the record keeps WHY — **LANDED** 2026-10-05
+
+`HeldEquipment::restartable` (one flag) becomes `bars`, a set of
+`RestartBar`s: a trip whose reset restarts nothing, a press, a burst during the
+stop. `restart_bars` lists them and adds M41's check of the tubes in place;
+`release_equipment` restarts only on an empty list. Same decisions as before:
+all 38 plants byte-identical on both fidelities.
+
+### M43.1 — `NodeSnapshot::trip_stop` — **LANDED** 2026-10-05, and M43 is CLOSED
+
+`held` (with `barred_by`, the verdict the release will act on) while a trip
+holds the equipment; `not_restarted` (with `at_tick` and `barred_by`) once the
+last trip let go without handing it back, while the equipment stands where the
+trip left it; absent otherwise. New demo `furnace_burst_during_stop.toml` (the
+39th file): M40's self-resetting trip on tubes that fail at 100.1 °C. They burst
+on the trip's own tick 75; the trip re-arms itself at 128 and the furnace stays
+dark to 6 000, `not_restarted` at 128 for `tubes_burst_during_stop` and
+`tubes_burst`; on both fidelities, identical events.
+
+**The furnace screen** (`demo/furnace.gd`): key 4 loads the new plant. The
+FURNACE block gains a `trip stop` line and the engine's reasons in words; under
+the furnace, "a reset will NOT relight it" while held and "DARK: WAITS FOR A
+PERSON (A or Up relights)" after; the message line names the reasons at the
+tick the trips let go; `--auto` prints a `heater stop ->` line on each change.
+A trip's reset label reads "restarts unless barred". The burst label on the
+coil gauge moves up a line when a tube trip's label would print over it (this
+plant fails its tubes 0.1 K above the trip). Timeline: patch and new tubes at
+80, dark past the self-reset at 128, relit by a person at 200 on 50 °C. The
+older stories now explain themselves too: after the emergency stop and a
+person's reset, "NOT RELIT … the emergency stop was pressed".
+
+**Gates.** `crates/scenarios/tests/trip_stop_reference.rs`, six:
+1. the new plant: `held` [during, in place] at 75, [during] after new tubes at
+   80, `not_restarted` at 128 [during], dark and MANUAL to 199; a person's AUTO
+   ends it at the command;
+2. `furnace_coil_trip`'s default trip: `held` [reset restarts nothing], a reset
+   at 150 gives `not_restarted` at 151; a press replaces it with `held`
+   [pressed]; a person's AUTO ends it, and a later cut by hand does not bring it
+   back;
+3. the self-reset plant: `held` with nothing barring it, absent once relit;
+4. the published verdict is what the release does: 43 restarts and 1 refusal;
+5. `tank_overfill_trip`'s pump and valve: each ends when its own equipment
+   leaves the trip's safe state;
+6. the wire: no `trip_stop` key before a trip fires, the tagged form after.
+
+Plus `crates/godot-ext/tests/furnace_screen.rs`'s fourth timeline, replaying the
+scene's command text. `trip_reset_reference.rs`'s twin comparison now leaves
+`trip_stop` out with the trips' records (it differs between a `manual` and a
+`manual_restart` twin by design); `burnout_reference.rs` counts 18 furnaces.
+
+**Mutations**, seven, against the new file: six caught by the gates predicted
+(the in-place reason dropped: 1, 6; the snapshot not asking whether it was
+restarted: 1; the tick not dropping it: 2; `at_tick` one early: 1, 2, 4, 5;
+the AUTO-loop check inverted: 1, and 5 too; a valve counted stopped at any
+opening: 5). Uncaught, as predicted: not clearing the old reason when a new
+stop begins — `held` always shows first and a refused release overwrites it,
+so it matters only when equipment a trip stopped and nobody restarted is
+stopped again and then handed back to that same stopped state.
+
+**Corpus.** 32 plants byte-identical on both fidelities, 1 new, 6 moved, wire
+only: `furnace_coil_trip`, `furnace_coil_trip_autoreset`,
+`furnace_low_flow_trip`, `tank_level_fill_check_valve`, `tank_overfill_trip`
+and `tank_overheat_trip` — every plant whose trip fires within 6 000 ticks.
+Five were predicted; `tank_level_fill_check_valve` (its low-level pump trip
+fires) was missed by a search on file names. With the field cut out of the
+text, every snapshot of all six is byte-identical to the build before it, on
+both fidelities; no iteration count moved.
+
+Release property tests 223/223. The Godot binding did not change (the scene and
+its test did); the extension was rebuilt and the four `--auto` runs replayed.
+
+#### Findings
+
+- None new.

@@ -12,6 +12,32 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M43 is CLOSED (2026-10-05): why a stop did not restart, in the snapshot —
+`docs/DEFERRED.md` F4 (logged and struck in one go).** The user's DECISION, on a
+review finding after M42 ("fix this, let the player have an indication or
+message or information"): the engine kept the reason a furnace stays dark in a
+private record, dropped the moment the trip let go. DESIGN §48.
+- **The record keeps WHY** (M43.0): `HeldEquipment::restartable` becomes a set
+  of `RestartBar`s; `restart_bars` adds M41's tubes-in-place check and is the one
+  verdict the release acts on. Byte-identical on all 38 plants.
+- **`NodeSnapshot::trip_stop`** (M43.1): `held` with `barred_by` while a trip
+  holds the equipment; `not_restarted` with `at_tick` and `barred_by` after the
+  last let go without handing it back, while the equipment stands where the
+  trip left it; absent otherwise. Reasons: `reset_restarts_nothing`,
+  `pressed_by_hand`, `tubes_burst_during_stop`, `tubes_burst` (only the last
+  lifts with new tubes).
+- **Demo `furnace_burst_during_stop.toml`** (39th file), key 4 on the furnace
+  screen: tubes burst on the trip's tick 75, new tubes at 80, the trip re-arms
+  itself at 128 and the heater stays dark, the panel, the furnace and the
+  message line saying why; a person relights it at 200. The older stories now
+  say "NOT RELIT … the emergency stop was pressed" after a reset.
+- Six gates, `tests/trip_stop_reference.rs`, plus the screen's fourth timeline.
+  Seven mutations, six caught; the new-stop clear is uncaught as predicted.
+- 32 plants byte-identical, 6 moved wire only (every plant whose trip fires;
+  `tank_level_fill_check_valve` was not predicted), 1 new; field cut out, all
+  byte-identical. Release property tests 223/223; the Godot binding did not
+  change.
+
 **M42 is CLOSED (2026-10-05): a burst during a stop makes its restart a
 person's — `docs/DEFERRED.md` E28's replaced-tubes clause struck (its last clause
 open).** The user's DECISION, on the question M41 left in E28: a burst while a

@@ -146,8 +146,8 @@ godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M42
-(2026-10-05)** — a burst during a stop makes its restart a person's.
+Work only on the current milestone unless asked. **Latest closed: M43
+(2026-10-05)** — the snapshot says why a stop did not restart (`trip_stop`).
 Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.

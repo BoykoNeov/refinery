@@ -19429,3 +19429,53 @@ burn-out pass now also narrows the trips' per-equipment record of the stop
 
 **Deferred.** E28 narrows to its last clause: a restart still asks no trip that
 does not hold the equipment.
+
+## 48. Why a stop did not restart, in the snapshot — the frontend gap M42 left (M43)
+
+Taken on the user's decision (2026-10-05), on a review finding after M42: "fix
+this, let the player have an indication or message or information". M42 made a
+burst during a stop keep the furnace dark for a person, new tubes or not; the
+engine knew it in a private record (`HeldEquipment`, §45) that was dropped at
+the very moment the trip let go. A player saw new tubes, a cleared trip and a
+dark furnace with nothing saying why — the same kind of gap as F2 and F3. The
+full write-up is ROADMAP M43.
+
+**Interfaces.**
+- `NodeSnapshot::trip_stop: Option<TripStop>`, skipped when absent:
+  `{"status":"held","barred_by":[…]}` while a trip holds the equipment;
+  `{"status":"not_restarted","at_tick":…,"barred_by":[…]}` once the last trip
+  let go without handing it back.
+- `RestartBar` (snake_case on the wire): `reset_restarts_nothing`,
+  `pressed_by_hand`, `tubes_burst_during_stop`, `tubes_burst`.
+- No command, no loader key. New demo `furnace_burst_during_stop.toml`.
+
+**Forks.**
+
+1. **One cause per reason, not one flag.** `HeldEquipment::restartable` becomes
+   `bars`, a set of the first three causes; `restart_bars` adds M41's question
+   of the tubes in place (`tubes_burst`). They are kept apart because a person
+   can lift only one of them, by fitting new tubes, and a screen should say
+   which. The refactor was its own commit, byte-identical on every plant.
+2. **One function makes the verdict.** `release_equipment` restarts only on an
+   empty `restart_bars`, and the snapshot publishes the same function's answer,
+   so what a frontend is told while a trip holds and what the release then does
+   cannot disagree. Gate 4 checks it over 43 restarts and a refused one.
+3. **The reason outlives the record.** The record is dropped when the last trip
+   lets go — exactly when the player needs the reason. So the release keeps it
+   (`Engine::not_restarted`), and a snapshot taken one tick after the release
+   says why on its own (gates 1 and 6), for a CLI or a dashboard as much as for
+   the Godot screen. The screen keeps no memory of its own.
+4. **`not_restarted` lasts while the equipment stands where the trip left it**:
+   a furnace at zero duty, a pump off, a valve at the trip's own position, and
+   no loop on it in AUTO. A person's restart ends it at the command (the
+   snapshot checks) and for good (the top of the next tick drops it), so cutting
+   the furnace by hand later does not bring the old reason back. The next stop
+   replaces it with `held`.
+5. **`at_tick` is the first tick that runs let go**: the tick whose trip pass
+   re-armed an `auto` trip, or the tick after a person's reset — a press's rule
+   (§43).
+6. **Absent, not `held` with nothing in it, when no trip has stopped it.**
+   Skipped when absent, so plants whose trips never fire keep their bytes.
+
+**Deferred.** Nothing new. E28's last clause (a restart asks no trip that does
+not hold the equipment) is unchanged.

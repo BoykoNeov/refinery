@@ -260,6 +260,74 @@ fn the_autoreset_timeline_tells_its_story() {
     assert_eq!(screen.loop_mode(), "manual");
 }
 
+/// `AUTO_BURST` (M43): the tubes burst on the trip's own tick, new tubes go in
+/// while the trip holds, the trip resets itself and the furnace stays dark —
+/// with `trip_stop` saying why on its own, which is what the screen draws — and
+/// a person's relight on a lower target ends it.
+#[test]
+fn the_burst_during_a_stop_timeline_tells_its_story() {
+    let mut screen = Screen::load("furnace_burst_during_stop.toml", "cool_feed", "hold_tank");
+    let snap = screen.snap();
+    assert_eq!(snap["trips"][0]["name"], "tube_skin_high");
+    assert_eq!(snap["controls"][0]["name"], "outlet_temperature");
+    // The scene's patch and new-tubes commands carry these ids.
+    let pipe = screen.session.edge_id("heated_line");
+    assert_eq!(pipe, 1, "heated_line moved: update PATCH_BURST");
+    assert_eq!(screen.heater, 1, "heater moved: update NEW_TUBES_BURST");
+    const PATCH_BURST: &str = r#"{"area":0.0,"cmd":"puncture_pipe","edge":1}"#;
+    const NEW_TUBES_BURST: &str = r#"{"cmd":"replace_tubes","node":1}"#;
+    let stop = |s: &Screen| s.heater()["trip_stop"].clone();
+
+    screen.run_to(74);
+    assert_eq!(stop(&screen), Value::Null);
+    screen.run_to(75);
+    assert_eq!(screen.trip(0), tripped(75));
+    assert_eq!(
+        screen.heater()["kind"]["tubes"]["state"],
+        serde_json::json!({"status": "failed", "at_tick": 75})
+    );
+    assert_eq!(
+        stop(&screen),
+        serde_json::json!({"status": "held", "barred_by": ["tubes_burst_during_stop", "tubes_burst"]})
+    );
+
+    // 80: patch and new tubes, the trip still holding.
+    screen.run_to(80);
+    assert_eq!(screen.send(PATCH_BURST), "null");
+    assert_eq!(screen.send(NEW_TUBES_BURST), "null");
+    assert_eq!(
+        stop(&screen),
+        serde_json::json!({"status": "held", "barred_by": ["tubes_burst_during_stop"]})
+    );
+
+    // 128: the trip resets itself; the furnace stays dark, and says why.
+    screen.run_to(127);
+    assert_eq!(screen.trip(0), tripped(75));
+    screen.run_to(128);
+    assert_eq!(screen.trip(0), armed());
+    assert_eq!(screen.duty_w(), 0.0);
+    assert_eq!(screen.loop_mode(), "manual");
+    let not_relit = serde_json::json!({"status": "not_restarted", "at_tick": 128, "barred_by": ["tubes_burst_during_stop"]});
+    assert_eq!(stop(&screen), not_relit);
+    screen.run_to(200);
+    assert_eq!(stop(&screen), not_relit);
+
+    // 200: a person relights it on 50 °C, and the coil stays under its trip.
+    assert_eq!(screen.send(SETPOINT_50), "null");
+    assert_eq!(screen.send(AUTO), "null");
+    assert_eq!(stop(&screen), Value::Null);
+    let skin_limit_k = screen.snap()["trips"][0]["limit"]["k"].as_f64().unwrap();
+    let mut hottest_k = f64::NEG_INFINITY;
+    while screen.session.tick_index() < 400 {
+        screen.run_to(screen.session.tick_index() + 1);
+        hottest_k = hottest_k.max(screen.coil_k());
+    }
+    assert!(hottest_k < skin_limit_k, "coil reached {hottest_k} K");
+    assert!(screen.duty_w() > 0.0);
+    assert_eq!(screen.trip(0), armed());
+    assert_eq!(stop(&screen), Value::Null);
+}
+
 /// `AUTO_BURNOUT`: the tubes burst by themselves, new tubes are refused on a
 /// coil still past its limit, and accepted once it has cooled.
 #[test]

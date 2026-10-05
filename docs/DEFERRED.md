@@ -175,6 +175,7 @@ time since M9.1 they were measured rather than re-asserted.
 | ~~F1~~ | **CLOSED by M27**, 2026-10-01, on the user's decision; the note is DESIGN §8's M27 correction. ~~Out-of-range ids in a `Command` are validated in `bridge`, not `core`; `core` still panics on one.~~ `Engine::apply` refuses one as `InvalidCommand`; the bridge keeps its guard for the `unknown_id` code. | §8, "The translation layer" | A second untrusted-input frontend, or an in-repo caller that can construct an out-of-range id. `core_panics_on_an_out_of_range_id` fires if `core` changes underneath. |
 | ~~F2~~ | **CLOSED by M40**, 2026-10-05, on the user's decision ("make it know"); the note is DESIGN §45. `TripSnapshot::watches` names the point — `{"node":…}`, `{"pipe":…}` or `{"coil":…}` — and `limit`'s tag names the variable; the furnace screen marks each trip on its own gauge. Always written, so the five trip plants' fingerprints moved, wire only (stripped, every snapshot is byte-identical). ~~**A frontend cannot tell what a trip watches** (M39). `TripSnapshot` carries a name, a direction, a limit and the reading, but not WHICH quantity — a coil, a furnace outlet, a flow, a tank level. So `demo/furnace.tscn`'s coil thermometer cannot mark `tube_skin_high`'s 100 °C beside the tubes' burst limit; its panel shows each trip's own reading against its own limit instead, which needs no source. Adding the source is a wire-format change; an optional field written only when present would keep every fingerprint (M38's `by_hand` precedent).~~ | ROADMAP M39, findings; DESIGN §45 | — |
 | ~~F3~~ | **CLOSED by M41**, 2026-10-05, on the user's decision ("yes, fix both"); the note is DESIGN §46. `ControlSnapshot::watches` names the point — `{"node":…}` or `{"pipe":…}` — and `setpoint`'s tag names the variable; the furnace screen finds its loop by it. Always written, so every loop plant's fingerprint moved, wire only (stripped, every snapshot is byte-identical). ~~**A frontend cannot tell what a LOOP watches** (M40). `ControlSnapshot` has a name, a setpoint and a measurement, but not the measurement point F2 gave the trips; the furnace screen knows its one loop by position. Adding it is F2's change on a second struct, and moves every loop plant's fingerprint the same way, wire only.~~ | ROADMAP M40, findings; DESIGN §46 | — |
+| ~~F4~~ | **CLOSED by M43**, 2026-10-05, on the user's decision ("fix this, let the player have an indication or message or information"), logged and struck together; the note is DESIGN §48. `NodeSnapshot::trip_stop` says `held` (with what bars a restart) while a trip holds the equipment and `not_restarted` (with the tick and the reasons) after the last let go without handing it back; the furnace screen draws it (key 4, `furnace_burst_during_stop.toml`). Six trip plants moved, wire only. ~~**A frontend cannot tell why a furnace stayed dark** (M42). A burst during a stop keeps the restart a person's, new tubes or not, but the reason was in a private record dropped when the trip let go: a player saw new tubes, a cleared trip and a dark furnace with nothing on screen to explain it.~~ | ROADMAP M42 review; DESIGN §48 | — |
 
 ## Reading the ledger
 
@@ -627,3 +628,13 @@ time since M9.1 they were measured rather than re-asserted.
   cleared for good by a hand-pressed stop. A burst while a trip holds the
   furnace is a third way to clear it, written where the burst happens. No plant
   moved. E28 narrows to its last clause; nothing is past its trigger.
+
+- **A rule the player cannot see is half a rule (M43, 2026-10-05).** M42's
+  answer was right and invisible: the engine knew why the furnace stayed dark,
+  in a record it dropped at the very moment the trip let go. The fix was to
+  publish the verdict from the one function that makes it, and to keep the
+  reason past the release, while the equipment still stands where the trip left
+  it. Second lesson: the moved-plant prediction named five plants by searching
+  file names for "trip" and missed a sixth whose file name does not say it has
+  one. Predict from what the plants declare, not what they are called. F4 was
+  logged and struck in one go; nothing is past its trigger.

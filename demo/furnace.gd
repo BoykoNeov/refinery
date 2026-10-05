@@ -12,6 +12,10 @@
 #   autoreset scenarios/furnace_coil_trip_autoreset.toml (M40) — the trip plant
 #            with a tube trip that resets itself and relights the furnace, so it
 #            cuts and relights on its own until the target is lowered.
+#   burst    scenarios/furnace_burst_during_stop.toml (M43) — the self-resetting
+#            trip on tubes that burst on the trip's own tick: the trip resets, the
+#            furnace stays dark, and the screen says why (the snapshot's
+#            `trip_stop`).
 #
 # Same rule as plant.gd, and the same reason: this script computes nothing
 # physical. Every number it draws is a snapshot field, every marker on a gauge is
@@ -60,6 +64,15 @@ const PLANTS := {
 		"destination": "hold_tank",
 		"ticks_per_frame": 1,
 	},
+	"burst":
+	{
+		"scenario": "res://scenarios/furnace_burst_during_stop.toml",
+		"title": "Tubes burst during a trip: who relights?",
+		"feed": "cool_feed",
+		"outlet_pipe": "heated_line",
+		"destination": "hold_tank",
+		"ticks_per_frame": 1,
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks. Each tick is one the
@@ -103,14 +116,27 @@ const AUTO_AUTORESET := {
 	1000: ["reset"],
 	1100: ["quit"],
 }
-const TIMELINES := {"trip": AUTO_TRIP, "burnout": AUTO_BURNOUT, "autoreset": AUTO_AUTORESET}
+## burst (M43): the tubes burst on tick 75, the tick the trip cuts the fuel. At
+## 80 the hole is patched and new tubes fitted while the trip still holds. The
+## trip resets itself at 128 and the furnace stays dark: a burst during a stop
+## makes its restart a person's (DESIGN §47), and the panel says so. At 200 a
+## person relights it on a 50 °C target, which keeps the coil under the trip.
+const AUTO_BURST := {
+	80: ["patch", "new_tubes"],
+	200: ["setpoint_50", "auto"],
+	400: ["quit"],
+}
+const TIMELINES := {
+	"trip": AUTO_TRIP, "burnout": AUTO_BURNOUT, "autoreset": AUTO_AUTORESET, "burst": AUTO_BURST
+}
 const AUTO_SHOT_TICKS := {
 	"trip": [74, 75, 238, 900, 901, 975],
 	"burnout": [1144, 1145, 1300, 2500],
 	"autoreset": [75, 128, 214, 300, 901, 1001],
+	"burst": [75, 80, 128, 200, 260],
 }
 ## Print a `t=` line every this many ticks in a recorded run.
-const PRINT_EVERY := {"trip": 25, "burnout": 100, "autoreset": 25}
+const PRINT_EVERY := {"trip": 25, "burnout": 100, "autoreset": 25, "burst": 25}
 
 ## Step sizes for the keys.
 const DUTY_STEP_W := 2.5e5
@@ -135,9 +161,10 @@ var shooting := false
 var ticks_per_frame := 1
 var message := ""
 var message_bad := false
-## Last-seen trip and tube states, to print an event line when one changes.
+## Last-seen trip, tube and stop states, to print an event line when one changes.
 var seen_trip_states: Array = []
 var seen_tubes := ""
+var seen_stop := ""
 
 
 func _ready() -> void:
@@ -149,7 +176,7 @@ func _ready() -> void:
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (trip | burnout | autoreset)" % plant_key)
+		_halt("no plant '%s' (trip | burnout | autoreset | burst)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -161,6 +188,7 @@ func _load(key: String) -> void:
 	snapshot = {}
 	seen_trip_states = []
 	seen_tubes = ""
+	seen_stop = ""
 	var plant: Dictionary = PLANTS[key]
 	ticks_per_frame = plant["ticks_per_frame"]
 
@@ -240,6 +268,26 @@ func _report_events(tick: int) -> void:
 		print("furnace: t=%d  tubes -> %s" % [tick, tubes])
 	seen_tubes = tubes
 
+	# The trips' account of the heater's stop (M43). When they let go without
+	# relighting it, the message line says so in the engine's reasons: it is the
+	# moment a player would otherwise be left guessing.
+	var reasons := _bar_lines()
+	var stop_line := _stop_label()
+	if not reasons.is_empty():
+		stop_line += " (%s)" % ", ".join(reasons)
+	if seen_stop != "" and stop_line != seen_stop:
+		print("furnace: t=%d  heater stop -> %s" % [tick, stop_line])
+		var stop = _trip_stop()
+		if stop != null and stop["status"] == "not_restarted":
+			_say(
+				(
+					"t=%d: the trips let go and the heater was NOT relit: %s. Relight it by hand: A (loop AUTO) or Up (fuel)"
+					% [tick, ", ".join(reasons)]
+				),
+				true
+			)
+	seen_stop = stop_line
+
 
 ## Ticking holds until the frame showing `tick` has been drawn and saved.
 func _shoot(tick: int) -> void:
@@ -264,6 +312,8 @@ func _input(event: InputEvent) -> void:
 			_load("burnout")
 		KEY_3:
 			_load("autoreset")
+		KEY_4:
+			_load("burst")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -426,6 +476,40 @@ func _tubes_failed() -> bool:
 	return _heater_kind()["tubes"]["state"]["status"] == "failed"
 
 
+## The trips' account of the heater's stop (M43, the snapshot's `trip_stop`):
+## null when they have nothing to say — never stopped, handed back, or relit.
+func _trip_stop() -> Variant:
+	return _node(heater_id).get("trip_stop")
+
+
+## The engine's reasons, in words. Only `tubes_burst` goes away by itself, when
+## new tubes are fitted.
+const BAR_TEXT := {
+	"reset_restarts_nothing": "a trip that held it restarts nothing",
+	"pressed_by_hand": "the emergency stop was pressed",
+	"tubes_burst_during_stop": "the tubes burst during the stop",
+	"tubes_burst": "the tubes are burst: N fits new ones",
+}
+
+
+func _stop_label() -> String:
+	var stop = _trip_stop()
+	if stop == null:
+		return "none"
+	if stop["status"] == "held":
+		return "HELD by a trip"
+	return "NOT RELIT at t=%d" % int(stop["at_tick"])
+
+
+func _bar_lines() -> PackedStringArray:
+	var lines := PackedStringArray()
+	var stop = _trip_stop()
+	if stop != null:
+		for bar in stop["barred_by"]:
+			lines.append(BAR_TEXT.get(bar, bar))
+	return lines
+
+
 func _tubes_label() -> String:
 	var state: Dictionary = _heater_kind()["tubes"]["state"]
 	if state["status"] == "failed":
@@ -532,10 +616,12 @@ func _reset_label(trip: Dictionary) -> String:
 	var reset = trip.get("reset")
 	if reset == null:
 		return "reset by hand, restarts nothing"
+	# A restart is the trips' to give only when nothing bars it (M43): the
+	# heater's stop line in the FURNACE block says whether anything does.
 	if reset["mode"] == "manual_restart":
-		return "reset by hand, restarts the furnace"
+		return "reset by hand, restarts unless barred"
 	var under := "<" if trip["direction"] == "high" else ">"
-	return "resets itself %s %s and restarts" % [under, _value_text(reset["reset_at"])]
+	return "resets itself %s %s, restarts unless barred" % [under, _value_text(reset["reset_at"])]
 
 
 ## The level fraction of a tank destination — plant.gd's rule, from the slate.
@@ -634,7 +720,7 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 624),
-		"P patch the hole   N new tubes   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset",
+		"P patch   N new tubes   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset   4 burst in a stop",
 		DIM
 	)
 	if halted != "":
@@ -713,6 +799,14 @@ func _draw_furnace() -> void:
 		draw_polyline(points, coil_color, 5.0)
 	if fire_w > 0.0:
 		_text(below + Vector2(120, 68), "tube fire %.1f MW" % (fire_w / 1.0e6), FIRE)
+	# What the trips will do, or did, with the heater (M43): a dark furnace that
+	# nothing will relight says so under itself.
+	var stop = _trip_stop()
+	if stop != null and not stop["barred_by"].is_empty():
+		if stop["status"] == "not_restarted":
+			_text(below + Vector2(0, 92), "DARK: WAITS FOR A PERSON (A or Up relights)", BAD, 16)
+		else:
+			_text(below + Vector2(0, 92), "a reset will NOT relight it", TRIP_MARK, 16)
 
 
 func _coil_color() -> Color:
@@ -738,7 +832,15 @@ func _draw_gauge() -> void:
 		_coil_color()
 	)
 	draw_rect(rect, SHELL, false, 2.0)
-	_marker(rect, low, high, _failure_k(), "burst %s" % _c(_failure_k()), BAD)
+	# The burst label moves up a line when a tube trip's label would print over
+	# it (M43's plant fails its tubes 0.1 K above its 100 °C trip).
+	var burst_dy := 0.0
+	for trip in _trips():
+		if _trip_gauge(trip) == "coil":
+			var gap := (float(trip["limit"]["k"]) - _failure_k()) / (high - low) * rect.size.y
+			if absf(gap) < 16.0:
+				burst_dy = -16.0
+	_marker(rect, low, high, _failure_k(), "burst %s" % _c(_failure_k()), BAD, burst_dy)
 	if _flame_k() <= high + 0.5:
 		_marker(rect, low, high, _flame_k(), "flame %s" % _c(_flame_k()), FLAME)
 	# Every trip that watches the tubes, on the tubes' own scale (M40).
@@ -759,10 +861,12 @@ func _draw_gauge() -> void:
 	_text(rect.position + Vector2(-6, rect.size.y + 24), _c(_coil_k()), INK)
 
 
-func _marker(rect: Rect2, low: float, high: float, kelvin: float, label: String, color: Color) -> void:
+func _marker(
+	rect: Rect2, low: float, high: float, kelvin: float, label: String, color: Color, label_dy: float = 0.0
+) -> void:
 	var y := rect.end.y - rect.size.y * clampf((kelvin - low) / (high - low), 0.0, 1.0)
 	draw_line(Vector2(rect.position.x - 4, y), Vector2(rect.end.x + 4, y), color, 2.0)
-	_text(Vector2(rect.end.x + 8, y + 5), label, color, 14)
+	_text(Vector2(rect.end.x + 8, y + 5 + label_dy), label, color, 14)
 
 
 ## The leak, sized by the reported mass flow. Orange when the tubes have burst
@@ -816,6 +920,23 @@ func _draw_panel() -> void:
 	_text(Vector2(PANEL_X, y), "tube fire      %6.2f MW" % (_optional_w("tube_fire_w") / 1.0e6), FIRE if _optional_w("tube_fire_w") > 0.0 else INK)
 	y += 22
 	_text(Vector2(PANEL_X, y), "tubes          %s" % _tubes_label(), BAD if _tubes_failed() else GOOD)
+	# The trips' stop (M43): whether they will relight it, and if not, why.
+	y += 22
+	var stop = _trip_stop()
+	var reasons := _bar_lines()
+	var stop_color := DIM
+	if stop != null:
+		stop_color = TRIP_MARK if reasons.is_empty() else BAD
+	_text(Vector2(PANEL_X, y), "trip stop      %s" % _stop_label(), stop_color)
+	if stop != null and reasons.is_empty():
+		y += 18
+		_text(Vector2(PANEL_X + 12, y), "relit when the trips let go", DIM, 14)
+	elif not reasons.is_empty():
+		y += 18
+		_text(Vector2(PANEL_X + 12, y), "a person relights it, because:", BAD, 14)
+		for reason in reasons:
+			y += 18
+			_text(Vector2(PANEL_X + 12, y), "- %s" % reason, BAD, 14)
 
 	y += 40
 	_text(Vector2(PANEL_X, y), "TRIPS", DIM)
