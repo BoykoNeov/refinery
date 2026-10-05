@@ -131,9 +131,11 @@ struct HeldEquipment {
     /// regulating writers of one actuator are refused at load (E4).
     auto_loop: Option<LoopId>,
     /// Every trip that has held it during this stop allows a restart
-    /// (`TripReset::restarts`), and none was pressed by hand. Cleared for good by
-    /// the first that does not, so one `Manual` trip or emergency stop keeps the
-    /// equipment for a person to restart.
+    /// (`TripReset::restarts`), none was pressed by hand, and — on a furnace —
+    /// its tubes did not burst while it was held (M42, docs/DESIGN.md §47).
+    /// Cleared for good by the first that fails, so one `Manual` trip, one
+    /// emergency stop or one burst keeps the equipment for a person to restart;
+    /// new tubes do not set it back.
     restartable: bool,
 }
 
@@ -2121,6 +2123,8 @@ impl Engine {
             // person — the refusal is of the restart, not of the reset. Here,
             // not in `restart_equipment`'s furnace arm, because a furnace under
             // an AUTO loop is relit through the transfer and never reaches it.
+            // This asks the tubes IN PLACE; a burst during the stop, on tubes
+            // since replaced, is in `restartable` (M42, §47).
             if held.restartable && !self.tubes_forbid_restart(node) {
                 self.restart_equipment(node, held)?;
             }
@@ -2244,7 +2248,9 @@ impl Engine {
     /// Unlike a trip, nothing is then held: a burst tube is damage, and patching
     /// the hole (`PuncturePipe` at zero) is the player's to do. Failed tubes
     /// stay failed until `Command::ReplaceTubes`, so a hole opened again by
-    /// hand on them burns again.
+    /// hand on them burns again. The one thing a burst does to a trip's hold
+    /// is narrow it: a furnace a trip holds dark is no longer restartable
+    /// (M42, §47).
     ///
     /// Measure then write, like the trips: every furnace is checked before any
     /// hole is opened, though no burn-out reads what another writes.
@@ -2269,6 +2275,13 @@ impl Engine {
             };
             if let NodeKind::Furnace { tubes, .. } = &mut self.graph.node_mut(nid).kind {
                 tubes.state = TubeState::Failed { at_tick: this_tick };
+            }
+            // A burst during a stop makes its restart a person's (M42,
+            // docs/DESIGN.md §47). On the stop's record, so new tubes fitted
+            // before the trip lets go do not undo it, and the next stop starts
+            // clean. Only a furnace a trip holds: a lit one has no stop to mark.
+            if let Some(held) = self.held_equipment.get_mut(&nid) {
+                held.restartable = false;
             }
         }
         Ok(())
