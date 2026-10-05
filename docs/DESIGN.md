@@ -19244,3 +19244,87 @@ runs, is ROADMAP M39.
   the gap is not a need, so it stays the user's decision.
 - §43's last bullet, "a press on the Godot screen", is met: the E key sends
   `manual_trip`.
+
+## 45. What a trip watches, and a reset that restarts — ledger rows F2 and E15's restart clause (M40)
+
+Taken on the user's decision (2026-10-05), from M39's two findings: "add the
+option to autoreset, when and where applicable" and "make it know" what a trip
+watches. Asked which of two features "auto-reset" meant — a reset that restarts
+the equipment, or a trip that clears itself — they answered: "make like in a
+real plant as default". So the default is unchanged and both are opt-in per
+trip. The full write-up, with the recorded runs, is ROADMAP M40.
+
+**Interfaces.**
+- `TripSnapshot::watches: MeasurementPoint` — always written. `MeasurementPoint`
+  gains `Serialize`/`Deserialize`, snake-case, externally tagged: `{"node":3}`,
+  `{"pipe":5}`, `{"coil":2}`, the id indexing the snapshot's own `nodes` and
+  `edges`. The variable is not repeated: it is already `limit`'s tag.
+- `graph::TripReset { Manual (default), ManualRestart, Auto { reset_at } }` on
+  `Trip::reset`; published as `TripSnapshot::reset`, tagged `mode`, skipped when
+  `Manual`: `{"mode":"manual_restart"}`, `{"mode":"auto","reset_at":{…}}`.
+- Loader keys on `[[trips]]`: `reset = "manual" | "manual_restart" | "auto"`
+  (absent is `"manual"`), and on `auto` one required `reset_limit_m`,
+  `reset_limit_bar`, `reset_limit_c` or `reset_limit_kg_per_s`.
+
+**Forks.**
+
+1. **The default is the real-plant rule, and it is the old behaviour.** IEC 61511
+   asks for a person to reset a safety function, and §26 fork 4 already made the
+   reset restart nothing. Absent `reset` is `"manual"`, so no file changed meaning
+   and no trip plant's bytes moved (the `reset` key is skipped when manual).
+2. **`watches` is always written, so five plants' fingerprints moved, wire only.**
+   F2 suggested an optional field to keep fingerprints; a field every trip has
+   cannot be optional honestly. Shown wire-only instead: every snapshot of the
+   five moved plants, 6 000 ticks on both fidelities, is byte-identical to the
+   previous build's once `"watches":{…},` is deleted.
+3. **A restart hands back the equipment as it stood before the STOP, not before
+   one trip.** The record is per EQUIPMENT (`Engine::held_equipment`, a
+   `BTreeMap`), written when the first trip latches on it and dropped when the
+   last lets go. Per trip it would be wrong: `furnace_coil_trip` has two trips on
+   one furnace, and the second to latch would record the dark furnace the first
+   left. Gate 7 is that case (a tank trip latching on tick 94, 19 ticks after the tube trip),
+   and mutation 0 (record on every latch) fails it.
+4. **A loop that was in AUTO takes the equipment back through the bumpless
+   transfer**, seeded at the safe state, and the equipment is not written. So a
+   relit furnace ramps from zero instead of jumping to the firing that tripped it,
+   and a `manual_restart` reset is byte-for-byte a person's reset followed by a
+   person's AUTO (gate 2). The transfer is `SetControllerMode`'s own, factored out
+   as `auto_transfer_seed` + `transfer_to_auto`. With no such loop the pump, valve
+   opening or duty is written back exactly (gates 4, 5). A loop with nothing to
+   measure at the restart (a cooler outlet a shut valve starved) stays in MANUAL
+   and its equipment is written back instead — **ungated**, no fixture reaches it.
+5. **A restart needs every holder's say.** `restartable` starts true and is ANDed
+   with each latching trip's `TripReset::restarts()`, and with `false` for a press.
+   So one `manual` trip, or an emergency stop, keeps the equipment for a person,
+   even after every trip has let go (gates 6, 8). "Where applicable" is this rule:
+   a restart is applicable only where every protection that stopped the equipment
+   agreed to it in the file.
+6. **A self-reset needs a deadband, and it has no default.** `reset_at` must be
+   strictly on the safe side of the limit, by `TripDirection::reached` — the
+   comparison that fires the trip, so there is one owner of it. At its own limit a
+   trip would cut and relight on alternate ticks. Re-arming compares the trip
+   pass's start-of-tick reading, so a self-reset on tick N is byte-for-byte a
+   `manual_restart` reset sent between N − 1 and N (gate 3).
+7. **A pressed trip never resets itself**, whatever its mode: the match arm is
+   `Tripped { by_hand: false, .. }`. An emergency stop waits for a person.
+8. **A person may reset an `auto` trip early**, under `ResetTrip`'s rule (the
+   condition must not hold — the limit, not the reset point), with the same
+   restart. A reset point is when the trip may re-arm ITSELF, not a second
+   refusal on a person.
+9. **Pass 3's order is not load-bearing.** Holds are recorded before releases and
+   both before the writes, but pass 2 has already marked this pass's latches
+   `Tripped`, and `release_equipment` asks `latched_trip_on`, so the swap is an
+   equivalent mutation (mutation 7, uncaught as predicted).
+
+**Corrections from building it.**
+- The relight's first tick reads 0 MW with the loop in AUTO: the transfer's
+  promise is that the first update returns the position it took over from. The
+  furnace-screen gate first asserted a nonzero duty on that tick and was wrong.
+- The demo cannot settle, and that is its point: the fouled coil needs 117.3 °C
+  for a 60 °C outlet (§39), so the self-resetting trip cuts it every 139 ticks.
+  A lower target (50 °C) stops the cycle.
+
+**Deferred.** A trip delay, voting, a bypass and a first-out indication stay in
+E15. An `auto` trip relights a furnace whose tubes have burst if its own reading
+clears (nothing ties the restart to `TubeState`): new row E28. A loop's faceplate
+does not say what it watches either: new row F3.

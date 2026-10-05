@@ -7473,3 +7473,112 @@ check, not a derivation. The note is DESIGN §44.
 - **The screen draws the last solved tick.** A command's effect shows on the next
   tick's snapshot, so the 1 300 screenshot still shows the fire it has just put
   out — honest, because the solve that would show otherwise has not run.
+
+## M40 — what a trip watches, and a reset that restarts: ledger rows F2 and E15's restart clause; opened on a decision
+
+M39 closed with two findings shown on its screen: a reset does not relight the
+furnace, and the screen cannot tell what a trip watches. The user's decision
+(2026-10-05): "add the option to autoreset, when and where applicable" and "make
+it know". Told that "auto-reset" could mean a reset that restarts the equipment
+or a trip that clears itself, and that real plants make a person reset, they
+answered "make like in a real plant as default". So the default stays a person's
+reset that restarts nothing, and both other behaviours are opt-in per trip. Two
+commits; the note is DESIGN §45.
+
+### M40.0 — `TripSnapshot::watches` — **LANDED** 2026-10-05
+
+Every trip's snapshot names its measurement point in the file's own form, the id
+for the name: `{"node":3}`, `{"pipe":5}`, `{"coil":2}`. With `limit`'s variable
+tag that says which gauge a trip belongs on. The furnace screen now marks tube
+trips on the coil thermometer, outlet trips under the outlet reading, and names
+what each trip watches on the panel. Gated in
+`crates/scenarios/tests/trip_watches.rs` (a coil, a node and a pipe, each on a
+shipped plant). **Five plants moved, wire only**: `furnace_coil_trip`,
+`furnace_low_flow_trip`, `tank_level_fill_check_valve`, `tank_overfill_trip`,
+`tank_overheat_trip`, on both fidelities; with `"watches":{…},` deleted, all
+6 000 snapshots of each are byte-identical to the previous build's.
+
+### M40.1 — `reset = "manual" | "manual_restart" | "auto"` — **LANDED** 2026-10-05, and M40 is CLOSED
+
+- `manual` (absent key): a person resets it and nothing restarts — every trip
+  before M40.
+- `manual_restart`: a person resets it and the equipment comes back.
+- `auto`: it re-arms itself on the first trip pass whose reading is strictly past
+  its required `reset_limit_*` on the safe side, and the equipment comes back.
+
+"Comes back" means as it stood before the stop: a loop that was in AUTO returns
+to AUTO through the bumpless transfer (the relight ramps from zero); otherwise
+the pump, valve opening or duty is written back. It happens only when every trip
+that held the equipment allows it and none was pressed by hand. The snapshot
+publishes `reset` (skipped when manual); the screen shows it per trip and draws
+an `auto` trip's reset point on the coil thermometer.
+
+**Demo `scenarios/furnace_coil_trip_autoreset.toml`** (the thirty-eighth file):
+M35's fouled heater, its tube trip `auto` at 80 °C. It is `furnace_coil_trip` to
+the bit until tick 75, then cuts and relights by itself every 139 ticks — 43
+trips in 6 000, re-arming 53 ticks after each, the outlet never past 55.52 °C —
+on both fidelities. The coil needs 117.3 °C for the 60 °C target, so it cannot
+settle: the nuisance-trip cycle a manual reset exists to stop. Key 3 on the
+furnace screen (`--plant=autoreset`).
+
+**Gates.** `crates/scenarios/tests/trip_reset_reference.rs`, eleven: the default
+restarts nothing; `manual_restart` is byte-for-byte reset + a person's AUTO for
+200 ticks; `auto` re-arms on tick 128 and not 127, byte-for-byte a
+`manual_restart` reset sent after 127; a hand-fired 3 MW furnace gets exactly
+3 MW back; a pump and a valve come back as they were; a press never restarts;
+two trips on one furnace restart it only when the last lets go, and as before
+the FIRST (a tank trip latching on tick 94); one manual holder keeps it stopped;
+seven loader refusals; the wire form; the demo's own numbers. The screen's
+timeline is gated in `crates/godot-ext/tests/furnace_screen.rs`
+(`the_autoreset_timeline_tells_its_story`).
+
+**Mutations**, eleven, run only against the reset gates: ten caught. Uncaught:
+pass 3's order (releases before latches), predicted and equivalent — pass 2 has
+already marked this pass's latches tripped (DESIGN §45 fork 9). The mutation
+runner first restored files with their old timestamps, so Cargo reused a mutated
+build; caught by the clean suite failing afterwards, fixed, and every mutation
+re-run.
+
+**Corpus.** 37 earlier plants: the five above moved (M40.0, wire only), 32
+byte-identical; M40.1 moved none (each trip plant byte-identical to M40.0's
+output); one new. Release property tests 223/223. Godot feature build and
+clippy clean.
+
+#### The observation
+
+```
+godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto --plant=autoreset
+```
+
+Abridged (the `flow`, `leak`, `tubes`, `fire` columns cut):
+
+```
+furnace: loaded res://scenarios/furnace_coil_trip_autoreset.toml
+furnace: t=75  trip tube_skin_high -> TRIPPED at t=75
+t=  125  duty= 0.00 MW  coil=  80.48 C  outlet= 50.52 C  ...  loop=manual  tube_skin_high=TRIPPED at t=75  outlet_high=armed
+furnace: t=128  trip tube_skin_high -> armed
+t=  150  duty= 0.70 MW  coil=  77.00 C  outlet= 49.57 C  ...  loop=auto  tube_skin_high=armed  outlet_high=armed
+furnace: t=214  trip tube_skin_high -> TRIPPED at t=214
+furnace: t=267  trip tube_skin_high -> armed
+furnace: t=300  outlet_temperature setpoint to 50.0 C  {"cmd":"set_setpoint","loop_id":0,"value":{"k":323.15,"variable":"temperature"}}
+t=  900  duty= 0.62 MW  coil=  78.51 C  outlet= 49.97 C  ...  loop=auto  tube_skin_high=armed  outlet_high=armed
+furnace: t=900  press tube_skin_high  {"cmd":"manual_trip","trip_id":0}
+furnace: t=901  trip tube_skin_high -> TRIPPED at t=901 (by hand)
+t= 1000  duty= 0.00 MW  coil=  57.69 C  outlet= 44.60 C  ...  loop=manual  tube_skin_high=TRIPPED at t=901 (by hand)  outlet_high=TRIPPED at t=901 (by hand)
+furnace: t=1000  reset tube_skin_high  {"cmd":"reset_trip","trip_id":0}
+t= 1100  duty= 0.00 MW  coil=  48.13 C  outlet= 42.11 C  ...  loop=manual  tube_skin_high=armed  outlet_high=armed
+```
+
+No command is sent at 128 or 267: the trip re-arms and hands the loop back by
+itself. On 50 °C the coil holds near 78.5 °C, under both its limit and its reset
+point. At 1 000 the coil has been under the 80 °C reset point for all 100 ticks since the press, and the pressed trip
+is still latched; the person's reset leaves the furnace dark.
+
+#### Findings — for the user's decision, none built
+
+- **An `auto` trip relights a furnace whose tubes have burst**, if its own reading
+  clears: nothing ties a restart to `TubeState`. New row E28.
+- **A loop's faceplate does not say what it watches either** (`ControlSnapshot`
+  has no measurement point). The screen knows its one loop by position. New row F3.
+- **A loop with nothing to measure at the restart** stays in MANUAL and its
+  equipment is written back. Built, not gated: no fixture reaches it.

@@ -12,6 +12,28 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M40 is CLOSED (2026-10-05): what a trip watches, and a reset that restarts —
+`docs/DEFERRED.md` F2 struck, E15's restart clause struck, new rows E28 and F3.**
+The user's DECISION, on M39's two findings: "add the option to autoreset, when and
+where applicable" and "make it know"; then, told the two meanings of auto-reset
+and the real-plant rule, "make like in a real plant as default". DESIGN §45.
+- **`TripSnapshot::watches`** (M40.0): `{"node":…}`, `{"pipe":…}` or
+  `{"coil":…}`, always written. The five trip plants moved their fingerprints on
+  both fidelities, wire only: with the field deleted every snapshot is
+  byte-identical. The furnace screen marks each trip on the gauge it watches.
+- **`reset = "manual" | "manual_restart" | "auto"`** (M40.1). Absent is
+  `manual`, the real-plant rule and the old behaviour: a person resets, nothing
+  restarts. `auto` re-arms past a required `reset_limit_*` strictly on the safe
+  side. A restart hands the equipment back as before the STOP (a per-equipment
+  record): an AUTO loop through the bumpless transfer, else the old pump, opening
+  or duty — only if every trip that held it allows it and none was pressed.
+- **Demo `furnace_coil_trip_autoreset.toml`** (38th file): cuts and relights every
+  139 ticks, 43 trips in 6 000, on both fidelities; the fouled coil cannot settle
+  on its 60 °C target. Key 3 on the furnace screen, its timeline gated.
+- Eleven gates, `tests/trip_reset_reference.rs`; eleven mutations, ten caught,
+  pass 3's order equivalent as predicted. M40.1 moved no plant; release property
+  tests 223/223; Godot feature build and clippy clean.
+
 **M39 is CLOSED (2026-10-05): the furnace screen — a Godot scene for M34–M38.**
 The user's DECISION, from four directions offered with nothing past its trigger:
 the recommendation. No engine, loader, binding or scenario change. ROADMAP M39;

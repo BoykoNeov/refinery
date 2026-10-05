@@ -146,8 +146,8 @@ godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M39
-(2026-10-05)** — the furnace screen: a Godot scene for the furnace milestones.
+Work only on the current milestone unless asked. **Latest closed: M40
+(2026-10-05)** — a trip says what it watches; its reset can restart the plant.
 Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
