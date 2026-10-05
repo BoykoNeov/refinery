@@ -10,7 +10,7 @@ use crate::error::SimError;
 use crate::graph::{
     Actuator, ActuatorLimit, ControlAction, ControlLoop, ControlMode, ControlledValue, LeakRole,
     LoopId, MeasuredVariable, MeasurementPoint, NodeId, NodeKind, PlantGraph, SetpointRange,
-    TripAction, TripId, TripState, TubeState,
+    TripAction, TripId, TripReset, TripState, TubeState,
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
@@ -113,7 +113,42 @@ pub struct Engine {
     /// counter-precedent — it lives in `NodeStates` because the sweep is the
     /// only place its inputs meet, and here the sweep is not.
     last_cavitation: std::collections::BTreeMap<NodeId, CavitationSnapshot>,
+    /// What the trips have taken from each piece of equipment they hold (M40,
+    /// docs/DESIGN.md §45): written when the FIRST trip latches on it, read and
+    /// dropped when the LAST lets go. Keyed per equipment, not per trip, because
+    /// two trips can cut one furnace, and the second to latch would otherwise
+    /// remember the safe state the first wrote and "restart" it dark.
+    held_equipment: std::collections::BTreeMap<NodeId, HeldEquipment>,
 }
+
+/// One piece of equipment as it stood before the trips stopped it (M40,
+/// docs/DESIGN.md §45).
+#[derive(Debug, Clone, Copy)]
+struct HeldEquipment {
+    /// Its own state before the first trip wrote its safe state.
+    before: EquipmentBefore,
+    /// The loop that was in AUTO on it then, if any. One at most: two
+    /// regulating writers of one actuator are refused at load (E4).
+    auto_loop: Option<LoopId>,
+    /// Every trip that has held it during this stop allows a restart
+    /// (`TripReset::restarts`), and none was pressed by hand. Cleared for good by
+    /// the first that does not, so one `Manual` trip or emergency stop keeps the
+    /// equipment for a person to restart.
+    restartable: bool,
+}
+
+/// A trip-stoppable piece of equipment's own state, one variant per
+/// `TripAction`.
+#[derive(Debug, Clone, Copy)]
+enum EquipmentBefore {
+    Pump { on: bool },
+    Valve { opening: f64 },
+    Furnace { duty: Watt },
+}
+
+/// What a MANUAL→AUTO transfer seeds a loop's memory from: the measurement
+/// standing now, the loop's setpoint and action, and the actuator's position.
+type AutoSeed = (ControlledValue, ControlledValue, ControlAction, f64);
 
 impl Engine {
     #[allow(clippy::too_many_arguments)] // one argument per fidelity seam; see `[fidelity]`
@@ -142,6 +177,7 @@ impl Engine {
             last_solution: None,
             node_states: energy::NodeStates::default(),
             last_cavitation: std::collections::BTreeMap::new(),
+            held_equipment: std::collections::BTreeMap::new(),
         }
     }
 
@@ -454,75 +490,35 @@ impl Engine {
                     // A pipe's flow is the same state before the first tick (M20,
                     // §24 fork 2), and the message names the missing quantity by
                     // variable rather than calling every absence a temperature.
-                    let measurement = self
-                        .graph
-                        .measure(
-                            &self.slate,
-                            &self.node_states,
-                            self.last_solution.as_ref(),
-                            control.measurement_point,
-                            control.setpoint.variable(),
-                        )?
-                        .ok_or_else(|| {
-                            SimError::InvalidCommand(format!(
-                                "control loop '{}' has no measurement to transfer against: \
-                                 '{}' has no resolved {} yet (before the first tick){}. A \
-                                 bumpless transfer back-calculates the loop's memory from the \
-                                 error standing NOW; step the plant first, or declare the loop \
-                                 `mode = \"auto\"` in the file (docs/DESIGN.md §23 fork 4, §24 \
-                                 fork 2)",
-                                control.name,
-                                self.graph.point_name(control.measurement_point),
-                                control.setpoint.variable().noun(),
-                                // Only an outlet can go absent AFTER the first
-                                // tick: a flow of zero is still a measurement.
-                                if control.setpoint.variable() == MeasuredVariable::Temperature {
-                                    " or none this tick (no flow through it)"
-                                } else {
-                                    ""
-                                }
-                            ))
-                        })?;
-                    // The SAME reader pass 1 uses (docs/DESIGN.md §21, sites 3
-                    // and 6): a transfer that seeded from one notion of position
-                    // while the tick ran on another would step the actuator. On a
-                    // cascade primary this is its secondary's setpoint, as a
-                    // fraction of the primary's range (§29 fork 2).
-                    let position = self
-                        .graph
-                        .actuator_position(
-                            control.actuator,
-                            control.max_duty,
-                            control.setpoint_range,
-                        )
-                        .map_err(|e| {
-                            SimError::InvalidCommand(format!(
-                                "control loop '{}' has no position to transfer from: {e}",
-                                control.name
-                            ))
-                        })?;
-                    Some((measurement, control.setpoint, control.action, position))
+                    let seed = self.auto_transfer_seed(loop_id)?;
+                    Some(seed.ok_or_else(|| {
+                        SimError::InvalidCommand(format!(
+                            "control loop '{}' has no measurement to transfer against:                              '{}' has no resolved {} yet (before the first tick){}. A                              bumpless transfer back-calculates the loop's memory from the                              error standing NOW; step the plant first, or declare the loop                              `mode = \"auto\"` in the file (docs/DESIGN.md §23 fork 4, §24                              fork 2)",
+                            control.name,
+                            self.graph.point_name(control.measurement_point),
+                            control.setpoint.variable().noun(),
+                            // Only an outlet can go absent AFTER the first
+                            // tick: a flow of zero is still a measurement.
+                            if control.setpoint.variable() == MeasuredVariable::Temperature {
+                                " or none this tick (no flow through it)"
+                            } else {
+                                ""
+                            }
+                        ))
+                    })?)
                 } else {
                     None
                 };
-                let control = self
-                    .graph
-                    .control_mut(loop_id)
-                    .ok_or_else(|| unknown_loop(loop_id))?;
-                if let Some((measurement, setpoint, action, position)) = seed {
-                    // The loop's own action, the one pass 2 will run with: a seed
-                    // taken against the other sign steps the first output by
-                    // `2·K·e` (docs/DESIGN.md §22 fork 1).
-                    control
-                        .algorithm
-                        .seed_from_output(position, measurement, setpoint, action)?;
-                    // The faceplate reports what the loop will hold, not what it
-                    // held while it was sitting out: a transfer that reported the
-                    // old output would show a jump the plant never made.
-                    control.last_output = position;
+                match seed {
+                    Some(seed) => self.transfer_to_auto(loop_id, seed),
+                    None => {
+                        self.graph
+                            .control_mut(loop_id)
+                            .ok_or_else(|| unknown_loop(loop_id))?
+                            .mode = mode;
+                        Ok(())
+                    }
                 }
-                control.mode = mode;
-                Ok(())
             }
             Command::SetSetpoint { loop_id, value } => {
                 let control = self
@@ -713,13 +709,15 @@ impl Engine {
                         trip.name, measurement, trip.direction, trip.limit
                     )));
                 }
-                self.graph
-                    .trip_mut(trip_id)
-                    .ok_or_else(|| {
-                        SimError::InvalidCommand(format!("{trip_id:?} names no trip on this plant"))
-                    })?
-                    .state = TripState::Armed;
-                Ok(())
+                let trip = self.graph.trip_mut(trip_id).ok_or_else(|| {
+                    SimError::InvalidCommand(format!("{trip_id:?} names no trip on this plant"))
+                })?;
+                trip.state = TripState::Armed;
+                // A `Manual` trip restarts nothing; one whose reset restarts
+                // (M40, docs/DESIGN.md §45) hands back what no other latched
+                // trip still holds, NOW, as the press writes at the command.
+                let actions = trip.actions.clone();
+                self.release_equipment(&actions)
             }
             // Fire one trip by hand (M38, docs/DESIGN.md §43): the trip's own
             // latch and safe states, written NOW rather than at the next trip
@@ -745,6 +743,10 @@ impl Engine {
                     by_hand: true,
                 };
                 let writes = trip.actions.clone();
+                // Pressed by hand, so never restartable (M40, §45): whatever
+                // this trip's reset mode, a person restarts what an emergency
+                // stop stopped.
+                self.hold_equipment(&writes, false)?;
                 self.write_trip_actions(writes)
             }
         }
@@ -1947,7 +1949,14 @@ impl Engine {
         // Pass 2 — latch the trips whose condition is reached, and collect what
         // they write. A trip already latched stays latched whatever the
         // measurement now says: that is the latch (fork 4).
-        let mut writes: Vec<TripAction> = Vec::new();
+        //
+        // **A trip that resets itself** (M40, docs/DESIGN.md §45) re-arms here,
+        // on the same reading, once it stands past its `reset_at` on the safe
+        // side — through `reached`, the comparison that fires it. Only a trip
+        // latched BEFORE this pass and not by hand: one latched on this pass
+        // cannot clear on it, and an emergency stop waits for a person.
+        let mut latched: Vec<(Vec<TripAction>, bool)> = Vec::new();
+        let mut released: Vec<Vec<TripAction>> = Vec::new();
         for (trip, measurement) in self.graph.trips_mut().iter_mut().zip(measured) {
             // Pass 1 let through only a flow or a furnace's outlet before the
             // first solve: the trip stays as it stands — armed, or latched by a
@@ -1956,17 +1965,39 @@ impl Engine {
                 continue;
             };
             trip.last_measurement = Some(measurement);
-            if trip.state == TripState::Armed && trip.direction.reached(measurement, trip.limit)? {
-                trip.state = TripState::Tripped {
-                    at_tick: this_tick,
-                    by_hand: false,
-                };
-                writes.extend(trip.actions.iter().copied());
+            match (trip.state, trip.reset) {
+                (TripState::Armed, _) => {
+                    if trip.direction.reached(measurement, trip.limit)? {
+                        trip.state = TripState::Tripped {
+                            at_tick: this_tick,
+                            by_hand: false,
+                        };
+                        latched.push((trip.actions.clone(), trip.reset.restarts()));
+                    }
+                }
+                (TripState::Tripped { by_hand: false, .. }, TripReset::Auto { reset_at }) => {
+                    if !trip.direction.reached(measurement, reset_at)? {
+                        trip.state = TripState::Armed;
+                        released.push(trip.actions.clone());
+                    }
+                }
+                (TripState::Tripped { .. }, _) => {}
             }
         }
 
-        // Pass 3 — write the safe states.
-        self.write_trip_actions(writes)
+        // Pass 3 — record what the latching trips take (before anything is
+        // written, so the record is the plant as it stood), hand back what the
+        // re-armed ones release, then write the safe states. A trip latched on
+        // this pass is already `Tripped` above, so `release_equipment` sees it
+        // holding its equipment whichever of the first two loops runs first:
+        // equipment one trip lets go of as another latches on it stays stopped.
+        for (actions, restartable) in &latched {
+            self.hold_equipment(actions, *restartable)?;
+        }
+        for actions in &released {
+            self.release_equipment(actions)?;
+        }
+        self.write_trip_actions(latched.into_iter().flat_map(|(a, _)| a).collect())
     }
 
     /// Write tripped equipment's safe states, and force every loop on it to
@@ -2007,6 +2038,183 @@ impl Engine {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// Remember what a latching trip takes from its equipment, BEFORE its safe
+    /// states are written (M40, docs/DESIGN.md §45).
+    ///
+    /// The first trip to hold a piece of equipment records it as it stands; a
+    /// later one only narrows `restartable`, so the record is always the state
+    /// before the STOP, never a safe state another trip wrote. `restartable` is
+    /// this trip's say: its reset mode allows a restart and it was not pressed.
+    fn hold_equipment(
+        &mut self,
+        actions: &[TripAction],
+        restartable: bool,
+    ) -> Result<(), SimError> {
+        for &action in actions {
+            let node = action.equipment();
+            if !self.held_equipment.contains_key(&node) {
+                let before = match (action, &self.graph.node(node).kind) {
+                    (TripAction::StopPump { .. }, NodeKind::Pump { on, .. }) => {
+                        EquipmentBefore::Pump { on: *on }
+                    }
+                    (TripAction::SetValve { .. }, NodeKind::Valve { opening, .. }) => {
+                        EquipmentBefore::Valve { opening: *opening }
+                    }
+                    (TripAction::CutFurnace { .. }, NodeKind::Furnace { duty, .. }) => {
+                        EquipmentBefore::Furnace { duty: *duty }
+                    }
+                    (TripAction::StopPump { .. }, _) => {
+                        return Err(trip_equipment_fault(&self.graph, node, "pump"))
+                    }
+                    (TripAction::SetValve { .. }, _) => {
+                        return Err(trip_equipment_fault(&self.graph, node, "valve"))
+                    }
+                    (TripAction::CutFurnace { .. }, _) => {
+                        return Err(trip_equipment_fault(&self.graph, node, "furnace"))
+                    }
+                };
+                let auto_loop = self
+                    .graph
+                    .controls()
+                    .iter()
+                    .position(|c| c.actuator == Actuator::Node(node) && c.mode == ControlMode::Auto)
+                    .map(|i| LoopId(i as u32));
+                self.held_equipment.insert(
+                    node,
+                    HeldEquipment {
+                        before,
+                        auto_loop,
+                        restartable: true,
+                    },
+                );
+            }
+            if let Some(held) = self.held_equipment.get_mut(&node) {
+                held.restartable &= restartable;
+            }
+        }
+        Ok(())
+    }
+
+    /// A trip has been reset — by a person or by itself — and these were its
+    /// actions: hand back every piece of equipment no other latched trip still
+    /// holds, if its record allows (M40, docs/DESIGN.md §45).
+    ///
+    /// Called AFTER the trip is `Armed` and after any trip latching in the same
+    /// pass is `Tripped`, so "still held" counts both, and a trip that latches on
+    /// the equipment as another lets go keeps it stopped.
+    fn release_equipment(&mut self, actions: &[TripAction]) -> Result<(), SimError> {
+        for &action in actions {
+            let node = action.equipment();
+            if self.graph.latched_trip_on(node).is_some() {
+                continue;
+            }
+            // Absent only if this trip names the equipment twice and the first
+            // mention already released it.
+            let Some(held) = self.held_equipment.remove(&node) else {
+                continue;
+            };
+            if held.restartable {
+                self.restart_equipment(node, held)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Put one piece of equipment back as it stood before the stop (M40).
+    ///
+    /// **A loop that was in AUTO takes it back through the bumpless transfer**,
+    /// seeded from where the equipment stands now — its safe state — so a relit
+    /// furnace's loop ramps from zero firing rather than jumping to the firing
+    /// that tripped it, and the equipment itself is not written. **With no such
+    /// loop, or one with nothing to measure now** (a cooler outlet a shut valve
+    /// starved), the equipment is written back to its pre-trip state and that
+    /// loop stays in MANUAL for a person, as `SetControllerMode` would refuse it.
+    fn restart_equipment(&mut self, node: NodeId, held: HeldEquipment) -> Result<(), SimError> {
+        if let Some(loop_id) = held.auto_loop {
+            if let Some(seed) = self.auto_transfer_seed(loop_id)? {
+                return self.transfer_to_auto(loop_id, seed);
+            }
+        }
+        match (held.before, &mut self.graph.node_mut(node).kind) {
+            (EquipmentBefore::Pump { on }, NodeKind::Pump { on: now, .. }) => *now = on,
+            (EquipmentBefore::Valve { opening }, NodeKind::Valve { opening: now, .. }) => {
+                *now = opening
+            }
+            (EquipmentBefore::Furnace { duty }, NodeKind::Furnace { duty: now, .. }) => *now = duty,
+            (EquipmentBefore::Pump { .. }, _) => {
+                return Err(trip_equipment_fault(&self.graph, node, "pump"))
+            }
+            (EquipmentBefore::Valve { .. }, _) => {
+                return Err(trip_equipment_fault(&self.graph, node, "valve"))
+            }
+            (EquipmentBefore::Furnace { .. }, _) => {
+                return Err(trip_equipment_fault(&self.graph, node, "furnace"))
+            }
+        }
+        Ok(())
+    }
+
+    /// What a MANUAL→AUTO transfer of `loop_id` would seed from, read FRESH
+    /// (docs/DESIGN.md §10 fork 4); `None` when the loop has nothing to measure
+    /// now. Shared by `Command::SetControllerMode` and a trip's restart (M40).
+    fn auto_transfer_seed(&self, loop_id: LoopId) -> Result<Option<AutoSeed>, SimError> {
+        let control = self
+            .graph
+            .control(loop_id)
+            .ok_or_else(|| unknown_loop(loop_id))?;
+        let Some(measurement) = self.graph.measure(
+            &self.slate,
+            &self.node_states,
+            self.last_solution.as_ref(),
+            control.measurement_point,
+            control.setpoint.variable(),
+        )?
+        else {
+            return Ok(None);
+        };
+        // The SAME reader pass 1 uses (docs/DESIGN.md §21, sites 3 and 6): a
+        // transfer that seeded from one notion of position while the tick ran on
+        // another would step the actuator. On a cascade primary this is its
+        // secondary's setpoint, as a fraction of the primary's range (§29 fork 2).
+        let position = self
+            .graph
+            .actuator_position(control.actuator, control.max_duty, control.setpoint_range)
+            .map_err(|e| {
+                SimError::InvalidCommand(format!(
+                    "control loop '{}' has no position to transfer from: {e}",
+                    control.name
+                ))
+            })?;
+        Ok(Some((
+            measurement,
+            control.setpoint,
+            control.action,
+            position,
+        )))
+    }
+
+    /// Seed `loop_id`'s memory from `seed` and put it in AUTO: the bumpless
+    /// MANUAL→AUTO transfer (docs/DESIGN.md §10 fork 4).
+    fn transfer_to_auto(&mut self, loop_id: LoopId, seed: AutoSeed) -> Result<(), SimError> {
+        let (measurement, setpoint, action, position) = seed;
+        let control = self
+            .graph
+            .control_mut(loop_id)
+            .ok_or_else(|| unknown_loop(loop_id))?;
+        // The loop's own action, the one pass 2 will run with: a seed taken
+        // against the other sign steps the first output by `2·K·e`
+        // (docs/DESIGN.md §22 fork 1).
+        control
+            .algorithm
+            .seed_from_output(position, measurement, setpoint, action)?;
+        // The faceplate reports what the loop will hold, not what it held while
+        // it was sitting out: a transfer that reported the old output would show
+        // a jump the plant never made.
+        control.last_output = position;
+        control.mode = ControlMode::Auto;
         Ok(())
     }
 
@@ -2503,6 +2711,7 @@ impl Engine {
                 watches: t.measurement_point,
                 direction: t.direction,
                 limit: t.limit,
+                reset: t.reset,
                 measurement: t.last_measurement,
                 state: t.state,
             })

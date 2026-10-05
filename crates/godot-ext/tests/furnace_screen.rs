@@ -188,6 +188,72 @@ fn the_trip_plant_timeline_tells_its_story() {
     assert!(screen.duty_w() > 0.0);
 }
 
+/// `AUTO_AUTORESET` (M40): the self-resetting tube trip cuts and relights the
+/// fouled heater on its own, a lower target ends the cycle, and the emergency
+/// stop is NOT undone by the trip — neither by itself nor by a person's reset.
+#[test]
+fn the_autoreset_timeline_tells_its_story() {
+    let mut screen = Screen::load("furnace_coil_trip_autoreset.toml", "cool_feed", "hold_tank");
+    let snap = screen.snap();
+    assert_eq!(snap["trips"][0]["name"], "tube_skin_high");
+    assert_eq!(snap["trips"][1]["name"], "outlet_high");
+    assert_eq!(snap["controls"][0]["name"], "outlet_temperature");
+    assert_eq!(
+        snap["trips"][0]["reset"],
+        serde_json::json!({"mode": "auto", "reset_at": {"variable": "temperature", "k": 353.15}})
+    );
+
+    // Cuts at 75, relights by itself at 128 with no command sent, cuts at 214.
+    screen.run_to(75);
+    assert_eq!(screen.trip(0), tripped(75));
+    assert_eq!(screen.loop_mode(), "manual");
+    screen.run_to(127);
+    assert_eq!(screen.trip(0), tripped(75));
+    screen.run_to(128);
+    assert_eq!(screen.trip(0), armed());
+    assert_eq!(screen.loop_mode(), "auto", "the trip handed the loop back");
+    // Bumpless: on its first tick the loop holds the zero it took over from,
+    // and ramps from there.
+    assert_eq!(screen.duty_w(), 0.0);
+    screen.run_to(130);
+    assert!(screen.duty_w() > 0.0);
+    screen.run_to(214);
+    assert_eq!(screen.trip(0), tripped(214));
+    screen.run_to(267);
+    assert_eq!(screen.trip(0), armed());
+
+    // 300: target 50 °C, in AUTO — the cycle stops, the coil stays under 100 °C.
+    screen.run_to(300);
+    assert_eq!(screen.send(SETPOINT_50), "null");
+    let skin_limit_k = screen.snap()["trips"][0]["limit"]["k"].as_f64().unwrap();
+    let mut hottest_k = f64::NEG_INFINITY;
+    while screen.session.tick_index() < 900 {
+        screen.run_to(screen.session.tick_index() + 1);
+        hottest_k = hottest_k.max(screen.coil_k());
+    }
+    assert!(hottest_k < skin_limit_k, "coil reached {hottest_k} K");
+    assert_eq!(screen.trip(0), armed());
+    assert_eq!(screen.loop_mode(), "auto");
+
+    // 900: the emergency stop. The coil falls far under the 80 °C reset point,
+    // and the pressed trip waits for a person all the same.
+    assert_eq!(screen.send(PRESS_SKIN), "null");
+    assert_eq!(screen.send(PRESS_OUTLET), "null");
+    screen.run_to(1000);
+    assert!(screen.coil_k() < 353.15, "coil {} K", screen.coil_k());
+    assert_eq!(screen.trip(0), tripped_by_hand(901));
+    assert_eq!(screen.trip(1), tripped_by_hand(901));
+
+    // 1000: a person resets both — and the furnace stays dark: a pressed trip
+    // never restarts anything (DESIGN §45).
+    assert_eq!(screen.send(RESET_SKIN), "null");
+    assert_eq!(screen.send(RESET_OUTLET), "null");
+    screen.run_to(1100);
+    assert_eq!(screen.trip(0), armed());
+    assert_eq!(screen.duty_w(), 0.0);
+    assert_eq!(screen.loop_mode(), "manual");
+}
+
 /// `AUTO_BURNOUT`: the tubes burst by themselves, new tubes are refused on a
 /// coil still past its limit, and accepted once it has cooled.
 #[test]

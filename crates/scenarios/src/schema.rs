@@ -930,6 +930,25 @@ pub struct TripDef {
     /// a flow running backwards.
     #[serde(default)]
     pub limit_kg_per_s: Option<f64>,
+    /// Who resets the trip, and whether the reset restarts what it stopped
+    /// (M40, docs/DESIGN.md §45): `"manual"` (a person resets it and nothing
+    /// restarts — the real-plant rule, and the default when absent),
+    /// `"manual_restart"` (a person resets it and the equipment comes back) or
+    /// `"auto"` (it resets itself past its reset point, and the equipment comes
+    /// back). An absent key is `"manual"`, which is what every earlier trip did.
+    #[serde(default)]
+    pub reset: Option<String>,
+    /// An `auto` trip's reset point, one key per variable as the limit's:
+    /// strictly on the SAFE side of the limit (below a high trip's, above a low
+    /// one's), required on `auto` and refused on any other mode.
+    #[serde(default)]
+    pub reset_limit_m: Option<f64>,
+    #[serde(default)]
+    pub reset_limit_bar: Option<f64>,
+    #[serde(default)]
+    pub reset_limit_c: Option<f64>,
+    #[serde(default)]
+    pub reset_limit_kg_per_s: Option<f64>,
     /// What the trip does when it fires: one or more pieces of equipment and
     /// each one's safe state. Required and non-empty (docs/DESIGN.md §26 fork 3).
     #[serde(default)]

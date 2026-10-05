@@ -3,7 +3,7 @@
 
 use crate::graph::{
     ControlAction, ControlMode, ControlledValue, EdgeId, LoopId, MeasurementPoint, NodeId,
-    NodeKind, TankState, TripDirection, TripId, TripState,
+    NodeKind, TankState, TripDirection, TripId, TripReset, TripState,
 };
 use crate::stream::Stream;
 use crate::traits::SolveDiagnostics;
@@ -100,10 +100,14 @@ pub enum Command {
     },
     /// Re-arm one latched trip (M22, docs/DESIGN.md §26 fork 4).
     ///
-    /// **It restarts nothing.** The pump stays stopped and the valve stays where
-    /// the trip put it; the reset only lifts the refusals that held them, so a
-    /// human can then restart the equipment by hand. "The trip cleared" and
-    /// "the plant restarted" stay two events a player can see.
+    /// **By default it restarts nothing** (`TripReset::Manual`, the real-plant
+    /// rule). The pump stays stopped and the valve stays where the trip put it;
+    /// the reset only lifts the refusals that held them, so a human can then
+    /// restart the equipment by hand. "The trip cleared" and "the plant
+    /// restarted" stay two events a player can see. A trip declared
+    /// `manual_restart` or `auto` (M40, docs/DESIGN.md §45) hands its equipment
+    /// back at the command, if no other latched trip holds it and every trip
+    /// that held it allows that.
     ///
     /// Refused while the trip's condition still holds — measured FRESH at the
     /// command, since the state standing now is what the next tick will
@@ -408,6 +412,13 @@ pub struct TripSnapshot {
     pub direction: TripDirection,
     /// The limit, carrying its own unit the way a loop's setpoint does.
     pub limit: ControlledValue,
+    /// Who resets it and whether the reset restarts the equipment (M40,
+    /// docs/DESIGN.md §45): `{"mode":"manual_restart"}`, or
+    /// `{"mode":"auto","reset_at":{…}}` with the reading it re-arms past.
+    /// **Skipped when `manual`**, the default and every trip before M40, and
+    /// `default` reads the absent key back as manual — a true statement.
+    #[serde(default, skip_serializing_if = "TripReset::is_manual")]
+    pub reset: TripReset,
     /// The measurement the last trip pass compared against `limit`.
     ///
     /// **Absent before the first tick**, when no pass has run. A level, a

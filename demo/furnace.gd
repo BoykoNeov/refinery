@@ -9,6 +9,9 @@
 #            at 60 °C while its tubes run hot, and the tube-skin trip that cuts it.
 #   burnout  scenarios/furnace_burnout.toml — a fouled heater over-fired on gas
 #            oil until its tubes burst and the leak burns in the firebox.
+#   autoreset scenarios/furnace_coil_trip_autoreset.toml (M40) — the trip plant
+#            with a tube trip that resets itself and relights the furnace, so it
+#            cuts and relights on its own until the target is lowered.
 #
 # Same rule as plant.gd, and the same reason: this script computes nothing
 # physical. Every number it draws is a snapshot field, every marker on a gauge is
@@ -20,14 +23,14 @@
 # Interactive:  godot --path . res://demo/furnace.tscn
 #               (keys listed on screen and in _input; 1 / 2 switch plants)
 # Recorded:     godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
-#               ...runs that plant's scripted timeline (AUTO_TRIP / AUTO_BURNOUT)
+#               ...runs that plant's scripted timeline (TIMELINES)
 #               and prints a `t=` line at a fixed interval plus one line per event.
 #               Those lines are the observation in ROADMAP.md's M39 section.
 # Screenshots:  add --shots=<dir> to a WINDOWED --auto run (headless renders
 #               nothing) to save a PNG at each scripted event.
 extends Node2D
 
-## The two plants, and the names on each the scene draws. A name missing from a
+## The three plants, and the names on each the scene draws. A name missing from a
 ## plant is a load-time halt, not a guess.
 const PLANTS := {
 	"trip":
@@ -48,6 +51,15 @@ const PLANTS := {
 		"destination": "product",
 		"ticks_per_frame": 4,
 	},
+	"autoreset":
+	{
+		"scenario": "res://scenarios/furnace_coil_trip_autoreset.toml",
+		"title": "Fouled heater with a self-resetting tube trip",
+		"feed": "cool_feed",
+		"outlet_pipe": "heated_line",
+		"destination": "hold_tank",
+		"ticks_per_frame": 1,
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks. Each tick is one the
@@ -60,7 +72,7 @@ const PLANTS := {
 ## the honest answer, since this coil settles at 117.3 °C on that target. Reset
 ## with the target at 50 °C instead and the coil settles near 76 °C. The button
 ## is pressed on that healthy plant at 900, reset at 901, and the loop relit at
-## 950: a reset does not relight the furnace (docs/DEFERRED.md E15).
+## 950: by default a reset does not relight the furnace (docs/DESIGN.md §45).
 const AUTO_TRIP := {
 	150: ["reset", "auto"],
 	500: ["reset", "setpoint_50", "auto"],
@@ -78,12 +90,27 @@ const AUTO_BURNOUT := {
 	2500: ["new_tubes"],
 	2600: ["quit"],
 }
+## autoreset (M40): nobody touches the trip. It cuts at 75, re-arms and hands
+## the loop back by itself at 128, cuts again at 214 and relights at 267 — the
+## fouled coil cannot hold 60 °C under its limit. At 300 the target goes to
+## 50 °C and the cycle stops. The button is pressed at 900; the coil falls far
+## under the 80 °C reset point and the pressed trip still waits. A person resets
+## both at 1000 and the furnace stays dark: a trip pressed by hand never
+## restarts anything.
+const AUTO_AUTORESET := {
+	300: ["setpoint_50"],
+	900: ["press"],
+	1000: ["reset"],
+	1100: ["quit"],
+}
+const TIMELINES := {"trip": AUTO_TRIP, "burnout": AUTO_BURNOUT, "autoreset": AUTO_AUTORESET}
 const AUTO_SHOT_TICKS := {
 	"trip": [74, 75, 238, 900, 901, 975],
 	"burnout": [1144, 1145, 1300, 2500],
+	"autoreset": [75, 128, 214, 300, 901, 1001],
 }
 ## Print a `t=` line every this many ticks in a recorded run.
-const PRINT_EVERY := {"trip": 25, "burnout": 100}
+const PRINT_EVERY := {"trip": 25, "burnout": 100, "autoreset": 25}
 
 ## Step sizes for the keys.
 const DUTY_STEP_W := 2.5e5
@@ -122,7 +149,7 @@ func _ready() -> void:
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (trip | burnout)" % plant_key)
+		_halt("no plant '%s' (trip | burnout | autoreset)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -182,7 +209,7 @@ func _step() -> bool:
 		return true
 	if tick % int(PRINT_EVERY[plant_key]) == 0:
 		print(_readout(tick))
-	var timeline: Dictionary = AUTO_TRIP if plant_key == "trip" else AUTO_BURNOUT
+	var timeline: Dictionary = TIMELINES[plant_key]
 	if timeline.has(tick):
 		for action in timeline[tick]:
 			if action == "quit":
@@ -235,6 +262,8 @@ func _input(event: InputEvent) -> void:
 			_load("trip")
 		KEY_2:
 			_load("burnout")
+		KEY_3:
+			_load("autoreset")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -492,6 +521,18 @@ func _trip_sign(trip: Dictionary) -> String:
 	return ">=" if trip["direction"] == "high" else "<="
 
 
+## Who resets a trip and what the reset does, from its `reset` field (M40);
+## absent means the default, a person's reset that restarts nothing.
+func _reset_label(trip: Dictionary) -> String:
+	var reset = trip.get("reset")
+	if reset == null:
+		return "reset by hand, restarts nothing"
+	if reset["mode"] == "manual_restart":
+		return "reset by hand, restarts the furnace"
+	var under := "<" if trip["direction"] == "high" else ">"
+	return "resets itself %s %s and restarts" % [under, _value_text(reset["reset_at"])]
+
+
 ## The level fraction of a tank destination — plant.gd's rule, from the slate.
 func _tank_fraction(id: int) -> float:
 	var kind: Dictionary = _node(id)["kind"]
@@ -588,7 +629,7 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 624),
-		"P patch the hole   N new tubes   Space pause   [ ] speed   1 trip plant   2 burn-out plant",
+		"P patch the hole   N new tubes   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset",
 		DIM
 	)
 	if halted != "":
@@ -699,7 +740,16 @@ func _draw_gauge() -> void:
 	for trip in _trips():
 		if _trip_gauge(trip) == "coil":
 			var tripped: bool = trip["state"]["status"] == "tripped"
-			_marker(rect, low, high, float(trip["limit"]["k"]), "trip %s" % _c(float(trip["limit"]["k"])), BAD if tripped else TRIP_MARK)
+			# An auto trip's reset point is a dim unlabelled line under its limit
+			# (the two sit a few pixels apart on this scale), named in the
+			# limit's own label.
+			var label := "trip %s" % _c(float(trip["limit"]["k"]))
+			var reset = trip.get("reset")
+			if reset != null and reset["mode"] == "auto":
+				var reset_k := float(reset["reset_at"]["k"])
+				_marker(rect, low, high, reset_k, "", DIM)
+				label += ", resets %s" % _c(reset_k)
+			_marker(rect, low, high, float(trip["limit"]["k"]), label, BAD if tripped else TRIP_MARK)
 	_text(rect.position + Vector2(-6, -12), "coil", DIM)
 	_text(rect.position + Vector2(-6, rect.size.y + 24), _c(_coil_k()), INK)
 
@@ -793,7 +843,9 @@ func _draw_panel() -> void:
 			DIM,
 			14
 		)
-		y += 26
+		y += 18
+		_text(Vector2(PANEL_X + 12, y), _reset_label(trip), DIM, 14)
+		y += 24
 
 	y += 14
 	_text(Vector2(PANEL_X, y), "CONTROL LOOP", DIM)

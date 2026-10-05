@@ -1448,6 +1448,56 @@ impl TripState {
     }
 }
 
+/// How a latched trip is reset, and whether its reset hands back what it
+/// stopped (M40, docs/DESIGN.md §45; `docs/DEFERRED.md` E15).
+///
+/// **`Manual` is the default and the real-plant rule** (IEC 61511 asks for a
+/// person to reset a safety function): a person resets it and the reset
+/// restarts nothing, which is every trip before M40. The other two are opt-in
+/// per trip, in the file.
+///
+/// **A restart hands the equipment back as it stood before the trip**: a loop
+/// that was in AUTO on it goes back to AUTO through the bumpless transfer, from
+/// where the equipment stands (so a relit furnace ramps up from zero rather than
+/// jumping to its old firing); equipment with no such loop goes back to its
+/// pre-trip state — a pump on, a valve at its opening, a furnace at its duty.
+/// **It happens only when every trip that held that equipment during the stop
+/// allows it, and none was pressed by hand**: a trip whose reset is `Manual`,
+/// or an emergency stop, keeps it stopped for a person to restart.
+///
+/// Tagged `mode`, skipped on the wire when `Manual`, so every trip written
+/// before M40 publishes the bytes it did.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum TripReset {
+    /// A person resets it (`Command::ResetTrip`); the reset restarts nothing.
+    #[default]
+    Manual,
+    /// A person resets it, and the reset restarts the equipment.
+    ManualRestart,
+    /// The trip resets ITSELF on the trip pass whose measurement is past
+    /// `reset_at` on the safe side — strictly below it for a high trip, above
+    /// it for a low one — and restarts the equipment. A person may still reset
+    /// it sooner, under `ResetTrip`'s rule, with the same restart.
+    ///
+    /// **`reset_at` is a deadband, required and strictly on the safe side of
+    /// the limit** (the loader refuses equal): a trip re-armed at its own limit
+    /// would cut and relight on alternate ticks. A trip pressed by hand never
+    /// resets itself.
+    Auto { reset_at: ControlledValue },
+}
+
+impl TripReset {
+    pub fn is_manual(&self) -> bool {
+        matches!(self, TripReset::Manual)
+    }
+
+    /// Whether a reset of this trip may hand its equipment back.
+    pub fn restarts(self) -> bool {
+        !self.is_manual()
+    }
+}
+
 /// One piece of equipment a trip drives to its safe state (docs/DESIGN.md §26
 /// fork 3).
 ///
@@ -1505,6 +1555,8 @@ pub struct Trip {
     pub limit: ControlledValue,
     /// Non-empty; each names one pump, valve or furnace and its safe state.
     pub actions: Vec<TripAction>,
+    /// Who resets it, and whether the reset restarts the equipment (M40).
+    pub reset: TripReset,
     pub state: TripState,
     /// The measurement the last trip pass compared. `None` only before the
     /// first tick, when no pass has run — and, for a flow trip, still `None` on

@@ -498,7 +498,10 @@ fn every_furnace_in_the_repo_owns_a_burnout_hole() {
             );
         }
     }
-    assert_eq!(furnaces, 16, "fifteen furnace plants and the burn-out demo");
+    assert_eq!(
+        furnaces, 17,
+        "fifteen furnace plants, the burn-out demo and M40's self-resetting trip demo"
+    );
     let heater_only = build_src(
         include_str!("../../../scenarios/furnace_heater.toml"),
         "newton",

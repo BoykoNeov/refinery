@@ -11,7 +11,7 @@ use refinery_core::graph::{
     Actuator, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
     EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling, LeakRole, LoopId, MeasuredVariable,
     MeasurementPoint, Node, NodeId, NodeKind, Pipe, PlantGraph, SetpointRange, TankState, Trip,
-    TripAction, TripDirection, TripState, TubeState, VesselState,
+    TripAction, TripDirection, TripReset, TripState, TubeState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -1501,6 +1501,7 @@ fn build_trips(
         })?;
         let limit = declared_value(variable, declared);
         check_trip_limit(graph, &owner, point, limit)?;
+        let reset = build_trip_reset(graph, &owner, def, point, variable, direction, limit)?;
 
         if def.actions.is_empty() {
             return Err(SimError::Scenario(format!(
@@ -1633,12 +1634,110 @@ fn build_trips(
             direction,
             limit,
             actions,
+            reset,
             state: TripState::Armed,
             // No trip pass has run: absent until tick 1 (fork 8).
             last_measurement: None,
         });
     }
     Ok(())
+}
+
+/// A trip's reset mode and, for `auto`, its reset point (M40,
+/// docs/DESIGN.md §45).
+///
+/// Refuses an unknown mode; a `reset_limit_*` key on any mode but `auto` (it
+/// would be a number nothing reads); on `auto`, a missing reset point, one under
+/// another variable's key, one outside the limit's physical range, and one AT or
+/// beyond the limit — a trip re-armed at its own limit would cut and restart on
+/// alternate ticks, so the deadband has no default and no zero.
+fn build_trip_reset(
+    graph: &PlantGraph,
+    owner: &str,
+    def: &TripDef,
+    point: MeasurementPoint,
+    variable: MeasuredVariable,
+    direction: TripDirection,
+    limit: ControlledValue,
+) -> Result<TripReset, SimError> {
+    let reset_key = |v: MeasuredVariable| match v {
+        MeasuredVariable::Level => "reset_limit_m",
+        MeasuredVariable::Pressure => "reset_limit_bar",
+        MeasuredVariable::Temperature => "reset_limit_c",
+        MeasuredVariable::Flow => "reset_limit_kg_per_s",
+    };
+    let given: Vec<(MeasuredVariable, f64)> = [
+        (MeasuredVariable::Level, def.reset_limit_m),
+        (MeasuredVariable::Pressure, def.reset_limit_bar),
+        (MeasuredVariable::Temperature, def.reset_limit_c),
+        (MeasuredVariable::Flow, def.reset_limit_kg_per_s),
+    ]
+    .into_iter()
+    .filter_map(|(v, value)| value.map(|value| (v, value)))
+    .collect();
+    let mode = def.reset.as_deref().unwrap_or("manual");
+    match mode {
+        "manual" | "manual_restart" => {
+            if let Some((v, _)) = given.first() {
+                return Err(SimError::Scenario(format!(
+                    "{owner} declares `{}` with `reset = \"{mode}\"`. A reset point is read only \
+                     by a trip that resets itself; write `reset = \"auto\"` or drop the key",
+                    reset_key(*v)
+                )));
+            }
+            Ok(if mode == "manual" {
+                TripReset::Manual
+            } else {
+                TripReset::ManualRestart
+            })
+        }
+        "auto" => {
+            if let Some((v, _)) = given.iter().find(|(v, _)| *v != variable) {
+                return Err(SimError::Scenario(format!(
+                    "{owner} watches a {} and declares `{}`, which is a {} trip's reset point. \
+                     Write `{}` instead",
+                    variable.noun(),
+                    reset_key(*v),
+                    v.noun(),
+                    reset_key(variable)
+                )));
+            }
+            let declared = given.first().map(|(_, value)| *value).ok_or_else(|| {
+                SimError::Scenario(format!(
+                    "{owner} resets itself (`reset = \"auto\"`) and declares no `{}`. The \
+                     reset point is the reading it re-arms past, strictly on the safe side of \
+                     its limit; it has no default, because a trip re-armed at its own limit \
+                     would cut and restart on alternate ticks",
+                    reset_key(variable)
+                ))
+            })?;
+            let reset_at = declared_value(variable, declared);
+            check_trip_limit(graph, owner, point, reset_at)?;
+            // Strictly on the safe side: the reset point must itself NOT be in
+            // the trip's condition, by the comparison that fires it.
+            if direction.reached(reset_at, limit)? {
+                return Err(SimError::Scenario(format!(
+                    "{owner} resets itself at {declared} (`{}`), which is not on the safe side \
+                     of its limit: a {} trip's reset point must be strictly {} its limit, or \
+                     the trip would re-arm inside its own condition and cut and restart on \
+                     alternate ticks",
+                    reset_key(variable),
+                    match direction {
+                        TripDirection::High => "high",
+                        TripDirection::Low => "low",
+                    },
+                    match direction {
+                        TripDirection::High => "below",
+                        TripDirection::Low => "above",
+                    }
+                )));
+            }
+            Ok(TripReset::Auto { reset_at })
+        }
+        other => Err(SimError::Scenario(format!(
+            "{owner} declares unknown reset '{other}' (valid: manual, manual_restart, auto)"
+        ))),
+    }
 }
 
 /// A trip limit's physical range (docs/DESIGN.md §26 fork 6).
