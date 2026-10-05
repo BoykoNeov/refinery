@@ -7582,3 +7582,75 @@ is still latched; the person's reset leaves the furnace dark.
   has no measurement point). The screen knows its one loop by position. New row F3.
 - **A loop with nothing to measure at the restart** stays in MANUAL and its
   equipment is written back. Built, not gated: no fixture reaches it.
+
+## M41 — no restart onto burst tubes, and what a loop watches: ledger rows E28's tube clause and F3; opened on a decision
+
+M40 closed with two findings: a self-clearing trip relights a furnace whose
+tubes burst while it was off, and a loop's faceplate does not say what it
+measures. Offered as "no restart onto burst tubes" (recommended) and "the same
+small change" F2 made for trips, the user's decision (2026-10-05): "yes, fix
+both". Two commits; the note is DESIGN §46.
+
+### M41.0 — no restart onto burst tubes — **LANDED** 2026-10-05
+
+When the last trip holding a furnace lets go and its reset would restart it,
+the engine first asks the tubes. Burst — or at or past their limit, so that the
+next burn-out pass bursts them — and the restart is refused: the trip re-arms,
+the furnace stays dark, its loop in MANUAL, and the record of how it stood is
+dropped, so a person restarts it, after new tubes. The check is in
+`release_equipment`, the one point every restart passes, including a relight
+through an AUTO loop. `FurnaceTubes::limit_reached` is now the single owner of
+the tube-limit comparison.
+
+**Gates.** `crates/scenarios/tests/restart_tubes_reference.rs`, three, on shipped
+plants edited in memory:
+1. `furnace_coil_trip` with an `auto` tube trip and tubes failing at 100.1 °C:
+   they burst on tick 75, the trip's own tick; the trip re-arms on tick 128, as
+   on intact tubes, and the burst furnace stays dark to 600 where the intact twin
+   is back in AUTO on 128.
+2. The same plant with `manual_restart`: patched and reset at 150, the trip
+   re-arms and nothing relights; new tubes and a person's AUTO fire it again.
+3. `tank_overheat_trip` with `manual_restart` and tubes failing at 100 °C: a
+   50 MW fire lit on the dark furnace at tick 1 594 carries the coil past 100 °C
+   by the end of 1 598, tubes still intact. A reset then re-arms the trip and
+   leaves the duty at zero, and the tubes burst on the next tick; the same reset
+   one tick earlier hands back the 3 MW.
+
+**Mutations**, four, against the restart, reset and burn-out gates: all caught —
+no check (gates 1–3), "burst" only (gate 3), "past the limit" only (gates 1, 2),
+the check moved into `restart_equipment`'s furnace arm (gates 1, 2).
+
+**Corpus.** All 38 plants byte-identical on both fidelities.
+
+### M41.1 — `ControlSnapshot::watches` — **LANDED** 2026-10-05, and M41 is CLOSED
+
+Every loop's snapshot names its measurement point right after its name, in the
+trips' form: `{"node":3}` or `{"pipe":5}`. The furnace screen finds its loop as
+the one watching the heater's own temperature, not as the first in the list; its
+three headless stories (`--auto`, `--plant=burnout`, `--plant=autoreset`) print
+the same 59, 33 and 58 lines as with the old script, on the same build. Gated in
+`crates/scenarios/tests/loop_watches.rs` (both loops of a cascade, and a flow
+loop's pipe) and by `crates/godot-ext/tests/furnace_screen.rs` (the loop the
+scene picks is the heater's). One mutation (every loop publishes node 0): caught
+by both.
+
+**Corpus. Eleven plants moved, wire only** — every plant with a loop:
+`furnace_cascade_control`, `furnace_coil_trip`, `furnace_coil_trip_autoreset`,
+`furnace_outlet_control`, `tank_flow_control`, `tank_level_control`,
+`tank_level_fill_check_valve`, `tank_level_fill_control`,
+`tank_temperature_control`, `tank_temperature_heating`,
+`vessel_pressure_control`, on both fidelities. With `"watches":{…},` deleted from
+the loops, all 6 000 snapshots of all 38 plants on both fidelities hash the same
+as the previous build's (76 streams); the 27 loopless plants are byte-identical
+without deleting anything.
+
+Release property tests 223/223. Godot feature build and clippy clean.
+
+#### Findings — for the user's decision, none built
+
+- **Tubes that burst during a stop and are replaced before the trip lets go are
+  relit by the trip**: the rule asks the tubes in place, as agreed. Whether any
+  burst during a stop should make the restart a person's is the user's question,
+  kept in E28.
+- **A restart asks no trip that does not hold the equipment**: E28's other
+  clause, unchanged.

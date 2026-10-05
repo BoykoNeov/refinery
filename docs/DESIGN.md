@@ -19328,3 +19328,64 @@ trip. The full write-up, with the recorded runs, is ROADMAP M40.
 E15. An `auto` trip relights a furnace whose tubes have burst if its own reading
 clears (nothing ties the restart to `TubeState`): new row E28. A loop's faceplate
 does not say what it watches either: new row F3.
+
+## 46. No restart onto burst tubes, and what a loop watches — ledger rows E28's tube clause and F3 (M41)
+
+Taken on the user's decision (2026-10-05), on M40's two findings, offered as "no
+restart onto burst tubes" and "the same small change" for loops: "yes, fix
+both". The full write-up, with the recorded runs, is ROADMAP M41.
+
+**Interfaces.**
+- `FurnaceTubes::limit_reached(coil_temperature) -> bool` and
+  `FurnaceTubes::burst_or_bursting(coil_temperature) -> bool`, both [K]. The
+  first is now the one owner of the tube-limit comparison: the burn-out pass,
+  `Command::ReplaceTubes` and a trip's restart all ask it.
+- `ControlSnapshot::watches: MeasurementPoint` — always written, right after
+  `name`, in `TripSnapshot::watches`'s form (§45): `{"node":3}` or `{"pipe":5}`.
+  Never `{"coil":…}`: a loop on a coil is refused at load (§39).
+- No loader key, no command, no scenario file.
+
+**Forks.**
+
+1. **The refusal is of the restart, not of the reset.** The trip re-arms as it
+   would, its held record is dropped, and the furnace stays dark with its loop
+   in MANUAL — exactly what a `manual` trip's reset leaves. E28 named this shape;
+   refusing the reset instead would leave a trip latched on a reading that has
+   cleared, which no frontend could explain from the trip's own row.
+2. **The check sits in `release_equipment`, not in `restart_equipment`'s furnace
+   arm.** A furnace under an AUTO loop is relit through the bumpless transfer,
+   which returns before that arm is reached, and that is how the shipped coil
+   plants relight. Mutation 3 moves the check into the arm; gates 1 and 2 catch it.
+3. **"Bursting" counts, not only "burst".** In a tick the trips run before the
+   burn-outs (§42), and a fire (`Command::SetHeatInput`) still heats a coil a
+   trip holds dark. So a coil can stand past its limit with intact tubes at the
+   top of a tick or between two ticks, and a restart then would relight tubes
+   that burst a moment later. The predicate is `ReplaceTubes`'s own rule
+   ("new tubes would burst on the next tick") on the tubes in place. Gate 3
+   reaches it; mutation 1 (failed only) fails gate 3 alone.
+4. **The record is dropped, not deferred.** Fitting new tubes later does not
+   bring the restart back: a person restarts the furnace (gate 2), as after any
+   `manual` trip. Real plants never relight a heater automatically after a tube
+   failure.
+5. **The rule is the one the user agreed to, and no stronger.** Tubes that burst
+   during a stop and are REPLACED before the trip lets go are intact at the
+   release, so an `auto` or `manual_restart` trip relights them. Whether any
+   burst during a stop should make the restart a person's is a separate
+   question, left to the user in E28's remainder.
+6. **`ControlSnapshot::watches` is always written, so every loop plant's
+   fingerprint moved, wire only** — §45 fork 2's argument on a second struct.
+   Shown as M40 did: every snapshot of every plant, 6 000 ticks on both
+   fidelities, is byte-identical to the previous build's once
+   `"watches":{…},` is deleted from the loops.
+7. **The furnace screen finds its loop by what it watches** — the one watching
+   the heater's own node on a temperature — instead of taking the first loop.
+   Its three headless stories print the same lines, byte for byte, as before.
+
+**Corrections from building it.**
+- GDScript inferred the new `_loop()`'s return type from its final `return null`
+  and refused every subscript on it at parse time; the function is typed
+  `-> Variant`.
+
+**Deferred.** E28 narrows to its remainder: a restart does not ask any trip that
+does not hold the equipment, and a burst during a stop does not by itself make
+the restart a person's once the tubes are replaced.

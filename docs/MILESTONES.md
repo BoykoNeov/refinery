@@ -12,6 +12,28 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M41 is CLOSED (2026-10-05): no restart onto burst tubes, and what a loop
+watches — `docs/DEFERRED.md` E28's tube clause struck (the rest open), F3 struck.**
+The user's DECISION, on M40's two findings: "yes, fix both". DESIGN §46.
+- **No restart onto burst tubes** (M41.0): when the last trip holding a furnace
+  lets go and its reset would restart it, tubes that have burst — or stand at or
+  past their limit, so the next tick bursts them (a fire heats a dark coil) —
+  refuse the restart. The trip re-arms; the furnace stays dark, its loop in
+  MANUAL, for a person. Checked in `release_equipment`, so a relight through an
+  AUTO loop is caught too. `FurnaceTubes::limit_reached` owns the comparison.
+- Three gates, `tests/restart_tubes_reference.rs` (burst on the trip's tick 75 and
+  dark past the re-arm at 128; a patched, reset furnace dark until new tubes and
+  a person's AUTO; a coil fired past 100 °C between ticks not relit, and relit
+  one tick earlier). Four mutations, all caught. All 38 plants byte-identical.
+- **`ControlSnapshot::watches`** (M41.1): `{"node":…}` or `{"pipe":…}`, always
+  written. The eleven loop plants moved their fingerprints on both fidelities,
+  wire only: with the field deleted every snapshot is byte-identical. The furnace
+  screen finds its loop by it; its three stories print the same lines.
+- Left for the user (E28): tubes replaced during a stop are relit by the trip, as
+  agreed ("no restart onto burst tubes"), and a restart asks no trip that does not
+  hold the equipment. Release property tests 223/223; Godot feature build and
+  clippy clean.
+
 **M40 is CLOSED (2026-10-05): what a trip watches, and a reset that restarts —
 `docs/DEFERRED.md` F2 struck, E15's restart clause struck, new rows E28 and F3.**
 The user's DECISION, on M39's two findings: "add the option to autoreset, when and
