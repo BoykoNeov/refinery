@@ -635,7 +635,7 @@ impl Engine {
                 }
                 // Measured FRESH: the coil is a state, and the one standing now is
                 // what the next tick's burn-out pass will compare.
-                if coil.temperature >= tubes.failure_temperature {
+                if tubes.limit_reached(coil.temperature) {
                     return Err(SimError::InvalidCommand(format!(
                         "furnace '{name}' coil is at {:.1} °C, at or past its tubes' {:.1} °C \
                          limit: new tubes would burst on the next tick. Let the coil cool \
@@ -2116,11 +2116,27 @@ impl Engine {
             let Some(held) = self.held_equipment.remove(&node) else {
                 continue;
             };
-            if held.restartable {
+            // No restart onto burst tubes (M41, docs/DESIGN.md §46): the trip
+            // re-arms, the record is dropped, and the furnace stays dark for a
+            // person — the refusal is of the restart, not of the reset. Here,
+            // not in `restart_equipment`'s furnace arm, because a furnace under
+            // an AUTO loop is relit through the transfer and never reaches it.
+            if held.restartable && !self.tubes_forbid_restart(node) {
                 self.restart_equipment(node, held)?;
             }
         }
         Ok(())
+    }
+
+    /// The equipment is a furnace whose tubes have burst, or will burst on the
+    /// next burn-out pass (`FurnaceTubes::burst_or_bursting`, M41). Read FRESH:
+    /// in the trip pass the coil standing is the one this tick's burn-out pass
+    /// compares, and between ticks the one the next tick's will.
+    fn tubes_forbid_restart(&self, node: NodeId) -> bool {
+        match &self.graph.node(node).kind {
+            NodeKind::Furnace { coil, tubes, .. } => tubes.burst_or_bursting(coil.temperature),
+            _ => false,
+        }
     }
 
     /// Put one piece of equipment back as it stood before the stop (M40).
@@ -2237,7 +2253,7 @@ impl Engine {
         let mut bursts: Vec<(NodeId, Option<crate::graph::EdgeId>, SquareMeter)> = Vec::new();
         for nid in self.graph.node_ids() {
             if let NodeKind::Furnace { coil, tubes, .. } = &self.graph.node(nid).kind {
-                if !tubes.state.is_failed() && coil.temperature >= tubes.failure_temperature {
+                if !tubes.state.is_failed() && tubes.limit_reached(coil.temperature) {
                     bursts.push((nid, tubes.hole, tubes.rupture_area));
                 }
             }

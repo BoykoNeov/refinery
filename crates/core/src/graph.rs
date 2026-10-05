@@ -553,6 +553,24 @@ pub struct FurnaceTubes {
     pub state: TubeState,
 }
 
+impl FurnaceTubes {
+    /// A coil at `coil_temperature` [K] is at or past these tubes' limit: the
+    /// next burn-out pass bursts them if they are intact. The one owner of the
+    /// comparison, shared by the burn-out pass, `Command::ReplaceTubes` and a
+    /// trip's restart.
+    pub fn limit_reached(&self, coil_temperature: Kelvin) -> bool {
+        coil_temperature >= self.failure_temperature
+    }
+
+    /// Burst, or bursting on the next burn-out pass: tubes no trip may relight
+    /// (M41, docs/DESIGN.md §46). The second half is reachable on a furnace a
+    /// trip holds dark, because a fire (`Command::SetHeatInput`) still heats its
+    /// coil, and the trips run before the burn-outs in a tick.
+    pub fn burst_or_bursting(&self, coil_temperature: Kelvin) -> bool {
+        self.state.is_failed() || self.limit_reached(coil_temperature)
+    }
+}
+
 /// Whether a furnace's tubes have burnt out (M37, docs/DESIGN.md §42).
 ///
 /// Latched: `Failed` from the tick whose top pass found the coil at or past its
