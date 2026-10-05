@@ -260,6 +260,52 @@ pub struct NodeSnapshot {
     /// byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tube_fire_w: Option<f64>,
+    /// The trips' stop of this equipment, and whether they will hand it back
+    /// (M43, docs/DESIGN.md §48): `{"status":"held","barred_by":[…]}` while a
+    /// trip holds it, `{"status":"not_restarted","at_tick":…,"barred_by":[…]}`
+    /// once the last let go without handing it back.
+    ///
+    /// **Why it is here**: an `auto` or `manual_restart` trip that re-arms and
+    /// leaves its furnace dark — a press, a `manual` trip beside it, tubes that
+    /// burst during the stop (M42) — was otherwise a cleared trip and a dark
+    /// furnace with nothing saying why, and the engine's reason sat in a private
+    /// record dropped at that very moment.
+    ///
+    /// **Absent when the trips have nothing to say**: equipment no trip has
+    /// stopped, equipment they handed back, and equipment a person has since
+    /// restarted. Skipped when absent, so a plant whose trips never fire
+    /// publishes the bytes it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trip_stop: Option<TripStop>,
+}
+
+/// A piece of equipment the trips stopped — see [`NodeSnapshot::trip_stop`]
+/// (M43, docs/DESIGN.md §48).
+///
+/// Tagged `status`, as `TripState` is. `barred_by` is always written, in
+/// `RestartBar`'s order; empty means nothing stands in the way of a restart.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum TripStop {
+    /// A trip holds it in its safe state now. `barred_by` is what would keep
+    /// it stopped if the last trip holding it let go NOW — the same verdict
+    /// the engine then acts on, made by the same function. Empty: the trips
+    /// hand it back (an `auto` or `manual_restart` trip, §45).
+    Held { barred_by: Vec<RestartBar> },
+    /// The last trip holding it let go and did NOT hand it back: a person
+    /// restarts it. `at_tick` is the first tick that ran with the trips let go
+    /// — the tick whose trip pass re-armed an `auto` trip, or the tick after a
+    /// person's reset, as `TripState::Tripped`'s `at_tick` is for a press.
+    /// `barred_by` is never empty: it is why.
+    ///
+    /// **Published while the equipment still stands where the trip left it**:
+    /// a furnace at zero duty, a pump off, a valve at the trip's position, and
+    /// no loop on it in AUTO. A person restarting it ends it, and so does the
+    /// next stop, which is `Held` again.
+    NotRestarted {
+        at_tick: u64,
+        barred_by: Vec<RestartBar>,
+    },
 }
 
 /// The cavitation criterion at one node — see [`NodeSnapshot::cavitation`].

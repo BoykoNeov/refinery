@@ -97,11 +97,16 @@ fn tripped(snapshot: &Snapshot, trip: TripId) -> bool {
 
 /// Everything a player sees of the plant, without the trips' own records
 /// (whose `reset` field differs between the two plants an equivalence
-/// compares).
+/// compares) — and so without each node's `trip_stop` (M43), the trips'
+/// account of what their resets will do, which differs for the same reason.
 fn plant_bytes(snapshot: &Snapshot) -> String {
+    let mut nodes = snapshot.nodes.clone();
+    for node in &mut nodes {
+        node.trip_stop = None;
+    }
     format!(
         "{}{}{}",
-        serde_json::to_string(&snapshot.nodes).unwrap(),
+        serde_json::to_string(&nodes).unwrap(),
         serde_json::to_string(&snapshot.edges).unwrap(),
         serde_json::to_string(&snapshot.controls).unwrap()
     )

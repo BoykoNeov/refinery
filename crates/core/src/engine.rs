@@ -14,7 +14,7 @@ use crate::graph::{
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
-    NodeSnapshot, RestartBar, Snapshot, TripSnapshot,
+    NodeSnapshot, RestartBar, Snapshot, TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, ReactionModel, SeparationModel,
@@ -119,6 +119,22 @@ pub struct Engine {
     /// two trips can cut one furnace, and the second to latch would otherwise
     /// remember the safe state the first wrote and "restart" it dark.
     held_equipment: std::collections::BTreeMap<NodeId, HeldEquipment>,
+    /// Equipment whose stop ended without the trips handing it back, and why
+    /// (M43, docs/DESIGN.md §48): written when the last trip lets go, dropped
+    /// at the next stop or at the top of the first tick that finds it restarted.
+    /// Only published, never acted on — `NodeSnapshot::trip_stop`.
+    not_restarted: std::collections::BTreeMap<NodeId, NotRestarted>,
+}
+
+/// One stop that ended without a restart — see `Engine::not_restarted`.
+#[derive(Debug, Clone)]
+struct NotRestarted {
+    /// The trip action that let go of it, which names its safe state.
+    action: TripAction,
+    /// The first tick that ran with the trips let go.
+    at_tick: u64,
+    /// Why, from `restart_bars`; never empty.
+    bars: Vec<RestartBar>,
 }
 
 /// One piece of equipment as it stood before the trips stopped it (M40,
@@ -181,6 +197,7 @@ impl Engine {
             node_states: energy::NodeStates::default(),
             last_cavitation: std::collections::BTreeMap::new(),
             held_equipment: std::collections::BTreeMap::new(),
+            not_restarted: std::collections::BTreeMap::new(),
         }
     }
 
@@ -757,6 +774,16 @@ impl Engine {
 
     pub fn tick(&mut self) -> Result<(), SimError> {
         let dt = self.config.dt;
+
+        // A stop that ended without a restart is forgotten once a person has
+        // restarted the equipment (M43, docs/DESIGN.md §48), so cutting it
+        // again by hand later does not bring the old reason back. Report-only
+        // state: nothing below reads it.
+        let not_restarted = std::mem::take(&mut self.not_restarted);
+        self.not_restarted = not_restarted
+            .into_iter()
+            .filter(|(_, ended)| self.still_stopped(ended.action))
+            .collect();
 
         // 0a. Protection (M22). Trips run FIRST, before the loops, on the same
         //     start-of-tick state (docs/DESIGN.md §26 fork 5). A trip that fires
@@ -2081,6 +2108,8 @@ impl Engine {
                         return Err(trip_equipment_fault(&self.graph, node, "furnace"))
                     }
                 };
+                // A new stop: whatever the last one ended in is history now.
+                self.not_restarted.remove(&node);
                 let auto_loop = self
                     .graph
                     .controls()
@@ -2128,11 +2157,66 @@ impl Engine {
             // an AUTO loop is relit through the transfer and never reaches it.
             // This asks the tubes IN PLACE; a burst during the stop, on tubes
             // since replaced, is in the record's `bars` (M42, §47).
-            if self.restart_bars(node, &held).is_empty() {
+            let bars = self.restart_bars(node, &held);
+            if bars.is_empty() {
                 self.restart_equipment(node, held)?;
+            } else {
+                // Kept for the snapshot (M43, §48): the record that held the
+                // reason is dropped here, and this is the moment a frontend
+                // needs it. The next tick is the first to run let go, in the
+                // trip pass (still inside it) and after a command alike.
+                self.not_restarted.insert(
+                    node,
+                    NotRestarted {
+                        action,
+                        at_tick: self.tick + 1,
+                        bars,
+                    },
+                );
             }
         }
         Ok(())
+    }
+
+    /// The equipment still stands where `action` left it — at its safe state,
+    /// with no loop on it in AUTO — so a stop that ended without a restart is
+    /// still waiting for a person (M43, docs/DESIGN.md §48). Exact comparisons:
+    /// the trip wrote these values, and any other value is someone else's.
+    fn still_stopped(&self, action: TripAction) -> bool {
+        let node = action.equipment();
+        let at_safe_state = match (action, &self.graph.node(node).kind) {
+            (TripAction::StopPump { .. }, NodeKind::Pump { on, .. }) => !*on,
+            (TripAction::SetValve { position, .. }, NodeKind::Valve { opening, .. }) => {
+                *opening == position
+            }
+            (TripAction::CutFurnace { .. }, NodeKind::Furnace { duty, .. }) => duty.value() == 0.0,
+            // The loader checked each action's kind; a mismatch has no safe
+            // state to stand at, and this is only a report.
+            _ => false,
+        };
+        at_safe_state
+            && !self
+                .graph
+                .controls()
+                .iter()
+                .any(|c| c.actuator == Actuator::Node(node) && c.mode == ControlMode::Auto)
+    }
+
+    /// What the snapshot says of `node`'s stop — see `NodeSnapshot::trip_stop`.
+    fn trip_stop(&self, node: NodeId) -> Option<TripStop> {
+        if let Some(held) = self.held_equipment.get(&node) {
+            return Some(TripStop::Held {
+                barred_by: self.restart_bars(node, held),
+            });
+        }
+        let ended = self.not_restarted.get(&node)?;
+        // Checked here too, not only at the top of a tick, so a person's
+        // restart between ticks shows at once.
+        self.still_stopped(ended.action)
+            .then(|| TripStop::NotRestarted {
+                at_tick: ended.at_tick,
+                barred_by: ended.bars.clone(),
+            })
     }
 
     /// Why `node`'s stop would not end in a restart if the last trip holding
@@ -2671,6 +2755,7 @@ impl Engine {
                     flue_loss_w: self.node_states.flue_loss.get(&id).map(|w| w.value()),
                     // Likewise — see `NodeSnapshot::tube_fire_w`.
                     tube_fire_w: self.node_states.tube_fire.get(&id).map(|w| w.value()),
+                    trip_stop: self.trip_stop(id),
                 }
             })
             .collect();

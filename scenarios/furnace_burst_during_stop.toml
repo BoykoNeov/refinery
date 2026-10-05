@@ -1,0 +1,160 @@
+# M43 demo: a burst during a stop, and the snapshot saying why the furnace
+# stays dark (docs/DESIGN.md §48).
+#
+#   cool_feed (40 °C) -> heater -> hold_tank -> drain_valve -> rundown
+#
+# `furnace_coil_trip_autoreset.toml` (M40) line for line, with one change: its
+# tubes fail at 100.1 °C instead of 550 °C — a ROUND GAME-TUNING VALUE, chosen
+# so the coil that ends tick 74 at 100.18 °C bursts them on tick 75, the tick
+# the 100 °C tube-skin trip cuts the fuel (M42's first fixture, as a file).
+#
+# **What happens.** On tick 75 the trip cuts the fuel and the tubes burst in the
+# same tick: a 1 cm² hole in the outlet, leaking water, which lights nothing. The
+# trip resets ITSELF on tick 128, when the coil reads under 80 °C — and the
+# furnace stays dark, its loop in MANUAL, because a burst during a stop makes
+# that stop's restart a person's (M42, §47). The heater's snapshot says so:
+# `trip_stop` reads `held` from tick 75, barred by `tubes_burst_during_stop` and
+# `tubes_burst`, and `not_restarted` at tick 128 for the same two reasons, to the
+# end of the run (the hole leaks 0.607 kg/s at 6 000, the coil back at the 40 °C
+# feed). New tubes would lift the second reason, never the first. Measured on
+# both fidelities, identical events.
+#
+# On the furnace screen (key 4) a person patches the hole and fits new tubes at
+# tick 80, the trip re-arms at 128 with the tubes intact — dark all the same,
+# the screen saying why — and a person relights it at 200 on a 50 °C target.
+#
+#   cargo run -p refinery-cli -- run scenarios/furnace_burst_during_stop.toml --ticks 6000
+
+[meta]
+name = "furnace_burst_during_stop"
+description = "The self-resetting tube trip of furnace_coil_trip_autoreset with tubes that fail at 100.1 °C: they burst on the trip's own tick 75, and the trip's reset at 128 leaves the furnace dark for a person, the snapshot saying why."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.cool_feed]
+type = "source"
+pressure_bar = 1.6
+temperature_c = 40.0
+
+# The actuator. Its declared duty is the loop's starting position: 0.5 MW of a
+# 2 MW range is u = 0.25, and `initial_output` below says the same number.
+[nodes.heater]
+type = "furnace"
+duty_mw = 0.5
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its loop's 2 MW range), as
+# §37's rule says. The UA does NOT follow the rule, and that is the point of the
+# file: 18 kW/K, 0.3 of the load flow's 60.09 kW/K capacity rate where a clean
+# coil gets twice it — a FOULED coil, effectiveness 0.259 instead of 0.865. The
+# coil's steady temperature at load, the root of Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)
+# (§40 fork 5; Q = 500 kW, G = 0.2589·60.09 kW/K, T_in = 40 °C), so the plant
+# starts settled at the declared 0.5 MW.
+coil_heat_capacity_mj_per_k = 2
+coil_ua_kw_per_k = 18.0
+coil_temperature_c = 71.29
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132). The duty is what the
+# burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.973 at load,
+# and the rest goes up the stack.
+flame_temperature_c = 1951.1
+# Tubes (docs/DESIGN.md §42): past `tube_failure_c` the coil bursts, opening a
+# hole of `tube_rupture_area_cm2` in the outlet pipe; while burst, what leaks
+# burns in the firebox at `fluid_heating_value_mj_per_kg`. The limit and the
+# hole are ROUND GAME-TUNING VALUES, not a cited metal limit: 100.1 °C, a tenth
+# of a kelvin over the tube-skin trip, so the coil's overshoot past the trip
+# bursts them on the trip's own tick; a 1 cm² hole. The heating value is 0:
+# water does not burn, so a hole leaks but lights nothing.
+tube_failure_c = 100.1
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 0.0
+
+# Not measured: the tank follows the outlet at its own pace. The level is the
+# settled 4.968 m, so only the temperature has anywhere to go.
+[nodes.hold_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.968
+temperature_c = 40.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 150.0
+opening = 0.5
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "feed_line"
+from = "cool_feed"
+to = "heater"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "hold_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "hold_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# `initial_output` is the loop's MEMORY, not a bias (docs/DESIGN.md §10 fork 5).
+# On an outlet loop it waits: there is no error at load to back-calculate it
+# against, so the memory is seeded at the first measurement (tick 2), and the
+# first output the loop computes is exactly 0.25 whatever the gain is.
+[[controls]]
+name = "outlet_temperature"
+measurement = { node = "heater", variable = "temperature" }
+actuator = "heater"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_c = 60.0
+gain_per_k = 0.015
+integral_time_s = 10.0
+initial_output = 0.25
+max_duty_mw = 2.0
+
+# Fires AT OR ABOVE 100 °C on the coil — the tube metal — and cuts the fuel. The
+# coil is a state on the graph (docs/DESIGN.md §37), present from load.
+[[trips]]
+name = "tube_skin_high"
+measurement = { coil = "heater", variable = "temperature" }
+direction = "high"
+limit_c = 100.0
+# Resets itself once the coil reads below 80 °C, and relights the furnace (M40,
+# docs/DESIGN.md §45). The 20 K deadband is required: re-armed at its own limit,
+# the trip would cut and relight on alternate ticks.
+reset = "auto"
+reset_limit_c = 80.0
+actions = [{ furnace = "heater" }]
+
+# Fires AT OR ABOVE 70 °C on the furnace's outlet. Absent on tick 1's pass only
+# (docs/DESIGN.md §39). Never reached here: the outlet loop holds 60 °C.
+[[trips]]
+name = "outlet_high"
+measurement = { node = "heater", variable = "temperature" }
+direction = "high"
+limit_c = 70.0
+actions = [{ furnace = "heater" }]
