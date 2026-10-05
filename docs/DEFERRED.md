@@ -621,8 +621,8 @@ time since M9.1 they were measured rather than re-asserted.
   way F2 did, wire only. Nothing is past its trigger.
 
 - **A question left open is answered on the same record (M42, 2026-10-05).** The
-  user answered M41's question ("any burst during a stop makes the restart a
-  person's, even after new tubes"), and the answer needed no new state: the
+  user answered M41's question: mark that stop as "a person must relight it",
+  and "Fitting new tubes does not undo the mark". The answer needed no new state: the
   trips' record of the stop already carried "may this be restarted", already
   cleared for good by a hand-pressed stop. A burst while a trip holds the
   furnace is a third way to clear it, written where the burst happens. No plant
