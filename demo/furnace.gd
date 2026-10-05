@@ -1,0 +1,782 @@
+# M39's demonstrated criterion: a screen for the furnace milestones (M34–M38).
+#
+# The furnace work since M34 — a tube coil with a temperature of its own, the
+# flame ceiling, tubes that burst into a fire, trips that cut the fuel and the
+# emergency-stop button — ran only in tests and the CLI. This scene draws it, on
+# either of two shipped plants:
+#
+#   trip     scenarios/furnace_coil_trip.toml — a fouled heater holding its outlet
+#            at 60 °C while its tubes run hot, and the tube-skin trip that cuts it.
+#   burnout  scenarios/furnace_burnout.toml — a fouled heater over-fired on gas
+#            oil until its tubes burst and the leak burns in the firebox.
+#
+# Same rule as plant.gd, and the same reason: this script computes nothing
+# physical. Every number it draws is a snapshot field, every marker on a gauge is
+# a limit the snapshot carries (the tubes' failure temperature, the flame, each
+# trip's own limit), and every refusal it shows is the engine's own message. The
+# one arithmetic it does is display units — kelvin to °C, watts to MW — which is
+# what a frontend boundary is for (CLAUDE.md rule 4).
+#
+# Interactive:  godot --path . res://demo/furnace.tscn
+#               (keys listed on screen and in _input; 1 / 2 switch plants)
+# Recorded:     godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
+#               ...runs that plant's scripted timeline (AUTO_TRIP / AUTO_BURNOUT)
+#               and prints a `t=` line at a fixed interval plus one line per event.
+#               Those lines are the observation in ROADMAP.md's M39 section.
+# Screenshots:  add --shots=<dir> to a WINDOWED --auto run (headless renders
+#               nothing) to save a PNG at each scripted event.
+extends Node2D
+
+## The two plants, and the names on each the scene draws. A name missing from a
+## plant is a load-time halt, not a guess.
+const PLANTS := {
+	"trip":
+	{
+		"scenario": "res://scenarios/furnace_coil_trip.toml",
+		"title": "Fouled heater with a tube-skin trip",
+		"feed": "cool_feed",
+		"outlet_pipe": "heated_line",
+		"destination": "hold_tank",
+		"ticks_per_frame": 1,
+	},
+	"burnout":
+	{
+		"scenario": "res://scenarios/furnace_burnout.toml",
+		"title": "Over-fired heater: tube burn-out",
+		"feed": "charge",
+		"outlet_pipe": "heated_line",
+		"destination": "product",
+		"ticks_per_frame": 4,
+	},
+}
+
+## Scripted timelines for the recorded runs, in ticks. Each tick is one the
+## bridge test `crates/godot-ext/tests/furnace_screen.rs` replays with the same
+## commands and pins the outcome of — so a timeline that stops telling its story
+## fails `cargo test`, not just this demo.
+##
+## trip: the trip fires by itself at 75. Reset with the loop back in AUTO at
+## the 60 °C target, the fouled coil climbs past 100 °C again and trips at 239 —
+## the honest answer, since this coil settles at 117.3 °C on that target. Reset
+## with the target at 50 °C instead and the coil settles near 76 °C. The button
+## is pressed on that healthy plant at 900, reset at 901, and the loop relit at
+## 950: a reset does not relight the furnace (docs/DEFERRED.md E15).
+const AUTO_TRIP := {
+	150: ["reset", "auto"],
+	500: ["reset", "setpoint_50", "auto"],
+	900: ["press"],
+	901: ["reset"],
+	950: ["auto"],
+	1000: ["quit"],
+}
+## burnout: the tubes burst by themselves at 1 145. At 1 300 the hole is
+## patched, the fuel cut to 0.5 MW and new tubes asked for — refused, because
+## the coil is still far past its limit. The coil cools under 550 °C near 2 460;
+## new tubes go in at 2 500.
+const AUTO_BURNOUT := {
+	1300: ["patch", "duty_0.5", "new_tubes"],
+	2500: ["new_tubes"],
+	2600: ["quit"],
+}
+const AUTO_SHOT_TICKS := {
+	"trip": [74, 75, 238, 900, 901, 975],
+	"burnout": [1144, 1145, 1300, 2500],
+}
+## Print a `t=` line every this many ticks in a recorded run.
+const PRINT_EVERY := {"trip": 25, "burnout": 100}
+
+## Step sizes for the keys.
+const DUTY_STEP_W := 2.5e5
+const SETPOINT_STEP_K := 5.0
+const MAX_TICKS_PER_FRAME := 64
+
+@onready var sim: RefinerySim = $Sim
+
+var plant_key := "trip"
+var heater_id := -1
+var feed_id := -1
+var destination_id := -1
+var outlet_pipe_id := -1
+var snapshot: Dictionary = {}
+var halted := ""
+var auto_run := false
+var shots_dir := ""
+var paused := false
+## A recorded run has reached its end, or is waiting on a screenshot.
+var finished := false
+var shooting := false
+var ticks_per_frame := 1
+var message := ""
+var message_bad := false
+## Last-seen trip and tube states, to print an event line when one changes.
+var seen_trip_states: Array = []
+var seen_tubes := ""
+
+
+func _ready() -> void:
+	for arg in OS.get_cmdline_user_args():
+		if arg == "--auto":
+			auto_run = true
+		elif arg.begins_with("--plant="):
+			plant_key = arg.trim_prefix("--plant=")
+		elif arg.begins_with("--shots="):
+			shots_dir = arg.trim_prefix("--shots=")
+	if not PLANTS.has(plant_key):
+		_halt("no plant '%s' (trip | burnout)" % plant_key)
+		return
+	_load(plant_key)
+
+
+func _load(key: String) -> void:
+	plant_key = key
+	halted = ""
+	finished = false
+	snapshot = {}
+	seen_trip_states = []
+	seen_tubes = ""
+	var plant: Dictionary = PLANTS[key]
+	ticks_per_frame = plant["ticks_per_frame"]
+
+	var err = JSON.parse_string(sim.load_scenario(plant["scenario"]))
+	if err != null:
+		_halt("load failed: %s" % err)
+		return
+
+	heater_id = sim.node_id("heater")
+	feed_id = sim.node_id(plant["feed"])
+	destination_id = sim.node_id(plant["destination"])
+	outlet_pipe_id = sim.edge_id(plant["outlet_pipe"])
+	if heater_id < 0 or feed_id < 0 or destination_id < 0 or outlet_pipe_id < 0:
+		_halt("this scenario does not have the names the scene expects")
+		return
+
+	snapshot = JSON.parse_string(sim.snapshot_json())
+	_say("loaded %s" % plant["scenario"], false)
+	print("furnace: loaded %s" % plant["scenario"])
+	queue_redraw()
+
+
+func _physics_process(_delta: float) -> void:
+	if halted != "" or paused or finished or shooting:
+		return
+	for i in ticks_per_frame:
+		if not _step():
+			return
+	queue_redraw()
+
+
+## One engine tick, then the scripted timeline for it. False when the scene
+## must stop ticking this frame (a halt, a screenshot, the end of the run).
+func _step() -> bool:
+	var err = JSON.parse_string(sim.tick())
+	if err != null:
+		# Same reasoning as plant.gd: ticking through a diverged solve draws a
+		# plant nobody solved.
+		_halt("tick %d: %s" % [sim.tick_index(), err["message"]])
+		return false
+	snapshot = JSON.parse_string(sim.snapshot_json())
+	var tick := sim.tick_index()
+	_report_events(tick)
+
+	if not auto_run:
+		return true
+	if tick % int(PRINT_EVERY[plant_key]) == 0:
+		print(_readout(tick))
+	var timeline: Dictionary = AUTO_TRIP if plant_key == "trip" else AUTO_BURNOUT
+	if timeline.has(tick):
+		for action in timeline[tick]:
+			if action == "quit":
+				finished = true
+				get_tree().quit()
+				return false
+			_do(action)
+	if shots_dir != "" and tick in AUTO_SHOT_TICKS[plant_key]:
+		_shoot(tick)
+		return false
+	return true
+
+
+## Print a line when a trip latches or resets, or the tubes change state — read
+## from the snapshot, so it is the engine's account of what happened.
+func _report_events(tick: int) -> void:
+	var states: Array = []
+	for trip in _trips():
+		states.append(_trip_label(trip))
+	if seen_trip_states.size() == states.size():
+		for i in states.size():
+			if states[i] != seen_trip_states[i]:
+				print("furnace: t=%d  trip %s -> %s" % [tick, _trips()[i]["name"], states[i]])
+	seen_trip_states = states
+
+	var tubes := _tubes_label()
+	if seen_tubes != "" and tubes != seen_tubes:
+		print("furnace: t=%d  tubes -> %s" % [tick, tubes])
+	seen_tubes = tubes
+
+
+## Ticking holds until the frame showing `tick` has been drawn and saved.
+func _shoot(tick: int) -> void:
+	shooting = true
+	queue_redraw()
+	await RenderingServer.frame_post_draw
+	var path := "%s/furnace_%s_t%04d.png" % [shots_dir, plant_key, tick]
+	var image := get_viewport().get_texture().get_image()
+	if image != null:
+		image.save_png(path)
+		print("furnace: saved %s" % path)
+	shooting = false
+
+
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	match event.keycode:
+		KEY_1:
+			_load("trip")
+		KEY_2:
+			_load("burnout")
+		KEY_SPACE:
+			paused = not paused
+		KEY_BRACKETLEFT:
+			ticks_per_frame = maxi(1, ticks_per_frame / 2)
+		KEY_BRACKETRIGHT:
+			ticks_per_frame = mini(MAX_TICKS_PER_FRAME, ticks_per_frame * 2)
+		KEY_E:
+			_do("press")
+		KEY_R:
+			_do("reset")
+		KEY_A:
+			_do("toggle_mode")
+		KEY_W:
+			_do("setpoint_up")
+		KEY_S:
+			_do("setpoint_down")
+		KEY_UP:
+			_do("duty_up")
+		KEY_DOWN:
+			_do("duty_down")
+		KEY_P:
+			_do("patch")
+		KEY_N:
+			_do("new_tubes")
+	queue_redraw()
+
+
+# --------------------------------------------------------------- commands
+
+## Every action the keys and the timelines share. Each sends the contract's own
+## JSON; ids read from the snapshot arrive as floats and are cast to int, or
+## serde would refuse `0.0` for an id.
+func _do(action: String) -> void:
+	match action:
+		"press":
+			# The emergency stop presses every ARMED trip on the plant.
+			var pressed := 0
+			for trip in _trips():
+				if trip["state"]["status"] == "armed":
+					_send("press %s" % trip["name"], {"cmd": "manual_trip", "trip_id": int(trip["id"])})
+					pressed += 1
+			if pressed == 0:
+				_say("emergency stop: no armed trip on this plant to press", true)
+		"reset":
+			var reset := 0
+			for trip in _trips():
+				if trip["state"]["status"] == "tripped":
+					_send("reset %s" % trip["name"], {"cmd": "reset_trip", "trip_id": int(trip["id"])})
+					reset += 1
+			if reset == 0:
+				_say("reset: no tripped trip on this plant", true)
+		"auto":
+			_set_mode("auto")
+		"toggle_mode":
+			var loop = _loop()
+			if loop != null:
+				_set_mode("manual" if loop["mode"] == "auto" else "auto")
+			else:
+				_say("this plant has no control loop", true)
+		"setpoint_50":
+			_set_setpoint_k(273.15 + 50.0)
+		"setpoint_up", "setpoint_down":
+			var loop = _loop()
+			if loop == null:
+				_say("this plant has no control loop", true)
+				return
+			var step := SETPOINT_STEP_K if action == "setpoint_up" else -SETPOINT_STEP_K
+			_set_setpoint_k(float(loop["setpoint"]["k"]) + step)
+		"duty_up", "duty_down", "duty_0.5":
+			var duty := 5.0e5
+			if action != "duty_0.5":
+				var step := DUTY_STEP_W if action == "duty_up" else -DUTY_STEP_W
+				duty = maxf(0.0, _duty_w() + step)
+			_send(
+				"fire heater at %.2f MW" % (duty / 1.0e6),
+				{"cmd": "set_furnace_duty", "node": heater_id, "duty": duty}
+			)
+		"patch":
+			_send("patch %s" % PLANTS[plant_key]["outlet_pipe"], {"cmd": "puncture_pipe", "edge": outlet_pipe_id, "area": 0.0})
+		"new_tubes":
+			_send("replace the heater's tubes", {"cmd": "replace_tubes", "node": heater_id})
+
+
+func _set_mode(mode: String) -> void:
+	var loop = _loop()
+	if loop == null:
+		_say("this plant has no control loop", true)
+		return
+	_send(
+		"%s to %s" % [loop["name"], mode.to_upper()],
+		{"cmd": "set_controller_mode", "loop_id": int(loop["id"]), "mode": mode}
+	)
+
+
+func _set_setpoint_k(kelvin: float) -> void:
+	var loop = _loop()
+	if loop == null:
+		_say("this plant has no control loop", true)
+		return
+	_send(
+		"%s setpoint to %.1f C" % [loop["name"], kelvin - 273.15],
+		{
+			"cmd": "set_setpoint",
+			"loop_id": int(loop["id"]),
+			"value": {"variable": "temperature", "k": kelvin},
+		}
+	)
+
+
+## Send one command and put the engine's answer on screen — its own refusal
+## message when it says no, which is usually the most useful line on the screen.
+func _send(what: String, command: Dictionary) -> void:
+	var text := JSON.stringify(command)
+	var err = JSON.parse_string(sim.apply_command(text))
+	if err == null:
+		_say(what, false)
+		if auto_run:
+			print("furnace: t=%d  %s  %s" % [sim.tick_index(), what, text])
+	else:
+		_say("%s: REFUSED — %s" % [what, err["message"]], true)
+		if auto_run:
+			print("furnace: t=%d  %s  REFUSED: %s" % [sim.tick_index(), what, err["message"]])
+
+
+func _say(text: String, bad: bool) -> void:
+	message = text
+	message_bad = bad
+
+
+# ---------------------------------------------------------------- reading
+
+## Field lookups only, as in plant.gd. `trips` and `controls` are left out of the
+## snapshot when a plant has none, hence the defaults.
+
+func _node(id: int) -> Dictionary:
+	return snapshot["nodes"][id]
+
+
+func _heater_kind() -> Dictionary:
+	return _node(heater_id)["kind"]
+
+
+func _duty_w() -> float:
+	return float(_heater_kind()["duty"])
+
+
+func _coil_k() -> float:
+	return float(_heater_kind()["coil"]["temperature"])
+
+
+func _flame_k() -> float:
+	return float(_heater_kind()["flame_temperature"])
+
+
+func _failure_k() -> float:
+	return float(_heater_kind()["tubes"]["failure_temperature"])
+
+
+func _tubes_failed() -> bool:
+	return _heater_kind()["tubes"]["state"]["status"] == "failed"
+
+
+func _tubes_label() -> String:
+	var state: Dictionary = _heater_kind()["tubes"]["state"]
+	if state["status"] == "failed":
+		return "BURST at t=%d" % int(state["at_tick"])
+	return "intact"
+
+
+## Outlet temperature [K], or NAN before the first solve (a `null` field).
+func _outlet_k() -> float:
+	var t = _node(heater_id)["temperature_k"]
+	return NAN if t == null else float(t)
+
+
+func _optional_w(field: String) -> float:
+	var w = _node(heater_id).get(field)
+	return 0.0 if w == null else float(w)
+
+
+func _outlet_flow() -> float:
+	return float(snapshot["edges"][outlet_pipe_id]["stream"]["mass_flow"])
+
+
+func _leak_kg_s() -> float:
+	return float(snapshot["edges"][outlet_pipe_id]["leak_mass_flow"])
+
+
+func _trips() -> Array:
+	return snapshot.get("trips", [])
+
+
+func _loop():
+	var loops: Array = snapshot.get("controls", [])
+	return null if loops.is_empty() else loops[0]
+
+
+func _trip_label(trip: Dictionary) -> String:
+	var state: Dictionary = trip["state"]
+	if state["status"] == "armed":
+		return "armed"
+	var label := "TRIPPED at t=%d" % int(state["at_tick"])
+	if state.get("by_hand", false):
+		label += " (by hand)"
+	return label
+
+
+func _c(kelvin: float) -> String:
+	return "--" if is_nan(kelvin) else "%.1f C" % (kelvin - 273.15)
+
+
+## The level fraction of a tank destination — plant.gd's rule, from the slate.
+func _tank_fraction(id: int) -> float:
+	var kind: Dictionary = _node(id)["kind"]
+	var fractions: Array = kind["composition"]["mass_fractions"]
+	var slate: Array = snapshot["slate"]
+	var inverse := 0.0
+	for i in fractions.size():
+		if float(fractions[i]) > 0.0:
+			inverse += float(fractions[i]) / float(slate[i]["density_kg_per_m3"])
+	var level := float(kind["mass"]) * inverse / float(kind["area"])
+	return clampf(level / float(kind["height"]), 0.0, 1.0)
+
+
+func _readout(tick: int) -> String:
+	var trips := ""
+	for trip in _trips():
+		trips += "  %s=%s" % [trip["name"], _trip_label(trip)]
+	var loop = _loop()
+	var loop_text := "" if loop == null else "  loop=%s" % loop["mode"]
+	return (
+		"t=%5d  duty=%5.2f MW  coil=%7.2f C  outlet=%6.2f C  flow=%6.2f kg/s  leak=%5.3f kg/s  tubes=%s  fire=%5.2f MW%s%s"
+		% [
+			tick,
+			_duty_w() / 1.0e6,
+			_coil_k() - 273.15,
+			_outlet_k() - 273.15,
+			_outlet_flow(),
+			_leak_kg_s(),
+			_tubes_label(),
+			_optional_w("tube_fire_w") / 1.0e6,
+			loop_text,
+			trips,
+		]
+	)
+
+
+# ---------------------------------------------------------------- drawing
+
+const FEED_POS := Vector2(60, 380)
+const FURNACE_RECT := Rect2(190, 140, 220, 300)
+const GAUGE_RECT := Rect2(440, 140, 26, 300)
+const LEAK_POS := Vector2(600, 180)
+const DEST_RECT := Rect2(650, 250, 100, 190)
+const PANEL_X := 790.0
+
+const BACKGROUND := Color(0.09, 0.10, 0.12)
+const SHELL := Color(0.42, 0.45, 0.50)
+const PIPE := Color(0.55, 0.58, 0.62)
+const LIQUID := Color(0.20, 0.45, 0.75)
+const STEEL := Color(0.50, 0.52, 0.56)
+const HOT := Color(0.90, 0.30, 0.15)
+const WHITE_HOT := Color(1.0, 0.92, 0.65)
+const FLAME := Color(1.0, 0.55, 0.10)
+const FIRE := Color(1.0, 0.30, 0.05)
+const SPRAY := Color(0.45, 0.70, 0.95)
+const INK := Color(0.88, 0.90, 0.93)
+const DIM := Color(0.60, 0.63, 0.68)
+const GOOD := Color(0.35, 0.80, 0.45)
+const BAD := Color(0.95, 0.30, 0.25)
+
+
+func _draw() -> void:
+	draw_rect(Rect2(Vector2.ZERO, get_viewport_rect().size), BACKGROUND)
+	if halted != "" and snapshot.is_empty():
+		_text(Vector2(30, 40), "HALTED — %s" % halted, BAD)
+		return
+	if snapshot.is_empty():
+		return
+
+	_text(Vector2(30, 34), PLANTS[plant_key]["title"], INK, 20)
+	_text(
+		Vector2(30, 60),
+		"t = %d s    %d tick(s) per frame%s" % [sim.tick_index(), ticks_per_frame, "    PAUSED" if paused else ""],
+		DIM
+	)
+
+	_draw_pipes()
+	_draw_furnace()
+	_draw_gauge()
+	_draw_leak()
+	_draw_destination()
+	_draw_panel()
+
+	draw_multiline_string(
+		ThemeDB.fallback_font, Vector2(30, 556), message, HORIZONTAL_ALIGNMENT_LEFT,
+		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
+	)
+	_text(
+		Vector2(30, 600),
+		"E emergency stop   R reset trips   A loop auto/manual   W/S setpoint   Up/Down fuel",
+		DIM
+	)
+	_text(
+		Vector2(30, 624),
+		"P patch the hole   N new tubes   Space pause   [ ] speed   1 trip plant   2 burn-out plant",
+		DIM
+	)
+	if halted != "":
+		_text(Vector2(30, 90), "HALTED — %s" % halted, BAD)
+
+
+func _draw_pipes() -> void:
+	var inlet := FURNACE_RECT.position + Vector2(0, FURNACE_RECT.size.y - 60)
+	draw_polyline(PackedVector2Array([FEED_POS, Vector2(FEED_POS.x, inlet.y), inlet]), PIPE, 6.0)
+	draw_circle(FEED_POS, 14, PIPE)
+	_text(FEED_POS + Vector2(-30, 36), PLANTS[plant_key]["feed"], DIM)
+	_text(FEED_POS + Vector2(-30, 56), _c(float(_node(feed_id)["kind"]["temperature"])), DIM)
+
+	var outlet := FURNACE_RECT.position + Vector2(FURNACE_RECT.size.x, 40)
+	var to_dest := DEST_RECT.position + Vector2(DEST_RECT.size.x * 0.5, 0)
+	draw_polyline(
+		PackedVector2Array([outlet, Vector2(to_dest.x, outlet.y), to_dest]), PIPE, 6.0
+	)
+	_text(Vector2(LEAK_POS.x - 10, outlet.y + 26), "%.2f kg/s" % _outlet_flow(), DIM)
+	_text(Vector2(LEAK_POS.x - 10, outlet.y + 46), "outlet %s" % _c(_outlet_k()), INK)
+
+
+## The firebox: burner flames sized by the duty, the coil coloured by its own
+## temperature, and — when the tubes have burst — the leak's fire, sized by
+## `tube_fire_w`. Every size is read, none is remembered from a command.
+func _draw_furnace() -> void:
+	draw_rect(FURNACE_RECT, Color(0.13, 0.12, 0.12))
+	draw_rect(FURNACE_RECT, SHELL, false, 3.0)
+	_text(FURNACE_RECT.position + Vector2(0, FURNACE_RECT.size.y + 24), "heater", INK)
+	_text(
+		FURNACE_RECT.position + Vector2(0, FURNACE_RECT.size.y + 46),
+		"fired %.2f MW" % (_duty_w() / 1.0e6),
+		FLAME if _duty_w() > 0.0 else DIM
+	)
+
+	var fire_w := _optional_w("tube_fire_w")
+	if fire_w > 0.0:
+		var height := minf(FURNACE_RECT.size.y - 20, 40.0 + sqrt(fire_w / 1.0e6) * 45.0)
+		_flames(FURNACE_RECT.position + Vector2(20, FURNACE_RECT.size.y), FURNACE_RECT.size.x - 40, height, 6, FIRE)
+	if _duty_w() > 0.0:
+		var height := 20.0 + sqrt(_duty_w() / 1.0e6) * 40.0
+		_flames(FURNACE_RECT.position + Vector2(40, FURNACE_RECT.size.y), FURNACE_RECT.size.x - 80, height, 4, FLAME)
+
+	# The coil: a serpentine in the radiant section, steel -> red at the tubes'
+	# failure limit -> white-hot toward the flame. Broken in the middle once burst.
+	var coil_color := _coil_color()
+	var left := FURNACE_RECT.position.x + 30
+	var right := FURNACE_RECT.end.x - 30
+	var top := FURNACE_RECT.position.y + 40
+	var points := PackedVector2Array()
+	for row in 7:
+		var y := top + row * 22.0
+		if row % 2 == 0:
+			points.append_array([Vector2(left, y), Vector2(right, y)])
+		else:
+			points.append_array([Vector2(right, y), Vector2(left, y)])
+	var below := FURNACE_RECT.position + Vector2(0, FURNACE_RECT.size.y)
+	if _tubes_failed():
+		var half := points.size() / 2
+		draw_polyline(points.slice(0, half), coil_color, 5.0)
+		draw_polyline(points.slice(half + 1), coil_color, 5.0)
+		_text(below + Vector2(0, 68), "TUBES BURST", BAD, 18)
+	else:
+		draw_polyline(points, coil_color, 5.0)
+	if fire_w > 0.0:
+		_text(below + Vector2(120, 68), "tube fire %.1f MW" % (fire_w / 1.0e6), FIRE)
+
+
+func _coil_color() -> Color:
+	var coil := _coil_k()
+	var ambient := 293.15
+	if coil <= _failure_k():
+		return STEEL.lerp(HOT, clampf((coil - ambient) / (_failure_k() - ambient), 0.0, 1.0))
+	return HOT.lerp(WHITE_HOT, clampf((coil - _failure_k()) / (_flame_k() - _failure_k()), 0.0, 1.0))
+
+
+## The coil's thermometer. Its scale tops out a little above the tubes' failure
+## limit until the coil passes it, then grows with the coil toward the flame —
+## so a trip near 100 °C and a burst at 550 °C are both readable on the trip
+## plant, and the burn-out's climb to the flame still fits.
+func _draw_gauge() -> void:
+	var low := 273.15
+	var high := minf(_flame_k(), maxf(_failure_k() * 1.15, _coil_k() * 1.1))
+	var rect := GAUGE_RECT
+	draw_rect(rect, Color(0.13, 0.14, 0.16))
+	var fraction := clampf((_coil_k() - low) / (high - low), 0.0, 1.0)
+	draw_rect(
+		Rect2(rect.position + Vector2(0, rect.size.y * (1.0 - fraction)), Vector2(rect.size.x, rect.size.y * fraction)),
+		_coil_color()
+	)
+	draw_rect(rect, SHELL, false, 2.0)
+	_marker(rect, low, high, _failure_k(), "burst %s" % _c(_failure_k()), BAD)
+	if _flame_k() <= high + 0.5:
+		_marker(rect, low, high, _flame_k(), "flame %s" % _c(_flame_k()), FLAME)
+	_text(rect.position + Vector2(-6, -12), "coil", DIM)
+	_text(rect.position + Vector2(-6, rect.size.y + 24), _c(_coil_k()), INK)
+
+
+func _marker(rect: Rect2, low: float, high: float, kelvin: float, label: String, color: Color) -> void:
+	var y := rect.end.y - rect.size.y * clampf((kelvin - low) / (high - low), 0.0, 1.0)
+	draw_line(Vector2(rect.position.x - 4, y), Vector2(rect.end.x + 4, y), color, 2.0)
+	_text(Vector2(rect.end.x + 8, y + 5), label, color, 14)
+
+
+## The leak, sized by the reported mass flow. Orange when the tubes have burst
+## and the leak is burning, blue for a hole that leaks without lighting.
+func _draw_leak() -> void:
+	var flow := _leak_kg_s()
+	if flow <= 0.0:
+		return
+	var color := FIRE if _optional_w("tube_fire_w") > 0.0 else SPRAY
+	var reach := 24.0 + flow * 30.0
+	for i in 7:
+		var spread := deg_to_rad(240.0 + i * 10.0)
+		draw_line(LEAK_POS, LEAK_POS + Vector2(cos(spread), sin(spread)) * reach, color, 3.0)
+	_text(LEAK_POS + Vector2(-24, -reach - 10), "leak %.3f kg/s" % flow, color)
+
+
+func _draw_destination() -> void:
+	var node := _node(destination_id)
+	var label: String = PLANTS[plant_key]["destination"]
+	if node["kind"]["type"] == "tank":
+		var fraction := _tank_fraction(destination_id)
+		var warmth := clampf((float(node["kind"]["temperature"]) - 293.15) / 40.0, 0.0, 1.0)
+		draw_rect(
+			Rect2(
+				DEST_RECT.position + Vector2(0, DEST_RECT.size.y * (1.0 - fraction)),
+				Vector2(DEST_RECT.size.x, DEST_RECT.size.y * fraction)
+			),
+			LIQUID.lerp(HOT, warmth)
+		)
+		draw_rect(DEST_RECT, SHELL, false, 3.0)
+		_text(DEST_RECT.position + Vector2(0, DEST_RECT.size.y + 24), label, INK)
+		_text(DEST_RECT.position + Vector2(0, DEST_RECT.size.y + 46), _c(float(node["kind"]["temperature"])), INK)
+	else:
+		var box := Rect2(DEST_RECT.position + Vector2(10, DEST_RECT.size.y - 60), Vector2(80, 60))
+		var top := DEST_RECT.position + Vector2(DEST_RECT.size.x * 0.5, 0)
+		draw_line(top, Vector2(top.x, box.position.y), PIPE, 6.0)
+		draw_rect(box, SHELL, false, 3.0)
+		_text(box.position + Vector2(0, box.size.y + 24), label, INK)
+
+
+## The right-hand panel: the furnace's books, each trip with its reading against
+## its limit, and the loop.
+func _draw_panel() -> void:
+	var y := 120.0
+	_text(Vector2(PANEL_X, y), "FURNACE", DIM)
+	y += 24
+	_text(Vector2(PANEL_X, y), "fired          %6.2f MW" % (_duty_w() / 1.0e6), INK)
+	y += 22
+	_text(Vector2(PANEL_X, y), "up the stack   %6.2f MW" % (_optional_w("flue_loss_w") / 1.0e6), INK)
+	y += 22
+	_text(Vector2(PANEL_X, y), "tube fire      %6.2f MW" % (_optional_w("tube_fire_w") / 1.0e6), FIRE if _optional_w("tube_fire_w") > 0.0 else INK)
+	y += 22
+	_text(Vector2(PANEL_X, y), "tubes          %s" % _tubes_label(), BAD if _tubes_failed() else GOOD)
+
+	y += 40
+	_text(Vector2(PANEL_X, y), "TRIPS", DIM)
+	y += 24
+	if _trips().is_empty():
+		_text(Vector2(PANEL_X, y), "none on this plant", DIM)
+		y += 22
+	for trip in _trips():
+		var tripped: bool = trip["state"]["status"] == "tripped"
+		var state: Dictionary = trip["state"]
+		_text(Vector2(PANEL_X, y), trip["name"], INK)
+		_text(
+			Vector2(PANEL_X + 160, y),
+			"TRIPPED t=%d" % int(state["at_tick"]) if tripped else "armed",
+			BAD if tripped else GOOD
+		)
+		y += 20
+		var reading = trip.get("measurement")
+		var reading_k := NAN if reading == null else float(reading["k"])
+		var sign := ">=" if trip["direction"] == "high" else "<="
+		_text(
+			Vector2(PANEL_X + 12, y),
+			(
+				"reads %s   trips %s %s%s"
+				% [
+					_c(reading_k),
+					sign,
+					_c(float(trip["limit"]["k"])),
+					"   by hand" if state.get("by_hand", false) else "",
+				]
+			),
+			DIM,
+			14
+		)
+		y += 26
+
+	y += 14
+	_text(Vector2(PANEL_X, y), "CONTROL LOOP", DIM)
+	y += 24
+	var loop = _loop()
+	if loop == null:
+		_text(Vector2(PANEL_X, y), "none — fired by hand", DIM)
+		return
+	var measured = loop.get("measurement")
+	_text(Vector2(PANEL_X, y), "%s   %s" % [loop["name"], str(loop["mode"]).to_upper()], GOOD if loop["mode"] == "auto" else BAD)
+	y += 22
+	_text(
+		Vector2(PANEL_X, y),
+		"target %s   reads %s   output %.0f%%"
+		% [
+			_c(float(loop["setpoint"]["k"])),
+			_c(NAN if measured == null else float(measured["k"])),
+			float(loop["output"]) * 100.0,
+		],
+		INK,
+		14
+	)
+
+
+func _flames(base_left: Vector2, width: float, height: float, count: int, color: Color) -> void:
+	var step := width / count
+	for i in count:
+		var x := base_left.x + step * (i + 0.5)
+		draw_colored_polygon(
+			PackedVector2Array(
+				[
+					Vector2(x - step * 0.4, base_left.y),
+					Vector2(x, base_left.y - height),
+					Vector2(x + step * 0.4, base_left.y),
+				]
+			),
+			color
+		)
+
+
+func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:
+	draw_string(ThemeDB.fallback_font, at, text, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+
+func _halt(reason: String) -> void:
+	halted = reason
+	push_error("furnace: %s" % reason)
+	print("furnace: HALTED — %s" % reason)
+	queue_redraw()

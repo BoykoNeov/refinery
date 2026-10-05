@@ -106,6 +106,8 @@ cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
 ```
 godot --headless --path . --editor --quit    # once, after cloning
 godot --headless --path . -- --auto          # the M6.2 demo; ends at t=350
+godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on screen)
+godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
 ```
 
 ## Testing
@@ -144,8 +146,8 @@ godot --headless --path . -- --auto          # the M6.2 demo; ends at t=350
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M38
-(2026-10-04)** — a trip pressed by hand: the emergency-stop button.
+Work only on the current milestone unless asked. **Latest closed: M39
+(2026-10-05)** — the furnace screen: a Godot scene for the furnace milestones.
 Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.

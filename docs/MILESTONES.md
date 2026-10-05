@@ -12,6 +12,27 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M39 is CLOSED (2026-10-05): the furnace screen — a Godot scene for M34–M38.**
+The user's DECISION, from four directions offered with nothing past its trigger:
+the recommendation. No engine, loader, binding or scenario change. ROADMAP M39.
+- **`demo/furnace.tscn`** draws `furnace_coil_trip` (key 1) or `furnace_burnout`
+  (key 2): flames sized by the duty and by `tube_fire_w`, the coil coloured by its
+  temperature and broken when burst, a coil thermometer marked with the burst
+  limit and the flame, the leak, and a panel of the furnace's books, each trip's
+  reading against its limit (`by hand` when pressed) and the loop. Refusals show
+  in the engine's words. E presses every armed trip, R resets, A/W/S drive the
+  loop, Up/Down the fuel, P patches, N fits new tubes. Nothing physical computed.
+- **`--auto` runs** both stories headless: the trip at 75, again at 238 on the
+  same target, held on 50 °C, pressed at 900, reset at 901 and dark until 950; the
+  burst at 1 145 (0.815 kg/s, 34.89 MW), new tubes refused at 1 300 and fitted at
+  2 500. Both match their scenario headers' CLI figures.
+- **Gated**: `crates/godot-ext/tests/furnace_screen.rs` replays both timelines
+  through `bridge::Session` with the scene's command text byte for byte; a float
+  id (`0.0`, what GDScript reads) fails it, which is why the scene casts.
+- **Found, not built**: a reset does not relight the furnace (E15, now visible on
+  screen); a trip's snapshot does not say what it watches (new row F2).
+- `run/main_scene` unchanged; no corpus can move.
+
 **M38 is CLOSED (2026-10-04): a trip pressed by hand, the emergency-stop button —
 `docs/DEFERRED.md` E15's manual-trip clause struck, the rest of E15 open.** The
 user's DECISION ("a relatively small batch"), told first that E15's trigger has not

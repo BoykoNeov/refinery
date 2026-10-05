@@ -7359,3 +7359,115 @@ Refused on a tripped trip and an unknown id; a flow or furnace-outlet trip press
 before tick 1 cannot be reset until a tick has run. No loader key, no scenario
 file: eight gates on shipped plants in `tests/manual_trip_reference.rs`, and the Godot bridge's
 sweeps gained `manual_trip`. All 37 plants byte-identical on both fidelities.
+
+## M39 — the furnace screen: a Godot scene for M34–M38; opened on a decision
+
+The user asked "what is next" (2026-10-05), was told nothing in DEFERRED.md is past
+its trigger, and offered four directions: a Godot screen for the furnace demos, a
+trip delay, the other small safety-system pieces (E15), or deeper physics (B42,
+E10, B15's liquid clause). They chose the screen, the recommendation: six
+milestones of furnace and trip work (coil, flame ceiling, burn-out, coil and
+outlet trips, the emergency-stop button) existed only in tests and the CLI. One
+slice, GDScript and a bridge test; **no engine, loader, binding or scenario
+change**, so no corpus can move.
+
+### M39 — `demo/furnace.tscn` — **LANDED** 2026-10-05, and M39 is CLOSED
+
+`demo/furnace.gd` loads either of two shipped plants — `furnace_coil_trip.toml`
+(key 1, `--plant=trip`, the default) or `furnace_burnout.toml` (key 2,
+`--plant=burnout`) — and draws the firebox (burner flames sized by `kind.duty`,
+the leak's fire sized by `tube_fire_w`), the coil coloured by its own
+temperature and broken once the tubes burst, a coil thermometer marked with the
+tubes' failure limit and the flame, the outlet and its flow, the leak spray, the
+destination, and a panel with the furnace's books, each trip's reading against
+its limit and state (`by hand` when pressed), and the loop. Every refusal is
+shown in the engine's own words. Keys: E emergency stop (presses every ARMED
+trip), R reset every tripped trip, A loop auto/manual, W/S setpoint ±5 K, Up/Down
+fuel ±0.25 MW, P patch the hole, N new tubes, Space pause, `[ ]` speed. The rule
+is `plant.gd`'s: nothing physical is computed in GDScript; every marker is a
+limit the snapshot carries, and the only arithmetic is display units.
+`run/main_scene` is unchanged — the M6.2 demo is still what `godot --path .` runs.
+
+**Gated where it can be.** `crates/godot-ext/tests/furnace_screen.rs` replays both
+`--auto` timelines through `bridge::Session` with the scene's command text byte
+for byte (Godot sorts keys and writes `0.0` for a float) and pins each beat:
+the trip at 75, the repeat at 238, a coil held 5 K or more under its trip on the
+50 °C target, both trips `by_hand` at 901, the furnace dark from the reset until
+950's AUTO, the burst at 1 145, the refusal at 1 300 and new tubes at 2 500.
+Mutation: a trip id sent as `0.0` — the float GDScript reads ids as — fails it
+with serde's `expected u32`, which is why `_do` casts every id with `int()`.
+
+#### The observation (M39's demonstrated criterion)
+
+```
+godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto
+godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto --plant=burnout
+```
+
+Each run ends itself (`quit()` at 1 000 and 2 600); `--quit-after` is M6.2's hang
+guard, counted in frames. Trip plant, abridged (the 25-tick lines between
+events dropped):
+
+```
+furnace: loaded res://scenarios/furnace_coil_trip.toml
+t=   50  duty= 1.90 MW  coil=  87.28 C  outlet= 52.17 C  ...  loop=auto  tube_skin_high=armed  outlet_high=armed
+furnace: t=75  trip tube_skin_high -> TRIPPED at t=75
+t=   75  duty= 0.00 MW  coil=  99.72 C  outlet= 55.52 C  ...  loop=manual  tube_skin_high=TRIPPED at t=75  outlet_high=armed
+furnace: t=150  reset tube_skin_high  {"cmd":"reset_trip","trip_id":0}
+furnace: t=150  outlet_temperature to AUTO  {"cmd":"set_controller_mode","loop_id":0,"mode":"auto"}
+t=  225  duty= 2.00 MW  coil=  94.13 C  outlet= 53.94 C  ...  loop=auto  tube_skin_high=armed  outlet_high=armed
+furnace: t=238  trip tube_skin_high -> TRIPPED at t=238
+furnace: t=500  outlet_temperature setpoint to 50.0 C  {"cmd":"set_setpoint","loop_id":0,"value":{"k":323.15,"variable":"temperature"}}
+t=  900  duty= 0.70 MW  coil=  76.10 C  outlet= 49.34 C  ...  loop=auto  tube_skin_high=armed  outlet_high=armed
+furnace: t=900  press tube_skin_high  {"cmd":"manual_trip","trip_id":0}
+furnace: t=900  press outlet_high  {"cmd":"manual_trip","trip_id":1}
+furnace: t=901  trip tube_skin_high -> TRIPPED at t=901 (by hand)
+furnace: t=901  reset tube_skin_high  {"cmd":"reset_trip","trip_id":0}
+furnace: t=902  trip tube_skin_high -> armed
+t=  950  duty= 0.00 MW  coil=  64.47 C  outlet= 46.36 C  ...  loop=manual  tube_skin_high=armed  outlet_high=armed
+furnace: t=950  outlet_temperature to AUTO  {"cmd":"set_controller_mode","loop_id":0,"mode":"auto"}
+t= 1000  duty= 0.62 MW  coil=  63.40 C  outlet= 46.04 C  ...  loop=auto  tube_skin_high=armed  outlet_high=armed
+```
+
+Burn-out plant, abridged:
+
+```
+furnace: loaded res://scenarios/furnace_burnout.toml
+t= 1100  duty= 1.50 MW  coil= 545.08 C  outlet=122.92 C  flow=  6.29 kg/s  leak=0.000 kg/s  tubes=intact  fire= 0.00 MW
+furnace: t=1145  tubes -> BURST at t=1145
+t= 1200  duty= 1.50 MW  coil=1212.65 C  outlet=220.40 C  flow=  6.29 kg/s  leak=0.815 kg/s  tubes=BURST at t=1145  fire=34.89 MW
+furnace: t=1300  patch heated_line  {"area":0.0,"cmd":"puncture_pipe","edge":2}
+furnace: t=1300  fire heater at 0.50 MW  {"cmd":"set_furnace_duty","duty":500000.0,"node":2}
+furnace: t=1300  replace the heater's tubes  REFUSED: invalid command: furnace 'heater' coil is at 1638.1 °C, at or past its tubes' 550.0 °C limit: new tubes would burst on the next tick. Let the coil cool first (cut the fuel)
+t= 1400  duty= 0.50 MW  coil=1460.54 C  outlet=257.56 C  flow=  6.29 kg/s  leak=0.000 kg/s  tubes=BURST at t=1145  fire= 0.00 MW
+t= 2500  duty= 0.50 MW  coil= 534.49 C  outlet=121.40 C  flow=  6.29 kg/s  leak=0.000 kg/s  tubes=BURST at t=1145  fire= 0.00 MW
+furnace: t=2500  replace the heater's tubes  {"cmd":"replace_tubes","node":2}
+furnace: t=2501  tubes -> intact
+```
+
+**A reader can check these against the scenario headers without the engine.**
+`furnace_coil_trip.toml` says the trip fires on tick 75 with the outlet at
+55.52 °C, and so does the first event line; `furnace_burnout.toml` says the
+tubes burst on tick 1 145 and spray 0.815 kg/s into a 34.9 MW fire, and so does
+the 1 200 line. Those numbers were measured by the CLI; here they came through
+the GDExtension and GDScript. The patch puts the fire out on the next tick (the
+1 400 line reads 0.000 kg/s and 0 MW), and the 0.5 MW coil takes about 1 200
+ticks to fall under 550 °C, as its `C/UA` = 750 s and its ~1 600 °C start say.
+
+#### Findings — for the user's decision, none built
+
+- **A reset does not relight the furnace.** The trip plant shows it from t=902 to
+  t=950: both trips armed again, the furnace at zero, its loop in MANUAL until a
+  separate AUTO. That is DESIGN §35's design (a furnace trip hands its loops to
+  MANUAL), and it is E15's still-open "a reset that restarts equipment" made
+  visible. The screen does not paper over it.
+- **A frontend cannot tell what a trip watches.** `TripSnapshot` carries a name,
+  direction, limit and reading, but not WHICH quantity (the coil, the outlet, a
+  flow). So the coil gauge cannot mark `tube_skin_high`'s 100 °C beside the burst
+  limit; the panel shows each trip's own reading against its limit instead, which
+  needs no source. New row F2 (Frontends).
+- **The emergency stop presses every armed trip.** A plant-wide stop is a scene
+  decision, not an engine one: `Command::ManualTrip` still names one trip.
+- **The screen draws the last solved tick.** A command's effect shows on the next
+  tick's snapshot, so the 1 300 screenshot still shows the fire it has just put
+  out — honest, because the solve that would show otherwise has not run.
