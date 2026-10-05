@@ -446,6 +446,52 @@ func _c(kelvin: float) -> String:
 	return "--" if is_nan(kelvin) else "%.1f C" % (kelvin - 273.15)
 
 
+## Which of this screen's gauges a trip belongs on, from the trip's own
+## `watches` (M40): "coil" for the heater's tubes, "outlet" for its outlet
+## temperature, "" for anything else. Nothing is assumed from the trip's name.
+func _trip_gauge(trip: Dictionary) -> String:
+	var watches: Dictionary = trip["watches"]
+	if watches.has("coil") and int(watches["coil"]) == heater_id:
+		return "coil"
+	if watches.has("node") and int(watches["node"]) == heater_id and trip["limit"]["variable"] == "temperature":
+		return "outlet"
+	return ""
+
+
+## What a trip watches, in words, from `watches` and its limit's variable.
+func _watch_label(trip: Dictionary) -> String:
+	var watches: Dictionary = trip["watches"]
+	var variable: String = trip["limit"]["variable"]
+	if watches.has("coil"):
+		return "%s tubes" % _node(int(watches["coil"]))["name"]
+	if watches.has("pipe"):
+		return "%s %s" % [snapshot["edges"][int(watches["pipe"])]["name"], variable]
+	var node := _node(int(watches["node"]))
+	if node["kind"]["type"] == "furnace" and variable == "temperature":
+		return "%s outlet" % node["name"]
+	return "%s %s" % [node["name"], variable]
+
+
+## A tagged value (a limit or a reading) in its display unit; `--` when absent.
+func _value_text(value) -> String:
+	if value == null:
+		return "--"
+	match value["variable"]:
+		"temperature":
+			return _c(float(value["k"]))
+		"level":
+			return "%.2f m" % float(value["m"])
+		"pressure":
+			return "%.2f bar" % (float(value["pa"]) / 1.0e5)
+		"flow":
+			return "%.2f kg/s" % float(value["kg_per_s"])
+	return "?"
+
+
+func _trip_sign(trip: Dictionary) -> String:
+	return ">=" if trip["direction"] == "high" else "<="
+
+
 ## The level fraction of a tank destination — plant.gd's rule, from the slate.
 func _tank_fraction(id: int) -> float:
 	var kind: Dictionary = _node(id)["kind"]
@@ -505,6 +551,8 @@ const INK := Color(0.88, 0.90, 0.93)
 const DIM := Color(0.60, 0.63, 0.68)
 const GOOD := Color(0.35, 0.80, 0.45)
 const BAD := Color(0.95, 0.30, 0.25)
+## A trip's limit on a gauge while it is armed; BAD once it has tripped.
+const TRIP_MARK := Color(0.95, 0.78, 0.30)
 
 
 func _draw() -> void:
@@ -561,6 +609,18 @@ func _draw_pipes() -> void:
 	)
 	_text(Vector2(LEAK_POS.x - 10, outlet.y + 26), "%.2f kg/s" % _outlet_flow(), DIM)
 	_text(Vector2(LEAK_POS.x - 10, outlet.y + 46), "outlet %s" % _c(_outlet_k()), INK)
+	# Every trip that watches the outlet, under the outlet's own reading (M40).
+	var line := 0
+	for trip in _trips():
+		if _trip_gauge(trip) == "outlet":
+			var tripped: bool = trip["state"]["status"] == "tripped"
+			_text(
+				Vector2(LEAK_POS.x - 10, outlet.y + 66 + line * 18),
+				"trip %s %s" % [_trip_sign(trip), _value_text(trip["limit"])],
+				BAD if tripped else TRIP_MARK,
+				14
+			)
+			line += 1
 
 
 ## The firebox: burner flames sized by the duty, the coil coloured by its own
@@ -635,6 +695,11 @@ func _draw_gauge() -> void:
 	_marker(rect, low, high, _failure_k(), "burst %s" % _c(_failure_k()), BAD)
 	if _flame_k() <= high + 0.5:
 		_marker(rect, low, high, _flame_k(), "flame %s" % _c(_flame_k()), FLAME)
+	# Every trip that watches the tubes, on the tubes' own scale (M40).
+	for trip in _trips():
+		if _trip_gauge(trip) == "coil":
+			var tripped: bool = trip["state"]["status"] == "tripped"
+			_marker(rect, low, high, float(trip["limit"]["k"]), "trip %s" % _c(float(trip["limit"]["k"])), BAD if tripped else TRIP_MARK)
 	_text(rect.position + Vector2(-6, -12), "coil", DIM)
 	_text(rect.position + Vector2(-6, rect.size.y + 24), _c(_coil_k()), INK)
 
@@ -713,17 +778,15 @@ func _draw_panel() -> void:
 			BAD if tripped else GOOD
 		)
 		y += 20
-		var reading = trip.get("measurement")
-		var reading_k := NAN if reading == null else float(reading["k"])
-		var sign := ">=" if trip["direction"] == "high" else "<="
 		_text(
 			Vector2(PANEL_X + 12, y),
 			(
-				"reads %s   trips %s %s%s"
+				"%s %s   trips %s %s%s"
 				% [
-					_c(reading_k),
-					sign,
-					_c(float(trip["limit"]["k"])),
+					_watch_label(trip),
+					_value_text(trip.get("measurement")),
+					_trip_sign(trip),
+					_value_text(trip["limit"]),
 					"   by hand" if state.get("by_hand", false) else "",
 				]
 			),

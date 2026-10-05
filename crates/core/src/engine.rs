@@ -2500,6 +2500,7 @@ impl Engine {
             .map(|(i, t)| TripSnapshot {
                 id: TripId(i as u32),
                 name: t.name.clone(),
+                watches: t.measurement_point,
                 direction: t.direction,
                 limit: t.limit,
                 measurement: t.last_measurement,

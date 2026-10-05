@@ -296,7 +296,7 @@ fn the_trips_key_is_absent_without_a_trip_and_its_state_is_tagged() {
     let at_load = serde_json::to_string(&engine.snapshot()).unwrap();
     assert!(
         at_load.contains(
-            r#""trips":[{"id":0,"name":"receiving_high_level","direction":"high","limit":{"variable":"level","m":6.0},"state":{"status":"armed"}}]"#
+            r#""trips":[{"id":0,"name":"receiving_high_level","watches":{"node":3},"direction":"high","limit":{"variable":"level","m":6.0},"state":{"status":"armed"}}]"#
         ),
         "at load: {at_load}"
     );

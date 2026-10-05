@@ -884,7 +884,14 @@ impl MeasuredVariable {
 /// It is a point of its own rather than a second variable on the furnace node,
 /// because the node's `temperature` is its OUTLET and a variable has one meaning
 /// per point. A loop on a coil is refused by the loader, by name.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// **Serialized as the file writes it, less the variable** (M40,
+/// docs/DESIGN.md §45): `{"node":3}`, `{"pipe":5}` or `{"coil":2}`, the id in
+/// place of the name. `TripSnapshot::watches` publishes it, and the variable is
+/// already the tag of the trip's `limit`, so a second copy would be a second
+/// owner of one fact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MeasurementPoint {
     Node(NodeId),
     Pipe(EdgeId),

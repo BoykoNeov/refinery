@@ -2,8 +2,8 @@
 //! Frontends never touch engine internals.
 
 use crate::graph::{
-    ControlAction, ControlMode, ControlledValue, EdgeId, LoopId, NodeId, NodeKind, TankState,
-    TripDirection, TripId, TripState,
+    ControlAction, ControlMode, ControlledValue, EdgeId, LoopId, MeasurementPoint, NodeId,
+    NodeKind, TankState, TripDirection, TripId, TripState,
 };
 use crate::stream::Stream;
 use crate::traits::SolveDiagnostics;
@@ -396,6 +396,15 @@ pub struct TripSnapshot {
     pub id: TripId,
     /// Scenario-given trip name.
     pub name: String,
+    /// WHERE the trip measures (M40, docs/DESIGN.md §45; `docs/DEFERRED.md`
+    /// F2): `{"node":3}`, `{"pipe":5}` or `{"coil":2}`, indexing the snapshot's
+    /// own `nodes` and `edges`. With the variable `limit` is tagged with, it
+    /// says which gauge the trip belongs on: a coil's temperature is the
+    /// tubes, a furnace node's temperature its outlet, a pipe's flow that pipe.
+    ///
+    /// **Always written**, unlike the optional fields: every trip watches
+    /// something. Static data in every snapshot, as a node's `kind` is.
+    pub watches: MeasurementPoint,
     pub direction: TripDirection,
     /// The limit, carrying its own unit the way a loop's setpoint does.
     pub limit: ControlledValue,
