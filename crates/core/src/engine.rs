@@ -14,7 +14,7 @@ use crate::graph::{
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
-    NodeSnapshot, Snapshot, TripSnapshot,
+    NodeSnapshot, RestartBar, Snapshot, TripSnapshot,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, ReactionModel, SeparationModel,
@@ -123,20 +123,21 @@ pub struct Engine {
 
 /// One piece of equipment as it stood before the trips stopped it (M40,
 /// docs/DESIGN.md §45).
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct HeldEquipment {
     /// Its own state before the first trip wrote its safe state.
     before: EquipmentBefore,
     /// The loop that was in AUTO on it then, if any. One at most: two
     /// regulating writers of one actuator are refused at load (E4).
     auto_loop: Option<LoopId>,
-    /// Every trip that has held it during this stop allows a restart
-    /// (`TripReset::restarts`), none was pressed by hand, and — on a furnace —
-    /// its tubes did not burst while it was held (M42, docs/DESIGN.md §47).
-    /// Cleared for good by the first that fails, so one `Manual` trip, one
-    /// emergency stop or one burst keeps the equipment for a person to restart;
-    /// new tubes do not set it back.
-    restartable: bool,
+    /// What this stop has met that keeps the equipment for a person to restart:
+    /// a trip whose reset restarts nothing, a press, a burst while it was held
+    /// (M42, docs/DESIGN.md §47). Empty while every trip that has held it allows
+    /// a restart. Only ever added to, so one `Manual` trip, one emergency stop
+    /// or one burst holds for the rest of the stop; new tubes do not take one
+    /// out. Kept per cause, not as one flag, so a frontend is told which (M43,
+    /// §48). The tubes IN PLACE are not here: `restart_bars` asks them fresh.
+    bars: std::collections::BTreeSet<RestartBar>,
 }
 
 /// A trip-stoppable piece of equipment's own state, one variant per
@@ -748,7 +749,7 @@ impl Engine {
                 // Pressed by hand, so never restartable (M40, §45): whatever
                 // this trip's reset mode, a person restarts what an emergency
                 // stop stopped.
-                self.hold_equipment(&writes, false)?;
+                self.hold_equipment(&writes, Some(RestartBar::PressedByHand))?;
                 self.write_trip_actions(writes)
             }
         }
@@ -1957,7 +1958,7 @@ impl Engine {
         // side — through `reached`, the comparison that fires it. Only a trip
         // latched BEFORE this pass and not by hand: one latched on this pass
         // cannot clear on it, and an emergency stop waits for a person.
-        let mut latched: Vec<(Vec<TripAction>, bool)> = Vec::new();
+        let mut latched: Vec<(Vec<TripAction>, Option<RestartBar>)> = Vec::new();
         let mut released: Vec<Vec<TripAction>> = Vec::new();
         for (trip, measurement) in self.graph.trips_mut().iter_mut().zip(measured) {
             // Pass 1 let through only a flow or a furnace's outlet before the
@@ -1974,7 +1975,9 @@ impl Engine {
                             at_tick: this_tick,
                             by_hand: false,
                         };
-                        latched.push((trip.actions.clone(), trip.reset.restarts()));
+                        let bar =
+                            (!trip.reset.restarts()).then_some(RestartBar::ResetRestartsNothing);
+                        latched.push((trip.actions.clone(), bar));
                     }
                 }
                 (TripState::Tripped { by_hand: false, .. }, TripReset::Auto { reset_at }) => {
@@ -1993,8 +1996,8 @@ impl Engine {
         // this pass is already `Tripped` above, so `release_equipment` sees it
         // holding its equipment whichever of the first two loops runs first:
         // equipment one trip lets go of as another latches on it stays stopped.
-        for (actions, restartable) in &latched {
-            self.hold_equipment(actions, *restartable)?;
+        for (actions, bar) in &latched {
+            self.hold_equipment(actions, *bar)?;
         }
         for actions in &released {
             self.release_equipment(actions)?;
@@ -2047,13 +2050,13 @@ impl Engine {
     /// states are written (M40, docs/DESIGN.md §45).
     ///
     /// The first trip to hold a piece of equipment records it as it stands; a
-    /// later one only narrows `restartable`, so the record is always the state
-    /// before the STOP, never a safe state another trip wrote. `restartable` is
-    /// this trip's say: its reset mode allows a restart and it was not pressed.
+    /// later one only adds to `bars`, so the record is always the state before
+    /// the STOP, never a safe state another trip wrote. `bar` is this trip's
+    /// say: `None` if its reset mode allows a restart and it was not pressed.
     fn hold_equipment(
         &mut self,
         actions: &[TripAction],
-        restartable: bool,
+        bar: Option<RestartBar>,
     ) -> Result<(), SimError> {
         for &action in actions {
             let node = action.equipment();
@@ -2089,12 +2092,12 @@ impl Engine {
                     HeldEquipment {
                         before,
                         auto_loop,
-                        restartable: true,
+                        bars: std::collections::BTreeSet::new(),
                     },
                 );
             }
-            if let Some(held) = self.held_equipment.get_mut(&node) {
-                held.restartable &= restartable;
+            if let (Some(held), Some(bar)) = (self.held_equipment.get_mut(&node), bar) {
+                held.bars.insert(bar);
             }
         }
         Ok(())
@@ -2124,12 +2127,27 @@ impl Engine {
             // not in `restart_equipment`'s furnace arm, because a furnace under
             // an AUTO loop is relit through the transfer and never reaches it.
             // This asks the tubes IN PLACE; a burst during the stop, on tubes
-            // since replaced, is in `restartable` (M42, §47).
-            if held.restartable && !self.tubes_forbid_restart(node) {
+            // since replaced, is in the record's `bars` (M42, §47).
+            if self.restart_bars(node, &held).is_empty() {
                 self.restart_equipment(node, held)?;
             }
         }
         Ok(())
+    }
+
+    /// Why `node`'s stop would not end in a restart if the last trip holding
+    /// it let go now (M43, docs/DESIGN.md §48): the record's own `bars`, then
+    /// M41's question of the tubes in place. Empty: the trips hand it back.
+    ///
+    /// **The one place the verdict is made.** `release_equipment` acts on it
+    /// and the snapshot publishes it, so what a frontend is told and what the
+    /// engine does cannot come apart. In the `Ord` order of `RestartBar`.
+    fn restart_bars(&self, node: NodeId, held: &HeldEquipment) -> Vec<RestartBar> {
+        let mut bars: Vec<RestartBar> = held.bars.iter().copied().collect();
+        if self.tubes_forbid_restart(node) {
+            bars.push(RestartBar::TubesBurst);
+        }
+        bars
     }
 
     /// The equipment is a furnace whose tubes have burst, or will burst on the
@@ -2281,7 +2299,7 @@ impl Engine {
             // before the trip lets go do not undo it, and the next stop starts
             // clean. Only a furnace a trip holds: a lit one has no stop to mark.
             if let Some(held) = self.held_equipment.get_mut(&nid) {
-                held.restartable = false;
+                held.bars.insert(RestartBar::TubesBurstDuringStop);
             }
         }
         Ok(())

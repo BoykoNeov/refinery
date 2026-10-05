@@ -443,6 +443,29 @@ pub struct TripSnapshot {
     pub state: TripState,
 }
 
+/// One reason a stop by the trips will not end, or did not end, in the trips
+/// handing the equipment back (M43, docs/DESIGN.md §48). Each is one cause, so
+/// a frontend can say which a person can still lift: only `TubesBurst` goes
+/// away by itself, when new tubes are fitted.
+///
+/// Declared in the order the engine lists them, and `Ord` on that order, so a
+/// list of them is always written the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RestartBar {
+    /// A trip that held it during this stop resets by hand and restarts
+    /// nothing (`reset = "manual"`, the default and the real-plant rule, §45).
+    ResetRestartsNothing,
+    /// A trip that held it was pressed by hand — the emergency stop (§43, §45).
+    PressedByHand,
+    /// Its tubes burst while the trips held it dark (M42, §47). New tubes do not
+    /// lift this one: the stop's restart is a person's.
+    TubesBurstDuringStop,
+    /// Its tubes, as they stand, have burst or will burst on the next tick (M41,
+    /// §46). New tubes lift this one.
+    TubesBurst,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EdgeSnapshot {
     pub id: EdgeId,
