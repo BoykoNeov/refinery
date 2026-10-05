@@ -314,6 +314,15 @@ pub struct ControlSnapshot {
     pub id: LoopId,
     /// Scenario-given loop name — what a faceplate is labelled with.
     pub name: String,
+    /// WHERE the loop measures (M41, docs/DESIGN.md §46; `docs/DEFERRED.md`
+    /// F3): `{"node":3}` or `{"pipe":5}`, indexing the snapshot's own `nodes`
+    /// and `edges` — `TripSnapshot::watches`'s form. Never `{"coil":…}`: the
+    /// loader refuses a loop on a coil (§39). With the variable `setpoint` is
+    /// tagged with, it says which gauge the faceplate belongs on.
+    ///
+    /// **Always written**: every loop measures something. Static data in every
+    /// snapshot, as a node's `kind` is.
+    pub watches: MeasurementPoint,
     /// The algorithm driving it ("proportional", "proportional_integral"), from
     /// `Controller::name`.
     pub algorithm: String,

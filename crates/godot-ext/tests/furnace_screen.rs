@@ -131,6 +131,9 @@ fn the_trip_plant_timeline_tells_its_story() {
     assert_eq!(snap["trips"][0]["name"], "tube_skin_high");
     assert_eq!(snap["trips"][1]["name"], "outlet_high");
     assert_eq!(snap["controls"][0]["name"], "outlet_temperature");
+    // The scene finds its loop by this, the heater's outlet (M41).
+    let watched = snap["controls"][0]["watches"]["node"].as_u64().unwrap() as usize;
+    assert_eq!(snap["nodes"][watched]["name"], "heater");
 
     // By itself, at tick 75, with the outlet trip still armed.
     screen.run_to(74);
@@ -198,6 +201,9 @@ fn the_autoreset_timeline_tells_its_story() {
     assert_eq!(snap["trips"][0]["name"], "tube_skin_high");
     assert_eq!(snap["trips"][1]["name"], "outlet_high");
     assert_eq!(snap["controls"][0]["name"], "outlet_temperature");
+    // The scene finds its loop by this, the heater's outlet (M41).
+    let watched = snap["controls"][0]["watches"]["node"].as_u64().unwrap() as usize;
+    assert_eq!(snap["nodes"][watched]["name"], "heater");
     assert_eq!(
         snap["trips"][0]["reset"],
         serde_json::json!({"mode": "auto", "reset_at": {"variable": "temperature", "k": 353.15}})

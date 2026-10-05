@@ -456,9 +456,14 @@ func _trips() -> Array:
 	return snapshot.get("trips", [])
 
 
-func _loop():
-	var loops: Array = snapshot.get("controls", [])
-	return null if loops.is_empty() else loops[0]
+## The loop on the heater's outlet, found by what it watches (M41), not by its
+## place in the list; null when the plant has none.
+func _loop() -> Variant:
+	for loop in snapshot.get("controls", []):
+		var watches: Dictionary = loop["watches"]
+		if watches.has("node") and int(watches["node"]) == heater_id and loop["setpoint"]["variable"] == "temperature":
+			return loop
+	return null
 
 
 func _trip_label(trip: Dictionary) -> String:

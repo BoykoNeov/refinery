@@ -2705,6 +2705,7 @@ impl Engine {
             .map(|(i, c)| ControlSnapshot {
                 id: LoopId(i as u32),
                 name: c.name.clone(),
+                watches: c.measurement_point,
                 algorithm: c.algorithm.name().to_string(),
                 mode: c.mode,
                 action: c.action,
