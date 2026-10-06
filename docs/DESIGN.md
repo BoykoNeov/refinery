@@ -19851,6 +19851,8 @@ pinned, not fixed: which answer is right is element state (B6). Beside it, the
 stood stretch reads the drop's gas static head from the parked pass's compile,
 0.043 Pa off.
 
+**Correction to §50.** §50's correction to §3c names `known_defect_newton_refuses_two_reliefs_in_series_with_one_answer` as where a real solve reaches the cycle. That test is now `two_reliefs_in_series_answer_on_both_fidelities` and asserts the answer; a real solve reaches the cycle only in `dead_end_disc.rs`'s `a_dead_end_below_vacuum_is_refused`.
+
 **Deferred.** A20 is closed. A22 (new). A re-run that converges onto a
 classification the solve has not seen walks on, and could end at the cap
 (`cycled: false`); nothing reaches it. Chatter between two converged
