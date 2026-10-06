@@ -402,6 +402,7 @@ fn mid_node(m: &Mid, i: usize, fluid: &Fluid) -> Node {
             set_pressure: Pascal(set),
             accumulation: Pascal(band),
             x_t: fluid.x_t,
+            blowdown: None,
         },
     };
     Node {
@@ -665,6 +666,7 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
                         set_pressure: Pascal(*set),
                         accumulation: Pascal(*band),
                         x_t: fluid.x_t,
+                        blowdown: None,
                     },
                     MidDevice::None => unreachable!("matched above"),
                 };
@@ -698,6 +700,7 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
                 set_pressure: Pascal(spur.set),
                 accumulation: Pascal(spur.band),
                 x_t: fluid.x_t,
+                blowdown: None,
             },
             heat_input: Watt(0.0),
         });
@@ -1001,6 +1004,7 @@ fn valve_edge_is_choked(
             set_pressure,
             accumulation,
             x_t: Some(x_t),
+            ..
         } => (
             cv_max,
             refinery_solvers::elements::relief_opening(
@@ -2095,6 +2099,7 @@ fn a_relief_that_shuts_on_the_way_to_the_answer_no_longer_defeats_the_solve() {
             set_pressure: Pascal(4.0e5),
             accumulation: Pascal(0.5e5),
             x_t: None,
+            blowdown: None,
         },
         heat_input: Watt(0.0),
     });
@@ -2285,6 +2290,7 @@ fn a_leg_behind_a_relief_that_opens_reports_its_neighbours_pressure() {
             set_pressure: Pascal(5.0e5),
             accumulation: Pascal(0.5e5),
             x_t: None,
+            blowdown: None,
         },
         heat_input: Watt(0.0),
     });
@@ -2535,6 +2541,7 @@ fn a_classification_that_never_repeats_hits_the_cap() {
                 set_pressure: Pascal(6.0e5),
                 accumulation: Pascal(0.5e5),
                 x_t: None,
+                blowdown: None,
             },
             heat_input: Watt(0.0),
         });
@@ -2654,6 +2661,7 @@ fn spur_plant(fluid: &Fluid, set_pressure: f64) -> (PlantGraph, NodeId, NodeId) 
             set_pressure: Pascal(set_pressure),
             accumulation: Pascal(0.5e5),
             x_t: None,
+            blowdown: None,
         },
         heat_input: Watt(0.0),
     });
@@ -2684,6 +2692,7 @@ fn relay_plant(fluid: &Fluid, set_pressure: f64) -> (PlantGraph, NodeId, NodeId)
             set_pressure: Pascal(4.0e5),
             accumulation: Pascal(0.5e5),
             x_t: None,
+            blowdown: None,
         },
         heat_input: Watt(0.0),
     });

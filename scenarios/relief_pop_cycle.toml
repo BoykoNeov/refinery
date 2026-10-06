@@ -1,0 +1,100 @@
+# M48.0 demo: a POP relief valve — it remembers that it has lifted.
+#
+# `relief_blowdown.toml` with one key added: `blowdown_bar = 1.4` on the PSV
+# (7% of its 20 bar set, the commonly quoted gas-service figure; API 520 Part I
+# defines blowdown, the percentage is the widely reproduced one). That file's
+# memoryless PSV settles steadily, partly open, inside its band. This one pops:
+# the tick after its inlet stands above 20 bar it goes to full lift, holds it
+# while the receiver vents, and reseats only once its inlet falls below
+# 18.6 bar. Then the make-up refills the receiver and it pops again: the
+# receiver's pressure is a saw-tooth between reseat and set, not a steady sit.
+#
+# The latch moves between ticks, from the pressure the PSV's spring sensed in
+# the last solve (docs/DESIGN.md §53). A pop valve needs a gas vessel behind
+# its inlet — here the receiver — or it would flip every tick; the loader
+# refuses one without.
+
+[meta]
+name = "relief_pop_cycle"
+description = "A blocked-in receiver's pop PSV lifts at 20 bar, vents to 18.6 bar, reseats and refills: a saw-tooth."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "none"
+
+[[components]]
+name = "fuel_gas"
+phase = "gas"
+tb_c = -161.5
+molar_mass_kg_per_mol = 0.016043
+cp_j_per_kg_k = 2220.0
+
+[nodes.header]
+type = "source"
+pressure_bar = 30.0
+temperature_c = 20.0
+
+# The receiver. Starts well BELOW the PSV's set pressure so the run shows the
+# build-up, the lift and the settle rather than starting at the answer — the same
+# discipline `knockout_drum` uses.
+[nodes.receiver]
+type = "vessel"
+volume_m3 = 2.0
+pressure_bar = 12.0
+temperature_c = 20.0
+
+# Set at 20 bar with a 1 bar accumulation band (5%, an ordinary relief spec).
+# `x_t` is required because this valve is in gas service, and carries the same
+# secondary citation `gas_valve.toml` records: 0.72 for a globe valve,
+# single-port, parabolic plug, flow-to-open, widely reproduced from
+# IEC 60534-2-1 Table 2. This workspace has not read the standard.
+[nodes.psv]
+type = "relief_valve"
+kv = 12.0
+set_pressure_bar = 20.0
+accumulation_bar = 1.0
+x_t = 0.72
+blowdown_bar = 1.4
+
+[nodes.flare]
+type = "sink"
+pressure_bar = 1.1
+temperature_c = 20.0
+
+# The make-up line: restrictive enough that the PSV settles LOW in its band, which
+# is what a correctly sized relief does.
+[[pipes]]
+name = "make_up"
+from = "header"
+to = "receiver"
+length_m = 20.0
+diameter_m = 0.021
+
+# The PSV's inlet line, 5 m x 60 mm rather than the 2 m x 100 mm a relief
+# designer would reach for first. It was sized that way (M5.4c) to dodge a stall
+# in the Simple fidelity: the receiver and the PSV node across a wide line could
+# only move together at about c/(g + c) per Gauss-Seidel sweep, and at 2 m x
+# 100 mm the solver hit its 5000-sweep cap. M21.1 fixed the solver, not the
+# plant (DESIGN §25: an additive correction over heavy-edge groups), and the
+# wide line now takes 8 sweeps. The line stays 5 m x 60 mm because this file is
+# a regression anchor, not because anything still needs it; the 2 m x 100 mm and
+# 1 m x 150 mm lines are exercised by editing this file in-test
+# (`relief_valve_reference.rs`). It is also the more realistic geometry - API 520
+# limits PSV inlet line pressure drop precisely because the line is not free.
+[[pipes]]
+name = "psv_inlet"
+from = "receiver"
+to = "psv"
+length_m = 5.0
+diameter_m = 0.06
+
+[[pipes]]
+name = "flare_line"
+from = "psv"
+to = "flare"
+length_m = 30.0
+diameter_m = 0.10

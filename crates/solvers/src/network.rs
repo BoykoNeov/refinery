@@ -17,7 +17,9 @@ use crate::elements::{
 use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
 use refinery_core::error::SimError;
-use refinery_core::graph::{EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState};
+use refinery_core::graph::{
+    Blowdown, EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState,
+};
 use refinery_core::traits::{HydraulicSolution, SolveDiagnostics, StarvedTank};
 use refinery_core::units::{KgPerSec, Pascal, Seconds, Watt, G, P_ATM};
 use std::collections::{BTreeMap, BTreeSet};
@@ -619,11 +621,21 @@ pub fn compile_edge(
                     opening,
                     x_t,
                 } => (cv_max, *opening, x_t),
+                // A LIFTED pop valve is at full lift whatever its inlet reads,
+                // and its opening has no slope (M48, docs/DESIGN.md §53 fork 2);
+                // the latch itself moves only between ticks.
+                NodeKind::ReliefValve {
+                    blowdown: Some(Blowdown { lifted: true, .. }),
+                    cv_max,
+                    x_t,
+                    ..
+                } => (cv_max, 1.0, x_t),
                 NodeKind::ReliefValve {
                     cv_max,
                     set_pressure,
                     accumulation,
                     x_t,
+                    ..
                 } => (
                     cv_max,
                     relief_opening(pressures[&src], set_pressure.value(), accumulation.value()),
@@ -633,20 +645,26 @@ pub fn compile_edge(
             };
             let opening = &opening;
             let op = if *opening < OPEN_EPS { 0.0 } else { *opening };
-            if let NodeKind::ReliefValve {
-                set_pressure,
-                accumulation,
-                ..
-            } = kind
-            {
-                relief = Some((
-                    op,
-                    relief_opening_slope(
-                        pressures[&src],
-                        set_pressure.value(),
-                        accumulation.value(),
-                    ),
-                ));
+            match kind {
+                NodeKind::ReliefValve {
+                    blowdown: Some(Blowdown { lifted: true, .. }),
+                    ..
+                } => relief = Some((op, 0.0)),
+                NodeKind::ReliefValve {
+                    set_pressure,
+                    accumulation,
+                    ..
+                } => {
+                    relief = Some((
+                        op,
+                        relief_opening_slope(
+                            pressures[&src],
+                            set_pressure.value(),
+                            accumulation.value(),
+                        ),
+                    ));
+                }
+                _ => {}
             }
             let rho_rel = rho / RHO_WATER_REF;
             let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);

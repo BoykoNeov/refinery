@@ -635,6 +635,77 @@ pub(crate) fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(),
     Ok(())
 }
 
+/// A relief valve's `blowdown` needs a gas cushion at its inlet (M48,
+/// docs/DESIGN.md §53 forks 4 and 4b): refused in liquid service, and refused in
+/// gas unless a `Vessel` is reachable from its inlet through pipes and
+/// zero-volume nodes, never through the relief itself.
+///
+/// The reason is the same one twice. The latch moves once per tick, and a pop
+/// valve at full lift with nothing to store pressure behind it drops its own
+/// inlet below reseat in the same solve, then stands back above set the tick
+/// after it shuts: it flips every tick. A liquid line never has the cushion (its
+/// holdups are vented tanks, a pump's discharge is algebraic), and liquid-trim
+/// relief valves are not pop valves anyway. In gas, the user's DECISION
+/// (2026-10-06) was to refuse a pop valve with no vessel behind it rather than
+/// let it chatter on screen.
+///
+/// What it does NOT promise: a vessel behind an inlet line that loses more than
+/// the blowdown at full lift still flips every tick — the real failure API 520
+/// Part II's inlet-loss limit exists for, and a gate rather than a refusal.
+///
+/// Runs after `require_gas_valve_x_t`, and takes the service verdict from the
+/// same `plant_phases` analysis.
+pub(crate) fn require_blowdown_cushion(
+    graph: &PlantGraph,
+    phases: &[Phase],
+) -> Result<(), SimError> {
+    for nid in graph.node_ids() {
+        let node = graph.node(nid);
+        let NodeKind::ReliefValve {
+            blowdown: Some(_), ..
+        } = &node.kind
+        else {
+            continue;
+        };
+        if phases[nid.0 as usize] == Phase::Liquid {
+            return Err(SimError::Scenario(format!(
+                "relief valve '{}' declares blowdown_bar in liquid service. A blowdown                  valve pops to full lift and holds it until its inlet falls to reseat,                  which needs a gas cushion behind it; a liquid line has none, so it would                  flip open and shut every tick, and liquid-trim relief valves do not pop.                  Remove blowdown_bar (docs/DESIGN.md §53).",
+                node.name
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::from([nid]);
+        let mut frontier: Vec<NodeId> = graph
+            .incident(nid)
+            .into_iter()
+            .filter(|(_, _, incoming)| *incoming)
+            .map(|(_, other, _)| other)
+            .collect();
+        let mut cushioned = false;
+        while let Some(at) = frontier.pop() {
+            if !seen.insert(at) {
+                continue;
+            }
+            match &graph.node(at).kind {
+                NodeKind::Vessel(_) => {
+                    cushioned = true;
+                    break;
+                }
+                kind if refinery_core::energy::is_zero_volume(kind) => {
+                    frontier.extend(graph.incident(at).into_iter().map(|(_, other, _)| other))
+                }
+                _ => {}
+            }
+        }
+        if !cushioned {
+            return Err(SimError::Scenario(format!(
+                "relief valve '{}' declares blowdown_bar with no gas vessel behind its                  inlet. A blowdown valve pops to full lift and holds it until its inlet                  falls to reseat; with nothing to store pressure behind it, full lift drops                  the inlet below reseat at once and the valve flips open and shut every                  tick. Put a vessel on its inlet side, or remove blowdown_bar                  (docs/DESIGN.md §53).",
+                node.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// The phase of every node's connected component — the load-time guard that
 /// makes M5's two-phase deferral loud instead of silent (docs/DESIGN.md §3a).
 ///

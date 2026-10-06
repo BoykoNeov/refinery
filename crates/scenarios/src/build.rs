@@ -8,11 +8,11 @@ use refinery_core::energy::T_REF;
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    Actuator, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
-    EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling, LeakRole, LoopId, MeasuredVariable,
-    MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe, PlantGraph, SetpointRange,
-    TankState, Trip, TripAction, TripDirection, TripId, TripReset, TripState, TubeState,
-    VesselState,
+    Actuator, Blowdown, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode,
+    ControlledValue, EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling, LeakRole, LoopId,
+    MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe, PlantGraph,
+    SetpointRange, TankState, Trip, TripAction, TripDirection, TripId, TripReset, TripState,
+    TubeState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -30,8 +30,9 @@ use crate::schema::{
     MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile, TripDef,
 };
 use crate::validate::{
-    plant_phases, require_compatible_fidelity, require_declared_iff_used, require_gas_valve_x_t,
-    seed_component_index, validate_node_def, validate_pipe_def, validate_topology,
+    plant_phases, require_blowdown_cushion, require_compatible_fidelity, require_declared_iff_used,
+    require_gas_valve_x_t, seed_component_index, validate_node_def, validate_pipe_def,
+    validate_topology,
 };
 
 /// Build a runnable engine from a scenario. Steps:
@@ -192,6 +193,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // is a tick-1 density seed only (see `seed_component_index`).
     let phases = plant_phases(&graph, &slate)?;
     require_gas_valve_x_t(&graph, &phases)?;
+    require_blowdown_cushion(&graph, &phases)?;
     for eid in graph.edge_ids().collect::<Vec<_>>() {
         let (src, _) = graph.endpoints(eid);
         let index = seed_component_index(&slate, phases[src.0 as usize]);
@@ -3133,6 +3135,7 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             set_pressure_bar,
             accumulation_bar,
             x_t,
+            blowdown_bar,
         } => {
             if !accumulation_bar.is_finite() || *accumulation_bar <= 0.0 {
                 return Err(SimError::Scenario(format!(
@@ -3148,11 +3151,29 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                      is ABSOLUTE and must be positive."
                 )));
             }
+            // Service and the vessel behind it are topological facts, checked
+            // in `require_blowdown_cushion` once the graph exists; the number's
+            // own range is checked here.
+            let blowdown = match blowdown_bar {
+                None => None,
+                Some(b) if b.is_finite() && *b > 0.0 && *b < *set_pressure_bar => {
+                    Some(Blowdown {
+                        amount: bar_to_pa(*b),
+                        lifted: false,
+                    })
+                }
+                Some(b) => {
+                    return Err(SimError::Scenario(format!(
+                        "relief valve '{name}' has blowdown_bar = {b}, which must be > 0 and                          below its set pressure ({set_pressure_bar} bar): the valve reseats at                          set − blowdown, an ABSOLUTE pressure that must stay positive."
+                    )))
+                }
+            };
             NodeKind::ReliefValve {
                 cv_max: kv_to_cv_si(*kv),
                 set_pressure: bar_to_pa(*set_pressure_bar),
                 accumulation: bar_to_pa(*accumulation_bar),
                 x_t: *x_t,
+                blowdown,
             }
         }
         NodeDef::CheckValve {

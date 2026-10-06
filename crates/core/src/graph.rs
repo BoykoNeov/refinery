@@ -157,11 +157,11 @@ pub enum NodeKind {
     /// `x_t`, same ISA gas law, same fold-at-source — so it shares every code path
     /// a valve takes and differs only in where `opening` comes from.
     ///
-    /// GIVEN UP, and stated rather than discovered: no blowdown hysteresis (a real
-    /// PSV recloses below its set pressure), no chatter, and — inherited from the
-    /// gas valve's symmetry — it passes REVERSE flow, which a real one does not.
-    /// All three need element state, and state is what turns an element into a
-    /// controller.
+    /// GIVEN UP, and stated rather than discovered: no chatter of its own, and —
+    /// inherited from the gas valve's symmetry — it passes REVERSE flow, which a
+    /// real one does not. Blowdown hysteresis (a real PSV recloses below its set
+    /// pressure) is opt-in since M48 through `blowdown`: element state the solve
+    /// reads and only the engine writes, between ticks (docs/DESIGN.md §53).
     ReliefValve {
         cv_max: f64,
         /// Set pressure [Pa] ABSOLUTE: at or below it the valve is shut.
@@ -172,6 +172,10 @@ pub enum NodeKind {
         /// As `Valve::x_t` — required in gas service, refused in liquid.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         x_t: Option<f64>,
+        /// A pop valve's memory (M48, docs/DESIGN.md §53). Absent: the memoryless
+        /// M5 valve above, and the wire is what it was before M48.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        blowdown: Option<Blowdown>,
     },
     /// Check (non-return) valve: passes flow one way and shuts against the other
     /// (M30, docs/DESIGN.md §33, ledger row E22).
@@ -658,6 +662,43 @@ pub struct TankState {
 /// to set one.
 fn no_ambient_exchange() -> WattPerKelvin {
     WattPerKelvin::ZERO
+}
+
+/// A pop relief valve's memory (M48, docs/DESIGN.md §53, ledger row B6). See
+/// `NodeKind::ReliefValve::blowdown`.
+///
+/// Shut, the valve runs the M5 curve unchanged. Lifted, it runs at FULL LIFT,
+/// whatever its inlet reads, until the inlet falls below `set − amount` — the
+/// reseat pressure (API 520 Part I's blowdown) — which is the hysteresis: at one
+/// pressure between reseat and set, the valve is shut on the way up and open on
+/// the way down.
+///
+/// `lifted` is written by the engine ONLY, at the top of each tick from the
+/// pressure its spring sensed in the last solve (`Engine::run_relief_latches`),
+/// and read by the solve; nothing inside a solve moves it.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Blowdown {
+    /// How far below the set pressure [Pa] a lifted valve reseats. Positive, and
+    /// less than the set pressure, both enforced at load.
+    pub amount: Pascal,
+    /// Lifted since its inlet last stood above the set, and not yet reseated.
+    pub lifted: bool,
+}
+
+impl Blowdown {
+    /// The latch after a solve whose inlet pressure [Pa absolute] was
+    /// `inlet_pressure`, for a valve set at `set_pressure` [Pa absolute]: shut
+    /// lifts strictly above set, lifted reseats strictly below `set − amount`,
+    /// and in between it stays as it was.
+    pub fn after(self, inlet_pressure: Pascal, set_pressure: Pascal) -> Blowdown {
+        let p = inlet_pressure.value();
+        let lifted = if self.lifted {
+            p >= set_pressure.value() - self.amount.value()
+        } else {
+            p > set_pressure.value()
+        };
+        Blowdown { lifted, ..self }
+    }
 }
 
 /// A capacitive gas vessel's inventory. See `NodeKind::Vessel`.

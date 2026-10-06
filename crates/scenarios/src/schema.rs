@@ -409,6 +409,13 @@ pub enum NodeDef {
         /// characteristic this solver's Jacobian is not entitled to.
         accumulation_bar: f64,
         x_t: Option<f64>,
+        /// How far below the set pressure [bar] the valve reseats once it has
+        /// lifted (M48, docs/DESIGN.md §53). Present: a POP valve — full lift
+        /// from the tick after its inlet stands above set, until it falls below
+        /// `set_pressure_bar − blowdown_bar`. Absent: the memoryless M5 valve.
+        /// Gas service only, with a vessel behind its inlet (both enforced at
+        /// load); > 0 and below the set pressure.
+        blowdown_bar: Option<f64>,
     },
     /// Check (non-return) valve (M30, docs/DESIGN.md §33). In gas service it
     /// takes `x_t` under `Valve`'s rule (M31, §34).

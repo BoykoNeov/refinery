@@ -19935,3 +19935,144 @@ the user's decision: Newton refusing when the far relief would open from its
 far side (which, stood at zero flow, could also refuse a plant near the set
 that has one answer), or a relief that shuts against back-pressure (a model
 change that reverses §3a fork 5's reading).
+
+## 53. Valve memory — a relief that reseats below its set, and an answer kept from the last tick — ledger rows B6 and A22 (M48) — specified before building
+
+Taken on the user's request ("work on valve memory", 2026-10-06), with the
+user's DECISION between four readings of it: reseat hysteresis, keeping last
+tick's answer where a plant has two, both (chosen, hysteresis first), or the
+check valve's cracking pressure (E23). Said plainly before deciding: no
+shipped plant needs either — every relief in the corpus settles steadily
+partly open inside its band, so both slices are opt-in or inert on the 41
+plants and each ships its own new fixture.
+
+**Two mechanisms, not one.** Hysteresis changes the CURVE: a relief that has
+lifted runs a different opening than one that has not, at the same inlet
+pressure. Keeping last tick's answer changes only the CHOICE between two exact
+roots of an unchanged curve. They are separate slices because hysteresis does
+not settle A22: there the far relief's two answers come from reverse flow
+raising its own inlet (7.48 bar held open, against a 6.85 bar set), so a valve
+that remembers it was shut would still find the held-open root on its shut
+curve. Only the second slice picks between them.
+
+### M48.0 — blowdown: a relief that pops and reseats below its set
+
+**What a real one does.** A spring-loaded PSV in gas service is a POP valve:
+at its set pressure it snaps to (near) full lift, and it stays there until the
+inlet falls through its RESEAT pressure, some fraction of the set below it —
+the blowdown, typically 7–10% of set for a gas valve (API 520 Part I's
+definition; the percentage is the commonly reproduced figure, the standard was
+not read). With a relief bigger than the make-up, the vessel's pressure is then
+a SAW-TOOTH between reseat and set, not a steady sit inside the band.
+
+**Interfaces.**
+- Scenario: `relief_valve` gains optional `blowdown_bar` [bar], the drop below
+  set at which a lifted valve reseats. Absent = today's memoryless valve, bit
+  for bit.
+- `NodeKind::ReliefValve` gains `blowdown: Option<Blowdown>`, skipped on the
+  wire when absent; `Blowdown { amount: Pascal, lifted: bool }`. It lives on
+  the node because it is element state the solve reads, exactly as a valve's
+  operator `opening` and a trip's `TripState` live on the graph — and so it
+  is in every snapshot through `NodeSnapshot::kind`, with no new field.
+- `FlowSolver::solve` does not change: the solver reads the latch off the
+  graph, and nothing in the solve writes it.
+
+**Forks.**
+1. **The shut curve is today's curve.** A valve that has not lifted is the
+   M5 smoothstep from set to set + accumulation, so a valve with the key that
+   never crosses its set runs the same bits as one without it, and the
+   solve stays continuous within a tick. *Rejected*: a step at set (the
+   Jacobian is not entitled to one).
+2. **The lifted curve is full lift, flat.** `opening = 1` while lifted, slope
+   zero. A pop valve's lift does not follow pressure between reseat and set;
+   that is the hysteresis. *Rejected*: the M5 curve shifted down by the
+   blowdown — a vessel then settles steadily on the shifted curve above its
+   reseat and never reseats, which is a lower set, not a memory.
+3. **The latch moves between ticks, never inside one**, at the TOP of the tick
+   beside the trips, from the start-of-tick state (`last_solution`'s pressure
+   at the relief node, the pressure its spring senses — §3a's read, M26):
+   shut and `p > set` → lifted; lifted and `p < set − blowdown` → shut.
+   Inside the solve the curve is fixed, so the active-set loop and both
+   solvers see an ordinary valve. The snapshot shows the latch the tick's
+   flows were computed with. The jump from full lift to shut is therefore
+   between ticks, where a trip's jump already is. Tick 1 has no previous
+   solve and starts shut.
+4. **Gas service only, refused in liquid.** In liquid there is no capacitance
+   at a relief's inlet — tanks are vented, a pump's discharge is algebraic —
+   so a pop valve on it flips every tick: full lift drops the inlet below
+   reseat, shut puts it back above set. That is real (an oversized liquid
+   relief does chatter) but liquid-trim valves are not pop valves, and no
+   plant asks. Refused at load beside the gas-valve `x_t` rule, which already
+   owns "which service is this valve in". New ledger row.
+5. **Chatter in gas is allowed, and is the inlet-loss rule.** A relief whose
+   inlet line loses more than its blowdown at full lift reseats the tick
+   after it pops, from a vessel still above set: it flips every tick. That is
+   the real failure API 520 Part II's inlet-loss limit (3% of set, beside a
+   7% blowdown) exists to prevent, so it is a gate, not a refusal.
+4b. **And refused in gas with no vessel behind it** — the user's DECISION,
+   taken mid-slice (2026-10-06) over allowing it or flagging it in the
+   snapshot. A gas relief fed straight from a fixed-pressure header has
+   nothing to store pressure behind it either, and flips every tick on
+   screen. The rule: a `Vessel` must be reachable from the relief's inlet
+   through pipes and zero-volume nodes (`energy::is_zero_volume`), never
+   through the relief itself; the search stops at every other holdup and
+   boundary. `validate::require_blowdown_cushion`, which also owns fork 4's
+   liquid refusal. A vessel behind a lossy inlet line still chatters (fork 5).
+6. **Load refusals**: `blowdown_bar` finite and > 0, and reseat
+   `set − blowdown` > 0 absolute.
+
+**Gates, named before building** (`crates/scenarios/tests/relief_blowdown_reference.rs`):
+1. A keyed valve that never reaches set is bit-identical to its keyless twin.
+2. Pop: the first tick whose start-of-tick inlet is above set runs at full
+   lift, and its snapshot says lifted.
+3. Hysteresis, hand-checked: at one inlet pressure between reseat and set the
+   valve is shut on the way up and fully open on the way down; it reseats on
+   the first tick whose start-of-tick inlet is below `set − blowdown` and not
+   before.
+4. The demo saw-tooths: several lifts in the run, every reseat at a start
+   pressure below reseat and every lift above set, on both fidelities, with
+   the same lift ticks.
+5. Inlet-loss chatter: the same plant with a blowdown smaller than its inlet
+   line's loss at full lift flips every tick.
+6. Refusals: zero, negative, non-finite, at-or-above set, liquid service.
+
+**Mutations, predicted before running** (each against only the gates named):
+- Lifted curve = today's curve (no pop): gates 2, 3, 4.
+- Reseat compared against `set` instead of `set − blowdown`: gate 3.
+- Latch never reseats: gates 3, 4.
+- Latch moved from the top of the tick to after the solve (reads this tick's
+  answer): gate 2's "the tick after", gate 3's tick.
+- Liquid refusal removed: gate 6.
+
+**Measured (M48.0, landed 2026-10-06).**
+- Demo `relief_pop_cycle.toml` (42nd file): first lift on tick 127, then a
+  lift every ~61 ticks — 94 lifts in 6 000 ticks, the receiver between
+  18.67 and 20.03 bar. Newton and the game solver lift and reseat on the
+  same ticks (189 latch changes each). Worst iterations 7 (Newton), 5
+  (game). The inlet line loses ~0.07 bar at full lift, well inside 1.4.
+- Corpus: 41 plants byte-identical on both fidelities, 1 new.
+- Gates: all six, in `relief_blowdown_reference.rs`, plus the loader's
+  junction case (a vessel reached through a tee is a cushion).
+- Mutations: the six predicted, all caught by the gates named; three caught
+  by one more gate each, as a consequence and not a surprise: no pop and
+  no reseat also fail gate 5 (nothing to chatter, or nothing that
+  reseats), and the latch moved after the solve also fails gate 1 (the
+  first lift reports a tick early).
+
+**Corrections from building it.**
+- Gate 5's "flips every tick" was wrong as a measurement. At a 0.05 bar
+  blowdown the pattern is `11010101…01101…`: a second open tick whenever the
+  receiver has crept far enough above set to hold the inlet over reseat once
+  more. The gate is the rate (≥ 80 lifts in 200 ticks, against the demo's ~3)
+  and the run length (never more than two lifted ticks running).
+- Gate 3's "same pressure, two states" reads the tick's OWN solved pressure,
+  not the start-of-tick one: a shut valve whose start-of-tick inlet sat just
+  below set can still crack open on the M5 curve inside the tick
+  (2.7e-5 kg/s at 19.95 bar sensed). That is fork 1 working, not a leak.
+
+**Deferred.** A pop valve in liquid service, or in gas with no vessel behind
+it — both refused at load (B6's remaining clauses).
+
+### M48.1 — an answer kept from the last tick
+
+Specified after M48.0 lands; the note will follow here.

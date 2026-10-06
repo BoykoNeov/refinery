@@ -8039,3 +8039,29 @@ both fidelities; three mutations, all caught (one by a different assertion
 than predicted: with the tie giving up, §51's re-run takes Newton to the other
 answer rather than to a refusal). A22 stays open for which answer is right —
 element state, B6.
+
+## M48 — valve memory: ledger rows B6 and A22; opened on a request
+
+The user asked to "work on valve memory" and, offered four readings of it,
+chose both reseat hysteresis and keeping last tick's answer, hysteresis first.
+Said plainly before deciding: no shipped plant needs either. The note is
+DESIGN §53.
+
+### M48.0 — **LANDED** 2026-10-06: a relief that pops and reseats below its set
+
+`relief_valve` gains optional `blowdown_bar`. Shut, the valve runs the M5
+curve unchanged; the tick after its inlet stands above set it goes to full
+lift and holds it until its inlet falls below `set − blowdown`. The latch
+moves at the top of the tick from the last solve's pressure, beside the trips,
+and rides in the snapshot on the node's `kind`. Refused in liquid service and,
+on the user's DECISION mid-slice, in gas with no vessel behind the valve (it
+would flip every tick on screen). Demo `relief_pop_cycle.toml`: 94 lifts in
+6 000 ticks, a saw-tooth between 18.67 and 20.03 bar, the same ticks on both
+fidelities. A lossy inlet line inside the blowdown chatters, and that is a
+gate (API 520 Part II's inlet-loss rule). Corpus 41 byte-identical on both
+fidelities; six mutations, all caught.
+
+### M48.1 — an answer kept from the last tick
+
+Not started.
+

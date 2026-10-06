@@ -799,6 +799,14 @@ impl Engine {
         //     in this tick's own snapshot.
         self.run_trips()?;
 
+        // 0a″. Pop reliefs (M48, docs/DESIGN.md §53 fork 3). Each one's latch
+        //     moves here, between ticks, from the pressure its spring sensed in
+        //     the last solve — never inside a solve, which reads it as a fixed
+        //     curve. Beside the trips and on the same start-of-tick state; a
+        //     trip writes pumps, valves and duties and a latch reads only a
+        //     pressure, so the order between them is free.
+        self.run_relief_latches();
+
         // 0a′. Damage the plant does to itself (M37, docs/DESIGN.md §42). A
         //     furnace whose coil stands at or past its tubes' limit bursts them,
         //     on the same start-of-tick state the trips read. After the trips,
@@ -1915,6 +1923,29 @@ impl Engine {
     ///
     /// Passes as in `run_control_loops`: every trip measures and checks before any
     /// trip writes, so two trips see the same state whatever their order.
+    /// Move every pop relief's latch from the last solve's pressure at its own
+    /// node (M48, docs/DESIGN.md §53): shut lifts above set, lifted reseats
+    /// below `set − blowdown` (`Blowdown::after`). Before the first solve there is
+    /// no pressure to read and every latch stays as loaded, shut.
+    fn run_relief_latches(&mut self) {
+        let Some(solution) = &self.last_solution else {
+            return;
+        };
+        for nid in self.graph.node_ids().collect::<Vec<_>>() {
+            let Some(&inlet_pressure) = solution.node_pressure.get(&nid) else {
+                continue;
+            };
+            if let NodeKind::ReliefValve {
+                set_pressure,
+                blowdown: Some(blowdown),
+                ..
+            } = &mut self.graph.node_mut(nid).kind
+            {
+                *blowdown = blowdown.after(inlet_pressure, *set_pressure);
+            }
+        }
+    }
+
     fn run_trips(&mut self) -> Result<(), SimError> {
         if self.graph.trips().is_empty() {
             // Every plant written before M22 takes this exit, which is why they
