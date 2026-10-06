@@ -7922,7 +7922,35 @@ refusal floor became a ceiling. Random disc chains now converge 392/400 (Newton)
 and 373/400 (game) in liquid, from 366 and 355. All 40 plants byte-identical on
 both fidelities. Nine mutations, seven caught, two uncaught as predicted.
 
-### M45.1 — a loop that holds while its pump is stopped — planned
+### M45.1 — the game solver opens a cracked valve behind a check valve — **LANDED** 2026-10-06
+
+Found while building the hold: on the game solver the restart crashed on its
+first tick, the loop's fill valve 0.015% open. A probe by hand on the M30 demo
+(pump on, fill cracked open, no loop involved) put it in the shipped engine:
+every opening up to 0.3% diverged at 5 000 sweeps, 1% took 2 681 and 3% took
+557, against 7–10 with a plain valve in the disc's place and on Newton at every
+opening. A ramp from shut must cross that range, so the user chose "Fix the
+solver first".
+
+The mechanism, traced sweep by sweep on a four-node fixture: the fill's node
+stands just above the disc's, so the disc is shut and the node's slope is the
+cracked valve's alone. Its Newton step is ~400 times too long, lands where the
+disc is wide open, and the line search's 1/256 still overshoots; every step is
+refused and the node crawls 0.06 Pa a sweep toward a root 2 kPa away. Now, when
+the ladder refuses every step on a node that has not met its own convergence
+bar and the full step's residual has the other sign, the node's own (monotone)
+equation is solved by bisection on that bracket. Every opening now runs in
+6–15 sweeps on the demo and lands on Newton's flow.
+
+All 40 plants byte-identical on both fidelities; the random arms' counts did
+not move (they do not reach a cracked valve behind a disc). Found on the way and
+pinned, not fixed: Newton stalls on the four-node fixture at 1% open behind the
+demo's narrow band (ledger A21; the demo never reaches it). Five mutations: three
+caught by the two new gates, the node-bar gate caught only by the corpus
+baseline (`cavitating_pump` moves on the game solver), the early stop uncaught
+(cost only), all as predicted.
+
+### M45.2 — a loop that holds while its pump is stopped — planned
 
 The controller-side fix the user chose: a loop names the pump it depends on;
 while that pump is off, the loop holds its valve at a declared position instead

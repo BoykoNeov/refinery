@@ -19663,3 +19663,55 @@ which removing the tie fails (6); reachability moved to a fixed plant:
 **Deferred.** A20 (new): Newton refuses two reliefs in series that have one
 answer. A stretch that would stand below vacuum stays refused; what a broken
 column does is not this model's.
+
+### 50.1 The game solver and a valve cracked open behind a check valve (M45.1)
+
+Found by the hold's own restart: on the game solver the first tick after the
+pump started diverged, the fill 0.015% open. By hand on the M30 demo, with no
+loop, every fill opening up to 0.3% diverged at 5 000 sweeps, 1% took 2 681 and
+3% took 557; a plain valve in the disc's place, and Newton, took 7–12 at every
+opening. Taken on the user's decision ("Fix the solver first").
+
+**Mechanism** (traced on `crates/solvers/tests/cracked_valve_disc.rs`'s
+four-node chain). The fill's node stands just above the disc's, so the disc is
+shut and contributes no slope; the node's Newton step is its imbalance over the
+cracked valve's slope alone, about 8 bar where the root is 2 kPa away. That
+lands where the disc is wide open, so the residual is far worse, and the line
+search's smallest step, 1/256 of it, still lands there. Every step is refused
+and the node moves 0.06 Pa a sweep. It is not row A19 (a disc riding its band
+at low flow, 9–10 sweeps): there the disc is open and the slope is its own.
+
+**Forks.**
+
+1. **Solve the node's equation, not a deeper ladder.** `MAX_HALVINGS` is already
+   six halvings of margin over anything the corpus needs (§11), and the depth
+   this case needs grows with the ratio of the disc's slope to the valve's, so
+   no fixed number closes it. A node's imbalance is monotone in its own
+   pressure (the solver's header), so when the full step's residual has the
+   other sign the root is bracketed, and bisection finds it — the exact
+   node-wise solve nonlinear Gauss–Seidel stands for, where the Newton step is
+   its approximation. `MAX_BISECTIONS = 64` is not a tuning: 64 halvings of any
+   `f64` step reach adjacent representable values.
+2. **Only where the ladder refused everything AND the node is not converged by
+   its own bar** (`meets_node_bar`, the grading's rule). Every refusal the
+   shipped plants reach sits at the rounding floor (§11: ≤ 3.4e-13 kg/s), so
+   they keep writing nothing and every plant is byte-identical. Without the
+   gate `cavitating_pump` moves on the game solver (mutation S2).
+3. **Stop at the bar, not at Armijo's test.** The ladder's test at a tiny `t`
+   accepts any decrease, so stopping on it would walk the node in by a fraction
+   per sweep; the bar is what the grading asks of it anyway.
+
+**Measured.** Fixture: the game solver lands on Newton's flow at every opening
+from 0.001% to 10%, both disc bands, in under 10 sweeps (5 000 and diverged
+before). Demo, gate 10 of `check_valve_reference.rs`: 6–15 sweeps, both
+fidelities agreeing to 1e-5. Corpus: 40 byte-identical on both fidelities.
+Random arms unchanged (none reaches the case). Mutations: five, predicted; the
+bisection removed, its bracket test flipped and its halves swapped are caught by
+both gates; the node-bar gate only by the corpus baseline; the early stop is
+cost only and uncaught.
+
+**Deferred.** A21 (new): Newton stalls on the same fixture with the valve 1%
+open behind the demo's 0.015 bar band — its global line search gives up after
+four iterations at ~51 kg/s of residual, where the game solver answers 8.695
+kg/s and a ten-times-wider band lets Newton answer too. The demo never reaches
+it. Pinned by `known_defect_newton_stalls_on_a_valve_1_percent_open_behind_a_narrow_disc`.

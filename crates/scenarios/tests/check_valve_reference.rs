@@ -31,6 +31,10 @@
 //!    §50): the stretch between the disc and the shut valve is a dead end, and
 //!    the tick solves with nothing flowing, on both fidelities. Until M45 the
 //!    first tick after the start was refused as chatter.
+//! 10. **A fill valve cracked open behind the disc runs on the game solver**
+//!     (M45.1, `docs/DESIGN.md` §50): the pump on, the fill a hair open, as a
+//!     level loop leaves it when it opens from shut. Until M45.1 every opening up
+//!     to 0.3% diverged on the game solver and 1% took 2 681 sweeps.
 
 use refinery_core::energy::NodeStates;
 use refinery_core::graph::{ControlMode, EdgeId, LoopId, NodeId, NodeKind, PlantGraph, TripState};
@@ -827,6 +831,73 @@ fn the_pump_starts_against_its_shut_fill_valve() {
         eprintln!(
             "MEASURE dead-headed {fidelity}: stopped {stopped} Pa, running {} Pa, worst iterations a tick {worst_iterations}",
             node_pressure(&engine, "discharge_check")
+        );
+    }
+}
+
+// ------------------------------------------------------------------ gate 10
+
+/// **A fill valve cracked open behind the disc runs on both fidelities, and
+/// they agree** (M45.1, DESIGN §50). The fill is shut by hand while the pump is
+/// stopped, then the pump starts and the fill is cracked open to each opening;
+/// ten ticks run. The game solver's node step on the fill's node used to be
+/// hundreds of times too long while the disc was shut, and every step was
+/// refused; it now solves the node's own equation on the bracket.
+#[test]
+fn a_fill_cracked_open_behind_the_disc_runs_on_both_fidelities() {
+    for opening in [1e-5, 1.5e-4, 1e-3, 1e-2, 3e-2] {
+        let mut flows = Vec::new();
+        for fidelity in FIDELITIES {
+            let mut engine = build(&on(fidelity, &untripped(DEMO)));
+            let pump = engine.graph.find_node("transfer_pump").expect("declared");
+            let fill = engine.graph.find_node("discharge_valve").expect("declared");
+            for t in 1..=3_000 {
+                tick(&mut engine, fidelity, t);
+            }
+            for cmd in [
+                Command::SetPumpOn {
+                    node: pump,
+                    on: false,
+                },
+                Command::SetControllerMode {
+                    loop_id: LoopId(0),
+                    mode: ControlMode::Manual,
+                },
+                Command::SetValveOpening {
+                    node: fill,
+                    opening: 0.0,
+                },
+            ] {
+                engine.apply(cmd).expect("the stop is accepted");
+            }
+            for t in 3_001..=3_100 {
+                tick(&mut engine, fidelity, t);
+            }
+            for cmd in [
+                Command::SetPumpOn {
+                    node: pump,
+                    on: true,
+                },
+                Command::SetValveOpening {
+                    node: fill,
+                    opening,
+                },
+            ] {
+                engine.apply(cmd).expect("the start is accepted");
+            }
+            let mut worst = 0;
+            for t in 3_101..=3_110 {
+                tick(&mut engine, &format!("{fidelity}, fill at {opening}"), t);
+                worst = worst.max(engine.snapshot().solver.iterations);
+            }
+            eprintln!("MEASURE cracked {opening} {fidelity}: worst iterations {worst}");
+            assert!(worst < 50, "{fidelity}, fill at {opening}: {worst} a tick");
+            flows.push(edge_flow(&engine, "fill_line"));
+        }
+        let (newton, game) = (flows[0], flows[1]);
+        assert!(
+            (newton - game).abs() <= 1e-5 * newton.abs().max(1e-3),
+            "fill at {opening}: Newton {newton} kg/s against the game solver's {game}"
         );
     }
 }

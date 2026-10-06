@@ -272,6 +272,9 @@ impl SimpleFlowSolver {
             for &nid in &unknowns {
                 let mut imbalance = 0.0;
                 let mut g_sum = 0.0;
+                // The node's own convergence scale, `max |ṁ|` over its edges, as
+                // the grading below takes it: what the bracketed solve stops on.
+                let mut scale = 0.0f64;
                 for &(eid, incoming) in &incident[&nid] {
                     // A check valve's edge is read FRESH, at the pressures this
                     // sweep has already moved (`fresh_check_edge`, §33).
@@ -293,6 +296,7 @@ impl SimpleFlowSolver {
                     let mdot = c.rho * c.branch.flow(dp, self.eps_dp);
                     g_sum += c.conductance(dp, self.eps_dp); // ≥ 0
                     imbalance += if incoming { mdot } else { -mdot };
+                    scale = scale.max(mdot.abs());
                 }
                 // A capacitive node carries its own accumulation, through the
                 // SAME `network::accumulation` Newton assembles — the shared
@@ -338,7 +342,7 @@ impl SimpleFlowSolver {
                 // form puts within `eps_dp` of the root from any drop — so this
                 // usually costs one halving and buys a converged node.
                 let p_now = pressures[&nid];
-                let step = match armijo_step(full, imbalance, |trial| {
+                let mut residual_at = |trial: f64| {
                     node_imbalance_at(
                         nid,
                         p_now + trial,
@@ -350,7 +354,26 @@ impl SimpleFlowSolver {
                         self.eps_dp,
                         (graph, slate, previous_states),
                     )
-                }) {
+                };
+                let mut step = armijo_step(full, imbalance, &mut residual_at);
+                // **When the ladder refuses every step on a node that is NOT
+                // converged, solve the node's own equation on the bracket**
+                // (M45.1, docs/DESIGN.md §50). A check valve shut against a
+                // nearly shut valve is the case: the node sees only the valve's
+                // tiny slope, so the Newton step is hundreds of times too long,
+                // lands where the disc is wide open, and 1/256 of it still does.
+                // The node's imbalance is monotone in its own pressure, so a full
+                // step whose residual has the other sign brackets the root.
+                // Skipped at the node's own bar: every refusal the shipped plants
+                // reach sits at the rounding floor, five orders below it.
+                if matches!(step, Ok(0.0))
+                    && !meets_node_bar(imbalance, scale, self.tol_abs_kg_s, self.tol_rel)
+                {
+                    step = bracketed_step(full, imbalance, &mut residual_at, |r| {
+                        meets_node_bar(r, scale, self.tol_abs_kg_s, self.tol_rel)
+                    });
+                }
+                let step = match step {
                     Ok(step) => step,
                     Err(e) => {
                         return AnchorPass {
@@ -630,6 +653,52 @@ fn armijo_step<E>(
         t *= 0.5;
     }
     Ok(0.0)
+}
+
+/// Most bisections of a node's bracket (M45.1). Not a tuning: each one halves
+/// the bracket, and from any step an `f64` pressure can hold, 64 halvings reach
+/// adjacent representable values — past that a bisection changes nothing.
+const MAX_BISECTIONS: u32 = 64;
+
+/// A node step found by BISECTION, for the node `armijo_step` could not move
+/// (M45.1, docs/DESIGN.md §50).
+///
+/// A node's imbalance is monotone in its own pressure (this file's header), so
+/// if the full Newton step's residual has the opposite sign to the current one,
+/// the root lies inside `[0, full]`. The bracket is halved toward it until a
+/// midpoint `settled` — the node's own convergence bar, the grading's — and
+/// that midpoint is the step. Each half keeps the root, so this cannot fail
+/// once bracketed; at the cap it returns the near end, whose residual is the
+/// current one's sign and no larger (monotonicity), or `0.0` if it never moved.
+/// With no bracket — the full step lands on the same side — it returns `0.0`,
+/// and the caller writes nothing, as for a refused ladder.
+fn bracketed_step<E>(
+    full: f64,
+    residual: f64,
+    mut residual_at: impl FnMut(f64) -> Result<f64, E>,
+    settled: impl Fn(f64) -> bool,
+) -> Result<f64, E> {
+    let at_full = residual_at(full)?;
+    if at_full == 0.0 {
+        return Ok(full);
+    }
+    if at_full.signum() == residual.signum() {
+        return Ok(0.0);
+    }
+    let (mut near, mut far) = (0.0, full);
+    for _ in 0..MAX_BISECTIONS {
+        let mid = 0.5 * (near + far);
+        let at_mid = residual_at(mid)?;
+        if settled(at_mid) {
+            return Ok(mid);
+        }
+        if at_mid.signum() == residual.signum() {
+            near = mid;
+        } else {
+            far = mid;
+        }
+    }
+    Ok(near)
 }
 
 /// What a group trial recompiles its boundary edges against: the trial
