@@ -20190,3 +20190,87 @@ start not restored after a refused B: corpus (the next tick seeds elsewhere).
   share the RULE, not a stored fact — which is what keeps the snapshot
   unchanged. A frontend reads a relief's remembered state as its last
   snapshot's inlet against its set.
+
+## 54. Newton and a disc carried shut in one step — ledger row A21 (M49)
+
+Taken on the user's request (2026-10-06: offered A21 as the recommended next
+slice among five, and chose it). No shipped plant ran Newton through the
+corner; the fixture is M45.1's chain in `crates/solvers/tests/cracked_valve_disc.rs`
+— 5 bar header, disc with a 0.015 bar band, fill valve 1% open, 1 bar sink.
+
+**Mechanism, traced iterate by iterate.** The ledger's "the global line
+search gives up after four iterations" was where the solve died, not where it
+went wrong.
+- Iteration 1 (cold seed, both nodes at 3 bar, disc shut) is accepted at
+  `t = 1/128` with the disc wide open, at full lift.
+- **Iteration 2 is the fault.** Its full step is the √-law's mirror (§11): it
+  carries both free nodes to about 6.3 bar, ABOVE the 5 bar header, and the
+  disc's drive from +6.25 kPa (full lift) to −3.9 kPa (shut). Armijo accepts it
+  — 1 350 against a bar of 0.9 × 1 530 — because a shut disc stops the reverse
+  flow that makes the mirror step's residual bad everywhere else. Fork 1 of §11
+  rests on that residual being bad; a check valve hides it.
+- Iterations 3–4 are §50.1's mechanism on the other fidelity: with the disc
+  shut its conductance is out of the Jacobian, so the fill node's step is set
+  by the cracked valve's slope alone (9.5e-6 kg/(s·Pa)), about a megapascal.
+  1/256 of it moves the drive 3 kPa — twice the band — so every trial throws
+  the disc wide open and the ladder refuses all nine.
+- The ten-times-wider band, which Newton solved, crosses too: its iteration-2
+  full step lands at the same shut point, and Armijo refuses it only because
+  that iterate's merit was a little lower (1 353 against 0.9 × 1 363). A
+  tenth of the band (150 Pa) stalls exactly as the demo's. The case was a
+  coin toss on the merit, not a band width.
+
+**Interfaces.** None public. `CompiledEdge` gains `check_band:
+Option<CheckBand>` — the disc's forward drive `S` [Pa] at the compile iterate
+and its `full_open` [Pa] — written by `compile_edge`'s check-valve arm, `None`
+on every other edge. `newton_flow::band_cut` reads it. The game solver does not
+(its node step already solves the bracket, §50.1).
+
+**Forks.**
+1. **Cut the step before the line search, not after it.** A step that would
+   carry a disc from FULL LIFT to SHUT starts the ladder at the `t` that lands
+   its drive at mid-band, on the linear change in drive the step predicts
+   (exact in liquid, where `β` is a fixed head). *Rejected*: refusing such a
+   trial inside the ladder — a disc just above full lift with a long step can
+   stay shut at every `t` down to 1/256, and the solve that should shut it
+   would be refused; and a deeper ladder, for §50.1 fork 1's reason (no fixed
+   depth closes it).
+2. **Land at mid-band**, where the smoothstep's slope is largest and the
+   Jacobian sees the disc best. *Rejected*: the shut edge (`S = 0`), where the
+   slope is zero and the Jacobian is blind again, and full lift, which is a
+   step that does nothing. Both measured as mutations, below.
+3. **One direction only.** Shut to wide open crosses the band too, but it lands
+   where the disc's conductance is back in the Jacobian — iteration 1 above is
+   that step, and it is how a cold solve gets started. A disc INSIDE its band
+   may shut in one step: that is how a solve whose answer has it shut gets there.
+   *Rejected*, measured: cutting both ways stops three of the four check-valve
+   plants (`gas_receiver_check_valve` on tick 1).
+4. **Not A9.** §11 fork 4's sign-reversal trust region is this rule's general
+   form, for every branch. Its trigger — a mirror step correctly REJECTED whose
+   half step is still not enough — is still unmet: here the mirror step was
+   wrongly ACCEPTED. The rule is scoped to check valves, where "reversal" is a
+   disc closing, the one place a shut branch loses its slope; A9's objection
+   (ordinary branches legitimately reverse) does not reach it.
+
+**Measured (M49, landed 2026-10-06).**
+- Fixture: Newton answers the 1% case in 7 iterations at 8.6955 kg/s, the game
+  solver's flow to 1e-9 (6 iterations on the 150 Pa band). Every opening from 0.001% to 10% on three bands (150,
+  1 500 and 15 000 Pa) now solves on both fidelities, Newton under its cap. The
+  wider band never reaches the cut (its disc is inside the band at iteration 2)
+  and runs its old 8 iterations bit for bit.
+- Corpus: 40 plants byte-identical on Newton and all 42 on the game solver.
+  **Two Newton plants moved, at the rounding floor**: `tank_level_fill_check_valve`
+  (the cut fires twice in 6 000 ticks; worst relative difference of any
+  sampled quantity 8e-13 — a shut edge reads 6e-13 kg/s for 0, and the solve's
+  own residual moves inside its tolerance; 30 784 → 30 786 iterations) and
+  `tank_level_fill_pump_hold` (ten times — each pump stop; every sampled
+  snapshot identical, 40 171 → 40 160 iterations). Each pump stop is a step that
+  used to carry the disc shut in one move and converge anyway; it now passes
+  through mid-band and lands on the same root.
+- Release property tests pass. The Godot binding did not change.
+- Mutations: five, predicted. No cut: both fixture gates. Landing at the shut
+  edge: both fixture gates and gate 10 of `check_valve_reference.rs`. Landing
+  at full lift: both fixture gates and five of that file's nine. Cutting from
+  inside the band too: the sweep gate and three of that file's nine. Cutting
+  both ways: every gate passes; the corpus catches it (three plants stop), and
+  CI runs the corpus.

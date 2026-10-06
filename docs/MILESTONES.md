@@ -12,6 +12,33 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M49 is CLOSED (2026-10-06): Newton and a disc carried shut in one step —
+`docs/DEFERRED.md` A21 struck.** On the user's request (A21, the recommended
+one of five next slices). DESIGN §54.
+- **The give-up was the symptom.** On M45.1's chain (valve 1% open behind the
+  M30 demo's 0.015 bar disc) Newton's iteration-2 full step — §11's mirror —
+  carried the disc from full lift to shut and both nodes above the 5 bar
+  header, and Armijo accepted it: a shut disc stops the reverse flow that makes
+  the mirror's residual bad. With the disc's slope gone from the Jacobian the
+  cracked valve set a megapascal step, and no halving kept the disc shut. The
+  ten-times-wider band crossed too and was refused by a hair of merit.
+- **`newton_flow::band_cut`**: a step that would carry a check valve from full
+  lift to shut starts the line search at the `t` that lands its drive
+  mid-band. One direction only (cutting shut → open stops three check-valve
+  plants). Reads the new `CompiledEdge::check_band`; the game solver does not.
+- **Not A9**: that row's trigger (a correctly rejected mirror whose half step
+  falls short) is still unmet; its note now says why.
+- Gates: `newton_answers_a_valve_1_percent_open_behind_a_narrow_disc` (was the
+  known defect; 7 iterations, 8.6955 kg/s, the game solver's flow to 1e-9) and
+  the sweep gate on three bands with no skip, Newton under its cap. Written
+  failing first. Mutations: five; four caught by the gates as predicted, the
+  fifth (cutting both ways) by the corpus.
+- 40 plants byte-identical on Newton and all 42 on the game solver. Two Newton
+  plants moved at the rounding floor — `tank_level_fill_check_valve` and
+  `tank_level_fill_pump_hold`, where the cut fires on pump stops (2 and 10
+  times in 6 000 ticks; worst sampled difference 8e-13 relative). Release
+  property tests pass. The Godot binding did not change.
+
 **M48 is CLOSED (2026-10-06): valve memory — a relief that pops and reseats
 below its set, and a relief that stays as it was where a plant has two
 answers; `docs/DEFERRED.md` B6's gas clause and A22 closed.** On the user's

@@ -8085,3 +8085,30 @@ tests pass at 400 and at 2 000 cases. Four mutations: three caught as named,
 one (the held answer kept unchecked) escaped its named test and is now caught
 by a new gate as well as the corpus.
 
+
+## M49 — Newton and a disc carried shut in one step: ledger row A21; opened on a request
+
+A21: Newton gave up on M45.1's fixture with the fill valve 1% open behind the
+M30 demo's 0.015 bar disc band, where the game solver answers 8.695 kg/s. No
+shipped plant reached it. Offered as the recommended one of five next slices;
+the user chose it. The note is DESIGN §54.
+
+### M49 — **LANDED** 2026-10-06
+
+Traced before building: the line search's give-up at iteration 4 was the
+symptom. Iteration 2's full step — the √-law's mirror — carried the disc from
+full lift to shut and both nodes above the header, and Armijo accepted it
+because a shut disc hides the reverse flow that makes the mirror step's residual
+bad. With the disc shut the fill node's step was set by the cracked valve alone.
+The wider band, which Newton solved, made the same crossing and was refused by
+a hair of merit.
+
+Newton now starts its line search short of a step that would carry a check
+valve from full lift to shut, landing the disc's drive at mid-band
+(`newton_flow::band_cut`, reading the new `CompiledEdge::check_band`). One
+direction only. Gates: `newton_answers_a_valve_1_percent_open_behind_a_narrow_disc`
+(was the known defect) and the sweep gate, now on three bands with no skip.
+Corpus: 40 byte-identical on Newton, 42 on the game solver; the two liquid
+check-valve plants moved at the rounding floor (the cut fires on pump stops).
+Five mutations: four caught by the gates, the fifth (cutting both ways) by the
+corpus.
