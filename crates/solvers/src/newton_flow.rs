@@ -269,7 +269,10 @@ impl NewtonFlowSolver {
             // accepted it below a drop of 10 kPa and the solve crawled 2 Pa at a
             // time. The rejection threshold IS `eps_dp/ARMIJO_C`; see that
             // constant for the relation it must hold against `max_iter`.
-            let mut t = 1.0;
+            //
+            // The ladder starts short of a step that would carry a check valve
+            // from full lift to shut (M49, docs/DESIGN.md §54): `band_cut`.
+            let mut t = band_cut(&compiled, &idx, &dp);
             let mut accepted = false;
             for _ in 0..=MAX_HALVINGS {
                 let trial = apply_step(&pressures, &unknowns, &idx, &dp, t);
@@ -445,6 +448,45 @@ fn assemble(
         }
     }
     (r, jac, scale)
+}
+
+/// The longest step `t ≤ 1` the line search may start from: short of carrying a
+/// check valve from FULL LIFT to SHUT in one move (M49, docs/DESIGN.md §54).
+///
+/// A disc at full lift has its whole conductance in the Jacobian; a shut one has
+/// none, so on the far side the step is set without it — on A21's chain by a
+/// valve cracked 1% open alone, a megapascal long, where 1/256 of it throws the
+/// disc wide open again and the line search gives up. Nor will Armijo refuse the
+/// crossing: a shut disc stops the reverse flow that makes the √-law's mirror
+/// step bad everywhere else (§11), so the trial's residual can look like
+/// progress. Such a step is cut to land the drive at mid-band — where the
+/// opening's slope is largest — on the linear change in drive the step
+/// predicts (exact in liquid, where `β` is a fixed head).
+///
+/// One direction only. Shut to wide open crosses the band too, but it lands
+/// where the disc's conductance is back in the Jacobian; and a disc inside its
+/// band may shut, which is how a solve whose answer has it shut gets there.
+/// `1.0` — every step's start before M49 — wherever no disc is at full lift.
+fn band_cut(
+    compiled: &BTreeMap<EdgeId, CompiledEdge>,
+    idx: &BTreeMap<NodeId, usize>,
+    dp: &[f64],
+) -> f64 {
+    let step = |nid: &NodeId| idx.get(nid).map_or(0.0, |&i| dp[i]);
+    let mut t: f64 = 1.0;
+    for c in compiled.values() {
+        let Some(band) = c.check_band else {
+            continue;
+        };
+        if band.full_open.is_nan() || band.full_open <= 0.0 || band.drive < band.full_open {
+            continue;
+        }
+        let change = step(&c.src) - step(&c.tgt);
+        if band.drive + change <= 0.0 {
+            t = t.min((0.5 * band.full_open - band.drive) / change);
+        }
+    }
+    t
 }
 
 /// Copy `pressures`, advancing each unknown by `t·ΔP`.

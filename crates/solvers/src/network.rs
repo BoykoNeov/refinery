@@ -72,6 +72,21 @@ pub struct CompiledEdge {
     /// CONDUCTANCE — both columns, symmetrically — rather than to the source
     /// column. `0.0` everywhere the relief term is, for the same reasons.
     pub check_opening_log_slope: f64,
+    /// A check valve's forward drive `S` [Pa] at the iterate this edge was
+    /// compiled at, and its band [Pa] from shut to full lift (M49,
+    /// docs/DESIGN.md §54). Newton reads it to keep one step from carrying a
+    /// fully open disc to shut, where its slope leaves the Jacobian. `None` on
+    /// every edge that is not a check valve's outlet.
+    pub check_band: Option<CheckBand>,
+}
+
+/// Where a check valve stands in its band (M49, docs/DESIGN.md §54).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct CheckBand {
+    /// Forward drive across the disc's branch, `S = dp − β` [Pa].
+    pub drive: f64,
+    /// Drive at full lift [Pa]; shut at `S ≤ 0`.
+    pub full_open: f64,
 }
 
 impl CompiledEdge {
@@ -502,6 +517,7 @@ pub fn compile_edge(
             conducts: false,
             relief_opening_log_slope: 0.0,
             check_opening_log_slope: 0.0,
+            check_band: None,
         });
     }
     let upwind_node = if pressures[&src] >= pressures[&tgt] {
@@ -567,6 +583,7 @@ pub fn compile_edge(
             conducts,
             relief_opening_log_slope: 0.0,
             check_opening_log_slope: 0.0,
+            check_band: None,
         });
     }
 
@@ -594,6 +611,7 @@ pub fn compile_edge(
     let mut relief: Option<(f64, f64)> = None;
     // A check valve's `(snapped opening, d opening / dS)`, likewise.
     let mut check: Option<(f64, f64)> = None;
+    let mut check_band: Option<CheckBand> = None;
 
     match &graph.node(src).kind {
         NodeKind::Pump { h0, a, on } => {
@@ -690,6 +708,10 @@ pub fn compile_edge(
             let opening = check_opening(drive, full_open.value());
             let op = if opening < OPEN_EPS { 0.0 } else { opening };
             check = Some((op, check_opening_slope(drive, full_open.value())));
+            check_band = Some(CheckBand {
+                drive,
+                full_open: full_open.value(),
+            });
             let rho_rel = rho / RHO_WATER_REF;
             let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);
             branch = fold_gas_service(graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind)?;
@@ -714,6 +736,7 @@ pub fn compile_edge(
         conducts,
         relief_opening_log_slope,
         check_opening_log_slope,
+        check_band,
     })
 }
 

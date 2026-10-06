@@ -11,8 +11,8 @@
 //! took 2 681 sweeps. Now the node's own equation is solved on the bracket.
 //!
 //! Newton is the reference here: both fidelities solve one fixed point, and the
-//! game solver must land on Newton's flow. One case Newton itself does not
-//! solve is pinned as a known defect (ledger A21).
+//! game solver must land on Newton's flow. Newton itself did not solve one of
+//! these cases until M49 (ledger A21, docs/DESIGN.md §54).
 
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
@@ -102,12 +102,12 @@ fn chain_flow(solution: &HydraulicSolution) -> f64 {
 }
 
 /// **The game solver lands on Newton's answer, in a handful of sweeps, at every
-/// opening from cracked to a tenth** — both disc bands, the M30 demo's 0.015 bar
-/// and ten times it. The flow climbs four decades over the openings; the sweep
-/// count stays under ten.
+/// opening from cracked to a tenth** — three disc bands: the M30 demo's 0.015
+/// bar, ten times it and a tenth of it. The flow climbs four decades over the
+/// openings; the sweep count stays under ten, and Newton's under its cap.
 #[test]
 fn a_cracked_valve_behind_a_disc_solves_on_both_fidelities() {
-    for band in [1.5e3, 1.5e4] {
+    for band in [1.5e2, 1.5e3, 1.5e4] {
         for opening in [1e-5, 1.5e-4, 1e-3, 1e-2, 0.1] {
             let g = cracked(opening, band);
             let label = format!("opening {opening}, band {band} Pa");
@@ -118,12 +118,13 @@ fn a_cracked_valve_behind_a_disc_solves_on_both_fidelities() {
                 "{label}: {} sweeps",
                 game.diagnostics.iterations
             );
-            // The one case Newton does not solve is the known defect below.
-            if opening == 1e-2 && band == 1.5e3 {
-                continue;
-            }
             let reference = solve(&mut NewtonFlowSolver::default(), &g)
                 .unwrap_or_else(|e| panic!("{label}: Newton must solve: {e}"));
+            assert!(
+                reference.diagnostics.iterations < 50,
+                "{label}: {} Newton iterations",
+                reference.diagnostics.iterations
+            );
             let (a, b) = (chain_flow(&game), chain_flow(&reference));
             assert!(
                 (a - b).abs() <= 1e-6 * b.abs().max(1e-3),
@@ -133,25 +134,23 @@ fn a_cracked_valve_behind_a_disc_solves_on_both_fidelities() {
     }
 }
 
-/// **KNOWN DEFECT, pinned: Newton gives up on the valve 1% open behind the
-/// demo's narrow band** (docs/DEFERRED.md A21). Its global line search stalls
-/// after four iterations at a residual of about 51 kg/s; the game solver answers
-/// it at 8.695 kg/s, and with ten times the band Newton does too (8.680). The M30
-/// demo never reaches it — Newton runs that plant at every opening — and M45.1
-/// does not change Newton. An `Ok` here means the defect is fixed: update A21.
+/// **Newton answers the valve 1% open behind the demo's narrow band** (ledger
+/// A21, closed by M49). Its second step used to carry the disc from wide open to
+/// shut in one move — both nodes above the header, the disc's slope gone from the
+/// Jacobian — and Armijo accepted it, because a shut disc hides the reverse flow
+/// that makes the mirror step bad everywhere else. From there the cracked valve's
+/// slope alone set the step, 1/256 of it still threw the disc wide open, and the
+/// line search gave up at about 51 kg/s. The game solver's answer is 8.695 kg/s.
 #[test]
-fn known_defect_newton_stalls_on_a_valve_1_percent_open_behind_a_narrow_disc() {
+fn newton_answers_a_valve_1_percent_open_behind_a_narrow_disc() {
     let g = cracked(1e-2, 1.5e3);
-    let newton = solve(&mut NewtonFlowSolver::default(), &g);
-    assert!(
-        matches!(newton, Err(SimError::SolverDiverged { .. })),
-        "Newton still stalls here: {:?}",
-        newton.map(|s| chain_flow(&s))
-    );
+    let newton = solve(&mut NewtonFlowSolver::default(), &g)
+        .unwrap_or_else(|e| panic!("Newton must answer A21's case: {e}"));
     let game = solve(&mut SimpleFlowSolver::default(), &g).expect("the game solver answers it");
+    let (a, b) = (chain_flow(&game), chain_flow(&newton));
+    assert!((b - 8.695).abs() < 1e-3, "Newton's {b} kg/s");
     assert!(
-        (chain_flow(&game) - 8.695).abs() < 1e-3,
-        "{}",
-        chain_flow(&game)
+        (a - b).abs() <= 1e-6 * b,
+        "the game solver's {a} kg/s against Newton's {b}"
     );
 }
