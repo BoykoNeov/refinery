@@ -7843,7 +7843,10 @@ fidelities.
 Key 5 loads the new plant; K starts or stops its pump, and a pump line shows
 it. Each trip's reset line names the trips it waits for. The two new reasons
 have words on every plant: "another trip on it is past its limit" and "a trip
-it waits for is not clear (see TRIPS)". Timeline: the pump stops at 266, the
+it waits for is not clear (see TRIPS)". Once the stop has ENDED, the reasons
+that can change since (those two, and M43's `tubes_burst`) are worded in the
+past tense ("…was not clear then"): a review found the panel still claiming the
+pump's trip was latched after a person had reset it. Timeline: the pump stops at 266, the
 heater is cut at 299 and stays dark at 321, the message line saying why; at 400
 a person resets the pump's trip, starts the pump and relights the heater at
 3 MW, and the coil stays under 90 °C to 500.

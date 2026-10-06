@@ -540,6 +540,16 @@ const BAR_TEXT := {
 	"trip_about_to_fire": "another trip on it is past its limit",
 	"permissive_not_clear": "a trip it waits for is not clear (see TRIPS)",
 }
+## Once the stop has ENDED (`not_restarted`), the reasons are the ones that
+## stood when the trips let go, kept until a person relights it. The three that
+## could change since are said in the past tense, so the panel does not claim a
+## pump trip is still latched, or the tubes still burst, after a person has
+## reset it or fitted new ones.
+const BAR_TEXT_ENDED := {
+	"tubes_burst": "the tubes were burst when the trips let go",
+	"trip_about_to_fire": "another trip on it was past its limit then",
+	"permissive_not_clear": "a trip it waits for was not clear then",
+}
 
 
 ## Whether the plant's drawn pump runs; false on a plant without one.
@@ -560,8 +570,12 @@ func _bar_lines() -> PackedStringArray:
 	var lines := PackedStringArray()
 	var stop = _trip_stop()
 	if stop != null:
+		var ended: bool = stop["status"] == "not_restarted"
 		for bar in stop["barred_by"]:
-			lines.append(BAR_TEXT.get(bar, bar))
+			if ended and BAR_TEXT_ENDED.has(bar):
+				lines.append(BAR_TEXT_ENDED[bar])
+			else:
+				lines.append(BAR_TEXT.get(bar, bar))
 	return lines
 
 
