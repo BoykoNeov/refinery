@@ -1165,10 +1165,19 @@ where
     // passes: from then on a tank may starve but not recover, so the loop can
     // only grow toward the pass that cannot create mass.
     let mut recovery_frozen = false;
-    // Every classification this solve has run, in order. A REPEAT is a cycle and
-    // is terminal: the plant has two self-consistent answers, and picking the
-    // later one would be choosing between them by iteration parity.
+    // Every classification this solve has run, in order. A REPEAT onto one that
+    // has converged is a cycle and is terminal: the plant has two
+    // self-consistent answers, and picking the later one would be choosing
+    // between them by iteration parity.
     let mut seen: Vec<(BTreeSet<NodeId>, BTreeSet<NodeId>)> = Vec::new();
+    // The classifications whose pass CONVERGED. Two answers need two converged
+    // passes: a repeat onto a classification only ever run as a failed pass is
+    // re-run once rather than refused (M46, docs/DESIGN.md §51).
+    let mut converged: Vec<(BTreeSet<NodeId>, BTreeSet<NodeId>)> = Vec::new();
+    // The refusal such a re-run postponed. A re-run that fails returns it
+    // unchanged, so a plant the re-run cannot answer is refused exactly as
+    // before; one that converges joins `converged`, so it is never re-run twice.
+    let mut postponed: Option<SimError> = None;
 
     for _ in 0..MAX_ANCHOR_PASSES {
         let supplies = starved_supplies(graph, &starved, dt);
@@ -1204,6 +1213,17 @@ where
             mut result,
             mut pressures,
         } = pass(prep);
+
+        // A re-run gets this one pass; failing, it is refused as it was before
+        // M46, not walked on toward the cap and a different refusal.
+        if let Some(refusal) = postponed.take() {
+            if result.is_err() {
+                return Err(refusal);
+            }
+        }
+        if result.is_ok() {
+            converged.push((used.clone(), starved.clone()));
+        }
 
         // A pass that failed BECAUSE its iterate went non-finite is the one case
         // the iterate cannot be reclassified from: the resulting set would be an
@@ -1273,6 +1293,10 @@ where
         // Measured before the qualifier existed: 13 of 21 repeats followed a
         // failed pass, so refusing on all of them would have refused mostly on
         // guesses (ROADMAP M8.0).
+        //
+        // The same holds of the classification the repeat lands ON, and M46
+        // added that half: one only ever run as a failed pass has not been an
+        // answer either, so it is re-run once below rather than refused.
         if result.is_ok() && seen.contains(&(next_override.clone(), next_starved.clone())) {
             // A dead end's tie is not chatter (M45.0, docs/DESIGN.md §50): this
             // pass is kept, with the stretch standing where its one way in
@@ -1307,37 +1331,46 @@ where
                 } else {
                     None
                 };
-                if let Some(dead_end) = tie {
-                    if let Ok(solution) = &mut result {
-                        settle_dead_end(graph, &dead_end, &mut pressures, solution);
+                match tie {
+                    Some(Tie::Stands(dead_end)) => {
+                        if let Ok(solution) = &mut result {
+                            settle_dead_end(graph, &dead_end, &mut pressures, solution);
+                        }
+                        accept(&mut result, warm_start, &pressures);
+                        return result;
                     }
-                    accept(&mut result, warm_start, &pressures);
-                    return result;
+                    // A broken column is refused, never re-run (§50 fork 5): a
+                    // re-run that converged would report a negative absolute
+                    // pressure as an answer.
+                    Some(Tie::BelowVacuum) => return Err(chatter(graph, &used, &next_override)),
+                    None => {}
                 }
             }
             if next != used {
-                return Err(SimError::AnchoringUnsettled {
-                    cycled: true,
-                    detail: format!(
-                        "{} has been anchored before in this tick, so the plant has two \
-                         self-consistent answers and the element(s) at {} are chattering — a \
-                         relief whose own discharge re-seats it. Element state (hysteresis) is \
-                         what would resolve it, and is deferred (docs/DESIGN.md §3a, §3c)",
-                        describe_nodes(graph, &next_override),
-                        describe_nodes(graph, &symmetric_difference(&used, &next_override)),
-                    ),
-                });
+                let refusal = chatter(graph, &used, &next_override);
+                // Chatter is two ANSWERS. If the classification this pass points
+                // back to has only ever been run as a failed pass, it has not
+                // been one yet: run it again, from this pass's answer, once
+                // (M46, docs/DESIGN.md §51). Two reliefs in series is the plant:
+                // Newton's cold pass, everything anchored, fails with the second
+                // relief still shut; the next pass converges and points
+                // straight back at it.
+                if converged.contains(&(next_override.clone(), next_starved.clone())) {
+                    return Err(refusal);
+                }
+                postponed = Some(refusal);
+            } else {
+                // A starvation-only repeat: the boundary itself, inside the
+                // solver's tolerance (§28 fork 3). Keep the pass that cannot
+                // create mass — this one, if it is the more starved of the two.
+                if next_starved.is_subset(&starved) {
+                    accept(&mut result, warm_start, &pressures);
+                    return result;
+                }
+                recovery_frozen = true;
+                next_starved = starved.union(&next_starved).copied().collect();
+                next_override = next_anchored_set(graph, slate, &compiled, &next_starved, dt);
             }
-            // A starvation-only repeat: the boundary itself, inside the solver's
-            // tolerance (§28 fork 3). Keep the pass that cannot create mass —
-            // this one, if it is the more starved of the two.
-            if next_starved.is_subset(&starved) {
-                accept(&mut result, warm_start, &pressures);
-                return result;
-            }
-            recovery_frozen = true;
-            next_starved = starved.union(&next_starved).copied().collect();
-            next_override = next_anchored_set(graph, slate, &compiled, &next_starved, dt);
         }
         previous_pass = Some(pressures);
         override_set = Some(next_override);
@@ -1354,12 +1387,37 @@ where
     })
 }
 
+/// The refusal of a repeat between the anchored sets `used` and `next`: the
+/// plant alternates between two answers (docs/DESIGN.md §3c).
+fn chatter(graph: &PlantGraph, used: &BTreeSet<NodeId>, next: &BTreeSet<NodeId>) -> SimError {
+    SimError::AnchoringUnsettled {
+        cycled: true,
+        detail: format!(
+            "{} has been anchored before in this tick, so the plant has two \
+             self-consistent answers and the element(s) at {} are chattering — a \
+             relief whose own discharge re-seats it. Element state (hysteresis) is \
+             what would resolve it, and is deferred (docs/DESIGN.md §3a, §3c)",
+            describe_nodes(graph, next),
+            describe_nodes(graph, &symmetric_difference(used, next)),
+        ),
+    }
+}
+
 /// A stretch of line closed at its far end, and where each of its nodes
 /// stands at zero drive (M45.0, docs/DESIGN.md §50).
 struct DeadEnd {
     stretch: BTreeSet<NodeId>,
     /// Each node of the stretch's pressure [Pa], see `dead_end_tie`.
     standing: BTreeMap<NodeId, f64>,
+}
+
+/// A repeat `dead_end_tie` has a verdict on.
+enum Tie {
+    /// A dead end, standing where its one way in leaves it: answered.
+    Stands(DeadEnd),
+    /// A dead end that would stand at or below vacuum — a broken column. Refused,
+    /// and never re-run (M46, docs/DESIGN.md §50 fork 5, §51).
+    BelowVacuum,
 }
 
 /// Whether a repeat between the anchored sets `floating` and `filled` (a
@@ -1392,15 +1450,17 @@ struct DeadEnd {
 ///
 /// **Then the stretch must stay a dead end where it stands**: every OTHER edge
 /// across its boundary, recompiled at those pressures, still conducts nothing.
-/// Chatter is the case that fails it — a relief chain whose second valve was
-/// shut only because the stretch was parked low, and lifts once it is filled —
-/// and it is refused as before. The way in is not asked: it sits at zero drive
-/// by construction, where a disc is shut to within a rounding and a relief that
-/// senses only its own inlet may stand open passing nothing.
+/// A relief chain whose second valve was shut only because the stretch was
+/// parked low, and lifts once it is filled, fails it, and is no dead end: the
+/// driver then judges it as any other repeat (M46, §51). The way in is not
+/// asked: it sits at zero drive by construction, where a disc is shut to within
+/// a rounding and a relief that senses only its own inlet may stand open
+/// passing nothing.
 ///
 /// **Nor below vacuum.** A stretch rising far enough above a low-pressure way
 /// in would stand at a negative absolute pressure, which is a column that has
-/// broken rather than a dead end; that tie is refused as before.
+/// broken rather than a dead end: `Tie::BelowVacuum`, which the driver refuses
+/// outright rather than re-running.
 ///
 /// `conducts_in_filled` answers for the compile `filled` was built from: the
 /// pass's own on Newton's road to the repeat, the recompile on the game
@@ -1416,7 +1476,7 @@ fn dead_end_tie(
     conducts_in_filled: impl Fn(EdgeId) -> bool,
     compiled: &BTreeMap<EdgeId, CompiledEdge>,
     pressures: &BTreeMap<NodeId, f64>,
-) -> Option<DeadEnd> {
+) -> Option<Tie> {
     let stretch: BTreeSet<NodeId> = filled.difference(floating).copied().collect();
     if stretch.is_empty() || stretch.iter().any(|nid| capacitive.contains_key(nid)) {
         return None;
@@ -1461,7 +1521,7 @@ fn dead_end_tie(
     // A stretch standing at or below vacuum is a column the liquid cannot
     // hold up: not a state this rule can name, so the tie is refused as before.
     if standing.values().any(|&p| p <= 0.0) {
-        return None;
+        return Some(Tie::BelowVacuum);
     }
     let mut settled = pressures.clone();
     settled.extend(standing.iter().map(|(&nid, &p)| (nid, p)));
@@ -1470,7 +1530,7 @@ fn dead_end_tie(
         .edge_ids()
         .filter(|&eid| eid != way_in && crosses(eid))
         .all(|eid| !recompiled[&eid].conducts);
-    still_closed.then_some(DeadEnd { stretch, standing })
+    still_closed.then_some(Tie::Stands(DeadEnd { stretch, standing }))
 }
 
 /// Stand a dead end where `dead_end_tie` found it, with nothing flowing in it

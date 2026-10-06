@@ -7976,3 +7976,37 @@ empties the supply's deadband in ~110 ticks and cycles seven times.
 Six gates in `crates/scenarios/tests/pump_stop_reference.rs`. Seven mutations,
 all caught; one prediction missed: H3 (a hold that ignores the pump's state) was named for gate 1 and caught only by gates 3 and 6 — gate 1 bounded the restart from above only, so a valve that never reopened passed it. Lower bounds were then added (a regulating flow before the stop, above 5 kg/s a hundred ticks after the restart) and H3 fails gate 1 too. 40 plants byte-identical on both fidelities,
 1 new. The Godot binding did not change and reads no faceplate field.
+
+## M46 — a repeat onto a classification that never converged is re-run: ledger row A20; opened on a request
+
+A20: Newton refused two reliefs in series as chatter — a 6.99 bar source, reliefs
+set at 6.42 and 3.23 bar, a 1 bar sink — though the game solver answers it, both
+open, 68.354 kg/s, and the refusal predates M45. The user asked for it to be
+worked on, naming the likely fix: retry the solve rather than refuse. The note
+is DESIGN §51.
+
+### M46 — **LANDED** 2026-10-06
+
+Traced pass by pass: Newton's first pass (everything anchored, cold seed)
+fails; the second (the second relief's node floating) converges and points back
+at the first's classification; the loop called the repeat chatter. Chatter is
+two answers, and the classification the repeat landed on had never converged.
+Now such a repeat is run again once, from the converged pass's answer, and is
+refused with the very refusal it postponed if that run fails too. The dead-end
+tie is still asked first, and a stretch that would stand below vacuum is still
+refused, now outright rather than by falling through. Newton answers the chain
+at 68.354 kg/s in three passes.
+
+Built narrow first, as the ledger suggested (re-run only when the dead-end tie's
+re-check fails, seeded at the stood pressures); its mutation pass showed the
+seed did nothing and the narrowness had no other reason, so the rule went
+general. A side note during the slice asked the same question. The random arms
+are unchanged; corpus 41 byte-identical on both fidelities; five mutations,
+four caught as named and one (re-running a below-vacuum stretch) uncaught as
+predicted possible, because the only fixture's re-run fails anyway.
+
+The mutation runs' random draws found A22, older than this slice: in gas with
+the drive backwards through two reliefs, §50's tie takes the second relief held
+shut (zero flow) where the game solver holds it open (0.2708 kg/s backwards);
+both stand. Pinned as a known defect, not fixed — it is an element-state
+question (B6).

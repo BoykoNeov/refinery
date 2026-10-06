@@ -2034,8 +2034,10 @@ fn the_relief_arm_lifts_relieves_and_floats() {
     // with the tie removed; 0 + 1 and 0 + 0 with it. So the bound is now a
     // CEILING on all four that the fix's removal fails, the M26.1 precedent
     // above. Reachability moved to fixed plants: the cycle by a real solve in
-    // `known_defect_newton_refuses_two_reliefs_in_series_with_one_answer`, the
-    // cap by its stub plus the one tree that still reaches it here.
+    // `dead_end_disc.rs`'s `a_dead_end_below_vacuum_is_refused` (until M46 also
+    // in the two-reliefs chain, which M46 answers — unchanged counts here, 0 + 1
+    // and 0 + 0 on both sides of it), the cap by its stub plus the one tree that
+    // still reaches it here.
     let refused = tree_cycled + tree_capped + chain_cycled + chain_capped;
     assert!(
         refused <= 2,
@@ -2691,13 +2693,18 @@ fn relay_plant(fluid: &Fluid, set_pressure: f64) -> (PlantGraph, NodeId, NodeId)
     (g, psv, relay)
 }
 
-/// **KNOWN DEFECT, pinned: Newton refuses two reliefs in series that have one
-/// answer** (docs/DEFERRED.md A20). A 6.99 bar source, a relief set at 6.42 bar,
-/// one set at 3.23 bar, a 1 bar sink — the case `chain_fidelity_agreement`'s
-/// generator found once M45.0 existed. The game solver answers it: both reliefs
-/// open, 68.354 kg/s. Newton's active-set loop reaches a repeat on the second
-/// relief's node and refuses it as chatter, which it is not. Measured on the
-/// tree before M45 too: the refusal is not M45's.
+/// **Two reliefs in series have one answer, and Newton gives it** (M46,
+/// docs/DESIGN.md §51; was the pinned defect A20). A 6.99 bar source, a relief
+/// set at 6.42 bar, one set at 3.23 bar, a 1 bar sink — the case
+/// `chain_fidelity_agreement`'s generator found once M45.0 existed. Both reliefs
+/// open, 68.354 kg/s, on both fidelities.
+///
+/// Newton's road to it: the first pass, everything anchored from the cold seed,
+/// fails; the second, with the second relief's node floating, converges and
+/// points straight back at the first's classification. Until M46 that repeat
+/// was refused as chatter, though the classification it repeats had never
+/// converged. It is now re-run once, from the second pass's answer, and
+/// converges.
 ///
 /// **It is also the one fixed plant that pins `dead_end_tie`'s re-check.** The
 /// second relief's node is a stretch with ONE conducting edge in the compile its
@@ -2706,8 +2713,96 @@ fn relay_plant(fluid: &Fluid, set_pressure: f64) -> (PlantGraph, NodeId, NodeId)
 /// second relief lifts, and only the re-check sees it. Without it Newton
 /// "answers" zero flow through a chain the other solver runs at 68 kg/s.
 #[test]
-fn known_defect_newton_refuses_two_reliefs_in_series_with_one_answer() {
+fn two_reliefs_in_series_answer_on_both_fidelities() {
     let fluid = Fluid::liquid();
+    let (g, edges) = two_reliefs_in_series(&fluid);
+
+    let newton = NewtonFlowSolver::default()
+        .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        .expect("Newton answers the chain: the repeat it reaches is not chatter");
+    let simple = SimpleFlowSolver::default()
+        .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        .expect("the game solver answers the chain");
+    for (name, solution) in [("newton", &newton), ("simple", &simple)] {
+        for &e in &edges {
+            let flow = solution.edge_mass_flow[&e];
+            assert!(
+                (flow - 68.354).abs() < 1e-3,
+                "{name}: both reliefs open, one flow through the chain: {flow} kg/s"
+            );
+        }
+    }
+}
+
+/// **A re-run that fails is refused as before, at once** (M46, docs/DESIGN.md
+/// §51). Newton's road through `two_reliefs_in_series_answer_on_both_fidelities`,
+/// scripted, with the re-run failing too: the filled pass fails, the floating
+/// pass converges and points back at it, and the re-run — the third pass —
+/// fails again. The refusal is the cycle the loop postponed, not a walk on to
+/// the cap from whatever the failed re-run's iterate implies.
+///
+/// The guard on the other side — a repeat onto a classification that HAS
+/// converged is refused without a re-run — is
+/// `an_alternating_classification_is_reported_as_a_cycle`'s two-pass count.
+#[test]
+fn a_retry_that_fails_is_refused_as_the_cycle_it_postponed() {
+    let fluid = Fluid::liquid();
+    let (g, _edges) = two_reliefs_in_series(&fluid);
+    let named = |name: &str| g.node_ids().find(|&n| g.node(n).name == name).unwrap();
+    let (first, second) = (named("mid0"), named("mid1"));
+
+    let mut warm = BTreeMap::new();
+    let mut passes = 0usize;
+    let out = refinery_solvers::network::solve_with_active_anchoring(
+        &g,
+        &fluid.slate,
+        &Default::default(),
+        &mut warm,
+        Seconds(0.1),
+        |prep| {
+            passes += 1;
+            let filled = prep.anchored.contains(&second);
+            let mut pass = stub_pass(&g, &fluid, prep, |p| {
+                if filled {
+                    // Where Newton's cold pass gave up: both reliefs shut.
+                    p.insert(first, 5.5e5);
+                    p.insert(second, 2.5e5);
+                } else {
+                    // No flow past the first relief: it stands at the source.
+                    p.insert(first, 698767.3083954572);
+                }
+            });
+            if filled {
+                pass.result = Err(SimError::SolverDiverged {
+                    iterations: 2,
+                    residual: 309.0,
+                    residual_history: vec![437.0, 309.0],
+                });
+            }
+            pass
+        },
+    );
+    let Err(SimError::AnchoringUnsettled { cycled, detail }) = out else {
+        panic!("a retry that fails must be refused, got {out:?}");
+    };
+    assert!(cycled, "refused as the cycle it postponed: {detail}");
+    assert!(
+        detail.contains("mid1"),
+        "the diagnostic names the second relief: {detail}"
+    );
+    assert_eq!(
+        passes, 3,
+        "filled (failed), floating (converged), ONE retry (failed) — then refused"
+    );
+    assert!(
+        warm.is_empty(),
+        "a solve that ends in Err must not leave a warm start behind"
+    );
+}
+
+/// The A20 chain: a 6.99 bar source, a relief set at 6.42 bar, one set at
+/// 3.23 bar, a 1 bar sink; the reliefs are `mid0` and `mid1`.
+fn two_reliefs_in_series(fluid: &Fluid) -> (PlantGraph, Vec<refinery_core::graph::EdgeId>) {
     let mids = [
         Mid::Relief {
             cv: 0.002297131857065713,
@@ -2725,28 +2820,82 @@ fn known_defect_newton_refuses_two_reliefs_in_series_with_one_answer() {
         (1.0, 0.25118774211238937, 0.01, 0.0),
         (1.0, 0.05, 0.01, 0.0),
     ];
-    let (g, edges) = build_chain(&mids, &pipes, 698767.3083954572, 1.0e5, &fluid);
+    build_chain(&mids, &pipes, 698767.3083954572, 1.0e5, fluid)
+}
 
-    let newton =
-        NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
-    let Err(SimError::AnchoringUnsettled { cycled, .. }) = newton else {
-        panic!(
-            "Newton must still refuse this chain as a cycle — an Ok here is either the \
-             defect fixed (update A20 and this gate) or the re-check gone: {newton:?}"
-        );
-    };
-    assert!(cycled, "refused as a cycle, not at the cap");
-
+/// **KNOWN DEFECT, pinned: a dead end's tie picks one of two answers**
+/// (docs/DEFERRED.md A22, found by M46's mutation runs; present since M45.0).
+/// Gas, a 5.90 bar source, a relief set at 5.25 bar, a junction down a 3.8 m
+/// drop, a relief set at 6.85 bar, a 7.67 bar sink: the drive is BACKWARDS.
+///
+/// Two answers stand. The second relief senses only its own inlet: held shut,
+/// the stretch between the reliefs fills from the first relief to 5.90 bar,
+/// under its set, so it stays shut — Newton's answer, through §50's dead-end
+/// tie, zero flow everywhere. Held open, the sink pushes the stretch to 7.48 bar,
+/// over its set, so it stays open — the game solver's, 0.2708 kg/s backwards.
+/// The tie never visits the second; `chain_fidelity_agreement` reads the pair
+/// as a disagreement. Which is right is element state (B6): a real relief held
+/// shut by back-pressure stays shut.
+///
+/// Measured beside it: the stood stretch reads the 3.8 m drop's static head from
+/// the compile its PARKED pass came from, and in gas that head moves with the
+/// pressure. Recompiled where it stands the drop is 0.043 Pa off, carrying
+/// 3.0e-5 kg/s — the "not a root" the agreement gate reports, relative to a
+/// throughput of zero.
+#[test]
+fn known_defect_a_dead_end_tie_picks_one_of_two_answers_in_gas() {
+    let fluid = Fluid::gas(0.1412898282423541, 0.5111970104338283);
+    let mids = [
+        Mid::Relief {
+            cv: 0.0005465476441746615,
+            set: 525151.5155196126,
+            band: 20000.0,
+        },
+        Mid::Junction,
+        Mid::Relief {
+            cv: 0.0030206220252378935,
+            set: 684889.851198137,
+            band: 20000.0,
+        },
+    ];
+    let pipes = [
+        (13.269368171285288, 0.15471275506689028, 0.01, 0.0),
+        (
+            1.0,
+            0.2143683747163805,
+            0.03700775446932792,
+            -3.8175495888055213,
+        ),
+        (1.0, 0.05, 0.01, 0.0),
+        (44.52142561490201, 0.05, 0.01, 0.0),
+        (1.0, 0.05, 0.01, 0.0),
+        (1.0, 0.05, 0.01, 0.0),
+    ];
+    let (g, edges) = build_chain(&mids, &pipes, 589569.6291973268, 766611.3079391625, &fluid);
+    let newton = NewtonFlowSolver::default()
+        .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        .expect("Newton answers through the dead end's tie");
     let simple = SimpleFlowSolver::default()
         .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
-        .expect("the game solver answers the chain");
+        .expect("the game solver answers with the second relief open");
     for &e in &edges {
+        assert_eq!(
+            newton.edge_mass_flow[&e], 0.0,
+            "Newton: the second relief held shut, nothing flows — if this moved, \
+             the tie changed (update A22 and this gate)"
+        );
         let flow = simple.edge_mass_flow[&e];
         assert!(
-            (flow - 68.354).abs() < 1e-3,
-            "both reliefs open, one flow through the chain: {flow} kg/s"
+            (flow + 0.2708).abs() < 1e-3,
+            "game solver: the second relief held open, 0.2708 kg/s backwards: {flow}"
         );
     }
+    let (imbalance, _) =
+        worst_recomputed_imbalance(&g, &fluid, &pressures_of(&newton)).expect("compiles");
+    assert!(
+        (1e-5..1e-4).contains(&imbalance),
+        "the stale gas head on the drop: 3.0e-5 kg/s measured, read {imbalance}"
+    );
 }
 
 // --- the second active set: starved tanks (M24, DESIGN §28 fork 3) -----------

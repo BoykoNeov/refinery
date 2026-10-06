@@ -19771,3 +19771,87 @@ one prediction missed: H3 (a hold that ignores the pump's state) was named for g
 
 **Deferred.** E25 is closed. E29 (new): a held loop in a cascade. A furnace or
 cooler loop held for its feed pump stays a trip's job (§49).
+
+## 51. A repeat onto a classification that never converged is re-run, not refused — ledger row A20 (M46)
+
+Taken on the user's request (2026-10-06): A20, Newton's refusal of two reliefs
+in series that have one answer, with "retry the solve rather than refuse" as
+the likely start. The full write-up is ROADMAP M46.
+
+**Mechanism.** A 6.99 bar source, a relief set at 6.42 bar, one at 3.23 bar, a
+1 bar sink. Newton's first pass, everything anchored from the cold seed, fails
+to converge. The second, with the second relief's node floating, converges —
+and its answer lifts the first relief, so it points straight back at the first
+pass's classification. §3c's loop read that repeat as chatter. The dead-end tie
+(§50) was asked first and rightly said no: stood at the first relief's
+pressure, the second relief lifts. But chatter is TWO ANSWERS, each pointing at
+the other, and the classification this repeat landed on had never been an
+answer — its one pass failed. M8.0 already refused to read a repeat produced BY
+a failed pass as evidence; this is the same argument about the classification
+the repeat lands ON.
+
+**Interfaces.** None public. `network::solve_with_active_anchoring` keeps the
+classifications whose pass converged and a postponed refusal; `dead_end_tie`
+returns a private `Tie` (stands / below vacuum); `chatter` builds the one
+refusal both exits share.
+
+**Forks.**
+
+1. **The rule is general, not the dead-end shape.** A repeat between two
+   different anchored sets, after a converged pass, onto a classification no
+   pass of this solve has converged under, is run again once — from the
+   converged pass's answer, as any next pass is seeded — instead of refused.
+   The ledger's start (re-run from the pressures §50 stands the stretch at) was
+   built first and dropped: a mutation removing that seed passed every gate,
+   and with the seed gone nothing tied the re-run to the dead-end shape.
+2. **A re-run that fails is refused at once, with the refusal it postponed** —
+   not walked on toward the pass cap, which would turn `cycled: true` into
+   `cycled: false` and a different diagnosis. A re-run that converges joins the
+   converged list, so no classification is re-run twice; a repeat between two
+   converged classifications is chatter exactly as before (B6).
+3. **The order is unchanged.** The dead-end tie is asked first; a stretch that
+   stands is answered as in §50, and only a repeat it does not answer reaches
+   the re-run.
+4. **A stretch that would stand below vacuum is refused outright, never
+   re-run** (§50 fork 5): a re-run that converged would report a broken column's
+   negative absolute pressure as an answer. `dead_end_tie` now says so
+   (`Tie::BelowVacuum`) instead of returning the same "not a tie" as every other
+   failure.
+5. **Every corpus plant is unmoved by construction.** The new path replaces a
+   return of `Err`, and every corpus plant runs to the end.
+
+**Measured.**
+- `two_reliefs_in_series_answer_on_both_fidelities`: Newton 68.354 kg/s on every
+  edge, three passes (fail, converge, re-run converges), as the game solver.
+  `a_retry_that_fails_is_refused_as_the_cycle_it_postponed` scripts the same
+  road with the re-run failing: refused as the cycle, at pass 3.
+- Random arms before → after: unchanged (spur trees 0 cycled + 1 capped,
+  chains 0 + 0 refused on both sides). The A20 chain is the only generated
+  plant known to reach the new path.
+- Corpus: 41 plants byte-identical on both fidelities.
+- Mutations: five, predicted before the run. Four caught by the gates named:
+  no re-run (the chain gate and the scripted gate), no converged-guard
+  (`an_alternating_classification_is_reported_as_a_cycle`: the cap instead of
+  the cycle at pass 2), no postponed refusal (the scripted gate), no re-check
+  (the chain gate). One uncaught, as predicted possible: re-running a
+  below-vacuum stretch. On the one fixture that reaches it
+  (`a_dead_end_below_vacuum_is_refused`) the re-run fails, so the postponed
+  refusal is the same cycle and no solve can tell the two apart; fork 4 is kept
+  as the rule, unpinned.
+- The first narrow build's mutations were run too; the two it left uncaught
+  (the converged-guard and the stood-pressure seed) are what led to fork 1.
+
+**Found on the way: A22.** The mutation runs' random draws found a chain the
+§50 tie answers with one of two answers: gas, the drive backwards through two
+reliefs. Held shut, the second relief's stretch fills to 5.90 bar, under its
+set; held open, the sink pushes it to 7.48 bar, over its set. Newton takes the
+first through the tie, zero flow; the game solver the second, 0.2708 kg/s
+backwards. Present since M45.0 — measured on the tree before this slice — and
+pinned, not fixed: which answer is right is element state (B6). Beside it, the
+stood stretch reads the drop's gas static head from the parked pass's compile,
+0.043 Pa off.
+
+**Deferred.** A20 is closed. A22 (new). A re-run that converges onto a
+classification the solve has not seen walks on, and could end at the cap
+(`cycled: false`); nothing reaches it. Chatter between two converged
+classifications stays B6.

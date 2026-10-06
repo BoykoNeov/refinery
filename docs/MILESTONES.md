@@ -12,6 +12,31 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M46 is CLOSED (2026-10-06): a repeat onto a classification that never
+converged is re-run, not refused — `docs/DEFERRED.md` A20 struck.** On the
+user's request ("retry the solve rather than refuse"). DESIGN §51.
+- **Newton answers two reliefs in series**: its cold first pass fails, the
+  second converges and points back at it, and the active-set loop called that
+  chatter. Chatter is two answers; the repeated classification had never been
+  one. Such a repeat is now re-run once from the converged pass's answer, and a
+  re-run that fails returns the refusal it postponed. 68.354 kg/s, as the game
+  solver. The dead-end tie is still asked first; a stretch below vacuum is
+  refused outright (`Tie::BelowVacuum`).
+- **General, not narrow**: built first as the ledger's "re-run from the stood
+  pressures"; a mutation removing that seed passed every gate, so the rule
+  dropped the dead-end shape. Covered by argument for stretches with two ways
+  in or a vessel; the only fixture is the A20 chain.
+- **A22 (new, older than M46)**: the mutation runs drew a gas chain, drive
+  backwards through two reliefs, where §50's tie answers zero flow and the game
+  solver 0.2708 kg/s backwards — both stand. Pinned as
+  `known_defect_a_dead_end_tie_picks_one_of_two_answers_in_gas`, not fixed.
+- Gates: `two_reliefs_in_series_answer_on_both_fidelities` (was the A20 known
+  defect), `a_retry_that_fails_is_refused_as_the_cycle_it_postponed`. Mutations:
+  five, four caught as named, one uncaught as predicted possible (re-running a
+  below-vacuum stretch: the only fixture's re-run fails anyway).
+- 41 plants byte-identical on both fidelities. Random arms unchanged. Release
+  property tests pass. The Godot binding did not change.
+
 **M45 is CLOSED (2026-10-06): a loop holds its valve while its pump is
 stopped — `docs/DEFERRED.md` E25 struck.** The user's DECISION: E25 as the next
 slice, told plainly no shipped plant reached it yet; "Controller holds" over a
