@@ -31,8 +31,9 @@ one of five next slices). DESIGN §54.
 - Gates: `newton_answers_a_valve_1_percent_open_behind_a_narrow_disc` (was the
   known defect; 7 iterations, 8.6955 kg/s, the game solver's flow to 1e-9) and
   the sweep gate on three bands with no skip, Newton under its cap. Written
-  failing first. Mutations: five; four caught by the gates as predicted, the
-  fifth (cutting both ways) by the corpus.
+  failing first. Mutations: five, all caught; the fifth (cutting both ways)
+  passes the fixture gates and is caught by `check_valve_reference.rs` and the
+  corpus.
 - 40 plants byte-identical on Newton and all 42 on the game solver. Two Newton
   plants moved at the rounding floor — `tank_level_fill_check_valve` and
   `tank_level_fill_pump_hold`, where the cut fires on pump stops (2 and 10

@@ -8110,5 +8110,6 @@ direction only. Gates: `newton_answers_a_valve_1_percent_open_behind_a_narrow_di
 (was the known defect) and the sweep gate, now on three bands with no skip.
 Corpus: 40 byte-identical on Newton, 42 on the game solver; the two liquid
 check-valve plants moved at the rounding floor (the cut fires on pump stops).
-Five mutations: four caught by the gates, the fifth (cutting both ways) by the
-corpus.
+Five mutations, all caught: the fifth (cutting both ways) passes the fixture
+gates and fails three of `check_valve_reference.rs`'s nine, and the corpus
+stops three plants.

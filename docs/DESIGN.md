@@ -20268,9 +20268,9 @@ on every other edge. `newton_flow::band_cut` reads it. The game solver does not
   used to carry the disc shut in one move and converge anyway; it now passes
   through mid-band and lands on the same root.
 - Release property tests pass. The Godot binding did not change.
-- Mutations: five, predicted. No cut: both fixture gates. Landing at the shut
+- Mutations: five. No cut: both fixture gates. Landing at the shut
   edge: both fixture gates and gate 10 of `check_valve_reference.rs`. Landing
   at full lift: both fixture gates and five of that file's nine. Cutting from
   inside the band too: the sweep gate and three of that file's nine. Cutting
-  both ways: every gate passes; the corpus catches it (three plants stop), and
-  CI runs the corpus.
+  both ways: the fixture gates pass; three of that file's nine fail, and the
+  corpus stops three plants.
