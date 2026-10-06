@@ -8010,3 +8010,32 @@ the drive backwards through two reliefs, §50's tie takes the second relief held
 shut (zero flow) where the game solver holds it open (0.2708 kg/s backwards);
 both stand. Pinned as a known defect, not fixed — it is an element-state
 question (B6).
+
+## M47 — a dead end stands where its own head puts it: ledger row A22; opened on a request
+
+A22: in gas, with the drive backwards through two reliefs, §50's dead-end tie
+answers zero flow (the second relief held shut) where the game solver answers
+0.2708 kg/s backwards (held open), and any random chain run that drew the case
+failed — CI included. The user asked to start it ("start a22"). The note is
+DESIGN §52.
+
+### M47 — **LANDED** 2026-10-06
+
+Measured before deciding: the random arm already allows two answers on a
+relief in reverse flow, provided each recompiles to an exact root. The game
+solver's did (1.2e-7 kg/s against its 2.8e-6 bound); Newton's did not (3.0e-5
+against 1e-7): the stood stretch read its 3.8 m drop's gas head from the pass
+it was parked in. So the ledger's "smaller" fault was the whole failure. Put
+to the user as three ways out — fix the head and keep both answers, have
+Newton refuse when the far relief would open from its far side, or make a
+relief shut against back-pressure — the user's DECISION: fix the head only.
+
+The tie now re-stands the stretch from its own recompile until no node moves
+more than 1e-6 Pa (at most eight re-stands; a column that will not settle is
+judged as any other repeat). Gas settles in two; Newton's answer recompiles to
+2.3e-12 kg/s, and the random arm accepts the pair. Both answers stay, pinned by
+`a_dead_end_tie_in_gas_stands_on_an_exact_root`. Corpus 41 byte-identical on
+both fidelities; three mutations, all caught (one by a different assertion
+than predicted: with the tie giving up, §51's re-run takes Newton to the other
+answer rather than to a refusal). A22 stays open for which answer is right —
+element state, B6.

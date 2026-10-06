@@ -19857,3 +19857,81 @@ stood stretch reads the drop's gas static head from the parked pass's compile,
 classification the solve has not seen walks on, and could end at the cap
 (`cycled: false`); nothing reaches it. Chatter between two converged
 classifications stays B6.
+
+## 52. A dead end stands where its own head puts it — ledger row A22 (M47)
+
+Taken on the user's request ("start a22", 2026-10-06), with the user's
+DECISION between three ways out: fix the stale head only and keep both answers
+(chosen); have Newton refuse when the far relief would open from its far side;
+or make a relief shut against back-pressure. The full write-up is ROADMAP M47.
+
+**What A22 turned out to be.** The ledger row read the pair — Newton's zero
+flow, the game solver's 0.2708 kg/s backwards — as the fault, and the random
+arm's failure as its symptom. It is not. `invariants.rs`'s header already
+allows exactly this pair: a relief in reverse flow raises the pressure its own
+spring senses, so held shut and held open are both exact roots, and
+`assert_fidelity_agreement` accepts two answers when some relief sits on
+different branches in each AND each recompiles to an exact root. Measured on
+A22's chain: the game solver's answer is a root (1.2e-7 kg/s against its
+2.8e-6 bound); Newton's is not (3.0e-5 against 1e-7, at a throughput of zero).
+The "smaller" fault beside it was the whole of the failure.
+
+**Mechanism.** §50 stands the stretch from the compile the kept pass came
+from: `P = P_outside − β` along the way in, and on through the stretch's
+pipes. In liquid `β = ρ·g·Δz` does not depend on where the stretch stands. In
+gas `ρ` is read at the upwind node's pressure, and the kept pass on A22's chain
+left the stretch somewhere other than where it stands, so the 3.8 m drop's head
+was 0.043 Pa off — 3.0e-5 kg/s through the drop's regularised branch.
+
+**Interfaces.** None public. `dead_end_tie` re-stands the stretch; two private
+constants, `DEAD_END_STANDING_TOL` (1e-6 Pa) and `MAX_DEAD_END_RESTANDS` (8).
+
+**Forks.**
+
+1. **Re-stand from the stretch's own recompile until it stops moving.** Stand,
+   recompile at the stood pressures, stand again from the new offsets; stop
+   when no node moves more than 1e-6 Pa (about 1e-9 kg/s at zero flow, where
+   both solvers' branches are linear over `eps_dp = 1 Pa`). The kept stretch is
+   the one the last recompile was taken AT, and the "still a dead end" check
+   (§50 fork 4) reads that same recompile.
+2. **The upwind side does not flip.** At the stood answer the two ends of a
+   sloped pipe differ by `β` exactly (160 Pa on the drop), so "upwind is the
+   higher end" is decided by the head itself, not by rounding; a flat pipe has
+   `β = 0` and no density to read.
+3. **Bounded, and a column that will not settle is not a tie.** Eight
+   re-stands, then the tie returns "not a dead end" and the driver judges the
+   repeat as any other (re-run once, then refused). Gas settles in two.
+4. **Below vacuum is checked on every stand**, not only the first.
+5. **Both answers stay.** Which one a relief held shut by back-pressure really
+   takes is element state (B6); the user chose not to decide it here.
+
+**Measured.**
+- `a_dead_end_tie_in_gas_stands_on_an_exact_root` (was the A22 known defect),
+  written failing first: Newton's stood stretch now recompiles to 2.3e-12 kg/s,
+  after two re-stands (the stretch moved 0.043 Pa, then 1.2e-5, then 3.1e-9);
+  both pinned flows unchanged; `assert_fidelity_agreement` with root proofs
+  passes on the pair.
+- Corpus: 41 plants byte-identical on both fidelities. Whether any of them
+  reaches the tie in its 6000 ticks was not measured; any that does stood
+  where the first recompile already agrees. The liquid fixtures of
+  `dead_end_disc.rs` and gate 9 of `check_valve_reference.rs` pass unchanged.
+- Mutations: three, predicted before the run, all caught by the gate. No
+  re-stand, and a tolerance loosened to 1 Pa (which stops after the first
+  stand): Newton's root, 3.0e-5 kg/s. A cap of zero re-stands, predicted as
+  Newton refusing the tick: caught, but not as predicted — with the tie giving
+  up, §51's re-run lands Newton on the OTHER answer, the relief open, so the
+  gate's "nothing flows" fails instead of its "Newton answers". `dead_end_disc.rs`
+  passes under all three, as predicted: its stretches are liquid.
+
+**Correction to §51.** §51's "Found on the way" and ROADMAP M46 call A22's
+pair the fault and the head "beside it". The head was the fault; the pair is
+the reverse-flow multiplicity `invariants.rs` already allows.
+`known_defect_a_dead_end_tie_picks_one_of_two_answers_in_gas` is now
+`a_dead_end_tie_in_gas_stands_on_an_exact_root`.
+
+**Deferred.** A22 stays open for its other half: which of the two answers a
+relief held shut by back-pressure takes is element state (B6). Not taken, on
+the user's decision: Newton refusing when the far relief would open from its
+far side (which, stood at zero flow, could also refuse a plant near the set
+that has one answer), or a relief that shuts against back-pressure (a model
+change that reverses §3a fork 5's reading).

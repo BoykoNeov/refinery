@@ -12,6 +12,28 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M47 is CLOSED (2026-10-06): a dead end stands where its own head puts it —
+`docs/DEFERRED.md` A22's CI failure closed, the row kept open.** On the user's
+request ("start a22") and DECISION ("fix gravity error only", over Newton
+refusing the case or a relief that shuts against back-pressure). DESIGN §52.
+- **The fault was the head, not the pair**: the random chain arm already allows
+  a relief in reverse flow two answers if both are exact roots. The game
+  solver's was (1.2e-7 kg/s); Newton's was not (3.0e-5 at zero throughput),
+  because the stood stretch read its 3.8 m drop's gas head from the pass it
+  was parked in.
+- **The tie re-stands the stretch from its own recompile** until no node moves
+  more than 1e-6 Pa, at most eight times; gas settles in two, Newton's answer
+  recompiles to 2.3e-12 kg/s. A column that will not settle is not a tie.
+- **Both answers stay**: zero flow (Newton) and 0.2708 kg/s backwards (game
+  solver). Which one a relief held shut by back-pressure takes is element
+  state, B6 — A22 stays open for that.
+- Gate: `a_dead_end_tie_in_gas_stands_on_an_exact_root` (was the A22 known
+  defect; written failing first). Mutations: three, all caught; the zero-cap
+  one by a different assertion than predicted (§51's re-run takes Newton to
+  the other answer, not to a refusal).
+- 41 plants byte-identical on both fidelities. Release property tests pass.
+  The Godot binding did not change.
+
 **M46 is CLOSED (2026-10-06): a repeat onto a classification that never
 converged is re-run, not refused — `docs/DEFERRED.md` A20 struck.** On the
 user's request ("retry the solve rather than refuse"). DESIGN §51.

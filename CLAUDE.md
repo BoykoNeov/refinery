@@ -146,9 +146,9 @@ godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M46
-(2026-10-06)** — a repeat onto a classification that never converged is re-run,
-not refused (A20).
+Work only on the current milestone unless asked. **Latest closed: M47
+(2026-10-06)** — a dead end stands where its own gas head puts it (A22's CI
+failure; the row stays open under B6).
 Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.

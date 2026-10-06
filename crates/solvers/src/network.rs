@@ -1075,6 +1075,18 @@ pub fn anchored_set(
 /// number of pressure-actuated elements in the plant.
 pub const MAX_ANCHOR_PASSES: usize = 8;
 
+/// How far [Pa] a dead end may still move between two re-stands and count as
+/// standing (M47, docs/DESIGN.md §52). At zero flow both solvers' branches are
+/// regularised linear over `eps_dp = 1 Pa`, so a stretch this far off carries
+/// about 1e-9 kg/s on A22's chain, two orders under the agreement gate's root
+/// bound of 1e-7 kg/s.
+const DEAD_END_STANDING_TOL: f64 = 1e-6;
+
+/// How many times a dead end is re-stood from its own recompile before the tie
+/// gives up on it (M47, §52). A gas column converges in two or three; the cap
+/// only bounds a column that would not.
+const MAX_DEAD_END_RESTANDS: usize = 8;
+
 /// What one fidelity's own iteration returns to the active-set driver: its
 /// result, and the pressure iterate it ended on.
 ///
@@ -1446,7 +1458,10 @@ enum Tie {
 /// pump jump), so each node of the stretch is reached from the one outside it
 /// by subtracting `β` along each edge followed forward and adding it along each
 /// followed backward. `compiled` is the compile at the kept pass's pressures,
-/// and its offsets are what the next solve would read.
+/// and stands the stretch first; a gas column's head moves with its pressure,
+/// so the stretch is then re-stood from its own recompile until it stops moving
+/// (M47, docs/DESIGN.md §52), and the offsets kept are the ones read where it
+/// stands.
 ///
 /// **Then the stretch must stay a dead end where it stands**: every OTHER edge
 /// across its boundary, recompiled at those pressures, still conducts nothing.
@@ -1494,38 +1509,66 @@ fn dead_end_tie(
     }
 
     let (src, tgt) = graph.endpoints(way_in);
-    let beta = compiled[&way_in].branch.beta;
-    let (first, at_first) = if stretch.contains(&tgt) {
-        (tgt, pressures[&src] - beta)
-    } else {
-        (src, pressures[&tgt] + beta)
-    };
-    let mut standing: BTreeMap<NodeId, f64> = BTreeMap::new();
-    standing.insert(first, at_first);
-    let mut stack = vec![first];
-    while let Some(nid) = stack.pop() {
-        let here = standing[&nid];
-        for (eid, other, incoming) in graph.incident(nid) {
-            if !stretch.contains(&other)
-                || standing.contains_key(&other)
-                || !conducts_in_filled(eid)
-            {
-                continue;
+    let stand = |offsets: &BTreeMap<EdgeId, CompiledEdge>| {
+        let beta = offsets[&way_in].branch.beta;
+        let (first, at_first) = if stretch.contains(&tgt) {
+            (tgt, pressures[&src] - beta)
+        } else {
+            (src, pressures[&tgt] + beta)
+        };
+        let mut standing: BTreeMap<NodeId, f64> = BTreeMap::new();
+        standing.insert(first, at_first);
+        let mut stack = vec![first];
+        while let Some(nid) = stack.pop() {
+            let here = standing[&nid];
+            for (eid, other, incoming) in graph.incident(nid) {
+                if !stretch.contains(&other)
+                    || standing.contains_key(&other)
+                    || !conducts_in_filled(eid)
+                {
+                    continue;
+                }
+                let beta = offsets[&eid].branch.beta;
+                standing.insert(other, if incoming { here + beta } else { here - beta });
+                stack.push(other);
             }
-            let beta = compiled[&eid].branch.beta;
-            standing.insert(other, if incoming { here + beta } else { here - beta });
-            stack.push(other);
         }
-    }
+        standing
+    };
 
-    // A stretch standing at or below vacuum is a column the liquid cannot
-    // hold up: not a state this rule can name, so the tie is refused as before.
-    if standing.values().any(|&p| p <= 0.0) {
-        return Some(Tie::BelowVacuum);
-    }
-    let mut settled = pressures.clone();
-    settled.extend(standing.iter().map(|(&nid, &p)| (nid, p)));
-    let recompiled = compile_edges(graph, slate, previous_states, &settled).ok()?;
+    // The offsets are read where the stretch STANDS, not where the kept pass
+    // left it (M47, docs/DESIGN.md §52): a gas column's head moves with its
+    // pressure, so the stretch is re-stood from its own recompile until it
+    // stops moving. Each pass shrinks the error by about `g·|Δz|·dρ/dP`, 3e-4
+    // on A22's 3.8 m drop, and a liquid's density does not move at all, so the
+    // first recompile already agrees and the stretch stands where it did.
+    let mut standing = stand(compiled);
+    let mut restands = 0;
+    let recompiled = loop {
+        // A stretch standing at or below vacuum is a column the liquid cannot
+        // hold up: not a state this rule can name, so the tie is refused as before.
+        if standing.values().any(|&p| p <= 0.0) {
+            return Some(Tie::BelowVacuum);
+        }
+        let mut settled = pressures.clone();
+        settled.extend(standing.iter().map(|(&nid, &p)| (nid, p)));
+        let recompiled = compile_edges(graph, slate, previous_states, &settled).ok()?;
+        let restood = stand(&recompiled);
+        let moved = standing
+            .iter()
+            .map(|(nid, p)| (restood[nid] - p).abs())
+            .fold(0.0, f64::max);
+        if moved <= DEAD_END_STANDING_TOL {
+            break recompiled;
+        }
+        // Still moving after the cap: not a column this rule can stand, so the
+        // driver judges the repeat as any other.
+        if restands == MAX_DEAD_END_RESTANDS {
+            return None;
+        }
+        restands += 1;
+        standing = restood;
+    };
     let still_closed = graph
         .edge_ids()
         .filter(|&eid| eid != way_in && crosses(eid))

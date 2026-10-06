@@ -2823,27 +2823,27 @@ fn two_reliefs_in_series(fluid: &Fluid) -> (PlantGraph, Vec<refinery_core::graph
     build_chain(&mids, &pipes, 698767.3083954572, 1.0e5, fluid)
 }
 
-/// **KNOWN DEFECT, pinned: a dead end's tie picks one of two answers**
-/// (docs/DEFERRED.md A22, found by M46's mutation runs; present since M45.0).
-/// Gas, a 5.90 bar source, a relief set at 5.25 bar, a junction down a 3.8 m
-/// drop, a relief set at 6.85 bar, a 7.67 bar sink: the drive is BACKWARDS.
+/// **A dead end's tie in gas stands on an exact root** (docs/DEFERRED.md A22,
+/// found by M46's mutation runs; the head fixed in M47). Gas, a 5.90 bar
+/// source, a relief set at 5.25 bar, a junction down a 3.8 m drop, a relief set
+/// at 6.85 bar, a 7.67 bar sink: the drive is BACKWARDS.
 ///
-/// Two answers stand. The second relief senses only its own inlet: held shut,
-/// the stretch between the reliefs fills from the first relief to 5.90 bar,
-/// under its set, so it stays shut — Newton's answer, through §50's dead-end
-/// tie, zero flow everywhere. Held open, the sink pushes the stretch to 7.48 bar,
-/// over its set, so it stays open — the game solver's, 0.2708 kg/s backwards.
-/// The tie never visits the second; `chain_fidelity_agreement` reads the pair
-/// as a disagreement. Which is right is element state (B6): a real relief held
-/// shut by back-pressure stays shut.
+/// Two answers stand, and both are kept. The second relief senses only its own
+/// inlet: held shut, the stretch between the reliefs fills from the first
+/// relief to 5.90 bar, under its set, so it stays shut — Newton's answer,
+/// through §50's dead-end tie, zero flow everywhere. Held open, the sink pushes
+/// the stretch to 7.48 bar, over its set, so it stays open — the game solver's,
+/// 0.2708 kg/s backwards. That is the reverse-flow multiplicity this file's
+/// header already allows; which one a real relief picks is element state (B6),
+/// still open.
 ///
-/// Measured beside it: the stood stretch reads the 3.8 m drop's static head from
-/// the compile its PARKED pass came from, and in gas that head moves with the
-/// pressure. Recompiled where it stands the drop is 0.043 Pa off, carrying
-/// 3.0e-5 kg/s — the "not a root" the agreement gate reports, relative to a
-/// throughput of zero.
+/// What was wrong was Newton's: the stood stretch read the 3.8 m drop's static
+/// head from the compile its PARKED pass came from, and in gas that head moves
+/// with the pressure. Recompiled where it stood, the drop was 0.043 Pa off and
+/// carried 3.0e-5 kg/s against a throughput of zero, so the agreement gate's
+/// root proof failed and any random run that drew this chain failed with it.
 #[test]
-fn known_defect_a_dead_end_tie_picks_one_of_two_answers_in_gas() {
+fn a_dead_end_tie_in_gas_stands_on_an_exact_root() {
     let fluid = Fluid::gas(0.1412898282423541, 0.5111970104338283);
     let mids = [
         Mid::Relief {
@@ -2890,12 +2890,17 @@ fn known_defect_a_dead_end_tie_picks_one_of_two_answers_in_gas() {
             "game solver: the second relief held open, 0.2708 kg/s backwards: {flow}"
         );
     }
-    let (imbalance, _) =
+    // The agreement gate's own root bound, at Newton's throughput of zero.
+    let (imbalance, throughput) =
         worst_recomputed_imbalance(&g, &fluid, &pressures_of(&newton)).expect("compiles");
     assert!(
-        (1e-5..1e-4).contains(&imbalance),
-        "the stale gas head on the drop: 3.0e-5 kg/s measured, read {imbalance}"
+        imbalance <= 1e-7 + 1e-5 * throughput,
+        "Newton's stood stretch is a root where it stands: 3.0e-5 kg/s on the \
+         parked pass's gas head, read {imbalance:.3e}"
     );
+    if let Err(e) = assert_fidelity_agreement(&g, &fluid, Ok(newton), Ok(simple), true) {
+        panic!("the random chain arm accepts this pair: {e}");
+    }
 }
 
 // --- the second active set: starved tanks (M24, DESIGN §28 fork 3) -----------
