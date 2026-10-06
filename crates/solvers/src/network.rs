@@ -1417,6 +1417,131 @@ where
     })
 }
 
+/// A relief's opening [0..1] at its own node's pressure `p` [Pa]: full lift
+/// while a pop valve is lifted, its curve otherwise. `None` for any other kind.
+fn relief_opening_at(kind: &NodeKind, p: f64) -> Option<f64> {
+    match kind {
+        NodeKind::ReliefValve {
+            blowdown: Some(Blowdown { lifted: true, .. }),
+            ..
+        } => Some(1.0),
+        NodeKind::ReliefValve {
+            set_pressure,
+            accumulation,
+            ..
+        } => Some(relief_opening(
+            p,
+            set_pressure.value(),
+            accumulation.value(),
+        )),
+        _ => None,
+    }
+}
+
+/// Every relief's open-or-shut state at `pressures`, `true` when open. A relief
+/// with no pressure there — before the first solve — reads shut.
+fn relief_states(graph: &PlantGraph, pressures: &BTreeMap<NodeId, f64>) -> BTreeMap<NodeId, bool> {
+    graph
+        .node_ids()
+        .filter_map(|nid| {
+            let kind = &graph.node(nid).kind;
+            relief_opening_at(kind, 0.0)?;
+            let open = pressures
+                .get(&nid)
+                .and_then(|&p| relief_opening_at(kind, p))
+                .is_some_and(|opening| opening > 0.0);
+            Some((nid, open))
+        })
+        .collect()
+}
+
+/// A relief keeps its last answer where the plant has two (M48.1,
+/// docs/DESIGN.md §53, ledger row A22): "start shut, stay as was".
+///
+/// `solve` is one fidelity's whole solve on the graph it is handed. It runs
+/// first on the plant as it is (A). Each relief's REMEMBERED state is read off
+/// `warm_start` — the last accepted answer's pressures, so tick 1 remembers every
+/// relief shut. A relief A puts in the other state has FLIPPED; with none, A is
+/// returned untouched, which is every tick of every plant whose reliefs only
+/// lift and reseat on their own inlet.
+///
+/// Otherwise the solve is repeated (B) on a hydraulic copy of the plant with each
+/// flipped relief held where it was — a plain valve at opening 0 or 1 — from the
+/// warm start A began with. B is kept when every held relief's own opening at
+/// B's pressure agrees with how it was held: then the held valve compiled to the
+/// branch the relief itself would have, and B is an exact root of the real
+/// plant, chosen for its history. A held relief that disagrees is released and B
+/// re-run. A relief that opened because its inlet rose past set always
+/// disagrees — held shut, its inlet is no lower — so it is released and A
+/// stands; what B keeps is a relief whose own opening put its inlet where it is.
+///
+/// When B cannot be kept, A is returned with A's own warm start.
+pub fn solve_remembering_reliefs<F>(
+    graph: &PlantGraph,
+    warm_start: &mut BTreeMap<NodeId, f64>,
+    mut solve: F,
+) -> Result<HydraulicSolution, SimError>
+where
+    F: FnMut(&PlantGraph, &mut BTreeMap<NodeId, f64>) -> Result<HydraulicSolution, SimError>,
+{
+    let remembered = relief_states(graph, warm_start);
+    if remembered.is_empty() {
+        return solve(graph, warm_start);
+    }
+    let seed = warm_start.clone();
+    let answer = solve(graph, warm_start)?;
+    let pressures: BTreeMap<NodeId, f64> = answer
+        .node_pressure
+        .iter()
+        .map(|(&nid, p)| (nid, p.value()))
+        .collect();
+    let mut held: BTreeMap<NodeId, bool> = relief_states(graph, &pressures)
+        .into_iter()
+        .filter(|(nid, open)| remembered[nid] != *open)
+        .map(|(nid, open)| (nid, !open))
+        .collect();
+    if held.is_empty() {
+        return Ok(answer);
+    }
+    let answer_warm_start = std::mem::replace(warm_start, seed.clone());
+    while !held.is_empty() {
+        let mut copy = graph.hydraulic_copy();
+        for (&nid, &open) in &held {
+            let NodeKind::ReliefValve { cv_max, x_t, .. } = graph.node(nid).kind else {
+                unreachable!("only reliefs are held")
+            };
+            copy.node_mut(nid).kind = NodeKind::Valve {
+                cv_max,
+                opening: if open { 1.0 } else { 0.0 },
+                x_t,
+            };
+        }
+        let Ok(kept) = solve(&copy, warm_start) else {
+            break;
+        };
+        let disagree: Vec<NodeId> = held
+            .iter()
+            .filter(|&(&nid, &open)| {
+                let opening = kept
+                    .node_pressure
+                    .get(&nid)
+                    .and_then(|p| relief_opening_at(&graph.node(nid).kind, p.value()));
+                opening != Some(if open { 1.0 } else { 0.0 })
+            })
+            .map(|(&nid, _)| nid)
+            .collect();
+        if disagree.is_empty() {
+            return Ok(kept);
+        }
+        for nid in disagree {
+            held.remove(&nid);
+        }
+        *warm_start = seed.clone();
+    }
+    *warm_start = answer_warm_start;
+    Ok(answer)
+}
+
 /// The refusal of a repeat between the anchored sets `used` and `next`: the
 /// plant alternates between two answers (docs/DESIGN.md §3c).
 fn chatter(graph: &PlantGraph, used: &BTreeSet<NodeId>, next: &BTreeSet<NodeId>) -> SimError {

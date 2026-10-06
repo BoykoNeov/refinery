@@ -20076,7 +20076,7 @@ a SAW-TOOTH between reseat and set, not a steady sit inside the band.
 **Deferred.** A pop valve in liquid service, or in gas with no vessel behind
 it — both refused at load (B6's remaining clauses).
 
-### M48.1 — an answer kept from the last tick: measured, not built
+### M48.1 — an answer kept from the last tick
 
 Measured before writing a note, and the measurement dissolved the slice.
 - **One solver keeps last tick's answer and the other does not.** A22's
@@ -20110,3 +20110,83 @@ Measured before writing a note, and the measurement dissolved the slice.
 The chatter refusal's text still says element state would resolve it. Since
 M48.0 that state exists for a pop valve, but no plant reaches the refusal to
 need it.
+
+**Reopened on the user's DECISION (2026-10-06)**, told the corrected finding:
+build "start shut, stay as was". Specified before building:
+
+**Rule.** A relief's REMEMBERED state is whether it was open (opening > 0, or
+a lifted pop valve) at the last accepted answer — read off the solver's own
+warm start, which holds exactly that answer's pressures, so there is no new
+state and nothing new in the snapshot. Tick 1 has no warm start: every relief
+is remembered shut. After the ordinary solve (call it A), the reliefs that
+FLIPPED against memory are found: remembered shut and open in A, or
+remembered open and shut in A. None: A is returned untouched. Otherwise the
+solve is repeated (B) on a hydraulic copy of the plant with each flipped
+relief HELD in its remembered state — a plain valve at opening 0 or at 1 —
+seeded from the warm start A started from. B is kept if every held relief's
+own curve, read at B's pressure, agrees with how it was held (0 for shut,
+exactly 1 for open — inside the band neither holds). A held relief that
+disagrees is released and B re-run; no held relief left, B failing, or B
+refused, and A is returned with A's warm start.
+
+**Why B is an answer of the real plant.** A shut relief's curve is exactly 0
+at or below set, and an open one's exactly 1 at or above full lift, with zero
+slope at both; held where its own curve agrees, the held valve compiles to
+the same branch the relief would. B is an exact root, chosen for its history.
+
+**Why a lifting relief still lifts.** A relief that opens because its inlet
+rose past set has, held shut, an inlet at least as high: B disagrees, the
+relief is released, A stands. The plants B keeps are those where the relief's
+own opening is what put its inlet above set — reverse flow raising the
+pressure its spring senses (A22) — or, held open, what held it there.
+
+**Interfaces.** `network::solve_remembering_reliefs`, wrapped around each
+solver's `solve_with_active_anchoring` call; `PlantGraph::hydraulic_copy`
+(nodes, pipes and exchanger couplings — never the loops or trips, which is
+why `Clone` was removed at M8.2 and stays removed).
+
+**Gates, named before building** (`crates/solvers/tests/relief_memory.rs`,
+on A22's chain):
+1. Cold, both solvers answer zero flow (the game solver's 0.2708 kg/s
+   backwards goes; `a_dead_end_tie_in_gas_stands_on_an_exact_root` is
+   updated, as its own message asks).
+2. History: five ticks open forward, then A22's pressures — both solvers stay
+   open, 0.2708 kg/s backwards; five ticks shut, then A22 — both stay shut.
+3. Corpus: 42 plants byte-identical on both fidelities (a lifting relief is
+   released), and the release property tests pass.
+
+**Mutations, predicted.** No held-open half: gate 2's open history on Newton.
+Holding all-or-nothing (no release round): gate 1 on the game solver, whose
+first relief is open in both answers. Keeping B without the agreement check:
+lifting plants never lift — corpus, and `relief_valve_reference.rs`. A's warm
+start not restored after a refused B: corpus (the next tick seeds elsewhere).
+
+**Measured (M48.1, landed 2026-10-06).**
+- A22's chain, cold: both solvers answer zero flow (the game solver's
+  0.2708 kg/s backwards is set aside). After five ticks running forward
+  open, both stay open at A22's pressures, 0.2708 kg/s backwards; after
+  five ticks shut, both stay shut.
+- Corpus: 42 plants byte-identical on both fidelities, and reported
+  iterations unchanged (the extra solve is not counted, and wall time moved
+  only inside its noise). Release property tests pass, and pass again at
+  2 000 cases per arm instead of 400.
+- Mutations: four predicted. Three caught as named (no held-open half: the
+  history gate on Newton; all-or-nothing: the cold gate on the game solver;
+  A's warm start not restored: the corpus, three relief plants moved). **One
+  escaped its named catcher**: keeping B without the agreement check passes
+  `relief_valve_reference.rs`, because the next tick reads the held answer's
+  inlet, above set, as OPEN, so the relief lifts one tick late and settles
+  exactly as before. The corpus catches it (the same three plants), and a gate
+  now does: `a_relief_opens_in_the_solve_that_takes_its_inlet_past_set`
+  (`relief_blowdown_reference.rs`), written to fail under the mutation (tick
+  126 at 20.05 bar relieving nothing) and passing without it.
+
+**Corrections from building it.**
+- The gates live in `crates/solvers/tests/invariants.rs`, beside A22's chain
+  builder, not in a new `relief_memory.rs`:
+  `a_dead_end_tie_in_gas_stands_on_an_exact_root` (updated: the game solver's
+  pin moved to zero flow) and `a_relief_stays_as_it_was_where_a22_has_two_answers`.
+- The memory is read off each solver's own warm start, so the two solvers
+  share the RULE, not a stored fact — which is what keeps the snapshot
+  unchanged. A frontend reads a relief's remembered state as its last
+  snapshot's inlet against its set.

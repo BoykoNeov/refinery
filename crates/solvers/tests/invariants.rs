@@ -2853,7 +2853,56 @@ fn two_reliefs_in_series(fluid: &Fluid) -> (PlantGraph, Vec<refinery_core::graph
 /// root proof failed and any random run that drew this chain failed with it.
 #[test]
 fn a_dead_end_tie_in_gas_stands_on_an_exact_root() {
-    let fluid = Fluid::gas(0.1412898282423541, 0.5111970104338283);
+    let fluid = a22_fluid();
+    let (g, edges) = a22_chain(A22_SOURCE, A22_SINK, &fluid);
+    let newton = NewtonFlowSolver::default()
+        .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        .expect("Newton answers through the dead end's tie");
+    let simple = SimpleFlowSolver::default()
+        .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        .expect("the game solver answers");
+    // Tick 1 remembers every relief shut (M48.1, docs/DESIGN.md §53): the game
+    // solver's own first answer — the second relief held open, 0.2708 kg/s
+    // backwards — is an exact root too, and it is set aside for the held-shut
+    // root its history picks.
+    for &e in &edges {
+        assert_eq!(
+            newton.edge_mass_flow[&e], 0.0,
+            "Newton: the second relief held shut, nothing flows — if this moved,              the tie changed (update A22 and this gate)"
+        );
+        assert!(
+            simple.edge_mass_flow[&e].abs() < 1e-9,
+            "game solver: started shut, it stays shut: {}",
+            simple.edge_mass_flow[&e]
+        );
+    }
+    // The agreement gate's own root bound, at Newton's throughput of zero.
+    let (imbalance, throughput) =
+        worst_recomputed_imbalance(&g, &fluid, &pressures_of(&newton)).expect("compiles");
+    assert!(
+        imbalance <= 1e-7 + 1e-5 * throughput,
+        "Newton's stood stretch is a root where it stands: 3.0e-5 kg/s on the          parked pass's gas head, read {imbalance:.3e}"
+    );
+    if let Err(e) = assert_fidelity_agreement(&g, &fluid, Ok(newton), Ok(simple), true) {
+        panic!("the random chain arm accepts this pair: {e}");
+    }
+}
+
+/// A22's slate and chain (M46's mutation runs drew it; M47, M48.1).
+fn a22_fluid() -> Fluid {
+    Fluid::gas(0.1412898282423541, 0.5111970104338283)
+}
+
+const A22_SOURCE: f64 = 589569.6291973268;
+const A22_SINK: f64 = 766611.3079391625;
+
+/// The chain at the given boundary pressures [Pa]. Built in the same order every
+/// time, so its `NodeId`s match across calls and a solver's warm start carries.
+fn a22_chain(
+    p_src: f64,
+    p_snk: f64,
+    fluid: &Fluid,
+) -> (PlantGraph, Vec<refinery_core::graph::EdgeId>) {
     let mids = [
         Mid::Relief {
             cv: 0.0005465476441746615,
@@ -2880,35 +2929,53 @@ fn a_dead_end_tie_in_gas_stands_on_an_exact_root() {
         (1.0, 0.05, 0.01, 0.0),
         (1.0, 0.05, 0.01, 0.0),
     ];
-    let (g, edges) = build_chain(&mids, &pipes, 589569.6291973268, 766611.3079391625, &fluid);
-    let newton = NewtonFlowSolver::default()
-        .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
-        .expect("Newton answers through the dead end's tie");
-    let simple = SimpleFlowSolver::default()
-        .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
-        .expect("the game solver answers with the second relief open");
-    for &e in &edges {
-        assert_eq!(
-            newton.edge_mass_flow[&e], 0.0,
-            "Newton: the second relief held shut, nothing flows — if this moved, \
-             the tie changed (update A22 and this gate)"
-        );
-        let flow = simple.edge_mass_flow[&e];
-        assert!(
-            (flow + 0.2708).abs() < 1e-3,
-            "game solver: the second relief held open, 0.2708 kg/s backwards: {flow}"
-        );
-    }
-    // The agreement gate's own root bound, at Newton's throughput of zero.
-    let (imbalance, throughput) =
-        worst_recomputed_imbalance(&g, &fluid, &pressures_of(&newton)).expect("compiles");
-    assert!(
-        imbalance <= 1e-7 + 1e-5 * throughput,
-        "Newton's stood stretch is a root where it stands: 3.0e-5 kg/s on the \
-         parked pass's gas head, read {imbalance:.3e}"
-    );
-    if let Err(e) = assert_fidelity_agreement(&g, &fluid, Ok(newton), Ok(simple), true) {
-        panic!("the random chain arm accepts this pair: {e}");
+    build_chain(&mids, &pipes, p_src, p_snk, fluid)
+}
+
+/// **A relief stays as it was where A22 has two answers** (M48.1, docs/DESIGN.md
+/// §53), on both fidelities. Five solves at a first pair of boundary pressures,
+/// then five at A22's, on the same solver: after the chain ran forward through
+/// both reliefs (source 9 bar), the second stays open and A22 flows 0.2708 kg/s
+/// backwards; after everything sat shut (source 4 bar, sink 1 bar), it stays
+/// shut and nothing flows. Before M48.1 Newton returned to zero flow after
+/// running open, and the game solver's cold answer was the open one.
+#[test]
+fn a_relief_stays_as_it_was_where_a22_has_two_answers() {
+    let fluid = a22_fluid();
+    for (history, first, open) in [
+        ("ran open", (9.0e5, A22_SINK), true),
+        ("sat shut", (4.0e5, 1.0e5), false),
+    ] {
+        let solvers: [(&str, Box<dyn FlowSolver>); 2] = [
+            ("newton", Box::new(NewtonFlowSolver::default())),
+            ("simple", Box::new(SimpleFlowSolver::default())),
+        ];
+        for (name, mut solver) in solvers {
+            let (g, _) = a22_chain(first.0, first.1, &fluid);
+            for _ in 0..5 {
+                solver
+                    .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+                    .unwrap_or_else(|e| panic!("{name}, {history}: {e}"));
+            }
+            let (g, edges) = a22_chain(A22_SOURCE, A22_SINK, &fluid);
+            for tick in 0..5 {
+                let flow = solver
+                    .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+                    .unwrap_or_else(|e| panic!("{name}, {history}, A22 {tick}: {e}"))
+                    .edge_mass_flow[&edges[0]];
+                if open {
+                    assert!(
+                        (flow + 0.2708).abs() < 1e-3,
+                        "{name}, {history}, A22 tick {tick}: held open, 0.2708 kg/s                          backwards, read {flow}"
+                    );
+                } else {
+                    assert!(
+                        flow.abs() < 1e-9,
+                        "{name}, {history}, A22 tick {tick}: held shut, read {flow}"
+                    );
+                }
+            }
+        }
     }
 }
 

@@ -362,3 +362,39 @@ fn a_blowdown_without_a_gas_cushion_or_out_of_range_is_refused() {
     set_blowdown(&mut liquid, None);
     refinery_scenarios::build_engine(&liquid).expect("the fixture loads without the key");
 }
+
+/// M48.1's guard on a relief that lifts on its own inlet (docs/DESIGN.md §53):
+/// held shut in its remembered state, its inlet only rises, so the held answer
+/// disagrees and is set aside. The memoryless demo's PSV therefore relieves in
+/// the very solve whose inlet first stands above set, on both fidelities — not
+/// a tick later, which is what keeping the held answer anyway would give (the
+/// next tick reads the held answer's inlet, above set, as open).
+#[test]
+fn a_relief_opens_in_the_solve_that_takes_its_inlet_past_set() {
+    for flow in ["newton", "simple"] {
+        let mut file = load(MEMORYLESS);
+        file.fidelity.flow = flow.to_string();
+        let mut engine = refinery_scenarios::build_engine(&file).expect("builds");
+        let psv = engine.graph.find_node("psv").expect("psv");
+        let flare = engine
+            .graph
+            .edge_ids()
+            .find(|e| engine.graph.pipe(*e).name == "flare_line")
+            .expect("flare_line");
+        let mut found = false;
+        for tick in 1..=400 {
+            engine.tick().expect("ticks");
+            let p = engine.last_solution().expect("solved").node_pressure[&psv].value() / 1e5;
+            if p > SET_BAR {
+                let relieved = engine.graph.pipe(flare).stream.mass_flow.value();
+                assert!(
+                    relieved > 0.0,
+                    "{flow}: tick {tick} stands at {p} bar, above set, relieving {relieved}"
+                );
+                found = true;
+                break;
+            }
+        }
+        assert!(found, "{flow}: the inlet reaches set within 400 ticks");
+    }
+}

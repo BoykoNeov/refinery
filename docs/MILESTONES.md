@@ -13,11 +13,12 @@ in `docs/DESIGN.md`) now point at this file.
 ---
 
 **M48 is CLOSED (2026-10-06): valve memory — a relief that pops and reseats
-below its set; `docs/DEFERRED.md` B6's gas clause closed, A22 re-measured.** On
-the user's request ("work on valve memory") and DECISIONS: both readings of it,
+below its set, and a relief that stays as it was where a plant has two
+answers; `docs/DEFERRED.md` B6's gas clause and A22 closed.** On the user's
+request ("work on valve memory") and DECISIONS: both readings of it,
 hysteresis first; mid-slice, refuse a pop valve with no vessel behind it rather
-than let it chatter; and, once the second reading was measured, close after the
-first. DESIGN §53.
+than let it chatter; close after the first (on a finding later corrected); then,
+told the correction, reopen and build "start shut, stay as was". DESIGN §53.
 - **`blowdown_bar` on a `relief_valve`** (M48.0): shut, the valve runs the M5
   curve bit for bit; the tick after its inlet stands above set it goes to full
   lift and holds it until its inlet falls below `set − blowdown`. The latch
@@ -33,19 +34,27 @@ first. DESIGN §53.
 - **Demo `relief_pop_cycle.toml`** (42nd file): 94 lifts in 6 000 ticks, the
   receiver a saw-tooth between 18.67 and 20.03 bar, lift and reseat on the same
   ticks on both fidelities.
-- **M48.1 measured, not built**: nothing reaches the chatter refusal but a
-  stub, and on A22 the game solver keeps its previous answer while Newton
-  returns to zero flow whatever came before. First reported as "both already
-  keep last tick's answer" (300 repeat solves, which cannot tell memory from
-  preference) and corrected the same day; the user closed on the first
-  reading and was told of the correction. Neither rule that settles A22 was
-  taken.
-- Gates: six in `relief_blowdown_reference.rs`. Mutations: six, all caught by
-  the gates predicted, three by one more each as a consequence. Two gate
-  readings corrected while building (chatter is a rate, not every tick; the
-  hysteresis reads the tick's own pressure).
-- 41 plants byte-identical on both fidelities, 1 new. Release property tests
-  pass. The Godot binding did not change.
+- **Start shut, stay as was** (M48.1): after the ordinary solve, a relief in
+  the other state from its last accepted answer (tick 1: shut) is held where
+  it was on a hydraulic copy of the plant (`PlantGraph::hydraulic_copy`, no
+  loops or trips), and that answer is kept when each held relief's own curve
+  agrees there — then it is an exact root of the real plant. A relief lifting
+  on its own inlet always disagrees and is released. Memory is read off each
+  solver's warm start: no new state, snapshot unchanged. A22: both solvers
+  zero flow cold; each stays open or shut after running so. Measured first,
+  and the first reading ("both solvers already keep last tick's answer", from
+  300 repeat solves) was wrong for Newton; the user closed on it, was told the
+  correction, and reopened.
+- Gates: seven in `relief_blowdown_reference.rs`, two on A22 in
+  `invariants.rs`. Mutations: M48.0's six, all caught by the gates predicted
+  (three by one more each, as a consequence); M48.1's four, three as named and
+  one — the held answer kept unchecked — escaping its named test (the relief
+  lifts a tick late and settles as before), now caught by a new gate and by the
+  corpus. Two gate readings corrected while building M48.0 (chatter is a rate,
+  not every tick; the hysteresis reads the tick's own pressure).
+- 41 plants byte-identical on both fidelities after M48.0, 1 new; all 42 after
+  M48.1. Release property tests pass, M48.1's also at 2 000 cases. The Godot
+  binding did not change.
 
 **M47 is CLOSED (2026-10-06): a dead end stands where its own head puts it —
 `docs/DEFERRED.md` A22's CI failure closed, the row kept open.** On the user's

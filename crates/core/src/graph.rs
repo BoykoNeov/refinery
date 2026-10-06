@@ -1888,6 +1888,19 @@ impl PlantGraph {
         Self::default()
     }
 
+    /// The plant's hydraulics alone: every node, pipe and exchanger coupling,
+    /// with the same ids, and NO control loops or trips. For a solver's what-if
+    /// solve (M48.1, docs/DESIGN.md §53: a relief held in its remembered state),
+    /// which reads nothing else. Not `Clone`, for M8.2's reason: a copied loop
+    /// would fork its controller's memory into a second plant.
+    pub fn hydraulic_copy(&self) -> PlantGraph {
+        PlantGraph {
+            g: self.g.clone(),
+            couplings: self.couplings.clone(),
+            ..PlantGraph::default()
+        }
+    }
+
     pub fn add_node(&mut self, node: Node) -> NodeId {
         NodeId(self.g.add_node(node).index() as u32)
     }

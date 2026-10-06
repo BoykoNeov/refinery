@@ -48,8 +48,8 @@
 //! legitimate, frequent game state (operator closes a valve), not an error.
 
 use crate::network::{
-    accumulation, compile_edges, edge_flows, finalize, solve_with_active_anchoring,
-    validate_degrees, AnchorPass, Capacitance, CompiledEdge, Prepared,
+    accumulation, compile_edges, edge_flows, finalize, solve_remembering_reliefs,
+    solve_with_active_anchoring, validate_degrees, AnchorPass, Capacitance, CompiledEdge, Prepared,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
@@ -142,14 +142,14 @@ impl FlowSolver for NewtonFlowSolver {
         // rejects. Taking it also splits the borrow, so the closure may hold
         // `&self` for the tolerances.
         let mut warm_start = std::mem::take(&mut self.warm_start);
-        let out = solve_with_active_anchoring(
-            graph,
-            slate,
-            previous_states,
-            &mut warm_start,
-            dt,
-            |prep| self.pass(prep, graph, slate, previous_states, dt),
-        );
+        // A relief keeps its last answer where the plant has two (M48.1,
+        // docs/DESIGN.md §53): the driver may run a second solve on a copy
+        // of the plant, so the pass reads whichever graph it is handed.
+        let out = solve_remembering_reliefs(graph, &mut warm_start, |graph, warm_start| {
+            solve_with_active_anchoring(graph, slate, previous_states, warm_start, dt, |prep| {
+                self.pass(prep, graph, slate, previous_states, dt)
+            })
+        });
         self.warm_start = warm_start;
         out
     }
