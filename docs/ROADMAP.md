@@ -7794,3 +7794,91 @@ its test did); the extension was rebuilt and the four `--auto` runs replayed.
 #### Findings
 
 - None new.
+
+## M44 — a restart asks the trips that do not hold the equipment: ledger row E28's last clause; opened on a decision
+
+E28's last open clause: a restart asked only the trips that HELD the equipment.
+The user chose it as the next slice (2026-10-06), and then, told it was two
+problems (another trip on the same furnace, and a trip on other equipment such
+as the feed pump), chose "Both cases" and, for a restart refused for the
+second, "Stays dark for a person". The note is DESIGN §49.
+
+### M44.0 — a reset does not relight what another trip will cut — **LANDED** 2026-10-06
+
+Proved by a fixture before any code: `tank_overheat_trip.toml` with its
+temperature trip on `manual_restart` and a second, high-level trip on the same
+furnace; the drain shut after the cut. On tick 1407 the solve lifts the level
+past 5.2 m after that trip's pass read it below. A person's reset then returned
+`Ok` and the snapshot showed the furnace at 3 MW with no `trip_stop`, and the
+level trip cut it at the top of tick 1408. Now `restart_bars` asks every armed
+trip on the equipment against a fresh reading: one in its condition is
+`trip_about_to_fire`, and the furnace stays dark, `not_restarted` at 1408. A
+reading that cannot be had counts as standing (a restart is an action, §26
+fork 2), which keeps the verdict infallible for the snapshot. Inside the trip
+pass such a trip has already latched, so no plant moved: all 39 byte-identical
+on both fidelities, as predicted.
+
+### M44.1 — start permissives — **LANDED** 2026-10-06
+
+`restart_permissives = ["<trip>", …]` on a trip whose reset restarts. When the
+stop ends, every trip named by a trip that held the equipment must be clear —
+armed, and its fresh reading outside its condition — or the equipment stays
+stopped for a person: `permissive_not_clear`. Refused at load: the key on a
+reset that restarts nothing, an unknown name, the trip itself, a name twice, a
+trip on the same equipment (M44.0 asks it anyway). Names may point forward.
+`TripSnapshot::restart_permissives`, skipped when empty.
+
+New demo `furnace_restart_permissive.toml` (the 40th file): a heater fired by
+hand at 3 MW behind a feed pump. The tank's 7.0 m overfill trip stops the pump
+on tick 266; the full tank drives the stream backwards through the heater
+(12.3 kg/s at first) and the coil passes 90 °C, so the tube trip cuts the fuel
+on 299. It re-arms itself under 80 °C on 321 and the heater stays dark,
+`not_restarted` for `permissive_not_clear`, to 6 000; the flow settles at
+13.98 kg/s, the coil at the 40 °C feed. Without the line it relights on 321,
+cuts on 340, and cuts and relights 88 times in 6 000 ticks. Same events on both
+fidelities.
+
+### M44.2 — the furnace screen's fifth story — **LANDED** 2026-10-06, and M44 is CLOSED
+
+Key 5 loads the new plant; K starts or stops its pump, and a pump line shows
+it. Each trip's reset line names the trips it waits for. The two new reasons
+have words on every plant: "another trip on it is past its limit" and "a trip
+it waits for is not clear (see TRIPS)". Timeline: the pump stops at 266, the
+heater is cut at 299 and stays dark at 321, the message line saying why; at 400
+a person resets the pump's trip, starts the pump and relights the heater at
+3 MW, and the coil stays under 90 °C to 500.
+
+**Gates.** `crates/scenarios/tests/restart_permissive_reference.rs`, eight:
+1. the reset at the level crossing: `held` [trip_about_to_fire] before it,
+   `Ok`, dark, `not_restarted` at 1408; the level trip's own stop next tick;
+2. the same reset one tick earlier relights at 3 MW;
+3. the demo: 266, 299 (`held` [permissive_not_clear]), 321, dark to 1000; the
+   pump trip's manual reset relights nothing; a person's pump and duty end it;
+4. without the line: relit at 321, cut again at 340;
+5. the pump's trip reset at 310, during the stop: the tube trip's reset at 321
+   relights it;
+6. the tube trip pressed at 100: [pressed_by_hand] until the tick the level
+   crosses 7.0 m with the overfill trip still armed, then [pressed_by_hand,
+   permissive_not_clear];
+7. the loader: a forward name resolves; five refusals;
+8. the wire: `"restart_permissives":[0]`, absent elsewhere; both new reason
+   names.
+
+Plus `crates/godot-ext/tests/furnace_screen.rs`'s fifth timeline, replaying the
+scene's command text. `burnout_reference.rs` counts 19 furnaces.
+
+**Mutations**, eight, against the new file, all caught by the gates predicted:
+a latched trip asked as "about to fire" (1); the check removed (1); the reading
+compared the wrong way (1, 2); permissives not recorded (3, 6, 8); a latched
+permissive counted clear (3, 6, 8); an armed permissive's reading not asked
+(6); the same-equipment refusal dropped (7); any armed trip anywhere barring a
+restart (6).
+
+**Corpus.** 39 plants byte-identical on both fidelities after each of M44.0 and
+M44.1, 1 new. Release property tests 223/223. The Godot binding did not change
+(the scene and its test did); the extension was rebuilt and all five `--auto`
+runs replayed with no script errors.
+
+#### Findings
+
+- None new.

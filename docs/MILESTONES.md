@@ -12,6 +12,34 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M44 is CLOSED (2026-10-06): a restart asks the trips that do not hold the
+equipment — `docs/DEFERRED.md` E28 struck (its last clause).** The user's
+DECISION: E28's last clause as the next slice; told it was two problems, "Both
+cases"; a restart refused for a trip on other equipment "Stays dark for a
+person". DESIGN §49.
+- **Another trip on the same equipment** (M44.0): a person's reset between
+  ticks asked only its own trip, so a second trip on the furnace whose reading
+  had just crossed its limit was still armed, and the reset relit the furnace
+  for nothing: `Ok`, 3 MW on the snapshot, cut at the top of the next tick.
+  Proved by a fixture first. `restart_bars` now asks every armed trip on the
+  equipment against a fresh reading: `trip_about_to_fire`, and the furnace stays
+  dark for a person. No plant moved.
+- **Start permissives** (M44.1): `restart_permissives = ["<trip>", …]` on a
+  trip whose reset restarts. Every trip named by a trip that held the equipment
+  must be clear when the stop ends (armed, its fresh reading outside its
+  condition), or it stays stopped for a person: `permissive_not_clear`. Five
+  load-time refusals; `TripSnapshot::restart_permissives`, skipped when empty.
+- **Demo `furnace_restart_permissive.toml`** (40th file), key 5 on the furnace
+  screen (K starts the pump): the overfill trip stops the feed pump at 266, the
+  starved heater's tube trip cuts it at 299 and re-arms itself at 321, and the
+  heater stays dark, saying why. Without the line: 88 cuts and relights in 6 000
+  ticks. A person resets the pump's trip, starts the pump and relights at 400.
+- Eight gates, `tests/restart_permissive_reference.rs`, plus the screen's fifth
+  timeline. Eight mutations, all caught.
+- 39 plants byte-identical on both fidelities after each slice, 1 new. Release
+  property tests 223/223; the Godot binding did not change; all five `--auto`
+  runs replayed.
+
 **M43 is CLOSED (2026-10-05): why a stop did not restart, in the snapshot —
 `docs/DEFERRED.md` F4 (logged and struck in one go).** The user's DECISION, on a
 review finding after M42 ("fix this, let the player have an indication or

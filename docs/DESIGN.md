@@ -19479,3 +19479,88 @@ full write-up is ROADMAP M43.
 
 **Deferred.** Nothing new. E28's last clause (a restart asks no trip that does
 not hold the equipment) is unchanged.
+
+## 49. A restart asks the trips that do not hold the equipment — ledger row E28's last clause (M44)
+
+Taken on the user's decision (2026-10-06), choosing E28's last clause as the
+next slice and then, asked how far and what a blocked restart does: "Both
+cases" and "Stays dark for a person". Until M44 a restart asked only the trips
+that HELD the equipment (§45) and its tubes (§46, §47). Two kinds of trip went
+unasked: an armed trip on the same equipment whose reading had moved into its
+condition, and a trip on other equipment the restart depends on. The full
+write-up is ROADMAP M44.
+
+**Interfaces.**
+- `RestartBar::TripAboutToFire` (`trip_about_to_fire`) and
+  `RestartBar::PermissiveNotClear` (`permissive_not_clear`), after
+  `TubesBurst` in the enum's order.
+- `Trip::restart_permissives: Vec<TripId>`; the TOML key
+  `restart_permissives = ["<trip name>", …]` on a `[[trips]]` entry;
+  `TripSnapshot::restart_permissives`, skipped when empty.
+- `HeldEquipment::permissives`: the union of the permissives of every trip
+  that held the equipment during the stop.
+- New demo `furnace_restart_permissive.toml`, the 40th file.
+
+**Forks.**
+
+1. **The same-equipment case is closed without a key** (M44.0). The gap was
+   real but narrow, and a fixture proved it before any code
+   (`restart_permissive_reference.rs` gate 1). Inside the trip pass, an armed
+   trip in its condition latches in pass 2, before pass 3 releases anything,
+   so it holds the equipment and the release skips it. A person's
+   `ResetTrip`, though, lands BETWEEN ticks and tested only its own trip's
+   reading. A second trip on the furnace whose reading had crossed during the
+   last tick was still armed, and the reset relit the furnace. The command
+   returned `Ok`, the snapshot showed 3 MW with no `trip_stop`, and the second
+   trip cut it at the top of the next tick, before any physics ran, recording
+   the relit state as its "before". That is §10 fork 4's "command that appears
+   to work and does not". Now `restart_bars` asks every armed trip that acts on
+   the equipment, against a fresh reading; one in its condition is
+   `trip_about_to_fire`. As M41 refused the restart and not the reset, so here:
+   the reset re-arms its trip, and the furnace stays dark for a person.
+2. **Other equipment needs a declaration, not an inference** (M44.1). Which
+   trips a restart depends on is not in the plant's topology in any form the
+   loader could check. The same feed pump matters to one furnace and not to
+   another, and guessing it from the pipes is the kind of hidden sign E8
+   refused. A real burner management system lists its start permissives, so the
+   file does: a trip names other trips in `restart_permissives`.
+3. **Clear means armed AND outside its condition on a fresh reading.** Armed
+   alone would pass a trip that is about to fire (fork 1's hole, one trip
+   over); the reading alone would pass a latched trip whose cause has gone,
+   which a person has not yet looked at. Gate 6 separates the two: a
+   permissive still armed at the end of the tick that crossed its limit is not
+   clear.
+4. **Not clear at the release keeps the equipment stopped for a person**, the
+   user's choice over "relight it later by itself". It is the rule M41 and M42
+   already follow for burst tubes, and the real-plant rule: nothing restarts
+   with nobody pressing anything once it has been refused. The stop ends in
+   `not_restarted` for `permissive_not_clear`. A permissive that clears later
+   lifts nothing; one that clears BEFORE the stop ends lets the restart
+   through (gate 5).
+5. **Asked when the stop ends, from every trip that held it.** The permissives
+   join the hold record as each trip latches, like `bars`, and are read fresh
+   by `restart_bars`. So the published verdict while a trip holds (`held` with
+   `barred_by`) is still the one function the release acts on (§48 fork 2), and
+   it moves with the readings.
+6. **The loader refuses lists that would mean or say nothing**: the key on a
+   trip whose reset restarts nothing; an unknown name; the trip itself; a name
+   twice; and a trip that acts on any of the same equipment, since fork 1 asks
+   that one at every restart. Names resolve after every trip is built, so one
+   may point forward (gate 7).
+7. **A reading that cannot be had counts as not clear.** A restart is an
+   action, and a safety function does not act on a missing measurement (§26
+   fork 2). The absence is a flow or a furnace outlet before the first solve;
+   the error is an engine fault that the next trip pass returns loudly on the
+   same reading. This keeps `restart_bars` infallible, so the snapshot, which
+   cannot fail, can still publish its answer.
+
+**Corrections from building it.** The first demo design put the furnace under
+its outlet loop, and it could not show the hazard: a loop holding an outlet
+temperature fires LESS when its flow falls, so a stopped pump cools the coil.
+The demo fires the heater by hand, as `tank_overheat_trip.toml` does, so a
+relight puts back the full 3 MW onto the starved flow. When the pump stops, the
+full tank stands above the 1.6 bar feed and drives the stream backwards through
+the heater for over a hundred ticks. That is the plant's own answer (nothing
+stops a backflow but a check valve, §33), and the file says so.
+
+**Deferred.** Nothing new. E28 is closed.
