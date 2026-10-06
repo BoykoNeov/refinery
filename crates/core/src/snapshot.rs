@@ -491,8 +491,9 @@ pub struct TripSnapshot {
 
 /// One reason a stop by the trips will not end, or did not end, in the trips
 /// handing the equipment back (M43, docs/DESIGN.md §48). Each is one cause, so
-/// a frontend can say which a person can still lift: only `TubesBurst` goes
-/// away by itself, when new tubes are fitted.
+/// a frontend can say which a person can still lift: while a trip holds the
+/// equipment only `TubesBurst` (new tubes) and `TripAboutToFire` (the reading
+/// clears) go away by themselves; the rest stand for the whole stop.
 ///
 /// Declared in the order the engine lists them, and `Ord` on that order, so a
 /// list of them is always written the same way.
@@ -510,6 +511,12 @@ pub enum RestartBar {
     /// Its tubes, as they stand, have burst or will burst on the next tick (M41,
     /// §46). New tubes lift this one.
     TubesBurst,
+    /// Another trip on it is armed and its reading, read fresh, is already in
+    /// its condition, so it would cut the equipment again at the next trip pass
+    /// (M44, docs/DESIGN.md §49). Reachable only between ticks — a person's
+    /// reset lands after the readings moved and before that trip's pass — since
+    /// inside the pass such a trip has latched first. Lifts with the reading.
+    TripAboutToFire,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

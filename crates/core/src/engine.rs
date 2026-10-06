@@ -9,7 +9,7 @@ use crate::energy::{self};
 use crate::error::SimError;
 use crate::graph::{
     Actuator, ActuatorLimit, ControlAction, ControlLoop, ControlMode, ControlledValue, LeakRole,
-    LoopId, MeasuredVariable, MeasurementPoint, NodeId, NodeKind, PlantGraph, SetpointRange,
+    LoopId, MeasuredVariable, MeasurementPoint, NodeId, NodeKind, PlantGraph, SetpointRange, Trip,
     TripAction, TripId, TripReset, TripState, TubeState,
 };
 use crate::snapshot::{
@@ -2231,7 +2231,40 @@ impl Engine {
         if self.tubes_forbid_restart(node) {
             bars.push(RestartBar::TubesBurst);
         }
+        // No restart that another trip on the equipment would undo (M44,
+        // docs/DESIGN.md §49). A latched one still holds it and is not asked
+        // here: `release_equipment` never reaches a held node.
+        if self
+            .graph
+            .trips()
+            .iter()
+            .any(|t| !t.state.is_tripped() && t.acts_on(node) && self.trip_condition_stands(t))
+        {
+            bars.push(RestartBar::TripAboutToFire);
+        }
         bars
+    }
+
+    /// Whether `trip`'s condition stands on a FRESH reading — what its next
+    /// pass would compare (M44, docs/DESIGN.md §49).
+    ///
+    /// **A reading that cannot be had counts as standing.** A restart is an
+    /// action, and a safety function does not act on a missing measurement
+    /// (§26 fork 2). The absence is a flow or a furnace outlet before the first
+    /// solve; the error is an engine fault the next trip pass returns loudly on
+    /// the same reading. Either way this only keeps equipment dark, so the
+    /// verdict stays the one infallible function both callers read.
+    fn trip_condition_stands(&self, trip: &Trip) -> bool {
+        match self.graph.measure(
+            &self.slate,
+            &self.node_states,
+            self.last_solution.as_ref(),
+            trip.measurement_point,
+            trip.limit.variable(),
+        ) {
+            Ok(Some(reading)) => trip.direction.reached(reading, trip.limit).unwrap_or(true),
+            Ok(None) | Err(_) => true,
+        }
     }
 
     /// The equipment is a furnace whose tubes have burst, or will burst on the
