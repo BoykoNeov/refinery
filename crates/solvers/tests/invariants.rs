@@ -2843,8 +2843,10 @@ fn two_reliefs_in_series(fluid: &Fluid) -> (PlantGraph, Vec<refinery_core::graph
 /// through §50's dead-end tie, zero flow everywhere. Held open, the sink pushes
 /// the stretch to 7.48 bar, over its set, so it stays open — the game solver's,
 /// 0.2708 kg/s backwards. That is the reverse-flow multiplicity this file's
-/// header already allows; which one a real relief picks is element state (B6),
-/// still open.
+/// header already allows. Since M48.1 (docs/DESIGN.md §53) a relief keeps the
+/// state it last stood in, shut on the first solve, so both solvers now answer
+/// zero flow here; the game solver's open root is still an exact root, and
+/// `a_relief_stays_as_it_was_where_a22_has_two_answers` reaches it by history.
 ///
 /// What was wrong was Newton's: the stood stretch read the 3.8 m drop's static
 /// head from the compile its PARKED pass came from, and in gas that head moves
@@ -2868,7 +2870,8 @@ fn a_dead_end_tie_in_gas_stands_on_an_exact_root() {
     for &e in &edges {
         assert_eq!(
             newton.edge_mass_flow[&e], 0.0,
-            "Newton: the second relief held shut, nothing flows — if this moved,              the tie changed (update A22 and this gate)"
+            "Newton: the second relief held shut, nothing flows — if this moved, \
+             the tie changed (update A22 and this gate)"
         );
         assert!(
             simple.edge_mass_flow[&e].abs() < 1e-9,
@@ -2966,7 +2969,8 @@ fn a_relief_stays_as_it_was_where_a22_has_two_answers() {
                 if open {
                     assert!(
                         (flow + 0.2708).abs() < 1e-3,
-                        "{name}, {history}, A22 tick {tick}: held open, 0.2708 kg/s                          backwards, read {flow}"
+                        "{name}, {history}, A22 tick {tick}: held open, 0.2708 kg/s \
+                         backwards, read {flow}"
                     );
                 } else {
                     assert!(

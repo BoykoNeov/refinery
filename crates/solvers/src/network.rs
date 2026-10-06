@@ -1550,8 +1550,10 @@ fn chatter(graph: &PlantGraph, used: &BTreeSet<NodeId>, next: &BTreeSet<NodeId>)
         detail: format!(
             "{} has been anchored before in this tick, so the plant has two \
              self-consistent answers and the element(s) at {} are chattering — a \
-             relief whose own discharge re-seats it. Element state (hysteresis) is \
-             what would resolve it, and is deferred (docs/DESIGN.md §3a, §3c)",
+             relief whose own discharge re-seats it. A relief's last state picks \
+             between two answers only once a solve has found one, which this one \
+             has not; a pop valve's reseat below its set is `blowdown_bar` \
+             (docs/DESIGN.md §3c, §53)",
             describe_nodes(graph, next),
             describe_nodes(graph, &symmetric_difference(used, next)),
         ),

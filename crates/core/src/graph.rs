@@ -162,6 +162,11 @@ pub enum NodeKind {
     /// real one does not. Blowdown hysteresis (a real PSV recloses below its set
     /// pressure) is opt-in since M48 through `blowdown`: element state the solve
     /// reads and only the engine writes, between ticks (docs/DESIGN.md §53).
+    ///
+    /// The CURVE above still has no history. Which answer a plant with two
+    /// answers takes does, since M48.1 and for every relief: the one where the
+    /// valve stays as it stood at the last accepted solve, shut on the first
+    /// (`network::solve_remembering_reliefs`, §53).
     ReliefValve {
         cv_max: f64,
         /// Set pressure [Pa] ABSOLUTE: at or below it the valve is shut.
