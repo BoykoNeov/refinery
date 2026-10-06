@@ -8123,7 +8123,7 @@ three questions put before building: opt-in key and a new demo (the old file
 stays the anchor), head to zero with no tricks for a pump with no working
 point, and a head fraction in the snapshot. The note is DESIGN §55.
 
-### M50 — **LANDED** 2026-10-06
+### M50 — **LANDED** 2026-10-07
 
 A pump declaring `npsh_required_m` delivers `φ·H(Q)`, `φ = 1 − exp(−k·σ²)` on
 `σ = NPSHa/NPSH3` — 3% lost at NPSH3, none at the bubble pressure. The engine
@@ -8135,4 +8135,4 @@ Demo `pump_cavitation_flow_limit.toml`: the pump settles at 26% of its head and
 the flow stops answering the valve; throttling gives the head back. Corpus: 42
 plants byte-identical on both fidelities, one new.
 Release property tests pass. Eleven mutations, all caught; Newton without
-the slope term fails to converge through the knee.
+the slope term hits its 50-iteration cap on the demo's second tick.

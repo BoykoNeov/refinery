@@ -20386,16 +20386,16 @@ Opening the valve wide buys under 5% more flow (the key-less twin gains over
 - Reverse flow through a vapour-locked pump is not refused: a plant that must
   not backflow carries a check valve (§33), which is what a real one does.
 
-**Measured (M50, landed 2026-10-06).**
+**Measured (M50, landed 2026-10-07).**
 - Demo: Newton 9 iterations at worst, the game solver 35 sweeps on tick 2 (the
   first tick with a bubble pressure) and one a tick after; the two agree to
   about 1e-9 on the flow. The hand calculation matches to 1e-4 on the flow and
   head fraction (the regularised square root's share) and 1e-6 on the suction.
 - Corpus: all 42 earlier plants byte-identical on both fidelities; one new.
   Release property tests pass. The Godot binding did not change.
-- Mutations: eleven, all caught. Newton without the share does not converge
-  through the knee and fails nine of the eleven plant gates — wider than the
-  "may be uncaught" predicted. The game solver without the share, without the
+- Mutations: eleven, all caught. Newton without the share hits its 50-iteration
+  cap on tick 2 (residual 4.0e-5 kg/s) and fails seven of the eleven plant
+  gates — wider than the "may be uncaught" predicted. The game solver without the share, without the
   fresh edge, or without the bracket-first step fails the fidelity-agreement
   gate. NPSHa from absolute pressure, a linear ramp, scaling the shut-off head
   alone, a stopped pump still cavitating, the engine never handing over the

@@ -12,7 +12,7 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
-**M50 is CLOSED (2026-10-06): what cavitation does to a pump —
+**M50 is CLOSED (2026-10-07): what cavitation does to a pump —
 `docs/DEFERRED.md` B9 struck, B45 opened.** On the user's request (B9, the
 recommended one of five next slices) and three DECISIONS put before building:
 an opt-in key and a new demo, head to zero with no tricks, and a head fraction
