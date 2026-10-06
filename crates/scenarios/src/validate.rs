@@ -651,7 +651,11 @@ pub(crate) fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(),
 ///
 /// What it does NOT promise: a vessel behind an inlet line that loses more than
 /// the blowdown at full lift still flips every tick — the real failure API 520
-/// Part II's inlet-loss limit exists for, and a gate rather than a refusal.
+/// Part II's inlet-loss limit exists for, and a gate rather than a refusal. Nor
+/// does it ask whether the way to the vessel can be SHUT: the search passes
+/// through every zero-volume node, an operator's valve included, so a vessel
+/// reached only through a valve someone has closed counts as a cushion it is
+/// not.
 ///
 /// Runs after `require_gas_valve_x_t`, and takes the service verdict from the
 /// same `plant_phases` analysis.

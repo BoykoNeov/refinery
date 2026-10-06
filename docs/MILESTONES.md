@@ -12,6 +12,38 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M48 is CLOSED (2026-10-06): valve memory — a relief that pops and reseats
+below its set; `docs/DEFERRED.md` B6's gas clause closed, A22 re-measured.** On
+the user's request ("work on valve memory") and DECISIONS: both readings of it,
+hysteresis first; mid-slice, refuse a pop valve with no vessel behind it rather
+than let it chatter; and, once the second reading was measured, close after the
+first. DESIGN §53.
+- **`blowdown_bar` on a `relief_valve`** (M48.0): shut, the valve runs the M5
+  curve bit for bit; the tick after its inlet stands above set it goes to full
+  lift and holds it until its inlet falls below `set − blowdown`. The latch
+  (`Blowdown { amount, lifted }` on the node) moves at the top of the tick from
+  the last solve's pressure, beside the trips, and rides in the snapshot on the
+  node's `kind`. `FlowSolver` unchanged.
+- **Refused at load** in liquid service, and in gas with no vessel reachable
+  behind the inlet through zero-volume nodes (`require_blowdown_cushion`): with
+  nothing to store pressure the latch flips every tick. Not promised: a vessel
+  reached only through a shut operator valve, or behind an inlet line that
+  loses more than the blowdown — the latter chatters, as API 520 Part II's
+  inlet-loss rule warns, and is a gate.
+- **Demo `relief_pop_cycle.toml`** (42nd file): 94 lifts in 6 000 ticks, the
+  receiver a saw-tooth between 18.67 and 20.03 bar, lift and reseat on the same
+  ticks on both fidelities.
+- **M48.1 measured, not built**: the solvers already keep last tick's answer
+  (A22 solved 300 times: each stays on its tick-1 root), and nothing reaches
+  the chatter refusal but a stub. A22 is a tick-1 question; neither rule that
+  settles it was taken.
+- Gates: six in `relief_blowdown_reference.rs`. Mutations: six, all caught by
+  the gates predicted, three by one more each as a consequence. Two gate
+  readings corrected while building (chatter is a rate, not every tick; the
+  hysteresis reads the tick's own pressure).
+- 41 plants byte-identical on both fidelities, 1 new. Release property tests
+  pass. The Godot binding did not change.
+
 **M47 is CLOSED (2026-10-06): a dead end stands where its own head puts it —
 `docs/DEFERRED.md` A22's CI failure closed, the row kept open.** On the user's
 request ("start a22") and DECISION ("fix gravity error only", over Newton

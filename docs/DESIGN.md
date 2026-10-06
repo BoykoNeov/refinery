@@ -20017,7 +20017,10 @@ a SAW-TOOTH between reseat and set, not a steady sit inside the band.
    through pipes and zero-volume nodes (`energy::is_zero_volume`), never
    through the relief itself; the search stops at every other holdup and
    boundary. `validate::require_blowdown_cushion`, which also owns fork 4's
-   liquid refusal. A vessel behind a lossy inlet line still chatters (fork 5).
+   liquid refusal. A vessel behind a lossy inlet line still chatters (fork 5),
+   and the search passes through an operator's valve whether or not it is
+   shut, so a vessel reached only through a closed valve counts as a cushion
+   it is not.
 6. **Load refusals**: `blowdown_bar` finite and > 0, and reseat
    `set − blowdown` > 0 absolute.
 
@@ -20073,6 +20076,26 @@ a SAW-TOOTH between reseat and set, not a steady sit inside the band.
 **Deferred.** A pop valve in liquid service, or in gas with no vessel behind
 it — both refused at load (B6's remaining clauses).
 
-### M48.1 — an answer kept from the last tick
+### M48.1 — an answer kept from the last tick: measured, not built
 
-Specified after M48.0 lands; the note will follow here.
+Measured before writing a note, and the measurement dissolved the slice.
+- **The solvers already keep last tick's answer.** A22's chain solved 300
+  times in a row on each solver, carrying its own warm start: Newton answers
+  zero flow on every tick, the game solver 0.2708 kg/s backwards on every
+  tick, each from tick 1 on. Continuity is what the warm start already gives;
+  what the two disagree on is which root they find FIRST.
+- **Nothing reaches the chatter refusal.** `cycled: true` is reached by a stub
+  (`an_alternating_classification_is_reported_as_a_cycle`, forced pass
+  outputs) and by the below-vacuum tie, which is a broken column, not two
+  answers. No shipped plant and no named fixture alternates between two
+  converged answers.
+- **So A22 is a tick-1 question**, and only two rules settle it: "every
+  relief first tries the state it remembers, shut on tick 1, and leaves it
+  only if that answer is not self-consistent" (history-dependent: an open
+  valve stays open against back-pressure), or "a relief passes no reverse
+  flow" (M47's declined option). Put to the user in those words; the user's
+  DECISION (2026-10-06): close M48 after M48.0 and build neither.
+
+The chatter refusal's text still says element state would resolve it. Since
+M48.0 that state exists for a pop valve, but no plant reaches the refusal to
+need it.

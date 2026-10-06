@@ -8040,7 +8040,7 @@ than predicted: with the tie giving up, §51's re-run takes Newton to the other
 answer rather than to a refusal). A22 stays open for which answer is right —
 element state, B6.
 
-## M48 — valve memory: ledger rows B6 and A22; opened on a request
+## M48 — valve memory: ledger rows B6 and A22; opened on a request — CLOSED 2026-10-06
 
 The user asked to "work on valve memory" and, offered four readings of it,
 chose both reseat hysteresis and keeping last tick's answer, hysteresis first.
@@ -8061,7 +8061,13 @@ fidelities. A lossy inlet line inside the blowdown chatters, and that is a
 gate (API 520 Part II's inlet-loss rule). Corpus 41 byte-identical on both
 fidelities; six mutations, all caught.
 
-### M48.1 — an answer kept from the last tick
+### M48.1 — an answer kept from the last tick: **NOT BUILT**, on the user's decision
 
-Not started.
+Measured first: A22's chain solved 300 times in a row on each solver stays on
+the answer each found on tick 1 (Newton zero flow, the game solver 0.2708 kg/s
+backwards), so the warm start already keeps last tick's answer; and no plant or
+named fixture reaches the chatter refusal (a stub and the below-vacuum tie
+only). A22 is therefore a tick-1 question, settled only by "reliefs first try
+their remembered state, shut on tick 1" or by M47's declined "no reverse flow
+through a relief". The user's DECISION: close M48 after M48.0. DESIGN §53.
 
