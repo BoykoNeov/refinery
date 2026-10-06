@@ -154,6 +154,10 @@ struct HeldEquipment {
     /// out. Kept per cause, not as one flag, so a frontend is told which (M43,
     /// §48). The tubes IN PLACE are not here: `restart_bars` asks them fresh.
     bars: std::collections::BTreeSet<RestartBar>,
+    /// The `restart_permissives` of every trip that has held it during this
+    /// stop (M44, docs/DESIGN.md §49): asked fresh by `restart_bars`, as the
+    /// tubes are, since a permissive clears and un-clears with its reading.
+    permissives: std::collections::BTreeSet<TripId>,
 }
 
 /// A trip-stoppable piece of equipment's own state, one variant per
@@ -766,7 +770,7 @@ impl Engine {
                 // Pressed by hand, so never restartable (M40, §45): whatever
                 // this trip's reset mode, a person restarts what an emergency
                 // stop stopped.
-                self.hold_equipment(&writes, Some(RestartBar::PressedByHand))?;
+                self.hold_equipment(trip_id, Some(RestartBar::PressedByHand))?;
                 self.write_trip_actions(writes)
             }
         }
@@ -1985,9 +1989,11 @@ impl Engine {
         // side — through `reached`, the comparison that fires it. Only a trip
         // latched BEFORE this pass and not by hand: one latched on this pass
         // cannot clear on it, and an emergency stop waits for a person.
-        let mut latched: Vec<(Vec<TripAction>, Option<RestartBar>)> = Vec::new();
+        let mut latched: Vec<(TripId, Option<RestartBar>)> = Vec::new();
         let mut released: Vec<Vec<TripAction>> = Vec::new();
-        for (trip, measurement) in self.graph.trips_mut().iter_mut().zip(measured) {
+        for (index, (trip, measurement)) in
+            self.graph.trips_mut().iter_mut().zip(measured).enumerate()
+        {
             // Pass 1 let through only a flow or a furnace's outlet before the
             // first solve: the trip stays as it stands — armed, or latched by a
             // press (M38) — and its snapshot shows no measurement, as before tick 1.
@@ -2004,7 +2010,7 @@ impl Engine {
                         };
                         let bar =
                             (!trip.reset.restarts()).then_some(RestartBar::ResetRestartsNothing);
-                        latched.push((trip.actions.clone(), bar));
+                        latched.push((TripId(index as u32), bar));
                     }
                 }
                 (TripState::Tripped { by_hand: false, .. }, TripReset::Auto { reset_at }) => {
@@ -2023,13 +2029,18 @@ impl Engine {
         // this pass is already `Tripped` above, so `release_equipment` sees it
         // holding its equipment whichever of the first two loops runs first:
         // equipment one trip lets go of as another latches on it stays stopped.
-        for (actions, bar) in &latched {
-            self.hold_equipment(actions, *bar)?;
+        for &(trip, bar) in &latched {
+            self.hold_equipment(trip, bar)?;
         }
         for actions in &released {
             self.release_equipment(actions)?;
         }
-        self.write_trip_actions(latched.into_iter().flat_map(|(a, _)| a).collect())
+        let writes = latched
+            .iter()
+            .filter_map(|&(trip, _)| self.graph.trip(trip))
+            .flat_map(|trip| trip.actions.iter().copied())
+            .collect();
+        self.write_trip_actions(writes)
     }
 
     /// Write tripped equipment's safe states, and force every loop on it to
@@ -2080,12 +2091,15 @@ impl Engine {
     /// later one only adds to `bars`, so the record is always the state before
     /// the STOP, never a safe state another trip wrote. `bar` is this trip's
     /// say: `None` if its reset mode allows a restart and it was not pressed.
-    fn hold_equipment(
-        &mut self,
-        actions: &[TripAction],
-        bar: Option<RestartBar>,
-    ) -> Result<(), SimError> {
-        for &action in actions {
+    /// Its `restart_permissives` join the record's, for the whole stop (M44).
+    fn hold_equipment(&mut self, trip: TripId, bar: Option<RestartBar>) -> Result<(), SimError> {
+        let Some(trip) = self.graph.trip(trip) else {
+            return Err(SimError::Numerical(format!(
+                "internal: {trip:?} latched and names no trip on this plant"
+            )));
+        };
+        let (actions, permissives) = (trip.actions.clone(), trip.restart_permissives.clone());
+        for action in actions {
             let node = action.equipment();
             if !self.held_equipment.contains_key(&node) {
                 let before = match (action, &self.graph.node(node).kind) {
@@ -2122,11 +2136,13 @@ impl Engine {
                         before,
                         auto_loop,
                         bars: std::collections::BTreeSet::new(),
+                        permissives: std::collections::BTreeSet::new(),
                     },
                 );
             }
-            if let (Some(held), Some(bar)) = (self.held_equipment.get_mut(&node), bar) {
-                held.bars.insert(bar);
+            if let Some(held) = self.held_equipment.get_mut(&node) {
+                held.bars.extend(bar);
+                held.permissives.extend(permissives.iter().copied());
             }
         }
         Ok(())
@@ -2241,6 +2257,16 @@ impl Engine {
             .any(|t| !t.state.is_tripped() && t.acts_on(node) && self.trip_condition_stands(t))
         {
             bars.push(RestartBar::TripAboutToFire);
+        }
+        // The start permissives the file named on the trips that held it (M44,
+        // §49). Ids the loader resolved, so a missing one cannot happen; it
+        // would read as not clear rather than be skipped.
+        if held.permissives.iter().any(|&id| {
+            self.graph
+                .trip(id)
+                .is_none_or(|t| t.state.is_tripped() || self.trip_condition_stands(t))
+        }) {
+            bars.push(RestartBar::PermissiveNotClear);
         }
         bars
     }
@@ -2878,6 +2904,7 @@ impl Engine {
                 direction: t.direction,
                 limit: t.limit,
                 reset: t.reset,
+                restart_permissives: t.restart_permissives.clone(),
                 measurement: t.last_measurement,
                 state: t.state,
             })

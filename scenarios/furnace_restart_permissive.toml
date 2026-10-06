@@ -1,0 +1,148 @@
+# M44 demo: a trip that resets itself, waiting for a trip on OTHER equipment —
+# a burner management system's start permissive (docs/DESIGN.md §49).
+#
+#   cool_feed (40 °C) -> feed_pump -> heater (3 MW by hand) -> hold_tank -> drain_valve -> rundown
+#
+# `tank_overheat_trip.toml`'s heater and tank, with a feed pump boosting the
+# 1.6 bar feed. Two trips on two pieces of equipment: the tank's overfill trip
+# stops the PUMP, and the tube-skin trip cuts the FURNACE and resets itself —
+# but names the overfill trip in `restart_permissives`, so it relights the
+# furnace only once that trip is clear.
+#
+# **What happens.** The pump pushes 40.8 kg/s through the heater, more than the
+# drain takes, and its tubes run near 75 °C. The tank fills to its 7.0 m trip
+# on tick 266: the pump stops. A stopped pump still conducts, and the full tank
+# now stands above the 1.6 bar feed, so the stream runs BACKWARDS through the
+# heater, 12.3 kg/s at first, then slows and turns forward again as the tank
+# falls. On that starved flow the 3 MW the heater is still fired at puts its
+# tubes past 90 °C: the tube-skin trip cuts the fuel on tick 299. The coil cools
+# under its 80 °C reset point and the trip re-arms itself on tick 321 — and the
+# furnace stays dark, because the pump's trip is still latched: `trip_stop`
+# reads `not_restarted` at 321, barred by `permissive_not_clear`, to the end of
+# the run. The overfill trip resets by hand and restarts nothing (the default),
+# so it stays latched and the flow settles at 13.98 kg/s on the feed's own
+# pressure, the coil at the 40 °C feed. Measured on both fidelities, identical
+# events.
+#
+# **What the permissive prevents.** Delete the `restart_permissives` line and the
+# tube trip relights the heater at 3 MW on tick 321 into the same starved flow:
+# it cuts again at 340, relights at 376, and goes on cutting and relighting —
+# 88 times in 6 000 ticks, the coil peaking at 90.76 °C — with nothing on the
+# screen asking why the pump is off. That is the nuisance cycle of M40's demo,
+# here caused by equipment the tube trip does not watch.
+#
+#   cargo run -p refinery-cli -- run scenarios/furnace_restart_permissive.toml --ticks 6000
+
+[meta]
+name = "furnace_restart_permissive"
+description = "A furnace fired by hand behind a feed pump; the tank's overfill trip stops the pump, the tube trip cuts the starved furnace and resets itself, and its start permissive keeps the furnace dark while the pump's trip is latched."
+
+[simulation]
+dt = 1.0
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+[nodes.cool_feed]
+type = "source"
+pressure_bar = 1.6
+temperature_c = 40.0
+
+# A booster: 10 m of shutoff head, H = h0 − a·Q² (Q in m³/s). Stopped, it
+# keeps its resistance and conducts both ways (docs/DESIGN.md §26 fork 3).
+[nodes.feed_pump]
+type = "pump"
+h0_m = 10.0
+a = 800.0
+on = true
+
+# `tank_overheat_trip.toml`'s heater, fired by hand: no loop, so a relight puts
+# back its full 3 MW. The coil starts at 75 °C, near where the pump's flow holds
+# it; 90 °C is far above that and under the ~96.5 °C the feed's own pressure
+# alone would hold it at, which is what lets the tube trip tell the two apart.
+# Tube limit and hole as every furnace: ROUND GAME VALUES (docs/DEFERRED.md B43).
+[nodes.heater]
+type = "furnace"
+duty_mw = 3.0
+coil_heat_capacity_mj_per_k = 3
+coil_ua_kw_per_k = 120.2
+coil_temperature_c = 75.0
+flame_temperature_c = 1951.1
+tube_failure_c = 550.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 0.0
+
+[nodes.hold_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 4.968
+temperature_c = 40.0
+
+[nodes.drain_valve]
+type = "valve"
+kv = 150.0
+opening = 0.5
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "suction_line"
+from = "cool_feed"
+to = "feed_pump"
+length_m = 5.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "feed_line"
+from = "feed_pump"
+to = "heater"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "heated_line"
+from = "heater"
+to = "hold_tank"
+length_m = 10.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "drain_line"
+from = "hold_tank"
+to = "drain_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "drain_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+# The tank's overfill protection: stops the feed pump at 7.0 m. A person resets
+# it, and the reset restarts nothing (`reset` absent, the real-plant rule).
+[[trips]]
+name = "hold_tank_high_level"
+measurement = { node = "hold_tank", variable = "level" }
+direction = "high"
+limit_m = 7.0
+actions = [{ pump = "feed_pump" }]
+
+# The tubes' protection: cuts the fuel at 90 °C on the coil and resets itself
+# under 80 °C (M40) — but only relights the furnace when every trip it names
+# here is clear: armed, and its reading outside its condition (M44).
+[[trips]]
+name = "tube_skin_high"
+measurement = { coil = "heater", variable = "temperature" }
+direction = "high"
+limit_c = 90.0
+reset = "auto"
+reset_limit_c = 80.0
+restart_permissives = ["hold_tank_high_level"]
+actions = [{ furnace = "heater" }]

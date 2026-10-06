@@ -1575,6 +1575,17 @@ pub struct Trip {
     pub actions: Vec<TripAction>,
     /// Who resets it, and whether the reset restarts the equipment (M40).
     pub reset: TripReset,
+    /// Other trips that must be clear before this one's reset may hand its
+    /// equipment back — the start permissives of a burner management system
+    /// (M44, docs/DESIGN.md §49). Clear: armed, and its fresh reading outside
+    /// its condition. One that is not clear when the stop ends keeps the
+    /// equipment dark for a person (`RestartBar::PermissiveNotClear`).
+    ///
+    /// Empty unless the file names some, and only on a trip whose reset
+    /// restarts. Trips on OTHER equipment only: one on the same equipment is
+    /// asked by every restart anyway (`RestartBar::TripAboutToFire`), and the
+    /// loader refuses naming it.
+    pub restart_permissives: Vec<TripId>,
     pub state: TripState,
     /// The measurement the last trip pass compared. `None` only before the
     /// first tick, when no pass has run — and, for a flow trip, still `None` on

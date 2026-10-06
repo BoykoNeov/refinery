@@ -474,6 +474,11 @@ pub struct TripSnapshot {
     /// `default` reads the absent key back as manual — a true statement.
     #[serde(default, skip_serializing_if = "TripReset::is_manual")]
     pub reset: TripReset,
+    /// The trips that must be clear before this one's reset may restart its
+    /// equipment (M44, docs/DESIGN.md §49), indexing the snapshot's own
+    /// `trips`. **Skipped when empty**, every trip before M44.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restart_permissives: Vec<TripId>,
     /// The measurement the last trip pass compared against `limit`.
     ///
     /// **Absent before the first tick**, when no pass has run. A level, a
@@ -492,8 +497,9 @@ pub struct TripSnapshot {
 /// One reason a stop by the trips will not end, or did not end, in the trips
 /// handing the equipment back (M43, docs/DESIGN.md §48). Each is one cause, so
 /// a frontend can say which a person can still lift: while a trip holds the
-/// equipment only `TubesBurst` (new tubes) and `TripAboutToFire` (the reading
-/// clears) go away by themselves; the rest stand for the whole stop.
+/// equipment `TubesBurst` (new tubes), `TripAboutToFire` and
+/// `PermissiveNotClear` (the other trips clear) can go away; the rest stand
+/// for the whole stop.
 ///
 /// Declared in the order the engine lists them, and `Ord` on that order, so a
 /// list of them is always written the same way.
@@ -517,6 +523,11 @@ pub enum RestartBar {
     /// reset lands after the readings moved and before that trip's pass — since
     /// inside the pass such a trip has latched first. Lifts with the reading.
     TripAboutToFire,
+    /// A trip named in the `restart_permissives` of a trip that held it during
+    /// this stop is not clear: tripped, or armed with its fresh reading in its
+    /// condition (M44, §49) — the feed pump's trip still active, say, when the
+    /// furnace's own trip lets go. Lifts when every one of them is clear.
+    PermissiveNotClear,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

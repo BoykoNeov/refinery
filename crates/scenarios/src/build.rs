@@ -11,7 +11,7 @@ use refinery_core::graph::{
     Actuator, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
     EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling, LeakRole, LoopId, MeasuredVariable,
     MeasurementPoint, Node, NodeId, NodeKind, Pipe, PlantGraph, SetpointRange, TankState, Trip,
-    TripAction, TripDirection, TripReset, TripState, TubeState, VesselState,
+    TripAction, TripDirection, TripId, TripReset, TripState, TubeState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -1635,10 +1635,75 @@ fn build_trips(
             limit,
             actions,
             reset,
+            // Names may point forward, so resolved below, once every trip is in.
+            restart_permissives: Vec::new(),
             state: TripState::Armed,
             // No trip pass has run: absent until tick 1 (fork 8).
             last_measurement: None,
         });
+    }
+    build_restart_permissives(graph, defs)
+}
+
+/// Resolve each trip's `restart_permissives` to trip ids (M44,
+/// docs/DESIGN.md §49), after every trip is built so a name may point forward.
+///
+/// Refuses the list on a trip whose reset restarts nothing (it would be names
+/// nothing reads); a name that is no trip, the trip itself, or twice; and a
+/// trip that acts on any of this trip's equipment — every restart already asks
+/// that one (`RestartBar::TripAboutToFire`), so naming it says nothing.
+fn build_restart_permissives(graph: &mut PlantGraph, defs: &[TripDef]) -> Result<(), SimError> {
+    for (index, def) in defs.iter().enumerate() {
+        if def.restart_permissives.is_empty() {
+            continue;
+        }
+        let owner = format!("trip '{}'", def.name);
+        let this = &graph.trips()[index];
+        if !this.reset.restarts() {
+            return Err(SimError::Scenario(format!(
+                "{owner} declares `restart_permissives` and its reset restarts nothing \
+                 (`reset = \"manual\"`, the default). A permissive gates a restart; write \
+                 `reset = \"manual_restart\"` or `\"auto\"`, or drop the key"
+            )));
+        }
+        let mut resolved: Vec<TripId> = Vec::with_capacity(def.restart_permissives.len());
+        for name in &def.restart_permissives {
+            let Some(found) = graph.trips().iter().position(|t| &t.name == name) else {
+                return Err(SimError::Scenario(format!(
+                    "{owner} names '{name}' in `restart_permissives`, and no trip on this plant \
+                     is called that"
+                )));
+            };
+            let id = TripId(found as u32);
+            if found == index {
+                return Err(SimError::Scenario(format!(
+                    "{owner} names itself in `restart_permissives`. Its own reading is what its \
+                     reset is tested against already"
+                )));
+            }
+            if resolved.contains(&id) {
+                return Err(SimError::Scenario(format!(
+                    "{owner} names '{name}' twice in `restart_permissives`"
+                )));
+            }
+            let other = &graph.trips()[found];
+            if let Some(shared) = this
+                .actions
+                .iter()
+                .map(|a| a.equipment())
+                .find(|&node| other.acts_on(node))
+            {
+                return Err(SimError::Scenario(format!(
+                    "{owner} names '{name}' in `restart_permissives`, and both act on '{}'. A \
+                     restart of that equipment already waits for every trip on it to be clear \
+                     (docs/DESIGN.md §49), so the name adds nothing; a permissive is a trip on \
+                     OTHER equipment",
+                    graph.node(shared).name
+                )));
+            }
+            resolved.push(id);
+        }
+        graph.trips_mut()[index].restart_permissives = resolved;
     }
     Ok(())
 }

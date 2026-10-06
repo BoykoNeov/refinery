@@ -949,6 +949,14 @@ pub struct TripDef {
     pub reset_limit_c: Option<f64>,
     #[serde(default)]
     pub reset_limit_kg_per_s: Option<f64>,
+    /// Other trips, by name, that must be CLEAR before this trip's reset may
+    /// restart its equipment — a burner management system's start permissives
+    /// (M44, docs/DESIGN.md §49). Clear: armed, and its reading outside its
+    /// condition. One not clear when the stop ends keeps the equipment stopped
+    /// for a person. Optional; only on a trip whose reset restarts
+    /// (`manual_restart` or `auto`), and only trips on OTHER equipment.
+    #[serde(default)]
+    pub restart_permissives: Vec<String>,
     /// What the trip does when it fires: one or more pieces of equipment and
     /// each one's safe state. Required and non-empty (docs/DESIGN.md §26 fork 3).
     #[serde(default)]
