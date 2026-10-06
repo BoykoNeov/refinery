@@ -20274,3 +20274,134 @@ on every other edge. `newton_flow::band_cut` reads it. The game solver does not
   inside the band too: the sweep gate and three of that file's nine. Cutting
   both ways: the fixture gates pass; three of that file's nine fail, and the
   corpus stops three plants.
+
+## 55. What cavitation does to a pump — ledger row B9 (M50)
+
+Taken on the user's request (2026-10-06: offered B9 as the recommended one of
+five next slices, and chose it), with three DECISIONS put to them before
+building: the behaviour is an **opt-in key with a new demo file** (over editing
+`cavitating_pump.toml`, a regression anchor, or switching it on for every pump
+on a plant that can compute a bubble pressure); a pump with no working point
+**falls to zero head with no tricks** (over a head floor, or an implied check
+valve); and the snapshot **reports a head fraction** (over letting the flow speak
+for itself).
+
+**Measured before choosing a demo.** M11's `cavitating_pump` cannot show a pump
+*losing* flow. Its suction is 1.27 bar running and 1.33 bar with the discharge
+valve shut, against a bubble pressure of 1.83 bar: the shortfall is the 25 m
+lift, and only 0.06 bar of it is friction. Under any curve that degrades head
+with suction, that pump has no partial answer — it collapses, and with the pump
+off the probe already runs the line backwards. So the demo is a new plant whose
+deficit comes from suction-line FRICTION, where less flow means more margin and
+the pump settles in between.
+
+**Interfaces.**
+- `NodeKind::Pump` gains `suction: Option<PumpSuction>` (serde-skipped when
+  absent, so every pre-M50 snapshot is byte-identical). `PumpSuction` holds
+  `npsh_required: Meter` (the NPSH3 off a data sheet) and `bubble_pressure:
+  Option<Pascal>`, which the ENGINE writes at the top of each tick from the
+  last tick's cavitation criterion at the pump (`Engine::run_pump_suctions`) and
+  the solve reads as a fixed number — the relief latch's arrangement (§53).
+  `FlowSolver` is unchanged and no solver touches thermodynamics.
+- `HydraulicSolution::pump_suction` and `NodeSnapshot::pump_suction`
+  (`npsh_available_m`, `head_fraction`): data across the seam, like
+  `edge_dissipation`. Absent wherever there is no key, no bubble pressure yet,
+  or the pump is off.
+- `CompiledEdge::pump_suction: Option<PumpSuctionSlope>` and
+  `CompiledEdge::suction_share`, the one owner of the slope term below.
+- Scenario key `npsh_required_m` on a pump; refused unless positive, refused in
+  gas service, and refused on a plant whose thermo model has no bubble
+  pressure (`require_pump_suction_answerable` asks the built model, which
+  answers `SimError::Scenario`, rather than checking its name).
+
+**Forks.**
+1. **The curve.** `φ(σ) = 1 − exp(−k·σ²)` for `σ = NPSHa/NPSH3 > 0`, zero
+   below, `k = ln(1/0.03)`. Anchored at the two points the physics fixes: 3% of
+   the head lost at `NPSHa = NPSH3`, which is NPSH3's definition (ANSI/HI
+   9.6.1), and nothing left when the suction stands at the bubble pressure. C¹
+   (value and slope both zero at `σ = 0`), as §3a fork 4 requires. Past
+   `σ ≈ 3.24` the exponential is below half an ULP of 1, so a pump with suction
+   to spare runs its old curve exactly. *The shape between the anchors is a
+   modelling choice, said so in the code*: real breakdown curves are steeper
+   near NPSH3 and pump-specific (Gülich, "Centrifugal Pumps", §6.2). *Rejected*:
+   a linear ramp (a kink at both ends), and a curve that keeps head below the
+   bubble pressure (the user's decision, below).
+2. **What it scales.** The WHOLE curve, `φ·(h0 − a·Q|Q|)`: NPSH3 is measured at
+   constant flow, so "3% of the head" means 3% at every flow. The pump's share
+   of the branch is `φ·ρ·g·a` in `α` and `−φ·ρ·g·h0` in `β`, still affine in
+   `Q|Q|`, so the closed-form inverse stands. At `φ = 0` the pump is not even a
+   resistance — a plain pipe, the user's "head to zero, no tricks": if the far
+   end is higher, the line runs backwards, as a vapour-locked pump with no check
+   valve does. A STOPPED pump has no head to lose and keeps the pre-M50 branch.
+   *Rejected*: scaling the shut-off head alone (the head drop would then be a
+   different share at each flow).
+3. **The slope the frozen branch hides.** `NPSHa` reads the pump's OWN node, the
+   source of its outlet edge, so the branch moves with `P_src` through `α` and
+   `β`: `∂ṁ/∂P_src` gains `ρ·(−dQ/d(dp)·∂β/∂P − Q·∂α/∂P/(2α))`
+   (`suction_share`). It is non-negative while the pump's curve head is
+   positive, and across the knee it is several times the frozen conductance
+   (gated: over 3× at some margin on the contract fixture). Newton adds it to the
+   source column, beside the relief's opening term (§30). The game solver adds
+   it to the pump node's own slope and to a group's when the pump is in the
+   group and its outlet is not, and reads the pump's edge FRESH inside the
+   sweep, as it does a check valve's (§33).
+4. **The first tick runs the whole curve.** No tick has resolved the pump's
+   liquid yet, so there is no bubble pressure to read; tick 1 is the key-less
+   pump's, bit for bit, and reports nothing. The same one-tick lag holds after:
+   each solve reads the temperature and composition the last tick resolved, as
+   density already does.
+5. **The game solver solves a cavitating pump's node on its bracket first.**
+   Found, not designed: with only forks 3's slope and the fresh edge, the game
+   solver cycled for 5 000 sweeps on the demo's second tick (residual 69 kg/s).
+   The head is flat at the top of the curve and flat at zero with a knee
+   between, so a Newton step from the flat top overshoots into the dead zone,
+   and the ladder ACCEPTS the half step because the residual fell a little; the
+   group step then shifts the node back. The node's imbalance is still monotone
+   in its own pressure, so a full step whose residual changes sign brackets its
+   root, and the pump node takes `bracketed_step` (§50.1) before the ladder.
+   Every other node is untouched. The demo then takes 35 sweeps on tick 2 and
+   one a tick after.
+
+**A known disagreement, kept on purpose.** M11's lamp compares the BULK suction
+pressure with the bubble pressure. A pump loses head before that, because the
+liquid accelerating into the impeller eye drops below the bulk — which is what
+NPSH3 measures. On the demo the suction settles 0.06 bar ABOVE the bubble
+pressure (`cavitating: false`) while the pump delivers 26% of its head. Both are
+right about what they measure; `head_fraction` is what a screen should draw.
+
+**The demo, `scenarios/pump_cavitation_flow_limit.toml` (the 43rd file).** Hot
+naphtha at 110 °C (M11's fluid) from a 2.4 bar source through 60 m of 80 mm
+line to a pump level with it (`npsh_required_m = 3`), then a valve at 0.6 to a
+1.5 bar sink. Hand calculation (bisection on the flow, written in the test from
+the plant's numbers): 10.96 kg/s at `φ = 0.258`, where without the key the same
+plant carries 16.5 kg/s with its suction 0.58 bar below the bubble point.
+Opening the valve wide buys under 5% more flow (the key-less twin gains over
+20%); throttling to 0.2 gives the whole head back.
+
+**Not built, with what un-defers each.**
+- NPSH3 rising with flow (it does, roughly with `Q²`): a constant keeps the
+  branch closed-form. Un-defers with a plant whose answer depends on curing
+  cavitation by throttling a pump whose suction does NOT lose pressure with flow.
+- The vapour itself — mass in a second phase at the impeller — stays B3's.
+- Reverse flow through a vapour-locked pump is not refused: a plant that must
+  not backflow carries a check valve (§33), which is what a real one does.
+
+**Measured (M50, landed 2026-10-06).**
+- Demo: Newton 9 iterations at worst, the game solver 35 sweeps on tick 2 (the
+  first tick with a bubble pressure) and one a tick after; the two agree to
+  about 1e-9 on the flow. The hand calculation matches to 1e-4 on the flow and
+  head fraction (the regularised square root's share) and 1e-6 on the suction.
+- Corpus: all 42 earlier plants byte-identical on both fidelities; one new.
+  Release property tests pass. The Godot binding did not change.
+- Mutations: eleven, all caught. Newton without the share does not converge
+  through the knee and fails nine of the eleven plant gates — wider than the
+  "may be uncaught" predicted. The game solver without the share, without the
+  fresh edge, or without the bracket-first step fails the fidelity-agreement
+  gate. NPSHa from absolute pressure, a linear ramp, scaling the shut-off head
+  alone, a stopped pump still cavitating, the engine never handing over the
+  bubble pressure, and each refusal dropped, each fails the gate named for it.
+- One gate corrected while building: the stopped-pump gate was written bit for
+  bit and cannot be — the 50 ticks before the stop ran different flows, so the
+  two solves start warm from different points and agree to 4.7e-9. It asserts
+  2e-8, thirteen times under what the mutation it defends moves (2.6e-7), and
+  that mutation fails it.

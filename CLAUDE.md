@@ -146,10 +146,9 @@ godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M49
-(2026-10-06)** — Newton no longer gives up on a nearly shut valve behind a
-check valve: a step that would carry the disc from full lift to shut is cut to
-land it mid-band (A21 closed).
+Work only on the current milestone unless asked. **Latest closed: M50
+(2026-10-06)** — a pump declaring `npsh_required_m` loses head as its suction
+nears the liquid's bubble pressure, and reports how much (B9 closed).
 Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.

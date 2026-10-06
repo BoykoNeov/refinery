@@ -12,6 +12,35 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M50 is CLOSED (2026-10-06): what cavitation does to a pump —
+`docs/DEFERRED.md` B9 struck, B45 opened.** On the user's request (B9, the
+recommended one of five next slices) and three DECISIONS put before building:
+an opt-in key and a new demo, head to zero with no tricks, and a head fraction
+in the snapshot. DESIGN §55.
+- **Measured first**: M11's `cavitating_pump` cannot show a pump losing flow —
+  its suction is below the bubble point even at zero flow (1.33 against 1.83
+  bar), so any degradation collapses it. It stays the anchor, untouched, and
+  still shows full flow while boiling.
+- **`npsh_required_m` on a pump**: it delivers `φ·H(Q)`, `φ = 1 − exp(−k·σ²)`,
+  `σ = NPSHa/NPSH3` — 3% lost at NPSH3 (ANSI/HI 9.6.1), none at the bubble
+  pressure, C¹. The engine hands the pump its liquid's bubble pressure between
+  ticks (`PumpSuction`, the relief latch's arrangement); tick 1 runs the whole
+  curve. Refused unless positive, in gas service, and where thermo has no
+  bubble pressure. Reported as `pump_suction { npsh_available_m, head_fraction }`.
+- **Both solvers carry the head's slope with the pump's own suction**
+  (`CompiledEdge::suction_share`); the game solver reads the pump's edge fresh
+  and — found while building, after 5 000 sweeps of cycling — solves its node
+  on the bracket first.
+- **Demo `pump_cavitation_flow_limit.toml`** (43rd file): the pump settles at
+  26% of its head, 10.96 kg/s against 16.5 without the key, and opening the
+  valve wide buys under 5%; throttling to 0.2 gives the head back. The boiling
+  lamp reads false there on purpose: the bulk suction is above the bubble
+  point, the impeller eye is not.
+- Gates: eleven in `pump_cavitation_reference.rs` (a hand calculation among
+  them), four in `pump_suction_contract.rs`. Mutations: eleven, all caught.
+- 42 plants byte-identical on both fidelities, one new. Release property tests
+  pass. The Godot binding did not change.
+
 **M49 is CLOSED (2026-10-06): Newton and a disc carried shut in one step —
 `docs/DEFERRED.md` A21 struck.** On the user's request (A21, the recommended
 one of five next slices). DESIGN §54.

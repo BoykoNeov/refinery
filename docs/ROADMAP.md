@@ -8113,3 +8113,26 @@ check-valve plants moved at the rounding floor (the cut fires on pump stops).
 Five mutations, all caught: the fifth (cutting both ways) passes the fixture
 gates and fails three of `check_valve_reference.rs`'s nine, and the corpus
 stops three plants.
+
+## M50 — what cavitation does to a pump: ledger row B9; opened on a request
+
+B9: M11 reports a pump boiling and changes nothing, so `cavitating_pump`'s pump
+read 0.70× its bubble pressure while carrying 10.7 kg/s at full head. Offered
+as the recommended one of five next slices; the user chose it, then decided
+three questions put before building: opt-in key and a new demo (the old file
+stays the anchor), head to zero with no tricks for a pump with no working
+point, and a head fraction in the snapshot. The note is DESIGN §55.
+
+### M50 — **LANDED** 2026-10-06
+
+A pump declaring `npsh_required_m` delivers `φ·H(Q)`, `φ = 1 − exp(−k·σ²)` on
+`σ = NPSHa/NPSH3` — 3% lost at NPSH3, none at the bubble pressure. The engine
+hands each such pump its liquid's bubble pressure between ticks; both solvers
+carry the slope of the head with the pump's own suction (`suction_share`), and
+the game solver reads the pump's edge fresh and solves its node on the bracket
+first (found while building: without it the demo cycled for 5 000 sweeps).
+Demo `pump_cavitation_flow_limit.toml`: the pump settles at 26% of its head and
+the flow stops answering the valve; throttling gives the head back. Corpus: 42
+plants byte-identical on both fidelities, one new.
+Release property tests pass. Eleven mutations, all caught; Newton without
+the slope term fails to converge through the knee.
