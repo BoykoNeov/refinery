@@ -2020,32 +2020,29 @@ fn the_relief_arm_lifts_relieves_and_floats() {
          when the active-set loop landed — `tree_fidelity_agreement` has no non-vacuity \
          guard of its own, so this is where a collapse would be seen"
     );
-    // M8.0's new termination, floored AND capped, for two different reasons.
+    // M8.0's new termination, CAPPED. Until M45 it was floored as well, for
+    // reachability: measured, the generators reached the cycle 6 times and the
+    // cap twice on trees, plus 2 cycles on chains, and a floor kept the refusal
+    // paths exercised by a real solve rather than only by the stub-driven unit
+    // tests.
     //
-    // The FLOOR is reachability. The loop's refusal paths are error paths a
-    // plant may never take, and a refusal class nothing reaches is a claim about
-    // coverage that cannot be checked; measured, the generators reach the cycle
-    // 6 times and the cap twice on trees, plus 2 cycles on chains. If this went
-    // to zero, `an_alternating_classification_is_reported_as_a_cycle` and
-    // `a_classification_that_never_repeats_hits_the_cap` would be the only
-    // things exercising those paths, and both drive the loop with a STUB pass —
-    // no real solve behind them.
-    //
-    // The CAP is the honest half of the fix's advertisement. Refusing a plant is
-    // better than answering it by iteration parity, but it is still a refusal,
-    // and a change that turned the loop trigger-happy would otherwise look like
-    // an improvement in `newton_diverged`.
+    // M45.0 (docs/DESIGN.md §50) took that floor's population away, and was
+    // right to: every cycle these generators reached was a relief opening into a
+    // stretch with one way in, which carries nothing whichever way the relief
+    // stands — a dead end's tie, now answered (`dead_end_tie`). Measured on
+    // today's generators: 4 cycled + 1 capped on trees and 1 cycled on chains
+    // with the tie removed; 0 + 1 and 0 + 0 with it. So the bound is now a
+    // CEILING on all four that the fix's removal fails, the M26.1 precedent
+    // above. Reachability moved to fixed plants: the cycle by a real solve in
+    // `known_defect_newton_refuses_two_reliefs_in_series_with_one_answer`, the
+    // cap by its stub plus the one tree that still reaches it here.
+    let refused = tree_cycled + tree_capped + chain_cycled + chain_capped;
     assert!(
-        tree_cycled + tree_capped >= 4,
-        "the anchoring loop refused only {tree_cycled} cycling + {tree_capped} capped spur \
-         trees — at this rate nothing but the stub-driven unit tests reaches its refusal \
-         paths, and those prove the control flow rather than that a plant can provoke it"
-    );
-    assert!(
-        (tree_cycled + tree_capped) * 20 <= spur_trees,
-        "the anchoring loop refused {tree_cycled} + {tree_capped} of {spur_trees} spur trees, \
-         well past the 8 measured when it landed — a loop that refuses more plants is not \
-         the same thing as a loop that solves more"
+        refused <= 2,
+        "the anchoring loop refused {tree_cycled} cycling + {tree_capped} capped spur trees \
+         and {chain_cycled} + {chain_capped} chains, against 0 + 1 and 0 + 0 measured when \
+         M45.0 answered a dead end's tie and 4 + 1 and 1 + 0 without it — a relief into a \
+         blocked-in stretch carries nothing and is not chatter (DESIGN §50)"
     );
 }
 
@@ -2441,16 +2438,23 @@ fn an_ordinary_plant_runs_one_anchoring_pass() {
 
 /// A classification that ALTERNATES is caught as a cycle, not waited out.
 ///
-/// The stub drives the relief open on the first pass and shut on the second, so
-/// the second pass's recomputed set is one already seen. Physically this is a
+/// The stub drives both reliefs open on the first pass and shut on the second,
+/// so the second pass's recomputed set is one already seen. Physically this is a
 /// relief whose own discharge re-seats it — chatter, which needs element state
 /// and is deferred (DESIGN §3a) — and the honest answer is to say so rather than
 /// return whichever of the two self-consistent states the parity landed on
 /// ([[prove-the-exception-dont-skip-it]]).
+///
+/// **The stretch is a RELAY, not a dead leg** (M45.0, docs/DESIGN.md §50). Until
+/// M45 this stub drove one relief into a blocked-in leg, and that is not
+/// chatter: with one way into the leg nothing can flow whichever way the relief
+/// stands, so the two classifications are one answer, and the loop now answers
+/// it (`dead_end_tie`). Chatter needs a flow the alternation switches, so the
+/// leg here leaves through a second relief to its own sink.
 #[test]
 fn an_alternating_classification_is_reported_as_a_cycle() {
     let fluid = Fluid::liquid();
-    let (g, psv, _leg) = spur_plant(&fluid, 5.0e5);
+    let (g, psv, relay) = relay_plant(&fluid, 5.0e5);
 
     let mut warm = BTreeMap::new();
     let mut passes = 0usize;
@@ -2464,8 +2468,10 @@ fn an_alternating_classification_is_reported_as_a_cycle() {
             passes += 1;
             let lift = passes == 1;
             stub_pass(&g, &fluid, prep, |p| {
-                // Above the set + accumulation band, or well below it.
+                // Above the set + accumulation band, or well below it — both
+                // reliefs together, so the stretch has two ways across it.
                 p.insert(psv, if lift { 6.0e5 } else { 2.0e5 });
+                p.insert(relay, if lift { 6.0e5 } else { 2.0e5 });
             })
         },
     );
@@ -2659,6 +2665,88 @@ fn spur_plant(fluid: &Fluid, set_pressure: f64) -> (PlantGraph, NodeId, NodeId) 
     g.add_pipe(j, psv, pipe((5.0, 0.06, 0.02, 0.0), "j_psv", fluid));
     g.add_pipe(psv, leg, pipe((5.0, 0.06, 0.02, 0.0), "psv_leg", fluid));
     (g, psv, leg)
+}
+
+/// `spur_plant` with the leg carried on through a SECOND relief (`relay`, set at
+/// 4 bar) to its own 1 bar sink: a stretch with two ways across it, so an
+/// alternation of both reliefs switches a flow through it (M45.0). Both set
+/// points sit above the 3.33 bar cold seed (the mean of the three pinned
+/// pressures), so the stretch floats on the first classification. Returns the
+/// graph, the first relief and the relay.
+fn relay_plant(fluid: &Fluid, set_pressure: f64) -> (PlantGraph, NodeId, NodeId) {
+    let (mut g, psv, leg) = spur_plant(fluid, set_pressure);
+    let relay = g.add_node(Node {
+        name: "relay".into(),
+        kind: NodeKind::ReliefValve {
+            cv_max: 1e-3,
+            set_pressure: Pascal(4.0e5),
+            accumulation: Pascal(0.5e5),
+            x_t: None,
+        },
+        heat_input: Watt(0.0),
+    });
+    let out = g.add_node(sink(1.0e5, fluid));
+    g.add_pipe(leg, relay, pipe((5.0, 0.06, 0.02, 0.0), "leg_relay", fluid));
+    g.add_pipe(relay, out, pipe((5.0, 0.06, 0.02, 0.0), "relay_out", fluid));
+    (g, psv, relay)
+}
+
+/// **KNOWN DEFECT, pinned: Newton refuses two reliefs in series that have one
+/// answer** (docs/DEFERRED.md A20). A 6.99 bar source, a relief set at 6.42 bar,
+/// one set at 3.23 bar, a 1 bar sink — the case `chain_fidelity_agreement`'s
+/// generator found once M45.0 existed. The game solver answers it: both reliefs
+/// open, 68.354 kg/s. Newton's active-set loop reaches a repeat on the second
+/// relief's node and refuses it as chatter, which it is not. Measured on the
+/// tree before M45 too: the refusal is not M45's.
+///
+/// **It is also the one fixed plant that pins `dead_end_tie`'s re-check.** The
+/// second relief's node is a stretch with ONE conducting edge in the compile its
+/// filled classification came from (the second relief was shut there, parked
+/// low), so it passes the count; filled to the first relief's pressure, the
+/// second relief lifts, and only the re-check sees it. Without it Newton
+/// "answers" zero flow through a chain the other solver runs at 68 kg/s.
+#[test]
+fn known_defect_newton_refuses_two_reliefs_in_series_with_one_answer() {
+    let fluid = Fluid::liquid();
+    let mids = [
+        Mid::Relief {
+            cv: 0.002297131857065713,
+            set: 642073.520100982,
+            band: 20000.0,
+        },
+        Mid::Relief {
+            cv: 0.0001,
+            set: 322711.0173797172,
+            band: 20000.0,
+        },
+    ];
+    let pipes = [
+        (26.85771911202901, 0.16941785515279675, 0.01, 0.0),
+        (1.0, 0.25118774211238937, 0.01, 0.0),
+        (1.0, 0.05, 0.01, 0.0),
+    ];
+    let (g, edges) = build_chain(&mids, &pipes, 698767.3083954572, 1.0e5, &fluid);
+
+    let newton =
+        NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
+    let Err(SimError::AnchoringUnsettled { cycled, .. }) = newton else {
+        panic!(
+            "Newton must still refuse this chain as a cycle — an Ok here is either the \
+             defect fixed (update A20 and this gate) or the re-check gone: {newton:?}"
+        );
+    };
+    assert!(cycled, "refused as a cycle, not at the cap");
+
+    let simple = SimpleFlowSolver::default()
+        .solve(&g, &fluid.slate, &Default::default(), Seconds(0.1))
+        .expect("the game solver answers the chain");
+    for &e in &edges {
+        let flow = simple.edge_mass_flow[&e];
+        assert!(
+            (flow - 68.354).abs() < 1e-3,
+            "both reliefs open, one flow through the chain: {flow} kg/s"
+        );
+    }
 }
 
 // --- the second active set: starved tanks (M24, DESIGN §28 fork 3) -----------

@@ -19564,3 +19564,102 @@ the heater for over a hundred ticks. That is the plant's own answer (nothing
 stops a backflow but a check valve, §33), and the file says so.
 
 **Deferred.** Nothing new. E28 is closed.
+
+## 50. A pump started against its shut valve, and a controller that holds while its pump is stopped — ledger row E25 (M45)
+
+Taken on the user's decision (2026-10-06): E25, the restart surge, as the next
+slice, the controller-side fix ("Controller holds"), and — on a finding the
+slice made before building anything — "Fix it first" for the engine fault below.
+The full write-up is ROADMAP M45.
+
+### 50.0 The finding: a dead end behind a check valve (M45.0)
+
+A probe of E25's textbook answer — shut the fill valve and put its loop in MANUAL
+while the pump is stopped, hand it back on restart — showed the answer works
+(the flow climbs from zero instead of stepping to 24.8 kg/s) and found a fault
+in the way: on `tank_level_fill_check_valve`, **starting the pump against the
+shut fill valve was refused on the first tick, on both fidelities**, with
+`AnchoringUnsettled { cycled: true }`. That is how a centrifugal pump is
+normally started. A plain valve in the disc's place ran; so did a fill valve
+left 5% open.
+
+**Mechanism.** The stretch between the disc and the shut valve has one way in.
+Filled (anchored through the open disc), it stands at the pump's pressure, the
+disc's forward drive is zero, and the disc shuts. Floating (disc shut), its
+pressure is parked at its warm start — the value from before the stop, below
+the pump's — and the disc opens. §3c's loop reads the repeat as chatter. It is
+not: with one way in nothing can flow either way, so the two classifications
+are one answer for every flow in the plant. They differ only in the stretch's
+reported pressure, and NEITHER has it right: filled, the disc shuts on the way
+to the answer and leaves the stretch wherever the iterate was — 8.99 bar behind
+a 5 bar header on the first fixture, a negative absolute pressure on the second.
+
+**Interfaces.** None public. `network::solve_with_active_anchoring`'s cycle
+branch gains `dead_end_tie` and `settle_dead_end` (private).
+
+**Forks.**
+
+1. **Where: the cycle branch only, not the floating park.** That branch ended in
+   `Err` on every plant that reaches it, and every corpus plant runs to the end,
+   so no running plant can move — byte-identical by construction, and measured
+   so (40 of 40, both fidelities). Re-parking floating nodes instead would touch
+   the dead leg behind every shut valve on every tick, and still flip on one ULP
+   of the drive.
+2. **The test is topological, not a flow tolerance.** The nodes only the filled
+   classification anchors (the "stretch") hold no vessel and no starved tank,
+   and exactly ONE edge across the stretch's boundary conducts in the compile the
+   filled classification came from. Mass balance then forces that edge to zero.
+   The two solvers reach the repeat from opposite ends — Newton on the filled
+   pass, the game solver on the floating one — so "the compile it came from" is
+   the pass's own on the first road and the recompile on the second. Both roads
+   are pinned (mutations 1 and 2).
+3. **The kept answer is set, not found.** The liquid the element lets in or out
+   moves until the drive across it is zero, and no further. At zero flow a
+   branch's drop is its offset alone, `P_src − P_tgt = β` (static head plus any
+   pump jump), so the stretch is stood at the outside node's pressure less `β`
+   along the way in, and on through the stretch's own pipes the same way. Every
+   edge touching the stretch carries exactly zero. On the demo the stretch reads
+   the disc's inlet, 5.58 bar, against 1.67 bar stopped.
+4. **Then it must stay a dead end where it stands.** Every OTHER edge across the
+   boundary is recompiled at the stood pressures and must still conduct nothing.
+   The random chain generator found the case this exists for at once: two reliefs
+   in series, the second shut only because the stretch was parked low; filled, it
+   lifts. Without the re-check Newton "answered" zero flow through a chain the
+   game solver runs at 68 kg/s. The way in is not asked: a disc there is shut to
+   within a rounding, and a relief that senses only its inlet may stand open
+   passing nothing.
+5. **Nor below vacuum.** A stretch high above a low way in would stand at a
+   negative absolute pressure — a column that has broken. The tie is then
+   refused as before (`a_dead_end_below_vacuum_is_refused`: 15 m above a 0.5 bar
+   receiver, about −97 kPa).
+
+**Correction to §3c (M8.0).** M8.0's stub for chatter drove one relief into a
+blocked-in leg, and the random generators' cycles were all that shape (4 on
+trees and 1 on chains on today's generators). A relief into a stretch with one
+way in is not chatter; it is this tie, and is now answered. The stub became a
+relay — relief, leg, second relief, its own sink — so the alternation switches a
+flow; every assertion it had is unchanged. The relief arm's refusal FLOOR (≥ 4,
+for reachability by a real solve) became a CEILING of 2 on all four counts,
+which removing the tie fails (6); reachability moved to a fixed plant:
+`known_defect_newton_refuses_two_reliefs_in_series_with_one_answer`, ledger A20.
+
+**Measured.**
+- Fixtures `crates/solvers/tests/dead_end_disc.rs` (both orientations, a rise
+  on the way in and inside the stretch, the vacuum refusal, both fidelities,
+  three solves in a row on one warm start) and gate 9 of
+  `crates/scenarios/tests/check_valve_reference.rs` (the demo, dead-headed for
+  300 ticks: exactly zero on `fill_line` and `check_outlet`, at most 3 Newton
+  iterations a tick, 6 on the game solver). All written failing first.
+- Random arms, before → after: liquid disc chains converge 366 → 392 (Newton)
+  and 355 → 373 (game); gas disc chains 369 → 393 and 371 → 387. Every newly
+  converged sample passes the arm's own conservation and disc gates.
+- Corpus: 40 plants byte-identical on both fidelities.
+- Mutations: nine, predicted before the run; seven caught by the gates named.
+  Two uncaught as predicted: the vessel/starved-tank exclusion (a vessel is an
+  anchor, so it is in both sets and never in a stretch — defensive only) and
+  the zeroing of the stretch's flows (the passes already return exact zeros on
+  every fixture).
+
+**Deferred.** A20 (new): Newton refuses two reliefs in series that have one
+answer. A stretch that would stand below vacuum stays refused; what a broken
+column does is not this model's.

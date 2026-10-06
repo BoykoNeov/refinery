@@ -7885,3 +7885,47 @@ runs replayed with no script errors.
 #### Findings
 
 - None new.
+
+## M45 — a controller holds while its pump is stopped: ledger row E25; opened on a decision
+
+E25: while a pump is stopped, a level loop on a fill valve below it sees the
+level fall and winds the valve wide open with nothing coming through; restarting
+the pump then steps the flow from zero to the whole pump curve through a wide
+open valve — 24.8 kg/s in one tick against 6.9 settled, on the M30 demo. The
+user chose it as the next slice (2026-10-06), told plainly that no shipped plant
+reaches it yet (no shipped pump trip restarts anything, and the one trip that
+shuts a fill valve has no loop on it). Offered the two textbook answers — a trip
+that also shuts the valve (data only, trip stops only) or a loop that holds while
+its pump is stopped (covers a person's stop too) — the user chose "Controller
+holds". A probe made before building found an engine fault in the way, and the
+user chose "Fix it first". The note is DESIGN §50.
+
+### M45.0 — a pump started against its shut valve runs — **LANDED** 2026-10-06
+
+The probe: E25's own fixture with the loop put in MANUAL and the fill valve shut
+during the stop, handed back to AUTO at the restart. The handback works — the
+flow climbs about 0.1 kg/s a tick from zero instead of stepping to 24.8 — but
+starting the pump against the shut fill valve was refused on the first tick, on
+both fidelities: `AnchoringUnsettled`, read as chatter. The stretch between the
+check valve and the shut valve is a dead end; filled it shuts the disc, parked
+low it opens it, and neither answer moves any flow. Now the active-set loop
+recognises the tie (one way in, no inventory, still closed everywhere else
+where it stands, not below vacuum) and stands the stretch at zero drive across
+its way in. On the demo the dead-headed line reads 5.58 bar, nothing flows, at
+most 3 Newton iterations a tick.
+
+The random chains found the case the last condition exists for (two reliefs in
+series), and that Newton refuses that chain, which has one answer, on the tree
+before M45 too: ledger A20, pinned as a known defect. M8.0's chatter stub was a
+relief into a dead leg — this tie — and is now a relay; the relief arm's
+refusal floor became a ceiling. Random disc chains now converge 392/400 (Newton)
+and 373/400 (game) in liquid, from 366 and 355. All 40 plants byte-identical on
+both fidelities. Nine mutations, seven caught, two uncaught as predicted.
+
+### M45.1 — a loop that holds while its pump is stopped — planned
+
+The controller-side fix the user chose: a loop names the pump it depends on;
+while that pump is off, the loop holds its valve at a declared position instead
+of winding, and hands back through the bumpless transfer when the pump starts.
+Covers a stop by a trip and by a person alike. E25's gate 7 stays as the
+control; a twin with the key asserts the ramp.

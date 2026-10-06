@@ -27,9 +27,13 @@
 //! 7. **E25, characterised**: restarting the pump into the fill valve the loop
 //!    pinned open while the disc was shut is a surge.
 //! 8. **A disc publishes a cavitation criterion** under a model that has one.
+//! 9. **The pump starts against its shut fill valve** (M45.0, `docs/DESIGN.md`
+//!    §50): the stretch between the disc and the shut valve is a dead end, and
+//!    the tick solves with nothing flowing, on both fidelities. Until M45 the
+//!    first tick after the start was refused as chatter.
 
 use refinery_core::energy::NodeStates;
-use refinery_core::graph::{EdgeId, NodeId, NodeKind, PlantGraph, TripState};
+use refinery_core::graph::{ControlMode, EdgeId, LoopId, NodeId, NodeKind, PlantGraph, TripState};
 use refinery_core::snapshot::Command;
 use refinery_core::units::Pascal;
 use refinery_core::Engine;
@@ -740,4 +744,89 @@ fn a_disc_publishes_a_cavitation_criterion() {
         Some(false),
         "and so does the disc"
     );
+}
+
+// ------------------------------------------------------------------ gate 9
+
+fn node_pressure(engine: &Engine, name: &str) -> f64 {
+    engine
+        .snapshot()
+        .nodes
+        .iter()
+        .find(|n| n.name == name)
+        .unwrap_or_else(|| panic!("the plant declares '{name}'"))
+        .pressure_pa
+}
+
+/// **A pump started against its shut discharge valve runs** (M45.0, DESIGN
+/// §50). The stop parks the loop in MANUAL with the fill valve shut, as a
+/// person — or a trip — would; the start then dead-heads the pump with the disc
+/// between it and the valve. Filled, that stretch stands at the pump's pressure
+/// and the disc's drive is zero, so it shuts; floating, it is parked below, so
+/// the disc opens — the active-set loop read the alternation as chatter and
+/// refused the tick on both fidelities. It is a dead end: nothing flows, and
+/// the stretch reads the disc's inlet pressure (its 1 m outlet is level).
+#[test]
+fn the_pump_starts_against_its_shut_fill_valve() {
+    for fidelity in FIDELITIES {
+        let mut engine = build(&on(fidelity, &untripped(DEMO)));
+        let pump = engine.graph.find_node("transfer_pump").expect("declared");
+        let fill = engine.graph.find_node("discharge_valve").expect("declared");
+        for t in 1..=3_000 {
+            tick(&mut engine, fidelity, t);
+        }
+        engine
+            .apply(Command::SetPumpOn {
+                node: pump,
+                on: false,
+            })
+            .expect("a pump can be stopped");
+        engine
+            .apply(Command::SetControllerMode {
+                loop_id: LoopId(0),
+                mode: ControlMode::Manual,
+            })
+            .expect("the loop can be put in MANUAL");
+        engine
+            .apply(Command::SetValveOpening {
+                node: fill,
+                opening: 0.0,
+            })
+            .expect("a valve in MANUAL can be shut");
+        for t in 3_001..=3_100 {
+            tick(&mut engine, fidelity, t);
+        }
+        let stopped = node_pressure(&engine, "discharge_check");
+        engine
+            .apply(Command::SetPumpOn {
+                node: pump,
+                on: true,
+            })
+            .expect("a pump can be started");
+        let mut worst_iterations = 0;
+        for t in 3_101..=3_400 {
+            tick(&mut engine, &format!("{fidelity}, dead-headed"), t);
+            worst_iterations = worst_iterations.max(engine.snapshot().solver.iterations);
+            assert_eq!(edge_flow(&engine, "fill_line"), 0.0, "{fidelity} tick {t}");
+            assert_eq!(
+                edge_flow(&engine, "check_outlet"),
+                0.0,
+                "{fidelity} tick {t}"
+            );
+            let at_disc = node_pressure(&engine, "discharge_check");
+            let stretch = node_pressure(&engine, "discharge_valve");
+            assert!(
+                (stretch - at_disc).abs() < 1.0,
+                "{fidelity} tick {t}: the stretch stands at the disc's inlet, {stretch} Pa against {at_disc} Pa"
+            );
+            assert!(
+                at_disc > stopped + 2.0e5,
+                "{fidelity} tick {t}: the started pump puts its head on the line, {at_disc} Pa against {stopped} Pa stopped"
+            );
+        }
+        eprintln!(
+            "MEASURE dead-headed {fidelity}: stopped {stopped} Pa, running {} Pa, worst iterations a tick {worst_iterations}",
+            node_pressure(&engine, "discharge_check")
+        );
+    }
 }

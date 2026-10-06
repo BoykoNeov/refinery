@@ -1189,11 +1189,20 @@ where
         let free = prep.classes.free.clone();
         let anchors = base_anchors(&prep.classes);
         let capacitive = prep.classes.capacitive.clone();
+        // What conducted in the compile this pass's classification came from:
+        // a dead end's tie is judged in the classification that fills it, and
+        // on Newton's road to the repeat that is this one (M45.0, §50).
+        let conducting: BTreeSet<EdgeId> = prep
+            .compiled
+            .iter()
+            .filter(|(_, c)| c.conducts)
+            .map(|(&eid, _)| eid)
+            .collect();
         seen.push((used.clone(), starved.clone()));
 
         let AnchorPass {
             mut result,
-            pressures,
+            mut pressures,
         } = pass(prep);
 
         // A pass that failed BECAUSE its iterate went non-finite is the one case
@@ -1226,19 +1235,20 @@ where
         // if it converged — the pre-M24 rule, now with one more reason a pass
         // can be discarded.
         let accept = |result: &mut Result<HydraulicSolution, SimError>,
-                      warm_start: &mut BTreeMap<NodeId, f64>| {
+                      warm_start: &mut BTreeMap<NodeId, f64>,
+                      pressures: &BTreeMap<NodeId, f64>| {
             if let Ok(solution) = result {
                 for &nid in &free {
                     if let Some(&p) = pressures.get(&nid) {
                         warm_start.insert(nid, p);
                     }
                 }
-                report_holdups(graph, solution, &supplies, &capacitive, &pressures, dt);
+                report_holdups(graph, solution, &supplies, &capacitive, pressures, dt);
             }
         };
 
         if next == used && next_starved == starved {
-            accept(&mut result, warm_start);
+            accept(&mut result, warm_start, &pressures);
             return result;
         }
         // The anchored set the NEXT pass runs under, from the next
@@ -1264,6 +1274,47 @@ where
         // failed pass, so refusing on all of them would have refused mostly on
         // guesses (ROADMAP M8.0).
         if result.is_ok() && seen.contains(&(next_override.clone(), next_starved.clone())) {
+            // A dead end's tie is not chatter (M45.0, docs/DESIGN.md §50): this
+            // pass is kept, with the stretch standing where its one way in
+            // leaves it at zero drive. Judged in the classification that FILLS
+            // the stretch: this pass's on Newton's road, the next one's on the
+            // game solver's.
+            if next != used && next_starved == starved {
+                let tie = if used.is_superset(&next_override) {
+                    dead_end_tie(
+                        graph,
+                        slate,
+                        previous_states,
+                        &next_override,
+                        &used,
+                        &capacitive,
+                        |eid| conducting.contains(&eid),
+                        &compiled,
+                        &pressures,
+                    )
+                } else if next_override.is_superset(&used) {
+                    dead_end_tie(
+                        graph,
+                        slate,
+                        previous_states,
+                        &used,
+                        &next_override,
+                        &capacitive,
+                        |eid| compiled[&eid].conducts,
+                        &compiled,
+                        &pressures,
+                    )
+                } else {
+                    None
+                };
+                if let Some(dead_end) = tie {
+                    if let Ok(solution) = &mut result {
+                        settle_dead_end(graph, &dead_end, &mut pressures, solution);
+                    }
+                    accept(&mut result, warm_start, &pressures);
+                    return result;
+                }
+            }
             if next != used {
                 return Err(SimError::AnchoringUnsettled {
                     cycled: true,
@@ -1281,7 +1332,7 @@ where
             // tolerance (§28 fork 3). Keep the pass that cannot create mass —
             // this one, if it is the more starved of the two.
             if next_starved.is_subset(&starved) {
-                accept(&mut result, warm_start);
+                accept(&mut result, warm_start, &pressures);
                 return result;
             }
             recovery_frozen = true;
@@ -1301,6 +1352,149 @@ where
              (docs/DESIGN.md §3c)"
         ),
     })
+}
+
+/// A stretch of line closed at its far end, and where each of its nodes
+/// stands at zero drive (M45.0, docs/DESIGN.md §50).
+struct DeadEnd {
+    stretch: BTreeSet<NodeId>,
+    /// Each node of the stretch's pressure [Pa], see `dead_end_tie`.
+    standing: BTreeMap<NodeId, f64>,
+}
+
+/// Whether a repeat between the anchored sets `floating` and `filled` (a
+/// superset of it) is a DEAD END's tie rather than chatter (M45.0,
+/// docs/DESIGN.md §50), and if so where the dead end stands.
+///
+/// The nodes only `filled` anchors form a stretch of line with no inventory in
+/// it — no vessel, no starved tank, nothing with a term of its own — joined to
+/// the rest of the plant, in the compile `filled` came from, by exactly ONE
+/// conducting edge. Mass balance forces that edge's flow to zero, and with it
+/// every flow in the stretch, so the two classifications are one answer for
+/// every flow in the plant. What they disagree on is the stretch's pressure,
+/// and neither has it: floating, it is parked at a stale value; filled, the
+/// element on the way in shuts on the way to the answer and leaves it wherever
+/// the iterate was (8.99 bar behind a 5 bar header on the first fixture, and a
+/// negative absolute pressure on the second).
+///
+/// The case it exists for is a pump started against its shut discharge valve
+/// with a check valve between them: filled, the stretch stands at the pump's
+/// pressure and the disc's forward drive is zero, so it shuts; floating, the
+/// stretch is parked below the pump's pressure, so it opens.
+///
+/// **Where it stands.** The liquid the element lets in or out moves until the
+/// drive across it is zero, and no further. At zero flow a branch's drop is its
+/// offset alone, `P_src − P_tgt = β` (`QuadraticBranch`: static head plus any
+/// pump jump), so each node of the stretch is reached from the one outside it
+/// by subtracting `β` along each edge followed forward and adding it along each
+/// followed backward. `compiled` is the compile at the kept pass's pressures,
+/// and its offsets are what the next solve would read.
+///
+/// **Then the stretch must stay a dead end where it stands**: every OTHER edge
+/// across its boundary, recompiled at those pressures, still conducts nothing.
+/// Chatter is the case that fails it — a relief chain whose second valve was
+/// shut only because the stretch was parked low, and lifts once it is filled —
+/// and it is refused as before. The way in is not asked: it sits at zero drive
+/// by construction, where a disc is shut to within a rounding and a relief that
+/// senses only its own inlet may stand open passing nothing.
+///
+/// **Nor below vacuum.** A stretch rising far enough above a low-pressure way
+/// in would stand at a negative absolute pressure, which is a column that has
+/// broken rather than a dead end; that tie is refused as before.
+///
+/// `conducts_in_filled` answers for the compile `filled` was built from: the
+/// pass's own on Newton's road to the repeat, the recompile on the game
+/// solver's (the two reach it from opposite ends).
+#[allow(clippy::too_many_arguments)]
+fn dead_end_tie(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    floating: &BTreeSet<NodeId>,
+    filled: &BTreeSet<NodeId>,
+    capacitive: &BTreeMap<NodeId, Capacitance>,
+    conducts_in_filled: impl Fn(EdgeId) -> bool,
+    compiled: &BTreeMap<EdgeId, CompiledEdge>,
+    pressures: &BTreeMap<NodeId, f64>,
+) -> Option<DeadEnd> {
+    let stretch: BTreeSet<NodeId> = filled.difference(floating).copied().collect();
+    if stretch.is_empty() || stretch.iter().any(|nid| capacitive.contains_key(nid)) {
+        return None;
+    }
+    let crosses = |eid: EdgeId| {
+        let (src, tgt) = graph.endpoints(eid);
+        stretch.contains(&src) != stretch.contains(&tgt)
+    };
+    let mut ways_in = graph
+        .edge_ids()
+        .filter(|&eid| crosses(eid) && conducts_in_filled(eid));
+    let way_in = ways_in.next()?;
+    if ways_in.next().is_some() {
+        return None;
+    }
+
+    let (src, tgt) = graph.endpoints(way_in);
+    let beta = compiled[&way_in].branch.beta;
+    let (first, at_first) = if stretch.contains(&tgt) {
+        (tgt, pressures[&src] - beta)
+    } else {
+        (src, pressures[&tgt] + beta)
+    };
+    let mut standing: BTreeMap<NodeId, f64> = BTreeMap::new();
+    standing.insert(first, at_first);
+    let mut stack = vec![first];
+    while let Some(nid) = stack.pop() {
+        let here = standing[&nid];
+        for (eid, other, incoming) in graph.incident(nid) {
+            if !stretch.contains(&other)
+                || standing.contains_key(&other)
+                || !conducts_in_filled(eid)
+            {
+                continue;
+            }
+            let beta = compiled[&eid].branch.beta;
+            standing.insert(other, if incoming { here + beta } else { here - beta });
+            stack.push(other);
+        }
+    }
+
+    // A stretch standing at or below vacuum is a column the liquid cannot
+    // hold up: not a state this rule can name, so the tie is refused as before.
+    if standing.values().any(|&p| p <= 0.0) {
+        return None;
+    }
+    let mut settled = pressures.clone();
+    settled.extend(standing.iter().map(|(&nid, &p)| (nid, p)));
+    let recompiled = compile_edges(graph, slate, previous_states, &settled).ok()?;
+    let still_closed = graph
+        .edge_ids()
+        .filter(|&eid| eid != way_in && crosses(eid))
+        .all(|eid| !recompiled[&eid].conducts);
+    still_closed.then_some(DeadEnd { stretch, standing })
+}
+
+/// Stand a dead end where `dead_end_tie` found it, with nothing flowing in it
+/// (M45.0, docs/DESIGN.md §50): every edge with an end in the stretch carries
+/// exactly zero and dissipates nothing. The ones that did not conduct already
+/// did; the way in and the stretch's own pipes close to the solver's tolerance
+/// in the pass, and this is the answer that tolerance stood for.
+fn settle_dead_end(
+    graph: &PlantGraph,
+    dead_end: &DeadEnd,
+    pressures: &mut BTreeMap<NodeId, f64>,
+    solution: &mut HydraulicSolution,
+) {
+    for (&nid, &p) in &dead_end.standing {
+        pressures.insert(nid, p);
+        solution.node_pressure.insert(nid, Pascal(p));
+    }
+    for eid in graph.edge_ids() {
+        let (a, b) = graph.endpoints(eid);
+        if dead_end.stretch.contains(&a) || dead_end.stretch.contains(&b) {
+            solution.edge_mass_flow.insert(eid, 0.0);
+            solution.edge_dissipation.insert(eid, Watt::ZERO);
+        }
+    }
 }
 
 /// Each tank in `starved` mapped to its supply [kg/s], through the one
