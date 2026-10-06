@@ -33,10 +33,13 @@ first. DESIGN §53.
 - **Demo `relief_pop_cycle.toml`** (42nd file): 94 lifts in 6 000 ticks, the
   receiver a saw-tooth between 18.67 and 20.03 bar, lift and reseat on the same
   ticks on both fidelities.
-- **M48.1 measured, not built**: the solvers already keep last tick's answer
-  (A22 solved 300 times: each stays on its tick-1 root), and nothing reaches
-  the chatter refusal but a stub. A22 is a tick-1 question; neither rule that
-  settles it was taken.
+- **M48.1 measured, not built**: nothing reaches the chatter refusal but a
+  stub, and on A22 the game solver keeps its previous answer while Newton
+  returns to zero flow whatever came before. First reported as "both already
+  keep last tick's answer" (300 repeat solves, which cannot tell memory from
+  preference) and corrected the same day; the user closed on the first
+  reading and was told of the correction. Neither rule that settles A22 was
+  taken.
 - Gates: six in `relief_blowdown_reference.rs`. Mutations: six, all caught by
   the gates predicted, three by one more each as a consequence. Two gate
   readings corrected while building (chatter is a rate, not every tick; the

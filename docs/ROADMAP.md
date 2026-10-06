@@ -8065,9 +8065,12 @@ fidelities; six mutations, all caught.
 
 Measured first: A22's chain solved 300 times in a row on each solver stays on
 the answer each found on tick 1 (Newton zero flow, the game solver 0.2708 kg/s
-backwards), so the warm start already keeps last tick's answer; and no plant or
-named fixture reaches the chatter refusal (a stub and the below-vacuum tie
-only). A22 is therefore a tick-1 question, settled only by "reliefs first try
+backwards), read at first as "the warm start already keeps last tick's
+answer". Corrected the same day by moving each solver onto the other root
+first: the game solver follows its history, Newton snaps back to zero flow
+whatever came before. No plant or named fixture reaches the chatter refusal (a
+stub and the below-vacuum tie only). A22 is therefore a tick-1 question for one
+solver and a history question for the other, settled only by "reliefs first try
 their remembered state, shut on tick 1" or by M47's declined "no reverse flow
 through a relief". The user's DECISION: close M48 after M48.0. DESIGN §53.
 
