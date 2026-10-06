@@ -388,6 +388,14 @@ pub enum NodeDef {
         a: f64,
         #[serde(default = "default_true")]
         on: bool,
+        /// Net positive suction head required [m], the NPSH3 off the pump's
+        /// data sheet (M50, docs/DESIGN.md §55): declared, the pump loses head
+        /// as its suction nears the liquid's bubble pressure, 3% of it where the
+        /// margin equals this number. Absent: the pump delivers its whole curve
+        /// whatever its suction reads, as before M50. Needs a thermo model with a
+        /// bubble pressure, and a liquid — both refused at load otherwise.
+        #[serde(default)]
+        npsh_required_m: Option<f64>,
     },
     Valve {
         kv: f64,

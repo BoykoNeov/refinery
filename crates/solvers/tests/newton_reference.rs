@@ -145,6 +145,7 @@ fn pump_drives_flow_between_equal_pressures() {
                 h0: Meter(40.0),
                 a: 5.0e3,
                 on,
+                suction: None,
             },
         ));
         let snk = g.add_node(node(
@@ -279,6 +280,7 @@ fn floating_subnetwork_with_pump_reports_zero_flow() {
             h0: Meter(50.0),
             a: 1e3,
             on: true, // running pump inside the dead subnetwork
+            suction: None,
         },
     ));
     let dead = g.add_node(node("dead", NodeKind::Junction)); // dead-ended, no sink
@@ -380,6 +382,7 @@ fn pump_wrong_degree_is_an_error() {
             h0: Meter(10.0),
             a: 1e3,
             on: true,
+            suction: None,
         },
     ));
     g.add_pipe(src, pmp, pipe("in", 5.0, 0.1));

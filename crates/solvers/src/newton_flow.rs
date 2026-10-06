@@ -422,7 +422,10 @@ fn assemble(
         }
         // The relief opening's share of `∂ṁ/∂P_src`, which `g` cannot carry
         // because the branch froze the opening. Source column only.
-        let opening_term = mdot * c.relief_opening_log_slope;
+        // A cavitating pump's head moves with its own node's pressure the same
+        // way (M50, §55), so its share joins the relief's: source column only,
+        // and zero on every other edge.
+        let opening_term = mdot * c.relief_opening_log_slope + c.suction_share(dp, eps);
         if opening_term != 0.0 {
             if let Some(s) = si {
                 jac[s][s] -= opening_term;

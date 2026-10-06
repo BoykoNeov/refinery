@@ -277,10 +277,11 @@ impl SimpleFlowSolver {
                 // the grading below takes it: what the bracketed solve stops on.
                 let mut scale = 0.0f64;
                 for &(eid, incoming) in &incident[&nid] {
-                    // A check valve's edge is read FRESH, at the pressures this
-                    // sweep has already moved (`fresh_check_edge`, §33).
+                    // A check valve's edge, and a cavitating pump's, is read
+                    // FRESH, at the pressures this sweep has already moved
+                    // (`fresh_edge`, §33, §55).
                     let fresh;
-                    let c = match fresh_check_edge(graph, eid, slate, previous_states, &pressures) {
+                    let c = match fresh_edge(graph, eid, slate, previous_states, &pressures) {
                         Ok(Some(f)) => {
                             fresh = f;
                             &fresh
@@ -296,6 +297,12 @@ impl SimpleFlowSolver {
                     let dp = pressures[&c.src] - pressures[&c.tgt];
                     let mdot = c.rho * c.branch.flow(dp, self.eps_dp);
                     g_sum += c.conductance(dp, self.eps_dp); // ≥ 0
+                                                             // A cavitating pump's head moves with its own node's
+                                                             // pressure (M50, §55): that share of the slope is this
+                                                             // node's only when it is the pump.
+                    if c.src == nid {
+                        g_sum += c.suction_share(dp, self.eps_dp);
+                    }
                     imbalance += if incoming { mdot } else { -mdot };
                     scale = scale.max(mdot.abs());
                 }
@@ -356,7 +363,28 @@ impl SimpleFlowSolver {
                         (graph, slate, previous_states),
                     )
                 };
-                let mut step = armijo_step(full, imbalance, &mut residual_at);
+                // **A cavitating pump's own node is solved on its bracket FIRST**
+                // (M50, docs/DESIGN.md §55). Its head is flat at the top of the
+                // curve and flat at zero, with a knee between, so a Newton step
+                // from the flat top overshoots the knee into the dead zone — and
+                // the ladder ACCEPTS it, the residual having fallen a little. The
+                // group step then shifts the node back, and the pair cycles for
+                // ever (measured: 5 000 sweeps on the M50 demo's second tick).
+                // The node's imbalance is still monotone in its own pressure, so a
+                // full step whose residual changes sign brackets its root.
+                let pump_node = incident[&nid]
+                    .iter()
+                    .any(|(eid, incoming)| !*incoming && compiled[eid].pump_suction.is_some());
+                let mut step = if pump_node {
+                    match bracketed_step(full, imbalance, &mut residual_at, |r| {
+                        meets_node_bar(r, scale, self.tol_abs_kg_s, self.tol_rel)
+                    }) {
+                        Ok(0.0) => armijo_step(full, imbalance, &mut residual_at),
+                        other => other,
+                    }
+                } else {
+                    armijo_step(full, imbalance, &mut residual_at)
+                };
                 // **When the ladder refuses every step on a node that is NOT
                 // converged, solve the node's own equation on the bracket**
                 // (M45.1, docs/DESIGN.md §50). A check valve shut against a
@@ -757,6 +785,11 @@ fn group_imbalance(
             let mdot = c.rho * c.branch.flow(dp, eps_dp);
             imbalance += if incoming { mdot } else { -mdot };
             slope += c.conductance(dp, eps_dp);
+            // The pump's suction share moves with the group only when the pump
+            // is in it (M50, §55); `other` is outside, so that is `c.src == nid`.
+            if c.src == nid {
+                slope += c.suction_share(dp, eps_dp);
+            }
         }
         if let Some(cap) = capacitive.get(&nid) {
             let (term, accumulation_slope) = accumulation(cap, at(nid), dt);
@@ -881,7 +914,7 @@ fn build_groups(
 /// via the SAME `network::accumulation`, and the edge flows come from the SAME
 /// frozen `compiled` coefficients the step was differentiated against — except a
 /// check valve's edge, which the step differentiated FRESH and which is
-/// therefore recompiled at the trial too (`fresh_check_edge`, M30).
+/// therefore recompiled at the trial too (`fresh_edge`, M30).
 #[allow(clippy::too_many_arguments)]
 fn node_imbalance_at(
     nid: NodeId,
@@ -900,7 +933,7 @@ fn node_imbalance_at(
     let mut trial_pressures: Option<BTreeMap<NodeId, f64>> = None;
     for &(eid, incoming) in incident {
         let fresh;
-        let c = if is_check_edge(graph, eid) {
+        let c = if is_fresh_edge(graph, eid) {
             let at_trial = trial_pressures.get_or_insert_with(|| {
                 let mut t = pressures.clone();
                 t.insert(nid, p_trial);
@@ -921,14 +954,24 @@ fn node_imbalance_at(
     Ok(imbalance)
 }
 
-/// True for the outlet edge of a check valve: the one edge whose opening is a
-/// function of its own drop (docs/DESIGN.md §33).
-fn is_check_edge(graph: &PlantGraph, eid: EdgeId) -> bool {
+/// True for an edge the node-wise sweep reads FRESH: the outlet edge of a check
+/// valve, whose opening is a function of its own drop (docs/DESIGN.md §33), and
+/// of a pump with a suction limit, whose head is a function of its own node's
+/// pressure (M50, §55).
+fn is_fresh_edge(graph: &PlantGraph, eid: EdgeId) -> bool {
     let (src, _) = graph.endpoints(eid);
-    matches!(graph.node(src).kind, NodeKind::CheckValve { .. })
+    matches!(
+        graph.node(src).kind,
+        NodeKind::CheckValve { .. }
+            | NodeKind::Pump {
+                suction: Some(_),
+                ..
+            }
+    )
 }
 
-/// A check valve's edge compiled at `pressures`, or `None` for any other edge.
+/// A check valve's or a cavitating pump's edge compiled at `pressures` (see
+/// `is_fresh_edge`), or `None` for any other edge.
 ///
 /// **The node-wise sweep reads a check valve fresh, where it reads every other
 /// edge off the coefficients frozen at the top of the sweep** (M30,
@@ -937,16 +980,18 @@ fn is_check_edge(graph: &PlantGraph, eid: EdgeId) -> bool {
 /// search judges a Newton step on the true function against a different one —
 /// and on the M30 fixture each sweep then made about a third of the progress it
 /// should, ~11 sweeps a tick against 3 for a plain valve. M21's group step
-/// recompiles its trials for the same reason. Scoped to check valves so every
-/// plant without one sweeps bit for bit as before.
-fn fresh_check_edge(
+/// recompiles its trials for the same reason. A pump with a suction limit is
+/// the same case (M50, §55): its head reads its own node's pressure, and the
+/// node step's slope carries that share (`CompiledEdge::suction_share`). Scoped
+/// to those two so every plant without one sweeps bit for bit as before.
+fn fresh_edge(
     graph: &PlantGraph,
     eid: EdgeId,
     slate: &Slate,
     previous_states: &NodeStates,
     pressures: &BTreeMap<NodeId, f64>,
 ) -> Result<Option<CompiledEdge>, SimError> {
-    if !is_check_edge(graph, eid) {
+    if !is_fresh_edge(graph, eid) {
         return Ok(None);
     }
     compile_edge(graph, eid, slate, previous_states, pressures).map(Some)

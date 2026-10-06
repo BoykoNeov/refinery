@@ -1,0 +1,107 @@
+# M50 demo plant: a pump that loses head as its suction nears the boiling point.
+#
+# The wired demonstration of docs/DESIGN.md §55 — what cavitation DOES (ledger
+# row B9). `cavitating_pump.toml` (M11) reports its pump boiling while it still
+# delivers its whole curve; that file is a regression anchor and is not edited.
+# This one declares `npsh_required_m`, so its pump pays for a short suction.
+#
+# --- why the plant is shaped like this -------------------------------------
+#
+# 1. THE SUCTION IS SHORT BECAUSE OF FRICTION, NOT HEIGHT. M11's pump sits 25 m
+#    above its supply, so its suction is below the bubble pressure even at zero
+#    flow (measured: 1.33 bar against 1.83) and no flow could rescue it — with
+#    the key it would simply stop. Here the pump is level with its supply and
+#    the 60 m × 80 mm suction line costs pressure only while it flows: at zero
+#    flow the suction has 8.3 m of margin, at full flow it would have none. So
+#    the pump settles where the head it loses and the flow it carries agree —
+#    the classic NPSH flow limit.
+#
+# 2. THE FLOW STOPS ANSWERING THE VALVE. Opening `discharge_valve` past about a
+#    third barely moves the flow: the pump answers more opening with less
+#    head. Hand model (`crates/scenarios/tests/pump_cavitation_reference.rs`):
+#    at the declared 0.6 opening it carries ~11.0 kg/s at ~26% of its head,
+#    where without the key it would carry ~16.5 kg/s with its suction 0.6 bar
+#    BELOW the bubble point. Throttle to 0.2 and it has its whole head back.
+#
+# 3. THE BOILING LAMP SAYS "NO" WHILE THE PUMP LOSES HEAD, AND THAT IS RIGHT.
+#    The suction settles about 0.06 bar ABOVE the bubble pressure, so M11's
+#    `cavitation.cavitating` reads false: the bulk liquid is not boiling. The
+#    impeller eye is lower than the bulk by roughly the NPSH3, and that is where
+#    the vapour forms. `pump_suction.head_fraction` is the number to draw.
+#
+# Same fluid as `cavitating_pump.toml` (hot naphtha at 110 °C, bubble pressure
+# 1.829 bar), so the two files can be read side by side.
+
+[meta]
+name = "pump_cavitation_flow_limit"
+description = "Hot naphtha drawn through a long suction line by a pump that loses head as its suction nears the boiling point."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+# Required by the key: the pump's suction is measured against the liquid's
+# bubble pressure, which `constant` has no way to give.
+thermo = "trouton"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[nodes.rundown_source]
+type = "source"
+pressure_bar = 2.4
+temperature_c = 110.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+# NPSH3 of 3 m: a typical figure for a small process pump at this duty.
+[nodes.feed_pump]
+type = "pump"
+h0_m = 40.0
+a = 800.0
+on = true
+npsh_required_m = 3.0
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 80.0
+opening = 0.6
+
+[nodes.unit_feed]
+type = "sink"
+pressure_bar = 1.5
+temperature_c = 110.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+# The long, narrow suction: what makes the margin depend on the flow.
+[[pipes]]
+name = "suction_line"
+from = "rundown_source"
+to = "feed_pump"
+length_m = 60.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "discharge"
+from = "feed_pump"
+to = "discharge_valve"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "feed_line"
+from = "discharge_valve"
+to = "unit_feed"
+length_m = 25.0
+diameter_m = 0.10

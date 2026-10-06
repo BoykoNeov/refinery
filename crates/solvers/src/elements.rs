@@ -85,6 +85,46 @@ pub fn pump_pressure_rise_dq(q: f64, a: f64, rho: f64, g: f64) -> f64 {
     rho * g * (-2.0 * a * q.abs())
 }
 
+/// `k` in `φ = 1 − exp(−k·σ²)`: chosen so `φ(1) = 0.97` exactly, i.e. the head
+/// has fallen 3% where `NPSHa = NPSH3` — the definition of NPSH3 (ANSI/HI 9.6.1,
+/// "Rotodynamic Pumps — Guideline for NPSH Margin"). `k = ln(1/0.03)`.
+const CAVITATION_K: f64 = 3.506_557_897_319_982;
+
+/// The share of its head curve a cavitating pump delivers (M50,
+/// docs/DESIGN.md §55), from `σ = NPSHa/NPSH3` (dimensionless):
+///
+/// ```text
+/// φ(σ) = 1 − exp(−k·σ²)   for σ > 0,     φ(σ) = 0   for σ ≤ 0
+/// ```
+///
+/// Anchored at the two points the physics fixes and smooth between them: 3%
+/// lost at `NPSH3` (`k` above), and no head at all when the suction stands at
+/// the liquid's bubble pressure (`σ = 0`), where the impeller eye is full of
+/// vapour. Beyond `σ = 1.5` the loss is below 0.04%, and past `σ ≈ 3.24` the
+/// exponential underflows `f64`'s spacing at 1, so a pump with suction to spare
+/// is EXACTLY its old curve. The SHAPE between the anchors is a modelling
+/// choice, not a published curve: real breakdown curves are steeper near
+/// `NPSH3` and pump-specific (Gülich, "Centrifugal Pumps", 3rd ed., §6.2).
+///
+/// C¹ everywhere, which the network's characteristics must be (DESIGN §3a
+/// fork 4): value and slope are both 0 at `σ = 0`.
+pub fn cavitation_head_fraction(sigma: f64) -> f64 {
+    if sigma <= 0.0 {
+        0.0
+    } else {
+        1.0 - (-CAVITATION_K * sigma * sigma).exp()
+    }
+}
+
+/// `dφ/dσ` of [`cavitation_head_fraction`]: `2·k·σ·exp(−k·σ²)`, 0 for `σ ≤ 0`.
+pub fn cavitation_head_fraction_dsigma(sigma: f64) -> f64 {
+    if sigma <= 0.0 {
+        0.0
+    } else {
+        2.0 * CAVITATION_K * sigma * (-CAVITATION_K * sigma * sigma).exp()
+    }
+}
+
 /// Series-composable branch characteristic covering every M1 hydraulic
 /// element. Each is affine in `Q·|Q|`:  `dp = alpha·Q·|Q| + beta`, with
 /// `dp = P_upstream − P_downstream` [Pa], `Q` = volumetric flow [m³/s].

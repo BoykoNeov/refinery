@@ -10,18 +10,18 @@
 //! physics or the boundary classification.
 
 use crate::elements::{
-    check_opening, check_opening_slope, fold_gas_valve, gas_orifice, pipe_resistance,
-    relief_opening, relief_opening_slope, specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND,
-    ORIFICE_CD,
+    cavitation_head_fraction, cavitation_head_fraction_dsigma, check_opening, check_opening_slope,
+    fold_gas_valve, gas_orifice, pipe_resistance, relief_opening, relief_opening_slope,
+    specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
 };
 use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    Blowdown, EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, TankState,
+    Blowdown, EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, PumpSuction, TankState,
 };
-use refinery_core::traits::{HydraulicSolution, SolveDiagnostics, StarvedTank};
-use refinery_core::units::{KgPerSec, Pascal, Seconds, Watt, G, P_ATM};
+use refinery_core::traits::{HydraulicSolution, PumpSuctionState, SolveDiagnostics, StarvedTank};
+use refinery_core::units::{KgPerSec, Meter, Pascal, Seconds, Watt, G, P_ATM};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Valve openings below this snap to fully closed, so a valve "cracked to
@@ -78,6 +78,29 @@ pub struct CompiledEdge {
     /// fully open disc to shut, where its slope leaves the Jacobian. `None` on
     /// every edge that is not a check valve's outlet.
     pub check_band: Option<CheckBand>,
+    /// A cavitating pump's head at the iterate this edge was compiled at, and
+    /// how the branch moves with the pump's own suction pressure (M50,
+    /// docs/DESIGN.md §55). `None` on every edge that does not leave a pump with
+    /// a suction limit and a bubble pressure to read.
+    pub pump_suction: Option<PumpSuctionSlope>,
+}
+
+/// A cavitating pump's outlet branch at one iterate (M50, docs/DESIGN.md §55).
+///
+/// The pump delivers `φ·H(Q)`, so the branch's pump share is `φ·ρ·g·a` in `α`
+/// and `−φ·ρ·g·h0` in `β`, both frozen at the compile iterate's `φ`. The two
+/// slopes are what that freezing hides: how `α` and `β` move with the pressure
+/// at the pump's own node, through `φ(NPSHa)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PumpSuctionSlope {
+    /// Net positive suction head available [m] at the iterate.
+    pub npsh_available: f64,
+    /// `φ`, the share of the curve's head delivered, in `[0, 1]`.
+    pub head_fraction: f64,
+    /// `∂α/∂P_src` [Pa/(m³/s)² per Pa].
+    pub dalpha_dp: f64,
+    /// `∂β/∂P_src` [Pa/Pa], never positive: more suction, more head.
+    pub dbeta_dp: f64,
 }
 
 /// Where a check valve stands in its band (M49, docs/DESIGN.md §54).
@@ -113,6 +136,29 @@ impl CompiledEdge {
         } else {
             frozen
         }
+    }
+
+    /// The share of `∂ṁ/∂P_src` [kg/(s·Pa)] that a cavitating pump's head adds
+    /// to the edge's `conductance` (M50, docs/DESIGN.md §55): the pump's head
+    /// moves with the pressure at its own node, which is this edge's SOURCE
+    /// alone, so — like a relief valve's opening — it belongs in the source's
+    /// column only. `0.0` on every other edge.
+    ///
+    /// From `Q = s(dp − β)/√α`: `∂Q/∂β = −dQ/d(dp)` and `∂Q/∂α = −Q/(2α)`. The
+    /// ONE owner of that sum, read by Newton's assembly and by the game solver's
+    /// node step and group step alike: a pump in partial cavitation moves its
+    /// flow many times harder with its suction than its frozen conductance says,
+    /// and a node step without it overshoots, as a check valve's did (§33).
+    pub fn suction_share(&self, dp: f64, eps: f64) -> f64 {
+        let Some(s) = self.pump_suction else {
+            return 0.0;
+        };
+        if s.dalpha_dp == 0.0 && s.dbeta_dp == 0.0 {
+            return 0.0;
+        }
+        let dq_ddp = self.branch.flow_ddp(dp, eps);
+        let q = self.branch.flow(dp, eps);
+        self.rho * (-dq_ddp * s.dbeta_dp - q * s.dalpha_dp / (2.0 * self.branch.alpha))
     }
 }
 
@@ -518,6 +564,7 @@ pub fn compile_edge(
             relief_opening_log_slope: 0.0,
             check_opening_log_slope: 0.0,
             check_band: None,
+            pump_suction: None,
         });
     }
     let upwind_node = if pressures[&src] >= pressures[&tgt] {
@@ -584,6 +631,7 @@ pub fn compile_edge(
             relief_opening_log_slope: 0.0,
             check_opening_log_slope: 0.0,
             check_band: None,
+            pump_suction: None,
         });
     }
 
@@ -612,11 +660,45 @@ pub fn compile_edge(
     // A check valve's `(snapped opening, d opening / dS)`, likewise.
     let mut check: Option<(f64, f64)> = None;
     let mut check_band: Option<CheckBand> = None;
+    let mut pump_suction: Option<PumpSuctionSlope> = None;
 
     match &graph.node(src).kind {
-        NodeKind::Pump { h0, a, on } => {
+        NodeKind::Pump { h0, a, on, suction } => {
             let h0_eff = if *on { h0.value() } else { 0.0 };
-            branch = branch.in_series(QuadraticBranch::pump(h0_eff, *a, rho, G));
+            match suction {
+                // A cavitating pump delivers `φ·H(Q)` (M50, docs/DESIGN.md §55):
+                // its whole curve scaled, so the head is down 3% at NPSH3 at
+                // EVERY flow, which is how NPSH3 is measured — at constant flow.
+                // `NPSHa` reads the pump's OWN node: its suction while the flow
+                // runs forward. In reverse that node is the pump's outlet, and
+                // this fidelity does not refuse reverse flow through a pump
+                // (`pump_pressure_rise`), so it is read there all the same — the
+                // relief spring's convention, a pressure at the device itself.
+                // An off pump has no head to lose and skips it.
+                Some(PumpSuction {
+                    npsh_required,
+                    bubble_pressure: Some(bubble),
+                }) if *on => {
+                    let rho_g = rho * G;
+                    let npsh_available = (pressures[&src] - bubble.value()) / rho_g;
+                    let sigma = npsh_available / npsh_required.value();
+                    let head_fraction = cavitation_head_fraction(sigma);
+                    let dsigma_dp = 1.0 / (rho_g * npsh_required.value());
+                    let dphi_dp = cavitation_head_fraction_dsigma(sigma) * dsigma_dp;
+                    let pump = QuadraticBranch::pump(h0_eff, *a, rho, G);
+                    branch = branch.in_series(QuadraticBranch {
+                        alpha: head_fraction * pump.alpha,
+                        beta: head_fraction * pump.beta,
+                    });
+                    pump_suction = Some(PumpSuctionSlope {
+                        npsh_available,
+                        head_fraction,
+                        dalpha_dp: dphi_dp * pump.alpha,
+                        dbeta_dp: dphi_dp * pump.beta,
+                    });
+                }
+                _ => branch = branch.in_series(QuadraticBranch::pump(h0_eff, *a, rho, G)),
+            }
         }
         // A relief valve IS a valve here — same coefficient, same ISA gas law,
         // same fold — and differs only in where `opening` comes from: the plant
@@ -737,6 +819,7 @@ pub fn compile_edge(
         relief_opening_log_slope,
         check_opening_log_slope,
         check_band,
+        pump_suction,
     })
 }
 
@@ -1920,6 +2003,10 @@ pub struct EdgeResults {
     /// `max |ṁ|` over all edges [kg/s] — the scale the relative convergence
     /// tolerance is measured against.
     pub throughput: f64,
+    /// Each cavitating pump's suction, read off the compile that carried the
+    /// flows above (M50, docs/DESIGN.md §55). See
+    /// `HydraulicSolution::pump_suction`.
+    pub pump_suction: BTreeMap<NodeId, PumpSuctionState>,
 }
 
 /// Mass flow (kg/s) and frictional dissipation (W) per edge in graph direction;
@@ -1981,8 +2068,20 @@ pub fn edge_flows(
     let mut mass_flow = BTreeMap::new();
     let mut dissipation = BTreeMap::new();
     let mut throughput = 0.0f64;
+    let mut pump_suction = BTreeMap::new();
     for eid in graph.edge_ids() {
         let c = &compiled[&eid];
+        if let Some(s) = c.pump_suction {
+            if anchored.contains(&c.src) {
+                pump_suction.insert(
+                    c.src,
+                    PumpSuctionState {
+                        npsh_available: Meter(s.npsh_available),
+                        head_fraction: s.head_fraction,
+                    },
+                );
+            }
+        }
         let mdot = if is_column_draw_edge(graph, eid) || graph.pipe(eid).leak.is_engine_written() {
             0.0
         } else if anchored.contains(&c.src) && anchored.contains(&c.tgt) {
@@ -2008,6 +2107,7 @@ pub fn edge_flows(
         mass_flow,
         dissipation,
         throughput,
+        pump_suction,
     }
 }
 
@@ -2121,6 +2221,13 @@ pub fn finalize(
             });
         }
     }
+    for (nid, suction) in &edges.pump_suction {
+        if !suction.npsh_available.value().is_finite() || !suction.head_fraction.is_finite() {
+            return Err(SimError::NonFiniteState {
+                location: format!("{nid:?} pump suction"),
+            });
+        }
+    }
     Ok(HydraulicSolution {
         node_pressure,
         edge_mass_flow: edges.mass_flow,
@@ -2134,5 +2241,6 @@ pub fn finalize(
         // does not know whether it will be kept (`solve_with_active_anchoring`).
         starved: BTreeMap::new(),
         vessel_residual: BTreeMap::new(),
+        pump_suction: edges.pump_suction,
     })
 }

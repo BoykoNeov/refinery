@@ -391,6 +391,7 @@ fn mid_node(m: &Mid, i: usize, fluid: &Fluid) -> Node {
             h0: Meter(h0),
             a,
             on,
+            suction: None,
         },
         Mid::Valve { cv, opening } => NodeKind::Valve {
             cv_max: valve_cv(cv, fluid),
@@ -655,6 +656,7 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
                         h0: Meter(*h0),
                         a: *a,
                         on: *on,
+                        suction: None,
                     },
                     MidDevice::Valve { cv, opening } => NodeKind::Valve {
                         cv_max: valve_cv(*cv, fluid),

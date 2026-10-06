@@ -10,7 +10,7 @@ use crate::error::SimError;
 use crate::graph::{
     CascadeSpec, ColumnDraw, ControlAction, ControlledValue, EdgeId, NodeId, PlantGraph,
 };
-use crate::units::{JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt};
+use crate::units::{JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerSec, Meter, Pascal, Seconds, Watt};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -56,6 +56,27 @@ pub struct HydraulicSolution {
     /// with no vessel.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub vessel_residual: BTreeMap<NodeId, KgPerSec>,
+    /// What cavitation left each pump that declares a suction limit, at the
+    /// accepted solution (M50, docs/DESIGN.md §55). Data across the seam, like
+    /// `edge_dissipation`: the head curve is a fact about the solver's element
+    /// physics, so `core` reports it and never recomputes it.
+    ///
+    /// Present only on a pump with `suction` and a bubble pressure to read —
+    /// so empty on every plant before M50, and skipped in serialization then.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pump_suction: BTreeMap<NodeId, PumpSuctionState>,
+}
+
+/// One pump's suction at a solution (M50, docs/DESIGN.md §55).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PumpSuctionState {
+    /// Net positive suction head available [m]: `(P_suction − P_bubble)/(ρ·g)`,
+    /// negative when the suction stands below the bubble pressure.
+    pub npsh_available: Meter,
+    /// The share of its curve's head the pump delivers, in `[0, 1]`
+    /// (dimensionless): 1 with suction to spare, 0.97 at `NPSHa = NPSH3`, 0 at
+    /// and below the bubble pressure.
+    pub head_fraction: f64,
 }
 
 /// What the solve did with one starved tank (docs/DESIGN.md §28 fork 3).

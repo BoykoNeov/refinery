@@ -115,7 +115,16 @@ pub enum NodeKind {
     /// "gas Cv" out of M5.4. A fire still reaches it through `Node::heat_input`.
     Vessel(VesselState),
     /// Centrifugal pump: head curve H(Q) = h0 - a·Q² (Q in m³/s, H in m).
-    Pump { h0: Meter, a: f64, on: bool },
+    Pump {
+        h0: Meter,
+        a: f64,
+        on: bool,
+        /// What cavitation costs this pump (M50, docs/DESIGN.md §55). Absent:
+        /// the pump delivers its whole curve whatever its suction reads, and the
+        /// wire is what it was before M50.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suction: Option<PumpSuction>,
+    },
     /// Control valve, ISA-style: Q = Cv_eff(opening)·sqrt(dP/SG).
     /// `cv_max` in SI-consistent form (m³/s at 1 Pa dP for SG=1) — the
     /// scenario loader converts from customary Cv units.
@@ -704,6 +713,31 @@ impl Blowdown {
         };
         Blowdown { lifted, ..self }
     }
+}
+
+/// A pump's suction limit (M50, docs/DESIGN.md §55, ledger row B9). See
+/// `NodeKind::Pump::suction`.
+///
+/// The pump delivers `φ·H(Q)`, where `φ` falls from 1 to 0 as the net positive
+/// suction head available, `NPSHa = (P_suction − P_bubble)/(ρ·g)`, falls from
+/// well above `npsh_required` to zero. The curve is the solver's
+/// (`elements::cavitation_head_fraction`); this struct holds what it reads.
+///
+/// `bubble_pressure` is written by the engine ONLY, at the top of each tick,
+/// from the cavitation criterion of the last tick (the pump's own liquid at its
+/// own resolved temperature), and read by the solve as a fixed number — the
+/// relief latch's arrangement (`Blowdown`). `None` before the first tick and
+/// whenever the last tick had no criterion at this pump (a gas): the pump then
+/// delivers its whole curve.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PumpSuction {
+    /// Net positive suction head required [m]: the `NPSHa` at which the pump's
+    /// head has fallen 3% (ANSI/HI 9.6.1's NPSH3). Positive, enforced at load.
+    pub npsh_required: Meter,
+    /// Bubble pressure [Pa] of the liquid at this pump, as the last tick left
+    /// it. The solve this tick reads it; the engine moves it between ticks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bubble_pressure: Option<Pascal>,
 }
 
 /// A capacitive gas vessel's inventory. See `NodeKind::Vessel`.

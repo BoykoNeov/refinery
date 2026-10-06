@@ -14,7 +14,7 @@ use crate::graph::{
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
-    NodeSnapshot, RestartBar, Snapshot, TripSnapshot, TripStop,
+    NodeSnapshot, PumpSuctionSnapshot, RestartBar, Snapshot, TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, ReactionModel, SeparationModel,
@@ -806,6 +806,13 @@ impl Engine {
         //     trip writes pumps, valves and duties and a latch reads only a
         //     pressure, so the order between them is free.
         self.run_relief_latches();
+
+        // 0a‴. Pump suctions (M50, docs/DESIGN.md §55). Each pump with a suction
+        //     limit takes the bubble pressure the last tick's cavitation
+        //     criterion found at it, and the solve below reads it as a fixed
+        //     number — the relief latch's arrangement. Reads only the last
+        //     tick's report, so its order among these passes is free.
+        self.run_pump_suctions();
 
         // 0a′. Damage the plant does to itself (M37, docs/DESIGN.md §42). A
         //     furnace whose coil stands at or past its tubes' limit bursts them,
@@ -1946,6 +1953,28 @@ impl Engine {
         }
     }
 
+    /// Hand every pump with a suction limit the bubble pressure of its own liquid
+    /// from the last tick's cavitation criterion (M50, docs/DESIGN.md §55):
+    /// `None` before the first tick, and wherever the last tick had no criterion
+    /// at the pump — a gas, which does not cavitate. The load refuses the key on
+    /// a plant whose thermo model has no bubble pressure, so that is not a third
+    /// way to `None`.
+    fn run_pump_suctions(&mut self) {
+        for nid in self.graph.node_ids().collect::<Vec<_>>() {
+            let bubble = self
+                .last_cavitation
+                .get(&nid)
+                .map(|c| Pascal(c.bubble_pressure_pa));
+            if let NodeKind::Pump {
+                suction: Some(suction),
+                ..
+            } = &mut self.graph.node_mut(nid).kind
+            {
+                suction.bubble_pressure = bubble;
+            }
+        }
+    }
+
     fn run_trips(&mut self) -> Result<(), SimError> {
         if self.graph.trips().is_empty() {
             // Every plant written before M22 takes this exit, which is why they
@@ -2866,6 +2895,13 @@ impl Engine {
                     // three different sentences a frontend must read as
                     // "unknown" — see `NodeSnapshot::cavitation`.
                     cavitation: self.last_cavitation.get(&id).copied(),
+                    // The solve's own report — see `NodeSnapshot::pump_suction`.
+                    pump_suction: sol.and_then(|s| s.pump_suction.get(&id)).map(|s| {
+                        PumpSuctionSnapshot {
+                            npsh_available_m: s.npsh_available.value(),
+                            head_fraction: s.head_fraction,
+                        }
+                    }),
                     // The solve's own verdict, never the tank's mass — see
                     // `NodeSnapshot::running_dry`.
                     running_dry: sol.is_some_and(|s| s.starved.contains_key(&id)),

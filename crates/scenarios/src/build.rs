@@ -11,8 +11,8 @@ use refinery_core::graph::{
     Actuator, Blowdown, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode,
     ControlledValue, EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling, LeakRole, LoopId,
     MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe, PlantGraph,
-    SetpointRange, TankState, Trip, TripAction, TripDirection, TripId, TripReset, TripState,
-    TubeState, VesselState,
+    PumpSuction, SetpointRange, TankState, Trip, TripAction, TripDirection, TripId, TripReset,
+    TripState, TubeState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -31,8 +31,8 @@ use crate::schema::{
 };
 use crate::validate::{
     plant_phases, require_blowdown_cushion, require_compatible_fidelity, require_declared_iff_used,
-    require_gas_valve_x_t, seed_component_index, validate_node_def, validate_pipe_def,
-    validate_topology,
+    require_gas_valve_x_t, require_pump_suction_answerable, seed_component_index,
+    validate_node_def, validate_pipe_def, validate_topology,
 };
 
 /// Build a runnable engine from a scenario. Steps:
@@ -273,6 +273,11 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
             )))
         }
     };
+
+    // Step 5: a pump's suction limit needs a liquid and a thermo model that has
+    // a bubble pressure (M50, docs/DESIGN.md §55) — the first check that needs
+    // the built model rather than its name.
+    require_pump_suction_answerable(&graph, &phases, thermo.as_ref(), &slate)?;
 
     let config = EngineConfig {
         dt: refinery_core::units::Seconds(scenario.simulation.dt),
@@ -3116,10 +3121,30 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             vessel.mass = Kg(bar_to_pa(*pressure_bar).value() * vessel.capacitance(slate));
             NodeKind::Vessel(vessel)
         }
-        NodeDef::Pump { h0_m, a, on } => NodeKind::Pump {
+        NodeDef::Pump {
+            h0_m,
+            a,
+            on,
+            npsh_required_m,
+        } => NodeKind::Pump {
             h0: Meter(*h0_m),
             a: *a,
             on: *on,
+            // The number is checked here; whether the plant can give the pump a
+            // bubble pressure, and whether it pumps a liquid, once the thermo
+            // model and the topology exist (`require_pump_suction_answerable`).
+            suction: match npsh_required_m {
+                None => None,
+                Some(n) if n.is_finite() && *n > 0.0 => Some(PumpSuction {
+                    npsh_required: Meter(*n),
+                    bubble_pressure: None,
+                }),
+                Some(n) => {
+                    return Err(SimError::Scenario(format!(
+                        "pump '{name}' has npsh_required_m = {n}, which must be a positive                          number of metres: the suction head at which the pump has lost 3%                          of its head (docs/DESIGN.md §55)."
+                    )))
+                }
+            },
         },
         // `x_t` is carried through unvalidated HERE and checked in
         // `require_gas_valve_x_t` instead: whether a valve is in gas service is a

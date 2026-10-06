@@ -211,6 +211,23 @@ pub struct NodeSnapshot {
     /// both made.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cavitation: Option<CavitationSnapshot>,
+    /// What cavitation is costing this pump (M50, docs/DESIGN.md §55): its net
+    /// positive suction head available and the share of its curve's head it
+    /// delivers.
+    ///
+    /// **It can disagree with `cavitation`, and should.** `cavitation` compares
+    /// the BULK suction pressure with the bubble pressure; a pump loses head
+    /// before that, because the liquid accelerating into the impeller eye drops
+    /// below its bulk pressure — which is what `NPSH3` measures. So a pump can
+    /// read `cavitating: false` here and deliver a quarter of its head.
+    ///
+    /// **Absent** on every pump that declares no `npsh_required_m`, on every node
+    /// that is not a pump, and on the first tick, whose solve has no bubble
+    /// pressure from a previous tick to read — the pump then delivers its whole
+    /// curve. Skipped when absent, so every plant without the key publishes the
+    /// bytes it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pump_suction: Option<PumpSuctionSnapshot>,
     /// This tank ran dry in the last tick's solve: the network drew more than it
     /// held, so the solve took everything left as the tank's supply and from then
     /// on the tank passes its feed straight through (M24, docs/DESIGN.md §28).
@@ -334,6 +351,17 @@ pub struct CavitationSnapshot {
     pub bubble_pressure_pa: f64,
     /// `pressure_pa < bubble_pressure_pa`: the engine's own verdict.
     pub cavitating: bool,
+}
+
+/// A pump's suction at the last solve — see [`NodeSnapshot::pump_suction`]
+/// (M50, docs/DESIGN.md §55).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PumpSuctionSnapshot {
+    /// Net positive suction head available [m]; negative below the bubble
+    /// pressure.
+    pub npsh_available_m: f64,
+    /// Share of the curve's head delivered, in `[0, 1]`.
+    pub head_fraction: f64,
 }
 
 /// A column's two emergent heat duties [W] — see `NodeSnapshot::column_duty`.

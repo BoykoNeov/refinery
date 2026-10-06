@@ -7,6 +7,7 @@
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::error::SimError;
 use refinery_core::graph::{Node, NodeId, NodeKind, PlantGraph};
+use refinery_core::traits::ThermoModel;
 use refinery_core::units::T_AMBIENT;
 use std::collections::BTreeMap;
 
@@ -703,6 +704,53 @@ pub(crate) fn require_blowdown_cushion(
         if !cushioned {
             return Err(SimError::Scenario(format!(
                 "relief valve '{}' declares blowdown_bar with no gas vessel behind its                  inlet. A blowdown valve pops to full lift and holds it until its inlet                  falls to reseat; with nothing to store pressure behind it, full lift drops                  the inlet below reseat at once and the valve flips open and shut every                  tick. Put a vessel on its inlet side, or remove blowdown_bar                  (docs/DESIGN.md §53).",
+                node.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A pump's `npsh_required_m` needs a liquid to lose head in and a thermo model
+/// that can say where that liquid boils (M50, docs/DESIGN.md §55). Refused in
+/// gas service — a vapour does not cavitate, and the key would be a number
+/// nothing reads — and on a plant whose `ThermoModel` has no bubble pressure,
+/// which the model itself is asked rather than its name checked: it answers
+/// `SimError::Scenario`, the refusal §13 already gives such a model. Without the
+/// refusal the pump would silently deliver its whole curve forever, which is
+/// the very disagreement the key exists to end.
+///
+/// Runs once the thermo model exists, and takes the service verdict from
+/// `plant_phases`, as `require_blowdown_cushion` does.
+pub(crate) fn require_pump_suction_answerable(
+    graph: &PlantGraph,
+    phases: &[Phase],
+    thermo: &dyn ThermoModel,
+    slate: &Slate,
+) -> Result<(), SimError> {
+    for nid in graph.node_ids() {
+        let node = graph.node(nid);
+        let NodeKind::Pump {
+            suction: Some(_), ..
+        } = &node.kind
+        else {
+            continue;
+        };
+        if phases[nid.0 as usize] != Phase::Liquid {
+            return Err(SimError::Scenario(format!(
+                "pump '{}' declares npsh_required_m in gas service. A vapour cannot                  cavitate — it is already vapour — so the key would be a number nothing                  reads. Remove npsh_required_m (docs/DESIGN.md §55).",
+                node.name
+            )));
+        }
+        let liquid = (0..slate.len())
+            .map(|i| Composition::pure(slate.len(), i))
+            .find(|c| matches!(c.phase(slate), Ok(Phase::Liquid)));
+        let Some(liquid) = liquid else {
+            continue;
+        };
+        if let Err(SimError::Scenario(why)) = thermo.bubble_pressure(slate, &liquid, T_AMBIENT) {
+            return Err(SimError::Scenario(format!(
+                "pump '{}' declares npsh_required_m, but this plant's thermo model has no                  bubble pressure to measure its suction against ({why}). Select                  thermo = \"trouton\" in [fidelity], or remove npsh_required_m                  (docs/DESIGN.md §55).",
                 node.name
             )));
         }
