@@ -16,6 +16,10 @@
 #            trip on tubes that burst on the trip's own tick: the trip resets, the
 #            furnace stays dark, and the screen says why (the snapshot's
 #            `trip_stop`).
+#   permissive scenarios/furnace_restart_permissive.toml (M44) — a heater fired by
+#            hand behind a feed pump: the tank's overfill trip stops the pump, the
+#            starved heater's tube trip cuts it and resets itself, and the heater
+#            stays dark while the pump's trip is latched — its start permissive.
 #
 # Same rule as plant.gd, and the same reason: this script computes nothing
 # physical. Every number it draws is a snapshot field, every marker on a gauge is
@@ -73,6 +77,17 @@ const PLANTS := {
 		"destination": "hold_tank",
 		"ticks_per_frame": 1,
 	},
+	"permissive":
+	{
+		"scenario": "res://scenarios/furnace_restart_permissive.toml",
+		"title": "Starved heater: the tube trip waits for the pump",
+		"feed": "cool_feed",
+		"outlet_pipe": "heated_line",
+		"destination": "hold_tank",
+		"ticks_per_frame": 1,
+		# The one plant with a pump the scene draws and starts (key K).
+		"pump": "feed_pump",
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks. Each tick is one the
@@ -126,17 +141,31 @@ const AUTO_BURST := {
 	200: ["setpoint_50", "auto"],
 	400: ["quit"],
 }
+## permissive (M44): the tank's overfill trip stops the feed pump at 266; the
+## heater, still fired at 3 MW, starves and its tube trip cuts it at 299, then
+## resets itself at 321 and leaves it dark — the pump's trip is its start
+## permissive (DESIGN §49), and the panel says so. At 400 a person resets the
+## pump's trip, starts the pump and relights the heater at 3 MW.
+const AUTO_PERMISSIVE := {
+	400: ["reset", "pump_on", "duty_3"],
+	500: ["quit"],
+}
 const TIMELINES := {
-	"trip": AUTO_TRIP, "burnout": AUTO_BURNOUT, "autoreset": AUTO_AUTORESET, "burst": AUTO_BURST
+	"trip": AUTO_TRIP,
+	"burnout": AUTO_BURNOUT,
+	"autoreset": AUTO_AUTORESET,
+	"burst": AUTO_BURST,
+	"permissive": AUTO_PERMISSIVE,
 }
 const AUTO_SHOT_TICKS := {
 	"trip": [74, 75, 238, 900, 901, 975],
 	"burnout": [1144, 1145, 1300, 2500],
 	"autoreset": [75, 128, 214, 300, 901, 1001],
 	"burst": [75, 80, 128, 200, 260],
+	"permissive": [266, 299, 321, 400, 450],
 }
 ## Print a `t=` line every this many ticks in a recorded run.
-const PRINT_EVERY := {"trip": 25, "burnout": 100, "autoreset": 25, "burst": 25}
+const PRINT_EVERY := {"trip": 25, "burnout": 100, "autoreset": 25, "burst": 25, "permissive": 25}
 
 ## Step sizes for the keys.
 const DUTY_STEP_W := 2.5e5
@@ -147,6 +176,8 @@ const MAX_TICKS_PER_FRAME := 64
 
 var plant_key := "trip"
 var heater_id := -1
+## -1 on every plant but the one whose entry names a `pump`.
+var pump_id := -1
 var feed_id := -1
 var destination_id := -1
 var outlet_pipe_id := -1
@@ -176,7 +207,7 @@ func _ready() -> void:
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (trip | burnout | autoreset | burst)" % plant_key)
+		_halt("no plant '%s' (trip | burnout | autoreset | burst | permissive)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -201,7 +232,11 @@ func _load(key: String) -> void:
 	feed_id = sim.node_id(plant["feed"])
 	destination_id = sim.node_id(plant["destination"])
 	outlet_pipe_id = sim.edge_id(plant["outlet_pipe"])
+	pump_id = sim.node_id(plant["pump"]) if plant.has("pump") else -1
 	if heater_id < 0 or feed_id < 0 or destination_id < 0 or outlet_pipe_id < 0:
+		_halt("this scenario does not have the names the scene expects")
+		return
+	if plant.has("pump") and pump_id < 0:
 		_halt("this scenario does not have the names the scene expects")
 		return
 
@@ -314,6 +349,8 @@ func _input(event: InputEvent) -> void:
 			_load("autoreset")
 		KEY_4:
 			_load("burst")
+		KEY_5:
+			_load("permissive")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -338,6 +375,8 @@ func _input(event: InputEvent) -> void:
 			_do("patch")
 		KEY_N:
 			_do("new_tubes")
+		KEY_K:
+			_do("toggle_pump")
 	queue_redraw()
 
 
@@ -382,9 +421,9 @@ func _do(action: String) -> void:
 				return
 			var step := SETPOINT_STEP_K if action == "setpoint_up" else -SETPOINT_STEP_K
 			_set_setpoint_k(float(loop["setpoint"]["k"]) + step)
-		"duty_up", "duty_down", "duty_0.5":
-			var duty := 5.0e5
-			if action != "duty_0.5":
+		"duty_up", "duty_down", "duty_0.5", "duty_3":
+			var duty := 3.0e6 if action == "duty_3" else 5.0e5
+			if action == "duty_up" or action == "duty_down":
 				var step := DUTY_STEP_W if action == "duty_up" else -DUTY_STEP_W
 				duty = maxf(0.0, _duty_w() + step)
 			_send(
@@ -395,6 +434,15 @@ func _do(action: String) -> void:
 			_send("patch %s" % PLANTS[plant_key]["outlet_pipe"], {"cmd": "puncture_pipe", "edge": outlet_pipe_id, "area": 0.0})
 		"new_tubes":
 			_send("replace the heater's tubes", {"cmd": "replace_tubes", "node": heater_id})
+		"pump_on", "toggle_pump":
+			if pump_id < 0:
+				_say("this plant has no pump on the screen", true)
+				return
+			var on := action == "pump_on" or not _pump_on()
+			_send(
+				"%s %s" % ["start" if on else "stop", PLANTS[plant_key]["pump"]],
+				{"cmd": "set_pump_on", "node": pump_id, "on": on}
+			)
 
 
 func _set_mode(mode: String) -> void:
@@ -482,14 +530,21 @@ func _trip_stop() -> Variant:
 	return _node(heater_id).get("trip_stop")
 
 
-## The engine's reasons, in words. Only `tubes_burst` goes away by itself, when
-## new tubes are fitted.
+## The engine's reasons, in words. While a trip holds the heater, the last three
+## can still go away: new tubes, or the other trips clearing (M44).
 const BAR_TEXT := {
 	"reset_restarts_nothing": "a trip that held it restarts nothing",
 	"pressed_by_hand": "the emergency stop was pressed",
 	"tubes_burst_during_stop": "the tubes burst during the stop",
 	"tubes_burst": "the tubes are burst: N fits new ones",
+	"trip_about_to_fire": "another trip on it is past its limit",
+	"permissive_not_clear": "a trip it waits for is not clear (see TRIPS)",
 }
+
+
+## Whether the plant's drawn pump runs; false on a plant without one.
+func _pump_on() -> bool:
+	return pump_id >= 0 and bool(_node(pump_id)["kind"]["on"])
 
 
 func _stop_label() -> String:
@@ -619,9 +674,20 @@ func _reset_label(trip: Dictionary) -> String:
 	# A restart is the trips' to give only when nothing bars it (M43): the
 	# heater's stop line in the FURNACE block says whether anything does.
 	if reset["mode"] == "manual_restart":
-		return "reset by hand, restarts unless barred"
+		return "reset by hand, restarts unless barred%s" % _waits_for(trip)
 	var under := "<" if trip["direction"] == "high" else ">"
-	return "resets itself %s %s, restarts unless barred" % [under, _value_text(reset["reset_at"])]
+	return (
+		"resets itself %s %s, restarts unless barred%s"
+		% [under, _value_text(reset["reset_at"]), _waits_for(trip)]
+	)
+
+
+## A trip's start permissives (M44), by name: the trips its restart waits for.
+func _waits_for(trip: Dictionary) -> String:
+	var names := PackedStringArray()
+	for id in trip.get("restart_permissives", []):
+		names.append(_trips()[int(id)]["name"])
+	return "" if names.is_empty() else "; waits for %s" % ", ".join(names)
 
 
 ## The level fraction of a tank destination — plant.gd's rule, from the slate.
@@ -643,6 +709,8 @@ func _readout(tick: int) -> String:
 		trips += "  %s=%s" % [trip["name"], _trip_label(trip)]
 	var loop = _loop()
 	var loop_text := "" if loop == null else "  loop=%s" % loop["mode"]
+	if pump_id >= 0:
+		loop_text += "  pump=%s" % ("on" if _pump_on() else "off")
 	return (
 		"t=%5d  duty=%5.2f MW  coil=%7.2f C  outlet=%6.2f C  flow=%6.2f kg/s  leak=%5.3f kg/s  tubes=%s  fire=%5.2f MW%s%s"
 		% [
@@ -720,7 +788,7 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 624),
-		"P patch   N new tubes   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset   4 burst in a stop",
+		"P patch   N new tubes   K pump   Space pause   [ ] speed   1 trip   2 burn-out   3 self-reset   4 burst   5 pump trip",
 		DIM
 	)
 	if halted != "":
@@ -937,6 +1005,13 @@ func _draw_panel() -> void:
 		for reason in reasons:
 			y += 18
 			_text(Vector2(PANEL_X + 12, y), "- %s" % reason, BAD, 14)
+	if pump_id >= 0:
+		y += 22
+		_text(
+			Vector2(PANEL_X, y),
+			"%-15s%s" % [PLANTS[plant_key]["pump"], "running" if _pump_on() else "STOPPED (K starts it)"],
+			GOOD if _pump_on() else BAD
+		)
 
 	y += 40
 	_text(Vector2(PANEL_X, y), "TRIPS", DIM)

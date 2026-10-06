@@ -328,6 +328,63 @@ fn the_burst_during_a_stop_timeline_tells_its_story() {
     assert_eq!(stop(&screen), Value::Null);
 }
 
+/// `AUTO_PERMISSIVE` (M44): the overfill trip stops the pump, the starved
+/// heater's tube trip cuts it and resets itself, and the heater stays dark for
+/// `permissive_not_clear` until a person resets the pump's trip, starts the
+/// pump and relights it.
+#[test]
+fn the_permissive_timeline_tells_its_story() {
+    let mut screen = Screen::load("furnace_restart_permissive.toml", "cool_feed", "hold_tank");
+    let snap = screen.snap();
+    assert_eq!(snap["trips"][0]["name"], "hold_tank_high_level");
+    assert_eq!(snap["trips"][1]["name"], "tube_skin_high");
+    // The scene's pump and duty commands carry these ids; its reset sends
+    // RESET_SKIN's text, which names trip 0 — here the overfill trip.
+    assert_eq!(screen.session.node_id("feed_pump"), 1, "update PUMP_ON");
+    assert_eq!(screen.heater, 2, "update DUTY_3_MW");
+    const PUMP_ON: &str = r#"{"cmd":"set_pump_on","node":1,"on":true}"#;
+    const DUTY_3_MW: &str = r#"{"cmd":"set_furnace_duty","duty":3000000.0,"node":2}"#;
+    let stop = |s: &Screen| s.heater()["trip_stop"].clone();
+    let pump_on = |s: &Screen| s.snap()["nodes"][1]["kind"]["on"].as_bool().unwrap();
+
+    screen.run_to(266);
+    assert_eq!(screen.trip(0), tripped(266));
+    assert!(!pump_on(&screen));
+    screen.run_to(299);
+    assert_eq!(screen.trip(1), tripped(299));
+    assert_eq!(
+        stop(&screen),
+        serde_json::json!({"status": "held", "barred_by": ["permissive_not_clear"]})
+    );
+
+    // 321: the tube trip resets itself; the heater stays dark, and says why.
+    screen.run_to(321);
+    assert_eq!(screen.trip(1), armed());
+    assert_eq!(screen.duty_w(), 0.0);
+    let not_relit = serde_json::json!({"status": "not_restarted", "at_tick": 321, "barred_by": ["permissive_not_clear"]});
+    assert_eq!(stop(&screen), not_relit);
+    screen.run_to(400);
+    assert_eq!(stop(&screen), not_relit);
+
+    // 400: a person resets the pump's trip, starts the pump, relights.
+    assert_eq!(screen.send(RESET_SKIN), "null");
+    assert_eq!(screen.send(PUMP_ON), "null");
+    assert_eq!(screen.send(DUTY_3_MW), "null");
+    assert_eq!(stop(&screen), Value::Null);
+    let skin_limit_k = screen.snap()["trips"][1]["limit"]["k"].as_f64().unwrap();
+    let mut hottest_k = f64::NEG_INFINITY;
+    while screen.session.tick_index() < 500 {
+        screen.run_to(screen.session.tick_index() + 1);
+        hottest_k = hottest_k.max(screen.coil_k());
+    }
+    assert!(hottest_k < skin_limit_k, "coil reached {hottest_k} K");
+    assert_eq!(screen.duty_w(), 3.0e6);
+    assert!(pump_on(&screen));
+    assert_eq!(screen.trip(0), armed());
+    assert_eq!(screen.trip(1), armed());
+    assert_eq!(stop(&screen), Value::Null);
+}
+
 /// `AUTO_BURNOUT`: the tubes burst by themselves, new tubes are refused on a
 /// coil still past its limit, and accepted once it has cooled.
 #[test]
