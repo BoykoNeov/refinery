@@ -447,6 +447,17 @@ pub struct ControlSnapshot {
     /// field saying it would be a second owner of one fact.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drives: Option<LoopId>,
+    /// The pump this loop holds its valve for, and the opening it holds (M45.1,
+    /// docs/DESIGN.md §50): the file's declaration, static data like `drives`.
+    ///
+    /// **"Holding" is not a field**, for `drives`' reason: the loop holds exactly
+    /// while it is in AUTO and the pump is off, and both are already published —
+    /// `mode` here and the pump's own `kind.on` — and they are what the next
+    /// tick's pass reads. A flag would be a second owner of one fact. **Skipped
+    /// when `None`**, so every loop without the key publishes the bytes it
+    /// always did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_pump_stop: Option<crate::graph::OnPumpStop>,
 }
 
 /// One trip, as a frontend draws it (M22, docs/DESIGN.md §26 fork 8).

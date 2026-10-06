@@ -12,6 +12,38 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M45 is CLOSED (2026-10-06): a loop holds its valve while its pump is
+stopped — `docs/DEFERRED.md` E25 struck.** The user's DECISION: E25 as the next
+slice, told plainly no shipped plant reached it yet; "Controller holds" over a
+trip that parks the valve; and twice, on faults the slice found before
+building, "Fix it first" / "Fix the solver first". DESIGN §50.
+- **A pump started against its shut valve runs** (M45.0): with a check valve
+  between them, the stretch is a dead end — filled it shuts the disc, parked low
+  it opens it — and the active-set loop refused the tick as chatter on both
+  fidelities. The cycle branch now recognises a dead end's tie and stands the
+  stretch at zero drive. M8.0's chatter stub was this tie and is now a relay; the
+  relief arm's refusal floor became a ceiling. Newton's refusal of two reliefs in
+  series (present before) is pinned: A20.
+- **The game solver opens a cracked valve behind a check valve** (M45.1): every
+  fill opening up to 0.3% diverged at 5 000 sweeps on the demo; the node's
+  Newton step was ~400× too long and every step refused. A node the ladder
+  cannot move is now solved by bisection on its bracket: 6–15 sweeps, on
+  Newton's flow. Newton's own stall on the fixture at 1% is pinned: A21.
+- **`on_pump_stop = { pump, output }`** (M45.2): in AUTO, with that pump off, the
+  loop holds its valve and tracks it; the restart ramps (0.0043 kg/s on the
+  first tick against 24.80). Refused on P loops, non-valves and cascades (E29).
+  `ControlSnapshot::on_pump_stop`, skipped when absent.
+- **Demo `tank_level_fill_pump_hold.toml`** (41st file): a self-resetting pump
+  trip restarts the pump four times in 6 000 ticks, each a ramp; its twin
+  without the key surges to 23.6 kg/s every restart and cycles seven times.
+- Gates: `dead_end_disc.rs`, `cracked_valve_disc.rs`, `pump_stop_reference.rs`,
+  gates 9 and 10 of `check_valve_reference.rs`, the relay stub and the A20/A21
+  known defects. Mutations: 9 + 5 + 7, every one caught or uncaught as
+  predicted.
+- 40 plants byte-identical on both fidelities after each slice, 1 new. Release
+  property tests pass; random disc chains converge 392/400 (Newton) and 373/400
+  (game) from 366 and 355. The Godot binding did not change.
+
 **M44 is CLOSED (2026-10-06): a restart asks the trips that do not hold the
 equipment — `docs/DEFERRED.md` E28 struck (its last clause).** The user's
 DECISION: E28's last clause as the next slice; told it was two problems, "Both

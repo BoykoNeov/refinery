@@ -1210,6 +1210,23 @@ impl ControlAction {
     }
 }
 
+/// What a loop does while the pump feeding its valve is stopped (M45.1,
+/// docs/DESIGN.md §50; `docs/DEFERRED.md` E25): in AUTO, with `pump` off, it
+/// writes `output` to its valve every tick and re-seeds its memory against it
+/// — output tracking — so a restart resumes from `output` instead of from a
+/// valve it wound wide open while nothing came through.
+///
+/// Declared by the file, pump and position both: which pump a valve depends on
+/// is not something the loader may infer from the pipes (the E21 lesson), and a
+/// held position is the file's to say, as a trip's `SetValve` is.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct OnPumpStop {
+    /// The pump whose stop the loop holds for.
+    pub pump: NodeId,
+    /// The valve opening it holds, in `[0, 1]`.
+    pub output: f64,
+}
+
 /// One regulating loop: what it measures, what it writes, and how.
 ///
 /// **It lives beside the graph, not on it** (docs/DESIGN.md §10 fork 1). A
@@ -1337,6 +1354,10 @@ pub struct ControlLoop {
     /// ticks at a time while the actuator's authority is still spent. Engine
     /// state; never on the wire.
     pub saturated: Option<ActuatorLimit>,
+    /// What the loop does while the pump feeding its valve is stopped (M45.1,
+    /// docs/DESIGN.md §50). `None` on every loop that does not declare it, which
+    /// then runs exactly as it did before M45.
+    pub on_pump_stop: Option<OnPumpStop>,
 }
 
 /// Which end of its range a loop's actuator is saturated at (docs/DESIGN.md

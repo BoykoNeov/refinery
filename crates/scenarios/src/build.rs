@@ -10,8 +10,9 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{
     Actuator, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode, ControlledValue,
     EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling, LeakRole, LoopId, MeasuredVariable,
-    MeasurementPoint, Node, NodeId, NodeKind, Pipe, PlantGraph, SetpointRange, TankState, Trip,
-    TripAction, TripDirection, TripId, TripReset, TripState, TubeState, VesselState,
+    MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe, PlantGraph, SetpointRange,
+    TankState, Trip, TripAction, TripDirection, TripId, TripReset, TripState, TubeState,
+    VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -26,7 +27,7 @@ use std::collections::BTreeMap;
 
 use crate::schema::{
     bar_to_pa, c_to_k, kv_to_cv_si, ActuatorDef, ComponentDef, ControlDef, ExchangerDef,
-    MeasurementDef, NodeDef, PipeDef, ScenarioFile, TripDef,
+    MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile, TripDef,
 };
 use crate::validate::{
     plant_phases, require_compatible_fidelity, require_declared_iff_used, require_gas_valve_x_t,
@@ -1303,6 +1304,11 @@ fn build_controls(
             Actuator::Loop(_) => f64::NAN,
         };
 
+        let on_pump_stop = match &def.on_pump_stop {
+            None => None,
+            Some(hold) => Some(on_pump_stop(graph, def, actuator, hold)?),
+        };
+
         graph.add_control(ControlLoop {
             name: def.name.clone(),
             measurement_point: point,
@@ -1316,9 +1322,92 @@ fn build_controls(
             last_measurement: measurement,
             last_output,
             saturated: None,
+            on_pump_stop,
         });
     }
     link_cascades(graph, defs)
+}
+
+/// Resolve a loop's `on_pump_stop` (M45.1, docs/DESIGN.md §50), refusing each
+/// way it could load and then not do what it says:
+///
+/// - **a proportional loop**: holding works by re-seeding the loop's memory
+///   against the held opening, and `u = K·e` has none — on restart it would
+///   jump straight to whatever the error asks, wide open after a long stop,
+///   which is the surge the key exists to prevent,
+/// - **an actuator that is not a valve**: a cascade primary writes a setpoint
+///   (its secondary is the loop to hold), and a cooler or furnace has no pump
+///   in its path — a furnace held for its feed pump is a trip's job (M44),
+/// - **an output outside `[0, 1]`**, the range `Command::SetValveOpening`
+///   refuses from a person,
+/// - **a pump name the plant does not declare, or a node that is not a pump.**
+///
+/// A cascade SECONDARY is refused in `link_cascades`, once the links exist.
+fn on_pump_stop(
+    graph: &PlantGraph,
+    def: &ControlDef,
+    actuator: Actuator,
+    hold: &OnPumpStopDef,
+) -> Result<OnPumpStop, SimError> {
+    let name = &def.name;
+    if def.algorithm == "p" {
+        return Err(SimError::Scenario(format!(
+            "control loop '{name}' declares `on_pump_stop` on `algorithm = \"p\"`, which has no \
+             memory to hold. A loop holds by re-seeding its memory against the held opening, so \
+             the restart resumes from there; `u = K·e` would jump straight to what the error \
+             asks — wide open after a long stop, the surge the key exists to prevent \
+             (docs/DESIGN.md §50)"
+        )));
+    }
+    match actuator {
+        Actuator::Loop(_) => {
+            return Err(SimError::Scenario(format!(
+                "control loop '{name}' declares `on_pump_stop` and is a cascade primary: it \
+                 writes a setpoint, not a valve. Holding a valve for a stopped pump belongs on \
+                 the loop that writes the valve (docs/DESIGN.md §50)"
+            )))
+        }
+        Actuator::Node(node) => {
+            if !matches!(graph.node(node).kind, NodeKind::Valve { .. }) {
+                let kind = match graph.node(node).kind {
+                    NodeKind::Cooler { .. } => "cooler",
+                    NodeKind::Furnace { .. } => "furnace",
+                    _ => "node",
+                };
+                return Err(SimError::Scenario(format!(
+                    "control loop '{name}' declares `on_pump_stop` and actuates {} '{}'. Only a \
+                     valve is held for a stopped pump; a furnace starved by its feed pump is cut \
+                     by a trip (docs/DESIGN.md §50, §49)",
+                    kind,
+                    graph.node(node).name
+                )));
+            }
+        }
+    }
+    if !hold.output.is_finite() || !(0.0..=1.0).contains(&hold.output) {
+        return Err(SimError::Scenario(format!(
+            "control loop '{name}' holds its valve at `output = {}` for a stopped pump, which is \
+             not an opening in [0, 1] (docs/DESIGN.md §50)",
+            hold.output
+        )));
+    }
+    let pump = graph.find_node(&hold.pump).ok_or_else(|| {
+        SimError::Scenario(format!(
+            "control loop '{name}' holds for pump '{}', but the plant names no node '{}'",
+            hold.pump, hold.pump
+        ))
+    })?;
+    if !matches!(graph.node(pump).kind, NodeKind::Pump { .. }) {
+        return Err(SimError::Scenario(format!(
+            "control loop '{name}' holds for '{}', which is not a pump: `on_pump_stop` names the \
+             pump whose stop the valve waits out (docs/DESIGN.md §50)",
+            hold.pump
+        )));
+    }
+    Ok(OnPumpStop {
+        pump,
+        output: hold.output,
+    })
 }
 
 /// Build the plant's trips from `[[trips]]`, after every node exists (M22,
@@ -2248,6 +2337,16 @@ fn link_cascades(graph: &mut PlantGraph, defs: &[ControlDef]) -> Result<(), SimE
                 primary.name
             ))
         })?;
+        // A held loop is never a cascade's inner loop (M45.1, docs/DESIGN.md
+        // §50): while it held, its primary would integrate against a setpoint
+        // nothing is using, and the windup the key exists to stop would move up
+        // one level. Refused rather than tracked (ledger E29).
+        if secondary.on_pump_stop.is_some() {
+            return Err(SimError::Scenario(format!(
+                "control loop '{}' declares `on_pump_stop` and is a cascade secondary, driven by                  '{}'. While it held its valve the primary would wind against a setpoint nothing                  uses; a held loop in a cascade is not built (docs/DESIGN.md §50,                  docs/DEFERRED.md E29)",
+                secondary.name, primary.name
+            )));
+        }
         if let Actuator::Loop(third) = secondary.actuator {
             if third == primary_id {
                 return Err(SimError::Scenario(format!(

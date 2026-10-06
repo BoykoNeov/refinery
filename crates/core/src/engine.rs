@@ -2582,6 +2582,31 @@ impl Engine {
             )?;
             sampled.push((measurement, position));
         }
+        // The opening each loop holds for a stopped pump (M45.1, docs/DESIGN.md
+        // §50): in AUTO, with the pump it names off. Read here with everything
+        // else this tick acts on — after the trips, so a pump a trip stopped
+        // this tick is held for from this tick. A held loop is never a cascade
+        // primary or secondary (refused at load), so nothing below asks it.
+        let mut pump_stopped: Vec<Option<f64>> = Vec::with_capacity(sampled.len());
+        for control in self.graph.controls() {
+            let held = match control.on_pump_stop {
+                Some(hold) if control.mode == ControlMode::Auto => {
+                    match self.graph.node(hold.pump).kind {
+                        NodeKind::Pump { on, .. } => (!on).then_some(hold.output),
+                        _ => {
+                            return Err(SimError::Numerical(format!(
+                                "internal: control loop '{}' holds for node '{}', which is not \
+                                 a pump; the loader refuses that (docs/DESIGN.md §50)",
+                                control.name,
+                                self.graph.node(hold.pump).name
+                            )))
+                        }
+                    }
+                }
+                _ => None,
+            };
+            pump_stopped.push(held);
+        }
         // Whether each loop will ACT this tick — AUTO, with something to measure.
         // Taken from pass 1 alone, after the trips have run, so a secondary a trip
         // forced to MANUAL this tick already reads as not acting.
@@ -2658,6 +2683,11 @@ impl Engine {
         for (i, &(measurement, position)) in sampled.iter().enumerate() {
             let control = &mut self.graph.controls_mut()[i];
             if control.actuator.driven_loop().is_some() {
+                continue;
+            }
+            if let Some(output) = pump_stopped[i] {
+                track_stopped_pump(control, measurement, output)?;
+                writes.push((control.actuator, control.max_duty, output));
                 continue;
             }
             if let Some(output) = step_loop(control, measurement, position, false, None, dt)? {
@@ -2888,6 +2918,7 @@ impl Engine {
                 measurement: c.last_measurement,
                 output: c.last_output,
                 drives: c.actuator.driven_loop(),
+                on_pump_stop: c.on_pump_stop,
             })
             .collect();
         // One entry per trip, in declaration order. `measurement` is what the
@@ -3152,6 +3183,31 @@ fn saturation_latch(
         Some(ActuatorLimit::Bottom) if error < 0.0 => Some(ActuatorLimit::Bottom),
         _ => None,
     }
+}
+
+/// One tick of a loop holding its valve for a stopped pump (M45.1,
+/// docs/DESIGN.md §50): the caller writes `output`; here the faceplate shows it
+/// and the memory is re-seeded against it — output tracking, the open
+/// cascade's arm with a declared position in place of a tracked one — so the
+/// tick the pump runs again, the loop resumes from `output` with no surplus
+/// wound up while nothing came through. With nothing to measure the memory is
+/// left alone, as the blind arm of `step_loop` leaves it.
+fn track_stopped_pump(
+    control: &mut ControlLoop,
+    measurement: Option<ControlledValue>,
+    output: f64,
+) -> Result<(), SimError> {
+    control.last_measurement = measurement;
+    if let Some(measurement) = measurement {
+        control.algorithm.seed_from_output(
+            output,
+            measurement,
+            control.setpoint,
+            control.action,
+        )?;
+    }
+    control.last_output = output;
+    Ok(())
 }
 
 fn step_loop(

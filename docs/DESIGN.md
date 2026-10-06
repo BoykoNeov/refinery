@@ -19715,3 +19715,56 @@ open behind the demo's 0.015 bar band — its global line search gives up after
 four iterations at ~51 kg/s of residual, where the game solver answers 8.695
 kg/s and a ten-times-wider band lets Newton answer too. The demo never reaches
 it. Pinned by `known_defect_newton_stalls_on_a_valve_1_percent_open_behind_a_narrow_disc`.
+
+### 50.2 A loop that holds while its pump is stopped (M45.2)
+
+**Interfaces.**
+- `OnPumpStop { pump: NodeId, output: f64 }` and `ControlLoop::on_pump_stop`;
+  the TOML key `on_pump_stop = { pump = "<pump>", output = <opening> }` on a
+  `[[controls]]` entry, both fields required.
+- `ControlSnapshot::on_pump_stop`, skipped when `None`.
+- New demo `tank_level_fill_pump_hold.toml`, the 41st file.
+
+**Forks.**
+
+1. **The loop, not a trip.** A trip that also shuts the valve already works
+   (`SetValve` forces the loop to MANUAL and the restart hands it back through
+   the bumpless transfer — measured on the probe), but it covers only stops a
+   trip makes. The user chose the loop ("Controller holds"): a person's stop
+   is covered too.
+2. **Declared, pump and position.** Which pump a valve depends on is not the
+   loader's to infer from the pipes (E21), and where the valve stands is the
+   file's to say, as a trip's `SetValve` position is. No default.
+3. **Output tracking, not a frozen integral.** Each held tick re-seeds the
+   memory against the held opening with the tick's measurement — the open
+   cascade's arm (§29 fork 4) with a declared position in place of a tracked
+   one — so the restart's first output is the held opening plus one tick's
+   change, not a kick. A missing re-seed is mutation H1, caught by the first
+   output's bound.
+4. **AUTO only.** In MANUAL the valve is a person's (gate 2). A person putting
+   the loop in AUTO while the pump is stopped sees the valve go to the held
+   opening on the next tick, which is what a DCS in track mode does.
+5. **A P loop is refused.** Its `seed_from_output` is a no-op — `u = K·e` has no
+   memory — so on restart it would jump to what the error asks, wide open after
+   a long stop: the surge itself.
+6. **Not in a cascade** (E29). A held secondary would leave its primary
+   integrating against a setpoint nothing uses, so the windup would move up a
+   level; making the primary open while its secondary holds is a `will_act`
+   change with its own gate, and no plant asks for it. A primary writes a
+   setpoint, not a valve.
+7. **The faceplate publishes the declaration, not a "holding" flag** —
+   `drives`' rule: whether it holds is `mode` and the pump's `kind.on`, both
+   published and both what the next tick reads.
+
+**Measured.** Gate 1 (the M30 demo, stopped 3 000 ticks, both fidelities): the
+fill at exactly 0 every stopped tick, in AUTO; first output 0.00015, first flow
+0.0043 kg/s, steepest rise 0.096 kg/s a tick, 7.56 kg/s at +100, against gate
+7's 24.80 on the first tick. The demo: restarts at 1 162, 2 496, 3 824 and
+5 148, 0.012 kg/s on each restart tick, the twin 23.6 kg/s and seven cycles.
+Corpus: 40 byte-identical on both fidelities, the new plant at worst 12 Newton
+iterations and 34 sweeps a tick. Mutations: seven, all caught as predicted (the
+re-seed, AUTO only, the pump's state, the held opening, both load refusals, the
+faceplate).
+
+**Deferred.** E25 is closed. E29 (new): a held loop in a cascade. A furnace or
+cooler loop held for its feed pump stays a trip's job (§49).

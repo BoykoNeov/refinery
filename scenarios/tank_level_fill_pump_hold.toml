@@ -1,0 +1,176 @@
+# M45 demo: a level loop that HOLDS its fill valve while its pump is stopped —
+# docs/DEFERRED.md row E25, closed by docs/DESIGN.md §50.
+#
+# **Built on `tank_level_fill_check_valve.toml`** (the M30 demo), with what a
+# pump that stops and restarts by itself needs:
+#
+# | change | there | here | why |
+# |---|---|---|---|
+# | `makeup` + `makeup_line` | none | a 2 bar source into the supply tank | the supply refills while the pump is stopped, so the trip can reset |
+# | `supply_tank.area_m2` | 20.0 | 4.0 | it falls and refills in hundreds of ticks, not thousands |
+# | `[[trips]]` `reset` | absent (a person's) | `"auto"`, re-arming at 7.5 m | the pump restarts by itself: the CLI issues no commands |
+# | `fill_line.elevation_change_m` | 5.0 | 8.0 | the supply's own head cannot push through the stopped pump, so a stop stays a stop |
+# | `level_valve.opening` | 0.2 | 0.1 | the receiving tank drains slower than the cycling pump fills it on average |
+# | `on_pump_stop` on the loop | none | `{ pump = "transfer_pump", output = 0.0 }` | the subject of the file |
+#
+# **The hazard (E25).** While the pump is stopped the receiving tank keeps
+# draining, so its level loop sees the level fall and opens the fill valve, all
+# the way, with nothing coming through. When the pump restarts it drives its
+# whole curve through a wide-open valve.
+#
+# **What the key does.** While the loop is in AUTO and `transfer_pump` is off,
+# the loop holds the fill at `output` (shut) and re-seeds its memory against
+# it every tick — output tracking. When the pump runs again the loop carries on
+# from shut, and the PI opens the valve at its own pace. A loop in MANUAL is
+# left alone: the valve is then a person's.
+#
+# Measured (both fidelities, 6 000 ticks): the trip stops the pump at 7.0 m on
+# tick 484, and restarts it at 7.5 m on 1 162, 2 496, 3 824 and 5 148. On each
+# restart tick the fill passes 0.012 kg/s, 0.055 the tick after; 1.9 kg/s fifty
+# ticks on and 5.6 at two hundred, the pump running about 650 ticks a cycle.
+# **Delete the `on_pump_stop` line** and every restart puts 23.6 kg/s through
+# the fill on its first tick, with the loop's output at 1; the surge empties
+# the supply tank's deadband in about 110 ticks, so the pump trips again and
+# cycles seven times instead of four. Pinned by
+# `crates/scenarios/tests/pump_stop_reference.rs`.
+#
+#   cargo run -p refinery-cli -- run scenarios/tank_level_fill_pump_hold.toml --ticks 6000
+
+[meta]
+name = "tank_level_fill_pump_hold"
+description = "A fill-valve level loop holds its valve shut while its self-restarting pump is stopped, so each restart ramps instead of surging."
+
+[simulation]
+dt = 1.0            # seconds per tick
+
+[fidelity]
+flow = "newton"     # "newton" (research) | "simple" (game)
+thermo = "constant"
+reactions = "none"
+
+# Makeup into the supply tank: about 3 kg/s at the trip's levels, against the
+# pump's ~7 — the supply falls while the pump runs and refills while it is off.
+[nodes.makeup]
+type = "source"
+pressure_bar = 2.0
+temperature_c = 20.0
+
+[nodes.supply_tank]
+type = "tank"
+area_m2 = 4.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 20.0
+
+[nodes.transfer_pump]
+type = "pump"
+h0_m = 40.0         # shutoff head [m]
+a = 800.0           # head curve coefficient: H = h0 - a*Q^2  (Q in m^3/s)
+on = true
+
+# A check valve: shut at or below zero forward drive across it, fully open at
+# `full_open_bar`. With the fill held shut the pump starts against a dead end
+# (M45.0) and then a valve cracked open behind the disc (M45.1).
+[nodes.discharge_check]
+type = "check_valve"
+kv = 200.0
+full_open_bar = 0.015
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 50.0           # metric Kv [m^3/h at 1 bar], converted to SI on load
+opening = 0.5       # the ACTUATOR here; equal to `initial_output` below
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 2.0
+temperature_c = 20.0
+
+[nodes.level_valve]
+type = "valve"
+kv = 200.0
+opening = 0.1
+
+[nodes.rundown]
+type = "sink"
+pressure_bar = 1.01325
+
+[[pipes]]
+name = "makeup_line"
+from = "makeup"
+to = "supply_tank"
+length_m = 20.0
+diameter_m = 0.04
+
+[[pipes]]
+name = "suction"
+from = "supply_tank"
+to = "transfer_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "discharge"
+from = "transfer_pump"
+to = "discharge_check"
+length_m = 30.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "check_outlet"
+from = "discharge_check"
+to = "discharge_valve"
+length_m = 1.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "fill_line"
+from = "discharge_valve"
+to = "receiving_tank"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = 8.0
+
+[[pipes]]
+name = "drain_line"
+from = "receiving_tank"
+to = "level_valve"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "rundown_line"
+from = "level_valve"
+to = "rundown"
+length_m = 10.0
+diameter_m = 0.15
+
+[[controls]]
+name = "receiving_level"
+measurement = { node = "receiving_tank", variable = "level" }
+actuator = "discharge_valve"
+action = "reverse"
+algorithm = "pi"
+mode = "auto"
+setpoint_m = 4.0
+gain_per_m = 0.5
+integral_time_s = 600.0
+initial_output = 0.5
+# While `transfer_pump` is off, hold the fill shut and track it (M45.2).
+on_pump_stop = { pump = "transfer_pump", output = 0.0 }
+
+# Pump protection that resets itself: stops the pump at 7.0 m on its suction
+# tank, re-arms once the makeup has lifted it back to 7.5 m, and the reset
+# restarts the pump (M40).
+[[trips]]
+name = "supply_low_level"
+measurement = { node = "supply_tank", variable = "level" }
+direction = "low"
+limit_m = 7.0
+reset = "auto"
+reset_limit_m = 7.5
+actions = [
+  { pump = "transfer_pump" },
+]

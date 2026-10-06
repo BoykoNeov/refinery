@@ -816,6 +816,24 @@ pub struct ControlDef {
     /// have to declare a key it is then refused.
     #[serde(default)]
     pub initial_output: Option<f64>,
+    /// `on_pump_stop = { pump = "<pump>", output = <opening> }`: while the loop
+    /// is in AUTO and that pump is off, hold the valve at `output` and track it,
+    /// so a restart resumes from there (M45.1, docs/DESIGN.md §50). PI loops on
+    /// a valve only, and not in a cascade; refused otherwise, each for its own
+    /// reason.
+    #[serde(default)]
+    pub on_pump_stop: Option<OnPumpStopDef>,
+}
+
+/// The `on_pump_stop` inline table of [`ControlDef`] (M45.1).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnPumpStopDef {
+    /// The pump's node name.
+    pub pump: String,
+    /// The valve opening held while it is stopped, in `[0, 1]`. Required: the
+    /// file says where the valve stands, as a trip's `position` does.
+    pub output: f64,
 }
 
 /// What a `[[controls]]` entry writes: a node by bare name, or another loop's

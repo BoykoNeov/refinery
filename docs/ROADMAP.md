@@ -7950,10 +7950,29 @@ caught by the two new gates, the node-bar gate caught only by the corpus
 baseline (`cavitating_pump` moves on the game solver), the early stop uncaught
 (cost only), all as predicted.
 
-### M45.2 — a loop that holds while its pump is stopped — planned
+### M45.2 — a loop that holds while its pump is stopped — **LANDED** 2026-10-06, and M45 is CLOSED
 
-The controller-side fix the user chose: a loop names the pump it depends on;
-while that pump is off, the loop holds its valve at a declared position instead
-of winding, and hands back through the bumpless transfer when the pump starts.
-Covers a stop by a trip and by a person alike. E25's gate 7 stays as the
-control; a twin with the key asserts the ramp.
+`on_pump_stop = { pump = "…", output = … }` on a `[[controls]]` entry. While the
+loop is in AUTO and that pump is off, the loop writes `output` to its valve every
+tick and re-seeds its memory against it (output tracking); the tick the pump
+runs again, by a person or a trip, it carries on from there. A loop in MANUAL is
+left alone. Refused at load: a P loop (no memory to hold — it would jump straight
+to the error's demand), an actuator that is not a valve, a cascade primary or
+secondary (E29), an output outside [0, 1], an unknown pump, a node that is not a
+pump. `ControlSnapshot::on_pump_stop` publishes the declaration; "holding" is
+not a field, `drives`' rule — it is `mode` and the pump's own `on`.
+
+On gate 7's own sequence with the key: the fill stands at exactly 0 on every
+stopped tick, in AUTO; on restart the first output is 0.00015 and the fill
+passes 0.004 kg/s, climbing at most 0.096 kg/s a tick to 7.56 at +100 ticks,
+the same on both fidelities. Without the key: 24.80 kg/s on the first tick.
+
+New demo `tank_level_fill_pump_hold.toml` (the 41st file): the M30 plant with a
+makeup feed, a 4 m² supply and a pump trip that resets itself at 7.5 m. The
+pump restarts at 1 162, 2 496, 3 824 and 5 148, each restart tick passing
+0.012 kg/s. Its twin without the key surges to 23.6 kg/s on every restart,
+empties the supply's deadband in ~110 ticks and cycles seven times.
+
+Six gates in `crates/scenarios/tests/pump_stop_reference.rs`. Seven mutations,
+all caught by the gates predicted. 40 plants byte-identical on both fidelities,
+1 new. The Godot binding did not change and reads no faceplate field.
