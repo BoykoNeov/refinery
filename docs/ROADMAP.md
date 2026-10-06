@@ -7974,5 +7974,5 @@ pump restarts at 1 162, 2 496, 3 824 and 5 148, each restart tick passing
 empties the supply's deadband in ~110 ticks and cycles seven times.
 
 Six gates in `crates/scenarios/tests/pump_stop_reference.rs`. Seven mutations,
-all caught by the gates predicted. 40 plants byte-identical on both fidelities,
+all caught; one prediction missed: H3 (a hold that ignores the pump's state) was named for gate 1 and caught only by gates 3 and 6 — gate 1 bounded the restart from above only, so a valve that never reopened passed it. Lower bounds were then added (a regulating flow before the stop, above 5 kg/s a hundred ticks after the restart) and H3 fails gate 1 too. 40 plants byte-identical on both fidelities,
 1 new. The Godot binding did not change and reads no faceplate field.

@@ -181,6 +181,18 @@ fn the_loop_holds_its_valve_while_its_pump_is_stopped_and_ramps_on_restart() {
             steepest < 0.5,
             "{fidelity}: the flow climbs, it does not step: {steepest} kg/s in one tick"
         );
+        // And it DOES climb: the bounds above all hold for a valve that never
+        // reopens (mutation H3, a hold that ignores the pump's state). Before
+        // the stop the loop was regulating a real flow, and a hundred ticks
+        // after the restart it is again (6.90 and 7.56 kg/s measured).
+        assert!(
+            settled > 5.0,
+            "{fidelity}: regulating before the stop, {settled}"
+        );
+        assert!(
+            previous > 5.0,
+            "{fidelity}: the loop reopens the fill after the restart: {previous} kg/s at +100"
+        );
     }
 }
 

@@ -19655,10 +19655,13 @@ which removing the tie fails (6); reachability moved to a fixed plant:
   converged sample passes the arm's own conservation and disc gates.
 - Corpus: 40 plants byte-identical on both fidelities.
 - Mutations: nine, predicted before the run; seven caught by the gates named.
-  Two uncaught as predicted: the vessel/starved-tank exclusion (a vessel is an
-  anchor, so it is in both sets and never in a stretch — defensive only) and
-  the zeroing of the stretch's flows (the passes already return exact zeros on
-  every fixture).
+  Two uncaught as predicted. The zeroing of the stretch's flows: the passes
+  already return exact zeros on every fixture. And the inventory exclusion,
+  which is NOT merely defensive, as this note first said: a vessel is an anchor
+  and so never in a stretch, but a STARVED tank is not an anchor and carries a
+  supply, so with one in a stretch something flows through it, and the
+  exclusion is what stops that being answered with zero flow. No fixture puts a
+  starved tank in a stretch, so it is unreached, not idle.
 
 **Deferred.** A20 (new): Newton refuses two reliefs in series that have one
 answer. A stretch that would stand below vacuum stays refused; what a broken
@@ -19762,9 +19765,9 @@ fill at exactly 0 every stopped tick, in AUTO; first output 0.00015, first flow
 7's 24.80 on the first tick. The demo: restarts at 1 162, 2 496, 3 824 and
 5 148, 0.012 kg/s on each restart tick, the twin 23.6 kg/s and seven cycles.
 Corpus: 40 byte-identical on both fidelities, the new plant at worst 12 Newton
-iterations and 34 sweeps a tick. Mutations: seven, all caught as predicted (the
-re-seed, AUTO only, the pump's state, the held opening, both load refusals, the
-faceplate).
+iterations and 34 sweeps a tick. Mutations: seven, all caught (the re-seed, AUTO
+only, the pump's state, the held opening, both load refusals, the faceplate);
+one prediction missed: H3 (a hold that ignores the pump's state) was named for gate 1 and caught only by gates 3 and 6 — gate 1 bounded the restart from above only, so a valve that never reopened passed it. Lower bounds were then added (a regulating flow before the stop, above 5 kg/s a hundred ticks after the restart) and H3 fails gate 1 too.
 
 **Deferred.** E25 is closed. E29 (new): a held loop in a cascade. A furnace or
 cooler loop held for its feed pump stays a trip's job (§49).

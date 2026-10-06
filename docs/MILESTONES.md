@@ -39,10 +39,13 @@ building, "Fix it first" / "Fix the solver first". DESIGN §50.
 - Gates: `dead_end_disc.rs`, `cracked_valve_disc.rs`, `pump_stop_reference.rs`,
   gates 9 and 10 of `check_valve_reference.rs`, the relay stub and the A20/A21
   known defects. Mutations: 9 + 5 + 7, every one caught or uncaught as
-  predicted.
+  predicted but one: H3 escaped the gate named for it (gate 1 had no lower
+  bound on the restart), and the bound was then added.
 - 40 plants byte-identical on both fidelities after each slice, 1 new. Release
   property tests pass; random disc chains converge 392/400 (Newton) and 373/400
-  (game) from 366 and 355. The Godot binding did not change.
+  (game) from 366 and 355. The Godot binding did not change; rebuilt with
+  M45.1's game solver, its clippy clean, all five furnace `--auto` runs and the
+  M6.2 demo replayed with every recorded event on its tick.
 
 **M44 is CLOSED (2026-10-06): a restart asks the trips that do not hold the
 equipment — `docs/DEFERRED.md` E28 struck (its last clause).** The user's
