@@ -44,9 +44,9 @@
 //! `build_groups` and `correct_groups`.
 
 use crate::network::{
-    accumulation, compile_edge, compile_edges, edge_flows, meets_node_bar,
-    solve_remembering_reliefs, solve_with_active_anchoring, validate_degrees, AnchorPass,
-    Capacitance, CompiledEdge, Prepared,
+    accumulation, compile_edge_with, compile_edges_with, edge_flows, meets_node_bar,
+    solve_remembering_reliefs, solve_with_active_anchoring_with, validate_degrees, AnchorPass,
+    Capacitance, CompiledEdge, LineFlash, OwnedLineFlash, Prepared,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
@@ -153,6 +153,21 @@ pub struct SimpleFlowSolver {
     pub eps_dp: f64,
     /// Warm-start pressures from the previous converged solve, keyed by NodeId.
     warm_start: BTreeMap<NodeId, f64>,
+    /// The line flash this solver reads two-phase densities through (M53,
+    /// docs/DESIGN.md §58 fork 3). `NoLineFlash` by default, under which every
+    /// compile is the liquid one bit for bit; the loader sets it from
+    /// `[fidelity] line_flash`.
+    pub line_flash: OwnedLineFlash,
+}
+
+impl SimpleFlowSolver {
+    /// This solver reading two-phase densities through `line_flash` (M53,
+    /// docs/DESIGN.md §58 fork 3) — what the loader calls for a plant selecting
+    /// `[fidelity] line_flash`.
+    pub fn with_line_flash(mut self, line_flash: OwnedLineFlash) -> Self {
+        self.line_flash = line_flash;
+        self
+    }
 }
 
 impl Default for SimpleFlowSolver {
@@ -164,6 +179,7 @@ impl Default for SimpleFlowSolver {
             tol_rel: 1e-6,
             eps_dp: 1.0,
             warm_start: BTreeMap::new(),
+            line_flash: OwnedLineFlash::default(),
         }
     }
 }
@@ -186,9 +202,15 @@ impl FlowSolver for SimpleFlowSolver {
         // docs/DESIGN.md §53): the driver may run a second solve on a copy
         // of the plant, so the pass reads whichever graph it is handed.
         let out = solve_remembering_reliefs(graph, &mut warm_start, |graph, warm_start| {
-            solve_with_active_anchoring(graph, slate, previous_states, warm_start, dt, |prep| {
-                self.pass(prep, graph, slate, previous_states, dt)
-            })
+            solve_with_active_anchoring_with(
+                graph,
+                slate,
+                previous_states,
+                warm_start,
+                dt,
+                self.line_flash.view(),
+                |prep| self.pass(prep, graph, slate, previous_states, dt),
+            )
         });
         self.warm_start = warm_start;
         out
@@ -281,7 +303,14 @@ impl SimpleFlowSolver {
                     // FRESH, at the pressures this sweep has already moved
                     // (`fresh_edge`, §33, §55).
                     let fresh;
-                    let c = match fresh_edge(graph, eid, slate, previous_states, &pressures) {
+                    let c = match fresh_edge(
+                        graph,
+                        eid,
+                        slate,
+                        previous_states,
+                        &pressures,
+                        self.line_flash.view(),
+                    ) {
                         Ok(Some(f)) => {
                             fresh = f;
                             &fresh
@@ -302,6 +331,14 @@ impl SimpleFlowSolver {
                                                              // node's only when it is the pump.
                     if c.src == nid {
                         g_sum += c.suction_share(dp, self.eps_dp);
+                    }
+                    // A two-phase edge's flow moves with its upwind node's
+                    // pressure through its density (M53, §58 fork 3): this
+                    // node's share when it is that end, signed as the side of
+                    // the edge it stands on.
+                    let share = c.density_share(nid, dp, self.eps_dp);
+                    if share != 0.0 {
+                        g_sum += if c.src == nid { share } else { -share };
                     }
                     imbalance += if incoming { mdot } else { -mdot };
                     scale = scale.max(mdot.abs());
@@ -360,7 +397,7 @@ impl SimpleFlowSolver {
                         capacitive.get(&nid),
                         dt.value(),
                         self.eps_dp,
-                        (graph, slate, previous_states),
+                        (graph, slate, previous_states, self.line_flash.view()),
                     )
                 };
                 // **A cavitating pump's own node is solved on its bracket FIRST**
@@ -463,7 +500,13 @@ impl SimpleFlowSolver {
             // is how a convergence flag can be honest and the answer still
             // wrong. Bit-identical for an all-liquid network, where
             // `density_at` ignores both arguments.
-            compiled = match compile_edges(graph, slate, previous_states, &pressures) {
+            compiled = match compile_edges_with(
+                graph,
+                slate,
+                previous_states,
+                &pressures,
+                self.line_flash.view(),
+            ) {
                 Ok(c) => c,
                 Err(e) => {
                     return AnchorPass {
@@ -635,6 +678,7 @@ impl SimpleFlowSolver {
                         slate,
                         previous_states,
                         pressures: &trial,
+                        flash: self.line_flash.view(),
                     }),
                     incident,
                     compiled,
@@ -737,6 +781,7 @@ struct TrialCompile<'a> {
     slate: &'a Slate,
     previous_states: &'a NodeStates,
     pressures: &'a BTreeMap<NodeId, f64>,
+    flash: LineFlash<'a>,
 }
 
 /// A group's net imbalance `Σ_{i∈K} R_i` [kg/s] with every member shifted by
@@ -776,7 +821,14 @@ fn group_imbalance(
             let fresh;
             let c = match &recompile {
                 Some(r) => {
-                    fresh = compile_edge(r.graph, eid, r.slate, r.previous_states, r.pressures)?;
+                    fresh = compile_edge_with(
+                        r.graph,
+                        eid,
+                        r.slate,
+                        r.previous_states,
+                        r.pressures,
+                        r.flash,
+                    )?;
                     &fresh
                 }
                 None => frozen,
@@ -789,6 +841,12 @@ fn group_imbalance(
             // is in it (M50, §55); `other` is outside, so that is `c.src == nid`.
             if c.src == nid {
                 slope += c.suction_share(dp, eps_dp);
+            }
+            // Its upwind density's share moves with the group when that end is
+            // in it (M53, §58 fork 3); `other` is outside, so that is `nid`.
+            let share = c.density_share(nid, dp, eps_dp);
+            if share != 0.0 {
+                slope += if c.src == nid { share } else { -share };
             }
         }
         if let Some(cap) = capacitive.get(&nid) {
@@ -925,7 +983,7 @@ fn node_imbalance_at(
     capacitive: Option<&Capacitance>,
     dt: f64,
     eps_dp: f64,
-    (graph, slate, previous_states): (&PlantGraph, &Slate, &NodeStates),
+    (graph, slate, previous_states, flash): (&PlantGraph, &Slate, &NodeStates, LineFlash<'_>),
 ) -> Result<f64, SimError> {
     let mut imbalance = 0.0;
     // The trial's pressures, built only when a check valve's edge needs them —
@@ -933,13 +991,13 @@ fn node_imbalance_at(
     let mut trial_pressures: Option<BTreeMap<NodeId, f64>> = None;
     for &(eid, incoming) in incident {
         let fresh;
-        let c = if is_fresh_edge(graph, eid) {
+        let c = if is_fresh_edge(graph, eid, flash) {
             let at_trial = trial_pressures.get_or_insert_with(|| {
                 let mut t = pressures.clone();
                 t.insert(nid, p_trial);
                 t
             });
-            fresh = compile_edge(graph, eid, slate, previous_states, at_trial)?;
+            fresh = compile_edge_with(graph, eid, slate, previous_states, at_trial, flash)?;
             &fresh
         } else {
             &compiled[&eid]
@@ -957,8 +1015,20 @@ fn node_imbalance_at(
 /// True for an edge the node-wise sweep reads FRESH: the outlet edge of a check
 /// valve, whose opening is a function of its own drop (docs/DESIGN.md §33), and
 /// of a pump with a suction limit, whose head is a function of its own node's
-/// pressure (M50, §55).
-fn is_fresh_edge(graph: &PlantGraph, eid: EdgeId) -> bool {
+/// pressure (M50, §55) — and EVERY edge of a plant whose line flash carries
+/// vapour, whose density is a function of its upwind node's pressure (M53,
+/// §58 fork 3).
+///
+/// The last is measured, not argued: frozen, a valve's outlet edge steps the
+/// valve's pressure to the root of its density at the top of the sweep, and the
+/// next sweep's density puts the root back across the bubble pressure — on the
+/// M53 probe, a supply stepped from 110 °C to 125 °C cycled between 1.857 bar
+/// (liquid) and 1.701 bar (208 kg/m³), 2 497 times each, though the slope was in
+/// the step. Read fresh, the node's line search judges the true function.
+fn is_fresh_edge(graph: &PlantGraph, eid: EdgeId, flash: LineFlash<'_>) -> bool {
+    if flash.model.carries_vapour() {
+        return true;
+    }
     let (src, _) = graph.endpoints(eid);
     matches!(
         graph.node(src).kind,
@@ -990,11 +1060,12 @@ fn fresh_edge(
     slate: &Slate,
     previous_states: &NodeStates,
     pressures: &BTreeMap<NodeId, f64>,
+    flash: LineFlash<'_>,
 ) -> Result<Option<CompiledEdge>, SimError> {
-    if !is_fresh_edge(graph, eid) {
+    if !is_fresh_edge(graph, eid, flash) {
         return Ok(None);
     }
-    compile_edge(graph, eid, slate, previous_states, pressures).map(Some)
+    compile_edge_with(graph, eid, slate, previous_states, pressures, flash).map(Some)
 }
 
 fn diverged(iterations: u32, residual: f64, residual_history: Vec<f64>) -> SimError {

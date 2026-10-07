@@ -20619,3 +20619,111 @@ the supply is warmed back (fork 3's lag, visible: tick 221 runs the cold flow
 against the hot liquid), and back-pressure barely costs a pump at its
 cavitation limit flow, since less flow is more suction margin. ROADMAP M52.1
 has the recorded lines.
+
+## 58. A supply that is partly vapour, and a line that boils as its pressure falls — ledger row B46 and B3's flashing-line clause (M53)
+
+Taken on a decision (2026-10-07): the user asked "what is next" and chose, from
+five directions, a supply that is partly vapour (B46, which M52 refused "for
+today"). Four questions before building and two more when the answers pulled
+against each other; ROADMAP M53 has them in full, with every number below.
+
+**Measured first.** The pump demo's naphtha at 2.4 bar is liquid at 120 °C,
+1.2% vapour by mass at 121 °C and 10.8% at 122 °C — already 92% by VOLUME
+(63 kg/m³ against 701). A supply barely past boiling flows like a gas. And six
+shipped plants have lines that fall below their own bubble pressure today: the
+isenthalpic flash puts 5–15% of their mass in vapour (the pump demo's outlet
+line 5.0%, M11's three lines up to 9.0%, the columns' product draws 9.4–15.4%).
+An isothermal flash of the same lines read 27–70% — the wrong model, kept in
+the record because the number nearly shipped.
+
+**Fork 1 — a per-plant model, off by default; the refusal lifted only where
+modelled** (the user's DECISIONS: "selectable, off by default" and "lift only
+where modelled"). `[fidelity] line_flash = "none" | "equilibrium"`, a
+`LineFlashModel` in `core`, `NoLineFlash` and `EquilibriumLineFlash` in
+`solvers`. Under `"none"` every stream is the liquid it was declared and M52's
+refusal of a boiling supply stands, by the loader and by both supply commands;
+under `"equilibrium"` both lift (`LineFlashModel::carries_vapour`). All 43
+shipped plants select `"none"` by default and are byte-identical on both
+fidelities, 6 000 ticks each.
+
+**Fork 2 — two flashes, and the vapour share from the energy.** A supply HOLDS
+its temperature, so it is an isothermal flash at its declared `(T, P)` — the
+heat its vapour carries comes from outside the plant. A valve or a junction holds
+nothing, so it is ISENTHALPIC at its own pressure from its mixed inflow
+enthalpy, latent heat included: the stream cools as it boils. The mix is the
+LIQUID-EQUIVALENT temperature `T_le` (`h(T_le) = h(T) + q·λ`), the one form of a
+stream's enthalpy a flash at another pressure can start from. The settle
+bisects `h(T) + q_flash(T)·λ(T) = h(T_le)` over `[T_bubble(P), T_le]`, 60 fixed
+halvings, then takes `q` from the ENERGY, `q = (h(T_le) − h(T*))/λ(T*)`: on a
+mixture the two agree at the root; on a PURE cut the flash jumps from all liquid
+to all vapour at one temperature, which the bisection pins and only the energy
+can divide — the spike tripped on exactly that step — and `h(T*) + q·λ = h(T_le)`
+then holds to rounding by construction. `λ` is the VAPOUR's own, `Σ y·Δh_vap/M̄_v`.
+
+**Fork 3 — the flow solve re-flashes at every trial pressure and carries the
+slope.** A two-phase edge flows at the homogeneous density of its upwind node,
+`1/ρ = q/ρ_v + (1 − q)/ρ_l` (Wallis 1969, ch. 2), evaluated at THIS iterate's
+pressure from the node's last-tick `T_le` and composition (a supply from its own
+declared state). The throwaway spike measured why both halves are needed: with
+density alone Newton walked the bubble pressure as a fixed point on the density
+(50 iterations a tick, its cap) and the game solver cycled across it (2.245 bar
+liquid / 2.221 bar two-phase, 2 495 times each); with `∂ṁ/∂P_upwind` through
+the density in both — M50's `suction_share` arrangement, a ±100 Pa central
+difference straddling the kink (`DensitySlope`) — 9 and 13. The kink is
+physical and is not smoothed. **The game solver also reads every edge FRESH on
+a flashing plant** (`is_fresh_edge`), as it reads a check valve's: the built
+engine's probe found the node step still cycling when a supply stepped from
+110 °C to 125 °C (1.857 bar liquid / 1.701 bar at 208 kg/m³), because its line
+search judged a density frozen at the top of the sweep. Read fresh, every move
+converges. On the probe plant (source → 30 m pipe → valve → 20 m pipe → sink at
+1.2 bar), 9 supply temperatures 110–130 °C × 4 openings, every cold start and
+all 1 260 ordered moves land on the cold answer on both fidelities (worst
+6.0e-8 and 2.0e-14); 24 of the moves on each take 11–13 iterations a tick — a
+hot two-phase supply with the valve open stepped in ONE tick to a cooler one
+nearly shut — the rest at most 10.
+
+**Fork 4 — a tank takes the arriving latent heat, and its boil-off vents it.**
+The tank's balance adds `ṁ·q·λ` for every inflow whose upwind node carries
+vapour; the existing `FlashBoilOff` then vents what that heat boils. The arriving
+vapour is never ALSO vented directly — that would count it twice. A flashing
+plant with a tank must therefore select `boiloff = "flash"`. A starved tank
+passes the heat on as superheat (it has no flash of its own).
+
+**Fork 5 — what a flashing plant may hold**, refused at load by name otherwise
+(`require_line_flash_plant`): `thermo = "trouton"`, liquids only, supplies,
+destinations, the atmosphere, junctions, control valves and tanks, and no leak
+path. A pump in two-phase service (gas-lock), a check or relief valve, a vessel,
+a furnace, a cooler, an exchanger, a column, a reactor and a two-phase jet
+through a hole are each a model not built here.
+
+**Fork 6 — friction heats the liquid's share of the volume only.** On this
+engine's datum a liquid's enthalpy has no pressure term, so throttling heats it
+by `v·ΔP` and the engine books the branch's `α·Q|Q|·Q` as heat; an ideal gas's
+enthalpy does not move with pressure, so throttling heats nothing. On a two-phase
+edge `Φ` is multiplied by the liquid's share of the flowing volume
+(`CompiledEdge::heated_share`, exactly `1.0` everywhere else) — on the probe a
+few percent of the volume, so most of what booking the whole `Q` would have
+invented.
+
+**The stream** carries `vapour_fraction` (mass, absent on one phase) and
+`latent = q·λ`, both written from ONE `VapourShare` of the upwind node, so they
+cannot describe different vapour. A boil-off vent still writes `latent = λ` and
+no `vapour_fraction`, which keeps every boil-off plant's wire unchanged.
+`NodeSnapshot::vapour_fraction` publishes the same number on the node.
+`supply_boiling`'s bubble pressure CAN now exceed the supply's own pressure, on a
+flashing plant only.
+
+**Not built, with what un-defers each:**
+- Choking: a valve in flashing service passes at most its critical two-phase
+  flow; the ordinary law here passes more when wide open. A plant whose answer
+  depends on a valve near its choke.
+- A pump in two-phase service (gas-lock) — the pump screen's supply warmed past
+  boiling.
+- Phase slip (the vapour outrunning the liquid) — a long vertical or a slug.
+- A zero-volume node's enthalpy in the flow solve is last tick's: the density a
+  valve's outlet flows at after a supply step lags one tick, the M50 hand-over's
+  lag in another form.
+- A pipe's ambient exchange on a two-phase stream is applied to its sensible
+  term, as on a liquid; conserved, but a condensing wall is not modelled.
+- A flashing feed into a column, a partial condenser, a vapour side draw — B3's
+  other stream paths.

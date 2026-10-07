@@ -20,7 +20,10 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{
     Blowdown, EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, PumpSuction, TankState,
 };
-use refinery_core::traits::{HydraulicSolution, PumpSuctionState, SolveDiagnostics, StarvedTank};
+use refinery_core::traits::{
+    EnthalpyModel, HydraulicSolution, LineFlashModel, PumpSuctionState, SolveDiagnostics,
+    StarvedTank, ThermoModel, TwoPhaseDensity,
+};
 use refinery_core::units::{KgPerSec, Meter, Pascal, Seconds, Watt, G, P_ATM};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -83,6 +86,107 @@ pub struct CompiledEdge {
     /// docs/DESIGN.md §55). `None` on every edge that does not leave a pump with
     /// a suction limit and a bubble pressure to read.
     pub pump_suction: Option<PumpSuctionSlope>,
+    /// How the edge's flow moves with its UPWIND node's pressure through its
+    /// two-phase density (M53, docs/DESIGN.md §58 fork 3). `None` on every edge
+    /// whose upwind stream is liquid on both sides of the iterate, which is every
+    /// edge of a plant without a line flash.
+    pub density_slope: Option<DensitySlope>,
+    /// The share of the branch's friction heat booked on the fluid [-]: its
+    /// LIQUID's share of the flowing volume on a two-phase edge, `1.0` on every
+    /// other (M53, docs/DESIGN.md §58 fork 6). On this engine's datum a liquid's
+    /// enthalpy has no pressure term, so throttling heats it by `v·ΔP`; an ideal
+    /// gas's enthalpy does not move with pressure, so throttling heats nothing.
+    pub heated_share: f64,
+}
+
+/// The line flash a flow solve reads two-phase densities through (M53,
+/// docs/DESIGN.md §58 fork 3): the model and the two property seams it needs,
+/// borrowed from whichever solver holds them.
+#[derive(Clone, Copy)]
+pub struct LineFlash<'a> {
+    pub model: &'a dyn LineFlashModel,
+    pub thermo: &'a dyn ThermoModel,
+    pub enthalpy: &'a dyn EnthalpyModel,
+}
+
+impl LineFlash<'static> {
+    /// Every stream the liquid it was declared — what every caller before M53
+    /// compiled against, and what the public entry points without a `_with`
+    /// still mean. `NoLineFlash` never reads the two seams beside it.
+    pub const LIQUID: LineFlash<'static> = LineFlash {
+        model: &crate::line_flash::NoLineFlash,
+        thermo: &crate::ConstantThermo,
+        enthalpy: &crate::enthalpy::ConstantEnthalpy,
+    };
+}
+
+/// A flow solver's own line flash (M53, docs/DESIGN.md §58 fork 3): the boxes
+/// `LineFlash` borrows. The engine holds another instance of the same model
+/// for its sweep; the loader builds both from one `[fidelity] line_flash`.
+pub struct OwnedLineFlash {
+    pub model: Box<dyn LineFlashModel>,
+    pub thermo: Box<dyn ThermoModel>,
+    pub enthalpy: Box<dyn EnthalpyModel>,
+}
+
+impl OwnedLineFlash {
+    /// The borrowed view every compile reads.
+    pub fn view(&self) -> LineFlash<'_> {
+        LineFlash {
+            model: self.model.as_ref(),
+            thermo: self.thermo.as_ref(),
+            enthalpy: self.enthalpy.as_ref(),
+        }
+    }
+}
+
+impl Default for OwnedLineFlash {
+    /// `LineFlash::LIQUID`, owned.
+    fn default() -> Self {
+        Self {
+            model: Box::new(crate::line_flash::NoLineFlash),
+            thermo: Box::new(crate::ConstantThermo),
+            enthalpy: Box::new(crate::enthalpy::ConstantEnthalpy),
+        }
+    }
+}
+
+/// A two-phase edge's flow on either side of its upwind node's pressure (M53,
+/// docs/DESIGN.md §58 fork 3): the branch recompiled at the density the stream
+/// has `delta` above and below the iterate.
+///
+/// **Why the solvers need it — measured, not argued.** The density falls by an
+/// order of magnitude within a fraction of a bar below the bubble pressure, and
+/// a branch compiled at one iterate's density holds it frozen: Newton then
+/// walks the bubble pressure as a fixed point on the density (50 iterations a
+/// tick, its cap, on M53's spike) and the game solver cycles across it (two
+/// states, 2 495 times each). With this slope in both, 9 and 13. It is M50's
+/// `suction_share` arrangement, for the upwind node instead of the pump's own.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DensitySlope {
+    /// The node whose pressure moves the density: the edge's upwind end.
+    pub upwind: NodeId,
+    /// `(ρ, branch)` at the upwind pressure plus `delta`.
+    pub above: (f64, QuadraticBranch),
+    /// `(ρ, branch)` at the upwind pressure minus `delta`.
+    pub below: (f64, QuadraticBranch),
+    /// The half-width of the central difference [Pa].
+    pub delta: f64,
+}
+
+/// The half-width [Pa] of a density slope's central difference. Small against
+/// the bar or so over which a flashing stream's density moves, large against
+/// `eps_dp`; across the bubble pressure it straddles the kink, which is what
+/// the spike needed (a one-sided difference there is zero on the liquid side).
+pub const DENSITY_SLOPE_DELTA: f64 = 100.0;
+
+impl DensitySlope {
+    /// `∂ṁ/∂P_upwind` [kg/(s·Pa)] through the density alone, at drop `dp`.
+    pub fn share(&self, dp: f64, eps: f64) -> f64 {
+        let (rho_above, above) = self.above;
+        let (rho_below, below) = self.below;
+        (rho_above * above.flow(dp, eps) - rho_below * below.flow(dp, eps)) / (2.0 * self.delta)
+    }
 }
 
 /// A cavitating pump's outlet branch at one iterate (M50, docs/DESIGN.md §55).
@@ -155,6 +259,18 @@ impl CompiledEdge {
     /// node step and group step alike: a pump in partial cavitation moves its
     /// flow many times harder with its suction than its frozen conductance says,
     /// and a node step without it overshoots, as a check valve's did (§33).
+    /// The density slope's share of `∂ṁ/∂P` [kg/(s·Pa)] at `node`, or `0.0`
+    /// when `node` is not this edge's two-phase upwind end (M53,
+    /// docs/DESIGN.md §58 fork 3). Read by Newton's assembly and by the game
+    /// solver's node and group steps alike, so the fidelities cannot
+    /// differentiate a flashing edge two ways.
+    pub fn density_share(&self, node: NodeId, dp: f64, eps: f64) -> f64 {
+        match self.density_slope {
+            Some(slope) if slope.upwind == node => slope.share(dp, eps),
+            _ => 0.0,
+        }
+    }
+
     pub fn suction_share(&self, dp: f64, eps: f64) -> f64 {
         let Some(s) = self.pump_suction else {
             return 0.0;
@@ -546,6 +662,178 @@ pub fn compile_edge(
     previous_states: &NodeStates,
     pressures: &BTreeMap<NodeId, f64>,
 ) -> Result<CompiledEdge, SimError> {
+    compile_edge_with(
+        graph,
+        eid,
+        slate,
+        previous_states,
+        pressures,
+        LineFlash::LIQUID,
+    )
+}
+
+/// `compile_edge` through a line flash (M53, docs/DESIGN.md §58 fork 3): a
+/// stream that is partly vapour at its upwind node flows at its homogeneous
+/// density, re-flashed at THIS iterate's pressure, and carries the slope of its
+/// flow with that pressure. Under `LineFlash::LIQUID` it is `compile_edge` bit
+/// for bit.
+pub fn compile_edge_with(
+    graph: &PlantGraph,
+    eid: EdgeId,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pressures: &BTreeMap<NodeId, f64>,
+    flash: LineFlash<'_>,
+) -> Result<CompiledEdge, SimError> {
+    let mut compiled = compile_edge_at(graph, eid, slate, previous_states, pressures, flash, None)?;
+    if !compiled.conducts {
+        return Ok(compiled);
+    }
+    let (src, tgt) = graph.endpoints(eid);
+    let upwind_node = if pressures[&src] >= pressures[&tgt] {
+        src
+    } else {
+        tgt
+    };
+    // A boundary's pressure is no unknown of the solve, so a slope in its
+    // column would be read by nobody; and the two extra compiles are not free.
+    if boundary_temperature(&graph.node(upwind_node).kind).is_some() {
+        return Ok(compiled);
+    }
+    let upwind = pressures[&upwind_node].max(RHO_EVAL_P_FLOOR);
+    let delta = DENSITY_SLOPE_DELTA;
+    let pipe = graph.pipe(eid);
+    let above = two_phase_density(
+        graph,
+        slate,
+        previous_states,
+        pipe,
+        upwind_node,
+        Pascal(upwind + delta),
+        flash,
+    )?;
+    let below = two_phase_density(
+        graph,
+        slate,
+        previous_states,
+        pipe,
+        upwind_node,
+        Pascal(upwind - delta),
+        flash,
+    )?;
+    if above.is_none() && below.is_none() {
+        return Ok(compiled);
+    }
+    // Each side at its own density: two-phase where the stream boils there, the
+    // liquid's own (the plain compile) where it does not.
+    let side = |density: Option<TwoPhaseDensity>| -> Result<(f64, QuadraticBranch), SimError> {
+        let c = match density {
+            Some(d) => compile_edge_at(
+                graph,
+                eid,
+                slate,
+                previous_states,
+                pressures,
+                flash,
+                Some(d.mixture.value()),
+            )?,
+            None => compile_edge_at(
+                graph,
+                eid,
+                slate,
+                previous_states,
+                pressures,
+                LineFlash::LIQUID,
+                None,
+            )?,
+        };
+        Ok((c.rho, c.branch))
+    };
+    compiled.density_slope = Some(DensitySlope {
+        upwind: upwind_node,
+        above: side(above)?,
+        below: side(below)?,
+        delta,
+    });
+    Ok(compiled)
+}
+
+/// The density a stream leaving `upwind_node` flows at under `pressure`, when it
+/// is partly vapour there (M53, docs/DESIGN.md §58 fork 3); `None` when it is all
+/// liquid, or when the node has no resolved state yet (tick 0: the edge's stored
+/// composition is a placeholder, and a pure component's flash is a step).
+///
+/// A supply is flashed at its own declared state; every other node from the
+/// liquid-equivalent temperature and composition the previous tick resolved.
+fn two_phase_density(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pipe: &Pipe,
+    upwind_node: NodeId,
+    pressure: Pascal,
+    flash: LineFlash<'_>,
+) -> Result<Option<TwoPhaseDensity>, SimError> {
+    let (composition, liquid_equivalent) = match &graph.node(upwind_node).kind {
+        NodeKind::Source {
+            temperature,
+            pressure: declared,
+            composition,
+        } => {
+            let share = flash.model.supply(
+                slate,
+                composition,
+                *temperature,
+                *declared,
+                flash.thermo,
+                flash.enthalpy,
+            )?;
+            (
+                composition,
+                share.map_or(*temperature, |s| s.liquid_equivalent),
+            )
+        }
+        _ => {
+            let liquid_equivalent = previous_states
+                .vapour
+                .get(&upwind_node)
+                .map(|s| s.liquid_equivalent)
+                .or_else(|| previous_states.temperature.get(&upwind_node).copied());
+            let Some(liquid_equivalent) = liquid_equivalent else {
+                return Ok(None);
+            };
+            let composition = previous_states
+                .composition
+                .get(&upwind_node)
+                .unwrap_or(&pipe.stream.composition);
+            (composition, liquid_equivalent)
+        }
+    };
+    flash
+        .model
+        .density(
+            slate,
+            composition,
+            liquid_equivalent,
+            pressure,
+            flash.thermo,
+            flash.enthalpy,
+        )
+        .map_err(|e| SimError::Numerical(format!("pipe {}: {e}", pipe.name)))
+}
+
+/// The body of `compile_edge_with`: one compile at one density. `rho_override`
+/// replaces the density the iterate gives, which is how the density slope
+/// compiles its two sides.
+fn compile_edge_at(
+    graph: &PlantGraph,
+    eid: EdgeId,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pressures: &BTreeMap<NodeId, f64>,
+    flash: LineFlash<'_>,
+    rho_override: Option<f64>,
+) -> Result<CompiledEdge, SimError> {
     let (src, tgt) = graph.endpoints(eid);
     let pipe = graph.pipe(eid);
     // A BOIL-OFF VENT compiles to a closed branch and returns before anything
@@ -571,6 +859,8 @@ pub fn compile_edge(
             check_opening_log_slope: 0.0,
             check_band: None,
             pump_suction: None,
+            density_slope: None,
+            heated_share: 1.0,
         });
     }
     let upwind_node = if pressures[&src] >= pressures[&tgt] {
@@ -588,6 +878,24 @@ pub fn compile_edge(
         .density_at(slate, Pascal(upwind), temperature)
         .map_err(|e| SimError::Numerical(format!("pipe {} ({eid:?}): {e}", pipe.name)))?
         .value();
+    // A stream partly vapour at its upwind node flows at its homogeneous density
+    // there, at this iterate's pressure (M53, docs/DESIGN.md §58 fork 3). Absent
+    // under `NoLineFlash`, which leaves `rho` the bits it was.
+    let two_phase = two_phase_density(
+        graph,
+        slate,
+        previous_states,
+        pipe,
+        upwind_node,
+        Pascal(upwind),
+        flash,
+    )?;
+    let heated_share = two_phase.map_or(1.0, |d| d.liquid_volume_share);
+    let rho = match (rho_override, two_phase) {
+        (Some(rho), _) => rho,
+        (None, Some(d)) => d.mixture.value(),
+        (None, None) => rho,
+    };
 
     // A LEAK ORIFICE compiles to its own characteristic and nothing else, and
     // returns here rather than falling through: it has no pipe geometry to
@@ -638,6 +946,8 @@ pub fn compile_edge(
             check_opening_log_slope: 0.0,
             check_band: None,
             pump_suction: None,
+            density_slope: None,
+            heated_share: 1.0,
         });
     }
 
@@ -829,6 +1139,8 @@ pub fn compile_edge(
         check_opening_log_slope,
         check_band,
         pump_suction,
+        density_slope: None,
+        heated_share,
     })
 }
 
@@ -954,11 +1266,22 @@ pub fn compile_edges(
     previous_states: &NodeStates,
     pressures: &BTreeMap<NodeId, f64>,
 ) -> Result<BTreeMap<EdgeId, CompiledEdge>, SimError> {
+    compile_edges_with(graph, slate, previous_states, pressures, LineFlash::LIQUID)
+}
+
+/// `compile_edges` through a line flash — see `compile_edge_with`.
+pub fn compile_edges_with(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pressures: &BTreeMap<NodeId, f64>,
+    flash: LineFlash<'_>,
+) -> Result<BTreeMap<EdgeId, CompiledEdge>, SimError> {
     let mut compiled = BTreeMap::new();
     for eid in graph.edge_ids() {
         compiled.insert(
             eid,
-            compile_edge(graph, eid, slate, previous_states, pressures)?,
+            compile_edge_with(graph, eid, slate, previous_states, pressures, flash)?,
         );
     }
     Ok(compiled)
@@ -986,6 +1309,7 @@ pub fn prepare(
         None,
         None,
         &BTreeMap::new(),
+        LineFlash::LIQUID,
     )
 }
 
@@ -1009,6 +1333,7 @@ pub fn prepare(
 /// `starved` maps each tank this pass solves as STARVED to its supply [kg/s]
 /// (`starved_supply`). It is empty on every pass of a tick that starves nothing,
 /// and then this is exactly the pre-M24 prologue (docs/DESIGN.md §28 fork 3).
+#[allow(clippy::too_many_arguments)] // one argument per input a pass is prepared from
 pub fn prepare_anchored(
     graph: &PlantGraph,
     slate: &Slate,
@@ -1017,6 +1342,7 @@ pub fn prepare_anchored(
     previous_pass: Option<&BTreeMap<NodeId, f64>>,
     anchored_override: Option<&BTreeSet<NodeId>>,
     starved: &BTreeMap<NodeId, f64>,
+    flash: LineFlash<'_>,
 ) -> Result<Prepared, SimError> {
     let classes = classify(graph, slate, starved);
 
@@ -1062,7 +1388,7 @@ pub fn prepare_anchored(
         pressures.insert(nid, seed);
     }
 
-    let compiled = compile_edges(graph, slate, previous_states, &pressures)?;
+    let compiled = compile_edges_with(graph, slate, previous_states, &pressures, flash)?;
     let anchored = match anchored_override {
         Some(a) => a.clone(),
         None => anchored_set(graph, &compiled, &base_anchors(&classes)),
@@ -1298,6 +1624,31 @@ pub fn solve_with_active_anchoring<F>(
     previous_states: &NodeStates,
     warm_start: &mut BTreeMap<NodeId, f64>,
     dt: Seconds,
+    pass: F,
+) -> Result<HydraulicSolution, SimError>
+where
+    F: FnMut(Prepared) -> AnchorPass,
+{
+    solve_with_active_anchoring_with(
+        graph,
+        slate,
+        previous_states,
+        warm_start,
+        dt,
+        LineFlash::LIQUID,
+        pass,
+    )
+}
+
+/// `solve_with_active_anchoring` through a line flash (M53, docs/DESIGN.md §58
+/// fork 3) — every compile the driver makes reads densities through `flash`.
+pub fn solve_with_active_anchoring_with<F>(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    warm_start: &mut BTreeMap<NodeId, f64>,
+    dt: Seconds,
+    flash: LineFlash<'_>,
     mut pass: F,
 ) -> Result<HydraulicSolution, SimError>
 where
@@ -1334,6 +1685,7 @@ where
             previous_pass.as_ref(),
             override_set.as_ref(),
             &supplies,
+            flash,
         )?;
         // Taken before the pass consumes `prep`: the free list for the warm-start
         // commit, the anchors so the reclassification below runs against the
@@ -1460,6 +1812,7 @@ where
                         |eid| conducting.contains(&eid),
                         &compiled,
                         &pressures,
+                        flash,
                     )
                 } else if next_override.is_superset(&used) {
                     dead_end_tie(
@@ -1472,6 +1825,7 @@ where
                         |eid| compiled[&eid].conducts,
                         &compiled,
                         &pressures,
+                        flash,
                     )
                 } else {
                     None
@@ -1751,6 +2105,7 @@ fn dead_end_tie(
     conducts_in_filled: impl Fn(EdgeId) -> bool,
     compiled: &BTreeMap<EdgeId, CompiledEdge>,
     pressures: &BTreeMap<NodeId, f64>,
+    flash: LineFlash<'_>,
 ) -> Option<Tie> {
     let stretch: BTreeSet<NodeId> = filled.difference(floating).copied().collect();
     if stretch.is_empty() || stretch.iter().any(|nid| capacitive.contains_key(nid)) {
@@ -1812,7 +2167,7 @@ fn dead_end_tie(
         }
         let mut settled = pressures.clone();
         settled.extend(standing.iter().map(|(&nid, &p)| (nid, p)));
-        let recompiled = compile_edges(graph, slate, previous_states, &settled).ok()?;
+        let recompiled = compile_edges_with(graph, slate, previous_states, &settled, flash).ok()?;
         let restood = stand(&recompiled);
         let moved = standing
             .iter()
@@ -2103,10 +2458,13 @@ pub fn edge_flows(
         // the product would be ∞·0 = NaN; it is exactly the case with no flow to
         // heat, so it is zero by the same test that makes `flow` return zero.
         let q = mdot / c.rho;
+        // Booked on the liquid's share of the volume alone on a two-phase edge
+        // (M53, docs/DESIGN.md §58 fork 6); `heated_share` is exactly `1.0` on
+        // every other edge, which multiplies nothing.
         let phi = if q == 0.0 {
             0.0
         } else {
-            c.branch.alpha * q * q.abs() * q
+            c.branch.alpha * q * q.abs() * q * c.heated_share
         };
         throughput = throughput.max(mdot.abs());
         mass_flow.insert(eid, mdot);

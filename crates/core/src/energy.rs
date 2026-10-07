@@ -55,10 +55,10 @@ use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, NodeId, NodeKind, PlantGraph};
 use crate::traits::{
-    ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, ReactionModel, Separation,
-    SeparationModel, StarvedTank, ThermoModel,
+    ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel, ReactionModel,
+    Separation, SeparationModel, StarvedTank, ThermoModel, VapourShare,
 };
-use crate::units::{JPerKgK, Kelvin, KgPerSec, Seconds, Watt, WattPerKelvin, T_AMBIENT};
+use crate::units::{JPerKgK, Kelvin, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, T_AMBIENT};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -315,7 +315,7 @@ fn mixed_composition_at(
 /// Extracted because temperature and composition are transported by the same
 /// rule and must never disagree about which way a pipe runs: one definition, two
 /// readers.
-fn upwind_end(graph: &PlantGraph, edge: EdgeId, mass_flow: f64) -> NodeId {
+pub fn upwind_end(graph: &PlantGraph, edge: EdgeId, mass_flow: f64) -> NodeId {
     let (from, to) = graph.endpoints(edge);
     if mass_flow >= 0.0 {
         from
@@ -957,6 +957,39 @@ pub struct NodeStates {
     /// DIAGNOSTIC like `flue_loss`, and for the same reason: the books do not
     /// close without it. Empty on a plant with no furnace.
     pub tube_fire: BTreeMap<NodeId, Watt>,
+    /// Each node whose stream is partly vapour this tick, and its vapour (M53,
+    /// docs/DESIGN.md §58): a supply above its bubble point, and a zero-volume
+    /// node whose line flash boiled it. Empty on every plant that does not
+    /// select `[fidelity] line_flash = "equilibrium"`.
+    ///
+    /// Read by three consumers, and the vapour every one of them reads is the
+    /// UPWIND node's: the sweep's own mix (the latent heat arriving at the next
+    /// node), `Engine::tick`'s edge write (`Stream::vapour_fraction` and
+    /// `latent`) and its tank balance, and the next tick's flow solve, which
+    /// re-flashes the node at each trial pressure from `liquid_equivalent`.
+    pub vapour: BTreeMap<NodeId, VapourShare>,
+}
+
+/// Σ ṁ·latent [W] arriving at `node` on its inflow edges — the latent heat its
+/// upwind nodes' vapour carries in (M53, docs/DESIGN.md §58). `None`, not
+/// `Some(0.0)`, when no upwind node has vapour, so a caller adds nothing at all
+/// to its sum and every plant without the model keeps its bits.
+pub(crate) fn inflow_latent(
+    graph: &PlantGraph,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    vapour: &BTreeMap<NodeId, VapourShare>,
+    node: NodeId,
+) -> Option<f64> {
+    if vapour.is_empty() {
+        return None;
+    }
+    let mut total = None;
+    for (_edge, upstream, into_node) in inflow_edges(graph, edge_mass_flow, node) {
+        if let Some(share) = vapour.get(&upstream) {
+            *total.get_or_insert(0.0) += into_node * share.latent.value();
+        }
+    }
+    total
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -1037,11 +1070,14 @@ pub fn resolve_node_states(
     separation: &dyn SeparationModel,
     thermo: &dyn ThermoModel,
     enthalpy: &dyn EnthalpyModel,
+    line_flash: &dyn LineFlashModel,
+    node_pressure: &BTreeMap<NodeId, Pascal>,
     previous: &NodeStates,
     starved: &BTreeMap<NodeId, StarvedTank>,
     dt: Seconds,
 ) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
+    let mut vapour: BTreeMap<NodeId, VapourShare> = BTreeMap::new();
     let mut coil_temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
     let mut flue_loss: BTreeMap<NodeId, Watt> = BTreeMap::new();
     let mut tube_fire: BTreeMap<NodeId, Watt> = BTreeMap::new();
@@ -1076,6 +1112,16 @@ pub fn resolve_node_states(
             boundary_composition(kind, slate),
         ) {
             (Some(t), Some(c)) => {
+                // A supply above its own bubble point boils where it stands, at
+                // its declared state (M53, docs/DESIGN.md §58 fork 2). Only a
+                // model that carries vapour answers; `NoLineFlash` never does.
+                if let NodeKind::Source { pressure, .. } = kind {
+                    if let Some(share) =
+                        line_flash.supply(slate, &c, t, *pressure, thermo, enthalpy)?
+                    {
+                        vapour.insert(id, share);
+                    }
+                }
                 temperature.insert(id, t);
                 composition.insert(id, c);
             }
@@ -1236,6 +1282,19 @@ pub fn resolve_node_states(
                         // Nothing arriving: what passes, if anything, is what the
                         // tank held, at exactly its own temperature — not a mix of
                         // one term, which is the same number to within rounding.
+                        // Latent heat arriving on a two-phase inflow passes on
+                        // as superheat: a starved tank has no flash of its own,
+                        // and its downstream holdup's boil-off is what vents it
+                        // (M53, docs/DESIGN.md §58 fork 4).
+                        let passing = passing.map(|totals| {
+                            match inflow_latent(graph, edge_mass_flow, &vapour, id) {
+                                Some(latent) => InflowEnthalpy {
+                                    enthalpy_rate: totals.enthalpy_rate + latent,
+                                    ..totals
+                                },
+                                None => totals,
+                            }
+                        });
                         let passed = match passing {
                             Some(totals) => enthalpy.mix_temperature(
                                 slate,
@@ -1323,6 +1382,7 @@ pub fn resolve_node_states(
                             &temperature,
                             &composition,
                             &separations,
+                            &vapour,
                             id,
                         )?;
                         // No inflow: indeterminate but inert (mass balance ⇒ no
@@ -1332,7 +1392,32 @@ pub fn resolve_node_states(
                         // recorded as held so no control loop reads it as a
                         // measurement (docs/DESIGN.md §23 fork 4).
                         let mixed = match mixed {
-                            Some(t) => t,
+                            // The mix is the LIQUID-EQUIVALENT temperature, its
+                            // inflow's latent heat included; the line flash
+                            // settles it at the node's own pressure, boiling
+                            // what that enthalpy boils there (M53,
+                            // docs/DESIGN.md §58 fork 2). `NoLineFlash` hands
+                            // the mix back untouched.
+                            Some(liquid_equivalent) => {
+                                let pressure = node_pressure.get(&id).copied().ok_or_else(|| {
+                                    SimError::Numerical(format!(
+                                        "internal: node '{}' has no solved pressure for its line flash",
+                                        graph.node(id).name
+                                    ))
+                                })?;
+                                let settled = line_flash.settle(
+                                    slate,
+                                    mixed_composition_at(&composition, id)?,
+                                    liquid_equivalent,
+                                    pressure,
+                                    thermo,
+                                    enthalpy,
+                                )?;
+                                if let Some(share) = settled.vapour {
+                                    vapour.insert(id, share);
+                                }
+                                settled.temperature
+                            }
                             None => {
                                 held.insert(id);
                                 previous.temperature.get(&id).copied().unwrap_or(T_AMBIENT)
@@ -1467,6 +1552,7 @@ pub fn resolve_node_states(
         coil_temperature,
         flue_loss,
         tube_fire,
+        vapour,
     })
 }
 
@@ -1761,6 +1847,7 @@ fn mix_inflows(
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
     separations: &BTreeMap<NodeId, Separation>,
+    vapour: &BTreeMap<NodeId, VapourShare>,
     node: NodeId,
 ) -> Result<Option<Kelvin>, SimError> {
     // Heat — external (a fire) and a cooler's duty alike — joins the same first
@@ -1788,6 +1875,17 @@ fn mix_inflows(
         let heated = InflowEnthalpy {
             enthalpy_rate: totals.enthalpy_rate + heat_input,
             ..totals
+        };
+        // The latent heat a two-phase inflow carries joins the same sum (M53,
+        // docs/DESIGN.md §58): the mix is then the temperature the node's inflow
+        // would have as all LIQUID, which the line flash settles. Absent, not
+        // zero, on a plant with no vapour, so this adds nothing to its bits.
+        let heated = match inflow_latent(graph, edge_mass_flow, vapour, node) {
+            Some(latent) => InflowEnthalpy {
+                enthalpy_rate: heated.enthalpy_rate + latent,
+                ..heated
+            },
+            None => heated,
         };
         let capacity = totals.capacity_rate;
         let mixed = enthalpy_model
@@ -2264,6 +2362,64 @@ mod tests {
     /// is what says that model reproduces the pre-M16 arithmetic. A drift here
     /// would fail these tests loudly, because the temperatures they assert are
     /// hand calculations rather than the model's own output.
+    /// The line flash every pre-M53 sweep test means: no vapour, the mix handed
+    /// back untouched (M53, docs/DESIGN.md §58).
+    struct NoLineFlashStub;
+
+    impl crate::traits::LineFlashModel for NoLineFlashStub {
+        fn name(&self) -> &'static str {
+            "none-stub"
+        }
+        fn carries_vapour(&self) -> bool {
+            false
+        }
+        fn supply(
+            &self,
+            _: &Slate,
+            _: &Composition,
+            _: Kelvin,
+            _: crate::units::Pascal,
+            _: &dyn ThermoModel,
+            _: &dyn EnthalpyModel,
+        ) -> Result<Option<crate::traits::VapourShare>, SimError> {
+            Ok(None)
+        }
+        fn settle(
+            &self,
+            _: &Slate,
+            _: &Composition,
+            liquid_equivalent: Kelvin,
+            _: crate::units::Pascal,
+            _: &dyn ThermoModel,
+            _: &dyn EnthalpyModel,
+        ) -> Result<crate::traits::Settled, SimError> {
+            Ok(crate::traits::Settled {
+                temperature: liquid_equivalent,
+                vapour: None,
+            })
+        }
+        fn density(
+            &self,
+            _: &Slate,
+            _: &Composition,
+            _: Kelvin,
+            _: crate::units::Pascal,
+            _: &dyn ThermoModel,
+            _: &dyn EnthalpyModel,
+        ) -> Result<Option<crate::traits::TwoPhaseDensity>, SimError> {
+            Ok(None)
+        }
+    }
+
+    /// Every node at atmospheric pressure: what a sweep test with no flow solve
+    /// hands the line flash, which `NoLineFlashStub` never reads.
+    fn everywhere_atmospheric(graph: &PlantGraph) -> BTreeMap<NodeId, crate::units::Pascal> {
+        graph
+            .node_ids()
+            .map(|id| (id, crate::units::P_ATM))
+            .collect()
+    }
+
     struct ConstantEnthalpyStub;
     impl EnthalpyModel for ConstantEnthalpyStub {
         fn name(&self) -> &'static str {
@@ -2504,6 +2660,8 @@ mod tests {
             &NoSeparation,
             &TestThermo,
             &ConstantEnthalpyStub,
+            &NoLineFlashStub,
+            &everywhere_atmospheric(graph),
             &NodeStates::default(),
             &BTreeMap::new(),
             Seconds(1.0),
@@ -2526,6 +2684,8 @@ mod tests {
             &NoSeparation,
             &TestThermo,
             &ConstantEnthalpyStub,
+            &NoLineFlashStub,
+            &everywhere_atmospheric(graph),
             &NodeStates::default(),
             &BTreeMap::new(),
             Seconds(1.0),
@@ -2709,6 +2869,8 @@ mod tests {
                 &NoSeparation,
                 &TestThermo,
                 &ConstantEnthalpyStub,
+                &NoLineFlashStub,
+                &everywhere_atmospheric(&g),
                 &previous,
                 &BTreeMap::new(),
                 Seconds(1.0),
@@ -3230,6 +3392,8 @@ mod tests {
             &NoSeparation,
             &TestThermo,
             &ConstantEnthalpyStub,
+            &NoLineFlashStub,
+            &everywhere_atmospheric(&g),
             &previous,
             &BTreeMap::new(),
             Seconds(1.0),
@@ -3552,6 +3716,8 @@ mod tests {
                 &NoSeparation,
                 &TestThermo,
                 &ConstantEnthalpyStub,
+                &NoLineFlashStub,
+                &everywhere_atmospheric(&g),
                 &NodeStates::default(),
                 &BTreeMap::new(),
                 Seconds(1.0),
@@ -3640,6 +3806,8 @@ mod tests {
                 &NoSeparation,
                 &TestThermo,
                 &ConstantEnthalpyStub,
+                &NoLineFlashStub,
+                &everywhere_atmospheric(&g),
                 &NodeStates::default(),
                 &BTreeMap::new(),
                 Seconds(1.0),

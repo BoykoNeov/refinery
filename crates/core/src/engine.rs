@@ -17,8 +17,8 @@ use crate::snapshot::{
     NodeSnapshot, PumpSuctionSnapshot, RestartBar, Snapshot, SupplyBoiling, TripSnapshot, TripStop,
 };
 use crate::traits::{
-    BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, ReactionModel, SeparationModel,
-    ThermoModel,
+    BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, LineFlashModel, ReactionModel,
+    SeparationModel, ThermoModel,
 };
 use crate::units::*;
 
@@ -83,6 +83,10 @@ pub struct Engine {
     /// docs/DESIGN.md §14). Reaches one call site — the `Tank` arm of step 3 —
     /// and `NoBoilOff` is what every plant written before M12 selects.
     boiloff: Box<dyn BoilOffModel>,
+    /// What a stream does below its bubble point (M53, docs/DESIGN.md §58):
+    /// `[fidelity] line_flash`. The flow solver holds its own instance of the
+    /// same model, for the density it flows at.
+    line_flash: Box<dyn LineFlashModel>,
     /// The specific enthalpy of a mixture, and every capacity derived from it
     /// (M16.2, docs/DESIGN.md §20). Reaches every energy path in the engine —
     /// the transport sweep, both holdup branches, the reactor's duty and the
@@ -190,6 +194,7 @@ impl Engine {
         separation: Box<dyn SeparationModel>,
         boiloff: Box<dyn BoilOffModel>,
         enthalpy: Box<dyn EnthalpyModel>,
+        line_flash: Box<dyn LineFlashModel>,
     ) -> Self {
         Self {
             graph,
@@ -201,6 +206,7 @@ impl Engine {
             separation,
             boiloff,
             enthalpy,
+            line_flash,
             tick: 0,
             last_solution: None,
             node_states: energy::NodeStates::default(),
@@ -985,6 +991,8 @@ impl Engine {
             self.separation.as_ref(),
             self.thermo.as_ref(),
             self.enthalpy.as_ref(),
+            self.line_flash.as_ref(),
+            &solution.node_pressure,
             &self.node_states,
             &solution.starved,
             dt,
@@ -1304,6 +1312,18 @@ impl Engine {
                     .value();
 
                 if into_node > 0.0 {
+                    // The latent heat a two-phase inflow carries (M53,
+                    // docs/DESIGN.md §58 fork 4). This is its ONE route into a
+                    // tank's books: the tank's own boil-off, below, vents what
+                    // the heat boils, and venting the arriving vapour as well
+                    // would count it twice.
+                    if let Some(share) =
+                        node_states
+                            .vapour
+                            .get(&energy::upwind_end(&self.graph, eid, flow))
+                    {
+                        net_enthalpy += into_node * share.latent.value();
+                    }
                     let arriving = energy::edge_composition_at(
                         &self.graph,
                         &node_states.column_separation,
@@ -1912,7 +1932,17 @@ impl Engine {
                 flow,
             )?
             .into_owned();
-            self.graph.pipe_mut(eid).stream.composition = upwind;
+            // Its vapour is its upwind node's too, both fields from ONE
+            // `VapourShare` (M53, docs/DESIGN.md §58): `None` on every edge of a
+            // plant without the model, as it was before.
+            let share = node_states
+                .vapour
+                .get(&energy::upwind_end(&self.graph, eid, flow))
+                .copied();
+            let stream = &mut self.graph.pipe_mut(eid).stream;
+            stream.composition = upwind;
+            stream.vapour_fraction = share.map(|v| v.mass_fraction);
+            stream.latent = share.map(|v| v.latent);
         }
 
         // 4. Validation: nothing non-finite escapes a tick.
@@ -2914,6 +2944,12 @@ impl Engine {
         temperature: Kelvin,
         composition: &Composition,
     ) -> Result<(), SimError> {
+        // A plant whose line flash carries vapour feeds a boiling supply as what
+        // it is (M53, docs/DESIGN.md §58 fork 1): the refusal is lifted there and
+        // only there.
+        if self.line_flash.carries_vapour() {
+            return Ok(());
+        }
         if let SupplyBoiling::Measured { bubble_pressure_pa } =
             supply_boiling(self.thermo.as_ref(), &self.slate, temperature, composition)?
         {
@@ -2921,8 +2957,10 @@ impl Engine {
                 return Err(SimError::InvalidCommand(format!(
                     "supply '{name}' would be boiling: at {:.2} °C its liquid boils at any pressure below \
                      {:.4} bar, and the supply would stand at {:.4} bar. The engine carries a \
-                     supply as liquid only, so it cannot feed one that is partly vapour \
-                     (docs/DEFERRED.md B46). Raise the pressure or lower the temperature",
+                     supply as liquid only on this plant, so it cannot feed one that is partly \
+                     vapour (docs/DEFERRED.md B46). Raise the pressure or lower the \
+                     temperature, or select `[fidelity] line_flash = \"equilibrium\"`, \
+                     which carries it (docs/DESIGN.md §58)",
                     temperature.value() - 273.15,
                     bubble_pressure_pa / 1e5,
                     pressure.value() / 1e5
@@ -3080,6 +3118,12 @@ impl Engine {
                     // Every supply, from the last tick — see
                     // `NodeSnapshot::supply_boiling`.
                     supply_boiling: self.last_supply_boiling.get(&id).copied(),
+                    // The last sweep's — see `NodeSnapshot::vapour_fraction`.
+                    vapour_fraction: self
+                        .node_states
+                        .vapour
+                        .get(&id)
+                        .map(|share| share.mass_fraction),
                 }
             })
             .collect();

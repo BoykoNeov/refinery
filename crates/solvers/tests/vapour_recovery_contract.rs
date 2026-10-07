@@ -68,6 +68,7 @@ fn boiling_engine(graph: PlantGraph) -> Engine {
         Box::new(CutPointSplitter),
         Box::new(FlashBoilOff),
         Box::new(refinery_solvers::ConstantEnthalpy),
+        Box::new(refinery_solvers::NoLineFlash),
     )
 }
 

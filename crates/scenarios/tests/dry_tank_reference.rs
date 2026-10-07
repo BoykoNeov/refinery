@@ -732,6 +732,7 @@ fn bent_engine(over_draw: f64, report: Option<f64>) -> Engine {
         Box::new(refinery_solvers::CutPointSplitter),
         Box::new(refinery_solvers::NoBoilOff),
         Box::new(refinery_solvers::ConstantEnthalpy),
+        Box::new(refinery_solvers::NoLineFlash),
     )
 }
 

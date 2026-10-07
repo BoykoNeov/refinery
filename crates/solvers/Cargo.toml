@@ -36,3 +36,7 @@ path = "tests/reference/flash.rs"
 [[test]]
 name = "cascade_reference"
 path = "tests/reference/cascade.rs"
+
+[[test]]
+name = "line_flash_reference"
+path = "tests/reference/line_flash.rs"

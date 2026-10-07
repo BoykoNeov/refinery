@@ -32,20 +32,34 @@ pub struct Stream {
     /// this engine carried before M13, and `skip_serializing_if` is then what
     /// keeps sixteen shipped plants byte-identical.
     ///
-    /// **It is not a phase marker and it is not `docs/DEFERRED.md` B3.** B3 is
-    /// a stream that is PART liquid and PART vapour, which needs a quality on
-    /// `Composition` and changes every reader of it. This is a single-phase
-    /// vapour stream declaring one scalar about its own energy — and spelling
-    /// it `phase: Phase` instead would contradict `Composition::phase`, since
-    /// a boil-off vent's cuts are ones the slate *declares* `Liquid`
-    /// (docs/DESIGN.md §15 fork 1).
+    /// **It is not a phase marker.** Spelling it `phase: Phase` would
+    /// contradict `Composition::phase`, since a boil-off vent's cuts are ones
+    /// the slate *declares* `Liquid` (docs/DESIGN.md §15 fork 1). Since M53 a
+    /// stream that is PART vapour carries it too, and then it is the latent heat
+    /// of its vapour share per kilogram of the WHOLE stream, `q·λ` — the energy
+    /// term, while `vapour_fraction` below is the phase term.
     ///
-    /// Written today by exactly one producer — a boil-off vent, from the
-    /// `BoilOff::latent_heat` the model sized the flash against. It is signed
-    /// by the mass flow rather than by itself, so a condensing stream (B12)
+    /// Two producers. A boil-off vent writes `Some(λ)`, from the
+    /// `BoilOff::latent_heat` the model sized the flash against, and no
+    /// `vapour_fraction`: it is all vapour by construction, and leaving that
+    /// field off keeps every boil-off plant's wire unchanged. A line flash (M53,
+    /// docs/DESIGN.md §58) writes `Some(q·λ)` and `vapour_fraction = Some(q)`
+    /// from ONE `VapourShare`, so the two cannot describe different vapour. It is
+    /// signed by the mass flow rather than by itself, so a condensing stream (B12)
     /// arrives carrying `Some(λ)` and gives it up, with no rename.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latent: Option<JPerKg>,
+    /// The share of this stream's MASS that is vapour [-], in `(0, 1]` — `None`
+    /// on a stream carried as one phase (M53, docs/DESIGN.md §58).
+    ///
+    /// Written only by a line flash (`[fidelity] line_flash = "equilibrium"`),
+    /// together with `latent`, from the upwind node's `VapourShare`. `None`
+    /// rather than `Some(0.0)` for the reason `latent` gives: absent is "the
+    /// question does not arise", which is every stream on a plant that does not
+    /// select the model, and `skip_serializing_if` is what keeps those plants'
+    /// wire byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vapour_fraction: Option<f64>,
 }
 
 impl Stream {
@@ -56,6 +70,7 @@ impl Stream {
             pressure,
             composition: Composition::pure(slate_len, 0),
             latent: None,
+            vapour_fraction: None,
         }
     }
 
@@ -68,5 +83,6 @@ impl Stream {
             // rule 5 does not have an exemption for one: a `None` is finite by
             // construction, a `Some(NaN)` is not.
             && self.latent.is_none_or(|l| l.is_finite())
+            && self.vapour_fraction.is_none_or(f64::is_finite)
     }
 }

@@ -173,6 +173,7 @@ fn engine_with(thermo: Box<dyn ThermoModel>) -> Engine {
         Box::new(CutPointSplitter),
         Box::new(NoBoilOff),
         Box::new(refinery_solvers::ConstantEnthalpy),
+        Box::new(refinery_solvers::NoLineFlash),
     )
 }
 

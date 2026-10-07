@@ -7,7 +7,7 @@
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::error::SimError;
 use refinery_core::graph::{Node, NodeId, NodeKind, PlantGraph};
-use refinery_core::traits::ThermoModel;
+use refinery_core::traits::{LineFlashModel, ThermoModel};
 use refinery_core::units::T_AMBIENT;
 use std::collections::BTreeMap;
 
@@ -417,6 +417,98 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
         ));
     }
     require_compatible_heat_capacity(scenario)?;
+    require_line_flash_plant(scenario)?;
+    Ok(())
+}
+
+/// A plant selecting `[fidelity] line_flash = "equilibrium"` holds only what the
+/// line flash models (M53, docs/DESIGN.md §58 fork 5) — refused at load, by
+/// name, rather than run on a model that does not reach it.
+///
+/// - **A bubble pressure**: `thermo = "trouton"`. `"constant"` has no K-value,
+///   so the plant would load, select the flash and boil nothing.
+/// - **Liquids only**: a gas component is a different phase law
+///   (`Composition::density_at`), not a stream that boils.
+/// - **A tank boils off**: `boiloff = "flash"` on any plant with a tank. A tank
+///   takes the latent heat of what arrives into its balance and its boil-off
+///   vents it (fork 4); under `"none"` that heat would sit as superheat for ever.
+/// - **Supplies, destinations, the atmosphere, junctions, control valves and
+///   tanks.** A pump in two-phase service (gas-lock), a furnace, a cooler, an
+///   exchanger, a column, a reactor, a vessel, and a check or relief valve are
+///   each a model this milestone did not build, and a boiling stream reaching
+///   one would be read as liquid.
+/// - **No leak path** (`leak_to`): a hole is an orifice, and a two-phase jet
+///   chokes, which no law here models — the valve's caveat, without a user's
+///   decision to accept it.
+pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), SimError> {
+    if scenario.fidelity.line_flash != "equilibrium" {
+        return Ok(());
+    }
+    let refuse = |why: String| {
+        Err(SimError::Scenario(format!(
+            "line_flash = \"equilibrium\" {why} (docs/DESIGN.md §58)"
+        )))
+    };
+    if scenario.fidelity.thermo != "trouton" {
+        return refuse(format!(
+            "with thermo = \"{}\": a line flash IS a vapour-liquid equilibrium, and \
+             only thermo = \"trouton\" has the bubble pressure and K-values it needs",
+            scenario.fidelity.thermo
+        ));
+    }
+    if let Some(gas) = scenario
+        .components
+        .iter()
+        .find(|c| c.phase.as_deref() == Some("gas"))
+    {
+        return refuse(format!(
+            "with a gas component ('{}'): the line flash boils liquids; a gas is carried \
+             by its own phase law",
+            gas.name
+        ));
+    }
+    let has_tank = scenario
+        .nodes
+        .values()
+        .any(|def| matches!(def, NodeDef::Tank { .. }));
+    if has_tank && scenario.fidelity.boiloff != "flash" {
+        return refuse(format!(
+            "with boiloff = \"{}\" on a plant with a tank: a tank takes the latent heat \
+             of the vapour that reaches it, and only boiloff = \"flash\" vents what that \
+             heat boils",
+            scenario.fidelity.boiloff
+        ));
+    }
+    for (name, def) in &scenario.nodes {
+        let kind = match def {
+            NodeDef::Source { .. }
+            | NodeDef::Sink { .. }
+            | NodeDef::Atmosphere
+            | NodeDef::Junction
+            | NodeDef::Valve { .. }
+            | NodeDef::Tank { .. } => continue,
+            NodeDef::Vessel { .. } => "a vessel",
+            NodeDef::Pump { .. } => "a pump (two-phase pumping, a gas-lock, is not modelled)",
+            NodeDef::ReliefValve { .. } => "a relief valve",
+            NodeDef::CheckValve { .. } => "a check valve",
+            NodeDef::Furnace { .. } => "a furnace",
+            NodeDef::Cooler { .. } => "a cooler",
+            NodeDef::HeatExchanger => "a heat exchanger",
+            NodeDef::Column { .. } => "a column",
+            NodeDef::Reactor { .. } => "a reactor",
+        };
+        return refuse(format!(
+            "with '{name}', {kind}: a plant that selects the line flash may hold only \
+             supplies, destinations, the atmosphere, junctions, control valves and tanks"
+        ));
+    }
+    if let Some(pipe) = scenario.pipes.iter().find(|p| p.leak_to.is_some()) {
+        return refuse(format!(
+            "with a leak path on pipe '{}': a two-phase jet through a hole chokes, which \
+             no law here models",
+            pipe.name
+        ));
+    }
     Ok(())
 }
 
@@ -773,8 +865,15 @@ pub(crate) fn require_pump_suction_answerable(
 pub(crate) fn require_supplies_below_boiling(
     graph: &PlantGraph,
     thermo: &dyn ThermoModel,
+    line_flash: &dyn LineFlashModel,
     slate: &Slate,
 ) -> Result<(), SimError> {
+    // A plant whose line flash carries vapour feeds a boiling supply as what it
+    // is (M53, docs/DESIGN.md §58 fork 1): the refusal is lifted there and only
+    // there.
+    if line_flash.carries_vapour() {
+        return Ok(());
+    }
     for nid in graph.node_ids() {
         let node = graph.node(nid);
         let NodeKind::Source {
@@ -792,9 +891,10 @@ pub(crate) fn require_supplies_below_boiling(
                 return Err(SimError::Scenario(format!(
                     "source '{}' is boiling: at {:.2} °C its liquid boils at any pressure \
                      below {:.4} bar, and the source is declared at {:.4} bar. The engine \
-                     carries a supply as liquid only, so it cannot feed one that is partly \
-                     vapour (docs/DEFERRED.md B46). Raise pressure_bar or lower \
-                     temperature_c (docs/DESIGN.md §57).",
+                     carries a supply as liquid only on this plant, so it cannot feed one \
+                     that is partly vapour (docs/DEFERRED.md B46). Raise pressure_bar or \
+                     lower temperature_c (docs/DESIGN.md §57), or select [fidelity] \
+                     line_flash = \"equilibrium\", which carries it (docs/DESIGN.md §58).",
                     node.name,
                     temperature.value() - 273.15,
                     bubble_pressure_pa / 1e5,

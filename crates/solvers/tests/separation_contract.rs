@@ -156,6 +156,7 @@ fn engine_with(separation: Box<dyn SeparationModel>) -> Engine {
         separation,
         Box::new(NoBoilOff),
         Box::new(refinery_solvers::ConstantEnthalpy),
+        Box::new(refinery_solvers::NoLineFlash),
     )
 }
 

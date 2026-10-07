@@ -16,8 +16,8 @@ use refinery_core::graph::{
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
-    BoilOffModel, Controller, EnthalpyModel, FlowSolver, ReactionModel, SeparationModel,
-    ThermoModel,
+    BoilOffModel, Controller, EnthalpyModel, FlowSolver, LineFlashModel, ReactionModel,
+    SeparationModel, ThermoModel,
 };
 use refinery_core::units::{
     CubicMeter, JPerK, JPerKg, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, KgPerSec, Meter, Seconds,
@@ -211,27 +211,16 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
 
     // Step 4: select solver impls from [fidelity]; unknown names are errors
     // listing the valid options.
-    let flow: Box<dyn FlowSolver> = match scenario.fidelity.flow.as_str() {
-        "newton" => Box::new(refinery_solvers::NewtonFlowSolver::default()),
-        "simple" => Box::new(refinery_solvers::SimpleFlowSolver::default()),
-        other => {
-            return Err(SimError::Scenario(format!(
-                "unknown flow solver '{other}' (valid: newton, simple)"
-            )))
-        }
-    };
-    let thermo: Box<dyn ThermoModel> = match scenario.fidelity.thermo.as_str() {
-        "constant" => Box::new(refinery_solvers::ConstantThermo),
-        // Raoult over a Clausius–Clapeyron vapour pressure with Trouton's rule
-        // for Δh_vap (M7.2). Selectable from M7.3, when the cascade gave a
-        // K-value its first consumer — see `Fidelity::thermo`.
-        "trouton" => Box::new(refinery_solvers::TroutonThermo::new()),
-        other => {
-            return Err(SimError::Scenario(format!(
-                "unknown thermo model '{other}' (valid: constant, trouton)"
-            )))
-        }
-    };
+    // The flow solver's name is checked here, in its old place, so a file with
+    // two bad names is told about this one first, as it always was; the solver
+    // itself is built after the line flash it reads densities through (M53).
+    if !matches!(scenario.fidelity.flow.as_str(), "newton" | "simple") {
+        return Err(SimError::Scenario(format!(
+            "unknown flow solver '{}' (valid: newton, simple)",
+            scenario.fidelity.flow
+        )));
+    }
+    let thermo = select_thermo(&scenario.fidelity.thermo)?;
     let reactions: Box<dyn ReactionModel> = match scenario.fidelity.reactions.as_str() {
         "none" => Box::new(refinery_solvers::NoReactions),
         // The FCC placeholder table (M4.1). Both reacting fidelities resolve
@@ -264,14 +253,24 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // The heat-capacity seam (M16.2). Every pairing it cannot work in was
     // already refused in step 0, in both directions, so this match only has to
     // name the model.
-    let enthalpy: Box<dyn EnthalpyModel> = match scenario.fidelity.heat_capacity.as_str() {
-        "constant" => Box::new(refinery_solvers::ConstantEnthalpy),
-        "linear" => Box::new(refinery_solvers::LinearCpEnthalpy),
-        other => {
-            return Err(SimError::Scenario(format!(
-                "unknown heat capacity model '{other}' (valid: constant, linear)"
-            )))
+    let enthalpy = select_enthalpy(&scenario.fidelity.heat_capacity)?;
+
+    // The line flash (M53, docs/DESIGN.md §58), held TWICE from one key: the
+    // engine's sweep settles each node on it, and the flow solver reads each
+    // two-phase edge's density through its own instance, with its own copies of
+    // the two property seams. All four are stateless, so the copies cannot
+    // disagree; `select_*` is the one place each name is read.
+    let line_flash = select_line_flash(&scenario.fidelity.line_flash)?;
+    let solver_flash = refinery_solvers::network::OwnedLineFlash {
+        model: select_line_flash(&scenario.fidelity.line_flash)?,
+        thermo: select_thermo(&scenario.fidelity.thermo)?,
+        enthalpy: select_enthalpy(&scenario.fidelity.heat_capacity)?,
+    };
+    let flow: Box<dyn FlowSolver> = match scenario.fidelity.flow.as_str() {
+        "newton" => {
+            Box::new(refinery_solvers::NewtonFlowSolver::default().with_line_flash(solver_flash))
         }
+        _ => Box::new(refinery_solvers::SimpleFlowSolver::default().with_line_flash(solver_flash)),
     };
 
     // Step 5: a pump's suction limit needs a liquid and a thermo model that has
@@ -280,14 +279,54 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     require_pump_suction_answerable(&graph, &phases, thermo.as_ref(), &slate)?;
     // And a supply must not boil at its own declared pressure (M52,
     // docs/DESIGN.md §57) — the rule the supply commands keep at runtime.
-    require_supplies_below_boiling(&graph, thermo.as_ref(), &slate)?;
+    require_supplies_below_boiling(&graph, thermo.as_ref(), line_flash.as_ref(), &slate)?;
 
     let config = EngineConfig {
         dt: refinery_core::units::Seconds(scenario.simulation.dt),
     };
     Ok(Engine::new(
-        graph, slate, config, flow, thermo, reactions, separation, boiloff, enthalpy,
+        graph, slate, config, flow, thermo, reactions, separation, boiloff, enthalpy, line_flash,
     ))
+}
+
+/// The thermo model a `[fidelity] thermo` name selects.
+fn select_thermo(name: &str) -> Result<Box<dyn ThermoModel>, SimError> {
+    match name {
+        "constant" => Ok(Box::new(refinery_solvers::ConstantThermo)),
+        // Raoult over a Clausius–Clapeyron vapour pressure with Trouton's rule
+        // for Δh_vap (M7.2). Selectable from M7.3, when the cascade gave a
+        // K-value its first consumer — see `Fidelity::thermo`.
+        "trouton" => Ok(Box::new(refinery_solvers::TroutonThermo::new())),
+        other => Err(SimError::Scenario(format!(
+            "unknown thermo model '{other}' (valid: constant, trouton)"
+        ))),
+    }
+}
+
+/// The heat-capacity model a `[fidelity] heat_capacity` name selects (M16.2).
+/// Every pairing it cannot work in was refused in step 0, in both directions,
+/// so this only has to name the model.
+fn select_enthalpy(name: &str) -> Result<Box<dyn EnthalpyModel>, SimError> {
+    match name {
+        "constant" => Ok(Box::new(refinery_solvers::ConstantEnthalpy)),
+        "linear" => Ok(Box::new(refinery_solvers::LinearCpEnthalpy)),
+        other => Err(SimError::Scenario(format!(
+            "unknown heat capacity model '{other}' (valid: constant, linear)"
+        ))),
+    }
+}
+
+/// The line flash a `[fidelity] line_flash` name selects (M53,
+/// docs/DESIGN.md §58). What a plant selecting `"equilibrium"` may hold was
+/// settled in step 0 (`require_line_flash_plant`).
+fn select_line_flash(name: &str) -> Result<Box<dyn LineFlashModel>, SimError> {
+    match name {
+        "none" => Ok(Box::new(refinery_solvers::NoLineFlash)),
+        "equilibrium" => Ok(Box::new(refinery_solvers::EquilibriumLineFlash)),
+        other => Err(SimError::Scenario(format!(
+            "unknown line flash model '{other}' (valid: none, equilibrium)"
+        ))),
+    }
 }
 
 /// Select the boil-off model, and say whether it needs vent edges.

@@ -336,15 +336,28 @@ pub struct NodeSnapshot {
     /// but say so"): a supply whose plant has no bubble pressure takes any
     /// temperature and pressure a command gives it, unchecked, and this field is
     /// where the engine says so rather than leaving a frontend to infer it from
-    /// the fidelity. Where it is measured, the bubble pressure is never above the
-    /// supply's own — the loader and both supply commands refuse that — so a
-    /// screen draws the margin from it.
+    /// the fidelity. Where it is measured on a plant that carries liquid only,
+    /// the bubble pressure is never above the supply's own — the loader and both
+    /// supply commands refuse that — so a screen draws the margin from it. **On a
+    /// plant that selects `[fidelity] line_flash = "equilibrium"` it can be**
+    /// (M53, docs/DESIGN.md §58): the supply is then boiling where it stands, and
+    /// `vapour_fraction` below says how much of it is vapour. A margin drawn from
+    /// it there is negative.
     ///
     /// Absent on every node that is not a supply, and before the first tick: it
     /// is computed with the tick's other diagnostics, for `cavitation`'s reason
     /// (a model's `Err` cannot be swallowed in `snapshot`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supply_boiling: Option<SupplyBoiling>,
+    /// The share of the MASS leaving this node that is vapour [-], in `(0, 1]`
+    /// (M53, docs/DESIGN.md §58): a supply above its bubble point, and a valve or
+    /// junction whose stream boiled as its pressure fell. The same number every
+    /// edge leaving the node carries as `Stream::vapour_fraction`.
+    ///
+    /// Absent on a node whose stream is all liquid, before the first tick, and
+    /// on every node of a plant that does not select the line flash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vapour_fraction: Option<f64>,
 }
 
 /// What the engine can say about a supply boiling at its own conditions — see

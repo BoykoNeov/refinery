@@ -8376,3 +8376,123 @@ The 210 and 250 lines are M52's measured-before-asking numbers (16.29 kg/s at
   the flow from 10.96 to only 10.74 kg/s and gives the pump push back (26% → 42%):
   less flow is more suction margin. On a pump at its cavitation limit, the
   destination is nearly irrelevant — a lesson the screen now shows.
+
+## M53 — a supply that is partly vapour, and a line that boils as its pressure falls: ledger row B46 and B3's flashing-feed-line clause; opened on a decision
+
+The user asked "what is next" (2026-10-07), was told nothing in DEFERRED.md is
+past its trigger, and offered five directions: creep burn-out (B42, the
+recommendation), a check valve's cracking pressure (E23), a reactor that sets
+its own temperature (D1), NPSH3 rising with flow (B45), and a supply that is
+partly vapour (B46). They chose B46, then decided four questions put before
+building, and two more put when their answers pulled against each other:
+
+1. **The first showcase is a NEW tank plant** — a hot rundown flashing down a
+   pipe and a control valve into a vented tank. The pump screen (a pump in
+   two-phase service, gas-lock) is left for later.
+2. **The stream RE-BOILS as its pressure falls** — a true flashing line, not a
+   vapour share fixed at the supply.
+3. **The refusal is lifted** — but (follow-up) **only where it is modelled**: a
+   boiling supply is accepted, by the loader and by both supply commands, on a
+   plant that selects the flashing line; everywhere else M52's refusal stands.
+4. **Pipes AND control valves** may carry a boiling stream, the valve through
+   its ordinary law at the mixture's density — choking ignored, so a wide-open
+   valve passes too much; named, not built.
+5. (Follow-up) **The flashing line is a per-plant model, off by default**:
+   `[fidelity]` selects it like `boiloff`, so all 43 shipped plants stay
+   byte-identical and keep showing what they show.
+
+**Measured before asking**, with the engine's own `flash_isothermal` on the
+pump demo's naphtha (70/30 light/heavy, Trouton) at 2.4 bar: vapour 0% at
+120 °C, 1.2% by mass at 121 °C, 10.8% at 122 °C (already **92% by VOLUME**,
+63 kg/m³ against 701), 31.9% at 125 °C, 54.4% at 130 °C; at 110 °C, 6.4% at
+1.8 bar and 24.5% at 1.7 bar. A supply barely past boiling flows like a gas.
+
+**And the existing plants' lines, measured twice — the first number was wrong.**
+Every flowing line on the six plants whose thermo has a bubble pressure, run 6 000
+ticks, flashed to the lower of its two end pressures: an ISOTHERMAL flash (at the
+stream's own temperature) put 27–70% of their mass in vapour, and was the wrong
+model — a line boils adiabatically, its vapour taking its latent heat from the
+liquid, so the stream cools as it boils. Isenthalpic: the pump demo's
+`feed_line` 5.0% (M50–M52), M11's `cavitating_pump` three of four lines up to
+9.0%, each column plant's three product draws 9.4–15.4%. So every one of the
+six would move under the model, which is decision 5's reason.
+
+**The convergence spike (throwaway, a worktree outside the repo) decided one
+part of the design.** A source → pipe → valve → pipe → sink plant with a
+homogeneous two-phase density hooked into `compile_edge` at the upwind node,
+re-flashed at each iterate's pressure: 9 supply temperatures (110–130 °C) × 4
+openings cold, and every ordered move between them mid-run, on both
+fidelities. As density alone, Newton converged everywhere but at up to **50
+iterations a tick, its cap**, and the game solver **diverged** at 118 °C wide
+open — a clean two-state cycle across the bubble pressure (2.245 bar liquid at
+700 kg/m³, 2.221 bar at 593 kg/m³, 2 495 times each). With the edge carrying
+`∂ṁ/∂P_upwind` through its density — the M50 `suction_share` arrangement, a
+±100 Pa central difference — **Newton at most 9 iterations a tick, the game
+solver at most 8 on a move and 13 cold, all 36 cold starts and all 1 260 moves
+landing on the cold answer** (worst 9.5e-8 and 2.6e-13). The kink is physical
+and is not smoothed. Two spike bugs were found and fixed on the way (the edge's
+tick-0 placeholder composition, pure light naphtha, whose bubble is a step).
+
+### The design, as built in M53.0
+
+- **`[fidelity] line_flash = "none" | "equilibrium"`**, a `LineFlashModel` in
+  `core`, its impls in `solvers`. `none` is the default and changes no bit.
+- **At a supply**: an isothermal flash at its declared `(T, P)`.
+- **At every zero-volume node** (valve, junction): an ISENTHALPIC flash at the
+  node's pressure from its mixed inflow enthalpy, latent included: the stream
+  cools as it boils.
+- **The stream** carries its vapour share by mass (`Stream::vapour_fraction`,
+  absent on a one-phase stream) and `latent = q·λ` per kilogram of mixture, one
+  writer for both.
+- **Hydraulics**: homogeneous density at the upwind node, re-flashed at each
+  iterate's pressure, and `∂ṁ/∂P_upwind` in both solvers.
+- **Friction heat** on a two-phase branch is booked on its liquid volume only
+  (`h` has no pressure term on this datum; throttling an ideal gas heats nothing).
+- **A tank** takes the arriving latent heat into its own balance and its
+  existing boil-off vents it — never both. The loader requires `boiloff =
+  "flash"` on a flashing plant.
+- **What a flashing plant may hold**: sources, sinks, the atmosphere, junctions,
+  control valves, tanks. Everything else refused at load, by name; a leak
+  refused by command.
+
+### M53.0 — **LANDED** 2026-10-07: the line flash, off by default
+
+`LineFlashModel` (`core`), `NoLineFlash` and `EquilibriumLineFlash`
+(`solvers::line_flash`), `[fidelity] line_flash`; the sweep flashes a supply at
+its declared state and settles every zero-volume node isenthalpically from its
+liquid-equivalent temperature; `Stream::vapour_fraction` and `latent = q·λ` from
+one `VapourShare`, and `NodeSnapshot::vapour_fraction`; a tank's balance takes
+the arriving latent heat; both flow solvers read a two-phase edge's density at
+each trial pressure with its `DensitySlope`, the game solver reads every edge
+fresh on a flashing plant, and friction heats the liquid's share of the volume.
+`require_line_flash_plant` refuses at load what the flash does not model; the
+boiling-supply refusal is lifted by the loader and both commands where the model
+carries vapour, and only there. DESIGN §58.
+
+- **All 43 shipped plants byte-identical on both fidelities**, 6 000 ticks,
+  against baselines recorded before the first edit — run twice, the second after
+  the game solver's fresh-edge change. Wall time could not be compared: a build
+  of another project was loading the machine throughout.
+- **Built engine, the probe plant** (outside the repo, then as a gate): 9 supply
+  temperatures × 4 openings cold and all 1 260 ordered moves on both fidelities
+  land on the cold answer (worst 6.0e-8, 2.0e-14); 24 moves on each take 11–13
+  iterations a tick (a hot two-phase supply wide open stepped in one tick to a
+  cooler one nearly shut), the rest at most 10. **The game solver first cycled
+  on 7 moves** — a step from 110 °C liquid to a boiling supply, 1.857 bar /
+  1.701 bar across the valve's bubble pressure, though the slope was in its step:
+  its line search judged densities frozen at the top of the sweep. Edges read
+  fresh on a flashing plant (`is_fresh_edge`) fixed all seven.
+- Gates: `crates/solvers/tests/reference/line_flash.rs` (6: the pure cut at one
+  atmosphere, closed form; a supply at 122 °C and a let-down to 1.5 bar against
+  an independent hand calculation; the first law swept over 80 settles;
+  `NoLineFlash` inert) and `crates/scenarios/tests/line_flash_reference.rs` (7:
+  the plant boiling and re-boiling; every move across the bubble pressure on both
+  fidelities; the traced 110 → 125 °C step on the game solver; the refusal lifted
+  only where modelled, by file and by command; four load refusals by name; no
+  vapour key on a plant without the model; determinism).
+- Mutations: eight, all caught — the density slope zeroed, fresh edges dropped,
+  `q` from the flash instead of the energy, the latent heat kept out of the mix,
+  the loader's and the command's lift each removed, a pump admitted, the
+  isenthalpic bracket collapsed to isothermal. **Not yet gated, for M53.1's tank
+  plant**: the tank taking arriving latent heat, and friction booked on the
+  liquid share — both need the plant's energy books.

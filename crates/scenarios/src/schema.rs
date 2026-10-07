@@ -222,6 +222,24 @@ pub struct Fidelity {
     /// to move on its own.
     #[serde(default = "default_no_boiloff")]
     pub boiloff: String,
+    /// "none" (default) | "equilibrium" (M53).
+    ///
+    /// What a liquid STREAM does below its bubble point (docs/DESIGN.md §58).
+    /// `"none"` carries every stream as the liquid it was declared — what every
+    /// file written before M53 means, and the user's decision for all of them
+    /// ("selectable, off by default"): six shipped plants have lines that fall
+    /// below their bubble pressure today, and would move. `"equilibrium"` boils a
+    /// supply above its bubble point where it stands and re-boils the stream at
+    /// every valve and junction as its pressure falls, cooling as it boils.
+    ///
+    /// **It lifts M52's refusal of a boiling supply on this plant and only on
+    /// this plant** (§58 fork 1; ledger row B46). And it is refused at load
+    /// beside anything it does not model (`require_line_flash_plant`): a thermo
+    /// with no bubble pressure, a gas, a tank that cannot boil off what arrives,
+    /// and every unit but a supply, a destination, a junction, a control valve
+    /// and a tank.
+    #[serde(default = "default_no_line_flash")]
+    pub line_flash: String,
     /// "constant" (M1–M16.1) | "linear" (M16.2).
     ///
     /// What a heat capacity does with temperature (docs/DESIGN.md §20).
@@ -264,6 +282,12 @@ fn default_none() -> String {
 }
 
 fn default_no_boiloff() -> String {
+    "none".into()
+}
+
+/// Its own default for `default_no_boiloff`'s reason: a mutation must be able
+/// to flip one key's default without the other.
+fn default_no_line_flash() -> String {
     "none".into()
 }
 

@@ -49,8 +49,9 @@
 
 use crate::elements::{cavitation_head_fraction, cavitation_head_fraction_dsigma};
 use crate::network::{
-    accumulation, compile_edges, edge_flows, finalize, solve_remembering_reliefs,
-    solve_with_active_anchoring, validate_degrees, AnchorPass, Capacitance, CompiledEdge, Prepared,
+    accumulation, compile_edges_with, edge_flows, finalize, solve_remembering_reliefs,
+    solve_with_active_anchoring_with, validate_degrees, AnchorPass, Capacitance, CompiledEdge,
+    OwnedLineFlash, Prepared,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
@@ -106,6 +107,21 @@ pub struct NewtonFlowSolver {
     pub eps_dp: f64,
     /// Warm-start pressures from the previous converged solve, keyed by NodeId.
     warm_start: BTreeMap<NodeId, f64>,
+    /// The line flash this solver reads two-phase densities through (M53,
+    /// docs/DESIGN.md §58 fork 3). `NoLineFlash` by default, under which every
+    /// compile is the liquid one bit for bit; the loader sets it from
+    /// `[fidelity] line_flash`.
+    pub line_flash: OwnedLineFlash,
+}
+
+impl NewtonFlowSolver {
+    /// This solver reading two-phase densities through `line_flash` (M53,
+    /// docs/DESIGN.md §58 fork 3) — what the loader calls for a plant selecting
+    /// `[fidelity] line_flash`.
+    pub fn with_line_flash(mut self, line_flash: OwnedLineFlash) -> Self {
+        self.line_flash = line_flash;
+        self
+    }
 }
 
 impl Default for NewtonFlowSolver {
@@ -116,6 +132,7 @@ impl Default for NewtonFlowSolver {
             tol_rel: 1e-8,
             eps_dp: 1.0,
             warm_start: BTreeMap::new(),
+            line_flash: OwnedLineFlash::default(),
         }
     }
 }
@@ -147,9 +164,15 @@ impl FlowSolver for NewtonFlowSolver {
         // docs/DESIGN.md §53): the driver may run a second solve on a copy
         // of the plant, so the pass reads whichever graph it is handed.
         let out = solve_remembering_reliefs(graph, &mut warm_start, |graph, warm_start| {
-            solve_with_active_anchoring(graph, slate, previous_states, warm_start, dt, |prep| {
-                self.pass(prep, graph, slate, previous_states, dt)
-            })
+            solve_with_active_anchoring_with(
+                graph,
+                slate,
+                previous_states,
+                warm_start,
+                dt,
+                self.line_flash.view(),
+                |prep| self.pass(prep, graph, slate, previous_states, dt),
+            )
         });
         self.warm_start = warm_start;
         out
@@ -286,7 +309,13 @@ impl NewtonFlowSolver {
                 // consistent trial, not of the old coefficients at a new
                 // pressure. For an all-liquid network this reproduces the same
                 // `CompiledEdge` bit for bit (M5.2, `compile_edge`).
-                let compiled_t = match compile_edges(graph, slate, previous_states, &trial) {
+                let compiled_t = match compile_edges_with(
+                    graph,
+                    slate,
+                    previous_states,
+                    &trial,
+                    self.line_flash.view(),
+                ) {
                     Ok(c) => c,
                     Err(e) => {
                         return AnchorPass {
@@ -435,6 +464,23 @@ fn assemble(
                 jac[s][s] -= opening_term;
                 if let Some(t) = ti {
                     jac[t][s] += opening_term;
+                }
+            }
+        }
+        // A two-phase edge's flow moves with its UPWIND node's pressure through
+        // its density (M53, docs/DESIGN.md §58 fork 3): that share goes in the
+        // upwind node's column, the relief's arrangement for whichever end the
+        // stream leaves. Absent on every edge whose stream is liquid.
+        if let Some(slope) = c.density_slope {
+            let share = slope.share(dp, eps);
+            if share != 0.0 {
+                if let Some(u) = idx.get(&slope.upwind).copied() {
+                    if let Some(s) = si {
+                        jac[s][u] -= share;
+                    }
+                    if let Some(t) = ti {
+                        jac[t][u] += share;
+                    }
                 }
             }
         }

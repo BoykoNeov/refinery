@@ -10,7 +10,9 @@ use crate::error::SimError;
 use crate::graph::{
     CascadeSpec, ColumnDraw, ControlAction, ControlledValue, EdgeId, NodeId, PlantGraph,
 };
-use crate::units::{JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerSec, Meter, Pascal, Seconds, Watt};
+use crate::units::{
+    JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerM3, KgPerSec, Meter, Pascal, Seconds, Watt,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -838,6 +840,134 @@ pub trait BoilOffModel: Send {
         thermo: &dyn ThermoModel,
         enthalpy: &dyn EnthalpyModel,
     ) -> Result<Option<BoilOff>, SimError>;
+}
+
+/// A stream's vapour, where it has any (M53, docs/DESIGN.md §58): the share of
+/// its mass that is vapour and the latent heat that share carries.
+///
+/// **One value, written together**, because the three numbers describe one
+/// equilibrium: the flash that found `mass_fraction` sized `latent` against the
+/// vapour it made, and `liquid_equivalent` is the enthalpy the two came from.
+/// Re-deriving any of them downstream (at another temperature, over the other
+/// phase's fractions) gives a plausible number that does not close the books.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VapourShare {
+    /// Vapour's share of the stream's MASS, in `(0, 1]` [-].
+    pub mass_fraction: f64,
+    /// Latent heat carried per kilogram of the WHOLE stream [J/kg]:
+    /// `mass_fraction × λ`, with `λ` the vapour's own heat of vaporisation per
+    /// kilogram of vapour. On this engine's saturated-liquid datum a stream's
+    /// specific enthalpy is `h(T) + latent` (`Stream::latent`).
+    pub latent: JPerKg,
+    /// The temperature [K] the stream would have as all LIQUID with the same
+    /// enthalpy: `h(T_le) = h(T) + latent`. It is the stream's enthalpy in the
+    /// one form a flash at another pressure can start from — a flow solve
+    /// re-flashing a node at a trial pressure reads it (M53 fork 3).
+    pub liquid_equivalent: Kelvin,
+}
+
+/// A node's settled state after a line flash: its temperature, and its vapour if
+/// it has any.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Settled {
+    /// The node's temperature [K]. Below its liquid-equivalent temperature by the
+    /// latent heat its vapour took (`h(T) = h(T_le) − latent`).
+    pub temperature: Kelvin,
+    /// `None` on a stream that is all liquid.
+    pub vapour: Option<VapourShare>,
+}
+
+/// The density a two-phase stream flows at, from `LineFlashModel::density`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TwoPhaseDensity {
+    /// Homogeneous mixture density [kg/m³], `1/ρ = q/ρ_v + (1 − q)/ρ_l`: the
+    /// phases move together at one velocity (the homogeneous equilibrium model;
+    /// Wallis, *One-dimensional Two-phase Flow*, 1969, ch. 2).
+    pub mixture: KgPerM3,
+    /// The LIQUID's share of the stream's volume [-], `((1 − q)/ρ_l)·ρ`. Friction
+    /// heat is booked on it alone: on this engine's datum a liquid's enthalpy has
+    /// no pressure term, so throttling heats it by `v·ΔP`, while an ideal gas's
+    /// enthalpy does not move with pressure at all (M53 fork 6).
+    pub liquid_volume_share: f64,
+}
+
+/// What a liquid stream does when its pressure falls below its bubble point —
+/// the line-flash seam (M53, docs/DESIGN.md §58, `[fidelity] line_flash`).
+///
+/// Two implementations, and the first is not an approximation of the second:
+/// `NoLineFlash` carries every stream as the liquid it was declared, which is
+/// what every plant written before M53 says; `EquilibriumLineFlash` boils a
+/// supply above its bubble point where it stands (an isothermal flash at its
+/// declared state) and re-boils the stream at every zero-volume node as its
+/// pressure falls (an ISENTHALPIC flash, so it cools as it boils). A plant
+/// chooses which statement it makes, the way `[fidelity] boiloff` does for a
+/// holdup.
+///
+/// **Pure, and a function of its arguments alone** (the `BoilOffModel`
+/// contract): the engine and each flow solver hold their own instance, so state
+/// on `self` would let the two disagree.
+pub trait LineFlashModel: Send {
+    fn name(&self) -> &'static str;
+
+    /// Whether this model can carry a stream that is partly vapour. `false`
+    /// keeps M52's refusal of a supply that would boil where it stands (the
+    /// loader's and both supply commands', `docs/DEFERRED.md` B46); `true`
+    /// lifts it, because the supply is then modelled rather than misread.
+    fn carries_vapour(&self) -> bool;
+
+    /// A supply's vapour at its declared state: an isothermal flash at
+    /// `(temperature, pressure)` — a source HOLDS its temperature, so the heat
+    /// its vapour carries comes from outside the plant. `Ok(None)` when it is
+    /// all liquid, and always on `NoLineFlash`.
+    ///
+    /// # Errors
+    /// `SimError` when the flash can be evaluated and comes out impossible.
+    fn supply(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        temperature: Kelvin,
+        pressure: Pascal,
+        thermo: &dyn ThermoModel,
+        enthalpy: &dyn EnthalpyModel,
+    ) -> Result<Option<VapourShare>, SimError>;
+
+    /// A zero-volume node's state from its mixed inflow: an isenthalpic flash at
+    /// `pressure`, from the temperature its inflow would have as all liquid
+    /// (`liquid_equivalent`, its latent heat included). `NoLineFlash` returns
+    /// `liquid_equivalent` and no vapour, bit for bit.
+    ///
+    /// # Errors
+    /// As `supply`.
+    #[allow(clippy::too_many_arguments)] // one argument per seam this model reads
+    fn settle(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        liquid_equivalent: Kelvin,
+        pressure: Pascal,
+        thermo: &dyn ThermoModel,
+        enthalpy: &dyn EnthalpyModel,
+    ) -> Result<Settled, SimError>;
+
+    /// The density a stream of this enthalpy flows at under `pressure`, when it
+    /// is partly vapour there; `Ok(None)` when it is all liquid, which leaves the
+    /// caller's liquid density in force. The flow solve asks this at every trial
+    /// pressure (M53 fork 3: last tick's vapour share, frozen, cycles across the
+    /// bubble pressure).
+    ///
+    /// # Errors
+    /// As `supply`.
+    #[allow(clippy::too_many_arguments)] // one argument per seam this model reads
+    fn density(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        liquid_equivalent: Kelvin,
+        pressure: Pascal,
+        thermo: &dyn ThermoModel,
+        enthalpy: &dyn EnthalpyModel,
+    ) -> Result<Option<TwoPhaseDensity>, SimError>;
 }
 
 /// How a column divides its feed among its draws — the separation seam.
