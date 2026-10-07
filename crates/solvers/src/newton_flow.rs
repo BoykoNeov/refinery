@@ -47,6 +47,7 @@
 //! Newton system, and every edge touching one reports zero flow. This is a
 //! legitimate, frequent game state (operator closes a valve), not an error.
 
+use crate::elements::{cavitation_head_fraction, cavitation_head_fraction_dsigma};
 use crate::network::{
     accumulation, compile_edges, edge_flows, finalize, solve_remembering_reliefs,
     solve_with_active_anchoring, validate_degrees, AnchorPass, Capacitance, CompiledEdge, Prepared,
@@ -271,11 +272,14 @@ impl NewtonFlowSolver {
             // constant for the relation it must hold against `max_iter`.
             //
             // The ladder starts short of a step that would carry a check valve
-            // from full lift to shut (M49, docs/DESIGN.md §54): `band_cut`.
+            // from full lift to shut (M49, docs/DESIGN.md §54): `band_cut`. Each
+            // trial carries a cavitating pump's outlet along the head its
+            // suction step buys (M51, §56): `follow_pump_heads`.
             let mut t = band_cut(&compiled, &idx, &dp);
             let mut accepted = false;
             for _ in 0..=MAX_HALVINGS {
-                let trial = apply_step(&pressures, &unknowns, &idx, &dp, t);
+                let mut trial = apply_step(&pressures, &unknowns, &idx, &dp, t);
+                follow_pump_heads(&compiled, &idx, &dp, t, &mut trial);
                 // Recompile at the trial iterate: a gas edge's frozen density
                 // coefficient follows the pressure it is evaluated at, so the
                 // merit the line search compares must be the merit of the fully
@@ -490,6 +494,64 @@ fn band_cut(
         }
     }
     t
+}
+
+/// Moves a cavitating pump's OUTLET with the head its suction step really buys
+/// (M51, docs/DESIGN.md §56, ledger row A23): a curved line search, `P(t)`,
+/// rather than the straight `P + t·ΔP`.
+///
+/// A pump in partial cavitation is a lever. Its head is `φ(σ)·ρ·g·h0`, and on
+/// the M50 demo one pascal more at the suction is twenty more at the outlet
+/// (`dbeta_dp`). The pump's branch then pins `P_out − P_suction − φ·ρ·g·h0`
+/// near its small `αQ²`, so the solve's answer lies along a curve shaped like
+/// `φ` — and a straight step leaves it. The step is computed on the tangent of
+/// `φ`, which past σ ≈ 0.38 (where `φ` turns concave) promises more head than
+/// the pump gives: throttling the demo from 0.6 to 0.2 predicted `φ` = 1.36
+/// where it is 0.97, put the outlet a bar too high, and the line search could
+/// only accept slivers of a step. Newton gave up at 50 iterations, on the
+/// move the demo exists to teach, while every cold start converged.
+///
+/// The cure is a change of unknown at the pump's outlet: measure it from the
+/// head the pump delivers, `u = P_out − φ(σ(P_suction))·ρ·g·h0`, in which the
+/// branch's drive is linear in the step. Taking the Newton step in `u` and
+/// mapping back adds `(φ(σ + t·Δσ) − φ(σ) − φ'(σ)·t·Δσ)·ρ·g·h0` to the
+/// outlet's trial pressure. That is second order in `t`, so the path leaves
+/// the iterate along the Newton direction and Armijo's sufficient-decrease
+/// test is still the right test of it. It takes the failing move in 4
+/// iterations.
+///
+/// Skipped where the outlet is not an unknown (a pinned pressure takes no
+/// correction) or the suction is not. Zero on every pump without
+/// `npsh_required_m`, which has no `pump_suction`, so no plant without the key
+/// can move. Not built, because no plant has one: two keyed pumps into one
+/// node (their corrections add), two in series (the downstream pump's
+/// correction ignores the upstream one's at its own suction), and a check
+/// valve on a keyed pump's outlet (`band_cut` sets `t` before this moves the
+/// disc's drive).
+fn follow_pump_heads(
+    compiled: &BTreeMap<EdgeId, CompiledEdge>,
+    idx: &BTreeMap<NodeId, usize>,
+    dp: &[f64],
+    t: f64,
+    trial: &mut BTreeMap<NodeId, f64>,
+) {
+    for c in compiled.values() {
+        let Some(s) = c.pump_suction else {
+            continue;
+        };
+        let (Some(&i), true) = (idx.get(&c.src), idx.contains_key(&c.tgt)) else {
+            continue;
+        };
+        let dsigma = s.dsigma_dp * t * dp[i];
+        let actual = cavitation_head_fraction(s.sigma + dsigma);
+        let tangent = s.head_fraction + cavitation_head_fraction_dsigma(s.sigma) * dsigma;
+        let lift = (actual - tangent) * s.shutoff_head;
+        if lift != 0.0 {
+            if let Some(outlet) = trial.get_mut(&c.tgt) {
+                *outlet += lift;
+            }
+        }
+    }
 }
 
 /// Copy `pressures`, advancing each unknown by `t·ΔP`.

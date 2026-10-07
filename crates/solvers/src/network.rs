@@ -101,6 +101,12 @@ pub struct PumpSuctionSlope {
     pub dalpha_dp: f64,
     /// `∂β/∂P_src` [Pa/Pa], never positive: more suction, more head.
     pub dbeta_dp: f64,
+    /// `σ = NPSHa/NPSH3` at the iterate (dimensionless).
+    pub sigma: f64,
+    /// `dσ/dP_src` [1/Pa]: `1/(ρ·g·NPSH3)`.
+    pub dsigma_dp: f64,
+    /// The whole curve's shut-off head as a pressure, `ρ·g·h0` [Pa].
+    pub shutoff_head: f64,
 }
 
 /// Where a check valve stands in its band (M49, docs/DESIGN.md §54).
@@ -695,6 +701,9 @@ pub fn compile_edge(
                         head_fraction,
                         dalpha_dp: dphi_dp * pump.alpha,
                         dbeta_dp: dphi_dp * pump.beta,
+                        sigma,
+                        dsigma_dp,
+                        shutoff_head: -pump.beta,
                     });
                 }
                 _ => branch = branch.in_series(QuadraticBranch::pump(h0_eff, *a, rho, G)),

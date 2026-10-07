@@ -299,6 +299,72 @@ fn opening_up_buys_little_and_throttling_restores_the_head() {
     assert!(rel(flow(&throttled, "discharge"), mdot) < 1e-4);
 }
 
+/// **Every move of the valve mid-run lands where a cold start at the new
+/// opening does, on both fidelities** (M51, ledger row A23). The gate above
+/// throttles from a COLD start; a player throttles a running pump, and Newton
+/// gave up on every move from 0.4 or wider down to 0.2 or narrower — the
+/// demo's own lesson, crashed — while the game solver took them all. Every
+/// ordered pair of eight openings, the step taken on a pump settled 30 ticks,
+/// held to the cold answer after 30 more and to an iteration cap on every one
+/// of those ticks. Written failing first (Newton: 0.4 -> 0.1 gave up after 27
+/// iterations); `newton_flow::follow_pump_heads` is the fix.
+#[test]
+fn every_valve_move_mid_run_lands_on_the_cold_answer() {
+    const OPENINGS: [f64; 8] = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0];
+    let with_opening = |engine: &mut Engine, opening: f64| {
+        let valve = id(engine, "discharge_valve");
+        engine
+            .apply(Command::SetValveOpening {
+                node: valve,
+                opening,
+            })
+            .expect("the valve takes an opening");
+    };
+    // Worst iterations on any tick after a move, measured: 7 Newton (onto
+    // 0.1), 55 game-solver sweeps. Newton's cap is what tells a fix that
+    // crawls to the answer from one that takes it.
+    for (solver, cap) in [("newton", 10), ("simple", 80)] {
+        let src = DEMO.replace("flow = \"newton\"", &format!("flow = \"{solver}\""));
+        let cold: Vec<f64> = OPENINGS
+            .iter()
+            .map(|&opening| {
+                let mut engine = build(&src);
+                with_opening(&mut engine, opening);
+                run(&mut engine, 60);
+                flow(&engine.snapshot(), "discharge")
+            })
+            .collect();
+        for (i, &from) in OPENINGS.iter().enumerate() {
+            for (j, &to) in OPENINGS.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                let mut engine = build(&src);
+                with_opening(&mut engine, from);
+                run(&mut engine, 30);
+                with_opening(&mut engine, to);
+                let mut worst = 0;
+                for t in 1..=30 {
+                    if let Err(e) = engine.tick() {
+                        panic!("{solver}: {from} -> {to}, tick {t} after the move: {e}");
+                    }
+                    worst = worst.max(engine.snapshot().solver.iterations);
+                }
+                assert!(
+                    worst <= cap,
+                    "{solver}: {from} -> {to} took {worst} iterations on a tick, cap {cap}"
+                );
+                let landed = flow(&engine.snapshot(), "discharge");
+                assert!(
+                    rel(landed, cold[j]) < 1e-6,
+                    "{solver}: {from} -> {to} lands on {landed} kg/s, a cold start on {}",
+                    cold[j]
+                );
+            }
+        }
+    }
+}
+
 /// **A stopped pump has no head to lose** (§55 fork 2): with the key it is the
 /// same resistance a stopped pump without the key is, and it reports nothing.
 /// Stopped mid-run, so the bubble pressure is in hand.
