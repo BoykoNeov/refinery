@@ -8308,7 +8308,7 @@ pressure refused by both and by the loader, one rule (`engine::supply_boiling`);
   purpose and now feed a compressed liquid at the same flow.
 - Corpus: 33 plants with a source moved, wire only (byte-identical with the new
   field stripped, 86 runs of 6 000 ticks on both fidelities); the other 10 are
-  byte-identical. Mutations: ten, all caught.
+  byte-identical. Mutations: ten, all caught. Release property tests pass.
 
 ### M52.1 — the pump screen's supply keys — **LANDED** 2026-10-07, and M52 is CLOSED
 

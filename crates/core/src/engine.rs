@@ -2008,21 +2008,10 @@ impl Engine {
             );
         }
 
-        // 5. Furnace coils (M34, docs/DESIGN.md §37). The sweep integrated each
-        //    coil across the tick, from its start-of-tick temperature, because
-        //    the sweep is where its inlet is known; the result is committed here,
-        //    with every other state, so nothing above read a half-written tick.
-        for (&nid, &end) in &node_states.coil_temperature {
-            if let NodeKind::Furnace { coil, .. } = &mut self.graph.node_mut(nid).kind {
-                coil.temperature = end;
-            }
-        }
-
-        self.node_states = node_states;
-        self.last_solution = Some(solution);
-        self.last_cavitation = cavitation;
         // The supplies' own conditions (M52, docs/DESIGN.md §57): read off their
         // kinds, which only a command moves, so this is what the next tick feeds.
+        // Before anything is committed, as the cavitation criterion is: a model's
+        // `Err` here fails the tick with the engine still at the last one.
         let mut supply = std::collections::BTreeMap::new();
         for nid in self.graph.node_ids() {
             if let NodeKind::Source {
@@ -2036,6 +2025,20 @@ impl Engine {
                 supply.insert(nid, check);
             }
         }
+
+        // 5. Furnace coils (M34, docs/DESIGN.md §37). The sweep integrated each
+        //    coil across the tick, from its start-of-tick temperature, because
+        //    the sweep is where its inlet is known; the result is committed here,
+        //    with every other state, so nothing above read a half-written tick.
+        for (&nid, &end) in &node_states.coil_temperature {
+            if let NodeKind::Furnace { coil, .. } = &mut self.graph.node_mut(nid).kind {
+                coil.temperature = end;
+            }
+        }
+
+        self.node_states = node_states;
+        self.last_solution = Some(solution);
+        self.last_cavitation = cavitation;
         self.last_supply_boiling = supply;
         self.tick += 1;
         Ok(())

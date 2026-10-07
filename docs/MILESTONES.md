@@ -41,7 +41,7 @@ plants with no bubble pressure, "accept it, but say so". DESIGN §57.
   warming back (the lag), and back-pressure barely costing a cavitating pump flow.
 - Gates: `supply_command_reference.rs` (8 tests) and the appended screen beats.
   Mutations: ten on the engine and two on the screen, all caught. Both clippy
-  passes clean.
+  passes clean; release property tests pass.
 
 **M51 is CLOSED (2026-10-07): the pump screen, and Newton throttling a
 cavitating pump — `docs/DEFERRED.md` A23 opened and struck.** On a decision (a
