@@ -21,6 +21,12 @@ jobs:
   workspace:
     name: fmt · clippy · test
     runs-on: ubuntu-latest
+    env:
+      # ~130 debug test binaries with full debug info filled the runner's disk
+      # from M52.0 on: the linker died with a bus error (once, "No space left on
+      # device"). Line tables keep a panic's file and line at a fraction of the
+      # size.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
