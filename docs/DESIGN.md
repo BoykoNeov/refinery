@@ -20424,7 +20424,7 @@ runs, is ROADMAP M51.
 
 **What failed, measured.** On `pump_cavitation_flow_limit.toml` settled at an
 opening, then moved: every move from 0.4, 0.5, 0.6 or 0.8 to 0.1 or 0.2 failed on
-Newton (27 to 50 iterations, residual 2.1–4.8 kg/s); every opening move, every
+Newton (after 2 to 50 iterations, residual 2.1–6.8 kg/s); every opening move, every
 smaller throttle, every throttle from 1.0, the pump stopped and restarted, and
 M11's whole timeline converged. Without `npsh_required_m` every move converged,
 so the fault was M50's coupling. Newton's Jacobian matched a central difference
@@ -20435,14 +20435,19 @@ to six digits at the failing iterate, so it was not a slope bug.
 suction is twenty at the outlet (`dbeta_dp = −20.2`). The pump's branch is stiff
 — a small error in its drive `P_suction − P_out + φ·ρ·g·h0` is a large error in
 its flow — so the answer lies along a curve shaped like `φ`, and a straight step
-leaves it. Newton steps on `φ`'s tangent, and past `σ ≈ 0.38` (`1/√(2k)`, where
-`φ` turns concave) the tangent promises more head than the pump has: at the
-failing iterate (`σ = 0.29`) the full step predicted `φ = 1.36` where the curve
-gives 0.97, putting the outlet about a bar too high. Every shortened step erred
-the same way at second order, the line search accepted 1/16 to 1/64 of a step,
-and after 50 iterations the pump had climbed only to `φ = 0.87`. Throttling from
-1.0 converged because the pump starts at `σ = 0.13`, on the convex side, where
-the tangent UNDER-promises.
+leaves it. Newton steps on `φ`'s tangent, and from the failing iterate
+(`σ = 0.29`, near `φ`'s steepest point `σ = 1/√(2k) ≈ 0.38`) the full step
+carried `σ` to 1.02 and the tangent ran past the curve's ceiling: it predicted
+`φ = 1.36` where the curve gives 0.97, putting the outlet about a bar (104 kPa)
+too high. Every shortened step erred the same way at second order, the line
+search accepted between 1/4 and 1/64 of a step (mostly the small end), and by
+iteration 16 the pump had climbed only to `φ = 0.87`, about 0.01 an iteration.
+**Why throttling from 1.0 converged, traced:** that pump starts at `σ = 0.13`,
+where `φ` is shallow, so its first step's tangent UNDER-promised (0.87 against
+0.985): the outlet landed 32 kPa LOW, a third the size and the other sign.
+Newton crept five iterations and converged on the sixth's long step. Not
+convexity — both starts sit below the inflection — but where the full step
+lands against the curve's flat top.
 
 **The fix: a change of unknown at the pump's outlet** (`newton_flow::
 follow_pump_heads`). Measured from the head the pump delivers,

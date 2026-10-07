@@ -505,11 +505,11 @@ fn band_cut(
 /// (`dbeta_dp`). The pump's branch then pins `P_out − P_suction − φ·ρ·g·h0`
 /// near its small `αQ²`, so the solve's answer lies along a curve shaped like
 /// `φ` — and a straight step leaves it. The step is computed on the tangent of
-/// `φ`, which past σ ≈ 0.38 (where `φ` turns concave) promises more head than
-/// the pump gives: throttling the demo from 0.6 to 0.2 predicted `φ` = 1.36
-/// where it is 0.97, put the outlet a bar too high, and the line search could
-/// only accept slivers of a step. Newton gave up at 50 iterations, on the
-/// move the demo exists to teach, while every cold start converged.
+/// `φ`, and a long step from near `φ`'s steepest point runs past the curve's
+/// ceiling: throttling the demo from 0.6 to 0.2 predicted `φ` = 1.36 where it
+/// is 0.97, put the outlet a bar too high, and the line search could only
+/// accept slivers of a step. Newton gave up at 50 iterations, on the move the
+/// demo exists to teach, while every cold start converged.
 ///
 /// The cure is a change of unknown at the pump's outlet: measure it from the
 /// head the pump delivers, `u = P_out − φ(σ(P_suction))·ρ·g·h0`, in which the

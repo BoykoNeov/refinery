@@ -8166,9 +8166,11 @@ the bug), they chose the fix. The note for both halves is DESIGN §56.
 New ledger row A23, opened and struck together. Newton's Jacobian matched a
 central difference to six digits at the failing iterate; the fault was the
 straight step. The pump's head is a lever on its suction (20 Pa out per Pa in on
-the demo), its branch is stiff, and the tangent of `φ` past its inflection
-promised 1.36 where the curve gives 0.97 — the outlet a bar too high, and the
-line search able to accept only 1/16 to 1/64 of each step. Each trial now moves
+the demo), its branch is stiff, and a long step on `φ`'s tangent ran past the
+curve's ceiling — 1.36 promised where the curve gives 0.97, the outlet a bar too
+high, and the line search able to accept only 1/4 to 1/64 of each step (mostly
+the small end). From 1.0 the tangent under-promised instead (the outlet 32 kPa
+low), which Newton survived. Each trial now moves
 the pump's outlet by the head the suction step really buys minus the tangent's
 promise (`newton_flow::follow_pump_heads`, Newton in the unknown
 `P_out − φ·ρ·g·h0`). The failing move takes 4 iterations.
@@ -8181,6 +8183,10 @@ promise (`newton_flow::follow_pump_heads`, Newton in the unknown
 - Corpus: 42 plants byte-identical on Newton and all 43 on the game solver; the
   demo moved on Newton at its tolerance (worst 3.8e-9 relative, the same 24
   iterations). Release property tests pass. The Godot binding did not change.
+- Probed before closing, on both fidelities and both plants: the valve walked
+  from 0.6 to shut and back to wide open in the Down/Up key's 5% steps, and the
+  pump stopped and restarted at 0, 0.05, 0.1, 0.2 and 0.8. All converge; Newton
+  at most 8 iterations a tick.
 
 ### M51.1 — `demo/pump.tscn` — **LANDED** 2026-10-07, and M51 is CLOSED
 
