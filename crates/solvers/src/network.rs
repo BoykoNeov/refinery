@@ -686,7 +686,7 @@ pub fn compile_edge_with(
     flash: LineFlash<'_>,
 ) -> Result<CompiledEdge, SimError> {
     let mut compiled = compile_edge_at(graph, eid, slate, previous_states, pressures, flash, None)?;
-    if !compiled.conducts {
+    if !compiled.conducts || !flash.model.carries_vapour() {
         return Ok(compiled);
     }
     let (src, tgt) = graph.endpoints(eid);
@@ -774,6 +774,12 @@ fn two_phase_density(
     pressure: Pascal,
     flash: LineFlash<'_>,
 ) -> Result<Option<TwoPhaseDensity>, SimError> {
+    // Every edge of a plant whose model carries no vapour is liquid: answered
+    // here, before a lookup, because this runs for every edge at every trial
+    // pressure (measured: 10–18% of a liquid plant's tick without it).
+    if !flash.model.carries_vapour() {
+        return Ok(None);
+    }
     let (composition, liquid_equivalent) = match &graph.node(upwind_node).kind {
         NodeKind::Source {
             temperature,

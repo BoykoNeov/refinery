@@ -42,7 +42,8 @@ refusal lifted only where modelled. DESIGN §58.
 - **Findings for the user**: two latent-heat conventions meet in a flashing tank
   (B51: 17.93% vented against a single flash's 17.56%); M12's boil-off parks a
   tank a few millikelvin below its own bubble point at the shipped step; the
-  plant is the corpus's slowest.
+  plant is the corpus's slowest. The unchanged plants run 1–10% slower, measured
+  back to back against the M52 binary after two fast exits.
 - Gates: `line_flash.rs` reference (6), `line_flash_reference.rs` (7),
   `flashing_rundown_reference.rs` (6). Mutations: eleven, all caught. The Godot
   binding did not change.

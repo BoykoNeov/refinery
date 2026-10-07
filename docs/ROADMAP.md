@@ -8540,3 +8540,21 @@ two-phase service (gas-lock — the pump screen's supply past boiling), B49 phas
 slip and a condensing wall, B50 a zero-volume node's enthalpy one tick late in
 the flow solve, B51 the two latent-heat conventions. B46 struck; B3's
 flashing-line clause closed for the units a flashing plant may hold.
+
+**After close (same day), on the advisor's review:**
+- **Wall time, measured properly.** M53.0's corpus read 2–2.5× slower on the
+  unchanged plants (8× on one), on a machine another project's build was
+  loading. Back to back against the M52 binary, three interleaved runs of four
+  plants: 0–18% slower — the per-edge density lookups, run on every plant. Two
+  fast exits on a model that carries no vapour (`two_phase_density`,
+  `settle_node`) took it to 1–10%, inside the run-to-run spread on two of the
+  four. Every fingerprint unchanged, the new plant's included.
+- **The supply-past-boiling gate runs on both fidelities**: the game solver is
+  what a player runs, and the dry tank was a regime no gate reached on it. Its
+  tank starts at 1 m so it runs dry in a few hundred ticks; still the slowest
+  test in the file (the game solver re-reads every edge, each a bisection of
+  bisections, in a debug build).
+- **CI had been red since M52.0** — not a test: the runner's disk filling while
+  linking ~130 debug test binaries (`ld ... Bus error`, and once "No space left
+  on device"), and M53's three new test files add to it. The workspace job now
+  builds with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`.

@@ -985,6 +985,11 @@ fn settle_node(
     id: NodeId,
     liquid_equivalent: Kelvin,
 ) -> Result<Kelvin, SimError> {
+    // A model that carries no vapour hands every mix back as it came: answered
+    // before the lookups, because this runs at every swept node every tick.
+    if !line_flash.carries_vapour() {
+        return Ok(liquid_equivalent);
+    }
     let pressure = node_pressure.get(&id).copied().ok_or_else(|| {
         SimError::Numerical(format!(
             "internal: node '{}' has no solved pressure for its line flash",

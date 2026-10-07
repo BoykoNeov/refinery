@@ -375,45 +375,52 @@ fn both_fidelities_agree_on_the_flashing_rundown() {
 /// leaves the tank after it runs dry is still boiling.
 #[test]
 fn a_supply_warmed_past_boiling_boils_where_it_stands() {
-    let mut engine = build(DEMO);
-    for t in 1..=300 {
-        tick(&mut engine, t);
+    // On BOTH fidelities: the game solver is what a player runs, and the dry
+    // tank is a regime no other gate reaches on it.
+    for solver in ["newton", "simple"] {
+        // The tank starts low (1 m, not 4.5) so it runs dry in a few hundred
+        // ticks; nothing else depends on its level.
+        let low = on_solver(solver).replace("initial_level_m = 4.5", "initial_level_m = 1.0");
+        let mut engine = build(&low);
+        for t in 1..=100 {
+            tick(&mut engine, t);
+        }
+        let cold_flow = edge(&engine.snapshot(), "rundown_line")
+            .stream
+            .mass_flow
+            .value();
+        warm_supply(&mut engine, 135.0);
+        for t in 101..=700 {
+            tick(&mut engine, t);
+        }
+        let s = engine.snapshot();
+        let q = node(&s, "rundown")
+            .vapour_fraction
+            .expect("the supply boils");
+        assert!((q - 0.347_526_116_816_403).abs() < 1e-9, "{q}");
+        assert_eq!(edge(&s, "rundown_line").stream.vapour_fraction, Some(q));
+        let hot_flow = edge(&s, "rundown_line").stream.mass_flow.value();
+        assert!(
+            hot_flow < 0.5 * cold_flow,
+            "{hot_flow} kg/s against {cold_flow}"
+        );
+        // The tank has run dry and passes its inflow straight through: settled at
+        // its own pressure, as a junction is — not handed on as liquid holding the
+        // latent heat as superheat (184 °C, measured before the fix). Read on the
+        // tank's OWN outlet: the outlet valve downstream re-flashes either way.
+        assert!(
+            s.tanks.iter().all(|(_, tank)| tank.mass.value() < 1.0),
+            "the tank must be dry"
+        );
+        let drained = &edge(&s, "tank_outlet").stream;
+        assert!(
+            drained.vapour_fraction.is_some(),
+            "the dry tank passes the boiling stream on as what it is"
+        );
+        assert!(
+            drained.temperature.value() < 120.0 + 273.15,
+            "{} K",
+            drained.temperature.value()
+        );
     }
-    let cold_flow = edge(&engine.snapshot(), "rundown_line")
-        .stream
-        .mass_flow
-        .value();
-    warm_supply(&mut engine, 135.0);
-    for t in 301..=1500 {
-        tick(&mut engine, t);
-    }
-    let s = engine.snapshot();
-    let q = node(&s, "rundown")
-        .vapour_fraction
-        .expect("the supply boils");
-    assert!((q - 0.347_526_116_816_403).abs() < 1e-9, "{q}");
-    assert_eq!(edge(&s, "rundown_line").stream.vapour_fraction, Some(q));
-    let hot_flow = edge(&s, "rundown_line").stream.mass_flow.value();
-    assert!(
-        hot_flow < 0.5 * cold_flow,
-        "{hot_flow} kg/s against {cold_flow}"
-    );
-    // The tank has run dry and passes its inflow straight through: settled at
-    // its own pressure, as a junction is — not handed on as liquid holding the
-    // latent heat as superheat (184 °C, measured before the fix). Read on the
-    // tank's OWN outlet: the outlet valve downstream re-flashes either way.
-    assert!(
-        s.tanks.iter().all(|(_, tank)| tank.mass.value() < 1.0),
-        "the tank must be dry"
-    );
-    let drained = &edge(&s, "tank_outlet").stream;
-    assert!(
-        drained.vapour_fraction.is_some(),
-        "the dry tank passes the boiling stream on as what it is"
-    );
-    assert!(
-        drained.temperature.value() < 120.0 + 273.15,
-        "{} K",
-        drained.temperature.value()
-    );
 }
