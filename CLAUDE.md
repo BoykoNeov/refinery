@@ -108,6 +108,8 @@ godot --headless --path . --editor --quit    # once, after cloning
 godot --headless --path . -- --auto          # the M6.2 demo; ends at t=350
 godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on screen)
 godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
+godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on screen)
+godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling]
 ```
 
 ## Testing
@@ -146,9 +148,9 @@ godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M50
-(2026-10-07)** — a pump declaring `npsh_required_m` loses head as its suction
-nears the liquid's bubble pressure, and reports how much (B9 closed).
+Work only on the current milestone unless asked. **Latest closed: M51
+(2026-10-07)** — the pump screen (`demo/pump.tscn`), and Newton no longer gives
+up when a running cavitating pump is throttled hard (A23 opened and closed).
 Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.

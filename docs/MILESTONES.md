@@ -12,6 +12,35 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M51 is CLOSED (2026-10-07): the pump screen, and Newton throttling a
+cavitating pump — `docs/DEFERRED.md` A23 opened and struck.** On a decision (a
+Godot screen for M50, the second of five directions offered) and three DECISIONS
+put before building: both cavitation plants, only the commands that exist, and a
+trail plot. Then a fourth, when the screen's first run found the bug: fix the
+solver first. DESIGN §56.
+- **The screen found it**: Newton gave up throttling M50's RUNNING pump from 0.4
+  or wider to 0.2 or narrower — the demo's own lesson — while every cold start
+  converged and the game solver took every move. The Jacobian was right; the
+  straight step was not. The pump's head is a lever on its suction (20 Pa out
+  per Pa in), and `φ`'s tangent past its inflection promised 1.36 where the
+  curve gives 0.97.
+- **`newton_flow::follow_pump_heads`** (M51.0): each line-search trial moves the
+  pump's outlet by the head the suction step really buys minus the tangent's
+  promise — Newton in `P_out − φ·ρ·g·h0`, second order in `t`, zero on any pump
+  without the key. The failing move takes 4 iterations.
+- **`demo/pump.tscn`** (M51.1): the M50 plant (key 1) and M11's (key 2); the pump
+  filled by the head it delivers, a suction gauge marked with the bubble
+  pressure, a panel saying why the lamp and the head disagree, and a trail of
+  flow and head per opening visited — the plants settle in one tick, so the
+  trail is the screen's memory. Nothing physical computed in GDScript.
+- Gates: `every_valve_move_mid_run_lands_on_the_cold_answer` (56 moves × 2
+  fidelities, Newton capped at 10 a tick, worst 7; written failing first) and
+  `pump_screen.rs` (both timelines byte for byte). Mutations: five on the fix and
+  two on the screen, all caught.
+- 42 plants byte-identical on Newton and all 43 on the game solver; the demo
+  moved on Newton at its tolerance (3.8e-9). Release property tests pass. The
+  Godot binding did not change.
+
 **M50 is CLOSED (2026-10-07): what cavitation does to a pump —
 `docs/DEFERRED.md` B9 struck, B45 opened.** On the user's request (B9, the
 recommended one of five next slices) and three DECISIONS put before building:
@@ -33,7 +62,8 @@ in the snapshot. DESIGN §55.
   on the bracket first.
 - **Demo `pump_cavitation_flow_limit.toml`** (43rd file): the pump settles at
   26% of its head, 10.96 kg/s against 16.5 without the key, and opening the
-  valve wide buys under 5%; throttling to 0.2 gives the head back. The boiling
+  valve wide buys under 5%; throttling to 0.2 gives the head back. *(From a cold
+  start only: throttling the RUNNING pump crashed Newton until M51, A23.)* The boiling
   lamp reads false there on purpose: the bulk suction is above the bubble
   point, the impeller eye is not.
 - Gates: eleven in `pump_cavitation_reference.rs` (a hand calculation among

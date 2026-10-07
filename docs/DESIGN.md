@@ -20405,3 +20405,101 @@ Opening the valve wide buys under 5% more flow (the key-less twin gains over
   two solves start warm from different points and agree to 4.7e-9. It asserts
   2e-8, thirteen times under what the mutation it defends moves (2.6e-7), and
   that mutation fails it.
+
+**Correction (M51, 2026-10-07).** "Throttling gives the head back" held from a
+COLD start only. Throttling the demo's RUNNING pump from 0.4 or wider to 0.2 or
+narrower made Newton give up — every gate above starts its plant cold, and so
+does the corpus. The game solver took every move. Fixed by §56 (ledger row A23).
+
+## 56. Newton and a cavitating pump throttled mid-run, and the pump screen — ledger row A23 (M51)
+
+Taken on a decision (2026-10-07): the user asked "what is next", was told nothing
+in DEFERRED.md is past its trigger, and chose a Godot screen for M50 from five
+directions, then three questions before building: both cavitation plants
+(M50's and M11's), only the commands that exist (valve opening, pump on/off),
+and a trail plot. The screen's first recorded run halted on its first command —
+Newton diverged throttling the M50 pump from 0.6 to 0.2 — and the user chose to
+fix the solver before finishing the screen. The full write-up, with the recorded
+runs, is ROADMAP M51.
+
+**What failed, measured.** On `pump_cavitation_flow_limit.toml` settled at an
+opening, then moved: every move from 0.4, 0.5, 0.6 or 0.8 to 0.1 or 0.2 failed on
+Newton (27 to 50 iterations, residual 2.1–4.8 kg/s); every opening move, every
+smaller throttle, every throttle from 1.0, the pump stopped and restarted, and
+M11's whole timeline converged. Without `npsh_required_m` every move converged,
+so the fault was M50's coupling. Newton's Jacobian matched a central difference
+to six digits at the failing iterate, so it was not a slope bug.
+
+**Mechanism.** A pump in partial cavitation is a LEVER: its head is
+`φ(σ)·ρ·g·h0` with `σ = NPSHa/NPSH3`, and on the demo at 0.6 one pascal at the
+suction is twenty at the outlet (`dbeta_dp = −20.2`). The pump's branch is stiff
+— a small error in its drive `P_suction − P_out + φ·ρ·g·h0` is a large error in
+its flow — so the answer lies along a curve shaped like `φ`, and a straight step
+leaves it. Newton steps on `φ`'s tangent, and past `σ ≈ 0.38` (`1/√(2k)`, where
+`φ` turns concave) the tangent promises more head than the pump has: at the
+failing iterate (`σ = 0.29`) the full step predicted `φ = 1.36` where the curve
+gives 0.97, putting the outlet about a bar too high. Every shortened step erred
+the same way at second order, the line search accepted 1/16 to 1/64 of a step,
+and after 50 iterations the pump had climbed only to `φ = 0.87`. Throttling from
+1.0 converged because the pump starts at `σ = 0.13`, on the convex side, where
+the tangent UNDER-promises.
+
+**The fix: a change of unknown at the pump's outlet** (`newton_flow::
+follow_pump_heads`). Measured from the head the pump delivers,
+`u = P_out − φ(σ(P_suction))·ρ·g·h0`, the branch's drive is linear in the step.
+Taking the Newton step in `u` and mapping back is a curved line search: each
+trial adds `(φ(σ + t·Δσ) − φ(σ) − φ'(σ)·t·Δσ)·ρ·g·h0` to the outlet's trial
+pressure. Second order in `t`, so the path leaves the iterate along the Newton
+direction and Armijo's sufficient-decrease test still applies. The failing move
+takes 4 iterations.
+- `PumpSuctionSlope` carries `sigma`, `dsigma_dp` and `shutoff_head` (`ρ·g·h0`)
+  for it; the game solver does not read them.
+- Skipped where the outlet or the suction is not a Newton unknown. Zero on every
+  pump without the key (no `pump_suction`), so no plant without the key can move.
+- *Rejected*: a cap on `Δσ` or a shorter first step (the trace showed a
+  quarter step already raising the merit from 25.9 to 34.4: the straight path,
+  not its length, was wrong); a higher iteration cap (the crawl gained
+  `φ` ≈ 0.01 an iteration). *Not tried*: solving the suction node alone first,
+  as the game solver's bracket does.
+
+**Not built, with what un-defers each** (no shipped plant has any of them):
+- Two keyed pumps discharging into one node: their corrections add. Un-defers
+  with a plant of parallel cavitating pumps on separate suctions.
+- Two keyed pumps in series: the downstream pump's correction ignores the
+  upstream one's at its own suction.
+- A check valve on a keyed pump's outlet: `band_cut` sets `t` before this moves
+  the disc's drive.
+
+**The pump screen** (`demo/pump.tscn`, `demo/pump.gd`). No interface change: it
+reads the snapshot and sends `Command`s through the unchanged binding, under
+§44's rules (no physics in GDScript; refusals in the engine's words; ids cast to
+integers). Two things are its own:
+1. **A trail, because the plants have no memory.** Neither plant has a tank, so
+   each settles on the tick after a change and a screen of current readings sits
+   still. The scene keeps one dot per (opening, pump on/off) — the latest tick's
+   flow and head fraction there, so tick 1's whole-curve guess is overwritten by
+   tick 2 — and plots them. Plotting reported numbers is not a computed curve;
+   drawing `H(Q)` from `h0` and `a` would be, and is not done.
+2. **The head fraction is the reading, not the lamp.** On the M50 plant
+   `cavitation.cavitating` is false while the pump delivers a quarter of its
+   head (§55 fork 3: the bulk is above its bubble pressure, the impeller eye is
+   not). The panel shows both and says why they differ; on M11's plant it says
+   the opposite — lamp lit, whole head, no suction model.
+
+**Measured (M51, landed 2026-10-07).**
+- Gate `every_valve_move_mid_run_lands_on_the_cold_answer`: 56 ordered moves
+  between eight openings × 2 fidelities, each landing on the cold start's flow
+  to 1e-6, Newton capped at 10 iterations a tick (worst 7, onto 0.1), the game
+  solver at 80 sweeps (worst 55). Written failing first (0.4 → 0.1, 27
+  iterations).
+- Mutations: five on the fix — removed, sign flipped, the tangent's slope
+  dropped, applied at the suction instead of the outlet, scaled by `t` — all
+  caught by that gate (the slope-dropped one by eight of the twelve).
+- Corpus: 42 plants byte-identical on Newton and all 43 on the game solver. The
+  demo moved on Newton at its tolerance — worst 3.8e-9 relative (tick 2's
+  flow), the same 24 iterations over 6 000 ticks — because its cold start runs
+  `φ < 1` from tick 2. Release property tests pass. The Godot binding did not
+  change.
+- Screen: `crates/godot-ext/tests/pump_screen.rs` replays both `--auto`
+  timelines byte for byte. An id sent as `2.0` fails it with serde's `expected
+  u32`; removing the fix fails it at tick 21.

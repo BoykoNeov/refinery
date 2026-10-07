@@ -8136,3 +8136,127 @@ the flow stops answering the valve; throttling gives the head back. Corpus: 42
 plants byte-identical on both fidelities, one new.
 Release property tests pass. Eleven mutations, all caught; Newton without
 the slope term hits its 50-iteration cap on the demo's second tick.
+**Correction (M51, 2026-10-07):** "throttling gives the head back" held from a
+cold start only. Throttling the RUNNING pump from 0.4 or wider to 0.2 or
+narrower made Newton give up — ledger row A23, fixed by M51 (DESIGN §56).
+
+## M51 — the pump screen, and Newton throttling a cavitating pump: ledger row A23; opened on a decision
+
+The user asked "what is next" (2026-10-07), was told nothing in DEFERRED.md is
+past its trigger, and offered five directions: creep burn-out (B42, the
+recommendation), a Godot screen for M50's pump, a check valve's cracking
+pressure (E23), a reactor that sets its own temperature (D1), and NPSH3 rising
+with flow (B45). They chose the screen, then decided three questions put before
+building: both cavitation plants (M50's and M11's), only the commands that exist
+(valve opening, pump on/off; a supply-pressure lever would need a new engine
+command), and a trail plot, because neither plant has a tank and each settles on
+the tick after a change. Measured before asking: from 0.4 open to wide open the
+M50 pump's flow gains under 1 kg/s while its head falls from 61% to 5%, and with
+the pump stopped the supply alone still drives 8.2 kg/s at 0.6.
+
+**The screen's first recorded run halted on its first command**: Newton diverged
+throttling the running pump from 0.6 to 0.2 — the move the demo exists to teach.
+Probed: every move from 0.4–0.8 to 0.1–0.2 failed on Newton, nothing failed on
+the game solver, and nothing failed without `npsh_required_m`. Put to the user
+plainly (fix the solver first, or ship the screen halting on that move and log
+the bug), they chose the fix. The note for both halves is DESIGN §56.
+
+### M51.0 — **LANDED** 2026-10-07: Newton follows a cavitating pump's head along its step
+
+New ledger row A23, opened and struck together. Newton's Jacobian matched a
+central difference to six digits at the failing iterate; the fault was the
+straight step. The pump's head is a lever on its suction (20 Pa out per Pa in on
+the demo), its branch is stiff, and the tangent of `φ` past its inflection
+promised 1.36 where the curve gives 0.97 — the outlet a bar too high, and the
+line search able to accept only 1/16 to 1/64 of each step. Each trial now moves
+the pump's outlet by the head the suction step really buys minus the tangent's
+promise (`newton_flow::follow_pump_heads`, Newton in the unknown
+`P_out − φ·ρ·g·h0`). The failing move takes 4 iterations.
+- Gate `every_valve_move_mid_run_lands_on_the_cold_answer`, written failing
+  first: 56 ordered moves between eight openings on both fidelities, each on the
+  cold start's flow to 1e-6, Newton capped at 10 iterations a tick (worst 7),
+  the game solver at 80 sweeps (worst 55).
+- Mutations: five, all caught (removed, sign flipped, the tangent's slope
+  dropped, applied at the suction, scaled by `t`).
+- Corpus: 42 plants byte-identical on Newton and all 43 on the game solver; the
+  demo moved on Newton at its tolerance (worst 3.8e-9 relative, the same 24
+  iterations). Release property tests pass. The Godot binding did not change.
+
+### M51.1 — `demo/pump.tscn` — **LANDED** 2026-10-07, and M51 is CLOSED
+
+`demo/pump.gd` loads `pump_cavitation_flow_limit.toml` (key 1, `--plant=limit`,
+the default) or `cavitating_pump.toml` (key 2, `--plant=boiling`) and draws the
+line from supply to destination, the pump filled by the share of its head it
+delivers (vapour at its eye for the share lost), the valve's opening, a suction
+gauge marked with the supply and the liquid's bubble pressure, the trail — one
+dot of flow and one of head per opening visited, hollow with the pump stopped —
+and a panel: head delivered, margin against NPSH3, the boiling lamp and why it
+can disagree with the head. Keys: Up/Down valve ±5%, K pump, C clear the trail,
+Space pause, `[ ]` speed. Nothing physical is computed in GDScript.
+`run/main_scene` is unchanged.
+
+**Gated where it can be.** `crates/godot-ext/tests/pump_screen.rs` replays both
+`--auto` timelines through `bridge::Session` with the scene's command text byte
+for byte and pins each beat: no head reported on tick 1; 26% at the file's 0.6
+with the lamp off; the whole head back on the throttle; the flow rising and the
+head falling at every step to wide open, with under 1 kg/s gained from 0.4; the
+throttle from wide open; 8.18 kg/s with the pump stopped; M11's flow following
+the valve with the lamp lit, and running backwards stopped. Mutations: an id
+sent as `2.0` fails it with serde's `expected u32`; removing M51.0's fix fails
+it at tick 21.
+
+#### The observation (M51's demonstrated criterion)
+
+```
+godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto
+godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto --plant=boiling
+```
+
+Each run ends itself (`quit()` at 200 and 140). Limit plant, abridged (the
+first of each pair of `t=` lines dropped):
+
+```
+pump: loaded res://scenarios/pump_cavitation_flow_limit.toml
+pump: t=2  boiling lamp -> no
+t=  20  valve= 60%  pump=on   flow= 10.96 kg/s  suction=1.890 bar  boils at 1.830 bar  margin=0.87 m  push=26%  lamp=no
+pump: t=20  discharge_valve to 20% open  {"cmd":"set_valve_opening","node":2,"opening":0.2}
+t=  40  valve= 20%  pump=on   flow=  6.84 kg/s  suction=2.202 bar  boils at 1.829 bar  margin=5.43 m  push=100%  lamp=no
+t=  60  valve= 30%  pump=on   flow=  9.59 kg/s  suction=2.010 bar  boils at 1.830 bar  margin=2.63 m  push=93%  lamp=no
+t=  80  valve= 40%  pump=on   flow= 10.45 kg/s  suction=1.936 bar  boils at 1.830 bar  margin=1.55 m  push=61%  lamp=no
+t= 100  valve= 60%  pump=on   flow= 10.96 kg/s  suction=1.890 bar  boils at 1.830 bar  margin=0.87 m  push=26%  lamp=no
+t= 120  valve= 80%  pump=on   flow= 11.18 kg/s  suction=1.869 bar  boils at 1.830 bar  margin=0.57 m  push=12%  lamp=no
+t= 140  valve=100%  pump=on   flow= 11.32 kg/s  suction=1.856 bar  boils at 1.830 bar  margin=0.38 m  push=5%  lamp=no
+pump: t=140  discharge_valve to 20% open  {"cmd":"set_valve_opening","node":2,"opening":0.2}
+t= 160  valve= 20%  pump=on   flow=  6.84 kg/s  suction=2.202 bar  boils at 1.829 bar  margin=5.43 m  push=100%  lamp=no
+pump: t=160  discharge_valve to 60% open  {"cmd":"set_valve_opening","node":2,"opening":0.6}
+pump: t=160  stop feed_pump  {"cmd":"set_pump_on","node":1,"on":false}
+t= 180  valve= 60%  pump=off  flow=  8.18 kg/s  suction=2.116 bar  boils at 1.829 bar  margin=--  push=-- (pump stopped)  lamp=no
+pump: t=180  start feed_pump  {"cmd":"set_pump_on","node":1,"on":true}
+t= 200  valve= 60%  pump=on   flow= 10.96 kg/s  suction=1.890 bar  boils at 1.830 bar  margin=0.87 m  push=26%  lamp=no
+```
+
+Boiling plant (M11), abridged: the flow follows the valve — 3.68, 7.28, 14.02
+and 17.05 kg/s at 0.2, 0.4, 0.8 and 1.0 — with `lamp=BOILING` and `push=-- (no
+suction model: whole push, boiling or not)` on every running line; stopped at
+100 the line runs backwards (−4.97 kg/s at 1.0 open), and restarted on 0.6 it is
+back at 10.75 kg/s.
+
+**A reader can check these against the scenario headers without the engine.**
+`pump_cavitation_flow_limit.toml` says the pump carries ~11.0 kg/s at ~26% of its
+head at 0.6 and has its whole head back at 0.2, and so do the 20, 40 and 160
+lines — the 160 line being the throttle that crashed before M51.0. Those numbers
+were measured by the CLI; here they came through the GDExtension and GDScript.
+
+#### Findings — for the user's decision, none built
+
+- **The supply is most of the drive.** Stopped at 0.6, the pump's line still
+  carries 8.18 kg/s, so the running pump adds under 3 kg/s; the screen shows it
+  rather than hiding it. A demo where the pump is the whole drive would need a
+  new plant (the existing file is a regression anchor).
+- **The real cure is not on the screen.** An operator cures NPSH trouble by
+  raising the suction (supply pressure or level) or cooling the liquid; the
+  engine has no command for a source's pressure or temperature, so the screen
+  offers throttling only. A command for it would be an engine change.
+- **The boiling lamp and the head disagree on M50's plant, by design** (§55
+  fork 3); the panel says why in two lines. A frontend that drives a warning
+  from the lamp alone would miss every partial-cavitation state.
