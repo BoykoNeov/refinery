@@ -12,6 +12,37 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M52 is CLOSED (2026-10-07): a supply's pressure and temperature, and a
+destination's pressure, by command — `docs/DEFERRED.md` F5 opened and struck,
+B46 opened.** On a decision (M51's finding that the pump screen could only
+throttle; the first of five directions offered) and three DECISIONS put before
+building: supplies and destinations, a boiling supply refused "for today", and
+the screen's keys now. A fourth came from a side note mid-build: on the 37
+plants with no bubble pressure, "accept it, but say so". DESIGN §57.
+- **`SetReservoirPressure`** (a source or a sink) and **`SetSourceTemperature`**
+  (a source) write the kind and nothing else; the solve and the sweep read both
+  fresh. Refused: non-finite or non-positive values, a tank (its pressure is its
+  level), the atmosphere, a sink's temperature, every other kind.
+- **A supply that would boil where it stands is refused** by both commands and
+  by the loader, through one rule (`engine::supply_boiling`). All 43 plants load;
+  two inline test fixtures that fed a boiling supply on purpose now feed a
+  compressed liquid at the same flow.
+- **`NodeSnapshot::supply_boiling` on every supply**: measured (its liquid's
+  boiling pressure), gas, or cannot tell. Always written, so 33 plants moved
+  their fingerprint, wire only: byte-identical with the field stripped, 86 runs
+  of 6 000 ticks on both fidelities; the other 10 byte-identical.
+- **No solver change**: every ordered move between six supply pressures, six
+  temperatures and three destination pressures lands on the cold start on both
+  fidelities (worst 1.4e-8); Newton at most 6, 12 and 5 iterations a tick. The
+  pump hears of a temperature step one tick late, measured and pinned.
+- **The pump screen** (M52.1): W/S, E/D and R/F; a SUPPLY panel; the trail keyed
+  by conditions, earlier ones faded; the recorded run continued to 300 with
+  M51's lines unchanged. Findings for the user: the lamp's one-tick flash on
+  warming back (the lag), and back-pressure barely costing a cavitating pump flow.
+- Gates: `supply_command_reference.rs` (8 tests) and the appended screen beats.
+  Mutations: ten on the engine and two on the screen, all caught. Both clippy
+  passes clean.
+
 **M51 is CLOSED (2026-10-07): the pump screen, and Newton throttling a
 cavitating pump — `docs/DEFERRED.md` A23 opened and struck.** On a decision (a
 Godot screen for M50, the second of five directions offered) and three DECISIONS

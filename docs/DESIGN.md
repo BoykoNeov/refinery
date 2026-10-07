@@ -20606,3 +20606,16 @@ collapsed, unpublished, or calling a gas `cannot_tell`.
 - A supply's composition by command — a crude switch, which also moves every
   downstream holdup's inventory.
 - A tank's level by command — never: it would create or destroy liquid.
+
+**The pump screen's keys (M52.1).** `demo/pump.gd` sends both commands — W/S
+the supply's pressure, E/D its temperature, R/F the destination's pressure, each
+step snapped — and draws `supply_boiling` in words on a SUPPLY panel, the
+"cannot check" arm in red. The trail is keyed by the supply and destination each
+dot was read under, earlier conditions faded. Its recorded run continues past
+M51's 200 ticks: cooled to 90 °C (16.29 kg/s, 97%), warmed back, raised to 3.0
+bar (15.75 kg/s, 67%), 125 °C refused, the destination at 2.0 bar (10.74 kg/s,
+42%). Two findings, not built: the boiling lamp lights for exactly one tick when
+the supply is warmed back (fork 3's lag, visible: tick 221 runs the cold flow
+against the hot liquid), and back-pressure barely costs a pump at its
+cavitation limit flow, since less flow is more suction margin. ROADMAP M52.1
+has the recorded lines.

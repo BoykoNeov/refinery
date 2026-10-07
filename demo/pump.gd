@@ -22,6 +22,11 @@
 # there (the latest tick at that opening, so tick 1's whole-curve guess is
 # overwritten by tick 2). Drawing it is plotting reported numbers, not a curve.
 #
+# M52 adds the operator's real cure: the supply's pressure and temperature, and
+# the destination's pressure, by command. The trail keys each dot by the supply
+# and destination it was read under; dots from earlier conditions stay, faded,
+# so cooling the supply shows as the whole curve moving.
+#
 # Interactive:  godot --path . res://demo/pump.tscn
 #               (keys listed on screen and in _input; 1 / 2 switch plants)
 # Recorded:     godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling]
@@ -67,6 +72,12 @@ const PLANTS := {
 ## gave up on until M51). At 160 the pump is stopped on the file's 0.6: the
 ## supply still drives 8.2 kg/s through it, so the pump was adding under 3 kg/s.
 ## Restarted at 180.
+##
+## M52, from 200 on the file's 0.6: the supply cooled to 90 °C gives the pump
+## nearly its whole push back (16.3 kg/s); warmed back to 110 °C it is where it
+## was; the supply raised to 3.0 bar gives back two thirds (15.8 kg/s); back to
+## 2.4 bar, then heated to 125 °C — REFUSED, the supply itself would boil; the
+## destination raised to 2.0 bar cuts the flow by back-pressure.
 const AUTO_LIMIT := {
 	20: ["valve_0.2"],
 	40: ["valve_0.3"],
@@ -77,7 +88,12 @@ const AUTO_LIMIT := {
 	140: ["valve_0.2"],
 	160: ["valve_0.6", "pump_off"],
 	180: ["pump_on"],
-	200: ["quit"],
+	200: ["supply_c_90"],
+	220: ["supply_c_110"],
+	240: ["supply_bar_3.0"],
+	260: ["supply_bar_2.4", "supply_c_125"],
+	280: ["destination_bar_2.0"],
+	300: ["quit"],
 }
 ## boiling: the same sweep on the M11 pump. The flow follows the valve all the
 ## way (3.7 -> 17.1 kg/s) with the boiling lamp lit throughout: nothing happens
@@ -94,7 +110,7 @@ const AUTO_BOILING := {
 }
 const TIMELINES := {"limit": AUTO_LIMIT, "boiling": AUTO_BOILING}
 const AUTO_SHOT_TICKS := {
-	"limit": [1, 39, 79, 139, 159, 179, 199],
+	"limit": [1, 39, 79, 139, 159, 179, 199, 219, 259, 299],
 	"boiling": [19, 79, 119],
 }
 ## Print a `t=` line every this many ticks in a recorded run.
@@ -102,6 +118,9 @@ const PRINT_EVERY := 10
 
 ## The valve keys' step, as a fraction of full opening.
 const VALVE_STEP := 0.05
+## The supply and destination keys' steps: 0.1 bar [Pa] and 5 K.
+const PRESSURE_STEP_PA := 1.0e4
+const TEMPERATURE_STEP_K := 5.0
 const MAX_TICKS_PER_FRAME := 64
 
 @onready var sim: RefinerySim = $Sim
@@ -127,6 +146,9 @@ var ticks_per_frame := 1
 var message := ""
 var message_bad := false
 var seen_lamp := ""
+## A command has moved the supply or the destination from the file's values;
+## from then on the recorded lines carry them (M52).
+var moved_conditions := false
 
 
 func _ready() -> void:
@@ -150,6 +172,7 @@ func _load(key: String) -> void:
 	snapshot = {}
 	trail = {}
 	seen_lamp = ""
+	moved_conditions = false
 	var plant: Dictionary = PLANTS[key]
 
 	var err = JSON.parse_string(sim.load_scenario(plant["scenario"]))
@@ -212,10 +235,21 @@ func _step() -> bool:
 
 
 ## Put this tick's reading on the trail, replacing what was there for the same
-## opening and pump state.
+## opening, pump state and supply/destination conditions.
 func _remember() -> void:
-	var key := "%d|%s" % [roundi(_opening() * 100.0), "on" if _pump_on() else "off"]
-	trail[key] = {"opening": _opening(), "flow": _flow(), "head": _head_fraction(), "on": _pump_on()}
+	var key := "%s|%d|%s" % [_conditions(), roundi(_opening() * 100.0), "on" if _pump_on() else "off"]
+	trail[key] = {
+		"opening": _opening(),
+		"flow": _flow(),
+		"head": _head_fraction(),
+		"on": _pump_on(),
+		"conditions": _conditions(),
+	}
+
+
+## The supply and destination a reading was taken under, as the trail keys it.
+func _conditions() -> String:
+	return "%.2f|%.1f|%.2f" % [_source_pa() / 1.0e5, _source_k() - 273.15, _destination_pa() / 1.0e5]
 
 
 ## Print a line when the boiling lamp changes — the engine's account, not ours.
@@ -259,6 +293,18 @@ func _input(event: InputEvent) -> void:
 			_do("valve_down")
 		KEY_K:
 			_do("toggle_pump")
+		KEY_W:
+			_do("supply_up")
+		KEY_S:
+			_do("supply_down")
+		KEY_E:
+			_do("warmer")
+		KEY_D:
+			_do("cooler")
+		KEY_R:
+			_do("destination_up")
+		KEY_F:
+			_do("destination_down")
 		KEY_C:
 			trail = {}
 			_say("trail cleared", false)
@@ -273,7 +319,30 @@ func _do(action: String) -> void:
 	if action.begins_with("valve_") and action.trim_prefix("valve_").is_valid_float():
 		_set_opening(float(action.trim_prefix("valve_")))
 		return
+	# The scripted forms: a value in display units, converted at this boundary.
+	if action.begins_with("supply_bar_"):
+		_set_pressure(source_id, "source", float(action.trim_prefix("supply_bar_")) * 1.0e5)
+		return
+	if action.begins_with("supply_c_"):
+		_set_supply_temperature(float(action.trim_prefix("supply_c_")) + 273.15)
+		return
+	if action.begins_with("destination_bar_"):
+		_set_pressure(destination_id, "destination", float(action.trim_prefix("destination_bar_")) * 1.0e5)
+		return
 	match action:
+		# Each step is snapped to the step, so a run of key presses lands on
+		# round values. The engine refuses what it must (a boiling supply, a
+		# pressure at or below zero) and the screen shows its reason.
+		"supply_up", "supply_down":
+			var step := PRESSURE_STEP_PA if action == "supply_up" else -PRESSURE_STEP_PA
+			_set_pressure(source_id, "source", snappedf(_source_pa() + step, PRESSURE_STEP_PA))
+		"destination_up", "destination_down":
+			var step := PRESSURE_STEP_PA if action == "destination_up" else -PRESSURE_STEP_PA
+			_set_pressure(destination_id, "destination", snappedf(_destination_pa() + step, PRESSURE_STEP_PA))
+		"warmer", "cooler":
+			var step := TEMPERATURE_STEP_K if action == "warmer" else -TEMPERATURE_STEP_K
+			# Snapped in °C, so 110 °C steps to 105 and 115.
+			_set_supply_temperature(snappedf(_source_k() - 273.15 + step, TEMPERATURE_STEP_K) + 273.15)
 		"valve_up", "valve_down":
 			var step := VALVE_STEP if action == "valve_up" else -VALVE_STEP
 			# Snapped to the step so the trail's dots line up; clamped to the
@@ -287,6 +356,23 @@ func _do(action: String) -> void:
 			)
 
 
+## `which` is the PLANTS key naming the node ("source" or "destination").
+func _set_pressure(id: int, which: String, pressure_pa: float) -> void:
+	var sent := _send(
+		"%s to %.2f bar" % [PLANTS[plant_key][which], pressure_pa / 1.0e5],
+		{"cmd": "set_reservoir_pressure", "node": int(id), "pressure": pressure_pa}
+	)
+	moved_conditions = moved_conditions or sent
+
+
+func _set_supply_temperature(temperature_k: float) -> void:
+	var sent := _send(
+		"%s to %.0f °C" % [PLANTS[plant_key]["source"], temperature_k - 273.15],
+		{"cmd": "set_source_temperature", "node": int(source_id), "temperature": temperature_k}
+	)
+	moved_conditions = moved_conditions or sent
+
+
 func _set_opening(opening: float) -> void:
 	_send(
 		"%s to %.0f%% open" % [PLANTS[plant_key]["valve"], opening * 100.0],
@@ -295,18 +381,22 @@ func _set_opening(opening: float) -> void:
 
 
 ## Send one command and put the engine's answer on screen — its own refusal
-## message when it says no.
-func _send(what: String, command: Dictionary) -> void:
+## message when it says no. True when the engine took it.
+func _send(what: String, command: Dictionary) -> bool:
 	var text := JSON.stringify(command)
 	var err = JSON.parse_string(sim.apply_command(text))
 	if err == null:
 		_say(what, false)
 		if auto_run:
 			print("pump: t=%d  %s  %s" % [sim.tick_index(), what, text])
-	else:
-		_say("%s: REFUSED — %s" % [what, err["message"]], true)
-		if auto_run:
-			print("pump: t=%d  %s  REFUSED: %s" % [sim.tick_index(), what, err["message"]])
+		# A command moves the kind at once; read it back so the screen shows
+		# the new value before the next tick.
+		snapshot = JSON.parse_string(sim.snapshot_json())
+		return true
+	_say("%s: REFUSED — %s" % [what, err["message"]], true)
+	if auto_run:
+		print("pump: t=%d  %s  REFUSED: %s" % [sim.tick_index(), what, err["message"]])
+	return false
 
 
 func _say(text: String, bad: bool) -> void:
@@ -347,8 +437,37 @@ func _suction_pa() -> float:
 	return float(_node(pump_id)["pressure_pa"])
 
 
+## The supply's and destination's pressures [Pa] and the supply's temperature
+## [K], off their kinds: what the file or the last command set, real before the
+## first tick.
 func _source_pa() -> float:
-	return float(_node(source_id)["pressure_pa"])
+	return float(_node(source_id)["kind"]["pressure"])
+
+
+func _source_k() -> float:
+	return float(_node(source_id)["kind"]["temperature"])
+
+
+func _destination_pa() -> float:
+	return float(_node(destination_id)["kind"]["pressure"])
+
+
+## What the engine says about the supply boiling where it stands (M52):
+## "measured" with the pressure its liquid boils below, "gas", or
+## "cannot_tell"; null before the first tick.
+func _supply_boiling() -> Variant:
+	return _node(source_id).get("supply_boiling")
+
+
+func _supply_boiling_label() -> String:
+	var check = _supply_boiling()
+	if check == null:
+		return "--"
+	if check["check"] == "measured":
+		return "boils below %s" % _bar(float(check["bubble_pressure_pa"]))
+	if check["check"] == "gas":
+		return "a gas: nothing to boil"
+	return "this plant cannot check for boiling"
 
 
 ## The liquid's boiling (bubble) pressure at the suction [Pa]; NAN where the
@@ -409,7 +528,7 @@ func _percent(value) -> String:
 func _readout(tick: int) -> String:
 	var head = _head_fraction()
 	var margin = _npsh_available_m()
-	return (
+	var line := (
 		"t=%4d  valve=%3.0f%%  pump=%s  flow=%6.2f kg/s  suction=%s  boils at %s  margin=%s  push=%s  lamp=%s"
 		% [
 			tick,
@@ -423,6 +542,14 @@ func _readout(tick: int) -> String:
 			_lamp_label(),
 		]
 	)
+	# The supply and destination, once a command has moved either (M52) — so
+	# every line up to then reads as it did in M51.
+	if moved_conditions:
+		line += (
+			"  supply=%s %.0f C (%s)  destination=%s"
+			% [_bar(_source_pa()), _source_k() - 273.15, _supply_boiling_label(), _bar(_destination_pa())]
+		)
+	return line
 
 
 # ---------------------------------------------------------------- drawing
@@ -477,10 +604,14 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 600),
-		"Up/Down valve   K pump on/off   C clear trail   Space pause   [ ] speed",
+		"Up/Down valve   K pump on/off   W/S supply pressure   E/D supply temperature   R/F destination pressure",
 		DIM
 	)
-	_text(Vector2(30, 624), "1 long suction line (M50)   2 boiling pump with no suction model (M11)", DIM)
+	_text(
+		Vector2(30, 624),
+		"C clear trail   Space pause   [ ] speed   1 long suction line (M50)   2 boiling pump, no suction model (M11)",
+		DIM
+	)
 	if halted != "":
 		_text(Vector2(30, 90), "HALTED — %s" % halted, BAD)
 
@@ -496,6 +627,7 @@ func _draw_line() -> void:
 	draw_rect(Rect2(SOURCE_POS - Vector2(30, 40), Vector2(40, 80)), SHELL, false, 3.0)
 	_text(SOURCE_POS + Vector2(-34, 64), plant["source"], DIM, 14)
 	_text(SOURCE_POS + Vector2(-34, 82), _bar(_source_pa()), DIM, 14)
+	_text(SOURCE_POS + Vector2(-34, 100), "%.0f °C" % (_source_k() - 273.15), DIM, 14)
 
 	var flow := _flow()
 	var arrow := "->" if flow >= 0.0 else "<- BACKWARDS"
@@ -529,7 +661,7 @@ func _draw_line() -> void:
 
 	draw_rect(Rect2(SINK_POS - Vector2(0, 30), Vector2(50, 60)), SHELL, false, 3.0)
 	_text(SINK_POS + Vector2(-6, 50), plant["destination"], DIM, 14)
-	_text(SINK_POS + Vector2(-6, 68), _bar(float(_node(destination_id)["pressure_pa"])), DIM, 14)
+	_text(SINK_POS + Vector2(-6, 68), _bar(_destination_pa()), DIM, 14)
 
 
 ## The pump, filled by the share of its push it still delivers, with vapour at
@@ -619,15 +751,20 @@ func _draw_plot() -> void:
 	if flow_low < 0.0:
 		_text(Vector2(rect.position.x - 22, rect.end.y + 4), "%.0f" % flow_low, LIQUID, 12)
 
+	var now_conditions := _conditions()
 	for point in trail.values():
 		var x := rect.position.x + rect.size.x * float(point["opening"])
 		var flow_at := Vector2(x, _plot_y(float(point["flow"]), flow_low, flow_high))
+		# A dot read under other supply or destination conditions is faded: the
+		# curve it belongs to is not the one the plant is on now.
+		var alpha := 1.0 if point["conditions"] == now_conditions else 0.3
+		var liquid := Color(LIQUID, alpha)
 		if point["on"]:
-			draw_circle(flow_at, 4.0, LIQUID)
+			draw_circle(flow_at, 4.0, liquid)
 		else:
-			draw_arc(flow_at, 4.0, 0.0, TAU, 16, LIQUID, 1.5)
+			draw_arc(flow_at, 4.0, 0.0, TAU, 16, liquid, 1.5)
 		if point["head"] != null:
-			draw_circle(Vector2(x, rect.end.y - rect.size.y * float(point["head"])), 4.0, PUSH)
+			draw_circle(Vector2(x, rect.end.y - rect.size.y * float(point["head"])), 4.0, Color(PUSH, alpha))
 
 	var now_x := rect.position.x + rect.size.x * _opening()
 	draw_arc(Vector2(now_x, _plot_y(_flow(), flow_low, flow_high)), 8.0, 0.0, TAU, 24, INK, 1.5)
@@ -655,6 +792,17 @@ func _draw_panel() -> void:
 		_text(Vector2(PANEL_X, y), "push delivered  -- (%s)" % _no_push_reason(), DIM, 14)
 	y += 22
 	_text(Vector2(PANEL_X, y), "flow            %.2f kg/s" % _flow(), INK)
+
+	y += 36
+	_text(Vector2(PANEL_X, y), "SUPPLY", DIM)
+	y += 24
+	_text(Vector2(PANEL_X, y), "%s  %s, %.0f °C" % [PLANTS[plant_key]["source"], _bar(_source_pa()), _source_k() - 273.15], INK)
+	y += 22
+	var check = _supply_boiling()
+	var unchecked: bool = check != null and check["check"] == "cannot_tell"
+	_text(Vector2(PANEL_X + 12, y), _supply_boiling_label(), BAD if unchecked else MARK, 14)
+	y += 20
+	_text(Vector2(PANEL_X + 12, y), "destination %s" % _bar(_destination_pa()), DIM, 14)
 
 	y += 36
 	_text(Vector2(PANEL_X, y), "SUCTION", DIM)

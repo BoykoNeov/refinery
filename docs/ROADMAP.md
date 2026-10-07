@@ -8309,3 +8309,70 @@ pressure refused by both and by the loader, one rule (`engine::supply_boiling`);
 - Corpus: 33 plants with a source moved, wire only (byte-identical with the new
   field stripped, 86 runs of 6 000 ticks on both fidelities); the other 10 are
   byte-identical. Mutations: ten, all caught.
+
+### M52.1 — the pump screen's supply keys — **LANDED** 2026-10-07, and M52 is CLOSED
+
+`demo/pump.gd` gains W/S (supply pressure ±0.1 bar), E/D (supply temperature
+±5 °C) and R/F (destination pressure ±0.1 bar) on both plants; a SUPPLY section
+on the panel — the supply's pressure and temperature, and `supply_boiling` in
+words ("boils below …", "a gas", or "this plant cannot check for boiling" in
+red); the supply's temperature under its pressure on the line. The trail keys
+each dot by the supply and destination it was read under, and dots from earlier
+conditions stay, faded, so cooling shows as the whole curve moving. An accepted
+command re-reads the snapshot, so the new value shows before the next tick; a
+refusal shows the engine's own reason. Nothing physical computed in GDScript.
+
+`AUTO_LIMIT` runs on to 300 (it quit at 200); every line up to 200 prints as it
+did in M51, and the supply readout joins the `t=` lines only once a command has
+moved the supply or destination. `AUTO_BOILING` is unchanged (measured: 3.68,
+7.28, 14.02, 17.05, −4.97 and 10.75 kg/s, as recorded in M51).
+
+**Gated** in `crates/godot-ext/tests/pump_screen.rs`, the new beats appended to
+the limit timeline with the scene's command text byte for byte, each sent after
+the tick the scene sends it on (the beats above send one tick early, which a plant
+that settles in a tick never showed; the lag's flash is a one-tick event).
+Mutations: the boiling refusal removed fails it at the refused beat; the supply
+temperature not written fails it at the cooling beat.
+
+#### The observation (M52's demonstrated criterion)
+
+```
+godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto
+```
+
+From tick 200, abridged (the supply readout trimmed after its first line):
+
+```
+t= 200  valve= 60%  pump=on   flow= 10.96 kg/s  suction=1.890 bar  boils at 1.830 bar  margin=0.87 m  push=26%  lamp=no
+pump: t=200  rundown_source to 90 °C  {"cmd":"set_source_temperature","node":0,"temperature":363.15}
+t= 210  valve= 60%  pump=on   flow= 16.29 kg/s  suction=1.274 bar  boils at 1.066 bar  margin=3.04 m  push=97%  lamp=no  supply=2.400 bar 90 C (boils below 1.064 bar)  destination=1.500 bar
+pump: t=220  rundown_source to 110 °C  {"cmd":"set_source_temperature","node":0,"temperature":383.15}
+pump: t=221  boiling lamp -> BOILING
+pump: t=222  boiling lamp -> no
+t= 230  valve= 60%  pump=on   flow= 10.96 kg/s  suction=1.890 bar  boils at 1.830 bar  margin=0.87 m  push=26%  lamp=no  ...
+pump: t=240  rundown_source to 3.00 bar  {"cmd":"set_reservoir_pressure","node":0,"pressure":300000.0}
+t= 250  valve= 60%  pump=on   flow= 15.75 kg/s  suction=1.947 bar  boils at 1.832 bar  margin=1.68 m  push=67%  lamp=no  ...
+pump: t=260  rundown_source to 2.40 bar  {"cmd":"set_reservoir_pressure","node":0,"pressure":240000.0}
+pump: t=260  rundown_source to 125 °C  REFUSED: invalid command: supply 'rundown_source' would be boiling: at 125.00 °C its liquid boils at any pressure below 2.6498 bar, and the supply would stand at 2.4000 bar. [...]
+t= 270  valve= 60%  pump=on   flow= 10.96 kg/s  suction=1.890 bar  boils at 1.830 bar  margin=0.87 m  push=26%  lamp=no  ...
+pump: t=280  unit_feed to 2.00 bar  {"cmd":"set_reservoir_pressure","node":3,"pressure":200000.0}
+t= 290  valve= 60%  pump=on   flow= 10.74 kg/s  suction=1.911 bar  boils at 1.830 bar  margin=1.18 m  push=42%  lamp=no  ...
+```
+
+The 210 and 250 lines are M52's measured-before-asking numbers (16.29 kg/s at
+97%, 15.75 kg/s at 67%), here through the GDExtension and GDScript.
+
+#### Findings — for the user's decision, none built
+
+- **The lamp flashes for one tick when the supply is warmed back** (221). The
+  pump solves tick 221 against the cold liquid's boiling pressure (§57 fork 3),
+  so it runs at the cold flow, and its suction falls below the hot liquid's
+  boiling pressure for that tick. Hot liquid arriving at the cold flow would
+  boil at a real pump's suction too, until the flow fell; the engine shows it
+  for exactly one tick because of the lag. Handing the pump the new
+  liquid's boiling pressure at the command would remove it; that is an engine
+  change to the M50 hand-over.
+- **Back-pressure barely costs this pump flow.** The destination at 2.0 bar takes
+  the flow from 10.96 to only 10.74 kg/s and gives the pump push back (26% → 42%):
+  less flow is more suction margin. On a pump at its cavitation limit, the
+  destination is nearly irrelevant — a lesson the screen now shows.

@@ -1,4 +1,5 @@
-//! Gates for the pump screen's scripted timelines (M51, `demo/pump.gd`).
+//! Gates for the pump screen's scripted timelines (M51, `demo/pump.gd`; M52
+//! appended the supply and destination beats after tick 200).
 //!
 //! The scene is demonstrated, not gated — no `cargo test` can say a pump looks
 //! starved. What IS checkable is the story its `--auto` runs tell: these tests
@@ -120,6 +121,14 @@ const BOILING_VALVE: [(f64, &str); 5] = [
     (0.8, r#"{"cmd":"set_valve_opening","node":3,"opening":0.8}"#),
     (1.0, r#"{"cmd":"set_valve_opening","node":3,"opening":1.0}"#),
 ];
+// M52's beats, as the recorded run printed them (the refused one as the scene
+// builds it: Godot writes 125 + 273.15 as 398.15).
+const SUPPLY_90_C: &str = r#"{"cmd":"set_source_temperature","node":0,"temperature":363.15}"#;
+const SUPPLY_110_C: &str = r#"{"cmd":"set_source_temperature","node":0,"temperature":383.15}"#;
+const SUPPLY_125_C: &str = r#"{"cmd":"set_source_temperature","node":0,"temperature":398.15}"#;
+const SUPPLY_3_BAR: &str = r#"{"cmd":"set_reservoir_pressure","node":0,"pressure":300000.0}"#;
+const SUPPLY_2_4_BAR: &str = r#"{"cmd":"set_reservoir_pressure","node":0,"pressure":240000.0}"#;
+const DESTINATION_2_BAR: &str = r#"{"cmd":"set_reservoir_pressure","node":3,"pressure":200000.0}"#;
 const BOILING_STOP: &str = r#"{"cmd":"set_pump_on","node":2,"on":false}"#;
 const BOILING_START: &str = r#"{"cmd":"set_pump_on","node":2,"on":true}"#;
 
@@ -134,7 +143,8 @@ fn valve(table: &[(f64, &'static str)], opening: f64) -> &'static str {
 /// `AUTO_LIMIT`: the pump at a quarter of its head on the file's opening, its
 /// whole head back on a throttle, the flow levelling off while the head goes
 /// as the valve opens, the throttle again from wide open, and a stop that
-/// shows how little the pump was adding.
+/// shows how little the pump was adding. Then M52's cure: the supply cooled,
+/// raised, refused when it would boil, and the destination raised.
 #[test]
 fn the_limit_plant_timeline_tells_its_story() {
     let mut screen = Screen::load(
@@ -216,6 +226,68 @@ fn the_limit_plant_timeline_tells_its_story() {
         "push {push} after the restart"
     );
     assert!((screen.flow() - 10.96).abs() < 0.01, "{}", screen.flow());
+
+    // M52 (DESIGN §57). The ids are the scene's lookups by name. From here
+    // each command goes in after the tick the scene sends it on (`run_to(200)`
+    // then send), not one tick early as the beats above do: the plant settles
+    // in a tick either way, but the lag's flash at 221 is a one-tick event.
+    assert_eq!(snap["nodes"][0]["name"], "rundown_source");
+    assert_eq!(snap["nodes"][3]["name"], "unit_feed");
+
+    // 200: the supply cooled to 90 °C — nearly the whole push back, and the
+    // most flow the plant has carried.
+    screen.run_to(200);
+    screen.send(SUPPLY_90_C);
+    screen.run_to(219);
+    assert!(screen.push().unwrap() > 0.95, "{:?}", screen.push());
+    assert!((screen.flow() - 16.29).abs() < 0.01, "{}", screen.flow());
+    let check = &screen.snap()["nodes"][0]["supply_boiling"];
+    assert_eq!(check["check"], "measured");
+    assert!(check["bubble_pressure_pa"].as_f64().unwrap() < 1.1e5);
+
+    // 220: warmed back to 110 °C. Tick 221 still solves the pump against the
+    // cold liquid's boiling pressure (the one-tick lag, §57 fork 3): it runs at
+    // the cold flow, its suction drops below the hot liquid's boiling pressure,
+    // and the lamp lights for that one tick.
+    screen.run_to(220);
+    screen.send(SUPPLY_110_C);
+    screen.run_to(221);
+    assert!(screen.lamp(), "the lag's one-tick flash");
+    screen.run_to(222);
+    assert!(!screen.lamp());
+    screen.run_to(239);
+    let push = screen.push().unwrap();
+    assert!((0.25..0.27).contains(&push), "push {push} back at 110 °C");
+    assert!((screen.flow() - 10.96).abs() < 0.01, "{}", screen.flow());
+
+    // 240: the supply raised to 3.0 bar — two thirds of the push back.
+    screen.run_to(240);
+    screen.send(SUPPLY_3_BAR);
+    screen.run_to(259);
+    let push = screen.push().unwrap();
+    assert!((0.6..0.7).contains(&push), "push {push} at 3.0 bar");
+    assert!((screen.flow() - 15.75).abs() < 0.01, "{}", screen.flow());
+
+    // 260: back to 2.4 bar, then 125 °C — refused, the supply itself would
+    // boil (B46); the plant runs on as it was.
+    screen.run_to(260);
+    screen.send(SUPPLY_2_4_BAR);
+    let answer = screen.session.apply_command_json(SUPPLY_125_C);
+    assert!(
+        answer.contains("boiling") && answer.contains("rundown_source"),
+        "{answer}"
+    );
+    screen.run_to(279);
+    assert!((screen.flow() - 10.96).abs() < 0.01, "{}", screen.flow());
+
+    // 280: the destination raised to 2.0 bar. The back-pressure costs little
+    // flow, and the pump gets push back for it: less flow, more suction margin.
+    screen.run_to(280);
+    screen.send(DESTINATION_2_BAR);
+    screen.run_to(299);
+    assert!((screen.flow() - 10.74).abs() < 0.01, "{}", screen.flow());
+    let push = screen.push().unwrap();
+    assert!((0.4..0.45).contains(&push), "push {push} against 2.0 bar");
 }
 
 /// `AUTO_BOILING`: M11's pump boils all run and nothing happens to it. The
