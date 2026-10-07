@@ -31,8 +31,8 @@ use crate::schema::{
 };
 use crate::validate::{
     plant_phases, require_blowdown_cushion, require_compatible_fidelity, require_declared_iff_used,
-    require_gas_valve_x_t, require_pump_suction_answerable, seed_component_index,
-    validate_node_def, validate_pipe_def, validate_topology,
+    require_gas_valve_x_t, require_pump_suction_answerable, require_supplies_below_boiling,
+    seed_component_index, validate_node_def, validate_pipe_def, validate_topology,
 };
 
 /// Build a runnable engine from a scenario. Steps:
@@ -278,6 +278,9 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // a bubble pressure (M50, docs/DESIGN.md §55) — the first check that needs
     // the built model rather than its name.
     require_pump_suction_answerable(&graph, &phases, thermo.as_ref(), &slate)?;
+    // And a supply must not boil at its own declared pressure (M52,
+    // docs/DESIGN.md §57) — the rule the supply commands keep at runtime.
+    require_supplies_below_boiling(&graph, thermo.as_ref(), &slate)?;
 
     let config = EngineConfig {
         dt: refinery_core::units::Seconds(scenario.simulation.dt),

@@ -653,7 +653,7 @@ fn each_overflow_carries_only_its_own_tanks_spill() {
 }
 
 /// A tank declared full of naphtha at 40 °C, fed naphtha at 150 °C: it heats to
-/// its bubble point, and from tick 202 it boils AND spills on the same tick.
+/// its bubble point, and from tick 204 it boils AND spills on the same tick.
 const BOILING_AT_THE_BRIM: &str = r#"
 [meta]
 name = "boiling_at_the_brim"
@@ -681,16 +681,20 @@ molar_mass_kg_per_mol = 0.130
 density_kg_per_m3 = 750.0
 cp_j_per_kg_k = 2100.0
 
+# At 150 °C this naphtha boils below ~3.74 bar, and a source that boils at its
+# own pressure is refused since M52 (docs/DESIGN.md §57, DEFERRED B46). Until
+# then this fixture fed it at 3 bar, wide open (12.73 kg/s; boiling and spilling
+# from tick 202); at 4 bar throttled to 0.8 it carries 12.65 kg/s, from tick 204.
 [nodes.hot_source]
 type = "source"
-pressure_bar = 3.0
+pressure_bar = 4.0
 temperature_c = 150.0
 composition = { light_naphtha = 0.5, heavy_naphtha = 0.5 }
 
 [nodes.feed_valve]
 type = "valve"
 kv = 40.0
-opening = 1.0
+opening = 0.8
 
 [nodes.product_tank]
 type = "tank"

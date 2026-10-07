@@ -14,7 +14,7 @@ use crate::graph::{
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
-    NodeSnapshot, PumpSuctionSnapshot, RestartBar, Snapshot, TripSnapshot, TripStop,
+    NodeSnapshot, PumpSuctionSnapshot, RestartBar, Snapshot, SupplyBoiling, TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, ReactionModel, SeparationModel,
@@ -113,6 +113,11 @@ pub struct Engine {
     /// counter-precedent — it lives in `NodeStates` because the sweep is the
     /// only place its inputs meet, and here the sweep is not.
     last_cavitation: std::collections::BTreeMap<NodeId, CavitationSnapshot>,
+    /// Whether each supply's liquid is clear of boiling, from the last tick
+    /// (M52, docs/DESIGN.md §57). `last_cavitation`'s placement and reason:
+    /// computed with the tick's diagnostics, where a model's `Err` can fail the
+    /// tick instead of being swallowed. Empty before the first tick.
+    last_supply_boiling: std::collections::BTreeMap<NodeId, SupplyBoiling>,
     /// What the trips have taken from each piece of equipment they hold (M40,
     /// docs/DESIGN.md §45): written when the FIRST trip latches on it, read and
     /// dropped when the LAST lets go. Keyed per equipment, not per trip, because
@@ -200,6 +205,7 @@ impl Engine {
             last_solution: None,
             node_states: energy::NodeStates::default(),
             last_cavitation: std::collections::BTreeMap::new(),
+            last_supply_boiling: std::collections::BTreeMap::new(),
             held_equipment: std::collections::BTreeMap::new(),
             not_restarted: std::collections::BTreeMap::new(),
         }
@@ -448,6 +454,114 @@ impl Engine {
                     }
                     _ => Err(SimError::InvalidCommand(format!(
                         "{node:?} is not a cooler"
+                    ))),
+                }
+            }
+            // A reservoir's pressure (M52, docs/DESIGN.md §57). Nothing to guard
+            // beyond the value: no trip acts on a reservoir and no loop actuates
+            // one. The solve reads pinned pressures fresh each tick
+            // (`network::classify`), so the write is the whole change.
+            Command::SetReservoirPressure { node, pressure } => {
+                if !pressure.value().is_finite() || pressure.value() <= 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "a reservoir's pressure must be finite and > 0 Pa (absolute). Got {} Pa",
+                        pressure.value()
+                    )));
+                }
+                let name = self.graph.node(node).name.clone();
+                match &self.graph.node(node).kind {
+                    NodeKind::Source {
+                        temperature,
+                        composition,
+                        ..
+                    } => {
+                        self.refuse_boiling_supply(
+                            &name,
+                            pressure,
+                            *temperature,
+                            &composition.clone(),
+                        )?;
+                    }
+                    NodeKind::Sink { .. } => {}
+                    NodeKind::Tank(_) => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') is a tank: its pressure is the weight of its \
+                             own liquid, and setting it would mean setting its level, which \
+                             would create or destroy liquid. Only a supply or a destination \
+                             takes a pressure"
+                        )))
+                    }
+                    NodeKind::Atmosphere => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') is the atmosphere, fixed at 1 atm. Only a \
+                             supply or a destination takes a pressure"
+                        )))
+                    }
+                    _ => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') is not a supply or a destination (a source or \
+                             a sink), so it has no pinned pressure to set"
+                        )))
+                    }
+                }
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Source { pressure: p, .. } | NodeKind::Sink { pressure: p, .. } => {
+                        *p = pressure;
+                        Ok(())
+                    }
+                    // Unreachable: the match above returned for every other kind.
+                    // An `Err` rather than a panic, for rule 5.
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} is not a source or a sink"
+                    ))),
+                }
+            }
+            // A supply's temperature (M52, docs/DESIGN.md §57). Read by the next
+            // tick's sweep off the kind, as every boundary temperature is.
+            Command::SetSourceTemperature { node, temperature } => {
+                if !temperature.value().is_finite() || temperature.value() <= 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "a supply's temperature must be finite and > 0 K. Got {} K",
+                        temperature.value()
+                    )));
+                }
+                let name = self.graph.node(node).name.clone();
+                match &self.graph.node(node).kind {
+                    NodeKind::Source {
+                        pressure,
+                        composition,
+                        ..
+                    } => {
+                        self.refuse_boiling_supply(
+                            &name,
+                            *pressure,
+                            temperature,
+                            &composition.clone(),
+                        )?;
+                    }
+                    // Its own reason: a sink has a temperature, but it is the fluid
+                    // it hands back on a reverse flow, not an operating condition.
+                    NodeKind::Sink { .. } => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') is a destination (a sink). Its temperature is \
+                             only the fluid it would hand back if the plant drove flow \
+                             backwards into it, and is fixed by the plant file; only a supply's \
+                             temperature can be set"
+                        )))
+                    }
+                    _ => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') is not a supply (a source)"
+                        )))
+                    }
+                }
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Source { temperature: t, .. } => {
+                        *t = temperature;
+                        Ok(())
+                    }
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} is not a source"
                     ))),
                 }
             }
@@ -1907,6 +2021,22 @@ impl Engine {
         self.node_states = node_states;
         self.last_solution = Some(solution);
         self.last_cavitation = cavitation;
+        // The supplies' own conditions (M52, docs/DESIGN.md §57): read off their
+        // kinds, which only a command moves, so this is what the next tick feeds.
+        let mut supply = std::collections::BTreeMap::new();
+        for nid in self.graph.node_ids() {
+            if let NodeKind::Source {
+                temperature,
+                composition,
+                ..
+            } = &self.graph.node(nid).kind
+            {
+                let check =
+                    supply_boiling(self.thermo.as_ref(), &self.slate, *temperature, composition)?;
+                supply.insert(nid, check);
+            }
+        }
+        self.last_supply_boiling = supply;
         self.tick += 1;
         Ok(())
     }
@@ -2769,6 +2899,36 @@ impl Engine {
         Ok(())
     }
 
+    /// Refuse a supply command that would leave the supply's liquid boiling at
+    /// its own pressure (M52, docs/DESIGN.md §57, ledger row B46): its bubble
+    /// pressure at `temperature` above `pressure`. The loader refuses the same
+    /// file through the same [`supply_boiling`]. Where the thermo model cannot
+    /// tell, nothing is refused; `NodeSnapshot::supply_boiling` says so.
+    fn refuse_boiling_supply(
+        &self,
+        name: &str,
+        pressure: Pascal,
+        temperature: Kelvin,
+        composition: &Composition,
+    ) -> Result<(), SimError> {
+        if let SupplyBoiling::Measured { bubble_pressure_pa } =
+            supply_boiling(self.thermo.as_ref(), &self.slate, temperature, composition)?
+        {
+            if bubble_pressure_pa > pressure.value() {
+                return Err(SimError::InvalidCommand(format!(
+                    "supply '{name}' would be boiling: at {:.2} °C its liquid boils at any pressure below \
+                     {:.4} bar, and the supply would stand at {:.4} bar. The engine carries a \
+                     supply as liquid only, so it cannot feed one that is partly vapour \
+                     (docs/DEFERRED.md B46). Raise the pressure or lower the temperature",
+                    temperature.value() - 273.15,
+                    bubble_pressure_pa / 1e5,
+                    pressure.value() / 1e5
+                )));
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse a command whose node or edge id this plant does not hold.
     ///
     /// The match has no `_` arm on purpose — the bridge's `referent` does the
@@ -2782,7 +2942,9 @@ impl Engine {
             | Command::SetPumpOn { node, .. }
             | Command::SetHeatInput { node, .. }
             | Command::SetFurnaceDuty { node, .. }
-            | Command::SetCoolerDuty { node, .. } => {
+            | Command::SetCoolerDuty { node, .. }
+            | Command::SetReservoirPressure { node, .. }
+            | Command::SetSourceTemperature { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::PuncturePipe { edge, .. } => {
@@ -2912,6 +3074,9 @@ impl Engine {
                     // Likewise — see `NodeSnapshot::tube_fire_w`.
                     tube_fire_w: self.node_states.tube_fire.get(&id).map(|w| w.value()),
                     trip_stop: self.trip_stop(id),
+                    // Every supply, from the last tick — see
+                    // `NodeSnapshot::supply_boiling`.
+                    supply_boiling: self.last_supply_boiling.get(&id).copied(),
                 }
             })
             .collect();
@@ -3120,6 +3285,40 @@ fn cavitation_subject(kind: &NodeKind) -> bool {
         // the FCC slate declares a `gas` lump with tb = -40 °C as a liquid, which
         // makes a liquid bubble-point test meaningless there (B3 again).
         NodeKind::Reactor { .. } => false,
+    }
+}
+
+/// What can be said about a supply's liquid boiling at `temperature` [K] (M52,
+/// docs/DESIGN.md §57, ledger row B46): its bubble pressure, or that the supply
+/// is a gas, or that `thermo` has no vapour–liquid equilibrium to ask.
+///
+/// The one rule behind three callers — the loader's refusal of a supply that
+/// boils at its declared pressure, the two supply commands' refusals, and
+/// `NodeSnapshot::supply_boiling` — so the file, the command and the report
+/// cannot come to disagree about what boiling is. A caller compares the
+/// `Measured` pressure with the supply's own.
+///
+/// Phase is `Composition::phase`, the engine's one notion of it, as the
+/// cavitation criterion asks it; a mixed-phase composition is its `Err`.
+///
+/// # Errors
+/// A mixed-phase composition, or a thermo fault other than "no equilibrium"
+/// (`SimError::Scenario`, which is `CannotTell`).
+pub fn supply_boiling(
+    thermo: &dyn ThermoModel,
+    slate: &Slate,
+    temperature: Kelvin,
+    composition: &Composition,
+) -> Result<SupplyBoiling, SimError> {
+    if composition.phase(slate)? != crate::components::Phase::Liquid {
+        return Ok(SupplyBoiling::Gas);
+    }
+    match thermo.bubble_pressure(slate, composition, temperature) {
+        Ok(bubble) => Ok(SupplyBoiling::Measured {
+            bubble_pressure_pa: bubble.value(),
+        }),
+        Err(SimError::Scenario(_)) => Ok(SupplyBoiling::CannotTell),
+        Err(other) => Err(other),
     }
 }
 

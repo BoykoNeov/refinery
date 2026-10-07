@@ -191,6 +191,8 @@ fn referent(cmd: &Command) -> Referent {
         Command::ReplaceTubes { node } => Referent::Node(*node),
         Command::ResetTrip { trip_id } => Referent::Trip(*trip_id),
         Command::ManualTrip { trip_id } => Referent::Trip(*trip_id),
+        Command::SetReservoirPressure { node, .. } => Referent::Node(*node),
+        Command::SetSourceTemperature { node, .. } => Referent::Node(*node),
     }
 }
 

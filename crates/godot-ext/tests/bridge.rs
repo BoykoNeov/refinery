@@ -6,7 +6,7 @@
 
 use refinery_core::graph::{ControlMode, ControlledValue, EdgeId, LoopId, NodeId, TripId};
 use refinery_core::snapshot::{Command, Snapshot};
-use refinery_core::units::{Meter, SquareMeter, Watt};
+use refinery_core::units::{Kelvin, Meter, Pascal, SquareMeter, Watt};
 use refinery_core::SimError;
 use refinery_godot_ext::bridge::{Bridge, BridgeError, ErrorReport, Session, MISSING_ID};
 use serde_json::Value;
@@ -186,6 +186,12 @@ fn wire_text(cmd: &Command) -> &'static str {
         Command::ResetTrip { .. } => r#"{"cmd":"reset_trip","trip_id":0}"#,
         Command::ReplaceTubes { .. } => r#"{"cmd":"replace_tubes","node":1}"#,
         Command::ManualTrip { .. } => r#"{"cmd":"manual_trip","trip_id":0}"#,
+        Command::SetReservoirPressure { .. } => {
+            r#"{"cmd":"set_reservoir_pressure","node":0,"pressure":250000.0}"#
+        }
+        Command::SetSourceTemperature { .. } => {
+            r#"{"cmd":"set_source_temperature","node":0,"temperature":373.15}"#
+        }
     }
 }
 
@@ -227,6 +233,14 @@ fn every_variant() -> Vec<Command> {
         Command::ResetTrip { trip_id: TripId(0) },
         Command::ReplaceTubes { node: NodeId(1) },
         Command::ManualTrip { trip_id: TripId(0) },
+        Command::SetReservoirPressure {
+            node: NodeId(0),
+            pressure: Pascal(250_000.0),
+        },
+        Command::SetSourceTemperature {
+            node: NodeId(0),
+            temperature: Kelvin(373.15),
+        },
     ]
 }
 
@@ -256,7 +270,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 11, "a Command variant was added");
+    assert_eq!(every_variant().len(), 13, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -295,6 +309,13 @@ fn fixture(cmd: &Command) -> Fixture {
             trip: "dump_on_high_level",
             ticks: 0,
         },
+        // M52: the cavitation demo's supply, at values below its boiling point.
+        Command::SetReservoirPressure { .. } => {
+            Fixture::shipped("pump_cavitation_flow_limit.toml", "rundown_source")
+        }
+        Command::SetSourceTemperature { .. } => {
+            Fixture::shipped("pump_cavitation_flow_limit.toml", "rundown_source")
+        }
         Command::ReplaceTubes { .. } => Fixture::Burnt {
             plant: "furnace_burnout.toml",
             furnace: "heater",

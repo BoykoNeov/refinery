@@ -8266,3 +8266,46 @@ were measured by the CLI; here they came through the GDExtension and GDScript.
 - **The boiling lamp and the head disagree on M50's plant, by design** (§55
   fork 3); the panel says why in two lines. A frontend that drives a warning
   from the lamp alone would miss every partial-cavitation state.
+
+## M52 — a supply's pressure and temperature, and a destination's pressure, by command: ledger rows F5 and B46; opened on a decision
+
+The user asked "what is next" (2026-10-07), was told nothing in DEFERRED.md is
+past its trigger, and offered five directions: a command for a supply's pressure
+or temperature (M51's finding that the pump screen can only throttle, the
+recommendation), creep burn-out (B42), a check valve's cracking pressure (E23),
+a reactor that sets its own temperature (D1), and NPSH3 rising with flow (B45).
+They chose the command, then decided three questions put before building:
+supplies AND destinations (a destination's pressure; its temperature only
+matters to a back-feed and stays fixed), a supply hot enough or low enough to
+boil at its own pressure REFUSED "for today, modeling part-vapour supply in the
+future" (new row B46, opened), and the pump screen's keys in this milestone.
+
+Measured before asking, on copies of `pump_cavitation_flow_limit.toml` at 0.6
+open (2.4 bar, 110 °C as shipped: 10.96 kg/s, 26% of the head): the supply at
+3.0 bar gives 15.75 kg/s and 67%; the liquid at 100 °C 14.37 kg/s and 68%, at
+90 °C 16.29 kg/s and 97%; at 120 °C the head is gone and the line carries 8.21
+kg/s, the supply alone. The supply itself boils above about 120.8 °C at 2.4 bar,
+or below about 1.83 bar at 110 °C — a state the loader accepts today and the
+engine carries as a liquid.
+
+A side note put a fourth question mid-build: 37 of the 43 plants have no bubble
+pressure, so a supply there takes any temperature unchecked. The user's
+DECISION: "accept it, but say so" — every supply reports whether it was checked.
+The note is DESIGN §57.
+
+### M52.0 — **LANDED** 2026-10-07: the commands, the boiling refusal, and the report
+
+`Command::SetReservoirPressure` (a source or a sink) and
+`Command::SetSourceTemperature` (a source); a supply that would boil at its own
+pressure refused by both and by the loader, one rule (`engine::supply_boiling`);
+`NodeSnapshot::supply_boiling` on every source — measured, gas, or cannot tell.
+- No solver change: every ordered move between six supply pressures, six supply
+  temperatures and three destination pressures lands on the cold start on both
+  fidelities (worst 1.4e-8); Newton at most 6, 12 and 5 iterations a tick.
+- The pump hears of a temperature step one tick late, and friction at the old
+  flow keeps tick 2 2.4e-4 off; on the cold start by tick 4.
+- All 43 shipped plants load. Two inline test fixtures fed a boiling supply on
+  purpose and now feed a compressed liquid at the same flow.
+- Corpus: 33 plants with a source moved, wire only (byte-identical with the new
+  field stripped, 86 runs of 6 000 ticks on both fidelities); the other 10 are
+  byte-identical. Mutations: ten, all caught.

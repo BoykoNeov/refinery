@@ -758,6 +758,54 @@ pub(crate) fn require_pump_suction_answerable(
     Ok(())
 }
 
+/// Refuse a supply whose liquid boils at its own declared pressure (M52,
+/// docs/DESIGN.md §57; ledger row B46, the user's DECISION: refused "for today,
+/// modeling part-vapour supply in the future").
+///
+/// The engine carries a supply as one phase, so a supply above its bubble point
+/// would feed liquid that is partly vapour as plain liquid. The rule is
+/// `refinery_core::engine::supply_boiling`, the one the supply commands refuse
+/// by, so a file and a command cannot disagree. Not asked of a gas supply, nor
+/// on a plant whose thermo model has no bubble pressure (it cannot tell; the
+/// snapshot says so), nor of a destination: its fluid matters only to a
+/// back-feed, and M50's shipped destination stands below its own bubble
+/// pressure.
+pub(crate) fn require_supplies_below_boiling(
+    graph: &PlantGraph,
+    thermo: &dyn ThermoModel,
+    slate: &Slate,
+) -> Result<(), SimError> {
+    for nid in graph.node_ids() {
+        let node = graph.node(nid);
+        let NodeKind::Source {
+            pressure,
+            temperature,
+            composition,
+        } = &node.kind
+        else {
+            continue;
+        };
+        if let refinery_core::snapshot::SupplyBoiling::Measured { bubble_pressure_pa } =
+            refinery_core::engine::supply_boiling(thermo, slate, *temperature, composition)?
+        {
+            if bubble_pressure_pa > pressure.value() {
+                return Err(SimError::Scenario(format!(
+                    "source '{}' is boiling: at {:.2} °C its liquid boils at any pressure \
+                     below {:.4} bar, and the source is declared at {:.4} bar. The engine \
+                     carries a supply as liquid only, so it cannot feed one that is partly \
+                     vapour (docs/DEFERRED.md B46). Raise pressure_bar or lower \
+                     temperature_c (docs/DESIGN.md §57).",
+                    node.name,
+                    temperature.value() - 273.15,
+                    bubble_pressure_pa / 1e5,
+                    pressure.value() / 1e5
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The phase of every node's connected component — the load-time guard that
 /// makes M5's two-phase deferral loud instead of silent (docs/DESIGN.md §3a).
 ///

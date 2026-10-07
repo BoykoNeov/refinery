@@ -20508,3 +20508,101 @@ integers). Two things are its own:
 - Screen: `crates/godot-ext/tests/pump_screen.rs` replays both `--auto`
   timelines byte for byte. An id sent as `2.0` fails it with serde's `expected
   u32`; removing the fix fails it at tick 21.
+
+## 57. A supply's pressure and temperature, and a destination's pressure, by command — ledger rows F5 and B46 (M52)
+
+Taken on a decision (2026-10-07): the user asked "what is next", was told
+nothing in DEFERRED.md is past its trigger, and chose, from five directions, a
+command for a supply's pressure or temperature — M51's finding that the pump
+screen could only throttle, while an operator cures a cavitating pump by raising
+its suction or cooling its liquid. Three questions before building, then a
+fourth put by a side note during it. The full write-up is ROADMAP M52.
+
+**Measured before asking**, on copies of `pump_cavitation_flow_limit.toml` at 0.6
+open (as shipped: 2.4 bar, 110 °C, 10.96 kg/s, 26% of the head): the supply at
+3.0 bar carries 15.75 kg/s at 67%; the liquid at 100 °C 14.37 kg/s at 68%, at
+90 °C 16.29 kg/s at 97%. At 120 °C the head is gone and the line carries 8.21
+kg/s, the supply's own drive. Cooling is the stronger cure.
+
+**Fork 1 — two commands, by what they move** (the user's DECISION: supplies AND
+destinations). `SetReservoirPressure { node, pressure: Pascal }` on a `Source` or
+a `Sink`; `SetSourceTemperature { node, temperature: Kelvin }` on a `Source` only.
+A pressure means the same on either reservoir, so one command; a temperature
+does not — a sink's is the fluid it hands back on a reverse flow, fixed by the
+file — so it is refused there with that reason. Both write the kind and nothing
+else: `network::classify` reads pinned pressures fresh every solve, and the sweep
+reads a source's temperature off its kind every tick, so nothing cached at load
+goes stale. No trip acts on a reservoir and no loop actuates one, so neither
+guard applies. Refused: a non-finite or non-positive value; a tank (its pressure
+is its level, and a command setting a level would create or destroy liquid); the
+atmosphere; every other kind, by name.
+
+**Fork 2 — a supply that would boil where it stands is refused** (the user's
+DECISION: "refuse it for today, modeling part-vapour supply in the future" —
+ledger row B46, opened). The engine carries a source as one phase; a liquid one
+above its own bubble point was carried as liquid that is partly vapour, and the
+loader accepted it (the demo's naphtha boils from about 120.8 °C at 2.4 bar, or
+below about 1.83 bar at 110 °C). One rule, `engine::supply_boiling`, behind the
+loader's refusal (`validate::require_supplies_below_boiling`), both commands'
+refusals and the report below, so the three cannot disagree. Not asked of a gas,
+of a destination (M50's own destination stands at 1.5 bar below its liquid's
+1.83, and its fluid matters only to a back-feed), or where thermo has no bubble
+pressure (fork 4).
+- All 43 shipped plants load. Two INLINE test fixtures fed a boiling supply on
+  purpose and were moved to a compressed liquid at the same flow:
+  `boiloff_reference.rs`'s scalding tank (800 K at 3 bar wide open, 12.96 kg/s;
+  now 300 bar throttled to 0.08, 12.97 kg/s, arriving 19 K hotter from the
+  throttle's friction — still everything-flashes) and `overflow_reference.rs`'s
+  tank at the brim (150 °C at 3 bar, 12.73 kg/s, boiling while spilling from tick
+  202; now 4 bar at 0.8, 12.65 kg/s, from tick 204).
+
+**Fork 3 — the pump hears of a temperature step one tick late, measured, kept.**
+Its bubble pressure is handed over between ticks from the liquid the last tick
+resolved at its suction (§55), so tick 1 after a step solves against the old
+liquid. Tick 2 solves against the new one, but warmed by friction at the old
+flow: 2.4e-4 off the cold start; 2.1e-7 at tick 3; on it to Newton's tolerance
+by tick 4. A valve move has the same friction coupling. Pinned by
+`the_pump_hears_of_a_temperature_step_one_tick_late`.
+
+**Fork 4 — every supply says whether the plant could check it** (put by a side
+note mid-build: 37 of the 43 plants have no bubble pressure, so a supply there
+takes any temperature unchecked; the user's DECISION: "accept it, but say so").
+`NodeSnapshot::supply_boiling` on every source, from each tick's diagnostics
+(`cavitation`'s placement and reason): `{"check":"measured","bubble_pressure_pa":…}`,
+`{"check":"gas"}` or `{"check":"cannot_tell"}`. Where measured it is never above
+the supply's pressure, so a screen draws the margin from it. Absent before the
+first tick and on every other node.
+- **Always written, so every plant with a source moved its fingerprint, wire
+  only.** Every shipped plant run 6 000 ticks on the commit before and after, on
+  both fidelities, snapshot every 10 ticks: on the 33 plants with a source every
+  snapshot line is byte-identical once `,"supply_boiling":{…}` is removed; the 10
+  without one are byte-identical as they stand. 86 runs, no other byte moved.
+
+**No solver change was needed.** Gate `every_supply_move_mid_run_lands_on_the_cold_answer`:
+every ordered move between six supply pressures (2.0–3.0 bar), six supply
+temperatures (90–120 °C) and three destination pressures (1.0–2.0 bar), on both
+fidelities, each landing on a cold start declared at the new value to 1e-6
+(measured worst 1.4e-8). Worst iterations on any tick after a move: Newton 6, 12
+and 5 (a temperature step swings the pump from nearly its whole head to none; a
+cold start of this plant takes 9), the game solver 37, 36 and 35 sweeps. Newton's
+caps are 8, 14 and 8: M51's failing throttle spent 27 to 50 and gave up.
+
+**Gates** (`crates/scenarios/tests/supply_command_reference.rs`): the moved supply
+and destination against a hand calculation; cooling gives the head back; the
+moves gate; the lag; the boiling refusals by command and by file (a refused
+command moves nothing); nonsense values and wrong nodes, each by its own reason;
+the report on all three arms and its wire form; determinism. Bridge: both
+variants' wire text pinned (13 variants). Mutations: ten, all caught — each
+refusal removed or flipped, each write skipped, zero admitted, the report
+collapsed, unpublished, or calling a gas `cannot_tell`.
+
+**Not built, with what un-defers each:**
+- A supply that is partly vapour — B46.
+- A destination's temperature by command — a plant whose answer depends on what
+  a destination hands back on a reverse flow.
+- A ramped change — a step is what the valve commands already are, and the
+  quasi-steady hydraulics land on it in one tick; a plant whose answer depends on
+  how fast a supply moves.
+- A supply's composition by command — a crude switch, which also moves every
+  downstream holdup's inventory.
+- A tank's level by command — never: it would create or destroy liquid.

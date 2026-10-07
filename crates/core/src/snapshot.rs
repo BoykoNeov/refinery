@@ -7,7 +7,7 @@ use crate::graph::{
 };
 use crate::stream::Stream;
 use crate::traits::SolveDiagnostics;
-use crate::units::{Seconds, SquareMeter, Watt};
+use crate::units::{Kelvin, Pascal, Seconds, SquareMeter, Watt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +133,39 @@ pub enum Command {
     /// already tripped, and on an id naming no trip.
     ManualTrip {
         trip_id: TripId,
+    },
+    /// Move a reservoir's pinned pressure [Pa]: a supply's (`Source`) or a
+    /// destination's (`Sink`) (M52, docs/DESIGN.md §57). Takes hold on the next
+    /// tick's solve, which reads the pinned pressures fresh; the hydraulics are
+    /// quasi-steady, so the plant lands on its new working point there.
+    ///
+    /// Must be finite and > 0. On a supply it is also refused where its liquid
+    /// would boil at the new pressure (see [`Command::SetSourceTemperature`]).
+    /// A destination is not asked: its fluid matters only to a back-feed, and a
+    /// shipped destination already stands below its liquid's bubble pressure.
+    /// Refused on every other node — a tank's bottom pressure is its level, which
+    /// no command sets (that would create or destroy liquid), and the atmosphere
+    /// is the atmosphere.
+    SetReservoirPressure {
+        node: NodeId,
+        pressure: Pascal,
+    },
+    /// Move a supply's temperature [K]: the fluid it feeds from the next tick on
+    /// (M52, docs/DESIGN.md §57). Holdups downstream warm or cool through their
+    /// own inventories; zero-volume nodes follow on the tick.
+    ///
+    /// Must be finite and > 0, and refused where the supply's liquid would boil
+    /// at its own pressure — its bubble pressure at the new temperature above the
+    /// supply's pressure. The engine carries a supply as one phase, so a boiling
+    /// one would be carried as liquid that is partly vapour (ledger row B46; the
+    /// loader refuses the same file). Not asked where the plant's thermo model has
+    /// no bubble pressure: it cannot tell.
+    ///
+    /// Supplies only: a destination's temperature is the fluid it returns if the
+    /// plant drives flow backwards into it, not an operating condition.
+    SetSourceTemperature {
+        node: NodeId,
+        temperature: Kelvin,
     },
 }
 
@@ -294,6 +327,40 @@ pub struct NodeSnapshot {
     /// publishes the bytes it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trip_stop: Option<TripStop>,
+    /// Whether this supply's liquid is clear of boiling at its own pressure, and
+    /// whether the plant can tell at all (M52, docs/DESIGN.md §57):
+    /// `{"check":"measured","bubble_pressure_pa":…}`, `{"check":"gas"}` or
+    /// `{"check":"cannot_tell"}`.
+    ///
+    /// **Written on every supply, and that is the user's decision** ("accept it,
+    /// but say so"): a supply whose plant has no bubble pressure takes any
+    /// temperature and pressure a command gives it, unchecked, and this field is
+    /// where the engine says so rather than leaving a frontend to infer it from
+    /// the fidelity. Where it is measured, the bubble pressure is never above the
+    /// supply's own — the loader and both supply commands refuse that — so a
+    /// screen draws the margin from it.
+    ///
+    /// Absent on every node that is not a supply, and before the first tick: it
+    /// is computed with the tick's other diagnostics, for `cavitation`'s reason
+    /// (a model's `Err` cannot be swallowed in `snapshot`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supply_boiling: Option<SupplyBoiling>,
+}
+
+/// What the engine can say about a supply boiling at its own conditions — see
+/// [`NodeSnapshot::supply_boiling`] (M52, docs/DESIGN.md §57).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "check", rename_all = "snake_case")]
+pub enum SupplyBoiling {
+    /// The bubble pressure [Pa] of the supply's liquid at its temperature —
+    /// `ThermoModel::bubble_pressure`, the pressure below which it boils.
+    Measured { bubble_pressure_pa: f64 },
+    /// The supply is a gas: there is nothing in it to boil.
+    Gas,
+    /// The plant's thermo model has no vapour–liquid equilibrium, so whether
+    /// this supply boils is not something it can answer. Its temperature and
+    /// pressure are taken unchecked.
+    CannotTell,
 }
 
 /// A piece of equipment the trips stopped — see [`NodeSnapshot::trip_stop`]

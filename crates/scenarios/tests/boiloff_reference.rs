@@ -406,16 +406,21 @@ molar_mass_kg_per_mol = 0.130
 density_kg_per_m3 = 750.0
 cp_j_per_kg_k = 2100.0
 
+# A compressed liquid: at 800 K this naphtha boils below ~276 bar, and a source
+# that boils at its own pressure is refused since M52 (docs/DESIGN.md §57,
+# DEFERRED B46). Until then this fixture fed it at 3 bar, wide open (12.96 kg/s
+# arriving at 800.1 K); throttled to 0.08 it carries 12.97 kg/s, arriving at
+# 819.5 K from the throttle's friction — the same regime.
 [nodes.hot_source]
 type = "source"
-pressure_bar = 3.0
+pressure_bar = 300.0
 temperature_c = 526.85
 composition = { light_naphtha = 0.5, heavy_naphtha = 0.5 }
 
 [nodes.feed_valve]
 type = "valve"
 kv = 40.0
-opening = 1.0
+opening = 0.08
 
 [nodes.product_tank]
 type = "tank"
