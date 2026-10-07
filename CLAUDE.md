@@ -148,10 +148,10 @@ godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--p
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M52
-(2026-10-07)** — a supply's pressure and temperature, and a destination's
-pressure, by command (a boiling supply refused, B46 opened; F5 opened and
-closed), and the pump screen's keys for them. Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Latest closed: M53
+(2026-10-07)** — a supply that is partly vapour and a line that boils as its
+pressure falls (`[fidelity] line_flash`, off by default; B46 struck, B47–B51
+opened), and the flashing rundown demo. Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

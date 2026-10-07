@@ -970,6 +970,41 @@ pub struct NodeStates {
     pub vapour: BTreeMap<NodeId, VapourShare>,
 }
 
+/// A swept node's temperature from its LIQUID-EQUIVALENT mix, settled by the line
+/// flash at the node's own solved pressure (M53, docs/DESIGN.md §58 fork 2); its
+/// vapour, if any, recorded in `vapour`. `NoLineFlash` hands the mix back
+/// untouched and records nothing.
+#[allow(clippy::too_many_arguments)] // one argument per input the settle reads
+fn settle_node(
+    graph: &PlantGraph,
+    slate: &Slate,
+    (line_flash, thermo, enthalpy): (&dyn LineFlashModel, &dyn ThermoModel, &dyn EnthalpyModel),
+    node_pressure: &BTreeMap<NodeId, Pascal>,
+    composition: &BTreeMap<NodeId, Composition>,
+    vapour: &mut BTreeMap<NodeId, VapourShare>,
+    id: NodeId,
+    liquid_equivalent: Kelvin,
+) -> Result<Kelvin, SimError> {
+    let pressure = node_pressure.get(&id).copied().ok_or_else(|| {
+        SimError::Numerical(format!(
+            "internal: node '{}' has no solved pressure for its line flash",
+            graph.node(id).name
+        ))
+    })?;
+    let settled = line_flash.settle(
+        slate,
+        mixed_composition_at(composition, id)?,
+        liquid_equivalent,
+        pressure,
+        thermo,
+        enthalpy,
+    )?;
+    if let Some(share) = settled.vapour {
+        vapour.insert(id, share);
+    }
+    Ok(settled.temperature)
+}
+
 /// Σ ṁ·latent [W] arriving at `node` on its inflow edges — the latent heat its
 /// upwind nodes' vapour carries in (M53, docs/DESIGN.md §58). `None`, not
 /// `Some(0.0)`, when no upwind node has vapour, so a caller adds nothing at all
@@ -1279,13 +1314,12 @@ pub fn resolve_node_states(
                             &separations,
                             id,
                         )?;
-                        // Nothing arriving: what passes, if anything, is what the
-                        // tank held, at exactly its own temperature — not a mix of
-                        // one term, which is the same number to within rounding.
-                        // Latent heat arriving on a two-phase inflow passes on
-                        // as superheat: a starved tank has no flash of its own,
-                        // and its downstream holdup's boil-off is what vents it
-                        // (M53, docs/DESIGN.md §58 fork 4).
+                        // Latent heat arriving on a two-phase inflow joins the
+                        // sum, and what passes is settled at the tank's own
+                        // pressure, as at a junction: a dry tank is swept as the
+                        // pass-through it is (M53, docs/DESIGN.md §58 fork 4).
+                        // Passing it on as liquid superheat instead put "liquid"
+                        // naphtha at 184 °C in the product line of M53's plant.
                         let passing = passing.map(|totals| {
                             match inflow_latent(graph, edge_mass_flow, &vapour, id) {
                                 Some(latent) => InflowEnthalpy {
@@ -1295,16 +1329,31 @@ pub fn resolve_node_states(
                                 None => totals,
                             }
                         });
+                        // Nothing arriving: what passes, if anything, is what the
+                        // tank held, at exactly its own temperature — not a mix of
+                        // one term, which is the same number to within rounding.
                         let passed = match passing {
-                            Some(totals) => enthalpy.mix_temperature(
-                                slate,
-                                mixed_composition_at(&composition, id)?,
-                                InflowEnthalpy {
-                                    enthalpy_rate: own.enthalpy_rate + totals.enthalpy_rate,
-                                    mass_rate: own.mass_rate + totals.mass_rate,
-                                    capacity_rate: own.capacity_rate + totals.capacity_rate,
-                                },
-                            )?,
+                            Some(totals) => {
+                                let liquid_equivalent = enthalpy.mix_temperature(
+                                    slate,
+                                    mixed_composition_at(&composition, id)?,
+                                    InflowEnthalpy {
+                                        enthalpy_rate: own.enthalpy_rate + totals.enthalpy_rate,
+                                        mass_rate: own.mass_rate + totals.mass_rate,
+                                        capacity_rate: own.capacity_rate + totals.capacity_rate,
+                                    },
+                                )?;
+                                settle_node(
+                                    graph,
+                                    slate,
+                                    (line_flash, thermo, enthalpy),
+                                    node_pressure,
+                                    &composition,
+                                    &mut vapour,
+                                    id,
+                                    liquid_equivalent,
+                                )?
+                            }
                             None => tank.temperature,
                         };
                         temperature.insert(id, passed);
@@ -1398,26 +1447,16 @@ pub fn resolve_node_states(
                             // what that enthalpy boils there (M53,
                             // docs/DESIGN.md §58 fork 2). `NoLineFlash` hands
                             // the mix back untouched.
-                            Some(liquid_equivalent) => {
-                                let pressure = node_pressure.get(&id).copied().ok_or_else(|| {
-                                    SimError::Numerical(format!(
-                                        "internal: node '{}' has no solved pressure for its line flash",
-                                        graph.node(id).name
-                                    ))
-                                })?;
-                                let settled = line_flash.settle(
-                                    slate,
-                                    mixed_composition_at(&composition, id)?,
-                                    liquid_equivalent,
-                                    pressure,
-                                    thermo,
-                                    enthalpy,
-                                )?;
-                                if let Some(share) = settled.vapour {
-                                    vapour.insert(id, share);
-                                }
-                                settled.temperature
-                            }
+                            Some(liquid_equivalent) => settle_node(
+                                graph,
+                                slate,
+                                (line_flash, thermo, enthalpy),
+                                node_pressure,
+                                &composition,
+                                &mut vapour,
+                                id,
+                                liquid_equivalent,
+                            )?,
                             None => {
                                 held.insert(id);
                                 previous.temperature.get(&id).copied().unwrap_or(T_AMBIENT)

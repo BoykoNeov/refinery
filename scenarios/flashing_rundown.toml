@@ -1,0 +1,134 @@
+# M53 demo plant: a hot rundown that boils after its control valve.
+#
+# The wired demonstration of docs/DESIGN.md §58 — a line that boils as its
+# pressure falls (ledger row B3's flashing-line clause) and, by command, a
+# supply that is partly vapour where it stands (row B46). The plant selects
+# `line_flash = "equilibrium"`; every plant written before M53 selects
+# "none" by default and carries its streams as liquid.
+#
+# --- why the plant is shaped like this -------------------------------------
+#
+# 1. THE SUPPLY IS LIQUID, THE LINE IS NOT. Naphtha at 115 °C and 3.0 bar is
+#    0.9 bar clear of boiling (its bubble pressure 2.07 bar). The control
+#    valve drops it to about 1.4 bar, below that, and the stream flashes just
+#    past the valve: about 10% of its mass, and 94% of its volume, is vapour
+#    in `flash_line`, and it has cooled from 115 °C to about 101 °C — the
+#    latent heat of what boiled came out of the liquid.
+#
+# 2. THE JUNCTION IS WHERE THE LINE CAN BE SEEN BOILING. A flow solve reads a
+#    pipe's density at its UPWIND node; with the valve emptying straight into
+#    the tank, the pipe after it would flow at the valve's inlet density —
+#    liquid — and the boiling would happen only in the tank, which M12 could
+#    already do. `valve_outlet` puts a node in the two-phase region, so
+#    `flash_line` flows as the mixture it is (about 44 kg/m³ against 701).
+#
+# 3. THE TANK VENTS WHAT ARRIVES AS VAPOUR. It is vented (it boils at
+#    atmospheric pressure, about 90 °C), so the arriving stream's latent heat,
+#    and the further flash from 1.4 bar to atmospheric, go up its boil-off vent:
+#    about 18% of the feed. `boiloff = "flash"` is required of a flashing plant
+#    with a tank; without it that heat would sit in the tank as superheat.
+#
+# 4. THE OUTLET SETTLES THE LEVEL. A valve and a 2 m drop to the product
+#    destination, sized so the level finds a steady height near 4.7 m within
+#    a few thousand ticks; the tank starts near it (4.5 m), at about its own
+#    boiling point.
+#
+# Warm the supply past about 130.3 °C (`set_source_temperature`) and it boils
+# where it stands: at 135 °C it is 35% vapour by mass, the line's flow falls
+# from 5.7 to 1.2 kg/s, and the tank drains.
+
+[meta]
+name = "flashing_rundown"
+description = "Hot naphtha let down through a control valve into a vented tank; the line boils after the valve."
+
+[simulation]
+dt = 0.5
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+boiloff = "flash"
+line_flash = "equilibrium"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[nodes.rundown]
+type = "source"
+pressure_bar = 3.0
+temperature_c = 115.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+[nodes.rundown_valve]
+type = "valve"
+kv = 40.0
+opening = 0.5
+
+[nodes.valve_outlet]
+type = "junction"
+
+[nodes.rundown_tank]
+type = "tank"
+area_m2 = 0.5
+height_m = 8.0
+initial_level_m = 4.5
+temperature_c = 88.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+[nodes.outlet_valve]
+type = "valve"
+kv = 60.0
+opening = 0.5
+
+[nodes.product]
+type = "sink"
+pressure_bar = 1.01325
+temperature_c = 40.0
+composition = { light_naphtha = 0.5, heavy_naphtha = 0.5 }
+
+[[pipes]]
+name = "rundown_line"
+from = "rundown"
+to = "rundown_valve"
+length_m = 30.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "valve_spool"
+from = "rundown_valve"
+to = "valve_outlet"
+length_m = 2.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "flash_line"
+from = "valve_outlet"
+to = "rundown_tank"
+length_m = 40.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "tank_outlet"
+from = "rundown_tank"
+to = "outlet_valve"
+length_m = 5.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "product_line"
+from = "outlet_valve"
+to = "product"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = -2.0

@@ -8496,3 +8496,47 @@ carries vapour, and only there. DESIGN §58.
   isenthalpic bracket collapsed to isothermal. **Not yet gated, for M53.1's tank
   plant**: the tank taking arriving latent heat, and friction booked on the
   liquid share — both need the plant's energy books.
+
+### M53.1 — the flashing rundown — **LANDED** 2026-10-07, and M53 is CLOSED
+
+`scenarios/flashing_rundown.toml`: naphtha at 115 °C and 3.0 bar through a 30 m
+line and a control valve to a junction just past it, a 40 m line, a vented tank
+and an outlet valve to the product. Shaped by measurement, twice: the first
+draft drained its tank four times faster than it filled and ran dry; the second
+settled too slowly (an hour of plant time) because a 10 m drop made the outflow
+nearly blind to the level. As shipped the level settles near 4.75 m.
+
+- **The line boils past the valve**: 9.9% of the mass (94% of the volume) at
+  1.40 bar and 101 °C, flowing at 44 kg/m³; the tank boils at atmospheric
+  (90.13 °C) and vents 17.93% of the feed. Warmed to 135 °C by command the supply
+  is 34.75% vapour where it stands — the hand calculation's
+  0.347 526 116 816 403 to every printed digit — the line's flow falls from 5.7 to
+  1.2 kg/s and the tank drains dry.
+- **A fix found by the plant (M53.0's)**: a tank run dry handed the arriving
+  latent heat on as LIQUID superheat — 184 °C naphtha in the product line. A dry
+  tank is now settled at its own pressure like the junction it has become.
+- **Against a hand calculation of the whole settled plant** (one equilibrium
+  stage at atmospheric, with the 1 352 W of friction upstream): V = 0.179 301,
+  T = 90.136 60 °C; the engine 0.179 321 and 90.133 76 °C, an offset that halves
+  with the step — M12's boil-off parks the tank on the bubble point of the liquid
+  it had before the vapour left. **Finding (row B51)**: the boil-off's latent heat
+  is the liquid's, the line flash's the vapour's; one flash with the vapour's
+  would vent 0.175 59.
+- **The books close every tick to round-off** (4.6e-10 of the gross enthalpy,
+  6.9e-10 of the mass) through the boiling supply and the dry tank — once an edge
+  LEAVING the plant was credited with the heat its own friction made inside the
+  boundary (the product line's 291 W, exactly the first residual).
+- Corpus: 43 plants byte-identical on both fidelities, the new one runs on both
+  (Newton worst 11 iterations a tick, the game solver 8). It is the corpus's
+  slowest plant: 0.8 ms a tick on Newton and 1.9 on the game solver, against
+  0.02–0.3 for most (a machine shared with another build; the flash is a
+  bisection of bisections, and the game solver reads every edge fresh).
+- Gates: `flashing_rundown_reference.rs` (6). Mutations: three more, all caught
+  (the tank's latent route, friction on the whole volume, the dry tank's
+  superheat); eleven over the milestone.
+
+**Not built, ledger rows opened**: B47 choking in flashing service, B48 a pump in
+two-phase service (gas-lock — the pump screen's supply past boiling), B49 phase
+slip and a condensing wall, B50 a zero-volume node's enthalpy one tick late in
+the flow solve, B51 the two latent-heat conventions. B46 struck; B3's
+flashing-line clause closed for the units a flashing plant may hold.

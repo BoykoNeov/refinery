@@ -20686,8 +20686,12 @@ nearly shut — the rest at most 10.
 The tank's balance adds `ṁ·q·λ` for every inflow whose upwind node carries
 vapour; the existing `FlashBoilOff` then vents what that heat boils. The arriving
 vapour is never ALSO vented directly — that would count it twice. A flashing
-plant with a tank must therefore select `boiloff = "flash"`. A starved tank
-passes the heat on as superheat (it has no flash of its own).
+plant with a tank must therefore select `boiloff = "flash"`. **A tank run dry is
+settled like a junction** — it is swept as the pass-through it is — at its own
+pressure. Handing the heat on as liquid superheat instead, as M53.0 first did,
+put "liquid" naphtha at 184 °C in the demo's product line; caught by M53.1's
+probe, fixed, and gated on the dry tank's own outlet (the valve downstream
+re-flashes either way, so the product line could not see it).
 
 **Fork 5 — what a flashing plant may hold**, refused at load by name otherwise
 (`require_line_flash_plant`): `thermo = "trouton"`, liquids only, supplies,
@@ -20727,3 +20731,39 @@ flashing plant only.
   term, as on a liquid; conserved, but a condensing wall is not modelled.
 - A flashing feed into a column, a partial condenser, a vapour side draw — B3's
   other stream paths.
+
+**The demo (M53.1): `scenarios/flashing_rundown.toml`.** Naphtha at 115 °C and
+3.0 bar (0.9 bar clear of boiling) through a 30 m line and a control valve to a
+junction just past it, a 40 m line, a vented tank (`boiloff = "flash"`) and an
+outlet valve to the product. The valve drops it to 1.40 bar: 9.9% of the mass
+and 94% of the volume is vapour past it, at 101 °C (it came in at 115), and the
+line flows at 44 kg/m³. The tank boils at atmospheric, about 90.13 °C, and vents
+17.93% of the feed. Warmed to 135 °C by command the supply is 34.75% vapour where
+it stands (the hand calculation's 0.347 526 116 816 403), the line's flow falls
+from 5.7 to 1.2 kg/s, and the tank drains dry. Both fidelities agree to 1e-6;
+Newton at most 11 iterations a tick, the game solver 8.
+
+**Measured against a hand calculation of the whole plant.** Settled, the tank is
+one equilibrium stage at atmospheric pressure, and an independent bisection gives
+the vented share V = 0.179 301 and T = 90.136 60 °C. The engine lands at
+0.179 321 and 90.133 76 °C — +1.9e-5 and −2.8 mK — and halving the step halves
+both (+1.1e-5, −1.4 mK): the boil-off's first-order timestep, not this
+milestone's (it parks the tank on the bubble point of the liquid it had BEFORE
+the vapour left). **And a finding, ledger row B51**: the tank's boil-off (M12)
+sizes vapour by a latent heat mass-weighted over its LIQUID, the line flash by
+the VAPOUR's own; one equilibrium flash with the vapour's would vent 0.175 59.
+Both conventions close their books; they are not one model.
+
+**The plant's books close every tick, to round-off** — 4.6e-10 of the gross
+enthalpy crossing the boundary, 6.9e-10 of the mass — through the line boiling,
+the supply boiling where it stands, and the tank running dry. Writing them took
+one correction worth keeping: an edge LEAVING the plant carries, at its published
+outlet temperature, the heat its own friction made inside the boundary, so that
+heat is a source here as well as leaving in the flux. The boil-off plants' books
+never needed the term, because none of their outgoing edges has friction; here
+it is the product line's 291 W, exactly the residual before it was counted.
+
+Gates: `crates/scenarios/tests/flashing_rundown_reference.rs` (6). Mutations:
+three more on top of M53.0's eight, all caught — the tank's latent route removed
+(the books), friction booked on the whole volume (the friction bound), the dry
+tank passing liquid superheat (its own outlet).

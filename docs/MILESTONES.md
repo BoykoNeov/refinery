@@ -12,6 +12,41 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M53 is CLOSED (2026-10-07): a supply that is partly vapour, and a line that
+boils as its pressure falls — `docs/DEFERRED.md` B46 struck, B3's flashing-line
+clause closed, B47–B51 opened.** On a decision (the fifth of five directions
+offered) and six DECISIONS: a new tank plant first, the stream re-boiling as its
+pressure falls, the refusal lifted, pipes AND control valves; then, when those
+pulled against each other, the model selectable and off by default, and the
+refusal lifted only where modelled. DESIGN §58.
+- **`[fidelity] line_flash = "equilibrium"`**: a supply above its bubble point
+  flashed where it stands (isothermal), every valve and junction re-flashed
+  ISENTHALPICALLY so the stream cools as it boils, the vapour share taken from the
+  energy (a pure cut's flash is a step); `Stream::vapour_fraction` and
+  `latent = q·λ` from one `VapourShare`; a tank takes the arriving latent heat
+  and its boil-off vents it; a dry tank settles like a junction.
+- **Measured first, and once wrongly**: an isothermal flash put 27–70% of six
+  shipped plants' line mass in vapour; isenthalpic, 5–15%. Those six would move,
+  which is why the model is off by default — all 43 shipped plants
+  byte-identical on both fidelities.
+- **The solvers**: a throwaway spike showed density alone takes Newton to its
+  50-iteration cap and cycles the game solver across the bubble pressure; each
+  two-phase edge now carries `∂ṁ/∂P_upwind` through its density (`DensitySlope`)
+  and the game solver reads every edge fresh on a flashing plant. 1 260 moves
+  across the bubble pressure land on the cold answer on both fidelities.
+- **The demo**, `flashing_rundown.toml`: 9.9% vapour past the valve, 17.93% of
+  the feed vented; the supply warmed to 135 °C is 34.75% vapour, the hand
+  calculation's number. Settled, the whole plant matches an independent hand
+  calculation to the boil-off's own first-order timestep; the plant's books close
+  every tick to round-off.
+- **Findings for the user**: two latent-heat conventions meet in a flashing tank
+  (B51: 17.93% vented against a single flash's 17.56%); M12's boil-off parks a
+  tank a few millikelvin below its own bubble point at the shipped step; the
+  plant is the corpus's slowest.
+- Gates: `line_flash.rs` reference (6), `line_flash_reference.rs` (7),
+  `flashing_rundown_reference.rs` (6). Mutations: eleven, all caught. The Godot
+  binding did not change.
+
 **M52 is CLOSED (2026-10-07): a supply's pressure and temperature, and a
 destination's pressure, by command — `docs/DEFERRED.md` F5 opened and struck,
 B46 opened.** On a decision (M51's finding that the pump screen could only
