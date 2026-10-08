@@ -8727,3 +8727,32 @@ pressure the pump makes); the pump admitted on a flashing plant, with
 - Corpus: all 44 shipped plants byte-identical on both fidelities, 6 000 ticks,
   against baselines recorded before the first edit. Release property tests pass;
   the Godot binding did not change.
+
+### M54.1 — **LANDED** 2026-10-08: a check valve on a flashing plant
+
+`require_line_flash_plant` admits a check valve (decision 5): its drive and its
+law at the density its upwind stream has, as a control valve's. The solvers took
+the work: Newton's ladder starts short of moving any pressure by more than the
+largest solved pump's shut-off head (`head_cut`), and the game solver's group
+step beside a pump inlet shifts with the inlet re-solved
+(`shift_beside_inlets`). DESIGN §59.1.
+
+- **Found by the gates, before any of it**: a disc shut at the cold seed on the
+  discharge of a pump on the table's fall is a dead end behind a flow regulator.
+  Newton's linear model raised it 1 300 bar and failed at every halving; the game
+  solver's group shift held the inlet still and pulled the disc and the valve
+  180 kPa down every sweep, 5 000 sweeps running.
+- **Measured**: M54.0's pump plant with a disc, into 3 bar at 125 °C — the line
+  that ran back at 2.13 kg/s is shut, both fidelities. Every move 100 → 130 →
+  100 °C into 1.5 and 3 bar lands on the cold answer and stays: Newton at most 7
+  iterations a tick into 1.5 bar, 17 into 3 bar (the disc opening and shutting);
+  the game solver 9 and 20. M53's let-down line with a disc: vapour past it,
+  every move settled, the fidelities agreeing to 1e-6.
+- Gates: `crates/scenarios/tests/flashing_check_valve_reference.rs` (3). M53's
+  refusal gate now refuses a relief valve where it refused a check valve.
+- Mutations: five. Three caught (the head cut, the group step's inlet path, its
+  re-solve). The two that escaped were bounds on the game solver's node and group
+  steps at the pump's head, added before the group fix; with it they changed
+  nothing measured, and were removed.
+- Corpus: all 44 shipped plants byte-identical on both fidelities. Release
+  property tests pass; the Godot binding did not change.

@@ -20886,3 +20886,44 @@ a hundredth of the absolute bar.
 - *Superseded and removed*: M51's curved line search generalised to the push
   (it did not help), and a bracket-first step at the pump node in the game
   solver (the node-wise coupling still cycled).
+
+### 59.1 A check valve on a flashing plant (M54.1)
+
+Decision 5: a dead pump's line need not run backwards. `require_line_flash_plant`
+admits a check valve. The disc needs no new law: it reads its forward drive
+`S = dp − β` and its liquid valve law at the density its upwind stream has there
+(the mixture's on a two-phase stream, M53 fork 3), as a control valve does, and
+the density slope's two sides recompile the disc with the rest of the branch —
+so its opening slope (through the drive, both columns) and its density slope
+(through the upwind pressure) are separate partials, not one counted twice.
+Choking through a disc in flashing service is B47's, as through a control valve.
+
+**What it took was the solvers, not the disc.** A pump on the table's fall is a
+flow regulator: with its inlet solved inside the iterate (59.0), the plant beside
+it sees a flow that hardly moves with its own pressure. A check valve shut on its
+discharge at the cold seed (both its ends at the seed pressure) is then a dead end
+behind a regulator, and both solvers' linear models asked for an enormous step:
+- **Newton** raised the dead end by 1 300 bar, and every halving to 1/256 still
+  overshot. It now starts its ladder short of moving any unknown by more than the
+  largest shut-off head among the plant's solved pumps, `ρ_ref·g·h0` at the
+  liquid reference density — more than one pump can change a pressure by
+  (`head_cut`, beside M49's `band_cut`). `1.0` on every plant without one.
+- **The game solver**'s GROUP step — a common shift of the check valve and the
+  valve after it — held the inlet still and pulled the pair 180 kPa down every
+  sweep, undoing the node steps for 5 000 sweeps. A group beside an inlet now
+  shifts on the plant as it answers (`shift_beside_inlets`): the inlet re-solved
+  at every trial, the slope a central difference of that. Bounds on the game
+  solver's node and group steps at the pump's head were tried first; with the
+  group fix they changed nothing the gates measure (both survived as mutations)
+  and were removed.
+
+**Measured** (`crates/scenarios/tests/flashing_check_valve_reference.rs`):
+- M54.0's pump plant with a disc on the discharge, into 3 bar at 125 °C: the line
+  that ran back at 2.13 kg/s is shut, on both fidelities.
+- Every move 100 → 130 → 100 °C into 1.5 and 3 bar lands on the cold answer and
+  stays there: Newton at most 7 iterations a tick into 1.5 bar and 17 into 3 bar,
+  where the disc opens and shuts as the pump dies and revives; the game solver 9
+  and 20.
+- M53's let-down line with a disc for the control valve, its supply stepped from
+  liquid to boiling: the disc's outlet carries vapour, every move settles on the
+  cold answer, and the fidelities agree to 1e-6.

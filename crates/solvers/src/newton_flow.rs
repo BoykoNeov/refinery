@@ -51,14 +51,14 @@ use crate::elements::{cavitation_head_fraction, cavitation_head_fraction_dsigma}
 use crate::network::{
     accumulation, compile_edges_with, edge_flows, finalize, pump_inlets, solve_pump_inlet,
     solve_remembering_reliefs, solve_with_active_anchoring_with, validate_degrees, AnchorPass,
-    Capacitance, CompiledEdge, OwnedLineFlash, Prepared, PumpInlet,
+    Capacitance, CompiledEdge, OwnedLineFlash, Prepared, PumpInlet, RHO_WATER_REF,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
 use refinery_core::error::SimError;
-use refinery_core::graph::{EdgeId, NodeId, PlantGraph};
+use refinery_core::graph::{EdgeId, NodeId, NodeKind, PlantGraph};
 use refinery_core::traits::{FlowSolver, HydraulicSolution};
-use refinery_core::units::Seconds;
+use refinery_core::units::{Seconds, G};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Max damped-halvings per Newton step (min step 1/256).
@@ -354,8 +354,11 @@ impl NewtonFlowSolver {
             // The ladder starts short of a step that would carry a check valve
             // from full lift to shut (M49, docs/DESIGN.md §54): `band_cut`. Each
             // trial carries a cavitating pump's outlet along the head its
-            // suction step buys (M51, §56): `follow_pump_heads`.
-            let mut t = band_cut(&compiled, &idx, &dp);
+            // suction step buys (M51, §56): `follow_pump_heads`. And on a plant
+            // whose pump inlets are solved inside the iterate it starts short of
+            // moving any pressure by more than a pump's head (M54, §59.1):
+            // `head_cut`.
+            let mut t = band_cut(&compiled, &idx, &dp).min(head_cut(graph, &inlets, &dp));
             let mut accepted = false;
             for _ in 0..=MAX_HALVINGS {
                 let mut trial = apply_step(&pressures, &unknowns, &idx, &dp, t);
@@ -571,6 +574,33 @@ fn assemble(
         }
     }
     (r, jac, scale)
+}
+
+/// The longest step `t ≤ 1` the line search may start from on a plant whose pump
+/// inlets are solved inside the iterate (M54, docs/DESIGN.md §59.1): short of
+/// moving any unknown by more than the largest of those pumps' shut-off heads,
+/// `ρ_ref·g·h0`, at the liquid reference density — more than any one pump can
+/// change a pressure by.
+///
+/// Measured where it is needed: a pump on the table's fall is a flow regulator,
+/// and a check valve shut on its discharge at the cold seed is a dead end behind
+/// it; the linear model then raised the dead end by 1 300 bar to stop the flow,
+/// and every halving down to 1/256 still overshot the pump's whole head. `1.0`
+/// on every plant without such a pump.
+fn head_cut(graph: &PlantGraph, inlets: &[PumpInlet], dp: &[f64]) -> f64 {
+    let head = inlets
+        .iter()
+        .filter_map(|inlet| match graph.node(inlet.node).kind {
+            NodeKind::Pump { h0, .. } => Some(RHO_WATER_REF * G * h0.value()),
+            _ => None,
+        })
+        .fold(0.0, f64::max);
+    let longest = dp.iter().fold(0.0f64, |m, x| m.max(x.abs()));
+    if head > 0.0 && longest > head {
+        head / longest
+    } else {
+        1.0
+    }
 }
 
 /// The longest step `t ≤ 1` the line search may start from: short of carrying a

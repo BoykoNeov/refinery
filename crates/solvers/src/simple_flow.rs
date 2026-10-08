@@ -401,9 +401,7 @@ impl SimpleFlowSolver {
                 // node's slope ten to a hundred times too steep — up to 200
                 // sweeps a tick, and none sufficing on a cold start at 125 °C
                 // into a 3 bar destination (measured, M54's probe).
-                if !inlets.is_empty()
-                    && !adjacent_inlets(graph, &incident[&nid], &inlets).is_empty()
-                {
+                if !adjacent_inlets(graph, &incident[&nid], &inlets).is_empty() {
                     let reduced = |p: f64| {
                         node_imbalance_at(
                             nid,
@@ -557,6 +555,7 @@ impl SimpleFlowSolver {
                 slate,
                 previous_states,
                 dt.value(),
+                &inlets,
             ) {
                 return AnchorPass {
                     result: Err(e),
@@ -647,6 +646,78 @@ impl SimpleFlowSolver {
         }
     }
 
+    /// The group step for a group beside one or more pump inlets (M54,
+    /// docs/DESIGN.md §59.1; `correct_groups`).
+    #[allow(clippy::too_many_arguments)] // `correct_groups`' inputs, and the inlets
+    fn shift_beside_inlets(
+        &self,
+        group: &[NodeId],
+        beside: &[PumpInlet],
+        incident: &BTreeMap<NodeId, Vec<(EdgeId, bool)>>,
+        compiled: &BTreeMap<EdgeId, CompiledEdge>,
+        pressures: &mut BTreeMap<NodeId, f64>,
+        capacitive: &BTreeMap<NodeId, Capacitance>,
+        (graph, slate, previous_states): (&PlantGraph, &Slate, &NodeStates),
+        dt: f64,
+    ) -> Result<(), SimError> {
+        let flash = self.line_flash.view();
+        let tol = 0.01 * self.tol_abs_kg_s;
+        let resolved = |shift: f64| -> Result<f64, SimError> {
+            let mut trial = pressures.clone();
+            for nid in group {
+                if let Some(p) = trial.get_mut(nid) {
+                    *p += shift;
+                }
+            }
+            for &inlet in beside {
+                solve_pump_inlet(
+                    graph,
+                    slate,
+                    previous_states,
+                    flash,
+                    inlet,
+                    &mut trial,
+                    self.eps_dp,
+                    tol,
+                )?;
+            }
+            let (imbalance, _) = group_imbalance(
+                group,
+                0.0,
+                Some(TrialCompile {
+                    graph,
+                    slate,
+                    previous_states,
+                    pressures: &trial,
+                    flash,
+                }),
+                incident,
+                compiled,
+                &trial,
+                capacitive,
+                dt,
+                self.eps_dp,
+            )?;
+            Ok(imbalance)
+        };
+        let delta = DENSITY_SLOPE_DELTA;
+        let r0 = resolved(0.0)?;
+        let slope = (resolved(-delta)? - resolved(delta)?) / (2.0 * delta);
+        if !(slope > 0.0 && slope.is_finite()) {
+            return Ok(());
+        }
+        let full = r0 / slope;
+        let step = armijo_step(full, r0, resolved)?;
+        if step != 0.0 {
+            for nid in group {
+                if let Some(p) = pressures.get_mut(nid) {
+                    *p += step;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// The additive correction (DESIGN §25): for each group in `groups`, in order
     /// (finest level first), shift every member's pressure by one common `δ`.
     ///
@@ -703,6 +774,7 @@ impl SimpleFlowSolver {
         slate: &Slate,
         previous_states: &NodeStates,
         dt: f64,
+        inlets: &[PumpInlet],
     ) -> Result<(), SimError> {
         for group in groups {
             let settled = group.iter().all(|&nid| {
@@ -721,6 +793,37 @@ impl SimpleFlowSolver {
                 meets_node_bar(bal, scale, self.tol_abs_kg_s, self.tol_rel)
             });
             if settled {
+                continue;
+            }
+
+            // A group beside a pump's inlet shifts on the plant as it answers,
+            // the inlet re-solved at every trial, its slope a central
+            // difference of that (M54, docs/DESIGN.md §59.1). Held still, the
+            // inlet made the shift
+            // undo the sweep: the check valve and the valve after a regulating
+            // pump were pulled 180 kPa down every sweep, 5 000 sweeps running.
+            let beside: Vec<PumpInlet> = {
+                let mut found: Vec<PumpInlet> = Vec::new();
+                for nid in group {
+                    for inlet in adjacent_inlets(graph, &incident[nid], inlets) {
+                        if !group.contains(&inlet.node) && !found.contains(&inlet) {
+                            found.push(inlet);
+                        }
+                    }
+                }
+                found
+            };
+            if !beside.is_empty() {
+                self.shift_beside_inlets(
+                    group,
+                    &beside,
+                    incident,
+                    compiled,
+                    pressures,
+                    capacitive,
+                    (graph, slate, previous_states),
+                    dt,
+                )?;
                 continue;
             }
 
@@ -1419,6 +1522,7 @@ mod tests {
                     &ch.slate,
                     &NodeStates::default(),
                     0.1,
+                    &[],
                 )
                 .expect("a liquid group corrects");
             pressures

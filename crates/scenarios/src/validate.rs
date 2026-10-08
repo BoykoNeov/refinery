@@ -433,10 +433,12 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
 ///   takes the latent heat of what arrives into its balance and its boil-off
 ///   vents it (fork 4); under `"none"` that heat would sit as superheat for ever.
 /// - **Supplies, destinations, the atmosphere, junctions, control valves,
-///   tanks and pumps.** A furnace, a cooler, an exchanger, a column, a reactor,
-///   a vessel, and a check or relief valve are each a model not built, and a
-///   boiling stream reaching one would be read as liquid. A pump in two-phase
-///   service loses its head to RELAP5's multiplier (M54, §59).
+///   tanks, pumps and check valves.** A furnace, a cooler, an exchanger, a
+///   column, a reactor, a vessel and a relief valve are each a model not built,
+///   and a boiling stream reaching one would be read as liquid. A pump in
+///   two-phase service loses its head to RELAP5's multiplier (M54, §59.0); a
+///   check valve reads its drive at the mixture's density, its law the liquid
+///   one there, as a control valve's is (M54, §59.1).
 /// - **No pump declares `npsh_required_m`** (M54, §59 decision 3): on a flashing
 ///   plant the steam-water data decides a pump's head, and it has a pump at its
 ///   boiling point with no vapour yet giving its whole head, where M50's curve
@@ -496,6 +498,7 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             | NodeDef::Junction
             | NodeDef::Valve { .. }
             | NodeDef::Tank { .. }
+            | NodeDef::CheckValve { .. }
             | NodeDef::Pump {
                 npsh_required_m: None,
                 ..
@@ -512,7 +515,6 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             }
             NodeDef::Vessel { .. } => "a vessel",
             NodeDef::ReliefValve { .. } => "a relief valve",
-            NodeDef::CheckValve { .. } => "a check valve",
             NodeDef::Furnace { .. } => "a furnace",
             NodeDef::Cooler { .. } => "a cooler",
             NodeDef::HeatExchanger => "a heat exchanger",
@@ -521,8 +523,8 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
         };
         return refuse(format!(
             "with '{name}', {kind}: a plant that selects the line flash may hold only \
-             supplies, destinations, the atmosphere, junctions, control valves, tanks \
-             and pumps"
+             supplies, destinations, the atmosphere, junctions, control valves, tanks, \
+             pumps and check valves"
         ));
     }
     if let Some(pipe) = scenario.pipes.iter().find(|p| p.leak_to.is_some()) {

@@ -302,12 +302,13 @@ fn a_flashing_plant_holds_only_what_the_flash_models() {
             ),
             "npsh_required_m",
         ),
+        // A check valve is admitted since M54.1 (§59.1); a relief valve is not.
         (
             base.replace(
-                "[nodes.rundown_valve]\ntype = \"valve\"",
-                "[nodes.rundown_valve]\ntype = \"check_valve\"\nfull_open_bar = 0.1",
+                "[nodes.rundown_valve]\ntype = \"valve\"\nkv = 40.0",
+                "[nodes.rundown_valve]\ntype = \"relief_valve\"\nkv = 40.0\nset_pressure_bar = 2.0\naccumulation_bar = 0.2\n#",
             ),
-            "a check valve",
+            "a relief valve",
         ),
         (
             base.replace(
