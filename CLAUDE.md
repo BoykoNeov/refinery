@@ -18,6 +18,8 @@ crates/
   cli/        # `run` one scenario to JSON snapshots; `corpus` runs every
               # scenario: iterations, wall time, per-plant fingerprint.
   godot-ext/  # GDExtension adapter. The ONLY crate that knows Godot exists.
+tools/        # steptime: per-tick wall time through the boiling stories, and
+              # profile/story-diff scripts (own workspace; M56, DESIGN §61).
 docs/         # DESIGN.md (architecture + physics), ROADMAP.md (milestones),
               # DEFERRED.md (open hurdles, un-defer triggers — read before
               # scoping a slice), MILESTONES.md (close-out reports, newest first)

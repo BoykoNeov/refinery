@@ -26,3 +26,6 @@ export_presets.cfg
 # Cargo.lock IS committed (not ignored) — this workspace ships a binary and
 # determinism is a hard project rule (CLAUDE.md), so dependency versions are
 # pinned for reproducible builds.
+
+# The steptime tool builds in its own workspace (tools/steptime/Cargo.toml).
+/tools/steptime/target/

@@ -1,0 +1,15 @@
+# Per-tick wall time through the boiling plants' stories (M56, docs/DESIGN.md
+# §61). Its own workspace, outside the engine's: a measuring tool, not part of
+# the simulation, so the gate commands never build it.
+[package]
+name = "steptime"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+serde_json = "1"
+refinery-core = { path = "../../crates/core" }
+refinery-scenarios = { path = "../../crates/scenarios" }
