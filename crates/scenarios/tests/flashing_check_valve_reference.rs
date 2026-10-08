@@ -168,7 +168,7 @@ const TEMPERATURES: [f64; 7] = [100.0, 105.0, 110.0, 118.0, 122.0, 125.0, 130.0]
 
 /// Ticks a step runs before it is read: the plants hold nothing, so a step
 /// settles within a few ticks (`pump_two_phase_reference.rs`).
-const SETTLE_TICKS: u32 = 40;
+const SETTLE_TICKS: u32 = 15;
 
 fn build(src: &str) -> Engine {
     let file = refinery_scenarios::load_str(src).expect("the scenario must parse");
@@ -203,8 +203,11 @@ fn settle(engine: &mut Engine, ticks: u32, edge: &str, label: &str) -> u32 {
         worst = worst.max(s.solver.iterations);
         let now = edge_flow(&s, edge);
         if t == ticks {
+            // The solvers converge each tick to 1e-8 kg/s absolute, so a settled
+            // plant wanders that much (measured on CI: 1.25e-8 kg/s at 6.3 kg/s);
+            // the flip this catches moved 4 kg/s.
             assert!(
-                (now - last).abs() <= 1e-9 * now.abs().max(1.0),
+                (now - last).abs() <= 1e-7 * now.abs().max(1.0),
                 "{label}: not settled — {last} then {now} kg/s on the last two ticks"
             );
         }

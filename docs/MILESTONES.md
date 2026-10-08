@@ -13,7 +13,7 @@ in `docs/DESIGN.md`) now point at this file.
 ---
 
 **M54 is CLOSED (2026-10-08): a pump in two-phase service, and a gas lock a
-person must vent — `docs/DEFERRED.md` B48 struck, B52–B53 opened.** On a decision
+person must vent — `docs/DEFERRED.md` B48 struck, B52–B57 opened.** On a decision
 (the recommended one of five directions offered) and ten DECISIONS in three
 rounds, the last when the table, built as asked, converged on neither fidelity
 and the user chose to keep it and make M54 a solver project. DESIGN §59.

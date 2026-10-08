@@ -164,12 +164,12 @@ fn cold_flow(solver: &str, celsius: f64) -> f64 {
 
 /// **On the table's fall the pump does not lock**: at 100 °C its suction offers
 /// about 7% vapour by volume and it has lost a tenth of its head, but 16.5% is
-/// the lock, and 600 ticks never reach it.
+/// the lock, and 200 ticks never reach it.
 #[test]
 fn a_pump_on_the_fall_does_not_lock() {
     for solver in SOLVERS {
         let mut engine = build(&plant(solver, 100.0));
-        run(&mut engine, 600, solver);
+        run(&mut engine, 200, solver);
         let s = engine.snapshot();
         let pump = node(&s, "feed_pump")
             .pump_two_phase

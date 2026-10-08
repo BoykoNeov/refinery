@@ -21005,12 +21005,12 @@ plant run until its pump locks, then stopped.
 ### Not built, with what un-defers each (M54)
 
 - The table at the AVERAGE of inlet and outlet vapour, as RELAP5 fits it — needs a
-  pump-outlet state the engine does not keep (this uses the inlet: cautious).
+  pump-outlet state the engine does not keep (this uses the inlet: cautious; B54).
 - `H_2φ`, the fully degraded two-phase head curve, taken as zero — a plant whose
-  answer depends on a dead pump's residual head at its rated flow.
+  answer depends on a dead pump's residual head away from its rated flow (B55).
 - A zero-volume node on a pump's suction side carries a tick's lag (B52).
 - Two steady states, and the lock choosing between them by history (B53).
 - Choking through a check valve or a control valve in flashing service (B47).
-- Two pumps joined by one pipe on a flashing plant — refused.
+- Two pumps joined by one pipe on a flashing plant — refused (B57).
 - A transient model of a gas pocket growing in the impeller: the lock is an
-  instant switch at the table's fully degraded point.
+  instant switch at the table's fully degraded point (B56).

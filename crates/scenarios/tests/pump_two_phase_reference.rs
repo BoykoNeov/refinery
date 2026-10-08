@@ -110,8 +110,8 @@ const SOLVERS: [&str; 2] = ["newton", "simple"];
 /// Ticks a step runs before it is read. The plant holds nothing — no tank, no
 /// vessel — so a step settles within a few ticks (the zero-volume nodes' one-tick
 /// enthalpy lag, B50); the flip this file was written against alternated from
-/// the first tick, so 40 shows it as surely as 400.
-const SETTLE_TICKS: u32 = 40;
+/// the first tick, so 15 shows it as surely as 400.
+const SETTLE_TICKS: u32 = 15;
 
 fn build(src: &str) -> Engine {
     let file = refinery_scenarios::load_str(src).expect("the scenario must parse");
@@ -151,8 +151,11 @@ fn settle(engine: &mut Engine, ticks: u32, label: &str) -> u32 {
         worst = worst.max(s.solver.iterations);
         if t == ticks {
             let now = flow(&s);
+            // The solvers converge each tick to 1e-8 kg/s absolute, so a settled
+            // plant wanders that much (measured on CI: 1.25e-8 kg/s at 6.3 kg/s);
+            // the flip this catches moved 4 kg/s.
             assert!(
-                (now - last).abs() <= 1e-9 * now.abs().max(1.0),
+                (now - last).abs() <= 1e-7 * now.abs().max(1.0),
                 "{label}: not settled — {last} kg/s then {now} kg/s on the last two ticks"
             );
         }

@@ -8808,6 +8808,7 @@ it, refused unless the node is a pump, locked and stopped. The bridge's
   (Newton at most 6 iterations a tick, 0.12 ms; the game solver 8 sweeps, 1.6 ms).
   Both clippy passes clean, the Godot binding built with the feature.
 
-**Ledger**: B48 struck. B52 (a suction-side zero-volume node's lag) and B53 (two
-steady states, the lock choosing by history) opened.
+**Ledger**: B48 struck. B52 (a suction-side zero-volume node's lag), B53 (two steady
+states, the lock choosing by history) and B54–B57 (the inlet share, `H_2φ = 0`,
+the instant lock, two pumps back to back) opened.
 
