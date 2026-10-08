@@ -154,6 +154,81 @@ actions = [{ valve = "dump_valve", position = 1.0 }]
 "#;
 const TRIP_TICKS: u32 = 50;
 
+/// M54's pump plant (`crates/scenarios/tests/gas_lock_reference.rs`): a supply at
+/// 125 °C boils, the pump's suction offers over nine tenths vapour by volume, and
+/// the pump gas-locks on its first tick.
+const GAS_LOCK: &str = r#"
+[meta]
+name = "gas_lock_bridge"
+description = "A pump whose boiling supply gas-locks it."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+line_flash = "equilibrium"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[nodes.rundown_source]
+type = "source"
+pressure_bar = 2.4
+temperature_c = 125.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+[nodes.feed_pump]
+type = "pump"
+h0_m = 40.0
+a = 800.0
+on = true
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 80.0
+opening = 0.6
+
+[nodes.unit_feed]
+type = "sink"
+pressure_bar = 1.5
+temperature_c = 110.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+[[pipes]]
+name = "suction_line"
+from = "rundown_source"
+to = "feed_pump"
+length_m = 60.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "discharge"
+from = "feed_pump"
+to = "discharge_valve"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "feed_line"
+from = "discharge_valve"
+to = "unit_feed"
+length_m = 25.0
+diameter_m = 0.10
+"#;
+
 // ------------------------------------------------ the wire format, pinned
 
 /// The exact JSON text of every `Command` variant.
@@ -185,6 +260,7 @@ fn wire_text(cmd: &Command) -> &'static str {
         }
         Command::ResetTrip { .. } => r#"{"cmd":"reset_trip","trip_id":0}"#,
         Command::ReplaceTubes { .. } => r#"{"cmd":"replace_tubes","node":1}"#,
+        Command::VentPump { .. } => r#"{"cmd":"vent_pump","node":1}"#,
         Command::ManualTrip { .. } => r#"{"cmd":"manual_trip","trip_id":0}"#,
         Command::SetReservoirPressure { .. } => {
             r#"{"cmd":"set_reservoir_pressure","node":0,"pressure":250000.0}"#
@@ -232,6 +308,7 @@ fn every_variant() -> Vec<Command> {
         },
         Command::ResetTrip { trip_id: TripId(0) },
         Command::ReplaceTubes { node: NodeId(1) },
+        Command::VentPump { node: NodeId(1) },
         Command::ManualTrip { trip_id: TripId(0) },
         Command::SetReservoirPressure {
             node: NodeId(0),
@@ -270,7 +347,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 13, "a Command variant was added");
+    assert_eq!(every_variant().len(), 14, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -316,6 +393,13 @@ fn fixture(cmd: &Command) -> Fixture {
         Command::SetSourceTemperature { .. } => {
             Fixture::shipped("pump_cavitation_flow_limit.toml", "rundown_source")
         }
+        // A vent is legal only on a gas-locked pump that is stopped, so the
+        // inline flashing pump plant is run until it locks, then stopped — see
+        // `Fixture::GasLocked` (M54, docs/DESIGN.md §59.2).
+        Command::VentPump { .. } => Fixture::GasLocked {
+            src: GAS_LOCK,
+            pump: "feed_pump",
+        },
         Command::ReplaceTubes { .. } => Fixture::Burnt {
             plant: "furnace_burnout.toml",
             furnace: "heater",
@@ -353,6 +437,13 @@ enum Fixture {
         plant: &'static str,
         furnace: &'static str,
         outlet: &'static str,
+    },
+    /// A pump that has gas-locked (M54, docs/DESIGN.md §59.2): the inline plant,
+    /// whose supply boils, is run until the pump locks, and the pump is stopped
+    /// through the bridge.
+    GasLocked {
+        src: &'static str,
+        pump: &'static str,
     },
 }
 
@@ -452,6 +543,18 @@ fn every_command_variant_is_accepted_by_a_real_engine() {
                     sim.tick().expect("the cooling plant ticks");
                 }
                 (sim, "node", heater, plant)
+            }
+            Fixture::GasLocked { src, pump } => {
+                let mut sim = Bridge::load(src).expect("inline gas-lock plant loads");
+                for _ in 0..40 {
+                    sim.tick().expect("the inline gas-lock plant ticks");
+                }
+                let id = sim.node_id(pump).expect("the pump");
+                sim.apply_command_json(&format!(
+                    r#"{{"cmd":"set_pump_on","node":{id},"on":false}}"#
+                ))
+                .expect("the stop");
+                (sim, "node", id, "the inline gas-lock plant")
             }
         };
 

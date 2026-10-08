@@ -98,6 +98,14 @@ pub enum Command {
     ReplaceTubes {
         node: NodeId,
     },
+    /// Vent a gas-locked pump (M54, docs/DESIGN.md §59.2): clears the lock, so
+    /// the pump makes its head again once it is started. It starts nothing.
+    /// Refused on a node that is not a pump, on a pump that is not gas-locked
+    /// (nothing to vent), and on one still running (stop it first): venting is
+    /// what a person does to a stopped pump.
+    VentPump {
+        node: NodeId,
+    },
     /// Re-arm one latched trip (M22, docs/DESIGN.md §26 fork 4).
     ///
     /// **By default it restarts nothing** (`TripReset::Manual`, the real-plant

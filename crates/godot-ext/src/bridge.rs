@@ -182,6 +182,7 @@ fn referent(cmd: &Command) -> Referent {
     match cmd {
         Command::SetValveOpening { node, .. } => Referent::Node(*node),
         Command::SetPumpOn { node, .. } => Referent::Node(*node),
+        Command::VentPump { node } => Referent::Node(*node),
         Command::PuncturePipe { edge, .. } => Referent::Edge(*edge),
         Command::SetHeatInput { node, .. } => Referent::Node(*node),
         Command::SetFurnaceDuty { node, .. } => Referent::Node(*node),

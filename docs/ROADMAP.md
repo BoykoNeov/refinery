@@ -8756,3 +8756,29 @@ step beside a pump inlet shifts with the inlet re-solved
   nothing measured, and were removed.
 - Corpus: all 44 shipped plants byte-identical on both fidelities. Release
   property tests pass; the Godot binding did not change.
+
+### M54.2 — **LANDED** 2026-10-08: the gas lock, and `VentPump`
+
+`NodeKind::Pump::gas_locked` (serde-skipped while false), set by the engine at
+the end of a tick in which a running pump's suction offered 16.5% vapour by
+volume or more (`GAS_LOCK_VOID_FRACTION`, the table's fully degraded point); a
+locked pump makes no head whatever its suction offers; `Command::VentPump` clears
+it, refused unless the node is a pump, locked and stopped. The bridge's
+`referent` names the new command. DESIGN §59.2.
+
+- Gates: `crates/scenarios/tests/gas_lock_reference.rs` (4: no lock on the fall;
+  locked at 125 °C and dead when cooled; only a vent on a stopped pump clears it,
+  with the three refusals by name; no key on the wire while unlocked) and the
+  threshold held to the table in `two_phase_head.rs`.
+- Mutations: six, all caught (the lock never set; set at the onset; ignored by
+  the solve on both its paths; vented while running; cleared by a stop; the vent
+  clearing nothing).
+- **Found by the lock**: M54.0's and M54.1's move gates failed — rightly: a move
+  into 125 °C locks the pump, and coming back down a locked pump is not a cold
+  start. And at 118 °C with the disc the plant has two answers (the pump alive,
+  6.43 kg/s; dead at 45% vapour, 7.25 kg/s); a cold start's first tick lands on
+  the dead one and locks at start-up (row B53). Both gates now settle, vent once
+  if locked, and settle again, on the cold start and on every move.
+- Corpus: all 44 shipped plants byte-identical on both fidelities (no pump off a
+  flashing plant writes the key). Release property tests pass. The bridge's
+  `referent` and its test name the new command (14 variants).

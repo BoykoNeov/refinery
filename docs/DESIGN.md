@@ -20927,3 +20927,51 @@ behind a regulator, and both solvers' linear models asked for an enormous step:
 - M53's let-down line with a disc for the control valve, its supply stepped from
   liquid to boiling: the disc's outlet carries vapour, every move settles on the
   cold answer, and the fidelities agree to 1e-6.
+
+### 59.2 A gas lock a person must vent (M54.2)
+
+Decisions 6–8: a pump that has lost its grip stays dead until a person restarts
+it; it locks when its inlet's vapour reaches 16.5% of the volume, the table's
+fully degraded point; a separate vent command, allowed only on a stopped pump,
+clears it.
+- **State**: `NodeKind::Pump::gas_locked`, set by the ENGINE at the end of a tick
+  in which the pump ran while its suction offered `GAS_LOCK_VOID_FRACTION` (0.165)
+  vapour by volume or more — read off the solve's own report
+  (`HydraulicSolution::pump_two_phase`), which only a running pump on a flashing
+  plant carries. The relief latch's arrangement (§53): the engine moves it
+  between ticks, the solve reads it as a fixed fact. Serde-skipped while false,
+  so no pump on any plant without a line flash changes a byte.
+- **What a lock does**: the pump makes no head at all, whatever its suction
+  offers — the table's fully degraded point, held. Its whole curve goes, the
+  droop term with it (M50's convention: the curve is scaled, not its shut-off
+  head alone). It is still a running pump to the solvers, its inlet still solved
+  inside the iterate.
+- **What clears it**: `Command::VentPump`, refused on a node that is not a pump,
+  on a pump that is not gas-locked ("nothing to vent", `ReplaceTubes`' rule), and
+  on one still running ("stop it first"). Not a stop by hand, not a trip, not the
+  supply cooling: a stopped and restarted pump that was not vented is still
+  locked. Vented and restarted on a liquid suction it runs as a cold one does.
+- **The threshold is the solver's table's**: `core` holds the number, the table
+  lives in `solvers`, and a reference test holds the two together (the
+  multiplier is 1 at 0.165 and below 1 just short of it).
+
+**A finding the lock exposed: two answers, and a lock at start-up** (ledger row
+B53). At 118 °C with the disc on the discharge, into 1.5 bar, the plant has two
+self-consistent steady states: the pump alive on the table's fall, 8% vapour at
+its suction, 6.43 kg/s; and the pump dead, 45% vapour, the supply alone driving
+the light mixture through it at 7.25 kg/s. The cold seed's first tick lands on
+the dead one — and so does a move from 110 °C — and the lock makes it permanent:
+the pump gas-locks at start-up. Before the lock the next tick left it for the live
+one, so nothing showed. Multiple steady states are a known property of boiling
+flow (the Ledinegg instability); the lock turns the choice of root into a
+history. The move gates now read both a cold start and a moved run as "settled,
+vented once if locked, settled again", which lands both on the live answer
+wherever its settled state does not lock it.
+
+**Measured** (`crates/scenarios/tests/gas_lock_reference.rs`, both fidelities):
+on the table's fall at 100 °C (7% vapour) 600 ticks never lock; warmed to 125 °C
+the pump locks; cooled back to 100 °C it stays dead and the flow is what the
+supply alone pushes; stopped, vented and started it lands on a cold start's flow
+to 1e-6. Mutations: six, all caught — one of them only once both of the solve's
+lock paths were broken (a locked pump stops pulling, its suction turns liquid,
+and the liquid path alone kept it dead).

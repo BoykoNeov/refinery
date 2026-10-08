@@ -3172,6 +3172,8 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             h0: Meter(*h0_m),
             a: *a,
             on: *on,
+            // No scenario key: a lock is the engine's to set (M54, §59.2).
+            gas_locked: false,
             // The number is checked here; whether the plant can give the pump a
             // bubble pressure, and whether it pumps a liquid, once the thermo
             // model and the topology exist (`require_pump_suction_answerable`).

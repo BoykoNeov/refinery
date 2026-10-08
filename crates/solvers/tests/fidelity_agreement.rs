@@ -150,6 +150,7 @@ fn agree_pump_asymmetric() {
             a: 5.0e3,
             on: true,
             suction: None,
+            gas_locked: false,
         },
     ));
     let jn = g.add_node(node("jn", NodeKind::Junction));
@@ -207,6 +208,7 @@ fn agree_tank_pump_valve() {
             a: 4.0e3,
             on: true,
             suction: None,
+            gas_locked: false,
         },
     ));
     let vlv = g.add_node(node(

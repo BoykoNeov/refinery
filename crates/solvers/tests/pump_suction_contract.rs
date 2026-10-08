@@ -99,6 +99,7 @@ fn plant(bubble: f64) -> (PlantGraph, NodeId, NodeId, refinery_core::graph::Edge
                 npsh_required: Meter(3.0),
                 bubble_pressure: Some(Pascal(bubble)),
             }),
+            gas_locked: false,
         },
     ));
     let snk = g.add_node(node(

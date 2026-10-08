@@ -1336,7 +1336,13 @@ fn compile_edge_at(
     let mut pump_two_phase: Option<PumpTwoPhase> = None;
 
     match &graph.node(src).kind {
-        NodeKind::Pump { h0, a, on, suction } => {
+        NodeKind::Pump {
+            h0,
+            a,
+            on,
+            suction,
+            gas_locked,
+        } => {
             let h0_eff = if *on { h0.value() } else { 0.0 };
             match suction {
                 // A cavitating pump delivers `φ·H(Q)` (M50, docs/DESIGN.md §55):
@@ -1386,13 +1392,23 @@ fn compile_edge_at(
                     } else {
                         None
                     };
+                    // A gas-locked pump makes no head at all, whatever its suction
+                    // offers now (M54, docs/DESIGN.md §59.2): the table's fully
+                    // degraded point, held until a person vents it.
+                    let push = |head_multiplier: f64| {
+                        if *gas_locked {
+                            0.0
+                        } else {
+                            1.0 - head_multiplier
+                        }
+                    };
                     match inlet {
                         Some(d) => {
                             let void_fraction = 1.0 - d.liquid_volume_share;
                             let head_multiplier = two_phase_head_multiplier(void_fraction);
                             let pump_branch = QuadraticBranch {
-                                alpha: (1.0 - head_multiplier) * pump.alpha,
-                                beta: (1.0 - head_multiplier) * pump.beta,
+                                alpha: push(head_multiplier) * pump.alpha,
+                                beta: push(head_multiplier) * pump.beta,
                             };
                             branch = branch.in_series(pump_branch);
                             pump_two_phase = Some(PumpTwoPhase {
@@ -1401,6 +1417,7 @@ fn compile_edge_at(
                                 pump_branch,
                             });
                         }
+                        None if *gas_locked && *on => {}
                         None => branch = branch.in_series(pump),
                     }
                 }

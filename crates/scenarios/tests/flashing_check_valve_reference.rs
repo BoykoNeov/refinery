@@ -14,6 +14,7 @@
 //! move across the supply's temperatures settling on the cold answer on both
 //! fidelities, and the two fidelities agreeing.
 
+use refinery_core::graph::NodeKind;
 use refinery_core::snapshot::{Command, NodeSnapshot, Snapshot};
 use refinery_core::units::Kelvin;
 use refinery_core::Engine;
@@ -258,12 +259,11 @@ fn every_move_with_the_disc_lands_on_the_cold_answer() {
                 .iter()
                 .map(|&c| {
                     let mut engine = build(&pump_plant(solver, c, destination_bar));
-                    worst = worst.max(settle(
-                        &mut engine,
-                        SETTLE_TICKS,
-                        "discharge",
-                        &format!("{solver} cold at {c} °C into {destination_bar} bar"),
-                    ));
+                    let label = format!("{solver} cold at {c} °C into {destination_bar} bar");
+                    worst = worst.max(settle(&mut engine, SETTLE_TICKS, "discharge", &label));
+                    if vent_if_locked(&mut engine) {
+                        worst = worst.max(settle(&mut engine, SETTLE_TICKS, "discharge", &label));
+                    }
                     edge_flow(&engine.snapshot(), "discharge")
                 })
                 .collect();
@@ -276,6 +276,9 @@ fn every_move_with_the_disc_lands_on_the_cold_answer() {
                 warm_supply(&mut engine, "rundown_source", celsius);
                 let label = format!("{solver} moved to {celsius} °C into {destination_bar} bar");
                 worst = worst.max(settle(&mut engine, SETTLE_TICKS, "discharge", &label));
+                if vent_if_locked(&mut engine) {
+                    worst = worst.max(settle(&mut engine, SETTLE_TICKS, "discharge", &label));
+                }
                 let moved = edge_flow(&engine.snapshot(), "discharge");
                 assert!(
                     (moved - cold[k]).abs() <= 1e-6 * cold[k].abs().max(1.0),
@@ -346,4 +349,37 @@ fn a_boiling_stream_passes_the_disc_on_both_fidelities() {
             "the fidelities disagree: {newton} against {simple} kg/s"
         );
     }
+}
+
+/// Stop, vent and start the pump if it is gas-locked (M54.2, §59.2); whether it
+/// was. Applied, once settled, to a moved run after each move and to a cold start,
+/// so both are read as "the pump running unlocked, re-locking only where its
+/// settled state locks it": a cold start can lock on its FIRST tick, where a
+/// moved run never passes (at 118 °C with the disc the plant has two answers —
+/// the pump alive at 8% vapour, 6.43 kg/s, and dead at 45%, 7.25 kg/s — and the
+/// cold seed's first tick lands on the dead one).
+fn vent_if_locked(engine: &mut Engine) -> bool {
+    let pump = engine.graph.find_node("feed_pump").unwrap();
+    let NodeKind::Pump { gas_locked, .. } = engine.graph.node(pump).kind else {
+        unreachable!()
+    };
+    if !gas_locked {
+        return false;
+    }
+    for command in [
+        Command::SetPumpOn {
+            node: pump,
+            on: false,
+        },
+        Command::VentPump { node: pump },
+        Command::SetPumpOn {
+            node: pump,
+            on: true,
+        },
+    ] {
+        engine
+            .apply(command)
+            .expect("a locked pump is stopped, vented and started");
+    }
+    true
 }

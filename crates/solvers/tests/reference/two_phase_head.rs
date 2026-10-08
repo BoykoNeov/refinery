@@ -109,3 +109,13 @@ fn clamps_outside_the_unit_interval() {
         two_phase_head_multiplier(1.0)
     );
 }
+
+/// **The engine's gas-lock threshold is the table's fully degraded point**
+/// (M54, docs/DESIGN.md §59.2): `core` holds the number it locks at, and the
+/// multiplier this crate owns must reach 1 there — and not before it.
+#[test]
+fn the_lock_threshold_is_where_the_head_is_all_gone() {
+    use refinery_core::graph::GAS_LOCK_VOID_FRACTION;
+    assert_eq!(two_phase_head_multiplier(GAS_LOCK_VOID_FRACTION), 1.0);
+    assert!(two_phase_head_multiplier(GAS_LOCK_VOID_FRACTION - 1e-3) < 1.0);
+}

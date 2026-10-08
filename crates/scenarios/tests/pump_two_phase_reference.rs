@@ -12,6 +12,7 @@
 //! answer, the pump settling on the table's fall, and the suction key refused
 //! on a flashing plant.
 
+use refinery_core::graph::NodeKind;
 use refinery_core::snapshot::{Command, NodeSnapshot, Snapshot};
 use refinery_core::units::Kelvin;
 use refinery_core::Engine;
@@ -174,11 +175,11 @@ fn warm_supply(engine: &mut Engine, celsius: f64) {
 /// and its worst iterations a tick.
 fn cold_flow(solver: &str, celsius: f64, destination_bar: f64) -> (f64, u32) {
     let mut engine = build(&plant_into(solver, celsius, destination_bar));
-    let worst = settle(
-        &mut engine,
-        SETTLE_TICKS,
-        &format!("{solver} cold at {celsius} °C into {destination_bar} bar"),
-    );
+    let label = format!("{solver} cold at {celsius} °C into {destination_bar} bar");
+    let mut worst = settle(&mut engine, SETTLE_TICKS, &label);
+    if vent_if_locked(&mut engine) {
+        worst = worst.max(settle(&mut engine, SETTLE_TICKS, &label));
+    }
     (flow(&engine.snapshot()), worst)
 }
 
@@ -243,6 +244,9 @@ fn every_move_across_the_supply_temperatures_lands_on_the_cold_answer() {
                 warm_supply(&mut engine, celsius);
                 let label = format!("{solver} moved to {celsius} °C into {destination_bar} bar");
                 worst = worst.max(settle(&mut engine, SETTLE_TICKS, &label));
+                if vent_if_locked(&mut engine) {
+                    worst = worst.max(settle(&mut engine, SETTLE_TICKS, &label));
+                }
                 let moved = flow(&engine.snapshot());
                 let (cold, _) = cold[k];
                 assert!(
@@ -336,4 +340,37 @@ fn two_pumps_back_to_back_are_refused_on_a_flashing_plant() {
         err.contains("interstage") && err.contains("two pumps"),
         "{err}"
     );
+}
+
+/// Stop, vent and start the pump if it is gas-locked (M54.2, §59.2); whether it
+/// was. Applied, once settled, to a moved run after each move and to a cold start,
+/// so both are read as "the pump running unlocked, re-locking only where its
+/// settled state locks it": a cold start can lock on its FIRST tick, where a
+/// moved run never passes (at 118 °C with the disc the plant has two answers —
+/// the pump alive at 8% vapour, 6.43 kg/s, and dead at 45%, 7.25 kg/s — and the
+/// cold seed's first tick lands on the dead one).
+fn vent_if_locked(engine: &mut Engine) -> bool {
+    let pump = engine.graph.find_node("feed_pump").unwrap();
+    let NodeKind::Pump { gas_locked, .. } = engine.graph.node(pump).kind else {
+        unreachable!()
+    };
+    if !gas_locked {
+        return false;
+    }
+    for command in [
+        Command::SetPumpOn {
+            node: pump,
+            on: false,
+        },
+        Command::VentPump { node: pump },
+        Command::SetPumpOn {
+            node: pump,
+            on: true,
+        },
+    ] {
+        engine
+            .apply(command)
+            .expect("a locked pump is stopped, vented and started");
+    }
+    true
 }

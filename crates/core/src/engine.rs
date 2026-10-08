@@ -746,6 +746,27 @@ impl Engine {
             // and nothing else. The hole is patched first, by `PuncturePipe` at
             // zero, so "the leak stopped" and "the tubes were replaced" stay two
             // events a player can see — `ResetTrip`'s shape.
+            Command::VentPump { node } => {
+                let name = self.graph.node(node).name.clone();
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Pump {
+                        gas_locked: false, ..
+                    } => Err(SimError::InvalidCommand(format!(
+                        "pump '{name}' is not gas-locked: there is nothing to vent"
+                    ))),
+                    NodeKind::Pump { on: true, .. } => Err(SimError::InvalidCommand(format!(
+                        "pump '{name}' is gas-locked and still running: stop it first \
+                         (`set_pump_on` off), then vent it, then start it"
+                    ))),
+                    NodeKind::Pump { gas_locked, .. } => {
+                        *gas_locked = false;
+                        Ok(())
+                    }
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') is not a pump, so it has nothing to vent"
+                    ))),
+                }
+            }
             Command::ReplaceTubes { node } => {
                 let name = self.graph.node(node).name.clone();
                 let NodeKind::Furnace { coil, tubes, .. } = &self.graph.node(node).kind else {
@@ -2067,6 +2088,24 @@ impl Engine {
             }
         }
 
+        // 6. Gas locks (M54, docs/DESIGN.md §59.2): a pump that ran this tick
+        //    while its suction offered the table's fully degraded share of
+        //    vapour is locked from the next tick on, until a person vents it.
+        //    Read off the solve's own report, which only a running pump on a
+        //    flashing plant carries.
+        for (&nid, pump) in &solution.pump_two_phase {
+            if pump.void_fraction >= crate::graph::GAS_LOCK_VOID_FRACTION {
+                if let NodeKind::Pump {
+                    on: true,
+                    gas_locked,
+                    ..
+                } = &mut self.graph.node_mut(nid).kind
+                {
+                    *gas_locked = true;
+                }
+            }
+        }
+
         self.node_states = node_states;
         self.last_solution = Some(solution);
         self.last_cavitation = cavitation;
@@ -2992,7 +3031,7 @@ impl Engine {
             Command::PuncturePipe { edge, .. } => {
                 (!self.graph.has_edge(edge)).then(|| format!("{edge:?} names no pipe"))
             }
-            Command::ReplaceTubes { node } => {
+            Command::ReplaceTubes { node } | Command::VentPump { node } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::SetControllerMode { .. }

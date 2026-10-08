@@ -124,6 +124,16 @@ pub enum NodeKind {
         /// wire is what it was before M50.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         suction: Option<PumpSuction>,
+        /// Gas-locked (M54, docs/DESIGN.md §59.2): set by the ENGINE at the end
+        /// of a tick in which this pump ran while its suction offered
+        /// `GAS_LOCK_VOID_FRACTION` vapour by volume or more, and cleared only by
+        /// `Command::VentPump` on the pump stopped. A locked pump makes no head
+        /// whatever its suction offers — not a stop, not a trip, not the supply
+        /// cooling clears it. Read by the solve as a fixed fact, like the relief
+        /// latch (`Blowdown`). `false`, and absent from the wire, on every pump
+        /// of a plant without a line flash.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        gas_locked: bool,
     },
     /// Control valve, ISA-style: Q = Cv_eff(opening)·sqrt(dP/SG).
     /// `cv_max` in SI-consistent form (m³/s at 1 Pa dP for SG=1) — the
@@ -714,6 +724,14 @@ impl Blowdown {
         Blowdown { lifted, ..self }
     }
 }
+
+/// The vapour's share of a running pump's suction VOLUME [-] at which it locks
+/// (M54, docs/DESIGN.md §59.2; `NodeKind::Pump::gas_locked`): RELAP5's fully
+/// degraded point, where its two-phase head multiplier reaches 1 (RELAP5/MOD3
+/// Code Manual Vol. I, NUREG/CR-5535-V1, Table 3.5-3). The table itself is the
+/// solver's (`refinery_solvers::elements::two_phase_head_multiplier`), which a
+/// reference test holds to this number.
+pub const GAS_LOCK_VOID_FRACTION: f64 = 0.165;
 
 /// A pump's suction limit (M50, docs/DESIGN.md §55, ledger row B9). See
 /// `NodeKind::Pump::suction`.
