@@ -12,9 +12,9 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
-**M56 is CLOSED (2026-10-08): the line flash's densities remembered — the frame
-budget M55 overran, back inside it with no answer moved — `docs/DEFERRED.md` A24
-logged and struck, A25 opened.** Asked after M55 as "what is next"; the
+**M56 is OPEN (M56.0 landed 2026-10-08): the line flash's densities remembered —
+the frame budget M55 overran, narrowed with no answer moved but not closed —
+`docs/DEFERRED.md` A24 logged and narrowed, A25 opened and awaiting the user.** Asked after M55 as "what is next"; the
 recommended direction, the user's "go". DESIGN §61.
 - **Measured first**: 98% of the flashing rundown's tick on the game solver was
   the line flash's density (a bisection of isothermal flashes, each a bisection
@@ -25,14 +25,18 @@ recommended direction, the user's "go". DESIGN §61.
   keyed on every bit of composition, liquid-equivalent temperature and pressure;
   the slate compared on every recall; two solves of memory, 4 096 entries a map;
   never an `Err`; never iterated. The model, thermo and enthalpy are private to
-  it, so nothing else can fill it.
-- **Measured after**: all 45 plants byte-identical on both fidelities. The
-  flashing rundown 3.1–3.9 → 1.24 ms a tick on the game solver (2× inside the
-  budget), the gas-lock plant 1.5 → 0.49 ms; on Newton 1.5–2.2 → 1.10 and
-  0.15 → 0.07. Alternating builds in one session, a control plant unmoved.
-- **Offered, not built** (A25): a faster flash would cut the rest several-fold
-  and move the boiling plants' answers at round-off; the engine's own sweep is
-  unremembered (a sixth of the remaining tick).
+  it and a view's fields the solvers crate's, so outside that crate nothing
+  else can fill it.
+- **Measured after**: all 45 plants byte-identical on both fidelities. Calm,
+  as the corpus runs them: the flashing rundown 3.1–3.9 → 1.24 ms a tick on the
+  game solver, the gas-lock plant 1.5 → 0.49 ms. **Tick by tick through their
+  stories** (the advisor's catch, after the first push): the gas-lock plant's
+  worst 960 → 736–762 ms, its locked 125 °C beat 458 ms a tick on the game
+  solver; the flashing rundown at 135 °C over 2.5 ms on every tick, worst
+  39 → 13–15 ms. The overrun is narrowed, not closed.
+- **Offered, not built** (A25): a faster flash, or a pump-inlet search asking
+  fewer pressures, would cut the rest and move the boiling plants' answers; the
+  engine's own sweep is unremembered.
 - Gates: `network::density_memo_tests` (6). Mutations: six, all caught; a solver
   that skips the memo's rotation moves no answer and is caught only by wall time.
 

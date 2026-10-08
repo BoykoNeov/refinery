@@ -129,15 +129,20 @@ pub struct PumpTwoPhase {
 /// The line flash a flow solve reads two-phase densities through (M53,
 /// docs/DESIGN.md §58 fork 3): the model and the two property seams it needs,
 /// borrowed from whichever solver holds them.
+///
+/// A view is made only by `OwnedLineFlash::view` or as `LIQUID`, and its fields
+/// are this crate's (M56): outside it no view can carry one owner's memo beside
+/// another's model, thermo or enthalpy. Inside it, rebuilding a view with the
+/// memo kept and a seam swapped would break the memo's one assumption
+/// (`DensityMemo`), and nothing here does.
 #[derive(Clone, Copy)]
 pub struct LineFlash<'a> {
-    pub model: &'a dyn LineFlashModel,
-    pub thermo: &'a dyn ThermoModel,
-    pub enthalpy: &'a dyn EnthalpyModel,
+    pub(crate) model: &'a dyn LineFlashModel,
+    pub(crate) thermo: &'a dyn ThermoModel,
+    pub(crate) enthalpy: &'a dyn EnthalpyModel,
     /// The densities these three have already answered (M56, docs/DESIGN.md
     /// §61), where the view is an `OwnedLineFlash`'s; `None` on `LIQUID`, which
-    /// answers none. Private so that no view can pair a memo with a model other
-    /// than the one that filled it.
+    /// answers none.
     memo: Option<&'a RefCell<DensityMemo>>,
 }
 
@@ -203,8 +208,9 @@ impl LineFlash<'_> {
 ///
 /// **Why it moves no bit.** `LineFlashModel::density` is a function of its
 /// arguments. The model, the thermo and the enthalpy are the owning
-/// `OwnedLineFlash`'s, fixed for its life, and the private `memo` field keeps
-/// any other trio from reading this memo; the slate is compared on every
+/// `OwnedLineFlash`'s, fixed for its life, and a view's fields are this
+/// crate's, so outside it no other trio can read this memo (`LineFlash`); the
+/// slate is compared on every
 /// recall and a different one empties the memo; the rest — composition,
 /// liquid-equivalent temperature, pressure — is the key, bit for bit. An `Err`
 /// is never remembered, so it is raised again.

@@ -148,12 +148,13 @@ godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--p
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M56
-(2026-10-08)** — the line flash's densities remembered inside each flow solver
-(`network::DensityMemo`, keyed on every input bit, so no answer moves): the
-flashing rundown back inside the 2.5 ms frame budget on the game solver
-(3.1–3.9 → 1.24 ms a tick), all 45 plants byte-identical (A24 logged and struck,
-A25 opened: a faster flash would move answers, the user's call). Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: M56, OPEN** — M56.0
+(2026-10-08) remembers the line flash's densities inside each flow solver
+(`network::DensityMemo`, keyed on every input bit, so no answer moves; all 45
+plants byte-identical): a calm boiling plant back inside the 2.5 ms frame budget,
+but the worst ticks are not (the gas-lock story's locked beat 458 ms on the game
+solver; A24 narrowed, A25's cures move answers and await the user). **Latest
+closed: M55 (2026-10-08).** Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

@@ -21219,8 +21219,9 @@ for a two-phase density (`two_phase_density`, which `suction_offer` and every
 compile reach).
 - **The same bits, by construction.** `LineFlashModel::density` is a function of
   its arguments. The model, thermo and enthalpy are the owning
-  `OwnedLineFlash`'s, fixed for its life — its fields are now private and
-  `LineFlash::memo` is private, so no view can pair a memo with another model;
+  `OwnedLineFlash`'s, fixed for its life — its fields are now private and a
+  `LineFlash`'s are the solvers crate's, so outside that crate no view can pair
+  a memo with another model (inside it, nothing rebuilds a view that way);
   the slate is compared on every recall (`Slate` and `PseudoComponent` now derive
   `PartialEq`) and a different one empties the memo; the composition, the
   liquid-equivalent temperature and the pressure are the key, every bit. An
@@ -21257,14 +21258,40 @@ new, two rounds each in one session, ms per 6 000 ticks:
                     Newton        228 /    224         231 /   225
 ```
 
-The flashing rundown on the game solver: 3.1–3.9 ms a tick → **1.24 ms**, inside
-the 2.5 ms budget by 2×; the gas-lock plant 1.5 → 0.49 ms. The control, which has
-no line flash and never reaches the memo, sits within this machine's drift (the
-corpus run just before had it at 251 old and 242 new).
+On the corpus's runs — each plant held where its file starts it — the flashing
+rundown on the game solver went 3.1–3.9 ms a tick → **1.24 ms**, and the gas-lock
+plant 1.5 → 0.49 ms. The control, which has no line flash and never reaches the
+memo, sits within this machine's drift (the corpus run just before had it at 251
+old and 242 new).
 
-What is left on the flashing rundown is new questions: `flash_isothermal`'s
-bisection is 55–64% of the remaining tick, and the engine's uncached sweep
-15–17%.
+**That is the average of a calm plant, and a frame stutters on its worst tick.**
+Measured after the first push (the advisor's catch): a scratch harness outside
+the repo times every tick of each plant's story — `pump_gas_lock` through the
+beats its reference test plays, `flashing_rundown` 200 ticks at 115 °C, 200 at
+135 °C, 200 back — five runs each, the fastest of the five per tick, old build
+and new alternated, two rounds:
+
+```text
+  ms a tick, old → new          mean           99th pct        worst       ticks > 2.5 ms
+  pump_gas_lock     game     120 → 88–93     880 → 680–714   960 → 736–762   133 → 123 of 219
+  pump_gas_lock     Newton   7.8 → 5.7–5.9    55 → 45–46      60 → 50–53      85 → 46 of 219
+  flashing_rundown  game     7.1 → 2.3–2.4    14 → 4.1–4.2    39 → 13–15     599 → 201 of 599
+  flashing_rundown  Newton   2.6 → 1.9–2.0   5.0 → 3.3        12 → 7–9       201 → 201 of 599
+```
+
+By beat, on the game solver: the gas-lock plant's last — 125 °C, the pump
+locked, the check valve holding the line shut — costs **458 ms a tick on
+average** (Newton 26); its supply steps 10–100 ms at their worst; the rest about
+1 ms or less. The flashing rundown at 135 °C is over the budget on every tick, on
+both solvers, before and after. **So the overrun is narrowed, not closed**
+(ledger row A24). Profiled, 90% of the locked beat is the pump-inlet search
+(`solve_pump_inlet`, through `shift_beside_inlet` and `node_imbalance_at`)
+flashing its strongly boiling suction afresh at every trial pressure — new
+questions the memo cannot answer.
+
+What is left is new questions: `flash_isothermal`'s bisection is 54–64% of the
+remaining tick on every case profiled, and the engine's uncached sweep 15–17% of
+the flashing rundown's.
 
 - Gates (`network::density_memo_tests`, 6): a remembered density is the model's
   bit for bit over a grid that boils and one that does not, and a second asking
@@ -21279,11 +21306,11 @@ bisection is 55–64% of the remaining tick, and the engine's uncached sweep
 
 ### Not built, with what un-defers each (M56)
 
-- **A faster flash** (A25): Newton on Rachford–Rice and a bracketed superlinear
-  search on the isenthalpic temperature (the bubble point's arrangement, §11
-  M9.3a) would cut the remaining cost several-fold, and would move the two
-  boiling plants' answers at round-off — a change of answer, so the user's to
-  make. Un-defers when a boiling plant's tick on the game solver presses on the
-  budget again.
+- **A faster flash, or fewer flashes** (A25): Newton on Rachford–Rice and a
+  bracketed superlinear search on the isenthalpic temperature (the bubble
+  point's arrangement, §11 M9.3a), or a pump-inlet search that asks fewer
+  pressures, would cut the remaining cost and move the two boiling plants'
+  answers — a change of answer, so the user's to make. Its trigger is already
+  met: the gas-lock story's locked beat is far past the budget.
 - **The engine's sweep remembered** (A25): the same memo in `core` needs the
   engine to hold one; the sweep is a sixth of the remaining tick.

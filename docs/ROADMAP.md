@@ -8923,7 +8923,7 @@ the pocket drawn and printed. DESIGN §60.1–60.2.
 valve's `γ` at the stored composition), B59 (one fill rate whatever the
 vapour) and B60 (the one-tick lag kept off the line flash, decision 5) opened.
 
-## M56 — the line flash's densities remembered: the frame budget M55 overran; ledger row A24 logged and struck, A25 opened; opened on a decision
+## M56 — the line flash's densities remembered: the frame budget M55 overran; ledger row A24 logged and narrowed, A25 opened; opened on a decision
 
 Asked after M55 closed (2026-10-08): "what is next" was answered with five
 directions, the recommended one first — M55 had put the flashing rundown at
@@ -8949,7 +8949,7 @@ whole run on the settled gas-lock plant.
 - The engine's own sweep left unremembered (A25): a sixth of the remaining tick,
   and a memo there would be `core`'s.
 
-### M56.0 — **LANDED** 2026-10-08: the memo — M56 is CLOSED
+### M56.0 — **LANDED** 2026-10-08: the memo — M56 stays OPEN
 
 `network::DensityMemo` in `OwnedLineFlash` (whose fields are now private, built
 by `OwnedLineFlash::new`), read through `LineFlash::density`, rotated by each
@@ -8963,5 +8963,12 @@ DESIGN §61.
   unmoved within drift.
 - Gates: `network::density_memo_tests` (6). Mutations: six, all caught.
 
-**Ledger**: A24 (the overrun) logged and struck; A25 opened (the flash's own
-cost, and the engine's sweep, unremembered).
+- **Worst ticks, measured after the push** (DESIGN §61.2): the gas-lock story's
+  locked 125 °C beat costs 458 ms a tick on the game solver — 90% of it the
+  pump-inlet search flashing a strongly boiling suction afresh at each trial
+  pressure — and the flashing rundown at 135 °C is over 2.5 ms on every tick.
+  The memo narrows the overrun; it does not close it.
+
+**Ledger**: A24 (the overrun) logged and narrowed; A25 opened (the flash's own
+cost, the inlet search's number of flashes, the engine's sweep unremembered) —
+its cures move answers and wait on the user.
