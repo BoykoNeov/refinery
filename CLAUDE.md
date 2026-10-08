@@ -152,7 +152,8 @@ Work only on the current milestone unless asked. **Latest closed: M55
 (2026-10-08)** — the step tick solved on its own states (a tick re-solved until
 the zero-volume nodes' densities settle; a liquid line at the composition it
 carries now) and a gas pocket that fills over seconds before a pump locks
-(`gas_fill_time_s`, default 3 s; B50, B53, B56 struck, B58–B59 opened). Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
+(`gas_fill_time_s`, default 3 s; B50, B53, B56 struck, B58–B60 opened; the re-solve narrowed to boiling plants
+and every first tick). Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

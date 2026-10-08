@@ -59,8 +59,8 @@ const SWEPT_DENSITY_TOL: f64 = 1e-8;
 
 /// Solves one tick may take before its zero-volume states settle (M55.0). A
 /// backstop, not a budget: measured over the corpus, 6 000 ticks, at most 8 (the
-/// fired gas drum on the game solver, whose drum outlet's temperature follows
-/// its burner every tick); a tick that has not settled within this many is an `Err` with the
+/// fired gas drum's first tick on the game solver, every node starting from the
+/// placeholder) and 4 on a boiling plant's later ticks (the flashing rundown); a tick that has not settled within this many is an `Err` with the
 /// last move in it, never a tick that silently reads stale states.
 const MAX_STATE_PASSES: u32 = 30;
 
@@ -1041,10 +1041,24 @@ impl Engine {
         //     solve read the one the LAST tick resolved, so on the tick a
         //     supply moves it flowed the plant at the old densities. Re-solved
         //     on what this tick resolves until the two agree.
+        //
+        //     Where it runs is the user's decision (M55, decision 5): on a plant
+        //     whose lines boil, where one stale tick decides a pump's lock; and
+        //     on every plant's FIRST tick, which has no last tick to be stale
+        //     against — its solve read `Stream::stagnant`'s placeholder, a
+        //     fixed offset rather than a lag. Every other tick of a plant
+        //     without the line flash keeps the one-tick lag M5.4 accepted (§3a
+        //     fork 6, ledger row B60): run there too, the loop re-solved the gas
+        //     and relief plants on nearly every tick, at about twice their wall
+        //     time, to move their answers by 1e-6.
+        let re_solve = self.line_flash.carries_vapour() || self.tick == 0;
         let mut passes = 1;
         let mut hardest = solution.diagnostics.iterations;
         let mut read: Option<energy::NodeStates> = None;
         loop {
+            if !re_solve {
+                break;
+            }
             let change = energy::swept_density_change(
                 &self.graph,
                 &self.slate,

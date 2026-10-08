@@ -14,7 +14,7 @@ in `docs/DESIGN.md`) now point at this file.
 
 **M55 is CLOSED (2026-10-08): the step tick solved on its own states, and a gas
 pocket that fills over seconds — `docs/DEFERRED.md` B50, B53 and B56 struck,
-B58–B59 opened.** Asked after M54: B53's "two steady states, the lock picks one"
+B58–B60 opened.** Asked after M54: B53's "two steady states, the lock picks one"
 was offered as "accept or fix later", and the user said fix it. A probe found
 B53 wrong — the "dead" answer lasted only the step tick, which read the valves
 after the pump at last tick's state (B50) and offered the pump 45% vapour for
@@ -24,11 +24,14 @@ draining at the rate it fills, and the push fading as it fills. DESIGN §60.
 - **The step tick**: the engine re-solves a tick on the states it resolves until
   the density the solve reads at every zero-volume node moves less than 1e-8 of
   itself; a liquid line flows at the composition the end it last flowed from
-  holds now (a cold start flowed its first tick at a placeholder liquid). Every
-  liquid plant re-solves its first tick only; the gas, relief and flashing plants
-  every tick a holdup moves — about 2× their wall time, the flashing rundown
-  about +55%, at most 8 solves a tick. 20 of 45 plants moved on each fidelity: steady
-  answers by 1e-10 or less, transients by up to 5.1e-5, `relief_pop_cycle` 0.23%.
+  holds now (a cold start flowed its first tick at a placeholder liquid).
+  **Narrowed after it was first pushed** (decision 5, the user's): the re-solve
+  runs on plants whose lines boil and on every plant's first tick. Run
+  everywhere it cost the gas and relief plants about 2× their wall time to move
+  them by 1e-6 — a reach the user had not been told of before the push; that
+  lag stays elsewhere (B60). The flashing rundown costs about +55% (2.1 → 2.9 ms
+  a tick on the game solver, past the 2.5 ms frame budget). 17 of 45 plants
+  moved: steady answers by 1e-10 or less, transients by up to 5.1e-5.
 - **The gas pocket**: fills by `dt` over the pump's fill time while its suction
   offers 16.5% vapour or more, drains at that rate below, takes `(1 − pocket)` of
   the push, locks the pump when full; read by the solve as a fixed number, so no
@@ -41,7 +44,7 @@ draining at the rate it fills, and the push fading as it fills. DESIGN §60.
 - Gates: `step_tick_reference.rs` (3), `gas_pocket_reference.rs` (7), the
   rewritten first-tick and cascade gates, the M54 move gates (one-tick fill; a
   vented pump must lock again), the story, the books and the screen's replay.
-  Mutations: 14, all caught (one after a gate was added for it).
+  Mutations: 15, all caught (one after a gate was added for it).
 
 **M54 is CLOSED (2026-10-08): a pump in two-phase service, and a gas lock a
 person must vent — `docs/DEFERRED.md` B48 struck, B52–B57 opened.** On a decision

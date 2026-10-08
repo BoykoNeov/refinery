@@ -21048,6 +21048,13 @@ read and the states it produced (`energy::swept_density_change`) — solves the
 tick again on the states it just resolved, until it has not. Every pass resolves
 against the TRUE previous tick (`self.node_states`), so a node with no inflow
 holds what it held; nothing is written to the graph until the loop ends.
+- **Where it runs** (decision 5): on a plant whose model carries vapour
+  (`LineFlashModel::carries_vapour`, the query the solvers already branch on),
+  and on every plant's first tick. Elsewhere the one-tick lag M5.4 accepted
+  stays (§3a fork 6, ledger row B60): run there too, as first pushed, the loop
+  re-solved the gas, relief and vessel plants on nearly every tick at about
+  twice their wall time, and moved their answers by 1e-6. The first tick is not
+  that lag — it has no last tick, and its solve read a placeholder.
 - **What is compared is what the solve reads**: the line flash's mixture density
   at the node's liquid-equivalent where the plant carries vapour, else the
   composition's density at the node's temperature. A liquid's density ignores
@@ -21062,7 +21069,8 @@ holds what it held; nothing is written to the graph until the loop ends.
   resolves. Steady ticks sit at 1e-16.
 - **`MAX_STATE_PASSES` = 30**, a backstop: a tick that has not settled is an
   `Err` naming its last move. Measured worst over the corpus, 6 000 ticks:
-  8 solves (the fired gas drum on the game solver, 7 on Newton).
+  8 solves (the fired gas drum's first tick on the game solver); a boiling
+  plant's later ticks at most 4 (the flashing rundown).
 - **Reported**: `SolveDiagnostics::iterations` is the hardest single solve of the
   tick — what every iteration cap in the workspace was measured on — and
   `re_solves` the solves added, absent from the wire while zero.
@@ -21081,14 +21089,19 @@ and Newton diverged on `tank_runs_dry` the tick its tank ran dry (the product
 reservoir's declared diesel read for a line carrying kerosene).
 
 **Measured** (corpus, 6 000 ticks, against baselines taken before the first
-edit): 20 of 45 plants moved on each fidelity; every liquid plant re-solves its
-first tick only. The plants that moved: the crude columns, the FCC plants and
-the pump plants by their first tick (the placeholder composition); the gas and
-relief plants, the vessel plant, the flashing rundown and the dry tank on every
-tick a holdup moves. Final answers: steady plants within 1e-10, transients within
-5.1e-5 (the recovery train's boil-off vent), `relief_pop_cycle` 0.23% on its make-up flow (its pops fall a little
-differently in time). Cost: the gas and relief plants about 2× their wall time
-(2–3 solves a moving tick), the flashing rundown about +55% (6.3 → 9.8 s per 6 000
+edit; the figures below are the general loop's as first pushed, and the
+narrowed loop's where they differ): 17 of 45 plants moved on each fidelity
+once narrowed (20 as first pushed). Every plant without the line flash
+re-solves its first tick only; the flashing rundown, the one shipped plant
+whose lines boil and whose holdup moves, most of its ticks. The plants that
+moved: the crude columns, the FCC plants, the pump plants, the gas plants and
+the dry tank by their first tick (the placeholder composition), and the
+flashing rundown; the three relief plants, which moved by re-solving every
+tick, are byte-identical once narrowed. Final answers, narrowed: steady plants within
+1e-10, transients within 5.1e-5 (the recovery train's boil-off vent, by its
+first tick); as first pushed `relief_pop_cycle` moved 0.23% on its make-up flow.
+Cost, narrowed: none measurable off the line flash; as first pushed the gas and
+relief plants ran about 2× their wall time. The flashing rundown about +55% (6.3 → 9.8 s per 6 000
 ticks on Newton); on the game solver, timed alone and alternating with the
 old build, 11–14 → 17–18 s — about 2.1 → 2.9 ms a tick, past the 2.5 ms frame
 budget M9.3a wrote (ledger row A1).
@@ -21102,7 +21115,8 @@ budget M9.3a wrote (ledger row A1).
   fill so a lock there is the solve's alone.
 
 **Not built** (M55.0): a gas valve's `γ` and a line's phase test still read the
-stored composition (B58).
+stored composition (B58); off the line flash, every tick but the first keeps the
+one-tick lag (B60).
 
 ### 60.1 A gas pocket that fills over seconds (M55.1)
 
@@ -21155,3 +21169,5 @@ lock no longer comes at 118 °C, where the pump runs (12.7% vapour, 6.43 kg/s).
 
 - A gas valve's `γ` and a line's phase test at the stored composition (B58).
 - A pocket that fills faster the more vapour is offered, or by pump size (B59).
+- The step tick re-solved off the line flash, where the one-tick lag M5.4 accepted
+  stays (B60).

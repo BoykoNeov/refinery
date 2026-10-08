@@ -8844,6 +8844,14 @@ seconds, or (c) both, chose:
    the choice: the pocket fills only at 16.5% vapour or more, where RELAP5's table
    has already taken the whole push up to 90%, so the fade shows in two places —
    a pump recovering after a surge, and the near-pure-vapour tail.
+5. (After M55 was first pushed) **The re-solve narrowed to plants whose lines
+   boil, and to every plant's first tick** — over "keep it as shipped" and
+   "revert the solver fix". Built general, it re-solved the gas, relief and
+   vessel plants on nearly every tick at about twice their wall time, to move
+   their answers by 1e-6; the user had been told it would move "the first tick
+   of every boiling plant", and was told the wider reach only after it was
+   pushed. The first tick stays everywhere: it has no last tick to be stale
+   against, only a placeholder.
 
 **Choices made without the user, each stated where it is built:**
 - The pocket is a state the engine moves BETWEEN ticks, read by the solve as a
@@ -8889,8 +8897,8 @@ reports the hardest solve and `re_solves` (absent while zero). DESIGN §60.0.
 - Gates: `step_tick_reference.rs` (3), the rewritten first-tick gate in
   `upwind_temperature_reference.rs`, the cascade's first tick on its bubble
   point, and the M54 move gates (one-tick fill; a vented pump must lock again).
-- Corpus: 20 of 45 plants moved on each fidelity, every one explained (DESIGN
-  §60.0 "Measured").
+- Corpus: 20 of 45 plants moved on each fidelity as first pushed; 17 once
+  narrowed (decision 5), every one explained (DESIGN §60.0 "Measured").
 
 ### M55.1 — **LANDED** 2026-10-08: the gas pocket — M55 is CLOSED
 
@@ -8904,12 +8912,13 @@ the pocket drawn and printed. DESIGN §60.1–60.2.
 - Gates: `gas_pocket_reference.rs` (7), the demo's story and books
   (`pump_gas_lock_reference.rs`), the screen's replay, `gas_lock_reference.rs`'s
   wire gate extended to the new keys.
-- Mutations: fourteen over the milestone, all caught; one escaped first (the push
+- Mutations: fifteen over the milestone (the fifteenth after decision 5: the
+  first-tick re-solve dropped off the line flash), all caught; one escaped first (the push
   ignoring the pocket on a liquid suction) and is now gated by
   `a_part_full_pocket_takes_its_share_on_a_liquid_suction`. The trial-end
   composition read that diverged `tank_runs_dry` was found by the corpus, which
   CI runs, and is not otherwise gated.
 
 **Ledger**: B50, B53 (wrong: no second steady state) and B56 struck; B58 (a gas
-valve's `γ` at the stored composition) and B59 (one fill rate whatever the
-vapour) opened.
+valve's `γ` at the stored composition), B59 (one fill rate whatever the
+vapour) and B60 (the one-tick lag kept off the line flash, decision 5) opened.
