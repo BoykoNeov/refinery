@@ -8972,3 +8972,31 @@ DESIGN §61.
 **Ledger**: A24 (the overrun) logged and narrowed; A25 opened (the flash's own
 cost, the inlet search's number of flashes, the engine's sweep unremembered) —
 its cures move answers and wait on the user.
+
+**Decision 1** (the user's, after M56.0, offered with a prototype's numbers):
+"faster search + find stall" — ship the faster line flash, though it moves the
+boiling plants' answers, then look into why the game solver never settles on the
+locked pump; over "faster search only", "stall only, keep exact answers" and
+"stop here".
+
+### M56.1 — **LANDED** 2026-10-08: the line flash's two roots found by superlinear searches
+
+`line_flash::temperature_root` (Illinois with a two-step bisection guarantee,
+the bracket's ends read) and `line_flash::flash_on_the_line` (Rachford–Rice by
+Newton under `rtsafe`'s safeguard, closed at the objective's own rounding);
+`flash::flash_isothermal`, the cascade's, untouched. DESIGN §61.3.
+
+- Corpus: `flashing_rundown` moved on both fidelities, `pump_gas_lock` on the
+  game solver; every other plant byte-identical.
+- Every value of both stories, every tick: at most 7.6e-10 relative; the gas
+  pocket and lock identical, the lock on the same tick; the locked beat's
+  stagnant nodes (flows ±1e-10 kg/s) take another draw of the same noise.
+- Worst tick on the game solver, M56.0 → M56.1: the gas-lock story 748 →
+  130–174 ms, the flashing rundown 14–16 → 2.9–3.1 ms (1 tick over, of 599).
+- Gates: `line_flash::search_tests` (3). Mutations: nine, seven caught, two
+  survivors explained (§61.3).
+
+### M56.2 — next: the locked beat's stall (decision 1's second half)
+
+The game solver takes 19 iterations on every tick of the gas-lock story's
+locked beat, a plant standing still; about 230 pump-inlet searches a tick.

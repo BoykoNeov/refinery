@@ -21304,13 +21304,85 @@ the flashing rundown's.
   that never calls `begin_solve` — every answer is unchanged and its memo
   stops growing at the cap, so only the wall time shows it.
 
+### 61.3 A faster line flash (M56.1) — the user's decision, and it moves answers
+
+Offered after §61.2 with a prototype's numbers — the boiling plants' answers
+moved at most ~5e-12 on the corpus's runs, the flashing rundown inside the
+budget on every tick — the user chose it, and to look into the locked beat's
+stall after it (the next step).
+
+- **The temperature search** (`line_flash::temperature_root`): the bubble
+  point's own method (§11, M9.3a) — regula falsi with Illinois weighting and a
+  bisection whenever the bracket has not halved over two steps — written fresh
+  in `line_flash.rs` rather than taken out of `bubble.rs`, whose arithmetic the
+  column plants are anchored on. **It reads the bracket's ends**, which the
+  halving loop never did: ends of one sign are answered by the end the halving
+  loop would have closed on. 7–43 evaluations, most 8–20, against 61.
+- **The isothermal flash** (`line_flash::flash_on_the_line`): Rachford–Rice by
+  Newton inside the bracket, with `rtsafe`'s safeguard (Press et al., §9.4) —
+  bisect where a step leaves the bracket or does not halve the step before
+  last — and **closed when the objective is within its own rounding**
+  (`n·ε·Σ|term|`, Higham §4.2). Without that test a third of the searches ground
+  on through noise-driven bisections to 30–60 evaluations (measured, while
+  building it); with it, 3–12, most 4–6, every one closed there.
+  `flash::flash_isothermal`, the cascade's, is untouched.
+
+**Measured.** Corpus, 6 000 ticks: `flashing_rundown` moved on both
+fidelities and `pump_gas_lock` on the game solver; the other plants
+byte-identical (43 on the game solver, 44 on Newton). Every value of both
+stories, every tick, against M56.0's build, nothing cut off:
+
+- `flashing_rundown`: at most 7.1e-12 relative (a mass flow); no field appears,
+  disappears or flips.
+- `pump_gas_lock`: the gas pocket and the lock identical on every tick, the lock
+  on tick 100 on both; the pump's head share and push at most 7.6e-10 (game
+  solver) and 2.9e-11 (Newton). **In the locked 125 °C beat, on the game solver,
+  the stagnant nodes move**: the pump's own node and the one before the shut disc
+  by up to 9.4 K, the bubble pressure read there by 22%, and the suction line's
+  vapour on one tick (186). Their flows are ±1e-10 kg/s with a sign that
+  wanders tick to tick, and a node with no flow takes the temperature of
+  whichever side that noise points from (A15's shape); M56.0's build and this
+  one are two draws of the same noise. That the solver does not settle there is
+  the next step's subject.
+
+Per tick, the fastest of five runs, M56.0's build and this one alternated, two
+rounds — on a machine other work held at 100%, so read the ratios:
+
+```text
+  ms a tick, M56.0 → M56.1      mean         99th pct      worst         ticks > 2.5 ms
+  pump_gas_lock     game    91–92 → 15–21   691–707 → 115–162   748 → 130–174   122–124 → 48–51 of 219
+  pump_gas_lock     Newton  5.7–6.7 → 0.9–1.4  45–52 → 7–10     51–56 → 9–11    46 → 32–33 of 219
+  flashing_rundown  game    2.5–2.8 → 0.4–0.6  4.3–4.5 → 0.8–0.9  14–16 → 2.9–3.1  201 → 1 of 599
+  flashing_rundown  Newton  1.8–2.2 → 0.3–0.4  3.3–3.5 → 0.6–0.7   8–9 → 1.3–1.6   201 → 0 of 599
+```
+
+The flashing rundown's one tick over is the step back from 135 °C to 115 °C on
+the game solver. What is left over the budget is the gas-lock story's
+transients and, above all, its locked beat: about 230 pump-inlet searches a
+tick of about 45 trials each, because the game solver takes 19 iterations on
+every tick of a plant standing still.
+
+- Gates (`line_flash::search_tests`, 3): the Newton search against
+  `flash_isothermal` over ten regimes, among them a vapour fraction a hair above
+  zero and one a hair below one, K-values six decades apart, eight components,
+  and two where Newton from 0.5 leaves the bracket (one past a pole); the
+  settled temperature against the 60-halving loop to a nanokelvin over 20
+  boiling states, a stream a nanokelvin over its bubble point and the pure cut
+  whose flash jumps at the bracket's end; ends of one sign answered by their
+  end. Mutations: nine. Caught: the whole safeguard removed, the rounding test
+  loosened a millionfold, either end-check removed, the temperature stop
+  loosened, the bracket update reversed. Survived, and why: the bracket check
+  alone removed (the step-halving test catches the same overshoot), the
+  step-halving test alone removed (a speed safeguard — the bracket check keeps
+  the answer); a step-size stop that never fired in any measured search was
+  removed rather than kept unpinned.
+
 ### Not built, with what un-defers each (M56)
 
-- **A faster flash, or fewer flashes** (A25): Newton on Rachford–Rice and a
-  bracketed superlinear search on the isenthalpic temperature (the bubble
-  point's arrangement, §11 M9.3a), or a pump-inlet search that asks fewer
-  pressures, would cut the remaining cost and move the two boiling plants'
-  answers — a change of answer, so the user's to make. Its trigger is already
-  met: the gas-lock story's locked beat is far past the budget.
+- **A faster flash** — BUILT by M56.1 (§61.3), on the user's decision.
+- **Fewer flashes where the plant stands still** (A25): the gas-lock story's
+  locked beat, where the game solver takes 19 iterations a tick and the
+  pump-inlet search asks about 10 000 densities. The next step, on the user's
+  decision.
 - **The engine's sweep remembered** (A25): the same memo in `core` needs the
   engine to hold one; the sweep is a sixth of the remaining tick.

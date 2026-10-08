@@ -12,9 +12,10 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
-**M56 is OPEN (M56.0 landed 2026-10-08): the line flash's densities remembered —
-the frame budget M55 overran, narrowed with no answer moved but not closed —
-`docs/DEFERRED.md` A24 logged and narrowed, A25 opened and awaiting the user.** Asked after M55 as "what is next"; the
+**M56 is OPEN (M56.0 and M56.1 landed 2026-10-08): the line flash's densities
+remembered, then its two roots found by superlinear searches — the frame budget
+M55 overran, narrowed but not closed — `docs/DEFERRED.md` A24 logged and
+narrowed, A25 opened, its flash clause closed.** Asked after M55 as "what is next"; the
 recommended direction, the user's "go". DESIGN §61.
 - **Measured first**: 98% of the flashing rundown's tick on the game solver was
   the line flash's density (a bisection of isothermal flashes, each a bisection
@@ -39,6 +40,15 @@ recommended direction, the user's "go". DESIGN §61.
   engine's own sweep is unremembered.
 - Gates: `network::density_memo_tests` (6). Mutations: six, all caught; a solver
   that skips the memo's rotation moves no answer and is caught only by wall time.
+- **M56.1, on the user's decision** (moves answers): the line flash's
+  temperature by the bubble point's Illinois search, its Rachford–Rice by a
+  safeguarded Newton closed at its own rounding; the cascade's flash untouched.
+  Two plants moved, by at most 7.6e-10; pocket and lock identical. Worst tick
+  on the game solver: the gas-lock story 748 → 130–174 ms, the flashing rundown
+  14–16 → 2.9–3.1 ms. `line_flash::search_tests` (3); nine mutations, seven
+  caught. DESIGN §61.3.
+- **Next (M56.2)**: the locked beat, where the game solver takes 19 iterations
+  on every tick of a plant standing still.
 
 **M55 is CLOSED (2026-10-08): the step tick solved on its own states, and a gas
 pocket that fills over seconds — `docs/DEFERRED.md` B50, B53 and B56 struck,
