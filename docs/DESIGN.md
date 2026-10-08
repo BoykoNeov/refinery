@@ -20968,6 +20968,13 @@ history. The move gates now read both a cold start and a moved run as "settled,
 vented once if locked, settled again", which lands both on the live answer
 wherever its settled state does not lock it.
 
+**Corrected by M55 (§60):** there are no two answers. With the lock cleared
+after every tick the "dead" answer lasts exactly the step tick, which read the
+valves after the pump at their last-tick state (ledger row B50) and offered the
+pump 45% vapour for that one tick; from the next tick every run sits on the
+live answer. M55 solves the step tick on its own states, and the pump's gas
+pocket (§60.1) needs seconds, not a tick, to lock it. B53 is struck as wrong.
+
 **Measured** (`crates/scenarios/tests/gas_lock_reference.rs`, both fidelities):
 on the table's fall at 100 °C (7% vapour) 600 ticks never lock; warmed to 125 °C
 the pump locks; cooled back to 100 °C it stays dead and the flow is what the
@@ -20990,6 +20997,11 @@ locks again and the disc holds the line shut. The plant's energy and mass books
 close on every tick of that story to round-off of its own scale. Corpus, 6 000
 ticks: Newton at most 6 iterations a tick, the game solver 8.
 
+**Retold by M55 (§60.2):** the plant no longer locks at 118 °C, where its pump
+runs on the last of the fall (12.7% vapour, 6.43 kg/s); its story and the
+screen's timeline lock it held at 120 °C, once its gas pocket fills. The figures
+above are M54's.
+
 **The pump screen** (`demo/pump.gd`, key 3, `--plant=gaslock`): the vapour the
 suction offers, the head the table takes, the PRESSURE the pump makes (decision 4:
 near pure vapour the table gives the share back while the pressure stays tiny —
@@ -21009,11 +21021,11 @@ plant run until its pump locks, then stopped.
 - `H_2φ`, the fully degraded two-phase head curve, taken as zero — a plant whose
   answer depends on a dead pump's residual head away from its rated flow (B55).
 - A zero-volume node on a pump's suction side carries a tick's lag (B52).
-- Two steady states, and the lock choosing between them by history (B53).
+- ~~Two steady states, and the lock choosing between them by history (B53).~~ Wrong, and struck by M55 (§60.0): one tick read stale states.
 - Choking through a check valve or a control valve in flashing service (B47).
 - Two pumps joined by one pipe on a flashing plant — refused (B57).
-- A transient model of a gas pocket growing in the impeller: the lock is an
-  instant switch at the table's fully degraded point (B56).
+- ~~A transient model of a gas pocket growing in the impeller: the lock is an
+  instant switch at the table's fully degraded point (B56).~~ Built by M55 (§60.1).
 
 ## 60. The step tick solved on its own states, and a gas pocket that fills over seconds — ledger rows B50, B53 and B56 (M55)
 
@@ -21074,10 +21086,12 @@ first tick only. The plants that moved: the crude columns, the FCC plants and
 the pump plants by their first tick (the placeholder composition); the gas and
 relief plants, the vessel plant, the flashing rundown and the dry tank on every
 tick a holdup moves. Final answers: steady plants within 1e-10, transients within
-2e-6, `relief_pop_cycle` 0.23% on its make-up flow (its pops fall a little
+5.1e-5 (the recovery train's boil-off vent), `relief_pop_cycle` 0.23% on its make-up flow (its pops fall a little
 differently in time). Cost: the gas and relief plants about 2× their wall time
 (2–3 solves a moving tick), the flashing rundown about +55% (6.3 → 9.8 s per 6 000
-ticks on Newton).
+ticks on Newton); on the game solver, timed alone and alternating with the
+old build, 11–14 → 17–18 s — about 2.1 → 2.9 ms a tick, past the 2.5 ms frame
+budget M9.3a wrote (ledger row A1).
 - Gates: `crates/scenarios/tests/step_tick_reference.rs` (3: a cold start's and
   a move's first tick on its settled answer at six temperatures where the pump
   runs, with the instant lock; no re-solve on a settled tick);

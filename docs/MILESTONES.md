@@ -28,7 +28,7 @@ draining at the rate it fills, and the push fading as it fills. DESIGN §60.
   liquid plant re-solves its first tick only; the gas, relief and flashing plants
   every tick a holdup moves — about 2× their wall time, the flashing rundown
   about +55%, at most 8 solves a tick. 20 of 45 plants moved on each fidelity: steady
-  answers by 1e-10 or less, transients by 2e-6, `relief_pop_cycle` 0.23%.
+  answers by 1e-10 or less, transients by up to 5.1e-5, `relief_pop_cycle` 0.23%.
 - **The gas pocket**: fills by `dt` over the pump's fill time while its suction
   offers 16.5% vapour or more, drains at that rate below, takes `(1 − pocket)` of
   the push, locks the pump when full; read by the solve as a fixed number, so no
