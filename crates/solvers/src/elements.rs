@@ -125,6 +125,96 @@ pub fn cavitation_head_fraction_dsigma(sigma: f64) -> f64 {
     }
 }
 
+/// RELAP5's two-phase head degradation multiplier, `(α, M_H)` (M54,
+/// docs/DESIGN.md §59): RELAP5/MOD3 Code Manual Vol. I (NUREG/CR-5535-V1),
+/// §3.5.4, Table 3.5-3, from the Semiscale and Westinghouse Canada steam-water
+/// pump tests. `α` is the vapour's share of the volume.
+const TWO_PHASE_HEAD_TABLE: [(f64, f64); 6] = [
+    (0.0, 0.0),
+    (0.07, 0.0),
+    (0.08, 0.74),
+    (0.165, 1.0),
+    (0.9, 1.0),
+    (1.0, 0.0),
+];
+
+/// The head a pump loses to the vapour at its inlet, `M_H(α)` in `[0, 1]`, from
+/// `α`, the vapour's share of the inlet's VOLUME (M54, docs/DESIGN.md §59).
+///
+/// RELAP5 degrades a pump's head as `H = H_1φ − M_H(α)·(H_1φ − H_2φ)` (eq.
+/// 3.5-67), where `H_2φ` is a fully degraded two-phase curve; this engine takes
+/// `H_2φ = 0`, so the pump delivers `(1 − M_H)·H(Q)`. Its table (above) has the
+/// pump untouched to 7% vapour, three quarters gone at 8%, all gone from 16.5%
+/// to 90%, and back at pure vapour — a fan blowing vapour, whose head in metres
+/// makes almost no pressure at a vapour's density.
+///
+/// **The shape between the table's points is a modelling choice**: the monotone
+/// piecewise-cubic Hermite interpolant of Fritsch & Carlson (SIAM J. Numer.
+/// Anal. 17(2), 1980), the one scipy calls PCHIP. It passes through every point,
+/// does not overshoot between them, and is C¹, which the network's
+/// characteristics must be (DESIGN §3a fork 4); the table's straight lines
+/// would kink at every point. `α` outside `[0, 1]` is clamped to it.
+pub fn two_phase_head_multiplier(void_fraction: f64) -> f64 {
+    let table = &TWO_PHASE_HEAD_TABLE;
+    let alpha = void_fraction.clamp(0.0, 1.0);
+    let last = table.len() - 1;
+    let k = (0..last)
+        .find(|&k| alpha <= table[k + 1].0)
+        .unwrap_or(last - 1);
+    let (x0, y0) = table[k];
+    let (x1, y1) = table[k + 1];
+    let h = x1 - x0;
+    let (m0, m1) = (pchip_slope(k), pchip_slope(k + 1));
+    // Cubic Hermite on [x0, x1] in t = (α − x0)/h.
+    let t = (alpha - x0) / h;
+    let t2 = t * t;
+    let t3 = t2 * t;
+    let value = (2.0 * t3 - 3.0 * t2 + 1.0) * y0
+        + (t3 - 2.0 * t2 + t) * h * m0
+        + (-2.0 * t3 + 3.0 * t2) * y1
+        + (t3 - t2) * h * m1;
+    value.clamp(0.0, 1.0)
+}
+
+/// The Fritsch–Carlson slope at point `k` of the two-phase head table: zero
+/// where the secants either side differ in sign or one is flat, else their
+/// weighted harmonic mean; at the ends, the three-point formula held to the
+/// end secant's sign and to three times its size (scipy's `PchipInterpolator`).
+fn pchip_slope(k: usize) -> f64 {
+    let table = &TWO_PHASE_HEAD_TABLE;
+    let last = table.len() - 1;
+    let width = |i: usize| table[i + 1].0 - table[i].0;
+    let secant = |i: usize| (table[i + 1].1 - table[i].1) / width(i);
+    let end = |h0: f64, h1: f64, d0: f64, d1: f64| {
+        let m = ((2.0 * h0 + h1) * d0 - h0 * d1) / (h0 + h1);
+        if m.signum() != d0.signum() || d0 == 0.0 {
+            0.0
+        } else if d0.signum() != d1.signum() && m.abs() > 3.0 * d0.abs() {
+            3.0 * d0
+        } else {
+            m
+        }
+    };
+    if k == 0 {
+        return end(width(0), width(1), secant(0), secant(1));
+    }
+    if k == last {
+        return end(
+            width(last - 1),
+            width(last - 2),
+            secant(last - 1),
+            secant(last - 2),
+        );
+    }
+    let (d0, d1) = (secant(k - 1), secant(k));
+    if d0 == 0.0 || d1 == 0.0 || d0.signum() != d1.signum() {
+        return 0.0;
+    }
+    let (h0, h1) = (width(k - 1), width(k));
+    let (w0, w1) = (2.0 * h1 + h0, h1 + 2.0 * h0);
+    (w0 + w1) / (w0 / d0 + w1 / d1)
+}
+
 /// Series-composable branch characteristic covering every M1 hydraulic
 /// element. Each is affine in `Q·|Q|`:  `dp = alpha·Q·|Q| + beta`, with
 /// `dp = P_upstream − P_downstream` [Pa], `Q` = volumetric flow [m³/s].

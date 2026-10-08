@@ -40,3 +40,7 @@ path = "tests/reference/cascade.rs"
 [[test]]
 name = "line_flash_reference"
 path = "tests/reference/line_flash.rs"
+
+[[test]]
+name = "two_phase_head_reference"
+path = "tests/reference/two_phase_head.rs"

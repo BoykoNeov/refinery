@@ -14,7 +14,8 @@ use crate::graph::{
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
-    NodeSnapshot, PumpSuctionSnapshot, RestartBar, Snapshot, SupplyBoiling, TripSnapshot, TripStop,
+    NodeSnapshot, PumpSuctionSnapshot, PumpTwoPhaseSnapshot, RestartBar, Snapshot, SupplyBoiling,
+    TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, LineFlashModel, ReactionModel,
@@ -3103,6 +3104,14 @@ impl Engine {
                         PumpSuctionSnapshot {
                             npsh_available_m: s.npsh_available.value(),
                             head_fraction: s.head_fraction,
+                        }
+                    }),
+                    // The solve's own report — see `NodeSnapshot::pump_two_phase`.
+                    pump_two_phase: sol.and_then(|s| s.pump_two_phase.get(&id)).map(|s| {
+                        PumpTwoPhaseSnapshot {
+                            void_fraction: s.void_fraction,
+                            head_multiplier: s.head_multiplier,
+                            pressure_rise_pa: s.pressure_rise.value(),
                         }
                     }),
                     // The solve's own verdict, never the tank's mass — see

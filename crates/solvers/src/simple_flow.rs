@@ -44,9 +44,10 @@
 //! `build_groups` and `correct_groups`.
 
 use crate::network::{
-    accumulation, compile_edge_with, compile_edges_with, edge_flows, meets_node_bar,
-    solve_remembering_reliefs, solve_with_active_anchoring_with, validate_degrees, AnchorPass,
-    Capacitance, CompiledEdge, LineFlash, OwnedLineFlash, Prepared,
+    accumulation, compile_edge_with, compile_edges_with, edge_flows, meets_node_bar, pump_inlets,
+    solve_pump_inlet, solve_remembering_reliefs, solve_with_active_anchoring_with,
+    validate_degrees, AnchorPass, Capacitance, CompiledEdge, LineFlash, OwnedLineFlash, Prepared,
+    PumpInlet, DENSITY_SLOPE_DELTA,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
@@ -275,7 +276,19 @@ impl SimpleFlowSolver {
         // The additive correction's groups, built ONCE per pass from the pass's
         // seed compile — the same point the anchored set is frozen (§3c), so the
         // grouping cannot flap while the weights move within the pass.
-        let groups = build_groups(&unknowns, &incident, &compiled, &pressures, self.eps_dp);
+        //
+        // A pump's inlet on a flashing plant is solved in its turn, never stepped
+        // (M54, docs/DESIGN.md §59), so it is no group's member either: a common
+        // shift would move it off the root its own solve keeps it on.
+        let inlets = pump_inlets(graph, self.line_flash.view(), |nid| {
+            unknowns.binary_search(&nid).is_ok()
+        });
+        let stepped: Vec<NodeId> = unknowns
+            .iter()
+            .copied()
+            .filter(|nid| !inlets.iter().any(|i| i.node == *nid))
+            .collect();
+        let groups = build_groups(&stepped, &incident, &compiled, &pressures, self.eps_dp);
 
         // Nonlinear Gauss–Seidel: sweep, then measure the residual on the exact
         // edge flows the solution will report (so the returned solution provably
@@ -293,6 +306,30 @@ impl SimpleFlowSolver {
             // step is not differentiating anyway. All-liquid networks recompile
             // to identical numbers (M5.2, `network::compile_edge`).
             for &nid in &unknowns {
+                // A pump's inlet is solved on its own balance's bracket, its
+                // neighbours as this sweep has left them (M54, §59). Where it has
+                // no root with them held, it takes the ordinary node step below.
+                if let Some(&inlet) = inlets.iter().find(|i| i.node == nid) {
+                    match solve_pump_inlet(
+                        graph,
+                        slate,
+                        previous_states,
+                        self.line_flash.view(),
+                        inlet,
+                        &mut pressures,
+                        self.eps_dp,
+                        0.01 * self.tol_abs_kg_s,
+                    ) {
+                        Ok(true) => continue,
+                        Ok(false) => {}
+                        Err(e) => {
+                            return AnchorPass {
+                                result: Err(e),
+                                pressures,
+                            }
+                        }
+                    }
+                }
                 let mut imbalance = 0.0;
                 let mut g_sum = 0.0;
                 // The node's own convergence scale, `max |ṁ|` over its edges, as
@@ -357,6 +394,48 @@ impl SimpleFlowSolver {
                 }
                 // g_sum > 0 for any anchored free node; the node-wise Newton
                 // step ΔP = imbalance / g_sum drives this node's balance to zero.
+                // Beside a pump's inlet the node is stepped on the plant as it
+                // answers, the inlet re-solved (M54, docs/DESIGN.md §59): its
+                // imbalance there, and the slope of that imbalance by a central
+                // difference. Held still instead, the pump's lever made the
+                // node's slope ten to a hundred times too steep — up to 200
+                // sweeps a tick, and none sufficing on a cold start at 125 °C
+                // into a 3 bar destination (measured, M54's probe).
+                if !inlets.is_empty()
+                    && !adjacent_inlets(graph, &incident[&nid], &inlets).is_empty()
+                {
+                    let reduced = |p: f64| {
+                        node_imbalance_at(
+                            nid,
+                            p,
+                            &incident[&nid],
+                            &compiled,
+                            &pressures,
+                            capacitive.get(&nid),
+                            dt.value(),
+                            self.eps_dp,
+                            (graph, slate, previous_states, self.line_flash.view()),
+                            (&inlets, 0.01 * self.tol_abs_kg_s),
+                        )
+                    };
+                    let p = pressures[&nid];
+                    let delta = DENSITY_SLOPE_DELTA;
+                    match (reduced(p), reduced(p + delta), reduced(p - delta)) {
+                        (Ok(here), Ok(above), Ok(below)) => {
+                            imbalance = here;
+                            let slope = (below - above) / (2.0 * delta);
+                            if slope > 0.0 && slope.is_finite() {
+                                g_sum = slope;
+                            }
+                        }
+                        (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+                            return AnchorPass {
+                                result: Err(e),
+                                pressures,
+                            }
+                        }
+                    }
+                }
                 let full = self.omega * imbalance / g_sum;
                 if !full.is_finite() {
                     // `g_sum == 0` — an anchored node with no conducting edge
@@ -398,6 +477,7 @@ impl SimpleFlowSolver {
                         dt.value(),
                         self.eps_dp,
                         (graph, slate, previous_states, self.line_flash.view()),
+                        (&inlets, 0.01 * self.tol_abs_kg_s),
                     )
                 };
                 // **A cavitating pump's own node is solved on its bracket FIRST**
@@ -984,11 +1064,31 @@ fn node_imbalance_at(
     dt: f64,
     eps_dp: f64,
     (graph, slate, previous_states, flash): (&PlantGraph, &Slate, &NodeStates, LineFlash<'_>),
+    (inlets, inlet_tol): (&[PumpInlet], f64),
 ) -> Result<f64, SimError> {
     let mut imbalance = 0.0;
     // The trial's pressures, built only when a check valve's edge needs them —
     // every other node evaluates its trial exactly as it did before M30.
     let mut trial_pressures: Option<BTreeMap<NodeId, f64>> = None;
+    // A pump's inlet beside this node is re-solved at the trial (M54, §59): the
+    // node is judged on the plant as it answers, the inlet back on its root.
+    for inlet in adjacent_inlets(graph, incident, inlets) {
+        let at_trial = trial_pressures.get_or_insert_with(|| {
+            let mut t = pressures.clone();
+            t.insert(nid, p_trial);
+            t
+        });
+        solve_pump_inlet(
+            graph,
+            slate,
+            previous_states,
+            flash,
+            inlet,
+            at_trial,
+            eps_dp,
+            inlet_tol,
+        )?;
+    }
     for &(eid, incoming) in incident {
         let fresh;
         let c = if is_fresh_edge(graph, eid, flash) {
@@ -1002,7 +1102,11 @@ fn node_imbalance_at(
         } else {
             &compiled[&eid]
         };
-        let at = |n: NodeId| if n == nid { p_trial } else { pressures[&n] };
+        let at = |n: NodeId| match &trial_pressures {
+            Some(t) => t[&n],
+            None if n == nid => p_trial,
+            None => pressures[&n],
+        };
         let mdot = c.rho * c.branch.flow(at(c.src) - at(c.tgt), eps_dp);
         imbalance += if incoming { mdot } else { -mdot };
     }
@@ -1010,6 +1114,28 @@ fn node_imbalance_at(
         imbalance += accumulation(cap, p_trial, dt).0;
     }
     Ok(imbalance)
+}
+
+/// The pump inlets (`PumpInlet`) at the far end of one of a node's `incident`
+/// edges: the ones its step must re-solve (M54, docs/DESIGN.md §59).
+fn adjacent_inlets(
+    graph: &PlantGraph,
+    incident: &[(EdgeId, bool)],
+    inlets: &[PumpInlet],
+) -> Vec<PumpInlet> {
+    if inlets.is_empty() {
+        return Vec::new();
+    }
+    incident
+        .iter()
+        .filter_map(|&(eid, _)| {
+            let (src, tgt) = graph.endpoints(eid);
+            inlets
+                .iter()
+                .find(|i| i.node == src || i.node == tgt)
+                .copied()
+        })
+        .collect()
 }
 
 /// True for an edge the node-wise sweep reads FRESH: the outlet edge of a check

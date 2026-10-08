@@ -49,9 +49,9 @@
 
 use crate::elements::{cavitation_head_fraction, cavitation_head_fraction_dsigma};
 use crate::network::{
-    accumulation, compile_edges_with, edge_flows, finalize, solve_remembering_reliefs,
-    solve_with_active_anchoring_with, validate_degrees, AnchorPass, Capacitance, CompiledEdge,
-    OwnedLineFlash, Prepared,
+    accumulation, compile_edges_with, edge_flows, finalize, pump_inlets, solve_pump_inlet,
+    solve_remembering_reliefs, solve_with_active_anchoring_with, validate_degrees, AnchorPass,
+    Capacitance, CompiledEdge, OwnedLineFlash, Prepared, PumpInlet,
 };
 use refinery_core::components::Slate;
 use refinery_core::energy::NodeStates;
@@ -184,6 +184,33 @@ impl FlowSolver for NewtonFlowSolver {
 }
 
 impl NewtonFlowSolver {
+    /// Solve every pump inlet in `inlets` at `pressures`, in order (M54,
+    /// docs/DESIGN.md §59; `network::solve_pump_inlet`), to a hundredth of the
+    /// absolute bar so its residual never decides convergence. One with no root
+    /// keeps the pressure it was handed.
+    fn solve_pump_inlets(
+        &self,
+        inlets: &[PumpInlet],
+        graph: &PlantGraph,
+        slate: &Slate,
+        previous_states: &NodeStates,
+        pressures: &mut BTreeMap<NodeId, f64>,
+    ) -> Result<(), SimError> {
+        for &inlet in inlets {
+            solve_pump_inlet(
+                graph,
+                slate,
+                previous_states,
+                self.line_flash.view(),
+                inlet,
+                pressures,
+                self.eps_dp,
+                0.01 * self.tol_abs_kg_s,
+            )?;
+        }
+        Ok(())
+    }
+
     /// One damped-Newton solve under a FIXED anchoring classification — the body
     /// this solver had before M8.0, minus the prologue (`prepare`, now the
     /// driver's) and minus the warm-start write (also the driver's).
@@ -233,6 +260,36 @@ impl NewtonFlowSolver {
             let edges = edge_flows(graph, &compiled, &pressures, anchored, self.eps_dp);
             let result = finalize(graph, &pressures, edges, 0, 0.0);
             return AnchorPass { result, pressures };
+        }
+
+        // A pump's inlet on a flashing plant is solved inside every iterate, the
+        // first included, and its edges recompiled there (M54, §59).
+        let inlets = pump_inlets(graph, self.line_flash.view(), |nid| idx.contains_key(&nid));
+        if !inlets.is_empty() {
+            match self.solve_pump_inlets(&inlets, graph, slate, previous_states, &mut pressures) {
+                Ok(()) => {}
+                Err(e) => {
+                    return AnchorPass {
+                        result: Err(e),
+                        pressures,
+                    }
+                }
+            }
+            compiled = match compile_edges_with(
+                graph,
+                slate,
+                previous_states,
+                &pressures,
+                self.line_flash.view(),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    return AnchorPass {
+                        result: Err(e),
+                        pressures,
+                    }
+                }
+            };
         }
 
         // Damped Newton.
@@ -303,6 +360,19 @@ impl NewtonFlowSolver {
             for _ in 0..=MAX_HALVINGS {
                 let mut trial = apply_step(&pressures, &unknowns, &idx, &dp, t);
                 follow_pump_heads(&compiled, &idx, &dp, t, &mut trial);
+                // A pump's inlet is solved at the trial, not stepped (M54,
+                // docs/DESIGN.md §59): its balance is held at zero, so the full
+                // step on the others is the Schur step. Where it has no root
+                // with its neighbours held, the step stands for that node.
+                match self.solve_pump_inlets(&inlets, graph, slate, previous_states, &mut trial) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        return AnchorPass {
+                            result: Err(e),
+                            pressures,
+                        }
+                    }
+                }
                 // Recompile at the trial iterate: a gas edge's frozen density
                 // coefficient follows the pressure it is evaluated at, so the
                 // merit the line search compares must be the merit of the fully

@@ -432,11 +432,20 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
 /// - **A tank boils off**: `boiloff = "flash"` on any plant with a tank. A tank
 ///   takes the latent heat of what arrives into its balance and its boil-off
 ///   vents it (fork 4); under `"none"` that heat would sit as superheat for ever.
-/// - **Supplies, destinations, the atmosphere, junctions, control valves and
-///   tanks.** A pump in two-phase service (gas-lock), a furnace, a cooler, an
-///   exchanger, a column, a reactor, a vessel, and a check or relief valve are
-///   each a model this milestone did not build, and a boiling stream reaching
-///   one would be read as liquid.
+/// - **Supplies, destinations, the atmosphere, junctions, control valves,
+///   tanks and pumps.** A furnace, a cooler, an exchanger, a column, a reactor,
+///   a vessel, and a check or relief valve are each a model not built, and a
+///   boiling stream reaching one would be read as liquid. A pump in two-phase
+///   service loses its head to RELAP5's multiplier (M54, §59).
+/// - **No pump declares `npsh_required_m`** (M54, §59 decision 3): on a flashing
+///   plant the steam-water data decides a pump's head, and it has a pump at its
+///   boiling point with no vapour yet giving its whole head, where M50's curve
+///   gives none. For the head not to jump at the bubble point the suction curve
+///   would have to be reshaped until nothing of it is left, so the key would be
+///   a number nothing reads.
+/// - **No two pumps joined by one pipe** (M54, §59): each pump's inlet is
+///   solved with its neighbours held, and two pumps back to back are one
+///   problem, not two.
 /// - **No leak path** (`leak_to`): a hole is an orifice, and a two-phase jet
 ///   chokes, which no law here models — the valve's caveat, without a user's
 ///   decision to accept it.
@@ -486,9 +495,22 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             | NodeDef::Atmosphere
             | NodeDef::Junction
             | NodeDef::Valve { .. }
-            | NodeDef::Tank { .. } => continue,
+            | NodeDef::Tank { .. }
+            | NodeDef::Pump {
+                npsh_required_m: None,
+                ..
+            } => continue,
+            NodeDef::Pump { .. } => {
+                return refuse(format!(
+                    "with '{name}' declaring npsh_required_m: on a flashing plant a pump's \
+                     head is RELAP5's two-phase multiplier on the vapour at its inlet \
+                     (docs/DESIGN.md §59), which has a pump at its boiling point with no \
+                     vapour giving its whole head. M50's suction curve gives it none, and \
+                     cannot be reshaped to agree without leaving nothing of it: the number \
+                     would change nothing. Remove the key"
+                ));
+            }
             NodeDef::Vessel { .. } => "a vessel",
-            NodeDef::Pump { .. } => "a pump (two-phase pumping, a gas-lock, is not modelled)",
             NodeDef::ReliefValve { .. } => "a relief valve",
             NodeDef::CheckValve { .. } => "a check valve",
             NodeDef::Furnace { .. } => "a furnace",
@@ -499,13 +521,29 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
         };
         return refuse(format!(
             "with '{name}', {kind}: a plant that selects the line flash may hold only \
-             supplies, destinations, the atmosphere, junctions, control valves and tanks"
+             supplies, destinations, the atmosphere, junctions, control valves, tanks \
+             and pumps"
         ));
     }
     if let Some(pipe) = scenario.pipes.iter().find(|p| p.leak_to.is_some()) {
         return refuse(format!(
             "with a leak path on pipe '{}': a two-phase jet through a hole chokes, which \
              no law here models",
+            pipe.name
+        ));
+    }
+    // Each pump's inlet is solved with its neighbours held (M54, §59), so two
+    // pumps joined by one pipe would each hold the other still: their two
+    // balances are one problem, which no solve here poses.
+    let is_pump = |name: &str| matches!(scenario.nodes.get(name), Some(NodeDef::Pump { .. }));
+    if let Some(pipe) = scenario
+        .pipes
+        .iter()
+        .find(|p| is_pump(&p.from) && is_pump(&p.to))
+    {
+        return refuse(format!(
+            "with pipe '{}' joining two pumps: each pump's inlet is solved with its \
+             neighbours held, and two pumps back to back are one problem, not two",
             pipe.name
         ));
     }

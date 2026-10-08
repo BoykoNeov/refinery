@@ -67,6 +67,31 @@ pub struct HydraulicSolution {
     /// so empty on every plant before M50, and skipped in serialization then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pump_suction: BTreeMap<NodeId, PumpSuctionState>,
+    /// What the vapour at its inlet left each running pump in two-phase service,
+    /// at the accepted solution (M54, docs/DESIGN.md §59). Data across the seam,
+    /// as `pump_suction` is.
+    ///
+    /// Present only on a running pump whose inlet carries vapour — so empty on
+    /// every plant without a line flash, and skipped in serialization then.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub pump_two_phase: BTreeMap<NodeId, PumpTwoPhaseState>,
+}
+
+/// One pump's two-phase inlet at a solution (M54, docs/DESIGN.md §59).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PumpTwoPhaseState {
+    /// The vapour's share of the pump inlet's VOLUME, in `[0, 1]`
+    /// (dimensionless), at the pump's own pressure.
+    pub void_fraction: f64,
+    /// The share of its curve's head the vapour took, in `[0, 1]`
+    /// (dimensionless): RELAP5's `M_H`, 0 to 7% vapour, 1 from 16.5% to 90%,
+    /// 0 again at pure vapour.
+    pub head_multiplier: f64,
+    /// The pressure the pump makes at the solved flow [Pa]:
+    /// `(1 − M_H)·ρ·g·H(Q)`, `ρ` its inlet's mixture density. Near pure vapour
+    /// the multiplier gives the head back and this stays tiny — the number a
+    /// screen should draw.
+    pub pressure_rise: Pascal,
 }
 
 /// One pump's suction at a solution (M50, docs/DESIGN.md §55).

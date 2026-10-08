@@ -261,6 +261,14 @@ pub struct NodeSnapshot {
     /// bytes it did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pump_suction: Option<PumpSuctionSnapshot>,
+    /// What the vapour at its inlet is costing this pump (M54, docs/DESIGN.md
+    /// §59): the vapour's share of the inlet's volume, the share of its head
+    /// RELAP5's multiplier takes, and the pressure it still makes.
+    ///
+    /// **Absent** on every node that is not a running pump whose inlet carries
+    /// vapour — so on every plant without a line flash, and skipped then.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pump_two_phase: Option<PumpTwoPhaseSnapshot>,
     /// This tank ran dry in the last tick's solve: the network drew more than it
     /// held, so the solve took everything left as the tank's supply and from then
     /// on the tank passes its feed straight through (M24, docs/DESIGN.md §28).
@@ -442,6 +450,18 @@ pub struct PumpSuctionSnapshot {
     pub npsh_available_m: f64,
     /// Share of the curve's head delivered, in `[0, 1]`.
     pub head_fraction: f64,
+}
+
+/// A pump in two-phase service at the last solve — see
+/// [`NodeSnapshot::pump_two_phase`] (M54, docs/DESIGN.md §59).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PumpTwoPhaseSnapshot {
+    /// The vapour's share of the inlet's volume, in `[0, 1]`.
+    pub void_fraction: f64,
+    /// The share of the curve's head the vapour took, in `[0, 1]`.
+    pub head_multiplier: f64,
+    /// The pressure the pump makes at the solved flow [Pa].
+    pub pressure_rise_pa: f64,
 }
 
 /// A column's two emergent heat duties [W] — see `NodeSnapshot::column_duty`.

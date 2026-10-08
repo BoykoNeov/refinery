@@ -293,12 +293,14 @@ fn a_flashing_plant_holds_only_what_the_flash_models() {
             base.replace("thermo = \"trouton\"", "thermo = \"constant\""),
             "thermo = \"constant\"",
         ),
+        // A pump is admitted since M54 (§59); one declaring M50's suction key
+        // is not, because on a flashing plant the key would change nothing.
         (
             base.replace(
                 "[nodes.rundown_valve]\ntype = \"valve\"\nkv = 40.0",
-                "[nodes.rundown_valve]\ntype = \"pump\"\nh0_m = 40.0\na = 800.0\non = true\n#",
+                "[nodes.rundown_valve]\ntype = \"pump\"\nh0_m = 40.0\na = 800.0\non = true\nnpsh_required_m = 3.0\n#",
             ),
-            "a pump",
+            "npsh_required_m",
         ),
         (
             base.replace(

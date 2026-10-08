@@ -12,7 +12,8 @@
 use crate::elements::{
     cavitation_head_fraction, cavitation_head_fraction_dsigma, check_opening, check_opening_slope,
     fold_gas_valve, gas_orifice, pipe_resistance, relief_opening, relief_opening_slope,
-    specific_heat_ratio_factor, QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
+    specific_heat_ratio_factor, two_phase_head_multiplier, QuadraticBranch, CHOKE_BLEND,
+    ORIFICE_CD,
 };
 use refinery_core::components::{Phase, Slate};
 use refinery_core::energy::{boundary_temperature, NodeStates};
@@ -21,8 +22,8 @@ use refinery_core::graph::{
     Blowdown, EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, PumpSuction, TankState,
 };
 use refinery_core::traits::{
-    EnthalpyModel, HydraulicSolution, LineFlashModel, PumpSuctionState, SolveDiagnostics,
-    StarvedTank, ThermoModel, TwoPhaseDensity,
+    EnthalpyModel, HydraulicSolution, LineFlashModel, PumpSuctionState, PumpTwoPhaseState,
+    SolveDiagnostics, StarvedTank, ThermoModel, TwoPhaseDensity,
 };
 use refinery_core::units::{KgPerSec, Meter, Pascal, Seconds, Watt, G, P_ATM};
 use std::collections::{BTreeMap, BTreeSet};
@@ -97,6 +98,31 @@ pub struct CompiledEdge {
     /// enthalpy has no pressure term, so throttling heats it by `v·ΔP`; an ideal
     /// gas's enthalpy does not move with pressure, so throttling heats nothing.
     pub heated_share: f64,
+    /// A running pump's inlet in two-phase service at the iterate this edge was
+    /// compiled at, and the share of its branch its push now is (M54,
+    /// docs/DESIGN.md §59). `None` on every edge that does not leave a running
+    /// pump whose inlet carries vapour, which is every edge of a plant without a
+    /// line flash. How the push moves with the pump's pressure rides on the
+    /// edge's `density_slope`, whose two sides recompile this whole branch.
+    pub pump_two_phase: Option<PumpTwoPhase>,
+}
+
+/// A running pump whose inlet is partly vapour, at one iterate (M54,
+/// docs/DESIGN.md §59): it delivers `(1 − M_H(α))·H(Q)`, its whole curve scaled
+/// as M50's cavitating pump is, with `M_H` RELAP5's head multiplier
+/// (`elements::two_phase_head_multiplier`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PumpTwoPhase {
+    /// `α`, the vapour's share of the pump inlet's VOLUME [-], at the pump's own
+    /// pressure: `1 − TwoPhaseDensity::liquid_volume_share`.
+    pub void_fraction: f64,
+    /// `M_H(α)` [-] in `[0, 1]`: the share of its head the vapour took.
+    pub head_multiplier: f64,
+    /// The pump's own share of the branch after the multiplier, `(α_p, β_p)`
+    /// [Pa/(m³/s)², Pa]: `(1 − M_H)·ρ·g·a` and `−(1 − M_H)·ρ·g·h0`, `ρ` the
+    /// inlet's mixture density. The pressure it makes at flow `Q` [m³/s] is
+    /// `−(α_p·Q|Q| + β_p)`.
+    pub pump_branch: QuadraticBranch,
 }
 
 /// The line flash a flow solve reads two-phase densities through (M53,
@@ -685,16 +711,20 @@ pub fn compile_edge_with(
     pressures: &BTreeMap<NodeId, f64>,
     flash: LineFlash<'_>,
 ) -> Result<CompiledEdge, SimError> {
-    let mut compiled = compile_edge_at(graph, eid, slate, previous_states, pressures, flash, None)?;
+    let upwind_node = density_upwind(graph, eid, pressures, flash);
+    let mut compiled = compile_edge_at(
+        graph,
+        eid,
+        slate,
+        previous_states,
+        pressures,
+        flash,
+        upwind_node,
+        None,
+    )?;
     if !compiled.conducts || !flash.model.carries_vapour() {
         return Ok(compiled);
     }
-    let (src, tgt) = graph.endpoints(eid);
-    let upwind_node = if pressures[&src] >= pressures[&tgt] {
-        src
-    } else {
-        tgt
-    };
     // A boundary's pressure is no unknown of the solve, so a slope in its
     // column would be read by nobody; and the two extra compiles are not free.
     if boundary_temperature(&graph.node(upwind_node).kind).is_some() {
@@ -703,24 +733,24 @@ pub fn compile_edge_with(
     let upwind = pressures[&upwind_node].max(RHO_EVAL_P_FLOOR);
     let delta = DENSITY_SLOPE_DELTA;
     let pipe = graph.pipe(eid);
-    let above = two_phase_density(
-        graph,
-        slate,
-        previous_states,
-        pipe,
-        upwind_node,
-        Pascal(upwind + delta),
-        flash,
-    )?;
-    let below = two_phase_density(
-        graph,
-        slate,
-        previous_states,
-        pipe,
-        upwind_node,
-        Pascal(upwind - delta),
-        flash,
-    )?;
+    let side_density = |pressure: f64| {
+        if is_two_phase_pump_outlet(graph, eid, flash) {
+            suction_offer(graph, slate, previous_states, upwind_node, pressure, flash)
+                .map(|(_, offer)| offer)
+        } else {
+            two_phase_density(
+                graph,
+                slate,
+                previous_states,
+                pipe,
+                upwind_node,
+                Pascal(pressure),
+                flash,
+            )
+        }
+    };
+    let above = side_density(upwind + delta)?;
+    let below = side_density((upwind - delta).max(RHO_EVAL_P_FLOOR))?;
     if above.is_none() && below.is_none() {
         return Ok(compiled);
     }
@@ -735,7 +765,8 @@ pub fn compile_edge_with(
                 previous_states,
                 pressures,
                 flash,
-                Some(d.mixture.value()),
+                upwind_node,
+                Some(d),
             )?,
             None => compile_edge_at(
                 graph,
@@ -744,6 +775,7 @@ pub fn compile_edge_with(
                 previous_states,
                 pressures,
                 LineFlash::LIQUID,
+                upwind_node,
                 None,
             )?,
         };
@@ -828,9 +860,329 @@ fn two_phase_density(
         .map_err(|e| SimError::Numerical(format!("pipe {}: {e}", pipe.name)))
 }
 
-/// The body of `compile_edge_with`: one compile at one density. `rho_override`
-/// replaces the density the iterate gives, which is how the density slope
-/// compiles its two sides.
+/// The node an edge's branch is characterised at: the end at the higher
+/// pressure — except a running pump's outlet in a plant with a line flash, which
+/// is ALWAYS characterised at the pump, its inlet (M54, docs/DESIGN.md §59).
+///
+/// A pump raises the pressure along its own edge, so the higher-pressure end of
+/// its outlet is its DISCHARGE, where the stream is liquid again: read there, a
+/// pump with a third of its inlet's mass in vapour delivered its whole liquid
+/// head (measured, M54's probe). Its push and its friction are its inlet's. Which
+/// end's stream the flow CARRIES is a separate question, answered by the flow's
+/// own direction in `compile_edge_at` (`is_two_phase_pump_outlet`).
+///
+/// Two rules were tried for the whole edge and both failed, measured: the drive
+/// judged at each trial at the inlet's density contradicted itself near zero
+/// flow (backwards at the mixture's density, forwards at the discharge's) and
+/// flipped mid-solve; last tick's direction, fixed, carried backward flow at the
+/// inlet's bubbly density and sent Newton into a vacuum. On every plant without a
+/// line flash this is the pressure rule bit for bit.
+fn density_upwind(
+    graph: &PlantGraph,
+    eid: EdgeId,
+    pressures: &BTreeMap<NodeId, f64>,
+    flash: LineFlash<'_>,
+) -> NodeId {
+    let (src, tgt) = graph.endpoints(eid);
+    if is_two_phase_pump_outlet(graph, eid, flash) {
+        return src;
+    }
+    if pressures[&src] >= pressures[&tgt] {
+        src
+    } else {
+        tgt
+    }
+}
+
+/// Whether `eid` leaves a RUNNING pump on a plant with a line flash: the edge
+/// whose branch is characterised at the pump's inlet (`density_upwind`) and
+/// whose push follows the vapour there (M54, docs/DESIGN.md §59).
+fn is_two_phase_pump_outlet(graph: &PlantGraph, eid: EdgeId, flash: LineFlash<'_>) -> bool {
+    flash.model.carries_vapour()
+        && matches!(
+            graph.node(graph.endpoints(eid).0).kind,
+            NodeKind::Pump { on: true, .. }
+        )
+}
+
+/// A running pump on a plant with a line flash whose INLET node the solvers
+/// solve inside each iterate instead of stepping it (M54, docs/DESIGN.md §59):
+/// the node, the one edge into it and the one edge out of it (a pump has exactly
+/// one of each, `validate_degrees`).
+///
+/// **Why the node is solved, not stepped — measured.** A pump drawing its inlet
+/// below the bubble pressure moves a stream whose density falls with the
+/// pressure it pulls, and whose head RELAP5's multiplier takes within a few
+/// hundred pascals. With its neighbours held, the node's balance falls from +79
+/// to −5 kg/s within 200 Pa (M54's probe): neither solver could step across it,
+/// Newton from any start, with the push even held fixed. The balance is
+/// monotone in the node's own pressure — no turning point, one sign change, on
+/// the same probe from the pressure floor to above boiling — so a bracket finds
+/// its root every time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PumpInlet {
+    /// The pump's own node: its inlet, whose pressure is solved.
+    pub node: NodeId,
+    /// The edge INTO the pump.
+    pub inflow: EdgeId,
+    /// The pump's outlet edge, its branch.
+    pub outflow: EdgeId,
+}
+
+/// Every pump whose inlet is solved inside the iterate (`PumpInlet`), ascending
+/// by node; empty on every plant without a line flash. `active` names the
+/// solve's unknowns: a pump that is not one (a floating node) is left alone.
+pub fn pump_inlets(
+    graph: &PlantGraph,
+    flash: LineFlash<'_>,
+    active: impl Fn(NodeId) -> bool,
+) -> Vec<PumpInlet> {
+    if !flash.model.carries_vapour() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for node in graph.node_ids() {
+        if !matches!(graph.node(node).kind, NodeKind::Pump { on: true, .. }) || !active(node) {
+            continue;
+        }
+        let incident = graph.incident(node);
+        let inflow = incident.iter().find(|(_, _, incoming)| *incoming);
+        let outflow = incident.iter().find(|(_, _, incoming)| !*incoming);
+        if let (Some(&(inflow, _, _)), Some(&(outflow, _, _))) = (inflow, outflow) {
+            out.push(PumpInlet {
+                node,
+                inflow,
+                outflow,
+            });
+        }
+    }
+    out
+}
+
+/// Iterations of the inlet's Illinois search: a fixed cap, so a solve is a fixed
+/// worst-case cost. Illinois converges superlinearly; the probe's falls take a
+/// few dozen.
+const PUMP_INLET_ITERATIONS: u32 = 200;
+
+/// Solve a pump's inlet pressure (`PumpInlet`) in `pressures`, its neighbours
+/// held: the root of the node's balance `ṁ_in − ṁ_out` [kg/s], bracketed between
+/// the pressure floor and the first pressure above its neighbours' at which the
+/// balance is not positive, then closed by the Illinois variant of regula falsi
+/// (Dowell & Jarratt, BIT 11, 1971) to `tol_kg_s`.
+///
+/// `Ok(false)`, with `pressures` unchanged, when the balance has no root with
+/// the neighbours held: still negative at the pressure floor (the pump would
+/// take more than its inlet line passes at any pressure), or still positive far
+/// above them. The caller then steps the node like any other for this iterate.
+/// Found once, on the first tick of a plant whose supply already boils, while
+/// the pump still read its own node's state; since it reads its suction
+/// (`suction_offer`) no run reaches it — none of M54's probe's cold starts and
+/// moves on either fidelity, into either destination.
+#[allow(clippy::too_many_arguments)] // one argument per input the balance reads
+pub fn solve_pump_inlet(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    flash: LineFlash<'_>,
+    inlet: PumpInlet,
+    pressures: &mut BTreeMap<NodeId, f64>,
+    eps: f64,
+    tol_kg_s: f64,
+) -> Result<bool, SimError> {
+    let held = pressures[&inlet.node];
+    let balance = |p: f64, pressures: &mut BTreeMap<NodeId, f64>| -> Result<f64, SimError> {
+        pressures.insert(inlet.node, p);
+        let into = edge_mass_flow(
+            graph,
+            inlet.inflow,
+            slate,
+            previous_states,
+            pressures,
+            flash,
+            eps,
+        )?;
+        let out = edge_mass_flow(
+            graph,
+            inlet.outflow,
+            slate,
+            previous_states,
+            pressures,
+            flash,
+            eps,
+        )?;
+        Ok(into - out)
+    };
+    let mut lo = RHO_EVAL_P_FLOOR;
+    let mut b_lo = balance(lo, pressures)?;
+    if b_lo <= 0.0 {
+        pressures.insert(inlet.node, held);
+        return Ok(false);
+    }
+    let (upstream, _) = graph.endpoints(inlet.inflow);
+    let (_, downstream) = graph.endpoints(inlet.outflow);
+    let mut hi = pressures[&upstream]
+        .max(pressures[&downstream])
+        .max(held)
+        .max(P_ATM.value());
+    let mut b_hi = balance(hi, pressures)?;
+    let mut doublings = 0;
+    while b_hi > 0.0 {
+        doublings += 1;
+        if doublings > 60 {
+            pressures.insert(inlet.node, held);
+            return Ok(false);
+        }
+        lo = hi;
+        b_lo = b_hi;
+        hi *= 2.0;
+        b_hi = balance(hi, pressures)?;
+    }
+    if !(b_lo.is_finite() && b_hi.is_finite()) {
+        pressures.insert(inlet.node, held);
+        return Ok(false);
+    }
+    // Illinois: regula falsi, halving the retained end's value whenever the same
+    // end is kept twice, so the bracket closes from both sides.
+    let mut side = 0i8;
+    let mut root = hi;
+    let mut b_root = b_hi;
+    for _ in 0..PUMP_INLET_ITERATIONS {
+        if b_root.abs() <= tol_kg_s || hi - lo <= 4.0 * f64::EPSILON * hi {
+            break;
+        }
+        root = (lo * b_hi - hi * b_lo) / (b_hi - b_lo);
+        if !(root > lo && root < hi) {
+            root = 0.5 * (lo + hi);
+        }
+        b_root = balance(root, pressures)?;
+        if b_root > 0.0 {
+            lo = root;
+            b_lo = b_root;
+            if side == -1 {
+                b_hi *= 0.5;
+            }
+            side = -1;
+        } else {
+            hi = root;
+            b_hi = b_root;
+            if side == 1 {
+                b_lo *= 0.5;
+            }
+            side = 1;
+        }
+    }
+    pressures.insert(inlet.node, root);
+    Ok(true)
+}
+
+/// The mass flow [kg/s] an edge carries at `pressures`, in graph direction:
+/// its branch at the stream `density_upwind` reads, without the density slope's
+/// two extra compiles — what `solve_pump_inlet`'s balance evaluates.
+fn edge_mass_flow(
+    graph: &PlantGraph,
+    eid: EdgeId,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pressures: &BTreeMap<NodeId, f64>,
+    flash: LineFlash<'_>,
+    eps: f64,
+) -> Result<f64, SimError> {
+    let upwind = density_upwind(graph, eid, pressures, flash);
+    let c = compile_edge_at(
+        graph,
+        eid,
+        slate,
+        previous_states,
+        pressures,
+        flash,
+        upwind,
+        None,
+    )?;
+    if !c.conducts {
+        return Ok(0.0);
+    }
+    let dp = pressures[&c.src] - pressures[&c.tgt];
+    Ok(c.rho * c.branch.flow(dp, eps))
+}
+
+/// What a pump's SUCTION offers at `pressure` [Pa], the pump's own: the stream on
+/// its one inflow, from the node at that edge's far end, re-flashed at the pump's
+/// pressure (M54, docs/DESIGN.md §59). Its liquid density [kg/m³] and, where it
+/// is partly vapour there, its two-phase state.
+///
+/// **Not the pump node's own last-tick state.** That state is whatever last
+/// passed through it — forward the suction's stream, backward the discharge's —
+/// and read with a tick's lag it made a plant with no steady state alternate: at
+/// 125 °C into a 3 bar destination a forward tick filled the pump with the
+/// boiling supply, the next tick's pump was dead and the line ran back full of
+/// the destination's liquid, which re-primed the pump for the tick after —
+/// +2.10 and −2.13 kg/s, every other tick, on both fidelities. Read from its
+/// suction, a pump the supply has killed stays dead while its line runs back,
+/// which is what the lock (§59, M54.2) and the check valve assume.
+///
+/// Leaves out the friction heat of the inflow pipe, which the node's own mix
+/// carries — a few hundred watts on M54's plant. A zero-volume node on the
+/// suction side carries the lag one node further up (ledger row B52).
+fn suction_offer(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pump: NodeId,
+    pressure: f64,
+    flash: LineFlash<'_>,
+) -> Result<(f64, Option<TwoPhaseDensity>), SimError> {
+    let pressure = pressure.max(RHO_EVAL_P_FLOOR);
+    let Some((inflow, upstream, _)) = graph
+        .incident(pump)
+        .into_iter()
+        .find(|(_, _, incoming)| *incoming)
+    else {
+        return Err(SimError::Numerical(format!(
+            "internal: pump '{}' has no inflow to draw from",
+            graph.node(pump).name
+        )));
+    };
+    let offer = two_phase_density(
+        graph,
+        slate,
+        previous_states,
+        graph.pipe(inflow),
+        upstream,
+        Pascal(pressure),
+        flash,
+    )?;
+    let liquid = liquid_density(graph, slate, previous_states, inflow, upstream, pressure)?;
+    Ok((liquid, offer))
+}
+
+/// The liquid density [kg/m³] a stream leaving `node` flows at under `pressure`
+/// [Pa]: at the node's own temperature where it has one, else the previous
+/// tick's resolved value, else the pipe's stored outlet (see `compile_edge`).
+fn liquid_density(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    eid: EdgeId,
+    node: NodeId,
+    pressure: f64,
+) -> Result<f64, SimError> {
+    let pipe = graph.pipe(eid);
+    let temperature = boundary_temperature(&graph.node(node).kind)
+        .or_else(|| previous_states.temperature.get(&node).copied())
+        .unwrap_or(pipe.stream.temperature);
+    Ok(pipe
+        .stream
+        .composition
+        .density_at(slate, Pascal(pressure), temperature)
+        .map_err(|e| SimError::Numerical(format!("pipe {} ({eid:?}): {e}", pipe.name)))?
+        .value())
+}
+
+/// The body of `compile_edge_with`: one compile at one density, its stream read
+/// at `upwind_node` (`density_upwind`). `two_phase_override` replaces the
+/// two-phase state the iterate gives, which is how the density slope compiles
+/// its two sides.
+#[allow(clippy::too_many_arguments)] // one argument per input the compile reads
 fn compile_edge_at(
     graph: &PlantGraph,
     eid: EdgeId,
@@ -838,7 +1190,8 @@ fn compile_edge_at(
     previous_states: &NodeStates,
     pressures: &BTreeMap<NodeId, f64>,
     flash: LineFlash<'_>,
-    rho_override: Option<f64>,
+    upwind_node: NodeId,
+    two_phase_override: Option<TwoPhaseDensity>,
 ) -> Result<CompiledEdge, SimError> {
     let (src, tgt) = graph.endpoints(eid);
     let pipe = graph.pipe(eid);
@@ -867,39 +1220,35 @@ fn compile_edge_at(
             pump_suction: None,
             density_slope: None,
             heated_share: 1.0,
+            pump_two_phase: None,
         });
     }
-    let upwind_node = if pressures[&src] >= pressures[&tgt] {
-        src
-    } else {
-        tgt
-    };
     let upwind = pressures[&upwind_node].max(RHO_EVAL_P_FLOOR);
-    let temperature = boundary_temperature(&graph.node(upwind_node).kind)
-        .or_else(|| previous_states.temperature.get(&upwind_node).copied())
-        .unwrap_or(pipe.stream.temperature);
-    let rho = pipe
-        .stream
-        .composition
-        .density_at(slate, Pascal(upwind), temperature)
-        .map_err(|e| SimError::Numerical(format!("pipe {} ({eid:?}): {e}", pipe.name)))?
-        .value();
-    // A stream partly vapour at its upwind node flows at its homogeneous density
-    // there, at this iterate's pressure (M53, docs/DESIGN.md §58 fork 3). Absent
-    // under `NoLineFlash`, which leaves `rho` the bits it was.
-    let two_phase = two_phase_density(
-        graph,
-        slate,
-        previous_states,
-        pipe,
-        upwind_node,
-        Pascal(upwind),
-        flash,
-    )?;
+    // A running pump's outlet on a flashing plant is characterised by what its
+    // SUCTION offers, at the pump's pressure (M54, docs/DESIGN.md §59).
+    let (rho, two_phase) = if is_two_phase_pump_outlet(graph, eid, flash) {
+        suction_offer(graph, slate, previous_states, src, upwind, flash)?
+    } else {
+        (
+            liquid_density(graph, slate, previous_states, eid, upwind_node, upwind)?,
+            // A stream partly vapour at its upwind node flows at its homogeneous
+            // density there, at this iterate's pressure (M53, docs/DESIGN.md §58
+            // fork 3). Absent under `NoLineFlash`, which leaves `rho` the bits it
+            // was.
+            two_phase_density(
+                graph,
+                slate,
+                previous_states,
+                pipe,
+                upwind_node,
+                Pascal(upwind),
+                flash,
+            )?,
+        )
+    };
     let heated_share = two_phase.map_or(1.0, |d| d.liquid_volume_share);
-    let rho = match (rho_override, two_phase) {
-        (Some(rho), _) => rho,
-        (None, Some(d)) => d.mixture.value(),
+    let rho = match (two_phase_override, two_phase) {
+        (Some(d), _) | (None, Some(d)) => d.mixture.value(),
         (None, None) => rho,
     };
 
@@ -954,6 +1303,7 @@ fn compile_edge_at(
             pump_suction: None,
             density_slope: None,
             heated_share: 1.0,
+            pump_two_phase: None,
         });
     }
 
@@ -983,6 +1333,7 @@ fn compile_edge_at(
     let mut check: Option<(f64, f64)> = None;
     let mut check_band: Option<CheckBand> = None;
     let mut pump_suction: Option<PumpSuctionSlope> = None;
+    let mut pump_two_phase: Option<PumpTwoPhase> = None;
 
     match &graph.node(src).kind {
         NodeKind::Pump { h0, a, on, suction } => {
@@ -1022,7 +1373,37 @@ fn compile_edge_at(
                         shutoff_head: -pump.beta,
                     });
                 }
-                _ => branch = branch.in_series(QuadraticBranch::pump(h0_eff, *a, rho, G)),
+                _ => {
+                    let pump = QuadraticBranch::pump(h0_eff, *a, rho, G);
+                    // A running pump whose inlet is partly vapour delivers
+                    // `(1 − M_H(α))·H(Q)` (M54, docs/DESIGN.md §59): RELAP5's
+                    // multiplier on the vapour's share of its inlet's volume,
+                    // its whole curve scaled as M50's cavitating pump is. Its
+                    // inlet is its own node at its own pressure — the stream this
+                    // branch carries whenever `density_upwind` read the pump.
+                    let inlet = if is_two_phase_pump_outlet(graph, eid, flash) {
+                        two_phase_override.or(two_phase)
+                    } else {
+                        None
+                    };
+                    match inlet {
+                        Some(d) => {
+                            let void_fraction = 1.0 - d.liquid_volume_share;
+                            let head_multiplier = two_phase_head_multiplier(void_fraction);
+                            let pump_branch = QuadraticBranch {
+                                alpha: (1.0 - head_multiplier) * pump.alpha,
+                                beta: (1.0 - head_multiplier) * pump.beta,
+                            };
+                            branch = branch.in_series(pump_branch);
+                            pump_two_phase = Some(PumpTwoPhase {
+                                void_fraction,
+                                head_multiplier,
+                                pump_branch,
+                            });
+                        }
+                        None => branch = branch.in_series(pump),
+                    }
+                }
             }
         }
         // A relief valve IS a valve here — same coefficient, same ISA gas law,
@@ -1126,6 +1507,33 @@ fn compile_edge_at(
         _ => {}
     }
 
+    // A two-phase pump's branch is its inlet's; the stream its flow CARRIES is
+    // whichever end it comes from (M54, docs/DESIGN.md §59). Forward, the inlet's
+    // — already `rho`. Backward (a pump too weak to hold its discharge), the
+    // discharge's, so a dead pump's line runs back full of the liquid behind it
+    // rather than of its own inlet's bubbles. At zero drive both carry nothing,
+    // so the mass flow is continuous; its slope jumps by the two densities' ratio.
+    let (rho, heated_share) =
+        if is_two_phase_pump_outlet(graph, eid, flash) && dp - branch.beta < 0.0 {
+            let outlet_pressure = pressures[&tgt].max(RHO_EVAL_P_FLOOR);
+            match two_phase_density(
+                graph,
+                slate,
+                previous_states,
+                pipe,
+                tgt,
+                Pascal(outlet_pressure),
+                flash,
+            )? {
+                Some(d) => (d.mixture.value(), d.liquid_volume_share),
+                None => (
+                    liquid_density(graph, slate, previous_states, eid, tgt, outlet_pressure)?,
+                    1.0,
+                ),
+            }
+        } else {
+            (rho, heated_share)
+        };
     let conducts = branch.alpha.is_finite() && branch.alpha > 0.0;
     let relief_opening_log_slope = match relief {
         Some((op, slope)) => opening_log_slope(graph, src, pipe_alpha, branch.alpha, op, slope)?,
@@ -1147,6 +1555,7 @@ fn compile_edge_at(
         pump_suction,
         density_slope: None,
         heated_share,
+        pump_two_phase,
     })
 }
 
@@ -2377,6 +2786,9 @@ pub struct EdgeResults {
     /// flows above (M50, docs/DESIGN.md §55). See
     /// `HydraulicSolution::pump_suction`.
     pub pump_suction: BTreeMap<NodeId, PumpSuctionState>,
+    /// Each running pump in two-phase service, read off the same compile (M54,
+    /// docs/DESIGN.md §59). See `HydraulicSolution::pump_two_phase`.
+    pub pump_two_phase: BTreeMap<NodeId, PumpTwoPhaseState>,
 }
 
 /// Mass flow (kg/s) and frictional dissipation (W) per edge in graph direction;
@@ -2439,6 +2851,7 @@ pub fn edge_flows(
     let mut dissipation = BTreeMap::new();
     let mut throughput = 0.0f64;
     let mut pump_suction = BTreeMap::new();
+    let mut pump_two_phase = BTreeMap::new();
     for eid in graph.edge_ids() {
         let c = &compiled[&eid];
         if let Some(s) = c.pump_suction {
@@ -2472,6 +2885,21 @@ pub fn edge_flows(
         } else {
             c.branch.alpha * q * q.abs() * q * c.heated_share
         };
+        // The pressure a two-phase pump makes at this flow, `−(α_p·Q|Q| + β_p)`
+        // on its own share of the branch (M54, docs/DESIGN.md §59).
+        if let Some(t) = c.pump_two_phase {
+            if anchored.contains(&c.src) {
+                let rise = -(t.pump_branch.alpha * q * q.abs() + t.pump_branch.beta);
+                pump_two_phase.insert(
+                    c.src,
+                    PumpTwoPhaseState {
+                        void_fraction: t.void_fraction,
+                        head_multiplier: t.head_multiplier,
+                        pressure_rise: Pascal(rise),
+                    },
+                );
+            }
+        }
         throughput = throughput.max(mdot.abs());
         mass_flow.insert(eid, mdot);
         dissipation.insert(eid, Watt(phi));
@@ -2481,6 +2909,7 @@ pub fn edge_flows(
         dissipation,
         throughput,
         pump_suction,
+        pump_two_phase,
     }
 }
 
@@ -2601,6 +3030,16 @@ pub fn finalize(
             });
         }
     }
+    for (nid, pump) in &edges.pump_two_phase {
+        if !pump.void_fraction.is_finite()
+            || !pump.head_multiplier.is_finite()
+            || !pump.pressure_rise.value().is_finite()
+        {
+            return Err(SimError::NonFiniteState {
+                location: format!("{nid:?} pump in two-phase service"),
+            });
+        }
+    }
     Ok(HydraulicSolution {
         node_pressure,
         edge_mass_flow: edges.mass_flow,
@@ -2615,5 +3054,6 @@ pub fn finalize(
         starved: BTreeMap::new(),
         vessel_residual: BTreeMap::new(),
         pump_suction: edges.pump_suction,
+        pump_two_phase: edges.pump_two_phase,
     })
 }

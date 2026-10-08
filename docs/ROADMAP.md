@@ -8558,3 +8558,172 @@ flashing-line clause closed for the units a flashing plant may hold.
   linking ~130 debug test binaries (`ld ... Bus error`, and once "No space left
   on device"), and M53's three new test files add to it. The workspace job now
   builds with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`.
+
+## M54 — a pump in two-phase service, and a gas lock a person must vent: ledger row B48; opened on a decision
+
+The user asked "what is next" (2026-10-08), was told nothing in DEFERRED.md is
+past its trigger, and offered five directions: a pump in two-phase service (B48,
+the recommendation), creep burn-out (B42), choking in flashing service (B47), a
+reactor that sets its own temperature (D1), and the small ones (E23, B45). They
+chose B48. A throwaway probe was run before asking anything (below), then eight
+DECISIONS in two rounds — the second because the first's answers pulled against
+each other:
+
+1. **A gradual rule, for every pump on a flashing plant**: the push fades with
+   the vapour at the pump's inlet, from a published table — over "the existing
+   M50 rule alone: any vapour means no push".
+2. **The table wins on a flashing plant**, over "the lower of the two".
+3. (Follow-up, forced by 2) **`npsh_required_m` is REFUSED on a flashing plant.**
+   The steam-water data has a pump at its boiling point with no vapour giving
+   its full push; M50's curve gives it none. For the push not to jump at the
+   bubble point the suction curve would have to be reshaped until nothing of it
+   is left, so on a flashing plant it would be a number nothing reads. Plants
+   that do not select the line flash keep M50 exactly.
+4. **The table's whole range, its pure-vapour tail included** (the push comes
+   back towards pure vapour: a fan blowing vapour), over a cut-off at the
+   fully-degraded point. The screen draws the pressure the pump makes, not a
+   share of its push.
+5. **A check valve may stand on a flashing plant**, so a dead pump's line need
+   not run backwards — over "accept the backflow and log it".
+6. **A gas lock that stays**: a pump that has lost its grip stays dead until a
+   person restarts it, over "recovers by itself".
+7. **It locks when the inlet's vapour reaches 16.5% of the volume** — the
+   table's fully-degraded point, the same trigger for every pump.
+8. **A separate vent command** (and a screen key), allowed only while the pump
+   is stopped, clears the lock — over "a hand stop clears it" and "any stop".
+9. **A new plant, and a third plant on the pump screen**, as a later step of
+   this milestone.
+
+**The table**: RELAP5/MOD3 Code Manual, Vol. I (NUREG/CR-5535-V1), §3.5.4,
+Table 3.5-3 — the head multiplier `M_H(α)` from the Semiscale and WCL steam-water
+pump tests, `H = H_1φ − M_H(α)·(H_1φ − H_2φ)` (eq. 3.5-67):
+`α` 0, 0.07, 0.08, 0.165, 0.9, 1.0 → `M_H` 0, 0, 0.74, 1.0, 1.0, 0. Caveat on
+record: a later RELAP5-3D assessment (Nuclear Technology 161(3), 2008) found the
+Semiscale multipliers predicted other pumps poorly, and the model assumes them
+independent of pump size and specific speed.
+
+**Choices made without the user, each stated where it is built:**
+- **`α` is the INLET's vapour share of the volume**, where the source fitted the
+  average of inlet and outlet. This engine has no pump-outlet state (the pump is
+  folded into its outlet pipe), and the outlet's vapour depends on the push the
+  rule decides — circular. On a pump with push the outlet is recompressed to
+  liquid, so the inlet share degrades it at up to half the vapour the data does:
+  the cautious side. (Told to the user before building.)
+- **`H_2φ = 0`**: the fully degraded head is a flow-dependent curve in rated-flow
+  terms (Table 3.5-2), and this engine's pump law has no rated point; at the
+  rated flow the table's difference is 1.00, i.e. no head left.
+- **The table is smoothed** by a monotone piecewise-cubic Hermite interpolant
+  (Fritsch & Carlson 1980): C¹, as §3a fork 4 requires, through every point of
+  the table and with no overshoot between them.
+- **The density a running pump's outlet pipe flows at is read at the PUMP**, on a
+  flashing plant only. Everywhere else a pipe reads it at its higher-pressure
+  end, which across a running pump is its discharge — liquid again.
+
+**Measured before asking** (a throwaway probe: the M50 plant with the line flash
+on and the pump's refusal lifted locally; the supply stepped 110 → 130 → 110 °C,
+400 ticks a step, both fidelities):
+- **With M50's key** the pump gives 26% of its head at 110 °C, 2% at 115 °C and
+  NONE from 118 °C, where the SUPPLY is still liquid and the pump's inlet is
+  0.4% vapour by mass — about a quarter of its volume. It is then a plain pipe:
+  6.7 kg/s falling to 1.1 kg/s at 130 °C. Both fidelities converge everywhere
+  (Newton ≤ 17 iterations a tick, the game solver ≤ 33) and the way back lands
+  on the way out.
+- **Without the key** the pump never notices: its full liquid head with 9–34% of
+  its inlet's mass vapour (16.46 kg/s, unchanged 110–120.5 °C), because its
+  outlet pipe read its density at the discharge end. And **Newton diverged** on
+  the tick the supply stepped to 122 °C (7 iterations, residual 1.8); the game
+  solver did not.
+- The suction margin published on a two-phase pump read −508 m: divided by the
+  mixture's density. Moot on a flashing plant now (decision 3).
+
+### The steps
+
+- **M54.0** — the table: the pump admitted on a flashing plant, its push scaled
+  by `1 − M_H(α_inlet)`, the density read at the pump, the slope carried by the
+  edge's density slope, `npsh_required_m` refused there; the snapshot reports the
+  inlet's vapour share by volume, the multiplier and the pressure the pump makes.
+- **M54.1** — check valves on a flashing plant.
+- **M54.2** — the gas lock and `VentPump`.
+- **M54.3** — the plant and the pump screen's third plant.
+
+### Decision 10, and why: the table kept, M54 a solver project
+
+Built as specified, the table did not converge on either fidelity, and three
+fixes, one per traced cause, did not cure it:
+- **The density read at the wrong end, flipping mid-solve** (fixed): judged per
+  trial, "does the pump hold the flow forward at its inlet's density?" flipped when
+  the push fell a few percent between ticks — 648 kg/m³ to the discharge's 700
+  inside one solve, and Newton rejected every step. Last tick's direction, fixed,
+  then carried a backward flow at the inlet's bubbly density. **The rule kept**:
+  a running pump's BRANCH (push, friction) is always its inlet's; the density its
+  flow CARRIES is whichever end the flow comes from — continuous at zero flow.
+- **The tail is not the cause** (measured: the table clamped at 1 past 16.5%
+  failed the same way).
+- **M51's curved line search, generalised, did not help.**
+
+**Measured, the width of the fall** (100–110 °C, at fixed inlet enthalpy): the
+pump keeps its whole push to 200–400 Pa below the bubble pressure (7% vapour by
+volume), three quarters of it is gone about 100 Pa further down, all of it within
+400–700 Pa, and half a bar down the tail gives back about 2% of the liquid's
+pressure. A lever of about a thousand, against M50's twenty.
+
+**Measured, the push held fixed** (21 values, 0 to 1, after the direction rule):
+Newton still failed on the first warm tick at every value; the game solver
+converged only at 0.85 and above — and there the suction sits within 0.6 kPa of
+the bubble pressure whatever the push. **The density alone pins the suction**: a
+pump drawing its inlet below boiling moves a stream whose density falls with the
+pressure it pulls. M53's valves never pulled their own inlets.
+
+**Measured, the pump node's balance with its neighbours held** (the failing tick's
+iterate, three discharge pressures, the pump's pressure swept from the floor to
+above boiling): no turning point, one sign change, falling from +79 to −5 kg/s
+within 200 Pa. Monotone, so a bracket finds it.
+
+The user, offered "back to M50's rule", "keep the table as a solver project" and
+"pause", chose **the solver project**. The design: **the pump's inlet node is
+solved inside the iterate** — given its neighbours, by a bracketed root on its own
+balance — so neither solver steps across the fall. Newton keeps the node in its
+system with its residual held at zero, which makes the full step the Schur step on
+the others; the game solver solves the node in its turn instead of stepping it.
+
+### M54.0 — **LANDED** 2026-10-08: the table, and the pump's inlet solved inside the iterate
+
+`elements::two_phase_head_multiplier` (RELAP5 Table 3.5-3, PCHIP-smoothed); a
+running pump's outlet on a flashing plant characterised by what its suction
+offers (`suction_offer`), its mass carried by the flow's direction; the pump's
+inlet node solved inside every iterate by a bracketed root on its own balance
+(`PumpInlet`, `solve_pump_inlet`) — Newton holding its residual at zero (the
+Schur step), the game solver solving it in its turn and stepping its neighbours
+on the plant as it answers; `HydraulicSolution::pump_two_phase` and
+`NodeSnapshot::pump_two_phase` (the inlet's vapour by volume, the multiplier, the
+pressure the pump makes); the pump admitted on a flashing plant, with
+`npsh_required_m` and two pumps back to back refused there. DESIGN §59.0.
+
+- **A flip the gates first missed.** Built with the pump reading its own node's
+  last-tick contents, the plant at 125 °C into a 3 bar destination had no steady
+  state: +2.10 and −2.13 kg/s every other tick, on both fidelities, from the first
+  tick; the gates read even tick counts and passed. Now the gates require the last
+  two ticks to agree, and the pump reads its suction: a pump its supply has killed
+  stays dead while the line runs back (−2.13 kg/s, 6.9 kPa of push from the
+  table's tail at 97% vapour).
+- **Measured, the probe plant** (M50's plant with the line flash, no suction key;
+  supply 95 → 130 → 95 °C, into 1.5 and 3 bar, both fidelities): every cold start
+  and every move lands on the cold answer and stays there; Newton at most 6
+  iterations a tick, the game solver 7 sweeps. Stepped instead of solved, Newton
+  took 14 and failed into 3 bar, and the game solver took up to 961 sweeps and
+  failed. The pump node's balance, swept with its neighbours held at 100 °C into
+  1.5 bar and at 118 and 125 °C into 3 bar through the backflow: monotone, one
+  sign change each.
+- Gates: `crates/solvers/tests/reference/two_phase_head.rs` (4: the table's
+  points, the hand calculation between them, C¹ and no overshoot, the clamp) and
+  `crates/scenarios/tests/pump_two_phase_reference.rs` (5: a cold start on the
+  table's fall; every move into both destinations, settled, with iteration caps;
+  the dead pump's line running back and staying back; the two refusals). M53's
+  refusal gate now refuses a pump declaring the suction key instead of a pump.
+- Mutations: fifteen, thirteen caught. The two that escaped were measured and
+  resolved: the no-root fallback is reached by no run since the pump reads its
+  suction (kept, documented); a 1 Pa density-slope width on the pump's outlet
+  measured the same as M53's 100 Pa and was removed.
+- Corpus: all 44 shipped plants byte-identical on both fidelities, 6 000 ticks,
+  against baselines recorded before the first edit. Release property tests pass;
+  the Godot binding did not change.
