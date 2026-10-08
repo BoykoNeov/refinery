@@ -341,3 +341,94 @@ fn the_boiling_plant_timeline_tells_its_story() {
     screen.run_to(139);
     assert!((screen.flow() - at_06).abs() < 1e-6 * at_06);
 }
+
+// M54's beats, as the gas-lock plant's recorded run printed them.
+const SUPPLY_118_C: &str = r#"{"cmd":"set_source_temperature","node":0,"temperature":391.15}"#;
+const SUPPLY_100_C: &str = r#"{"cmd":"set_source_temperature","node":0,"temperature":373.15}"#;
+const GASLOCK_VENT: &str = r#"{"cmd":"vent_pump","node":1}"#;
+const GASLOCK_DESTINATION_3_BAR: &str =
+    r#"{"cmd":"set_reservoir_pressure","node":4,"pressure":300000.0}"#;
+
+/// `AUTO_GASLOCK` (M54, docs/DESIGN.md §59): the pump on liquid, its suction
+/// boiling at 110 °C, gas-locked at 118 °C and dead when cooled, a vent refused
+/// while it runs, stopped–vented–started back to where it began, pushing into
+/// 3 bar, and locked again at 125 °C behind a check valve that holds the line.
+#[test]
+fn the_gaslock_plant_timeline_tells_its_story() {
+    let mut screen = Screen::load(
+        "pump_gas_lock.toml",
+        [
+            "rundown_source",
+            "feed_pump",
+            "discharge_valve",
+            "unit_feed",
+            "suction_line",
+        ],
+    );
+    let snap = screen.snap();
+    assert_eq!(snap["nodes"][0]["name"], "rundown_source");
+    assert_eq!(snap["nodes"][1]["name"], "feed_pump");
+    assert_eq!(snap["nodes"][4]["name"], "unit_feed");
+    let two_phase = |s: &Screen| s.pump().get("pump_two_phase").cloned();
+    let locked = |s: &Screen| s.pump()["kind"]["gas_locked"].as_bool().unwrap_or(false);
+
+    screen.run_to(20);
+    let liquid = screen.flow();
+    assert!((liquid - 14.91).abs() < 0.01, "{liquid}");
+    assert!(
+        two_phase(&screen).is_none(),
+        "liquid at the suction at 100 °C"
+    );
+
+    // 20: 110 °C — the suction boils; the pump is on the table's fall.
+    screen.send(SUPPLY_110_C);
+    screen.run_to(40);
+    let two = two_phase(&screen).expect("vapour offered at 110 °C");
+    let void = two["void_fraction"].as_f64().unwrap();
+    assert!((0.07..0.165).contains(&void), "{void}");
+    assert!((screen.flow() - 11.65).abs() < 0.01, "{}", screen.flow());
+    assert!(!locked(&screen));
+
+    // 40: 118 °C — gas-locked. 60: cooled back to 100 °C, still dead.
+    screen.send(SUPPLY_118_C);
+    screen.run_to(60);
+    assert!(locked(&screen), "not locked at 118 °C");
+    screen.send(SUPPLY_100_C);
+    screen.run_to(80);
+    assert!(locked(&screen), "cooling cleared the lock");
+    assert!((screen.flow() - 7.43).abs() < 0.01, "{}", screen.flow());
+
+    // 80: a vent while it runs — refused, in the engine's words.
+    let answer = screen.session.apply_command_json(GASLOCK_VENT);
+    assert!(answer.contains("still running"), "{answer}");
+
+    // 90 stop, 100 vent, 110 start: back where it began.
+    screen.run_to(90);
+    screen.send(LIMIT_STOP);
+    screen.run_to(100);
+    screen.send(GASLOCK_VENT);
+    assert!(!locked(&screen), "the vent left it locked");
+    screen.run_to(110);
+    screen.send(LIMIT_START);
+    screen.run_to(129);
+    assert!(
+        (screen.flow() - liquid).abs() < 1e-6 * liquid,
+        "{}",
+        screen.flow()
+    );
+
+    // 130: into 3 bar it still pushes. 150: 125 °C — locked, the disc holds.
+    screen.run_to(130);
+    screen.send(GASLOCK_DESTINATION_3_BAR);
+    screen.run_to(149);
+    assert!((screen.flow() - 11.43).abs() < 0.01, "{}", screen.flow());
+    screen.run_to(150);
+    screen.send(SUPPLY_125_C);
+    screen.run_to(169);
+    assert!(locked(&screen), "not locked at 125 °C");
+    assert!(
+        screen.flow().abs() < 1e-6,
+        "{} kg/s past the disc",
+        screen.flow()
+    );
+}

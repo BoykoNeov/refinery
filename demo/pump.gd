@@ -27,9 +27,21 @@
 # and destination it was read under; dots from earlier conditions stay, faded,
 # so cooling the supply shows as the whole curve moving.
 #
+# M54 adds a third plant, and the operator's real hazard:
+#
+#   gaslock  scenarios/pump_gas_lock.toml (M54) — M50's plant with the line
+#            flash on and a check valve on the discharge. Warm the supply and
+#            the pump's own suction boils: RELAP5's table takes its push as the
+#            vapour there grows, and at 16.5% vapour by volume it GAS-LOCKS —
+#            dead until a person stops it (K), vents it (V) and starts it (K).
+#            The screen draws the vapour the suction offers, the head the table
+#            takes and the PRESSURE the pump makes (not a share of its push: near
+#            pure vapour the table gives the share back while the pressure stays
+#            tiny), and the lock.
+#
 # Interactive:  godot --path . res://demo/pump.tscn
-#               (keys listed on screen and in _input; 1 / 2 switch plants)
-# Recorded:     godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling]
+#               (keys listed on screen and in _input; 1 / 2 / 3 switch plants)
+# Recorded:     godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line at a fixed interval plus one line per command. Those
 #               lines are the observation in ROADMAP.md's M51 section.
@@ -57,6 +69,16 @@ const PLANTS := {
 		"source": "rundown_source",
 		"suction_pipe": "lift_line",
 		"pump": "suction",
+		"valve": "discharge_valve",
+		"destination": "unit_feed",
+	},
+	"gaslock":
+	{
+		"scenario": "res://scenarios/pump_gas_lock.toml",
+		"title": "A pump that boils its own suction, and gas-locks (M54)",
+		"source": "rundown_source",
+		"suction_pipe": "suction_line",
+		"pump": "feed_pump",
 		"valve": "discharge_valve",
 		"destination": "unit_feed",
 	},
@@ -108,10 +130,30 @@ const AUTO_BOILING := {
 	120: ["pump_on", "valve_0.6"],
 	140: ["quit"],
 }
-const TIMELINES := {"limit": AUTO_LIMIT, "boiling": AUTO_BOILING}
+## gaslock (M54): at 100 °C the pump runs on liquid (14.9 kg/s). Warmed to
+## 110 °C its suction boils — 7.6% vapour by volume, about half its push gone.
+## At 118 °C it GAS-LOCKS; cooled back to 100 °C it stays dead and the supply
+## alone pushes 7.4 kg/s. A vent while it runs is REFUSED; stopped, vented and
+## started it runs as it did at first. Into a 3 bar destination it still pushes;
+## warmed to 125 °C it locks again and the check valve holds the line shut
+## instead of letting the destination run back through it.
+const AUTO_GASLOCK := {
+	20: ["supply_c_110"],
+	40: ["supply_c_118"],
+	60: ["supply_c_100"],
+	80: ["vent"],
+	90: ["pump_off"],
+	100: ["vent"],
+	110: ["pump_on"],
+	130: ["destination_bar_3.0"],
+	150: ["supply_c_125"],
+	170: ["quit"],
+}
+const TIMELINES := {"limit": AUTO_LIMIT, "boiling": AUTO_BOILING, "gaslock": AUTO_GASLOCK}
 const AUTO_SHOT_TICKS := {
 	"limit": [1, 39, 79, 139, 159, 179, 199, 219, 259, 299],
 	"boiling": [19, 79, 119],
+	"gaslock": [19, 39, 59, 79, 109, 129, 149, 169],
 }
 ## Print a `t=` line every this many ticks in a recorded run.
 const PRINT_EVERY := 10
@@ -160,7 +202,7 @@ func _ready() -> void:
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (limit | boiling)" % plant_key)
+		_halt("no plant '%s' (limit | boiling | gaslock)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -281,6 +323,10 @@ func _input(event: InputEvent) -> void:
 			_load("limit")
 		KEY_2:
 			_load("boiling")
+		KEY_3:
+			_load("gaslock")
+		KEY_V:
+			_do("vent")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -348,6 +394,11 @@ func _do(action: String) -> void:
 			# Snapped to the step so the trail's dots line up; clamped to the
 			# valve's own range, which the engine would refuse past.
 			_set_opening(clampf(snappedf(_opening() + step, VALVE_STEP), 0.0, 1.0))
+		"vent":
+			_send(
+				"vent %s" % PLANTS[plant_key]["pump"],
+				{"cmd": "vent_pump", "node": int(pump_id)}
+			)
 		"pump_on", "pump_off", "toggle_pump":
 			var on := action == "pump_on" or (action == "toggle_pump" and not _pump_on())
 			_send(
@@ -427,9 +478,12 @@ func _opening() -> float:
 	return float(_node(valve_id)["kind"]["opening"])
 
 
-## Through the suction line [kg/s], signed by its declared direction.
+## Through the suction line [kg/s], signed by its declared direction. Display
+## rounding only: below 0.005 kg/s it reads as zero — behind a shut disc the flow
+## is 1e-10 kg/s either way, and its sign is not a direction.
 func _flow() -> float:
-	return float(snapshot["edges"][suction_pipe_id]["stream"]["mass_flow"])
+	var flow := float(snapshot["edges"][suction_pipe_id]["stream"]["mass_flow"])
+	return 0.0 if absf(flow) < 0.005 else flow
 
 
 ## The pump's suction pressure [Pa]: the pump node's own pressure.
@@ -489,6 +543,19 @@ func _head_fraction() -> Variant:
 	return null if suction == null else float(suction["head_fraction"])
 
 
+## The pump in two-phase service (M54): the vapour its suction offers by volume,
+## the share of its head RELAP5's table takes, and the pressure it makes [Pa];
+## null where its suction offers liquid, or the pump is stopped.
+func _two_phase() -> Variant:
+	return _node(pump_id).get("pump_two_phase")
+
+
+## The engine's lock (M54): set when the suction offered 16.5% vapour by volume
+## while the pump ran, cleared only by a vent. Absent from the wire while false.
+func _gas_locked() -> bool:
+	return bool(_pump_kind().get("gas_locked", false))
+
+
 func _npsh_available_m() -> Variant:
 	var suction = _node(pump_id).get("pump_suction")
 	return null if suction == null else float(suction["npsh_available_m"])
@@ -512,6 +579,12 @@ func _lamp_label() -> String:
 func _no_push_reason() -> String:
 	if not _pump_on():
 		return "pump stopped"
+	if _gas_locked():
+		return "GAS-LOCKED: no head until vented"
+	if _two_phase() != null:
+		return "two-phase suction: see head lost"
+	if plant_key == "gaslock":
+		return "liquid at the suction: whole push"
 	if _npsh_required_m() == null:
 		return "no suction model: whole push, boiling or not"
 	return "not yet measured (first tick)"
@@ -542,6 +615,19 @@ func _readout(tick: int) -> String:
 			_lamp_label(),
 		]
 	)
+	# The pump in two-phase service, on the M54 plant only — so the M50 and M11
+	# plants' recorded lines read as they did.
+	if plant_key == "gaslock":
+		var two = _two_phase()
+		line += (
+			"  vapour=%s  head lost=%s  makes=%s  locked=%s"
+			% [
+				"--" if two == null else "%.1f%%" % (float(two["void_fraction"]) * 100.0),
+				"--" if two == null else "%.0f%%" % (float(two["head_multiplier"]) * 100.0),
+				"--" if two == null else _bar(float(two["pressure_rise_pa"])),
+				"YES" if _gas_locked() else "no",
+			]
+		)
 	# The supply and destination, once a command has moved either (M52) — so
 	# every line up to then reads as it did in M51.
 	if moved_conditions:
@@ -609,7 +695,7 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 624),
-		"C clear trail   Space pause   [ ] speed   1 long suction line (M50)   2 boiling pump, no suction model (M11)",
+		"C clear trail   V vent   Space pause   [ ] speed   1 long suction (M50)   2 no suction model (M11)   3 gas lock (M54)",
 		DIM
 	)
 	if halted != "":
@@ -630,7 +716,7 @@ func _draw_line() -> void:
 	_text(SOURCE_POS + Vector2(-34, 100), "%.0f °C" % (_source_k() - 273.15), DIM, 14)
 
 	var flow := _flow()
-	var arrow := "->" if flow >= 0.0 else "<- BACKWARDS"
+	var arrow := "->" if flow > 0.0 else ("(no flow)" if flow == 0.0 else "<- BACKWARDS")
 	_text(Vector2(SOURCE_POS.x + 30, SOURCE_POS.y - 34), plant["suction_pipe"], DIM, 14)
 	_text(Vector2(SOURCE_POS.x + 30, SOURCE_POS.y - 14), "%.2f kg/s %s" % [flow, arrow], BAD if flow < 0.0 else INK, 14)
 
@@ -669,18 +755,26 @@ func _draw_line() -> void:
 ## model the lamp alone decides the bubbles, and the fill stays whole.
 func _draw_pump() -> void:
 	var head = _head_fraction()
+	var two = _two_phase()
 	var on := _pump_on()
 	var fill := GOOD
 	if not on:
 		fill = SHELL
+	elif _gas_locked():
+		fill = BAD
 	elif head != null:
 		fill = BAD.lerp(GOOD, float(head))
+	elif two != null:
+		fill = BAD.lerp(GOOD, 1.0 - float(two["head_multiplier"]))
 	draw_circle(PUMP_POS, PUMP_RADIUS, fill)
 	draw_arc(PUMP_POS, PUMP_RADIUS, 0.0, TAU, 48, INK, 2.0)
 
 	var lost := 0.0
 	if on and head != null:
 		lost = 1.0 - float(head)
+	elif two != null:
+		# The vapour its suction offers, by volume — one bubble a tenth.
+		lost = float(two["void_fraction"])
 	elif on and _lamp() == true:
 		lost = 1.0
 	for i in roundi(lost * 10.0):
@@ -689,6 +783,10 @@ func _draw_pump() -> void:
 
 	_text(PUMP_POS + Vector2(-40, -PUMP_RADIUS - 30), PLANTS[plant_key]["pump"], INK)
 	var label := "STOPPED" if not on else ("push %s" % _percent(head) if head != null else "whole push")
+	if _gas_locked():
+		label = "GAS-LOCKED" if on else "STOPPED, GAS-LOCKED"
+	elif on and two != null:
+		label = "makes %s" % _bar(float(two["pressure_rise_pa"]))
 	_text(PUMP_POS + Vector2(-40, PUMP_RADIUS + 26), label, fill if on else BAD, 18)
 
 
@@ -824,6 +922,30 @@ func _draw_panel() -> void:
 		y += 20
 		_text(Vector2(PANEL_X + 12, y), "loses 3%% of its push at %.2f m (NPSH3)" % float(needed), DIM, 14)
 
+	if plant_key == "gaslock":
+		y += 36
+		_text(Vector2(PANEL_X, y), "TWO-PHASE SUCTION (RELAP5 table)", DIM)
+		y += 24
+		var two = _two_phase()
+		if two == null:
+			_text(Vector2(PANEL_X, y), "vapour offered  none: liquid", INK)
+		else:
+			_text(Vector2(PANEL_X, y), "vapour offered  %.1f%% of the volume" % (float(two["void_fraction"]) * 100.0), MARK)
+			y += 22
+			_text(Vector2(PANEL_X, y), "head lost       %.0f%% (all of it from 16.5%%)" % (float(two["head_multiplier"]) * 100.0), INK)
+			y += 22
+			_text(Vector2(PANEL_X, y), "pressure made   %s" % _bar(float(two["pressure_rise_pa"])), INK)
+		y += 26
+		if _gas_locked():
+			_text(Vector2(PANEL_X, y), "GAS-LOCKED", BAD, 18)
+			y += 20
+			_text(Vector2(PANEL_X + 12, y), "no head until stopped (K), vented (V), started (K)", DIM, 14)
+		else:
+			_text(Vector2(PANEL_X, y), "not locked", GOOD)
+
+	# On the M54 plant the two-phase section says what the lamp would, and more.
+	if plant_key == "gaslock":
+		return
 	y += 36
 	_text(Vector2(PANEL_X, y), "BOILING LAMP", DIM)
 	y += 24

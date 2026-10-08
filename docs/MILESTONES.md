@@ -12,6 +12,43 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M54 is CLOSED (2026-10-08): a pump in two-phase service, and a gas lock a
+person must vent — `docs/DEFERRED.md` B48 struck, B52–B53 opened.** On a decision
+(the recommended one of five directions offered) and ten DECISIONS in three
+rounds, the last when the table, built as asked, converged on neither fidelity
+and the user chose to keep it and make M54 a solver project. DESIGN §59.
+- **The law**: a running pump on a flashing plant delivers `(1 − M_H(α))·H(Q)`,
+  `M_H` RELAP5's steam-water head multiplier (NUREG/CR-5535-V1 Table 3.5-3,
+  PCHIP-smoothed), `α` the vapour its SUCTION offers by volume at the pump's
+  pressure — read from the stream arriving on its inflow, every tick, not from
+  the pump node's last-tick contents (read so, a plant flipped between +2.10 and
+  −2.13 kg/s every other tick). `npsh_required_m` is refused there: the data and
+  M50's curve disagree at the bubble point, and the data won.
+- **The solvers**: the fall is a cliff — three quarters of the push within about
+  100 Pa — and a pump pulling its own suction below boiling defeated both solvers
+  even with the push held fixed. The pump's inlet node is now solved inside every
+  iterate by a bracket on its own balance (measured monotone): Newton holds its
+  residual at zero (the Schur step), the game solver solves it in turn and steps
+  its neighbours, singly and in groups, on the plant as it answers. Newton starts
+  short of moving a pressure by more than a pump's head. Newton at most 6–17
+  iterations a tick, the game solver 7–21, on every gate.
+- **Check valves** stand on a flashing plant (decision 5): a dead pump's line no
+  longer runs back. **The gas lock** (decisions 6–8): 16.5% vapour at a running
+  pump's suction locks it; no head until `vent_pump` on the pump stopped.
+- **Findings for the user**: the plant can have two steady states (pump alive
+  6.43 kg/s, dead 7.25 kg/s at 118 °C with the disc), and a cold start's first
+  tick lands on the dead one and locks at start-up (B53). A suction-side
+  zero-volume node would carry the lag the pump node did (B52).
+- **The demo**, `pump_gas_lock.toml` on the pump screen (key 3, V vents): liquid at
+  100 °C, the table's fall at 110 °C, locked at 118 °C and dead when cooled, a
+  vent refused while running, vented back to its first flow, locked again at
+  125 °C behind a disc that holds the line. Its books close every tick.
+- Gates: `two_phase_head.rs` reference (5), `pump_two_phase_reference.rs` (5),
+  `flashing_check_valve_reference.rs` (3), `gas_lock_reference.rs` (4),
+  `pump_gas_lock_reference.rs` (2), the screen's replay. Mutations: 26 over the
+  milestone; the escapes measured and either gated or removed as unneeded. All 44
+  earlier plants byte-identical on both fidelities.
+
 **M53 is CLOSED (2026-10-07): a supply that is partly vapour, and a line that
 boils as its pressure falls — `docs/DEFERRED.md` B46 struck, B3's flashing-line
 clause closed, B47–B51 opened.** On a decision (the fifth of five directions

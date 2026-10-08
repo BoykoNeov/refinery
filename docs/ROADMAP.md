@@ -8782,3 +8782,32 @@ it, refused unless the node is a pump, locked and stopped. The bridge's
 - Corpus: all 44 shipped plants byte-identical on both fidelities (no pump off a
   flashing plant writes the key). Release property tests pass. The bridge's
   `referent` and its test name the new command (14 variants).
+
+### M54.3 — **LANDED** 2026-10-08: the gas-lock plant and the pump screen's third plant — M54 is CLOSED
+
+`scenarios/pump_gas_lock.toml` and `demo/pump.gd`'s `gaslock` plant (key 3,
+`--plant=gaslock`, vent on V). DESIGN §59.3.
+
+- **The recorded run** (`godot --headless --path . res://demo/pump.tscn
+  --quit-after 20000 -- --auto --plant=gaslock`): t=20 14.91 kg/s on liquid;
+  t=30 110 °C, 7.6% vapour, 48% of the head lost, 1.318 bar made, 11.65 kg/s;
+  t=50 118 °C, GAS-LOCKED, 5.81 kg/s; t=70 100 °C, still locked, 7.43 kg/s;
+  t=80 vent REFUSED ("still running"); stopped at 90, vented at 100, started at
+  110: t=120 14.91 kg/s; t=140 into 3 bar, 11.43 kg/s; t=160 125 °C, locked,
+  97.8% vapour, 0.000 bar made, no flow — the disc holds.
+- **Fixed on screen while building it**: the push column read "liquid at the
+  suction" beside 7.6% vapour; M11's lamp note ("no suction model") was drawn on
+  this plant and ran into the key help; behind the shut disc the suction line
+  read "−0.00 kg/s ← BACKWARDS" and the trail's axis dropped to −5 (display
+  rounding: under 5 g/s now reads as zero).
+- Gates: `crates/scenarios/tests/pump_gas_lock_reference.rs` (2: the file's
+  story on both fidelities with iteration caps; the books on every tick, with the
+  latent-free counterfactual failing) and the screen's replay in
+  `crates/godot-ext/tests/pump_screen.rs`. The M50 and M11 timelines run clean.
+- Corpus: 44 plants byte-identical on both fidelities, the new one runs on both
+  (Newton at most 6 iterations a tick, 0.12 ms; the game solver 8 sweeps, 1.6 ms).
+  Both clippy passes clean, the Godot binding built with the feature.
+
+**Ledger**: B48 struck. B52 (a suction-side zero-volume node's lag) and B53 (two
+steady states, the lock choosing by history) opened.
+

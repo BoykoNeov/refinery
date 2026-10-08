@@ -109,7 +109,7 @@ godot --headless --path . -- --auto          # the M6.2 demo; ends at t=350
 godot --path . res://demo/furnace.tscn       # the M39 furnace screen (keys on screen)
 godot --headless --path . res://demo/furnace.tscn --quit-after 20000 -- --auto [--plant=burnout]
 godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on screen)
-godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling]
+godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 ```
 
 ## Testing
@@ -148,10 +148,11 @@ godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--p
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M53
-(2026-10-07)** — a supply that is partly vapour and a line that boils as its
-pressure falls (`[fidelity] line_flash`, off by default; B46 struck, B47–B51
-opened), and the flashing rundown demo. Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Latest closed: M54
+(2026-10-08)** — a pump in two-phase service: RELAP5's head multiplier on the
+vapour its suction offers, the pump's inlet solved inside the iterate, check
+valves and a gas lock a person vents (`vent_pump`) on a flashing plant (B48
+struck, B52–B53 opened), and the gas-lock plant on the pump screen. Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

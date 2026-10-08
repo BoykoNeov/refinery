@@ -20975,3 +20975,42 @@ supply alone pushes; stopped, vented and started it lands on a cold start's flow
 to 1e-6. Mutations: six, all caught — one of them only once both of the solve's
 lock paths were broken (a locked pump stops pulling, its suction turns liquid,
 and the liquid path alone kept it dead).
+
+### 59.3 The demo plant and the pump screen's third plant (M54.3)
+
+Decision 9. **`scenarios/pump_gas_lock.toml`** (the 45th file): M50's plant with
+the line flash on, no suction key, and a check valve on the discharge (kv 80,
+full lift at 0.1 bar), into 1.5 bar. Measured, its story: at 100 °C the pump runs
+on liquid, 14.9 kg/s; at 110 °C its suction offers 7.6% vapour by volume and the
+table takes 48% of its head (1.32 bar made, 11.65 kg/s); at 118 °C it gas-locks
+(5.81 kg/s); cooled back to 100 °C it stays dead and the supply alone pushes
+7.43 kg/s; a vent while it runs is refused; stopped, vented and started it is
+back at 14.9 kg/s to 1e-6; into 3 bar it still pushes 11.43 kg/s; at 125 °C it
+locks again and the disc holds the line shut. The plant's energy and mass books
+close on every tick of that story to round-off of its own scale. Corpus, 6 000
+ticks: Newton at most 6 iterations a tick, the game solver 8.
+
+**The pump screen** (`demo/pump.gd`, key 3, `--plant=gaslock`): the vapour the
+suction offers, the head the table takes, the PRESSURE the pump makes (decision 4:
+near pure vapour the table gives the share back while the pressure stays tiny —
+97.8% vapour, 27% of the head lost, 0.000 bar made), and the lock, with a vent
+key (V). No physics in GDScript; display rounding only: a flow under 5 g/s reads
+as zero (behind a shut disc it is 1e-10 kg/s either way, and its sign is no
+direction). The M50 and M11 plants' recorded lines are unchanged; the M11 boiling
+lamp's note is not drawn on the M54 plant, whose two-phase section says more.
+`crates/godot-ext/tests/pump_screen.rs` replays the new timeline through the
+bridge, beat by beat; the bridge's command test applies `vent_pump` on an inline
+plant run until its pump locks, then stopped.
+
+### Not built, with what un-defers each (M54)
+
+- The table at the AVERAGE of inlet and outlet vapour, as RELAP5 fits it — needs a
+  pump-outlet state the engine does not keep (this uses the inlet: cautious).
+- `H_2φ`, the fully degraded two-phase head curve, taken as zero — a plant whose
+  answer depends on a dead pump's residual head at its rated flow.
+- A zero-volume node on a pump's suction side carries a tick's lag (B52).
+- Two steady states, and the lock choosing between them by history (B53).
+- Choking through a check valve or a control valve in flashing service (B47).
+- Two pumps joined by one pipe on a flashing plant — refused.
+- A transient model of a gas pocket growing in the impeller: the lock is an
+  instant switch at the table's fully degraded point.

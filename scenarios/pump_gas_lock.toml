@@ -1,0 +1,116 @@
+# M54 demo plant: a pump that boils its own suction, loses its push, and gas-locks.
+#
+# The wired demonstration of docs/DESIGN.md §59 — a pump in two-phase service
+# (ledger row B48). M50's plant (`pump_cavitation_flow_limit.toml`, a regression
+# anchor, not edited) with the line flash switched on, no suction key (refused on
+# a flashing plant), and a check valve on the pump's discharge.
+#
+# --- why the plant is shaped like this -------------------------------------
+#
+# 1. AT 100 °C THE PUMP RUNS ON LIQUID; WARMER, ITS SUCTION BOILS. Naphtha at
+#    100 °C and 2.4 bar is a whole bar clear of boiling (bubble pressure about
+#    1.4 bar), and the pump draws its suction down to about 1.46 bar: liquid,
+#    14.9 kg/s. At 110 °C (bubble about 1.83 bar) the pump draws its suction
+#    below boiling and the stream it takes in is 7.6% vapour by volume. RELAP5's
+#    steam-water table leaves a pump its whole head to 7% and takes three
+#    quarters of it by 8%, so the pump settles on that fall at about half its
+#    push — it regulates its own suction a few hundred pascals below boiling.
+#
+# 2. WARMER STILL AND THE PUMP GAS-LOCKS. At 118 °C its suction offers more than
+#    16.5% vapour — the table's "all gone" — and the pump locks: it makes no head
+#    from then on, whatever its suction offers, until a person stops it, vents it
+#    (`vent_pump`) and starts it again. Cooling the supply back to 100 °C does not
+#    clear it: the supply alone pushes 7.4 kg/s through the dead pump.
+#
+# 3. THE CHECK VALVE KEEPS A DEAD PUMP'S LINE FROM RUNNING BACK. Raise the
+#    destination above the supply's 2.4 bar and a locked pump cannot hold it:
+#    without the disc the destination's liquid would run back through the pump
+#    to the supply. With it the line stops.
+#
+# Same fluid as `pump_cavitation_flow_limit.toml` and `cavitating_pump.toml`, so
+# the three can be read side by side on the pump screen (`demo/pump.tscn`).
+
+[meta]
+name = "pump_gas_lock"
+description = "Hot naphtha drawn through a long suction line by a pump that boils its own suction, loses its push, and gas-locks."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+line_flash = "equilibrium"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[nodes.rundown_source]
+type = "source"
+pressure_bar = 2.4
+temperature_c = 100.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+[nodes.feed_pump]
+type = "pump"
+h0_m = 40.0
+a = 800.0
+on = true
+
+# Full lift at 0.1 bar of forward drive: it shuts the moment the line would run
+# back.
+[nodes.discharge_check]
+type = "check_valve"
+kv = 80.0
+full_open_bar = 0.1
+
+[nodes.discharge_valve]
+type = "valve"
+kv = 80.0
+opening = 0.6
+
+[nodes.unit_feed]
+type = "sink"
+pressure_bar = 1.5
+temperature_c = 100.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+# The long, narrow suction: what makes the pump draw its own suction down.
+[[pipes]]
+name = "suction_line"
+from = "rundown_source"
+to = "feed_pump"
+length_m = 60.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "discharge"
+from = "feed_pump"
+to = "discharge_check"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "check_spool"
+from = "discharge_check"
+to = "discharge_valve"
+length_m = 2.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "feed_line"
+from = "discharge_valve"
+to = "unit_feed"
+length_m = 25.0
+diameter_m = 0.10
