@@ -62,6 +62,8 @@ type = "pump"
 h0_m = 40.0
 a = 800.0
 on = true
+# One tick: the instant lock M54 built, so a lock here is the solve's alone.
+gas_fill_time_s = 0.1
 
 [nodes.discharge_check]
 type = "check_valve"
@@ -266,6 +268,7 @@ fn every_move_with_the_disc_lands_on_the_cold_answer() {
                     worst = worst.max(settle(&mut engine, SETTLE_TICKS, "discharge", &label));
                     if vent_if_locked(&mut engine) {
                         worst = worst.max(settle(&mut engine, SETTLE_TICKS, "discharge", &label));
+                        assert_locked_again(&engine, &label);
                     }
                     edge_flow(&engine.snapshot(), "discharge")
                 })
@@ -276,11 +279,16 @@ fn every_move_with_the_disc_lands_on_the_cold_answer() {
             settle(&mut engine, SETTLE_TICKS, "discharge", solver);
             for &k in &path[1..] {
                 let celsius = TEMPERATURES[k];
+                let was_locked = is_locked(&engine);
                 warm_supply(&mut engine, "rundown_source", celsius);
                 let label = format!("{solver} moved to {celsius} °C into {destination_bar} bar");
                 worst = worst.max(settle(&mut engine, SETTLE_TICKS, "discharge", &label));
                 if vent_if_locked(&mut engine) {
                     worst = worst.max(settle(&mut engine, SETTLE_TICKS, "discharge", &label));
+                    // A lock carried down from a hotter step is history, not this move's.
+                    if !was_locked {
+                        assert_locked_again(&engine, &label);
+                    }
                 }
                 let moved = edge_flow(&engine.snapshot(), "discharge");
                 assert!(
@@ -357,10 +365,10 @@ fn a_boiling_stream_passes_the_disc_on_both_fidelities() {
 /// Stop, vent and start the pump if it is gas-locked (M54.2, §59.2); whether it
 /// was. Applied, once settled, to a moved run after each move and to a cold start,
 /// so both are read as "the pump running unlocked, re-locking only where its
-/// settled state locks it": a cold start can lock on its FIRST tick, where a
-/// moved run never passes (at 118 °C with the disc the plant has two answers —
-/// the pump alive at 8% vapour, 6.43 kg/s, and dead at 45%, 7.25 kg/s — and the
-/// cold seed's first tick lands on the dead one).
+/// settled state locks it" — and `assert_locked_again` then requires that it
+/// does. Until M55 a cold start, or a move, at 118 °C locked on its FIRST tick
+/// and ran on once vented: the step tick read the valves' last-tick states
+/// (B50), and its suction offered 45% vapour for that one tick (B53, struck).
 fn vent_if_locked(engine: &mut Engine) -> bool {
     let pump = engine.graph.find_node("feed_pump").unwrap();
     let NodeKind::Pump { gas_locked, .. } = engine.graph.node(pump).kind else {
@@ -385,4 +393,23 @@ fn vent_if_locked(engine: &mut Engine) -> bool {
             .expect("a locked pump is stopped, vented and started");
     }
     true
+}
+
+/// A pump `vent_if_locked` vented must lock again once re-settled: the plant it
+/// locked on is one whose settled suction locks it, not one a single tick misled
+/// (M55.0, docs/DESIGN.md §60.0). This fixture fills its pocket in one tick, so a
+/// lock here is the solve's alone.
+fn assert_locked_again(engine: &Engine, label: &str) {
+    assert!(
+        is_locked(engine),
+        "{label}: the pump locked, was vented, and runs on unlocked: a lock its settled state does not make"
+    );
+}
+
+fn is_locked(engine: &Engine) -> bool {
+    let pump = engine.graph.find_node("feed_pump").unwrap();
+    let NodeKind::Pump { gas_locked, .. } = engine.graph.node(pump).kind else {
+        unreachable!()
+    };
+    gas_locked
 }

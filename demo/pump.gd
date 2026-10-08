@@ -130,30 +130,34 @@ const AUTO_BOILING := {
 	120: ["pump_on", "valve_0.6"],
 	140: ["quit"],
 }
-## gaslock (M54): at 100 °C the pump runs on liquid (14.9 kg/s). Warmed to
+## gaslock (M54, M55): at 100 °C the pump runs on liquid (14.9 kg/s). Warmed to
 ## 110 °C its suction boils — 7.6% vapour by volume, about half its push gone.
-## At 118 °C it GAS-LOCKS; cooled back to 100 °C it stays dead and the supply
-## alone pushes 7.4 kg/s. A vent while it runs is REFUSED; stopped, vented and
-## started it runs as it did at first. Into a 3 bar destination it still pushes;
-## warmed to 125 °C it locks again and the check valve holds the line shut
-## instead of letting the destination run back through it.
+## A one-second surge to 120 °C fills its gas pocket a third of the way; back at
+## 110 °C the pocket drains and the push comes back. Held at 120 °C the pocket
+## fills in 3 s and the pump GAS-LOCKS; cooled back to 100 °C it stays dead and
+## the supply alone pushes through it. A vent while it runs is REFUSED; stopped,
+## vented and started it runs as it did at first. Into a 3 bar destination it
+## still pushes; warmed to 125 °C it locks again and the check valve holds the
+## line shut instead of letting the destination run back through it.
 const AUTO_GASLOCK := {
 	20: ["supply_c_110"],
-	40: ["supply_c_118"],
-	60: ["supply_c_100"],
-	80: ["vent"],
-	90: ["pump_off"],
-	100: ["vent"],
-	110: ["pump_on"],
-	130: ["destination_bar_3.0"],
-	150: ["supply_c_125"],
-	170: ["quit"],
+	40: ["supply_c_120"],
+	50: ["supply_c_110"],
+	70: ["supply_c_120"],
+	110: ["supply_c_100"],
+	130: ["vent"],
+	140: ["pump_off"],
+	150: ["vent"],
+	160: ["pump_on"],
+	180: ["destination_bar_3.0"],
+	200: ["supply_c_125"],
+	250: ["quit"],
 }
 const TIMELINES := {"limit": AUTO_LIMIT, "boiling": AUTO_BOILING, "gaslock": AUTO_GASLOCK}
 const AUTO_SHOT_TICKS := {
 	"limit": [1, 39, 79, 139, 159, 179, 199, 219, 259, 299],
 	"boiling": [19, 79, 119],
-	"gaslock": [19, 39, 59, 79, 109, 129, 149, 169],
+	"gaslock": [19, 39, 49, 51, 69, 99, 109, 129, 159, 179, 199, 249],
 }
 ## Print a `t=` line every this many ticks in a recorded run.
 const PRINT_EVERY := 10
@@ -556,6 +560,14 @@ func _gas_locked() -> bool:
 	return bool(_pump_kind().get("gas_locked", false))
 
 
+## The gas collected in the pump's eye, as a share of what locks it (M55): it
+## fills in the pump's fill time (3 s unless the plant sets it) while the suction
+## offers 16.5% vapour or more, drains at the same rate below that, and takes
+## its share of the push as it goes. Absent from the wire while empty.
+func _gas_pocket() -> float:
+	return float(_pump_kind().get("gas_pocket", 0.0))
+
+
 func _npsh_available_m() -> Variant:
 	var suction = _node(pump_id).get("pump_suction")
 	return null if suction == null else float(suction["npsh_available_m"])
@@ -620,11 +632,12 @@ func _readout(tick: int) -> String:
 	if plant_key == "gaslock":
 		var two = _two_phase()
 		line += (
-			"  vapour=%s  head lost=%s  makes=%s  locked=%s"
+			"  vapour=%s  head lost=%s  makes=%s  gas pocket=%s  locked=%s"
 			% [
 				"--" if two == null else "%.1f%%" % (float(two["void_fraction"]) * 100.0),
 				"--" if two == null else "%.0f%%" % (float(two["head_multiplier"]) * 100.0),
 				"--" if two == null else _bar(float(two["pressure_rise_pa"])),
+				"%.0f%%" % (_gas_pocket() * 100.0),
 				"YES" if _gas_locked() else "no",
 			]
 		)
@@ -941,7 +954,15 @@ func _draw_panel() -> void:
 			y += 20
 			_text(Vector2(PANEL_X + 12, y), "no head until stopped (K), vented (V), started (K)", DIM, 14)
 		else:
-			_text(Vector2(PANEL_X, y), "not locked", GOOD)
+			var pocket := _gas_pocket()
+			_text(
+				Vector2(PANEL_X, y),
+				"gas pocket      %.0f%% (locks when full)" % (pocket * 100.0),
+				GOOD if pocket == 0.0 else BAD.lerp(MARK, 1.0 - pocket)
+			)
+			if pocket > 0.0:
+				y += 20
+				_text(Vector2(PANEL_X + 12, y), "fills past 16.5% vapour, drains below; takes its share of the push", DIM, 14)
 
 	# On the M54 plant the two-phase section says what the lamp would, and more.
 	if plant_key == "gaslock":

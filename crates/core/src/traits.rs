@@ -121,9 +121,24 @@ pub struct StarvedTank {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SolveDiagnostics {
+    /// Iterations the hardest solve of the tick took: the solver's own count
+    /// for one solve, and, where the engine re-solved the tick on its own
+    /// states (M55.0, docs/DESIGN.md §60.0), the most any of those solves took.
     pub iterations: u32,
     pub residual: f64,
     pub converged: bool,
+    /// Solves the engine added to the tick because its zero-volume states moved
+    /// the densities the first one read (M55.0, docs/DESIGN.md §60.0). Zero —
+    /// and absent from the wire — on every tick that needed none. Written by
+    /// the engine, never by a solver.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub re_solves: u32,
+}
+
+/// Whether a count is zero — what keeps `SolveDiagnostics::re_solves` off the
+/// wire on a tick that needed no re-solve.
+fn is_zero_u32(count: &u32) -> bool {
+    *count == 0
 }
 
 /// Computes the quasi-steady pressure/flow field for the current network

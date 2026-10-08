@@ -8812,3 +8812,104 @@ it, refused unless the node is a pump, locked and stopped. The bridge's
 states, the lock choosing by history) and B54–B57 (the inlet share, `H_2φ = 0`,
 the instant lock, two pumps back to back) opened.
 
+
+## M55 — the step tick solved on its own states, and a gas pocket that fills over seconds: ledger rows B50, B53 and B56; opened on a decision
+
+Asked after M54 closed (2026-10-08): B53 said the 118 °C check-valve plant had
+two steady states and the cold start's first tick locked the pump on the dead
+one, "which root a tick finds is the solver's seed". Offered "accept it as
+logged" or "fix it later, e.g. a start-up grace period or a gas pocket building
+up over time", the user said fix it.
+
+**Measured before asking** (a throwaway probe: M54's demo plant, the lock cleared
+after every tick, both fidelities): **there is no second steady state.** The
+"dead" answer (45% vapour, 7.25 kg/s) lasts exactly one tick, the step tick, on a
+cold start and on every move; from the next tick every run sits on the live one
+(12.7%, 6.43 kg/s). A solve seeded on the dead answer leaves it, so the step tick
+was solved on stale input: the two zero-volume valves after the pump carried the
+LAST tick's cooler, less bubbly state (B50's lag), so the line downstream looked
+easier, the pump pulled more, and its suction offered 45% vapour for one tick.
+The instant lock made that tick permanent — and not only at 118 °C: on a 1 °C
+ramp the pump locked at 119 °C, where its settled suction offers 15.2%, under the
+lock point. B53's "two steady states" was wrong.
+
+The user, offered (a) removing the stale read, (b) a gas pocket that fills over
+seconds, or (c) both, chose:
+
+1. **Both**: the solver fix, and the pocket.
+2. **The fill time is a per-pump setting**, default 3 s.
+3. **A part-full pocket drains at the rate it fills** when the suction comes back
+   under the lock point — over "empties at once" and "never drains".
+4. **The push fades as the pocket fills** — over "lock only when full". Told after
+   the choice: the pocket fills only at 16.5% vapour or more, where RELAP5's table
+   has already taken the whole push up to 90%, so the fade shows in two places —
+   a pump recovering after a surge, and the near-pure-vapour tail.
+
+**Choices made without the user, each stated where it is built:**
+- The pocket is a state the engine moves BETWEEN ticks, read by the solve as a
+  fixed number (the lock's and the relief latch's arrangement), so the push does
+  not depend on itself inside a solve — M54's convergence work is untouched.
+- The setting (`gas_fill_time_s`) is optional and refused on a plant without the
+  line flash, as `npsh_required_m` is refused on one; zero, negative or
+  non-finite values are refused. The pocket and the setting are absent from the
+  wire while zero / unset, so no plant that never fills one changes a byte.
+- A full pocket is the lock; it stays full until vented. A stopped pump's pocket
+  holds. A vent is allowed on a stopped pump whose pocket holds any gas, and
+  refused on one holding none.
+- `(1 − pocket)` scales the pump's whole curve, the droop term with it (M50's
+  convention).
+
+### The steps
+
+- **M55.0** — the step tick solved on its own states (B50): the tick re-solved on
+  the zero-volume states it resolves until the densities the solve reads stop
+  moving; a liquid line's density at the composition it carries now, not its
+  stored copy's.
+- **M55.1** — the gas pocket (B56), its setting, the vent rule, and the demo's
+  story retold where it locks.
+
+### M55.0 — **LANDED** 2026-10-08: the step tick solved on its own states
+
+`Engine::tick` re-solves a tick on the states it resolves until the density the
+solve reads at every zero-volume node has moved less than 1e-8 of itself
+(`energy::swept_density_change`, `SWEPT_DENSITY_TOL`, `MAX_STATE_PASSES` = 30);
+a liquid line flows at the composition the end it last flowed from holds now
+(`network::carried_composition`), not its stored copy. `SolveDiagnostics`
+reports the hardest solve and `re_solves` (absent while zero). DESIGN §60.0.
+
+- **Found while building it**: compared on temperature, every plant with a
+  heated tank re-solved every tick and the FCC plant on the game solver never
+  settled — the comparison is now on the density the solve reads, which a
+  liquid's temperature does not move. A cold start's first tick flowed at
+  `Stream::stagnant`'s placeholder composition (10.50 against 10.65 kg/s), a
+  second stale read, fixed beside the first. Read at whichever end a trial
+  pressure made upwind, the composition jumped at zero drive and Newton
+  diverged on `tank_runs_dry` the tick its tank ran dry; it is read at the end
+  the line last flowed from.
+- Gates: `step_tick_reference.rs` (3), the rewritten first-tick gate in
+  `upwind_temperature_reference.rs`, the cascade's first tick on its bubble
+  point, and the M54 move gates (one-tick fill; a vented pump must lock again).
+- Corpus: 20 of 45 plants moved on each fidelity, every one explained (DESIGN
+  §60.0 "Measured").
+
+### M55.1 — **LANDED** 2026-10-08: the gas pocket — M55 is CLOSED
+
+`NodeKind::Pump::gas_pocket` and `gas_fill_time` (scenario key
+`gas_fill_time_s`, default 3 s, refused without the line flash), moved by the
+engine between ticks, the push scaled by `(1 − pocket)`, full = locked; the vent
+allowed on a stopped pump holding any gas. The demo's story and the pump
+screen's `gaslock` timeline retold (a surge survived, the lock held at 120 °C),
+the pocket drawn and printed. DESIGN §60.1–60.2.
+
+- Gates: `gas_pocket_reference.rs` (7), the demo's story and books
+  (`pump_gas_lock_reference.rs`), the screen's replay, `gas_lock_reference.rs`'s
+  wire gate extended to the new keys.
+- Mutations: fourteen over the milestone, all caught; one escaped first (the push
+  ignoring the pocket on a liquid suction) and is now gated by
+  `a_part_full_pocket_takes_its_share_on_a_liquid_suction`. The trial-end
+  composition read that diverged `tank_runs_dry` was found by the corpus, which
+  CI runs, and is not otherwise gated.
+
+**Ledger**: B50, B53 (wrong: no second steady state) and B56 struck; B58 (a gas
+valve's `γ` at the stored composition) and B59 (one fill rate whatever the
+vapour) opened.

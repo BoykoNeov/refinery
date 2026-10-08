@@ -219,23 +219,29 @@ fn a_zero_volume_upwind_node_supplies_its_resolved_temperature() {
     );
 }
 
-/// Before any sweep has run there is no resolved state to read, and the fallback
-/// is the pipe's stored temperature — so the FIRST tick reproduces exactly what
-/// solving the freshly built graph gives.
+/// The FIRST tick is solved at the tee's own temperature too (M55.0,
+/// docs/DESIGN.md §60.0, ledger row B50): before any sweep there is no resolved
+/// state, so the tick's first solve reads the pipe's stored temperature — the
+/// header's 20 °C — and the engine then re-solves the tick on the states that
+/// solve's flows resolve, until the densities the solve reads stop moving.
 ///
-/// This is what keeps `gas_density_reference`'s twelve gates meaning what they
-/// meant: they all solve the untouched graph, and this asserts that path is still
-/// the one taken when `previous_states` is empty. It says nothing about the other
-/// two arms — the mutation that reverts the un-deferral entirely passes here, and
-/// should, because tick 0 is exactly the case the un-deferral does not change.
+/// Until M55 the first tick kept the fallback's answer and the plant moved on
+/// tick two, by 7.1e-3 of its flow (this gate asserted both) — 70 times the
+/// tolerance, the separation this discrimination has. Now the first tick
+/// sits on the hand calculation at the tee's resolved temperature, and the
+/// second does not move — the stationary plant's one-tick lag is gone from tick
+/// one on. `gas_density_reference`'s gates solve the untouched graph through the
+/// solver directly and are unaffected.
 #[test]
-fn the_first_tick_falls_back_to_the_stored_stream_temperature() {
-    // Freshly built: both pipes still carry `Stream::stagnant`'s seed, which for
-    // this plant equals the header's declared 20 °C, so the M5.2 hand calc with a
-    // single temperature is the prediction.
-    let (expected_tee_p, expected_flow) = prediction(T_HEADER_K);
-
+fn the_first_tick_is_solved_at_the_tees_own_temperature() {
     let first = run(1);
+    // The fallback and the tee must differ for this to discriminate anything.
+    assert!(
+        (first.tee_temperature - T_HEADER_K).abs() > 1.0,
+        "premise: the tee ({:.3} K) must sit away from the header's 20 °C",
+        first.tee_temperature
+    );
+    let (expected_tee_p, expected_flow) = prediction(first.tee_temperature);
     approx::assert_relative_eq!(
         first.flow,
         expected_flow,
@@ -246,19 +252,16 @@ fn the_first_tick_falls_back_to_the_stored_stream_temperature() {
         expected_tee_p,
         max_relative = HAND_CALC_TOLERANCE
     );
-
-    // And the plant does not STAY there: the second tick moves. That is not a
-    // claim about which arm was taken — it rules out the weaker failure in which
-    // the first tick's agreement is an artifact of a plant that never evolves at
-    // all, which would make the assertion above true for the wrong reason.
-    let second = run(2);
+    let (_, fallback_flow) = prediction(T_HEADER_K);
     assert!(
-        (second.flow - first.flow).abs() / first.flow > 1e-3,
-        "the second tick must differ from the first once resolved states exist: \
-         {:.9} vs {:.9} kg/s",
-        second.flow,
+        (first.flow - fallback_flow).abs() / expected_flow > 50.0 * HAND_CALC_TOLERANCE,
+        "the first tick ({:.6} kg/s) must be far from the stored-temperature answer \
+         ({fallback_flow:.6} kg/s) for this gate to mean anything",
         first.flow
     );
+
+    let second = run(2);
+    approx::assert_relative_eq!(second.flow, first.flow, max_relative = 1e-8);
 }
 
 // ---------------------------------------------------------------------------

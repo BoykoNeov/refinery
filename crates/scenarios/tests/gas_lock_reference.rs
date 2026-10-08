@@ -275,6 +275,8 @@ fn an_unlocked_pump_writes_no_key() {
     run(&mut engine, 10, "newton");
     let wire = serde_json::to_string(&engine.snapshot()).unwrap();
     assert!(!wire.contains("gas_locked"), "{wire}");
+    assert!(!wire.contains("gas_pocket"), "{wire}");
+    assert!(!wire.contains("gas_fill_time"), "{wire}");
 
     let mut engine = build(&plant("newton", 118.0).replace("line_flash = \"equilibrium\"", ""));
     run(&mut engine, 200, "no line flash");

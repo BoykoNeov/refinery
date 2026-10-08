@@ -1051,6 +1051,92 @@ pub struct ReactorDuty {
     pub reported: Watt,
 }
 
+/// The largest relative move, between the states a flow solve READ and the
+/// states the sweep then resolved from that solve's flows, of the density a
+/// stream leaving a zero-volume node flows at (M55.0, docs/DESIGN.md §60.0,
+/// ledger row B50) — what the solve reads of such a node, at the pressure it
+/// solved there: the line flash's mixture where the node carries vapour
+/// (`network::two_phase_density`), else its composition's density at its
+/// temperature (`network::liquid_density`; a liquid's ignores the
+/// temperature).
+///
+/// Where the solve read no state of a node (the first tick), what it read was
+/// the stored stream of each pipe at the node (`Pipe::stream`), as a liquid.
+#[allow(clippy::too_many_arguments)] // one argument per seam the density reads
+pub fn swept_density_change(
+    graph: &PlantGraph,
+    slate: &Slate,
+    line_flash: &dyn LineFlashModel,
+    thermo: &dyn ThermoModel,
+    enthalpy: &dyn EnthalpyModel,
+    node_pressure: &BTreeMap<NodeId, Pascal>,
+    read: &NodeStates,
+    resolved: &NodeStates,
+) -> Result<f64, SimError> {
+    let density = |states: &NodeStates,
+                   id: NodeId,
+                   pressure: Pascal|
+     -> Result<Option<f64>, SimError> {
+        let Some(composition) = states.composition.get(&id) else {
+            return Ok(None);
+        };
+        let temperature = states
+            .vapour
+            .get(&id)
+            .map(|share| share.liquid_equivalent)
+            .or_else(|| states.temperature.get(&id).copied());
+        let Some(temperature) = temperature else {
+            return Ok(None);
+        };
+        if line_flash.carries_vapour() {
+            if let Some(two_phase) =
+                line_flash.density(slate, composition, temperature, pressure, thermo, enthalpy)?
+            {
+                return Ok(Some(two_phase.mixture.value()));
+            }
+        }
+        Ok(Some(
+            composition
+                .density_at(slate, pressure, temperature)?
+                .value(),
+        ))
+    };
+    let mut largest = 0.0_f64;
+    for id in graph.node_ids() {
+        if !is_zero_volume(&graph.node(id).kind) {
+            continue;
+        }
+        let Some(&pressure) = node_pressure.get(&id) else {
+            continue;
+        };
+        let Some(after) = density(resolved, id, pressure)? else {
+            continue;
+        };
+        let mut befores = Vec::new();
+        match density(read, id, pressure)? {
+            Some(before) => befores.push(before),
+            // Not resolved when the solve read it (the first tick): the solve
+            // read the stored stream of each pipe at the node instead — liquid,
+            // at that stream's composition and temperature.
+            None => {
+                for (eid, _, _) in graph.incident(id) {
+                    let stream = &graph.pipe(eid).stream;
+                    befores.push(
+                        stream
+                            .composition
+                            .density_at(slate, pressure, stream.temperature)?
+                            .value(),
+                    );
+                }
+            }
+        }
+        for before in befores {
+            largest = largest.max((after - before).abs() / after.abs().max(f64::MIN_POSITIVE));
+        }
+    }
+    Ok(largest)
+}
+
 /// Resolve every node's temperature [K] and composition for this tick.
 ///
 /// Inertial nodes seed the field with their start-of-tick temperature;

@@ -319,15 +319,17 @@ fn the_cascade_demo_feeds_its_column_a_saturated_liquid_from_the_first_tick() {
          {steady} K off. `duty_mw` is Q = ṁ·c̄p·ΔT at 192.685 kg/s and needs re-deriving \
          against whatever this plant now produces."
     );
-    // The first tick is the one that uses the window, and it must not use it all.
+    // The first tick lands there too (M55.0, docs/DESIGN.md §60.0). Until M55 it
+    // flowed its lines at `Stream::stagnant`'s placeholder liquid — the slate's
+    // first component — so the tick-1 flow was lower, the furnace's rise higher,
+    // and the feed +0.53 K superheated: the one tick that used the ±1.18 K
+    // window. Measured since: −0.002 K, the steady offset's size.
     assert!(
-        (0.0..0.7).contains(&first),
-        "the first tick's flow transient put the feed {first} K off saturation. It is \
-         expected to be about +0.53 K — superheated, because the tick-1 flow is LOWER and \
-         the furnace's rise is therefore higher — and it must stay well inside the ±1.18 K \
-         window, which nothing else is left to absorb."
+        first.abs() < 0.01,
+        "the first tick put the feed {first} K off saturation: a liquid line flowing \
+         its first tick at a placeholder composition again?"
     );
-    approx::assert_relative_eq!(worst, first.abs(), max_relative = 1e-12);
+    assert!(worst < 0.01, "the feed left its bubble point by {worst} K");
 }
 
 /// The bubble point of a MASS composition at `pressure` [K], by bisection on

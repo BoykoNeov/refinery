@@ -418,6 +418,34 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
     }
     require_compatible_heat_capacity(scenario)?;
     require_line_flash_plant(scenario)?;
+    require_gas_fill_time_on_flashing_plant(scenario)?;
+    Ok(())
+}
+
+/// A pump's `gas_fill_time_s` is refused on a plant without the line flash
+/// (M55.1, docs/DESIGN.md §60.1): only a line flash offers a pump's suction any
+/// vapour, so its pocket never fills and the key would be a number nothing
+/// reads — `npsh_required_m`'s refusal on a flashing plant, the other way round.
+pub(crate) fn require_gas_fill_time_on_flashing_plant(
+    scenario: &ScenarioFile,
+) -> Result<(), SimError> {
+    if scenario.fidelity.line_flash == "equilibrium" {
+        return Ok(());
+    }
+    for (name, def) in &scenario.nodes {
+        if let NodeDef::Pump {
+            gas_fill_time_s: Some(_),
+            ..
+        } = def
+        {
+            return Err(SimError::Scenario(format!(
+                "pump '{name}' declares gas_fill_time_s, but this plant selects no line \
+                 flash: its suction never offers vapour, so no gas collects in it and the \
+                 number would change nothing. Select line_flash = \"equilibrium\" in \
+                 [fidelity], or remove gas_fill_time_s (docs/DESIGN.md §60.1)."
+            )));
+        }
+    }
     Ok(())
 }
 

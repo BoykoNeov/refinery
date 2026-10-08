@@ -420,6 +420,13 @@ pub enum NodeDef {
         /// bubble pressure, and a liquid — both refused at load otherwise.
         #[serde(default)]
         npsh_required_m: Option<f64>,
+        /// The time [s] an empty gas pocket takes to fill — and lock the pump —
+        /// while its suction offers 16.5% vapour or more (M55.1,
+        /// docs/DESIGN.md §60.1). Absent: 3 s (`GAS_POCKET_FILL_TIME`). Only on a
+        /// plant with `line_flash = "equilibrium"`, the one place a pump's
+        /// suction can offer vapour; finite and positive.
+        #[serde(default)]
+        gas_fill_time_s: Option<f64>,
     },
     Valve {
         kv: f64,

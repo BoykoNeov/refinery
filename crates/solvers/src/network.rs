@@ -15,8 +15,8 @@ use crate::elements::{
     specific_heat_ratio_factor, two_phase_head_multiplier, QuadraticBranch, CHOKE_BLEND,
     ORIFICE_CD,
 };
-use refinery_core::components::{Phase, Slate};
-use refinery_core::energy::{boundary_temperature, NodeStates};
+use refinery_core::components::{Composition, Phase, Slate};
+use refinery_core::energy::{boundary_temperature, upwind_end, NodeStates};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
     Blowdown, EdgeId, LeakRole, Node, NodeId, NodeKind, Pipe, PlantGraph, PumpSuction, TankState,
@@ -1155,9 +1155,37 @@ fn suction_offer(
     Ok((liquid, offer))
 }
 
+/// The composition `eid` carries this tick (M55.0, docs/DESIGN.md §60.0): its
+/// stored stream's — what last flowed, from the end it last flowed from
+/// (`energy::upwind_end`), so the density cannot jump as a trial pressure
+/// turns the drive across zero — but that end's composition NOW: a supply's or
+/// a reservoir's own, a tank's or a vessel's inventory, a zero-volume node's
+/// state as the solve was handed it; the stored copy itself only where none
+/// was. Before M55 the stored copy was read, which a line flowed at for its
+/// first tick — `Stream::stagnant`'s placeholder, the slate's first component —
+/// and for one tick after its upwind composition moved.
+fn carried_composition<'a>(
+    graph: &'a PlantGraph,
+    previous_states: &'a NodeStates,
+    eid: EdgeId,
+) -> &'a Composition {
+    let pipe = graph.pipe(eid);
+    let node = upwind_end(graph, eid, pipe.stream.mass_flow.value());
+    match &graph.node(node).kind {
+        NodeKind::Source { composition, .. } | NodeKind::Sink { composition, .. } => composition,
+        NodeKind::Tank(tank) => &tank.composition,
+        NodeKind::Vessel(vessel) => &vessel.composition,
+        _ => previous_states
+            .composition
+            .get(&node)
+            .unwrap_or(&pipe.stream.composition),
+    }
+}
+
 /// The liquid density [kg/m³] a stream leaving `node` flows at under `pressure`
 /// [Pa]: at the node's own temperature where it has one, else the previous
-/// tick's resolved value, else the pipe's stored outlet (see `compile_edge`).
+/// tick's resolved value, else the pipe's stored outlet (see `compile_edge`);
+/// at the composition the pipe carries (`carried_composition`).
 fn liquid_density(
     graph: &PlantGraph,
     slate: &Slate,
@@ -1170,9 +1198,7 @@ fn liquid_density(
     let temperature = boundary_temperature(&graph.node(node).kind)
         .or_else(|| previous_states.temperature.get(&node).copied())
         .unwrap_or(pipe.stream.temperature);
-    Ok(pipe
-        .stream
-        .composition
+    Ok(carried_composition(graph, previous_states, eid)
         .density_at(slate, Pascal(pressure), temperature)
         .map_err(|e| SimError::Numerical(format!("pipe {} ({eid:?}): {e}", pipe.name)))?
         .value())
@@ -1342,6 +1368,8 @@ fn compile_edge_at(
             on,
             suction,
             gas_locked,
+            gas_pocket,
+            ..
         } => {
             let h0_eff = if *on { h0.value() } else { 0.0 };
             match suction {
@@ -1394,12 +1422,16 @@ fn compile_edge_at(
                     };
                     // A gas-locked pump makes no head at all, whatever its suction
                     // offers now (M54, docs/DESIGN.md §59.2): the table's fully
-                    // degraded point, held until a person vents it.
+                    // degraded point, held until a person vents it. Short of that,
+                    // the gas its eye has collected takes its share of the push
+                    // the suction leaves (M55.1, §60.1) — a number the engine
+                    // moved between ticks, fixed for this solve.
+                    let pocket = 1.0 - *gas_pocket;
                     let push = |head_multiplier: f64| {
                         if *gas_locked {
                             0.0
                         } else {
-                            1.0 - head_multiplier
+                            (1.0 - head_multiplier) * pocket
                         }
                     };
                     match inlet {
@@ -1418,6 +1450,12 @@ fn compile_edge_at(
                             });
                         }
                         None if *gas_locked && *on => {}
+                        None if *gas_pocket > 0.0 && *on => {
+                            branch = branch.in_series(QuadraticBranch {
+                                alpha: push(0.0) * pump.alpha,
+                                beta: push(0.0) * pump.beta,
+                            })
+                        }
                         None => branch = branch.in_series(pump),
                     }
                 }
@@ -3065,6 +3103,7 @@ pub fn finalize(
             iterations,
             residual,
             converged: true,
+            re_solves: 0,
         },
         // Filled by the driver from the pass it ACCEPTS, never by a pass: a pass
         // does not know whether it will be kept (`solve_with_active_anchoring`).

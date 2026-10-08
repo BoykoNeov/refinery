@@ -44,6 +44,15 @@ fn locked(engine: &Engine) -> bool {
     }
 }
 
+/// The gas collected in the pump's eye, as a share of what locks it (M55.1).
+fn pocket(engine: &Engine) -> f64 {
+    let pump = engine.graph.find_node("feed_pump").unwrap();
+    match engine.graph.node(pump).kind {
+        NodeKind::Pump { gas_pocket, .. } => gas_pocket,
+        _ => unreachable!(),
+    }
+}
+
 /// The story's commands, in the order the file's header tells it.
 enum Beat {
     Supply(f64),
@@ -90,7 +99,9 @@ fn run(engine: &mut Engine, ticks: u32, label: &str) -> u32 {
 
 /// **The file's story, beat by beat, on both fidelities.** At 100 °C the pump
 /// runs on liquid; at 110 °C its suction offers 7–16.5% vapour by volume and it
-/// has lost part of its push; at 118 °C it locks; cooled back to 100 °C it stays
+/// has lost part of its push; a one-second surge to 120 °C fills its gas pocket a
+/// third of the way and it recovers as the pocket drains; held at 120 °C it locks
+/// once the pocket is full, 3 s on; cooled back to 100 °C it stays
 /// dead; a vent is refused while it runs; stopped, vented and started it runs as
 /// it did at first; into 3 bar it still pushes; at 125 °C it locks again and the
 /// check valve holds the line shut instead of letting the destination run back.
@@ -127,9 +138,43 @@ fn the_files_story_on_both_fidelities() {
         );
         assert!(!locked(&engine), "{solver}: locked at 110 °C");
 
-        apply(&mut engine, &Beat::Supply(118.0)).unwrap();
-        worst = worst.max(run(&mut engine, 20, solver));
-        assert!(locked(&engine), "{solver}: not locked at 118 °C");
+        // A one-second surge to 120 °C: the suction offers over a third of its
+        // volume in vapour, the pump has no push, and its pocket fills a third
+        // of the way (M55.1, 3 s to fill). Back at 110 °C it drains at the same
+        // rate, the push it takes fading as it goes, and the pump is where it was.
+        let fall = flow(&engine.snapshot());
+        apply(&mut engine, &Beat::Supply(120.0)).unwrap();
+        worst = worst.max(run(&mut engine, 10, solver));
+        assert!(!locked(&engine), "{solver}: a one-second surge locked it");
+        let surged = pocket(&engine);
+        assert!(
+            (surged - 1.0 / 3.0).abs() < 1e-9,
+            "{solver}: pocket {surged} after a second past the lock point"
+        );
+        apply(&mut engine, &Beat::Supply(110.0)).unwrap();
+        worst = worst.max(run(&mut engine, 2, solver));
+        let recovering = flow(&engine.snapshot());
+        assert!(
+            pocket(&engine) > 0.0 && recovering < fall,
+            "{solver}: {recovering} kg/s with a part-full pocket, {fall} without"
+        );
+        worst = worst.max(run(&mut engine, 18, solver));
+        assert_eq!(pocket(&engine), 0.0, "{solver}: the pocket did not drain");
+        let after = flow(&engine.snapshot());
+        assert!(
+            (after - fall).abs() <= 1e-6 * fall,
+            "{solver}: {after} kg/s after the surge, {fall} before it"
+        );
+
+        // Held at 120 °C the pocket fills in 3 s and the pump locks.
+        apply(&mut engine, &Beat::Supply(120.0)).unwrap();
+        worst = worst.max(run(&mut engine, 25, solver));
+        assert!(
+            !locked(&engine),
+            "{solver}: locked before its pocket filled"
+        );
+        worst = worst.max(run(&mut engine, 15, solver));
+        assert!(locked(&engine), "{solver}: not locked after 4 s at 120 °C");
 
         apply(&mut engine, &Beat::Supply(100.0)).unwrap();
         worst = worst.max(run(&mut engine, 20, solver));
@@ -160,12 +205,13 @@ fn the_files_story_on_both_fidelities() {
         assert!(!locked(&engine));
 
         apply(&mut engine, &Beat::Supply(125.0)).unwrap();
-        worst = worst.max(run(&mut engine, 20, solver));
+        worst = worst.max(run(&mut engine, 40, solver));
         assert!(locked(&engine), "{solver}: not locked at 125 °C");
         let shut = flow(&engine.snapshot());
         assert!(shut.abs() < 1e-6, "{solver}: {shut} kg/s past a shut disc");
 
-        // Measured worst a tick over the story: Newton 11, the game solver 21.
+        // Measured worst a tick over the story: Newton 11, the game solver 19
+        // (21 before M55).
         let cap = if solver == "newton" { 14 } else { 26 };
         assert!(
             worst <= cap,
@@ -224,30 +270,32 @@ fn boundary(
 }
 
 /// **The plant's energy and mass books close on every tick of the story** —
-/// liquid, the pump on the table's fall, locked, stopped, vented, pushing into
-/// 3 bar, and locked behind a shut disc — to round-off of the gross enthalpy
-/// crossing the boundary (measured: at most 1.4e-9, in the locked ticks at
-/// 118 °C; 1e-14 or less on liquid). The counterfactual is the same sum with the latent
+/// liquid, the pump on the table's fall, a surge its pocket survives, locked,
+/// stopped, vented, pushing into 3 bar, and locked behind a shut disc — to
+/// round-off of the gross enthalpy crossing the boundary (measured: at most
+/// 2.2e-10 of the energy and 2.0e-10 of the mass; 1e-14 or less on liquid). The counterfactual is the same sum with the latent
 /// terms left out, which must not close: from 110 °C the line past the valve
 /// boils, and at 125 °C the supply does.
 #[test]
 fn the_books_close_through_the_whole_story() {
     let mut engine = build("newton");
     let slate = engine.slate.clone();
-    let story: [(u64, Beat); 9] = [
+    let story: [(u64, Beat); 11] = [
         (20, Beat::Supply(110.0)),
-        (40, Beat::Supply(118.0)),
-        (60, Beat::Supply(100.0)),
-        (80, Beat::Pump(false)),
-        (90, Beat::Vent),
-        (91, Beat::Pump(true)),
-        (110, Beat::Destination(3.0)),
-        (130, Beat::Supply(125.0)),
-        (150, Beat::Supply(125.0)),
+        (40, Beat::Supply(120.0)),
+        (50, Beat::Supply(110.0)),
+        (70, Beat::Supply(120.0)),
+        (110, Beat::Supply(100.0)),
+        (130, Beat::Pump(false)),
+        (140, Beat::Vent),
+        (141, Beat::Pump(true)),
+        (160, Beat::Destination(3.0)),
+        (180, Beat::Supply(125.0)),
+        (230, Beat::Supply(125.0)),
     ];
     let (mut worst, mut worst_without, mut worst_mass) = (0.0f64, 0.0f64, 0.0f64);
     let (mut scale, mut flow_scale) = (0.0f64, 0.0f64);
-    for t in 1..=150u64 {
+    for t in 1..=230u64 {
         engine.tick().unwrap_or_else(|e| panic!("tick {t}: {e}"));
         let s = engine.snapshot();
         let (power, mass, gross) = boundary(&s, &slate, engine.enthalpy(), true);

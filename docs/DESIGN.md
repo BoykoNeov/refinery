@@ -21014,3 +21014,130 @@ plant run until its pump locks, then stopped.
 - Two pumps joined by one pipe on a flashing plant — refused (B57).
 - A transient model of a gas pocket growing in the impeller: the lock is an
   instant switch at the table's fully degraded point (B56).
+
+## 60. The step tick solved on its own states, and a gas pocket that fills over seconds — ledger rows B50, B53 and B56 (M55)
+
+Asked after M54 closed (2026-10-08): B53 said the 118 °C check-valve plant had
+two steady states and that a cold start locked its pump on the dead one. A
+probe found no second steady state: the "dead" answer lasted exactly the step
+tick, because that tick read the zero-volume valves after the pump at their
+LAST-tick state (B50), and the instant lock (B56) made the one tick permanent.
+The user chose both cures — the stale read removed, and a gas pocket that fills
+over seconds — with four decisions; ROADMAP M55 has them in full.
+
+### 60.0 The step tick solved on its own states (M55.0)
+
+**The loop.** A zero-volume node has no state of its own: the flow solve reads
+the one the last tick resolved for it (§3a fork 6, M5.4's "honest staleness").
+`Engine::tick` now solves, resolves the node states from that solve's flows,
+and — where the density a stream leaving any zero-volume node would flow at has
+moved by more than `SWEPT_DENSITY_TOL` of itself between the states the solve
+read and the states it produced (`energy::swept_density_change`) — solves the
+tick again on the states it just resolved, until it has not. Every pass resolves
+against the TRUE previous tick (`self.node_states`), so a node with no inflow
+holds what it held; nothing is written to the graph until the loop ends.
+- **What is compared is what the solve reads**: the line flash's mixture density
+  at the node's liquid-equivalent where the plant carries vapour, else the
+  composition's density at the node's temperature. A liquid's density ignores
+  its temperature, so a warming liquid plant never re-solves — compared on
+  temperature, every plant with a heated tank re-solved every tick, and the FCC
+  plant on the game solver never settled.
+- **The first tick** has no states to compare: the solve read each pipe's stored
+  stream there, so that is what the first resolved states are compared against.
+- **`SWEPT_DENSITY_TOL` = 1e-8**, the solvers' own relative flow tolerance: a
+  flow moves with its density at most in proportion (a valve as `√ρ`, a pipe's
+  friction as `ρ`), so a density settled that far moves no flow the solve
+  resolves. Steady ticks sit at 1e-16.
+- **`MAX_STATE_PASSES` = 30**, a backstop: a tick that has not settled is an
+  `Err` naming its last move. Measured worst over the corpus, 6 000 ticks:
+  8 solves (the fired gas drum on the game solver, 7 on Newton).
+- **Reported**: `SolveDiagnostics::iterations` is the hardest single solve of the
+  tick — what every iteration cap in the workspace was measured on — and
+  `re_solves` the solves added, absent from the wire while zero.
+
+**A liquid line flows at the composition it carries now**
+(`network::carried_composition`). Until M55 a line's liquid density read the
+pipe's stored composition — the upwind node's of the last tick, and on the
+first tick `Stream::stagnant`'s placeholder, the slate's first component: the
+gas-lock plant at 112 °C flowed 10.50 kg/s on its first tick against a settled
+10.65. It now reads the composition of the end the pipe LAST flowed from, as it
+is now: a supply's or a reservoir's own, a holdup's state as resolved (a starved
+tank's mix) or its inventory before any was, a zero-volume node's as the solve
+was handed it. The end is the last flow's, not the trial pressure's: read at
+whichever end a trial pressure made upwind, the density jumped at zero drive,
+and Newton diverged on `tank_runs_dry` the tick its tank ran dry (the product
+reservoir's declared diesel read for a line carrying kerosene).
+
+**Measured** (corpus, 6 000 ticks, against baselines taken before the first
+edit): 20 of 45 plants moved on each fidelity; every liquid plant re-solves its
+first tick only. The plants that moved: the crude columns, the FCC plants and
+the pump plants by their first tick (the placeholder composition); the gas and
+relief plants, the vessel plant, the flashing rundown and the dry tank on every
+tick a holdup moves. Final answers: steady plants within 1e-10, transients within
+2e-6, `relief_pop_cycle` 0.23% on its make-up flow (its pops fall a little
+differently in time). Cost: the gas and relief plants about 2× their wall time
+(2–3 solves a moving tick), the flashing rundown about +55% (6.3 → 9.8 s per 6 000
+ticks on Newton).
+- Gates: `crates/scenarios/tests/step_tick_reference.rs` (3: a cold start's and
+  a move's first tick on its settled answer at six temperatures where the pump
+  runs, with the instant lock; no re-solve on a settled tick);
+  `upwind_temperature_reference.rs`'s first-tick gate rewritten (the first tick
+  at the tee's own temperature, the second unmoved); the cascade's first tick on
+  its bubble point (it was +0.53 K, the placeholder's transient); and the M54
+  move gates, whose vent now requires the pump to lock again, with a one-tick
+  fill so a lock there is the solve's alone.
+
+**Not built** (M55.0): a gas valve's `γ` and a line's phase test still read the
+stored composition (B58).
+
+### 60.1 A gas pocket that fills over seconds (M55.1)
+
+**The law.** `NodeKind::Pump::gas_pocket`, in `[0, 1]`, moved by the ENGINE at
+the end of each tick a pump runs: up by `dt/τ` while its suction offered
+`GAS_LOCK_VOID_FRACTION` (16.5%) vapour or more, down by the same while it
+offered less or none; `τ` the pump's `gas_fill_time_s`, else
+`GAS_POCKET_FILL_TIME` (3 s). Full locks the pump (`gas_locked`, §59.2) and stays
+full until vented; a stopped pump's pocket holds. Within `POCKET_ROUNDING` (1e-9)
+of full or empty it is full or empty — the sum of `τ/dt` equal steps lands a few
+ulps either side. No published figure was found for how long a centrifugal pump
+runs on a gassy suction before it locks; the default is the user's choice of game
+feel, and the rate does not grow with the vapour past the lock point (B59).
+- **The push it takes**: the solve reads the pocket as a fixed number, like the
+  lock, and scales the pump's whole curve by `(1 − pocket)` on top of RELAP5's
+  `(1 − M_H)` — on the two-phase path and on a liquid suction alike. Moved only
+  between ticks, it puts no new dependence inside a solve. Past 16.5% the table
+  has already taken the push to 90%, so the fade shows where it was asked for:
+  a pump recovering from a surge, and the near-pure-vapour tail.
+- **The setting**: `gas_fill_time_s` on a pump, finite and positive, refused on a
+  plant without the line flash (its suction never offers vapour) — the
+  `npsh_required_m` refusal the other way round.
+- **The vent**: allowed on a stopped pump holding any gas, locked or not; it
+  empties the pocket and clears the lock. Refused on a running pump ("holds gas
+  and is still running") and on one holding none ("holds no gas").
+- **On the wire**: both keys absent while empty / unset, so no plant that never
+  fills a pocket changes a byte.
+
+**Measured** (`crates/scenarios/tests/gas_pocket_reference.rs`, 7, both
+fidelities): a 0.25 °C ramp 110 → 121 °C never parks the pocket part-full and
+first locks at 119.25 °C, where the settled suction offers 19%; a 2 s surge fills
+two thirds at a 0.1 s and a 0.05 s tick alike and the lock lands at 3 s on both;
+a 1 s setting locks on the tenth tick; after a 1.5 s surge the flow climbs back
+every tick as the pocket drains; half full and cooled to a liquid suction it
+still takes its share until drained; a stopped pocket holds 10 s and a vent empties
+it; the refusals by name.
+
+### 60.2 The demo's story, retold (M55.1)
+
+`scenarios/pump_gas_lock.toml`'s header and the pump screen's `gaslock`
+timeline: 100 °C liquid; 110 °C on the fall; a one-second surge to 120 °C fills
+a third of the pocket, and back at 110 °C it drains and the push returns; held at
+120 °C the pump locks 3 s on; cooled to 100 °C it stays dead (7.43 kg/s); a vent
+while running refused; stopped, vented, started — back at 14.91 kg/s; into 3 bar
+11.43 kg/s; 125 °C locked behind the shut disc. The screen draws the pocket
+("gas pocket N% (locks when full)") and prints it on every recorded line. Its
+lock no longer comes at 118 °C, where the pump runs (12.7% vapour, 6.43 kg/s).
+
+### Not built, with what un-defers each (M55)
+
+- A gas valve's `γ` and a line's phase test at the stored composition (B58).
+- A pocket that fills faster the more vapour is offered, or by pump size (B59).

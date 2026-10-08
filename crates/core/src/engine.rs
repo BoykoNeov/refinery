@@ -46,6 +46,31 @@ const MIN_THERMAL_MASS_KG: f64 = 1e-6;
 /// being fitted to either.
 const ROUNDING_MASS_FRACTION: f64 = 1e-9;
 
+/// How far a zero-volume node's density may move, relative to itself, between
+/// the states a flow solve read and the states its flows resolve, and the tick
+/// still be solved (M55.0, docs/DESIGN.md §60.0; `energy::swept_density_change`).
+///
+/// The solvers' own relative tolerance on a flow (`tol_rel`, 1e-8), because a
+/// flow moves with its density at most in proportion — a valve's as `√ρ`, a
+/// pipe's friction as `ρ` — so a density settled this far moves no flow by more
+/// than the solve resolves. Steady ticks sit at round-off, 1e-16; a tick a
+/// supply steps, or a gas holdup's temperature moves, at 1e-4 to 1e-1.
+const SWEPT_DENSITY_TOL: f64 = 1e-8;
+
+/// Solves one tick may take before its zero-volume states settle (M55.0). A
+/// backstop, not a budget: measured over the corpus, 6 000 ticks, at most 8 (the
+/// fired gas drum on the game solver, whose drum outlet's temperature follows
+/// its burner every tick); a tick that has not settled within this many is an `Err` with the
+/// last move in it, never a tick that silently reads stale states.
+const MAX_STATE_PASSES: u32 = 30;
+
+/// How far from full, or from empty, a gas pocket may land and still be full or
+/// empty (M55.1): the rounding of a sum of `fill_time/dt` equal steps, which lands
+/// within a few ulps of 1 or of 0 on either side (measured: 4.2e-17 left after
+/// fifteen steps up and fifteen down); nine orders above that and nine below a step any
+/// plant takes (`dt/fill_time` ≥ 1e-3 at a millisecond tick on a second's fill).
+const POCKET_ROUNDING: f64 = 1e-9;
+
 pub struct EngineConfig {
     pub dt: Seconds,
 }
@@ -750,16 +775,23 @@ impl Engine {
                 let name = self.graph.node(node).name.clone();
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Pump {
-                        gas_locked: false, ..
-                    } => Err(SimError::InvalidCommand(format!(
-                        "pump '{name}' is not gas-locked: there is nothing to vent"
+                        gas_locked: false,
+                        gas_pocket,
+                        ..
+                    } if *gas_pocket == 0.0 => Err(SimError::InvalidCommand(format!(
+                        "pump '{name}' is not gas-locked and holds no gas: there is nothing to vent"
                     ))),
                     NodeKind::Pump { on: true, .. } => Err(SimError::InvalidCommand(format!(
-                        "pump '{name}' is gas-locked and still running: stop it first \
+                        "pump '{name}' holds gas and is still running: stop it first \
                          (`set_pump_on` off), then vent it, then start it"
                     ))),
-                    NodeKind::Pump { gas_locked, .. } => {
+                    NodeKind::Pump {
+                        gas_locked,
+                        gas_pocket,
+                        ..
+                    } => {
                         *gas_locked = false;
+                        *gas_pocket = 0.0;
                         Ok(())
                     }
                     _ => Err(SimError::InvalidCommand(format!(
@@ -975,9 +1007,74 @@ impl Engine {
         //    step 2b writes prescribed column draw flows back into it once the
         //    feed composition is known — the solver deliberately leaves those at
         //    zero (see `network::edge_flows`).
+        let resolve = |solution: &HydraulicSolution| {
+            energy::resolve_node_states(
+                &self.graph,
+                &self.slate,
+                &solution.edge_mass_flow,
+                &solution.edge_dissipation,
+                self.reactions.as_ref(),
+                self.separation.as_ref(),
+                self.thermo.as_ref(),
+                self.enthalpy.as_ref(),
+                self.line_flash.as_ref(),
+                &solution.node_pressure,
+                &self.node_states,
+                &solution.starved,
+                dt,
+            )
+        };
         let mut solution =
             self.flow_solver
                 .solve(&self.graph, &self.slate, &self.node_states, dt)?;
+
+        // 2b. Resolve the node temperature AND composition fields: inertial
+        //     nodes contribute their start-of-tick values, zero-volume nodes mix
+        //     their inflows in flow order (docs/DESIGN.md §4a).
+        //     A tank the solve STARVED is a mixing point here too (M24,
+        //     docs/DESIGN.md §28 fork 4): its outflow is the mix of what it held
+        //     and what it was fed.
+        let mut node_states = resolve(&solution)?;
+
+        // 1b. The same tick's states, re-solved on (M55.0, docs/DESIGN.md §60.0,
+        //     ledger row B50). A zero-volume node has no state of its own: the
+        //     solve read the one the LAST tick resolved, so on the tick a
+        //     supply moves it flowed the plant at the old densities. Re-solved
+        //     on what this tick resolves until the two agree.
+        let mut passes = 1;
+        let mut hardest = solution.diagnostics.iterations;
+        let mut read: Option<energy::NodeStates> = None;
+        loop {
+            let change = energy::swept_density_change(
+                &self.graph,
+                &self.slate,
+                self.line_flash.as_ref(),
+                self.thermo.as_ref(),
+                self.enthalpy.as_ref(),
+                &solution.node_pressure,
+                read.as_ref().unwrap_or(&self.node_states),
+                &node_states,
+            )?;
+            if change <= SWEPT_DENSITY_TOL {
+                break;
+            }
+            if passes == MAX_STATE_PASSES {
+                return Err(SimError::Numerical(format!(
+                    "the zero-volume nodes' densities did not settle within {MAX_STATE_PASSES} \
+                     re-solves of one tick: the last moved {change:.3e} of itself"
+                )));
+            }
+            let next = self
+                .flow_solver
+                .solve(&self.graph, &self.slate, &node_states, dt)?;
+            hardest = hardest.max(next.diagnostics.iterations);
+            let next_states = resolve(&next)?;
+            read = Some(std::mem::replace(&mut node_states, next_states));
+            solution = next;
+            passes += 1;
+        }
+        solution.diagnostics.iterations = hardest;
+        solution.diagnostics.re_solves = passes - 1;
 
         // 2. Apply flows to edge streams.
         for eid in self.graph.edge_ids().collect::<Vec<_>>() {
@@ -998,27 +1095,6 @@ impl Engine {
             pipe.stream.mass_flow = KgPerSec(flow);
         }
 
-        // 2b. Resolve the node temperature AND composition fields: inertial
-        //     nodes contribute their start-of-tick values, zero-volume nodes mix
-        //     their inflows in flow order (docs/DESIGN.md §4a).
-        //     A tank the solve STARVED is a mixing point here too (M24,
-        //     docs/DESIGN.md §28 fork 4): its outflow is the mix of what it held
-        //     and what it was fed.
-        let node_states = energy::resolve_node_states(
-            &self.graph,
-            &self.slate,
-            &solution.edge_mass_flow,
-            &solution.edge_dissipation,
-            self.reactions.as_ref(),
-            self.separation.as_ref(),
-            self.thermo.as_ref(),
-            self.enthalpy.as_ref(),
-            self.line_flash.as_ref(),
-            &solution.node_pressure,
-            &self.node_states,
-            &solution.starved,
-            dt,
-        )?;
         let node_temperature = &node_states.temperature;
 
         // 2b′. Column draws: prescribe ṁ_drawᵢ = splitᵢ · ṁ_feed_now, split by the
@@ -2088,19 +2164,40 @@ impl Engine {
             }
         }
 
-        // 6. Gas locks (M54, docs/DESIGN.md §59.2): a pump that ran this tick
+        // 6. Gas pockets and locks (M54, docs/DESIGN.md §59.2; M55.1, §60.1).
+        //    Every RUNNING pump's pocket moves by `dt` over its fill time: up
         //    while its suction offered the table's fully degraded share of
-        //    vapour is locked from the next tick on, until a person vents it.
-        //    Read off the solve's own report, which only a running pump on a
-        //    flashing plant carries.
-        for (&nid, pump) in &solution.pump_two_phase {
-            if pump.void_fraction >= crate::graph::GAS_LOCK_VOID_FRACTION {
-                if let NodeKind::Pump {
-                    on: true,
-                    gas_locked,
-                    ..
-                } = &mut self.graph.node_mut(nid).kind
-                {
+        //    vapour this tick, down while it offered less or none. A full pocket
+        //    locks the pump from the next tick on, until a person vents it, and
+        //    stays full while it is locked; a stopped pump's pocket holds. Read
+        //    off the solve's own report, which only a running pump on a flashing
+        //    plant carries — every other pump's pocket stays empty, exactly.
+        for nid in self.graph.node_ids().collect::<Vec<_>>() {
+            let gassy = solution
+                .pump_two_phase
+                .get(&nid)
+                .is_some_and(|pump| pump.void_fraction >= crate::graph::GAS_LOCK_VOID_FRACTION);
+            if let NodeKind::Pump {
+                on: true,
+                gas_locked: gas_locked @ false,
+                gas_pocket,
+                gas_fill_time,
+                ..
+            } = &mut self.graph.node_mut(nid).kind
+            {
+                let fill_time = gas_fill_time.unwrap_or(crate::graph::GAS_POCKET_FILL_TIME);
+                let step = dt.value() / fill_time.value();
+                *gas_pocket = if gassy {
+                    *gas_pocket + step
+                } else {
+                    *gas_pocket - step
+                };
+                // A sum of `fill_time/dt` equal steps lands within rounding of 1
+                // or of 0, on either side of it.
+                if *gas_pocket <= POCKET_ROUNDING {
+                    *gas_pocket = 0.0;
+                } else if *gas_pocket >= 1.0 - POCKET_ROUNDING {
+                    *gas_pocket = 1.0;
                     *gas_locked = true;
                 }
             }

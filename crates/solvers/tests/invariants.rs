@@ -393,6 +393,8 @@ fn mid_node(m: &Mid, i: usize, fluid: &Fluid) -> Node {
             on,
             suction: None,
             gas_locked: false,
+            gas_pocket: 0.0,
+            gas_fill_time: None,
         },
         Mid::Valve { cv, opening } => NodeKind::Valve {
             cv_max: valve_cv(cv, fluid),
@@ -659,6 +661,8 @@ fn build_tree(inputs: &TreeInputs) -> PlantGraph {
                         on: *on,
                         suction: None,
                         gas_locked: false,
+                        gas_pocket: 0.0,
+                        gas_fill_time: None,
                     },
                     MidDevice::Valve { cv, opening } => NodeKind::Valve {
                         cv_max: valve_cv(*cv, fluid),

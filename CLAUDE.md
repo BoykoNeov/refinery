@@ -148,11 +148,11 @@ godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--p
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Latest closed: M54
-(2026-10-08)** — a pump in two-phase service: RELAP5's head multiplier on the
-vapour its suction offers, the pump's inlet solved inside the iterate, check
-valves and a gas lock a person vents (`vent_pump`) on a flashing plant (B48
-struck, B52–B57 opened), and the gas-lock plant on the pump screen. Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Latest closed: M55
+(2026-10-08)** — the step tick solved on its own states (a tick re-solved until
+the zero-volume nodes' densities settle; a liquid line at the composition it
+carries now) and a gas pocket that fills over seconds before a pump locks
+(`gas_fill_time_s`, default 3 s; B50, B53, B56 struck, B58–B59 opened). Its close-out report and every earlier one are at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

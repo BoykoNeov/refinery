@@ -3168,12 +3168,29 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             a,
             on,
             npsh_required_m,
+            gas_fill_time_s,
         } => NodeKind::Pump {
             h0: Meter(*h0_m),
             a: *a,
             on: *on,
-            // No scenario key: a lock is the engine's to set (M54, §59.2).
+            // No scenario key: a lock and a pocket are the engine's to set
+            // (M54, §59.2; M55.1, §60.1).
             gas_locked: false,
+            gas_pocket: 0.0,
+            // The number is checked here; whether the plant can offer the pump
+            // any vapour, in `require_gas_fill_time_on_flashing_plant`.
+            gas_fill_time: match gas_fill_time_s {
+                None => None,
+                Some(t) if t.is_finite() && *t > 0.0 => Some(Seconds(*t)),
+                Some(t) => {
+                    return Err(SimError::Scenario(format!(
+                        "pump '{name}' has gas_fill_time_s = {t}, which must be a positive \
+                         number of seconds: how long its suction may offer 16.5% vapour \
+                         before the gas collected in its impeller locks it \
+                         (docs/DESIGN.md §60.1)."
+                    )))
+                }
+            },
             // The number is checked here; whether the plant can give the pump a
             // bubble pressure, and whether it pumps a liquid, once the thermo
             // model and the topology exist (`require_pump_suction_answerable`).

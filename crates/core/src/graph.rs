@@ -134,6 +134,23 @@ pub enum NodeKind {
         /// of a plant without a line flash.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         gas_locked: bool,
+        /// The gas collected in this pump's impeller eye, as a share of what
+        /// locks it, in `[0, 1]` (M55.1, docs/DESIGN.md §60.1). Moved by the
+        /// ENGINE at the end of each tick this pump runs: up by `dt` over its
+        /// fill time while its suction offered `GAS_LOCK_VOID_FRACTION` vapour or
+        /// more, down at the same rate while it offered less. Full is
+        /// `gas_locked`, and a locked pump's pocket stays full until a vent
+        /// empties both. Read by the solve as a fixed number: the pump delivers
+        /// `(1 − gas_pocket)` of what its suction would let it. Absent from the
+        /// wire while empty, so no pump that never filled one changes a byte.
+        #[serde(default, skip_serializing_if = "is_empty_pocket")]
+        gas_pocket: f64,
+        /// The time an empty pocket takes to fill [s] while the suction offers
+        /// `GAS_LOCK_VOID_FRACTION` vapour or more (M55.1): the scenario's
+        /// `gas_fill_time_s`, absent for `GAS_POCKET_FILL_TIME`. Allowed only on a
+        /// plant with a line flash, finite and positive (enforced at load).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gas_fill_time: Option<Seconds>,
     },
     /// Control valve, ISA-style: Q = Cv_eff(opening)·sqrt(dP/SG).
     /// `cv_max` in SI-consistent form (m³/s at 1 Pa dP for SG=1) — the
@@ -732,6 +749,21 @@ impl Blowdown {
 /// solver's (`refinery_solvers::elements::two_phase_head_multiplier`), which a
 /// reference test holds to this number.
 pub const GAS_LOCK_VOID_FRACTION: f64 = 0.165;
+
+/// The time an empty gas pocket takes to fill [s] — and so to lock a pump —
+/// while its suction offers `GAS_LOCK_VOID_FRACTION` vapour or more, where a
+/// plant does not set it (M55.1, docs/DESIGN.md §60.1; `NodeKind::Pump::
+/// gas_pocket`). Not a published number: none was found for how long a
+/// centrifugal pump runs on a gassy suction before it locks. Chosen by the user
+/// as game feel — long enough that the one tick a step can mislead (B50) or a
+/// brief surge cannot lock a pump, short enough that a pump past its lock point
+/// visibly locks.
+pub const GAS_POCKET_FILL_TIME: Seconds = Seconds(3.0);
+
+/// Whether a pump's gas pocket is empty — what keeps it off the wire (M55.1).
+fn is_empty_pocket(pocket: &f64) -> bool {
+    *pocket == 0.0
+}
 
 /// A pump's suction limit (M50, docs/DESIGN.md §55, ledger row B9). See
 /// `NodeKind::Pump::suction`.

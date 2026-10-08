@@ -16,11 +16,17 @@
 #    quarters of it by 8%, so the pump settles on that fall at about half its
 #    push — it regulates its own suction a few hundred pascals below boiling.
 #
-# 2. WARMER STILL AND THE PUMP GAS-LOCKS. At 118 °C its suction offers more than
-#    16.5% vapour — the table's "all gone" — and the pump locks: it makes no head
-#    from then on, whatever its suction offers, until a person stops it, vents it
-#    (`vent_pump`) and starts it again. Cooling the supply back to 100 °C does not
-#    clear it: the supply alone pushes 7.4 kg/s through the dead pump.
+# 2. WARMER STILL AND THE PUMP GAS-LOCKS — IF IT STAYS THERE. At 118 °C the
+#    pump still runs, on the last of the fall (12.7% vapour, 6.4 kg/s). At 120 °C
+#    its suction offers over a third of its volume in vapour, past the table's
+#    "all gone" at 16.5%, and gas collects in the impeller's eye: the pocket
+#    fills in 3 s (M55; a pump's `gas_fill_time_s` sets it). A one-second surge
+#    fills a third of it, and back on the fall it drains at the same rate, the
+#    pump recovering its push as it goes. Held there, the pocket fills and the
+#    pump locks: it makes no head from then on, whatever its suction offers,
+#    until a person stops it, vents it (`vent_pump`) and starts it again.
+#    Cooling the supply back to 100 °C does not clear it: the supply alone pushes
+#    7.4 kg/s through the dead pump.
 #
 # 3. THE CHECK VALVE KEEPS A DEAD PUMP'S LINE FROM RUNNING BACK. Raise the
 #    destination above the supply's 2.4 bar and a locked pump cannot hold it:
