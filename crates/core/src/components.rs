@@ -27,7 +27,7 @@ pub enum Phase {
     Gas,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PseudoComponent {
     pub name: String,
     /// The cut's true boiling point **at `units::P_ATM`** — the NORMAL boiling
@@ -141,7 +141,7 @@ impl PseudoComponent {
 
 /// The ordered component list for one engine instance. Order is canonical:
 /// `Composition` fractions index into it. Immutable after engine build.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Slate {
     components: Vec<PseudoComponent>,
 }

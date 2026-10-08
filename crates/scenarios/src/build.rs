@@ -261,11 +261,11 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // the two property seams. All four are stateless, so the copies cannot
     // disagree; `select_*` is the one place each name is read.
     let line_flash = select_line_flash(&scenario.fidelity.line_flash)?;
-    let solver_flash = refinery_solvers::network::OwnedLineFlash {
-        model: select_line_flash(&scenario.fidelity.line_flash)?,
-        thermo: select_thermo(&scenario.fidelity.thermo)?,
-        enthalpy: select_enthalpy(&scenario.fidelity.heat_capacity)?,
-    };
+    let solver_flash = refinery_solvers::network::OwnedLineFlash::new(
+        select_line_flash(&scenario.fidelity.line_flash)?,
+        select_thermo(&scenario.fidelity.thermo)?,
+        select_enthalpy(&scenario.fidelity.heat_capacity)?,
+    );
     let flow: Box<dyn FlowSolver> = match scenario.fidelity.flow.as_str() {
         "newton" => {
             Box::new(refinery_solvers::NewtonFlowSolver::default().with_line_flash(solver_flash))

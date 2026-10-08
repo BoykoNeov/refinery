@@ -198,6 +198,7 @@ impl FlowSolver for SimpleFlowSolver {
         // loop around it, because the stale classification defeats both
         // fidelities and one driver is what keeps them agreeing (DESIGN §3c).
         validate_degrees(graph)?;
+        self.line_flash.begin_solve();
         let mut warm_start = std::mem::take(&mut self.warm_start);
         // A relief keeps its last answer where the plant has two (M48.1,
         // docs/DESIGN.md §53): the driver may run a second solve on a copy

@@ -12,6 +12,30 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M56 is CLOSED (2026-10-08): the line flash's densities remembered — the frame
+budget M55 overran, back inside it with no answer moved — `docs/DEFERRED.md` A24
+logged and struck, A25 opened.** Asked after M55 as "what is next"; the
+recommended direction, the user's "go". DESIGN §61.
+- **Measured first**: 98% of the flashing rundown's tick on the game solver was
+  the line flash's density (a bisection of isothermal flashes, each a bisection
+  of its own), 87% of the gas-lock plant's — and most questions were asked
+  again bit for bit: a third new within a solve on the one, under 1% new in a
+  whole run on the other.
+- **The memo**: each solver's `OwnedLineFlash` remembers what its model answered,
+  keyed on every bit of composition, liquid-equivalent temperature and pressure;
+  the slate compared on every recall; two solves of memory, 4 096 entries a map;
+  never an `Err`; never iterated. The model, thermo and enthalpy are private to
+  it, so nothing else can fill it.
+- **Measured after**: all 45 plants byte-identical on both fidelities. The
+  flashing rundown 3.1–3.9 → 1.24 ms a tick on the game solver (2× inside the
+  budget), the gas-lock plant 1.5 → 0.49 ms; on Newton 1.5–2.2 → 1.10 and
+  0.15 → 0.07. Alternating builds in one session, a control plant unmoved.
+- **Offered, not built** (A25): a faster flash would cut the rest several-fold
+  and move the boiling plants' answers at round-off; the engine's own sweep is
+  unremembered (a sixth of the remaining tick).
+- Gates: `network::density_memo_tests` (6). Mutations: six, all caught; a solver
+  that skips the memo's rotation moves no answer and is caught only by wall time.
+
 **M55 is CLOSED (2026-10-08): the step tick solved on its own states, and a gas
 pocket that fills over seconds — `docs/DEFERRED.md` B50, B53 and B56 struck,
 B58–B60 opened.** Asked after M54: B53's "two steady states, the lock picks one"

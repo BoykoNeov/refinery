@@ -25,7 +25,8 @@ use refinery_core::traits::{
     EnthalpyModel, HydraulicSolution, LineFlashModel, PumpSuctionState, PumpTwoPhaseState,
     SolveDiagnostics, StarvedTank, ThermoModel, TwoPhaseDensity,
 };
-use refinery_core::units::{KgPerSec, Meter, Pascal, Seconds, Watt, G, P_ATM};
+use refinery_core::units::{Kelvin, KgPerSec, Meter, Pascal, Seconds, Watt, G, P_ATM};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Valve openings below this snap to fully closed, so a valve "cracked to
@@ -133,6 +134,11 @@ pub struct LineFlash<'a> {
     pub model: &'a dyn LineFlashModel,
     pub thermo: &'a dyn ThermoModel,
     pub enthalpy: &'a dyn EnthalpyModel,
+    /// The densities these three have already answered (M56, docs/DESIGN.md
+    /// §61), where the view is an `OwnedLineFlash`'s; `None` on `LIQUID`, which
+    /// answers none. Private so that no view can pair a memo with a model other
+    /// than the one that filled it.
+    memo: Option<&'a RefCell<DensityMemo>>,
 }
 
 impl LineFlash<'static> {
@@ -143,37 +149,179 @@ impl LineFlash<'static> {
         model: &crate::line_flash::NoLineFlash,
         thermo: &crate::ConstantThermo,
         enthalpy: &crate::enthalpy::ConstantEnthalpy,
+        memo: None,
     };
+}
+
+impl LineFlash<'_> {
+    /// `LineFlashModel::density` through this view's memo (M56, docs/DESIGN.md
+    /// §61): the answer already given for these exact inputs where there is
+    /// one, else the model's, remembered. The same bits either way — the model
+    /// is a function of its arguments and the memo is keyed on all of them that
+    /// can change (`DensityMemo`).
+    fn density(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        liquid_equivalent: Kelvin,
+        pressure: Pascal,
+    ) -> Result<Option<TwoPhaseDensity>, SimError> {
+        let answer = |model: &dyn LineFlashModel| {
+            model.density(
+                slate,
+                composition,
+                liquid_equivalent,
+                pressure,
+                self.thermo,
+                self.enthalpy,
+            )
+        };
+        let Some(memo) = self.memo else {
+            return answer(self.model);
+        };
+        let key = DensityMemo::key(composition, liquid_equivalent, pressure);
+        if let Some(found) = memo.borrow_mut().recall(slate, &key) {
+            return Ok(found);
+        }
+        let density = answer(self.model)?;
+        memo.borrow_mut().remember(key, density);
+        Ok(density)
+    }
+}
+
+/// The two-phase densities a solver's line flash has answered (M56,
+/// docs/DESIGN.md §61), so that a question asked again is not flashed again.
+///
+/// **Why it pays.** A density is an isenthalpic flash — a bisection whose every
+/// step is an isothermal flash with a bisection of its own — and a solve asks
+/// for the same one many times over: three per two-phase edge per compile (the
+/// iterate and the density slope's two sides), every edge leaving one node at
+/// that node's pressure, and the pump-inlet search re-reading its inflow's
+/// upwind node, whose pressure it holds. Measured over 1 000 ticks on the game
+/// solver: `flashing_rundown` asked 185 a tick, a third of them new within a
+/// solve; `pump_gas_lock`, settled, 695 a tick and 6 052 new in the whole run.
+///
+/// **Why it moves no bit.** `LineFlashModel::density` is a function of its
+/// arguments. The model, the thermo and the enthalpy are the owning
+/// `OwnedLineFlash`'s, fixed for its life, and the private `memo` field keeps
+/// any other trio from reading this memo; the slate is compared on every
+/// recall and a different one empties the memo; the rest — composition,
+/// liquid-equivalent temperature, pressure — is the key, bit for bit. An `Err`
+/// is never remembered, so it is raised again.
+///
+/// **Bounded by two solves.** Entries go to the current solve's map; at each
+/// solve's start it becomes the previous one and the one before is dropped.
+/// A recall from the previous map is copied into the current one, so a settled
+/// plant — whose solves ask the same questions tick after tick — keeps them,
+/// and a moving one forgets what it stopped asking. A map holds at most
+/// `DENSITY_MEMO_CAPACITY` entries; past that the answer is computed and not
+/// kept. Never iterated (rule 3): looked up, inserted, cleared.
+#[derive(Default)]
+pub struct DensityMemo {
+    /// The slate the entries were answered on.
+    slate: Option<Slate>,
+    current: BTreeMap<Vec<u64>, Option<TwoPhaseDensity>>,
+    previous: BTreeMap<Vec<u64>, Option<TwoPhaseDensity>>,
+}
+
+/// Entries one solve's map may hold (M56). Far above what a solve asks — at
+/// most 122 new questions in one solve over the corpus — so it bounds the
+/// memory of a solve that iterates to its cap rather than shaping any answer.
+const DENSITY_MEMO_CAPACITY: usize = 4096;
+
+impl DensityMemo {
+    /// The key: every bit of the composition, the liquid-equivalent temperature
+    /// and the pressure.
+    fn key(composition: &Composition, liquid_equivalent: Kelvin, pressure: Pascal) -> Vec<u64> {
+        let mut key: Vec<u64> = composition
+            .fractions()
+            .iter()
+            .map(|fraction| fraction.to_bits())
+            .collect();
+        key.push(liquid_equivalent.value().to_bits());
+        key.push(pressure.value().to_bits());
+        key
+    }
+
+    /// Starts a solve: the current map becomes the previous one.
+    fn begin_solve(&mut self) {
+        self.previous = std::mem::take(&mut self.current);
+    }
+
+    /// The answer already given for `key` on `slate`, if any.
+    fn recall(&mut self, slate: &Slate, key: &[u64]) -> Option<Option<TwoPhaseDensity>> {
+        if self.slate.as_ref() != Some(slate) {
+            self.current.clear();
+            self.previous.clear();
+            self.slate = Some(slate.clone());
+            return None;
+        }
+        if let Some(found) = self.current.get(key) {
+            return Some(*found);
+        }
+        let found = *self.previous.get(key)?;
+        self.remember(key.to_vec(), found);
+        Some(found)
+    }
+
+    fn remember(&mut self, key: Vec<u64>, density: Option<TwoPhaseDensity>) {
+        if self.current.len() < DENSITY_MEMO_CAPACITY {
+            self.current.insert(key, density);
+        }
+    }
 }
 
 /// A flow solver's own line flash (M53, docs/DESIGN.md §58 fork 3): the boxes
 /// `LineFlash` borrows. The engine holds another instance of the same model
 /// for its sweep; the loader builds both from one `[fidelity] line_flash`.
 pub struct OwnedLineFlash {
-    pub model: Box<dyn LineFlashModel>,
-    pub thermo: Box<dyn ThermoModel>,
-    pub enthalpy: Box<dyn EnthalpyModel>,
+    model: Box<dyn LineFlashModel>,
+    thermo: Box<dyn ThermoModel>,
+    enthalpy: Box<dyn EnthalpyModel>,
+    /// What these three have answered (M56): private, with them, so that it
+    /// can only ever hold their answers.
+    memo: RefCell<DensityMemo>,
 }
 
 impl OwnedLineFlash {
+    pub fn new(
+        model: Box<dyn LineFlashModel>,
+        thermo: Box<dyn ThermoModel>,
+        enthalpy: Box<dyn EnthalpyModel>,
+    ) -> Self {
+        Self {
+            model,
+            thermo,
+            enthalpy,
+            memo: RefCell::default(),
+        }
+    }
+
     /// The borrowed view every compile reads.
     pub fn view(&self) -> LineFlash<'_> {
         LineFlash {
             model: self.model.as_ref(),
             thermo: self.thermo.as_ref(),
             enthalpy: self.enthalpy.as_ref(),
+            memo: Some(&self.memo),
         }
+    }
+
+    /// Called at the start of every solve: the memo's last solve becomes its
+    /// previous one (`DensityMemo`).
+    pub fn begin_solve(&self) {
+        self.memo.borrow_mut().begin_solve();
     }
 }
 
 impl Default for OwnedLineFlash {
     /// `LineFlash::LIQUID`, owned.
     fn default() -> Self {
-        Self {
-            model: Box::new(crate::line_flash::NoLineFlash),
-            thermo: Box::new(crate::ConstantThermo),
-            enthalpy: Box::new(crate::enthalpy::ConstantEnthalpy),
-        }
+        Self::new(
+            Box::new(crate::line_flash::NoLineFlash),
+            Box::new(crate::ConstantThermo),
+            Box::new(crate::enthalpy::ConstantEnthalpy),
+        )
     }
 }
 
@@ -848,15 +996,7 @@ fn two_phase_density(
         }
     };
     flash
-        .model
-        .density(
-            slate,
-            composition,
-            liquid_equivalent,
-            pressure,
-            flash.thermo,
-            flash.enthalpy,
-        )
+        .density(slate, composition, liquid_equivalent, pressure)
         .map_err(|e| SimError::Numerical(format!("pipe {}: {e}", pipe.name)))
 }
 
@@ -3112,4 +3252,250 @@ pub fn finalize(
         pump_suction: edges.pump_suction,
         pump_two_phase: edges.pump_two_phase,
     })
+}
+
+#[cfg(test)]
+mod density_memo_tests {
+    //! The solver's density memo (M56, docs/DESIGN.md §61): a remembered answer
+    //! is the model's own, bit for bit, and nothing else.
+
+    use super::*;
+    use crate::line_flash::EquilibriumLineFlash;
+    use crate::{ConstantEnthalpy, ConstantThermo, TroutonThermo};
+    use refinery_core::components::{PseudoComponent, Slate};
+    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol};
+
+    /// The flashing rundown's two naphtha cuts, the heavy one's boiling point
+    /// moved by `heavy_shift` [K].
+    fn naphtha(heavy_shift: f64) -> Slate {
+        let cut = |name: &str, tb_c: f64, molar_mass: f64, density: f64, cp: f64| PseudoComponent {
+            name: name.into(),
+            tb: Kelvin(tb_c + 273.15),
+            molar_mass: KgPerMol(molar_mass),
+            density: Some(KgPerM3(density)),
+            cp: JPerKgK(cp),
+            cp_shape: None,
+            phase: Phase::Liquid,
+        };
+        Slate::new(vec![
+            cut("light_naphtha", 80.0, 0.100, 680.0, 2200.0),
+            cut("heavy_naphtha", 150.0 + heavy_shift, 0.130, 750.0, 2100.0),
+        ])
+        .unwrap()
+    }
+
+    fn equilibrium() -> OwnedLineFlash {
+        OwnedLineFlash::new(
+            Box::new(EquilibriumLineFlash),
+            Box::new(TroutonThermo::new()),
+            Box::new(ConstantEnthalpy),
+        )
+    }
+
+    /// The model's own answer, through a view with no memo.
+    fn unremembered(
+        owned: &OwnedLineFlash,
+        slate: &Slate,
+        composition: &Composition,
+        liquid_equivalent: f64,
+        pressure: f64,
+    ) -> Option<TwoPhaseDensity> {
+        LineFlash {
+            memo: None,
+            ..owned.view()
+        }
+        .density(
+            slate,
+            composition,
+            Kelvin(liquid_equivalent),
+            Pascal(pressure),
+        )
+        .unwrap()
+    }
+
+    fn bits(density: Option<TwoPhaseDensity>) -> Option<(u64, u64)> {
+        density.map(|d| (d.mixture.value().to_bits(), d.liquid_volume_share.to_bits()))
+    }
+
+    /// Asked twice over a grid that boils and one that does not, the memo
+    /// answers every second asking and adds nothing — and every answer, first
+    /// or second, is the model's to the bit.
+    #[test]
+    fn a_remembered_density_is_the_models_bit_for_bit() {
+        let owned = equilibrium();
+        let slate = naphtha(0.0);
+        let blend = Composition::from_weights(&[0.7, 0.3]).unwrap();
+        let grid: Vec<(f64, f64)> = [370.0, 388.15, 400.0]
+            .iter()
+            .flat_map(|&t| [1.1e5, 1.4e5, 2.0e5, 3.0e5].map(move |p| (t, p)))
+            .collect();
+        let mut boiled = 0;
+        for round in 0..2 {
+            for &(t, p) in &grid {
+                let remembered = owned
+                    .view()
+                    .density(&slate, &blend, Kelvin(t), Pascal(p))
+                    .unwrap();
+                let direct = unremembered(&owned, &slate, &blend, t, p);
+                assert_eq!(
+                    bits(remembered),
+                    bits(direct),
+                    "round {round}, {t} K, {p} Pa"
+                );
+                boiled += usize::from(round == 0 && direct.is_some());
+            }
+            assert_eq!(
+                owned.memo.borrow().current.len(),
+                grid.len(),
+                "round {round}"
+            );
+        }
+        assert!(
+            boiled > 0 && boiled < grid.len(),
+            "the grid must boil and not boil"
+        );
+    }
+
+    /// One ulp of any input is another key: the key holds every bit of the
+    /// pressure, the liquid-equivalent temperature and the composition.
+    #[test]
+    fn the_key_tells_every_input_apart_by_one_ulp() {
+        let blend = Composition::from_weights(&[0.7, 0.3]).unwrap();
+        let leaner = Composition::from_weights(&[0.7f64.next_down(), 0.3]).unwrap();
+        let (t, p): (f64, f64) = (388.15, 1.4e5);
+        let key = |c: &Composition, t: f64, p: f64| DensityMemo::key(c, Kelvin(t), Pascal(p));
+        let keys = [
+            key(&blend, t, p),
+            key(&blend, t, p.next_up()),
+            key(&blend, t.next_up(), p),
+            key(&leaner, t, p),
+        ];
+        for i in 0..keys.len() {
+            for j in (i + 1)..keys.len() {
+                assert_ne!(keys[i], keys[j], "cases {i} and {j}");
+            }
+        }
+    }
+
+    /// Questions a hair apart, each answered differently by the model, are each
+    /// recalled as their own answer.
+    #[test]
+    fn nearby_questions_are_recalled_as_their_own_answers() {
+        let owned = equilibrium();
+        let slate = naphtha(0.0);
+        let blend = Composition::from_weights(&[0.7, 0.3]).unwrap();
+        let leaner = Composition::from_weights(&[0.7 - 1e-9, 0.3]).unwrap();
+        let (t, p): (f64, f64) = (388.15, 1.4e5);
+        let cases = [
+            (&blend, t, p),
+            (&blend, t, p * (1.0 + 1e-9)),
+            (&blend, t + 1e-6, p),
+            (&leaner, t, p),
+        ];
+        let answers: Vec<_> = cases
+            .iter()
+            .map(|&(c, t, p)| unremembered(&owned, &slate, c, t, p))
+            .collect();
+        for (i, answer) in answers.iter().enumerate().skip(1) {
+            assert_ne!(
+                bits(answers[0]),
+                bits(*answer),
+                "case {i} must answer differently"
+            );
+        }
+        for _ in 0..2 {
+            for (&(c, t, p), answer) in cases.iter().zip(&answers) {
+                let remembered = owned
+                    .view()
+                    .density(&slate, c, Kelvin(t), Pascal(p))
+                    .unwrap();
+                assert_eq!(bits(remembered), bits(*answer));
+            }
+        }
+    }
+
+    /// The memo holds one slate's answers: the same question on another slate
+    /// empties it and is answered afresh.
+    #[test]
+    fn a_different_slate_empties_the_memo() {
+        let owned = equilibrium();
+        let blend = Composition::from_weights(&[0.7, 0.3]).unwrap();
+        let (t, p): (f64, f64) = (388.15, 1.4e5);
+        for slate in [naphtha(0.0), naphtha(10.0), naphtha(0.0)] {
+            let remembered = owned
+                .view()
+                .density(&slate, &blend, Kelvin(t), Pascal(p))
+                .unwrap();
+            assert_eq!(
+                bits(remembered),
+                bits(unremembered(&owned, &slate, &blend, t, p))
+            );
+            assert_eq!(owned.memo.borrow().current.len(), 1);
+        }
+        assert_ne!(
+            bits(unremembered(&owned, &naphtha(0.0), &blend, t, p)),
+            bits(unremembered(&owned, &naphtha(10.0), &blend, t, p)),
+            "the two slates must answer differently, or the test proves nothing"
+        );
+    }
+
+    /// An `Err` is raised every time it is asked, never remembered: a thermo
+    /// with no K-values cannot flash.
+    #[test]
+    fn a_failed_density_is_not_remembered() {
+        let owned = OwnedLineFlash::new(
+            Box::new(EquilibriumLineFlash),
+            Box::new(ConstantThermo),
+            Box::new(ConstantEnthalpy),
+        );
+        let slate = naphtha(0.0);
+        let blend = Composition::from_weights(&[0.7, 0.3]).unwrap();
+        for _ in 0..2 {
+            assert!(owned
+                .view()
+                .density(&slate, &blend, Kelvin(388.15), Pascal(1.4e5))
+                .is_err());
+            assert!(owned.memo.borrow().current.is_empty());
+        }
+    }
+
+    /// Two solves of memory: what a solve asks again is carried into it, what
+    /// two solves in a row did not ask is gone, and no map grows past its cap.
+    #[test]
+    fn the_memo_keeps_what_solves_repeat_and_stays_bounded() {
+        let slate = naphtha(0.0);
+        let answer = Some(TwoPhaseDensity {
+            mixture: KgPerM3(44.0),
+            liquid_volume_share: 0.06,
+        });
+        let mut memo = DensityMemo::default();
+        assert_eq!(
+            memo.recall(&slate, &[1]),
+            None,
+            "an empty memo knows nothing"
+        );
+        memo.remember(vec![1], answer);
+        memo.remember(vec![2], None);
+        memo.begin_solve();
+        assert_eq!(
+            memo.recall(&slate, &[1]),
+            Some(answer),
+            "asked again a solve later"
+        );
+        memo.begin_solve();
+        assert_eq!(
+            memo.recall(&slate, &[1]),
+            Some(answer),
+            "carried by its asking"
+        );
+        assert_eq!(memo.recall(&slate, &[2]), None, "two solves unasked");
+
+        for k in 0..(DENSITY_MEMO_CAPACITY as u64 + 10) {
+            memo.remember(vec![10 + k], None);
+        }
+        assert_eq!(memo.current.len(), DENSITY_MEMO_CAPACITY);
+        memo.begin_solve();
+        memo.begin_solve();
+        assert!(memo.current.is_empty() && memo.previous.is_empty());
+    }
 }

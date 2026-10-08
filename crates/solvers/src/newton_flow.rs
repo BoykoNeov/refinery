@@ -147,6 +147,7 @@ impl FlowSolver for NewtonFlowSolver {
     ) -> Result<HydraulicSolution, SimError> {
         // F6: pumps/valves must have exactly one inlet and one outlet edge.
         validate_degrees(graph)?;
+        self.line_flash.begin_solve();
 
         // The classification is an ACTIVE SET, not a constant: a relief valve's
         // opening depends on the pressure this solve is still finding, so the

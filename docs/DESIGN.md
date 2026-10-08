@@ -21171,3 +21171,119 @@ lock no longer comes at 118 °C, where the pump runs (12.7% vapour, 6.43 kg/s).
 - A pocket that fills faster the more vapour is offered, or by pump size (B59).
 - The step tick re-solved off the line flash, where the one-tick lag M5.4 accepted
   stays (B60).
+
+## 61. The line flash's densities remembered — the frame budget M55 overran (M56)
+
+Asked after M55 closed (2026-10-08): M55's re-solve put the flashing rundown at
+about 2.9 ms a tick on the game solver, past the 2.5 ms frame budget M9.3a wrote
+(§11, "How fast is fast enough"), and no ledger row logged it. Offered as the
+recommended next step, the user said go. ROADMAP M56; ledger row A24, logged and
+struck together, and A25 opened.
+
+### 61.0 Where the time went — measured, not argued
+
+Profiled (samply, release with debug info, 3 000 ticks, symbols from a linker
+map): on the game solver **98% of `flashing_rundown`'s tick was the line flash's
+density** — `EquilibriumLineFlash::settle_full`, a bisection on temperature
+whose every one of 61 steps is an isothermal flash with a 60-step bisection of
+its own (`flash_isothermal`, 54% of the tick by itself). On `pump_gas_lock` —
+the plant the pump screen shows — 87% was the pump-inlet search
+(`solve_pump_inlet`) re-reading its inflow's density at every trial pressure,
+most of it the bubble temperature of a suction that does not boil. The plants
+are two components and six nodes; the cost was the number of densities asked
+for, not the size of the plant.
+
+And most of them had been asked before. Counted over 1 000 ticks (a throwaway
+probe on `settle_full`, keyed on every bit of its inputs):
+
+```text
+                               asked     new within     new within
+                                         their solve    the whole run
+  flashing_rundown  game        185 000      60 836          52 862
+  flashing_rundown  Newton       80 000      52 954          45 236
+  pump_gas_lock     game        695 000     121 988           6 052
+  pump_gas_lock     Newton       70 000      42 587             420
+```
+
+A solve asks three per two-phase edge per compile (the iterate and the density
+slope's two sides, §58 fork 3), once per edge leaving a node at that node's
+pressure, and the pump-inlet search once per trial for an inflow whose upwind
+pressure it holds; a settled plant then asks the same questions tick after tick,
+because its warm-started solve lands on the same bits.
+
+### 61.1 The memo
+
+`network::DensityMemo`, held by each solver's `OwnedLineFlash` beside the model
+it remembers, read through `LineFlash::density` at the one place a solve asks
+for a two-phase density (`two_phase_density`, which `suction_offer` and every
+compile reach).
+- **The same bits, by construction.** `LineFlashModel::density` is a function of
+  its arguments. The model, thermo and enthalpy are the owning
+  `OwnedLineFlash`'s, fixed for its life — its fields are now private and
+  `LineFlash::memo` is private, so no view can pair a memo with another model;
+  the slate is compared on every recall (`Slate` and `PseudoComponent` now derive
+  `PartialEq`) and a different one empties the memo; the composition, the
+  liquid-equivalent temperature and the pressure are the key, every bit. An
+  `Err` is never remembered.
+- **Two solves of memory.** At each solve's start the current map becomes the
+  previous one and the one before is dropped; a recall from the previous map is
+  copied into the current one. A settled plant keeps what it repeats; a moving
+  one forgets what it stopped asking. Each map holds at most 4 096 entries
+  (`DENSITY_MEMO_CAPACITY`, against at most 122 new in one solve over the
+  corpus); past that an answer is computed and not kept.
+- **Determinism (rule 3).** `BTreeMap`s, looked up, inserted and cleared, never
+  iterated. A hit returns what a miss would compute, so neither the order of
+  questions nor the memo's size can move an answer.
+- **Not in `core`.** The engine's own sweep (`resolve_node_states`,
+  `swept_density_change`) flashes through its own instance and is not
+  remembered (ledger row A25).
+
+### 61.2 Measured
+
+Corpus, 6 000 ticks, release: **all 45 plants byte-identical on both
+fidelities** against baselines taken before the first edit.
+
+Wall time, alternating the old build (a worktree at M55's last commit) and the
+new, two rounds each in one session, ms per 6 000 ticks:
+
+```text
+                               old (two rounds)      new (two rounds)
+  flashing_rundown  game       23 576 / 18 529       7 419 / 7 416
+  flashing_rundown  Newton     13 103 /  9 234       6 620 / 6 572
+  pump_gas_lock     game        9 230 /  9 108       2 874 / 3 047
+  pump_gas_lock     Newton        912 /    944         448 /   393
+  crude_column_cascade (control)
+                    game          235 /    242         260 /   266
+                    Newton        228 /    224         231 /   225
+```
+
+The flashing rundown on the game solver: 3.1–3.9 ms a tick → **1.24 ms**, inside
+the 2.5 ms budget by 2×; the gas-lock plant 1.5 → 0.49 ms. The control, which has
+no line flash and never reaches the memo, sits within this machine's drift (the
+corpus run just before had it at 251 old and 242 new).
+
+What is left on the flashing rundown is new questions: `flash_isothermal`'s
+bisection is 55–64% of the remaining tick, and the engine's uncached sweep
+15–17%.
+
+- Gates (`network::density_memo_tests`, 6): a remembered density is the model's
+  bit for bit over a grid that boils and one that does not, and a second asking
+  adds no entry; the key tells every input apart by one ulp; questions a hair
+  apart are recalled as their own answers; a different slate empties the memo;
+  an `Err` is not remembered; what a solve repeats is kept, what two solves did
+  not ask is gone, and a map stops at its cap. Mutations: six (the key without
+  the pressure, without the temperature; no slate check; no cap; no copy from
+  the previous map; no rotation), all caught. Not gated by a test: a solver
+  that never calls `begin_solve` — every answer is unchanged and its memo
+  stops growing at the cap, so only the wall time shows it.
+
+### Not built, with what un-defers each (M56)
+
+- **A faster flash** (A25): Newton on Rachford–Rice and a bracketed superlinear
+  search on the isenthalpic temperature (the bubble point's arrangement, §11
+  M9.3a) would cut the remaining cost several-fold, and would move the two
+  boiling plants' answers at round-off — a change of answer, so the user's to
+  make. Un-defers when a boiling plant's tick on the game solver presses on the
+  budget again.
+- **The engine's sweep remembered** (A25): the same memo in `core` needs the
+  engine to hold one; the sweep is a sixth of the remaining tick.

@@ -8922,3 +8922,46 @@ the pocket drawn and printed. DESIGN §60.1–60.2.
 **Ledger**: B50, B53 (wrong: no second steady state) and B56 struck; B58 (a gas
 valve's `γ` at the stored composition), B59 (one fill rate whatever the
 vapour) and B60 (the one-tick lag kept off the line flash, decision 5) opened.
+
+## M56 — the line flash's densities remembered: the frame budget M55 overran; ledger row A24 logged and struck, A25 opened; opened on a decision
+
+Asked after M55 closed (2026-10-08): "what is next" was answered with five
+directions, the recommended one first — M55 had put the flashing rundown at
+about 2.9 ms a tick on the game solver, past the 2.5 ms frame budget (DESIGN
+§11, M9.3a), and nothing logged it. The user said "go with your
+recommendation".
+
+**Measured before choosing** (DESIGN §61.0): 98% of the flashing rundown's tick
+on the game solver, and 87% of the gas-lock plant's (the pump screen's), was the
+line flash's two-phase density — a bisection of isothermal flashes, each a
+bisection of its own — and most of the questions repeated an earlier one bit
+for bit: a third new within a solve on the flashing rundown, under 1% new in a
+whole run on the settled gas-lock plant.
+
+**Choices made without the user, each stated where it is built:**
+- Speed bought only where no answer moves: a memo keyed on every input bit,
+  inside each solver's own line flash. Faster methods for the flash itself (Newton
+  on Rachford–Rice, a superlinear temperature search) would move the boiling
+  plants' answers at round-off, and are offered, not built (A25) — M55's decision
+  5 came of a reach the user learned of after the push.
+- Two solves of memory, capped at 4 096 entries a map; the slate compared on
+  every recall; nothing remembered on an `Err`.
+- The engine's own sweep left unremembered (A25): a sixth of the remaining tick,
+  and a memo there would be `core`'s.
+
+### M56.0 — **LANDED** 2026-10-08: the memo — M56 is CLOSED
+
+`network::DensityMemo` in `OwnedLineFlash` (whose fields are now private, built
+by `OwnedLineFlash::new`), read through `LineFlash::density`, rotated by each
+solver's `begin_solve`; `Slate` and `PseudoComponent` derive `PartialEq`.
+DESIGN §61.
+
+- Corpus: 45 of 45 plants byte-identical on both fidelities.
+- Wall time (alternating builds, one session): the flashing rundown 3.1–3.9 →
+  1.24 ms a tick on the game solver, 1.5–2.2 → 1.10 on Newton; the gas-lock plant
+  1.5 → 0.49 on the game solver, 0.15 → 0.07 on Newton; the control plant
+  unmoved within drift.
+- Gates: `network::density_memo_tests` (6). Mutations: six, all caught.
+
+**Ledger**: A24 (the overrun) logged and struck; A25 opened (the flash's own
+cost, and the engine's sweep, unremembered).
