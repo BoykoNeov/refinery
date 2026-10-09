@@ -156,8 +156,10 @@ flow solver (`network::DensityMemo`, no answer moved); M56.1 (the user's
 decision) finds the line flash's two roots by superlinear searches (two boiling
 plants moved ≤ 7.6e-10). The flashing rundown is back inside the 2.5 ms budget;
 the gas-lock story's locked beat is not (worst 130–174 ms on the game solver,
-19 sweeps a tick while the pump DIES behind its shut disc, 3 s; measured
-2026-10-09, DESIGN §61.4, a cure awaits the user's decision) — M56.2 is that stall
+19 sweeps a tick while the pump DIES behind its shut disc, 3 s; DESIGN §61.4).
+M56.2 (the user's decision) warm-starts the pump inlet's search: 41 trials →
+13, that beat 88–91 → 24 ms a tick on the game solver, Newton inside the
+budget on every tick; the 19 sweeps remain (the next step's subject)
 (A24 narrowed, A25). **Latest closed: M55 (2026-10-08).** Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.

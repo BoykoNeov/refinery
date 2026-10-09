@@ -1110,11 +1110,30 @@ pub fn pump_inlets(
 /// few dozen.
 const PUMP_INLET_ITERATIONS: u32 = 200;
 
+/// The warm bracket's first step away from the held pressure [Pa] (M56.2,
+/// docs/DESIGN.md §61.5): the regularised square-root law's own width
+/// (`eps_dp`, 1 Pa), the smallest move that changes a branch's flow law.
+const PUMP_INLET_FIRST_STEP_PA: f64 = 1.0;
+
+/// The warm bracket's growth per step: 8 spans 1 Pa to the cold bracket's
+/// hundred kilopascals in six steps, and the measured moves of a tick (a few
+/// hundred pascals) in four.
+const PUMP_INLET_GROWTH: f64 = 8.0;
+
 /// Solve a pump's inlet pressure (`PumpInlet`) in `pressures`, its neighbours
-/// held: the root of the node's balance `ṁ_in − ṁ_out` [kg/s], bracketed between
-/// the pressure floor and the first pressure above its neighbours' at which the
-/// balance is not positive, then closed by the Illinois variant of regula falsi
-/// (Dowell & Jarratt, BIT 11, 1971) to `tol_kg_s`.
+/// held: the root of the node's balance `ṁ_in − ṁ_out` [kg/s], bracketed and
+/// then closed by the Illinois variant of regula falsi (Dowell & Jarratt, BIT
+/// 11, 1971) to `tol_kg_s`.
+///
+/// **The bracket is grown outward from the pressure the node holds** (M56.2,
+/// docs/DESIGN.md §61.5): a step of `PUMP_INLET_FIRST_STEP_PA` toward the root
+/// (the balance falls as the pressure rises), growing by `PUMP_INLET_GROWTH`,
+/// never past the cold bracket's own ends. Where that finds no sign change — the root beyond
+/// the neighbours' pressures, or a balance that is not finite — the cold
+/// bracket is taken: the pressure floor, and the first pressure above the
+/// neighbours' at which the balance is not positive. Started cold every time,
+/// the search took 41 trials on the gas-lock story's dying pump, about 230
+/// times a tick; warm, 13.
 ///
 /// `Ok(false)`, with `pressures` unchanged, when the balance has no root with
 /// the neighbours held: still negative at the pressure floor (the pump would
@@ -1136,7 +1155,13 @@ pub fn solve_pump_inlet(
     tol_kg_s: f64,
 ) -> Result<bool, SimError> {
     let held = pressures[&inlet.node];
-    let balance = |p: f64, pressures: &mut BTreeMap<NodeId, f64>| -> Result<f64, SimError> {
+    let (upstream, _) = graph.endpoints(inlet.inflow);
+    let (_, downstream) = graph.endpoints(inlet.outflow);
+    let ceiling = pressures[&upstream]
+        .max(pressures[&downstream])
+        .max(held)
+        .max(P_ATM.value());
+    let root = inlet_root(held, ceiling, tol_kg_s, |p| {
         pressures.insert(inlet.node, p);
         let into = edge_mass_flow(
             graph,
@@ -1157,35 +1182,93 @@ pub fn solve_pump_inlet(
             eps,
         )?;
         Ok(into - out)
+    })?;
+    pressures.insert(inlet.node, root.unwrap_or(held));
+    Ok(root.is_some())
+}
+
+/// The root [Pa] of a pump inlet's `balance` [kg/s] (`solve_pump_inlet`), a
+/// function falling with the pressure, searched from `held` [Pa] inside
+/// `[RHO_EVAL_P_FLOOR, ceiling]` and past `ceiling` by doubling; `None` where it
+/// has none. Split from the plant so its tests can hand it a balance of their
+/// own and count what it asks (`pump_inlet_search_tests`).
+fn inlet_root(
+    held: f64,
+    ceiling: f64,
+    tol_kg_s: f64,
+    mut balance: impl FnMut(f64) -> Result<f64, SimError>,
+) -> Result<Option<f64>, SimError> {
+    // The warm bracket, grown from `held` toward the root inside
+    // `[RHO_EVAL_P_FLOOR, ceiling]`: `(lo, b_lo, hi, b_hi)` with `b_lo > 0 ≥ b_hi`.
+    let mut warm = None;
+    let b_held = if held.is_finite() && held > RHO_EVAL_P_FLOOR {
+        balance(held)?
+    } else {
+        f64::NAN
     };
-    let mut lo = RHO_EVAL_P_FLOOR;
-    let mut b_lo = balance(lo, pressures)?;
-    if b_lo <= 0.0 {
-        pressures.insert(inlet.node, held);
-        return Ok(false);
-    }
-    let (upstream, _) = graph.endpoints(inlet.inflow);
-    let (_, downstream) = graph.endpoints(inlet.outflow);
-    let mut hi = pressures[&upstream]
-        .max(pressures[&downstream])
-        .max(held)
-        .max(P_ATM.value());
-    let mut b_hi = balance(hi, pressures)?;
-    let mut doublings = 0;
-    while b_hi > 0.0 {
-        doublings += 1;
-        if doublings > 60 {
-            pressures.insert(inlet.node, held);
-            return Ok(false);
+    // A held pressure that already meets `tol_kg_s` is NOT kept: it is
+    // bracketed and closed like any other. Kept, a node with no flow stays on
+    // whichever side of its root the last solve's noise left it, and the
+    // engine's re-solve of a tick (§60) never settled on M54.1's pump plant
+    // moved to 125 °C into 3 bar — the zero-volume nodes' densities moving 3.8×
+    // of themselves after 30 re-solves. It saved 0.2 trials a search.
+    if b_held.is_finite() {
+        let rising = b_held > 0.0;
+        let mut step = PUMP_INLET_FIRST_STEP_PA;
+        let mut near = (held, b_held);
+        loop {
+            let next = if rising {
+                (near.0 + step).min(ceiling)
+            } else {
+                (near.0 - step).max(RHO_EVAL_P_FLOOR)
+            };
+            if next == near.0 {
+                break;
+            }
+            let b_next = balance(next)?;
+            if !b_next.is_finite() {
+                break;
+            }
+            if rising && b_next <= 0.0 {
+                warm = Some((near.0, near.1, next, b_next));
+                break;
+            }
+            if !rising && b_next > 0.0 {
+                warm = Some((next, b_next, near.0, near.1));
+                break;
+            }
+            near = (next, b_next);
+            step *= PUMP_INLET_GROWTH;
         }
-        lo = hi;
-        b_lo = b_hi;
-        hi *= 2.0;
-        b_hi = balance(hi, pressures)?;
     }
+
+    // The cold bracket, where the warm one found no sign change.
+    let (mut lo, mut b_lo, mut hi, mut b_hi) = match warm {
+        Some(bracket) => bracket,
+        None => {
+            let mut lo = RHO_EVAL_P_FLOOR;
+            let mut b_lo = balance(lo)?;
+            if b_lo <= 0.0 {
+                return Ok(None);
+            }
+            let mut hi = ceiling;
+            let mut b_hi = balance(hi)?;
+            let mut doublings = 0;
+            while b_hi > 0.0 {
+                doublings += 1;
+                if doublings > 60 {
+                    return Ok(None);
+                }
+                lo = hi;
+                b_lo = b_hi;
+                hi *= 2.0;
+                b_hi = balance(hi)?;
+            }
+            (lo, b_lo, hi, b_hi)
+        }
+    };
     if !(b_lo.is_finite() && b_hi.is_finite()) {
-        pressures.insert(inlet.node, held);
-        return Ok(false);
+        return Ok(None);
     }
     // Illinois: regula falsi, halving the retained end's value whenever the same
     // end is kept twice, so the bracket closes from both sides.
@@ -1200,7 +1283,7 @@ pub fn solve_pump_inlet(
         if !(root > lo && root < hi) {
             root = 0.5 * (lo + hi);
         }
-        b_root = balance(root, pressures)?;
+        b_root = balance(root)?;
         if b_root > 0.0 {
             lo = root;
             b_lo = b_root;
@@ -1217,8 +1300,7 @@ pub fn solve_pump_inlet(
             side = 1;
         }
     }
-    pressures.insert(inlet.node, root);
-    Ok(true)
+    Ok(Some(root))
 }
 
 /// The mass flow [kg/s] an edge carries at `pressures`, in graph direction:
@@ -3503,5 +3585,193 @@ mod density_memo_tests {
         memo.begin_solve();
         memo.begin_solve();
         assert!(memo.current.is_empty() && memo.previous.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pump_inlet_search_tests {
+    //! The pump inlet's root search (M56.2, docs/DESIGN.md §61.5): grown from
+    //! the pressure the node holds, it closes where the cold search does, on
+    //! the cold search's own terms, in a fraction of the questions.
+
+    use super::*;
+
+    /// The tolerance the solvers hand the search [kg/s]: a hundredth of the
+    /// game solver's absolute bar.
+    const TOL: f64 = 1e-10;
+
+    /// The regularised square-root law (§11): flow per unit conductance at a
+    /// drop `dp` [Pa], linear within about 1 Pa of zero.
+    fn branch(dp: f64) -> f64 {
+        dp / (dp.abs() + 1.0).sqrt()
+    }
+
+    /// The gas-lock story's dying pump, reduced to its inlet: a supply at
+    /// 2.4 bar draws in through a line of liquid, and the pump's outlet runs to
+    /// a node `rise` [Pa] above its root, at the pump's boiling stream's
+    /// density going forward and the trapped liquid's going back — the
+    /// thirtyfold jump at zero flow (§61.4). Falls as the inlet's pressure
+    /// rises; its root is `root` [Pa].
+    fn dying_pump(root: f64) -> impl Fn(f64) -> f64 {
+        let supply = 2.4e5;
+        let into = move |p: f64| 699.6 * 1e-3 * branch(supply - p);
+        let at_root = into(root);
+        move |p: f64| {
+            let dp = p - root;
+            let density = if dp >= 0.0 { 22.7 } else { 699.6 };
+            into(p) - at_root - density * 1e-3 * branch(dp)
+        }
+    }
+
+    /// The search on `balance` from `held` under `ceiling`, and how many
+    /// pressures it asked about.
+    fn search(held: f64, ceiling: f64, balance: impl Fn(f64) -> f64) -> (Option<f64>, usize) {
+        let mut asked = 0;
+        let root = inlet_root(held, ceiling, TOL, |p| {
+            asked += 1;
+            Ok(balance(p))
+        })
+        .unwrap();
+        (root, asked)
+    }
+
+    /// From either side of the root, near and far, the warm search ends where
+    /// the cold one (a held pressure it cannot start from) does: on a pressure
+    /// whose balance meets the tolerance, a hair from the cold answer.
+    #[test]
+    fn a_warm_search_closes_where_the_cold_one_does() {
+        for root in [1.5e5, 2.4e5 - 3.0, 2.4e5 + 5_618.0] {
+            let balance = dying_pump(root);
+            let ceiling = 3.0e5;
+            let (cold, _) = search(f64::NAN, ceiling, &balance);
+            let cold = cold.expect("the cold search must find the root");
+            assert!(balance(cold).abs() <= TOL, "cold, root {root}");
+            for offset in [-1e5, -5e3, -216.0, -1.0, -1e-3, 1e-3, 1.0, 216.0, 5e3] {
+                let held = (root + offset).min(ceiling);
+                let (warm, _) = search(held, ceiling, &balance);
+                let warm = warm.expect("the warm search must find the root");
+                assert!(
+                    balance(warm).abs() <= TOL,
+                    "root {root}, held {held}: balance {}",
+                    balance(warm)
+                );
+                assert!(
+                    (warm - cold).abs() <= 1e-6,
+                    "root {root}, held {held}: warm {warm} against cold {cold}"
+                );
+            }
+        }
+    }
+
+    /// A held pressure already within the tolerance is not simply kept: it is
+    /// bracketed and closed like any other (a kept one stopped the engine's
+    /// re-solve settling, M54.1's plant), for a handful of questions, and ends
+    /// within the tolerance.
+    #[test]
+    fn a_held_root_is_closed_again_for_a_few_questions() {
+        let root = 2.4e5 - 3.0;
+        let balance = dying_pump(root);
+        let (answer, asked) = search(root, 3.0e5, &balance);
+        assert!(balance(root).abs() <= TOL);
+        let answer = answer.expect("the root");
+        assert!(balance(answer).abs() <= TOL, "balance {}", balance(answer));
+        assert!((2..=6).contains(&asked), "{asked} questions");
+    }
+
+    /// The point of it. Started within a pascal of its root — where most of a
+    /// converging solve's searches start — the warm search asks fewer questions
+    /// than the cold one, and two or three from a pascal off, where its first
+    /// step brackets a root the square-root law is linear around. Started far
+    /// off, its walk out costs at most a few more than the cold search: the
+    /// closing, not the bracket, is most of the cost on a balance with a kink
+    /// at its root (on this one, 30–60 questions from a cold start).
+    #[test]
+    fn a_warm_search_near_its_root_asks_fewer_questions() {
+        for root in [1.5e5, 2.4e5 - 3.0, 2.4e5 + 5_618.0] {
+            let balance = dying_pump(root);
+            let (_, cold) = search(f64::NAN, 3.0e5, &balance);
+            for offset in [-1.0, -1e-3, 1e-3, 1.0] {
+                let (_, warm) = search(root + offset, 3.0e5, &balance);
+                assert!(
+                    warm < cold,
+                    "root {root}, held {offset} Pa off: warm {warm} against cold {cold}"
+                );
+                if offset.abs() == 1.0 {
+                    assert!(warm <= 3, "root {root}, held {offset} Pa off: {warm}");
+                }
+            }
+            for offset in [-1e5, -5e3, -216.0, 216.0, 5e3] {
+                let held = (root + offset).min(3.0e5);
+                let (_, warm) = search(held, 3.0e5, &balance);
+                assert!(
+                    warm <= cold + 8,
+                    "root {root}, held {offset} Pa off: warm {warm} against cold {cold}"
+                );
+            }
+        }
+    }
+
+    /// The warm walk stays inside the cold search's own ends — the pressure
+    /// floor below, the neighbours' pressures above — and so never asks about a
+    /// pressure the cold search would not. Unbounded, it asked the line flash
+    /// about 1.07e9 Pa while being built, where no bubble point exists (an
+    /// `Err`). Here the balance refuses outside `[floor, 1.25e6]` Pa, inside
+    /// which the cold search's doubling closes on a root at 9e5 Pa.
+    #[test]
+    fn the_warm_walk_stays_inside_the_cold_brackets_ends() {
+        let guarded = |root: f64| {
+            let balance = dying_pump(root);
+            move |p: f64| -> Result<f64, SimError> {
+                if (RHO_EVAL_P_FLOOR..=1.25e6).contains(&p) {
+                    Ok(balance(p))
+                } else {
+                    Err(SimError::Numerical(format!("no bubble point at {p} Pa")))
+                }
+            }
+        };
+        for (root, held) in [(9.0e5, 2.9e5), (50.0, 2.0e5)] {
+            let balance = guarded(root);
+            let answer = inlet_root(held, 3.0e5, TOL, &balance)
+                .unwrap_or_else(|e| panic!("root {root}, held {held}: {e}"))
+                .expect("a root inside the bounds");
+            assert!(balance(answer).unwrap().abs() <= TOL, "root {root}");
+        }
+    }
+
+    /// Where the warm bracket cannot close — the root past the ceiling, or a
+    /// balance that is not finite on its way — the cold search answers, as it
+    /// did before; with no root at all, there is none.
+    #[test]
+    fn where_the_warm_bracket_cannot_close_the_cold_one_answers() {
+        // The root above the neighbours' pressures: found by doubling.
+        let high = dying_pump(4.0e5);
+        let (root, _) = search(2.5e5, 3.0e5, &high);
+        let root = root.expect("past the ceiling, the doubling must find it");
+        assert!(high(root).abs() <= TOL, "balance {}", high(root));
+
+        // Not finite where the warm walk's last step before the root lands
+        // (its sixth, 227 449 Pa): a bracket with that end could not close,
+        // so the walk refuses it and the cold bracket, from the floor, finds
+        // the root.
+        let root_at = 2.4e5 - 3.0;
+        let base = dying_pump(root_at);
+        let broken = |p: f64| {
+            if (2.27e5..2.28e5).contains(&p) {
+                f64::NAN
+            } else {
+                base(p)
+            }
+        };
+        let (root, _) = search(1.9e5, 3.0e5, broken);
+        let root = root.expect("the cold bracket must find it");
+        assert!(base(root).abs() <= TOL, "balance {}", base(root));
+
+        // No root at all, from either kind of start.
+        for held in [2.0e5, f64::NAN] {
+            let (root, _) = search(held, 3.0e5, |_| -1.0);
+            assert!(root.is_none(), "negative everywhere, held {held}");
+            let (root, _) = search(held, 3.0e5, |_| 1.0);
+            assert!(root.is_none(), "positive everywhere, held {held}");
+        }
     }
 }

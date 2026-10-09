@@ -21467,14 +21467,95 @@ ticks over budget: the cold start, each supply step, the one-second surge and
 its fill (ticks 51–61), the vent and the restart. Today that is 17 ticks at up to
 19.5 ms on the game solver, and D alone takes it to 6 at up to 9.6.
 
+### 61.5 The inlet search warm-started (M56.2) — the user's decision, and it moves answers
+
+Offered after §61.4 as the one cure that works on its own, and the user chose
+it (2026-10-09), the sweeps to be looked at as a step of their own.
+
+- **The search** (`network::solve_pump_inlet`, its root in `inlet_root`):
+  - It starts from the pressure the node holds and walks toward the root (the balance falls as the pressure
+    rises), 1 Pa first (`PUMP_INLET_FIRST_STEP_PA`, the square-root law's
+    regularisation width), each step 8× the last (`PUMP_INLET_GROWTH`), never
+    below the pressure floor or above the cold bracket's top, the neighbours'
+    pressures.
+  - The first sign change is the bracket; Illinois closes it as before.
+  - A walk that reaches either end with no sign change, or meets a balance that
+    is not finite, takes the cold bracket, as every search did before.
+  - So the warm walk asks about no pressure the cold search would not. The first
+    prototype had no ceiling and asked the line flash about 1.07e9 Pa, where it
+    has no bubble point (`Err`).
+  - **A held pressure that already meets the tolerance is not kept**; it is
+    bracketed and closed like any other. The first build kept it, for one
+    question, and the workspace suite caught what that did:
+    `flashing_check_valve_reference` (M54.1's pump plant, moved to 125 °C into
+    3 bar) failed on the game solver. The engine's re-solve of a tick (§60)
+    never settled: the zero-volume nodes' densities moved 3.8× of themselves
+    after 30 re-solves. A node with no flow, kept where the last solve's noise
+    left it, stays on that side of its root. Closing it again costs 0.2 trials
+    a search.
+- **Measured**, the gas-lock story's dying pump: 41 trials a search → 13.0 on
+  the game solver, and 11.9 on Newton, which calls the same search. The sweeps
+  are unchanged (18.7 → 18.9 a tick through ticks 181–211).
+
+Corpus, 6 000 ticks: **`pump_gas_lock` moved on both fidelities, the other 44
+plants byte-identical on each.** It is the one shipped plant with a pump and a
+line flash. The two stories against the commit before, every value of every
+tick:
+
+- `flashing_rundown`: byte-identical, both fidelities.
+- `pump_gas_lock`, Newton: at most 3.6e-11 relative.
+- `pump_gas_lock`, game solver: at most 4.6e-10 relative off the stagnant nodes.
+- Both fidelities: the gas pocket identical on every tick, full on ticks 100
+  and 210 as before.
+- The stagnant nodes take another draw of their noise (§61.3), on the game
+  solver only. Their flows are ±1e-10 kg/s or less. An edge's temperature moves
+  by up to 25 K and a node's by up to 8 K, their bubble pressure by 20%, and the
+  suction line's vapour fraction appears or disappears on 16 ticks of the
+  dying pump and the lock.
+
+Per tick, the fastest of five runs, the old build and the new alternated, two
+rounds:
+
+```text
+                       ticks 181–211 a tick       ticks > 2.5 ms of 219
+                       mean ms      max ms        all       outside 181–212 (worst)
+  game     old → new   88–91 → 24   110–122 → 30–31   48–49 → 35   17 (17–20 ms) → 4 (8.8 ms)
+  Newton   old → new  4.5–4.6 → 1.6   6.7 → 2.1–2.2     32 → 0     2 (3.1–3.2 ms) → 0
+  flashing_rundown: unchanged on both (worst 2.9–3.1 game, 1.0–1.6 Newton, old and new alike)
+```
+
+**Newton is now inside the budget on every tick of the story** (worst 2.47 ms,
+tick 71, a supply step). On the game solver, a sweep through the dying pump
+costs about 1.3 ms instead of 7. So what is left is 19 sweeps a tick, the kink
+at the trapped node's root (§61.4), plus 4 transients at up to 9 ms.
+
+- Gates (`network::pump_inlet_search_tests`, 5) run on `inlet_root` with a
+  balance of their own: the dying pump reduced to its inlet, with the
+  thirtyfold density jump at its root. They check that:
+  - the warm search closes within 1e-6 Pa of the cold answer, from either side,
+    near and far;
+  - a held root is closed again, in 2–6 questions, not kept;
+  - started within a pascal of its root it asks fewer questions than the cold
+    search (two or three from a pascal off), and started far off at most eight
+    more;
+  - the walk stays inside the floor and the ceiling, against a balance that
+    refuses outside them;
+  - where the walk cannot close — the root past the ceiling, an end that is
+    not finite — the cold search answers, and with no root there is none.
+- Mutations: nine, all caught: the walk disabled, a held root kept,
+  no growth, either bound removed, either bracket's ends swapped, the direction
+  reversed, a non-finite step not refused. The last survived its first gate,
+  whose bad pressures lay where the walk steps over them. The gate was moved to
+  the walk's last step before the root.
+
 ### Not built, with what un-defers each (M56)
 
 - **A faster flash** — BUILT by M56.1 (§61.3), on the user's decision.
-- **The dying pump's stall** (A25, §61.4): measured, not cured. A pump dying
-  behind a shut disc takes 19 sweeps a tick on the game solver for 3 s, at about
-  110 ms a tick. A warm-started inlet search cuts that fourfold on the game
-  solver and to the budget on Newton, after which the sweeps alone decide it. The
-  kink at the trapped node's root is what the sweeps cost, and nothing
-  prototyped removes it. The user's decision.
+- **The warm-started inlet search** — BUILT by M56.2 (§61.5), on the user's
+  decision.
+- **The dying pump's sweeps** (A25, §61.4): 19 a tick on the game solver for
+  3 s, about 24 ms a tick since §61.5. The kink at the trapped node's root is
+  what they cost, and nothing prototyped removes it (A + C together cut them to
+  7). Un-defer: the user's decision, after M56.2.
 - **The engine's sweep remembered** (A25): the same memo in `core` needs the
   engine to hold one; the sweep is a sixth of the remaining tick.

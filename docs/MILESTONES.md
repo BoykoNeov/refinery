@@ -53,7 +53,17 @@ recommended direction, the user's "go". DESIGN §61.
   at a kink in the trapped node's balance, and each sweep costs about 7 ms of
   boiling densities. A warm-started inlet search cuts a sweep to about 1.4 ms on
   the game solver and brings Newton to the budget. Nothing prototyped gets the
-  game solver within it. A cure awaits the user's decision.
+  game solver within it.
+- **M56.2, on the user's decision** (moves answers): the pump inlet's search
+  grown from the pressure it holds, inside the cold search's ends; 41 trials a
+  search → 13; a held root closed again, not kept (kept, it stopped M54.1's
+  re-solve settling). `pump_gas_lock` moved on both fidelities (Newton ≤ 3.6e-11,
+  the game solver ≤ 4.6e-10 off its stagnant nodes), every other plant identical.
+  Through the dying pump the game solver 88–91 → 24 ms a tick on average; Newton
+  inside the budget on every tick of the story. `pump_inlet_search_tests` (5);
+  nine mutations, all caught. DESIGN §61.5.
+- **Next**: the game solver's 19 sweeps a tick through the dying pump, and 4
+  transients at up to 9 ms.
 
 **M55 is CLOSED (2026-10-08): the step tick solved on its own states, and a gas
 pocket that fills over seconds — `docs/DEFERRED.md` B50, B53 and B56 struck,

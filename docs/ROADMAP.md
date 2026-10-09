@@ -8996,7 +8996,7 @@ Newton under `rtsafe`'s safeguard, closed at the objective's own rounding);
 - Gates: `line_flash::search_tests` (3). Mutations: nine, seven caught, two
   survivors explained (§61.3).
 
-### M56.2 — the "locked beat" stall: MEASURED 2026-10-09, a cure awaits the user's decision
+### M56.2 — **LANDED** 2026-10-09: the "locked beat" measured (a dying pump), and the inlet search warm-started
 
 The game solver takes 18–19 sweeps on every tick from 181 to 211 of the gas-lock
 story, about 230 pump-inlet searches a tick. **The pump is not locked there: it
@@ -9017,3 +9017,25 @@ is one sweep. DESIGN §61.4.
   stagnant nodes' noise as M56.1 did.
 - A24 stays open whatever is chosen: 17 other ticks of the story are over budget
   (6 with the warm start).
+
+**Decision 2** (the user's, after the measurement, 2026-10-09): "warm-start
+search now". Build the warm-started inlet search properly and look at the
+sweeps as a step of their own; over "warm start + attack the rounds", "warm
+start, then close M56" and "stop, change nothing".
+
+- Built: `network::solve_pump_inlet` grows its bracket from the pressure the
+  node holds, inside the cold bracket's ends (`inlet_root`). DESIGN §61.5.
+- Corpus: `pump_gas_lock` moved on both fidelities, every other plant
+  byte-identical. Newton's values at most 3.6e-11; the game solver's 4.6e-10
+  off the stagnant nodes, which take another draw of their noise. The pocket is
+  identical on every tick.
+- A held root that meets the tolerance is closed again, not kept: kept, it
+  stopped the engine's re-solve settling on M54.1's pump plant at 125 °C into
+  3 bar (`flashing_check_valve_reference`, game solver).
+- Ticks 181–211 a tick, alternated: the game solver 88–91 → 24 ms mean,
+  110–122 → 30–31 worst; Newton 4.5–4.6 → 1.6 mean and inside the budget on
+  every tick of the story (32 over before). Trials a search 41 → 13; sweeps
+  unchanged.
+- Gates: `network::pump_inlet_search_tests` (5). Mutations: nine, all caught.
+- **Next**: the game solver's 19 sweeps a tick through the dying pump (the kink,
+  §61.4), and 4 transients of the story at up to 9 ms. The user's decision.
