@@ -47,8 +47,13 @@ recommended direction, the user's "go". DESIGN §61.
   on the game solver: the gas-lock story 748 → 130–174 ms, the flashing rundown
   14–16 → 2.9–3.1 ms. `line_flash::search_tests` (3); nine mutations, seven
   caught. DESIGN §61.3.
-- **Next (M56.2)**: the locked beat, where the game solver takes 19 iterations
-  on every tick of a plant standing still.
+- **M56.2, measured 2026-10-09** (DESIGN §61.4): the "locked beat" is a pump
+  DYING. Its pocket fills over 3 s and the liquid trapped behind the shut disc
+  follows its fading rise. The game solver takes 19 sweeps a tick at a kink in
+  the trapped node's balance, and each sweep costs about 7 ms of boiling
+  densities. Once the pump is locked, a tick is one sweep. A warm-started inlet
+  search cuts the worst tick fourfold; nothing prototyped reaches the budget. A
+  cure awaits the user's decision.
 
 **M55 is CLOSED (2026-10-08): the step tick solved on its own states, and a gas
 pocket that fills over seconds — `docs/DEFERRED.md` B50, B53 and B56 struck,

@@ -8996,7 +8996,22 @@ Newton under `rtsafe`'s safeguard, closed at the objective's own rounding);
 - Gates: `line_flash::search_tests` (3). Mutations: nine, seven caught, two
   survivors explained (§61.3).
 
-### M56.2 — next: the locked beat's stall (decision 1's second half)
+### M56.2 — the "locked beat" stall: MEASURED 2026-10-09, a cure awaits the user's decision
 
-The game solver takes 19 iterations on every tick of the gas-lock story's
-locked beat, a plant standing still; about 230 pump-inlet searches a tick.
+The game solver takes 18–19 sweeps on every tick from 181 to 210 of the gas-lock
+story, about 230 pump-inlet searches a tick. **The pump is not locked there: it
+is dying.** Its gas pocket fills over those 3 s and the liquid trapped behind the
+shut disc follows its fading rise down about 216 Pa a tick. Once it locks, a tick
+is one sweep. DESIGN §61.4.
+
+- The sweeps: the trapped node balances at zero flow, where its edge's upwind
+  density jumps thirtyfold as the flow turns. A ±100 Pa slope there is 2–7× off,
+  so the residual falls only threefold a sweep. A first-sweep overshoot is
+  accepted because it lands on the light side. The group correction pairs across
+  the shut disc. Newton takes 7–11 iterations on the same ticks.
+- The cost: about 7 ms a sweep (12 inlet searches of 41 trials), so one sweep
+  alone is three budgets.
+- Prototyped one at a time: an inlet search warm-started from its last answer
+  cuts the worst tick 121–132 → 32 ms (over budget 48 → 37 ticks of 219). With
+  the narrower slope it reaches 27 ms. Nothing reaches 2.5 ms. All of them redraw
+  the stagnant nodes' noise as M56.1 did.

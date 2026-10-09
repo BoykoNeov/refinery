@@ -21377,12 +21377,84 @@ every tick of a plant standing still.
   the answer); a step-size stop that never fired in any measured search was
   removed rather than kept unpinned.
 
+### 61.4 The "locked beat" stall, measured (M56.2) — the plant was not standing still
+
+Measured 2026-10-09 in a throwaway worktree. It logged every sweep, each
+mechanism's move per node, and the pump-inlet searches per tick. Nothing in the
+repo changed. The gas-lock story on the game solver, by tick:
+
+- **The slow ticks are 181–210, and the pump is dying through them, not
+  locked.** The gas pocket fills from 0 to 1 over those 30 ticks (3 s,
+  `gas_fill_time_s`). The pump's rise falls by an equal step each tick, 6 482 Pa
+  down to 0, and the lock sets on tick 210. The node between the pump and the
+  shut disc (`discharge_check`) is a pocket of trapped liquid that must follow
+  that rise down about 216 Pa every tick. Once the pump is locked (tick 211 on),
+  every tick takes one sweep and well under 1 ms. §61.2–61.3 and A25 called the
+  stall "a plant standing still". That was wrong, and so is any cure shaped like
+  "skip the work when nothing changed": the answer moves on every tick.
+- **Why 19 sweeps: the trapped node's root sits on a kink.** That node balances
+  at exactly zero flow on the pump's outlet edge. There the upwind density jumps
+  thirtyfold as the noise-sized flow turns round: 22.7 kg/m³ for the pump's
+  boiling stream going forward, 699.6 for the trapped liquid coming back. Its
+  node step takes its slope by central difference over ±100 Pa
+  (`DENSITY_SLOPE_DELTA`) while it sits millipascals from its root. That slope
+  is 2.3× too shallow on the near side (2.79e-3 against 6.37e-3 kg/(s·Pa),
+  one-sided at 1e-6 Pa), and the far side is 4–7× steeper still. The step
+  overshoots, the ladder cuts it to a quarter, and the residual falls about
+  threefold a sweep (×0.32), so 1 kg/s → 1e-8 takes 17 sweeps.
+- **The first sweep of each tick causes the kick.** The full step from 216 Pa
+  above the root lands on its mirror, a square-root law's Newton step (§11). The
+  ladder accepts it because on the far side the flow runs forward at the light
+  density, so the residual there looks thirty times smaller than it is in
+  distance. The pump's inlet then re-solves 210 Pa up and the line starts
+  1 kg/s out of balance.
+- **The group correction pairs across the shut disc.** With the pump's inlet
+  left out of the groups, the only pair left is `discharge_check` and
+  `discharge_valve`, joined by the shut check spool. Its common shift moves the
+  valve's node off its own root every sweep, which is why that node's residual
+  decays in step with the trapped node's, at 1.17% of it.
+- **Each sweep costs about 7 ms there whatever the count.** That is about 12
+  pump-inlet searches a sweep at 41 trials each: the node's own search, the
+  three reduced readings and the ladder beside it, and the group shift's.
+  Over the window that comes to 230 searches and 9 400 boiling densities a tick.
+  One sweep alone would be three budgets.
+- **Newton shares the kink.** On the same ticks it takes 7–11 iterations,
+  against 0 once the pump is locked. Its worst tick is 7.4 ms.
+
+**Candidate cures, prototyped one at a time behind switches** (game solver, the
+gas-lock story; fastest of five runs, so read ratios):
+
+```text
+                                  sweeps 181–210   worst tick   ticks > 2.5 ms   mean
+  today                               18.7          121–132 ms      48–49 / 219   14–16 ms
+  A  slope over ±0.01 Pa beside an inlet  19.3       99            48           12
+  B  no pair across a link with no conductance  20.0  138           49           13
+  C  Illinois for the node beside an inlet   —    the engine's re-solve does not settle (Err)
+  D  inlet search bracketed outward from its last answer
+                                      19.0           32            37            4.2
+  A + D                               18.8           27            35            3.3
+  A + C + D                            6.9           33            37            2.4
+  A + B + D                           22.8           27            35            2.3
+```
+
+D is the one lever that works on its own: about 9 trials a search instead of
+41, the worst tick ÷4. A and C cut the sweeps only together, and B alone costs
+sweeps. **No combination reaches the 2.5 ms budget**: the kink costs the sweeps,
+and the boiling densities cost each sweep. Every cure moves answers the way
+M56.1 did. Flows and pressures that are not noise move ≤ 1e-9 relative. The
+stagnant nodes, whose flows are ±1e-11 kg/s with a sign that wanders, take
+another draw of the same noise: their temperatures move up to about 10 K and
+their bubble pressures 20–50%, and A + B + D flips one stagnant edge's vapour
+fraction. Only `pump_gas_lock` has both a line flash and a pump, so D reaches no
+other shipped plant.
+
 ### Not built, with what un-defers each (M56)
 
 - **A faster flash** — BUILT by M56.1 (§61.3), on the user's decision.
-- **Fewer flashes where the plant stands still** (A25): the gas-lock story's
-  locked beat, where the game solver takes 19 iterations a tick and the
-  pump-inlet search asks about 10 000 densities. The next step, on the user's
-  decision.
+- **The dying pump's stall** (A25, §61.4): measured, not cured. A pump dying
+  behind a shut disc takes 19 sweeps a tick on the game solver for 3 s, at
+  110–160 ms a tick. A warm-started inlet search cuts the worst tick fourfold.
+  The kink at the trapped node's root is what the sweeps cost, and nothing
+  prototyped removes it. The user's decision.
 - **The engine's sweep remembered** (A25): the same memo in `core` needs the
   engine to hold one; the sweep is a sixth of the remaining tick.
