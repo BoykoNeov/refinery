@@ -21493,6 +21493,13 @@ it (2026-10-09), the sweeps to be looked at as a step of their own.
     after 30 re-solves. A node with no flow, kept where the last solve's noise
     left it, stays on that side of its root. Closing it again costs 0.2 trials
     a search.
+  - **Its margin, measured** (a scratch run of that plant over 100–130 °C in
+    1 °C steps, cold starts and moves both ways, into 1.5 and 3 bar, both
+    solvers): the most re-solves any tick takes is 5 on the game solver into
+    3 bar, against 18 before M56.2 and a cap of 30; 2–3 elsewhere. The gas-lock
+    story's re-solves are unchanged (at most 3 a tick). The run found Newton
+    failing the cold start at 119 and 120 °C into 3 bar, before M56.2 as after
+    it (ledger row A26).
 - **Measured**, the gas-lock story's dying pump: 41 trials a search → 13.0 on
   the game solver, and 11.9 on Newton, which calls the same search. The sweeps
   are unchanged (18.7 → 18.9 a tick through ticks 181–211).
