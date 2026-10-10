@@ -62,8 +62,16 @@ recommended direction, the user's "go". DESIGN §61.
   Through the dying pump the game solver 88–91 → 24 ms a tick on average; Newton
   inside the budget on every tick of the story. `pump_inlet_search_tests` (5);
   nine mutations, all caught. DESIGN §61.5.
-- **Next**: the game solver's 19 sweeps a tick through the dying pump, and 4
-  transients at up to 9 ms.
+- **M56.4, measured 2026-10-10** (DESIGN §61.7): the pump screen runs the
+  gas-lock plant on Newton, already inside the budget; the overrun is the game
+  solver's. Behind the kink, the trapped node and the pump's inlet share the
+  stiffest link in the plant. A prototype that solves that node to its root,
+  the inlet re-solved warm and written back, takes the dying pump to one sweep
+  a tick (about 1–1.7 ms, from 22) and the story's ticks over 35 → 8; it moves
+  `pump_gas_lock` on the game solver alone and flips its stagnant nodes'
+  `cavitating` (A15). Not built.
+- **Next**: the user's decision 4: build that prototype (with a bound on its
+  trial pressures), or leave the game solver's overrun logged and close M56.
 
 **M55 is CLOSED (2026-10-08): the step tick solved on its own states, and a gas
 pocket that fills over seconds — `docs/DEFERRED.md` B50, B53 and B56 struck,

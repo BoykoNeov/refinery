@@ -21635,6 +21635,119 @@ tick. This session's machine ran the old build about 1.5× slower than §61.5's
   straddles the kink by design; at 120.9 °C's answer, 15%). Each cure removed
   alone fails one of them.
 
+### 61.7 The dying pump's sweeps, traced and prototyped (M56.4) — awaiting the user's decision
+
+Asked after M56.3 as "what is next"; the recommendation (look at the game
+solver's 19 sweeps, measure and prototype, bring the numbers) and the user's
+"go with your recommendation". Measured 2026-10-10 in a throwaway worktree
+whose cures sat behind switches, one binary for old and new. Nothing in the
+repo changed. The gas-lock story, game solver.
+
+**Which solver this is about.** The pump screen loads `pump_gas_lock.toml` as
+written, and the file selects `flow = "newton"`. Newton has been inside the
+budget on every tick of the story since §61.5. So the overrun below is the
+plant run on the game solver (`--solver simple`, the corpus's second fidelity),
+not what the pump screen shows.
+
+**Re-measured, today's build** (§61.5's warm start in): ticks 181–211 take
+19.0 sweeps, 231 inlet searches of 13 trials and about 4 260 densities the
+memo has not seen, about 22 ms a tick. 35 of 219 ticks over 2.5 ms.
+
+**Traced, a sweep at a time** (tick 195):
+
+- **The kink, as §61.4 found it.** The trapped node (`discharge_check`) is
+  stepped on its balance with the inlet re-solved, its slope a central
+  difference over ±100 Pa. That straddles the kink: 2.8e-3 kg/(s·Pa) against
+  the near side's 6.4e-3. The full step overshoots, and the ladder takes a
+  quarter of it on every sweep from the fourth on, the residual falling ×0.32
+  a sweep.
+- **A second coupling the kink hid.** The node and the pump's inlet are joined
+  by the pump's branch at zero flow, a √-law at `eps_dp` = 1 Pa, about
+  0.6 kg/(s·Pa): the stiffest link in the plant. The node's step re-solves
+  the inlet in a COPY of the iterate (§59), so the inlet stays where the sweep
+  left it. With the node solved exactly (C below) the graded residual is the
+  pair's mismatch, which still falls only about twofold a sweep (14 sweeps).
+
+**Prototypes, one at a time and combined** (a tick through 181–211; one
+session, read the milliseconds as ratios):
+
+```text
+                                         sweeps  searches  mean ms   ticks > 2.5 ms of 219
+  today                                   19.0     231      22.4      35
+  A  slope beside an inlet over ±0.01 Pa  24.0     229      21.6      35
+  B  no group pair across a shut link     19.8     136      12.7      35
+  C  Illinois inside the ±100 Pa probes   13.8     202      20.3      35
+  C2 bracket the node on its full step     3.7      70       9.6      38
+  E  the inlet's answer written back      Err: the engine's re-solve never settles (tick 181)
+  A + B + C + E                            6.3      41       2.2      14
+  W  (below)                               1.2      17       1.6       8
+```
+
+**W: the node beside a pump inlet solved to its own root in its turn**, as the
+inlet itself is (§59), and the plant as it answers written back:
+
+- The node's balance is read with the inlet re-solved at each trial, the
+  inlet's search warm from the previous trial's answer (§61.5's walk).
+- First trial: a Newton step on a ±0.01 Pa central slope. Then a secant, each
+  step at most 8× the last, until the balance changes sign, then Illinois.
+  It stops at the node's own bar, `meets_node_bar` on `|r|`.
+- The node's root and the inlet's last answer are both written into the
+  iterate (E, inside W).
+- A node already at its bar is kept. Closing it again ("WR"), as §61.5's held
+  inlet root is closed, fails a cold start at 125 °C into 3 bar on M54.1's pump
+  plant: the engine's re-solve never settles. That is the opposite of §61.5's
+  finding, on a different node.
+- Where it finds no root, the node takes today's step. The prototype also
+  catches a trial's `Err` and does the same. A secant on a cold start asked the
+  line flash at 8.7e8 Pa, where it has no bubble point. **A build bounds the
+  trials so the flash is never asked there; that bound is not designed yet.**
+
+**W measured**, alternated with today's build, two rounds, fastest of five a
+tick:
+
+- **Ticks 182–209: one sweep each, 0.99–1.67 ms a tick (about 22 before),
+  inside the budget.** Fresh densities about 4 260 → 164 a tick. On the whole
+  story: 148 824 → 20 693 densities, 902 → 329 sweeps.
+- The ticks still over 2.5 ms: 8 of 219 (35 before). Tick 181, the supply's
+  step to 125 °C, 21.6 → 10.9 ms; tick 210, the lock, 24.0 → 4.5. The cold start
+  and the supply steps (21, 41, 51, 71), each 3–9 ms before and after; and 111
+  and 141, which cross the budget by a hair (2.41 → 2.56, 2.33 → 2.60 ms).
+- **What W costs:** 9 ticks of 219 dearer, all supply steps. There the plant
+  takes 5–18 sweeps whatever W does, and W solves the node fully on each. Ticks
+  41 and 71 need 1 214 → 1 454 densities (+20%). A bar on the node's real scale
+  (`max |ṁ|` over its edges, "WS") trims that to 1 340. It leaves the settled
+  flows up to 6e-7 off today's rather than 1e-9, so it is not recommended.
+- B is not needed: W alone and W with B count the same densities. With B,
+  `every_move_with_the_disc_lands_on_the_cold_answer` failed on the game solver
+  into 1.5 bar (80 sweeps a tick, cap 12), so B is dropped.
+
+**Answers, W against today:**
+
+- Corpus, 6 000 ticks: Newton byte-identical on all 45 plants (W is the game
+  solver's alone). The game solver byte-identical on 44; `pump_gas_lock` moved,
+  the one shipped plant with a line flash and a pump.
+- The story, every value of every tick: the gas pocket and the lock identical;
+  the pump's head within 4e-10. Flows on edges carrying more than 1e-6 kg/s
+  move up to 1.2e-6 relative, on the first tick of a change. That is the
+  solve's own `tol_rel` (1e-6): another landing point inside its tolerance. At
+  the end of every settled beat they agree within 1.1e-9.
+- **The stagnant nodes take another draw of their noise (A15), and this time
+  it reaches a flag.** From tick 181 to 220 the dead pump's line carries
+  ±1e-10 kg/s. Its sign now runs the other way, so `feed_pump` and
+  `discharge_check` read the supply's 399 K instead of about 375 K, and both
+  report `cavitating` true instead of false. Nothing physical moved. On the
+  pump screen (Newton) none of this shows.
+- **Margin**, M54.1's pump plant over 100–130 °C in 1 °C steps, cold starts and
+  moves both ways, into 1.5 and 3 bar, both solvers: no failure (two failed
+  before the `Err` fallback). Worst sweeps a tick on the game solver: 9 → 8
+  into 1.5 bar, 28 → 8 into 3 bar. Worst re-solves a tick: 3 → 3, and 5 → 8
+  into 3 bar (cap 30). Settled flows within 6.3e-9 kg/s.
+- The workspace suite (release, with the property tests) passes with W on.
+
+**A24 after W would be narrowed, not closed**: the dying pump inside the
+budget, and 8 ticks of the story over it on the game solver (tick 181 at
+11 ms).
+
 ### Not built, with what un-defers each (M56)
 
 - **A faster flash** — BUILT by M56.1 (§61.3), on the user's decision.
@@ -21646,6 +21759,10 @@ tick. This session's machine ran the old build about 1.5× slower than §61.5's
 - **The dying pump's sweeps** (A25, §61.4): 19 a tick on the game solver for
   3 s, about 24 ms a tick since §61.5. The kink at the trapped node's root is
   what they cost, and nothing prototyped removes it (A + C together cut them to
-  7). Un-defer: the user's decision, after M56.2.
+  7). Un-defer: the user's decision, after M56.2. **Prototyped by M56.4
+  (§61.7)**: W, the node beside an inlet solved to its root with the inlet
+  written back, takes them to one, inside the budget. It moves the gas-lock
+  plant on the game solver, and it needs a trial bound designed before it is
+  built. Un-defer: the user's decision 4.
 - **The engine's sweep remembered** (A25): the same memo in `core` needs the
   engine to hold one; the sweep is a sixth of the remaining tick.

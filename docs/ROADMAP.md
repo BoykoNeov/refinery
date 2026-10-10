@@ -9057,3 +9057,35 @@ plant, tick 1); over "the shut disc alone, byte-identical" and "stop".
 - Gates: `newton_starts_cold_where_it_failed`,
   `the_pump_outlets_slope_is_the_slope_at_the_iterate`.
 - **Next**: unchanged — the game solver's 19 sweeps (A25). The user's decision.
+
+### M56.4 — **MEASURED** 2026-10-10: the dying pump's sweeps traced and prototyped; decision 4 pending
+
+Asked after M56.3 as "what is next"; the user said "go with your
+recommendation" (measure and prototype the game solver's 19 sweeps, then bring
+the numbers). Nothing in the repo's code changed. DESIGN §61.7.
+
+- Which solver: the pump screen runs `pump_gas_lock.toml` as written, on Newton,
+  which has been inside the budget since M56.2. The overrun is the plant on the
+  game solver (`--solver simple`).
+- Traced: the trapped node's ±100 Pa slope straddles the kink, so the ladder
+  takes a quarter step every sweep (§61.4). Behind it, the node and the pump's
+  inlet are joined by the stiffest link in the plant (the pump's branch at zero
+  flow), and the node's step re-solves the inlet only in a copy. Solving the
+  node exactly still leaves about twofold a sweep.
+- Prototyped: A, B, C, C2, E and combinations (§61.7's table). **W** works:
+  the node beside a pump inlet is solved to its own root in its turn, each
+  trial re-solving the inlet warm from the last, and both answers are written
+  back. Ticks 182–209 take one sweep, 0.99–1.67 ms (about 22). Over budget:
+  35 → 8 of 219 (tick 181 at 11 ms, the lock at 4.5, the supply steps). Fresh
+  densities over the story: 148 824 → 20 693.
+- Costs and moves: supply-step ticks up to 20% dearer. Corpus: Newton 45/45
+  identical; the game solver moves `pump_gas_lock` alone (pocket and lock
+  identical, flows within the solve's 1e-6 on the first tick of a change and
+  1.1e-9 settled). The stagnant pump and trapped node take another draw of
+  their noise and read `cavitating` true on ticks 181–220 (A15; not shown on
+  the Newton pump screen). M54.1's plant over 100–130 °C: no failure, worst
+  re-solves 5 → 8 into 3 bar (cap 30). The workspace suite passes with W on.
+- Not yet buildable as prototyped: it catches a trial's `Err` (a cold-start
+  secant asked the flash at 8.7e8 Pa); a build bounds the trials instead.
+- **Decision 4** (the user's): build W (with a trial bound), or leave the game
+  solver's overrun logged (A24) and close M56.
