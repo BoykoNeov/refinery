@@ -25,7 +25,7 @@ use refinery_core::traits::{
     EnthalpyModel, HydraulicSolution, LineFlashModel, PumpSuctionState, PumpTwoPhaseState,
     SolveDiagnostics, StarvedTank, ThermoModel, TwoPhaseDensity,
 };
-use refinery_core::units::{Kelvin, KgPerSec, Meter, Pascal, Seconds, Watt, G, P_ATM};
+use refinery_core::units::{Kelvin, KgPerM3, KgPerSec, Meter, Pascal, Seconds, Watt, G, P_ATM};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -887,8 +887,9 @@ pub fn compile_edge_with(
     let upwind = pressures[&upwind_node].max(RHO_EVAL_P_FLOOR);
     let delta = DENSITY_SLOPE_DELTA;
     let pipe = graph.pipe(eid);
+    let pump_outlet = is_two_phase_pump_outlet(graph, eid, flash);
     let side_density = |pressure: f64| {
-        if is_two_phase_pump_outlet(graph, eid, flash) {
+        if pump_outlet {
             suction_offer(graph, slate, previous_states, upwind_node, pressure, flash)
                 .map(|(_, offer)| offer)
         } else {
@@ -903,13 +904,38 @@ pub fn compile_edge_with(
             )
         }
     };
-    let above = side_density(upwind + delta)?;
-    let below = side_density((upwind - delta).max(RHO_EVAL_P_FLOOR))?;
+    let above_pressure = upwind + delta;
+    let below_pressure = (upwind - delta).max(RHO_EVAL_P_FLOOR);
+    let above = side_density(above_pressure)?;
+    let below = side_density(below_pressure)?;
     if above.is_none() && below.is_none() {
         return Ok(compiled);
     }
     // Each side at its own density: two-phase where the stream boils there, the
-    // liquid's own (the plain compile) where it does not.
+    // liquid's own (the plain compile) where it does not — and for a pump's
+    // outlet, its SUCTION's liquid, the stream the iterate's own compile falls
+    // back to (`suction_offer`). The plain compile reads the discharge pipe's
+    // carried liquid instead, a different stream: on a cold start its
+    // placeholder, 680 kg/m³ against the suction's 700, which turned the slope's
+    // sign at the bubble pressure and failed Newton's first tick (A26,
+    // docs/DESIGN.md §61.6).
+    let resolve = |pressure: f64,
+                   density: Option<TwoPhaseDensity>|
+     -> Result<Option<TwoPhaseDensity>, SimError> {
+        Ok(match density {
+            None if pump_outlet => {
+                let (liquid, _) =
+                    suction_offer(graph, slate, previous_states, upwind_node, pressure, flash)?;
+                Some(TwoPhaseDensity {
+                    mixture: KgPerM3(liquid),
+                    liquid_volume_share: 1.0,
+                })
+            }
+            density => density,
+        })
+    };
+    let above = resolve(above_pressure, above)?;
+    let below = resolve(below_pressure, below)?;
     let side = |density: Option<TwoPhaseDensity>| -> Result<(f64, QuadraticBranch), SimError> {
         let c = match density {
             Some(d) => compile_edge_at(

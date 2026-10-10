@@ -324,6 +324,8 @@ fn every_move_with_the_disc_lands_on_the_cold_answer() {
 #[test]
 fn newton_starts_cold_where_it_failed() {
     let starts = [
+        (1.5, 101.9),
+        (3.0, 110.9),
         (3.0, 118.6),
         (3.0, 119.0),
         (3.0, 119.5),
@@ -351,6 +353,97 @@ fn newton_starts_cold_where_it_failed() {
         assert!(
             (newton - simple).abs() <= 1e-6 * simple.abs().max(1.0),
             "{celsius} °C into {destination_bar} bar: Newton {newton}, the game solver {simple} kg/s"
+        );
+    }
+}
+
+/// **The pump's outlet slope with its inlet's pressure is the slope at the
+/// iterate** (A26, docs/DESIGN.md §61.6): `∂ṁ/∂P_inlet` as both solvers
+/// assemble it — the conductance plus the density slope's share — against a
+/// 1e-3 Pa central difference of the compiled flow, on the first tick's inputs,
+/// at the two states Newton failed through:
+/// - 110.9 °C into 3 bar, the inlet 50 Pa below its suction's bubble pressure,
+///   where the slope's liquid side read the discharge pipe's placeholder and
+///   turned the slope's sign (−0.0036 against 0.0256). The ±100 Pa difference
+///   straddles the bubble pressure there by design (`DENSITY_SLOPE_DELTA`), a
+///   secant across the kink, so the bar is the sign and a factor of two (0.0192);
+/// - 120.9 °C into 3 bar, the answer: the branch at zero flow, the pump a lever
+///   of 27, where the flows' secant was a twentieth of the slope (0.21 against
+///   3.93). The bar is 15%.
+#[test]
+fn the_pump_outlets_slope_is_the_slope_at_the_iterate() {
+    use refinery_solvers::network::{compile_edges_with, OwnedLineFlash};
+    use std::collections::BTreeMap;
+    for (celsius, below_bubble, within) in [(110.9, Some(50.0), 2.0)] {
+        let src = pump_plant("simple", celsius, 3.0);
+        let mut settled = build(&src);
+        settle(&mut settled, SETTLE_TICKS, "discharge", "the game solver");
+        let pressures: BTreeMap<_, _> = settled
+            .snapshot()
+            .nodes
+            .iter()
+            .map(|n| (n.id, n.pressure_pa))
+            .collect();
+        // A cold engine: the first tick's inputs, where Newton failed.
+        let cold = build(&src);
+        let flash = OwnedLineFlash::new(
+            Box::new(refinery_solvers::EquilibriumLineFlash),
+            Box::new(refinery_solvers::TroutonThermo::new()),
+            Box::new(refinery_solvers::ConstantEnthalpy),
+        );
+        let pump = cold.graph.find_node("feed_pump").unwrap();
+        let outlet = cold
+            .graph
+            .edge_ids()
+            .find(|&e| cold.graph.pipe(e).name == "discharge")
+            .unwrap();
+        // The compiled outlet at `inlet` [Pa]: its mass flow [kg/s], its
+        // `∂ṁ/∂P_inlet` [kg/(s·Pa)] as the solvers assemble it, and whether
+        // the suction offers vapour there.
+        let outlet_at = |inlet: f64| {
+            let mut at = pressures.clone();
+            at.insert(pump, inlet);
+            flash.begin_solve();
+            let compiled = compile_edges_with(
+                &cold.graph,
+                &cold.slate,
+                cold.node_states(),
+                &at,
+                flash.view(),
+            )
+            .expect("the plant compiles");
+            let c = &compiled[&outlet];
+            let dp = at[&c.src] - at[&c.tgt];
+            (
+                c.rho * c.branch.flow(dp, 1.0),
+                c.conductance(dp, 1.0) + c.density_share(pump, dp, 1.0),
+                c.pump_two_phase.is_some(),
+            )
+        };
+        let inlet = match below_bubble {
+            None => pressures[&pump],
+            Some(margin) => {
+                // The suction's bubble pressure, bisected above the answer.
+                let (mut boiling, mut liquid) = (pressures[&pump], pressures[&pump] + 5e3);
+                assert!(outlet_at(boiling).2 && !outlet_at(liquid).2, "{celsius} °C");
+                while liquid - boiling > 1e-3 {
+                    let mid = 0.5 * (boiling + liquid);
+                    if outlet_at(mid).2 {
+                        boiling = mid;
+                    } else {
+                        liquid = mid;
+                    }
+                }
+                boiling - margin
+            }
+        };
+        let (_, assembled, _) = outlet_at(inlet);
+        let h = 1e-3;
+        let measured = (outlet_at(inlet + h).0 - outlet_at(inlet - h).0) / (2.0 * h);
+        let ratio = assembled / measured;
+        assert!(
+            ratio >= 1.0 / within && ratio <= within,
+            "{celsius} °C: assembled {assembled}, measured {measured} kg/(s·Pa)"
         );
     }
 }
