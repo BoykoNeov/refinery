@@ -9051,7 +9051,9 @@ plant, tick 1); over "the shut disc alone, byte-identical" and "stop".
 - Newton fails none of the 1 204 cold starts, within 1e-6 of the game solver.
 - Corpus: the first two cures byte-identical everywhere; the third moves
   `pump_gas_lock` on Newton alone (≤ 9.1e-9 off the stagnant nodes). Its story
-  on Newton: ticks over 2.5 ms 22–30 → 3 of 219. The game solver untouched.
+  on Newton: ticks over 2.5 ms 22–30 → 3 of 219, old and new alternated in one
+  session on a machine about 1.5× slower than §61.5's (read as a ratio). The
+  game solver untouched.
 - Gates: `newton_starts_cold_where_it_failed`,
   `the_pump_outlets_slope_is_the_slope_at_the_iterate`.
 - **Next**: unchanged — the game solver's 19 sweeps (A25). The user's decision.
