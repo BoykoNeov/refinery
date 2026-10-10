@@ -21555,11 +21555,94 @@ at the trapped node's root (§61.4), plus 4 transients at up to 9 ms.
   whose bad pressures lay where the walk steps over them. The gate was moved to
   the walk's last step before the root.
 
+### 61.6 Newton's cold starts on M54.1's pump plant (M56.3, A26) — the user's decision
+
+M56.2's margin check found Newton failing tick 1 of M54.1's pump plant
+(`flashing_check_valve_reference.rs`) started cold at 119 and 120 °C into
+3 bar. On the user's decision it was measured at 0.1 °C over 100–130 °C, into
+1.5 and 3 bar, on both solvers: 1 204 cold starts. The game solver started
+every one. Newton failed 22, all on tick 1, by three mechanisms, each now
+cured. Moves between temperatures never failed.
+
+- **A shut disc at the cold seed (118.6–120.4 °C into 3 bar, 18 starts).** The
+  seed holds the disc's two sides at one pressure, so the shut disc has no
+  conductance in the Jacobian. The step then raises the dead end behind it by
+  megapascals (cut to the pump's head, `head_cut`), and every rung of the line
+  search cracks the disc open. Its flow grows as the drive's 2.5 power (the
+  smoothstep opening times the √-law), a flow the step never saw. Below
+  118.6 °C the dead end's imbalance exceeds the valve node's, the leak helps,
+  and the last rung passes. Above it the leak hurts, and every rung is refused.
+  The sign of that difference predicts pass or fail exactly from 117 to
+  120.4 °C. **Cure** (`opens_shut_disc`, `MAX_OPENING_HALVINGS`): a step that
+  raises a shut disc's drive may halve 8 more times. A rung short enough always
+  passes, because the leak is of higher order in `t` than Armijo's decrease, and
+  the next iterate has the disc inside its band, its conductance back. Only a
+  ladder that has run out reaches the further rungs.
+- **The pump outlet's liquid side read the wrong stream (101.9 °C into 1.5 bar,
+  110.9 °C into 3 bar).** Near the answer the pump inlet sits within 100 Pa
+  below its suction's bubble pressure. There the density slope's liquid side
+  was compiled as a plain liquid edge, which reads the DISCHARGE pipe's carried
+  liquid: on a cold start its placeholder, 680 kg/m³. The iterate's own compile
+  falls back to the SUCTION's liquid, 700 kg/m³ (`suction_offer`). The slope
+  turned sign (−3e-5 against −0.035 kg/(s·Pa) at 110.9 °C), the step stopped
+  being a descent direction, and the line search ran out. **Cure**
+  (`compile_edge_with`): a pump outlet's liquid side is the suction's liquid,
+  compiled as the pump's offer with no vapour.
+- **The pump a lever at zero flow (120.9 °C into 3 bar).** The answer is the
+  disc shut and the pump's branch at zero flow. A pascal at the inlet moves the
+  head by 27 through the vapour the suction offers, so the density slope's
+  ±100 Pa is ±2 700 Pa of drive across a √-law at zero flow. The flows' secant
+  over that span was a twentieth of the slope at the iterate (0.21 against
+  3.93 kg/(s·Pa)), and Newton crawled 6.5% an iteration to its cap.
+  **Cure** (`PumpOutletSlope`, `DensitySlope::share`): a pump outlet's slope
+  is taken by the chain rule, M50's `suction_share` form. The central
+  difference is of the branch's `α` and `β` and of the offered density (applied
+  forward only; backward the flow carries the discharge's liquid), carried
+  through the branch's analytic `∂Q/∂dp`. 10 iterations.
+
+**Measured** (the 1 204 cold starts, each 15 ticks): Newton fails none (22
+before). Newton's settled flow is within 1e-6 of the game solver's on every
+start, locked or not alike. Newton's mean worst iterations a start went
+7.1 → 6.75 with the third cure, and its worst start is unchanged at 17.
+
+Corpus, 6 000 ticks, against the commit before: **the first two cures leave all
+45 plants byte-identical on both fidelities.** The third moves `pump_gas_lock`
+on Newton alone. The game solver is byte-identical on every plant: it reads a
+density share only in the upwind node's own step, and a two-phase pump's inlet
+is solved by its search, never stepped (nor grouped, §61.4). The gas-lock story
+on Newton, every value of every tick: at most 9.1e-9 relative off the stagnant
+nodes (the pump's head multiplier). The stagnant nodes take another draw of
+their noise, as in §61.3 and §61.5. A suction-line flow of −1.2e-9 kg/s became
+0 on tick 181, so that edge reports the supply's stream (398 K, a vapour
+fraction) instead of the pump node's (373 K, none). One bubble pressure moved
+1.3e-4.
+
+Wall time, the two stories, old and new alternated twice, fastest of five per
+tick. This session's machine ran the old build about 1.5× slower than §61.5's
+(game solver worst 43–49 ms against 30–31), so read ratios:
+
+```text
+                          ticks > 2.5 ms of 219     p99 ms        worst ms
+  pump_gas_lock  Newton   22, 30 → 3, 3             3.5–3.7 → 2.1–2.3   4.3–4.7 → 4.4–4.5
+                 game     47, 47 → 47, 48           unchanged (identical snapshots)
+  flashing_rundown        unchanged on both
+```
+
+- Gates: `newton_starts_cold_where_it_failed` (the eight starts named in A26,
+  Newton against the game solver) and `the_pump_outlets_slope_is_the_slope_at_the_iterate`
+  (the assembled `∂ṁ/∂P_inlet` against a 1e-3 Pa difference: 50 Pa below the
+  bubble pressure at 110.9 °C, the sign and a factor of two, since ±100 Pa
+  straddles the kink by design; at 120.9 °C's answer, 15%). Each cure removed
+  alone fails one of them.
+
 ### Not built, with what un-defers each (M56)
 
 - **A faster flash** — BUILT by M56.1 (§61.3), on the user's decision.
 - **The warm-started inlet search** — BUILT by M56.2 (§61.5), on the user's
   decision.
+- **Newton's cold starts on M54.1's pump plant** (A26) — BUILT by M56.3
+  (§61.6), on the user's decision. It does not touch the game solver's 19
+  sweeps (A25): that solver never reads the slope the third cure repairs.
 - **The dying pump's sweeps** (A25, §61.4): 19 a tick on the game solver for
   3 s, about 24 ms a tick since §61.5. The kink at the trapped node's root is
   what they cost, and nothing prototyped removes it (A + C together cut them to

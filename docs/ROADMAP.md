@@ -9039,3 +9039,19 @@ start, then close M56" and "stop, change nothing".
 - Gates: `network::pump_inlet_search_tests` (5). Mutations: nine, all caught.
 - **Next**: the game solver's 19 sweeps a tick through the dying pump (the kink,
   §61.4), and 4 transients of the story at up to 9 ms. The user's decision.
+
+**Decision 3** (the user's, 2026-10-10): "fix all three" of A26's mechanisms,
+measured that day (Newton failing 22 of 1 204 cold starts of M54.1's pump
+plant, tick 1); over "the shut disc alone, byte-identical" and "stop".
+
+- Built (M56.3, DESIGN §61.6): a step that opens a shut disc may halve 8 more
+  times (`opens_shut_disc`); a pump outlet's density slope reads the suction's
+  liquid on its liquid side; and it differentiates the branch's coefficients by
+  the chain rule (`PumpOutletSlope`) instead of its flows over ±100 Pa.
+- Newton fails none of the 1 204 cold starts, within 1e-6 of the game solver.
+- Corpus: the first two cures byte-identical everywhere; the third moves
+  `pump_gas_lock` on Newton alone (≤ 9.1e-9 off the stagnant nodes). Its story
+  on Newton: ticks over 2.5 ms 22–30 → 3 of 219. The game solver untouched.
+- Gates: `newton_starts_cold_where_it_failed`,
+  `the_pump_outlets_slope_is_the_slope_at_the_iterate`.
+- **Next**: unchanged — the game solver's 19 sweeps (A25). The user's decision.
