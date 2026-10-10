@@ -331,6 +331,7 @@ fn newton_starts_cold_where_it_failed() {
         (3.0, 119.5),
         (3.0, 120.0),
         (3.0, 120.4),
+        (3.0, 120.9),
     ];
     for (destination_bar, celsius) in starts {
         let settled: Vec<(f64, bool)> = SOLVERS
@@ -374,7 +375,7 @@ fn newton_starts_cold_where_it_failed() {
 fn the_pump_outlets_slope_is_the_slope_at_the_iterate() {
     use refinery_solvers::network::{compile_edges_with, OwnedLineFlash};
     use std::collections::BTreeMap;
-    for (celsius, below_bubble, within) in [(110.9, Some(50.0), 2.0)] {
+    for (celsius, below_bubble, within) in [(110.9, Some(50.0), 2.0), (120.9, None, 1.15)] {
         let src = pump_plant("simple", celsius, 3.0);
         let mut settled = build(&src);
         settle(&mut settled, SETTLE_TICKS, "discharge", "the game solver");

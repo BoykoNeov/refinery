@@ -352,6 +352,36 @@ pub struct DensitySlope {
     pub below: (f64, QuadraticBranch),
     /// The half-width of the central difference [Pa].
     pub delta: f64,
+    /// Set on a running pump's outlet (A26, docs/DESIGN.md §61.6): `share`
+    /// then differentiates the branch's coefficients rather than its flows.
+    pub pump: Option<PumpOutletSlope>,
+}
+
+/// A two-phase pump's outlet at the iterate (A26, docs/DESIGN.md §61.6): what
+/// `DensitySlope::share` needs to differentiate it by the chain rule.
+///
+/// **Why not the flows' central difference — measured.** The pump is a lever:
+/// on M54.1's plant at 120.9 °C into 3 bar, a pascal at its inlet moves its
+/// head `β` by 27 through the vapour its suction offers, so ±100 Pa at the
+/// inlet is ±2 700 Pa of drive across a branch that sits at zero flow — the
+/// answer there, the disc behind it shut. The flows' secant over that span is
+/// the √-law's, 10 to 50 times shallower than the slope at the iterate, and
+/// Newton crawled 6.5% an iteration to its cap of 50. Differencing `α`, `β` and
+/// the offered density instead and carrying them through the branch's own
+/// analytic slope, as M50's `suction_share` does for a cavitating pump, is the
+/// slope at the iterate: within the difference's own error of a 1e-3 Pa one.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PumpOutletSlope {
+    /// The density [kg/m³] the iterate's flow carries: the suction's offer
+    /// forward, the discharge's backward.
+    pub rho: f64,
+    /// The iterate's branch.
+    pub branch: QuadraticBranch,
+    /// The density [kg/m³] the suction offers at the inlet's pressure plus
+    /// `delta` — the liquid's where it does not boil there.
+    pub offer_above: f64,
+    /// The same at the inlet's pressure minus `delta`.
+    pub offer_below: f64,
 }
 
 /// The half-width [Pa] of a density slope's central difference. Small against
@@ -363,6 +393,25 @@ pub const DENSITY_SLOPE_DELTA: f64 = 100.0;
 impl DensitySlope {
     /// `∂ṁ/∂P_upwind` [kg/(s·Pa)] through the density alone, at drop `dp`.
     pub fn share(&self, dp: f64, eps: f64) -> f64 {
+        if let Some(pump) = self.pump {
+            // Chain rule through `ṁ = ρ·Q(dp; α, β)`, `Q = √(dp − β)/√α`
+            // regularised (`QuadraticBranch::flow`), each coefficient's slope a
+            // central difference over the two sides; `suction_share`'s form.
+            let span = 2.0 * self.delta;
+            let dalpha = (self.above.1.alpha - self.below.1.alpha) / span;
+            let dbeta = (self.above.1.beta - self.below.1.beta) / span;
+            let q = pump.branch.flow(dp, eps);
+            let dq_ddp = pump.branch.flow_ddp(dp, eps);
+            // Backward, the flow carries the discharge's liquid, which the
+            // inlet's pressure does not move (`compile_edge_at`).
+            let drho = if dp - pump.branch.beta >= 0.0 {
+                (pump.offer_above - pump.offer_below) / span
+            } else {
+                0.0
+            };
+            return pump.rho * (-dq_ddp * dbeta - q * dalpha / (2.0 * pump.branch.alpha))
+                + q * drho;
+        }
         let (rho_above, above) = self.above;
         let (rho_below, below) = self.below;
         (rho_above * above.flow(dp, eps) - rho_below * below.flow(dp, eps)) / (2.0 * self.delta)
@@ -961,11 +1010,23 @@ pub fn compile_edge_with(
         };
         Ok((c.rho, c.branch))
     };
+    // A pump's outlet is differentiated through its coefficients, not its flows
+    // (`PumpOutletSlope`): the offers each side's density came from.
+    let pump = match (pump_outlet, above, below) {
+        (true, Some(above), Some(below)) => Some(PumpOutletSlope {
+            rho: compiled.rho,
+            branch: compiled.branch,
+            offer_above: above.mixture.value(),
+            offer_below: below.mixture.value(),
+        }),
+        _ => None,
+    };
     compiled.density_slope = Some(DensitySlope {
         upwind: upwind_node,
         above: side(above)?,
         below: side(below)?,
         delta,
+        pump,
     });
     Ok(compiled)
 }
