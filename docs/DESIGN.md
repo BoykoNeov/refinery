@@ -21635,7 +21635,7 @@ tick. This session's machine ran the old build about 1.5× slower than §61.5's
   straddles the kink by design; at 120.9 °C's answer, 15%). Each cure removed
   alone fails one of them.
 
-### 61.7 The dying pump's sweeps, traced and prototyped (M56.4) — awaiting the user's decision
+### 61.7 The dying pump's sweeps, traced and prototyped (M56.4) — not built, the user's decision
 
 Asked after M56.3 as "what is next"; the recommendation (look at the game
 solver's 19 sweeps, measure and prototype, bring the numbers) and the user's
@@ -21763,6 +21763,10 @@ budget, and 8 ticks of the story over it on the game solver (tick 181 at
   (§61.7)**: W, the node beside an inlet solved to its root with the inlet
   written back, takes them to one, inside the budget. It moves the gas-lock
   plant on the game solver, and it needs a trial bound designed before it is
-  built. Un-defer: the user's decision 4.
+  built. **Not built, the user's decision 4 (2026-10-10, "close M56")**: no
+  screen runs this plant on the game solver. Its prototype is kept at
+  `tools/steptime/prototypes/m56_4_w.patch` (with the throwaway probes and
+  switches it was measured through; `M564=W` turned it on). Un-defer: a frontend
+  that runs a boiling plant with a pump on the game solver.
 - **The engine's sweep remembered** (A25): the same memo in `core` needs the
   engine to hold one; the sweep is a sixth of the remaining tick.

@@ -12,10 +12,12 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
-**M56 is OPEN (M56.0 and M56.1 landed 2026-10-08): the line flash's densities
-remembered, then its two roots found by superlinear searches — the frame budget
-M55 overran, narrowed but not closed — `docs/DEFERRED.md` A24 logged and
-narrowed, A25 opened, its flash clause closed.** Asked after M55 as "what is next"; the
+**M56 is CLOSED (2026-10-10): the line flash's densities remembered, its two
+roots found by superlinear searches, the pump inlet's search warm-started,
+Newton's cold starts on M54.1's pump plant cured, and the game solver's dying
+pump traced — the frame budget M55 overran, narrowed but not closed —
+`docs/DEFERRED.md` A24 narrowed and left open, A25's flash clause closed and
+the rest left open, A26 opened and closed.** Asked after M55 as "what is next"; the
 recommended direction, the user's "go". DESIGN §61.
 - **Measured first**: 98% of the flashing rundown's tick on the game solver was
   the line flash's density (a bisection of isothermal flashes, each a bisection
@@ -70,8 +72,21 @@ recommended direction, the user's "go". DESIGN §61.
   a tick (about 1–1.7 ms, from 22) and the story's ticks over 35 → 8; it moves
   `pump_gas_lock` on the game solver alone and flips its stagnant nodes'
   `cavitating` (A15). Not built.
-- **Next**: the user's decision 4: build that prototype (with a bound on its
-  trial pressures), or leave the game solver's overrun logged and close M56.
+- **M56.3, on the user's decision** (DESIGN §61.6): Newton failed 22 of 1 204
+  cold starts of M54.1's pump plant (A26), by three mechanisms, each cured — a
+  step that opens a shut disc may halve on; a pump outlet's slope reads the
+  suction's liquid and is taken by the chain rule. Newton fails none; only
+  `pump_gas_lock` on Newton moved (≤ 9.1e-9 off its stagnant nodes).
+- **Closed on the user's decision 4** ("close M56", 2026-10-10): the prototype
+  is not built — no screen runs the plant on the game solver, and it would move
+  answers, flip a visible flag and need a bound on its trials designed first.
+  Its code is kept at `tools/steptime/prototypes/m56_4_w.patch`.
+- **Left open**: A24 — on the game solver the gas-lock story's dying pump at
+  about 22 ms a tick and 35 of 219 ticks over 2.5 ms; Newton (the pump screen's)
+  inside the budget on every tick of both stories; the flashing rundown inside
+  it on both but one tick. A25 — the dying pump's sweeps and the engine's
+  sweep unremembered. A15 — a stagnant node's state set by the sign of solver
+  noise, seen again on every M56 step that moved the boiling plants.
 
 **M55 is CLOSED (2026-10-08): the step tick solved on its own states, and a gas
 pocket that fills over seconds — `docs/DEFERRED.md` B50, B53 and B56 struck,

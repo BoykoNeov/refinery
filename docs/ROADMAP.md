@@ -8923,7 +8923,7 @@ the pocket drawn and printed. DESIGN §60.1–60.2.
 valve's `γ` at the stored composition), B59 (one fill rate whatever the
 vapour) and B60 (the one-tick lag kept off the line flash, decision 5) opened.
 
-## M56 — the line flash's densities remembered: the frame budget M55 overran; ledger row A24 logged and narrowed, A25 opened; opened on a decision
+## M56 — **CLOSED** 2026-10-10 — the line flash's densities remembered: the frame budget M55 overran; ledger row A24 logged and narrowed, A25 opened; opened on a decision
 
 Asked after M55 closed (2026-10-08): "what is next" was answered with five
 directions, the recommended one first — M55 had put the flashing rundown at
@@ -9087,5 +9087,10 @@ the numbers). Nothing in the repo's code changed. DESIGN §61.7.
   re-solves 5 → 8 into 3 bar (cap 30). The workspace suite passes with W on.
 - Not yet buildable as prototyped: it catches a trial's `Err` (a cold-start
   secant asked the flash at 8.7e8 Pa); a build bounds the trials instead.
-- **Decision 4** (the user's): build W (with a trial bound), or leave the game
-  solver's overrun logged (A24) and close M56.
+- **Decision 4** (the user's, 2026-10-10): "close M56" — W not built, the game
+  solver's overrun left logged (A24, A25); over "build the fix" and "stop here".
+  The recommendation was to close: nothing on screen gets faster, and W moves
+  answers, flips a visible flag and needs its trial bound designed first.
+  W's prototype code is kept at `tools/steptime/prototypes/m56_4_w.patch`.
+
+**M56 CLOSED 2026-10-10.** Close-out at the top of `docs/MILESTONES.md`.

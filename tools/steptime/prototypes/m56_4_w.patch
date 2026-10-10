@@ -1,0 +1,426 @@
+diff --git a/crates/scenarios/tests/flashing_check_valve_reference.rs b/crates/scenarios/tests/flashing_check_valve_reference.rs
+index c40badc..a4ba1b7 100644
+--- a/crates/scenarios/tests/flashing_check_valve_reference.rs
++++ b/crates/scenarios/tests/flashing_check_valve_reference.rs
+@@ -548,3 +548,46 @@ fn is_locked(engine: &Engine) -> bool {
+     };
+     gas_locked
+ }
++
++/// THROWAWAY M56.4: 100–130 °C in 1 °C, cold starts and moves both ways, into
++/// 1.5 and 3 bar, both solvers: the most re-solves and iterations a tick, and
++/// every settled flow written to `M564OUT`.
++#[test]
++fn m564_scratch_sweep() {
++    let Ok(out) = std::env::var("M564OUT") else { return };
++    let mut text = String::new();
++    for destination_bar in [1.5, 3.0] {
++        for solver in SOLVERS {
++            let (mut worst_re, mut worst_it, mut fails) = (0u32, 0u32, 0u32);
++            let mut run = |engine: &mut Engine, label: &str, text: &mut String| {
++                for t in 1..=40 {
++                    if let Err(e) = engine.tick() {
++                        fails += 1;
++                        text.push_str(&format!("FAIL {label} tick {t}: {e}\n"));
++                        return;
++                    }
++                    let s = engine.snapshot();
++                    worst_re = worst_re.max(s.solver.re_solves);
++                    worst_it = worst_it.max(s.solver.iterations);
++                }
++                let s = engine.snapshot();
++                text.push_str(&format!("{label} {:.12e}\n", edge_flow(&s, "discharge")));
++            };
++            for c in 100..=130 {
++                let mut engine = build(&pump_plant(solver, c as f64, destination_bar));
++                run(&mut engine, &format!("{solver} {destination_bar} cold {c}"), &mut text);
++            }
++            let mut engine = build(&pump_plant(solver, 100.0, destination_bar));
++            run(&mut engine, &format!("{solver} {destination_bar} start"), &mut text);
++            let path: Vec<i32> = (101..=130).chain((100..=129).rev()).collect();
++            for (i, &c) in path.iter().enumerate() {
++                warm_supply(&mut engine, "rundown_source", c as f64);
++                run(&mut engine, &format!("{solver} {destination_bar} move{i} {c}"), &mut text);
++            }
++            text.push_str(&format!(
++                "SUMMARY {solver} {destination_bar} bar: worst re-solves {worst_re}, worst iterations {worst_it}, fails {fails}\n"
++            ));
++        }
++    }
++    std::fs::write(out, text).unwrap();
++}
+diff --git a/crates/solvers/src/lib.rs b/crates/solvers/src/lib.rs
+index 09f8eb9..3a68a77 100644
+--- a/crates/solvers/src/lib.rs
++++ b/crates/solvers/src/lib.rs
+@@ -34,6 +34,7 @@ pub mod four_lump;
+ pub mod line_flash;
+ pub mod molar;
+ pub mod network;
++pub mod probe;
+ pub mod newton_flow;
+ pub mod reactor;
+ pub mod separation;
+diff --git a/crates/solvers/src/network.rs b/crates/solvers/src/network.rs
+index a2368a3..bc73506 100644
+--- a/crates/solvers/src/network.rs
++++ b/crates/solvers/src/network.rs
+@@ -271,6 +271,7 @@ impl DensityMemo {
+     }
+ 
+     fn remember(&mut self, key: Vec<u64>, density: Option<TwoPhaseDensity>) {
++        crate::probe::bump(&crate::probe::PROBES_SAME);
+         if self.current.len() < DENSITY_MEMO_CAPACITY {
+             self.current.insert(key, density);
+         }
+@@ -1248,7 +1249,9 @@ pub fn solve_pump_inlet(
+         .max(pressures[&downstream])
+         .max(held)
+         .max(P_ATM.value());
++    crate::probe::bump(&crate::probe::INLET_SEARCHES);
+     let root = inlet_root(held, ceiling, tol_kg_s, |p| {
++        crate::probe::bump(&crate::probe::INLET_TRIALS);
+         pressures.insert(inlet.node, p);
+         let into = edge_mass_flow(
+             graph,
+diff --git a/crates/solvers/src/simple_flow.rs b/crates/solvers/src/simple_flow.rs
+index 85271b2..eb9a425 100644
+--- a/crates/solvers/src/simple_flow.rs
++++ b/crates/solvers/src/simple_flow.rs
+@@ -235,6 +235,7 @@ impl SimpleFlowSolver {
+         previous_states: &NodeStates,
+         dt: Seconds,
+     ) -> AnchorPass {
++        crate::probe::bump(&crate::probe::PASSES);
+         let cls = prep.classes;
+         let capacitive = &cls.capacitive;
+         let anchored = &prep.anchored;
+@@ -298,6 +299,7 @@ impl SimpleFlowSolver {
+         let mut iterations = 0u32;
+         while iterations < self.max_iter {
+             iterations += 1;
++            crate::probe::bump(&crate::probe::SWEEPS);
+ 
+             // In-place update sweep, against coefficients valid at the CURRENT
+             // pressures — from `prepare` on the first pass, refreshed after each
+@@ -402,7 +404,96 @@ impl SimpleFlowSolver {
+                 // node's slope ten to a hundred times too steep — up to 200
+                 // sweeps a tick, and none sufficing on a cold start at 125 °C
+                 // into a 3 bar destination (measured, M54's probe).
+-                if !adjacent_inlets(graph, &incident[&nid], &inlets).is_empty() {
++                let mut c_root: Option<f64> = None;
++                let beside_inlet = !adjacent_inlets(graph, &incident[&nid], &inlets).is_empty();
++                // W: the node solved to its root in its turn, the inlet warm from trial to trial,
++                // and the plant as it answers committed.
++                if beside_inlet && crate::probe::on("W") {
++                    let mut warm = pressures.clone();
++                    let beside = adjacent_inlets(graph, &incident[&nid], &inlets);
++                    let cap = capacitive.get(&nid);
++                    let mut eval = |x: f64, warm: &mut BTreeMap<NodeId, f64>| -> Result<f64, SimError> {
++                        warm.insert(nid, x);
++                        for &inlet in &beside {
++                            solve_pump_inlet(graph, slate, previous_states, self.line_flash.view(), inlet, warm, self.eps_dp, 0.01 * self.tol_abs_kg_s)?;
++                        }
++                        node_imbalance_at(nid, x, &incident[&nid], &compiled, warm, cap, dt.value(), self.eps_dp, (graph, slate, previous_states, self.line_flash.view()), (&[], 0.0))
++                    };
++                    // WS: the node's scale (max |mdot| over its edges) at the trial, as the grade reads it.
++                    let scale_at = |warm: &BTreeMap<NodeId, f64>| -> Result<f64, SimError> {
++                        let mut m = 0.0f64;
++                        for &(eid, _) in &incident[&nid] {
++                            let fresh;
++                            let c = if is_fresh_edge(graph, eid, self.line_flash.view()) {
++                                fresh = compile_edge_with(graph, eid, slate, previous_states, warm, self.line_flash.view())?;
++                                &fresh
++                            } else { &compiled[&eid] };
++                            m = m.max((c.rho * c.branch.flow(warm[&c.src] - warm[&c.tgt], self.eps_dp)).abs());
++                        }
++                        Ok(m)
++                    };
++                    let ws = crate::probe::on("WS");
++                    let wr = crate::probe::on("WR");
++                    let outcome: Result<Option<f64>, SimError> = (|| {
++                        let p = pressures[&nid];
++                        let here = eval(p, &mut warm)?;
++                        // the node's own scale off the committed-inlet plant
++                        let bar = |r: f64, warm: &BTreeMap<NodeId, f64>| -> Result<bool, SimError> {
++                            let sc = if ws { scale_at(warm)? } else { r.abs() };
++                            Ok(meets_node_bar(r, sc, self.tol_abs_kg_s, self.tol_rel))
++                        };
++                        if !wr && bar(here, &warm)? { return Ok(Some(p)); }
++                        let d = 0.01;
++                        let up = eval(p + d, &mut warm.clone())?;
++                        let dn = eval(p - d, &mut warm.clone())?;
++                        let slope = (dn - up) / (2.0 * d);
++                        if !(slope > 0.0 && slope.is_finite()) { return Ok(None); }
++                        let (mut xa, mut fa) = (p, here);
++                        let mut x = p + here / slope;
++                        let mut bracket = None;
++                        for _ in 0..12 {
++                            let fx = eval(x, &mut warm)?;
++                            if bar(fx, &warm)? { return Ok(Some(x)); }
++                            if fx.signum() != fa.signum() {
++                                bracket = Some(if fa > 0.0 { (xa, fa, x, fx) } else { (x, fx, xa, fa) });
++                                break;
++                            }
++                            let sec = (fa - fx) / (x - xa);
++                            let mut next = if sec > 0.0 && sec.is_finite() { x + fx / sec } else { x + fx / slope };
++                            // growth capped at 8x the last step
++                            let last = (x - xa).abs();
++                            if (next - x).abs() > 8.0 * last { next = x + 8.0 * last * (next - x).signum(); }
++                            xa = x; fa = fx; x = next;
++                        }
++                        let Some((mut lo, mut flo, mut hi, mut fhi)) = bracket else { return Ok(None) };
++                        let mut side = 0i32;
++                        for _ in 0..80 {
++                            let xm = (lo * fhi - hi * flo) / (fhi - flo);
++                            let xm = if xm.is_finite() && xm > lo.min(hi) && xm < lo.max(hi) { xm } else { 0.5 * (lo + hi) };
++                            let fm = eval(xm, &mut warm)?;
++                            if bar(fm, &warm)? || (hi - lo).abs() <= 1e-12 * xm.abs() { return Ok(Some(xm)); }
++                            if fm > 0.0 { lo = xm; flo = fm; if side == -1 { fhi *= 0.5; } side = -1; }
++                            else { hi = xm; fhi = fm; if side == 1 { flo *= 0.5; } side = 1; }
++                        }
++                        Ok(None)
++                    })();
++                    match outcome {
++                        Ok(Some(root)) => {
++                            crate::probe::bump(&crate::probe::BRACKETED);
++                            // `warm` holds the node at its last evaluation, which is `root`.
++                            pressures.insert(nid, root);
++                            for inlet in &beside { pressures.insert(inlet.node, warm[&inlet.node]); }
++                            if crate::probe::trace() { eprintln!("  node {nid:?} solved -> {root:.4}"); }
++                            continue;
++                        }
++                        Ok(None) => {}
++                        Err(e) => {
++                            if crate::probe::on("WE") { return AnchorPass { result: Err(e), pressures }; }
++                            if crate::probe::trace() { eprintln!("  node {nid:?} W fell back: {e}"); }
++                        }
++                    }
++                }
++                if beside_inlet {
+                     let reduced = |p: f64| {
+                         node_imbalance_at(
+                             nid,
+@@ -418,7 +509,7 @@ impl SimpleFlowSolver {
+                         )
+                     };
+                     let p = pressures[&nid];
+-                    let delta = DENSITY_SLOPE_DELTA;
++                    let delta = if crate::probe::on("A") { 0.01 } else { DENSITY_SLOPE_DELTA };
+                     match (reduced(p), reduced(p + delta), reduced(p - delta)) {
+                         (Ok(here), Ok(above), Ok(below)) => {
+                             imbalance = here;
+@@ -426,6 +517,85 @@ impl SimpleFlowSolver {
+                             if slope > 0.0 && slope.is_finite() {
+                                 g_sum = slope;
+                             }
++                            if above.signum() != below.signum() {
++                                crate::probe::bump(&crate::probe::PROBES_STRADDLE);
++                            } else {
++                                {}
++                            }
++                            if crate::probe::trace() {
++                                eprintln!("  node {nid:?} p={p:.4} here={here:.3e} above={above:.3e} below={below:.3e} slope={slope:.3e} scale={scale:.3e}");
++                            }
++                            // S: the node solved to its root in its turn: secant
++                            // from the probes' slope until a sign change, then Illinois.
++                            if crate::probe::on("S")
++                                && !meets_node_bar(here, scale, self.tol_abs_kg_s, self.tol_rel)
++                                && slope > 0.0 && slope.is_finite()
++                            {
++                                let bar = |r: f64| meets_node_bar(r, scale, self.tol_abs_kg_s, self.tol_rel);
++                                let (mut xa, mut fa) = (p, here);
++                                let mut x = p + here / slope;
++                                let mut root = None;
++                                let mut bracket: Option<(f64, f64, f64, f64)> = None; // lo, flo, hi, fhi
++                                for _ in 0..12 {
++                                    let fx = match reduced(x) { Ok(v) => v, Err(e) => return AnchorPass { result: Err(e), pressures } };
++                                    if bar(fx) { root = Some(x); break; }
++                                    if fx.signum() != fa.signum() {
++                                        bracket = Some(if fa > 0.0 { (xa, fa, x, fx) } else { (x, fx, xa, fa) });
++                                        break;
++                                    }
++                                    // same side: secant through (xa, fa), (x, fx)
++                                    let sec = (fa - fx) / (x - xa);
++                                    let next = if sec > 0.0 && sec.is_finite() { x + fx / sec } else { x + fx / slope };
++                                    xa = x; fa = fx; x = next;
++                                }
++                                if let (None, Some((mut lo, mut flo, mut hi, mut fhi))) = (root, bracket) {
++                                    // balance falls with pressure: f(lo) > 0 > f(hi)
++                                    let mut side = 0i32;
++                                    for _ in 0..80 {
++                                        let xm = (lo * fhi - hi * flo) / (fhi - flo);
++                                        let xm = if xm.is_finite() && xm > lo.min(hi) && xm < lo.max(hi) { xm } else { 0.5 * (lo + hi) };
++                                        let fm = match reduced(xm) { Ok(v) => v, Err(e) => return AnchorPass { result: Err(e), pressures } };
++                                        if bar(fm) || (hi - lo).abs() <= 1e-12 * xm.abs() { root = Some(xm); break; }
++                                        if fm > 0.0 { lo = xm; flo = fm; if side == -1 { fhi *= 0.5; } side = -1; }
++                                        else { hi = xm; fhi = fm; if side == 1 { flo *= 0.5; } side = 1; }
++                                    }
++                                }
++                                c_root = root;
++                                crate::probe::bump(&crate::probe::BRACKETED);
++                            }
++                            // C: the probes straddle the root -> Illinois on [p-δ, p+δ].
++                            if crate::probe::on("C")
++                                && !meets_node_bar(here, scale, self.tol_abs_kg_s, self.tol_rel)
++                                && above.signum() != below.signum()
++                            {
++                                // balance falls with pressure: below > 0 > above (normally)
++                                let (mut lo, mut flo) = (p - delta, below);
++                                let (mut hi, mut fhi) = (p + delta, above);
++                                // shrink with `here`
++                                if here.signum() == flo.signum() { lo = p; flo = here; } else { hi = p; fhi = here; }
++                                let mut side = 0i32;
++                                let mut root = None;
++                                for _ in 0..60 {
++                                    let x = (lo * fhi - hi * flo) / (fhi - flo);
++                                    let x = if x.is_finite() && x > lo && x < hi { x } else { 0.5 * (lo + hi) };
++                                    let fx = match reduced(x) { Ok(v) => v, Err(e) => return AnchorPass { result: Err(e), pressures } };
++                                    if meets_node_bar(fx, scale, self.tol_abs_kg_s, self.tol_rel) || hi - lo < 1e-9 * p.abs() {
++                                        root = Some(x);
++                                        break;
++                                    }
++                                    if fx.signum() == flo.signum() {
++                                        lo = x; flo = fx;
++                                        if side == -1 { fhi *= 0.5; }
++                                        side = -1;
++                                    } else {
++                                        hi = x; fhi = fx;
++                                        if side == 1 { flo *= 0.5; }
++                                        side = 1;
++                                    }
++                                }
++                                c_root = root;
++                                crate::probe::bump(&crate::probe::BRACKETED);
++                            }
+                         }
+                         (Err(e), _, _) | (_, Err(e), _) | (_, _, Err(e)) => {
+                             return AnchorPass {
+@@ -491,7 +661,9 @@ impl SimpleFlowSolver {
+                 let pump_node = incident[&nid]
+                     .iter()
+                     .any(|(eid, incoming)| !*incoming && compiled[eid].pump_suction.is_some());
+-                let mut step = if pump_node {
++                let mut step = if let Some(root) = c_root {
++                    Ok(root - p_now)
++                } else if pump_node || (beside_inlet && crate::probe::on("C2")) {
+                     match bracketed_step(full, imbalance, &mut residual_at, |r| {
+                         meets_node_bar(r, scale, self.tol_abs_kg_s, self.tol_rel)
+                     }) {
+@@ -540,6 +712,17 @@ impl SimpleFlowSolver {
+                 // rounding floor on an already-converged node, where the target
+                 // `(1 − c·t)·|R|` is unreachable and the dropped step is a no-op.
+                 *pressures.get_mut(&nid).expect("unknown is a node") += step;
++                // E: commit the plant as it answers -- the inlet re-solved into the iterate.
++                if beside_inlet && crate::probe::on("E") {
++                    for inlet in adjacent_inlets(graph, &incident[&nid], &inlets) {
++                        if let Err(e) = solve_pump_inlet(graph, slate, previous_states, self.line_flash.view(), inlet, &mut pressures, self.eps_dp, 0.01 * self.tol_abs_kg_s) {
++                            return AnchorPass { result: Err(e), pressures };
++                        }
++                    }
++                }
++                if crate::probe::trace() {
++                    eprintln!("  node {nid:?} step={step:.4e} -> {:.4}", pressures[&nid]);
++                }
+             }
+ 
+             // The group correction, after the node-wise sweep and BEFORE the
+@@ -618,11 +801,13 @@ impl SimpleFlowSolver {
+                 if let Some(cap) = capacitive.get(&nid) {
+                     bal += accumulation(cap, pressures[&nid], dt.value()).0;
+                 }
++                if crate::probe::trace() { eprintln!("   grade {nid:?} p={:.4} bal={bal:.3e} scale={scale:.3e}", pressures[&nid]); }
+                 graded.push((bal, scale));
+             }
+             let (residual, converged) =
+                 crate::network::grade_nodes(graded, self.tol_abs_kg_s, self.tol_rel);
+             history.push(residual);
++            if crate::probe::trace() { eprintln!(" sweep {iterations} residual {residual:.3e}"); }
+ 
+             if converged {
+                 let result =
+@@ -1101,7 +1286,11 @@ fn build_groups(
+                 let other = if c.src == nid { c.tgt } else { c.src };
+                 if let (Some(&a), Some(&b)) = (aggregate_of.get(&nid), aggregate_of.get(&other)) {
+                     if a < b {
+-                        *weights.entry((a, b)).or_insert(0.0) += weight_of(&eid);
++                        let w = weight_of(&eid);
++                        if crate::probe::trace() { eprintln!("  group weight {nid:?}-{other:?} = {w:.3e}"); }
++                        if !(crate::probe::on("B") && w <= 0.0) {
++                            *weights.entry((a, b)).or_insert(0.0) += w;
++                        }
+                     }
+                 }
+             }
+diff --git a/tools/steptime/Cargo.lock b/tools/steptime/Cargo.lock
+index 84325b0..2c8a191 100644
+--- a/tools/steptime/Cargo.lock
++++ b/tools/steptime/Cargo.lock
+@@ -839,6 +839,7 @@ version = "0.1.0"
+ dependencies = [
+  "refinery-core",
+  "refinery-scenarios",
++ "refinery-solvers",
+  "serde_json",
+ ]
+ 
+diff --git a/tools/steptime/Cargo.toml b/tools/steptime/Cargo.toml
+index a9e4092..32c816f 100644
+--- a/tools/steptime/Cargo.toml
++++ b/tools/steptime/Cargo.toml
+@@ -13,3 +13,4 @@ publish = false
+ serde_json = "1"
+ refinery-core = { path = "../../crates/core" }
+ refinery-scenarios = { path = "../../crates/scenarios" }
++refinery-solvers = { path = "../../crates/solvers" }
+diff --git a/tools/steptime/src/main.rs b/tools/steptime/src/main.rs
+index 91bd158..ff4ba25 100644
+--- a/tools/steptime/src/main.rs
++++ b/tools/steptime/src/main.rs
+@@ -36,6 +36,8 @@ enum Beat {
+     Vent,
+ }
+ 
++thread_local! { static COUNTS: std::cell::RefCell<Vec<[u64; 7]>> = const { std::cell::RefCell::new(Vec::new()) }; }
++
+ /// Frame budget for one tick [ms] (docs/DESIGN.md §11, M9.3a).
+ const FRAME_BUDGET_MS: f64 = 2.5;
+ 
+@@ -57,9 +59,13 @@ fn story(engine: &mut Engine, beats: &[Beat], snapshots: bool) -> (Vec<f64>, Str
+         let command = match *beat {
+             Beat::Run(n) => {
+                 for _ in 0..n {
++                    use refinery_solvers::probe::*;
++                    for c in [&SWEEPS, &PASSES, &INLET_SEARCHES, &INLET_TRIALS, &BRACKETED, &PROBES_STRADDLE, &PROBES_SAME] { take(c); }
++                    if trace() { eprintln!("TICK {}", times.len() + 1); }
+                     let start = Instant::now();
+                     engine.tick().expect("a story's tick");
+                     times.push(start.elapsed().as_secs_f64() * 1e3);
++                    COUNTS.with(|v| v.borrow_mut().push([take(&SWEEPS), take(&PASSES), take(&INLET_SEARCHES), take(&INLET_TRIALS), take(&BRACKETED), take(&PROBES_STRADDLE), take(&PROBES_SAME)]));
+                     if snapshots {
+                         lines.push_str(&serde_json::to_string(&engine.snapshot()).unwrap());
+                         lines.push('\n');
+@@ -157,6 +163,23 @@ fn main() {
+                     }
+                 }
+             }
++            let counts: Vec<[u64; 7]> = COUNTS.with(|v| std::mem::take(&mut *v.borrow_mut()));
++            let n = best.len();
++            let last = &counts[counts.len() - n..];
++            if let Some(dir) = &dump {
++                let text: String = best.iter().zip(last).enumerate().map(|(i, (t, c))| format!("{} {t:.3} {} {} {} {} {} {} {}
++", i + 1, c[0], c[1], c[2], c[3], c[4], c[5], c[6])).collect();
++                std::fs::write(format!("{dir}/counts_{name}_{solver}.txt"), text).unwrap();
++            }
++            {
++                let w: Vec<usize> = (180..211).filter(|&i| i < n).collect();
++                let m = |k: usize| w.iter().map(|&i| last[i][k] as f64).sum::<f64>() / w.len() as f64;
++                let tm = w.iter().map(|&i| best[i]).sum::<f64>() / w.len() as f64;
++                let tx = w.iter().map(|&i| best[i]).fold(0.0, f64::max);
++                let outside = (0..n).filter(|&i| !(180..212).contains(&i) && i > 0 && best[i] > FRAME_BUDGET_MS).count();
++                let outside_worst = (0..n).filter(|&i| !(180..212).contains(&i) && i > 0).map(|i| best[i]).fold(0.0, f64::max);
++                println!("  window 181-211: mean {tm:.2} ms max {tx:.2}; sweeps {:.2} passes {:.2} searches {:.1} trials/search {:.1} bracketed {:.2} straddle {:.2} same {:.2}; outside over {outside} (worst {outside_worst:.2})", m(0), m(1), m(2), m(3) / m(2).max(1e-9), m(4), m(5), m(6));
++            }
+             if let Some(dir) = &dump {
+                 let text: String = best.iter().map(|t| format!("{t:.3}\n")).collect();
+                 std::fs::write(format!("{dir}/steps_{name}_{solver}.txt"), text)

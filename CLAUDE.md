@@ -150,22 +150,10 @@ godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--p
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M56, OPEN** — the
-frame budget M55 overran. M56.0 remembers the line flash's densities inside each
-flow solver (`network::DensityMemo`, no answer moved); M56.1 (the user's
-decision) finds the line flash's two roots by superlinear searches (two boiling
-plants moved ≤ 7.6e-10). The flashing rundown is back inside the 2.5 ms budget;
-the gas-lock story's locked beat is not (worst 130–174 ms on the game solver,
-19 sweeps a tick while the pump DIES behind its shut disc, 3 s; DESIGN §61.4).
-M56.2 (the user's decision) warm-starts the pump inlet's search: 41 trials →
-13, that beat 88–91 → 24 ms a tick on the game solver, Newton inside the
-budget on every tick; the 19 sweeps remain (the next step's subject)
-(A24 narrowed, A25). M56.3 (the user's decision) cures Newton's three cold-start
-failures on M54.1's pump plant (A26 closed, §61.6): a shut disc's step halves
-on, and a pump outlet's slope reads the suction's liquid and is taken by the
-chain rule; only `pump_gas_lock` on Newton moved. M56.4 (measured, not built) traces the game
-solver's 19 sweeps and prototypes a cure that takes the dying pump to one sweep
-a tick (DESIGN §61.7); building it is the user's decision 4. **Latest closed: M55 (2026-10-08).** Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — the
+next is the user's choice. **Latest closed: M56 (2026-10-10)**: the frame budget
+M55 overran, narrowed (A24 stays open on the game solver's gas-lock story; the
+pump screen runs that plant on Newton, inside the budget). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 
