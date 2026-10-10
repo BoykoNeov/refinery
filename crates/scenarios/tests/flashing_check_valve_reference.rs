@@ -314,6 +314,47 @@ fn every_move_with_the_disc_lands_on_the_cold_answer() {
     }
 }
 
+/// **Newton starts cold where it used to fail, on the game solver's answer**
+/// (A26): a 0.1 °C scan over 100–130 °C found Newton failing tick 1 at these
+/// starts, by three mechanisms (docs/DESIGN.md §61.6): 118.6–120.4 °C into 3 bar,
+/// a shut disc at the cold seed; 101.9 °C into 1.5 bar and 110.9 °C into 3 bar,
+/// a non-descent step near the answer; 120.9 °C into 3 bar, the pump short of
+/// its lock. Each settles, unlocked or locked as the game solver is, its flow
+/// within 1e-6 of the game solver's.
+#[test]
+fn newton_starts_cold_where_it_failed() {
+    let starts = [
+        (3.0, 118.6),
+        (3.0, 119.0),
+        (3.0, 119.5),
+        (3.0, 120.0),
+        (3.0, 120.4),
+    ];
+    for (destination_bar, celsius) in starts {
+        let settled: Vec<(f64, bool)> = SOLVERS
+            .iter()
+            .map(|solver| {
+                let mut engine = build(&pump_plant(solver, celsius, destination_bar));
+                let label = format!("{solver} cold at {celsius} °C into {destination_bar} bar");
+                settle(&mut engine, SETTLE_TICKS, "discharge", &label);
+                (
+                    edge_flow(&engine.snapshot(), "discharge"),
+                    is_locked(&engine),
+                )
+            })
+            .collect();
+        let ((newton, newton_locked), (simple, simple_locked)) = (settled[0], settled[1]);
+        assert_eq!(
+            newton_locked, simple_locked,
+            "{celsius} °C into {destination_bar} bar: Newton locked {newton_locked}, the game solver {simple_locked}"
+        );
+        assert!(
+            (newton - simple).abs() <= 1e-6 * simple.abs().max(1.0),
+            "{celsius} °C into {destination_bar} bar: Newton {newton}, the game solver {simple} kg/s"
+        );
+    }
+}
+
 /// **A boiling stream passes the disc**: M53's let-down line with a check valve,
 /// its supply stepped from liquid to boiling and back, the disc's outlet carrying
 /// vapour once the supply boils, every move settled and on the cold answer, and

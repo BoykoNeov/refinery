@@ -63,6 +63,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Max damped-halvings per Newton step (min step 1/256).
 const MAX_HALVINGS: u32 = 8;
+/// Further halvings a step may take when it opens a disc the Jacobian holds
+/// shut (`opens_shut_disc`; A26, docs/DESIGN.md §61.6): min step 1/65 536.
+const MAX_OPENING_HALVINGS: u32 = 8;
 /// Armijo sufficient-decrease coefficient for the line search.
 ///
 /// **This constant is coupled to [`NewtonFlowSolver::max_iter`], and the coupling
@@ -361,7 +364,14 @@ impl NewtonFlowSolver {
             // `head_cut`.
             let mut t = band_cut(&compiled, &idx, &dp).min(head_cut(graph, &inlets, &dp));
             let mut accepted = false;
-            for _ in 0..=MAX_HALVINGS {
+            // A step that opens a disc the Jacobian holds shut may halve on past
+            // the usual ladder (A26, docs/DESIGN.md §61.6): `opens_shut_disc`.
+            let halvings = if opens_shut_disc(&compiled, &idx, &dp) {
+                MAX_HALVINGS + MAX_OPENING_HALVINGS
+            } else {
+                MAX_HALVINGS
+            };
+            for _ in 0..=halvings {
                 let mut trial = apply_step(&pressures, &unknowns, &idx, &dp, t);
                 follow_pump_heads(&compiled, &idx, &dp, t, &mut trial);
                 // A pump's inlet is solved at the trial, not stepped (M54,
@@ -641,6 +651,35 @@ fn band_cut(
         }
     }
     t
+}
+
+/// Whether the Newton step raises the drive of a check valve that is SHUT at
+/// the iterate (A26, docs/DESIGN.md §61.6) — the one move the ladder may halve
+/// past `MAX_HALVINGS` on (`MAX_OPENING_HALVINGS`).
+///
+/// A shut disc has no conductance in the Jacobian, so the step is set as if it
+/// stayed shut. Its opening grows as the drive's square off its seat (the
+/// smoothstep, `check_opening`), and the flow through it as the drive's 2.5
+/// power: on every rung the disc leaks a flow the step never saw. Where that leak runs against the node's imbalance the merit RISES on
+/// every rung the usual ladder reaches. M54.1's pump plant started cold at
+/// 118.6–120.4 °C into 3 bar is that case: the cold seed holds the disc's two
+/// sides at one pressure, the dead end behind it is raised by megapascals, and
+/// the last of nine rungs still cracks the disc 1.5 kPa open. A rung short
+/// enough always passes — the leak is of higher order in `t` than Armijo's
+/// decrease — and the next iterate has the disc inside its band, its
+/// conductance back in the Jacobian. Only a ladder that has run out reaches
+/// the further rungs, so every solve the usual ladder settles is unchanged.
+fn opens_shut_disc(
+    compiled: &BTreeMap<EdgeId, CompiledEdge>,
+    idx: &BTreeMap<NodeId, usize>,
+    dp: &[f64],
+) -> bool {
+    let step = |nid: &NodeId| idx.get(nid).map_or(0.0, |&i| dp[i]);
+    compiled.values().any(|c| {
+        c.check_band.is_some_and(|band| {
+            band.full_open > 0.0 && band.drive <= 0.0 && step(&c.src) - step(&c.tgt) > 0.0
+        })
+    })
 }
 
 /// Moves a cavitating pump's OUTLET with the head its suction step really buys
