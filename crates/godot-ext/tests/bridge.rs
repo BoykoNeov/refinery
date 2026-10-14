@@ -260,6 +260,7 @@ fn wire_text(cmd: &Command) -> &'static str {
         }
         Command::ResetTrip { .. } => r#"{"cmd":"reset_trip","trip_id":0}"#,
         Command::ReplaceTubes { .. } => r#"{"cmd":"replace_tubes","node":1}"#,
+        Command::RepairBedWall { .. } => r#"{"cmd":"repair_bed_wall","node":1}"#,
         Command::VentPump { .. } => r#"{"cmd":"vent_pump","node":1}"#,
         Command::ManualTrip { .. } => r#"{"cmd":"manual_trip","trip_id":0}"#,
         Command::SetReservoirPressure { .. } => {
@@ -308,6 +309,7 @@ fn every_variant() -> Vec<Command> {
         },
         Command::ResetTrip { trip_id: TripId(0) },
         Command::ReplaceTubes { node: NodeId(1) },
+        Command::RepairBedWall { node: NodeId(1) },
         Command::VentPump { node: NodeId(1) },
         Command::ManualTrip { trip_id: TripId(0) },
         Command::SetReservoirPressure {
@@ -347,7 +349,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 14, "a Command variant was added");
+    assert_eq!(every_variant().len(), 15, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -405,6 +407,14 @@ fn fixture(cmd: &Command) -> Fixture {
             furnace: "heater",
             outlet: "heated_line",
         },
+        // A repair is legal only on a failed wall, patched, on a bed back below
+        // its limit — see `Fixture::WallFailed` (M58, docs/DESIGN.md §63.4).
+        Command::RepairBedWall { .. } => Fixture::WallFailed {
+            plant: "hydrocracker_wall_failure.toml",
+            bed: "bed",
+            outlet: "product_line",
+            feed: "vgo_feed",
+        },
     }
 }
 
@@ -437,6 +447,17 @@ enum Fixture {
         plant: &'static str,
         furnace: &'static str,
         outlet: &'static str,
+    },
+    /// A catalyst bed whose wall has failed (M58, docs/DESIGN.md §63): the
+    /// shipped plant with its bed made 60 times lighter, so a debug build gets
+    /// through the story in a few hundred ticks, run past the failure, its hole
+    /// patched and its feed chilled through the bridge, and run on until the
+    /// bed is back below its limit.
+    WallFailed {
+        plant: &'static str,
+        bed: &'static str,
+        outlet: &'static str,
+        feed: &'static str,
     },
     /// A pump that has gas-locked (M54, docs/DESIGN.md §59.2): the inline plant,
     /// whose supply boils, is run until the pump locks, and the pump is stopped
@@ -543,6 +564,36 @@ fn every_command_variant_is_accepted_by_a_real_engine() {
                     sim.tick().expect("the cooling plant ticks");
                 }
                 (sim, "node", heater, plant)
+            }
+            Fixture::WallFailed {
+                plant,
+                bed,
+                outlet,
+                feed,
+            } => {
+                let src = scenario_src(plant).replace(
+                    "bed_heat_capacity_mj_per_k = 30.0",
+                    "bed_heat_capacity_mj_per_k = 0.5",
+                );
+                let mut sim = Bridge::load(&src).expect("the light wall-failure plant loads");
+                for _ in 0..200 {
+                    sim.tick().expect("the wall-failure demo ticks");
+                }
+                let id = sim.node_id(bed).expect("the bed");
+                let pipe = sim.edge_id(outlet).expect("its outlet");
+                let supply = sim.node_id(feed).expect("its feed");
+                sim.apply_command_json(&format!(
+                    r#"{{"cmd":"puncture_pipe","edge":{pipe},"area":0.0}}"#
+                ))
+                .expect("the patch");
+                sim.apply_command_json(&format!(
+                    r#"{{"cmd":"set_source_temperature","node":{supply},"temperature":473.15}}"#
+                ))
+                .expect("the chill");
+                for _ in 0..400 {
+                    sim.tick().expect("the cooling plant ticks");
+                }
+                (sim, "node", id, plant)
             }
             Fixture::GasLocked { src, pump } => {
                 let mut sim = Bridge::load(src).expect("inline gas-lock plant loads");

@@ -8,11 +8,11 @@ use refinery_core::energy::T_REF;
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    Actuator, Blowdown, CascadeSpec, CatalystBed, ColumnDraw, ControlAction, ControlLoop,
+    Actuator, BedWall, Blowdown, CascadeSpec, CatalystBed, ColumnDraw, ControlAction, ControlLoop,
     ControlMode, ControlledValue, EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling,
     LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe,
     PlantGraph, PumpSuction, QuenchCheck, QuenchReading, SetpointRange, TankState, Trip,
-    TripAction, TripDirection, TripId, TripReset, TripState, TubeState, VesselState,
+    TripAction, TripDirection, TripId, TripReset, TripState, TubeState, VesselState, WallState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -119,10 +119,12 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         // docs/DESIGN.md §42), built here, dormant, exactly as a declared
         // `leak_to` is — the shape of the plant cannot change mid-run. A pipe
         // that already declares one shares it; one that does not vents to the
-        // plant's outside (`burnout_atmosphere_for`).
+        // plant's outside (`burnout_atmosphere_for`). Every catalyst bed's
+        // outlet carries the hole its wall fails into the same way (M58,
+        // docs/DESIGN.md §63.1).
         let furnace_outlet = matches!(
             scenario.nodes.get(&pipe.from),
-            Some(NodeDef::Furnace { .. })
+            Some(NodeDef::Furnace { .. } | NodeDef::BedReactor { .. })
         );
         let atmosphere = match (&pipe.leak_to, furnace_outlet) {
             (Some(declared), _) => Some(declared.clone()),
@@ -143,8 +145,10 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
                     whole,
                     &atmosphere,
                 )?;
-                if let NodeKind::Furnace { tubes, .. } = &mut graph.node_mut(from).kind {
-                    tubes.hole = Some(hole);
+                match &mut graph.node_mut(from).kind {
+                    NodeKind::Furnace { tubes, .. } => tubes.hole = Some(hole),
+                    NodeKind::BedReactor { wall, .. } => wall.hole = Some(hole),
+                    _ => {}
                 }
             }
         }
@@ -2481,6 +2485,17 @@ fn resolve_measurement_point(
             // or not the file says `leak_to`, so it is refused for the same
             // reason, and named as the furnace's rather than as a loader fault.
             if let Some(furnace) = graph.find_node(&pipe.from) {
+                // A catalyst bed's outlet likewise, for its wall (M58, §63.1).
+                if matches!(graph.node(furnace).kind, NodeKind::BedReactor { .. }) {
+                    return Err(SimError::Scenario(format!(
+                        "{owner} measures pipe '{name}', the outlet of catalyst bed '{}'. \
+                         Every bed's outlet is split at load for the hole its wall fails into \
+                         (docs/DESIGN.md §63.1), and once that hole is open the two halves \
+                         carry different flows, so the name no longer names one flow. Meter \
+                         the bed's flow on its inlet pipe",
+                        pipe.from
+                    )));
+                }
                 if matches!(graph.node(furnace).kind, NodeKind::Furnace { .. }) {
                     return Err(SimError::Scenario(format!(
                         "{owner} measures pipe '{name}', the outlet of furnace '{}'. Every \
@@ -3783,11 +3798,25 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             bed_heat_capacity_mj_per_k,
             catalyst_volume_m3,
             bed_temperature_c,
+            wall_failure_c,
+            wall_rupture_area_cm2,
+            fluid_heating_value_mj_per_kg,
+            wall_fire_share,
         } => NodeKind::BedReactor {
             bed: CatalystBed {
                 heat_capacity: JPerK(*bed_heat_capacity_mj_per_k * 1e6),
                 catalyst_volume: CubicMeter(*catalyst_volume_m3),
                 temperature: c_to_k(*bed_temperature_c),
+            },
+            // The hole is written once the outlet pipe is split (`build_engine`,
+            // step 2), as a furnace's is; intact from load (M58, §63).
+            wall: BedWall {
+                failure_temperature: c_to_k(*wall_failure_c),
+                rupture_area: SquareMeter(*wall_rupture_area_cm2 * 1e-4),
+                heating_value: JPerKg(*fluid_heating_value_mj_per_kg * 1e6),
+                fire_share: *wall_fire_share,
+                hole: None,
+                state: WallState::Intact,
             },
         },
     })
@@ -3953,8 +3982,9 @@ fn split_for_leak(
     Ok(orifice)
 }
 
-/// Where a furnace's burn-out hole vents when its outlet pipe declares no
-/// `leak_to` (M37, docs/DESIGN.md §42): the plant's first DECLARED atmosphere;
+/// Where a furnace's burn-out hole — or a catalyst bed's wall hole (M58, §63.1)
+/// — vents when its outlet pipe declares no `leak_to` (M37, docs/DESIGN.md
+/// §42): the plant's first DECLARED atmosphere;
 /// else the one the loader creates, under the name the plant's FIRST
 /// loader-made atmosphere would have had without it — `boiloff_atmosphere` on a
 /// plant whose tanks get boil-off vents, `overflow_atmosphere` on one whose tanks
@@ -3987,8 +4017,8 @@ fn burnout_atmosphere_for(
         Some(existing) if matches!(graph.node(existing).kind, NodeKind::Atmosphere) => {}
         Some(_) => {
             return Err(SimError::Scenario(format!(
-                "this plant has a furnace, whose burn-out hole would vent to an atmosphere \
-                 named '{name}' — and the plant already has a node by that name which is not \
+                "this plant has a furnace or a catalyst bed, whose failure hole would vent to \
+                 an atmosphere named '{name}' — and the plant already has a node by that name which is not \
                  an atmosphere. Rename it, or declare an atmosphere node and the hole will \
                  use it (docs/DESIGN.md §42)"
             )));

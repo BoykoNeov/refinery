@@ -1,0 +1,115 @@
+# M58 demo plant: what a runaway breaks — a catalyst bed's wall fails.
+#
+# The bed of `hydrocracker_runaway.toml`, unchanged, loaded where that file's
+# bed is after about 16 minutes: 450 °C, mid-creep, on the same 385 °C feed. So
+# it runs away inside a short run rather than after twenty minutes of creep.
+#
+# The wall (docs/DESIGN.md §63) fails the tick the bed starts at or past 550 °C:
+# a 1 cm² hole opens on the product line, the hot products spray out of it and
+# burn at 42.8 MJ/kg — tens of megawatts — and a tenth of that fire heats the
+# bed, which runs on past where the runaway alone would settle. Every wall
+# number is a round GAME value, not a sourced shell limit.
+#
+# What a player does about it: patch the hole (`puncture_pipe` at area 0 on
+# `product_line`), which puts the fire out; chill the feed hard
+# (`set_source_temperature` on `vgo_feed` — a runaway bed stays hot far below
+# the feed that lit it, and only a feed near 200 °C brings it back under the
+# limit); then repair the wall (`repair_bed_wall` on `bed`), which is refused
+# until the bed is below 550 °C. The reactor screen tells this story on key 4.
+#
+# Every number but the bed's starting temperature is the runaway file's, which
+# is the calm file's with a hotter feed; the calm file's header explains them.
+
+[meta]
+name = "hydrocracker_wall_failure"
+description = "The runaway bed loaded mid-creep at 450 °C: it reaches 550 °C, its wall fails, and the leak burns."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "hydrocracking"
+
+# --- the four hydrocracking lumps (§62.3) --------------------------------------
+
+[[components]]
+name = "vgo"
+tb_c = 450.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "distillate"
+tb_c = 260.0
+molar_mass_kg_per_mol = 0.200
+density_kg_per_m3 = 830.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "naphtha"
+tb_c = 120.0
+molar_mass_kg_per_mol = 0.110
+density_kg_per_m3 = 740.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "gas"
+tb_c = -10.0
+molar_mass_kg_per_mol = 0.050
+density_kg_per_m3 = 550.0
+cp_j_per_kg_k = 3200.0
+
+# --- the plant ----------------------------------------------------------------
+
+[nodes.vgo_feed]
+type = "source"
+pressure_bar = 8.0
+temperature_c = 385.0
+composition = { vgo = 1.0 }
+
+[nodes.feed_valve]
+type = "valve"
+kv = 110.0
+opening = 1.0
+
+[nodes.bed]
+type = "bed_reactor"
+bed_heat_capacity_mj_per_k = 30.0
+catalyst_volume_m3 = 20.0
+bed_temperature_c = 450.0
+# The wall (M58, docs/DESIGN.md §63): it fails when the bed reaches 550 °C,
+# opening a 1 cm² hole on the outlet line; what leaks burns at 42.8 MJ/kg and a
+# tenth of that fire heats the bed. Round GAME values, not a sourced shell limit.
+wall_failure_c = 550.0
+wall_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.8
+wall_fire_share = 0.1
+
+[nodes.product]
+type = "sink"
+pressure_bar = 5.0
+composition = { vgo = 1.0 }
+
+[[pipes]]
+name = "feed_line"
+from = "vgo_feed"
+to = "feed_valve"
+length_m = 30.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "valve_line"
+from = "feed_valve"
+to = "bed"
+length_m = 5.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "product_line"
+from = "bed"
+to = "product"
+length_m = 30.0
+diameter_m = 0.25

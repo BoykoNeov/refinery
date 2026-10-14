@@ -443,7 +443,75 @@ pub enum NodeKind {
     /// bed into a runaway, and a heat-absorbing one cools it until it settles.
     /// The loader admits a bed only with a reaction model that is solved exactly
     /// at every residence time, `+∞` included (§62.2).
-    BedReactor { bed: CatalystBed },
+    ///
+    /// Its `wall` fails past a metal limit, as a furnace's tubes burst (M58,
+    /// docs/DESIGN.md §63): a hole on its outlet pipe, and a fire fed by what
+    /// leaks, a declared share of which heats the bed.
+    BedReactor { bed: CatalystBed, wall: BedWall },
+}
+
+/// A catalyst bed's vessel wall: its failure limit, the hole a failure opens,
+/// the fire the leak feeds, and whether it has failed (M58, docs/DESIGN.md
+/// §63) — `FurnaceTubes`' twin.
+///
+/// `Engine::run_burnouts` fails an intact wall whose bed stands at or past
+/// `failure_temperature` at the top of a tick: it opens `hole` — the dormant
+/// orifice the loader built on the bed's outlet pipe — to `rupture_area`, and
+/// latches `state`. While the wall is FAILED, whatever leaks out of that hole
+/// burns at `heating_value` per kilogram, and `fire_share` of that fire heats
+/// the bed; the rest goes to the air. A player patches the hole with
+/// `Command::PuncturePipe` at area zero, which puts the fire out with it, and
+/// then repairs the wall (`Command::RepairBedWall`) once the bed is below its
+/// limit.
+///
+/// The limit is compared with the LUMPED bed temperature (`CatalystBed`), as
+/// an instant failure point, where a real shell fails by creep over time —
+/// §42's simplifications for tubes, made again for a vessel (§63.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BedWall {
+    /// Bed temperature at or above which the wall fails [K].
+    pub failure_temperature: Kelvin,
+    /// Area of the hole a failure opens [m²]. Positive.
+    pub rupture_area: SquareMeter,
+    /// Lower heating value of what leaks [J/kg]: what a kilogram of it
+    /// releases burning outside the vessel. Non-negative.
+    pub heating_value: JPerKg,
+    /// The share of the leak's fire that heats the bed, in [0, 1]
+    /// (dimensionless). A game value (§63.3): the rest goes to the air.
+    pub fire_share: f64,
+    /// The orifice edge the failure opens, on the bed's outlet pipe. Written by
+    /// the loader once it has split that pipe, so `None` only on a graph built
+    /// by hand without one — which the burn-out pass refuses rather than skips.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole: Option<EdgeId>,
+    pub state: WallState,
+}
+
+impl BedWall {
+    /// A bed at `bed_temperature` [K] is at or past this wall's limit: the next
+    /// burn-out pass fails it if it is intact. The one owner of the comparison,
+    /// shared by the burn-out pass and `Command::RepairBedWall`.
+    pub fn limit_reached(&self, bed_temperature: Kelvin) -> bool {
+        bed_temperature >= self.failure_temperature
+    }
+}
+
+/// Whether a catalyst bed's wall has failed (M58, docs/DESIGN.md §63).
+///
+/// Latched: `Failed` from the tick whose top pass found the bed at or past its
+/// limit, until `Command::RepairBedWall`. Patching the hole does not clear it,
+/// so a hole punched again by hand in a failed wall burns again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WallState {
+    Intact,
+    Failed { at_tick: u64 },
+}
+
+impl WallState {
+    pub fn is_failed(self) -> bool {
+        matches!(self, WallState::Failed { .. })
+    }
 }
 
 /// A catalyst bed: the catalyst, the internals and the liquid they hold, as one
@@ -2559,7 +2627,7 @@ impl PlantGraph {
             self.pipe(check.main_pipe).stream.temperature
         } else {
             match &self.node(check.bed).kind {
-                NodeKind::BedReactor { bed } => bed.temperature,
+                NodeKind::BedReactor { bed, .. } => bed.temperature,
                 _ => {
                     return Err(SimError::Numerical(format!(
                         "internal: a quench check measures '{}', which is not a catalyst bed; \
@@ -2854,7 +2922,7 @@ impl PlantGraph {
             // `Engine::tick` writes it at the end of every tick — so never absent,
             // flowing or not. Read for a TRIP: a loop on a bed is refused by the
             // loader, by name, until M57.4 argues one.
-            (MeasuredVariable::Temperature, NodeKind::BedReactor { bed }) => {
+            (MeasuredVariable::Temperature, NodeKind::BedReactor { bed, .. }) => {
                 Ok(Some(ControlledValue::Temperature { k: bed.temperature }))
             }
             (

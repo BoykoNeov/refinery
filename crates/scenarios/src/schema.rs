@@ -578,6 +578,20 @@ pub enum NodeDef {
         /// The bed's temperature at load [°C]: a STATE, like a furnace's
         /// `coil_temperature_c`. Finite and above absolute zero.
         bed_temperature_c: f64,
+        /// The wall's failure limit [°C] (M58, docs/DESIGN.md §63): at or past
+        /// it the wall fails, opening a hole in the bed's outlet pipe. REQUIRED
+        /// on every bed, no default, as a furnace's `tube_failure_c` is. Finite
+        /// and above `bed_temperature_c` (a bed loaded at its limit would fail
+        /// on tick 1).
+        wall_failure_c: f64,
+        /// The area of the hole a failure opens [cm²]. REQUIRED. Finite and > 0.
+        wall_rupture_area_cm2: f64,
+        /// Lower heating value of what leaks [MJ/kg]: what a leaked kilogram
+        /// releases burning outside the vessel. REQUIRED. Finite and >= 0.
+        fluid_heating_value_mj_per_kg: f64,
+        /// The share of that fire which heats the bed, in [0, 1]. REQUIRED. A
+        /// game value (docs/DESIGN.md §63.3): the rest goes to the air.
+        wall_fire_share: f64,
     },
 }
 

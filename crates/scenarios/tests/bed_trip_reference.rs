@@ -48,6 +48,9 @@ actions = [{ furnace = "preheater" }]
 const DEMO_TRIP_TICK: u64 = 3698;
 const BED_LIMIT_C: f64 = 400.0;
 const FEED_C: f64 = 300.0;
+/// How far the stopped bed may move from the reading that fired the trip [K]:
+/// the game solver's rounding-level flow through the shut line (M58).
+const BED_HOLD_K: f64 = 1e-6;
 /// Thirty minutes of 0.1 s ticks: long enough for the twin to finish running
 /// away and for the tripped bed to settle onto its feed.
 const LONG_RUN: u64 = 18_000;
@@ -96,7 +99,7 @@ fn run(engine: &mut Engine, ticks: u64) {
 fn bed_k(engine: &Engine) -> f64 {
     let id = engine.graph.find_node("bed").expect("a bed");
     match &engine.graph.node(id).kind {
-        NodeKind::BedReactor { bed } => bed.temperature.value(),
+        NodeKind::BedReactor { bed, .. } => bed.temperature.value(),
         other => panic!("'bed' is a catalyst bed, not {other:?}"),
     }
 }
@@ -315,8 +318,10 @@ fn the_bed_trip_resets_once_the_bed_cools_and_relights_nothing() {
 /// The loader refuses that trip (gate 6), so the trap is shown here the only
 /// way left to reach it: the shipped trip cuts the fire, and a person shuts
 /// `feed_valve` by hand on the trip's own tick. From that tick the bed's feed is
-/// exactly zero, and a bed at zero flow holds its temperature bit for bit
-/// (§62.8): no reaction heat (no fresh oil) and no heat lost (no wall, §62.7).
+/// zero — exactly on Newton, a rounding residual on the game solver since the
+/// bed's outlet carries its wall's hole (M58) — and a bed at zero flow holds its
+/// temperature (§62.8): no reaction heat (no fresh oil) and no heat lost (no
+/// wall loss, §62.7).
 /// So the bed sits at the very value the trip fired on, over its limit, and
 /// every reset is refused, for as long as anyone waits.
 #[test]
@@ -337,15 +342,16 @@ fn a_shut_feed_traps_the_bed_over_its_limit() {
         assert!(fired_on - 273.15 >= BED_LIMIT_C, "{solver}");
         for minute in 0..10 {
             let snapshot = engine.snapshot();
-            assert_eq!(
-                bed_feed_kg_per_s(&snapshot),
-                0.0,
-                "{solver}, minute {minute}"
-            );
-            assert_eq!(
-                bed_k(&engine),
-                fired_on,
-                "{solver}, minute {minute}: the stopped bed holds bit for bit"
+            // Below the solve's own 1e-8 kg/s floor rather than exactly zero
+            // since M58: the bed's outlet is split for its wall's hole, one more
+            // free node, and the game solver leaves a rounding residual through
+            // the shut line (§63.6; §42 correction 5 for the furnace's hole).
+            let feed = bed_feed_kg_per_s(&snapshot);
+            assert!(feed.abs() < 1e-8, "{solver}, minute {minute}: {feed}");
+            let held = bed_k(&engine) - fired_on;
+            assert!(
+                held.abs() < BED_HOLD_K,
+                "{solver}, minute {minute}: the stopped bed holds, moved {held:e} K"
             );
             let refused = reset(&mut engine).expect_err("a trapped bed never resets");
             assert!(refused.contains("condition still holds"), "{refused}");

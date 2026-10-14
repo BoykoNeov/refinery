@@ -46,8 +46,11 @@ fn fixture(bed_c: f64, feed_c: f64) -> String {
         .replace(
             "temperature_c = 365.0",
             &format!("temperature_c = {feed_c}"),
-        );
+        )
+        // The balance has no wall in it: these beds must never fail (M58).
+        .replace("wall_failure_c = 550.0", "wall_failure_c = 3000.0");
     assert!(src.contains("= 0.5\n") && src.contains(&format!("bed_temperature_c = {bed_c}")));
+    assert!(src.contains("wall_failure_c = 3000.0"));
     src
 }
 
@@ -74,7 +77,7 @@ fn node_id(snap: &Snapshot, name: &str) -> NodeId {
 fn bed(snap: &Snapshot) -> f64 {
     let node = snap.nodes.iter().find(|n| n.name == "bed").expect("bed");
     match &node.kind {
-        NodeKind::BedReactor { bed } => bed.temperature.value(),
+        NodeKind::BedReactor { bed, .. } => bed.temperature.value(),
         other => panic!("'bed' must be a bed reactor, got {other:?}"),
     }
 }
@@ -365,7 +368,7 @@ fn the_runaway_file_runs_away_by_itself() {
         minutes.push(bed(&engine.snapshot()) - KELVIN);
     }
     // The header's claims: about 400 °C at 6 min and 450 °C at 16, past 600 °C
-    // at 22 and 700 °C at 25, settling near 760 °C (minute n is index n − 1).
+    // at 22 and 700 °C at 25 (minute n is index n − 1).
     assert!(
         (395.0..405.0).contains(&minutes[5]),
         "6 min: {}",
@@ -373,8 +376,19 @@ fn the_runaway_file_runs_away_by_itself() {
     );
     assert!(minutes[14] < 450.0 && minutes[16] > 450.0, "{minutes:?}");
     assert!(minutes[21] > 600.0 && minutes[24] > 700.0, "{minutes:?}");
+    // Since M58 (docs/DESIGN.md §63) its wall fails at 550 °C, 20 min 36 s in,
+    // and a tenth of the burning leak heats the bed: at 30 minutes it is past
+    // the ~760 °C the runaway alone settles at, still climbing.
+    let bed_id = engine.graph.find_node("bed").expect("a bed");
+    let NodeKind::BedReactor { wall, .. } = &engine.graph.node(bed_id).kind else {
+        panic!("bed is a bed reactor");
+    };
+    assert_eq!(
+        wall.state,
+        refinery_core::graph::WallState::Failed { at_tick: 12_364 }
+    );
     assert!(
-        (740.0..761.0).contains(&minutes[29]),
+        (775.0..790.0).contains(&minutes[29]),
         "30 min: {}",
         minutes[29]
     );
@@ -388,11 +402,18 @@ fn the_runaway_file_runs_away_by_itself() {
 /// `τ`): the products at its set temperature and fixed `tau_s` are the model's.
 #[test]
 fn a_held_reactor_runs_hydrocracking_at_its_set_temperature() {
+    let bed_keys = CALM
+        .lines()
+        .skip_while(|l| *l != "type = \"bed_reactor\"")
+        .take_while(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(bed_keys.ends_with("wall_fire_share = 0.1"), "{bed_keys}");
     let src = CALM.replace(
-        "type = \"bed_reactor\"\nbed_heat_capacity_mj_per_k = 30.0\ncatalyst_volume_m3 = 20.0\nbed_temperature_c = 374.1",
+        &bed_keys,
         "type = \"reactor\"\nt_set_c = 390.0\ntau_s = 3600.0",
     );
-    assert!(src.contains("t_set_c"));
+    assert!(src.contains("t_set_c") && !src.contains("wall_"));
     let mut engine = build(&src);
     run(&mut engine, 5);
     let snap = engine.snapshot();

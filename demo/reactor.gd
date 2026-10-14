@@ -4,7 +4,7 @@
 # M57 built a catalyst bed whose cracking releases heat faster the hotter it
 # runs, so it has a calm state and a runaway one; a trip that cuts the preheater;
 # and a quench that a loop opens as the bed heats. It ran only in tests and the
-# CLI. This scene draws it, on any of three shipped plants, each loaded unchanged:
+# CLI. This scene draws it, on any of four shipped plants, each loaded unchanged:
 #
 #   calm    scenarios/hydrocracker_bed.toml (M57.2) — one bed on a calm day.
 #           Warm its feed 20 K and it runs away; bring the feed back and the bed
@@ -15,8 +15,16 @@
 #   quench  scenarios/hydrocracker_quench.toml (M57.4) — two beds, the second
 #           held at 380 °C by a loop that sets the flow of cooled product mixed in
 #           ahead of it, with a backup trip.
+#   wall    scenarios/hydrocracker_wall_failure.toml (M58) — the runaway bed
+#           loaded mid-creep: at 550 °C its wall fails, the leak sprays out of the
+#           product line and burns, and a tenth of that fire heats the bed. Patch
+#           the hole (P), chill the feed hard, and repair the wall (M) once the
+#           bed is back under its limit — the engine refuses the repair before.
 #
-# Each plant runs on the solver its own file names — Newton, for all three
+# Since M58 every bed's wall can fail (docs/DESIGN.md §63): the calm plant's
+# runaway breaks its wall too, and its story patches and repairs it.
+#
+# Each plant runs on the solver its own file names — Newton, for all four
 # (§62.13 decision 1; ledger row A27).
 #
 # Same rule as plant.gd, furnace.gd and pump.gd: this script computes nothing
@@ -33,8 +41,8 @@
 # up and the bed staying hot. Neither draws a curve the engine did not report.
 #
 # Interactive:  godot --path . res://demo/reactor.tscn
-#               (keys listed on screen and in _input; 1 / 2 / 3 switch plants)
-# Recorded:     godot --headless --path . res://demo/reactor.tscn --quit-after 200000 -- --auto [--plant=trip|quench]
+#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 switch plants)
+# Recorded:     godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line every PRINT_EVERY ticks plus one line per command and
 #               event. Those lines are the observation in ROADMAP.md's M57.5
@@ -43,7 +51,7 @@
 #               nothing) to save a PNG at each tick in AUTO_SHOT_TICKS.
 extends Node2D
 
-## The three plants, and the names on each the scene draws. A name missing from
+## The four plants, and the names on each the scene draws. A name missing from
 ## a plant is a load-time halt, not a guess. Optional entries are absent on the
 ## plants that do not have them.
 ##
@@ -93,6 +101,17 @@ const PLANTS := {
 		"ticks_per_frame": 4,
 		"max_ticks_per_frame": 32,
 	},
+	"wall":
+	{
+		"scenario": "res://scenarios/hydrocracker_wall_failure.toml",
+		"title": "A runaway that breaks the reactor wall — patch it, chill the feed, repair it",
+		"feed": "vgo_feed",
+		"feed_valve": "feed_valve",
+		"beds": ["bed"],
+		"product": "product",
+		"ticks_per_frame": 16,
+		"max_ticks_per_frame": 128,
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks of 0.1 s. Each beat is one
@@ -100,16 +119,17 @@ const PLANTS := {
 ## same commands and pins the outcome of.
 ##
 ## calm: at 1 min the feed is warmed from 365 to 385 °C. The bed creeps, then
-## runs away toward 740 °C. At 25 min the feed goes back to 365 °C and the bed
-## STAYS hot. At 35 min the feed is cooled to 220 °C: the bed holds above 570 °C
-## for a quarter of an hour, then falls. At 55 min the feed goes back to 365 °C
-## and the bed is on its calm state again.
+## runs away; at 550 °C, 21 min 36 s in, its wall fails and the leak burns (M58).
+## At 25 min the feed goes back to 365 °C and the bed STAYS hot. At 35 min the
+## hole is patched and the feed cooled to 220 °C: the bed holds above 550 °C for
+## a quarter of an hour, then falls. At 55 min the wall is repaired and the feed
+## goes back to 365 °C, and the bed returns to its calm state.
 const AUTO_CALM := {
 	600: ["feed_c_385"],
 	15000: ["feed_c_365"],
-	21000: ["feed_c_220"],
-	33000: ["feed_c_365"],
-	39000: ["quit"],
+	21000: ["patch", "feed_c_220"],
+	33000: ["repair", "feed_c_365"],
+	48000: ["quit"],
 }
 ## trip: from the file's start the bed creeps; the trip fires at 400 °C and cuts
 ## the preheater. A reset 10 s later is REFUSED — the bed is still past its
@@ -133,11 +153,24 @@ const AUTO_QUENCH := {
 	11000: ["reset", "auto:bed2_temperature", "auto:preheat_outlet"],
 	24000: ["quit"],
 }
-const TIMELINES := {"calm": AUTO_CALM, "trip": AUTO_TRIP, "quench": AUTO_QUENCH}
+## wall: the bed creeps from 450 °C; its wall fails at 550 °C, 4 min 35 s in, and
+## the leak burns at about 55 MW. At 10 min a repair is REFUSED (the hole is
+## open); the hole is patched; a repair is REFUSED again (the bed is past its
+## limit); the feed is chilled to 200 °C. At 20 min, the bed under 550 °C, the
+## repair is admitted. At 25 min the feed goes back to 365 °C, and the bed
+## settles on the calm day's 374 °C.
+const AUTO_WALL := {
+	6000: ["repair", "patch", "repair", "feed_c_200"],
+	12000: ["repair"],
+	15000: ["feed_c_365"],
+	33000: ["quit"],
+}
+const TIMELINES := {"calm": AUTO_CALM, "trip": AUTO_TRIP, "quench": AUTO_QUENCH, "wall": AUTO_WALL}
 const AUTO_SHOT_TICKS := {
-	"calm": [600, 6000, 12000, 15000, 21000, 30000, 33000, 38999],
+	"calm": [600, 6000, 12000, 15000, 21000, 30000, 33000, 47999],
 	"trip": [3600, 3800, 6000, 7200, 12000, 35999],
 	"quench": [1200, 6000, 8800, 9000, 11000, 15000, 23999],
+	"wall": [2700, 2760, 6000, 9000, 12000, 15000, 32999],
 }
 ## Print a `t=` line every this many ticks (1 minute) in a recorded run.
 const PRINT_EVERY := 600
@@ -192,6 +225,7 @@ var message_bad := false
 var seen_trips: Array = []
 var seen_modes: Array = []
 var seen_cold := ""
+var seen_walls: Array = []
 ## Wall time [µs] of the engine's ticks and of reading its snapshot, printed at
 ## the end of a recorded run: what sets each plant's speed (§62.13).
 var tick_usec_total := 0
@@ -213,7 +247,7 @@ func _ready() -> void:
 	if DisplayServer.get_name() != "headless":
 		get_window().size = Vector2i(1440, 810)
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (calm | trip | quench)" % plant_key)
+		_halt("no plant '%s' (calm | trip | quench | wall)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -228,6 +262,7 @@ func _load(key: String) -> void:
 	seen_trips = []
 	seen_modes = []
 	seen_cold = ""
+	seen_walls = []
 	var plant: Dictionary = PLANTS[key]
 	ticks_per_frame = plant["ticks_per_frame"]
 	max_ticks_per_frame = plant["max_ticks_per_frame"]
@@ -398,6 +433,16 @@ func _report_events(tick: int) -> void:
 		_event(tick, "quench -> %s" % cold.strip_edges(), true)
 	seen_cold = cold
 
+	var walls: Array = []
+	for i in bed_ids.size():
+		walls.append(_wall_failed(i))
+	if seen_walls.size() == walls.size():
+		for i in walls.size():
+			if walls[i] != seen_walls[i]:
+				var name: String = _node(bed_ids[i])["name"]
+				_event(tick, "%s wall -> %s" % [name, "FAILED" if walls[i] else "repaired"], walls[i])
+	seen_walls = walls
+
 
 func _event(tick: int, text: String, bad: bool) -> void:
 	if auto_run:
@@ -429,6 +474,8 @@ func _input(event: InputEvent) -> void:
 			_load("trip")
 		KEY_3:
 			_load("quench")
+		KEY_4:
+			_load("wall")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -465,6 +512,10 @@ func _input(event: InputEvent) -> void:
 			_do("press")
 		KEY_R:
 			_do("reset")
+		KEY_P:
+			_do("patch")
+		KEY_M:
+			_do("repair")
 		KEY_T:
 			samples = []
 			_say("charts cleared", false)
@@ -546,6 +597,32 @@ func _do(action: String) -> void:
 					reset += 1
 			if reset == 0:
 				_say("reset: no tripped trip on this plant", true)
+		"patch":
+			# Patch the hole in every failed wall: its outlet pipe at area zero,
+			# which puts the fire out (M58, docs/DESIGN.md §63).
+			var patched := 0
+			for i in bed_ids.size():
+				if _wall_failed(i):
+					_send(
+						"patch %s" % _edge(bed_out_edges[i])["name"],
+						{"cmd": "puncture_pipe", "edge": int(bed_out_edges[i]), "area": 0.0}
+					)
+					patched += 1
+			if patched == 0:
+				_say("patch: no failed wall on this plant", true)
+		"repair":
+			# Repair every failed wall; the engine refuses one still leaking or
+			# still at its limit, in its own words.
+			var repaired := 0
+			for i in bed_ids.size():
+				if _wall_failed(i):
+					_send(
+						"repair %s's wall" % _node(bed_ids[i])["name"],
+						{"cmd": "repair_bed_wall", "node": int(bed_ids[i])}
+					)
+					repaired += 1
+			if repaired == 0:
+				_say("repair: no failed wall on this plant", true)
 
 
 func _set_feed_k(kelvin: float) -> void:
@@ -666,6 +743,26 @@ func _inlet_k(i: int) -> float:
 func _reaction_w(i: int) -> float:
 	var value = _node(bed_ids[i]).get("reaction_heat_w")
 	return NAN if value == null else float(value)
+
+
+## Bed `i`'s wall: failed or intact, its limit [K], and the fire its leak feeds
+## [W] (all of it; `fire_share` of it heats the bed). The fire is NAN before the
+## first tick, when the snapshot leaves it out (M58, docs/DESIGN.md §63).
+func _wall_failed(i: int) -> bool:
+	return _node(bed_ids[i])["kind"]["wall"]["state"]["status"] == "failed"
+
+
+func _wall_limit_k(i: int) -> float:
+	return float(_node(bed_ids[i])["kind"]["wall"]["failure_temperature"])
+
+
+func _wall_fire_w(i: int) -> float:
+	var value = _node(bed_ids[i]).get("wall_fire_w")
+	return NAN if value == null else float(value)
+
+
+func _wall_share(i: int) -> float:
+	return float(_node(bed_ids[i])["kind"]["wall"]["fire_share"])
 
 
 func _residence_s(i: int) -> float:
@@ -823,6 +920,7 @@ func _readout(tick: int) -> String:
 				_uncracked(i) * 100.0,
 			]
 		)
+		line += " wall=%s fire=%6.2f MW" % ["FAILED" if _wall_failed(i) else "intact", _wall_fire_w(i) / 1.0e6]
 	if quench_pipe_id >= 0:
 		line += "  | quench=%5.2f kg/s" % _quench_flow()
 	for loop in _loops():
@@ -898,7 +996,7 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 790),
-		"E emergency stop   R reset trips   T clear charts   Space pause   [ ] speed   1 calm bed   2 trip   3 quench",
+		"E emergency stop   R reset trips   P patch hole   M repair wall   T clear charts   Space pause   [ ] speed   1 calm   2 trip   3 quench   4 wall",
 		DIM, 14
 	)
 	if halted != "":
@@ -1003,6 +1101,39 @@ func _draw_bed(x: float, i: int) -> void:
 		var y := _vessel_y(rect, target)
 		draw_line(Vector2(rect.position.x - 6, y), Vector2(rect.end.x, y), TARGET_MARK, 2.0)
 		_text(Vector2(rect.position.x - 50, y + 4), "%.0f" % (target - 273.15), TARGET_MARK, 12)
+	# The wall's limit, and on a failed wall the crack, the spray out of the
+	# outlet line and its fire, sized by the power the snapshot reports (M58).
+	var wall_y := _vessel_y(rect, _wall_limit_k(i))
+	var failed := _wall_failed(i)
+	draw_dashed_line(Vector2(rect.position.x, wall_y), Vector2(rect.end.x, wall_y), BAD if failed else DIM, 2.0, 6.0)
+	_text(Vector2(rect.position.x - 58, wall_y + 4), "wall %.0f" % (_wall_limit_k(i) - 273.15), BAD if failed else DIM, 12)
+	if failed:
+		draw_polyline(
+			PackedVector2Array([
+				rect.position + Vector2(rect.size.x * 0.55, 0),
+				rect.position + Vector2(rect.size.x * 0.35, rect.size.y * 0.3),
+				rect.position + Vector2(rect.size.x * 0.6, rect.size.y * 0.5),
+				rect.position + Vector2(rect.size.x * 0.4, rect.size.y * 0.75),
+			]),
+			BAD, 3.0
+		)
+		var fire := _wall_fire_w(i)
+		var spray_at := Vector2(rect.end.x + 30, LINE_Y)
+		if fire > 0.0:
+			var height := clampf(fire / 6.0e7, 0.15, 1.0) * 90.0
+			for k in 3:
+				var fx := spray_at.x - 12 + k * 12
+				draw_colored_polygon(
+					PackedVector2Array([
+						Vector2(fx - 7, LINE_Y - 4),
+						Vector2(fx, LINE_Y - 4 - height * (0.7 + 0.15 * k)),
+						Vector2(fx + 7, LINE_Y - 4),
+					]),
+					FLAME
+				)
+			_text(spray_at + Vector2(24, -46), "fire %s" % _mw(fire), FLAME, 13)
+			_text(spray_at + Vector2(24, -30), "%s into bed" % _mw(fire * _wall_share(i)), FLAME, 12)
+		_text(Vector2(rect.position.x - 6, rect.position.y - 26), "WALL FAILED", BAD, 15)
 	for trip in _bed_trips(i):
 		var limit := float(trip["limit"]["k"])
 		var y := _vessel_y(rect, limit)

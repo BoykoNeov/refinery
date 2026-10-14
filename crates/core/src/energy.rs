@@ -55,7 +55,8 @@ use crate::components::Phase;
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{
-    CatalystBed, ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, NodeId, NodeKind, PlantGraph,
+    BedWall, CatalystBed, ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, NodeId, NodeKind,
+    PlantGraph,
 };
 use crate::traits::{
     ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel, ReactionModel,
@@ -1065,6 +1066,11 @@ pub struct BedPass {
     /// The residence time the chemistry ran over [s], `τ = V·ρ_feed/ṁ`
     /// (§62.2). `None` at zero flow, where `τ` is infinite.
     pub residence_time: Option<Seconds>,
+    /// The fire a failed wall's leak feeds this tick [W] (M58, docs/DESIGN.md
+    /// §63.3): what flowed out of the hole times the heating value, all of
+    /// it; `BedWall::fire_share` of it heated the bed. Zero on an intact wall
+    /// and on a patched hole. A DIAGNOSTIC like `reaction_heat`.
+    pub wall_fire: Watt,
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -1517,7 +1523,11 @@ pub fn resolve_node_states(
                         composition.insert(id, products);
                         temperature.insert(id, t_set);
                         reactor_duties.insert(id, duty);
-                    } else if let NodeKind::BedReactor { bed: catalyst } = &graph.node(id).kind {
+                    } else if let NodeKind::BedReactor {
+                        bed: catalyst,
+                        wall,
+                    } = &graph.node(id).kind
+                    {
                         // A bed reacts the feed just mixed above at its own
                         // start-of-tick temperature and takes the heat into
                         // itself (M57.1, docs/DESIGN.md §62.1). Like a furnace
@@ -1537,6 +1547,7 @@ pub fn resolve_node_states(
                             id,
                             &feed,
                             catalyst,
+                            wall,
                             dt,
                         )?;
                         composition.insert(id, products);
@@ -2358,9 +2369,11 @@ fn psi(x: f64) -> f64 {
 /// C·dT_b/dt = Q + F + H_in − H_out(T_b),   Q = −ṁ·Δh_rxn(T_b, τ)
 /// ```
 ///
-/// with `F` a commanded fire (`Command::SetHeatInput`) on the bed, a fixed heat
-/// into it as on a coil, and `H_out` the PRODUCTS' enthalpy rate at the bed's
-/// temperature, so the cp shift a conversion causes is booked (§5 fork 2).
+/// with `F` the fire on the bed — a commanded fire (`Command::SetHeatInput`), a
+/// fixed heat into it as on a coil, plus, while its wall is failed, the share
+/// `s·L` of the fire its leak feeds (M58, docs/DESIGN.md §63.3) — and
+/// `H_out` the PRODUCTS' enthalpy rate at the bed's temperature, so the cp
+/// shift a conversion causes is booked (§5 fork 2).
 /// `Q`, `F` and `H_in` are frozen across the tick and `H_out` is linearised by
 /// the products' capacity rate `W = ṁ·cp_out(T_b)`, so its exact solution is
 /// `furnace_coil`'s:
@@ -2397,14 +2410,40 @@ fn bed_reactor(
     node: NodeId,
     feed: &Composition,
     bed: &CatalystBed,
+    wall: &BedWall,
     dt: Seconds,
 ) -> Result<(Composition, BedPass, Kelvin), SimError> {
     let name = &graph.node(node).name;
     let capacity = bed.heat_capacity.value();
     let start = bed.temperature.value();
-    // A commanded fire heats the bed, as it heats a furnace's coil: a bed has
-    // the thermal mass a fire on a zero-volume node lacks (`mix_inflows`).
-    let fire = heat_load(graph.node(node)).value();
+    // The wall fire (M58, docs/DESIGN.md §63.3): while the wall is FAILED, what
+    // flows out of its hole this tick burns outside the vessel, `L = ṁ·LHV`,
+    // read off THIS tick's solve — §42 fork 3's fire, nothing circular and
+    // nothing stored. Only an OUTWARD flow burns. It is read whether or not
+    // the bed itself has flow: a hole on its outlet can be fed from downstream.
+    let wall_fire = if wall.state.is_failed() {
+        let hole = wall.hole.ok_or_else(|| {
+            SimError::Scenario(format!(
+                "catalyst bed '{name}' has a failed wall but owns no hole. The loader builds \
+                 one on every bed's outlet pipe; a graph built by hand must do the same \
+                 (docs/DESIGN.md §63.1)"
+            ))
+        })?;
+        let leaked = edge_mass_flow.get(&hole).copied().ok_or_else(|| {
+            SimError::Numerical(format!(
+                "catalyst bed '{name}': the solve reported no flow for its wall's hole {hole:?}"
+            ))
+        })?;
+        leaked.max(0.0) * wall.heating_value.value()
+    } else {
+        0.0
+    };
+    // What heats the bed besides its chemistry: a commanded fire, as on a
+    // furnace's coil — a bed has the thermal mass a fire on a zero-volume node
+    // lacks (`mix_inflows`) — and the wall fire's declared share, a game value
+    // (§63.3); the rest of the wall fire goes to the air.
+    let fire = heat_load(graph.node(node)).value() + wall.fire_share * wall_fire;
+    let wall_fire = Watt(wall_fire);
 
     let totals = inflow_totals(
         graph,
@@ -2461,6 +2500,7 @@ fn bed_reactor(
                 temperature: end,
                 reaction_heat: Watt::ZERO,
                 residence_time: None,
+                wall_fire,
             },
             end,
         ));
@@ -2507,6 +2547,7 @@ fn bed_reactor(
             temperature: end_temperature,
             reaction_heat: Watt(released),
             residence_time,
+            wall_fire,
         },
         fluid,
     ))
@@ -4215,7 +4256,7 @@ mod tests {
     /// `Engine::tick` does, so what it pins is the step the engine runs.
     mod bed_tests {
         use super::*;
-        use crate::graph::CatalystBed;
+        use crate::graph::{BedWall, CatalystBed, WallState};
 
         const FEED_CP: f64 = 2000.0;
         const PRODUCT_CP: f64 = 3000.0;
@@ -4309,6 +4350,15 @@ mod tests {
                         catalyst_volume: CubicMeter(volume),
                         temperature: start,
                     },
+                    // Never fails: no gate here is about the wall (M58).
+                    wall: BedWall {
+                        failure_temperature: Kelvin(1.0e6),
+                        rupture_area: SquareMeter(1.0e-4),
+                        heating_value: JPerKg(0.0),
+                        fire_share: 0.0,
+                        hole: None,
+                        state: WallState::Intact,
+                    },
                 },
             ));
             let snk = g.add_node(node(
@@ -4330,7 +4380,7 @@ mod tests {
 
         fn bed_temperature(g: &PlantGraph, bed: NodeId) -> Kelvin {
             match &g.node(bed).kind {
-                NodeKind::BedReactor { bed } => bed.temperature,
+                NodeKind::BedReactor { bed, .. } => bed.temperature,
                 _ => unreachable!("the fixture's bed is a bed"),
             }
         }
@@ -4361,7 +4411,7 @@ mod tests {
             )
             .unwrap();
             for (&id, pass) in &states.bed {
-                if let NodeKind::BedReactor { bed } = &mut g.node_mut(id).kind {
+                if let NodeKind::BedReactor { bed, .. } = &mut g.node_mut(id).kind {
                     bed.temperature = pass.temperature;
                 }
             }

@@ -98,6 +98,18 @@ pub enum Command {
     ReplaceTubes {
         node: NodeId,
     },
+    /// Repair a catalyst bed's failed wall (M58, docs/DESIGN.md §63.4):
+    /// re-arms it, so the bed may fail again. `ReplaceTubes`' twin.
+    ///
+    /// **It mends nothing else**: the hole is patched by `PuncturePipe` at area
+    /// zero on the bed's outlet pipe, FIRST, and that is what puts the fire
+    /// out. Refused on a node that is not a bed, on a wall that has not failed,
+    /// while the hole is still open, and while the bed is still at or past the
+    /// wall's limit (read fresh at the command): a wall repaired there would
+    /// fail on the next tick.
+    RepairBedWall {
+        node: NodeId,
+    },
     /// Vent a gas-locked pump (M54, docs/DESIGN.md §59.2): clears the lock, so
     /// the pump makes its head again once it is started. It starts nothing.
     /// Refused on a node that is not a pump, on a pump that is not gas-locked
@@ -346,6 +358,19 @@ pub struct NodeSnapshot {
     /// and at zero flow, where `τ` is infinite.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub residence_time_s: Option<f64>,
+    /// The fire a catalyst bed's failed wall feeds [W] over the last tick
+    /// (M58, docs/DESIGN.md §63.3): what leaked out of its hole, times the
+    /// heating value, burning outside the vessel — all of it; the share that
+    /// heated the bed is `wall.fire_share` of it, on `kind`. `0.0` on an intact
+    /// wall and on a patched hole — computed, so reported. Whether the wall HAS
+    /// failed is on `kind` (`wall.state`).
+    ///
+    /// **Absent, not zero, wherever there is nothing to report**, exactly as
+    /// `reaction_heat_w`: every node that is not a bed, and a bed before its
+    /// first tick. Skipped when absent, which keeps every plant with no bed
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wall_fire_w: Option<f64>,
     /// The trips' stop of this equipment, and whether they will hand it back
     /// (M43, docs/DESIGN.md §48): `{"status":"held","barred_by":[…]}` while a
     /// trip holds it, `{"status":"not_restarted","at_tick":…,"barred_by":[…]}`

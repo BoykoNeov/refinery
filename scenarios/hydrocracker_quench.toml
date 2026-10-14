@@ -121,6 +121,13 @@ type = "bed_reactor"
 bed_heat_capacity_mj_per_k = 30.0
 catalyst_volume_m3 = 20.0
 bed_temperature_c = 381.8
+# The wall (M58, docs/DESIGN.md §63): it fails when the bed reaches 550 °C,
+# opening a 1 cm² hole on the outlet line; what leaks burns at 42.8 MJ/kg and a
+# tenth of that fire heats the bed. Round GAME values, not a sourced shell limit.
+wall_failure_c = 550.0
+wall_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.8
+wall_fire_share = 0.1
 
 # Where the quench joins the first bed's outflow.
 [nodes.mix]
@@ -131,6 +138,13 @@ type = "bed_reactor"
 bed_heat_capacity_mj_per_k = 30.0
 catalyst_volume_m3 = 20.0
 bed_temperature_c = 375.0
+# The wall (M58, docs/DESIGN.md §63): it fails when the bed reaches 550 °C,
+# opening a 1 cm² hole on the outlet line; what leaks burns at 42.8 MJ/kg and a
+# tenth of that fire heats the bed. Round GAME values, not a sourced shell limit.
+wall_failure_c = 550.0
+wall_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.8
+wall_fire_share = 0.1
 
 # --- the product side and the quench recycle -----------------------------------
 

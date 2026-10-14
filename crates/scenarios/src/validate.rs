@@ -182,6 +182,10 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
         bed_heat_capacity_mj_per_k,
         catalyst_volume_m3,
         bed_temperature_c,
+        wall_failure_c,
+        wall_rupture_area_cm2,
+        fluid_heating_value_mj_per_kg,
+        wall_fire_share,
     } = def
     {
         // The bed (M57.1, docs/DESIGN.md §62.1). Its step is exact, so no value
@@ -204,6 +208,34 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
             return Err(SimError::Scenario(format!(
                 "bed reactor '{name}' has bed_temperature_c = {bed_temperature_c}: it must be \
                  finite and above absolute zero (−273.15 °C)."
+            )));
+        }
+        // The wall (M58, docs/DESIGN.md §63.5), the furnace tubes' checks.
+        if !wall_failure_c.is_finite() || *wall_failure_c <= *bed_temperature_c {
+            return Err(SimError::Scenario(format!(
+                "bed reactor '{name}' has wall_failure_c = {wall_failure_c}: it must be finite \
+                 and above its bed_temperature_c = {bed_temperature_c}. A wall loaded at or past \
+                 its limit would fail before the plant has run."
+            )));
+        }
+        if !wall_rupture_area_cm2.is_finite() || *wall_rupture_area_cm2 <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "bed reactor '{name}' has wall_rupture_area_cm2 = {wall_rupture_area_cm2}: it \
+                 must be finite and > 0. A failure that opens no hole is not a failure."
+            )));
+        }
+        if !fluid_heating_value_mj_per_kg.is_finite() || *fluid_heating_value_mj_per_kg < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "bed reactor '{name}' has fluid_heating_value_mj_per_kg = \
+                 {fluid_heating_value_mj_per_kg}: it must be finite and >= 0 (0 for a fluid \
+                 that does not burn)."
+            )));
+        }
+        if !wall_fire_share.is_finite() || !(0.0..=1.0).contains(wall_fire_share) {
+            return Err(SimError::Scenario(format!(
+                "bed reactor '{name}' has wall_fire_share = {wall_fire_share}: it must be a \
+                 share, from 0 (the fire heats nothing) to 1 (all of it heats the bed) \
+                 (docs/DESIGN.md §63.3)."
             )));
         }
     }

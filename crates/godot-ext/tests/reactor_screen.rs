@@ -4,21 +4,21 @@
 //! The scene is demonstrated, not gated: no `cargo test` can say a bed looks
 //! like it is running away. What IS checkable is the story its `--auto` runs
 //! tell. These tests send the scene's commands through the same [`Session`] the
-//! gdext binding forwards to, at the same ticks as `AUTO_CALM`, `AUTO_TRIP` and
-//! `AUTO_QUENCH`, and pin what each beat is there to show. A plant edit that
-//! renames a node the scene resolves, or an engine change that stops the calm
-//! bed staying hot after its feed comes back, fails here instead of quietly
-//! changing the demo.
+//! gdext binding forwards to, at the same ticks as `AUTO_CALM`, `AUTO_TRIP`,
+//! `AUTO_QUENCH` and `AUTO_WALL` (M58), and pin what each beat is there to
+//! show. A plant edit that renames a node the scene resolves, or an engine
+//! change that stops the calm bed staying hot after its feed comes back, fails
+//! here instead of quietly changing the demo.
 //!
 //! **The command text is the scene's own**, byte for byte as its recorded runs
 //! printed it (Godot's `JSON.stringify` sorts keys and writes `14000000.0`), so
 //! the ids-must-be-integers cast `_do` makes is checked too.
 //!
-//! The plants are the shipped `hydrocracker_bed.toml`, `hydrocracker_trip.toml`
-//! and `hydrocracker_quench.toml`; their physics is gated in
-//! `crates/scenarios/tests/` (`hydrocracker_reference.rs`,
-//! `bed_trip_reference.rs`, `quench_reference.rs`). These tests own only the
-//! timelines.
+//! The plants are the shipped `hydrocracker_bed.toml`, `hydrocracker_trip.toml`,
+//! `hydrocracker_quench.toml` and `hydrocracker_wall_failure.toml`; their
+//! physics is gated in `crates/scenarios/tests/` (`hydrocracker_reference.rs`,
+//! `bed_trip_reference.rs`, `quench_reference.rs`, `bed_wall_reference.rs`).
+//! These tests own only the timelines.
 
 use refinery_godot_ext::bridge::Session;
 use serde_json::Value;
@@ -131,6 +131,29 @@ impl Screen {
             .unwrap()
     }
 
+    /// Whether bed `i`'s wall has failed, `kind.wall.state` (M58).
+    fn wall_failed(&self, i: usize) -> bool {
+        self.snap()["nodes"][self.beds[i]]["kind"]["wall"]["state"]["status"] == "failed"
+    }
+
+    /// The fire bed `i`'s failed wall feeds [W], `wall_fire_w` (M58).
+    fn wall_fire_w(&self, i: usize) -> f64 {
+        self.snap()["nodes"][self.beds[i]]["wall_fire_w"]
+            .as_f64()
+            .unwrap()
+    }
+
+    /// Tick until bed `i`'s wall fails; the tick it failed on.
+    fn run_to_failure(&mut self, i: usize, limit: i64) -> i64 {
+        while self.session.tick_index() < limit {
+            self.tick();
+            if self.wall_failed(i) {
+                return self.session.tick_index();
+            }
+        }
+        panic!("no wall failure by tick {limit}");
+    }
+
     fn trip_status(&self) -> String {
         self.snap()["trips"][0]["state"]["status"]
             .as_str()
@@ -166,6 +189,9 @@ fn assert_readable_refusal(message: &str) {
 const FEED_385_C: &str = r#"{"cmd":"set_source_temperature","node":0,"temperature":658.15}"#;
 const FEED_365_C: &str = r#"{"cmd":"set_source_temperature","node":0,"temperature":638.15}"#;
 const FEED_220_C: &str = r#"{"cmd":"set_source_temperature","node":0,"temperature":493.15}"#;
+const FEED_200_C: &str = r#"{"cmd":"set_source_temperature","node":0,"temperature":473.15}"#;
+const PATCH: &str = r#"{"area":0.0,"cmd":"puncture_pipe","edge":2}"#;
+const REPAIR: &str = r#"{"cmd":"repair_bed_wall","node":2}"#;
 const RESET: &str = r#"{"cmd":"reset_trip","trip_id":0}"#;
 const FIRE_14_MW: &str = r#"{"cmd":"set_furnace_duty","duty":14000000.0,"node":2}"#;
 const BED_LOOP_MANUAL: &str = r#"{"cmd":"set_controller_mode","loop_id":0,"mode":"manual"}"#;
@@ -206,6 +232,11 @@ fn the_calm_bed_timeline_runs_away_and_stays_hot() {
     assert!(screen.bed_c(0) > 500.0, "{}", screen.bed_c(0));
     assert!(screen.uncracked(0) < 1e-3);
 
+    // Since M58: at 550 °C the wall fails, 21 min 36 s in, and the leak burns.
+    assert_eq!(screen.run_to_failure(0, 15000), 12964);
+    screen.run_to(12970);
+    assert!(screen.wall_fire_w(0) > 50e6, "{}", screen.wall_fire_w(0));
+
     // 25 min: the feed back to the calm day's 365 °C. Ten minutes on, the bed
     // is HOTTER, not cooler: the hot state holds on the calm day's feed.
     screen.run_to(15000);
@@ -224,8 +255,9 @@ fn the_calm_bed_timeline_runs_away_and_stays_hot() {
         screen.bed_c(0)
     );
 
-    // 35 min: a 220 °C feed. It holds above 570 °C ten minutes on, then falls
-    // back onto the cool state.
+    // 35 min: the hole patched, which puts the fire out, and a 220 °C feed. It
+    // holds above 550 °C ten minutes on, then falls back onto the cool state.
+    screen.send(PATCH);
     screen.send(FEED_220_C);
     screen.run_to(27000);
     assert!(
@@ -233,19 +265,84 @@ fn the_calm_bed_timeline_runs_away_and_stays_hot() {
         "{}",
         screen.inlet_c(0)
     );
+    assert_eq!(screen.wall_fire_w(0), 0.0, "a patched hole burns nothing");
     assert!(screen.bed_c(0) > 570.0, "{}", screen.bed_c(0));
     screen.run_to(33000);
-    assert!(screen.bed_c(0) < 400.0, "{}", screen.bed_c(0));
+    assert!(screen.bed_c(0) < 420.0, "{}", screen.bed_c(0));
 
-    // 55 min: the calm day's feed again, and the calm day's bed.
+    // 55 min: the wall repaired, the calm day's feed again, and the calm day's
+    // bed.
+    screen.send(REPAIR);
     screen.send(FEED_365_C);
-    screen.run_to(39000);
+    screen.run_to(33001);
+    assert!(!screen.wall_failed(0));
+    screen.run_to(48000);
     assert!(
         (374.0..375.5).contains(&screen.bed_c(0)),
         "{}",
         screen.bed_c(0)
     );
     assert!(screen.uncracked(0) > 0.93);
+}
+
+/// `AUTO_WALL` (M58): the bed loaded mid-creep fails its wall at 550 °C and the
+/// leak burns; a repair is refused while the hole is open and again while the
+/// bed is past its limit; patched and fed 200 °C oil, it is admitted at 20 min,
+/// and back on the calm day's feed the bed settles on its calm state.
+#[test]
+fn the_wall_timeline_fails_patches_chills_and_repairs() {
+    let mut screen = Screen::load(
+        "hydrocracker_wall_failure.toml",
+        &["vgo_feed", "feed_valve", "product"],
+        &["bed"],
+    );
+    assert_eq!(screen.snap()["nodes"][0]["name"], "vgo_feed");
+    assert_eq!(screen.snap()["nodes"][2]["name"], "bed");
+    assert_eq!(screen.snap()["edges"][2]["name"], "product_line");
+
+    // §63's figure: the wall fails at 4 min 35 s, and the leak burns.
+    assert_eq!(screen.run_to_failure(0, 6000), 2750);
+    screen.run_to(2760);
+    assert!(
+        (50e6..60e6).contains(&screen.wall_fire_w(0)),
+        "{}",
+        screen.wall_fire_w(0)
+    );
+
+    // 10 min: refused (the hole), patched, refused (the heat), chilled.
+    screen.run_to(6000);
+    let says = screen.refused(REPAIR);
+    assert!(
+        says.contains("still leaks") && says.contains("'product_line'"),
+        "{says}"
+    );
+    screen.send(PATCH);
+    let says = screen.refused(REPAIR);
+    assert!(
+        says.contains("at or past its wall's 550.0 °C limit") && says.contains("colder feed"),
+        "{says}"
+    );
+    assert!(!says.contains("Kelvin("), "{says}");
+    screen.send(FEED_200_C);
+
+    // 20 min: under its limit, the repair is admitted.
+    screen.run_to(12000);
+    assert!(screen.bed_c(0) < 550.0, "{}", screen.bed_c(0));
+    assert!(screen.wall_failed(0));
+    screen.send(REPAIR);
+    screen.run_to(12001);
+    assert!(!screen.wall_failed(0));
+
+    // 25 min: the calm day's feed, and by 55 min the calm day's bed.
+    screen.run_to(15000);
+    screen.send(FEED_365_C);
+    screen.run_to(33000);
+    assert!(
+        (373.5..374.5).contains(&screen.bed_c(0)),
+        "{}",
+        screen.bed_c(0)
+    );
+    assert!(!screen.wall_failed(0));
 }
 
 /// `AUTO_TRIP`: the trip cuts the fire at 400 °C; a reset inside the condition

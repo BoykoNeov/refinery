@@ -49,6 +49,11 @@ type = "bed_reactor"
 bed_heat_capacity_mj_per_k = 2.0
 catalyst_volume_m3 = 3.0
 bed_temperature_c = 420.0
+# The wall (M58): never reached here.
+wall_failure_c = 3000.0
+wall_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.8
+wall_fire_share = 0.1
 
 [nodes.out]
 type = "sink"
@@ -87,7 +92,7 @@ fn node<'a>(snap: &'a Snapshot, name: &str) -> &'a NodeSnapshot {
 
 fn bed_temperature(snap: &Snapshot) -> f64 {
     match &node(snap, "bed").kind {
-        NodeKind::BedReactor { bed } => bed.temperature.value(),
+        NodeKind::BedReactor { bed, .. } => bed.temperature.value(),
         other => panic!("'bed' must load as a bed reactor, got {other:?}"),
     }
 }
@@ -109,7 +114,7 @@ fn refused(src: &str) -> String {
 fn the_loader_builds_the_bed_from_its_three_keys() {
     let engine = build(PLANT).expect("the bed fixture must build");
     let snap = engine.snapshot();
-    let NodeKind::BedReactor { bed } = &node(&snap, "bed").kind else {
+    let NodeKind::BedReactor { bed, .. } = &node(&snap, "bed").kind else {
         panic!("'bed' must load as a bed reactor");
     };
     // MJ/K → J/K, m³ as written, °C → K: each against an independent constant.

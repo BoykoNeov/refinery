@@ -10,7 +10,7 @@ use crate::error::SimError;
 use crate::graph::{
     Actuator, ActuatorLimit, ControlAction, ControlLoop, ControlMode, ControlledValue, LeakRole,
     LoopId, MeasuredVariable, MeasurementPoint, NodeId, NodeKind, PlantGraph, SetpointRange, Trip,
-    TripAction, TripDirection, TripId, TripReset, TripState, TubeState,
+    TripAction, TripDirection, TripId, TripReset, TripState, TubeState, WallState,
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
@@ -837,19 +837,12 @@ impl Engine {
                 let hole = self.burnout_hole(node, tubes.hole)?;
                 if let LeakRole::Orifice { area } = self.graph.pipe(hole).leak {
                     if area.value() > 0.0 {
-                        let pipe = self
-                            .graph
-                            .edge_ids()
-                            .find(|&e| {
-                                self.graph.pipe(e).leak == LeakRole::Punctureable { orifice: hole }
-                            })
-                            .map(|e| self.graph.pipe(e).name.clone())
-                            .unwrap_or_default();
                         return Err(SimError::InvalidCommand(format!(
                             "furnace '{name}' still leaks through a {:.2} cm² hole: patch it \
-                             first (`puncture_pipe` at area 0 on '{pipe}'), then replace the \
+                             first (`puncture_pipe` at area 0 on '{}'), then replace the \
                              tubes",
-                            area.value() * 1e4
+                            area.value() * 1e4,
+                            self.punctured_pipe_name(hole)
                         )));
                     }
                 }
@@ -866,6 +859,47 @@ impl Engine {
                 }
                 if let NodeKind::Furnace { tubes, .. } = &mut self.graph.node_mut(node).kind {
                     tubes.state = TubeState::Intact;
+                }
+                Ok(())
+            }
+            Command::RepairBedWall { node } => {
+                let name = self.graph.node(node).name.clone();
+                let NodeKind::BedReactor { bed, wall } = &self.graph.node(node).kind else {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') is not a catalyst bed, so it has no wall to repair"
+                    )));
+                };
+                if !wall.state.is_failed() {
+                    return Err(SimError::InvalidCommand(format!(
+                        "catalyst bed '{name}' has an intact wall: there is nothing to repair"
+                    )));
+                }
+                // The player's order: patch the hole, cool the bed, repair.
+                let hole = self.wall_hole(node, wall.hole)?;
+                if let LeakRole::Orifice { area } = self.graph.pipe(hole).leak {
+                    if area.value() > 0.0 {
+                        return Err(SimError::InvalidCommand(format!(
+                            "catalyst bed '{name}' still leaks through a {:.2} cm² hole: patch \
+                             it first (`puncture_pipe` at area 0 on '{}'), then repair the wall",
+                            area.value() * 1e4,
+                            self.punctured_pipe_name(hole)
+                        )));
+                    }
+                }
+                // Measured FRESH: the bed is a state, and the one standing now
+                // is what the next tick's burn-out pass will compare.
+                if wall.limit_reached(bed.temperature) {
+                    return Err(SimError::InvalidCommand(format!(
+                        "catalyst bed '{name}' is at {:.1} °C, at or past its wall's {:.1} °C \
+                         limit: a repaired wall would fail on the next tick. Cool the bed \
+                         first (a much colder feed: a runaway bed stays hot far below the \
+                         feed that lit it)",
+                        bed.temperature.value() - 273.15,
+                        wall.failure_temperature.value() - 273.15
+                    )));
+                }
+                if let NodeKind::BedReactor { wall, .. } = &mut self.graph.node_mut(node).kind {
+                    wall.state = WallState::Intact;
                 }
                 Ok(())
             }
@@ -2212,7 +2246,7 @@ impl Engine {
         //    Catalyst beds likewise (M57.1, docs/DESIGN.md §62.1): integrated
         //    on the sweep from the start-of-tick temperature, committed here.
         for (&nid, pass) in &node_states.bed {
-            if let NodeKind::BedReactor { bed } = &mut self.graph.node_mut(nid).kind {
+            if let NodeKind::BedReactor { bed, .. } = &mut self.graph.node_mut(nid).kind {
                 bed.temperature = pass.temperature;
             }
         }
@@ -2826,27 +2860,41 @@ impl Engine {
     /// is narrow it: a furnace a trip holds dark is no longer restartable
     /// (M42, §47).
     ///
-    /// Measure then write, like the trips: every furnace is checked before any
-    /// hole is opened, though no burn-out reads what another writes.
+    /// **A catalyst bed's wall fails the same way** (M58, docs/DESIGN.md
+    /// §63.2): an intact wall whose bed stands at or past its limit opens its
+    /// hole and latches `Failed`. No trip holds a bed, so it marks no stop.
+    ///
+    /// Measure then write, like the trips: every furnace and bed is checked
+    /// before any hole is opened, though no burn-out reads what another writes.
     fn run_burnouts(&mut self) -> Result<(), SimError> {
         let this_tick = self.tick + 1;
         let mut bursts: Vec<(NodeId, Option<crate::graph::EdgeId>, SquareMeter)> = Vec::new();
+        let mut walls: Vec<(NodeId, Option<crate::graph::EdgeId>, SquareMeter)> = Vec::new();
         for nid in self.graph.node_ids() {
-            if let NodeKind::Furnace { coil, tubes, .. } = &self.graph.node(nid).kind {
-                if !tubes.state.is_failed() && tubes.limit_reached(coil.temperature) {
+            match &self.graph.node(nid).kind {
+                NodeKind::Furnace { coil, tubes, .. }
+                    if !tubes.state.is_failed() && tubes.limit_reached(coil.temperature) =>
+                {
                     bursts.push((nid, tubes.hole, tubes.rupture_area));
                 }
+                NodeKind::BedReactor { bed, wall }
+                    if !wall.state.is_failed() && wall.limit_reached(bed.temperature) =>
+                {
+                    walls.push((nid, wall.hole, wall.rupture_area));
+                }
+                _ => {}
+            }
+        }
+        for (nid, hole, rupture_area) in walls {
+            let hole = self.wall_hole(nid, hole)?;
+            self.open_hole_to(hole, rupture_area);
+            if let NodeKind::BedReactor { wall, .. } = &mut self.graph.node_mut(nid).kind {
+                wall.state = WallState::Failed { at_tick: this_tick };
             }
         }
         for (nid, hole, rupture_area) in bursts {
             let hole = self.burnout_hole(nid, hole)?;
-            let open = match self.graph.pipe(hole).leak {
-                LeakRole::Orifice { area } => area,
-                _ => unreachable!("`burnout_hole` returns only a leak orifice"),
-            };
-            self.graph.pipe_mut(hole).leak = LeakRole::Orifice {
-                area: SquareMeter(open.value().max(rupture_area.value())),
-            };
+            self.open_hole_to(hole, rupture_area);
             if let NodeKind::Furnace { tubes, .. } = &mut self.graph.node_mut(nid).kind {
                 tubes.state = TubeState::Failed { at_tick: this_tick };
             }
@@ -2859,6 +2907,57 @@ impl Engine {
             }
         }
         Ok(())
+    }
+
+    /// Open a checked leak orifice to `area` [m²] — or leave it wider: a
+    /// failure never shrinks a hole a hand puncture already opened more.
+    fn open_hole_to(&mut self, hole: crate::graph::EdgeId, area: SquareMeter) {
+        let open = match self.graph.pipe(hole).leak {
+            LeakRole::Orifice { area } => area,
+            _ => unreachable!("a checked hole is a leak orifice"),
+        };
+        self.graph.pipe_mut(hole).leak = LeakRole::Orifice {
+            area: SquareMeter(open.value().max(area.value())),
+        };
+    }
+
+    /// The pipe a player punctures to open or patch `hole`: the upstream half
+    /// of the split pipe that owns it. Empty if none does, which the loader
+    /// never builds.
+    fn punctured_pipe_name(&self, hole: crate::graph::EdgeId) -> String {
+        self.graph
+            .edge_ids()
+            .find(|&e| self.graph.pipe(e).leak == LeakRole::Punctureable { orifice: hole })
+            .map(|e| self.graph.pipe(e).name.clone())
+            .unwrap_or_default()
+    }
+
+    /// A catalyst bed's wall hole, checked to be a leak orifice in this graph
+    /// (M58, docs/DESIGN.md §63.1). The loader builds one on every bed; a graph
+    /// built by hand without one is refused when its wall fails rather than
+    /// skipped (rule 5).
+    fn wall_hole(
+        &self,
+        bed: NodeId,
+        hole: Option<crate::graph::EdgeId>,
+    ) -> Result<crate::graph::EdgeId, SimError> {
+        let name = &self.graph.node(bed).name;
+        let hole = hole.ok_or_else(|| {
+            SimError::Scenario(format!(
+                "catalyst bed '{name}' has a failed wall but owns no hole. The loader builds \
+                 one on every bed's outlet pipe; a graph built by hand must do the same \
+                 (docs/DESIGN.md §63.1)"
+            ))
+        })?;
+        if !self.graph.has_edge(hole)
+            || !matches!(self.graph.pipe(hole).leak, LeakRole::Orifice { .. })
+        {
+            return Err(SimError::Numerical(format!(
+                "internal: catalyst bed '{name}' names {hole:?} as its wall's hole, which is \
+                 not a leak orifice in this plant (docs/DESIGN.md §63.1)"
+            )));
+        }
+        Ok(hole)
     }
 
     /// A furnace's burn-out hole, checked to be a leak orifice in this graph.
@@ -3202,7 +3301,9 @@ impl Engine {
             Command::PuncturePipe { edge, .. } => {
                 (!self.graph.has_edge(edge)).then(|| format!("{edge:?} names no pipe"))
             }
-            Command::ReplaceTubes { node } | Command::VentPump { node } => {
+            Command::ReplaceTubes { node }
+            | Command::RepairBedWall { node }
+            | Command::VentPump { node } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::SetControllerMode { .. }
@@ -3346,6 +3447,12 @@ impl Engine {
                         .get(&id)
                         .and_then(|pass| pass.residence_time)
                         .map(|tau| tau.value()),
+                    // Likewise — see `NodeSnapshot::wall_fire_w`.
+                    wall_fire_w: self
+                        .node_states
+                        .bed
+                        .get(&id)
+                        .map(|pass| pass.wall_fire.value()),
                     trip_stop: self.trip_stop(id),
                     // Every supply, from the last tick — see
                     // `NodeSnapshot::supply_boiling`.

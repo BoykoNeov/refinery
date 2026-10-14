@@ -9,9 +9,12 @@
 #
 # What a run shows: a slow creep first — about 400 °C after 6 minutes and 450 °C
 # after 16, as the bed passes where the calm state used to be — and then the
-# runaway, past 600 °C at 22 minutes and 700 °C at 25, settling near 760 °C with
-# nearly everything cracked to light ends. The creep is the warning a trip on the
-# bed (M57.3) has to act inside. See it whole with
+# runaway, past 600 °C at 22 minutes and 700 °C at 25, with nearly everything
+# cracked to light ends. The creep is the warning a trip on the bed (M57.3) has
+# to act inside. Since M58 the runaway also BREAKS something: the wall fails at
+# 550 °C, 20 min 36 s in, and a tenth of the burning leak heats the bed, which
+# climbs past the ~760 °C the runaway alone settles at (docs/DESIGN.md §63). See
+# it whole with
 #
 #   cargo run -p refinery-cli -- run scenarios/hydrocracker_runaway.toml --ticks 18000
 #
@@ -80,6 +83,13 @@ type = "bed_reactor"
 bed_heat_capacity_mj_per_k = 30.0
 catalyst_volume_m3 = 20.0
 bed_temperature_c = 374.1
+# The wall (M58, docs/DESIGN.md §63): it fails when the bed reaches 550 °C,
+# opening a 1 cm² hole on the outlet line; what leaks burns at 42.8 MJ/kg and a
+# tenth of that fire heats the bed. Round GAME values, not a sourced shell limit.
+wall_failure_c = 550.0
+wall_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.8
+wall_fire_share = 0.1
 
 [nodes.product]
 type = "sink"

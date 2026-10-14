@@ -71,7 +71,7 @@ fn tick(engine: &mut Engine) {
 fn bed_c(engine: &Engine, name: &str) -> f64 {
     let id = engine.graph.find_node(name).expect("a bed");
     match &engine.graph.node(id).kind {
-        NodeKind::BedReactor { bed } => bed.temperature.value() - 273.15,
+        NodeKind::BedReactor { bed, .. } => bed.temperature.value() - 273.15,
         other => panic!("'{name}' is a catalyst bed, not {other:?}"),
     }
 }
@@ -282,9 +282,14 @@ fn in_manual_the_trip_catches_it() {
 #[test]
 fn with_no_trip_either_the_quench_goes_warm() {
     for solver in ["newton", "simple"] {
+        // Both walls out of reach (M58): this gate is about the quench, and a
+        // bed loaded at 742 °C is past the shipped 550 °C limit.
+        let no_walls = without_trip(&bed_loop_manual(DEMO))
+            .replace("wall_failure_c = 550.0", "wall_failure_c = 3000.0");
+        assert_eq!(no_walls.matches("wall_failure_c = 3000.0").count(), 2);
         let src = swap(
             &swap(
-                &without_trip(&bed_loop_manual(DEMO)),
+                &no_walls,
                 "bed_temperature_c = 375.0",
                 "bed_temperature_c = 742.0",
             ),
