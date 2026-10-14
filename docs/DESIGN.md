@@ -22028,13 +22028,15 @@ zero flow holds the bed bit for bit under a reaction that would release heat,
 with the fluid at the bed's temperature and fully converted, not held, and a
 fire then adds exactly `F·dt/C`; a heat-ABSORBING first-order reaction settles
 below its feed, at the root of a hand bisection of its balance to 1e-6 K.
-`scenarios/tests/bed_reactor_reference.rs` (5), on an inline fixture: the keys
+`scenarios/tests/bed_reactor_reference.rs` (7), on an inline fixture: the keys
 reach the bed in SI; through the real solve the bed relaxes onto its feed as the
-hand calculation says, and its `τ` is `V·ρ/ṁ` on the solved flow; the refusals.
+hand calculation says, and its `τ` is `V·ρ/ṁ` on the solved flow; the refusals,
+a second outlet and a trip on the bed among them, both at load.
 
-**Mutations: nine, nine caught** — the outlet read on the feed's `cp` (books),
+**Mutations: eleven, eleven caught** — the outlet read on the feed's `cp` (books),
 explicit Euler for the exact step (lag), the released heat's sign (books,
 settling), an arithmetic-mean density (`τ`), zero flow reacting over `τ = 0`
 (zero flow), `H_out` on the feed rather than the products (settling), a fire on
 a stopped bed dropped (zero flow), no write-back in `Engine::tick` (the engine
-relaxation), and no load-time refusal (both refusal tests).
+relaxation), no load-time refusal (both refusal tests), the bed dropped from the
+degree rule (two outlets) and a trip on a bed admitted (the trip refusal).

@@ -221,3 +221,66 @@ fn each_bed_key_is_required_and_range_checked() {
         );
     }
 }
+
+/// A bed is one feed in, one product out, as a furnace is: its residence time is
+/// "the" feed's flow. A second outlet is refused at load, by the degree rule the
+/// solvers also enforce.
+#[test]
+fn a_bed_with_two_outlets_is_refused() {
+    let src = format!(
+        "{PLANT}
+[[pipes]]
+name = \"second_outlet\"
+from = \"bed\"
+to = \"out\"
+length_m = 20.0
+diameter_m = 0.1
+"
+    );
+    let err = refused(&src);
+    assert!(
+        err.contains("bed") && err.contains("exactly 1 inlet + 1 outlet"),
+        "{err}"
+    );
+}
+
+/// A trip watching a bed is refused AT LOAD, not on its first tick: what a trip
+/// does about a bed is M57.3's to settle (docs/DESIGN.md §62.6).
+#[test]
+fn a_trip_on_a_bed_is_refused_at_load() {
+    let src = format!(
+        "{}
+[nodes.product_valve]
+type = \"valve\"
+kv = 200.0
+opening = 1.0
+
+[[pipes]]
+name = \"valve_line\"
+from = \"product_valve\"
+to = \"out\"
+length_m = 5.0
+diameter_m = 0.1
+
+[[trips]]
+name = \"bed_high\"
+measurement = {{ node = \"bed\", variable = \"temperature\" }}
+direction = \"high\"
+limit_c = 450.0
+actions = [{{ valve = \"product_valve\", position = 0.0 }}]
+",
+        PLANT.replace(
+            "from = \"bed\"\nto = \"out\"",
+            "from = \"bed\"\nto = \"product_valve\""
+        )
+    );
+    assert!(
+        src.contains("to = \"product_valve\""),
+        "the fixture rewrite must apply"
+    );
+    let err = refused(&src);
+    assert!(
+        err.contains("catalyst bed") && err.contains("M57.3"),
+        "{err}"
+    );
+}

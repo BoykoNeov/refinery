@@ -9137,5 +9137,5 @@ but `none` (until M57.2) and in gas service. Snapshot: the bed on `kind`, plus
 
 - Corpus: every plant byte-identical on both fidelities (45 of 45 each).
   Release property tests pass.
-- Gates: `energy::tests::bed_tests` (5), `bed_reactor_reference.rs` (5).
-  Mutations: nine, nine caught (§62.8).
+- Gates: `energy::tests::bed_tests` (5), `bed_reactor_reference.rs` (7).
+  Mutations: eleven, eleven caught (§62.8).
