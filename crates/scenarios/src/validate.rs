@@ -178,6 +178,35 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
             )));
         }
     }
+    if let NodeDef::BedReactor {
+        bed_heat_capacity_mj_per_k,
+        catalyst_volume_m3,
+        bed_temperature_c,
+    } = def
+    {
+        // The bed (M57.1, docs/DESIGN.md §62.1). Its step is exact, so no value
+        // is refused for being small against `dt`; these are the physical bounds.
+        if !bed_heat_capacity_mj_per_k.is_finite() || *bed_heat_capacity_mj_per_k <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "bed reactor '{name}' has bed_heat_capacity_mj_per_k = \
+                 {bed_heat_capacity_mj_per_k}: it must be finite and > 0. A bed with no heat \
+                 capacity has no temperature of its own (docs/DESIGN.md §62.1)."
+            )));
+        }
+        if !catalyst_volume_m3.is_finite() || *catalyst_volume_m3 <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "bed reactor '{name}' has catalyst_volume_m3 = {catalyst_volume_m3}: it must be \
+                 finite and > 0. A bed with no catalyst gives its feed no time to react \
+                 (docs/DESIGN.md §62.2)."
+            )));
+        }
+        if !bed_temperature_c.is_finite() || c_to_k(*bed_temperature_c).value() <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "bed reactor '{name}' has bed_temperature_c = {bed_temperature_c}: it must be \
+                 finite and above absolute zero (−273.15 °C)."
+            )));
+        }
+    }
     if let NodeDef::Furnace {
         coil_heat_capacity_mj_per_k,
         coil_ua_kw_per_k,
@@ -548,6 +577,7 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             NodeDef::HeatExchanger => "a heat exchanger",
             NodeDef::Column { .. } => "a column",
             NodeDef::Reactor { .. } => "a reactor",
+            NodeDef::BedReactor { .. } => "a catalyst bed",
         };
         return refuse(format!(
             "with '{name}', {kind}: a plant that selects the line flash may hold only \
@@ -1053,6 +1083,49 @@ pub(crate) fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Res
                     node.name
                 )));
             }
+        }
+    }
+    Ok(())
+}
+
+/// A catalyst bed is admitted only where its model can answer (M57.1,
+/// docs/DESIGN.md §62.2):
+///
+/// - **With a reaction model solved exactly at every residence time.** At zero
+///   flow a bed's `τ` is infinite, and the FCC kinetics' fixed-count RK4 (M4.2)
+///   would be asked to integrate a stiff problem over any `τ` at all; the lookup
+///   table ignores `τ`, which on a bed whose point is that `τ` follows the flow
+///   would be a key that changes nothing. So `none` only, until M57.2 adds the
+///   hydrocracking model, which is solved exactly. The trait is unchanged; this
+///   refusal is where the rule lives.
+/// - **In liquid service.** Its residence time is the feed's LIQUID volume
+///   over the catalyst's (`Composition::mixture_density`), which has no meaning
+///   for a gas. `phases` is `plant_phases`' verdict, taken verbatim.
+pub(crate) fn require_bed_reactor_plant(
+    graph: &PlantGraph,
+    phases: &[Phase],
+    reactions: &str,
+) -> Result<(), SimError> {
+    for nid in graph.node_ids() {
+        if !matches!(graph.node(nid).kind, NodeKind::BedReactor { .. }) {
+            continue;
+        }
+        let name = &graph.node(nid).name;
+        if reactions != "none" {
+            return Err(SimError::Scenario(format!(
+                "bed reactor '{name}' with reactions = \"{reactions}\": a bed's residence time \
+                 follows its flow and is infinite when the flow stops, so it needs a reaction \
+                 model solved exactly at every residence time. The FCC kinetics integrate a \
+                 fixed number of steps over any τ, and the lookup table ignores τ. Admitted: \
+                 none (docs/DESIGN.md §62.2)"
+            )));
+        }
+        if phases[nid.0 as usize] == Phase::Gas {
+            return Err(SimError::Scenario(format!(
+                "bed reactor '{name}' is in gas service: its residence time is the feed's \
+                 LIQUID volume over the catalyst's, which a gas does not have \
+                 (docs/DESIGN.md §62.2)"
+            )));
         }
     }
     Ok(())

@@ -2177,6 +2177,13 @@ impl Engine {
                 coil.temperature = end;
             }
         }
+        //    Catalyst beds likewise (M57.1, docs/DESIGN.md §62.1): integrated
+        //    on the sweep from the start-of-tick temperature, committed here.
+        for (&nid, pass) in &node_states.bed {
+            if let NodeKind::BedReactor { bed } = &mut self.graph.node_mut(nid).kind {
+                bed.temperature = pass.temperature;
+            }
+        }
 
         // 6. Gas pockets and locks (M54, docs/DESIGN.md §59.2; M55.1, §60.1).
         //    Every RUNNING pump's pocket moves by `dt` over its fill time: up
@@ -3273,6 +3280,19 @@ impl Engine {
                     flue_loss_w: self.node_states.flue_loss.get(&id).map(|w| w.value()),
                     // Likewise — see `NodeSnapshot::tube_fire_w`.
                     tube_fire_w: self.node_states.tube_fire.get(&id).map(|w| w.value()),
+                    // The last sweep's, on a bed only — see
+                    // `NodeSnapshot::reaction_heat_w` and `residence_time_s`.
+                    reaction_heat_w: self
+                        .node_states
+                        .bed
+                        .get(&id)
+                        .map(|pass| pass.reaction_heat.value()),
+                    residence_time_s: self
+                        .node_states
+                        .bed
+                        .get(&id)
+                        .and_then(|pass| pass.residence_time)
+                        .map(|tau| tau.value()),
                     trip_stop: self.trip_stop(id),
                     // Every supply, from the last tick — see
                     // `NodeSnapshot::supply_boiling`.
@@ -3491,6 +3511,12 @@ fn cavitation_subject(kind: &NodeKind) -> bool {
         // the FCC slate declares a `gas` lump with tb = -40 °C as a liquid, which
         // makes a liquid bubble-point test meaningless there (B3 again).
         NodeKind::Reactor { .. } => false,
+        // A catalyst bed's fluid is at the bed's temperature, a state rather than
+        // a setpoint — but a hydrocracker's bed runs under hydrogen this model
+        // does not carry (docs/DESIGN.md §62.7), and its slate's light-ends lump
+        // is a gas declared as a liquid, so a liquid bubble-point test there
+        // would grade the slate's simplification rather than the plant (B3).
+        NodeKind::BedReactor { .. } => false,
     }
 }
 

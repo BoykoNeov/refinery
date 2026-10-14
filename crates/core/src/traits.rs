@@ -1091,6 +1091,11 @@ pub trait ReactionModel: Send {
     /// load-bearing for the M4.2 kinetics, which integrate `dC/dτ` over it — it
     /// is in the signature now so that additive swap needs no trait churn.
     ///
+    /// **`tau` may be `+∞`** (M57.1, docs/DESIGN.md §62.2): a catalyst bed's
+    /// residence time follows its flow, `τ = V·ρ/ṁ`, and asks for the products
+    /// of complete conversion when the flow stops. A model that cannot answer
+    /// there is refused at load on a plant with a bed; nothing else passes one.
+    ///
     /// `NoReactions` returns the feed unchanged with `Δh_rxn = 0`, so a network
     /// with no reactor node — every scenario before M4 — stays bit-identical.
     ///

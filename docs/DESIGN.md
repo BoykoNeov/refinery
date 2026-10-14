@@ -21983,3 +21983,58 @@ at every slice.
   defer their equivalents.
 - **A sourced activation energy and heat release**, replacing the chosen ones.
   Un-defer: a reachable paper tabulating them for this network.
+
+### 62.8 The bed, built (M57.1)
+
+`NodeKind::BedReactor { bed: CatalystBed }`, stepped by `energy::bed_reactor` in
+the sweep's single-node branch beside `furnace_coil`, written back to
+`CatalystBed::temperature` at `Engine::tick` step 5 beside the coil. As §62.1
+specifies, with these choices made while building it:
+
+- **The outlet is read on the PRODUCTS' own enthalpy**
+  (`EnthalpyModel::temperature_from_enthalpy`), not by `mix_temperature` on the
+  inflow's sums as the furnace does. The furnace's fluid keeps its composition;
+  a bed's does not, and the inflow's capacity rate would put the outlet at the
+  feed's `cp` whenever the reaction shifts it.
+- **A commanded fire heats the bed** (`F` in the first law), as it heats a
+  coil: a bed has the thermal mass a fire on a zero-volume node lacks. At zero
+  flow the bed then gains exactly `F·dt/C` a tick.
+- **The engine refuses a gas feed at run time** as well as the loader at load,
+  because `Composition::mixture_density` has no guard in release (rule 5).
+- **The snapshot** carries the bed in `kind` (its three numbers and its
+  temperature), plus `reaction_heat_w` (`−ṁ·Δh_rxn`, the books' missing term,
+  `flue_loss_w`'s argument) and `residence_time_s` (absent at zero flow, where
+  `τ` is infinite). Both are absent on every other node, so no other plant's
+  bytes move.
+- **The loader** (`type = "bed_reactor"`): `bed_heat_capacity_mj_per_k`,
+  `catalyst_volume_m3`, `bed_temperature_c`, all required, the first two finite
+  and > 0, the third above 0 K. `require_bed_reactor_plant` carries §62.2's
+  refusal: `reactions = "none"` only, until M57.2's model joins it, and a bed in
+  gas service refused on `plant_phases`' verdict. `ReactionModel::react`'s doc
+  now says `τ` may be `+∞`; its signature is unchanged.
+- **Refused, each with its own reason**: a loop or trip measuring a bed (M57.3
+  settles it); a boil-off vent into a bed (a zero-volume node); a bed on a
+  line-flash plant (a model not built, as a reactor). The suction-boiling
+  criterion is not asked of a bed: its slate's light-ends lump is a gas declared
+  as a liquid, and its hydrogen is not modelled (§62.7).
+
+**Gates.** `energy::tests::bed_tests` (5), on hand-built flows, driving the
+sweep tick by tick with the engine's write-back: the first law closes to 1e-9
+with a conversion that shifts `cp` (the released heat recomputed by hand at the
+START temperature, the outflow by hand on the products' capacity); with no
+reaction the bed is `T_in + (T₀ − T_in)·e^(−W·t/C)` to 1e-9 at each of 300
+ticks; `τ = V·ρ/ṁ` with a harmonic-mean density, doubling when the flow halves;
+zero flow holds the bed bit for bit under a reaction that would release heat,
+with the fluid at the bed's temperature and fully converted, not held, and a
+fire then adds exactly `F·dt/C`; a heat-ABSORBING first-order reaction settles
+below its feed, at the root of a hand bisection of its balance to 1e-6 K.
+`scenarios/tests/bed_reactor_reference.rs` (5), on an inline fixture: the keys
+reach the bed in SI; through the real solve the bed relaxes onto its feed as the
+hand calculation says, and its `τ` is `V·ρ/ṁ` on the solved flow; the refusals.
+
+**Mutations: nine, nine caught** — the outlet read on the feed's `cp` (books),
+explicit Euler for the exact step (lag), the released heat's sign (books,
+settling), an arithmetic-mean density (`τ`), zero flow reacting over `τ = 0`
+(zero flow), `H_out` on the feed rather than the products (settling), a fire on
+a stopped bed dropped (zero flow), no write-back in `Engine::tick` (the engine
+relaxation), and no load-time refusal (both refusal tests).

@@ -600,6 +600,9 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
             // A reactor is the furnace's process constraint too: "the stream it
             // converts" names one definite feed, so it is 1-in-1-out.
             | NodeKind::Reactor { .. }
+            // A catalyst bed is hydraulically a furnace too, and its residence
+            // time is "the" feed's flow (docs/DESIGN.md §62.1).
+            | NodeKind::BedReactor { .. }
             | NodeKind::HeatExchanger => Some((1, 1)),
             // One feed, one outlet per draw. The feed is stored INTO the column
             // and each draw OUT of it (the loader enforces the direction), so the
@@ -655,6 +658,7 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::Reactor { .. }
+        | NodeKind::BedReactor { .. }
         | NodeKind::Vessel(_)
         | NodeKind::HeatExchanger => None,
     }

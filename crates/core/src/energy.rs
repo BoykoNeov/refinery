@@ -51,9 +51,12 @@
 //! balances — the invariant tests state it against `T_REF` explicitly rather than
 //! assuming a zero reference makes it moot.
 
+use crate::components::Phase;
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
-use crate::graph::{ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, NodeId, NodeKind, PlantGraph};
+use crate::graph::{
+    CatalystBed, ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, NodeId, NodeKind, PlantGraph,
+};
 use crate::traits::{
     ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel, ReactionModel,
     Separation, SeparationModel, StarvedTank, ThermoModel, VapourShare,
@@ -748,6 +751,10 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
             // the sweep visits it at all (an inertial node would never resolve its
             // feed-dependent composition).
             | NodeKind::Reactor { .. }
+            // A catalyst bed holds no FLUID inventory either (M57.1,
+            // docs/DESIGN.md §62.1): its thermal mass is the bed, a state on the
+            // node like a furnace's coil, so its fluid is swept like a furnace's.
+            | NodeKind::BedReactor { .. }
     )
 }
 
@@ -800,7 +807,10 @@ pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Compositio
         // A reactor's composition is its feed mix, then `react`'d — mixed here,
         // transformed in the sweep. It is zero-volume in BOTH fields (the
         // partition must agree), so it is `None` here too.
-        | NodeKind::Reactor { .. } => None,
+        | NodeKind::Reactor { .. }
+        // A bed's composition is its feed mix, reacted in the sweep, like a
+        // reactor's (M57.1, docs/DESIGN.md §62).
+        | NodeKind::BedReactor { .. } => None,
     }
 }
 
@@ -843,7 +853,11 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         // partition assertion (its composition is zero-volume) and the sweep must
         // visit it to resolve that composition. `t_set` is applied in the sweep's
         // single-node branch, overriding the mixed value.
-        | NodeKind::Reactor { .. } => None,
+        | NodeKind::Reactor { .. }
+        // A bed's fluid leaves at the bed's temperature, a state the sweep
+        // integrates in its single-node branch (`bed_reactor`), as a furnace's
+        // leaves through its coil: `None` so the sweep visits it.
+        | NodeKind::BedReactor { .. } => None,
     }
 }
 
@@ -957,6 +971,12 @@ pub struct NodeStates {
     /// DIAGNOSTIC like `flue_loss`, and for the same reason: the books do not
     /// close without it. Empty on a plant with no furnace.
     pub tube_fire: BTreeMap<NodeId, Watt>,
+    /// What this tick did to each catalyst bed (M57.1, docs/DESIGN.md §62.1),
+    /// integrated on this sweep because it is the one site with the bed's feed
+    /// in hand. Its end-of-tick temperature is a RESULT, not a state:
+    /// `Engine::tick` writes it back to `CatalystBed::temperature`, as it does
+    /// a furnace's coil. Empty on a plant with no bed.
+    pub bed: BTreeMap<NodeId, BedPass>,
     /// Each node whose stream is partly vapour this tick, and its vapour (M53,
     /// docs/DESIGN.md §58): a supply above its bubble point, and a zero-volume
     /// node whose line flash boiled it. Empty on every plant that does not
@@ -1030,6 +1050,21 @@ pub(crate) fn inflow_latent(
         }
     }
     total
+}
+
+/// What one tick does to a catalyst bed (M57.1, docs/DESIGN.md §62.1).
+#[derive(Debug, Clone, Copy)]
+pub struct BedPass {
+    /// The bed's temperature at the END of the tick [K].
+    pub temperature: Kelvin,
+    /// Heat the reaction released into the bed this tick [W],
+    /// `Q = −ṁ·Δh_rxn`: positive when it heats the bed, negative when it
+    /// absorbs. A DIAGNOSTIC like `flue_loss`: a plant's energy books do not
+    /// close without it, since the sensible datum does not track chemistry.
+    pub reaction_heat: Watt,
+    /// The residence time the chemistry ran over [s], `τ = V·ρ_feed/ṁ`
+    /// (§62.2). `None` at zero flow, where `τ` is infinite.
+    pub residence_time: Option<Seconds>,
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -1207,6 +1242,7 @@ pub fn resolve_node_states(
     let mut coil_temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
     let mut flue_loss: BTreeMap<NodeId, Watt> = BTreeMap::new();
     let mut tube_fire: BTreeMap<NodeId, Watt> = BTreeMap::new();
+    let mut bed: BTreeMap<NodeId, BedPass> = BTreeMap::new();
     let mut composition: BTreeMap<NodeId, Composition> = BTreeMap::new();
     let mut reactor_duties: BTreeMap<NodeId, ReactorDuty> = BTreeMap::new();
     let mut separations: BTreeMap<NodeId, Separation> = BTreeMap::new();
@@ -1481,6 +1517,31 @@ pub fn resolve_node_states(
                         composition.insert(id, products);
                         temperature.insert(id, t_set);
                         reactor_duties.insert(id, duty);
+                    } else if let NodeKind::BedReactor { bed: catalyst } = &graph.node(id).kind {
+                        // A bed reacts the feed just mixed above at its own
+                        // start-of-tick temperature and takes the heat into
+                        // itself (M57.1, docs/DESIGN.md §62.1). Like a furnace
+                        // it is never HELD: with no inflow its fluid sits at the
+                        // bed's temperature, which is a state.
+                        let feed = mixed_composition_at(&composition, id)?.clone();
+                        let (products, pass, fluid) = bed_reactor(
+                            graph,
+                            slate,
+                            enthalpy,
+                            reactions,
+                            edge_mass_flow,
+                            edge_dissipation,
+                            &temperature,
+                            &composition,
+                            &separations,
+                            id,
+                            &feed,
+                            catalyst,
+                            dt,
+                        )?;
+                        composition.insert(id, products);
+                        temperature.insert(id, fluid);
+                        bed.insert(id, pass);
                     } else if let NodeKind::Furnace {
                         duty,
                         coil,
@@ -1682,6 +1743,7 @@ pub fn resolve_node_states(
         coil_temperature,
         flue_loss,
         tube_fire,
+        bed,
         vapour,
     })
 }
@@ -2274,6 +2336,201 @@ fn psi(x: f64) -> f64 {
     } else {
         (x + (-x).exp_m1()) / (x * x)
     }
+}
+
+/// Integrate a catalyst bed across one tick: react its feed at the bed's
+/// START-of-tick temperature, put the released heat into the bed, and send the
+/// fluid out at the bed's temperature (M57.1, docs/DESIGN.md §62.1).
+///
+/// Returns the products (the bed's composition), what the tick did to the bed,
+/// and the fluid's temperature.
+///
+/// **The residence time follows the flow** (§62.2): `τ = V·ρ_feed/ṁ`, the space
+/// time `1/LHSV` fixed-bed kinetics are quoted against, with `ρ_feed` the feed's
+/// liquid density (`Composition::mixture_density`, the mass-weighted harmonic
+/// mean of the slate's declared densities). At zero flow `τ = +∞`.
+///
+/// **The bed's first law**, the lumped capacitance of `furnace_coil` with the
+/// flame replaced by the chemistry (Incropera & DeWitt, *Fundamentals of Heat
+/// and Mass Transfer*, 6th ed., §5.1):
+///
+/// ```text
+/// C·dT_b/dt = Q + F + H_in − H_out(T_b),   Q = −ṁ·Δh_rxn(T_b, τ)
+/// ```
+///
+/// with `F` a commanded fire (`Command::SetHeatInput`) on the bed, a fixed heat
+/// into it as on a coil, and `H_out` the PRODUCTS' enthalpy rate at the bed's
+/// temperature, so the cp shift a conversion causes is booked (§5 fork 2).
+/// `Q`, `F` and `H_in` are frozen across the tick and `H_out` is linearised by
+/// the products' capacity rate `W = ṁ·cp_out(T_b)`, so its exact solution is
+/// `furnace_coil`'s:
+///
+/// ```text
+/// T_b(dt) = T_b + r₀·dt/C·φ(x),   x = W·dt/C,   φ(x) = (1 − e^−x)/x
+/// ```
+///
+/// `r₀` the right-hand side at the start of the tick. Exact for the frozen rate
+/// and unconditionally stable, and exactly `(Q + F)·dt/C` at zero flow.
+///
+/// **The fluid's heat comes from the STORED change**, as the coil's does
+/// (§37 fork 3, correction 2): `H_out,avg = H_in + Q + F − C·(T_b,end −
+/// T_b,start)/dt`, turned into a temperature on the products' own enthalpy, so
+/// the first law at the bed closes by construction. Fluid–solid contact is
+/// complete (`ε = 1`, §62.1): the outlet is the tick's average bed temperature
+/// under the linearised outflow.
+///
+/// **No flow**: `ṁ = 0`, so nothing reacts into or out of the bed (`Q = 0`)
+/// and nothing carries heat away; the bed keeps its temperature, plus any fire.
+/// The fluid standing in it is reported at the bed's end-of-tick temperature
+/// with the products of complete conversion (`τ = +∞`). Nothing is held.
+#[allow(clippy::too_many_arguments)]
+fn bed_reactor(
+    graph: &PlantGraph,
+    slate: &Slate,
+    enthalpy_model: &dyn EnthalpyModel,
+    reactions: &dyn ReactionModel,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    edge_dissipation: &BTreeMap<EdgeId, Watt>,
+    temperature: &BTreeMap<NodeId, Kelvin>,
+    composition: &BTreeMap<NodeId, Composition>,
+    separations: &BTreeMap<NodeId, Separation>,
+    node: NodeId,
+    feed: &Composition,
+    bed: &CatalystBed,
+    dt: Seconds,
+) -> Result<(Composition, BedPass, Kelvin), SimError> {
+    let name = &graph.node(node).name;
+    let capacity = bed.heat_capacity.value();
+    let start = bed.temperature.value();
+    // A commanded fire heats the bed, as it heats a furnace's coil: a bed has
+    // the thermal mass a fire on a zero-volume node lacks (`mix_inflows`).
+    let fire = heat_load(graph.node(node)).value();
+
+    let totals = inflow_totals(
+        graph,
+        slate,
+        enthalpy_model,
+        edge_mass_flow,
+        edge_dissipation,
+        temperature,
+        composition,
+        separations,
+        node,
+    )?;
+
+    // τ = V·ρ_feed/ṁ (§62.2). The density is the liquid one, and the loader
+    // refuses a bed in gas service; this refusal is the engine's own guard
+    // (rule 5), since `mixture_density` has none in release.
+    let residence_time = match totals {
+        Some(totals) => {
+            if feed.phase(slate)? != Phase::Liquid {
+                return Err(SimError::Numerical(format!(
+                    "catalyst bed '{name}' is fed a gas: its residence time is the feed's \
+                     LIQUID volume over the catalyst's (docs/DESIGN.md §62.2)"
+                )));
+            }
+            let density = feed.mixture_density(slate).value();
+            Some(Seconds(
+                bed.catalyst_volume.value() * density / totals.mass_rate,
+            ))
+        }
+        None => None,
+    };
+    let reaction = reactions.react(
+        feed,
+        bed.temperature,
+        residence_time.unwrap_or(Seconds(f64::INFINITY)),
+        slate,
+    )?;
+    if !reaction.dh_rxn.value().is_finite() {
+        return Err(SimError::Numerical(format!(
+            "catalyst bed '{name}': the reaction model '{}' returned a heat of reaction of \
+             {} J/kg at {start:.2} K",
+            reactions.name(),
+            reaction.dh_rxn.value()
+        )));
+    }
+
+    let Some(totals) = totals else {
+        // No flow: the fire alone, exactly.
+        let end = start + fire * dt.value() / capacity;
+        let end = checked_bed_temperature(name, end, start, fire)?;
+        return Ok((
+            reaction.products,
+            BedPass {
+                temperature: end,
+                reaction_heat: Watt::ZERO,
+                residence_time: None,
+            },
+            end,
+        ));
+    };
+    let mass = totals.mass_rate;
+    // Q = −ṁ·Δh_rxn [W]: positive Δh_rxn absorbs (§5's sign convention).
+    // Written as a subtraction from zero so a reaction that does nothing
+    // reports +0.0, not the −0.0 a negation of a zero product gives.
+    let released = 0.0 - mass * reaction.dh_rxn.value();
+    // The products' enthalpy rate and capacity rate at the bed's start-of-tick
+    // temperature: the outflow `H_out(T_b)` and its slope `W`.
+    let outflow_at_bed = enthalpy_model
+        .enthalpy_flux(slate, &reaction.products, KgPerSec(mass), bed.temperature)?
+        .value();
+    let capacity_rate = mass
+        * enthalpy_model
+            .spot_cp(slate, &reaction.products, bed.temperature)?
+            .value();
+
+    // The exact step, in `furnace_coil`'s form that never divides by `W`.
+    let x = capacity_rate * dt.value() / capacity;
+    let rate = released + fire + totals.enthalpy_rate - outflow_at_bed;
+    let phi = if x > 0.0 { -(-x).exp_m1() / x } else { 1.0 };
+    let end = start + rate * dt.value() / capacity * phi;
+    let end_temperature = checked_bed_temperature(name, end, start, released + fire)?;
+
+    // What leaves with the fluid, as an average power [W]: what came in and
+    // what was released, less what the bed now stores. From the STORED change,
+    // for `furnace_coil`'s reason: the bits rounding drops from `end` must not
+    // reach the fluid without leaving the bed.
+    let outflow = totals.enthalpy_rate + released + fire - capacity * (end - start) / dt.value();
+    let outlet = enthalpy_model
+        .temperature_from_enthalpy(slate, &reaction.products, outflow, mass)?
+        .value();
+    let fluid = checked_temperature(outlet, || {
+        format!(
+            "catalyst bed '{name}' outlet {outlet:.2} K is below absolute zero: {outflow:.4e} W \
+             leaves with {mass:.4e} kg/s"
+        )
+    })?;
+    Ok((
+        reaction.products,
+        BedPass {
+            temperature: end_temperature,
+            reaction_heat: Watt(released),
+            residence_time,
+        },
+        fluid,
+    ))
+}
+
+/// A bed's end-of-tick temperature, refused if it is not finite or below 0 K.
+fn checked_bed_temperature(
+    name: &str,
+    end: f64,
+    start: f64,
+    heat: f64,
+) -> Result<Kelvin, SimError> {
+    if !end.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "catalyst bed '{name}' temperature is not finite ({end}) after a tick from \
+             {start:.2} K with {heat:.4e} W released and fired into it"
+        )));
+    }
+    checked_temperature(end, || {
+        format!(
+            "catalyst bed '{name}' cools to {end:.2} K, below absolute zero, from {start:.2} K \
+             with {heat:.4e} W released and fired into it"
+        )
+    })
 }
 
 /// Both outlet temperatures of a coupled `HeatExchanger` pair [K].
@@ -3948,6 +4205,375 @@ mod tests {
             let duty = states.reactor_duty[&rx];
             assert_eq!(duty.sensible.value(), 0.0);
             assert_eq!(duty.reported.value(), 0.0);
+        }
+    }
+
+    /// The catalyst bed's contract in the sweep (M57.1, docs/DESIGN.md §62.1–2):
+    /// its books, its lag, its residence time, its zero flow, and a
+    /// heat-absorbing reaction settling below its feed. Each test drives the
+    /// sweep tick by tick and writes the bed's end-of-tick temperature back as
+    /// `Engine::tick` does, so what it pins is the step the engine runs.
+    mod bed_tests {
+        use super::*;
+        use crate::graph::CatalystBed;
+
+        const FEED_CP: f64 = 2000.0;
+        const PRODUCT_CP: f64 = 3000.0;
+        const FEED_DENSITY: f64 = 800.0;
+        const PRODUCT_DENSITY: f64 = 600.0;
+
+        /// Two liquid cuts with DIFFERENT `cp` and density, so a conversion
+        /// shifts the products' capacity (the books gate) and a mixed feed's
+        /// density is a harmonic mean rather than either one (the `τ` gate).
+        fn two_cut_slate() -> Slate {
+            use crate::components::{Phase, PseudoComponent};
+            let cut = |name: &str, cp: f64, density: f64| PseudoComponent {
+                name: name.into(),
+                tb: Kelvin(400.0),
+                molar_mass: KgPerMol(0.1),
+                density: Some(KgPerM3(density)),
+                cp: JPerKgK(cp),
+                cp_shape: None,
+                phase: Phase::Liquid,
+            };
+            Slate::new(vec![
+                cut("feed_lump", FEED_CP, FEED_DENSITY),
+                cut("product_lump", PRODUCT_CP, PRODUCT_DENSITY),
+            ])
+            .unwrap()
+        }
+
+        /// First-order `A → B`, Arrhenius in the bed's temperature, solved
+        /// exactly over `τ` (`+∞` included): `X = 1 − exp(−k(T)·τ)`, and
+        /// `Δh_rxn = f_A·X·h` per kg of feed. A test model, written here so the
+        /// bed's gates do not wait on M57.2's chemistry.
+        struct FirstOrder {
+            /// Rate constant at `t_ref` [1/s].
+            k_ref: f64,
+            t_ref: f64,
+            /// `E/R` [K].
+            e_over_r: f64,
+            /// Heat of reaction per kg CONVERTED [J/kg]; positive absorbs.
+            h: f64,
+        }
+        impl FirstOrder {
+            fn conversion(&self, temperature: f64, tau: f64) -> f64 {
+                let k =
+                    self.k_ref * (-self.e_over_r * (1.0 / temperature - 1.0 / self.t_ref)).exp();
+                -(-k * tau).exp_m1()
+            }
+        }
+        impl ReactionModel for FirstOrder {
+            fn name(&self) -> &'static str {
+                "test-first-order"
+            }
+            fn react(
+                &self,
+                feed: &Composition,
+                temperature: Kelvin,
+                tau: Seconds,
+                _slate: &Slate,
+            ) -> Result<Reaction, SimError> {
+                let x = self.conversion(temperature.value(), tau.value());
+                let [a, b] = [feed.fractions()[0], feed.fractions()[1]];
+                Ok(Reaction {
+                    products: Composition::from_weights(&[a * (1.0 - x), b + a * x])?,
+                    dh_rxn: JPerKg(a * x * self.h),
+                })
+            }
+        }
+
+        /// source → bed → sink, the bed loaded at `start` with heat capacity
+        /// `capacity` [J/K] and catalyst `volume` [m³].
+        fn bed_plant(
+            feed: &Composition,
+            t_in: Kelvin,
+            start: Kelvin,
+            capacity: f64,
+            volume: f64,
+        ) -> (PlantGraph, NodeId, EdgeId, EdgeId) {
+            let mut g = PlantGraph::new();
+            let src = g.add_node(node(
+                "src",
+                NodeKind::Source {
+                    pressure: Pascal(2.0e5),
+                    temperature: t_in,
+                    composition: feed.clone(),
+                },
+            ));
+            let bed = g.add_node(node(
+                "bed",
+                NodeKind::BedReactor {
+                    bed: CatalystBed {
+                        heat_capacity: JPerK(capacity),
+                        catalyst_volume: CubicMeter(volume),
+                        temperature: start,
+                    },
+                },
+            ));
+            let snk = g.add_node(node(
+                "snk",
+                NodeKind::Sink {
+                    pressure: Pascal(1.0e5),
+                    temperature: t_in,
+                    composition: feed.clone(),
+                },
+            ));
+            let feed_edge = g.add_pipe(src, bed, pipe("feed"));
+            let prod_edge = g.add_pipe(bed, snk, pipe("prod"));
+            (g, bed, feed_edge, prod_edge)
+        }
+
+        fn flows(feed: EdgeId, prod: EdgeId, mass_flow: f64) -> BTreeMap<EdgeId, f64> {
+            BTreeMap::from([(feed, mass_flow), (prod, mass_flow)])
+        }
+
+        fn bed_temperature(g: &PlantGraph, bed: NodeId) -> Kelvin {
+            match &g.node(bed).kind {
+                NodeKind::BedReactor { bed } => bed.temperature,
+                _ => unreachable!("the fixture's bed is a bed"),
+            }
+        }
+
+        /// One tick: the sweep, then the write-back `Engine::tick` does.
+        fn step(
+            g: &mut PlantGraph,
+            slate: &Slate,
+            flows: &BTreeMap<EdgeId, f64>,
+            reactions: &dyn ReactionModel,
+            previous: &NodeStates,
+            dt: f64,
+        ) -> NodeStates {
+            let states = resolve_node_states(
+                g,
+                slate,
+                flows,
+                &no_friction(),
+                reactions,
+                &NoSeparation,
+                &TestThermo,
+                &ConstantEnthalpyStub,
+                &NoLineFlashStub,
+                &everywhere_atmospheric(g),
+                previous,
+                &BTreeMap::new(),
+                Seconds(dt),
+            )
+            .unwrap();
+            for (&id, pass) in &states.bed {
+                if let NodeKind::BedReactor { bed } = &mut g.node_mut(id).kind {
+                    bed.temperature = pass.temperature;
+                }
+            }
+            states
+        }
+
+        /// **The first law at the bed closes**: what the bed stored equals what
+        /// came in, plus what the reaction released, less what left — with the
+        /// outflow recomputed BY HAND from the reported outlet temperature on
+        /// the PRODUCTS' capacity, and the released heat recomputed by hand at
+        /// the bed's START-of-tick temperature. A conversion that shifts `cp`
+        /// is what makes the products' capacity matter.
+        #[test]
+        fn the_bed_books_close_exactly() {
+            let slate = two_cut_slate();
+            let feed = Composition::pure(2, 0);
+            let (t_in, start, capacity, volume, mass_flow, dt) =
+                (Kelvin(600.0), Kelvin(650.0), 4.0e5, 1.0, 2.0, 1.0);
+            let reactions = FirstOrder {
+                k_ref: 0.002,
+                t_ref: 650.0,
+                e_over_r: 15_000.0,
+                h: -3.0e5,
+            };
+            let (mut g, bed, fe, pe) = bed_plant(&feed, t_in, start, capacity, volume);
+            let states = step(
+                &mut g,
+                &slate,
+                &flows(fe, pe, mass_flow),
+                &reactions,
+                &NodeStates::default(),
+                dt,
+            );
+
+            let pass = states.bed[&bed];
+            let tau = volume * FEED_DENSITY / mass_flow;
+            let x = reactions.conversion(start.value(), tau);
+            assert!(x > 0.1, "the fixture must convert something (X = {x})");
+            let released = -mass_flow * x * reactions.h;
+            assert!(
+                (pass.reaction_heat.value() - released).abs() <= 1e-9 * released.abs(),
+                "released {} W, by hand at the START temperature {released} W",
+                pass.reaction_heat.value()
+            );
+
+            let tref = T_REF.value();
+            let heat_in = mass_flow * FEED_CP * (t_in.value() - tref);
+            let product_cp = (1.0 - x) * FEED_CP + x * PRODUCT_CP;
+            let outlet = states.temperature[&bed].value();
+            let heat_out = mass_flow * product_cp * (outlet - tref);
+            let stored = capacity * (pass.temperature.value() - start.value()) / dt;
+            let imbalance = heat_in + released - heat_out - stored;
+            assert!(
+                imbalance.abs() <= 1e-9 * heat_in.abs(),
+                "the bed's first law misses by {imbalance} W (in {heat_in}, released \
+                 {released}, out {heat_out}, stored {stored})"
+            );
+            // The products travel on, and the fluid leaves near the bed.
+            assert!((states.composition[&bed].fractions()[1] - x).abs() < 1e-12);
+            assert!(!states.held.contains(&bed));
+        }
+
+        /// **No reaction, one cut: the lumped-capacitance lag of a hand
+        /// calculation**, `T_b(t) = T_in + (T₀ − T_in)·e^(−W·t/C)` (Incropera &
+        /// DeWitt 6th ed. §5.1), which the step reproduces to rounding at every
+        /// tick because, with nothing frozen that moves, it is exact.
+        #[test]
+        fn a_bed_with_no_reaction_lags_its_feed_as_a_lumped_capacitance() {
+            let slate = two_cut_slate();
+            let feed = Composition::pure(2, 0);
+            let (t_in, start, capacity, mass_flow, dt) = (300.0, 500.0, 4.0e5, 2.0, 1.0);
+            let (mut g, bed, fe, pe) = bed_plant(&feed, Kelvin(t_in), Kelvin(start), capacity, 1.0);
+            let flows = flows(fe, pe, mass_flow);
+            let rate = mass_flow * FEED_CP / capacity; // W/C = 1/(100 s)
+            let mut previous = NodeStates::default();
+            for n in 1..=300 {
+                previous = step(&mut g, &slate, &flows, &NoRxn, &previous, dt);
+                let expected = t_in + (start - t_in) * (-rate * dt * f64::from(n)).exp();
+                let got = bed_temperature(&g, bed).value();
+                assert!(
+                    (got - expected).abs() <= 1e-9 * (start - t_in),
+                    "tick {n}: bed {got} K, hand {expected} K"
+                );
+            }
+            // Three time constants on, the fluid follows the bed down.
+            let fluid = previous.temperature[&bed].value();
+            assert!(fluid < t_in + (start - t_in) * 0.06 && fluid > t_in);
+        }
+
+        /// **`τ = V·ρ_feed/ṁ` by hand**, with `ρ_feed` the mass-weighted harmonic
+        /// mean of the declared densities, and it follows the flow: half the feed,
+        /// twice the time.
+        #[test]
+        fn the_residence_time_follows_the_flow() {
+            let slate = two_cut_slate();
+            let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+            let volume = 2.0;
+            let (mut g, bed, fe, pe) =
+                bed_plant(&feed, Kelvin(500.0), Kelvin(500.0), 4.0e5, volume);
+            let density = 1.0 / (0.5 / FEED_DENSITY + 0.5 / PRODUCT_DENSITY);
+            for mass_flow in [4.0, 2.0] {
+                let states = step(
+                    &mut g,
+                    &slate,
+                    &flows(fe, pe, mass_flow),
+                    &NoRxn,
+                    &NodeStates::default(),
+                    1.0,
+                );
+                let tau = states.bed[&bed]
+                    .residence_time
+                    .expect("a flowing bed has a residence time")
+                    .value();
+                let expected = volume * density / mass_flow;
+                assert!(
+                    (tau - expected).abs() <= 1e-12 * expected,
+                    "τ = {tau} s at {mass_flow} kg/s, by hand {expected} s"
+                );
+            }
+        }
+
+        /// **Zero flow holds the bed**, bit for bit, however hard its chemistry
+        /// would release heat: with nothing flowing nothing reacts into it. The
+        /// fluid standing in it is at the bed's temperature with the products of
+        /// complete conversion (`τ = +∞`), the bed is not HELD, and nothing in the
+        /// tick is NaN. A fire on it then heats it by exactly `F·dt/C`.
+        #[test]
+        fn a_bed_with_no_flow_holds_its_temperature() {
+            let slate = two_cut_slate();
+            let feed = Composition::pure(2, 0);
+            let (start, capacity, dt) = (Kelvin(650.0), 4.0e5, 1.0);
+            let reactions = FirstOrder {
+                k_ref: 0.002,
+                t_ref: 650.0,
+                e_over_r: 15_000.0,
+                h: -3.0e5,
+            };
+            let (mut g, bed, fe, pe) = bed_plant(&feed, Kelvin(600.0), start, capacity, 1.0);
+            let flows = flows(fe, pe, 0.0);
+            let mut previous = NodeStates::default();
+            for _ in 0..10 {
+                previous = step(&mut g, &slate, &flows, &reactions, &previous, dt);
+            }
+            assert_eq!(
+                bed_temperature(&g, bed).value().to_bits(),
+                start.value().to_bits()
+            );
+            let pass = previous.bed[&bed];
+            assert_eq!(pass.reaction_heat.value().to_bits(), 0.0_f64.to_bits());
+            assert!(pass.residence_time.is_none());
+            assert_eq!(previous.temperature[&bed], start);
+            assert_eq!(previous.composition[&bed].fractions(), &[0.0, 1.0]);
+            assert!(!previous.held.contains(&bed));
+
+            let fire = 1.0e4;
+            g.node_mut(bed).heat_input = Watt(fire);
+            let _ = step(&mut g, &slate, &flows, &reactions, &previous, dt);
+            let expected = start.value() + fire * dt / capacity;
+            assert_eq!(bed_temperature(&g, bed).value(), expected);
+        }
+
+        /// **A heat-ABSORBING reaction settles below its feed** — the FCC
+        /// argument of §62.0, as a gate: the bed cools as it reacts, reacts
+        /// slower, and comes to rest where the feed's heat in meets the products'
+        /// heat out and the heat the reaction absorbs,
+        /// `ṁ·cp_A·(T_in − T_ref) = ṁ·f·X(T)·h + ṁ·cp_out(X)·(T − T_ref)`,
+        /// solved here by bisection, independently of the step.
+        #[test]
+        fn a_heat_absorbing_bed_settles_below_its_feed() {
+            let slate = two_cut_slate();
+            let feed = Composition::pure(2, 0);
+            let (t_in, capacity, volume, mass_flow, dt) = (650.0, 4.0e5, 1.0, 2.0, 1.0);
+            let reactions = FirstOrder {
+                k_ref: 0.01,
+                t_ref: 650.0,
+                e_over_r: 15_000.0,
+                h: 2.0e5,
+            };
+            let (mut g, bed, fe, pe) =
+                bed_plant(&feed, Kelvin(t_in), Kelvin(t_in), capacity, volume);
+            let flows = flows(fe, pe, mass_flow);
+            let mut previous = NodeStates::default();
+            for _ in 0..5000 {
+                previous = step(&mut g, &slate, &flows, &reactions, &previous, dt);
+            }
+
+            let tau = volume * FEED_DENSITY / mass_flow;
+            let tref = T_REF.value();
+            let balance = |t: f64| {
+                let x = reactions.conversion(t, tau);
+                let cp_out = (1.0 - x) * FEED_CP + x * PRODUCT_CP;
+                FEED_CP * (t_in - tref) - x * reactions.h - cp_out * (t - tref)
+            };
+            let (mut low, mut high) = (300.0, t_in);
+            assert!(balance(low) > 0.0 && balance(high) < 0.0);
+            for _ in 0..200 {
+                let mid = 0.5 * (low + high);
+                if balance(mid) > 0.0 {
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+            let settled = bed_temperature(&g, bed).value();
+            assert!(
+                settled < t_in - 20.0,
+                "a heat-absorbing bed must settle well below its {t_in} K feed, at {settled} K"
+            );
+            assert!(
+                (settled - low).abs() < 1e-6,
+                "the bed settled at {settled} K; the hand balance has it at {low} K"
+            );
         }
     }
 }

@@ -559,6 +559,26 @@ pub enum NodeDef {
         /// ignores it, the M4.2 kinetics integrate over it.
         tau_s: f64,
     },
+    /// Catalyst-bed reactor whose own heat sets its temperature (M57.1,
+    /// docs/DESIGN.md §62). One feed in, one product out, hydraulically a
+    /// furnace. The bed is a lumped body whose temperature is a STATE; the
+    /// chemistry runs at it over a residence time that follows the flow.
+    ///
+    /// All three keys are REQUIRED, with no default, as a furnace coil's are:
+    /// nothing in the engine derives a bed's mass or its catalyst volume from
+    /// anything else in the file. Admitted only with a reaction model solved
+    /// exactly at every residence time (§62.2), and only in liquid service.
+    BedReactor {
+        /// Heat capacity of the bed — catalyst, internals and the liquid they
+        /// hold [MJ/K]. Must be finite and > 0.
+        bed_heat_capacity_mj_per_k: f64,
+        /// Catalyst volume [m³]: the residence time is this over the feed's
+        /// volumetric flow, `τ = V·ρ/ṁ`. Must be finite and > 0.
+        catalyst_volume_m3: f64,
+        /// The bed's temperature at load [°C]: a STATE, like a furnace's
+        /// `coil_temperature_c`. Finite and above absolute zero.
+        bed_temperature_c: f64,
+    },
 }
 
 /// One `draws = [...]` entry of a `column` node.

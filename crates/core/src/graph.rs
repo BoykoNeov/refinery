@@ -428,6 +428,50 @@ pub enum NodeKind {
         /// `ReactionModel::react`; the M4.2 kinetics integrate over it.
         tau: Seconds,
     },
+    /// Catalyst-bed reactor whose own heat sets its temperature (M57.1,
+    /// docs/DESIGN.md §62): one feed in, one product out, through a lumped bed
+    /// (`CatalystBed`) whose temperature is a STATE.
+    ///
+    /// Hydraulically a furnace — zero-volume fluid, 1-in-1-out, no pressure of
+    /// its own. Thermally the furnace coil's twin (§37) with the flame replaced
+    /// by the chemistry: the reaction runs at the bed's START-of-tick
+    /// temperature over a residence time that follows the flow,
+    /// `τ = V·ρ_feed/ṁ` (§62.2), its released heat goes into the bed, and the
+    /// fluid leaves at the bed's temperature (`ε = 1`, §62.1).
+    ///
+    /// Unlike `Reactor`, nothing is held: a heat-releasing reaction can heat the
+    /// bed into a runaway, and a heat-absorbing one cools it until it settles.
+    /// The loader admits a bed only with a reaction model that is solved exactly
+    /// at every residence time, `+∞` included (§62.2).
+    BedReactor { bed: CatalystBed },
+}
+
+/// A catalyst bed: the catalyst, the internals and the liquid they hold, as one
+/// lumped body at one temperature (M57.1, docs/DESIGN.md §62.1).
+///
+/// No axial profile, no fluid–solid film, no pressure drop, no wall loss
+/// (§62.1, rejected; §62.7, deferred). Its three numbers are declared per bed,
+/// with no default, as a furnace coil's are.
+///
+/// `energy::bed_reactor` integrates its first law exactly across a tick, the
+/// chemistry and the inflow frozen and the outflow linearised:
+///
+/// ```text
+/// C·dT_b/dt = Q + H_in − H_out(T_b),   Q = −ṁ·Δh_rxn(T_b, τ)
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CatalystBed {
+    /// Heat capacity of the bed, `C` [J/K]: catalyst, internals and the
+    /// liquid they hold. Positive.
+    pub heat_capacity: JPerK,
+    /// Catalyst volume, `V` [m³]: the volume the space time `τ = V·ρ/ṁ` is
+    /// quoted against (`1/LHSV`, §62.2). Positive.
+    pub catalyst_volume: CubicMeter,
+    /// Bed temperature, `T_b` [K]: a STATE, set from `bed_temperature_c` at
+    /// load and written back at the end of every tick, so it is present before
+    /// the first tick and reads the END of the last one — exactly
+    /// `FurnaceCoil::temperature`.
+    pub temperature: Kelvin,
 }
 
 /// One draw of a `Column`: the outlet it feeds and the top of its boiling-range
@@ -2687,6 +2731,18 @@ impl PlantGraph {
                      loop to regulate. A column's temperatures are its separation model's \
                      output, and a reactor's outlet is its declared `t_set_c`, already held \
                      exactly (docs/DESIGN.md §21 fork 1)",
+                    self.node(node).name
+                )))
+            }
+            // A bed's temperature IS a state, present from load, so it could be
+            // measured as a tank's is. What a loop or a trip may do with it is
+            // M57.3's to settle (docs/DESIGN.md §62.6), so it is refused until then
+            // rather than admitted by default.
+            (MeasuredVariable::Temperature, NodeKind::BedReactor { .. }) => {
+                Err(SimError::Scenario(format!(
+                    "node '{}' is a catalyst bed: a loop or trip on its temperature is not \
+                     admitted yet — what one does about a bed is settled in M57.3 \
+                     (docs/DESIGN.md §62.6)",
                     self.node(node).name
                 )))
             }

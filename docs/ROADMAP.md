@@ -9124,3 +9124,18 @@ on a halved feed, and a hot branch that survives below a 330 °C feed.
 Slices: M57.1 the bed; M57.2 hydrocracking and `hydrocracker_runaway.toml`;
 M57.3 a trip on the bed; M57.4 quench between two beds; M57.5 the reactor
 screen. No code changed.
+
+### M57.1 — **LANDED** 2026-10-14: the bed
+
+`NodeKind::BedReactor` with a `CatalystBed` whose temperature is a state: the
+chemistry runs at its start-of-tick temperature over `τ = V·ρ_feed/ṁ`, its heat
+goes into the bed, and the fluid leaves at the bed's temperature; the step is
+the furnace coil's exact one. Loader keys `bed_heat_capacity_mj_per_k`,
+`catalyst_volume_m3`, `bed_temperature_c`; a bed refused with any reaction model
+but `none` (until M57.2) and in gas service. Snapshot: the bed on `kind`, plus
+`reaction_heat_w` and `residence_time_s`. DESIGN §62.8.
+
+- Corpus: every plant byte-identical on both fidelities (45 of 45 each).
+  Release property tests pass.
+- Gates: `energy::tests::bed_tests` (5), `bed_reactor_reference.rs` (5).
+  Mutations: nine, nine caught (§62.8).

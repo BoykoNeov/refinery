@@ -326,6 +326,26 @@ pub struct NodeSnapshot {
     /// byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tube_fire_w: Option<f64>,
+    /// The heat a catalyst bed's reaction released into it over the last tick
+    /// [W] (M57.1, docs/DESIGN.md §62.1): `−ṁ·Δh_rxn`, positive when the
+    /// reaction heats the bed, negative when it absorbs. The bed's temperature
+    /// itself is on `kind` (`bed.temperature`).
+    ///
+    /// **Absent, not zero, wherever there is nothing to report**, exactly as
+    /// `flue_loss_w`: every node that is not a bed, and a bed before its first
+    /// tick. A bed with no flow reports `0.0`, which IS computed. Skipped when
+    /// absent, which keeps every plant with no bed byte-identical.
+    ///
+    /// A DIAGNOSTIC, published because a plant's energy books do not close
+    /// without it: the sensible datum does not track chemistry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reaction_heat_w: Option<f64>,
+    /// The residence time a catalyst bed's chemistry ran over in the last tick
+    /// [s] (M57.1, docs/DESIGN.md §62.2): `τ = V·ρ_feed/ṁ`, which follows the
+    /// flow. Absent on every node that is not a bed, before the first tick,
+    /// and at zero flow, where `τ` is infinite.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residence_time_s: Option<f64>,
     /// The trips' stop of this equipment, and whether they will hand it back
     /// (M43, docs/DESIGN.md §48): `{"status":"held","barred_by":[…]}` while a
     /// trip holds it, `{"status":"not_restarted","at_tick":…,"barred_by":[…]}`

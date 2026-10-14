@@ -8,11 +8,11 @@ use refinery_core::energy::T_REF;
 use refinery_core::engine::{Engine, EngineConfig};
 use refinery_core::error::SimError;
 use refinery_core::graph::{
-    Actuator, Blowdown, CascadeSpec, ColumnDraw, ControlAction, ControlLoop, ControlMode,
-    ControlledValue, EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling, LeakRole, LoopId,
-    MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe, PlantGraph,
-    PumpSuction, SetpointRange, TankState, Trip, TripAction, TripDirection, TripId, TripReset,
-    TripState, TubeState, VesselState,
+    Actuator, Blowdown, CascadeSpec, CatalystBed, ColumnDraw, ControlAction, ControlLoop,
+    ControlMode, ControlledValue, EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling,
+    LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe,
+    PlantGraph, PumpSuction, SetpointRange, TankState, Trip, TripAction, TripDirection, TripId,
+    TripReset, TripState, TubeState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -30,9 +30,10 @@ use crate::schema::{
     MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile, TripDef,
 };
 use crate::validate::{
-    plant_phases, require_blowdown_cushion, require_compatible_fidelity, require_declared_iff_used,
-    require_gas_valve_x_t, require_pump_suction_answerable, require_supplies_below_boiling,
-    seed_component_index, validate_node_def, validate_pipe_def, validate_topology,
+    plant_phases, require_bed_reactor_plant, require_blowdown_cushion, require_compatible_fidelity,
+    require_declared_iff_used, require_gas_valve_x_t, require_pump_suction_answerable,
+    require_supplies_below_boiling, seed_component_index, validate_node_def, validate_pipe_def,
+    validate_topology,
 };
 
 /// Build a runnable engine from a scenario. Steps:
@@ -193,6 +194,9 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // is a tick-1 density seed only (see `seed_component_index`).
     let phases = plant_phases(&graph, &slate)?;
     require_gas_valve_x_t(&graph, &phases)?;
+    // A catalyst bed needs a reaction model it can ask at an infinite residence
+    // time, and a liquid to measure that time in (M57.1, docs/DESIGN.md §62.2).
+    require_bed_reactor_plant(&graph, &phases, &scenario.fidelity.reactions)?;
     require_blowdown_cushion(&graph, &phases)?;
     for eid in graph.edge_ids().collect::<Vec<_>>() {
         let (src, _) = graph.endpoints(eid);
@@ -604,6 +608,7 @@ fn resolve_vent_destination(
         | NodeKind::CheckValve { .. }
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
+        | NodeKind::BedReactor { .. }
         | NodeKind::HeatExchanger => {
             "a zero-volume node. The condensate would have to leave again in the same tick \
              by a pressure-driven edge, but a vent's flow is PRESCRIBED and the hydraulic \
@@ -3343,6 +3348,17 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
         NodeDef::Reactor { t_set_c, tau_s } => NodeKind::Reactor {
             t_set: c_to_k(*t_set_c),
             tau: Seconds(*tau_s),
+        },
+        NodeDef::BedReactor {
+            bed_heat_capacity_mj_per_k,
+            catalyst_volume_m3,
+            bed_temperature_c,
+        } => NodeKind::BedReactor {
+            bed: CatalystBed {
+                heat_capacity: JPerK(*bed_heat_capacity_mj_per_k * 1e6),
+                catalyst_volume: CubicMeter(*catalyst_volume_m3),
+                temperature: c_to_k(*bed_temperature_c),
+            },
         },
     })
 }
