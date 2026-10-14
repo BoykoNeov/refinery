@@ -9190,3 +9190,16 @@ bed turns at 400.39 °C, is resettable 31 s after the cut, and settles near
   A quench or dump valve on a branch, a valve closed partway, a stopped pump,
   and a trip on anything else are still admitted. The trap gate now shuts the
   feed by hand. All 48 plants still run on both fidelities.
+
+### M57.4 — **SPECIFIED** 2026-10-14: quench between two beds
+
+DESIGN §62.11. Five decisions, the user's, asked in plain words: the quench is
+the reactor's own product, cooled and recycled through a product drum (hydrogen,
+the real quench, for another session); both the single loop on the quench valve
+and the cascade over a quench-flow loop are admitted; the demo carries a backup
+trip on the second bed, which cuts the preheater; and when the quench stops
+being colder than the oil it joins, the bed's loop freezes in MANUAL and resumes
+by hand. The sign is a temperature, not a topology: `quench_layout` checks the
+layout at load, and `PlantGraph::quench_reading` compares the two temperatures
+at load and on every tick. The prototype: quench shut, the second bed runs away
+to 744 °C and its drum warms past the first bed's outflow inside two hours.

@@ -21968,7 +21968,9 @@ at every slice.
 - **M57.4 — quench.** Two beds with a cold-quench junction between them, and a
   loop that opens the quench as the bed downstream heats. A temperature loop on
   a VALVE, two hops from what it measures, is new: the direction of action and
-  E21's one-hop rule are argued there.
+  E21's one-hop rule are argued there. Settled, §62.11: the quench is cooled
+  product recycled through a drum, the sign is a temperature checked at load
+  and on every tick, and a loop whose quench stops being cold freezes.
 - **M57.5 — the reactor screen**, after the furnace and pump screens.
 
 ### 62.7 Deferred, with what un-defers each
@@ -22267,3 +22269,159 @@ tank or a ring on a bed's line.
 
 **Deferred, added to §62.7's list:** a trip that stops a bed's feed, until a
 stopped bed can lose heat so its reading can fall back under the limit.
+
+### 62.11 Quench between two beds, specified (M57.4)
+
+**Five decisions, the user's (2026-10-14), asked in plain words before any code.**
+
+1. **The quench is the reactor's own product, cooled and recycled** — over cold
+   fresh feed, which was offered first and recommended. Real hydrocrackers
+   quench with cold hydrogen gas; hydrogen stays deferred (§62.7), "for another
+   session", and the cooled product is the liquid stand-in.
+2. **Both arrangements are admitted**: a bed temperature loop on the quench
+   valve itself, and the real plant's two-controller form — the bed's loop
+   setting the target of a flow loop on the quench valve (a cascade, §29).
+3. **The demo carries a backup trip** on the second bed.
+4. **When the quench stops being cold, the bed's loop freezes, and resumes by
+   hand** (below).
+5. **The backup trip cuts the preheater**, M57.3's proven action, and does not
+   open the quench: opening it is exactly the wrong act once the quench has
+   stopped being cold, which is the case the check exists for.
+
+**The plant, prototyped before the note** (probes in `W:\temp\claude\m57_4\`):
+
+    vgo_feed (300 °C) -> feed_valve -> preheater -> bed1 -> mix -> bed2
+      -> product_cooler -> letdown_valve -> product_drum -> rundown_valve -> product
+    product_drum -> quench_pump -> quench_valve -> mix
+
+A recycle through zero-volume nodes only is refused by the heat sweep (§28,
+`energy.rs`), so the recycle must pass a holdup: the product drum, a vented tank,
+its level held by a loop on the rundown valve (a drain, §32). The preheater's
+outlet is held at 369 °C by its own loop (§22): with a fixed duty, the quench's
+back-pressure, which cuts the first bed's flow, would otherwise heat the feed.
+
+Measured on the prototype, both fidelities equal to the printed digit:
+
+- **Quench shut, the second bed runs away**: 407 °C at 20 minutes, 742 °C at
+  60, 744 °C after; the first bed creeps from 381 to 385 °C as the runaway's
+  back-pressure cuts its flow from 49.2 to 43.3 kg/s.
+- **Quench open, the second bed is held below its feed**: a fifth open
+  (3.9 kg/s) gives about 370 °C, half open (8.7 kg/s) 341 °C, settled.
+- **The first bed keeps its margin**: half open for two hours its flow falls to
+  44.5 kg/s and it settles at 384.1 °C.
+- **The drum level holds** near 5 m in every run, the runaway included.
+- **The quench stops being cold in the runaway**: the drum takes the hot
+  product in and warms, 277 °C at an hour, 374 °C at 80 minutes, 422 °C at 100,
+  442 °C at two hours — past the first bed's 385 °C outflow somewhere between
+  80 and 100 minutes. From then on, opening the quench would HEAT the second bed.
+
+**Why the sign is a temperature, not a topology.** Opening the quench mixes more
+of it into the first bed's outflow. The second bed's steady temperature is its
+inlet's plus the heat its reaction releases over its capacity rate. More quench
+lowers the inlet only while the quench is colder than the outflow it joins; it
+always raises the flow and dilutes what reacts, both of which cool. So the loop
+is direct acting (hotter bed, more quench) while the quench is colder than the
+stream it joins — which no walk of the pipes can see, and which a recycle can
+lose mid-run, as the prototype shows. Two checks, each with one owner.
+
+**At load: the layout.** `quench_layout(graph, bed, valve)` in the loader, the
+single owner of "is this valve a quench on this bed", read by the single loop's
+admission and by the cascade's pairing, so the two cannot disagree (the
+`valve_side` precedent, §32):
+
+- the valve's outlet line reaches a `junction`, the MIX, through nothing but
+  pipe (a leak split's junction is pipe, as in `on_bed_line`);
+- the mix has exactly two inlets — the quench's and one other, the MAIN stream —
+  and exactly one outlet, whose line reaches the measured bed through nothing
+  but pipe;
+- walked upstream from the valve, the quench line passes only pumps, check
+  valves, valves, coolers and leak splits, and ends at its ORIGIN: a `tank` or a
+  `source`. A furnace or a heat exchanger on it is refused (either can heat the
+  quench), and so is anything else — a junction where another stream joins, a
+  bed, a reactor, a column, a gas vessel.
+
+**At load and on every tick: the comparison.** `PlantGraph::quench_reading`,
+the single owner, returns the quench's temperature and the temperature of what
+it joins:
+
+- the QUENCH: the quench pipe's stream temperature when the last solve gave it a
+  forward flow; otherwise the origin's own temperature, a state present from
+  load. Never the pipe's when nothing flows: a still pipe keeps the last
+  temperature it carried (160.6 °C in the prototype while the drum reached
+  339 °C). A cooler on the line makes the origin's temperature an overstatement
+  of the quench's while the valve is shut, so the check can freeze the loop
+  early, never late;
+- the MAIN stream: the main inlet pipe's stream temperature when the last solve
+  gave it a forward flow; otherwise the measured bed's own temperature (then the
+  quench is the bed's only feed, and cools it exactly when it is colder than
+  it). Before the first solve both fall back.
+
+**The quench is cold when its temperature is strictly below the main stream's.**
+
+- **At load, a quench that is not cold is refused**, whatever the loop's mode:
+  a plant whose quench would heat its bed on tick 1 is mis-built.
+- **On every tick**, before the loops act, a quench loop in AUTO whose quench is
+  not cold is switched to MANUAL. It moves no equipment: in MANUAL a loop holds
+  its actuator and tracks it (§10 fork 4) — the valve, on a single loop; the flow
+  target, on a cascade primary, whose flow loop goes on holding that flow. It is
+  not a trip: it writes nothing a trip writes, and nothing latches.
+- **It resumes by hand.** `Command::SetControllerMode` to AUTO on a quench loop
+  is refused while its quench, read fresh, is not cold — the latched trip's
+  refusal (§26 fork 4), in this one's words. It never resumes on its own: the
+  two temperatures can hover together, and a loop that switched itself back and
+  forth on them would chatter.
+- **Published on the loop's faceplate**, `ControlSnapshot::quench`: the two
+  temperatures the last check compared, in kelvin. Skipped on every other loop,
+  so no shipped plant's bytes move. "Frozen" is not a field: a quench loop in
+  MANUAL whose quench is not colder than its main stream is frozen, and both
+  facts are already on the faceplate (`drives`' argument, §29 fork 7).
+
+**The admission table, every pairing with a bed.**
+
+| loop | admitted |
+|---|---|
+| bed temperature, on a quench valve | yes — `action = "direct"` declared; absent and `"reverse"` refused |
+| bed temperature, cascade primary over a flow loop on a quench valve's own pipe | yes — `action = "direct"` declared (the cascade's own rule) |
+| bed temperature, on any other valve | refused: not a quench, in `quench_layout`'s words |
+| bed temperature, on a furnace or cooler | refused: a duty upstream of a bed moves it through the bed's chemistry and lag, a sign no slice has argued |
+| bed temperature, cascade primary over a furnace or cooler outlet | refused, the same reason |
+| bed temperature, cascade primary over any other flow loop | refused: not a quench |
+| a bed loop as a cascade SECONDARY | refused: a cascade's inner loop is its fast one, and a bed is the slowest thing on the plant |
+| level, pressure or flow on a bed | refused by `measure`, unchanged |
+
+A temperature loop on a valve that does not measure a bed keeps its §21
+refusal. `check_setpoint` gains a bed's temperature (above absolute zero), so
+`Command::SetSetpoint` and a cascade's range check can answer for it.
+
+**The demo**, `scenarios/hydrocracker_quench.toml`: the prototype's plant on a
+369 °C preheat, the second bed starting near its feed's temperature with the
+quench shut, so the plant is born heading for the runaway and the loop has to
+catch it. Two loops in cascade, `bed2_temperature` (direct) over `quench_flow`
+(reverse, on the quench line); the preheater's outlet loop; the drum's level
+loop; a check valve on the quench line; and `bed2_high`, a trip at 400 °C on
+the second bed cutting the preheater, reset by hand. Tuning and the setpoint are
+measured with the code, in a sweep, and recorded with the build.
+
+**Gates**, `crates/scenarios/tests/quench_reference.rs`, both fidelities:
+
+1. the loop catches the runaway and holds the second bed near its setpoint, the
+   valve well short of fully open, the trip never firing;
+2. the loop-off twin, derived in the test, runs to the trip; and with the trip
+   removed too, runs away, and its drum warms past the main stream — the
+   faceplate reads the quench not cold, and AUTO is refused;
+3. **the freeze**: the product cooler turned down by command, the drum warms,
+   and on the first tick the quench is not colder than the main stream the loop
+   is switched to MANUAL, holding its output, the faceplate showing both
+   temperatures; AUTO refused while it stands, admitted once the cooler is
+   restored and the drum is cold again;
+4. the single-loop form on the same plant, admitted and holding;
+5. every refusing cell of the table and of `quench_layout`, each on a substring
+   of its own message, and the load-time refusal of a quench not cold;
+6. the faceplate's `quench` absent on every other loop; the corpus
+   byte-identical on both fidelities.
+
+**Not caught, said here.** A stopped quench pump conducts (M22), so the main
+stream could push back through it into the drum: the quench pipe's flow turns
+negative, the reading falls back to the drum's temperature, and the loop may
+open a valve that lets the hot main stream escape to the drum. A check valve on
+the quench line (§33) is the plant's answer, and the demo carries one.
