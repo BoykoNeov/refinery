@@ -1833,14 +1833,14 @@ fn build_trips(
 ///
 /// Walks out of the bed both ways by declared pipe direction, stepping through
 /// each node the line passes straight through — one pipe in, one pipe out — so a
-/// pump, a furnace or another bed on the way does not end it. A leak split's
+/// pump, a furnace, one side of a heat exchanger or another bed on the way does
+/// not end it. A leak split's
 /// dormant orifice is not a branch: every furnace's outlet carries one (M37,
 /// §42), and counting it would hide the feed valve ahead of a preheater. The
 /// walk stops at a branch (a quench or dump line joins or leaves there, and the
 /// bed keeps a flow past a shut valve beyond it), at a source or sink, and at a
 /// holdup: a tank between the valve and the bed keeps feeding the bed until it
-/// drains, which is a different story from the trap. A heat exchanger has two
-/// pipes each way, so a walk ends there too.
+/// drains, which is a different story from the trap.
 fn on_bed_line(graph: &PlantGraph, bed: NodeId, valve: NodeId) -> bool {
     let line_neighbours = |node: NodeId, upstream: bool| -> Vec<NodeId> {
         graph

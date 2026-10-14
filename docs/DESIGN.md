@@ -22202,20 +22202,19 @@ coil that cools in a few minutes.
   line** is refused at load, in words that explain the trap (`build_trips`,
   `on_bed_line`). "Own line" is walked out of the bed both ways by declared
   pipe direction, through every node with one pipe in and one pipe out — a
-  pump, a furnace, another bed — so all the bed's oil passes the valve. A leak
+  pump, a furnace, one side of a heat exchanger, another bed — so all the bed's
+  oil passes the valve. A leak
   split's dormant orifice is not a branch (every furnace outlet carries one,
   §42; counting it would hide the feed valve ahead of a preheater). The walk
   stops at a branch, a source or sink, and a holdup (a tank, vessel or column:
-  it keeps feeding the bed after the valve shuts); a heat exchanger has two
-  pipes each way, so it ends a walk too. **Still admitted:** a quench or dump
+  it keeps feeding the bed after the valve shuts). **Still admitted:** a quench or dump
   valve on a branch (a side line still feeds the bed, or the valve trips open);
   a valve closed only partway (some oil flows and carries heat away); a stopped
   pump (pressure still pushes oil through it); and any trip watching something
   else that shuts the feed, a low-flow trip say — that reading can recover and
   the trip be reset, though the bed sits hot. **Not caught, said here:** a trip
   that shuts BOTH a feed beyond a junction and the quench joining it — each
-  valve alone leaves the bed a flow; and a valve beyond a heat exchanger on the
-  bed's stream.
+  valve alone leaves the bed a flow.
 - `scenarios/hydrocracker_trip.toml`: the runaway file's bed behind a fired
   preheater, `vgo_feed` (300 °C) → `feed_valve` → `preheater` → `bed` →
   `product`. A clean coil (UA twice the feed's 159.6 kW/K, 1 MJ/K per rated MW)
