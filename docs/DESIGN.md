@@ -21983,9 +21983,10 @@ at every slice.
 - **Catalyst deactivation; wall heat loss; bed pressure drop.** As §5 and §37
   defer their equivalents.
 - **A trip that stops a bed's feed** (added by M57.3, §62.10): a stopped bed
-  holds its temperature exactly, so such a trip could never be reset.
+  holds its temperature exactly, so such a trip could never be reset. Refused
+  at load when it fully shuts a valve on the bed's own line (§62.10).
   Un-defer: a way for a stopped bed to lose heat — wall loss, or the hydrogen
-  sweep a real reactor keeps flowing.
+  sweep a real reactor keeps flowing — and lift that refusal with it.
 - **A sourced activation energy and heat release**, replacing the chosen ones.
   Un-defer: a reachable paper tabulating them for this network.
 
@@ -22195,11 +22196,26 @@ coil that cools in a few minutes.
   coil's refusal: admitting the reading in `measure` would otherwise have
   admitted loops too, and a loop regulating a bed through the equipment upstream
   of it is M57.4's to argue (§62.6).
-- **No new trip action and no new refusal.** A bed trip may name any action a
-  trip may (a pump, a valve, a furnace). A trip that shuts a bed's feed is not
-  refused at load: which valve feeds a bed is a traversal the loader does not
-  do, and a valve on a bed trip may be a quench or a dump valve as well as a
-  feed. What it does is gated (gate 4 below) and said here.
+- **No new trip action; one new refusal, the trap** (added the same day, on
+  the user's go-ahead). A bed trip may name any action a trip may (a pump, a
+  valve, a furnace), except one: **a valve at `position = 0.0` on the bed's own
+  line** is refused at load, in words that explain the trap (`build_trips`,
+  `on_bed_line`). "Own line" is walked out of the bed both ways by declared
+  pipe direction, through every node with one pipe in and one pipe out — a
+  pump, a furnace, another bed — so all the bed's oil passes the valve. A leak
+  split's dormant orifice is not a branch (every furnace outlet carries one,
+  §42; counting it would hide the feed valve ahead of a preheater). The walk
+  stops at a branch, a source or sink, and a holdup (a tank, vessel or column:
+  it keeps feeding the bed after the valve shuts); a heat exchanger has two
+  pipes each way, so it ends a walk too. **Still admitted:** a quench or dump
+  valve on a branch (a side line still feeds the bed, or the valve trips open);
+  a valve closed only partway (some oil flows and carries heat away); a stopped
+  pump (pressure still pushes oil through it); and any trip watching something
+  else that shuts the feed, a low-flow trip say — that reading can recover and
+  the trip be reset, though the bed sits hot. **Not caught, said here:** a trip
+  that shuts BOTH a feed beyond a junction and the quench joining it — each
+  valve alone leaves the bed a flow; and a valve beyond a heat exchanger on the
+  bed's stream.
 - `scenarios/hydrocracker_trip.toml`: the runaway file's bed behind a fired
   preheater, `vgo_feed` (300 °C) → `feed_valve` → `preheater` → `bed` →
   `product`. A clean coil (UA twice the feed's 159.6 kW/K, 1 MJ/K per rated MW)
@@ -22216,18 +22232,23 @@ at 400.39 °C, is under its limit (resettable) at the end of tick 4 008, 31 s
 after the cut, and settles onto its feed: 300.52 °C at thirty minutes. The
 untripped twin is at 748.2 °C by then.
 
-**Gates.** `scenarios/tests/bed_trip_reference.rs` (5): on both fidelities, the
+**Gates.** `scenarios/tests/bed_trip_reference.rs` (6): on both fidelities, the
 trip watches `{"node": bed}` and its published reading is the bed's state at the
 end of the tick before, bit for bit, from tick 1; bit-identical to its twin until
 the cut; fires on tick 3 698 with zero duty on that tick's snapshot and the feed
 flowing; the bed peaks under 401 °C and ends under 301 °C at thirty minutes,
 still latched, while the twin passes 740 °C; a reset is refused while the bed is
 at or over 400 °C and admitted on the first look under it, within two minutes,
-relighting nothing, and the bed keeps falling; **the design not shipped** — the
-same trip also shutting `feed_valve` — gives exactly zero feed and a bed held
-bit for bit at the reading that fired it, with every reset refused, for ten
-minutes of looking; a bed trip on level or pressure is refused with `measure`'s
-reason. `bed_reactor_reference.rs`'s trip refusal became a loop refusal.
+relighting nothing, and the bed keeps falling; **the trap** — the shipped
+trip with `feed_valve` shut by hand on its tick (the trip that shut it is now
+refused) — gives exactly zero feed and a bed held bit for bit at the reading
+that fired it, with every reset refused, for ten minutes of looking; a bed trip
+on level or pressure is refused with `measure`'s reason; **the trap's refusal**
+— a bed trip shutting `feed_valve` (behind the preheater's leak split) or an
+outlet valve between bed and product is refused, naming the trip and the valve,
+while one shutting a quench valve that joins at a junction, or holding
+`feed_valve` a tenth open, loads. `bed_reactor_reference.rs`'s trip refusal
+became a loop refusal.
 
 **Mutations: four; three caught, one equivalent** — the bed read as the fluid
 leaving it (every engine-driven gate: the plant no longer loads), the same
@@ -22237,6 +22258,13 @@ reading, and the reset and trap gates), the loop refusal removed
 `solved_only` set survives, and changes nothing: that set only excuses an ABSENT
 reading on the first pass, and a bed's is never absent, so the trip compares on
 tick 1 either way.
+
+**Mutations on the trap's refusal: four, all caught by gate 6** — the leak
+orifice counted as a branch (the shut feed loads), the walk run upstream only
+(the shut outlet loads), a branch not ending the walk (the shut quench is
+refused), and any closing refused, not only a full one (the tenth-open valve is
+refused). The holdup stop and the ring guard are not gated: no fixture puts a
+tank or a ring on a bed's line.
 
 **Deferred, added to §62.7's list:** a trip that stops a bed's feed, until a
 stopped bed can lose heat so its reading can fall back under the limit.

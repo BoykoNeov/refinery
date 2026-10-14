@@ -1762,6 +1762,28 @@ fn build_trips(
                              [0, 1]: a valve's opening is a fraction"
                         )));
                     }
+                    // The bed's trap (M57.3, docs/DESIGN.md §62.10): a bed at zero
+                    // flow holds its temperature exactly, so a bed trip that shuts
+                    // the bed's only flow could never be reset.
+                    if let MeasurementPoint::Node(bed) = point {
+                        if matches!(graph.node(bed).kind, NodeKind::BedReactor { .. })
+                            && position == 0.0
+                            && on_bed_line(graph, bed, node)
+                        {
+                            return Err(SimError::Scenario(format!(
+                                "{owner} watches catalyst bed '{point_name}' and shuts valve \
+                                 '{name}', which is on the bed's own line: all the oil through \
+                                 the bed passes it. A bed with no flow holds its temperature \
+                                 exactly — no fresh oil, so no reaction heat, and no wall to \
+                                 lose heat through (docs/DESIGN.md §62.7) — so the trip would \
+                                 hold the bed at the reading that fired it, at or past its \
+                                 limit, and refuse every reset for as long as anyone waits \
+                                 (§62.10). Cut the heat ahead of the bed and leave the oil \
+                                 flowing to carry it away, or close the valve only partway; a \
+                                 quench or dump valve on a branch of the line is admitted"
+                            )));
+                        }
+                    }
                     if let Some((_, other, other_trip)) = valve_positions
                         .iter()
                         .find(|(v, p, _)| *v == node && *p != position)
@@ -1804,6 +1826,57 @@ fn build_trips(
         });
     }
     build_restart_permissives(graph, defs)
+}
+
+/// Whether `valve` is on `bed`'s own single line: every drop of the bed's flow
+/// passes it, so shutting it stops the bed (M57.3, docs/DESIGN.md §62.10).
+///
+/// Walks out of the bed both ways by declared pipe direction, stepping through
+/// each node the line passes straight through — one pipe in, one pipe out — so a
+/// pump, a furnace or another bed on the way does not end it. A leak split's
+/// dormant orifice is not a branch: every furnace's outlet carries one (M37,
+/// §42), and counting it would hide the feed valve ahead of a preheater. The
+/// walk stops at a branch (a quench or dump line joins or leaves there, and the
+/// bed keeps a flow past a shut valve beyond it), at a source or sink, and at a
+/// holdup: a tank between the valve and the bed keeps feeding the bed until it
+/// drains, which is a different story from the trap. A heat exchanger has two
+/// pipes each way, so a walk ends there too.
+fn on_bed_line(graph: &PlantGraph, bed: NodeId, valve: NodeId) -> bool {
+    let line_neighbours = |node: NodeId, upstream: bool| -> Vec<NodeId> {
+        graph
+            .edge_ids()
+            .filter(|&e| !matches!(graph.pipe(e).leak, LeakRole::Orifice { .. }))
+            .filter_map(|e| match graph.endpoints(e) {
+                (from, to) if upstream && to == node => Some(from),
+                (from, to) if !upstream && from == node => Some(to),
+                _ => None,
+            })
+            .collect()
+    };
+    [true, false].into_iter().any(|upstream| {
+        let mut at = bed;
+        let mut visited = vec![bed];
+        loop {
+            let (inlets, outlets) = (line_neighbours(at, true), line_neighbours(at, false));
+            let (&[before], &[after]) = (inlets.as_slice(), outlets.as_slice()) else {
+                return false;
+            };
+            let step = if upstream { before } else { after };
+            if step == valve {
+                return true;
+            }
+            if visited.contains(&step)
+                || matches!(
+                    graph.node(step).kind,
+                    NodeKind::Tank(_) | NodeKind::Vessel(_) | NodeKind::Column { .. }
+                )
+            {
+                return false;
+            }
+            visited.push(step);
+            at = step;
+        }
+    })
 }
 
 /// Resolve each trip's `restart_permissives` to trip ids (M44,

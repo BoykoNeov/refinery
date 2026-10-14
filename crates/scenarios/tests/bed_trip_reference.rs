@@ -12,7 +12,9 @@
 //! - **stopping the feed would trap it.** At zero flow a bed holds its
 //!   temperature exactly (§62.8; no wall loss, §62.7), so a trip that shut the
 //!   feed would hold the bed at the reading that fired it, forever, and refuse
-//!   every reset. That design is run here to show why it was not shipped.
+//!   every reset. The loader refuses a bed trip that fully shuts a valve on the
+//!   bed's own line (gate 6), so the trap is shown with the feed shut by hand
+//!   (gate 4).
 //!
 //! A loop on a bed stays refused (M57.4's); that refusal is in
 //! `bed_reactor_reference.rs`, beside the bed's other refusals.
@@ -299,25 +301,28 @@ fn the_bed_trip_resets_once_the_bed_cools_and_relights_nothing() {
 
 // ------------------------------------------------------------------- gate 4
 
-/// **Gate 4, on both fidelities. The design NOT shipped: a trip that also shuts
-/// the feed traps the bed at the reading that fired it.**
+/// **Gate 4, on both fidelities. Why a bed trip may not shut the bed's line: a
+/// stopped bed is trapped at the reading that fired the trip.**
 ///
-/// The demo's trip with `feed_valve` shut beside the cut. From the trip's tick
-/// the bed's feed is exactly zero, and a bed at zero flow holds its temperature
-/// bit for bit (§62.8): no reaction heat (no fresh oil) and no heat lost
-/// (no wall, §62.7). So the bed sits at the very value the trip fired on, over
-/// its limit, and every reset is refused, for as long as anyone waits. This is
-/// why §62.10 cuts the fire and leaves the oil flowing.
+/// The loader refuses that trip (gate 6), so the trap is shown here the only
+/// way left to reach it: the shipped trip cuts the fire, and a person shuts
+/// `feed_valve` by hand on the trip's own tick. From that tick the bed's feed is
+/// exactly zero, and a bed at zero flow holds its temperature bit for bit
+/// (§62.8): no reaction heat (no fresh oil) and no heat lost (no wall, §62.7).
+/// So the bed sits at the very value the trip fired on, over its limit, and
+/// every reset is refused, for as long as anyone waits.
 #[test]
-fn a_trip_that_shuts_the_feed_traps_the_bed_over_its_limit() {
-    let trapping = swap(
-        DEMO,
-        r#"actions = [{ furnace = "preheater" }]"#,
-        r#"actions = [{ furnace = "preheater" }, { valve = "feed_valve", position = 0.0 }]"#,
-    );
+fn a_shut_feed_traps_the_bed_over_its_limit() {
     for solver in ["newton", "simple"] {
-        let mut engine = build(&with_solver(&trapping, solver));
+        let mut engine = build(&with_solver(DEMO, solver));
         run(&mut engine, DEMO_TRIP_TICK - 1);
+        let feed_valve = engine.graph.find_node("feed_valve").expect("a feed valve");
+        engine
+            .apply(Command::SetValveOpening {
+                node: feed_valve,
+                opening: 0.0,
+            })
+            .unwrap_or_else(|e| panic!("{solver}: shutting the feed by hand: {e}"));
         let fired_on = bed_k(&engine);
         tick(&mut engine);
         assert!(engine.snapshot().trips[0].state.is_tripped(), "{solver}");
@@ -367,4 +372,117 @@ fn a_bed_trip_on_anything_but_its_temperature_is_refused() {
             "{variable}: {err}"
         );
     }
+}
+
+// ------------------------------------------------------------------- gate 6
+
+/// The demo's trip with one more action.
+fn demo_trip_also(action: &str) -> String {
+    swap(
+        DEMO,
+        r#"actions = [{ furnace = "preheater" }]"#,
+        &format!(r#"actions = [{{ furnace = "preheater" }}, {action}]"#),
+    )
+}
+
+/// **Gate 6. A bed trip that fully shuts a valve on the bed's own line is
+/// refused at load; one on a branch, or one closing only partway, is not.**
+///
+/// The trap gate 4 shows, refused before it can run. `feed_valve` sits ahead of
+/// the preheater, past the leak split the loader puts on every furnace outlet
+/// (§42), so the walk must step over that split's dormant orifice to see it. An
+/// outlet valve between the bed and its product is the same trap from the other
+/// side. A quench valve joining the line at a junction is admitted shut: the
+/// feed still reaches the bed past it. So is `feed_valve` held at a tenth open:
+/// some oil still flows, and it carries the heat away.
+#[test]
+fn a_bed_trip_that_shuts_the_beds_own_line_is_refused() {
+    let err = refusal(&demo_trip_also(
+        r#"{ valve = "feed_valve", position = 0.0 }"#,
+    ));
+    assert!(
+        err.contains("trip 'bed_high'")
+            && err.contains("valve 'feed_valve'")
+            && err.contains("bed's own line")
+            && err.contains("refuse every reset"),
+        "the shut feed: {err}"
+    );
+
+    let with_outlet_valve = swap(
+        &swap(DEMO, r#"to = "product""#, r#"to = "outlet_valve""#),
+        "[nodes.product]",
+        r#"[nodes.outlet_valve]
+type = "valve"
+kv = 110.0
+opening = 1.0
+
+[[pipes]]
+name = "outlet_line"
+from = "outlet_valve"
+to = "product"
+length_m = 5.0
+diameter_m = 0.25
+
+[nodes.product]"#,
+    );
+    build(&with_outlet_valve);
+    let err = refusal(&swap(
+        &with_outlet_valve,
+        r#"actions = [{ furnace = "preheater" }]"#,
+        r#"actions = [{ furnace = "preheater" }, { valve = "outlet_valve", position = 0.0 }]"#,
+    ));
+    assert!(
+        err.contains("trip 'bed_high'") && err.contains("valve 'outlet_valve'"),
+        "the shut outlet: {err}"
+    );
+
+    let with_quench = swap(
+        &swap(DEMO, r#"to = "bed""#, r#"to = "mix""#),
+        "[nodes.product]",
+        r#"[nodes.quench]
+type = "source"
+pressure_bar = 8.0
+temperature_c = 300.0
+composition = { vgo = 1.0 }
+
+[nodes.quench_valve]
+type = "valve"
+kv = 20.0
+opening = 1.0
+
+[nodes.mix]
+type = "junction"
+
+[[pipes]]
+name = "quench_supply"
+from = "quench"
+to = "quench_valve"
+length_m = 5.0
+diameter_m = 0.1
+
+[[pipes]]
+name = "quench_line"
+from = "quench_valve"
+to = "mix"
+length_m = 5.0
+diameter_m = 0.1
+
+[[pipes]]
+name = "mixed_line"
+from = "mix"
+to = "bed"
+length_m = 5.0
+diameter_m = 0.25
+
+[nodes.product]"#,
+    );
+    build(&swap(
+        &with_quench,
+        r#"actions = [{ furnace = "preheater" }]"#,
+        r#"actions = [{ furnace = "preheater" }, { valve = "quench_valve", position = 0.0 }]"#,
+    ));
+
+    build(&demo_trip_also(
+        r#"{ valve = "feed_valve", position = 0.1 }"#,
+    ));
 }

@@ -9179,6 +9179,14 @@ bed turns at 400.39 °C, is resettable 31 s after the cut, and settles near
 
 - Corpus: the 47 shipped plants byte-identical on both fidelities, plus the
   new one. Release property tests pass.
-- Gates: `bed_trip_reference.rs` (5), the shut-feed trap among them;
+- Gates: `bed_trip_reference.rs` (6), the shut-feed trap among them;
   `bed_reactor_reference.rs`'s trip refusal became a loop refusal. Mutations:
-  four, three caught and one equivalent (§62.10).
+  four, three caught and one equivalent; then four on the trap's refusal, all
+  caught (§62.10).
+- Added the same day, on the user's go-ahead: **the trap refused at load.** A
+  bed trip that fully shuts a valve on the bed's own line — walked both ways
+  from the bed through one-in-one-out nodes, over a furnace's leak split, to a
+  branch, a source or sink, or a holdup — is refused, in words that explain why.
+  A quench or dump valve on a branch, a valve closed partway, a stopped pump,
+  and a trip on anything else are still admitted. The trap gate now shuts the
+  feed by hand. All 48 plants still run on both fidelities.
