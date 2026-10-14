@@ -11,8 +11,8 @@ use refinery_core::graph::{
     Actuator, Blowdown, CascadeSpec, CatalystBed, ColumnDraw, ControlAction, ControlLoop,
     ControlMode, ControlledValue, EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling,
     LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe,
-    PlantGraph, PumpSuction, SetpointRange, TankState, Trip, TripAction, TripDirection, TripId,
-    TripReset, TripState, TubeState, VesselState,
+    PlantGraph, PumpSuction, QuenchCheck, QuenchReading, SetpointRange, TankState, Trip,
+    TripAction, TripDirection, TripId, TripReset, TripState, TubeState, VesselState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -732,21 +732,50 @@ fn build_controls(
                 graph.node(furnace).name
             )));
         }
-        // A bed's temperature is a state a TRIP may watch (M57.3, docs/DESIGN.md
-        // §62.10). A loop on it would regulate the bed through some valve or duty
-        // upstream, and which way that acts, and through how many nodes, is M57.4's
-        // to argue (§62.6), so it is refused here rather than admitted by `measure`.
-        if let MeasurementPoint::Node(bed) = point {
-            if matches!(graph.node(bed).kind, NodeKind::BedReactor { .. }) {
-                return Err(SimError::Scenario(format!(
-                    "control loop '{}' measures catalyst bed '{}'. A bed's temperature is \
-                     watched by TRIPS (docs/DESIGN.md §62.10); a loop regulating it through \
-                     equipment upstream of the bed is not admitted yet (M57.4, §62.6)",
-                    def.name,
-                    graph.node(bed).name
-                )));
+        // **A loop on a catalyst bed's temperature is admitted on a QUENCH valve
+        // only** (M57.4, docs/DESIGN.md §62.11): a valve mixing a cold stream into
+        // the bed's feed, in the one layout `quench_layout` owns, and its sign
+        // held by the quench check at load and on every tick. A cascade primary
+        // on a bed is checked by `cascade_pairing`, against its secondary's
+        // valve. A level, pressure or flow on a bed is refused by `measure`.
+        let quench = match (point, &def.actuator) {
+            (MeasurementPoint::Node(bed), ActuatorDef::Node(actuator_name))
+                if variable == MeasuredVariable::Temperature
+                    && matches!(graph.node(bed).kind, NodeKind::BedReactor { .. }) =>
+            {
+                match graph.find_node(actuator_name) {
+                    Some(valve) if matches!(graph.node(valve).kind, NodeKind::Valve { .. }) => {
+                        Some(quench_layout(graph, bed, valve).map_err(|why| {
+                            SimError::Scenario(format!(
+                                "control loop '{}' holds catalyst bed '{}' with valve '{}', \
+                                 which is not a quench on that bed: {why}. A loop on a bed's \
+                                 temperature acts through a quench and nothing else \
+                                 (docs/DESIGN.md §62.11)",
+                                def.name,
+                                graph.node(bed).name,
+                                graph.node(valve).name
+                            ))
+                        })?)
+                    }
+                    Some(duty)
+                        if matches!(
+                            graph.node(duty).kind,
+                            NodeKind::Furnace { .. } | NodeKind::Cooler { .. }
+                        ) =>
+                    {
+                        return Err(bed_duty_refusal(
+                            &def.name,
+                            &graph.node(bed).name,
+                            &graph.node(duty).name,
+                        ))
+                    }
+                    // Unknown, or any other kind: the pairing table below
+                    // refuses it in the words it uses for every temperature loop.
+                    _ => None,
+                }
             }
-        }
+            _ => None,
+        };
         let point_name = graph.point_name(point).to_owned();
 
         // The measured node must be able to answer for the variable. Asking the
@@ -926,6 +955,22 @@ fn build_controls(
                         }
                         Some(max)
                     }
+                    // A quench valve on a catalyst bed: the one process flow whose
+                    // sign is argued (M57.4, docs/DESIGN.md §62.11), by the layout
+                    // above and the quench check. Its action is held to direct
+                    // below.
+                    (MeasuredVariable::Temperature, NodeKind::Valve { .. }) if quench.is_some() => {
+                        if def.max_duty_mw.is_some() {
+                            return Err(SimError::Scenario(format!(
+                                "control loop '{}' declares `max_duty_mw` on a valve actuator. \
+                                 That key is a DUTY actuator's range — a cooler's or a \
+                                 furnace's — and a valve's opening is already a fraction, so \
+                                 the number would be read by nothing (docs/DESIGN.md §21 fork 3)",
+                                def.name
+                            )));
+                        }
+                        None
+                    }
                     // **Refused with a physical reason and not ruled out**: a coolant
                     // valve is the real-world temperature actuator, but this engine's
                     // cooler is a fixed duty with no coolant side, so a valve could only
@@ -1033,7 +1078,32 @@ fn build_controls(
                     )?;
                 }
                 let flow_loop = variable == MeasuredVariable::Flow;
+                let quench_loop = quench.is_some();
                 match (&graph.node(actuator).kind, action, def.action.is_some()) {
+                    // A quench is DIRECT acting (M57.4, docs/DESIGN.md §62.11): a
+                    // hotter bed opens it wider. Declared, never defaulted — the
+                    // sign rests on the quench being cold, which the file's reader
+                    // should see stated.
+                    (NodeKind::Valve { .. }, ControlAction::Direct, false) if quench_loop => {
+                        return Err(SimError::Scenario(format!(
+                            "control loop '{}' holds a catalyst bed with quench valve '{}' and \
+                             declares no `action`. More of a cold quench LOWERS the bed's \
+                             temperature, so this loop is direct acting, and that must be \
+                             declared rather than defaulted: add `action = \"direct\"` \
+                             (docs/DESIGN.md §62.11)",
+                            def.name, def.actuator
+                        )))
+                    }
+                    (NodeKind::Valve { .. }, ControlAction::Reverse, _) if quench_loop => {
+                        return Err(SimError::Scenario(format!(
+                            "control loop '{}' declares `action = \"reverse\"` on quench valve \
+                             '{}'. A reverse loop's output must RAISE its measurement as it \
+                             rises, and more of a cold quench lowers the bed's temperature: \
+                             this loop would shut the quench as the bed ran away. Declare \
+                             `action = \"direct\"` (docs/DESIGN.md §62.11)",
+                            def.name, def.actuator
+                        )))
+                    }
                     (NodeKind::Valve { .. }, ControlAction::Direct, false) if flow_loop => {
                         return Err(SimError::Scenario(format!(
                             "control loop '{}' holds the flow through valve '{}' and declares no \
@@ -1381,6 +1451,11 @@ fn build_controls(
             Some(hold) => Some(on_pump_stop(graph, def, actuator, hold)?),
         };
 
+        let last_quench = match &quench {
+            None => None,
+            Some(check) => Some(cold_at_load(graph, &def.name, check)?),
+        };
+
         graph.add_control(ControlLoop {
             name: def.name.clone(),
             measurement_point: point,
@@ -1395,9 +1470,195 @@ fn build_controls(
             last_output,
             saturated: None,
             on_pump_stop,
+            quench,
+            last_quench,
         });
     }
     link_cascades(graph, defs)
+}
+
+/// The quench check at load (M57.4, docs/DESIGN.md §62.11): a quench not
+/// colder than what it joins would heat its bed on tick 1, so the plant is
+/// refused, whatever the loop's mode. Returns the reading the loop is born
+/// holding — before any solve, the origin's temperature against the bed's.
+fn cold_at_load(
+    graph: &PlantGraph,
+    loop_name: &str,
+    check: &QuenchCheck,
+) -> Result<QuenchReading, SimError> {
+    let reading = graph.quench_reading(check, None)?;
+    if !reading.is_cold() {
+        return Err(SimError::Scenario(format!(
+            "control loop '{loop_name}' holds catalyst bed '{}' with a quench from '{}' at {:.2} \
+             °C, which is not colder than the bed's {:.2} °C at load. More of it would heat the \
+             bed, not cool it, from the first tick (docs/DESIGN.md §62.11)",
+            graph.node(check.bed).name,
+            graph.node(check.origin).name,
+            reading.quench_k.value() - 273.15,
+            reading.joins_k.value() - 273.15
+        )));
+    }
+    Ok(reading)
+}
+
+/// The refusal of a loop on a catalyst bed that writes a duty (M57.4,
+/// docs/DESIGN.md §62.11), single and cascade alike.
+fn bed_duty_refusal(loop_name: &str, bed: &str, unit: &str) -> SimError {
+    SimError::Scenario(format!(
+        "control loop '{loop_name}' holds catalyst bed '{bed}' through the duty of '{unit}'. A \
+         duty upstream of a bed moves it only through the bed's chemistry and its slow heat \
+         capacity, a sign no slice has argued; a loop on a bed acts through a quench valve, and \
+         a heater's own outlet is held by a loop on that outlet (docs/DESIGN.md §62.11)"
+    ))
+}
+
+/// Whether `valve` is a QUENCH on `bed` (M57.4, docs/DESIGN.md §62.11), and if
+/// so, the check that holds its sign. **The single owner of "is this a
+/// quench"**: a single loop's admission and a cascade's pairing both ask it, so
+/// the two cannot disagree about one valve (the `valve_side` precedent, §32).
+///
+/// By declared pipe direction, a leak split's junction and dormant orifice
+/// counting as pipe (`on_bed_line`'s rule):
+/// - the valve's outlet line reaches a `junction`, the MIX;
+/// - the mix has exactly two inlets, the quench's and the MAIN stream's, and one
+///   outlet, whose line reaches `bed`;
+/// - upstream of the valve the line passes only pumps, check valves, valves and
+///   coolers, and starts at a `tank` or a `source`: its ORIGIN. A furnace or a
+///   heat exchanger could heat the quench; anything else is refused too.
+///
+/// `Err` carries the reason, in words a file's author can act on.
+fn quench_layout(graph: &PlantGraph, bed: NodeId, valve: NodeId) -> Result<QuenchCheck, String> {
+    let line = |node: NodeId, upstream: bool| -> Vec<EdgeId> {
+        graph
+            .edge_ids()
+            .filter(|&e| !matches!(graph.pipe(e).leak, LeakRole::Orifice { .. }))
+            .filter(|&e| {
+                let (from, to) = graph.endpoints(e);
+                if upstream {
+                    to == node
+                } else {
+                    from == node
+                }
+            })
+            .collect()
+    };
+    let name = |node: NodeId| graph.node(node).name.as_str();
+    // A junction with one pipe in and one out is a leak split: pipe.
+    let is_split = |node: NodeId| {
+        matches!(graph.node(node).kind, NodeKind::Junction)
+            && line(node, true).len() == 1
+            && line(node, false).len() == 1
+    };
+
+    // Downstream from the valve, through splits, to the mix.
+    let mut at = valve;
+    let (quench_pipe, mix) = loop {
+        let &[out] = line(at, false).as_slice() else {
+            return Err(format!(
+                "'{}' does not have exactly one outlet pipe",
+                name(at)
+            ));
+        };
+        let next = graph.endpoints(out).1;
+        if is_split(next) {
+            at = next;
+            continue;
+        }
+        if !matches!(graph.node(next).kind, NodeKind::Junction) {
+            return Err(format!(
+                "its outlet line reaches '{}' without joining another stream at a junction; a \
+                 quench mixes into the bed's feed at a junction",
+                name(next)
+            ));
+        }
+        break (out, next);
+    };
+    let inlets = line(mix, true);
+    let &[first, second] = inlets.as_slice() else {
+        return Err(format!(
+            "junction '{}' has {} inlet pipes, and a quench's mix has exactly two: the quench \
+             and the stream it joins",
+            name(mix),
+            inlets.len()
+        ));
+    };
+    let main_pipe = if first == quench_pipe { second } else { first };
+    let mut at = mix;
+    loop {
+        let outlets = line(at, false);
+        let &[out] = outlets.as_slice() else {
+            return Err(format!(
+                "junction '{}' has {} outlet pipes, and a quench's mix has exactly one, to the bed",
+                name(at),
+                outlets.len()
+            ));
+        };
+        let next = graph.endpoints(out).1;
+        if next == bed {
+            break;
+        }
+        if !is_split(next) {
+            return Err(format!(
+                "the outlet line of junction '{}' reaches '{}', not the bed: a quench's mix feeds \
+                 the bed it cools, through nothing but pipe",
+                name(mix),
+                name(next)
+            ));
+        }
+        at = next;
+    }
+
+    // Upstream from the valve to the quench's origin.
+    let mut at = valve;
+    let mut visited = vec![valve];
+    let origin = loop {
+        let inlets = line(at, true);
+        let &[inlet] = inlets.as_slice() else {
+            return Err(format!(
+                "'{}' on the quench line has {} inlet pipes, and the line must run back to its \
+                 tank or supply with no other stream joining it",
+                name(at),
+                inlets.len()
+            ));
+        };
+        let prev = graph.endpoints(inlet).0;
+        if visited.contains(&prev) {
+            return Err(format!(
+                "the quench line runs in a ring through '{}' and starts at no tank or supply",
+                name(prev)
+            ));
+        }
+        visited.push(prev);
+        match &graph.node(prev).kind {
+            NodeKind::Tank(_) | NodeKind::Source { .. } => break prev,
+            NodeKind::Pump { .. }
+            | NodeKind::CheckValve { .. }
+            | NodeKind::Valve { .. }
+            | NodeKind::Cooler { .. } => {}
+            NodeKind::Junction if is_split(prev) => {}
+            NodeKind::Furnace { .. } | NodeKind::HeatExchanger => {
+                return Err(format!(
+                    "the quench line passes '{}', which can heat it; a quench's line may pass \
+                     pumps, check valves, valves and coolers only",
+                    name(prev)
+                ))
+            }
+            _ => {
+                return Err(format!(
+                    "the quench line passes '{}', and may pass pumps, check valves, valves and \
+                     coolers only, back to the tank or supply it draws from",
+                    name(prev)
+                ))
+            }
+        }
+        at = prev;
+    };
+    Ok(QuenchCheck {
+        bed,
+        quench_pipe,
+        main_pipe,
+        origin,
+    })
 }
 
 /// Resolve a loop's `on_pump_stop` (M45.1, docs/DESIGN.md §50), refusing each
@@ -2517,7 +2778,7 @@ fn link_cascades(graph: &mut PlantGraph, defs: &[ControlDef]) -> Result<(), SimE
                 primary.name, secondary.name, driver.name
             )));
         }
-        let required = cascade_pairing(graph, primary, secondary)?;
+        let (required, quench) = cascade_pairing(graph, primary, secondary)?;
         match (def.action.is_some(), primary.action == required) {
             (false, _) => {
                 return Err(SimError::Scenario(format!(
@@ -2577,10 +2838,19 @@ fn link_cascades(graph: &mut PlantGraph, defs: &[ControlDef]) -> Result<(), SimE
             )));
         }
         let position = graph.actuator_position(primary.actuator, None, Some(range))?;
-        graph
+        // A primary on a catalyst bed carries the quench check of its
+        // secondary's valve (M57.4, docs/DESIGN.md §62.11), refused at load if
+        // its quench is not cold.
+        let last_quench = match &quench {
+            None => None,
+            Some(check) => Some(cold_at_load(graph, &primary.name, check)?),
+        };
+        let primary = graph
             .control_mut(primary_id)
-            .ok_or_else(|| SimError::Scenario(format!("internal: {primary_id:?} names no loop")))?
-            .last_output = position;
+            .ok_or_else(|| SimError::Scenario(format!("internal: {primary_id:?} names no loop")))?;
+        primary.last_output = position;
+        primary.quench = quench;
+        primary.last_quench = last_quench;
     }
     Ok(())
 }
@@ -2734,8 +3004,77 @@ fn action_word(action: ControlAction) -> &'static str {
 ///   (a drain): DIRECT;
 /// - a tank's level over the flow on a valve whose outlet pipe ends at the tank (a
 ///   fill): REVERSE — the first reverse level loop on a valve admitted. M29 admits
-///   the same side for a single loop, through the same `valve_side`.
+///   the same side for a single loop, through the same `valve_side`;
+/// - a catalyst bed's temperature over the flow on a QUENCH valve (M57.4,
+///   docs/DESIGN.md §62.11): DIRECT, a hotter bed asking for more quench. Its
+///   sign is a temperature as well as a layout, so the pairing also returns the
+///   quench check the primary carries.
 fn cascade_pairing(
+    graph: &PlantGraph,
+    primary: &ControlLoop,
+    secondary: &ControlLoop,
+) -> Result<(ControlAction, Option<QuenchCheck>), SimError> {
+    let on_bed = |point: MeasurementPoint| match point {
+        MeasurementPoint::Node(node)
+            if matches!(graph.node(node).kind, NodeKind::BedReactor { .. }) =>
+        {
+            Some(node)
+        }
+        _ => None,
+    };
+    if let Some(bed) = on_bed(secondary.measurement_point) {
+        return Err(SimError::Scenario(format!(
+            "cascade primary '{}' drives loop '{}', which holds catalyst bed '{}'. A cascade's \
+             inner loop is its FAST one, and a bed — its heat capacity tens of megajoules per \
+             kelvin — is the slowest thing on the plant; a bed loop is a primary or stands \
+             alone (docs/DESIGN.md §62.11)",
+            primary.name,
+            secondary.name,
+            graph.node(bed).name
+        )));
+    }
+    let Some(bed) = on_bed(primary.measurement_point) else {
+        return Ok((holdup_pairing(graph, primary, secondary)?, None));
+    };
+    match (secondary.measurement_point, secondary.setpoint.variable()) {
+        (MeasurementPoint::Pipe(_), MeasuredVariable::Flow) => {
+            let valve = secondary.actuator.node().ok_or_else(|| {
+                SimError::Scenario(format!(
+                    "internal: flow loop '{}' writes no valve",
+                    secondary.name
+                ))
+            })?;
+            let check = quench_layout(graph, bed, valve).map_err(|why| {
+                SimError::Scenario(format!(
+                    "cascade primary '{}' holds catalyst bed '{}' over the flow through valve \
+                     '{}', which is not a quench on that bed: {why}. A loop on a bed's \
+                     temperature acts through a quench and nothing else (docs/DESIGN.md §62.11)",
+                    primary.name,
+                    graph.node(bed).name,
+                    graph.node(valve).name
+                ))
+            })?;
+            Ok((ControlAction::Direct, Some(check)))
+        }
+        (MeasurementPoint::Node(unit), MeasuredVariable::Temperature)
+            if matches!(
+                graph.node(unit).kind,
+                NodeKind::Furnace { .. } | NodeKind::Cooler { .. }
+            ) =>
+        {
+            Err(bed_duty_refusal(
+                &primary.name,
+                &graph.node(bed).name,
+                &graph.node(unit).name,
+            ))
+        }
+        _ => Err(not_admitted(graph, primary, secondary)),
+    }
+}
+
+/// [`cascade_pairing`]'s holdup cells (docs/DESIGN.md §29 fork 5): every pairing
+/// whose primary is not on a catalyst bed.
+fn holdup_pairing(
     graph: &PlantGraph,
     primary: &ControlLoop,
     secondary: &ControlLoop,

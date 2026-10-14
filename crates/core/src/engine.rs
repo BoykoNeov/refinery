@@ -648,6 +648,28 @@ impl Engine {
                             )));
                         }
                     }
+                    // The quench check's refusal (M57.4, docs/DESIGN.md §62.11),
+                    // read fresh: in AUTO a loop whose quench is not colder than
+                    // the stream it joins would open it as the bed heats, and
+                    // heat the bed more. The next tick's pass would freeze it
+                    // again; refusing here says why instead.
+                    if let Some(check) = control.quench {
+                        let reading = self
+                            .graph
+                            .quench_reading(&check, self.last_solution.as_ref())?;
+                        if !reading.is_cold() {
+                            return Err(SimError::InvalidCommand(format!(
+                                "control loop '{}' holds catalyst bed '{}' with a quench at {:.2} \
+                                 K, which is not colder than the {:.2} K stream it joins. More \
+                                 of it would heat the bed, not cool it, so the loop is held in \
+                                 MANUAL until the quench is cold again (docs/DESIGN.md §62.11)",
+                                control.name,
+                                self.graph.node(check.bed).name,
+                                reading.quench_k.value(),
+                                reading.joins_k.value()
+                            )));
+                        }
+                    }
                 }
                 let seed = if mode == ControlMode::Auto && control.mode == ControlMode::Manual {
                     // **Refused when there is nothing to measure** (docs/DESIGN.md
@@ -2935,6 +2957,27 @@ impl Engine {
             return Ok(());
         }
 
+        // Pass 0 — the quench checks (M57.4, docs/DESIGN.md §62.11). A loop on a
+        // catalyst bed acts the right way only while its quench is colder than
+        // the stream it joins. Read on the state standing at the top of the
+        // tick, before any loop acts; a quench loop in AUTO whose quench is not
+        // cold is switched to MANUAL, which holds its actuator and moves no
+        // equipment. Nothing switches it back: AUTO is the player's, and
+        // `SetControllerMode` refuses it while the quench stands warm.
+        for i in 0..self.graph.controls().len() {
+            let Some(check) = self.graph.controls()[i].quench else {
+                continue;
+            };
+            let reading = self
+                .graph
+                .quench_reading(&check, self.last_solution.as_ref())?;
+            let control = &mut self.graph.controls_mut()[i];
+            control.last_quench = Some(reading);
+            if control.mode == ControlMode::Auto && !reading.is_cold() {
+                control.mode = ControlMode::Manual;
+            }
+        }
+
         // Pass 1 — measure, and read each actuator's current position. Both are
         // reads of the state BEFORE this tick's solve: the graph, and — for a
         // furnace or cooler outlet — the last tick's resolved states, which are
@@ -3377,6 +3420,7 @@ impl Engine {
                 output: c.last_output,
                 drives: c.actuator.driven_loop(),
                 on_pump_stop: c.on_pump_stop,
+                quench: c.last_quench,
             })
             .collect();
         // One entry per trip, in declaration order. `measurement` is what the

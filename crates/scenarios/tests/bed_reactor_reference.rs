@@ -244,10 +244,10 @@ diameter_m = 0.1
     );
 }
 
-/// A control LOOP watching a bed is refused AT LOAD, by name (M57.3,
-/// docs/DESIGN.md §62.10): a trip may watch a bed since M57.3
-/// (`bed_trip_reference.rs`), and a loop regulating one through the equipment
-/// upstream is M57.4's to argue.
+/// A control LOOP on a bed through its own FEED valve is refused AT LOAD (M57.3,
+/// docs/DESIGN.md §62.10; narrowed by M57.4, §62.11): a loop on a bed acts
+/// through a quench only, and a valve on the bed's own line mixes nothing in.
+/// The quench cells are `quench_reference.rs`'s.
 #[test]
 fn a_loop_on_a_bed_is_refused_at_load() {
     let src = format!(
@@ -287,7 +287,10 @@ to = \"feed_valve\""
     );
     let err = refused(&src);
     assert!(
-        err.contains("catalyst bed 'bed'") && err.contains("TRIPS") && err.contains("M57.4"),
+        err.contains("catalyst bed 'bed'")
+            && err.contains("not a quench on that bed")
+            && err.contains("without joining another stream")
+            && err.contains("§62.11"),
         "{err}"
     );
 }

@@ -614,6 +614,18 @@ pub struct ControlSnapshot {
     /// always did.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_pump_stop: Option<crate::graph::OnPumpStop>,
+    /// What this loop's quench check last compared (M57.4, docs/DESIGN.md
+    /// §62.11): `{"quench_k":…,"joins_k":…}`, the quench arriving at the mix and
+    /// the stream it joins. A loop on a catalyst bed acts the right way only
+    /// while the first is below the second, and one in AUTO that finds it is
+    /// not is switched to MANUAL.
+    ///
+    /// **"Frozen" is not a field**, for `drives`' reason: a quench loop in
+    /// MANUAL whose quench is not colder than what it joins is frozen, and both
+    /// facts are published here. **Skipped when `None`**, every loop that is not
+    /// on a bed, so no earlier plant's bytes move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quench: Option<crate::graph::QuenchReading>,
 }
 
 /// One trip, as a frontend draws it (M22, docs/DESIGN.md §26 fork 8).

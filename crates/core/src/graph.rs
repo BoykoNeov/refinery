@@ -1532,6 +1532,52 @@ pub struct ControlLoop {
     /// docs/DESIGN.md §50). `None` on every loop that does not declare it, which
     /// then runs exactly as it did before M45.
     pub on_pump_stop: Option<OnPumpStop>,
+    /// The quench check a loop on a catalyst bed carries (M57.4, docs/DESIGN.md
+    /// §62.11): `Some` exactly when the loop measures a bed — a single loop on a
+    /// quench valve, or a cascade primary over a flow loop on one — and `None`
+    /// on every other loop, which then runs exactly as it did before M57.4.
+    pub quench: Option<QuenchCheck>,
+    /// The two temperatures the last quench check compared: at load, then at
+    /// the top of every tick. `Some` exactly when `quench` is.
+    pub last_quench: Option<QuenchReading>,
+}
+
+/// Where a quench loop's sign comes from (M57.4, docs/DESIGN.md §62.11). A loop
+/// holding a catalyst bed's temperature by mixing a cold stream into its feed
+/// acts the right way only while that stream is colder than the one it joins,
+/// which no walk of the pipes can see. Found by the loader's `quench_layout`;
+/// read by [`PlantGraph::quench_reading`] at load and at the top of every tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuenchCheck {
+    /// The bed the loop measures; the mix's single outlet line feeds it.
+    pub bed: NodeId,
+    /// The pipe that brings the quench into the mix.
+    pub quench_pipe: EdgeId,
+    /// The mix's other inlet: the MAIN stream the quench joins.
+    pub main_pipe: EdgeId,
+    /// Where the quench line starts, walked upstream from its valve: a `Tank`
+    /// or a `Source`, whose temperature is a state present from load.
+    pub origin: NodeId,
+}
+
+/// The two temperatures one quench check compared (M57.4, docs/DESIGN.md
+/// §62.11).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct QuenchReading {
+    /// The quench arriving at the mix [K]: its pipe's stream when the last solve
+    /// gave that pipe a forward flow, else its origin's own temperature.
+    pub quench_k: Kelvin,
+    /// The main stream it joins [K]: its pipe's stream when the last solve gave
+    /// that pipe a forward flow, else the measured bed's own temperature.
+    pub joins_k: Kelvin,
+}
+
+impl QuenchReading {
+    /// Whether the quench is colder than what it joins — STRICTLY: the only
+    /// state in which more of it is sure to lower the mix's temperature.
+    pub fn is_cold(&self) -> bool {
+        self.quench_k.value() < self.joins_k.value()
+    }
 }
 
 /// Which end of its range a loop's actuator is saturated at (docs/DESIGN.md
@@ -2435,12 +2481,15 @@ impl PlantGraph {
             // level has a height; absolute zero is the only one it has.
             // A furnace or cooler OUTLET takes the same bound (M19): an outlet
             // has no geometry either, and its ceiling is a function of the flow.
+            // A catalyst bed's temperature is a state (M57.4, docs/DESIGN.md
+            // §62.11), with absolute zero its only bound as well.
             (
                 ControlledValue::Temperature { k },
                 NodeKind::Tank(_)
                 | NodeKind::Vessel(_)
                 | NodeKind::Furnace { .. }
-                | NodeKind::Cooler { .. },
+                | NodeKind::Cooler { .. }
+                | NodeKind::BedReactor { .. },
             ) => {
                 if !k.is_finite() || k.value() <= 0.0 {
                     return Err(SimError::InvalidCommand(format!(
@@ -2463,6 +2512,72 @@ impl PlantGraph {
                 self.node(node).name
             ))),
         }
+    }
+
+    /// A quench check's two temperatures, as they stand now (M57.4,
+    /// docs/DESIGN.md §62.11). **The single owner of the comparison**: the
+    /// loader reads it at load, the tick's loop pass at the top of every tick,
+    /// and `Command::SetControllerMode`'s refusal fresh. `hydraulics` is the
+    /// last hydraulic solution, `None` before the first tick.
+    ///
+    /// A pipe's stream temperature is a reading only while that pipe carries a
+    /// forward flow: a still pipe keeps the last temperature it carried. So a
+    /// quench that is not flowing reads its origin's temperature, and a main
+    /// stream that is not flowing reads the bed's own — the quench is then the
+    /// bed's only feed, and cools it exactly when it is colder than it.
+    ///
+    /// # Errors
+    /// `SimError::Numerical` if either temperature is not finite, or if the
+    /// check names an origin or a bed of the wrong kind (unreachable: the loader
+    /// builds every check).
+    pub fn quench_reading(
+        &self,
+        check: &QuenchCheck,
+        hydraulics: Option<&crate::traits::HydraulicSolution>,
+    ) -> Result<QuenchReading, SimError> {
+        let flowing = |pipe: EdgeId| -> bool {
+            hydraulics
+                .and_then(|solution| solution.edge_mass_flow.get(&pipe))
+                .is_some_and(|flow| *flow > 0.0)
+        };
+        let quench_k = if flowing(check.quench_pipe) {
+            self.pipe(check.quench_pipe).stream.temperature
+        } else {
+            match &self.node(check.origin).kind {
+                NodeKind::Tank(tank) => tank.temperature,
+                NodeKind::Source { temperature, .. } => *temperature,
+                _ => {
+                    return Err(SimError::Numerical(format!(
+                        "internal: a quench check starts at '{}', which is neither a tank nor a \
+                         source; the loader refuses that (docs/DESIGN.md §62.11)",
+                        self.node(check.origin).name
+                    )))
+                }
+            }
+        };
+        let joins_k = if flowing(check.main_pipe) {
+            self.pipe(check.main_pipe).stream.temperature
+        } else {
+            match &self.node(check.bed).kind {
+                NodeKind::BedReactor { bed } => bed.temperature,
+                _ => {
+                    return Err(SimError::Numerical(format!(
+                        "internal: a quench check measures '{}', which is not a catalyst bed; \
+                         the loader refuses that (docs/DESIGN.md §62.11)",
+                        self.node(check.bed).name
+                    )))
+                }
+            }
+        };
+        if !quench_k.is_finite() || !joins_k.is_finite() {
+            return Err(SimError::Numerical(format!(
+                "a quench check on '{}' read {} K against {} K, which cannot be compared",
+                self.node(check.bed).name,
+                quench_k.value(),
+                joins_k.value()
+            )));
+        }
+        Ok(QuenchReading { quench_k, joins_k })
     }
 
     /// Read one regulated variable off the plant, as it stands right now.

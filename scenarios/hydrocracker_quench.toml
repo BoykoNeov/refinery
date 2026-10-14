@@ -1,0 +1,343 @@
+# M57.4 demo plant: two hydrocracker beds, a quench between them, and a loop
+# that opens it as the second bed heats.
+#
+#   vgo_feed (300 °C) -> feed_valve -> preheater -> bed1 -> mix -> bed2
+#     -> product_cooler -> letdown_valve -> product_drum -> rundown_valve -> product
+#   product_drum -> quench_pump -> quench_check -> quench_valve -> mix
+#
+# Each bed is `hydrocracker_runaway.toml`'s bed. The preheater lifts the feed to
+# 369 °C, where the first bed is calm at about 382 °C — but the second bed takes
+# that hot, part-cracked oil in, and on its own it runs away to about 742 °C.
+#
+# **The quench** (docs/DESIGN.md §62.11): the reactor's own product, cooled by
+# `product_cooler` into `product_drum`, pumped back and mixed into the oil
+# between the beds. Real hydrocrackers quench with cold hydrogen gas, which this
+# engine does not simulate yet; the cooled product is the liquid stand-in. A
+# recycle must pass a holdup (the heat sweep refuses one through zero-volume
+# nodes only), so the drum is part of the loop; its level is held by a loop on
+# the rundown valve. The check valve stops the main stream pushing back into the
+# drum through a stopped quench pump.
+#
+# **The loops.** `bed2_temperature` holds the second bed at 380 °C by setting
+# the target of `quench_flow`, which holds the quench's flow with the quench
+# valve — the real plant's two-controller arrangement. More quench cools the bed
+# only while the quench is colder than the oil it joins, so the engine checks
+# that at load and at the top of every tick, and a bed loop in AUTO whose quench
+# is not cold is switched to MANUAL, to be put back by hand. The faceplate's
+# `quench` shows the two temperatures. `preheat_outlet` holds the feed at
+# 369 °C; with a fixed duty, the quench's back-pressure, which slows the first
+# bed's flow, would heat it.
+#
+# **The backup trip.** `bed2_high` fires at 400 °C on the second bed and cuts
+# the preheater, M57.3's action: both beds cool toward the 300 °C feed. It does
+# not open the quench — that is the wrong act exactly when the quench has
+# stopped being cold. Reset by hand; the reset relights nothing.
+#
+# What a run shows: the second bed starts at 375 °C and heats; the bed loop
+# raises the quench from its 0.25 kg/s minimum, the bed peaks under 381 °C and
+# settles at 380 °C on about 2.5 kg/s, the valve an eighth open, while the drum
+# cools to about 133 °C. With `bed2_temperature` in MANUAL the bed reaches the
+# trip in about ten minutes and the plant cools to its feed; with no trip as
+# well it runs away, and after about an hour and a half its drum is hotter than
+# the first bed's outflow, so the quench could no longer cool it.
+#
+#   cargo run -p refinery-cli -- run scenarios/hydrocracker_quench.toml --ticks 18000
+#
+# The starting values are the loops' settled ones (measured on this file), but
+# for the second bed's 375 °C and the quench at its minimum. The quench flow
+# loop's target cannot be zero — zero is "shut", a manual act (§24 fork 4) — so
+# the cascade's range starts at 0.25 kg/s. Every bed and chemistry number is the
+# runaway file's; the preheater's coil follows `hydrocracker_trip.toml`'s.
+
+[meta]
+name = "hydrocracker_quench"
+description = "Two hydrocracker beds; a loop on a cooled-product quench holds the second at 380 °C where it would run away, with a backup trip on the preheater."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "hydrocracking"
+
+# --- the four hydrocracking lumps (§62.3) --------------------------------------
+
+[[components]]
+name = "vgo"
+tb_c = 450.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "distillate"
+tb_c = 260.0
+molar_mass_kg_per_mol = 0.200
+density_kg_per_m3 = 830.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "naphtha"
+tb_c = 120.0
+molar_mass_kg_per_mol = 0.110
+density_kg_per_m3 = 740.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "gas"
+tb_c = -10.0
+molar_mass_kg_per_mol = 0.050
+density_kg_per_m3 = 550.0
+cp_j_per_kg_k = 3200.0
+
+# --- the reactor line -----------------------------------------------------------
+
+[nodes.vgo_feed]
+type = "source"
+pressure_bar = 8.0
+temperature_c = 300.0
+composition = { vgo = 1.0 }
+
+[nodes.feed_valve]
+type = "valve"
+kv = 110.0
+opening = 1.0
+
+# Held at 369 °C by `preheat_outlet`; half its 26 MW range at load.
+[nodes.preheater]
+type = "furnace"
+duty_mw = 13.0
+coil_heat_capacity_mj_per_k = 17.0
+coil_ua_kw_per_k = 320.0
+coil_temperature_c = 378.8
+flame_temperature_c = 1951.1
+tube_failure_c = 650.0
+tube_rupture_area_cm2 = 5.0
+fluid_heating_value_mj_per_kg = 42.0
+
+[nodes.bed1]
+type = "bed_reactor"
+bed_heat_capacity_mj_per_k = 30.0
+catalyst_volume_m3 = 20.0
+bed_temperature_c = 381.8
+
+# Where the quench joins the first bed's outflow.
+[nodes.mix]
+type = "junction"
+
+[nodes.bed2]
+type = "bed_reactor"
+bed_heat_capacity_mj_per_k = 30.0
+catalyst_volume_m3 = 20.0
+bed_temperature_c = 375.0
+
+# --- the product side and the quench recycle -----------------------------------
+
+# Takes about 230 K off the product before the drum.
+[nodes.product_cooler]
+type = "cooler"
+duty_mw = 40.0
+
+[nodes.letdown_valve]
+type = "valve"
+kv = 100.0
+opening = 1.0
+
+[nodes.product_drum]
+type = "tank"
+area_m2 = 20.0
+height_m = 10.0
+initial_level_m = 5.0
+temperature_c = 135.0
+composition = { vgo = 0.85, distillate = 0.15 }
+
+[nodes.rundown_valve]
+type = "valve"
+kv = 600.0
+opening = 0.47
+
+[nodes.product]
+type = "sink"
+pressure_bar = 1.01325
+composition = { vgo = 1.0 }
+
+[nodes.quench_pump]
+type = "pump"
+h0_m = 120.0
+a = 160000.0
+on = true
+
+[nodes.quench_check]
+type = "check_valve"
+kv = 100.0
+full_open_bar = 0.015
+
+# At the quench's 0.25 kg/s minimum at load; `quench_flow` moves it.
+[nodes.quench_valve]
+type = "valve"
+kv = 30.0
+opening = 0.01
+
+[[pipes]]
+name = "feed_line"
+from = "vgo_feed"
+to = "feed_valve"
+length_m = 30.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "valve_line"
+from = "feed_valve"
+to = "preheater"
+length_m = 5.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "heated_line"
+from = "preheater"
+to = "bed1"
+length_m = 5.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "interbed_line"
+from = "bed1"
+to = "mix"
+length_m = 5.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "bed2_inlet"
+from = "mix"
+to = "bed2"
+length_m = 5.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "effluent_line"
+from = "bed2"
+to = "product_cooler"
+length_m = 10.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "cooled_line"
+from = "product_cooler"
+to = "letdown_valve"
+length_m = 10.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "drum_inlet"
+from = "letdown_valve"
+to = "product_drum"
+length_m = 10.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "drum_outlet"
+from = "product_drum"
+to = "rundown_valve"
+length_m = 10.0
+diameter_m = 0.3
+
+[[pipes]]
+name = "rundown_line"
+from = "rundown_valve"
+to = "product"
+length_m = 10.0
+diameter_m = 0.3
+
+[[pipes]]
+name = "quench_suction"
+from = "product_drum"
+to = "quench_pump"
+length_m = 10.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "quench_discharge"
+from = "quench_pump"
+to = "quench_check"
+length_m = 25.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "check_line"
+from = "quench_check"
+to = "quench_valve"
+length_m = 5.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "quench_line"
+from = "quench_valve"
+to = "mix"
+length_m = 10.0
+diameter_m = 0.15
+
+# --- the loops ------------------------------------------------------------------
+
+# The bed loop: DIRECT, a hotter bed asking for more quench (§62.11). Its output
+# is the quench flow target as a fraction of 0.25–10 kg/s. Gain and reset time
+# from a sweep (K 0.02–0.1 per K × T_i 120–600 s, from this file's start): the
+# pair that peaks under 1 K over the target without a slow creep onto it.
+[[controls]]
+name = "bed2_temperature"
+measurement = { node = "bed2", variable = "temperature" }
+actuator = { loop = "quench_flow" }
+algorithm = "pi"
+mode = "auto"
+action = "direct"
+setpoint_c = 380.0
+gain_per_k = 0.05
+integral_time_s = 300.0
+initial_output = 0.0
+range_min_kg_per_s = 0.25
+range_max_kg_per_s = 10.0
+
+[[controls]]
+name = "quench_flow"
+measurement = { pipe = "quench_line", variable = "flow" }
+actuator = "quench_valve"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_kg_per_s = 0.25
+gain_per_kg_per_s = 0.02
+integral_time_s = 10.0
+initial_output = 0.01
+
+[[controls]]
+name = "preheat_outlet"
+measurement = { node = "preheater", variable = "temperature" }
+actuator = "preheater"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_c = 369.0
+gain_per_k = 0.02
+integral_time_s = 60.0
+initial_output = 0.5
+max_duty_mw = 26.0
+
+[[controls]]
+name = "drum_level"
+measurement = { node = "product_drum", variable = "level" }
+actuator = "rundown_valve"
+algorithm = "pi"
+mode = "auto"
+setpoint_m = 5.0
+gain_per_m = 0.25
+integral_time_s = 600.0
+initial_output = 0.47
+
+# The backup: fires AT OR ABOVE 400 °C on the second bed and cuts the
+# preheater. Reset by hand; the reset relights nothing.
+[[trips]]
+name = "bed2_high"
+measurement = { node = "bed2", variable = "temperature" }
+direction = "high"
+limit_c = 400.0
+actions = [{ furnace = "preheater" }]
