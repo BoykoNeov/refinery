@@ -152,11 +152,17 @@ time since M9.1 they were measured rather than re-asserted.
 
 | # | item | argued in | un-defers when |
 |---|---|---|---|
-| D1 | Adiabatic / emergent outlet temperature (the coupled ODE, fork 3). **TAKEN by M57** (2026-10-14, the user's decision; DESIGN §62), for a new node kind only: a `bed_reactor` whose catalyst bed holds heat, the chemistry run at the bed's start-of-tick temperature, so no tick solves a fixed point; hydrocracking, which releases heat, so the bed can run away. The held reactor and the two FCC plants are unchanged. | §5, "Simple reactor", "Deferred" | A case where the reactor's own heat release sets its temperature. |
+| ~~D1~~ | **CLOSED by M57**, 2026-10-14, on the user's decision. ~~Adiabatic / emergent outlet temperature (the coupled ODE, fork 3).~~ **TAKEN by M57** (2026-10-14, the user's decision; DESIGN §62), for a new node kind only: a `bed_reactor` whose catalyst bed holds heat, the chemistry run at the bed's start-of-tick temperature, so no tick solves a fixed point; hydrocracking, which releases heat, so the bed can run away. The held reactor and the two FCC plants are unchanged: the held reactor keeps its set outlet temperature, and a plant whose reactor must heat itself uses a bed. | §5, "Simple reactor", "Deferred" | — |
 | D2 | Flow-dependent residence time `τ = V·ρ/ṁ`. **TAKEN by M57 for the bed reactor** (2026-10-14, the user's decision; DESIGN §62.2): `τ` is the catalyst volume over the feed's volumetric flow, so a feed cut can start a runaway. Stays open for the held reactor, whose `tau_s` is fixed. | same | A reactor whose throughput moves during a run. |
 | D3 | A 1-in-2-out reactor separating coke at the outlet (reintroduces the draw-flow machinery). | same | Coke needs to leave by a second outlet rather than ride to a downstream column. |
 | D4 | The catalyst regenerator loop that physically supplies the endothermic duty. | same | The duty must be sourced, not reported. |
 | D5 | Coke-on-catalyst deactivation (Voorhies form), feed-quality dependence of the constants, a second lump slate. | §5, "FCC 4-lump", "Deferred" | A catalyst inventory exists (D4). |
+| D6 | An axial temperature profile in a catalyst bed — the hot spot at a real bed's outlet (M57; the bed is one lumped temperature). | §62.7 | A story that needs WHERE in a bed it is hot. |
+| D7 | Hydrogen in the bed: its consumption, its partial pressure, depressuring (the real emergency cure, which starves the reaction), and hydrogen as the real quench — M57.4's quench is cooled product, a liquid stand-in; the user named hydrogen "for another session" (§62.11). | §62.7; §62.11 | A plant whose answer depends on the hydrogen, or a depressuring action. |
+| D8 | What a runaway breaks — a reactor wall past its metal limit, as §42's furnace tubes burst. | §62.7 | The user's call (offered after M57.3). |
+| D9 | Catalyst deactivation, wall heat loss and bed pressure drop on the bed reactor, as §5 and §37 defer their equivalents. | §62.7 | As §5's and §37's equivalents: a catalyst inventory (D4, D5); a story that needs the heat lost or the pressure dropped. |
+| D10 | A trip that stops a bed's feed. A stopped bed holds its temperature exactly, so such a trip could never reset; refused at load since M57.3 when it fully shuts a valve on the bed's own line. | §62.7; §62.10 | A way for a stopped bed to lose heat — wall loss (D9) or a hydrogen sweep (D7) — and the refusal lifted with it. |
+| D11 | A sourced activation energy and heat release for the four-lump hydrocracking network; M57.2's 150 kJ/mol and formation enthalpies are chosen, and labelled so. | §62.7; §62.9 | A reachable paper tabulating them for this network. |
 
 ## E. Regulation — §10
 
