@@ -10,7 +10,7 @@ use crate::error::SimError;
 use crate::graph::{
     Actuator, ActuatorLimit, ControlAction, ControlLoop, ControlMode, ControlledValue, LeakRole,
     LoopId, MeasuredVariable, MeasurementPoint, NodeId, NodeKind, PlantGraph, SetpointRange, Trip,
-    TripAction, TripId, TripReset, TripState, TubeState,
+    TripAction, TripDirection, TripId, TripReset, TripState, TubeState,
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
@@ -922,11 +922,21 @@ impl Engine {
                     )));
                 };
                 if trip.direction.reached(measurement, trip.limit)? {
+                    // In display units, as the coil's refusal above words its
+                    // temperatures: a frontend shows this text as it comes back
+                    // (docs/DESIGN.md §44 rule 2), so it is written for a person.
+                    let side = match trip.direction {
+                        TripDirection::High => "at or above",
+                        TripDirection::Low => "at or below",
+                    };
                     return Err(SimError::InvalidCommand(format!(
-                        "trip '{}' cannot be reset: its condition still holds ({:?} against a \
-                         {:?} limit of {:?}). A reset re-arms a trip, and one re-armed inside \
-                         its own condition would fire again on the next tick",
-                        trip.name, measurement, trip.direction, trip.limit
+                        "trip '{}' cannot be reset: its condition still holds (the {} is {}, \
+                         {side} its limit of {}). A reset re-arms a trip, and one re-armed \
+                         inside its own condition would fire again on the next tick",
+                        trip.name,
+                        trip.limit.variable().noun(),
+                        reading_text(measurement),
+                        reading_text(trip.limit)
                     )));
                 }
                 let trip = self.graph.trip_mut(trip_id).ok_or_else(|| {
@@ -3903,4 +3913,15 @@ fn check_duty(duty: Watt, unit: &str) -> Result<(), SimError> {
         )));
     }
     Ok(())
+}
+
+/// A measured or limiting value in the words a refusal shows a person: °C, bar,
+/// metres or kg/s (display units, as the coil's and the supply's refusals use).
+fn reading_text(value: ControlledValue) -> String {
+    match value {
+        ControlledValue::Temperature { k } => format!("{:.1} °C", k.value() - 273.15),
+        ControlledValue::Pressure { pa } => format!("{:.3} bar", pa.value() / 1.0e5),
+        ControlledValue::Level { m } => format!("{:.3} m", m.value()),
+        ControlledValue::Flow { kg_per_s } => format!("{:.3} kg/s", kg_per_s.value()),
+    }
 }

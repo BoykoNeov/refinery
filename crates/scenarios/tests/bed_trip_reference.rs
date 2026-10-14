@@ -274,6 +274,14 @@ fn the_bed_trip_resets_once_the_bed_cools_and_relights_nothing() {
         if bed >= BED_LIMIT_C {
             let refused = reset(&mut engine).expect_err("over the limit, refused");
             assert!(refused.contains("condition still holds"), "{refused}");
+            // In the words a person reads on the reactor screen (M57.5): the
+            // reading and the limit in °C, not the engine's debug text.
+            assert!(
+                refused.contains(&format!("temperature is {bed:.1} °C"))
+                    && refused.contains("at or above its limit of 400.0 °C")
+                    && !refused.contains("Kelvin("),
+                "{refused}"
+            );
         } else {
             reset(&mut engine).unwrap_or_else(|e| panic!("under the limit at {bed}: {e}"));
             admitted_at = Some(engine.snapshot().tick);
