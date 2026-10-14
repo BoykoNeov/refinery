@@ -732,6 +732,21 @@ fn build_controls(
                 graph.node(furnace).name
             )));
         }
+        // A bed's temperature is a state a TRIP may watch (M57.3, docs/DESIGN.md
+        // §62.10). A loop on it would regulate the bed through some valve or duty
+        // upstream, and which way that acts, and through how many nodes, is M57.4's
+        // to argue (§62.6), so it is refused here rather than admitted by `measure`.
+        if let MeasurementPoint::Node(bed) = point {
+            if matches!(graph.node(bed).kind, NodeKind::BedReactor { .. }) {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' measures catalyst bed '{}'. A bed's temperature is \
+                     watched by TRIPS (docs/DESIGN.md §62.10); a loop regulating it through \
+                     equipment upstream of the bed is not admitted yet (M57.4, §62.6)",
+                    def.name,
+                    graph.node(bed).name
+                )));
+            }
+        }
         let point_name = graph.point_name(point).to_owned();
 
         // The measured node must be able to answer for the variable. Asking the

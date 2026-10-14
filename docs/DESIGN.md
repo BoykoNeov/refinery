@@ -21963,7 +21963,8 @@ at every slice.
   the feed-cut runaway.
 - **M57.3 — a trip on the bed.** The bed's temperature is a state present from
   load, so a trip may watch it as it watches a tank. What a trip does about it
-  (cut the preheat furnace, shut the feed) is settled there.
+  (cut the preheat furnace, shut the feed) is settled there. Settled, §62.10:
+  it cuts the preheater only; a trip that shut the feed could never be reset.
 - **M57.4 — quench.** Two beds with a cold-quench junction between them, and a
   loop that opens the quench as the bed downstream heats. A temperature loop on
   a VALVE, two hops from what it measures, is new: the direction of action and
@@ -22151,3 +22152,89 @@ reference), the coincident-rate refusal removed (the unit tests), the two-rate
 form without `expm1` (the reference, at equal rates), the primary distillate
 constant 10% high (the reference and the plant), the activation energy at
 120 kJ/mol (both), and a bed refusing the chemistry (the plant).
+
+### 62.10 The trip on the bed, built (M57.3)
+
+**The decision, the user's (2026-10-14): the trip cuts the preheater, and only
+that.** §62.6 offered two safe states — cut the fire, shut the feed — and "both"
+was the first answer. It did not survive the reset rule. `Command::ResetTrip`
+re-reads the measurement and refuses while it stands inside the condition; a bed
+at zero flow holds its temperature bit for bit (§62.8: no fresh oil, so no
+reaction heat, and no wall, §62.7); so a trip that shut the feed would hold the
+bed at the very reading that fired it, at or past its limit, and could never be
+reset — by a person or by an `auto` deadband. A shut valve gives exactly zero
+flow on both fidelities (`elements.rs`: `opening = 0` makes the conductance 0),
+so it is not even a trickle that might cool it. Asked again with that in plain
+words, the user chose the fire alone: the oil keeps flowing and carries the
+heat away.
+
+**Why cutting the fire is enough, measured before it was built.** On the
+runaway file's bed with its feed pinned (no preheater lag), run an hour from
+each start: on a 280–300 °C feed a bed loaded at 500 °C comes back to its feed
+and one at 550 °C runs away; on a 320–340 °C feed, 450 °C comes back and 500 °C
+runs away. The runaway file passes 400 °C after about six minutes and 450 °C
+after sixteen. So a trip at 400 °C that returns the feed to 300 °C has about
+100 K of room before the point it cannot come back from, against a preheater
+coil that cools in a few minutes.
+
+**What is built.**
+
+- `PlantGraph::measure` answers for a bed's TEMPERATURE with its state,
+  `CatalystBed::temperature` — read off the graph, where `Engine::tick` writes it
+  at step 5, so present from load and on every tick after, flowing or not, as a
+  furnace's coil is (§39). Not the fluid leaving the bed, which differs from it
+  in the fourth decimal; a trip on the bed is a trip on the catalyst. The trip
+  pass compares it from tick 1 (no `solved_only` exemption), and the loader's
+  admission test — `measure` at load must return a value — passes it unchanged.
+  Every other variable on a bed is refused with `measure`'s existing reasons.
+- **A LOOP on a bed stays refused**, now by name in `build_controls`, beside the
+  coil's refusal: admitting the reading in `measure` would otherwise have
+  admitted loops too, and a loop regulating a bed through the equipment upstream
+  of it is M57.4's to argue (§62.6).
+- **No new trip action and no new refusal.** A bed trip may name any action a
+  trip may (a pump, a valve, a furnace). A trip that shuts a bed's feed is not
+  refused at load: which valve feeds a bed is a traversal the loader does not
+  do, and a valve on a bed trip may be a quench or a dump valve as well as a
+  feed. What it does is gated (gate 4 below) and said here.
+- `scenarios/hydrocracker_trip.toml`: the runaway file's bed behind a fired
+  preheater, `vgo_feed` (300 °C) → `feed_valve` → `preheater` → `bed` →
+  `product`. A clean coil (UA twice the feed's 159.6 kW/K, 1 MJ/K per rated MW)
+  fired at 16.86 MW lifts the feed to 385.0 °C, the runaway file's preheat, with
+  its coil settled at 398.26 °C — both measured on the untripped twin. One trip,
+  `bed_high`: high, 400 °C, `actions = [{ furnace = "preheater" }]`, reset by
+  hand. **The reset relights nothing, on purpose**: relighting at the old firing
+  is the creep again, so that is a person's act.
+
+**What the demo does, identical on both fidelities.** The bed ends tick 3 697
+(6 min 10 s) at or over 400 °C and the pass at the top of tick 3 698 cuts the
+fire, the feed still flowing at 49.9 kg/s. The bed turns fifteen seconds later
+at 400.39 °C, is under its limit (resettable) at the end of tick 4 008, 31 s
+after the cut, and settles onto its feed: 300.52 °C at thirty minutes. The
+untripped twin is at 748.2 °C by then.
+
+**Gates.** `scenarios/tests/bed_trip_reference.rs` (5): on both fidelities, the
+trip watches `{"node": bed}` and its published reading is the bed's state at the
+end of the tick before, bit for bit, from tick 1; bit-identical to its twin until
+the cut; fires on tick 3 698 with zero duty on that tick's snapshot and the feed
+flowing; the bed peaks under 401 °C and ends under 301 °C at thirty minutes,
+still latched, while the twin passes 740 °C; a reset is refused while the bed is
+at or over 400 °C and admitted on the first look under it, within two minutes,
+relighting nothing, and the bed keeps falling; **the design not shipped** — the
+same trip also shutting `feed_valve` — gives exactly zero feed and a bed held
+bit for bit at the reading that fired it, with every reset refused, for ten
+minutes of looking; a bed trip on level or pressure is refused with `measure`'s
+reason. `bed_reactor_reference.rs`'s trip refusal became a loop refusal.
+
+**Mutations: four; three caught, one equivalent** — the bed read as the fluid
+leaving it (every engine-driven gate: the plant no longer loads), the same
+falling back to the state when the outlet is absent (gate 1's bit-for-bit
+reading, and the reset and trap gates), the loop refusal removed
+(`bed_reactor_reference.rs`'s loop refusal); a bed added to the trip pass's
+`solved_only` set survives, and changes nothing: that set only excuses an ABSENT
+reading on the first pass, and a bed's is never absent, so the trip compares on
+tick 1 either way.
+
+**Deferred, added to §62.7's list:** a trip that stops a bed's feed. Un-defer:
+a way for a stopped bed to lose heat — wall loss (§62.7), or the hydrogen sweep
+a real reactor keeps flowing (§62.7's hydrogen) — so its reading can fall back
+under the limit.

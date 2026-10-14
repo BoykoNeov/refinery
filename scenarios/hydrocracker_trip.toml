@@ -1,0 +1,150 @@
+# M57.3 demo plant: a hydrocracker bed running away, caught by a trip on the bed.
+#
+#   vgo_feed (300 °C) -> feed_valve -> preheater -> bed -> product
+#
+# The bed of `hydrocracker_runaway.toml`, unchanged, now fed through a fired
+# preheater. The feed arrives cool, at 300 °C, and the PREHEATER brings it to the
+# 385 °C that makes that file's bed run away: its firing has crept up 20 K past
+# the calm day's 365 °C. The bed starts where the calm day left it, 374.1 °C.
+#
+# **The trip** (docs/DESIGN.md §62.10). `bed_high` watches the bed's own
+# temperature — a state, present from load, as a furnace's coil is — and at
+# 400 °C it CUTS THE PREHEATER. It does not stop the feed, and that is the
+# decision of §62.10: the oil keeps flowing and carries the bed's heat away. A
+# trip that shut the feed would leave the bed at zero flow, where it holds its
+# temperature exactly (no heat leaves through the wall, §62.7), so it would sit
+# at or past its limit forever and the trip could never be reset.
+#
+# What a run shows: the creep, as in the runaway file, until the bed reaches
+# 400 °C after about six and a half minutes; the trip cuts the fuel; the coil
+# gives its heat back and the feed cools toward 300 °C over a few minutes; the
+# bed turns, and falls to about 300 °C. With the cut, a bed reaches the point of
+# no return only past about 500 °C (§62.10), so a trip at 400 °C has about 100 K
+# of room. The trip resets by hand (the default) and the reset relights nothing:
+# relighting at the old firing would start the creep again.
+#
+#   cargo run -p refinery-cli -- run scenarios/hydrocracker_trip.toml --ticks 18000
+#
+# The preheater (docs/DESIGN.md §37, §40): its coil is a clean one, UA twice the
+# feed's capacity rate (2 × 49.9 kg/s × 3.2 kJ/(kg·K) ≈ 320 kW/K), with 1 MJ/K of
+# metal per rated MW, as §37's rule says; methane's stoichiometric flame, as
+# `furnace_coil_trip.toml`. Its 16.86 MW and the coil's 398.26 °C are measured
+# settled on the untripped twin (this file without its `[[trips]]`), where the
+# outlet holds 385.0 °C. The tube limit and hole are round game-tuning values;
+# VGO burns at about 42 MJ/kg. Every other number is the runaway file's.
+
+[meta]
+name = "hydrocracker_trip"
+description = "The runaway hydrocracker bed behind a fired preheater; a bed trip at 400 °C cuts the fire and the flowing oil cools the bed."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "hydrocracking"
+
+# --- the four hydrocracking lumps (§62.3) --------------------------------------
+
+[[components]]
+name = "vgo"
+tb_c = 450.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "distillate"
+tb_c = 260.0
+molar_mass_kg_per_mol = 0.200
+density_kg_per_m3 = 830.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "naphtha"
+tb_c = 120.0
+molar_mass_kg_per_mol = 0.110
+density_kg_per_m3 = 740.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "gas"
+tb_c = -10.0
+molar_mass_kg_per_mol = 0.050
+density_kg_per_m3 = 550.0
+cp_j_per_kg_k = 3200.0
+
+# --- the plant ----------------------------------------------------------------
+
+[nodes.vgo_feed]
+type = "source"
+pressure_bar = 8.0
+temperature_c = 300.0
+composition = { vgo = 1.0 }
+
+[nodes.feed_valve]
+type = "valve"
+kv = 110.0
+opening = 1.0
+
+[nodes.preheater]
+type = "furnace"
+duty_mw = 16.86
+coil_heat_capacity_mj_per_k = 17.0
+coil_ua_kw_per_k = 320.0
+coil_temperature_c = 398.26
+flame_temperature_c = 1951.1
+tube_failure_c = 650.0
+tube_rupture_area_cm2 = 5.0
+fluid_heating_value_mj_per_kg = 42.0
+
+[nodes.bed]
+type = "bed_reactor"
+bed_heat_capacity_mj_per_k = 30.0
+catalyst_volume_m3 = 20.0
+bed_temperature_c = 374.1
+
+[nodes.product]
+type = "sink"
+pressure_bar = 5.0
+composition = { vgo = 1.0 }
+
+[[pipes]]
+name = "feed_line"
+from = "vgo_feed"
+to = "feed_valve"
+length_m = 30.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "valve_line"
+from = "feed_valve"
+to = "preheater"
+length_m = 5.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "heated_line"
+from = "preheater"
+to = "bed"
+length_m = 5.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "product_line"
+from = "bed"
+to = "product"
+length_m = 30.0
+diameter_m = 0.25
+
+# Fires AT OR ABOVE 400 °C on the bed — a state on the graph (docs/DESIGN.md
+# §62.10), present from load — and cuts the preheater's fuel. The feed is left
+# flowing on purpose: it is what cools the bed. Reset by hand; the reset
+# relights nothing.
+[[trips]]
+name = "bed_high"
+measurement = { node = "bed", variable = "temperature" }
+direction = "high"
+limit_c = 400.0
+actions = [{ furnace = "preheater" }]

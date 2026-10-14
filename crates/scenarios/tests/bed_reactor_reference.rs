@@ -244,43 +244,50 @@ diameter_m = 0.1
     );
 }
 
-/// A trip watching a bed is refused AT LOAD, not on its first tick: what a trip
-/// does about a bed is M57.3's to settle (docs/DESIGN.md §62.6).
+/// A control LOOP watching a bed is refused AT LOAD, by name (M57.3,
+/// docs/DESIGN.md §62.10): a trip may watch a bed since M57.3
+/// (`bed_trip_reference.rs`), and a loop regulating one through the equipment
+/// upstream is M57.4's to argue.
 #[test]
-fn a_trip_on_a_bed_is_refused_at_load() {
+fn a_loop_on_a_bed_is_refused_at_load() {
     let src = format!(
         "{}
-[nodes.product_valve]
+[nodes.feed_valve]
 type = \"valve\"
 kv = 200.0
 opening = 1.0
 
 [[pipes]]
 name = \"valve_line\"
-from = \"product_valve\"
-to = \"out\"
+from = \"feed_valve\"
+to = \"bed\"
 length_m = 5.0
 diameter_m = 0.1
 
-[[trips]]
-name = \"bed_high\"
+[[controls]]
+name = \"bed_temperature\"
 measurement = {{ node = \"bed\", variable = \"temperature\" }}
-direction = \"high\"
-limit_c = 450.0
-actions = [{{ valve = \"product_valve\", position = 0.0 }}]
+actuator = \"feed_valve\"
+algorithm = \"p\"
+mode = \"auto\"
+setpoint_c = 400.0
+gain_per_k = 0.01
+initial_output = 0.5
 ",
         PLANT.replace(
-            "from = \"bed\"\nto = \"out\"",
-            "from = \"bed\"\nto = \"product_valve\""
+            "from = \"feed\"
+to = \"bed\"",
+            "from = \"feed\"
+to = \"feed_valve\""
         )
     );
     assert!(
-        src.contains("to = \"product_valve\""),
+        src.contains("to = \"feed_valve\""),
         "the fixture rewrite must apply"
     );
     let err = refused(&src);
     assert!(
-        err.contains("catalyst bed") && err.contains("M57.3"),
+        err.contains("catalyst bed 'bed'") && err.contains("TRIPS") && err.contains("M57.4"),
         "{err}"
     );
 }

@@ -2734,17 +2734,13 @@ impl PlantGraph {
                     self.node(node).name
                 )))
             }
-            // A bed's temperature IS a state, present from load, so it could be
-            // measured as a tank's is. What a loop or a trip may do with it is
-            // M57.3's to settle (docs/DESIGN.md §62.6), so it is refused until then
-            // rather than admitted by default.
-            (MeasuredVariable::Temperature, NodeKind::BedReactor { .. }) => {
-                Err(SimError::Scenario(format!(
-                    "node '{}' is a catalyst bed: a loop or trip on its temperature is not \
-                     admitted yet — what one does about a bed is settled in M57.3 \
-                     (docs/DESIGN.md §62.6)",
-                    self.node(node).name
-                )))
+            // **A catalyst bed: a STATE, present from load** (M57.3, docs/DESIGN.md
+            // §62.10), read off the graph as a furnace's coil is, where
+            // `Engine::tick` writes it at the end of every tick — so never absent,
+            // flowing or not. Read for a TRIP: a loop on a bed is refused by the
+            // loader, by name, until M57.4 argues one.
+            (MeasuredVariable::Temperature, NodeKind::BedReactor { bed }) => {
+                Ok(Some(ControlledValue::Temperature { k: bed.temperature }))
             }
             (
                 MeasuredVariable::Temperature,

@@ -9160,3 +9160,25 @@ a 385 °C feed, which runs away by itself to about 760 °C in 25–30 minutes
 - Gates: `hydrocracking::tests` (6), `hydrocracking_reference` (8),
   `hydrocracker_reference.rs` (8). Mutations: twelve,
   twelve caught (§62.9).
+
+### M57.3 — **LANDED** 2026-10-14: a trip on the bed
+
+A trip may watch a bed's temperature (`measurement = { node = "bed", variable =
+"temperature" }`): its state, present from load, compared from tick 1 as a
+furnace's coil is. A loop on a bed stays refused, now by name (M57.4's). What
+the trip does was the user's decision, asked twice: "cut the fire and shut the
+feed" was the first answer, and did not survive the reset rule — a bed at zero
+flow holds its temperature exactly, so a trip that shut the feed would sit past
+its limit forever and never reset. So the trip cuts the preheater only, and the
+flowing oil carries the heat away. DESIGN §62.10.
+
+`scenarios/hydrocracker_trip.toml`: the runaway bed behind a fired preheater
+(300 °C feed lifted to 385 °C). The trip fires at 400 °C after 6 min 10 s, the
+bed turns at 400.39 °C, is resettable 31 s after the cut, and settles near
+300 °C; the untripped twin runs away to 748 °C. Identical on both fidelities.
+
+- Corpus: the 47 shipped plants byte-identical on both fidelities, plus the
+  new one. Release property tests pass.
+- Gates: `bed_trip_reference.rs` (5), the shut-feed trap among them;
+  `bed_reactor_reference.rs`'s trip refusal became a loop refusal. Mutations:
+  four, three caught and one equivalent (§62.10).
