@@ -234,9 +234,12 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         // FCC 4-lump Arrhenius kinetics (M4.2), integrated with fixed-count RK4
         // over the reactor's `tau_s`.
         "fcc" => Box::new(refinery_solvers::FourLump::fcc(&slate)?),
+        // Four-lump VGO hydrocracking (M57.2), solved exactly at every
+        // residence time, so it may sit in a catalyst bed (docs/DESIGN.md §62.3).
+        "hydrocracking" => Box::new(refinery_solvers::Hydrocracking::song_2017(&slate)?),
         other => {
             return Err(SimError::Scenario(format!(
-                "unknown reaction model '{other}' (valid: none, lookup, fcc)"
+                "unknown reaction model '{other}' (valid: none, lookup, fcc, hydrocracking)"
             )))
         }
     };

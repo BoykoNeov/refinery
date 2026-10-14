@@ -22040,3 +22040,114 @@ settling), an arithmetic-mean density (`τ`), zero flow reacting over `τ = 0`
 a stopped bed dropped (zero flow), no write-back in `Engine::tick` (the engine
 relaxation), no load-time refusal (both refusal tests), the bed dropped from the
 degree rule (two outlets) and a trip on a bed admitted (the trip refusal).
+
+### 62.9 The chemistry and the demo, built (M57.2)
+
+`refinery_solvers::Hydrocracking`, selected by `reactions = "hydrocracking"`,
+its lumps `vgo`, `distillate`, `naphtha` and `gas` resolved by name. As §62.3
+specifies, with these choices made while building it:
+
+- **The exact solution is the closed form, the Bateman chains** (Bateman, *Proc.
+  Camb. Phil. Soc.* 15 (1910) 423, the radioactive decay chain): the network has
+  no loops, so each lump is a sum over the fifteen chains of paths that reach
+  it, each weighted by a divided difference of `e^(−λτ)` over its lumps' total
+  cracking rates. Fixed work per call. **A correction to §62.3:** it offered
+  "scaling and squaring with a fixed order" as the alternative with the same
+  fixed work; it is not — the squaring count grows with `‖K‖·τ`, unbounded as the
+  flow stops. That is one reason the closed form was chosen.
+- **The divided differences are stable.** The two-rate one goes through `expm1`
+  and is exact at equal rates and at small `τ`; higher orders recurse over the
+  widest span, which vanishes only if all three cracking lumps share one total
+  rate. The constructor refuses that (a spread under 1e-3 of the largest).
+- **One activation energy for the whole network**, a single `e_act` field — a
+  narrowing of §62.3's "one per cracking lump", whose three values were all
+  150 kJ/mol anyway. It keeps the rates' ratios the same at every temperature, so
+  the refusal above, checked once at load, holds at every bed temperature.
+- **`τ = +∞` is its own branch**, each chain's closed limit (`Π 1/λ` when it
+  ends in a lump that does not crack, zero otherwise): every reacting lump ends
+  as gas. A long finite `τ` meets it with no jump (gated).
+- **Every lump is its own sum, gas included**, never `1 − Σ others`, so the
+  lumps' total is not conserved by construction and the model's check of it
+  (1e-9) is a real guard on the arithmetic. A chain weight that rounds below
+  zero at a vanishing `τ` is clamped to zero; a NaN is not, and fails the check.
+- **The calibration.** The three secondary constants are kept at the M57.0
+  prototype's 0.10, 0.03 and 0.04 h⁻¹ (distillate → naphtha, distillate → gas,
+  naphtha → gas); the three primary ones are solved so the outlet at 390 °C and
+  LHSV 1 h⁻¹ is Song 2017's yields exactly, normalised from their 99% sum to
+  27.27 / 47.47 / 21.21 / 4.04 wt%: 0.917, 0.335 and 0.0475 h⁻¹ (vgo →
+  distillate, naphtha, gas). That outlet releases 342 kJ per kg of feed.
+- **The held reactor admits the chemistry too.** It is exact at any `τ`, so
+  nothing argues for a refusal; gated with the products at the held `t_set` and
+  `tau_s` matching the model's.
+
+**The demo plants are two, on the user's decision** (asked mid-slice: a plant
+file holds a starting state and cannot schedule a disturbance, so one file could
+be calm or run away, not both). `scenarios/hydrocracker_bed.toml` is the calm
+day: about 50 kg/s of vacuum gas oil at 365 °C through 20 m³ of catalyst, a
+residence time of 0.1 h, a bed of 30 MJ/K (its catalyst and the oil in its
+voids), every lump at 3.2 kJ/(kg·K), the light-ends lump declared a liquid (the
+bed is liquid-full, §62.7). It sits on its cool root, 374.1 °C.
+`scenarios/hydrocracker_runaway.toml` is the same bed with its feed at 385 °C,
+20 K too hot; it runs away by itself — about 400 °C at 6 minutes and 450 °C at
+16 as it creeps past where the calm state used to be, then 600 °C at 22 and
+700 °C at 25, settling near 760 °C (run it with `--ticks 18000`; the corpus's
+6 000 ticks end mid-creep). Both keep their character on both flow solvers, which
+solve the same flow on this one-path plant. **Later slices copy these files
+rather than edit them**: they are now corpus anchors, and the trip, quench and
+screen are added to new files.
+
+**§62.4's figures, recalibrated.** The shape held; the numbers moved. At
+`τ = 0.1 h`, one bed:
+
+```text
+  feed °C   steady beds °C (stable, unstable, stable)
+     300    300.3   522.5   675.0
+     330    331.3   467.8   705.0
+     350    353.7   445.9   725.0
+     365    373.9   429.8   740.0     <- the calm file: 9 K across the bed
+     370    382.9   422.5   745.0
+     375    398.3   408.6   750.0
+     375.4                            <- the cool branch ends: runaway
+     385                    760.0     <- the runaway file
+```
+
+So the calm day runs away on about 10 K more preheat (from a 370 °C feed it is
+5 K, where §62.4 said 7), or on a feed cut to about 60% (70% holds; from 370 °C
+a cut to 80% already runs away). The hot branch survives down to a 237 °C feed,
+not 330. The runaway's pace is set by `C/W` (about 190 s on the shipped bed) and
+by how far past the edge the feed is: near the edge the bed lingers where the
+calm state vanished, which is the warning a trip has to act inside (M57.3).
+
+**Gates.** `solvers/src/hydrocracking.rs` (6): `τ = 0` is the identity bit for
+bit; cracking releases heat; an inert passes untouched; a missing lump, a
+meaningless parameter and coincident rates are refused; a NaN or negative `τ` or
+a non-positive temperature is an error. `solvers/tests/reference/hydrocracking.rs`
+(8), each reaching the numbers another way than the chains: the slope at `τ = 0`
+is the network applied to the feed, at 390 and 425 °C; reacting for `τ₁` then
+`τ₂` is reacting for their sum, to 1e-13; a 20 000-step RK4 written in the test
+agrees to 1e-10; two lumps sharing one total rate (the case a naive formula
+divides by zero on) agree with RK4; `τ = +∞` ends everything as gas and `τ` of
+1e8 s and 1e300 s meet it; with naphtha not cracking, the limit is a routing by
+hand; the calibration lands within ±1 wt% of Song 2017 and releases the heat its
+yields say by hand; the rates speed up 3.9–4.3% per kelvin at 390 °C.
+`scenarios/tests/hydrocracker_reference.rs` (8), on the calm file with its bed
+made 60 times lighter (the heat capacity sets how fast a bed gets somewhere, not
+where it can rest), the inlet temperature and `τ` read off the snapshot, and the
+steady states found by bisecting `c̄p·(T − T_in) = q(T, τ)`: a bed loaded at its
+feed settles on the cool root and one loaded hot on the hot root of the same
+feed, both to 1e-6 K; the cool branch ends where the balance says, 9.5–11 K over
+the calm feed, and a feed 1.5 K below that edge settles cool while 1.5 K above
+runs away, each to its root; a hot bed on a 330 °C feed stays on the hot root
+(hysteresis); a feed cut to 80% opening settles on the new cool root and one to
+50% runs away; the calm file holds its cool root; the runaway file runs away as
+its header says; a held reactor runs the chemistry at its set temperature.
+
+**Mutations: twelve, twelve caught** — the vgo → naphtha and vgo → gas constants
+swapped (the reference), the two-rate divided difference's sign (the reference),
+the chains' parity sign (both), the `τ = +∞` limit routing everything to the
+chain's end (the reference), the Arrhenius sign (the reference), the heat of
+reaction's sign (the unit tests and the plant), the secondary chains dropped (the
+reference), the coincident-rate refusal removed (the unit tests), the two-rate
+form without `expm1` (the reference, at equal rates), the primary distillate
+constant 10% high (the reference and the plant), the activation energy at
+120 kJ/mol (both), and a bed refusing the chemistry (the plant).

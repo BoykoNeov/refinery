@@ -1095,9 +1095,9 @@ pub(crate) fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Res
 ///   flow a bed's `τ` is infinite, and the FCC kinetics' fixed-count RK4 (M4.2)
 ///   would be asked to integrate a stiff problem over any `τ` at all; the lookup
 ///   table ignores `τ`, which on a bed whose point is that `τ` follows the flow
-///   would be a key that changes nothing. So `none` only, until M57.2 adds the
-///   hydrocracking model, which is solved exactly. The trait is unchanged; this
-///   refusal is where the rule lives.
+///   would be a key that changes nothing. So `none` and M57.2's hydrocracking,
+///   which is solved exactly (docs/DESIGN.md §62.9). The trait is unchanged;
+///   this refusal is where the rule lives.
 /// - **In liquid service.** Its residence time is the feed's LIQUID volume
 ///   over the catalyst's (`Composition::mixture_density`), which has no meaning
 ///   for a gas. `phases` is `plant_phases`' verdict, taken verbatim.
@@ -1111,13 +1111,13 @@ pub(crate) fn require_bed_reactor_plant(
             continue;
         }
         let name = &graph.node(nid).name;
-        if reactions != "none" {
+        if !matches!(reactions, "none" | "hydrocracking") {
             return Err(SimError::Scenario(format!(
                 "bed reactor '{name}' with reactions = \"{reactions}\": a bed's residence time \
                  follows its flow and is infinite when the flow stops, so it needs a reaction \
                  model solved exactly at every residence time. The FCC kinetics integrate a \
                  fixed number of steps over any τ, and the lookup table ignores τ. Admitted: \
-                 none (docs/DESIGN.md §62.2)"
+                 none, hydrocracking (docs/DESIGN.md §62.2)"
             )));
         }
         if phases[nid.0 as usize] == Phase::Gas {

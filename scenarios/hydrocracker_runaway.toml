@@ -1,0 +1,108 @@
+# M57.2 demo plant: a hydrocracker's catalyst bed running away on its own.
+#
+# The bed of `hydrocracker_bed.toml`, unchanged, with one difference: its feed
+# arrives at 385 °C, 20 K hotter than the calm day — the preheat has crept up.
+# The bed starts where the calm day left it, 374.1 °C. At this feed the calm
+# steady state no longer exists (it ends near a 375 °C feed, docs/DESIGN.md
+# §62.9), so the bed heats, and the hotter it gets the faster it cracks and the
+# more heat it releases.
+#
+# What a run shows: a slow creep first — about 400 °C after 6 minutes and 450 °C
+# after 16, as the bed passes where the calm state used to be — and then the
+# runaway, past 600 °C at 22 minutes and 700 °C at 25, settling near 760 °C with
+# nearly everything cracked to light ends. The creep is the warning a trip on the
+# bed (M57.3) has to act inside. See it whole with
+#
+#   cargo run -p refinery-cli -- run scenarios/hydrocracker_runaway.toml --ticks 18000
+#
+# (18 000 ticks of 0.1 s = 30 minutes; the corpus's 6 000 ticks end mid-creep.)
+# Every number but the feed temperature is the calm file's; its header explains
+# them. This file, like that one, is a fixed regression anchor: later slices copy
+# it rather than edit it.
+
+[meta]
+name = "hydrocracker_runaway"
+description = "The calm hydrocracker bed with its feed 20 K too hot: it creeps, then runs away to ~760 °C."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "hydrocracking"
+
+# --- the four hydrocracking lumps (§62.3) --------------------------------------
+
+[[components]]
+name = "vgo"
+tb_c = 450.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "distillate"
+tb_c = 260.0
+molar_mass_kg_per_mol = 0.200
+density_kg_per_m3 = 830.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "naphtha"
+tb_c = 120.0
+molar_mass_kg_per_mol = 0.110
+density_kg_per_m3 = 740.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "gas"
+tb_c = -10.0
+molar_mass_kg_per_mol = 0.050
+density_kg_per_m3 = 550.0
+cp_j_per_kg_k = 3200.0
+
+# --- the plant ----------------------------------------------------------------
+
+[nodes.vgo_feed]
+type = "source"
+pressure_bar = 8.0
+temperature_c = 385.0
+composition = { vgo = 1.0 }
+
+[nodes.feed_valve]
+type = "valve"
+kv = 110.0
+opening = 1.0
+
+[nodes.bed]
+type = "bed_reactor"
+bed_heat_capacity_mj_per_k = 30.0
+catalyst_volume_m3 = 20.0
+bed_temperature_c = 374.1
+
+[nodes.product]
+type = "sink"
+pressure_bar = 5.0
+composition = { vgo = 1.0 }
+
+[[pipes]]
+name = "feed_line"
+from = "vgo_feed"
+to = "feed_valve"
+length_m = 30.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "valve_line"
+from = "feed_valve"
+to = "bed"
+length_m = 5.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "product_line"
+from = "bed"
+to = "product"
+length_m = 30.0
+diameter_m = 0.25

@@ -9139,3 +9139,24 @@ but `none` (until M57.2) and in gas service. Snapshot: the bed on `kind`, plus
   Release property tests pass.
 - Gates: `energy::tests::bed_tests` (5), `bed_reactor_reference.rs` (7).
   Mutations: eleven, eleven caught (§62.8).
+
+### M57.2 — **LANDED** 2026-10-14: hydrocracking and the demo
+
+`reactions = "hydrocracking"`: four-lump first-order VGO hydrocracking
+(`refinery_solvers::Hydrocracking`), solved exactly at every residence time by
+the Bateman chains with stable divided differences, `τ = +∞` its own closed
+limit. Rate constants calibrated to Song 2017's industrial yields at 390 °C and
+LHSV 1 h⁻¹; one activation energy (150 kJ/mol) and the formation enthalpies
+chosen. Admitted on a bed and on the held reactor. DESIGN §62.9.
+
+Two demo plants, on the user's decision mid-slice (a plant file cannot schedule
+a disturbance): `scenarios/hydrocracker_bed.toml`, the calm day (9 K across a
+bed on a 365 °C feed), and `scenarios/hydrocracker_runaway.toml`, the same bed on
+a 385 °C feed, which runs away by itself to about 760 °C in 25–30 minutes
+(`--ticks 18000`). Later slices copy these files, never edit them.
+
+- Corpus: the 45 shipped plants byte-identical on both fidelities, plus the two
+  new ones. Release property tests pass.
+- Gates: `hydrocracking::tests` (6), `hydrocracking_reference` (8),
+  `hydrocracker_reference.rs` (8). Mutations: twelve,
+  twelve caught (§62.9).

@@ -175,7 +175,7 @@ pub struct Fidelity {
     /// permissiveness `reactions` already has toward a plant with no reactor.
     #[serde(default = "default_constant")]
     pub thermo: String,
-    /// "none" (M1) — expands in M4
+    /// "none" (M1) | "lookup" (M4.1) | "fcc" (M4.2) | "hydrocracking" (M57.2).
     #[serde(default = "default_none")]
     pub reactions: String,
     /// "cut_point" (M3.2) | "cascade" (M7.3).

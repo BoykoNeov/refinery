@@ -22,6 +22,10 @@ name = "four_lump_reference"
 path = "tests/reference/four_lump.rs"
 
 [[test]]
+name = "hydrocracking_reference"
+path = "tests/reference/hydrocracking.rs"
+
+[[test]]
 name = "orifice_reference"
 path = "tests/reference/orifice.rs"
 
