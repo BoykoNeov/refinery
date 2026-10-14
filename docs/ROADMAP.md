@@ -9245,3 +9245,52 @@ through the bridge before the note:
   preheater is relit lower.
 - On the quench plant, a quench cut by hand runs the second bed into the trip,
   the loops are handed back, and the bed is held at 380.00 °C again.
+
+### M57.5 — **LANDED** 2026-10-14: the reactor screen
+
+`demo/reactor.tscn`: the calm bed, the trip plant and the quench plant on keys
+1–3, each file loaded unchanged and run on its own solver (Newton). It draws:
+- the process line, with each bed a vessel filled to its temperature and its
+  trip limit and loop target across it;
+- a 30-minute time chart of each bed and the oil entering it;
+- a trail of bed temperature against the oil entering it;
+- each loop's faceplate, with the quench check in words, and each trip with
+  its reset rule.
+
+Commands: the feed's temperature, the feed valve, the preheater's firing, the
+product cooler, each loop's mode and target, the emergency stop and the reset.
+No new command and no binding change. DESIGN §62.14.
+
+Recorded runs (`godot --headless --path . res://demo/reactor.tscn --quit-after
+400000 -- --auto --plant=calm|trip|quench`):
+- **calm**:
+  - Feed to 385 °C at 1 minute. The bed creeps to 396 °C at 6 minutes and is
+    at 530 °C at 21.
+  - Feed back to 365 °C at 25 minutes: the bed is at 737.7 °C ten minutes later.
+  - Feed to 220 °C at 35 minutes: 591 °C at 45 minutes, then back on the cool
+    state, 377.9 °C at 55.
+  - Feed to 365 °C again: 374.8 °C at 64 minutes.
+- **trip**:
+  - The trip latches at t=3 698.
+  - The reset at 3 800 is REFUSED: "its condition still holds (the temperature
+    is 400.4 °C, at or above its limit of 400.0 °C)".
+  - The reset at 7 200 is admitted and relights nothing.
+  - Relit by hand at 14 MW at 7 800, the bed settles near 385.9 °C.
+- **quench**:
+  - The bed loop is put in MANUAL and the quench cut to 0.25 kg/s at 2 minutes.
+  - The trip latches at t=8 717 and sets the preheater's loop to MANUAL.
+  - The reset at 9 000 is refused.
+  - At 18 min 20 s the reset is admitted and both loops are put back in AUTO.
+  - The bed is at 380.1 °C at 40 minutes.
+
+- **Fixed on the way**: a refused trip reset printed its reading as Rust debug
+  text in kelvin. It now reads in °C (bar, m or kg/s for other trips). The side
+  agent's catch, made in the engine and not reworded on the screen.
+  `bed_trip_reference.rs` gained the readable form, written failing first.
+- The editor loads the extension's debug build, where a tick costs 18–25 times
+  its release figure (0.17, 0.27 and 1.1 ms on a quiet machine). The screen reads the snapshot once a frame when
+  interactive, and its default speeds (16, 8 and 4 ticks a frame) keep the
+  simulation under about 8 ms a frame.
+- Gates: `reactor_screen.rs` (3). Mutations: five on the timelines, all caught.
+- Corpus: every shipped plant byte-identical on both fidelities.
+- A27 stays open: no screen runs the quench plant on the game solver.

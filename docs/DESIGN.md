@@ -22672,3 +22672,96 @@ Probed through the bridge:
   engine moves.
 - Screenshots come from a windowed `--auto` run, and the recorded `t=` lines go
   to ROADMAP M57.5.
+
+### 62.14 The reactor screen, built (M57.5)
+
+`demo/reactor.tscn` and `demo/reactor.gd`, with keys 1–3 for the calm bed, the
+trip plant and the quench plant. There is no new command, and neither the
+binding nor any plant file changed. The screen draws:
+- **The process line**: feed, valve, preheater with flames sized by its firing,
+  the beds, the mix, the cooler, the drum and the product.
+  - Each bed is a vessel filled to its temperature on a fixed 200–800 °C scale
+    and coloured by it.
+  - Its trip limits and loop targets are drawn across it.
+  - Underneath: temperature, the oil entering, the heat released, the share
+    still uncracked, and the time in the bed.
+  - The quench returns underneath, from the drum to the mix, labelled with its
+    flow and the two temperatures the loop's check compares. It turns red with
+    "NOT COLD" when the check fails.
+- **The time chart and the trail** of §62.13.
+- **A panel** with each loop's faceplate (Tab picks one, A switches AUTO or
+  MANUAL, Q/Z moves its target in its own variable), the quench state in words
+  ("FROZEN" when MANUAL and not cold), and each trip against its limit with
+  its reset rule.
+
+**Found while building, and fixed in the engine.** A refused trip reset printed
+its reading and limit as Rust's debug text (`Temperature { k:
+Kelvin(673.5055419284853) } against a High limit of …`), and the screen shows
+refusals as they come back (§44 rule 2). The coil and supply refusals already
+speak °C. Now this one does too: "its condition still holds (the temperature is
+400.4 °C, at or above its limit of 400.0 °C)", through `reading_text` in
+`engine.rs`, which writes °C, bar, metres and kg/s.
+- Every test that matches on "condition still holds" is untouched.
+- `bed_trip_reference.rs` gained the readable form, written failing first.
+- No snapshot moves, since only an error path changed.
+
+**What the build changed from the note.**
+1. **The editor runs the extension's DEBUG build.** Measured in the scene
+   (last line of each recorded run, on a quiet machine), a tick costs on
+   average 0.17 ms on the calm bed, 0.27 ms on the trip plant and 1.1 ms on the
+   quench plant. That is 18–25 times the release figures, about twice that on
+   a busy machine, and reading the snapshot costs about the same again. So:
+   - An interactive frame reads the snapshot only on its last tick and on a
+     chart sample. A recorded run reads it every tick, so its event lines carry
+     exact ticks.
+   - The default speeds are 16, 8 and 4 ticks a frame (maxima 128, 64 and 32),
+     which keeps a frame's simulation under about 8 ms.
+   - The worst single tick is 3–8 ms on a quiet machine. On a busy one, ticks
+     of 40–110 ms appeared, and they are not repeatable.
+   - The release build is what A27's budget is about. A debug-build speed-up
+     (an `opt-level` for the engine's crates in the dev profile) is not taken.
+     It would change every test build in the workspace, and it is the user's
+     call.
+2. **The trip plant's run is 60 minutes, not 30.** Relit at 14 MW, the bed
+   settles at 385.89 °C, but only within 0.1 K of it by 60 minutes.
+3. **The quench plant ends within 0.3 K of 380 °C at 40 minutes, not at
+   380.00.** The scene's beats fall on different ticks from the probe's: the
+   reset and both AUTO commands land together at 18 min 20 s.
+4. **Each trip's line names no action.** `TripSnapshot` does not publish what a
+   trip acts on, so "cuts the preheater" would be text the screen made up. The
+   line shows what the snapshot does carry: the watched value, the limit, and
+   the reset rule.
+
+**Gates.** `crates/godot-ext/tests/reactor_screen.rs` (3) replays the three
+timelines on the scene's command text.
+- **calm**:
+  - The calm day is 374.10 °C.
+  - The creep runs at 390–400 °C at 6 minutes, and there is no feed left
+    uncracked by 21 minutes.
+  - Ten minutes after the feed returns to 365.1 °C, the bed is HOTTER than when
+    it came back, and over 730 °C.
+  - On a 220.1 °C feed it holds over 570 °C, then falls under 400 °C by
+    55 minutes.
+  - Back on 365 °C, it settles at 374–375.5 °C with over 93% uncracked.
+- **trip**:
+  - The trip latches on tick 3 698.
+  - The reset at 3 800 is refused in °C.
+  - The reset at 7 200 is admitted with the preheater still dark.
+  - Relit at 14 MW, the bed settles at 385.7–386.0 °C, armed.
+- **quench**:
+  - The second bed is within 0.5 K of 380 °C at 2 minutes.
+  - By hand with the quench cut, the trip latches on tick 8 717 and puts the
+    preheater's loop in MANUAL.
+  - The reset at 9 000 is refused in °C.
+  - At 40 minutes: the preheater is relit by its loop, the bed is within 0.3 K
+    of 380 °C, both loops are in AUTO, the quench is cold, and the trip is
+    armed.
+
+**Mutations: five on the timelines, all caught.**
+- An id sent as `0.0`.
+- The feed not brought back at 25 minutes.
+- The preheater relit at its old 16.86 MW.
+- The quench not cut.
+- The preheater's loop left in MANUAL.
+
+The engine's message was caught by its own failing-first gate.
