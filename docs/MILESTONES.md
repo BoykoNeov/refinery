@@ -12,6 +12,56 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M57 is CLOSED (2026-10-14): a reactor whose own heat sets its temperature —
+a catalyst bed, hydrocracking that releases heat and can run away, a trip on
+the bed, quench between two beds, and a reactor screen — `docs/DEFERRED.md` D1
+taken, D2 taken for the bed (open for the held reactor), A27 opened and left
+open.** Asked after M56 as "what is next"; the user chose a reactor that heats
+itself and can run away, then "i want a true runaway". New plants only; the two
+FCC plants and the held reactor unchanged. DESIGN §62.
+- **M57.1, the bed** (§62.8): `NodeKind::BedReactor`, a `CatalystBed` whose
+  temperature is a state — the chemistry at the bed's start-of-tick
+  temperature over `τ = V·ρ_feed/ṁ`, its heat into the bed, the fluid out at
+  the bed's temperature, the furnace coil's exact step. No tick solves a fixed
+  point. Gates `bed_tests` (5), `bed_reactor_reference.rs` (7); eleven
+  mutations, all caught.
+- **M57.2, hydrocracking** (§62.9): four-lump first-order VGO hydrocracking,
+  solved exactly at every residence time (Bateman chains, stable divided
+  differences). Rate constants calibrated to Song 2017's industrial yields;
+  the activation energy (150 kJ/mol) and formation enthalpies chosen, and
+  labelled so. `hydrocracker_bed.toml` (the calm day, 9 K across the bed) and
+  `hydrocracker_runaway.toml` (a 385 °C feed, away by itself to about 760 °C in
+  25–30 minutes). Twelve mutations, all caught.
+- **M57.3, a trip on the bed** (§62.10): a trip may watch a bed's temperature.
+  It cuts the preheater only: a bed at zero flow holds its heat exactly, so a
+  trip that shut the feed could never reset — and is now refused at load when
+  it fully shuts a valve on the bed's own line. `hydrocracker_trip.toml`: the
+  trip at 400 °C after 6 min 10 s, the bed turns at 400.39 °C and settles near
+  300 °C; the untripped twin reaches 748 °C. `bed_trip_reference.rs` (6).
+- **M57.4, quench between two beds** (§62.11–62.12): cooled product recycled
+  through a drum (hydrogen, the real quench, deferred); single loop and cascade
+  admitted; a bed loop whose quench stops being colder than what it joins is
+  switched to MANUAL. `hydrocracker_quench.toml`: the second bed held at
+  380.00 °C on 2.45 kg/s of quench, a backup trip at 400 °C. `quench_reference.rs`
+  (7); fifteen mutations, all caught. **Found**: the game solver overruns the
+  frame budget on this plant (518 of 6 000 ticks over 2.5 ms, worst 21.9 ms),
+  the cascade moving the valve every tick; Newton is inside it on every tick
+  (A27).
+- **M57.5, the reactor screen** (§62.13–62.14): `demo/reactor.tscn`, the calm,
+  trip and quench plants on keys 1–3, each file unchanged on Newton. Beds drawn
+  as vessels filled to their temperature, a 30-minute time chart, a trail of
+  bed against inlet temperature, loop faceplates and trips with their reset
+  rule. No new command, no binding change. `reactor_screen.rs` (3); five
+  mutations, all caught. On the way, a refused trip reset reads in °C, not Rust
+  debug text in kelvin.
+- Corpus: every plant shipped before M57 byte-identical on both fidelities
+  through every slice; 49 plants now.
+- **Left open**: A27 — no screen runs the quench plant on the game solver.
+  §62.7's deferrals: an axial hot spot, hydrogen (consumption, depressuring,
+  the real quench), what a runaway breaks, deactivation / wall loss / bed
+  pressure drop, a trip that stops a bed's feed, and a sourced activation
+  energy and heat release.
+
 **M56 is CLOSED (2026-10-10): the line flash's densities remembered, its two
 roots found by superlinear searches, the pump inlet's search warm-started,
 Newton's cold starts on M54.1's pump plant cured, and the game solver's dying

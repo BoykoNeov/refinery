@@ -9095,7 +9095,7 @@ the numbers). Nothing in the repo's code changed. DESIGN §61.7.
 
 **M56 CLOSED 2026-10-10.** Close-out at the top of `docs/MILESTONES.md`.
 
-## M57 — a reactor whose own heat sets its temperature: a catalyst bed, hydrocracking, and a runaway; ledger rows D1 and D2; opened on a decision
+## M57 — **CLOSED** 2026-10-14 — a reactor whose own heat sets its temperature: a catalyst bed, hydrocracking, and a runaway; ledger rows D1 and D2; opened on a decision
 
 The user asked "what is next" (2026-10-14), was told nothing in DEFERRED.md is
 past its trigger, and chose the first of five directions offered: a reactor
@@ -9294,3 +9294,6 @@ Recorded runs (`godot --headless --path . res://demo/reactor.tscn --quit-after
 - Gates: `reactor_screen.rs` (3). Mutations: five on the timelines, all caught.
 - Corpus: every shipped plant byte-identical on both fidelities.
 - A27 stays open: no screen runs the quench plant on the game solver.
+
+**M57 CLOSED 2026-10-14**, on the user's "yes" after all five slices landed.
+Close-out at the top of `docs/MILESTONES.md`.
