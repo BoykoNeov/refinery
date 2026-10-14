@@ -21979,7 +21979,9 @@ at every slice.
   a story that needs WHERE in a bed it is hot.
 - **Hydrogen** — consumption, partial pressure, and depressuring, the real
   emergency cure (it starves the reaction of hydrogen). Un-defer: a plant whose
-  answer depends on the hydrogen, or a depressuring action.
+  answer depends on the hydrogen, or a depressuring action. Also the real
+  QUENCH: M57.4's is cooled product, a liquid stand-in, and the user named
+  hydrogen "for another session" (§62.11).
 - **What a runaway breaks** — a vessel wall past its metal limit, as §42's tubes
   burst. Un-defer: the user's call after M57.3.
 - **Catalyst deactivation; wall heat loss; bed pressure drop.** As §5 and §37
@@ -22425,3 +22427,114 @@ stream could push back through it into the drum: the quench pipe's flow turns
 negative, the reading falls back to the drum's temperature, and the loop may
 open a valve that lets the hot main stream escape to the drum. A check valve on
 the quench line (§33) is the plant's answer, and the demo carries one.
+
+### 62.12 Quench between two beds, built (M57.4)
+
+**What is built.**
+
+- `refinery_core::graph::QuenchCheck` (the bed, the quench pipe into the mix,
+  the main pipe, the origin) and `QuenchReading` (`quench_k`, `joins_k`,
+  `is_cold`: strictly colder). `ControlLoop::quench` and `last_quench`, `None`
+  on every loop not on a bed.
+- `PlantGraph::quench_reading`, the single owner of the comparison: a pipe's
+  stream temperature while the last solve gave it a forward flow, else the
+  origin's temperature (the quench) or the bed's (the main stream). Read by the
+  loader at load (`cold_at_load`), by pass 0 of `run_control_loops` at the top
+  of every tick, and fresh by `Command::SetControllerMode`'s refusal of AUTO.
+- **Pass 0**, before every other loop pass: each quench loop stores its
+  reading; one in AUTO whose quench is not cold is set to MANUAL, nothing more.
+  The pre-M8 exit still returns before it, so a plant with no loop runs no line
+  of it.
+- `check_setpoint` answers for a bed's temperature (absolute zero its bound).
+- In the loader: `quench_layout`, the single owner of "is this valve a quench
+  on this bed", walking by declared direction with a leak split's junction and
+  orifice counted as pipe; the old blanket refusal of a loop on a bed replaced
+  by §62.11's table; `cascade_pairing` split into the bed cells (it now returns
+  the quench check with the sign) and `holdup_pairing`, the §29 cells unchanged;
+  `bed_duty_refusal` shared by the single loop and the cascade.
+- `ControlSnapshot::quench`, skipped when `None`.
+- `scenarios/hydrocracker_quench.toml`, the forty-ninth plant.
+
+**What the demo does**, identical on both fidelities to the printed digit. The
+second bed, born at 375 °C with the quench at its 0.25 kg/s minimum, heats; the
+cascade raises the quench, the bed peaks at 380.23 °C after 3 min 40 s and holds
+380.00 °C on 2.45 kg/s, the valve at most 0.123 open. The first bed sits at
+381.8 °C, the preheater at 13.0 MW, the drum at 133 °C and 5 m. The bed loop in
+MANUAL: the bed reaches 400 °C and the trip cuts the preheater between 10 and
+15 minutes, and the plant settles onto its 300 °C feed. With no trip either, the
+bed runs away to 742 °C and the drum warms past the first bed's 385 °C outflow
+at 91 minutes (tick 54 560), the same tick on both fidelities.
+
+**Corrections from building it.**
+
+1. **A flow target of zero is refused** (§24 fork 4: zero is "shut", a manual
+   act). So the quench cannot start shut under the cascade: the range starts at
+   0.25 kg/s, the plant's minimum quench, and the valve at 0.01.
+2. **A warm quench can be reached by a TRIP, not only by a runaway.** With the
+   product cooler turned down to 5 MW (prototype), the drum warms to ~324 °C,
+   the cascade saturates at 10 kg/s after 55 minutes, the bed creeps to the trip
+   at 116 minutes — and the trip, cutting the preheater, cools the main stream
+   to 358 °C under the 362 °C drum. The check then freezes the loop holding
+   ~10 kg/s of quench that is now slightly WARMER than what it joins. That is
+   the freeze the user chose, read honestly: it holds, it does not shut. The
+   trip is what cools the plant; the held quench slows it a little.
+3. **The game solver overruns the frame budget on this plant** — 518 of 6 000
+   ticks over 2.5 ms, worst 21.9 ms; Newton is inside it on every tick. Traced
+   to the cascade moving the valve every tick, which the game solver
+   re-converges in 250–330 iterations. Ledger row **A27**; it decides which
+   solver M57.5's screen runs this plant on.
+4. **Gate 2's warm drum starts warm.** From the file's own start the drum
+   passes the main stream after 91 minutes — about four minutes of debug
+   test per fidelity. The gate starts where that run is headed (bed at 742 °C,
+   drum at 360 °C, still colder than the bed so the plant loads); the
+   ninety-minute figure is the CLI's.
+5. **The tie was not gated.** Mutation 3 (`<` to `<=` in `is_cold`) survived
+   the first pass: no running plant ties to the last bit. At load it can — a
+   drum declared at the bed's temperature — and gate 5 now refuses that too.
+
+**Gates**, `crates/scenarios/tests/quench_reference.rs` (7), both fidelities:
+the loop catches the runaway (peak just over 380 °C, settled within 0.01 K,
+valve 0.05–0.2 open, quench cold and the loop in AUTO on every tick, the trip
+armed); in MANUAL the trip fires between ticks 6 000 and 9 000 and the bed ends
+under 310 °C; with no trip the quench goes warm between 5 and 15 minutes from
+the hot start and AUTO is refused in words naming the loop; **the freeze** — a
+quench drawn from a supply heated by `SetSourceTemperature` from 135 to 395 °C:
+the next tick's pass still reads the cold pipe, the one after reads the hot
+quench and sets MANUAL, the faceplate showing it within a kelvin of 395 °C; the
+flow target held exactly for 600 ticks; AUTO refused; the supply cooled, AUTO
+refused until one tick has carried the cold quench, then admitted, and the bed
+brought back within half a kelvin of its target; the single loop (K 0.025/K,
+T_i 300 s) holding the bed as the cascade does; every refusal of the table and
+of `quench_layout` on its own substring (absent and reverse action, a duty range
+on the valve, a valve whose line reaches no junction, a mix feeding another
+bed, a third inlet, a furnace on the quench line, a quench hotter than or level
+with the bed at load, a preheater or cooler loop on a bed, a cascade over a flow
+loop that is no quench, over the preheater's outlet, declared reverse, and a bed
+loop as a secondary); and the faceplate's `quench` on the bed loop alone, from
+load, and on no loop of the 48 earlier plants. `bed_reactor_reference.rs`'s loop
+refusal now names `quench_layout`'s reason.
+
+**Mutations: fifteen, fifteen caught** (one after the tie gate was added).
+
+| # | mutation | caught by |
+|---|---|---|
+| 1 | the quench read off its pipe when still | gate 6 (the load reading) |
+| 2 | the main stream read off its pipe when still | gate 6 |
+| 3 | a tie counted cold | gate 5's level drum, added for it |
+| 4 | the freeze removed | gate 3 |
+| 5 | AUTO's refusal removed | gates 2 and 3 |
+| 6 | the reading not stored | gates 2 and 3 |
+| 7 | a mix with any number of inlets | gate 5 |
+| 8 | a furnace on the quench line admitted | gate 5 |
+| 9 | the load-time check removed | gate 5 |
+| 10 | a bed loop admitted as a secondary | gate 5 |
+| 11 | the cascade's sign reversed | gates 1 and 5 |
+| 12 | an absent action defaulted | gate 5 |
+| 13 | reverse admitted on a quench | gate 5 |
+| 14 | the cascade primary's check not stored | gate 6 |
+| 15 | a duty loop on a bed falling through to the duty arm | gate 5 |
+
+**What must not change, measured.** Every one of the 48 earlier plants is
+byte-identical on both fidelities, against baselines taken before the first
+edit; `hydrocracker_quench` is new on both. The Godot bridge does not read
+`ControlSnapshot`'s fields, so the binding's build is not owed.

@@ -9203,3 +9203,25 @@ by hand. The sign is a temperature, not a topology: `quench_layout` checks the
 layout at load, and `PlantGraph::quench_reading` compares the two temperatures
 at load and on every tick. The prototype: quench shut, the second bed runs away
 to 744 °C and its drum warms past the first bed's outflow inside two hours.
+
+### M57.4 — **LANDED** 2026-10-14: quench between two beds
+
+`scenarios/hydrocracker_quench.toml`: two beds behind a preheater held at 369 °C;
+the second, born at 375 °C heading for the runaway, is caught by the cascade
+`bed2_temperature` (direct) over `quench_flow` and held at 380.00 °C on 2.45 kg/s
+of cooled product, peaking at 380.23 °C; a backup trip at 400 °C cuts the
+preheater. In MANUAL the trip catches it inside a quarter of an hour; with no
+trip the bed runs away to 742 °C and the drum passes the first bed's outflow at
+91 minutes, when AUTO is refused. A bed loop in AUTO whose quench stops being
+colder than what it joins is switched to MANUAL (gate 3, by a supply heated on
+command). DESIGN §62.12.
+
+- Corpus: the 48 shipped plants byte-identical on both fidelities, plus the new
+  one.
+- Gates: `quench_reference.rs` (7); `bed_reactor_reference.rs`'s loop refusal
+  re-pointed; the repo's furnace count 21. Mutations: fifteen, fifteen caught
+  (one after a tie gate was added).
+- **Found: the game solver overruns the frame budget on this plant** (518 of
+  6 000 ticks over 2.5 ms, worst 21.9 ms; Newton inside it on every tick),
+  traced to the cascade moving the valve every tick. Ledger row A27; it decides
+  which solver M57.5's screen runs this plant on.
