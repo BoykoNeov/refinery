@@ -22796,9 +22796,9 @@ Measured on `hydrocracker_runaway.toml`, release, its bed loaded at 760 °C, the
 feed moved by `SetSourceTemperature` after one minute (a throwaway probe):
 
 ```text
-  feed °C   bed after 2 h (or minutes to fall below)
-    385     760.1 (holds)
-    340     715.1        330  705.1        300  675.1        250  623.4
+  feed °C   bed at the end of the run (or minutes to fall below)
+    385     760.1 (holds; a 10-minute run)
+    340     715.1        330  705.1        300  675.1        250  623.4   (2 h runs)
     200     < 600 at 5.9 min, < 500 at 11.1, < 400 at 13.2
 ```
 
