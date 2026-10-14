@@ -22917,3 +22917,107 @@ ends in a failed wall; its header says so.
   shell limit (ASME VIII-2 / API 934) or a sourced engulfing-fire share.
 - **Depressuring as the cure** (D7): the real emergency answer to a runaway,
   and a far kinder way to bring a bed below its limit than a 200 °C feed.
+
+### 63.9 The wall, built (M58.1)
+
+As §63.1–63.5 specify. `NodeKind::BedReactor { bed, wall: BedWall }`,
+`WallState`, `BedWall::limit_reached`; `Engine::run_burnouts` fails walls
+beside the furnaces (an `open_hole_to` shared with them, so a failure never
+shrinks a wider hand hole); `energy::bed_reactor` burns `L = max(ṁ_hole, 0)·LHV`
+while the wall is failed — read whether or not the bed itself has flow, since
+its outlet's hole can be fed from downstream — and puts `s·L` into the bed beside
+a commanded fire; `BedPass::wall_fire`, published as `NodeSnapshot::wall_fire_w`;
+`Command::RepairBedWall` (bridge `repair_bed_wall`); the loader's four keys, the
+split outlet on every bed, and the refusal of a metered bed outlet. The
+`ReplaceTubes` message now names its pipe through a helper the repair shares.
+
+**The demo**, `scenarios/hydrocracker_wall_failure.toml` (the fiftieth file): the
+runaway file's bed loaded at 450 °C. On both fidelities the wall fails on tick
+**2 750** (4 min 35 s), the bed at 550.13 °C; 1.37 kg/s sprays from the product
+line and burns at 58.5 MW, settling to 1.28 kg/s and 54.75 MW as the bed heats;
+5.5 MW of it heats the bed, which settles at **794.4 °C** — 34 K over the ~760 °C
+the runaway alone reaches. Patched and fed 200 °C oil at 10 minutes, the bed is
+under its limit 9 minutes later (tick 11 502), the repair is admitted, and back on
+a 365 °C feed it settles on the calm day's 374.0 °C.
+
+**`hydrocracker_runaway.toml` now breaks its wall**: on tick 12 364 (20 min 36 s),
+and at 30 minutes it is at 781.4 °C, still climbing; its header says so, and
+`the_runaway_file_runs_away_by_itself` pins both.
+
+**Gates** (`crates/scenarios/tests/bed_wall_reference.rs`, eight): the failure on
+the tick after the bed first ends one at its limit, to the declared area, on both
+fidelities (tick 2 750); the fire is the leak times the heating value to the bit
+and zero intact and patched; with the feed valve shut on a failed, leaking bed the
+bed takes `C·ΔT/dt = s·L` to 1e-9 each tick, and exactly nothing with a share of
+zero; a hand hole in an intact wall leaks and burns nothing, in a failed one it
+burns; a failure keeps a 5 cm² hand hole; `RepairBedWall`'s four refusals in the
+player's order, every refusal while the 200 °C feed cools the bed, success that
+moves no hole, and a second failure back on the 385 °C feed; every bed in the repo
+(six, in five files) owns a dormant hole named for its outlet; the loader's
+refusals, a metered bed outlet among them. The Godot bridge's wire-format and
+acceptance sweeps gained `repair_bed_wall`, applied to the demo failed, patched
+and chilled through the bridge itself.
+
+**What else moved, corrected while building it:**
+
+1. **The trip gate's trapped bed** (`bed_trip_reference.rs`, gate 4): with the
+   feed valve shut the game solver now leaves −3.5e-9 kg/s through the bed (one
+   more free node on its outlet, §42 correction 5's twin), so the gate reads the
+   feed below the solve's 1e-8 kg/s floor and the bed held to 1e-6 K, where it
+   read exactly zero and bit for bit. Newton still gives exactly zero.
+2. **Fixtures loaded past 550 °C are refused** (a wall loaded at its limit would
+   fail before the plant ran): the hydrocracker balance gates and the warm-quench
+   gate take a 3 000 °C limit, as §42's furnace fixtures do; the held-reactor
+   gate strips the bed's keys whole.
+
+**What moved, measured** (6 000 ticks, both fidelities, against baselines taken
+before the first M58 edit): **45 plants byte-identical, the four hydrocracker
+plants moved, the new file new** — as §63.6 predicted. None of the four fails its
+wall inside 6 000 ticks; they move by the split outlet alone: at tick 6 000 the
+flows by at most 8.3e-5 kg/s of 50 (1.7 parts per million — the second half of
+the outlet evaluated at the junction's state, not rounding) and the beds by at
+most 2.6e-4 K (the trip plant). Newton's iterations: worst 9 → 10 on the calm,
+runaway and quench beds, totals within 2. **The game solver on the quench plant
+got slower**: 162 215 → 180 365 iterations and 2.8 → 4.8 s of tick time over the
+run, its worst tick 971 → 330 iterations. A27 (that plant over the frame budget on
+the game solver) stays open and is no better; the screen runs it on Newton.
+
+**Mutations: fifteen, fourteen caught, one uncaught as predicted**
+(`mutate_wall.py`, each running `bed_wall_reference.rs` only, release): the pass
+never fails a wall (six gates); the limit compared strictly (**uncaught, as
+predicted**: no bed lands exactly on 550 °C — B42's mutation 2 for tubes); a
+failure shrinks a wider hand hole (the wider-hole gate); the failure never
+latches (six gates); the fire burns on an intact wall (the hand-hole gate); the
+fire ignores the heating value (four); the whole fire heats the bed, and none of
+it does (the share gate, both); the repair skips the hole check, the bed check,
+or the re-arm (the repair gate, each); no hole on a bed's outlet, and the hole
+never written to the wall (seven gates each, the every-bed gate among them); a
+bed's outlet metered, and the share's range unchecked (the loader gate, each).
+
+### 63.10 The screen, built (M58.2)
+
+`demo/reactor.gd` gains a fourth plant on key 4, `wall` (the demo file), and on
+every plant a bed's wall: its limit as a dashed line across the vessel ("wall
+550", red once failed), and on a failed wall a crack, flames on the outlet line
+sized by `wall_fire_w`, the fire and the share into the bed in MW, and "WALL
+FAILED". Keys **P** (patch every failed wall's outlet: `puncture_pipe` at area 0)
+and **M** (`repair_bed_wall` on every failed wall); the engine's refusals shown in
+its own words. A wall failing or being repaired is an event line.
+
+**The calm timeline changed, because its plant did**: its runaway now fails the
+wall on tick 12 964 and the leak's fire keeps the bed near 630 °C on a 220 °C
+feed, so the story's return never came. It now patches the hole with the 220 °C
+feed at 35 minutes and repairs the wall with the 365 °C feed at 55, and runs to
+80 minutes (it was 65) to show the bed back at 374.6 °C. `AUTO_WALL`: the failure
+at tick 2 750; at 10 minutes a repair refused (the hole), the patch, a repair
+refused (the heat, 748.1 °C), the 200 °C feed; at 20 minutes the repair admitted;
+at 25 the 365 °C feed; calm (374.0 °C) by 55. Both recorded headless in Godot and
+replayed by `reactor_screen.rs` (now four gates); the wall plant also recorded
+windowed with screenshots at its beats (checked by eye: crack, flames, labels).
+Debug-build ticks: 0.22–0.23 ms on both one-bed plants.
+
+### 63.11 Deferred, as §63.8, in the ledger
+
+D12 (a trip on a failed bed may still relight its preheater) and D13 (the wall's
+round limit, hole and share; its instant failure at a lumped temperature) are new
+rows; D7 now also names depressuring as the kinder way under a wall's limit.

@@ -9315,3 +9315,32 @@ cool" can be met, hard. The hole is §42's, on the bed's outlet pipe; the wall
 fails the tick its bed starts at or past 550 °C; the fire is the leak times
 42.8 MJ/kg, a tenth of it into the bed; `RepairBedWall` re-arms it. Slices:
 M58.1 the wall, M58.2 the screen. No code changed.
+
+### M58.1 — **LANDED** 2026-10-14: the wall
+
+`BedWall` on every bed: it fails the tick its bed starts at or past its limit,
+opening a hole on the bed's outlet pipe; the leak burns at its heating value and
+a declared share of the fire heats the bed; `RepairBedWall` re-arms it once the
+hole is patched and the bed is back under its limit. Loader keys
+`wall_failure_c`, `wall_rupture_area_cm2`, `fluid_heating_value_mj_per_kg`,
+`wall_fire_share`; the four hydrocracker files carry 550 °C, 1 cm², 42.8 MJ/kg and
+0.1 (game values). Snapshot: `wall` on the bed's `kind`, `wall_fire_w`. New file
+`hydrocracker_wall_failure.toml`: the wall fails on tick 2 750 on both
+fidelities, the leak burns at ~55 MW, the bed settles at 794 °C; patched and fed
+200 °C oil it is under its limit nine minutes later. DESIGN §63.9.
+
+- Corpus: 45 plants byte-identical on both fidelities; the four hydrocracker
+  plants moved, by the split outlet alone (flows ≤ 1.7 ppm, beds ≤ 2.6e-4 K at
+  tick 6 000); the game solver slower on the quench plant (A27 no better).
+- `hydrocracker_runaway.toml` now fails its wall on tick 12 364.
+- Gates: `bed_wall_reference.rs` (8); the bridge's sweeps gained
+  `repair_bed_wall`. Mutations: fifteen, fourteen caught, one uncaught as
+  predicted. Release property tests pass; the godot-feature clippy is clean.
+
+### M58.2 — **LANDED** 2026-10-14: the screen
+
+`demo/reactor.gd`: a fourth plant on key 4; every bed draws its wall's limit and,
+failed, a crack and the fire on its outlet with its size and the share into the
+bed; P patches, M repairs. The calm timeline patches and repairs its wall now
+that its runaway breaks it, and runs to 80 minutes. Recorded headless (calm,
+wall) and windowed with screenshots (wall). `reactor_screen.rs` (4). DESIGN §63.10.
