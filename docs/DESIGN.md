@@ -22550,3 +22550,125 @@ refusal now names `quench_layout`'s reason.
 byte-identical on both fidelities, against baselines taken before the first
 edit; `hydrocracker_quench` is new on both. The Godot bridge does not read
 `ControlSnapshot`'s fields, so the binding's build is not owed.
+
+### 62.13 The reactor screen, specified (M57.5)
+
+**Three decisions, the user's (2026-10-14), asked in plain words before any
+code.**
+
+1. **Each plant runs on the solver its own file names: Newton, for all three.**
+   The user was told that the game solver overruns the frame budget on the
+   quench plant (A27) and that the pump screen set the precedent of running its
+   plant on Newton (M56). They answered "go with your recommendation". There is
+   nothing to build for this. `Bridge::load` builds the engine from the file's
+   own `[fidelity]`, and every hydrocracker file says `flow = "newton"`. A27
+   stays open, because its trigger is a screen that runs this plant on the game
+   solver, and none does. Its row says so.
+2. **Three plants**, on keys 1–3, each file loaded unchanged:
+   - `calm`: `hydrocracker_bed.toml`, one bed on a calm day. The only plant
+     that shows a bed staying hot after its feed comes back.
+   - `trip`: `hydrocracker_trip.toml`, the bed behind a fired preheater, with
+     the trip that cuts the fire.
+   - `quench`: `hydrocracker_quench.toml`, two beds with the quench cascade and
+     the backup trip.
+
+   `hydrocracker_runaway.toml` is left out. It is the calm bed with a feed 20 K
+   hotter, and the calm plant reaches that same story with one key.
+3. **Two charts, both plotting numbers the engine reported.**
+   - **A time chart**: each bed's temperature and the temperature of the oil
+     entering it, over the last 30 minutes of plant time. Each bed's trip limit
+     and loop target are drawn as horizontal lines. This chart shows the creep
+     before a runaway, the warning a trip acts inside.
+   - **A trail**: one dot per sample, at (entering oil temperature, bed
+     temperature), with older dots faded. Warming the feed and then cooling it
+     traces the jump up and the bed staying hot, which is §62.4's shape drawn by
+     the bed itself.
+
+   Neither chart draws a steady-state curve, a branch or a turning point. Those
+   would be physics computed in GDScript, which §44 rule 1 forbids.
+
+**No interface change.** Every command the screen sends already exists:
+`set_source_temperature` on `vgo_feed`, `set_valve_opening` on `feed_valve`,
+`set_furnace_duty` on `preheater`, `set_cooler_duty` on `product_cooler`,
+`set_controller_mode`, `set_setpoint` (a flow target is `{"variable":"flow",
+"kg_per_s":…}`), `manual_trip` and `reset_trip`. The binding does not change,
+so its godot-feature clippy is not owed. §44's rules hold:
+- No physics in GDScript.
+- Refusals are shown in the engine's own words. A refused reset prints its
+  condition as Rust's debug text (`Temperature { k: Kelvin(673.5…) }`), and the
+  screen shows it as the engine wrote it.
+- Ids are cast to integers.
+- The screen draws the last tick that was solved.
+
+**What is read from where.**
+- **A bed's temperature**: `kind.bed.temperature`, a state present from load.
+- **Heat released and residence time**: `reaction_heat_w` and
+  `residence_time_s`. Both are absent before the first tick, and the screen
+  shows them as unknown, not zero.
+- **Entering oil temperature**: the stream on the edge whose `to` is the bed.
+- **The share of the bed's outflow still uncracked**: the `vgo` mass fraction on
+  the edge whose `from` is the bed, found by its name in the snapshot's `slate`,
+  and shown as a percent. That conversion is display.
+- **Gauge markers**: each trip whose `watches` is the bed's node, at its own
+  `limit`, and each loop whose `watches` is the bed's node, at its own
+  `setpoint`.
+- **Quench faceplate**: the bed loop's `quench` (`quench_k`, `joins_k`) and
+  `mode`.
+  - "Frozen" is shown when the loop is in MANUAL and `quench_k ≥ joins_k`.
+    These are the two facts the snapshot's own doc says make it.
+  - The cascade's link is the primary's `drives`.
+- **The quench flow**: the stream on `quench_line`.
+
+**Speed.** The stories take 10–60 minutes of plant time. At one 0.1 s tick per
+60 Hz physics frame, a 20-minute runaway would take 200 s to watch.
+- Each plant gets its own default and maximum ticks per frame, as the furnace
+  screen does, set by the measured cost of a tick in the scene itself. The
+  extension is a debug build unless built `--release`.
+- Probes through the bridge (release, `W:\temp\claude\m57_5\`), mean / worst
+  per tick:
+  - calm: 0.009 / 0.3 ms
+  - trip: 0.014 / 0.3 ms
+  - quench: 0.044 / 0.48 ms (one 3.3 ms tick in 24 000, the relight)
+
+**The recorded timelines** (`--auto`), each replayed byte for byte by
+`crates/godot-ext/tests/reactor_screen.rs`, in `pump_screen.rs`'s form.
+Probed through the bridge:
+- **calm**:
+  - At 1 min the feed goes to 385 °C. The bed creeps (396 °C at 6 min), then
+    runs away (530 °C at 21 min, 718 °C at 27).
+  - At 25 min the feed returns to 365 °C, and the bed STAYS near 740 °C.
+  - At 35 min the feed goes to 220 °C. The bed holds above 570 °C for about a
+    quarter of an hour, then falls (427 °C at 54 min).
+  - At 55 min the feed goes back to 365 °C, and the bed returns to the calm
+    state, 374 °C.
+  - About 65 minutes in all. Interactive only: a feed cut to 40% on the valve,
+    which runs it away in about 30 minutes.
+- **trip**:
+  - From the file's start the bed creeps.
+  - The trip fires at 6 min 10 s (tick 3 698) and the bed turns.
+  - At 6 min 20 s a reset is REFUSED, because the bed is still past its limit.
+  - At 12 min the reset is admitted, and it relights nothing.
+  - At 13 min the preheater is relit by hand at 14 MW, below the 16.86 MW that
+    ran it away, and the bed settles.
+- **quench**:
+  - The cascade catches the second bed (380 °C).
+  - At 2 min its loop is put in MANUAL and the quench cut by hand to 0.25 kg/s.
+    The bed creeps.
+  - The trip fires at about 14.7 min and cuts the preheater, and both beds
+    cool.
+  - At 15 min a reset is refused, the bed still at 400.4 °C.
+  - At 18 min 20 s the reset is admitted, and the bed loop and then the
+    preheater's loop are put back in AUTO.
+  - The preheater relights under its loop, and the cascade holds the second bed
+    at 380.00 °C by 40 min.
+  - Interactive only: the product cooler turned down, which warms the quench
+    over an hour or more until the loop freezes (§62.12 item 2).
+
+**Gates.**
+- `reactor_screen.rs` pins each beat above on the scene's own command text. An
+  id sent as a float fails it.
+- Mutations are run on the timelines, not the engine.
+- The corpus must be byte-identical on both fidelities, since nothing in the
+  engine moves.
+- Screenshots come from a windowed `--auto` run, and the recorded `t=` lines go
+  to ROADMAP M57.5.

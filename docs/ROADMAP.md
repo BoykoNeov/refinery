@@ -9225,3 +9225,23 @@ command). DESIGN §62.12.
   6 000 ticks over 2.5 ms, worst 21.9 ms; Newton inside it on every tick),
   traced to the cascade moving the valve every tick. Ledger row A27; it decides
   which solver M57.5's screen runs this plant on.
+
+### M57.5 — **SPECIFIED** 2026-10-14: the reactor screen
+
+DESIGN §62.13. Three decisions, the user's, asked in plain words:
+- Each plant runs on the solver its own file names, Newton for all three. A27
+  stays open, since no screen runs the quench plant on the game solver.
+- Three plants: the calm bed, the trip plant and the quench plant, each file
+  loaded unchanged.
+- Two charts: each bed's temperature over time, with its trip limit and loop
+  target, and a trail of bed temperature against the temperature of the oil
+  entering it. Both plot only numbers the engine reported.
+
+No new command and no binding change. The three scripted stories were probed
+through the bridge before the note:
+- The calm bed runs away on a feed 20 K hotter, stays hot when the feed comes
+  back, and recovers only on a 220 °C feed.
+- The trip plant's trip fires, a reset is refused and then admitted, and the
+  preheater is relit lower.
+- On the quench plant, a quench cut by hand runs the second bed into the trip,
+  the loops are handed back, and the bed is held at 380.00 °C again.
