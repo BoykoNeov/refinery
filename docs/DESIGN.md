@@ -22765,3 +22765,155 @@ timelines on the scene's command text.
 - The preheater's loop left in MANUAL.
 
 The engine's message was caught by its own failing-first gate.
+
+## 63. What a runaway breaks — a catalyst bed's wall past its metal limit (M58) — specified before building
+
+Asked after M57 closed (2026-10-14), offered first of four as "what a runaway
+breaks"; the user said "work on this". Ledger row D8. A bed that runs away gets
+very hot and nothing happens; this makes its wall fail past a metal limit, as
+§42's furnace tubes burst — a hole, a leak, and a fire fed by the leak. Four
+decisions, asked in plain words before anything was written; the recommended
+option was declined on the first two:
+
+1. **On EVERY bed**, not only beds that ask. Told that the four shipped
+   hydrocracker files then gain keys and move, the user kept it — §42 decision 2
+   for furnaces, again. CLAUDE.md's "never add to an existing scenario file" is
+   set aside here by the user's decision, as M37 set it aside.
+2. **Part of the fire heats the bed.** A furnace's leak burns in its firebox as
+   fuel (§42 fork 3); a bed has no firebox. Offered: the fire burns outside and
+   heats nothing; a declared share of it heats the bed; a leak with no fire. The
+   user chose the share. It is a GAME VALUE, said so in every file.
+3. **Patch, then repair once the bed is below its limit** — `ReplaceTubes`'
+   rule, on a new command.
+4. **A fourth plant on the reactor screen**, in this milestone.
+
+### 63.0 Probed before the rule was offered (2026-10-14)
+
+The advisor's catch: a furnace's tubes may not be replaced while the coil is at
+its limit, and a runaway bed's hot branch survives far below the feed that lit
+it (§62.4), so "repair once cool" might be a refusal no player can satisfy.
+Measured on `hydrocracker_runaway.toml`, release, its bed loaded at 760 °C, the
+feed moved by `SetSourceTemperature` after one minute (a throwaway probe):
+
+```text
+  feed °C   bed after 2 h (or minutes to fall below)
+    385     760.1 (holds)
+    340     715.1        330  705.1        300  675.1        250  623.4
+    200     < 600 at 5.9 min, < 500 at 11.1, < 400 at 13.2
+```
+
+So the rule CAN be met, but only by chilling the feed to about 200 °C — on this
+slate the hot branch sits about 375 K over its feed, everything cracked. Said to
+the user with the rule. Also measured: a 1 cm² hole on the product line at the
+hot bed leaks 1.28 kg/s out of a 49.8 kg/s stream (5 cm²: 6.39), and moves the
+feed by 0.01% — the hole barely changes what the bed does; the fire is what
+matters. The runaway file's bed reaches 450 °C on tick 9 615, 550 °C on 12 363,
+600 °C on 13 051.
+
+### 63.1 Fork 1 — where the hole is: the bed's outlet pipe, §42 fork 1's
+
+A bed is hydraulically a furnace (one in, one out, zero volume), so the hole is
+built exactly as a furnace's: the bed's OUTLET pipe split at its midpoint, a
+junction `<pipe>__leak_point`, a dormant orifice `<pipe>__leak` to the plant's
+outside (`burnout_atmosphere_for`, its naming unchanged), shared with a declared
+`leak_to`; `PuncturePipe` patches it, and a player may puncture it by hand. A
+bed's outlet metered by flow is refused, as a furnace's is. Named
+approximation, §42's: the hole sits at the outlet pipe's midpoint, not in the
+shell, and what leaks is the products at the pipe's state.
+
+### 63.2 Fork 2 — the failure: a latched state at the top of the tick
+
+`NodeKind::BedReactor { bed, wall: BedWall }`, `BedWall { failure_temperature,
+rupture_area, heating_value, fire_share, hole: Option<EdgeId>, state: WallState }`
+— the furnace's `{ coil, tubes }` shape. `Engine::run_burnouts` handles it beside
+the furnaces, on the same start-of-tick state: an intact wall whose bed stands
+AT OR PAST its limit opens the hole to `max(open area, rupture_area)` and latches
+`Failed { at_tick }`. Nothing is held. No trip holds a bed (a bed's trip cuts the
+preheater, §62.10), so there is no restart bar to mark (§47 has no analogue).
+
+**What the limit is compared with**: the LUMPED bed temperature (§62.1), as an
+instant failure point — B42's two simplifications, for a vessel. A real
+hydroprocessing reactor shell (2¼Cr-1Mo(-V)) loses strength by creep over hours
+at temperature; this one fails the tick its average bed reaches a round number.
+
+### 63.3 Fork 3 — the fire: the leak times a heating value, a share into the bed
+
+While the wall is failed, what flows OUT of its hole on this tick's solve burns:
+`L = max(ṁ_hole, 0)·LHV`, read off this tick's solve, nothing stored, nothing
+circular — §42 fork 3's fire. Unlike a furnace's it does not pass through a
+flame law (a bed has none). **`s·L` heats the bed**, entering its first law
+beside a commanded fire (§62.8): `C·dT_b/dt = Q + s·L + F + H_in − H_out(T_b)`;
+the rest, `(1 − s)·L`, goes to the air. A hole punched by hand in an INTACT wall
+leaks and burns nothing; patching puts the fire out on the next solve.
+
+Published as `NodeSnapshot::wall_fire_w` = `L`, the whole fire (absent off beds,
+so no other plant moves); what reached the bed is `s·L`, `s` on `kind`.
+
+**Why a share, and what it is.** Most of a jet fire's heat goes into the air; a
+vessel engulfed in a pool fire absorbs of order a megawatt (API 521's
+wetted-area law, `Q = 43.2·F·A^0.82` kW — recalled, the standard not read), about
+2% of this plant's 55 MW leak fire, which would move the hot bed by about 6 K and
+could not be seen. The user chose a share that shows. **Shipped `s = 0.1`**, a
+game value: about 5.5 MW into a bed whose products carry about 160 kW/K, so the
+burning bed should settle some 30 K hotter than the runaway alone (to be
+measured).
+
+### 63.4 Fork 4 — `RepairBedWall`
+
+`Command::RepairBedWall { node }`, `ReplaceTubes`' shape: re-arms the wall and
+moves nothing else. Refused, in the player's order: not a bed; an intact wall;
+the hole still open (naming the pipe to patch); the bed at or past its limit
+(read fresh — a repaired wall there fails on the next tick; the message says to
+chill the feed). A new command rather than `ReplaceTubes` widened: a bed has no
+tubes, and a frontend that sent "replace tubes" to a reactor has the wrong
+picture of it. Godot bridge: `{"cmd":"repair_bed_wall","node":…}`.
+
+### 63.5 Fork 5 — the four keys, on every bed
+
+`wall_failure_c` (finite, above `bed_temperature_c`), `wall_rupture_area_cm2`
+(finite, > 0), `fluid_heating_value_mj_per_kg` (finite, ≥ 0; §42's key name),
+`wall_fire_share` (finite, in [0, 1]). Required, no default. The shipped beds:
+**550 °C**, **1 cm²**, **42.8 MJ/kg** (FCC gas oil's, §42 fork 5, Engineering
+ToolBox — one heating value although the products crack toward gas, a named
+approximation) and **0.1**. 550 °C is the furnace tubes' round number (B43):
+above every shipped bed in service (calm 374 °C, the trip's peak 400.4 °C, the
+quench held at 380 °C) and below the runaway's 760 °C. Test fixtures not about a
+wall take 3 000 °C.
+
+### 63.6 What moves, predicted
+
+The four hydrocracker plants move (keys, a split outlet, a new published
+field); every other plant byte-identical on both fidelities. Within the
+corpus's 6 000 ticks no shipped bed reaches 550 °C (the runaway file does on
+tick 12 363, past it), so the four should move only by the split pipe's
+rounding — to be measured, not assumed. `hydrocracker_runaway.toml`'s story now
+ends in a failed wall; its header says so.
+
+### 63.7 The slices
+
+- **M58.1 — the wall.** Graph, engine (burst, fire, repair), loader (keys, hole,
+  refusals), snapshot, bridge command, the four files' keys, and a new demo
+  `scenarios/hydrocracker_wall_failure.toml` (the runaway bed loaded mid-creep,
+  so it fails inside a corpus run). Gates `bed_wall_reference.rs`, mirroring
+  §42's: the burst tick and area on both fidelities; the fire is leak × heating
+  value to the bit and zero intact; the share reaches the bed (its first law
+  closes with `s·L` and misses without it); a hand hole in an intact wall burns
+  nothing; a burst keeps a wider hand hole; the repair's four refusals, success,
+  and the cooling story (patch, feed to 200 °C, repair admitted below the limit);
+  every bed in the repo owns a hole; the loader refusals.
+- **M58.2 — the screen.** The demo plant on key 4: the wall's state, the leak
+  and the fire drawn; keys to patch, chill the feed and repair; a recorded
+  timeline.
+
+### 63.8 Deferred, with what un-defers each
+
+- **The bed's wall and the preheater's restart**: a trip on a failed bed may
+  still relight its preheater (§46's "no restart onto burst tubes" has no
+  analogue here). Un-defer: a story where relighting onto a broken reactor
+  matters.
+- **A creep-rupture time and a hot spot** (B42 for a vessel; D6). Un-defer: as
+  B42.
+- **The round limit, hole and share** (B43 for a vessel). Un-defer: a sourced
+  shell limit (ASME VIII-2 / API 934) or a sourced engulfing-fire share.
+- **Depressuring as the cure** (D7): the real emergency answer to a runaway,
+  and a far kinder way to bring a bed below its limit than a 200 °C feed.

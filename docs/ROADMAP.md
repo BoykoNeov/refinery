@@ -9297,3 +9297,21 @@ Recorded runs (`godot --headless --path . res://demo/reactor.tscn --quit-after
 
 **M57 CLOSED 2026-10-14**, on the user's "yes" after all five slices landed.
 Close-out at the top of `docs/MILESTONES.md`.
+
+## M58 — what a runaway breaks: a catalyst bed's wall past its metal limit; ledger row D8; opened on a decision
+
+Offered after M57 closed (2026-10-14) as the first of four; the user said "work
+on this". Four decisions, asked in plain words before anything was written
+(DESIGN §63): the wall on EVERY bed (the four hydrocracker files gain keys and
+move); a declared share of the leak's fire heats the bed (a game value); patch,
+then repair once the bed is below its limit; a fourth plant on the reactor
+screen.
+
+### M58.0 — **SPECIFIED** 2026-10-14: the design note — M58 stays OPEN
+
+DESIGN §63. Probed first: a bed at 760 °C stays above 600 °C on any feed down
+to 250 °C and falls under 400 °C in 13 minutes on a 200 °C feed, so "repair once
+cool" can be met, hard. The hole is §42's, on the bed's outlet pipe; the wall
+fails the tick its bed starts at or past 550 °C; the fire is the leak times
+42.8 MJ/kg, a tenth of it into the bed; `RepairBedWall` re-arms it. Slices:
+M58.1 the wall, M58.2 the screen. No code changed.
