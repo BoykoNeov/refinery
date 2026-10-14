@@ -395,6 +395,20 @@ fn a_warm_quench_freezes_the_loop() {
             .expect_err("AUTO is refused while the quench is warm")
             .to_string();
         assert!(err.contains("not colder than"), "{solver}: {err}");
+        // Frozen, the quench is the player's: its flow target moves by hand,
+        // inside the bed loop's range (§29 fork 4's rule for a primary in
+        // MANUAL), down to the minimum.
+        let flow = loop_id(&engine.snapshot(), "quench_flow");
+        engine
+            .apply(Command::SetSetpoint {
+                loop_id: flow,
+                value: ControlledValue::Flow {
+                    kg_per_s: refinery_core::units::KgPerSec(0.25),
+                },
+            })
+            .unwrap_or_else(|e| panic!("{solver}: the quench turned down by hand: {e}"));
+        tick(&mut engine);
+        assert_eq!(flow_target(&engine.snapshot()), 0.25, "{solver}");
 
         engine
             .apply(Command::SetSourceTemperature {

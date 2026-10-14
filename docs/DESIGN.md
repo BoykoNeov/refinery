@@ -22491,6 +22491,16 @@ at 91 minutes (tick 54 560), the same tick on both fidelities.
 5. **The tie was not gated.** Mutation 3 (`<` to `<=` in `is_cold`) survived
    the first pass: no running plant ties to the last bit. At load it can — a
    drum declared at the bed's temperature — and gate 5 now refuses that too.
+6. **Gate 3 heats a supply, not the drum, and the reason is physics.** The
+   note planned the freeze through the product cooler turned down. But while
+   the loop holds the second bed below the first bed's outflow, the recycled
+   quench is that bed's own product, cooled, so it cannot be warmer than the
+   main stream: with the cooler at 5 MW, and at 0 MW on a 392 °C target, the
+   check fired only after the cascade had saturated and the trip had cut the
+   preheater, cooling the main stream under the drum. So in play the freeze
+   comes after the loop has already lost the bed, or after a trip — never while
+   it is holding. The gate's supply, heated by command, reaches the freeze in
+   one tick and isolates it.
 
 **Gates**, `crates/scenarios/tests/quench_reference.rs` (7), both fidelities:
 the loop catches the runaway (peak just over 380 °C, settled within 0.01 K,
@@ -22501,7 +22511,9 @@ the hot start and AUTO is refused in words naming the loop; **the freeze** — a
 quench drawn from a supply heated by `SetSourceTemperature` from 135 to 395 °C:
 the next tick's pass still reads the cold pipe, the one after reads the hot
 quench and sets MANUAL, the faceplate showing it within a kelvin of 395 °C; the
-flow target held exactly for 600 ticks; AUTO refused; the supply cooled, AUTO
+flow target held exactly for 600 ticks; AUTO refused, and the quench's flow
+target set by hand to its 0.25 kg/s minimum (admitted, the bed loop being in
+MANUAL); the supply cooled, AUTO
 refused until one tick has carried the cold quench, then admitted, and the bed
 brought back within half a kelvin of its target; the single loop (K 0.025/K,
 T_i 300 s) holding the bed as the cascade does; every refusal of the table and
