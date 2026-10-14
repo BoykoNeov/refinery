@@ -21982,6 +21982,10 @@ at every slice.
   burst. Un-defer: the user's call after M57.3.
 - **Catalyst deactivation; wall heat loss; bed pressure drop.** As §5 and §37
   defer their equivalents.
+- **A trip that stops a bed's feed** (added by M57.3, §62.10): a stopped bed
+  holds its temperature exactly, so such a trip could never be reset.
+  Un-defer: a way for a stopped bed to lose heat — wall loss, or the hydrogen
+  sweep a real reactor keeps flowing.
 - **A sourced activation energy and heat release**, replacing the chosen ones.
   Un-defer: a reachable paper tabulating them for this network.
 
@@ -22014,7 +22018,7 @@ specifies, with these choices made while building it:
   gas service refused on `plant_phases`' verdict. `ReactionModel::react`'s doc
   now says `τ` may be `+∞`; its signature is unchanged.
 - **Refused, each with its own reason**: a loop or trip measuring a bed (M57.3
-  settles it); a boil-off vent into a bed (a zero-volume node); a bed on a
+  settles it — §62.10 admits the trip; the loop stays refused); a boil-off vent into a bed (a zero-volume node); a bed on a
   line-flash plant (a model not built, as a reactor). The suction-boiling
   criterion is not asked of a bed: its slate's light-ends lump is a gas declared
   as a liquid, and its hydrogen is not modelled (§62.7).
@@ -22234,7 +22238,5 @@ reading, and the reset and trap gates), the loop refusal removed
 reading on the first pass, and a bed's is never absent, so the trip compares on
 tick 1 either way.
 
-**Deferred, added to §62.7's list:** a trip that stops a bed's feed. Un-defer:
-a way for a stopped bed to lose heat — wall loss (§62.7), or the hydrogen sweep
-a real reactor keeps flowing (§62.7's hydrogen) — so its reading can fall back
-under the limit.
+**Deferred, added to §62.7's list:** a trip that stops a bed's feed, until a
+stopped bed can lose heat so its reading can fall back under the limit.
