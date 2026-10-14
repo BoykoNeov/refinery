@@ -21770,3 +21770,216 @@ budget, and 8 ticks of the story over it on the game solver (tick 181 at
   that runs a boiling plant with a pump on the game solver.
 - **The engine's sweep remembered** (A25): the same memo in `core` needs the
   engine to hold one; the sweep is a sixth of the remaining tick.
+
+## 62. A reactor whose own heat sets its temperature — a catalyst bed, hydrocracking, and a runaway (M57) — specified before building
+
+Asked after M56 closed (2026-10-14) as "what is next"; offered first of five, the
+user chose it, and confirmed mid-turn "i want a true runaway". Ledger rows D1 (an
+emergent reactor temperature, §5 fork 3) and D2 (a residence time that follows
+the flow). Nothing fired: **this milestone is a decision**. Four more were the
+user's, asked in plain words before anything was written:
+
+1. **New plants only.** The two shipped reactor plants keep their held
+   temperature and stay byte-identical. The self-heating bed is a new node kind;
+   a riser's temperature really is held (the regenerator's catalyst does it), so
+   §5's verdict stands for the FCC.
+2. **Hydrocracking chemistry**, tuned to a published industrial envelope and
+   labelled tuned, over a generic textbook reaction written in the file.
+3. **The residence time follows the flow**, so a feed cut can start a runaway.
+4. **Everything, including a screen**: bed, chemistry, a trip on the bed, quench
+   and a Godot screen, in five slices.
+
+### 62.0 Why the existing reactor cannot do it
+
+§5's reactor is FCC cracking, which ABSORBS heat (`dh_rxn > 0`). An FCC bed
+left to find its own temperature cools as it cracks, cracks slower, and settles:
+it can never run away. A runaway needs a reaction that RELEASES heat, faster the
+hotter it gets. Hydrocracking does; its temperature excursions are the classic
+refinery reactor emergency, and real units carry bed-temperature trips and cold
+quench between beds for exactly that reason.
+
+### 62.1 Fork 1 — the model: a lumped catalyst bed, the furnace coil's twin
+
+A new node kind, `NodeKind::BedReactor`, holding a `CatalystBed`: a heat
+capacity `C` [J/K] (catalyst, internals and the liquid it holds), a catalyst
+volume `V` [m³], and a temperature `T_b` [K] that is a STATE, set from the file
+and written back at the end of every tick — exactly `FurnaceCoil::temperature`
+(§37). Hydraulically it is a furnace: zero-volume fluid, one inlet, one outlet,
+no pressure of its own.
+
+- **The fluid leaves at the bed's temperature.** A catalyst bed's fluid–solid
+  area is enormous, so its NTU is effectively infinite and `ε = 1` (§37 fork 1's
+  form at `UA → ∞`). No conductance key: a parameter that is always "very large"
+  has no value a gate could falsify.
+- **The chemistry runs at the bed's START-of-tick temperature**, so the reaction
+  is a pure function of known numbers — §5 fork 3's (T-iso) property kept inside
+  every tick. The released heat `Q = −ṁ·Δh_rxn` (sign convention of §5: positive
+  `Δh_rxn` absorbs) goes into the bed.
+- **The bed's first law**, the lumped capacitance of §37 fork 1 with the flame
+  replaced by the chemistry:
+  `C·dT_b/dt = Q + H_in − H_out(T_b)`, where `H_in` is the inflow's enthalpy
+  rate and `H_out` the PRODUCTS' at the bed's temperature (so the cp shift a
+  conversion causes is booked, §5 fork 2).
+- **The step is §37 fork 2's**, with `Q` and `H_in` frozen across the tick and
+  `H_out` linearised by the products' capacity rate `W`:
+  `T_b(dt) = T_b + (Q + H_in − H_out(T_b))·dt/C·φ(x)`, `x = W·dt/C`,
+  `φ(x) = (1 − e^(−x))/x`. Exact for the frozen rate, unconditionally stable,
+  and exactly `Q·dt/C` at zero flow.
+- **The fluid's heat comes from the STORED change**, §37 fork 3 and its
+  correction 2: `H_out,avg = H_in + Q − C·(T_b,end − T_b,start)/dt`, turned into
+  an outlet temperature on the products. The first law at the bed closes by
+  construction.
+
+**Why explicit in the chemistry, and why that is the physics.** A zero-volume
+adiabatic reactor (§5's T-adia) is an implicit fixed point with up to three
+roots on a hydrocracker — the classic multiple steady states (van Heerden 1953;
+Fogler, *Elements of Chemical Reaction Engineering*, ch. 12) — and a solver
+would have to pick one each tick, which is A15's noise deciding a visible
+outcome. With a heat capacity, the bed's HISTORY picks the branch: a bed that
+was cool stays on the cool branch until the cool branch disappears, and then it
+runs away; a bed that is hot stays hot until the hot branch disappears. That
+hysteresis is real reactor behaviour, not an artefact. The chemistry lags the
+bed by one tick (0.1 s) against a bed time constant `C/W` of order 100 s.
+
+Rejected: an axial temperature profile inside one node (a real bed is plug flow,
+hottest at its outlet); a fluid–solid film; pressure drop through the bed
+(Ergun); heat loss through the vessel wall. A plant with several beds is several
+nodes, with a quench junction between them (§62.6, M57.4).
+
+### 62.2 Fork 2 — a residence time that follows the flow (D2)
+
+`τ = V·ρ_feed/ṁ`, the space time `1/LHSV` that fixed-bed kinetics are quoted
+against: catalyst volume over the feed's volumetric flow, the volume taken at
+the slate's declared liquid densities (mass-weighted harmonic mean). Halving the
+feed doubles `τ`, so more of it reacts and each kilogram releases more heat
+while the flow that carries heat away halves — the feed-cut runaway.
+
+At zero flow `τ` is infinite. The released heat `ṁ·(…)` is zero, so the bed
+neither heats nor cools (no wall loss, above), and the fluid standing in it is
+reported at the bed's temperature with the products of complete conversion. A
+model that cannot answer an infinite `τ` cannot sit in a bed: FCC's fixed-count
+RK4 (§5, M4.2) would be asked to integrate a stiff problem over any `τ` at all.
+So **a `bed_reactor` is refused at load unless the plant selects a reaction
+model that is solved exactly at every residence time** — hydrocracking, below,
+and `none`. The trait is unchanged; the loader carries the refusal.
+
+The held reactor keeps its fixed `tau_s` (D2 stays open for it, narrowed): an
+FCC riser's residence time is set by its geometry and lift gas as much as by
+its feed.
+
+### 62.3 Fork 3 — the chemistry: four-lump hydrocracking
+
+`reactions = "hydrocracking"`, a `ReactionModel` in `solvers` beside `FourLump`.
+
+- **The network** is the four-lump VGO hydrocracking network of Sadighi, Ahmad
+  & Rashidzadeh, *Korean J. Chem. Eng.* 27 (2010) 1099–1108 (abstract read; the
+  full text was not reachable), restated by Faraji et al., *ACS Omega* 5 (2020)
+  16595–16601 (read): vacuum gas oil → distillate, naphtha, gas; distillate →
+  naphtha, gas; naphtha → gas. Six paths.
+- **First order**, hydrogen in excess so no rate reads it (Faraji 2020, §3
+  assumption 3; Song et al., *Chem. Eng. Trans.* 61 (2017) 673–678, §2.1
+  assumption 2, read). **One activation energy per cracking lump**, the same for
+  every product it cracks to (Song 2017, §2 below eq. 4).
+- **Solved exactly.** A first-order network is a linear ODE, `dy/dτ = K·y`, with
+  `K` lower triangular; its answer is the matrix exponential, which is exact at
+  any `τ` and has a closed limit at `τ = ∞`. The method (a closed form per lump,
+  or scaling and squaring with a fixed order) is M57.2's to choose and gate;
+  fixed work per call either way (determinism).
+- **The slate** names its four lumps, as `FourLump` names its four; a slate
+  without them is refused by name.
+- **Heat** from per-lump formation enthalpies, `Δh_rxn = Σ (y_out − y_in)·h_f`,
+  as M4.2 did: path-independent, zero when nothing reacts. Hydrogen is not in
+  the slate, so the heat of the hydrogen it adds is folded into the lumps.
+
+**What is sourced and what is tuned, said once.** No reachable source tabulates
+both rate constants with their temperature dependence and a heat of reaction
+for this network. Faraji 2020's Table 2 lists six constants at one temperature
+(390 °C), does not say which path each belongs to, and does not reproduce its
+own tabulated outlet with the stated LHSV; it is not transcribed. So, as M4.2
+did: **the rate constants are calibrated** to an envelope — Song 2017's
+industrial outlet yields (Fig. 2; bottoms about 27 wt%, distillate (diesel and
+kerosene) about 47, naphtha about 21, light ends about 4) at 390 °C and an LHSV
+of 1 h⁻¹, chosen inside Faraji 2020's pilot range of 0.8–1.05 h⁻¹ (Table 1);
+**the activation energy and the formation enthalpies are chosen**, game values
+said as such. The envelope gate is then a regression lock on the calibration,
+not a validation (§5, "The anchor is an ENVELOPE"). Its ceiling is the same.
+
+The two chosen numbers decide how a runaway looks, so they are named:
+
+- **`E = 150 kJ/mol`** sets how fast the reaction speeds up with heat: at
+  390 °C, about 4% per kelvin.
+- **The formation enthalpies** set how hot a runaway ends: everything cracked
+  to gas is the hottest state the bed can reach, `ΔT_ad = −h_f,gas / c̄p`.
+  Prototyped at −350, −600 and −1 200 kJ/kg for distillate, naphtha and gas, a
+  full-conversion rise of about 375 K at `c̄p = 3.2 kJ/(kg·K)` (Song 2017,
+  Table 1: 3.05–3.58 for the oil lumps).
+
+### 62.4 Fork 4 — what the player will see, prototyped
+
+A throwaway Python prototype of the steady states, `c̄p·(T_b − T_in) =
+q(T_b, τ)` (heat released per kilogram of feed at the bed's temperature), with
+the prototype constants above and `E = 150 kJ/mol`, one bed at `τ = 0.1 h`:
+
+```text
+  feed °C   steady beds °C (stable, unstable, stable)
+     330    331.0   467.0   704.5
+     350    353.0   448.5   724.5
+     370    380.5   427.5   744.5     <- a normal day: 10 K across the bed
+     375    391.5   418.5   749.5
+     380                    754.5     <- the cool branch is gone: runaway
+  τ = 0.2 h (the feed halved), feed 370 °C: only 744.5
+```
+
+So: a bed running 10 K hot over its feed runs away if the feed is preheated
+about 7 K more, or if the feed is halved. Bringing the feed back down does not
+bring the bed back: the hot branch survives below a 330 °C feed. The time to
+run away is set by `C/W`: tens of seconds to minutes on the demo's sizing.
+
+These numbers move when M57.2 calibrates; the SHAPE — a cool branch, a hot
+branch, and a gap between where each ends — is what the slice must keep, and
+its gates are on the shape against hand calculations, not on these figures.
+
+### 62.5 Fork 5 — the shipped plants
+
+New node kind, new reaction model, new scenario files. Every shipped plant is
+byte-identical by construction, the two FCC plants included; the corpus says so
+at every slice.
+
+### 62.6 The slices
+
+- **M57.1 — the bed.** `NodeKind::BedReactor`, `CatalystBed`, the bed step in
+  the sweep beside `furnace_coil`, the write-back in `Engine::tick`, the bed in
+  the snapshot, the loader key set (`bed_heat_capacity_mj_per_k`,
+  `catalyst_volume_m3`, `bed_temperature_c`, all required) and the refusal of
+  §62.2. Gates: the bed's books close exactly; a bed with no reaction is the
+  lumped-capacitance lag of a hand calculation; `τ` from the flow by hand; zero
+  flow holds the bed; a heat-absorbing test reaction settles BELOW its feed (the
+  FCC argument, as a gate); corpus byte-identical.
+- **M57.2 — hydrocracking and the demo.** The reaction model, its exact
+  solution and envelope; `scenarios/hydrocracker_runaway.toml`. Gates: the
+  closed forms; mass conservation; the steady states of a hand bisection of
+  `c̄p·(T − T_in) = q(T)` against long engine runs on each branch; ignition when
+  the cool branch ends; the hot branch kept below the ignition feed (hysteresis);
+  the feed-cut runaway.
+- **M57.3 — a trip on the bed.** The bed's temperature is a state present from
+  load, so a trip may watch it as it watches a tank. What a trip does about it
+  (cut the preheat furnace, shut the feed) is settled there.
+- **M57.4 — quench.** Two beds with a cold-quench junction between them, and a
+  loop that opens the quench as the bed downstream heats. A temperature loop on
+  a VALVE, two hops from what it measures, is new: the direction of action and
+  E21's one-hop rule are argued there.
+- **M57.5 — the reactor screen**, after the furnace and pump screens.
+
+### 62.7 Deferred, with what un-defers each
+
+- **An axial profile in a bed** — the hot spot at a real bed's outlet. Un-defer:
+  a story that needs WHERE in a bed it is hot.
+- **Hydrogen** — consumption, partial pressure, and depressuring, the real
+  emergency cure (it starves the reaction of hydrogen). Un-defer: a plant whose
+  answer depends on the hydrogen, or a depressuring action.
+- **What a runaway breaks** — a vessel wall past its metal limit, as §42's tubes
+  burst. Un-defer: the user's call after M57.3.
+- **Catalyst deactivation; wall heat loss; bed pressure drop.** As §5 and §37
+  defer their equivalents.
+- **A sourced activation energy and heat release**, replacing the chosen ones.
+  Un-defer: a reachable paper tabulating them for this network.

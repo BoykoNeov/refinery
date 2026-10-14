@@ -151,8 +151,8 @@ time since M9.1 they were measured rather than re-asserted.
 
 | # | item | argued in | un-defers when |
 |---|---|---|---|
-| D1 | Adiabatic / emergent outlet temperature (the coupled ODE, fork 3). | §5, "Simple reactor", "Deferred" | A case where the reactor's own heat release sets its temperature. |
-| D2 | Flow-dependent residence time `τ = V·ρ/ṁ`. | same | A reactor whose throughput moves during a run. |
+| D1 | Adiabatic / emergent outlet temperature (the coupled ODE, fork 3). **TAKEN by M57** (2026-10-14, the user's decision; DESIGN §62), for a new node kind only: a `bed_reactor` whose catalyst bed holds heat, the chemistry run at the bed's start-of-tick temperature, so no tick solves a fixed point; hydrocracking, which releases heat, so the bed can run away. The held reactor and the two FCC plants are unchanged. | §5, "Simple reactor", "Deferred" | A case where the reactor's own heat release sets its temperature. |
+| D2 | Flow-dependent residence time `τ = V·ρ/ṁ`. **TAKEN by M57 for the bed reactor** (2026-10-14, the user's decision; DESIGN §62.2): `τ` is the catalyst volume over the feed's volumetric flow, so a feed cut can start a runaway. Stays open for the held reactor, whose `tau_s` is fixed. | same | A reactor whose throughput moves during a run. |
 | D3 | A 1-in-2-out reactor separating coke at the outlet (reintroduces the draw-flow machinery). | same | Coke needs to leave by a second outlet rather than ride to a downstream column. |
 | D4 | The catalyst regenerator loop that physically supplies the endothermic duty. | same | The duty must be sourced, not reported. |
 | D5 | Coke-on-catalyst deactivation (Voorhies form), feed-quality dependence of the constants, a second lump slate. | §5, "FCC 4-lump", "Deferred" | A catalyst inventory exists (D4). |

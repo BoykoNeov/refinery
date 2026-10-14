@@ -150,8 +150,9 @@ godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--p
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the
-next is the user's choice. **Latest closed: M56 (2026-10-10)**: the frame budget
+Work only on the current milestone unless asked. **Current: M57 (opened 2026-10-14)**:
+a reactor whose own heat sets its temperature — a catalyst bed, hydrocracking,
+a runaway, a trip, quench and a screen, in five slices (DESIGN §62, ROADMAP M57). **Latest closed: M56 (2026-10-10)**: the frame budget
 M55 overran, narrowed (A24 stays open on the game solver's gas-lock story; the
 pump screen runs that plant on Newton, inside the budget). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at

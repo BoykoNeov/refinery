@@ -9094,3 +9094,33 @@ the numbers). Nothing in the repo's code changed. DESIGN §61.7.
   W's prototype code is kept at `tools/steptime/prototypes/m56_4_w.patch`.
 
 **M56 CLOSED 2026-10-10.** Close-out at the top of `docs/MILESTONES.md`.
+
+## M57 — a reactor whose own heat sets its temperature: a catalyst bed, hydrocracking, and a runaway; ledger rows D1 and D2; opened on a decision
+
+The user asked "what is next" (2026-10-14), was told nothing in DEFERRED.md is
+past its trigger, and chose the first of five directions offered: a reactor
+that heats itself and can run away. Four decisions followed, asked in plain
+words before anything was written (DESIGN §62): new plants only (the two FCC
+plants stay held and byte-identical); hydrocracking chemistry, tuned to a
+published industrial envelope and labelled tuned; a residence time that follows
+the flow; and the full scope — bed, chemistry, a trip, quench and a screen. Mid-
+turn the user confirmed "i want a true runaway", which is why the FCC chemistry
+(it absorbs heat and can only settle) is not the one used.
+
+### M57.0 — **SPECIFIED** 2026-10-14: the design note — M57 stays OPEN
+
+DESIGN §62. A `bed_reactor` node with a catalyst bed whose temperature is a
+state (the furnace coil's twin, §37): the chemistry runs at the bed's
+start-of-tick temperature and its heat goes into the bed; the fluid leaves at
+the bed's temperature; the step is §37's exact one. Residence time from the
+flow, `τ = V·ρ/ṁ`; a bed refused at load with a reaction model not solved
+exactly at every `τ`. Four-lump first-order hydrocracking (Sadighi 2010's
+network; Song 2017's assumptions), rate constants calibrated to Song 2017's
+industrial yields, activation energy and formation enthalpies chosen and said
+so. A prototype of the steady states shows the shape the slices must keep: a
+cool branch 10 K over a 370 °C feed, a runaway about 7 K of preheat above it or
+on a halved feed, and a hot branch that survives below a 330 °C feed.
+
+Slices: M57.1 the bed; M57.2 hydrocracking and `hydrocracker_runaway.toml`;
+M57.3 a trip on the bed; M57.4 quench between two beds; M57.5 the reactor
+screen. No code changed.
