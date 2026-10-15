@@ -20,11 +20,23 @@
 #           product line and burns, and a tenth of that fire heats the bed. Patch
 #           the hole (P), chill the feed hard, and repair the wall (M) once the
 #           bed is back under its limit — the engine refuses the repair before.
+#   hydrogen  scenarios/hydrocracker_hydrogen_wall.toml (M59.5) — a bed with its
+#           hydrogen loop and no trip, loaded hot: it eats its loop down, and its
+#           wall fails with TWO holes, one on the product line and one on the
+#           hydrogen's outlet. The loop empties through its hole. P patches both;
+#           stop the oil and the refilled hydrogen sweeps the bed down.
+#   h2quench  scenarios/hydrocracker_hydrogen_quench.toml (M59.3) — two beds in
+#           one hydrogen loop, the second held at 400 °C by cold hydrogen mixed in
+#           ahead of it, and a backup trip that DEPRESSURES the loop (opens the
+#           vent, shuts the makeup). D opens or closes the vent by hand.
 #
 # Since M58 every bed's wall can fail (docs/DESIGN.md §63): the calm plant's
-# runaway breaks its wall too, and its story patches and repairs it.
+# runaway breaks its wall too, and its story patches and repairs it. Since M59
+# a plant may have a hydrogen loop (§64), drawn under the oil line: the
+# separator's pressure, the compressor, the gas heater, a pass beside each bed,
+# the makeup and the vent, and a hydrogen quench where there is one.
 #
-# Each plant runs on the solver its own file names — Newton, for all four
+# Each plant runs on the solver its own file names — Newton, for all six
 # (§62.13 decision 1; ledger row A27).
 #
 # Same rule as plant.gd, furnace.gd and pump.gd: this script computes nothing
@@ -41,8 +53,8 @@
 # up and the bed staying hot. Neither draws a curve the engine did not report.
 #
 # Interactive:  godot --path . res://demo/reactor.tscn
-#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 switch plants)
-# Recorded:     godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall]
+#               (keys listed on screen and in _input; 1 to 6 switch plants)
+# Recorded:     godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line every PRINT_EVERY ticks plus one line per command and
 #               event. Those lines are the observation in ROADMAP.md's M57.5
@@ -57,9 +69,10 @@ extends Node2D
 ##
 ## Speeds are ticks of 0.1 s per 60 Hz frame. The editor loads the extension's
 ## DEBUG build, where a tick costs about 0.17 ms on the calm bed, 0.27 ms on the
-## trip plant and 1.1 ms on the quench plant on a quiet machine (twice that on a
-## busy one), and reading the snapshot about as much again (measured by the
-## recorded runs' last line). Each default keeps a
+## trip plant, 1.1 ms on the quench plant, 1.7 ms on the hydrogen wall and
+## 2.7 ms on the hydrogen quench on a quiet machine (twice that on a busy one),
+## and reading the snapshot about half as much again (measured by the recorded
+## runs' last line). Each default keeps a
 ## frame's simulation under about 8 ms; `]` goes faster at the frame rate's cost.
 const PLANTS := {
 	"calm":
@@ -111,6 +124,44 @@ const PLANTS := {
 		"product": "product",
 		"ticks_per_frame": 16,
 		"max_ticks_per_frame": 128,
+	},
+	# The hydrogen plants name their loop too. Each bed's hydrogen pass is read
+	# from the snapshot (the `bed_hydrogen` node whose `bed` is it), not named.
+	"hydrogen":
+	{
+		"scenario": "res://scenarios/hydrocracker_hydrogen_wall.toml",
+		"title": "A hydrogen bed whose runaway breaks the wall twice over — patch both holes, stop the oil",
+		"feed": "vgo_feed",
+		"feed_valve": "feed_valve",
+		"beds": ["bed"],
+		"product": "product",
+		"separator": "separator",
+		"compressor": "compressor",
+		"gas_heater": "gas_heater",
+		"gas_cooler": "gas_cooler",
+		"makeup_valve": "makeup_valve",
+		"vent_valve": "vent_valve",
+		"ticks_per_frame": 4,
+		"max_ticks_per_frame": 32,
+	},
+	"h2quench":
+	{
+		"scenario": "res://scenarios/hydrocracker_hydrogen_quench.toml",
+		"title": "Two beds in one hydrogen loop, a cold-hydrogen quench, and a trip that vents the loop",
+		"feed": "vgo_feed",
+		"feed_valve": "feed_valve",
+		"beds": ["bed1", "bed2"],
+		"product": "product",
+		"quench_pipe": "quench_line",
+		"separator": "separator",
+		"compressor": "compressor",
+		"gas_heater": "gas_heater",
+		"gas_cooler": "gas_cooler",
+		"gas_mix": "mix",
+		"makeup_valve": "makeup_valve",
+		"vent_valve": "vent_valve",
+		"ticks_per_frame": 2,
+		"max_ticks_per_frame": 16,
 	},
 }
 
@@ -165,12 +216,48 @@ const AUTO_WALL := {
 	15000: ["feed_c_365"],
 	33000: ["quit"],
 }
-const TIMELINES := {"calm": AUTO_CALM, "trip": AUTO_TRIP, "quench": AUTO_QUENCH, "wall": AUTO_WALL}
+## hydrogen (M59.5): the bed, loaded at 460 °C, eats its loop down from 150 bar;
+## its wall fails at 550 °C, about 9 min in, opening both holes, and the loop
+## empties through the hydrogen one. At 15 min a repair is REFUSED (the oil's
+## hole); P patches BOTH holes; a repair is REFUSED again (the heat); the oil is
+## stopped. The makeup refills the loop and the hydrogen sweeps the bed down: at
+## 25 min the repair is admitted. At 40 min, the bed near 410 °C, the gas heater's
+## target and the feed go to 385 °C and the oil is opened again; the bed settles
+## near 404 °C.
+const AUTO_HYDROGEN := {
+	9000: ["repair", "patch", "repair", "valve_pct_0"],
+	15000: ["repair"],
+	24000: ["target_c:gas_heater_outlet:385", "feed_c_385", "valve_pct_100"],
+	36000: ["quit"],
+}
+## h2quench (M59.5): the loops hold the second bed at 400 °C. At 2 min its loop
+## is put in MANUAL and the quench cut by hand to 0.1 kg/s: the bed creeps into
+## the trip, which vents the loop and shuts the makeup. At 15 min a reset and
+## closing the vent by hand are both REFUSED — the bed is past its limit and the
+## trip holds the vent. At 22 min the reset is admitted, the vent closed by hand,
+## and both loops put back in AUTO: the makeup refills the loop and the quench
+## holds the bed at 400 °C again.
+const AUTO_H2QUENCH := {
+	1200: ["manual:bed2_temperature", "target_kgs:quench_flow:0.1"],
+	9000: ["reset", "vent_close"],
+	13200: ["reset", "vent_close", "auto:separator_pressure", "auto:bed2_temperature"],
+	36000: ["quit"],
+}
+const TIMELINES := {
+	"calm": AUTO_CALM,
+	"trip": AUTO_TRIP,
+	"quench": AUTO_QUENCH,
+	"wall": AUTO_WALL,
+	"hydrogen": AUTO_HYDROGEN,
+	"h2quench": AUTO_H2QUENCH,
+}
 const AUTO_SHOT_TICKS := {
 	"calm": [600, 6000, 12000, 15000, 21000, 30000, 33000, 47999],
 	"trip": [3600, 3800, 6000, 7200, 12000, 35999],
 	"quench": [1200, 6000, 8800, 9000, 11000, 15000, 23999],
 	"wall": [2700, 2760, 6000, 9000, 12000, 15000, 32999],
+	"hydrogen": [3000, 5400, 7200, 9000, 12000, 15000, 24000, 35999],
+	"h2quench": [1200, 5600, 9000, 13200, 18000, 35999],
 }
 ## Print a `t=` line every this many ticks (1 minute) in a recorded run.
 const PRINT_EVERY := 600
@@ -201,10 +288,28 @@ var cooler_id := -1
 var drum_id := -1
 var product_id := -1
 var quench_pipe_id := -1
+## The hydrogen loop, on the plants that have one; -1 elsewhere.
+var separator_id := -1
+var compressor_id := -1
+var gas_heater_id := -1
+var gas_cooler_id := -1
+var gas_mix_id := -1
+var makeup_id := -1
+var vent_id := -1
+## The edge out of the compressor: its flow and the pressure it delivers to.
+var compressor_out_edge := -1
 ## Per bed, in the plant's order: node id, the edge into it, the edge out of it.
 var bed_ids: Array[int] = []
 var bed_in_edges: Array[int] = []
 var bed_out_edges: Array[int] = []
+## Per bed: the pipes a failed wall's holes sit on, the oil's first (M58, and
+## the hydrogen's since M59.4) — what P patches, and where a leak is reported.
+var bed_hole_pipes: Array = []
+## Per bed: its hydrogen pass and the edge into it; -1 on a bed without one.
+var pass_ids: Array[int] = []
+var pass_in_edges: Array[int] = []
+## Where each bed's vessel was last drawn [px]: its pass is drawn under it.
+var bed_xs: Array[float] = []
 ## Where "vgo" sits in the slate: the uncracked share of a bed's outflow.
 var vgo_index := -1
 var snapshot: Dictionary = {}
@@ -247,7 +352,7 @@ func _ready() -> void:
 	if DisplayServer.get_name() != "headless":
 		get_window().size = Vector2i(1440, 810)
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (calm | trip | quench | wall)" % plant_key)
+		_halt("no plant '%s' (calm | trip | quench | wall | hydrogen | h2quench)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -280,8 +385,20 @@ func _load(key: String) -> void:
 	cooler_id = sim.node_id(plant["cooler"]) if plant.has("cooler") else -1
 	drum_id = sim.node_id(plant["drum"]) if plant.has("drum") else -1
 	quench_pipe_id = sim.edge_id(plant["quench_pipe"]) if plant.has("quench_pipe") else -1
+	separator_id = sim.node_id(plant["separator"]) if plant.has("separator") else -1
+	compressor_id = sim.node_id(plant["compressor"]) if plant.has("compressor") else -1
+	gas_heater_id = sim.node_id(plant["gas_heater"]) if plant.has("gas_heater") else -1
+	gas_cooler_id = sim.node_id(plant["gas_cooler"]) if plant.has("gas_cooler") else -1
+	gas_mix_id = sim.node_id(plant["gas_mix"]) if plant.has("gas_mix") else -1
+	makeup_id = sim.node_id(plant["makeup_valve"]) if plant.has("makeup_valve") else -1
+	vent_id = sim.node_id(plant["vent_valve"]) if plant.has("vent_valve") else -1
 	var missing := feed_id < 0 or feed_valve_id < 0 or product_id < 0
-	for optional in [["preheater", preheater_id], ["mix", mix_id], ["cooler", cooler_id], ["drum", drum_id], ["quench_pipe", quench_pipe_id]]:
+	for optional in [
+		["preheater", preheater_id], ["mix", mix_id], ["cooler", cooler_id], ["drum", drum_id],
+		["quench_pipe", quench_pipe_id], ["separator", separator_id], ["compressor", compressor_id],
+		["gas_heater", gas_heater_id], ["gas_cooler", gas_cooler_id], ["gas_mix", gas_mix_id],
+		["makeup_valve", makeup_id], ["vent_valve", vent_id],
+	]:
 		if plant.has(optional[0]) and int(optional[1]) < 0:
 			missing = true
 	bed_ids = []
@@ -311,6 +428,51 @@ func _load(key: String) -> void:
 			return
 		bed_in_edges.append(into)
 		bed_out_edges.append(out)
+	# Each hole a failed wall opens is an orifice edge hanging off a junction the
+	# loader split into its pipe (§3b); `puncture_pipe` names the pipe, which is
+	# the edge ending at that junction. Read from the wall's own list — the oil's
+	# hole, then the hydrogen's (M59.4) — so P patches every hole the repair asks
+	# for.
+	bed_hole_pipes = []
+	for id in bed_ids:
+		var wall: Dictionary = _node(id)["kind"]["wall"]
+		var holes: Array = [wall.get("hole")]
+		if wall.has("hydrogen_leak"):
+			holes.append(wall["hydrogen_leak"].get("hole"))
+		var pipes: Array[int] = []
+		for hole in holes:
+			var pipe := -1
+			if hole != null:
+				var junction := int(_edge(int(hole))["from"])
+				for edge in snapshot["edges"]:
+					if int(edge["to"]) == junction:
+						pipe = int(edge["id"])
+			if pipe < 0:
+				_halt("%s's wall has a hole on no pipe the scene can find" % _node(id)["name"])
+				return
+			pipes.append(pipe)
+		bed_hole_pipes.append(pipes)
+	# Each bed's hydrogen pass: the `bed_hydrogen` node that names it.
+	pass_ids = []
+	pass_in_edges = []
+	for id in bed_ids:
+		var pass_id := -1
+		var pass_in := -1
+		for node in snapshot["nodes"]:
+			if node["kind"]["type"] == "bed_hydrogen" and int(node["kind"]["bed"]) == id:
+				pass_id = int(node["id"])
+		for edge in snapshot["edges"]:
+			if pass_id >= 0 and int(edge["to"]) == pass_id:
+				pass_in = int(edge["id"])
+		pass_ids.append(pass_id)
+		pass_in_edges.append(pass_in)
+	if separator_id >= 0 and pass_ids.has(-1):
+		_halt("this plant names a hydrogen loop, but a bed has no hydrogen pass")
+		return
+	compressor_out_edge = -1
+	for edge in snapshot["edges"]:
+		if compressor_id >= 0 and int(edge["from"]) == compressor_id:
+			compressor_out_edge = int(edge["id"])
 	vgo_index = -1
 	for i in snapshot["slate"].size():
 		if snapshot["slate"][i]["name"] == "vgo":
@@ -476,6 +638,12 @@ func _input(event: InputEvent) -> void:
 			_load("quench")
 		KEY_4:
 			_load("wall")
+		KEY_5:
+			_load("hydrogen")
+		KEY_6:
+			_load("h2quench")
+		KEY_D:
+			_do("vent_toggle")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -543,6 +711,13 @@ func _do(action: String) -> void:
 		var parts := action.split(":")
 		_set_target(_loop_named(parts[1]), float(parts[2]))
 		return
+	if action.begins_with("target_c:"):
+		var parts := action.split(":")
+		_set_target(_loop_named(parts[1]), float(parts[2]) + 273.15)
+		return
+	if action.begins_with("valve_pct_"):
+		_set_feed_valve(float(action.trim_prefix("valve_pct_")) / 100.0)
+		return
 	match action:
 		# Each key step snaps to its step, so a run of presses lands on round
 		# values; the engine refuses what it must and the screen shows why.
@@ -551,10 +726,17 @@ func _do(action: String) -> void:
 			_set_feed_k(snappedf(_feed_k() - 273.15 + step, TEMPERATURE_STEP_K) + 273.15)
 		"valve_up", "valve_down":
 			var step := VALVE_STEP if action == "valve_up" else -VALVE_STEP
-			var opening := clampf(snappedf(_valve_opening() + step, VALVE_STEP), 0.0, 1.0)
+			_set_feed_valve(clampf(snappedf(_valve_opening() + step, VALVE_STEP), 0.0, 1.0))
+		"vent_toggle", "vent_open", "vent_close":
+			# Depressuring by hand (M59.5): the loop's vent fully open, or shut.
+			# A trip holding the vent refuses it, in the engine's words.
+			if vent_id < 0:
+				_say("this plant has no hydrogen vent", true)
+				return
+			var open := action == "vent_open" or (action == "vent_toggle" and _opening(vent_id) < 0.5)
 			_send(
-				"%s to %d%%" % [PLANTS[plant_key]["feed_valve"], roundi(opening * 100.0)],
-				{"cmd": "set_valve_opening", "node": int(feed_valve_id), "opening": opening}
+				"%s %s" % [PLANTS[plant_key]["vent_valve"], "opened (depressuring)" if open else "closed"],
+				{"cmd": "set_valve_opening", "node": int(vent_id), "opening": 1.0 if open else 0.0}
 			)
 		"firing_up", "firing_down":
 			if preheater_id < 0:
@@ -598,15 +780,19 @@ func _do(action: String) -> void:
 			if reset == 0:
 				_say("reset: no tripped trip on this plant", true)
 		"patch":
-			# Patch the hole in every failed wall: its outlet pipe at area zero,
-			# which puts the fire out (M58, docs/DESIGN.md §63).
+			# Patch EVERY hole in every failed wall — the oil's on its outlet pipe
+			# (M58, docs/DESIGN.md §63) and, on a bed whose hydrogen leaks too,
+			# the hydrogen's on its pass's outlet (M59.4, §64.13): each pipe at
+			# area zero. The fire goes out with the last of them, and the repair
+			# is refused while any one still leaks.
 			var patched := 0
 			for i in bed_ids.size():
 				if _wall_failed(i):
-					_send(
-						"patch %s" % _edge(bed_out_edges[i])["name"],
-						{"cmd": "puncture_pipe", "edge": int(bed_out_edges[i]), "area": 0.0}
-					)
+					for pipe in bed_hole_pipes[i]:
+						_send(
+							"patch %s" % _edge(pipe)["name"],
+							{"cmd": "puncture_pipe", "edge": int(pipe), "area": 0.0}
+						)
 					patched += 1
 			if patched == 0:
 				_say("patch: no failed wall on this plant", true)
@@ -629,6 +815,13 @@ func _set_feed_k(kelvin: float) -> void:
 	_send(
 		"%s to %.0f C" % [PLANTS[plant_key]["feed"], kelvin - 273.15],
 		{"cmd": "set_source_temperature", "node": int(feed_id), "temperature": kelvin}
+	)
+
+
+func _set_feed_valve(opening: float) -> void:
+	_send(
+		"%s to %d%%" % [PLANTS[plant_key]["feed_valve"], roundi(opening * 100.0)],
+		{"cmd": "set_valve_opening", "node": int(feed_valve_id), "opening": opening}
 	)
 
 
@@ -787,7 +980,34 @@ func _feed_flow() -> float:
 
 
 func _valve_opening() -> float:
-	return float(_node(feed_valve_id)["kind"]["opening"])
+	return _opening(feed_valve_id)
+
+
+func _opening(valve: int) -> float:
+	return float(_node(valve)["kind"]["opening"])
+
+
+## A node's solved pressure [Pa]; NAN before the first solve. Read from the
+## NODE: a pipe's stream carries no solved pressure.
+func _pressure_pa(id: int) -> float:
+	var value = _node(id).get("pressure_pa")
+	return NAN if value == null else float(value)
+
+
+## The mass flow along an edge [kg/s], signed as the edge runs; NAN before the
+## first solve.
+func _flow(edge: int) -> float:
+	return float(_edge(edge)["stream"]["mass_flow"]) if _solved() else NAN
+
+
+## What leaks out of a pipe's hole [kg/s], reported on the pipe itself.
+func _leak(pipe: int) -> float:
+	var value = _edge(pipe).get("leak_mass_flow")
+	return 0.0 if value == null else float(value)
+
+
+func _bar(pa: float) -> String:
+	return "--" if is_nan(pa) else "%.2f bar" % (pa / 1.0e5)
 
 
 func _duty_w(id: int) -> float:
@@ -923,6 +1143,18 @@ func _readout(tick: int) -> String:
 		line += " wall=%s fire=%6.2f MW" % ["FAILED" if _wall_failed(i) else "intact", _wall_fire_w(i) / 1.0e6]
 	if quench_pipe_id >= 0:
 		line += "  | quench=%5.2f kg/s" % _quench_flow()
+	if separator_id >= 0:
+		line += (
+			"  | loop=%7.2f bar makeup=%3d%% vent=%3d%%"
+			% [_pressure_pa(separator_id) / 1.0e5, roundi(_opening(makeup_id) * 100.0), roundi(_opening(vent_id) * 100.0)]
+		)
+		for i in bed_ids.size():
+			line += "  %s=%7.2f bar %5.2f kg/s" % [_node(pass_ids[i])["name"], _pressure_pa(pass_ids[i]) / 1.0e5, _flow(pass_in_edges[i])]
+	for i in bed_ids.size():
+		if _wall_failed(i):
+			line += "  leaks:"
+			for pipe in bed_hole_pipes[i]:
+				line += " %s=%.3f kg/s" % [_edge(pipe)["name"], _leak(pipe)]
 	for loop in _loops():
 		line += "  %s=%s" % [loop["name"], loop["mode"]]
 	for trip in _trips():
@@ -941,6 +1173,17 @@ const VESSEL_LOW_K := 473.15
 const VESSEL_HIGH_K := 1073.15
 const CHART_RECT := Rect2(60, 420, 520, 250)
 const TRAIL_RECT := Rect2(660, 420, 280, 250)
+## On a plant with a hydrogen loop the loop is drawn where the charts' top was,
+## and the charts are shorter.
+const CHART_RECT_GAS := Rect2(60, 545, 520, 135)
+const TRAIL_RECT_GAS := Rect2(660, 545, 280, 135)
+## The hydrogen loop's rows: the gas line, the quench under it, the return.
+const GAS_Y := 446.0
+const GAS_QUENCH_Y := GAS_Y + 24.0
+const GAS_RETURN_Y := GAS_Y + 64.0
+const GAS_SEPARATOR_X := 150.0
+const GAS_COMPRESSOR_X := 240.0
+const GAS_HEATER_X := 355.0
 const PANEL_X := 990.0
 
 const BACKGROUND := Color(0.09, 0.10, 0.12)
@@ -959,6 +1202,7 @@ const TRIP_MARK := Color(0.95, 0.78, 0.30)
 const TARGET_MARK := Color(0.45, 0.85, 0.95)
 ## One colour per bed, on the vessels' labels and both charts.
 const BED_COLORS := [Color(1.0, 0.62, 0.25), Color(0.62, 0.55, 1.0)]
+const HYDROGEN := Color(0.55, 0.85, 0.72)
 
 
 func _draw() -> void:
@@ -981,6 +1225,8 @@ func _draw() -> void:
 	)
 
 	_draw_line()
+	if separator_id >= 0:
+		_draw_gas_loop()
 	_draw_chart()
 	_draw_trail()
 	_draw_panel()
@@ -991,12 +1237,12 @@ func _draw() -> void:
 	)
 	_text(
 		Vector2(30, 768),
-		"W/S feed temperature   Up/Down feed valve   F/V preheater firing   C/X product cooler   Tab pick loop   A auto/manual   Q/Z loop target",
+		"W/S feed temperature   Up/Down feed valve   F/V preheater firing   C/X product cooler   D hydrogen vent   Tab pick loop   A auto/manual   Q/Z loop target",
 		DIM, 14
 	)
 	_text(
 		Vector2(30, 790),
-		"E emergency stop   R reset trips   P patch hole   M repair wall   T clear charts   Space pause   [ ] speed   1 calm   2 trip   3 quench   4 wall",
+		"E emergency stop   R reset trips   P patch holes   M repair wall   T clear charts   Space pause   [ ] speed   1 calm  2 trip  3 quench  4 wall  5 hydrogen  6 h2 quench",
 		DIM, 14
 	)
 	if halted != "":
@@ -1022,6 +1268,8 @@ func _draw_line() -> void:
 
 	var step := (LINE_X1 - LINE_X0) / (stations.size() - 1)
 	draw_line(Vector2(LINE_X0, LINE_Y), Vector2(LINE_X1, LINE_Y), PIPE, 5.0)
+	bed_xs = []
+	bed_xs.resize(bed_ids.size())
 	var mix_x := -1.0
 	var drum_x := -1.0
 	for s in stations.size():
@@ -1039,6 +1287,7 @@ func _draw_line() -> void:
 				mix_x = x
 				draw_circle(Vector2(x, LINE_Y), 7.0, PIPE)
 			"bed":
+				bed_xs[int(stations[s][1])] = x
 				_draw_bed(x, int(stations[s][1]))
 			"cooler":
 				var box := Rect2(x - 22, LINE_Y - 22, 44, 44)
@@ -1196,6 +1445,134 @@ func _draw_quench(mix_x: float, drum_x: float) -> void:
 		_text(at + Vector2(0, 35), "joins %s%s" % [_c(float(quench["joins_k"])), "" if cold else "  NOT COLD"], color, 13)
 
 
+## The hydrogen loop (M59.5), under the oil line: the separator and its
+## pressure, the compressor, the gas heater, each bed's pass under its bed, the
+## gas cooler and the return; the makeup and the vent on the separator; a
+## hydrogen quench from the compressor's discharge to the mix between the
+## passes, where the plant has one; and a failed wall's hydrogen leak at its
+## pass. Every number is a snapshot field.
+func _draw_gas_loop() -> void:
+	var cooler_x := float(bed_xs[bed_xs.size() - 1]) + 125.0
+	var line := PackedVector2Array([
+		Vector2(GAS_SEPARATOR_X, GAS_Y), Vector2(cooler_x, GAS_Y), Vector2(cooler_x, GAS_RETURN_Y),
+		Vector2(GAS_SEPARATOR_X, GAS_RETURN_Y), Vector2(GAS_SEPARATOR_X, GAS_Y),
+	])
+	draw_polyline(line, HYDROGEN.darkened(0.3), 3.0)
+
+	# The separator: the loop's pressure, which the makeup holds and the vent
+	# and every leak lower.
+	var sep := Rect2(GAS_SEPARATOR_X - 18, GAS_Y - 30, 36, 60)
+	draw_rect(sep, Color(0.12, 0.17, 0.16))
+	draw_rect(sep, SHELL, false, 3.0)
+	_label_over(GAS_SEPARATOR_X, GAS_Y - 54, ["separator", _bar(_pressure_pa(separator_id))], HYDROGEN)
+	# Makeup in and vent out, on stubs to the left.
+	var vent_open := _opening(vent_id)
+	draw_line(Vector2(40, GAS_Y - 14), Vector2(sep.position.x, GAS_Y - 14), HYDROGEN.darkened(0.3), 2.0)
+	draw_line(Vector2(40, GAS_Y + 14), Vector2(sep.position.x, GAS_Y + 14), HYDROGEN.darkened(0.3), 2.0)
+	_draw_small_valve(Vector2(85, GAS_Y - 14), BAD if vent_open > 0.0 else SHELL)
+	_draw_small_valve(Vector2(85, GAS_Y + 14), SHELL)
+	_text(Vector2(26, GAS_Y - 26), "vent %d%%" % roundi(vent_open * 100.0), BAD if vent_open > 0.0 else DIM, 13)
+	_text(Vector2(26, GAS_Y + 36), "makeup %d%%" % roundi(_opening(makeup_id) * 100.0), DIM, 13)
+
+	# The compressor, and the pressure it delivers.
+	var on: bool = _node(compressor_id)["kind"].get("on", true)
+	draw_circle(Vector2(GAS_COMPRESSOR_X, GAS_Y), 15.0, Color(0.14, 0.16, 0.18))
+	draw_arc(Vector2(GAS_COMPRESSOR_X, GAS_Y), 15.0, 0.0, TAU, 24, SHELL, 3.0)
+	draw_colored_polygon(
+		PackedVector2Array([
+			Vector2(GAS_COMPRESSOR_X - 7, GAS_Y - 9), Vector2(GAS_COMPRESSOR_X + 9, GAS_Y), Vector2(GAS_COMPRESSOR_X - 7, GAS_Y + 9)
+		]),
+		HYDROGEN if on else DIM
+	)
+	var delivers := NAN
+	if compressor_out_edge >= 0:
+		delivers = _pressure_pa(int(_edge(compressor_out_edge)["to"]))
+	_label_over(
+		GAS_COMPRESSOR_X, GAS_Y - 54,
+		["compressor" if on else "compressor OFF", "%.2f kg/s" % _flow(compressor_out_edge) if _solved() else "-- kg/s", "to %s" % _bar(delivers)],
+		HYDROGEN
+	)
+
+	# The gas heater.
+	var heater := Rect2(GAS_HEATER_X - 22, GAS_Y - 14, 44, 28)
+	draw_rect(heater, Color(0.14, 0.12, 0.11))
+	draw_rect(heater, SHELL, false, 2.0)
+	if _duty_w(gas_heater_id) > 0.0:
+		draw_rect(Rect2(heater.position + Vector2(4, 18), Vector2(36, 6)), FLAME)
+	_label_over(GAS_HEATER_X, GAS_Y - 54, ["gas heater", "fired %s" % _mw(_duty_w(gas_heater_id)), "out %s" % _c(_node_k(gas_heater_id))], HYDROGEN)
+
+	# Each pass under its bed, coloured by its temperature (the bed's own).
+	for i in bed_ids.size():
+		var x := float(bed_xs[i])
+		var box := Rect2(x - 28, GAS_Y - 11, 56, 22)
+		draw_rect(box, _temperature_color(_node_k(pass_ids[i])))
+		draw_rect(box, SHELL, false, 2.0)
+		_label_over(
+			x, GAS_Y - 54,
+			[
+				"%s %s" % [_node(pass_ids[i])["name"], _bar(_pressure_pa(pass_ids[i]))],
+				"hydrogen %s" % ("%.2f kg/s" % _flow(pass_in_edges[i]) if _solved() else "--"),
+			],
+			BED_COLORS[i % BED_COLORS.size()]
+		)
+		# A failed wall's hydrogen hole, on the pass's outlet: what leaks.
+		if _wall_failed(i) and bed_hole_pipes[i].size() > 1:
+			var leak := _leak(int(bed_hole_pipes[i][1]))
+			var at := Vector2(x + 44, GAS_Y)
+			if leak > 0.0:
+				var height := clampf(leak / 0.3, 0.15, 1.0) * 34.0
+				for k in 2:
+					var fx := at.x - 5 + k * 10
+					draw_colored_polygon(
+						PackedVector2Array([Vector2(fx - 5, GAS_Y - 3), Vector2(fx, GAS_Y - 3 - height * (0.8 + 0.2 * k)), Vector2(fx + 5, GAS_Y - 3)]),
+						FLAME
+					)
+			_text(Vector2(at.x - 6, GAS_Y + 32), "H2 leak %.3f kg/s" % leak, FLAME if leak > 0.0 else DIM, 12)
+
+	# The gas cooler, on the way back to the separator.
+	var cooler := Rect2(cooler_x - 18, GAS_Y - 14, 36, 28)
+	draw_rect(cooler, Color(0.13, 0.20, 0.28))
+	draw_rect(cooler, LIQUID, false, 2.0)
+	_label_over(cooler_x, GAS_Y - 54, ["gas cooler", "out %s" % _c(_node_k(gas_cooler_id))], HYDROGEN)
+
+	# The hydrogen quench: from the compressor's discharge to the mix ahead of
+	# the second pass, coloured by the bed loop's cold check.
+	if gas_mix_id >= 0 and quench_pipe_id >= 0 and bed_xs.size() > 1:
+		var tee_x := GAS_COMPRESSOR_X + 50.0
+		var mix_x := (float(bed_xs[0]) + float(bed_xs[1])) * 0.5
+		var color := HYDROGEN
+		var loop = _quench_loop()
+		var cold := true
+		if loop != null:
+			cold = _quench_cold(loop)
+			color = LIQUID if cold else BAD
+		draw_polyline(
+			PackedVector2Array([Vector2(tee_x, GAS_Y), Vector2(tee_x, GAS_QUENCH_Y), Vector2(mix_x, GAS_QUENCH_Y), Vector2(mix_x, GAS_Y)]),
+			color, 2.5
+		)
+		draw_circle(Vector2(tee_x, GAS_Y), 4.0, PIPE)
+		draw_circle(Vector2(mix_x, GAS_Y), 6.0, PIPE)
+		var text := "quench %s" % ("%.2f kg/s" % _quench_flow() if _solved() else "-- kg/s")
+		if loop != null:
+			var quench: Dictionary = loop["quench"]
+			text += "  at %s, joins %s%s" % [_c(float(quench["quench_k"])), _c(float(quench["joins_k"])), "" if cold else "  NOT COLD"]
+		_text(Vector2(tee_x + 34, GAS_QUENCH_Y + 16), text, color, 12)
+
+
+func _draw_small_valve(at: Vector2, color: Color) -> void:
+	draw_colored_polygon(PackedVector2Array([at + Vector2(-9, -7), at, at + Vector2(-9, 7)]), color)
+	draw_colored_polygon(PackedVector2Array([at + Vector2(9, -7), at, at + Vector2(9, 7)]), color)
+
+
+## Lines of text centred on `x`, the first one's baseline at `y`: labels drawn
+## above a station, the first line in `color`.
+func _label_over(x: float, y: float, lines: Array, color: Color) -> void:
+	for n in lines.size():
+		var text := str(lines[n])
+		var width := ThemeDB.fallback_font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 13).x
+		_text(Vector2(x - width * 0.5, y + n * 16), text, color if n == 0 else DIM, 13)
+
+
 ## The bed loop that carries a quench reading, if the plant has one.
 func _quench_loop() -> Variant:
 	for loop in _loops():
@@ -1208,7 +1585,7 @@ func _quench_loop() -> Variant:
 ## over the last CHART_SAMPLES samples, with the bed's trip limits and loop
 ## targets across it. The vertical scale fits what is drawn.
 func _draw_chart() -> void:
-	var rect := CHART_RECT
+	var rect := CHART_RECT if separator_id < 0 else CHART_RECT_GAS
 	draw_rect(rect, Color(0.11, 0.12, 0.14))
 	_text(rect.position + Vector2(0, -10), "temperature, last 30 minutes (bold: bed, thin: oil entering it)", DIM, 14)
 	var shown := samples.slice(maxi(0, samples.size() - CHART_SAMPLES))
@@ -1263,7 +1640,7 @@ func _draw_chart() -> void:
 ## The trail: every sample as a dot at (oil entering the bed, bed), older dots
 ## fainter, the newest ringed. No curve is drawn that the engine did not report.
 func _draw_trail() -> void:
-	var rect := TRAIL_RECT
+	var rect := TRAIL_RECT if separator_id < 0 else TRAIL_RECT_GAS
 	draw_rect(rect, Color(0.11, 0.12, 0.14))
 	_text(rect.position + Vector2(0, -10), "trail: bed against oil entering it", DIM, 14)
 	var x_low := INF

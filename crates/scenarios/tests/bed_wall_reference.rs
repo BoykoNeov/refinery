@@ -515,9 +515,10 @@ fn every_bed_in_the_repo_owns_a_wall_hole() {
     // eight since M59.2 (§64.11): `hydrocracker_makeup.toml`'s; ten since M59.3
     // (§64.12): `hydrocracker_hydrogen_quench.toml`'s two.
     // Eleven since M59.4 (§64.13): `hydrocracker_hydrogen_leak.toml`'s, the one
-    // bed whose pass leaks hydrogen.
-    assert_eq!(beds, 11, "nine shipped hydrocracker files, eleven beds");
-    assert_eq!(hydrogen_holes, 1, "one pass declares a heating value");
+    // bed whose pass leaks hydrogen. Twelve since M59.5 (§64.14):
+    // `hydrocracker_hydrogen_wall.toml`'s, the reactor screen's, a second.
+    assert_eq!(beds, 12, "ten shipped hydrocracker files, twelve beds");
+    assert_eq!(hydrogen_holes, 2, "two passes declare a heating value");
     let engine = build_src(DEMO, "newton");
     assert!(engine.graph.find_node("burnout_atmosphere").is_some());
 }
