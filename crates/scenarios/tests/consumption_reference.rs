@@ -21,7 +21,9 @@
 //! 5. the game solver tells the same story;
 //! 6. a starved loop comes to REST at the factor's floor, reacting nothing;
 //! 7. the factor's regularisation near vacuum, by hand;
-//! 8. the loader's refusals.
+//! 8. the loader's refusals — M59.3's included: the figures ordered along the
+//!    reaction's own paths, a left-out lump counting as zero (§64.12);
+//! 9. a bed fed products, not the datum lump, consumes on every tick.
 //!
 //! `Engine` is not `Debug` (boxed solver traits), so failures are unwrapped by
 //! hand rather than with `expect` on the engine itself.
@@ -483,4 +485,84 @@ fn the_loader_refuses_a_misdeclared_uptake() {
         "hydrogen_uptake_kg_per_kg = { distillate = 0.035, naphtha = 0.020, gas = 0.070 }",
     ));
     assert!(e.contains("must not fall as the lumps get lighter"), "{e}");
+    // M59.3 (§64.12): a lump the table leaves out counts as zero and is
+    // ordered too — naphtha's zero falls below distillate's 0.020.
+    let e = refused(&edit(
+        DEMO,
+        table,
+        "hydrogen_uptake_kg_per_kg = { distillate = 0.020 }",
+    ));
+    assert!(
+        e.contains("'naphtha', which the table leaves out and so counts as zero,"),
+        "{e}"
+    );
+    assert!(e.contains("must not fall as the lumps get lighter"), "{e}");
+    // The datum may carry a figure, below the lighter lumps'.
+    let e = refused(&edit(
+        DEMO,
+        table,
+        "hydrogen_uptake_kg_per_kg = { vgo = 0.030, distillate = 0.020, naphtha = 0.035, gas = 0.070 }",
+    ));
+    assert!(
+        e.contains("per kg of 'vgo', which the reaction cracks into it"),
+        "{e}"
+    );
+    refinery_scenarios::build_engine(
+        &refinery_scenarios::load_str(&edit(
+            DEMO,
+            table,
+            "hydrogen_uptake_kg_per_kg = { vgo = 0.010, distillate = 0.020, naphtha = 0.035, gas = 0.070 }",
+        ))
+        .unwrap(),
+    )
+    .unwrap_or_else(|e| panic!("an ordered datum figure loads: {e}"));
+    // Cooling water is in the slate and in liquid service, and inert.
+    let e = refused(&edit(
+        DEMO,
+        table,
+        "hydrogen_uptake_kg_per_kg = { distillate = 0.020, naphtha = 0.035, gas = 0.070, water = 0.1 }",
+    ));
+    assert!(
+        e.contains("'water', which reactions = \"hydrocracking\" neither forms"),
+        "{e}"
+    );
+    // A chemistry with no paths prices nothing.
+    let e = refused(&edit(
+        DEMO,
+        r#"reactions = "hydrocracking""#,
+        r#"reactions = "none""#,
+    ));
+    assert!(
+        e.contains("names no path along which its lumps convert"),
+        "{e}"
+    );
+}
+
+/// 9. A bed fed PRODUCTS — the second bed's lot — consumes on every tick.
+///
+/// M59.3 (§64.12). M59.2's loader admitted a table that left lumps out, and a
+/// bed fed pure distillate under `{ distillate = 0.020 }` refused its first
+/// tick; under an ordered table every feed draws non-negative hydrogen.
+#[test]
+fn a_bed_fed_products_consumes() {
+    for feed in [
+        "{ distillate = 1.0 }",
+        "{ naphtha = 1.0 }",
+        "{ gas = 1.0 }",
+        "{ vgo = 0.5, distillate = 0.3, naphtha = 0.15, gas = 0.05 }",
+    ] {
+        let src = edit(
+            DEMO,
+            "temperature_c = 395.0\ncomposition = { vgo = 1.0 }",
+            &format!("temperature_c = 395.0\ncomposition = {feed}"),
+        );
+        let mut engine = build_src(&src, "newton");
+        for _ in 0..600 {
+            engine
+                .tick()
+                .unwrap_or_else(|e| panic!("fed {feed}, a tick refused: {e}"));
+            let d = demand(&engine.snapshot());
+            assert!(d >= 0.0, "fed {feed}: a demand of {d} kg/s");
+        }
+    }
 }

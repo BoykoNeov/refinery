@@ -1109,6 +1109,20 @@ pub trait ReactionModel: Send {
         tau: Seconds,
         slate: &Slate,
     ) -> Result<Reaction, SimError>;
+
+    /// The paths along which this model moves mass, as `(from, to)` slate
+    /// indices: a lump `from` converts into a lump `to` (M59.3,
+    /// docs/DESIGN.md §64.12). Every path a path list names, and only those,
+    /// can carry mass, so a per-kilogram property that never falls along any
+    /// path — a hydrogen uptake — makes the reaction's net change in it
+    /// non-negative for ANY feed, not only for a feed of one lump.
+    ///
+    /// Empty by default: a model that converts nothing, or whose structure is
+    /// a table rather than a network. The loader refuses a hydrogen uptake
+    /// table on a plant whose model names no path.
+    fn paths(&self) -> Vec<(usize, usize)> {
+        Vec::new()
+    }
 }
 
 /// One control algorithm — the regulation seam (docs/DESIGN.md §10 fork 2).

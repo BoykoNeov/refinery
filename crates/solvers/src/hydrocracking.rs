@@ -409,6 +409,26 @@ impl ReactionModel for Hydrocracking {
             dh_rxn: JPerKg(dh_rxn),
         })
     }
+
+    /// The network's six paths, each lump to every lighter one (`rate_matrix`'s
+    /// structure), in slate indices — whatever their rate constants, so a path
+    /// a parameter set happens to switch off is still ordered (M59.3,
+    /// docs/DESIGN.md §64.12).
+    fn paths(&self) -> Vec<(usize, usize)> {
+        let order = [
+            self.lumps.vgo,
+            self.lumps.distillate,
+            self.lumps.naphtha,
+            self.lumps.gas,
+        ];
+        let mut paths = Vec::with_capacity(6);
+        for (i, &from) in order.iter().enumerate() {
+            for &to in &order[i + 1..] {
+                paths.push((from, to));
+            }
+        }
+        paths
+    }
 }
 
 #[cfg(test)]

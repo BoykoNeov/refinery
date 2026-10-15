@@ -571,8 +571,9 @@ impl HydrogenKinetics {
 pub struct HydrogenConsumption {
     /// Hydrogen consumed per kilogram of each component FORMED [kg/kg], one per
     /// slate component in slate order, zero for an undeclared one. A GAME
-    /// VALUE (§64.11). Non-negative, and never falling as the declared lumps
-    /// get lighter, so a reaction that only cracks consumes and never releases.
+    /// VALUE (§64.11). Non-negative, and never falling along any path the
+    /// reaction runs, an undeclared lump counting as zero (§64.12), so the
+    /// reaction consumes and never releases, whatever the bed is fed.
     pub uptake: Vec<f64>,
     /// The sink's rate this tick [kg/(s·Pa)], a STATE: the last tick's demand
     /// over the pressure its reaction ran at, written back at the end of every

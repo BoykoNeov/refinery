@@ -252,6 +252,7 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
             )))
         }
     };
+    order_uptake(scenario, &slate, reactions.as_ref())?;
 
     let separation: Box<dyn SeparationModel> = match scenario.fidelity.separation.as_str() {
         // M3.2's boiling-range splitter, and the default (see `Fidelity`).
@@ -3864,12 +3865,9 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
 /// - a figure must be finite and >= 0, and the table must not be empty — a
 ///   table that consumes nothing is no table, and omitting it says that;
 /// - it must name a slate component in LIQUID service, a lump the bed's oil
-///   can form; hydrogen itself is not formed;
-/// - the figures must never FALL as the declared lumps get lighter. Every path
-///   a bed's network runs goes lighter, so ordered figures make the demand
-///   `Σ Δyᵢ · uptakeᵢ` a sum of non-negative steps: cracking only ever
-///   consumes. Lumps the table leaves out count as zero and are not ordered —
-///   the datum, conventionally the feed's lump.
+///   can form; hydrogen itself is not formed.
+///
+/// The figures' ORDER needs the reaction model, built later: `order_uptake`.
 fn hydrogen_consumption(
     name: &str,
     table: &BTreeMap<String, f64>,
@@ -3882,7 +3880,6 @@ fn hydrogen_consumption(
         )));
     }
     let mut uptake = vec![0.0; slate.len()];
-    let mut declared: Vec<(f64, &str, f64)> = Vec::new();
     for (component, &figure) in table {
         let index = slate.index_of(component).ok_or_else(|| {
             SimError::Scenario(format!(
@@ -3905,22 +3902,80 @@ fn hydrogen_consumption(
             )));
         }
         uptake[index] = figure;
-        declared.push((lump.tb.value(), component, figure));
-    }
-    // Heaviest first; each lighter lump must consume at least as much.
-    declared.sort_by(|a, b| b.0.total_cmp(&a.0));
-    for pair in declared.windows(2) {
-        let ((_, heavy, heavy_figure), (_, light, light_figure)) = (pair[0], pair[1]);
-        if light_figure < heavy_figure {
-            return Err(SimError::Scenario(format!(
-                "hydrogen pass '{name}' declares {light_figure} kg of hydrogen per kg of \
-                 '{light}' but {heavy_figure} per kg of the heavier '{heavy}': the figures must \
-                 not fall as the lumps get lighter, or cracking '{heavy}' to '{light}' would \
-                 give hydrogen back (docs/DESIGN.md §64.11)"
-            )));
-        }
     }
     Ok(HydrogenConsumption { uptake, rate: 0.0 })
+}
+
+/// Each hydrogen uptake table ordered along the reaction's own paths (M59.3,
+/// docs/DESIGN.md §64.12), once the model exists:
+///
+/// - the model must name its paths (`ReactionModel::paths`): one that names
+///   none converts nothing a table could price;
+/// - every declared lump must lie on a path — an inert member such as cooling
+///   water is never formed, and a figure on it changes nothing;
+/// - along every path the figure must not FALL, a lump the table leaves out
+///   counting as zero. Mass moves only along paths, so the demand
+///   `Σ Δyᵢ · uptakeᵢ` is then a sum of non-negative steps for ANY feed — a
+///   second bed fed the first one's products included. M59.2's check ordered
+///   only the declared lumps by boiling point, so `{ distillate = 0.020 }`
+///   loaded and a bed fed distillate drew negative hydrogen mid-run.
+fn order_uptake(
+    scenario: &ScenarioFile,
+    slate: &Slate,
+    reactions: &dyn ReactionModel,
+) -> Result<(), SimError> {
+    let paths = reactions.paths();
+    for (name, def) in &scenario.nodes {
+        let NodeDef::BedHydrogen {
+            hydrogen_uptake_kg_per_kg: Some(table),
+            ..
+        } = def
+        else {
+            continue;
+        };
+        if paths.is_empty() {
+            return Err(SimError::Scenario(format!(
+                "hydrogen pass '{name}' declares a hydrogen_uptake_kg_per_kg, but reactions = \
+                 \"{}\" names no path along which its lumps convert, so the table would change \
+                 nothing (docs/DESIGN.md §64.12)",
+                reactions.name()
+            )));
+        }
+        for component in table.keys() {
+            let on_a_path = slate
+                .index_of(component)
+                .is_some_and(|i| paths.iter().any(|&(from, to)| from == i || to == i));
+            if !on_a_path {
+                return Err(SimError::Scenario(format!(
+                    "hydrogen pass '{name}' declares hydrogen uptake for '{component}', which \
+                     reactions = \"{}\" neither forms nor cracks: a figure on an inert member \
+                     changes nothing (docs/DESIGN.md §64.12)",
+                    reactions.name()
+                )));
+            }
+        }
+        let figure = |i: usize| table.get(&slate.get(i).name).copied();
+        for &(from, to) in &paths {
+            let (heavy, light) = (&slate.get(from).name, &slate.get(to).name);
+            let (heavy_figure, light_figure) =
+                (figure(from).unwrap_or(0.0), figure(to).unwrap_or(0.0));
+            if light_figure < heavy_figure {
+                let left_out = if figure(to).is_none() {
+                    ", which the table leaves out and so counts as zero,"
+                } else {
+                    ""
+                };
+                return Err(SimError::Scenario(format!(
+                    "hydrogen pass '{name}' declares {light_figure} kg of hydrogen per kg of \
+                     '{light}'{left_out} but {heavy_figure} per kg of '{heavy}', which the \
+                     reaction cracks into it: the figures must not fall as the lumps get \
+                     lighter, or cracking '{heavy}' to '{light}' would give hydrogen back \
+                     (docs/DESIGN.md §64.12)"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Resolve each hydrogen pass's `bed` (M59.1, docs/DESIGN.md §64.2) now that

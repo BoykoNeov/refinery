@@ -23530,7 +23530,8 @@ never reaches exactly zero.
 **Open, for the slices that reach them** (found by the close-out review, each
 confirmed on the engine):
 
-- **The demand is non-negative only for a feed of the datum lump.** Lumps the
+- ~~**The demand is non-negative only for a feed of the datum lump.**~~ —
+  **CLOSED by M59.3** (§64.12, first part). Lumps the
   uptake table leaves out count as zero and are not ordered, so
   `{ distillate = 0.020 }` loads, and a bed fed pure distillate refuses its
   first tick mid-run (`would consume −1.4356e-2 kg/s`) where the loader should
@@ -23547,3 +23548,35 @@ confirmed on the engine):
   above 1 atm would avoid it and still leave M59.1's loop (at or above 2 bar)
   untouched while the ramp stays under 2 bar — M59.4's decision.
 
+### 64.12 The hydrogen quench (M59.3)
+
+**First part, built: the uptake table ordered along the reaction's paths.**
+§64.11's first open edge, closed before the second bed (it is fed the first
+bed's products, not the datum lump):
+
+- **`ReactionModel::paths`**, a defaulted trait method (empty): the `(from,
+  to)` slate indices along which a model moves mass. Hydrocracking names its
+  six — each lump to every lighter one, whatever the rate constants. Every
+  other model names none. A trait method rather than a match on the model's
+  name in the loader (CLAUDE.md rule 2).
+- **`order_uptake`** in the loader, once the model is built: a table on a
+  plant whose model names no path is refused (it would change nothing); a
+  figure on a slate member no path names — cooling water — is refused (an
+  inert member is never formed); along every path the figure must not fall, a
+  lump the table leaves out counting as ZERO. Mass moves only along paths, so
+  `Σ Δyᵢ · uptakeᵢ` is a sum of non-negative steps for ANY feed. M59.2's check
+  ordered only the declared lumps by boiling point: `{ distillate = 0.020 }`
+  loaded. The boiling-point order is gone; the path order is the exact
+  condition it stood in for.
+- **The rounding band** in `pass_consumption`: a demand under zero by no more
+  than `16·ε·ṁ_oil·Σᵢ (y_out,i + y_in,i)·uptakeᵢ` is zero; beyond it the tick is
+  still refused. Each fraction carries a few ulps of itself, so that is the
+  terms' own scale. Every shipped bed is fed pure vgo, its sum exactly
+  non-negative, so the band moves nothing.
+- **Gates**: `consumption_reference` gate 8 gains five refusals (a left-out
+  lump, a datum figure above a lighter lump's — and one below it admitted —,
+  cooling water, a table under `reactions = "none"`); gate 9 runs a bed fed
+  pure distillate, pure naphtha, pure gas and a mix for a minute each, its
+  demand non-negative every tick; three unit tests in `energy.rs` put the band
+  on a reversal of one part in 1e16 (zero), of 1e-9 (refused) and on a
+  positive demand (untouched).

@@ -2901,7 +2901,23 @@ fn pass_consumption(
         .zip(&declared.uptake)
         .map(|((after, before), uptake)| (after - before) * uptake)
         .sum();
-    let demand = oil_mass * per_kg;
+    // A ROUNDING-sized negative is zero (M59.3, docs/DESIGN.md §64.12). The
+    // loader orders the figures along every path, so the exact sum is never
+    // negative; computed, a bed fed products that almost nothing reacts in can
+    // land a few ulps under it. The band is the terms' own scale: each of
+    // `y_out` and `y_in` carries a few ulps of itself.
+    let scale: f64 = products
+        .fractions()
+        .iter()
+        .zip(feed.fractions())
+        .zip(&declared.uptake)
+        .map(|((after, before), uptake)| (after + before) * uptake)
+        .sum();
+    let band = 16.0 * f64::EPSILON * oil_mass * scale;
+    let demand = match oil_mass * per_kg {
+        demand if demand < 0.0 && demand >= -band => 0.0,
+        demand => demand,
+    };
     if !demand.is_finite() || demand < 0.0 {
         return Err(SimError::Numerical(format!(
             "catalyst bed '{name}': its reaction would consume {demand:.4e} kg/s of hydrogen. A \
@@ -5017,6 +5033,73 @@ mod tests {
                 (settled - low).abs() < 1e-6,
                 "the bed settled at {settled} K; the hand balance has it at {low} K"
             );
+        }
+    }
+
+    /// M59.3 (docs/DESIGN.md §64.12): a demand a few ulps under zero — a bed
+    /// fed products, reversing almost nothing by rounding — is zero, and a
+    /// real negative is still refused.
+    mod hydrogen_demand_band {
+        use super::*;
+        use crate::components::PseudoComponent;
+        use crate::graph::HydrogenConsumption;
+
+        fn two_lumps() -> Slate {
+            let cut = |name: &str, tb: f64| PseudoComponent {
+                name: name.into(),
+                tb: Kelvin(tb),
+                molar_mass: KgPerMol(0.1),
+                density: Some(KgPerM3(800.0)),
+                cp: JPerKgK(3200.0),
+                cp_shape: None,
+                phase: Phase::Liquid,
+            };
+            Slate::new(vec![cut("heavy", 600.0), cut("light", 400.0)]).unwrap()
+        }
+
+        /// The demand of `products` formed from a 25/75 feed, 1 kg/s of oil.
+        fn demand(products: [f64; 2]) -> Result<f64, SimError> {
+            let slate = two_lumps();
+            let declared = HydrogenConsumption {
+                uptake: vec![0.020, 0.035],
+                rate: 0.0,
+            };
+            let feed = Composition::from_weights(&[0.25, 0.75]).unwrap();
+            let products = Composition::from_weights(&products).unwrap();
+            let gas = Composition::pure(2, 0);
+            pass_consumption(
+                "bed",
+                (&slate, &ConstantEnthalpyStub),
+                &declared,
+                (&feed, &products, 1.0),
+                (&gas, Pascal(1e7)),
+                0.0,
+                Kelvin(650.0),
+            )
+            .map(|c| c.demand.value())
+        }
+
+        #[test]
+        fn a_rounding_sized_negative_is_zero() {
+            // Light turned back into heavy by one part in 1e16: the raw sum is
+            // negative, by about 1.7e-18 kg/s, under the band's ~2.2e-17.
+            let products = [0.25 + 1e-16, 0.75 - 1e-16];
+            let raw = (products[0] - 0.25) * 0.020 + (products[1] - 0.75) * 0.035;
+            assert!(raw < 0.0, "the fixture must reverse a little: {raw}");
+            assert_eq!(demand(products).unwrap(), 0.0);
+        }
+
+        #[test]
+        fn a_real_negative_is_refused() {
+            let e = demand([0.25 + 1e-9, 0.75 - 1e-9]).unwrap_err().to_string();
+            assert!(e.contains("would consume"), "{e}");
+        }
+
+        #[test]
+        fn a_positive_demand_is_untouched() {
+            let products = [0.25 - 1e-3, 0.75 + 1e-3];
+            let by_hand = -1e-3 * 0.020 + 1e-3 * 0.035;
+            assert!((demand(products).unwrap() - by_hand).abs() < 1e-18);
         }
     }
 }
