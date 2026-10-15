@@ -12,6 +12,50 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M59 is CLOSED (2026-10-15): hydrogen in the catalyst bed — a recycle loop
+through the beds, consumption, a hydrogen quench, depressuring, a trip that
+stops the oil, a wall that leaks hydrogen, and two hydrogen plants on the
+reactor screen — `docs/DEFERRED.md` D7 taken, D10 met for hydrogen beds, D14–D21
+and F6 opened, A27 and A28 left open.** Offered after M58 closed; the user said
+"close m58, then 1" and made seven decisions in plain words before anything was
+written (DESIGN §64): depressuring and the hydrogen quench both, the hydrogen
+order ½, consumption, the screen, two streams through one bed each with its own
+pressure, a trip that may stop a hydrogen bed's oil, and a wall that leaks
+hydrogen too.
+- **M59.0, specified** (§64.0–64.9): probed first — with the loop's hydrogen as
+  a heat sink, venting catches an excursion but makes a run-away bed hotter;
+  D7's "kinder way under the wall's limit" corrected.
+- **M59.1, the hydrogen loop** (§64.10): a hydrogen pass beside each bed, swept
+  with it; every rate times `(p/p_ref)^½`; a recycle compressor in both solvers.
+  `hydrocracker_hydrogen.toml`: the trip depressures the loop and the starved
+  bed turns at 464.0 °C.
+- **M59.2, consumption** (§64.11): the bed draws hydrogen per kilogram of each
+  lump formed — the network's first nodal sink. `hydrocracker_makeup.toml`:
+  shutting the makeup starves a runaway at 521.25 °C, under the wall.
+- **M59.3, the hydrogen quench** (§64.12): the uptake ordered along the
+  reaction's own paths; cold hydrogen from the compressor's discharge mixed in
+  between two beds under a cascade. `hydrocracker_hydrogen_quench.toml`: the
+  quench holds the second bed at 400.00 °C.
+- **M59.4, the stopping trip, the hydrogen leak, the floor** (§64.13): the
+  hydrogen factor ramps to zero at 1.2 bar so a starved loop rests above the
+  atmosphere; a trip may stop a hydrogen bed's oil (D10 lifted for those beds);
+  a failed wall opens a second hole on the hydrogen's outlet and both leaks
+  burn. `hydrocracker_hydrogen_leak.toml`.
+- **M59.5, the screen** (§64.14): key 5, a new screen file
+  (`hydrocracker_hydrogen_wall.toml`, the leak plant with no trip, loaded at
+  460 °C) — the wall fails with two holes, the loop empties through one, P
+  patches BOTH; key 6, the quench plant — the trip vents the loop, D closes the
+  vent by hand. `reactor_screen.rs` (7).
+- Corpus: every plant shipped before each slice byte-identical on both
+  fidelities at every slice; 55 plants now (five new).
+- **Left open**: A27 (the game solver's quench cascade; the screens run Newton),
+  A28 (the floor is a numerical regularisation). New rows: D14 the shared
+  pressure, D15 the hydrogen order and uptake figures as game values, D16 light
+  ends and the purge, D17 heat of compression and surge, D18 the heat of
+  hydrogenation (a gap: no trigger written), D19 thermal cracking past 450 °C,
+  D20 a still quench's reading within a valve's dissipation, D21 a vented loop
+  fed back from the flare; F6 the trip-held valve's refusal wording.
+
 **M58 is CLOSED (2026-10-15): what a runaway breaks — a catalyst bed's wall
 fails past its metal limit, a leak and its fire, a patch and a repair, and a
 fourth plant on the reactor screen — `docs/DEFERRED.md` D8 taken, D12 and D13

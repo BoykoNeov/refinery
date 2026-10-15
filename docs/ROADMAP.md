@@ -9348,7 +9348,7 @@ wall) and windowed with screenshots (wall). `reactor_screen.rs` (4). DESIGN §63
 **M58 CLOSED 2026-10-15**, on the user's "close m58" after both slices landed.
 Close-out at the top of `docs/MILESTONES.md`. A27 stays open, worse.
 
-## M59 — hydrogen in the catalyst bed: a recycle loop through the beds, depressuring, consumption and a hydrogen quench; ledger rows D7 and D10; opened on a decision
+## M59 — **CLOSED** 2026-10-15 — hydrogen in the catalyst bed: a recycle loop through the beds, depressuring, consumption and a hydrogen quench; ledger rows D7 and D10; opened on a decision
 
 Offered after M58 closed (2026-10-15); the user said "close m58, then 1". Seven
 decisions, asked in plain words before anything was written (DESIGN §64): both
@@ -9533,3 +9533,7 @@ key 5 and the shipped quench plant on key 6.
 - Seen, not changed: the engine's refusal to move a valve a trip holds reads
   `NodeId(21) ('vent_valve') ... can then be reopened by hand`, debug text and
   "reopened" for a close — the kind of wording M57.5 fixed for temperatures.
+
+**M59 CLOSED 2026-10-15**, after all six slices landed, on the user's standing
+rule ("close it, do so as a rule"). Close-out at the top of
+`docs/MILESTONES.md`. A27 and A28 stay open; D14–D21 and F6 new.
