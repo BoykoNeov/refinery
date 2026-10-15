@@ -23580,3 +23580,131 @@ bed's products, not the datum lump):
   demand non-negative every tick; three unit tests in `energy.rs` put the band
   on a reversal of one part in 1e16 (zero), of 1e-9 (refused) and on a
   positive demand (untouched).
+
+**Probed on the engine, before the rules** (`W:\temp\claude\m59_3\`, the
+two-bed plant at fixed quench openings, Newton; the game solver equal to the
+printed digit). The two beds in series, each the M59.2 bed consuming its
+hydrogen; the oil straight from the first to the second; the hydrogen through
+the first pass, a mix, the second pass:
+
+```text
+  feed 385 °C, quench Kv 40     bed1 °C   bed2 °C      quench kg/s  H2 to bed1
+  shut                          403.5     runs away    0            5.47
+  0.3 open                      405.1     395.5        1.05         5.23
+  0.6 open                      406.2     373.2        1.98         5.00
+  fully open                    407.8     354.5        3.03         4.70
+```
+
+- **At a 380 °C feed the second bed only creeps** (428 °C at an hour, still
+  rising); at 385 °C it runs away inside half an hour, so 385 °C is the
+  plant's feed.
+- **The quench cools through the pass**: about 1 kg/s at ~70 °C into 5.2 kg/s
+  at 404 °C brings the second pass's hydrogen to ~350 °C, and its heat
+  capacity rate does the rest. Kv 5 passed 0.45 kg/s fully open — too small.
+- **What the quench takes, the first bed loses.** The compressor's flow rises
+  as the quench valve opens (5.47 → 7.73 kg/s at full open) but the first
+  pass's share falls (5.47 → 4.70), and the first bed warms 1.6–4.3 K. The
+  gas twin of M57.4's back-pressure; it stays calm.
+- **The second pass's pressure is unchanged** (150.1 bar): its factor stays
+  at 0.984 at every opening.
+- **The backup trip** at 420 °C on the second bed, quench at its minimum:
+  depressuring (vent open, makeup shut) peaks the bed near 434 °C, back to its
+  feed in about 30 minutes; shutting the makeup alone peaks it near 494 °C and
+  empties the loop to the 1 kPa floor. **The user chose depressuring**
+  (2026-10-15), the standard action on an excursion.
+
+**The rules, built.** §64.5 as written, `quench_layout` and `quench_reading`
+still the single owners:
+
+- **The mix may feed the bed's hydrogen pass** (`hydrogen_pass_of`) as well as
+  the bed itself; the check's `bed` stays the measured bed. The main stream's
+  fallback, when its pipe is still, stays the bed's temperature: the pass leaves
+  at it, so the quench is then the pass's only feed and cools the bed exactly
+  when colder than it.
+- **The quench line may pass a compressor and a TEE** — a junction with one
+  inlet, where the stream divides and nothing joins (a compressor's discharge
+  feeds the loop and the quench). A junction where a second stream joins is
+  refused in its own words. **Its origin may be a gas vessel**, read at its own
+  temperature while the quench pipe is still.
+- **Phase is not this function's**: a liquid line into a pass's mix, or a gas
+  one into a bed's oil, joins a gas part to a liquid one, which `plant_phases`
+  refuses before any loop is built — both gated.
+
+**Two facts the rules lean on, said here** (ledger rows at close):
+
+- **§62.11's "a still quench freezes early, never late" now holds only up to
+  a valve's dissipation.** The model warms a gas across a branch by `Δp/ρ`
+  (§5.2's friction heating): the demo's quench arrives about 6 K warmer than
+  its separator (67.8 → 73.6 °C through the valve's 9.4 bar). While the quench
+  is still, the reading is the origin's temperature, so it can read a few
+  kelvin COLD of what will arrive. On this plant the margin is ~330 K. Heat of
+  compression, still unmodelled (§64.3), would widen it: modelled, the origin
+  would understate a quench drawn through a compressor by its 10–15 K too.
+- **A vented, consuming loop is fed back from the flare.** With the vent open
+  the beds' uptake pulls the separator to ~1.2 bar under the 2 bar flare, a
+  pressure boundary, so a trickle of hydrogen (~0.01 kg/s) flows back through
+  the vent. A real flare header would not feed the reactor; a check valve on
+  the vent would rest the loop near the 1 kPa floor instead (A28's regime).
+  The demo's story does not turn on it.
+
+**The demo**, `scenarios/hydrocracker_hydrogen_quench.toml` (the fifty-third
+file): the M59.2 bed twice, oil 385 °C straight from one to the other, the
+M59.2 loop with a tee on the discharge, a check valve and a Kv 40 quench valve
+into a mix ahead of the second pass. `bed2_temperature` (direct, K 0.1/K, T_i
+300 s, 400 °C, a range of 0.1–4 kg/s) over `quench_flow` (reverse, on the
+quench line); the separator's pressure on the makeup; the gas heater holding
+385 °C; `bed2_high` at 420 °C depressuring the loop. Born with the second bed
+at 395 °C and the quench at its minimum. Tuning swept (K 0.05, 0.1, 0.2 at T_i
+150 and 300 s): K 0.05 peaked 2.6 K over, K 0.2 settled slowest; K 0.1 at 300 s
+peaks 0.46 K over. On Newton:
+
+- the second bed peaks at **400.46 °C** at 1 min 19 s and settles on 400.00 °C
+  on **0.909 kg/s** of quench, the valve 0.260 open; the first bed settles at
+  405.0 °C, its hydrogen 5.26 kg/s (5.55 at load); the quench at 74 °C, the
+  check reading it against the first pass's 405 °C;
+- **the bed loop in MANUAL**: the trip fires on tick **3 047** (5 min 5 s), the
+  bed turns at **432.07 °C** (11 min 17 s), is at 391 °C at 30 minutes and
+  388 °C at 40, both walls intact;
+- **with no trip either**: the second bed's wall fails on tick **17 081**
+  (28 min 28 s) and the bed peaks at 611 °C; the first bed is untouched.
+
+The game solver holds the bed the same way (400.00 °C at 30 minutes), and in
+MANUAL trips on the same tick and turns at the same 432.07 °C.
+
+**Gates**, `crates/scenarios/tests/hydrogen_quench_reference.rs` (8), both
+fidelities where the story is short enough: the cascade catching the bed (peak
+within half a kelvin over, settled within 0.02 K, valve 0.2–0.4 open, quench
+cold and AUTO every tick, the trip armed); the mix as the two streams' blend
+to 1e-9, the tee dividing the discharge to 1e-7, the first bed's hydrogen
+falling as the quench opens; the trip depressuring in MANUAL (fires between 4
+and 6 minutes, turns 425–440 °C, under 390 °C at 40 minutes, walls intact);
+the wall failing without it (25–30 minutes); **the freeze**, on a quench drawn
+from a hydrogen supply heated from 67.8 to 420 °C (the separator's pressure
+moved onto the vent, since that supply adds gas the makeup cannot remove):
+MANUAL on the second tick, the reading 420–430 °C (the valve's dissipation),
+the target held 600 ticks, AUTO refused naming the loop, admitted one tick
+after the supply is cold, the bed back within half a kelvin in 15 minutes; the
+single loop on the valve (K 0.05/K from a sweep of 0.01–0.05) holding the bed;
+the refusals (a supply joining the tee, a liquid quench into the pass's mix, a
+gas quench into the oil, a first-bed loop over the second bed's quench, a
+separator hotter than the bed at load); the faceplate reading the separator's
+50 °C at load against the bed's 395 °C, on the bed loop alone. The bed census
+counts ten beds, the burn-out census 24 furnaces; `quench_reference`'s
+"no other faceplate" sweep skips this file too.
+
+**Timing** (`tools/steptime`, the 36 000-tick story, fastest of three): the game
+solver mean 0.20 ms, p99 0.85 ms, worst 1.86 ms (tick 23), none over the 2.5 ms
+budget; Newton mean 0.08 ms, worst 0.19 ms. Not A27's shape: the cascade moves a
+GAS valve here, and the game solver re-converges it in 2–6 iterations.
+
+**Corpus**: 52 plants byte-identical on both fidelities after both parts, the
+new file new (6 000 ticks: Newton 10 iterations at worst, the game solver 31).
+
+**Mutations**: fifteen, each run against its predicted test file only, all
+fifteen caught — the uptake order's three refusals (a left-out lump not counted
+as zero, an inert member, a model with no paths), the band removed or widened to
+every negative, hydrocracking naming no paths, and nine on the quench rules (the
+pass not a mix target, or every pass one; no tee; no compressor; no vessel
+origin; a joining junction taken for a tee, or refused only by the catch-all;
+the vessel read a kelvin off; the main stream always read off the bed). The
+vessel-reading mutation is caught by the faceplate gate alone.

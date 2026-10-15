@@ -9422,3 +9422,36 @@ fails on tick 13 394. DESIGN §64.11.
   census 23 furnaces.
 - Mutations: fifteen, thirteen caught, two uncaught as predicted (the sink as
   an anchor; a zero factor reacting fully, still unreached above the floor).
+
+### M59.3 — **LANDED** 2026-10-15: the hydrogen quench
+
+Two parts. First, §64.11's open edge: the uptake table ordered along the
+reaction's own paths (`ReactionModel::paths`, a defaulted trait method;
+hydrocracking names its six), so a bed fed any mix of lumps never shows a
+negative demand: a left-out lump counts as zero, a figure on an inert member
+or a table under a model with no paths is refused, and a rounding-sized
+negative is zero. Second, a cold hydrogen quench between two beds: the mix may
+feed a bed's hydrogen pass, and the quench line may pass a compressor and a
+tee and start at a gas vessel; a junction where a stream joins is refused in
+its own words. New file `hydrocracker_hydrogen_quench.toml`: the M59.2 bed
+twice in series, oil 385 °C, a Kv 40 quench valve off the compressor's
+discharge into a mix ahead of the second pass; the bed-temperature loop over
+the quench-flow loop catches the second bed at 400.46 °C and holds it at
+400.00 °C on 0.909 kg/s. In MANUAL the 420 °C trip (tick 3 047) depressures
+the loop (the user's choice) and the bed turns at 432.07 °C, walls intact;
+with no trip either, the second bed's wall fails on tick 17 081. DESIGN
+§64.12.
+
+- Probed first: the quench cools through the pass; what it takes, the first
+  bed loses (its hydrogen 5.47 → 4.70 kg/s fully open, the bed 1.6–4.3 K
+  warmer); the second pass's pressure unchanged.
+- Recorded, ledger rows at close: a valve's dissipation warms the quench ~6 K,
+  so "a still quench freezes early, never late" now holds only up to it; a
+  vented, consuming loop sits at ~1.2 bar and is fed back from the 2 bar flare.
+- Corpus: 52 plants byte-identical on both fidelities after both parts, the
+  new file new.
+- Timing: game solver mean 0.20 ms, worst 1.86 ms, none over; Newton 0.08 ms.
+- Gates: `consumption_reference` gate 8 five more refusals and gate 9 (a bed
+  fed products); three band tests in `energy.rs`; `hydrogen_quench_reference`
+  (8); the bed census ten beds, the burn-out census 24 furnaces.
+- Mutations: fifteen, all caught.

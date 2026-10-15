@@ -1748,14 +1748,16 @@ pub struct ControlLoop {
 /// read by [`PlantGraph::quench_reading`] at load and at the top of every tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct QuenchCheck {
-    /// The bed the loop measures; the mix's single outlet line feeds it.
+    /// The bed the loop measures; the mix's single outlet line feeds it, or
+    /// its hydrogen pass (a hydrogen quench, M59.3).
     pub bed: NodeId,
     /// The pipe that brings the quench into the mix.
     pub quench_pipe: EdgeId,
     /// The mix's other inlet: the MAIN stream the quench joins.
     pub main_pipe: EdgeId,
-    /// Where the quench line starts, walked upstream from its valve: a `Tank`
-    /// or a `Source`, whose temperature is a state present from load.
+    /// Where the quench line starts, walked upstream from its valve: a `Tank`,
+    /// a `Source` or — for a hydrogen quench (M59.3, docs/DESIGN.md §64.12) —
+    /// a gas `Vessel`, whose temperature is a state present from load.
     pub origin: NodeId,
 }
 
@@ -2772,10 +2774,12 @@ impl PlantGraph {
             match &self.node(check.origin).kind {
                 NodeKind::Tank(tank) => tank.temperature,
                 NodeKind::Source { temperature, .. } => *temperature,
+                // A hydrogen quench's separator (M59.3, docs/DESIGN.md §64.12).
+                NodeKind::Vessel(vessel) => vessel.temperature,
                 _ => {
                     return Err(SimError::Numerical(format!(
-                        "internal: a quench check starts at '{}', which is neither a tank nor a \
-                         source; the loader refuses that (docs/DESIGN.md §62.11)",
+                        "internal: a quench check starts at '{}', which is not a tank, a source \
+                         or a vessel; the loader refuses that (docs/DESIGN.md §62.11)",
                         self.node(check.origin).name
                     )))
                 }

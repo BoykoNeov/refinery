@@ -139,11 +139,16 @@ fn main() {
     // The consuming bed's (M59.2, docs/DESIGN.md §64.11): the creep, the trip
     // that shuts the makeup, the loop eaten down to its floor, the recovery.
     let makeup = vec![Run(36000)];
+    // The hydrogen quench's (M59.3, docs/DESIGN.md §64.12): the cascade
+    // catching the second bed and holding it, its valve moving every tick
+    // (the shape A27 found too slow on the game solver).
+    let quench = vec![Run(36000)];
     for (name, beats) in [
         ("pump_gas_lock", &gas_lock),
         ("flashing_rundown", &rundown),
         ("hydrocracker_hydrogen", &hydrogen),
         ("hydrocracker_makeup", &makeup),
+        ("hydrocracker_hydrogen_quench", &quench),
     ] {
         for solver in ["simple", "newton"] {
             if only

@@ -480,8 +480,9 @@ fn every_bed_in_the_repo_owns_a_wall_hole() {
         }
     }
     // Seven since M59.1 (docs/DESIGN.md §64): `hydrocracker_hydrogen.toml`'s bed;
-    // eight since M59.2 (§64.11): `hydrocracker_makeup.toml`'s.
-    assert_eq!(beds, 8, "seven shipped hydrocracker files, eight beds");
+    // eight since M59.2 (§64.11): `hydrocracker_makeup.toml`'s; ten since M59.3
+    // (§64.12): `hydrocracker_hydrogen_quench.toml`'s two.
+    assert_eq!(beds, 10, "eight shipped hydrocracker files, ten beds");
     let engine = build_src(DEMO, "newton");
     assert!(engine.graph.find_node("burnout_atmosphere").is_some());
 }

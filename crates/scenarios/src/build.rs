@@ -1533,10 +1533,18 @@ fn bed_duty_refusal(loop_name: &str, bed: &str, unit: &str) -> SimError {
 /// counting as pipe (`on_bed_line`'s rule):
 /// - the valve's outlet line reaches a `junction`, the MIX;
 /// - the mix has exactly two inlets, the quench's and the MAIN stream's, and one
-///   outlet, whose line reaches `bed`;
-/// - upstream of the valve the line passes only pumps, check valves, valves and
-///   coolers, and starts at a `tank` or a `source`: its ORIGIN. A furnace or a
-///   heat exchanger could heat the quench; anything else is refused too.
+///   outlet, whose line reaches `bed` — or, for a HYDROGEN quench (M59.3,
+///   §64.12), the bed's hydrogen pass, the cold gas joining the hydrogen that
+///   leaves the bed before;
+/// - upstream of the valve the line passes only pumps, compressors, check
+///   valves, valves, coolers and tees (a junction with ONE inlet: the stream
+///   divides there and nothing joins it, as at a compressor's discharge), and
+///   starts at a `tank`, a `source` or a gas `vessel`: its ORIGIN. A furnace or
+///   a heat exchanger could heat the quench; anything else is refused too.
+///
+/// A quench's phase is not checked here: a liquid line into a hydrogen pass's
+/// mix, or a gas one into a bed's, joins a gas part to a liquid one, which
+/// `plant_phases` refuses before any loop is built.
 ///
 /// `Err` carries the reason, in words a file's author can act on.
 fn quench_layout(graph: &PlantGraph, bed: NodeId, valve: NodeId) -> Result<QuenchCheck, String> {
@@ -1561,6 +1569,13 @@ fn quench_layout(graph: &PlantGraph, bed: NodeId, valve: NodeId) -> Result<Quenc
             && line(node, true).len() == 1
             && line(node, false).len() == 1
     };
+    // Upstream of the valve, a junction with one pipe in is a split or a TEE:
+    // the stream divides there and nothing joins it (M59.3).
+    let is_tee = |node: NodeId| {
+        matches!(graph.node(node).kind, NodeKind::Junction) && line(node, true).len() == 1
+    };
+    // What the mix's outlet line must reach: the bed, or its hydrogen pass.
+    let pass = graph.hydrogen_pass_of(bed).map(|(pass, _)| pass);
 
     // Downstream from the valve, through splits, to the mix.
     let mut at = valve;
@@ -1606,13 +1621,13 @@ fn quench_layout(graph: &PlantGraph, bed: NodeId, valve: NodeId) -> Result<Quenc
             ));
         };
         let next = graph.endpoints(out).1;
-        if next == bed {
+        if next == bed || Some(next) == pass {
             break;
         }
         if !is_split(next) {
             return Err(format!(
                 "the outlet line of junction '{}' reaches '{}', not the bed: a quench's mix feeds \
-                 the bed it cools, through nothing but pipe",
+                 the bed it cools, or its hydrogen pass, through nothing but pipe",
                 name(mix),
                 name(next)
             ));
@@ -1628,7 +1643,7 @@ fn quench_layout(graph: &PlantGraph, bed: NodeId, valve: NodeId) -> Result<Quenc
         let &[inlet] = inlets.as_slice() else {
             return Err(format!(
                 "'{}' on the quench line has {} inlet pipes, and the line must run back to its \
-                 tank or supply with no other stream joining it",
+                 tank, supply or gas vessel with no other stream joining it",
                 name(at),
                 inlets.len()
             ));
@@ -1636,29 +1651,39 @@ fn quench_layout(graph: &PlantGraph, bed: NodeId, valve: NodeId) -> Result<Quenc
         let prev = graph.endpoints(inlet).0;
         if visited.contains(&prev) {
             return Err(format!(
-                "the quench line runs in a ring through '{}' and starts at no tank or supply",
+                "the quench line runs in a ring through '{}' and starts at no tank, supply or \
+                 gas vessel",
                 name(prev)
             ));
         }
         visited.push(prev);
         match &graph.node(prev).kind {
-            NodeKind::Tank(_) | NodeKind::Source { .. } => break prev,
+            NodeKind::Tank(_) | NodeKind::Source { .. } | NodeKind::Vessel(_) => break prev,
             NodeKind::Pump { .. }
+            | NodeKind::Compressor { .. }
             | NodeKind::CheckValve { .. }
             | NodeKind::Valve { .. }
             | NodeKind::Cooler { .. } => {}
-            NodeKind::Junction if is_split(prev) => {}
+            NodeKind::Junction if is_tee(prev) => {}
+            NodeKind::Junction => {
+                return Err(format!(
+                    "the quench line passes junction '{}', where another stream joins it; a \
+                     quench's line may divide at a tee but nothing may join it before its mix",
+                    name(prev)
+                ))
+            }
             NodeKind::Furnace { .. } | NodeKind::HeatExchanger => {
                 return Err(format!(
                     "the quench line passes '{}', which can heat it; a quench's line may pass \
-                     pumps, check valves, valves and coolers only",
+                     pumps, compressors, check valves, valves, coolers and tees only",
                     name(prev)
                 ))
             }
             _ => {
                 return Err(format!(
-                    "the quench line passes '{}', and may pass pumps, check valves, valves and \
-                     coolers only, back to the tank or supply it draws from",
+                    "the quench line passes '{}', and may pass pumps, compressors, check valves, \
+                     valves, coolers and tees only, back to the tank, supply or gas vessel it \
+                     draws from",
                     name(prev)
                 ))
             }

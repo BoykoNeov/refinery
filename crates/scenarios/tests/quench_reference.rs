@@ -703,8 +703,14 @@ fn only_a_quench_loop_publishes_its_check() {
     let mut seen = 0;
     for entry in std::fs::read_dir(&scenarios).expect("the scenarios folder") {
         let path = entry.expect("an entry").path();
+        // M59.3's hydrogen quench carries its own, gated in
+        // `hydrogen_quench_reference.rs`.
+        let stem = path.file_stem().and_then(|s| s.to_str());
         if path.extension().and_then(|e| e.to_str()) != Some("toml")
-            || path.file_stem().and_then(|s| s.to_str()) == Some("hydrocracker_quench")
+            || matches!(
+                stem,
+                Some("hydrocracker_quench" | "hydrocracker_hydrogen_quench")
+            )
         {
             continue;
         }
