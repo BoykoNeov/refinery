@@ -12,6 +12,40 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M58 is CLOSED (2026-10-15): what a runaway breaks — a catalyst bed's wall
+fails past its metal limit, a leak and its fire, a patch and a repair, and a
+fourth plant on the reactor screen — `docs/DEFERRED.md` D8 taken, D12 and D13
+opened, A27 left open and worse.** Offered after M57 as the first of four; the
+user said "work on this", then chose the wall on every bed, a declared share of
+the fire into the bed, patch-then-repair, and a fourth plant on the screen.
+DESIGN §63.
+- **M58.0, specified** (§63.0–63.8): probed first — a bed at 760 °C needs a
+  ~200 °C feed to get back under 550 °C, so "repair once cool" can be met, hard.
+- **M58.1, the wall** (§63.9): `BedWall` on every bed fails the tick its bed
+  starts at or past its limit, opening a hole on the bed's outlet pipe (§42's
+  hole, shared with the furnaces); the leak burns at its heating value and a
+  declared share heats the bed; `RepairBedWall` re-arms it once the hole is
+  patched and the bed is under its limit. The four hydrocracker files carry
+  550 °C, 1 cm², 42.8 MJ/kg and 0.1 — game values, said so. New file
+  `hydrocracker_wall_failure.toml`: the wall fails on tick 2 750 on both
+  fidelities, the leak burns at ~55 MW, the bed settles at 794 °C; patched and
+  fed 200 °C oil it is under its limit nine minutes later.
+  `hydrocracker_runaway.toml` now breaks its wall on tick 12 364.
+  `bed_wall_reference.rs` (8); fifteen mutations, fourteen caught, one uncaught
+  as predicted (the limit compared strictly).
+- **M58.2, the screen** (§63.10): key 4 runs the wall plant; every bed draws its
+  wall's limit, and failed, a crack and the fire with its share into the bed;
+  P patches, M repairs. The calm timeline patches and repairs the wall its
+  runaway now breaks, and runs to 80 minutes. `reactor_screen.rs` (4).
+- Corpus: 45 plants byte-identical on both fidelities; the four hydrocracker
+  plants moved by the split outlet alone (flows ≤ 1.7 ppm, beds ≤ 2.6e-4 K at
+  tick 6 000); 50 plants now.
+- **Left open**: A27, worse — the wall's hole splits both quench beds'
+  outlets, and the game solver's tick time on that plant rose 2.8 → 4.8 s over
+  6 000 ticks; the screen still runs it on Newton. D12 (a trip on a failed bed
+  may relight its preheater), D13 (the wall's numbers are round game values;
+  an instant failure at a lumped temperature).
+
 **M57 is CLOSED (2026-10-14): a reactor whose own heat sets its temperature —
 a catalyst bed, hydrocracking that releases heat and can run away, a trip on
 the bed, quench between two beds, and a reactor screen — `docs/DEFERRED.md` D1

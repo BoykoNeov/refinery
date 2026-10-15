@@ -9298,7 +9298,7 @@ Recorded runs (`godot --headless --path . res://demo/reactor.tscn --quit-after
 **M57 CLOSED 2026-10-14**, on the user's "yes" after all five slices landed.
 Close-out at the top of `docs/MILESTONES.md`.
 
-## M58 — what a runaway breaks: a catalyst bed's wall past its metal limit; ledger row D8; opened on a decision
+## M58 — **CLOSED** 2026-10-15 — what a runaway breaks: a catalyst bed's wall past its metal limit; ledger row D8; opened on a decision
 
 Offered after M57 closed (2026-10-14) as the first of four; the user said "work
 on this". Four decisions, asked in plain words before anything was written
@@ -9344,3 +9344,6 @@ failed, a crack and the fire on its outlet with its size and the share into the
 bed; P patches, M repairs. The calm timeline patches and repairs its wall now
 that its runaway breaks it, and runs to 80 minutes. Recorded headless (calm,
 wall) and windowed with screenshots (wall). `reactor_screen.rs` (4). DESIGN §63.10.
+
+**M58 CLOSED 2026-10-15**, on the user's "close m58" after both slices landed.
+Close-out at the top of `docs/MILESTONES.md`. A27 stays open, worse.

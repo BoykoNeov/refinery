@@ -152,11 +152,11 @@ godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto 
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M58 (opened 2026-10-14)** —
-what a runaway breaks: a catalyst bed's wall fails past its metal limit (DESIGN §63). **Latest closed: M57 (2026-10-14)**: a reactor whose
-own heat sets its temperature — a catalyst bed, hydrocracking that can run
-away, a trip, quench and the reactor screen (DESIGN §62; A27 stays open on the
-game solver's quench plant, which the screen runs on Newton). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: M59 (opened 2026-10-15)** —
+hydrogen in the catalyst bed: depressuring and hydrogen quench (ledger D7). **Latest closed: M58 (2026-10-15)**: what a runaway breaks — a catalyst
+bed's wall fails past its metal limit, a leak and its fire, a patch and a
+repair, a fourth plant on the reactor screen (DESIGN §63; A27 stays open,
+worse, on the game solver's quench plant, which the screen runs on Newton). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 
