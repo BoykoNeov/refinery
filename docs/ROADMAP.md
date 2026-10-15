@@ -9347,3 +9347,25 @@ wall) and windowed with screenshots (wall). `reactor_screen.rs` (4). DESIGN §63
 
 **M58 CLOSED 2026-10-15**, on the user's "close m58" after both slices landed.
 Close-out at the top of `docs/MILESTONES.md`. A27 stays open, worse.
+
+## M59 — hydrogen in the catalyst bed: a recycle loop through the beds, depressuring, consumption and a hydrogen quench; ledger rows D7 and D10; opened on a decision
+
+Offered after M58 closed (2026-10-15); the user said "close m58, then 1". Seven
+decisions, asked in plain words before anything was written (DESIGN §64): both
+depressuring and the hydrogen quench now; the hydrogen order "whichever is
+closer to reality" (½, chosen, the weakest honest citation); consumption; the
+screen; two streams through one bed, each with its own pressure (the stated
+compromise); a trip may stop a hydrogen bed's feed (D10); a failed wall leaks
+hydrogen too.
+
+### M59.0 — **SPECIFIED** 2026-10-15: the design note — M59 stays OPEN
+
+DESIGN §64. Probed first, twice: without hydrogen flowing through the bed,
+venting saves a run-away bed only at a hydrogen order of 1; with the loop's
+~5 kg/s of hydrogen as a heat sink, a run-away bed ends near 620–655 °C, and
+venting catches an excursion (a bed up to ~500 °C back in 10–30 minutes) but
+makes a run-away bed hotter, the compressor's flow falling with the pressure.
+D7's "kinder way under the wall's limit" corrected. Slices: M59.1 the hydrogen
+loop (pass, factor, compressor, depressuring), M59.2 consumption, M59.3 the
+hydrogen quench, M59.4 the stopping trip and the hydrogen leak, M59.5 the
+screen. No code changed.

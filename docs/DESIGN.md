@@ -23021,3 +23021,265 @@ Debug-build ticks: 0.22–0.23 ms on both one-bed plants.
 D12 (a trip on a failed bed may still relight its preheater) and D13 (the wall's
 round limit, hole and share; its instant failure at a lumped temperature) are new
 rows; D7 now also names depressuring as the kinder way under a wall's limit.
+
+## 64. Hydrogen in the catalyst bed — a recycle loop through the beds, depressuring, consumption and a hydrogen quench (M59) — specified before building
+
+Asked after M58 closed (2026-10-15), offered as "hydrogen in the reactor"; the
+user said "close m58, then 1". Ledger rows D7 and D10. Today a bed's chemistry
+assumes hydrogen in excess (§62.3), so nothing a player does to the hydrogen
+matters, and the real emergency cure for a runaway — depressuring, which starves
+the reaction of hydrogen — does not exist. Seven decisions, asked in plain words
+before anything was written:
+
+1. **Both the depressuring and the hydrogen quench, in this milestone** — the
+   recommended split (depressuring now, quench later) was declined.
+2. **The hydrogen dependence "whichever is closer to reality"**: the square
+   root of the hydrogen pressure (§64.1), from the best source reachable.
+3. **The reaction consumes hydrogen** — the recommended "not yet" was declined.
+4. **The reactor screen gains the hydrogen plant** in this milestone.
+5. **Oil and hydrogen run as two streams through one bed**, each with its own
+   pressure, sharing only the bed's temperature (§64.2). Told plainly that a real
+   trickle bed shares one pressure and that venting here lowers the hydrogen's
+   pressure and not the oil's, the user accepted it.
+6. **A trip may stop a hydrogen bed's feed** (D10, §64.7): the hydrogen the
+   recycle compressor keeps sweeping through cools a stopped bed, which is what
+   D10's un-defer names. Beds without hydrogen keep M57.3's refusal.
+7. **A hydrogen bed's failed wall leaks hydrogen as well as oil** (§64.7).
+
+### 64.0 Probed before the rules were offered (2026-10-15)
+
+Throwaway prototypes in `W:\temp\claude\m59_0\` (`probe.py`, `probe_gas.py`):
+§62's steady-state and lumped-bed equations with the shipped `song_2017`
+constants, every rate constant times a hydrogen factor `f = (p/p_ref)^n`, the
+demo's sizing (50 kg/s, `C` = 30 MJ/K, `τ` = 360 s).
+
+**Without hydrogen flowing through the bed** (the first probe), the answer
+hinged on `n`. At a 365 °C feed the hot branch vanishes only below
+`f ≈ 0.068`: venting from 150 bar to 1 bar reaches `f = 0.0067` at `n = 1` (a
+760 °C bed back to normal in about 30 minutes) but only `f = 0.082` at `n = ½`
+(the bed stays near 735 °C). That was what the user was shown before choosing.
+
+**With hydrogen flowing through the bed** (the second probe, after the
+advisor's catch): a real loop carries about 1 000 Nm³ of hydrogen per m³ of
+oil, about 5 kg/s here at 14.3 kJ/(kg·K) — 72 kW/K of heat capacity rate
+against the oil's 160. During venting a fixed-speed compressor moves a roughly
+constant VOLUME, so its mass flow, and the cooling, falls with the suction
+pressure. Gas entering at the oil's temperature, `n = ½`:
+
+```text
+  steady beds °C            no H2            5 kg/s H2
+  feed 365 °C        373.9 / 429.8 / 740   370.3 / 532.0 / 622.9
+  feed 385 °C                     760      406.9 / 429.9 / 644.1
+  feed 395 °C                     770                     654.2
+```
+
+- **The hydrogen is a heat sink large enough to matter**: a run-away bed ends
+  near 620–655 °C instead of 740–780 °C — still past the wall's 550 °C. The
+  calm day sits near a 365 °C feed and a feed near 395 °C runs away by itself.
+- **Venting catches an excursion and does not undo a runaway.** Vented at the
+  low rate (to half the pressure in 15 minutes), a bed starting at 400–500 °C
+  is back near its feed in 10–30 minutes. A bed already on the hot branch is
+  NOT saved and gets HOTTER (652 → 728 °C over an hour): the compressor's mass
+  flow falls with the pressure faster than `√p` cuts the reaction. At the high
+  rate (to a fifth in 15 minutes) the same. That matches practice: refineries
+  depressure on an excursion — 28 °C over normal, or a rise of 5–15 °C a minute
+  (thepetrosolutions.com, "Emergency depressuring system of hydroprocessing
+  units", read; a practitioner's page) — not after a runaway.
+- So D7's line that depressuring is "the kinder way to bring a bed under its
+  wall's limit" is FALSE for a run-away bed on this model, and is corrected in
+  the ledger by this note.
+
+### 64.1 Fork 1 — how hydrogen enters the chemistry: `f = (p_H2/p_ref)^n` on every rate
+
+Every path's rate constant is multiplied by `f = (p_H2/p_ref)^n`, where `p_H2`
+is the hydrogen pressure the bed reads (§64.2) and `p_ref` the pressure the
+calibration holds at. The network stays linear in the lumps, so §62.3's exact
+Bateman solution is unchanged with `K` scaled — exact at every residence time,
+`f = 0` included (nothing reacts; zero heat).
+
+- **`n = ½`**, a CHOSEN value with the weakest honest citation: Elizalde,
+  Rodríguez & Ancheyta, *Appl. Catal. A* 382 (2010) 205–212, expect the
+  hydrogen order of heavy-crude hydrocracking to be "close to 0.5" — seen only
+  through a search engine's summary of the abstract (the paper and its record
+  were not reachable), and for heavy crude, not VGO. Hydrotreating studies of
+  heavy gas oil fit orders between about ½ and 1 (Botchwey et al., not read).
+  The order is a GAME VALUE, said so in every file and in a ledger row as D11's.
+- **Both are declared keys with no defaults** on a bed that has hydrogen:
+  `hydrogen_order` and `hydrogen_reference_bar`. The file sets the reference to
+  the plant's design hydrogen pressure, so `f = 1` there and Song 2017's
+  calibration is untouched on a normal day.
+- **A bed with no hydrogen has no factor** — the multiply is skipped, not
+  `× 1.0` — so every shipped plant stays byte-identical by construction.
+- **Rejected**: the "ideal hydrocracking" negative order (cracking on acid
+  sites inhibited by hydrogen), true of the cracking step on some catalysts and
+  wrong for the plant's behaviour: depressuring slows real hydrocrackers, which
+  is why it is the cure (§64.0). Rejected also: a factor on the heat alone (the
+  lumps' heat already follows their conversion, §62.3).
+
+### 64.2 Fork 2 — where hydrogen lives: a recycle loop through a hydrogen pass beside each bed
+
+Hydrogen is a real gas component (`phase = "gas"`, 2.016 g/mol, `c_p` ≈
+14.3 kJ/(kg·K), γ ≈ 1.40, recalled standard values) flowing in its own loop:
+
+```text
+  makeup H2 source -> makeup valve (pressure loop) -> separator (gas vessel)
+  separator -> recycle compressor -> gas heater -> bed1's hydrogen pass
+            -> mix -> bed2's hydrogen pass -> gas cooler -> separator
+  compressor discharge -> quench valve -> mix                       (§64.5)
+  separator -> depressuring valve -> flare sink                     (§64.4)
+```
+
+- **A new node kind, the HYDROGEN PASS** (`NodeKind::BedHydrogen { bed }`,
+  name settled in M59.1), names the bed it runs through. Hydraulically it is a
+  zero-volume gas node with one inlet and one outlet, like a furnace. The bed
+  it names keeps its liquid inlet and outlet and its `kind` unchanged.
+- **The bed reads the pass's pressure** — this tick's solved pressure, known
+  before the heat sweep — as `p_H2`. The loop is pure hydrogen (pure makeup, no
+  light ends in the gas, §64.8), so the partial pressure is the pressure.
+- **Two streams, one temperature — the stated compromise** (decision 5). The
+  oil's pressure is its own line's; the hydrogen's is the loop's. A real
+  trickle bed has one pressure, so venting here does not drop the oil side's
+  pressure and the feed pump does not speed up as the reactor depressures.
+  Sharing one pressure means mixed gas–liquid flow through a node, refused
+  today (§62.8, `Composition::mixture_density`), and a rebuild of the flow
+  model many times this milestone.
+- **The heat**: the pass's hydrogen leaves at the bed's START-of-tick
+  temperature (ε = 1, §62.1's argument for an enormous area), so its heat
+  `Q_H2 = H_in,H2 − H_out,H2(T_b)` is known before the bed steps, and enters
+  the bed's first law as a known term beside the fire: `C·dT_b/dt = Q_rxn +
+  Q_H2 + F + H_in − H_out(T_b)`. Energy closes exactly: the bed books the same
+  `Q_H2` the gas lost. The one-tick lag is stable by four orders
+  (`W_H2·dt/C` ≈ 2.4e-4 against the explicit limit of 2). The sweep resolves a
+  pass's inflows before its bed — an ordering dependency, refused at load if a
+  bed's own outflow could reach its pass (it cannot across phases today; the
+  refusal makes it a rule).
+- **Rejected**: a pressure owned by the bed with no gas (a number the player
+  pushes) — special-case physics, CLAUDE.md's rule, and no consumption,
+  compressor, quench or leak could act on it; one node carrying both phases
+  (above).
+
+### 64.3 Fork 3 — the recycle compressor: a new machine
+
+No gas machine exists (`network.rs`: "a compressor is not a pump"). A real
+recycle compressor is centrifugal at fixed speed.
+
+- **The law**: a polytropic head falling with suction volume flow,
+  `H_p(Q) = H₀ − a·Q²` [J/kg], and the discharge from the head by the
+  polytropic relation `P₂/P₁ = (1 + H_p·(k−1)/k · M/(R·T₁))^(k/(k−1))` (GPSA
+  Engineering Data Book §13; API 617 — recalled, to be checked against a
+  reachable source in M59.1), with `ṁ = ρ₁·Q` and the density at the SUCTION
+  node — not the higher-pressure end, the §3a convention a machine breaks
+  (`compile_edge`'s stated exception). At a fixed speed and ratio, the mass
+  flow falls with the suction pressure: the probe's assumption, now the law.
+- **Folded at its source, as a pump**: a compressor node with one inlet and one
+  outlet. Both solvers, Newton's slope included. A stopped compressor passes
+  nothing forward.
+- **Not modelled, said so**: the heat of compression (a recycle compressor's
+  ratio of about 1.1–1.2 warms the gas 10–15 K; the gas heater after it holds
+  the bed inlet anyway), surge, and anti-surge recycle. Logged.
+- **Measured early** (A27's lesson): a gas recycle with a vessel and a moving
+  valve is A27's shape. The new plant is put through `tools/steptime` on both
+  fidelities in M59.1, before any later slice builds on it.
+
+### 64.4 Fork 4 — depressuring: an existing valve, an existing trip
+
+The depressuring valve is a gas valve from the separator to a flare sink;
+opening it is `SetValveOpening` by hand or `TripAction::SetValve` (a vent trips
+OPEN, §26) from a bed-temperature trip. Nothing new in the engine.
+
+- **Sized on the practice the probe used**: the demo's valve takes the loop to
+  about half its pressure in 15 minutes — the low-rate system (thepetrosolutions,
+  above: low rate "50% of the vessel's design pressure within 15 minutes", high
+  rate "to 20% … in 15 minutes"). The digitalrefining.com article "Reactor
+  runaways: automatic or manual depressuring" (read) quotes "API 541" for "50% of
+  normal pressure within 15 minutes"; API 521 is almost certainly meant (not
+  checked).
+- **The recycle compressor keeps running** while the loop vents — "providing
+  cooling media to the hydrotreating catalyst" (thepetrosolutions).
+- **The makeup loop must not fight the vent**: the demo's trip also shuts the
+  makeup valve (a second action), or the makeup loop goes to MANUAL — settled
+  in M59.1 with the plant.
+
+### 64.5 Fork 5 — the hydrogen quench
+
+Cold hydrogen from the compressor discharge joins the first bed's hydrogen
+outflow at a mix ahead of the second bed's pass — the real plant's quench.
+
+- **Through the existing quench machinery** (§62.11): `quench_layout` learns
+  that a quench may be GAS — its mix ahead of a bed's hydrogen pass rather than
+  the bed, its origin a gas vessel, its walk admitting a compressor — and
+  `quench_reading` compares the quench with the hydrogen it joins. Both
+  arrangements (single loop, cascade) and the "not cold → MANUAL" rule carry
+  over unchanged in meaning.
+- The prototype of its size and the loop's tuning are M59.3's.
+
+### 64.6 Fork 6 — consumption
+
+The reaction draws hydrogen from the bed's pass: per kilogram of each lump
+formed, `Σ (y_out − y_in)·c_lump` with chosen per-lump figures, sized so the
+calm day consumes about 2 wt% of the feed (an industrial range recalled as
+roughly 1.5–3 wt% for VGO hydrocracking, not sourced; a game value, said so).
+The hydrogen's mass is already folded into the lumps' (§62.3), so the oil
+side's mass is unchanged and the consumed mass is a booked sink on the gas side.
+
+It is the network's first nodal mass term. Its form is M59.2's to specify after
+a probe, under three rules: **it vanishes as the pass's pressure goes to zero**
+(a starved loop has a solution, and the reaction it feeds has stopped); **the
+books close exactly** (the gas side loses what is booked, every tick); **it
+lags the reaction by at most one tick.** Losing the makeup then lets the loop's
+pressure sag and the reaction slow — the real "cut makeup to drop the pressure"
+move (PTQ Q3 2023, via a search summary only: cutting makeup to sag the loop
+200–300 psi "lowers reactions on all beds").
+
+### 64.7 Fork 7 — the trip that stops the feed, and the wall that leaks hydrogen
+
+- **D10, taken for hydrogen beds**: the refusal of a trip that fully shuts a
+  valve on a bed's own line is lifted for a bed with a hydrogen pass, and kept
+  for every other bed. With its oil stopped, a hydrogen bed cools toward its
+  gas inlet's temperature, so the trip can clear.
+- **The wall leaks hydrogen too**: a hydrogen bed's wall failure opens a hole on
+  its pass's outlet pipe as well as the oil's (§41's isentropic nozzle law for
+  the gas), each of the declared area. The fire is both leaks at their own
+  heating values — the oil's key as today, hydrogen's declared on the pass
+  (119.96 MJ/kg, hydrogen's lower heating value, a recalled standard figure) —
+  and the declared share heats the bed. The loop vents through the hole: an
+  uncontrolled depressuring. Patching a bed's wall patches both holes; the
+  repair's rules are M58's.
+
+### 64.8 What moves, and what is deferred
+
+**Every shipped plant byte-identical** on both fidelities: a bed without a
+hydrogen pass has no factor, no `Q_H2`, no consumption, keeps D10's refusal and
+its one hole. New plants only. The corpus confirms it at every slice.
+
+Deferred, each to a ledger row when M59 closes:
+
+- **The shared pressure** (decision 5). Un-defer: two-phase flow through a node.
+- **The hydrogen order** `n = ½` and the consumption figures, game values.
+  Un-defer: a reachable VGO hydrocracking study with a fitted hydrogen order.
+- **Light ends in the recycle gas, and the purge** real loops need for them:
+  the loop is pure hydrogen. Un-defer: a story that turns on purity.
+- **Heat of compression, surge, anti-surge.** Un-defer: a story about the
+  compressor itself.
+- **The hydrogen's own heat of hydrogenation**, still folded into the lumps.
+- **Thermal cracking past about 450 °C**, releasing 10–15 times
+  hydrocracking's heat (digitalrefining, above). Un-defer: a runaway story that
+  needs its speed.
+
+### 64.9 The slices
+
+- **M59.1 — the hydrogen loop.** The hydrogen pass (graph, sweep ordering,
+  `Q_H2`, loader, snapshot), the factor `f` and its keys, the recycle
+  compressor in both solvers (a reference gate against a hand calculation), and
+  a new plant: one bed, its loop, makeup and depressuring, a story where a feed
+  cut starts an excursion and depressuring catches it. Steptime on both
+  fidelities.
+- **M59.2 — consumption.** The nodal sink in both solvers under §64.6's rules,
+  the per-lump figures, a story where losing the makeup sags the loop.
+- **M59.3 — the hydrogen quench.** Two beds, the gas quench through §62.11's
+  machinery, its plant and gates.
+- **M59.4 — the stopping trip and the hydrogen leak.** D10 lifted for hydrogen
+  beds; the wall's second hole and hydrogen fire.
+- **M59.5 — the screen.** A fifth plant on the reactor screen: the loop's
+  pressure, the compressor, the vent by hand (a key), the quench, and a
+  recorded timeline.
