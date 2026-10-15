@@ -448,6 +448,77 @@ pub enum NodeKind {
     /// docs/DESIGN.md §63): a hole on its outlet pipe, and a fire fed by what
     /// leaks, a declared share of which heats the bed.
     BedReactor { bed: CatalystBed, wall: BedWall },
+    /// The hydrogen pass beside a catalyst bed (M59.1, docs/DESIGN.md §64.2):
+    /// a hydrogen stream running through the bed it names, beside the bed's
+    /// oil, sharing only the bed's temperature.
+    ///
+    /// Hydraulically a zero-volume gas node, 1-in-1-out, like a furnace: the
+    /// pressure it solves to is the hydrogen pressure the bed's chemistry reads.
+    /// Thermally the hydrogen leaves at the bed's temperature (`ε = 1`, §62.1's
+    /// argument) and the heat it carries off is a term in the bed's first law;
+    /// the heat sweep resolves the pass and its bed as ONE vertex, as it does a
+    /// heat exchanger's two sides, so both inlets are known when the bed steps.
+    ///
+    /// Two streams, two pressures: the oil keeps its own line's pressure, a
+    /// stated compromise (§64.2, the user's decision) — a real trickle bed has
+    /// one.
+    BedHydrogen {
+        /// The `BedReactor` this pass runs through. Resolved from a name by the
+        /// loader; at most one pass per bed.
+        bed: NodeId,
+        /// The bed's chemistry: every rate is multiplied by
+        /// `f = (p/p_ref)^n` (§64.1), applied as the effective space time `f·τ`.
+        kinetics: HydrogenKinetics,
+    },
+    /// Centrifugal gas compressor at fixed speed (M59.1, docs/DESIGN.md §64.3):
+    /// the hydrogen loop's recycle machine.
+    ///
+    /// A polytropic head falling with the SUCTION volume flow,
+    /// `H_p(Q) = head − a·Q²` [J/kg], turned into a pressure rise at the suction
+    /// density `ρ₁` — read at this node, its own inlet, whatever the flow's
+    /// direction (§3a's higher-pressure-end convention is wrong for a machine) —
+    /// and corrected for compressibility by the polytropic relation taken at the
+    /// shutoff head (`network::compressor_multiplier`). Folded at its source
+    /// into its single outlet edge, as a pump is. A stopped compressor makes no
+    /// head. GAS ONLY, enforced at load. No heat of compression, surge or
+    /// anti-surge (§64.3, deferred).
+    Compressor {
+        /// Polytropic head at zero flow [J/kg]. Positive.
+        head: JPerKg,
+        /// Head curve coefficient `a` [J/kg per (m³/s)²]: the head lost per
+        /// square of suction volume flow. Non-negative.
+        a: f64,
+        /// Polytropic efficiency `η_p` (dimensionless), in (0, 1]:
+        /// `(k−1)/k = (γ−1)/(γ·η_p)`.
+        polytropic_efficiency: f64,
+        on: bool,
+    },
+}
+
+/// How a bed's chemistry reads its hydrogen (M59.1, docs/DESIGN.md §64.1):
+/// every rate constant times `f = (p/p_ref)^n`, `p` the hydrogen pass's
+/// pressure. Both numbers declared, no default; `p_ref` is the plant's design
+/// hydrogen pressure, so `f = 1` there and the calibration holds.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct HydrogenKinetics {
+    /// The hydrogen order `n` (dimensionless), positive. A GAME VALUE (§64.1):
+    /// ½, from a heavy-crude study seen only through its abstract's summary.
+    pub order: f64,
+    /// The pressure at which `f = 1` [Pa absolute]. Positive.
+    pub reference_pressure: Pascal,
+}
+
+impl HydrogenKinetics {
+    /// `f = (p/p_ref)^n` at a pass pressure `pressure` [Pa], zero at or below
+    /// zero pressure (dimensionless).
+    pub fn factor(&self, pressure: Pascal) -> f64 {
+        let ratio = pressure.value() / self.reference_pressure.value();
+        if ratio > 0.0 {
+            ratio.powf(self.order)
+        } else {
+            0.0
+        }
+    }
 }
 
 /// A catalyst bed's vessel wall: its failure limit, the hole a failure opens,
@@ -2353,6 +2424,31 @@ impl PlantGraph {
         })
     }
 
+    /// The hydrogen pass running through bed `bed`, with its kinetics (M59.1,
+    /// docs/DESIGN.md §64.2), or `None` for a bed without one — and for any node
+    /// that is not a bed. The loader admits at most one pass per bed; the lowest
+    /// id wins on a graph built by hand with two.
+    pub fn hydrogen_pass_of(&self, bed: NodeId) -> Option<(NodeId, HydrogenKinetics)> {
+        self.node_ids().find_map(|id| match &self.node(id).kind {
+            NodeKind::BedHydrogen { bed: b, kinetics } if *b == bed => Some((id, *kinetics)),
+            _ => None,
+        })
+    }
+
+    /// The node the heat sweep resolves with `id` as one vertex: an exchanger
+    /// side's partner (§4a), a hydrogen pass's bed, or a bed's hydrogen pass
+    /// (M59.1, docs/DESIGN.md §64.2). `None` for every other node.
+    pub fn sweep_partner(&self, id: NodeId) -> Option<NodeId> {
+        if let Some((partner, _)) = self.exchanger_partner(id) {
+            return Some(partner);
+        }
+        match &self.node(id).kind {
+            NodeKind::BedHydrogen { bed, .. } => Some(*bed),
+            NodeKind::BedReactor { .. } => self.hydrogen_pass_of(id).map(|(pass, _)| pass),
+            _ => None,
+        }
+    }
+
     pub fn find_node(&self, name: &str) -> Option<NodeId> {
         self.node_ids().find(|id| self.node(*id).name == name)
     }
@@ -2883,7 +2979,12 @@ impl PlantGraph {
                 // the relief valve's reason below does not apply to it: it is
                 // refused with the other pass-throughs, on scope alone.
                 | NodeKind::CheckValve { .. }
-                | NodeKind::HeatExchanger,
+                | NodeKind::HeatExchanger
+                // A compressor and a bed's hydrogen pass (M59.1) are zero-volume
+                // gas pass-throughs: refused on the same scope. The bed itself
+                // is what a loop measures.
+                | NodeKind::Compressor { .. }
+                | NodeKind::BedHydrogen { .. },
             ) => Err(SimError::Scenario(format!(
                 "node '{}' holds no volume, so its temperature is resolved by the tick, and a \
                  zero-volume temperature is measured only at a FURNACE or COOLER outlet \

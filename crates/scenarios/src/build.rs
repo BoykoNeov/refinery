@@ -10,9 +10,10 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{
     Actuator, BedWall, Blowdown, CascadeSpec, CatalystBed, ColumnDraw, ControlAction, ControlLoop,
     ControlMode, ControlledValue, EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling,
-    LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe,
-    PlantGraph, PumpSuction, QuenchCheck, QuenchReading, SetpointRange, TankState, Trip,
-    TripAction, TripDirection, TripId, TripReset, TripState, TubeState, VesselState, WallState,
+    HydrogenKinetics, LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind,
+    OnPumpStop, Pipe, PlantGraph, PumpSuction, QuenchCheck, QuenchReading, SetpointRange,
+    TankState, Trip, TripAction, TripDirection, TripId, TripReset, TripState, TubeState,
+    VesselState, WallState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -31,9 +32,9 @@ use crate::schema::{
 };
 use crate::validate::{
     plant_phases, require_bed_reactor_plant, require_blowdown_cushion, require_compatible_fidelity,
-    require_declared_iff_used, require_gas_valve_x_t, require_pump_suction_answerable,
-    require_supplies_below_boiling, seed_component_index, validate_node_def, validate_pipe_def,
-    validate_topology,
+    require_declared_iff_used, require_gas_machines, require_gas_valve_x_t,
+    require_pump_suction_answerable, require_supplies_below_boiling, seed_component_index,
+    validate_node_def, validate_pipe_def, validate_topology,
 };
 
 /// Build a runnable engine from a scenario. Steps:
@@ -87,6 +88,8 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // (one pipe per draw, correct direction) is checked in `validate_topology`
     // once the pipes exist.
     resolve_column_draws(&mut graph, scenario)?;
+    // Step 2a': each hydrogen pass's bed, for the same reason (M59.1).
+    resolve_hydrogen_passes(&mut graph, scenario)?;
 
     for pipe in &scenario.pipes {
         validate_pipe_def(pipe)?;
@@ -201,6 +204,8 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // A catalyst bed needs a reaction model it can ask at an infinite residence
     // time, and a liquid to measure that time in (M57.1, docs/DESIGN.md §62.2).
     require_bed_reactor_plant(&graph, &phases, &scenario.fidelity.reactions)?;
+    // A hydrogen pass and a compressor carry a gas (M59.1, docs/DESIGN.md §64).
+    require_gas_machines(&graph, &phases)?;
     require_blowdown_cushion(&graph, &phases)?;
     for eid in graph.edge_ids().collect::<Vec<_>>() {
         let (src, _) = graph.endpoints(eid);
@@ -616,6 +621,8 @@ fn resolve_vent_destination(
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::BedReactor { .. }
+        | NodeKind::BedHydrogen { .. }
+        | NodeKind::Compressor { .. }
         | NodeKind::HeatExchanger => {
             "a zero-volume node. The condensate would have to leave again in the same tick \
              by a pressure-driven edge, but a vent's flow is PRESCRIBED and the hydraulic \
@@ -3819,7 +3826,71 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                 state: WallState::Intact,
             },
         },
+        // The bed is resolved from its name once every node exists
+        // (`resolve_hydrogen_passes`); until then the id names no node.
+        NodeDef::BedHydrogen {
+            hydrogen_order,
+            hydrogen_reference_bar,
+            ..
+        } => NodeKind::BedHydrogen {
+            bed: NodeId(u32::MAX),
+            kinetics: HydrogenKinetics {
+                order: *hydrogen_order,
+                reference_pressure: bar_to_pa(*hydrogen_reference_bar),
+            },
+        },
+        NodeDef::Compressor {
+            head_kj_per_kg,
+            head_curve_kj_per_kg_s2_per_m6,
+            polytropic_efficiency,
+            on,
+        } => NodeKind::Compressor {
+            head: JPerKg(*head_kj_per_kg * 1e3),
+            a: *head_curve_kj_per_kg_s2_per_m6 * 1e3,
+            polytropic_efficiency: *polytropic_efficiency,
+            on: *on,
+        },
     })
+}
+
+/// Resolve each hydrogen pass's `bed` (M59.1, docs/DESIGN.md §64.2) now that
+/// every node exists: it must name a `bed_reactor`, and no bed takes two passes.
+fn resolve_hydrogen_passes(
+    graph: &mut PlantGraph,
+    scenario: &ScenarioFile,
+) -> Result<(), SimError> {
+    let mut taken: BTreeMap<NodeId, String> = BTreeMap::new();
+    for (name, def) in &scenario.nodes {
+        let NodeDef::BedHydrogen { bed, .. } = def else {
+            continue;
+        };
+        let target = graph.find_node(bed).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "hydrogen pass '{name}' runs through bed = '{bed}', which is not a node in this \
+                 plant"
+            ))
+        })?;
+        if !matches!(graph.node(target).kind, NodeKind::BedReactor { .. }) {
+            return Err(SimError::Scenario(format!(
+                "hydrogen pass '{name}' runs through bed = '{bed}', which is not a bed_reactor: \
+                 a hydrogen pass is the hydrogen stream through a catalyst bed \
+                 (docs/DESIGN.md §64.2)"
+            )));
+        }
+        if let Some(other) = taken.insert(target, name.clone()) {
+            return Err(SimError::Scenario(format!(
+                "bed '{bed}' has two hydrogen passes, '{other}' and '{name}': a bed reads one \
+                 hydrogen pressure (docs/DESIGN.md §64.2)"
+            )));
+        }
+        let pass = graph.find_node(name).ok_or_else(|| {
+            SimError::Scenario(format!("internal: hydrogen pass '{name}' was not built"))
+        })?;
+        if let NodeKind::BedHydrogen { bed: slot, .. } = &mut graph.node_mut(pass).kind {
+            *slot = target;
+        }
+    }
+    Ok(())
 }
 
 /// Reject node definitions whose numbers are out of physical range, at load

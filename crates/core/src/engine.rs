@@ -3453,6 +3453,20 @@ impl Engine {
                         .bed
                         .get(&id)
                         .map(|pass| pass.wall_fire.value()),
+                    // Likewise, on a bed with a hydrogen pass only — see
+                    // `NodeSnapshot::hydrogen_factor` and `hydrogen_heat_w`.
+                    hydrogen_factor: self
+                        .node_states
+                        .bed
+                        .get(&id)
+                        .and_then(|pass| pass.hydrogen)
+                        .map(|h| h.factor),
+                    hydrogen_heat_w: self
+                        .node_states
+                        .bed
+                        .get(&id)
+                        .and_then(|pass| pass.hydrogen)
+                        .map(|h| h.heat.value()),
                     trip_stop: self.trip_stop(id),
                     // Every supply, from the last tick — see
                     // `NodeSnapshot::supply_boiling`.
@@ -3658,6 +3672,9 @@ fn cavitation_subject(kind: &NodeKind) -> bool {
         // own bubble pressure — so without this the criterion would fire on them
         // and report a boiling product tank as a cavitating pump.
         NodeKind::Tank(_) | NodeKind::Vessel(_) => false,
+        // Gas service only, enforced at load (M59.1, docs/DESIGN.md §64): a
+        // compressor and a bed's hydrogen pass carry no liquid to boil.
+        NodeKind::Compressor { .. } | NodeKind::BedHydrogen { .. } => false,
         // Declared boundaries: their pressures are typed into the scenario file
         // rather than solved, so grading one grades the author's arithmetic. B1
         // carried a distance for five milestones that was a declared sink's

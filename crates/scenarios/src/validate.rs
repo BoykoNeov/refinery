@@ -239,6 +239,58 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
             )));
         }
     }
+    if let NodeDef::BedHydrogen {
+        hydrogen_order,
+        hydrogen_reference_bar,
+        ..
+    } = def
+    {
+        // The hydrogen factor `(p/p_ref)^n` (M59.1, docs/DESIGN.md §64.1).
+        if !hydrogen_order.is_finite() || *hydrogen_order <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "hydrogen pass '{name}' has hydrogen_order = {hydrogen_order}: it must be finite \
+                 and > 0. Depressuring slows a real hydrocracker, so its rates rise with the \
+                 hydrogen pressure (docs/DESIGN.md §64.1)."
+            )));
+        }
+        if !hydrogen_reference_bar.is_finite() || *hydrogen_reference_bar <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "hydrogen pass '{name}' has hydrogen_reference_bar = {hydrogen_reference_bar}: \
+                 it must be a finite absolute pressure > 0, the design hydrogen pressure."
+            )));
+        }
+    }
+    if let NodeDef::Compressor {
+        head_kj_per_kg,
+        head_curve_kj_per_kg_s2_per_m6,
+        polytropic_efficiency,
+        ..
+    } = def
+    {
+        // The compressor's curve (M59.1, docs/DESIGN.md §64.3).
+        if !head_kj_per_kg.is_finite() || *head_kj_per_kg <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "compressor '{name}' has head_kj_per_kg = {head_kj_per_kg}: its head at zero \
+                 flow must be finite and > 0."
+            )));
+        }
+        if !head_curve_kj_per_kg_s2_per_m6.is_finite() || *head_curve_kj_per_kg_s2_per_m6 < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "compressor '{name}' has head_curve_kj_per_kg_s2_per_m6 = \
+                 {head_curve_kj_per_kg_s2_per_m6}: it must be finite and >= 0 (a head that \
+                 falls with flow)."
+            )));
+        }
+        if !polytropic_efficiency.is_finite()
+            || *polytropic_efficiency <= 0.0
+            || *polytropic_efficiency > 1.0
+        {
+            return Err(SimError::Scenario(format!(
+                "compressor '{name}' has polytropic_efficiency = {polytropic_efficiency}: it \
+                 must be in (0, 1]."
+            )));
+        }
+    }
     if let NodeDef::Furnace {
         coil_heat_capacity_mj_per_k,
         coil_ua_kw_per_k,
@@ -610,6 +662,8 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             NodeDef::Column { .. } => "a column",
             NodeDef::Reactor { .. } => "a reactor",
             NodeDef::BedReactor { .. } => "a catalyst bed",
+            NodeDef::BedHydrogen { .. } => "a hydrogen pass",
+            NodeDef::Compressor { .. } => "a compressor",
         };
         return refuse(format!(
             "with '{name}', {kind}: a plant that selects the line flash may hold only \
@@ -1163,6 +1217,26 @@ pub(crate) fn require_bed_reactor_plant(
     Ok(())
 }
 
+/// A hydrogen pass and a compressor are in GAS service (M59.1, docs/DESIGN.md
+/// §64): the pass's pressure is a hydrogen pressure, and a compressor's head is
+/// a polytropic one, which a liquid does not have.
+pub(crate) fn require_gas_machines(graph: &PlantGraph, phases: &[Phase]) -> Result<(), SimError> {
+    for nid in graph.node_ids() {
+        let what = match graph.node(nid).kind {
+            NodeKind::BedHydrogen { .. } => "hydrogen pass",
+            NodeKind::Compressor { .. } => "compressor",
+            _ => continue,
+        };
+        if phases[nid.0 as usize] != Phase::Gas {
+            return Err(SimError::Scenario(format!(
+                "{what} '{}' is in liquid service: it must carry a gas (docs/DESIGN.md §64)",
+                graph.node(nid).name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Returns the phase per node, indexed by `NodeId.0` — the seed `build_engine`
 /// needs for each pipe's initial stream.
 pub(crate) fn plant_phases(graph: &PlantGraph, slate: &Slate) -> Result<Vec<Phase>, SimError> {
@@ -1170,6 +1244,15 @@ pub(crate) fn plant_phases(graph: &PlantGraph, slate: &Slate) -> Result<Vec<Phas
     let mut parent: Vec<usize> = (0..ids.len()).collect();
     for eid in graph.edge_ids() {
         let (a, b) = graph.endpoints(eid);
+        // The outside world joins nothing (M59.1, docs/DESIGN.md §64): what
+        // leaks into an `Atmosphere` never comes back — a back-feed through a
+        // hole is refused (`network::finalize`) — so a gas hole and a liquid
+        // hole venting to one atmosphere mix no stream. A hydrogen loop's
+        // heater and its oil bed share the burn-out atmosphere this way.
+        let outside = |n: NodeId| matches!(graph.node(n).kind, NodeKind::Atmosphere);
+        if outside(a) || outside(b) {
+            continue;
+        }
         uf_union(&mut parent, a.0 as usize, b.0 as usize);
     }
     // Per component root: the phase voted so far, and the node that voted it —

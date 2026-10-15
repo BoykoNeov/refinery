@@ -11,9 +11,9 @@
 
 use crate::elements::{
     cavitation_head_fraction, cavitation_head_fraction_dsigma, check_opening, check_opening_slope,
-    fold_gas_valve, gas_orifice, pipe_resistance, relief_opening, relief_opening_slope,
-    specific_heat_ratio_factor, two_phase_head_multiplier, QuadraticBranch, CHOKE_BLEND,
-    ORIFICE_CD,
+    compressor_multiplier, fold_gas_valve, gas_orifice, pipe_resistance, relief_opening,
+    relief_opening_slope, specific_heat_ratio_factor, two_phase_head_multiplier, QuadraticBranch,
+    CHOKE_BLEND, ORIFICE_CD,
 };
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::energy::{boundary_temperature, upwind_end, NodeStates};
@@ -603,6 +603,10 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
             // A catalyst bed is hydraulically a furnace too, and its residence
             // time is "the" feed's flow (docs/DESIGN.md §62.1).
             | NodeKind::BedReactor { .. }
+            // A bed's hydrogen pass is hydraulically a furnace too (M59.1), and
+            // a compressor folds into its one outlet as a pump does.
+            | NodeKind::BedHydrogen { .. }
+            | NodeKind::Compressor { .. }
             | NodeKind::HeatExchanger => Some((1, 1)),
             // One feed, one outlet per draw. The feed is stored INTO the column
             // and each draw OUT of it (the loader enforces the direction), so the
@@ -659,6 +663,8 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         | NodeKind::Cooler { .. }
         | NodeKind::Reactor { .. }
         | NodeKind::BedReactor { .. }
+        | NodeKind::BedHydrogen { .. }
+        | NodeKind::Compressor { .. }
         | NodeKind::Vessel(_)
         | NodeKind::HeatExchanger => None,
     }
@@ -1122,6 +1128,13 @@ fn density_upwind(
 ) -> NodeId {
     let (src, tgt) = graph.endpoints(eid);
     if is_two_phase_pump_outlet(graph, eid, flash) {
+        return src;
+    }
+    // A compressor's branch is characterised at its SUCTION, its own node,
+    // whichever end is higher (M59.1, docs/DESIGN.md §64.3): its discharge is
+    // the higher-pressure end exactly when it works, and `ṁ = ρ₁·Q` is
+    // quoted at the inlet. `compile_edge`'s stated exception, un-deferred.
+    if matches!(graph.node(src).kind, NodeKind::Compressor { .. }) {
         return src;
     }
     if pressures[&src] >= pressures[&tgt] {
@@ -1779,6 +1792,40 @@ fn compile_edge_at(
                     }
                 }
             }
+        }
+        // A compressor folds as a pump does, its head a polytropic one in J/kg
+        // read at the suction density `rho` (this edge's upwind is its own
+        // node, `density_upwind`), corrected for compressibility at the shutoff
+        // head (M59.1, docs/DESIGN.md §64.3). Gas only, refused at load; the
+        // engine's own guard here (rule 5), since γ is read off the stream.
+        NodeKind::Compressor {
+            head,
+            a,
+            polytropic_efficiency,
+            on,
+        } => {
+            let comp = &pipe.stream.composition;
+            if comp.phase(slate)? != Phase::Gas {
+                return Err(SimError::Numerical(format!(
+                    "compressor '{}' ({src:?}) is fed a stream that is not a gas: its head \
+                     is a polytropic one (docs/DESIGN.md §64.3)",
+                    graph.node(src).name
+                )));
+            }
+            let gamma = comp.mixture_cp(slate).value() / comp.mixture_cv(slate).value();
+            if !gamma.is_finite() || gamma <= 1.0 {
+                return Err(SimError::Numerical(format!(
+                    "compressor '{}' ({src:?}) carries a gas whose cp/cv = {gamma:.4} is \
+                     not above 1",
+                    graph.node(src).name
+                )));
+            }
+            let head_eff = if *on { head.value() } else { 0.0 };
+            // σ = (k−1)/k = (γ−1)/(γ·η_p): the polytropic exponent from the
+            // isentropic one and the efficiency.
+            let sigma = (gamma - 1.0) / (gamma * polytropic_efficiency);
+            let multiplier = compressor_multiplier(head_eff, rho / upwind, sigma);
+            branch = branch.in_series(QuadraticBranch::compressor(head_eff, *a, rho, multiplier));
         }
         // A relief valve IS a valve here — same coefficient, same ISA gas law,
         // same fold — and differs only in where `opening` comes from: the plant

@@ -274,6 +274,19 @@ impl QuadraticBranch {
         }
     }
 
+    /// Centrifugal compressor (M59.1, docs/DESIGN.md §64.3): polytropic head
+    /// `H_p(Q) = head − a·Q·|Q|` [J/kg] at the suction volume flow `Q`, rise
+    /// `dP = m·rho·H_p` with `rho` the SUCTION density and `m` the polytropic
+    /// correction (`compressor_multiplier`). The pump's form with `g·h0 → head`
+    /// and the multiplier on both terms: `alpha = m·rho·a`, `beta = −m·rho·head`.
+    /// A stopped compressor passes `head = 0` and its resistance alone.
+    pub fn compressor(head: f64, a: f64, rho: f64, multiplier: f64) -> Self {
+        Self {
+            alpha: multiplier * rho * a,
+            beta: -multiplier * rho * head,
+        }
+    }
+
     /// Sharp-edged orifice discharging through an area `a` [m²] into a fluid of
     /// density `rho` [kg/m³] — the leak path's whole characteristic.
     ///
@@ -322,6 +335,28 @@ impl QuadraticBranch {
     #[inline]
     pub fn flow_ddp(&self, dp: f64, eps: f64) -> f64 {
         smooth_signed_sqrt_deriv(dp - self.beta, eps) / self.alpha.sqrt()
+    }
+}
+
+/// The polytropic correction a compressor's rise takes over the incompressible
+/// `rho·H` (M59.1, docs/DESIGN.md §64.3), dimensionless, `≥ 1`.
+///
+/// A polytropic compression from `P₁` through a head `H` [J/kg] reaches
+/// `P₂/P₁ = (1 + x)^(1/σ)`, `x = σ·H·ρ₁/P₁`, `σ = (k−1)/k` (the polytropic
+/// head relation; GPSA Engineering Data Book §13, API 617 — recalled), so
+/// `P₂ − P₁ = m·ρ₁·H` with `m = σ·((1 + x)^(1/σ) − 1)/x`, which tends to 1 as
+/// `x → 0` (the incompressible fan law). `rho_over_p` is `ρ₁/P₁ = M/(R·T₁)`
+/// [s²/m²] for an ideal gas, so `m` depends on the head and the suction
+/// temperature and not on the suction pressure. Taken at the SHUTOFF head and
+/// applied to the whole curve: exact at zero flow, about 1% low at a design
+/// point where the head has fallen a fifth.
+pub fn compressor_multiplier(head: f64, rho_over_p: f64, sigma: f64) -> f64 {
+    let x = sigma * head * rho_over_p;
+    if x > 0.0 {
+        // (1 + x)^(1/σ) − 1 through ln_1p/exp_m1: exact at small x.
+        sigma * ((x.ln_1p() / sigma).exp_m1()) / x
+    } else {
+        1.0
     }
 }
 

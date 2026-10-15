@@ -48,3 +48,7 @@ path = "tests/reference/line_flash.rs"
 [[test]]
 name = "two_phase_head_reference"
 path = "tests/reference/two_phase_head.rs"
+
+[[test]]
+name = "compressor_reference"
+path = "tests/reference/compressor.rs"

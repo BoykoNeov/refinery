@@ -371,6 +371,21 @@ pub struct NodeSnapshot {
     /// byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wall_fire_w: Option<f64>,
+    /// The factor a catalyst bed's every rate ran at over the last tick
+    /// (dimensionless; M59.1, docs/DESIGN.md §64.1): `(p/p_ref)^n`, `p` its
+    /// hydrogen pass's pressure. 1 at the design pressure, 0 with no hydrogen.
+    /// The pass's pressure itself is the pass node's `pressure_pa`.
+    ///
+    /// **Absent on every bed without a hydrogen pass**, on every node that is
+    /// not a bed, and before the first tick. Skipped when absent, which keeps
+    /// every plant without hydrogen byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hydrogen_factor: Option<f64>,
+    /// The heat a catalyst bed's hydrogen carried INTO it over the last tick
+    /// [W] (M59.1, docs/DESIGN.md §64.2): `H_in,H2 − H_out,H2`, negative while
+    /// the hydrogen cools the bed. Absent exactly where `hydrogen_factor` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hydrogen_heat_w: Option<f64>,
     /// The trips' stop of this equipment, and whether they will hand it back
     /// (M43, docs/DESIGN.md §48): `{"status":"held","barred_by":[…]}` while a
     /// trip holds it, `{"status":"not_restarted","at_tick":…,"barred_by":[…]}`

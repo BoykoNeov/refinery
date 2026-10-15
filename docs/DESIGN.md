@@ -23283,3 +23283,127 @@ Deferred, each to a ledger row when M59 closes:
 - **M59.5 — the screen.** A fifth plant on the reactor screen: the loop's
   pressure, the compressor, the vent by hand (a key), the quench, and a
   recorded timeline.
+
+### 64.10 The hydrogen loop, built (M59.1)
+
+As §64.1–64.4 specify, with five corrections made while building it.
+
+`NodeKind::BedHydrogen { bed, kinetics: HydrogenKinetics }` and
+`NodeKind::Compressor { head, a, polytropic_efficiency, on }`;
+`HydrogenKinetics::factor`; `PlantGraph::hydrogen_pass_of` and `sweep_partner`;
+`QuadraticBranch::compressor` and `elements::compressor_multiplier`;
+`energy::bed_with_hydrogen`, `HydrogenPass` on `BedPass`; the snapshot's
+`hydrogen_factor` and `hydrogen_heat_w` on a bed; the loader's `bed_hydrogen`
+and `compressor` node types, `resolve_hydrogen_passes` and
+`require_gas_machines`.
+
+- **The factor is the space time's**: every rate times `f` is the same
+  first-order chemistry over `f·τ`, so the bed calls the unchanged
+  `ReactionModel` at `f·τ` (`0` at `f = 0`, written out since `0·∞` is NaN).
+  No trait changed.
+- **The compressor's correction is taken at the shutoff head** and applied to
+  the whole curve: `m = σ·((1 + x)^(1/σ) − 1)/x`, `x = σ·H₀·ρ₁/P₁`, which depends
+  on the head and the suction temperature only. Exact at zero flow; about 1%
+  low where the head has fallen a fifth. `density_upwind` reads a compressor's
+  edge at its own node, whichever end is higher.
+
+**Corrections to the note, each measured:**
+
+1. **The pass is swept WITH its bed, not a tick behind it.** §64.2 had the
+   hydrogen leave at the bed's start-of-tick temperature, so its heat would be
+   known before the bed stepped. The heat sweep already resolves an exchanger's
+   two sides as one vertex (§4a); a bed and its pass are now one too
+   (`sweep_partner`), so both inflows are known when the bed steps. The step is
+   `bed_reactor`'s exact one with both capacity rates, and both streams leave at
+   ONE temperature, from the stored change: the enthalpy models are additive by
+   mass, so it is `temperature_from_enthalpy` on the two blended. No lag. A bed
+   without a pass runs the old arithmetic, line for line.
+2. **The gas cooler is an exchanger against cooling water, not a `cooler`.** A
+   fixed-duty cooler on a loop whose flow falls fourfold while it vents cooled
+   the hydrogen below absolute zero — an `Err` — before its outlet loop could
+   follow (twice: a gain fast enough to follow it oscillated, the 1 MW/K first
+   try by a factor of twelve). An exchanger's effectiveness holds the gas near
+   the water's temperature at any flow, as a real one does. The slate gains a
+   `water` component, inert to the chemistry.
+3. **The phase guard no longer joins parts of a plant through an
+   `Atmosphere`.** The gas heater's tube hole and the bed's wall hole vent to
+   one burn-out atmosphere, which joined the hydrogen loop to the oil in
+   `plant_phases` and refused the plant. A leak's back-feed is refused
+   (`network::finalize`), so nothing that reaches the outside world comes back
+   to mix. Every shipped plant joined through an atmosphere was one phase
+   already: its votes are unchanged.
+4. **A zero-volume node with no inflow and no history takes its first pipe's
+   seed**, not the slate's first component. On a slate of two phases the first
+   component is a liquid lump, and a stagnant gas node's outlet pipe carries
+   what the node holds: the new plant's shut vent and makeup lines read an
+   oil's density on the tick the vent opened, and a stopped compressor's line
+   was refused as "not a gas". The loader seeds every pipe with its part's
+   phase; on a one-phase slate both answers are the first component.
+5. **The story is the high-rate system catching a too-hot feed.** The note's
+   "a feed cut starts an excursion and depressuring catches it" was tried in
+   two forms and neither tells it:
+   - **A calm 365 °C feed with the bed loaded mid-excursion** at 450 °C
+     recovers BY ITSELF: with 5 kg/s of hydrogen through it the middle branch
+     sits at 532 °C (§64.0's table), so only a bed past it runs on, 18 K from
+     the wall.
+   - **A 395 °C feed with the low-rate vent** (half the pressure in 15 minutes):
+     the bed was still climbing at 506 °C 20 minutes on.
+
+   What tells it is a 395 °C feed, which runs away even with the hydrogen,
+   tripped at 420 °C onto the high-rate system's pace (a fifth of the design
+   pressure in 15 minutes, thepetrosolutions, §64.4).
+
+**The demo**, `scenarios/hydrocracker_hydrogen.toml` (the fifty-first file): the
+runaway file's bed in a hydrogen loop — a 100 m³ separator at 150 bar, a
+recycle compressor (120 kJ/kg shutoff, 75% polytropic) through a fixed loop
+valve, a gas heater holding 395 °C, the pass, the water-cooled gas cooler;
+makeup on a pressure loop; a depressuring valve to a 2 bar flare. About
+5.76 kg/s of hydrogen against 49.9 kg/s of oil. On Newton:
+
+- the 395 °C feed creeps the bed from 395 °C; the trip fires on tick **3 729**
+  (6 min 13 s) at 420.0 °C, opening the vent and shutting the makeup;
+- 15 minutes on the separator stands at 29.6 bar, 19% of the 155 bar design;
+- the starved bed turns at **464.0 °C**, 24 min 47 s in, its factor down to
+  0.36 and its hydrogen down to 0.78 kg/s;
+- at 40 minutes it is at 406.5 °C, at 50 minutes 398.7 °C — its feed, with the
+  reaction at a ninth of itself — and its wall intact throughout;
+- **without the trip** the same bed reaches 514 °C at 20 minutes, fails its wall
+  on tick 13 860 (23 min 6 s) and settles at 665 °C with a 55 MW fire.
+
+The game solver trips on the same tick and turns 0.007 K hotter, on the same tick.
+
+**Gates.** `crates/solvers/tests/reference/compressor.rs` (4): the zero-flow
+crossing at the polytropic hand calculation's 163.883 bar on both fidelities
+(the incompressible law would be 0.377 bar lower), mass flow halving with both
+pressures, a stopped compressor's lost head, the fidelities' agreement.
+`crates/scenarios/tests/hydrogen_reference.rs` (8): the factor to the bit from
+the pass's pressure; a factor of exactly 1 giving the bed without a pass's
+reaction heat to the bit; the first law with both streams each tick, both at
+one temperature; a stopped bed relaxing toward its hydrogen as
+`e^(−ṁ·cp·dt/C)` to 1e-9; a stopped compressor carrying nothing; the story
+against the untripped twin; the game solver to the trip; the loader's nine
+refusals.
+
+**Timing** (`tools/steptime`, the 24 000-tick story, fastest of five): the game
+solver mean 0.89 ms a tick, worst 1.40 ms, none of 23 999 over the 2.5 ms
+budget; Newton mean 0.10 ms, worst 0.22 ms. A first three-run measurement
+showed one 31.8 ms tick on the game solver, the same 18 iterations as its
+neighbours, and five runs did not repeat it: the machine's.
+
+**Corpus** (6 000 ticks, both fidelities, against baselines from the commit
+before M59.1): **50 plants byte-identical, the new file new.**
+
+**Mutations:** fifteen, fourteen caught, one uncaught as predicted
+(`mutate_hydrogen.py`, each running only its predicted test file, release): the
+factor ignoring its order, never reaching the chemistry, or dividing the space
+time; the hydrogen's heat or its capacity rate left out of the step; the pass
+leaving at the bed's end temperature; the bed and its pass not paired; the
+compressor's multiplier dropped, read at its higher-pressure end, or keeping its
+head stopped; the atmosphere joining the phases; two passes on a bed, or a
+liquid compressor or pass, admitted; a stagnant node's composition falling back
+to the first component. **Uncaught, as predicted**: a zero factor reacting
+fully — no plant reaches zero hydrogen pressure. **Found by the pass**: the
+factor gate compared against `powf(x, 0.5)` with a constant order, which a
+release build turns into `sqrt`, one ulp from the engine's `powf`; the gate now
+reads its order through `black_box`, and the first pass's verdicts that leaned
+on it were rerun.

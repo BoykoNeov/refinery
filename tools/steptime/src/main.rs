@@ -133,7 +133,14 @@ fn main() {
         Supply(r, 115.0),
         Run(200),
     ];
-    for (name, beats) in [("pump_gas_lock", &gas_lock), ("flashing_rundown", &rundown)] {
+    // The hydrogen loop's story as its file plays it (M59.1, docs/DESIGN.md
+    // §64.9): the creep, the trip at 420 °C, the vent and the recovery.
+    let hydrogen = vec![Run(24000)];
+    for (name, beats) in [
+        ("pump_gas_lock", &gas_lock),
+        ("flashing_rundown", &rundown),
+        ("hydrocracker_hydrogen", &hydrogen),
+    ] {
         for solver in ["simple", "newton"] {
             if only
                 .as_ref()

@@ -593,6 +593,33 @@ pub enum NodeDef {
         /// game value (docs/DESIGN.md §63.3): the rest goes to the air.
         wall_fire_share: f64,
     },
+    /// The hydrogen pass beside a catalyst bed (M59.1, docs/DESIGN.md §64.2):
+    /// a hydrogen stream through the bed `bed` names, one inlet and one outlet,
+    /// in gas service. The bed's every rate is multiplied by
+    /// `(p/p_ref)^hydrogen_order`, `p` this node's pressure. At most one per bed.
+    BedHydrogen {
+        /// The `bed_reactor` this pass runs through, by name. REQUIRED.
+        bed: String,
+        /// The hydrogen order `n` (dimensionless). REQUIRED, no default: a GAME
+        /// VALUE (§64.1). Finite and > 0.
+        hydrogen_order: f64,
+        /// The pressure at which the factor is 1 [bar absolute]: the plant's
+        /// design hydrogen pressure. REQUIRED. Finite and > 0.
+        hydrogen_reference_bar: f64,
+    },
+    /// Centrifugal gas compressor at fixed speed (M59.1, docs/DESIGN.md §64.3):
+    /// polytropic head `H(Q) = head − a·Q²` at the suction volume flow `Q`
+    /// [m³/s]. Gas service only.
+    Compressor {
+        /// Polytropic head at zero flow [kJ/kg]. Finite and > 0.
+        head_kj_per_kg: f64,
+        /// Curve coefficient [kJ/kg per (m³/s)²]. Finite and >= 0.
+        head_curve_kj_per_kg_s2_per_m6: f64,
+        /// Polytropic efficiency, in (0, 1].
+        polytropic_efficiency: f64,
+        #[serde(default = "default_true")]
+        on: bool,
+    },
 }
 
 /// One `draws = [...]` entry of a `column` node.

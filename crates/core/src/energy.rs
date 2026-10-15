@@ -55,12 +55,12 @@ use crate::components::Phase;
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{
-    BedWall, CatalystBed, ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, NodeId, NodeKind,
-    PlantGraph,
+    BedWall, CatalystBed, ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, HydrogenKinetics, NodeId,
+    NodeKind, PlantGraph,
 };
 use crate::traits::{
-    ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel, ReactionModel,
-    Separation, SeparationModel, StarvedTank, ThermoModel, VapourShare,
+    ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel, Reaction,
+    ReactionModel, Separation, SeparationModel, StarvedTank, ThermoModel, VapourShare,
 };
 use crate::units::{JPerKgK, Kelvin, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, T_AMBIENT};
 use std::borrow::Cow;
@@ -756,6 +756,12 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
             // docs/DESIGN.md §62.1): its thermal mass is the bed, a state on the
             // node like a furnace's coil, so its fluid is swept like a furnace's.
             | NodeKind::BedReactor { .. }
+            // A bed's hydrogen pass is zero-volume gas through the same bed
+            // (M59.1, docs/DESIGN.md §64.2), swept with its bed as one vertex.
+            | NodeKind::BedHydrogen { .. }
+            // A compressor is a pass-through like a pump: its work is not
+            // modelled as heat (§64.3, deferred).
+            | NodeKind::Compressor { .. }
     )
 }
 
@@ -811,7 +817,12 @@ pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Compositio
         | NodeKind::Reactor { .. }
         // A bed's composition is its feed mix, reacted in the sweep, like a
         // reactor's (M57.1, docs/DESIGN.md §62).
-        | NodeKind::BedReactor { .. } => None,
+        | NodeKind::BedReactor { .. }
+        // A hydrogen pass mixes its inflow and passes it on unreacted: the
+        // hydrogen a bed consumes is a mass term, not a composition change
+        // (M59, docs/DESIGN.md §64.6). A compressor passes its inflow on.
+        | NodeKind::BedHydrogen { .. }
+        | NodeKind::Compressor { .. } => None,
     }
 }
 
@@ -858,7 +869,11 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         // A bed's fluid leaves at the bed's temperature, a state the sweep
         // integrates in its single-node branch (`bed_reactor`), as a furnace's
         // leaves through its coil: `None` so the sweep visits it.
-        | NodeKind::BedReactor { .. } => None,
+        | NodeKind::BedReactor { .. }
+        // A hydrogen pass leaves at its bed's temperature, set with the bed in
+        // the sweep's paired branch (M59.1, docs/DESIGN.md §64.2).
+        | NodeKind::BedHydrogen { .. }
+        | NodeKind::Compressor { .. } => None,
     }
 }
 
@@ -1071,6 +1086,22 @@ pub struct BedPass {
     /// it; `BedWall::fire_share` of it heated the bed. Zero on an intact wall
     /// and on a patched hole. A DIAGNOSTIC like `reaction_heat`.
     pub wall_fire: Watt,
+    /// The bed's hydrogen this tick (M59.1, docs/DESIGN.md §64), `None` on a
+    /// bed without a hydrogen pass.
+    pub hydrogen: Option<HydrogenPass>,
+}
+
+/// What a bed's hydrogen did this tick (M59.1, docs/DESIGN.md §64).
+#[derive(Debug, Clone, Copy)]
+pub struct HydrogenPass {
+    /// The pass node.
+    pub pass: NodeId,
+    /// The factor every rate ran at, `f = (p/p_ref)^n` (dimensionless).
+    pub factor: f64,
+    /// The heat the hydrogen carried INTO the bed this tick [W],
+    /// `H_in,H2 − H_out,H2`: negative while it cools the bed. A DIAGNOSTIC like
+    /// `reaction_heat`.
+    pub heat: Watt,
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -1319,9 +1350,12 @@ pub fn resolve_node_states(
     //
     //    A vertex is keyed by its LEADER, the lower of the two node ids, so the
     //    key is a function of the graph alone (rule 3).
+    //    A catalyst bed and its hydrogen pass are one vertex too (M59.1,
+    //    docs/DESIGN.md §64.2), for the same reason: both leave at the bed's
+    //    temperature, which both inflows set.
     let leader_of = |id: NodeId| -> NodeId {
-        match graph.exchanger_partner(id) {
-            Some((partner, _)) => id.min(partner),
+        match graph.sweep_partner(id) {
+            Some(partner) => id.min(partner),
             None => id,
         }
     };
@@ -1396,6 +1430,66 @@ pub fn resolve_node_states(
         }
 
         match sides.as_slice() {
+            [a, b] if graph.exchanger_partner(*a).is_none() => {
+                // A catalyst bed and its hydrogen pass (M59.1, docs/DESIGN.md
+                // §64.2): the bed steps on both inflows, and both streams leave
+                // at one temperature. The bed reads the pass's solved pressure.
+                let (bed_id, pass_id) =
+                    if matches!(graph.node(*a).kind, NodeKind::BedReactor { .. }) {
+                        (*a, *b)
+                    } else {
+                        (*b, *a)
+                    };
+                let (
+                    NodeKind::BedReactor {
+                        bed: catalyst,
+                        wall,
+                    },
+                    NodeKind::BedHydrogen { kinetics, .. },
+                ) = (&graph.node(bed_id).kind, &graph.node(pass_id).kind)
+                else {
+                    return Err(SimError::Numerical(format!(
+                        "internal: '{}' and '{}' were swept as one vertex, but are neither an \
+                         exchanger's two sides nor a bed and its hydrogen pass",
+                        graph.node(*a).name,
+                        graph.node(*b).name
+                    )));
+                };
+                let pressure = node_pressure.get(&pass_id).copied().ok_or_else(|| {
+                    SimError::Numerical(format!(
+                        "hydrogen pass '{}': the solve reported no pressure for it",
+                        graph.node(pass_id).name
+                    ))
+                })?;
+                let feed = mixed_composition_at(&composition, bed_id)?.clone();
+                let gas = mixed_composition_at(&composition, pass_id)?.clone();
+                let (products, pass, fluid) = bed_reactor(
+                    graph,
+                    slate,
+                    enthalpy,
+                    reactions,
+                    edge_mass_flow,
+                    edge_dissipation,
+                    &temperature,
+                    &composition,
+                    &separations,
+                    bed_id,
+                    &feed,
+                    catalyst,
+                    wall,
+                    Some(HydrogenInput {
+                        pass: pass_id,
+                        composition: &gas,
+                        kinetics: *kinetics,
+                        pressure,
+                    }),
+                    dt,
+                )?;
+                composition.insert(bed_id, products);
+                temperature.insert(bed_id, fluid);
+                temperature.insert(pass_id, fluid);
+                bed.insert(bed_id, pass);
+            }
             [a, b] => {
                 // Both outlets from one signed Q, computed from both inlets.
                 let (t_a, t_b) = exchange_pair(
@@ -1548,6 +1642,7 @@ pub fn resolve_node_states(
                             &feed,
                             catalyst,
                             wall,
+                            None,
                             dt,
                         )?;
                         composition.insert(id, products);
@@ -1898,14 +1993,25 @@ fn mix_compositions(
         // value keeps the field reproducible; `Composition::from_weights` errs
         // on an all-zero weight vector, so mixing through it is not an option.
         //
-        // With no history at all, the first slate component: the composition
-        // counterpart of the temperature path's fallback to ambient, and inert
-        // for the same reason.
-        Ok(previous
-            .composition
-            .get(&node)
-            .cloned()
-            .unwrap_or_else(|| Composition::pure(slate.len(), 0)))
+        // With no history at all, what the node's first pipe carries — the
+        // loader seeds every pipe with a component of its part of the plant's
+        // phase — and the first slate component only on a node with no pipe.
+        // The composition counterpart of the temperature path's fallback to
+        // ambient. Not inert on a slate of two phases (M59.1, docs/DESIGN.md
+        // §64): this is what the node's outlet pipe carries next, and a gas
+        // line's density is read off it, so the first component — a liquid
+        // lump on a hydrocracker's slate — put a closed vent's line at an oil's
+        // density on the tick it opened. On a one-phase slate both answers are
+        // the first component. A pipe whose composition does not span the
+        // slate (a graph built by hand) is passed over.
+        Ok(previous.composition.get(&node).cloned().unwrap_or_else(|| {
+            graph
+                .incident(node)
+                .first()
+                .map(|&(edge, _, _)| graph.pipe(edge).stream.composition.clone())
+                .filter(|seed| seed.fractions().len() == slate.len())
+                .unwrap_or_else(|| Composition::pure(slate.len(), 0))
+        }))
     }
 }
 
@@ -2396,6 +2502,16 @@ fn psi(x: f64) -> f64 {
 /// and nothing carries heat away; the bed keeps its temperature, plus any fire.
 /// The fluid standing in it is reported at the bed's end-of-tick temperature
 /// with the products of complete conversion (`τ = +∞`). Nothing is held.
+/// A catalyst bed's hydrogen, as the paired sweep vertex hands it to
+/// `bed_reactor` (M59.1, docs/DESIGN.md §64.2): the pass node, the hydrogen it
+/// mixed, the bed's kinetics, and the pressure the pass solved to this tick.
+struct HydrogenInput<'a> {
+    pass: NodeId,
+    composition: &'a Composition,
+    kinetics: HydrogenKinetics,
+    pressure: Pascal,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn bed_reactor(
     graph: &PlantGraph,
@@ -2411,6 +2527,7 @@ fn bed_reactor(
     feed: &Composition,
     bed: &CatalystBed,
     wall: &BedWall,
+    hydrogen: Option<HydrogenInput<'_>>,
     dt: Seconds,
 ) -> Result<(Composition, BedPass, Kelvin), SimError> {
     let name = &graph.node(node).name;
@@ -2457,6 +2574,33 @@ fn bed_reactor(
         node,
     )?;
 
+    // The hydrogen (M59.1, docs/DESIGN.md §64): the pass's inflow, and the
+    // factor `f = (p/p_ref)^n` its pressure sets.
+    let hydrogen = match hydrogen {
+        Some(input) => {
+            let factor = input.kinetics.factor(input.pressure);
+            if !factor.is_finite() {
+                return Err(SimError::Numerical(format!(
+                    "catalyst bed '{name}': its hydrogen factor at {:.4e} Pa is {factor}",
+                    input.pressure.value()
+                )));
+            }
+            let inflow = inflow_totals(
+                graph,
+                slate,
+                enthalpy_model,
+                edge_mass_flow,
+                edge_dissipation,
+                temperature,
+                composition,
+                separations,
+                input.pass,
+            )?;
+            Some((input, factor, inflow))
+        }
+        None => None,
+    };
+
     // τ = V·ρ_feed/ṁ (§62.2). The density is the liquid one, and the loader
     // refuses a bed in gas service; this refusal is the engine's own guard
     // (rule 5), since `mixture_density` has none in release.
@@ -2475,12 +2619,16 @@ fn bed_reactor(
         }
         None => None,
     };
-    let reaction = reactions.react(
-        feed,
-        bed.temperature,
-        residence_time.unwrap_or(Seconds(f64::INFINITY)),
-        slate,
-    )?;
+    let space_time = residence_time.unwrap_or(Seconds(f64::INFINITY));
+    // Every rate times `f` is the same chemistry over the space time `f·τ`: the
+    // network is first order, `dy/dτ = f·K·y` (§64.1). At `f = 0` nothing
+    // reacts, whatever `τ` — written out, since `0·∞` is NaN.
+    let space_time = match &hydrogen {
+        Some((_, factor, _)) if *factor > 0.0 => Seconds(space_time.value() * factor),
+        Some(_) => Seconds(0.0),
+        None => space_time,
+    };
+    let reaction = reactions.react(feed, bed.temperature, space_time, slate)?;
     if !reaction.dh_rxn.value().is_finite() {
         return Err(SimError::Numerical(format!(
             "catalyst bed '{name}': the reaction model '{}' returned a heat of reaction of \
@@ -2488,6 +2636,20 @@ fn bed_reactor(
             reactions.name(),
             reaction.dh_rxn.value()
         )));
+    }
+
+    if let Some(hydrogen) = hydrogen {
+        return bed_with_hydrogen(
+            name,
+            (slate, enthalpy_model),
+            bed,
+            totals,
+            reaction,
+            residence_time,
+            hydrogen,
+            (fire, wall_fire),
+            dt,
+        );
     }
 
     let Some(totals) = totals else {
@@ -2501,6 +2663,7 @@ fn bed_reactor(
                 reaction_heat: Watt::ZERO,
                 residence_time: None,
                 wall_fire,
+                hydrogen: None,
             },
             end,
         ));
@@ -2548,6 +2711,99 @@ fn bed_reactor(
             reaction_heat: Watt(released),
             residence_time,
             wall_fire,
+            hydrogen: None,
+        },
+        fluid,
+    ))
+}
+
+/// The step of a bed with a hydrogen pass (M59.1, docs/DESIGN.md §64.2): the
+/// oil and the hydrogen both through the bed, both leaving at ONE temperature.
+///
+/// `bed_reactor`'s exact step with the two streams' capacity rates summed,
+/// `C·dT_b/dt = Q + F + H_in,oil + H_in,H2 − H_out,oil(T_b) − H_out,H2(T_b)`,
+/// and the outflow from the STORED change, as there. The two streams' common
+/// outlet temperature is the one at which their summed sensible enthalpy is
+/// that outflow — the enthalpy models are additive by mass, so it is
+/// `temperature_from_enthalpy` on the two blended. What the hydrogen carried
+/// off the bed, `H_in,H2 − H_out,H2(T_out)`, is reported.
+#[allow(clippy::too_many_arguments)]
+fn bed_with_hydrogen(
+    name: &str,
+    (slate, enthalpy_model): (&Slate, &dyn EnthalpyModel),
+    bed: &CatalystBed,
+    totals: InflowTotals,
+    reaction: Reaction,
+    residence_time: Option<Seconds>,
+    (input, factor, inflow): (HydrogenInput<'_>, f64, InflowTotals),
+    (fire, wall_fire): (f64, Watt),
+    dt: Seconds,
+) -> Result<(Composition, BedPass, Kelvin), SimError> {
+    let capacity = bed.heat_capacity.value();
+    let start = bed.temperature.value();
+    // Each stream's inflow, its outflow at the bed's start-of-tick temperature,
+    // and its capacity rate there; zero for a stream that does not flow.
+    let stream =
+        |totals: InflowTotals, leaving: &Composition| -> Result<(f64, f64, f64, f64), SimError> {
+            match totals {
+                Some(t) => Ok((
+                    t.mass_rate,
+                    t.enthalpy_rate,
+                    enthalpy_model
+                        .enthalpy_flux(slate, leaving, KgPerSec(t.mass_rate), bed.temperature)?
+                        .value(),
+                    t.mass_rate
+                        * enthalpy_model
+                            .spot_cp(slate, leaving, bed.temperature)?
+                            .value(),
+                )),
+                None => Ok((0.0, 0.0, 0.0, 0.0)),
+            }
+        };
+    let (oil_mass, oil_in, oil_out, oil_w) = stream(totals, &reaction.products)?;
+    let (gas_mass, gas_in, gas_out, gas_w) = stream(inflow, input.composition)?;
+    let released = 0.0 - oil_mass * reaction.dh_rxn.value();
+
+    let x = (oil_w + gas_w) * dt.value() / capacity;
+    let rate = released + fire + oil_in + gas_in - oil_out - gas_out;
+    let phi = if x > 0.0 { -(-x).exp_m1() / x } else { 1.0 };
+    let end = start + rate * dt.value() / capacity * phi;
+    let end_temperature = checked_bed_temperature(name, end, start, released + fire)?;
+
+    // Both streams' outflow from the stored change, at one temperature.
+    let mass = oil_mass + gas_mass;
+    let (fluid, hydrogen_heat) = if mass > 0.0 {
+        let outflow = oil_in + gas_in + released + fire - capacity * (end - start) / dt.value();
+        let leaving =
+            Composition::blend(&reaction.products, oil_mass, input.composition, gas_mass)?;
+        let outlet = enthalpy_model
+            .temperature_from_enthalpy(slate, &leaving, outflow, mass)?
+            .value();
+        let fluid = checked_temperature(outlet, || {
+            format!(
+                "catalyst bed '{name}' outlet {outlet:.2} K is below absolute zero: \
+                 {outflow:.4e} W leaves with {mass:.4e} kg/s of oil and hydrogen"
+            )
+        })?;
+        let gas_leaving = enthalpy_model
+            .enthalpy_flux(slate, input.composition, KgPerSec(gas_mass), fluid)?
+            .value();
+        (fluid, gas_in - gas_leaving)
+    } else {
+        (end_temperature, 0.0)
+    };
+    Ok((
+        reaction.products,
+        BedPass {
+            temperature: end_temperature,
+            reaction_heat: Watt(released),
+            residence_time,
+            wall_fire,
+            hydrogen: Some(HydrogenPass {
+                pass: input.pass,
+                factor,
+                heat: Watt(hydrogen_heat),
+            }),
         },
         fluid,
     ))

@@ -9369,3 +9369,28 @@ D7's "kinder way under the wall's limit" corrected. Slices: M59.1 the hydrogen
 loop (pass, factor, compressor, depressuring), M59.2 consumption, M59.3 the
 hydrogen quench, M59.4 the stopping trip and the hydrogen leak, M59.5 the
 screen. No code changed.
+
+### M59.1 — **LANDED** 2026-10-15: the hydrogen loop
+
+A hydrogen pass beside a bed (`bed_hydrogen`), swept with its bed as one vertex
+so the oil and the hydrogen leave at one temperature; every rate times
+`(p/p_ref)^n`, applied as the space time `f·τ`, `n = ½` a game value; a recycle
+compressor in both solvers, its polytropic head read at its suction and
+corrected for compressibility at the shutoff head. New file
+`hydrocracker_hydrogen.toml`: a 395 °C feed creeps the bed, the trip at 420 °C
+(tick 3 729) depressures the loop at the high-rate system's pace and shuts the
+makeup; the starved bed turns at 464.0 °C and is back at its feed by 50
+minutes, its wall intact — untripped, its wall fails on tick 13 860. DESIGN
+§64.10.
+
+- Corrected while building: the pass swept with its bed, not a tick behind;
+  the gas cooler a cooling-water exchanger (a fixed-duty cooler froze the
+  hydrogen below 0 K as the loop vented); the phase guard no longer joins parts
+  of a plant through an atmosphere; a stagnant node's first composition is its
+  pipe's seed, not the slate's first component; the story a too-hot feed and the
+  high-rate vent (a hot bed on a calm feed recovers by itself).
+- Corpus: 50 plants byte-identical on both fidelities, the new file new.
+- Timing: game solver mean 0.89 ms, worst 1.40 ms, none over; Newton 0.10 ms.
+- Gates: `compressor_reference` (4), `hydrogen_reference` (8); the wall census
+  counts seven beds and the burn-out census 22 furnaces (the gas heater). Mutations: fifteen, fourteen caught, one uncaught as
+  predicted (a zero factor; no plant reaches zero hydrogen pressure).
