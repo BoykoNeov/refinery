@@ -178,7 +178,7 @@ pub struct Fidelity {
     /// "none" (M1) | "lookup" (M4.1) | "fcc" (M4.2) | "hydrocracking" (M57.2).
     #[serde(default = "default_none")]
     pub reactions: String,
-    /// "cut_point" (M3.2) | "cascade" (M7.3).
+    /// "cut_point" (M3.2) | "cascade" (M7.3) | "heat_balance" (M60).
     ///
     /// Defaults to the boiling-range splitter, which is what every file written
     /// before M7 MEANS — not merely what keeps them loading. That distinction is
@@ -267,6 +267,17 @@ pub struct Fidelity {
     /// reach.
     #[serde(default = "default_constant_heat_capacity")]
     pub heat_capacity: String,
+}
+
+impl Fidelity {
+    /// Whether the separation fidelity is a STAGE cascade — `"cascade"` (M7.3)
+    /// or `"heat_balance"` (M60, docs/DESIGN.md §65). Both are specified and
+    /// validated the same way (a `[cascade]` block, stage-located draws, a
+    /// K-value from Trouton thermo, constant heat capacity); they differ only
+    /// in the vapour profile, which the loader never reads.
+    pub fn stage_cascade(&self) -> bool {
+        matches!(self.separation.as_str(), "cascade" | "heat_balance")
+    }
 }
 
 fn default_constant_heat_capacity() -> String {

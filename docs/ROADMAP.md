@@ -9564,3 +9564,26 @@ fails cold on every cascade (fixed by a sharp boiling-order seed) and runs dry
 above the feed on reflux alone; with 40 MW of pumparounds it runs at 250–390 °C
 feed. Slices: M60.1 the heat-balance cascade, M60.2 the reflux rises, M60.3
 pumparounds and the crude unit, M60.4 the column screen. No code changed.
+
+### M60.1 — **LANDED** 2026-10-15: the heat-balance cascade
+
+`separation = "heat_balance"`: the cascade's stages with each stage's vapour
+from its own energy balance, so the feed may arrive at any temperature; its
+enthalpy enters its stage. The stage machinery is shared with `StageCascade`,
+lifted out without changing an operation. The column reports the share of its
+feed that flashes and the reflux it ran at (`column_operation`). New file
+`crude_column_hot_feed.toml`: the cascade demo's plant with its furnace firing
+46 MW, the feed at 250 °C, 41.5 % of it flashing; the reboiler 40.5 MW against
+the saturated twin's 80.3; the `"cascade"` model refuses the same plant. DESIGN
+§65.7.
+
+- Corrected while building: no vapour-profile convergence criterion and no
+  first iteration on constant molar overflow (neither bound anything once the
+  sharp boiling-order seed was in; both found by the mutation pass); the sharp
+  seed gated by a heavy-residue cold start that fails without it.
+- Corpus: 55 plants byte-identical on both fidelities, the new file new.
+- Timing: game solver mean 0.15 ms, worst 0.85 ms; Newton mean 0.14 ms, worst
+  0.86 ms; none over.
+- Gates: `heat_balance` unit tests (8), `heat_balance_column` (3); the furnace
+  census 27. Mutations: eight; five caught, three acted on (two aids removed,
+  one gate added and then caught).

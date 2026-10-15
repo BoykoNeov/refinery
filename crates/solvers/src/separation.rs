@@ -136,6 +136,8 @@ impl SeparationModel for CutPointSplitter {
             // energy-neutral, and that needs no duty to hold.
             condenser_duty: None,
             reboiler_duty: None,
+            feed_vapour_fraction: None,
+            reflux_ratio: None,
         })
     }
 }

@@ -7,6 +7,7 @@
 //! | ReactionModel   | SimpleLookup (M4.1)  | FourLump (M4.2)         |
 //! |                 |                      | Hydrocracking (M57.2)   |
 //! | SeparationModel | CutPointSplitter     | StageCascade (M7.3)     |
+//! |                 |                      | HeatBalanceCascade (M60)|
 //! | BoilOffModel    | NoBoilOff (M12.1)    | FlashBoilOff (M12.1)    |
 //! | Controller      | ProportionalController (M8.2) | PiController (M8.3) |
 //!
@@ -32,6 +33,7 @@ pub mod elements;
 pub mod enthalpy;
 pub mod flash;
 pub mod four_lump;
+pub mod heat_balance;
 pub mod hydrocracking;
 pub mod line_flash;
 pub mod molar;
@@ -49,6 +51,7 @@ pub use control::{PiController, ProportionalController};
 pub use enthalpy::{ConstantEnthalpy, LinearCpEnthalpy};
 pub use flash::{flash_isothermal, FlashResult};
 pub use four_lump::{FourLump, FourLumpParams};
+pub use heat_balance::HeatBalanceCascade;
 pub use hydrocracking::{Hydrocracking, HydrocrackingParams};
 pub use line_flash::{EquilibriumLineFlash, NoLineFlash};
 pub use molar::MoleFractions;

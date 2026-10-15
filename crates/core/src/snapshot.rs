@@ -236,6 +236,14 @@ pub struct NodeSnapshot {
     /// heat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_duty: Option<ColumnDuty>,
+    /// How a heat-balance cascade column ran this tick (M60, docs/DESIGN.md
+    /// §65): the share of its feed that flashed to vapour, and the reflux
+    /// ratio it ran at. **Absent** wherever the fidelity does not answer —
+    /// every node that is not a column, a column before its first tick, the
+    /// cut-point splitter and the `"cascade"` model — `column_duty`'s shape,
+    /// and what keeps every plant that predates it byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_operation: Option<ColumnOperation>,
     /// Whether the liquid at this node is boiling, and the bubble pressure the
     /// verdict was made against (M11, docs/DESIGN.md §13).
     ///
@@ -562,6 +570,16 @@ pub struct ColumnDuty {
     pub condenser_w: f64,
     /// Heat ADDED at the reboiler [W], ≥ 0.
     pub reboiler_w: f64,
+}
+
+/// How a heat-balance cascade column ran — see `NodeSnapshot::column_operation`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ColumnOperation {
+    /// The share of the feed's MOLES that is vapour after an adiabatic flash at
+    /// the column's pressure [-], in `[0, 1]`.
+    pub feed_vapour_fraction: f64,
+    /// The molar reflux ratio `R = L/D` the column ran at [-].
+    pub reflux_ratio: f64,
 }
 
 /// One control loop's faceplate — what a frontend draws and what §7's rule

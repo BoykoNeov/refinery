@@ -676,7 +676,7 @@ pub struct Separation {
     ///
     /// The two are always `Some` together or `None` together — a model that
     /// knows one knows both, since M7.4b derives this one from the other plus
-    /// the column's external sensible balance (`StageCascade::duties`).
+    /// the column's external sensible balance (`cascade::column_duties`).
     pub reboiler_duty: Option<Watt>,
     /// This pass's converged iterate, for the next tick to start from, or `None`
     /// from a fidelity that iterates nothing (the cut-point splitter) and from a
@@ -691,6 +691,19 @@ pub struct Separation {
     /// the warm start costs no new state and gets per-column keying from the
     /// `BTreeMap` the results already live in.
     pub profile: Option<CascadeProfile>,
+    /// The share of the feed's MOLES that is vapour once it has flashed at the
+    /// column's pressure, `[0, 1]` — an adiabatic flash, the feed boiling by
+    /// cooling itself (M60, docs/DESIGN.md §65.1). `None` from a fidelity that
+    /// does not answer it: the splitter has no phases, and the `"cascade"`
+    /// model admits only a saturated feed, whose share is zero by its own rule.
+    ///
+    /// A READING, for a frontend: the heat-balance cascade's stage balances
+    /// take the feed's enthalpy, not this split.
+    pub feed_vapour_fraction: Option<f64>,
+    /// The molar reflux ratio `R = L/D` this pass ran at [-], or `None` from a
+    /// fidelity that does not report it. The heat-balance cascade reports it
+    /// because it may run above the declared ratio (§65.3).
+    pub reflux_ratio: Option<f64>,
 }
 
 /// Everything one column pass is a function of: the equipment, and the feed

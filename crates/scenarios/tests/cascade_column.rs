@@ -736,7 +736,7 @@ fn a_malformed_cascade_geometry_is_refused_at_load() {
 /// So it exercises the draw-flow write, `edge_temperature_at`'s column arm from
 /// M7.4a, and `cp` mixing, end to end. It does **not** check that either duty is
 /// physically right: `Q_reb` is defined as `Q_cond` plus this balance
-/// (`StageCascade::duties`), so a pair of duties both wrong by the same amount
+/// (`cascade::column_duties`), so a pair of duties both wrong by the same amount
 /// would pass here. Said explicitly per `a-conjunctive-gate-hides-which-
 /// criterion-bound`, because a reader would otherwise take a green energy
 /// balance for a green duty.

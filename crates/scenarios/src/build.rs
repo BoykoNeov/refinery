@@ -289,9 +289,13 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         // The M7.3 equilibrium-stage cascade. Its pairing with `thermo` is
         // already settled by `require_compatible_fidelity` in step 0.
         "cascade" => Box::new(refinery_solvers::StageCascade::new()),
+        // The M60 heat-balance cascade: the same stages, each stage's vapour from
+        // its own energy balance, so a feed hot from its furnace is admitted
+        // (docs/DESIGN.md §65). Validated exactly as `"cascade"` is.
+        "heat_balance" => Box::new(refinery_solvers::HeatBalanceCascade::new()),
         other => {
             return Err(SimError::Scenario(format!(
-                "unknown separation model '{other}' (valid: cut_point, cascade)"
+                "unknown separation model '{other}' (valid: cut_point, cascade, heat_balance)"
             )))
         }
     };
@@ -4455,7 +4459,7 @@ fn build_couplings(graph: &mut PlantGraph, defs: &[ExchangerDef]) -> Result<(), 
 /// node, and the two scope boundaries (partial condenser, vapour side draw) that
 /// have no representation in `core` at all.
 fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
-    let cascade_selected = scenario.fidelity.separation == "cascade";
+    let cascade_selected = scenario.fidelity.stage_cascade();
     for (name, def) in &scenario.nodes {
         let NodeDef::Column {
             draws: draw_defs,

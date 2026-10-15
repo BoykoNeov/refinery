@@ -967,7 +967,7 @@ fn equal_volatility_makes_both_duties_one_hand_computed_latent_load() {
 /// its envelope is exact and needs nothing from the column's interior. That is
 /// what makes it, and not the reboiler, the duty this gate can pin: the reboiler
 /// is the one that closes the external balance, so checking it against that
-/// balance would be a tautology (`StageCascade::duties`).
+/// balance would be a tautology (`cascade::column_duties`).
 ///
 /// Everything on the right is recomputed here from the PUBLIC return and the
 /// published `k_value`: `V` from the reflux ratio, the declared mass ratio and
@@ -1030,7 +1030,7 @@ fn the_condenser_duty_is_a_total_condensers_own_envelope() {
 ///
 /// The condenser gate above reconstructs its subject exactly; the reboiler cannot
 /// be gated that way, because it is the duty that CLOSES the external balance and
-/// checking it against that balance is a tautology (`StageCascade::duties`). What
+/// checking it against that balance is a tautology (`cascade::column_duties`). What
 /// is left is an envelope, and it is a real one: whatever the profile, the
 /// reboiler boils `V` mol/s of *something on this slate*, so
 ///
@@ -1108,7 +1108,7 @@ fn the_reboiler_duty_is_one_boilups_worth_of_latent_heat() {
 /// balance leans on and the construction must not change without this going red.
 ///
 /// **Not a duty gate, and must not be read as one.** `Q_reb` is *defined* as
-/// `Q_cond` plus this balance (`StageCascade::duties`), so the identity holds by
+/// `Q_cond` plus this balance (`cascade::column_duties`), so the identity holds by
 /// construction; what the test adds is that the balance the solver used is the
 /// one computable from the splits, compositions and temperatures it returned, in
 /// the datum `energy::enthalpy_flux` uses. The gates with physics in them are the

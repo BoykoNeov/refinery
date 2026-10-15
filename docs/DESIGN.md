@@ -24174,3 +24174,82 @@ Deferred, each to a ledger row when M60 closes:
   and run), the condenser, the reboiler and each pumparound, the products'
   compositions; keys for the furnace, the reflux and the pumparounds; a
   recorded timeline.
+
+### 65.7 The heat-balance cascade, built (M60.1)
+
+As §65.1 specifies, with three corrections made while building it.
+
+- **`HeatBalanceCascade`** (`crates/solvers/src/heat_balance.rs`), selected by
+  `separation = "heat_balance"`. It shares `cascade.rs`'s stage machinery —
+  the plan, `CascadePlan::liquid_profile` (one Thomas sweep per component),
+  `bubble_profile`, the draws, the residual gate and `column_duties` — which
+  were lifted out of `StageCascade::separate` without changing an operation:
+  `Flows::vapour` became one entry per stage (uniform under constant molar
+  overflow, so every product is the same product), and the reboiler closure
+  gained a `heat_removed_between` term that `StageCascade` passes as `0.0`
+  (`x + 0.0` is `x`). The corpus says so: every shipped plant byte-identical.
+- **What it adds**: the stage energy balances top-down from the condenser
+  (`stage_balance_flows`), the feed's enthalpy on its stage, no
+  saturated-liquid guard, the sharp boiling-order seed for a cold start's
+  first ten iterations, and the feed's adiabatic flash share
+  (`adiabatic_flash_share`, 64 halvings of the flash temperature, the share
+  taken from the energy at the root as M53 does).
+- **Reported**: `Separation::feed_vapour_fraction` and `reflux_ratio`, on the
+  snapshot as `NodeSnapshot::column_operation` (`feed_vapour_fraction`,
+  `reflux_ratio`), absent from every other fidelity.
+- **The loader**: `Fidelity::stage_cascade()` is `"cascade" | "heat_balance"`
+  wherever a rule was written for the cascade (the `[cascade]` block, the
+  draws, Trouton thermo, constant heat capacity); the refusals name the
+  fidelity the file selected.
+
+**Corrected while building:**
+
+- **The vapour-profile convergence criterion is not there.** §65.1 asked for
+  the vapour profile to stop moving beside the three existing criteria. The
+  mutation pass found nothing policed it, and measuring why: on every fixture
+  the liquid profile and the residual are the last to converge (a heavy
+  fixture converges at 76 iterations: the temperatures settle at 67, the
+  vapour at 74, the liquid and the residual last). Every
+  published number — the draws, their temperatures, both duties — is a
+  function of the converged profile, so the criterion bought nothing. The
+  probe's one case where it alone was unmet sat in the stiff zone at the
+  column's limit, which M60.2's floor keeps the solve out of.
+- **No first iteration on constant molar overflow.** §65.1 kept one, because
+  the probe's first stage balance from a flat seed was wild. That probe run
+  had no sharp seed; with it, no fixture and no plant needs the CMO step (the
+  mutation that removes it is caught by nothing, and the plants run), so it
+  went. If M60.3's crude unit needs it, it returns with the test that shows
+  why.
+- **The sharp seed is gated**: a four-cut fixture down to a 0.55 kg/mol
+  residue starts cold at a saturated and two hot feeds
+  (`a_heavy_residue_crude_starts_cold`); without the seed it fails on tick 1,
+  as `StageCascade` does.
+
+**New plant** `crude_column_hot_feed.toml`: `crude_column_cascade.toml`'s plant
+on the heat-balance model, its furnace firing 46.36 MW instead of 2.26 so the
+feed reaches the column at 250.0 °C, 98 K past its bubble point. At 3 000
+ticks 41.5 % of the feed's moles flash; the reboiler carries 40.5 MW against
+the saturated twin's 80.3, the condenser 51.6 MW against 51.5; the bottoms'
+kerosene 1.9 % against 0.7 %. The same plant on `"cascade"` is refused on its
+first ticks, naming the superheat.
+
+**Gates**: `heat_balance.rs` unit tests (8) — the reboiler closure equals the
+reboiler stage's own balance at a cold, a saturated and two hot feeds (to 1e-6
+relative); with equal molar latent heats and negligible cp the draws equal
+`StageCascade`'s (and differ when the latent heats differ); a hotter feed
+unloads the reboiler, flashes more and leaves more light cut in the bottoms; a
+pure feed's flash share equals `M·cp·ΔT/λ` = 0.125; warm, cold and displaced
+starts agree; the out-of-iterations refusal; a feed too hot for its reflux
+refused (M60.2 replaces that); the heavy cold start. `heat_balance_column.rs`
+(3) — the plant runs and reports, the `"cascade"` model refuses it, the loader
+refuses `heat_balance` on constant thermo by name. The furnace census counts 27.
+
+**Timing** (`tools/steptime`, fastest of five, 6 000 ticks): the game solver
+mean 0.15 ms, p99 0.70, worst 0.85 ms; Newton mean 0.14, worst 0.86 ms; none
+over the 2.5 ms budget. The first, cold tick 3.0 / 1.9 ms.
+
+**Mutations**: eight, then two re-runs. Caught: the feed's enthalpy term, the
+top vapour without the distillate, the flash comparison flipped, the enthalpy
+above frozen at the reflux's, the enthalpy datum dropped. Uncaught, and acted
+on: the vapour criterion and the CMO first iteration (both removed, above), the
+sharp seed (predicted uncaught; the heavy cold-start gate added, now caught).

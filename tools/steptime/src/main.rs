@@ -148,6 +148,9 @@ fn main() {
     // twin — the wall failing, both holes venting — is timed by pointing the
     // directory at a copy with the trip's limit out of reach.
     let leak = vec![Run(36000)];
+    // The hot-fed column's (M60.1, docs/DESIGN.md §65): the heat-balance
+    // cascade solving every tick, warm from the tick before.
+    let hot_feed = vec![Run(6000)];
     for (name, beats) in [
         ("pump_gas_lock", &gas_lock),
         ("flashing_rundown", &rundown),
@@ -155,6 +158,7 @@ fn main() {
         ("hydrocracker_makeup", &makeup),
         ("hydrocracker_hydrogen_quench", &quench),
         ("hydrocracker_hydrogen_leak", &leak),
+        ("crude_column_hot_feed", &hot_feed),
     ] {
         for solver in ["simple", "newton"] {
             if only

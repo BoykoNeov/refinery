@@ -520,13 +520,13 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
     // FIRST TICK — surfacing inside the composition sweep as a solver failure
     // rather than as the configuration mistake it is. A combination that cannot
     // work is a load-time error, exactly as an unknown model name is.
-    if scenario.fidelity.separation == "cascade" && scenario.fidelity.thermo == "constant" {
-        return Err(SimError::Scenario(
-            "separation = \"cascade\" with thermo = \"constant\": a cascade stage IS a \
+    if scenario.fidelity.stage_cascade() && scenario.fidelity.thermo == "constant" {
+        return Err(SimError::Scenario(format!(
+            "separation = \"{}\" with thermo = \"constant\": a cascade stage IS a \
              vapour-liquid equilibrium, and the 'constant' fidelity is constant-property water \
-             with no K-value to give it. Select thermo = \"trouton\"."
-                .into(),
-        ));
+             with no K-value to give it. Select thermo = \"trouton\".",
+            scenario.fidelity.separation
+        )));
     }
     // The same shape, one key over, and refused for the same reason: without it
     // the plant loads happily, runs, and boils nothing at all — because
@@ -805,17 +805,17 @@ fn require_compatible_heat_capacity(scenario: &ScenarioFile) -> Result<(), SimEr
     }
 
     // (4) The cascade's duties and its condenser's sensible term.
-    if scenario.fidelity.separation == "cascade" {
-        return Err(SimError::Scenario(
-            "heat_capacity = \"linear\" with separation = \"cascade\": a cascade column computes \
+    if scenario.fidelity.stage_cascade() {
+        return Err(SimError::Scenario(format!(
+            "heat_capacity = \"linear\" with separation = \"{}\": a cascade column computes \
              its reboiler and condenser duties, and its condenser's sensible term, from the \
              CONSTANT mixture capacity — `SeparationModel::separate` is not handed the enthalpy \
              model, and M16.2 deliberately did not change that signature. The plant would \
              integrate its holdups on cp(T) and report duties on a constant. Deferred with a \
              trigger in docs/DEFERRED.md; select separation = \"cut_point\" or heat_capacity = \
-             \"constant\"."
-                .into(),
-        ));
+             \"constant\".",
+            scenario.fidelity.separation
+        )));
     }
 
     // (5) A gas valve's γ, computed inside the flow solve.

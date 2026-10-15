@@ -1,0 +1,181 @@
+# M60.1 demo plant: crude → furnace → HEAT-BALANCE column → three products.
+#
+# `crude_column_cascade.toml`'s plant — the same five-cut crude, stages, draws and
+# reflux ratio — with two changes: `[fidelity] separation = "heat_balance"`
+# (docs/DESIGN.md §65), and a furnace that heats the crude about 100 K PAST its
+# bubble point instead of trimming it onto saturation. The `"cascade"` model
+# refuses a feed more than ±1.18 K off its bubble point on this crude (§5, M7.4b
+# correction 6); this one takes the feed's enthalpy into its feed stage's energy
+# balance, each stage's vapour from its own balance.
+#
+# What the hot feed does, against the saturated feed next door:
+#
+# - The furnace takes over work the reboiler did: about half the feed's moles
+#   flash to vapour on entering, the stripping section below the feed needs less
+#   vapour from the reboiler, and the reboiler duty falls (DESIGN §65.0 measured
+#   80 MW at a saturated feed, 38 MW 93 K above it).
+# - The stripping weakens with it: less vapour below the feed strips less of the
+#   light cuts out of the bottoms, so the bottoms carries more kerosene.
+# - The condenser is unchanged to first order: the reflux ratio fixes the
+#   vapour leaving the top stage.
+#
+# The furnace's `duty_mw` is the probe's: 46.36 MW fired lands the column's feed
+# near 250 °C at the steady feed rate. The coil runs about 60 K above its fluid
+# (46 MW over 784 kW/K), far from the 550 °C tube limit. Every other number is
+# `crude_column_cascade.toml`'s, with that file's reasons.
+
+[meta]
+name = "crude_column_hot_feed"
+description = "Crude heated well past its boiling point in a furnace and separated by a heat-balance cascade."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+separation = "heat_balance"
+reactions = "none"
+boiloff = "none"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[[components]]
+name = "kerosene"
+tb_c = 220.0
+molar_mass_kg_per_mol = 0.170
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2050.0
+
+[[components]]
+name = "diesel"
+tb_c = 300.0
+molar_mass_kg_per_mol = 0.220
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "residue"
+tb_c = 400.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 950.0
+cp_j_per_kg_k = 1900.0
+
+[nodes.crude_source]
+type = "source"
+pressure_bar = 6.0
+temperature_c = 146.5
+composition = { light_naphtha = 0.12, heavy_naphtha = 0.18, kerosene = 0.25, diesel = 0.25, residue = 0.20 }
+
+[nodes.preheater]
+type = "furnace"
+duty_mw = 46.36
+# Fired, not absorbed (docs/DESIGN.md §40): the coil absorbs the 2.1051 MW the
+# feed's trim to saturation needs, which at its 0.9312 efficiency is 2.2607 MW
+# released by the burners. The coil keeps the 2.105 MW metal it was sized on.
+# Tube coil (docs/DESIGN.md §37): 1 MJ/K per rated MW (its 2.105 MW); UA twice
+# the load flow's 392.02 kW/K capacity rate; and the coil's steady temperature
+# at load, the root of Q·(T_f − T_c)/(T_f − T_a) = G·(T_c − T_in)
+# (§40 fork 5; Q = 2260.7 kW, G = 0.8647·392.02 kW/K, T_in = 146.68 °C), so the plant starts settled.
+coil_heat_capacity_mj_per_k = 2.105
+coil_ua_kw_per_k = 784
+coil_temperature_c = 152.89
+# Flame (docs/DESIGN.md §40): methane in air at the stoichiometric ratio,
+# 2224.25 K (Marzouk 2023, doi:10.48084/etasr.6132). The duty is what the
+# burners release; the coil absorbs (T_f − T_c)/(T_f − 20 °C) of it, 0.931 at load,
+# and the rest goes up the stack.
+flame_temperature_c = 1951.1
+# Tubes (docs/DESIGN.md §42): past `tube_failure_c` the coil bursts, opening a
+# hole of `tube_rupture_area_cm2` in the outlet pipe; while burst, what leaks
+# burns in the firebox at `fluid_heating_value_mj_per_kg`. The limit and the
+# hole are ROUND GAME-TUNING VALUES, not a cited metal limit: 550 °C, far above
+# anything this coil reaches in service; a 1 cm² hole. The heating value is
+# 42.686 MJ/kg, the lower heating value of crude oil, GREET 1.8d.1 (Argonne).
+tube_failure_c = 550.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.686
+
+[nodes.column]
+type = "column"
+pressure_bar = 1.6
+draws = [
+    { outlet = "naphtha_tank", stage = 0, draw_ratio = 0.246 },
+    { outlet = "distillate_tank", stage = 5, draw_ratio = 0.554 },
+    { outlet = "bottoms_tank", stage = 8 },
+]
+
+[nodes.column.cascade]
+stages = 8
+feed_stage = 4
+reflux_ratio = 2.0
+
+[nodes.naphtha_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { light_naphtha = 1.0 }
+
+[nodes.distillate_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { kerosene = 1.0 }
+
+[nodes.bottoms_tank]
+type = "tank"
+area_m2 = 8.0
+height_m = 12.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { residue = 1.0 }
+
+[[pipes]]
+name = "crude_line"
+from = "crude_source"
+to = "preheater"
+length_m = 30.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "hot_feed_line"
+from = "preheater"
+to = "column"
+length_m = 15.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "naphtha_draw"
+from = "column"
+to = "naphtha_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "distillate_draw"
+from = "column"
+to = "distillate_tank"
+length_m = 20.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "bottoms_draw"
+from = "column"
+to = "bottoms_tank"
+length_m = 20.0
+diameter_m = 0.12

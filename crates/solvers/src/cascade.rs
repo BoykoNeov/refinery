@@ -43,7 +43,7 @@ use crate::molar::MoleFractions;
 /// convergence criterion is I7's own number and not one picked to make a test
 /// pass. It is an absolute flow for the same reason I7's is absolute — the M1
 /// acceptance-gate argument.
-const COMPONENT_RESIDUAL_KG_PER_S: f64 = 1e-5;
+pub(crate) const COMPONENT_RESIDUAL_KG_PER_S: f64 = 1e-5;
 
 /// Equilibrium-stage distillation: the complex (research) separation fidelity,
 /// selected by `[fidelity] separation = "cascade"`.
@@ -131,129 +131,6 @@ impl StageCascade {
         }
     }
 
-    /// The column's two heat duties [W], as emergent diagnostics.
-    ///
-    /// **Why they are not two symmetric envelope balances, which is what M7.4b
-    /// set out to build.** The condenser's envelope is exact and needs nothing
-    /// from the column's interior; the reboiler's does not have that property,
-    /// and neither does any interior stage. Constant molar overflow fixes `L`
-    /// and `V` instead of solving each stage's energy balance, so every interior
-    /// stage carries an energy residual, and summing them **telescopes** to
-    /// roughly `V·[λ̄(y_1) − λ̄(y_N)]` rather than cancelling. On this
-    /// workspace's own two-cut fixture the molar latent heats differ by 30%
-    /// (`88·333` against `88·433` J/mol), while the sensible external balance
-    /// the pair is supposed to bracket is about 9% of a duty. Two locally-exact
-    /// envelopes would therefore disagree with the column's own external balance
-    /// by three times the quantity that balance measures — a diagnostic pair
-    /// that reports a plant creating or destroying energy, which is worse than a
-    /// coarse one.
-    ///
-    /// So the pair is built the other way round:
-    ///
-    /// ```text
-    /// Q_cond = V·λ̄(y₁) + V·c̄p(y₁)·(T₁ − T_cond)          exact, local
-    /// Q_reb  = Q_cond + [Σᵢ ṁᵢ·cpᵢ·(Tᵢ − T_REF) − ṁ_F·cp_F·(T_F − T_REF)]
-    /// ```
-    ///
-    /// The condenser is determined by physics; the reboiler is the duty that
-    /// **closes the column's external energy balance**, which is the property a
-    /// plant-level energy invariant needs and the one a locally-exact pair would
-    /// not have. What it costs is stated rather than hidden: `Q_reb` differs
-    /// from its own local envelope `≈ V·λ̄(y_N)` by that same CMO telescoping
-    /// term, so the reboiler duty carries the formulation's error and the
-    /// condenser duty does not.
-    ///
-    /// **And that is why the roadmap's "duty difference" box cannot be its own
-    /// gate.** `Q_reb − Q_cond` is the external sensible balance *by
-    /// construction* here, so asserting it equals the external sensible balance
-    /// is the tautology M4's two-duty lesson warns about, one level up. The real
-    /// gates are: the condenser duty reconstructed independently from the public
-    /// return and a published `k_value` (`tests/reference/cascade.rs`), the
-    /// `α = 1` case where the whole pair reduces to one hand-computed `V·λ̄(z)`
-    /// with no sensible term at all, and an envelope on the reboiler.
-    ///
-    /// **The second condenser term is real physics, not a CMO artifact.** A
-    /// total condenser takes saturated VAPOUR in at `y₁` and puts saturated
-    /// LIQUID out at the same composition, and those two states are at different
-    /// temperatures: `T₁` is the dew point of `y₁` (which is exactly what
-    /// `Σ_c K_c(T₁)·x₁_c = 1` makes stage 1's bubble point) and `T_cond` is its
-    /// bubble point, which is lower. Reading a total condenser as pure latent
-    /// heat is wrong by `V·c̄p·(T₁ − T_cond)`, and on a wide-boiling cut that is
-    /// not small.
-    #[allow(clippy::too_many_arguments)]
-    fn duties(
-        &self,
-        slate: &Slate,
-        thermo: &dyn ThermoModel,
-        flows: &Flows,
-        distillate: &DrawState,
-        stage_one_t: Kelvin,
-        condenser_t: Kelvin,
-        draws: &[DrawSeparation],
-        pass: &ColumnPass<'_>,
-    ) -> Result<(Watt, Watt), SimError> {
-        let vapour = flows.vapour;
-        let y_one = distillate.moles.fractions();
-
-        // Latent: the whole uniform vapour rate condenses, at the composition it
-        // condenses AT. Evaluated at `condenser_t` because that is the state the
-        // latent heat is released into; `TroutonThermo` ignores the argument, and
-        // a `T`-dependent Δh_vap would want exactly this one.
-        let latent = vapour * mixture_dh_vap(slate, thermo, y_one, condenser_t)?;
-        // Sensible: dew point down to bubble point, same composition, all of it
-        // as liquid once condensed.
-        let sensible =
-            vapour * mixture_molar_cp(slate, y_one) * (stage_one_t.value() - condenser_t.value());
-        let condenser_duty = latent + sensible;
-
-        // The external sensible balance, in the ENGINE's datum (`energy::T_REF`)
-        // rather than a datum local to this function — `datum-consistency-in-a-
-        // holdup-balance`. It cancels out of the difference analytically, but the
-        // number these duties must be comparable with is `energy::enthalpy_flux`,
-        // and a second datum is how the two drift.
-        let feed_flux = pass.feed_flow.value()
-            * pass.feed.mixture_cp(slate).value()
-            * (pass.temperature.value() - T_REF.value());
-        let mut draw_flux = 0.0;
-        for draw in draws {
-            draw_flux += draw.split
-                * pass.feed_flow.value()
-                * draw.composition.mixture_cp(slate).value()
-                * (draw.temperature.value() - T_REF.value());
-        }
-        let reboiler_duty = condenser_duty + (draw_flux - feed_flux);
-
-        for (name, duty) in [("condenser", condenser_duty), ("reboiler", reboiler_duty)] {
-            // Two checks with different standing, and it is worth not conflating
-            // them.
-            //
-            // The FINITENESS half is rule 5's mandated post-solve check ("check
-            // for NaN/Inf after every solve"), and it needs no reachability
-            // argument to earn its place.
-            //
-            // The NON-NEGATIVE half is the sign convention: `Separation`'s fields
-            // are magnitudes with the direction in the name (the
-            // `Furnace`/`Cooler` convention), so a condenser that heats is not
-            // representable and a negative number here would be a solve that has
-            // left the physical region. **Nothing has been shown to reach it** —
-            // `the_duties_stay_non_negative_where_it_is_hardest` pushes five
-            // adversarial configurations at it and the closest comes within 3.7 kW
-            // on a 311 kW duty. That is deliberately weaker than the claim
-            // `flash.rs` makes when it DELETES an unreachable guard, which rests
-            // on a proof ("beta is 0.0, 1.0, or a midpoint"). No such proof exists
-            // here, so the check stays and the margin is gated instead.
-            if !duty.is_finite() || duty < 0.0 {
-                return Err(SimError::Numerical(format!(
-                    "stage cascade: the {name} duty came out as {duty:.4e} W. Both duties are \
-                     non-negative magnitudes — a condenser removes heat and a reboiler adds it \
-                     — so a negative one is a profile that has left the physical region rather \
-                     than a column running backwards."
-                )));
-            }
-        }
-        Ok((Watt(condenser_duty), Watt(reboiler_duty)))
-    }
-
     /// Check a column's cascade geometry without solving it — what the LOADER
     /// calls so a malformed cascade column is refused when the file is read
     /// rather than on its first tick.
@@ -281,6 +158,132 @@ impl Default for StageCascade {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The column's two heat duties [W], as emergent diagnostics.
+///
+/// **Why they are not two symmetric envelope balances, which is what M7.4b
+/// set out to build.** The condenser's envelope is exact and needs nothing
+/// from the column's interior; the reboiler's does not have that property,
+/// and neither does any interior stage. Constant molar overflow fixes `L`
+/// and `V` instead of solving each stage's energy balance, so every interior
+/// stage carries an energy residual, and summing them **telescopes** to
+/// roughly `V·[λ̄(y_1) − λ̄(y_N)]` rather than cancelling. On this
+/// workspace's own two-cut fixture the molar latent heats differ by 30%
+/// (`88·333` against `88·433` J/mol), while the sensible external balance
+/// the pair is supposed to bracket is about 9% of a duty. Two locally-exact
+/// envelopes would therefore disagree with the column's own external balance
+/// by three times the quantity that balance measures — a diagnostic pair
+/// that reports a plant creating or destroying energy, which is worse than a
+/// coarse one.
+///
+/// So the pair is built the other way round:
+///
+/// ```text
+/// Q_cond = V·λ̄(y₁) + V·c̄p(y₁)·(T₁ − T_cond)          exact, local
+/// Q_reb  = Q_cond + [Σᵢ ṁᵢ·cpᵢ·(Tᵢ − T_REF) − ṁ_F·cp_F·(T_F − T_REF)]
+/// ```
+///
+/// The condenser is determined by physics; the reboiler is the duty that
+/// **closes the column's external energy balance**, which is the property a
+/// plant-level energy invariant needs and the one a locally-exact pair would
+/// not have. What it costs is stated rather than hidden: `Q_reb` differs
+/// from its own local envelope `≈ V·λ̄(y_N)` by that same CMO telescoping
+/// term, so the reboiler duty carries the formulation's error and the
+/// condenser duty does not.
+///
+/// **And that is why the roadmap's "duty difference" box cannot be its own
+/// gate.** `Q_reb − Q_cond` is the external sensible balance *by
+/// construction* here, so asserting it equals the external sensible balance
+/// is the tautology M4's two-duty lesson warns about, one level up. The real
+/// gates are: the condenser duty reconstructed independently from the public
+/// return and a published `k_value` (`tests/reference/cascade.rs`), the
+/// `α = 1` case where the whole pair reduces to one hand-computed `V·λ̄(z)`
+/// with no sensible term at all, and an envelope on the reboiler.
+///
+/// **The second condenser term is real physics, not a CMO artifact.** A
+/// total condenser takes saturated VAPOUR in at `y₁` and puts saturated
+/// LIQUID out at the same composition, and those two states are at different
+/// temperatures: `T₁` is the dew point of `y₁` (which is exactly what
+/// `Σ_c K_c(T₁)·x₁_c = 1` makes stage 1's bubble point) and `T_cond` is its
+/// bubble point, which is lower. Reading a total condenser as pure latent
+/// heat is wrong by `V·c̄p·(T₁ − T_cond)`, and on a wide-boiling cut that is
+/// not small.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn column_duties(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    flows: &Flows,
+    distillate: &DrawState,
+    stage_one_t: Kelvin,
+    condenser_t: Kelvin,
+    draws: &[DrawSeparation],
+    pass: &ColumnPass<'_>,
+    heat_removed_between: f64,
+) -> Result<(Watt, Watt), SimError> {
+    let vapour = flows.vapour[0];
+    let y_one = distillate.moles.fractions();
+
+    // Latent: the whole uniform vapour rate condenses, at the composition it
+    // condenses AT. Evaluated at `condenser_t` because that is the state the
+    // latent heat is released into; `TroutonThermo` ignores the argument, and
+    // a `T`-dependent Δh_vap would want exactly this one.
+    let latent = vapour * mixture_dh_vap(slate, thermo, y_one, condenser_t)?;
+    // Sensible: dew point down to bubble point, same composition, all of it
+    // as liquid once condensed.
+    let sensible =
+        vapour * mixture_molar_cp(slate, y_one) * (stage_one_t.value() - condenser_t.value());
+    let condenser_duty = latent + sensible;
+
+    // The external sensible balance, in the ENGINE's datum (`energy::T_REF`)
+    // rather than a datum local to this function — `datum-consistency-in-a-
+    // holdup-balance`. It cancels out of the difference analytically, but the
+    // number these duties must be comparable with is `energy::enthalpy_flux`,
+    // and a second datum is how the two drift.
+    let feed_flux = pass.feed_flow.value()
+        * pass.feed.mixture_cp(slate).value()
+        * (pass.temperature.value() - T_REF.value());
+    let mut draw_flux = 0.0;
+    for draw in draws {
+        draw_flux += draw.split
+            * pass.feed_flow.value()
+            * draw.composition.mixture_cp(slate).value()
+            * (draw.temperature.value() - T_REF.value());
+    }
+    // `heat_removed_between` is the heat taken out between the condenser and
+    // the reboiler [W] — the heat-balance cascade's pumparounds (M60, §65.4);
+    // the `"cascade"` model passes zero, and `x + 0.0` is `x` exactly.
+    let reboiler_duty = condenser_duty + heat_removed_between + (draw_flux - feed_flux);
+
+    for (name, duty) in [("condenser", condenser_duty), ("reboiler", reboiler_duty)] {
+        // Two checks with different standing, and it is worth not conflating
+        // them.
+        //
+        // The FINITENESS half is rule 5's mandated post-solve check ("check
+        // for NaN/Inf after every solve"), and it needs no reachability
+        // argument to earn its place.
+        //
+        // The NON-NEGATIVE half is the sign convention: `Separation`'s fields
+        // are magnitudes with the direction in the name (the
+        // `Furnace`/`Cooler` convention), so a condenser that heats is not
+        // representable and a negative number here would be a solve that has
+        // left the physical region. **Nothing has been shown to reach it** —
+        // `the_duties_stay_non_negative_where_it_is_hardest` pushes five
+        // adversarial configurations at it and the closest comes within 3.7 kW
+        // on a 311 kW duty. That is deliberately weaker than the claim
+        // `flash.rs` makes when it DELETES an unreachable guard, which rests
+        // on a proof ("beta is 0.0, 1.0, or a midpoint"). No such proof exists
+        // here, so the check stays and the margin is gated instead.
+        if !duty.is_finite() || duty < 0.0 {
+            return Err(SimError::Numerical(format!(
+                "stage cascade: the {name} duty came out as {duty:.4e} W. Both duties are \
+                 non-negative magnitudes — a condenser removes heat and a reboiler adds it \
+                 — so a negative one is a profile that has left the physical region rather \
+                 than a column running backwards."
+            )));
+        }
+    }
+    Ok((Watt(condenser_duty), Watt(reboiler_duty)))
 }
 
 impl SeparationModel for StageCascade {
@@ -360,6 +363,8 @@ impl SeparationModel for StageCascade {
                 // splitter's claim, that there is no such equipment to report on.
                 condenser_duty: Some(Watt::ZERO),
                 reboiler_duty: Some(Watt::ZERO),
+                feed_vapour_fraction: None,
+                reflux_ratio: None,
             });
         }
 
@@ -445,53 +450,12 @@ impl SeparationModel for StageCascade {
             let previous = plan.draw_states(&liquid, &k, slate)?;
             let flows = plan.flows(spec, &previous, feed_flow, feed_molar)?;
 
-            // One Thomas sweep per component: the stage balances are tridiagonal
-            // in that component's liquid mole fractions at fixed K.
-            let mut columns = Vec::with_capacity(slate.len());
-            for (c, &z) in feed.fractions().iter().enumerate() {
-                columns.push(plan.solve_component(&flows, &k, c, z, feed_molar)?);
-            }
-            // Transposed from one column per component to one row per stage, which
-            // is the shape a stage's composition and its bubble point are read in.
-            let amounts: Vec<Vec<f64>> = (0..plan.stages)
-                .map(|j| columns.iter().map(|column| column[j]).collect())
-                .collect();
-            let mut next: Vec<Vec<f64>> = Vec::with_capacity(plan.stages);
-            for (j, row) in amounts.iter().enumerate() {
-                next.push(
-                    MoleFractions::from_amounts(row)
-                        .map_err(|e| {
-                            SimError::Numerical(format!(
-                                "stage cascade: stage {} of {} produced no valid liquid \
-                                 composition ({e}). The stage balances are exact at fixed \
-                                 K-values, so this is an infeasible specification rather than \
-                                 drift.",
-                                j + 1,
-                                plan.stages
-                            ))
-                        })?
-                        .fractions()
-                        .to_vec(),
-                );
-            }
-
+            let next = plan.liquid_profile(&flows, &k, &feed, feed_molar)?;
             profile_change = max_abs_difference(&liquid, &next);
             liquid = next;
 
             // Bubble point per stage, at the NEW liquid composition.
-            let mut next_t = Vec::with_capacity(plan.stages);
-            for (j, x) in liquid.iter().enumerate() {
-                next_t.push(
-                    bubble_temperature_unnormalized(
-                        slate,
-                        thermo,
-                        x,
-                        pass.pressure,
-                        &format!("stage {} of {}", j + 1, plan.stages),
-                    )?
-                    .value(),
-                );
-            }
+            let next_t = bubble_profile(slate, thermo, &liquid, pass.pressure)?;
             temperature_change = stage_t
                 .iter()
                 .zip(&next_t)
@@ -593,7 +557,7 @@ impl SeparationModel for StageCascade {
         // iterate before it — one iteration stale, which is inside tolerance but
         // is not the number this solve settled on.
         let flows = plan.flows(spec, &draws, feed_flow, feed_molar)?;
-        let (condenser_duty, reboiler_duty) = self.duties(
+        let (condenser_duty, reboiler_duty) = column_duties(
             slate,
             thermo,
             &flows,
@@ -602,6 +566,7 @@ impl SeparationModel for StageCascade {
             condenser_t,
             &result,
             pass,
+            0.0,
         )?;
 
         Ok(Separation {
@@ -616,6 +581,8 @@ impl SeparationModel for StageCascade {
             }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
+            feed_vapour_fraction: None,
+            reflux_ratio: None,
         })
     }
 }
@@ -626,50 +593,53 @@ impl SeparationModel for StageCascade {
 /// `Stage(stages − 1)`; the file's `stage` is one-based with `0` meaning the
 /// condenser. The translation happens in `CascadePlan::new` and nowhere else.
 #[derive(Debug, Clone, Copy, PartialEq)]
-enum DrawLocation {
+pub(crate) enum DrawLocation {
     Condenser,
     Stage(usize),
 }
 
 /// One draw's current state: its mole fractions and the mean molar mass that
 /// converts its mass ratio into a molar rate.
-struct DrawState {
-    moles: MoleFractions,
-    mean_molar_mass: f64,
+pub(crate) struct DrawState {
+    pub(crate) moles: MoleFractions,
+    pub(crate) mean_molar_mass: f64,
 }
 
 /// The molar flow profile at one iteration. Constant molar overflow with a
 /// saturated-liquid feed makes the vapour rate uniform and the liquid rate
-/// piecewise-constant, so this is a short vector rather than a solve.
-struct Flows {
+/// piecewise-constant, so this is a short vector rather than a solve; the
+/// heat-balance cascade (M60) fills the same shape from each stage's energy
+/// balance.
+pub(crate) struct Flows {
     /// Liquid entering stage `j` from above; `liquid_in[0]` is the reflux `L`.
-    liquid_in: Vec<f64>,
+    pub(crate) liquid_in: Vec<f64>,
     /// Liquid leaving stage `j` downwards. Zero at the reboiler, which passes
     /// nothing down — what leaves it is the bottoms draw.
-    liquid_down: Vec<f64>,
+    pub(crate) liquid_down: Vec<f64>,
     /// Total liquid drawn OFF stage `j` (a side draw, or the bottoms at the
     /// reboiler); zero elsewhere.
-    liquid_drawn: Vec<f64>,
-    /// Uniform vapour rate `V = (R+1)·D` [mol/s].
-    vapour: f64,
-    /// Molar reflux `L = R·D` [mol/s]. The molar distillate `D = V − L` is an
+    pub(crate) liquid_drawn: Vec<f64>,
+    /// Vapour LEAVING stage `j` upwards [mol/s]; `vapour[0]` is what the total
+    /// condenser takes. Uniform, `V = (R+1)·D`, under constant molar overflow.
+    pub(crate) vapour: Vec<f64>,
+    /// Molar reflux `L = R·D` [mol/s]. The molar distillate `D = V₁ − L` is an
     /// ITERATE rather than an input — see `StageCascade`'s docs — but only the
     /// reflux appears in a stage row, through the condenser fold.
-    reflux: f64,
+    pub(crate) reflux: f64,
 }
 
 /// Everything about a cascade column that does not change between iterations: the
 /// validated geometry, the draw locations, and the mass ratios.
-struct CascadePlan {
-    stages: usize,
+pub(crate) struct CascadePlan {
+    pub(crate) stages: usize,
     /// Zero-based index of the feed stage.
-    feed_stage: usize,
-    locations: Vec<DrawLocation>,
+    pub(crate) feed_stage: usize,
+    pub(crate) locations: Vec<DrawLocation>,
     /// Each draw's share of the feed MASS. Exact, sums to 1 by subtraction.
-    mass_ratios: Vec<f64>,
+    pub(crate) mass_ratios: Vec<f64>,
     /// Stage index → the draw that leaves from it, if any.
-    draw_at_stage: Vec<Option<usize>>,
-    components: usize,
+    pub(crate) draw_at_stage: Vec<Option<usize>>,
+    pub(crate) components: usize,
 }
 
 impl CascadePlan {
@@ -680,7 +650,11 @@ impl CascadePlan {
     /// is the model refusing them on its own behalf, because a `SeparationModel`
     /// can be constructed by anything (M7.1's correction 3 — a contract kept in
     /// another crate is not a contract).
-    fn new(spec: &CascadeSpec, draws: &[ColumnDraw], components: usize) -> Result<Self, SimError> {
+    pub(crate) fn new(
+        spec: &CascadeSpec,
+        draws: &[ColumnDraw],
+        components: usize,
+    ) -> Result<Self, SimError> {
         let stages = spec.stages as usize;
         if stages == 0 {
             return Err(SimError::Scenario(
@@ -836,7 +810,7 @@ impl CascadePlan {
     /// of stage 1's vapour — that is the fold this whole formulation rests on, and
     /// it is why the condenser is not a stage. Every other draw is liquid off its
     /// own stage.
-    fn draw_states(
+    pub(crate) fn draw_states(
         &self,
         liquid: &[Vec<f64>],
         k: &[Vec<f64>],
@@ -875,7 +849,7 @@ impl CascadePlan {
     /// the reboiler, so the profile is internally consistent at every iteration
     /// and the mismatch against the declared bottoms mass shows up where fork 4
     /// wants it: in the per-component residual.
-    fn flows(
+    pub(crate) fn flows(
         &self,
         spec: &CascadeSpec,
         draws: &[DrawState],
@@ -961,9 +935,49 @@ impl CascadePlan {
             liquid_in,
             liquid_down,
             liquid_drawn: drawn,
-            vapour,
+            vapour: vec![vapour; self.stages],
             reflux,
         })
+    }
+
+    /// Every stage's liquid mole fractions at fixed flows and K-values: one
+    /// Thomas sweep per component (the stage balances are tridiagonal in that
+    /// component's liquid mole fractions at fixed K), then normalised per stage.
+    pub(crate) fn liquid_profile(
+        &self,
+        flows: &Flows,
+        k: &[Vec<f64>],
+        feed: &MoleFractions,
+        feed_molar: f64,
+    ) -> Result<Vec<Vec<f64>>, SimError> {
+        let mut columns = Vec::with_capacity(feed.len());
+        for (c, &z) in feed.fractions().iter().enumerate() {
+            columns.push(self.solve_component(flows, k, c, z, feed_molar)?);
+        }
+        // Transposed from one column per component to one row per stage, which
+        // is the shape a stage's composition and its bubble point are read in.
+        let amounts: Vec<Vec<f64>> = (0..self.stages)
+            .map(|j| columns.iter().map(|column| column[j]).collect())
+            .collect();
+        let mut next: Vec<Vec<f64>> = Vec::with_capacity(self.stages);
+        for (j, row) in amounts.iter().enumerate() {
+            next.push(
+                MoleFractions::from_amounts(row)
+                    .map_err(|e| {
+                        SimError::Numerical(format!(
+                            "stage cascade: stage {} of {} produced no valid liquid \
+                             composition ({e}). The stage balances are exact at fixed \
+                             K-values, so this is an infeasible specification rather than \
+                             drift.",
+                            j + 1,
+                            self.stages
+                        ))
+                    })?
+                    .fractions()
+                    .to_vec(),
+            );
+        }
+        Ok(next)
     }
 
     /// One component's liquid mole fractions down the column, by the Thomas
@@ -985,7 +999,7 @@ impl CascadePlan {
     /// The reboiler row is the same equation with `L_N = 0` and `U_N = B`: what
     /// leaves it downward is the bottoms product, and what leaves it upward is the
     /// boilup `V·K_N`.
-    fn solve_component(
+    pub(crate) fn solve_component(
         &self,
         flows: &Flows,
         k: &[Vec<f64>],
@@ -1003,7 +1017,7 @@ impl CascadePlan {
         for j in 0..n {
             let k_here = k[j][component];
             let leaving = flows.liquid_down[j] + flows.liquid_drawn[j];
-            diagonal[j] = -(leaving + flows.vapour * k_here);
+            diagonal[j] = -(leaving + flows.vapour[j] * k_here);
             if j == 0 {
                 // The condenser fold: + L·K_1, so the diagonal becomes
                 // −[(L_1 + U_1) + D·K_1] since V − L = D.
@@ -1012,7 +1026,7 @@ impl CascadePlan {
                 sub[j] = flows.liquid_in[j];
             }
             if j + 1 < n {
-                sup[j] = flows.vapour * k[j + 1][component];
+                sup[j] = flows.vapour[j + 1] * k[j + 1][component];
             }
             if j == self.feed_stage {
                 rhs[j] = -feed_molar * feed_fraction;
@@ -1058,7 +1072,12 @@ impl CascadePlan {
     /// balance the tridiagonal system enforces is exact, but the bottoms *mass*
     /// comes from `1 − Σ others` while its molar rate comes from the mole balance,
     /// and the two agree only at the fixed point.
-    fn component_residual(&self, draws: &[DrawState], feed: &Composition, slate: &Slate) -> f64 {
+    pub(crate) fn component_residual(
+        &self,
+        draws: &[DrawState],
+        feed: &Composition,
+        slate: &Slate,
+    ) -> f64 {
         let mut worst = 0.0f64;
         for c in 0..self.components {
             let mut out = 0.0;
@@ -1174,7 +1193,7 @@ fn check_saturated_liquid_feed(
 /// which is the same assumption Raoult's law already makes in `k_value`. Mixing
 /// on mass fractions instead would be the M4.2 slip (units, not the ODE) with
 /// the two bases swapped.
-fn mixture_dh_vap(
+pub(crate) fn mixture_dh_vap(
     slate: &Slate,
     thermo: &dyn ThermoModel,
     fractions: &[f64],
@@ -1201,7 +1220,7 @@ fn mixture_dh_vap(
 ///
 /// Liquid only, which is all this needs: every draw is a liquid and the internal
 /// vapour is only ever *condensed* here, never carried as a sensible stream.
-fn mixture_molar_cp(slate: &Slate, fractions: &[f64]) -> f64 {
+pub(crate) fn mixture_molar_cp(slate: &Slate, fractions: &[f64]) -> f64 {
     fractions
         .iter()
         .enumerate()
@@ -1212,8 +1231,31 @@ fn mixture_molar_cp(slate: &Slate, fractions: &[f64]) -> f64 {
         .sum()
 }
 
+/// Every stage's bubble temperature [K] at its liquid composition.
+pub(crate) fn bubble_profile(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    liquid: &[Vec<f64>],
+    pressure: Pascal,
+) -> Result<Vec<f64>, SimError> {
+    let mut temperatures = Vec::with_capacity(liquid.len());
+    for (j, x) in liquid.iter().enumerate() {
+        temperatures.push(
+            bubble_temperature_unnormalized(
+                slate,
+                thermo,
+                x,
+                pressure,
+                &format!("stage {} of {}", j + 1, liquid.len()),
+            )?
+            .value(),
+        );
+    }
+    Ok(temperatures)
+}
+
 /// Every component's K at every stage of a temperature profile.
-fn stage_k_values_profile(
+pub(crate) fn stage_k_values_profile(
     slate: &Slate,
     thermo: &dyn ThermoModel,
     stage_t: &[f64],
@@ -1259,7 +1301,7 @@ fn stage_k_values(
     Ok(k)
 }
 
-fn max_abs_difference(a: &[Vec<f64>], b: &[Vec<f64>]) -> f64 {
+pub(crate) fn max_abs_difference(a: &[Vec<f64>], b: &[Vec<f64>]) -> f64 {
     a.iter()
         .zip(b)
         .flat_map(|(row_a, row_b)| row_a.iter().zip(row_b))
@@ -2118,7 +2160,7 @@ mod tests {
     /// **The duty sign convention, pushed at rather than asserted.**
     ///
     /// `Separation`'s duties are non-negative MAGNITUDES with the direction in the
-    /// name (the `Furnace`/`Cooler` convention), so `duties` refuses a negative
+    /// name (the `Furnace`/`Cooler` convention), so `column_duties` refuses a negative
     /// one. That refusal is not reachable by anything here, and this test is the
     /// record of trying: five configurations chosen to drive the reboiler duty
     /// below zero — inverted relative volatility so the distillate is the HEAVY
@@ -2206,7 +2248,7 @@ mod tests {
             closest > 0.0 && closest < 1.0e4,
             "the closest this slate comes to a negative reboiler duty is {closest} W. If that \
              has gone far positive the configurations above have stopped being adversarial; \
-             if it has gone negative, `duties`' refusal is now reachable and owes a test that \
+             if it has gone negative, `column_duties`' refusal is now reachable and owes a test that \
              reaches it deliberately."
         );
     }

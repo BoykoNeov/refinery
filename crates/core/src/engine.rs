@@ -13,9 +13,9 @@ use crate::graph::{
     TripAction, TripDirection, TripId, TripReset, TripState, TubeState, WallState,
 };
 use crate::snapshot::{
-    CavitationSnapshot, ColumnDuty, Command, ComponentSnapshot, ControlSnapshot, EdgeSnapshot,
-    NodeSnapshot, PumpSuctionSnapshot, PumpTwoPhaseSnapshot, RestartBar, Snapshot, SupplyBoiling,
-    TripSnapshot, TripStop,
+    CavitationSnapshot, ColumnDuty, ColumnOperation, Command, ComponentSnapshot, ControlSnapshot,
+    EdgeSnapshot, NodeSnapshot, PumpSuctionSnapshot, PumpTwoPhaseSnapshot, RestartBar, Snapshot,
+    SupplyBoiling, TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, LineFlashModel, ReactionModel,
@@ -3441,6 +3441,16 @@ impl Engine {
                         .map(|(condenser, reboiler)| ColumnDuty {
                             condenser_w: condenser.value(),
                             reboiler_w: reboiler.value(),
+                        }),
+                    // Both-or-neither again, for the same reason as the duties.
+                    column_operation: self
+                        .node_states
+                        .column_separation
+                        .get(&id)
+                        .and_then(|s| s.feed_vapour_fraction.zip(s.reflux_ratio))
+                        .map(|(feed_vapour_fraction, reflux_ratio)| ColumnOperation {
+                            feed_vapour_fraction,
+                            reflux_ratio,
                         }),
                     // Absent wherever the criterion does not apply, which is
                     // three different sentences a frontend must read as
