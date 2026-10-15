@@ -23526,3 +23526,24 @@ pressure, and the loader admitting falling figures, a gas or an empty table.
 anchors the pass anyway), and M59.1's zero factor reacting fully — still
 unreached, since the starved loop closes on 1 kPa from above and the factor
 never reaches exactly zero.
+
+**Open, for the slices that reach them** (found by the close-out review, each
+confirmed on the engine):
+
+- **The demand is non-negative only for a feed of the datum lump.** Lumps the
+  uptake table leaves out count as zero and are not ordered, so
+  `{ distillate = 0.020 }` loads, and a bed fed pure distillate refuses its
+  first tick mid-run (`would consume −1.4356e-2 kg/s`) where the loader should
+  have refused the plant; an ordered table could also round a few ulps
+  negative where almost nothing reacts. Every M59.2 bed is fed pure vgo, so
+  each term is exactly non-negative. **M59.3's first step**, with the second
+  bed that is fed products: order the figures over the reaction's own lumps
+  (inert members such as water exempt), and admit a rounding-sized band.
+- **A starved loop rests BELOW atmospheric pressure** (~1 kPa), and a leak
+  there back-feeds, which `network::finalize` refuses (§3b): the tripped demo
+  punctured on `reactor_gas_line` at tick 50 000 (1 076.6 Pa at the pass)
+  refuses the next tick. Unreached by M59.2, which opens no hole on the loop;
+  **M59.4's** hydrogen wall hole and M59.5's puncture key reach it. A floor
+  above 1 atm would avoid it and still leave M59.1's loop (at or above 2 bar)
+  untouched while the ramp stays under 2 bar — M59.4's decision.
+
