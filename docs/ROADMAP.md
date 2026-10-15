@@ -9485,3 +9485,51 @@ hydrogen hole to ~1.2 bar in under six minutes, and the bed peaks at
 - Gates: `hydrogen_leak_reference` (7); `consumption_reference` re-pinned to
   the floor; the bed census eleven beds, the burn-out census 25 furnaces.
 - Mutations: thirteen, all caught.
+
+### M59.5 — **LANDED** 2026-10-15: the screen — M59 stays OPEN
+
+Two hydrogen plants on the reactor screen, and a P key that patches every hole
+a wall opens (DESIGN §64.14). Asked first, in plain words: the only shipped
+plant whose wall leaks hydrogen (M59.4's) has a trip that stops the oil at
+420 °C and always saves the wall, and no command bypasses a trip, so the
+two-hole patch could never be shown on it. The user chose a new screen file on
+key 5 and the shipped quench plant on key 6.
+
+- New file `hydrocracker_hydrogen_wall.toml` (the fifty-fifth): the leak plant's
+  bed and loop with no trip, the bed loaded at 460 °C (M58's way). Key 5,
+  `AUTO_HYDROGEN`: the bed eats its loop down (102 bar at 8 minutes, the makeup
+  wide open); the wall fails on tick **5 292**, both holes leak (1.38 and
+  0.20 kg/s, an 83 MW fire), and the loop empties through the hydrogen hole to
+  1.58 bar by 15 minutes. There a repair is refused (naming `product_line`), P
+  sends both patches, a repair is refused (603.0 °C), the oil is stopped. The
+  makeup refills the loop and its hydrogen sweeps the bed: 518.7 °C at 25
+  minutes, the repair admitted; at 40 minutes (409.4 °C) the gas heater's target
+  and the feed go to 385 °C and the oil reopens; calm at 404.47 °C by 60.
+  Probed: reopening at 30 minutes (462 °C) runs it away again and breaks the
+  wall a second time at 43 minutes.
+- Key 6, `AUTO_H2QUENCH`, on `hydrocracker_hydrogen_quench.toml` unchanged: the
+  bed loop in MANUAL and the quench cut to 0.1 kg/s at 2 minutes; the trip on
+  tick **5 561** vents the loop and shuts the makeup; at 15 minutes (431.8 °C,
+  53 bar) a reset and closing the vent by hand are both refused, the second
+  naming the trip that holds it; at 22 minutes both admitted and both loops
+  handed back; the loop at 150.00 bar and the second bed at 400.1 °C by 60.
+- **P** reads each failed wall's own hole list (the oil's, then the
+  hydrogen's) and patches the pipe each hole sits on; on the four older plants
+  it sends the same command as before. **D** opens or closes the loop's vent.
+  The loop is drawn under the oil line: the separator's pressure, the
+  compressor (flow and the pressure it delivers), the gas heater, each pass
+  under its bed, the gas cooler, the makeup and vent, a hydrogen quench, and a
+  failed wall's hydrogen leak.
+- Gates: `reactor_screen.rs` seven tests, three new — both timelines with the
+  scene's command text, and the rule itself (the oil's patch alone leaves the
+  hydrogen leaking, burning and the repair refused naming
+  `reactor_gas_outlet`). Recorded headless and windowed with screenshots,
+  checked by eye; the four older plants re-recorded. The bed census twelve
+  beds (two hydrogen holes), the burn-out census 26 furnaces.
+- Corpus: 54 plants on both fidelities, all run. No engine code changed: the 53
+  shipped rows are the M59.4 build's, the new file new.
+- Debug-build ticks: 1.7 ms (hydrogen wall), 2.7 ms (hydrogen quench); their
+  default speeds 4 and 2 ticks a frame.
+- Seen, not changed: the engine's refusal to move a valve a trip holds reads
+  `NodeId(21) ('vent_valve') ... can then be reopened by hand`, debug text and
+  "reopened" for a close — the kind of wording M57.5 fixed for temperatures.
