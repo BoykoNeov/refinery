@@ -342,8 +342,9 @@ impl QuadraticBranch {
 /// `rho·H` (M59.1, docs/DESIGN.md §64.3), dimensionless, `≥ 1`.
 ///
 /// A polytropic compression from `P₁` through a head `H` [J/kg] reaches
-/// `P₂/P₁ = (1 + x)^(1/σ)`, `x = σ·H·ρ₁/P₁`, `σ = (k−1)/k` (the polytropic
-/// head relation; GPSA Engineering Data Book §13, API 617 — recalled), so
+/// `P₂/P₁ = (1 + x)^(1/σ)`, `x = σ·H·ρ₁/P₁`, `σ = (k−1)/k` — the polytropic
+/// head relation, `(1/σ)·((P₂/P₁)^σ − 1) = H/(R·T₁·Z₁)` with `Z₁ = 1` and `R`
+/// per kilogram (Ostromuhov, arXiv:1103.0524 (2011), eq. 64, read), so
 /// `P₂ − P₁ = m·ρ₁·H` with `m = σ·((1 + x)^(1/σ) − 1)/x`, which tends to 1 as
 /// `x → 0` (the incompressible fan law). `rho_over_p` is `ρ₁/P₁ = M/(R·T₁)`
 /// [s²/m²] for an ideal gas, so `m` depends on the head and the suction

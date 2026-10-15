@@ -23301,6 +23301,12 @@ and `compressor` node types, `resolve_hydrogen_passes` and
   first-order chemistry over `f·τ`, so the bed calls the unchanged
   `ReactionModel` at `f·τ` (`0` at `f = 0`, written out since `0·∞` is NaN).
   No trait changed.
+- **The compressor's law, checked**: §64.3's polytropic relation is
+  Ostromuhov, *Uniform conversions of operating points and characteristics of
+  compressor*, arXiv:1103.0524 (2011), eq. 64 (read): `(1/σ)·((P₂/P₁)^σ − 1) =
+  H/(R·T₁·Z₁)`, here with `Z₁ = 1`. The exponent from the efficiency,
+  `σ = (γ−1)/(γ·η_p)`, is the usual ideal-gas form, recalled and not found in a
+  source read — a ledger row at close.
 - **The compressor's correction is taken at the shutoff head** and applied to
   the whole curve: `m = σ·((1 + x)^(1/σ) − 1)/x`, `x = σ·H₀·ρ₁/P₁`, which depends
   on the head and the suction temperature only. Exact at zero flow; about 1%
