@@ -23740,13 +23740,14 @@ consuming loop with a hole is above `P_ATM`.
   1 kPa; the turn (521.25 °C), the trip tick and the untripped story are
   unchanged. **The quench plant's vented loop** (bed loop in MANUAL, the
   backup trip depressuring; 60 minutes, Newton, against the build before
-  M59.4): byte-for-byte the same until the separator falls through the ramp's
-  1.8 bar near minute 29; the trip, the turn and the 30-minute bed
+  M59.4): byte-for-byte the same until the loop (the passes within 0.001 bar
+  of the separator) falls through the ramp's 1.8 bar near minute 29; the trip, the turn and the 30-minute bed
   (391.25 → 391.23 °C) unchanged. After it the beds' uptake is throttled
   sooner, so the loop rests near **1.59 bar** under the 2 bar flare, where it
   drifted to 1.17 bar and still falling; the second bed is 387.6 °C at
   40 minutes (388.2 before) and ends 0.7 K cooler (386.9 °C at 60 minutes), the
-  first 0.3 K cooler. The flare still feeds it back (§64.12), now less.
+  first 0.3 K cooler. The flare still feeds it back (§64.12), now less:
+  0.020 kg/s through the vent at 60 minutes, where it was 0.025 kg/s.
 - **§64.11's exact probe, closed**: the tripped makeup plant punctured on
   `reactor_gas_line` at tick 50 000 (which refused the next tick at 1 076.6 Pa)
   now blows outward for ten minutes on both solvers, the loop draining toward
