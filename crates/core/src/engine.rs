@@ -2249,6 +2249,22 @@ impl Engine {
             if let NodeKind::BedReactor { bed, .. } = &mut self.graph.node_mut(nid).kind {
                 bed.temperature = pass.temperature;
             }
+            //    And a consuming pass's sink rate (M59.2, docs/DESIGN.md
+            //    §64.11): this tick's demand over this tick's pressure, which the
+            //    NEXT tick's solve draws — the one-tick lag §64.6 allows.
+            let Some(hydrogen) = pass.hydrogen else {
+                continue;
+            };
+            let Some(drawn) = hydrogen.consumption else {
+                continue;
+            };
+            if let NodeKind::BedHydrogen {
+                consumption: Some(consumption),
+                ..
+            } = &mut self.graph.node_mut(hydrogen.pass).kind
+            {
+                consumption.rate = drawn.rate;
+            }
         }
 
         // 6. Gas pockets and locks (M54, docs/DESIGN.md §59.2; M55.1, §60.1).
@@ -2663,6 +2679,16 @@ impl Engine {
                 .controls()
                 .iter()
                 .any(|c| c.actuator == Actuator::Node(node) && c.mode == ControlMode::Auto)
+    }
+
+    /// What bed `node`'s pass consumed in the last sweep (M59.2, docs/DESIGN.md
+    /// §64.11), `None` on any node that is not a bed whose pass consumes.
+    fn consumption_of(&self, node: NodeId) -> Option<energy::PassConsumption> {
+        self.node_states
+            .bed
+            .get(&node)
+            .and_then(|pass| pass.hydrogen)
+            .and_then(|h| h.consumption)
     }
 
     /// What the snapshot says of `node`'s stop — see `NodeSnapshot::trip_stop`.
@@ -3467,6 +3493,13 @@ impl Engine {
                         .get(&id)
                         .and_then(|pass| pass.hydrogen)
                         .map(|h| h.heat.value()),
+                    // Likewise, on a bed whose pass consumes only — see
+                    // `NodeSnapshot::hydrogen_consumed_kg_s`.
+                    hydrogen_consumed_kg_s: self.consumption_of(id).map(|c| c.consumed.value()),
+                    hydrogen_consumed_heat_w: self
+                        .consumption_of(id)
+                        .map(|c| c.consumed_heat.value()),
+                    hydrogen_demand_kg_s: self.consumption_of(id).map(|c| c.demand.value()),
                     trip_stop: self.trip_stop(id),
                     // Every supply, from the last tick — see
                     // `NodeSnapshot::supply_boiling`.

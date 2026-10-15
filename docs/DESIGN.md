@@ -23421,3 +23421,108 @@ factor gate compared against `powf(x, 0.5)` with a constant order, which a
 release build turns into `sqrt`, one ulp from the engine's `powf`; the gate now
 reads its order through `black_box`, and the first pass's verdicts that leaned
 on it were rerun.
+
+### 64.11 Consumption, built (M59.2)
+
+As §64.6 specifies, with its form settled by two probes and one engine run.
+`HydrogenConsumption { uptake, rate }` on `NodeKind::BedHydrogen` (optional,
+skipped when absent, so a pass without it serialises as before);
+`Capacitance::Consumed`; `energy::PassConsumption` and `pass_consumption`; the
+snapshot's `hydrogen_consumed_kg_s`, `hydrogen_consumed_heat_w` and
+`hydrogen_demand_kg_s` on a bed; the loader's optional
+`hydrogen_uptake_kg_per_kg` and `hydrogen_consumption`;
+`HYDROGEN_FACTOR_RAMP_FROM` and `HYDROGEN_FACTOR_ZERO_AT`.
+
+- **The demand**: `D = ṁ_oil · Σᵢ (y_out,i − y_in,i) · uptakeᵢ` [kg/s], per
+  kilogram of each lump formed, the feed's lumps the datum. **The figures**,
+  game values: distillate 0.020, naphtha 0.035, gas 0.070 kg/kg, sized so
+  Song 2017's calibration point (390 °C, LHSV 1 h⁻¹: 47.5 / 21.2 / 4.0 wt% of
+  products) consumes **1.97 wt%** — §64.6's "about 2 wt% on the calm day" is
+  the calibration's day, not the demo's. The demo bed's feed passes ten times
+  faster (`τ` = 360 s), so it converts 5–19% on its calm days and consumes
+  0.1–0.5 wt%; scaling the figures to make the demo hit 2% would have the gas
+  lump absorb most of its own mass in hydrogen. The loader refuses figures that
+  FALL as the declared lumps get lighter (and any negative, gas or unknown one,
+  and an empty table): every path in the network goes lighter, so the demand is
+  a sum of non-negative steps.
+- **The sink — the network's first nodal mass term**: the next tick's solve
+  draws `rate · P` at the pass, `rate = D/Pⁿ` the demand over the pressure its
+  reaction ran at, through `accumulation` like a vessel's term (so both
+  solvers, their grading, group correction and trials inherit it from one
+  definition). Implicit in `P`, it vanishes as the pass's pressure goes to
+  zero; it lags the reaction by one tick; it is not an anchor. Zero at load: the
+  first tick has no reaction behind it. **Rejected**: subtracting `D` after the
+  solve (the first probe's form went negative as a small loop emptied); a cap
+  on the sink (the reaction would run on hydrogen it never drew).
+- **The books close on the solve's own flows**: the booked figure is the pass's
+  net inflow, so the gas side loses exactly what is booked. The bed's step is
+  unchanged — the whole hydrogen inflow is heated through it — and the consumed
+  share leaves the books at the outlet temperature, `consumed · h(T_out)`, the
+  pass's outlet pipe carrying the rest.
+
+**Correction found on the engine — the factor regularised near vacuum.** The
+first draft, its makeup cut, ate its loop down to 1e-6 Pa and refused the tick
+45 minutes in: the separator drawn 12 times its stock in one tick. At an order
+under one the demand over the loop's stock grows as `p^(n−1)`, so a consuming
+loop drains itself faster the emptier it is — the advisor's earlier call that
+the implicit sink keeps a starved loop well posed, from a probe with no
+compressor and no frozen densities, was wrong. The solves' tolerance (1e-8
+kg/s) was 400 times under the draw, so the cause was the rate, not rounding.
+**The fix**: from 1 bar down `f` falls on a straight line to zero at 1 kPa, and
+is zero below — a NUMERICAL regularisation like the branches' 1 Pa linear zone,
+ledger row A28. On the ramp the demand falls with the stock above 1 kPa, so the
+loop closes on the floor from above (about 0.075 kg in the demo's separator)
+and never crosses it. Unchanged at and above 1 bar: `hydrocracker_hydrogen`'s
+loop stays at or above its 2 bar flare on both solvers over two hours, and its
+corpus row is byte-identical.
+
+**The demo**, `scenarios/hydrocracker_makeup.toml` (the fifty-second file): the
+M59.1 file's bed and loop with the uptake declared, and a trip at 420 °C that
+only SHUTS THE MAKEUP. The real move "cut makeup to drop the pressure" (§64.6).
+On Newton:
+
+- the 395 °C feed creeps the bed; the trip fires on tick **3 795** (6 min 20 s);
+- a hotter bed eats the loop faster — 0.62 kg/s at 10 minutes, 1.55 at 20 —
+  and the separator falls from 150 bar to 34.6 bar by 20 minutes;
+- the starved reaction turns the bed at **521.25 °C**, 21 min 28 s in, 29 K
+  under its wall's 550 °C; it is under 400 °C by 34 minutes and at its feed by
+  40, its wall intact, and the loop closes on 1 kPa;
+- **without the trip** the makeup valve, wide open, tops out near 1.15 kg/s
+  against a run-away bed's 3.4: the loop sags, too late — the wall fails on
+  tick **13 394** (22 min 19 s), the bed peaks at 636 °C, and by the hour it
+  burns at about 517 °C with a 66 MW fire, its loop held near 4.7 bar where the
+  makeup just feeds the demand. In that stretch the sink pulls gas back into
+  the pass through its outlet pipe for a while; the books close there too.
+
+The game solver trips on the same tick and turns at the same 521.25 °C. Six
+hours of the tripped story run clean on both solvers.
+
+**Gates.** `crates/scenarios/tests/consumption_reference.rs` (8): the demand by
+hand from the oil and product lines; the sink as the last tick's demand at this
+tick's pressure, to the solve's tolerance, and nothing on tick 1; the books —
+the pass's loss to the bit, its energy with the consumed enthalpy, the
+separator's stock against makeup less vent less consumption — on the tripped
+story and on the untripped one's reversed ticks; the story against the
+untripped twin; the game solver through the sag; the starved loop coming to
+rest above the floor; the factor's ramp by hand; the loader's five refusals.
+The bed census now counts eight beds and the burn-out census 23 furnaces.
+
+**Timing** (`tools/steptime`, the 36 000-tick story, fastest of five): the game
+solver mean 0.34 ms a tick, worst 0.89 ms, none over the 2.5 ms budget; Newton
+mean 0.06 ms, worst 0.10 ms.
+
+**Corpus** (6 000 ticks, both fidelities, against baselines from the commit
+before M59.2): **51 plants byte-identical, the new file new** (the old loader
+read it, ignoring the key it did not know, so its row reads "moved").
+
+**Mutations:** fifteen, thirteen caught, two uncaught as predicted
+(`mutate.py`, each running only `consumption_reference`, release): the sink's
+sign, its never reaching the solve, a constant draw instead of one linear in
+`P`, its rate never committed, the demand ignoring the oil's flow, the rate not
+over the pressure, the demand booked in place of the flows, the consumed
+hydrogen leaving at the wrong temperature, no ramp, a ramp ending at zero
+pressure, and the loader admitting falling figures, a gas or an empty table.
+**Uncaught, as predicted**: the sink counted as an anchor (the loop's vessel
+anchors the pass anyway), and M59.1's zero factor reacting fully — still
+unreached, since the starved loop closes on 1 kPa from above and the factor
+never reaches exactly zero.

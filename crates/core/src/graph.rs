@@ -469,6 +469,11 @@ pub enum NodeKind {
         /// The bed's chemistry: every rate is multiplied by
         /// `f = (p/p_ref)^n` (§64.1), applied as the effective space time `f·τ`.
         kinetics: HydrogenKinetics,
+        /// What the bed's reaction draws from this pass (M59.2, docs/DESIGN.md
+        /// §64.11), `None` on a pass whose bed consumes nothing — every pass
+        /// before M59.2, whose snapshot keeps its shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        consumption: Option<HydrogenConsumption>,
     },
     /// Centrifugal gas compressor at fixed speed (M59.1, docs/DESIGN.md §64.3):
     /// the hydrogen loop's recycle machine.
@@ -508,17 +513,71 @@ pub struct HydrogenKinetics {
     pub reference_pressure: Pascal,
 }
 
+/// The pressure below which the hydrogen factor leaves its power law [Pa]:
+/// 1 bar absolute (M59.2, docs/DESIGN.md §64.11). A NUMERICAL REGULARISATION,
+/// like the flow branches' 1 Pa linear zone, not a fact about catalysts.
+pub const HYDROGEN_FACTOR_RAMP_FROM: Pascal = Pascal(1.0e5);
+
+/// The pressure at and below which nothing reacts [Pa]: 1 kPa (M59.2,
+/// §64.11). A loop starved of its makeup comes to REST here, holding a stock
+/// far above the solve's tolerance, instead of being drained toward a vacuum
+/// no solve can resolve. The same regularisation as
+/// [`HYDROGEN_FACTOR_RAMP_FROM`].
+pub const HYDROGEN_FACTOR_ZERO_AT: Pascal = Pascal(1.0e3);
+
 impl HydrogenKinetics {
-    /// `f = (p/p_ref)^n` at a pass pressure `pressure` [Pa], zero at or below
-    /// zero pressure (dimensionless).
+    /// `f = (p/p_ref)^n` at a pass pressure `pressure` [Pa] (dimensionless),
+    /// regularised near vacuum (M59.2, docs/DESIGN.md §64.11): from
+    /// [`HYDROGEN_FACTOR_RAMP_FROM`] down it falls on a straight line to zero
+    /// at [`HYDROGEN_FACTOR_ZERO_AT`], and is zero below.
+    ///
+    /// Why: at an order under one, the reaction's hydrogen demand over the
+    /// loop's stock grows without bound as the pressure falls (`∝ p^(n−1)`),
+    /// so a consuming loop with no makeup would drain itself faster each tick
+    /// — measured, it drew a tick's stock twelve times over at 1e-6 Pa. On the
+    /// ramp the demand falls with the stock and vanishes above zero.
+    /// Unchanged at and above 1 bar, so no plant whose loop stays there moves.
     pub fn factor(&self, pressure: Pascal) -> f64 {
-        let ratio = pressure.value() / self.reference_pressure.value();
-        if ratio > 0.0 {
-            ratio.powf(self.order)
-        } else {
-            0.0
+        let p = pressure.value();
+        let ramp_from = HYDROGEN_FACTOR_RAMP_FROM.value();
+        if p >= ramp_from {
+            return (p / self.reference_pressure.value()).powf(self.order);
         }
+        let zero_at = HYDROGEN_FACTOR_ZERO_AT.value();
+        if p <= zero_at {
+            return 0.0;
+        }
+        let top = (ramp_from / self.reference_pressure.value()).powf(self.order);
+        top * (p - zero_at) / (ramp_from - zero_at)
     }
+}
+
+/// The hydrogen a bed's reaction consumes from its pass (M59.2, docs/DESIGN.md
+/// §64.11): the network's first nodal mass sink.
+///
+/// **The demand.** Each tick the bed's reaction draws
+/// `D = ṁ_oil · Σᵢ (y_out,i − y_in,i) · uptakeᵢ` [kg/s] — per kilogram of each
+/// lump formed, `uptake` kilograms of hydrogen, the feed's lumps the datum
+/// (§64.6). The hydrogen's mass is already folded into the lumps' (§62.3), so
+/// the oil keeps its mass and the gas side loses `D`.
+///
+/// **The sink.** The NEXT tick's solve draws `rate · P` at the pass, `P` the
+/// pass's pressure that tick and `rate = D/Pⁿ` [kg/(s·Pa)] the demand over the
+/// pressure its reaction ran at: implicit in the pressure, it vanishes as the
+/// pass's pressure goes to zero, and it lags the reaction by one tick (§64.6's
+/// three rules). What the solve drew — the pass's net inflow — is booked as
+/// consumed, so the books close on the solve's own flows.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HydrogenConsumption {
+    /// Hydrogen consumed per kilogram of each component FORMED [kg/kg], one per
+    /// slate component in slate order, zero for an undeclared one. A GAME
+    /// VALUE (§64.11). Non-negative, and never falling as the declared lumps
+    /// get lighter, so a reaction that only cracks consumes and never releases.
+    pub uptake: Vec<f64>,
+    /// The sink's rate this tick [kg/(s·Pa)], a STATE: the last tick's demand
+    /// over the pressure its reaction ran at, written back at the end of every
+    /// tick. Zero at load — the first tick has no reaction behind it.
+    pub rate: f64,
 }
 
 /// A catalyst bed's vessel wall: its failure limit, the hole a failure opens,
@@ -2430,7 +2489,9 @@ impl PlantGraph {
     /// id wins on a graph built by hand with two.
     pub fn hydrogen_pass_of(&self, bed: NodeId) -> Option<(NodeId, HydrogenKinetics)> {
         self.node_ids().find_map(|id| match &self.node(id).kind {
-            NodeKind::BedHydrogen { bed: b, kinetics } if *b == bed => Some((id, *kinetics)),
+            NodeKind::BedHydrogen {
+                bed: b, kinetics, ..
+            } if *b == bed => Some((id, *kinetics)),
             _ => None,
         })
     }

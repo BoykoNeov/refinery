@@ -136,10 +136,14 @@ fn main() {
     // The hydrogen loop's story as its file plays it (M59.1, docs/DESIGN.md
     // §64.9): the creep, the trip at 420 °C, the vent and the recovery.
     let hydrogen = vec![Run(24000)];
+    // The consuming bed's (M59.2, docs/DESIGN.md §64.11): the creep, the trip
+    // that shuts the makeup, the loop eaten down to its floor, the recovery.
+    let makeup = vec![Run(36000)];
     for (name, beats) in [
         ("pump_gas_lock", &gas_lock),
         ("flashing_rundown", &rundown),
         ("hydrocracker_hydrogen", &hydrogen),
+        ("hydrocracker_makeup", &makeup),
     ] {
         for solver in ["simple", "newton"] {
             if only

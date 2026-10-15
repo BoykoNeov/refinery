@@ -55,8 +55,8 @@ use crate::components::Phase;
 use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{
-    BedWall, CatalystBed, ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, HydrogenKinetics, NodeId,
-    NodeKind, PlantGraph,
+    BedWall, CatalystBed, ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, HydrogenConsumption,
+    HydrogenKinetics, NodeId, NodeKind, PlantGraph,
 };
 use crate::traits::{
     ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel, Reaction,
@@ -1102,6 +1102,30 @@ pub struct HydrogenPass {
     /// `H_in,H2 − H_out,H2`: negative while it cools the bed. A DIAGNOSTIC like
     /// `reaction_heat`.
     pub heat: Watt,
+    /// What the reaction consumed of it (M59.2, docs/DESIGN.md §64.11), `None`
+    /// on a pass that declares no consumption.
+    pub consumption: Option<PassConsumption>,
+}
+
+/// The hydrogen a bed's reaction consumed from its pass this tick (M59.2,
+/// docs/DESIGN.md §64.11).
+#[derive(Debug, Clone, Copy)]
+pub struct PassConsumption {
+    /// What the gas side lost at the pass this tick [kg/s]: the pass's net
+    /// inflow in this tick's solve, which drew `rate · P` there. The BOOKED
+    /// figure — every gas-side ledger closes on it.
+    pub consumed: KgPerSec,
+    /// The sensible enthalpy the consumed hydrogen takes off the books [W]: it
+    /// is heated through the bed with the rest of the hydrogen and consumed at
+    /// the outlet temperature, so `consumed · h(T_out)`. A DIAGNOSTIC like
+    /// `reaction_heat`, which the energy books need beside it.
+    pub consumed_heat: Watt,
+    /// What this tick's reaction draws [kg/s], `ṁ_oil · Σ Δyᵢ · uptakeᵢ`: the
+    /// NEXT tick's sink, at this tick's pressure.
+    pub demand: KgPerSec,
+    /// The next tick's sink rate [kg/(s·Pa)], `demand / P` at the pressure this
+    /// tick's reaction ran at; zero at zero pressure, where nothing reacts.
+    pub rate: f64,
 }
 
 /// The two heat duties a reactor's isothermal setpoint implies, both extensive
@@ -1445,7 +1469,11 @@ pub fn resolve_node_states(
                         bed: catalyst,
                         wall,
                     },
-                    NodeKind::BedHydrogen { kinetics, .. },
+                    NodeKind::BedHydrogen {
+                        kinetics,
+                        consumption,
+                        ..
+                    },
                 ) = (&graph.node(bed_id).kind, &graph.node(pass_id).kind)
                 else {
                     return Err(SimError::Numerical(format!(
@@ -1482,6 +1510,7 @@ pub fn resolve_node_states(
                         composition: &gas,
                         kinetics: *kinetics,
                         pressure,
+                        consumption: consumption.as_ref(),
                     }),
                     dt,
                 )?;
@@ -2510,6 +2539,8 @@ struct HydrogenInput<'a> {
     composition: &'a Composition,
     kinetics: HydrogenKinetics,
     pressure: Pascal,
+    /// The pass's consumption (M59.2), `None` on a pass that declares none.
+    consumption: Option<&'a HydrogenConsumption>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2596,7 +2627,13 @@ fn bed_reactor(
                 separations,
                 input.pass,
             )?;
-            Some((input, factor, inflow))
+            // What the gas side lost at the pass (M59.2, docs/DESIGN.md
+            // §64.11): its net inflow in this solve, read only where the pass
+            // consumes — elsewhere it is the solve's residual and nothing.
+            let consumed = input
+                .consumption
+                .map(|_| net_inflow(graph, edge_mass_flow, input.pass));
+            Some((input, factor, inflow, consumed))
         }
         None => None,
     };
@@ -2624,7 +2661,7 @@ fn bed_reactor(
     // network is first order, `dy/dτ = f·K·y` (§64.1). At `f = 0` nothing
     // reacts, whatever `τ` — written out, since `0·∞` is NaN.
     let space_time = match &hydrogen {
-        Some((_, factor, _)) if *factor > 0.0 => Seconds(space_time.value() * factor),
+        Some((_, factor, _, _)) if *factor > 0.0 => Seconds(space_time.value() * factor),
         Some(_) => Seconds(0.0),
         None => space_time,
     };
@@ -2643,7 +2680,7 @@ fn bed_reactor(
             name,
             (slate, enthalpy_model),
             bed,
-            totals,
+            (totals, feed),
             reaction,
             residence_time,
             hydrogen,
@@ -2727,15 +2764,21 @@ fn bed_reactor(
 /// that outflow — the enthalpy models are additive by mass, so it is
 /// `temperature_from_enthalpy` on the two blended. What the hydrogen carried
 /// off the bed, `H_in,H2 − H_out,H2(T_out)`, is reported.
+///
+/// **Consumption** (M59.2, docs/DESIGN.md §64.11) leaves this arithmetic as it
+/// is: the whole hydrogen inflow is heated through the bed, and the share the
+/// solve drew at the pass, `consumed`, is taken off the books at the outlet
+/// temperature, `consumed · h(T_out)` — so the pass's outlet pipe carries the
+/// rest at that temperature and both books close on the solve's own flows.
 #[allow(clippy::too_many_arguments)]
 fn bed_with_hydrogen(
     name: &str,
     (slate, enthalpy_model): (&Slate, &dyn EnthalpyModel),
     bed: &CatalystBed,
-    totals: InflowTotals,
+    (totals, feed): (InflowTotals, &Composition),
     reaction: Reaction,
     residence_time: Option<Seconds>,
-    (input, factor, inflow): (HydrogenInput<'_>, f64, InflowTotals),
+    (input, factor, inflow, consumed): (HydrogenInput<'_>, f64, InflowTotals, Option<f64>),
     (fire, wall_fire): (f64, Watt),
     dt: Seconds,
 ) -> Result<(Composition, BedPass, Kelvin), SimError> {
@@ -2792,6 +2835,18 @@ fn bed_with_hydrogen(
     } else {
         (end_temperature, 0.0)
     };
+    let consumption = match (input.consumption, consumed) {
+        (Some(declared), Some(consumed)) => Some(pass_consumption(
+            name,
+            (slate, enthalpy_model),
+            declared,
+            (feed, &reaction.products, oil_mass),
+            (input.composition, input.pressure),
+            consumed,
+            fluid,
+        )?),
+        _ => None,
+    };
     Ok((
         reaction.products,
         BedPass {
@@ -2803,10 +2858,92 @@ fn bed_with_hydrogen(
                 pass: input.pass,
                 factor,
                 heat: Watt(hydrogen_heat),
+                consumption,
             }),
         },
         fluid,
     ))
+}
+
+/// What a bed's reaction consumed of its hydrogen this tick, and what it draws
+/// next tick (M59.2, docs/DESIGN.md §64.11).
+///
+/// - **Booked**: `consumed`, the pass's net inflow in this solve, and the
+///   enthalpy it takes off the books at the outlet temperature `fluid`.
+/// - **Demand**: `D = ṁ_oil · Σᵢ (y_out,i − y_in,i) · uptakeᵢ` [kg/s]. The
+///   loader orders `uptake` so a reaction that only cracks makes `D ≥ 0`; a
+///   negative one would be a reaction RELEASING hydrogen, which this model has
+///   no account of, and is refused rather than booked.
+/// - **Next rate**: `D / P` at the pressure the reaction ran at, zero at zero
+///   pressure — where the factor is zero, nothing reacts and `D` is zero too.
+fn pass_consumption(
+    name: &str,
+    (slate, enthalpy_model): (&Slate, &dyn EnthalpyModel),
+    declared: &HydrogenConsumption,
+    (feed, products, oil_mass): (&Composition, &Composition, f64),
+    (gas, pressure): (&Composition, Pascal),
+    consumed: f64,
+    fluid: Kelvin,
+) -> Result<PassConsumption, SimError> {
+    if declared.uptake.len() != slate.len() {
+        return Err(SimError::Scenario(format!(
+            "catalyst bed '{name}': its hydrogen pass declares {} uptake figures for a slate of \
+             {} components",
+            declared.uptake.len(),
+            slate.len()
+        )));
+    }
+    // Per kilogram of each lump formed, `uptake` kilograms of hydrogen (§64.6).
+    let per_kg: f64 = products
+        .fractions()
+        .iter()
+        .zip(feed.fractions())
+        .zip(&declared.uptake)
+        .map(|((after, before), uptake)| (after - before) * uptake)
+        .sum();
+    let demand = oil_mass * per_kg;
+    if !demand.is_finite() || demand < 0.0 {
+        return Err(SimError::Numerical(format!(
+            "catalyst bed '{name}': its reaction would consume {demand:.4e} kg/s of hydrogen. A \
+             negative figure is a reaction releasing hydrogen, which the uptake table's order \
+             rules out for one that only cracks (docs/DESIGN.md §64.11)"
+        )));
+    }
+    let rate = if pressure.value() > 0.0 {
+        demand / pressure.value()
+    } else {
+        0.0
+    };
+    if !rate.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "catalyst bed '{name}': its hydrogen sink's rate {rate} is not finite at {:.4e} Pa",
+            pressure.value()
+        )));
+    }
+    let consumed_heat = enthalpy_model
+        .enthalpy_flux(slate, gas, KgPerSec(consumed), fluid)?
+        .value();
+    Ok(PassConsumption {
+        consumed: KgPerSec(consumed),
+        consumed_heat: Watt(consumed_heat),
+        demand: KgPerSec(demand),
+        rate,
+    })
+}
+
+/// Net mass flow INTO `node` [kg/s] over its incident edges, in the solve's own
+/// flows. Self-loops carry nothing anywhere and are skipped, as `inflow_edges`
+/// skips them.
+fn net_inflow(graph: &PlantGraph, edge_mass_flow: &BTreeMap<EdgeId, f64>, node: NodeId) -> f64 {
+    let mut into = 0.0;
+    for (edge, other, incoming) in graph.incident(node) {
+        if other == node {
+            continue;
+        }
+        let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
+        into += if incoming { flow } else { -flow };
+    }
+    into
 }
 
 /// A bed's end-of-tick temperature, refused if it is not finite or below 0 K.

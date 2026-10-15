@@ -9396,3 +9396,29 @@ minutes, its wall intact — untripped, its wall fails on tick 13 860. DESIGN
 - Gates: `compressor_reference` (4), `hydrogen_reference` (8); the wall census
   counts seven beds and the burn-out census 22 furnaces (the gas heater). Mutations: fifteen, fourteen caught, one uncaught as
   predicted (a zero factor; no plant reaches zero hydrogen pressure).
+
+### M59.2 — **LANDED** 2026-10-15: consumption
+
+The bed's reaction draws hydrogen from its pass, `ṁ_oil · Σ Δyᵢ · uptakeᵢ`
+per kilogram of each lump formed (distillate 0.020, naphtha 0.035, gas 0.070
+kg/kg — game values giving 1.97 wt% at the calibration point; the demo bed,
+ten times faster, uses 0.1–0.5 wt% on calm days). The network's first nodal
+mass sink: the next tick's solve draws `rate · P` at the pass, through
+`accumulation` in both solvers; the books close on the solve's own flows,
+energy included. Optional on a pass: every shipped plant byte-identical. New
+file `hydrocracker_makeup.toml`: the trip at 420 °C (tick 3 795) only shuts
+the makeup; the bed eats its loop down and the starved reaction turns at
+521.25 °C, under the wall — untripped, the makeup cannot keep up and the wall
+fails on tick 13 394. DESIGN §64.11.
+
+- Corrected while building: the hydrogen factor regularised near vacuum — from
+  1 bar it ramps to zero at 1 kPa (ledger row A28). Without it the makeup-cut
+  loop drained itself to 1e-6 Pa and refused a tick 45 minutes in; with it the
+  loop comes to rest above 1 kPa and six hours run clean on both solvers.
+  Unchanged at and above 1 bar, where every shipped loop stays.
+- Corpus: 51 plants byte-identical on both fidelities, the new file new.
+- Timing: game solver mean 0.34 ms, worst 0.89 ms, none over; Newton 0.06 ms.
+- Gates: `consumption_reference` (8); the bed census eight beds, the burn-out
+  census 23 furnaces.
+- Mutations: fifteen, thirteen caught, two uncaught as predicted (the sink as
+  an anchor; a zero factor reacting fully, still unreached above the floor).

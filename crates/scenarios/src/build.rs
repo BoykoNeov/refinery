@@ -10,10 +10,10 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{
     Actuator, BedWall, Blowdown, CascadeSpec, CatalystBed, ColumnDraw, ControlAction, ControlLoop,
     ControlMode, ControlledValue, EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling,
-    HydrogenKinetics, LeakRole, LoopId, MeasuredVariable, MeasurementPoint, Node, NodeId, NodeKind,
-    OnPumpStop, Pipe, PlantGraph, PumpSuction, QuenchCheck, QuenchReading, SetpointRange,
-    TankState, Trip, TripAction, TripDirection, TripId, TripReset, TripState, TubeState,
-    VesselState, WallState,
+    HydrogenConsumption, HydrogenKinetics, LeakRole, LoopId, MeasuredVariable, MeasurementPoint,
+    Node, NodeId, NodeKind, OnPumpStop, Pipe, PlantGraph, PumpSuction, QuenchCheck, QuenchReading,
+    SetpointRange, TankState, Trip, TripAction, TripDirection, TripId, TripReset, TripState,
+    TubeState, VesselState, WallState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -3831,12 +3831,17 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
         NodeDef::BedHydrogen {
             hydrogen_order,
             hydrogen_reference_bar,
+            hydrogen_uptake_kg_per_kg,
             ..
         } => NodeKind::BedHydrogen {
             bed: NodeId(u32::MAX),
             kinetics: HydrogenKinetics {
                 order: *hydrogen_order,
                 reference_pressure: bar_to_pa(*hydrogen_reference_bar),
+            },
+            consumption: match hydrogen_uptake_kg_per_kg {
+                Some(table) => Some(hydrogen_consumption(name, table, slate)?),
+                None => None,
             },
         },
         NodeDef::Compressor {
@@ -3851,6 +3856,71 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             on: *on,
         },
     })
+}
+
+/// A hydrogen pass's uptake table resolved against the slate (M59.2,
+/// docs/DESIGN.md §64.11), with its refusals:
+///
+/// - a figure must be finite and >= 0, and the table must not be empty — a
+///   table that consumes nothing is no table, and omitting it says that;
+/// - it must name a slate component in LIQUID service, a lump the bed's oil
+///   can form; hydrogen itself is not formed;
+/// - the figures must never FALL as the declared lumps get lighter. Every path
+///   a bed's network runs goes lighter, so ordered figures make the demand
+///   `Σ Δyᵢ · uptakeᵢ` a sum of non-negative steps: cracking only ever
+///   consumes. Lumps the table leaves out count as zero and are not ordered —
+///   the datum, conventionally the feed's lump.
+fn hydrogen_consumption(
+    name: &str,
+    table: &BTreeMap<String, f64>,
+    slate: &Slate,
+) -> Result<HydrogenConsumption, SimError> {
+    if table.is_empty() {
+        return Err(SimError::Scenario(format!(
+            "hydrogen pass '{name}' declares an empty hydrogen_uptake_kg_per_kg: a bed that \
+             consumes no hydrogen omits the table (docs/DESIGN.md §64.11)"
+        )));
+    }
+    let mut uptake = vec![0.0; slate.len()];
+    let mut declared: Vec<(f64, &str, f64)> = Vec::new();
+    for (component, &figure) in table {
+        let index = slate.index_of(component).ok_or_else(|| {
+            SimError::Scenario(format!(
+                "hydrogen pass '{name}' declares hydrogen uptake for '{component}', which is not \
+                 in the slate"
+            ))
+        })?;
+        if !figure.is_finite() || figure < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "hydrogen pass '{name}' declares {figure} kg of hydrogen per kg of \
+                 '{component}' formed: it must be finite and >= 0"
+            )));
+        }
+        let lump = slate.get(index);
+        if lump.phase != Phase::Liquid {
+            return Err(SimError::Scenario(format!(
+                "hydrogen pass '{name}' declares hydrogen uptake for '{component}', which is a \
+                 gas: the figures are per kilogram of a lump the bed's oil forms \
+                 (docs/DESIGN.md §64.11)"
+            )));
+        }
+        uptake[index] = figure;
+        declared.push((lump.tb.value(), component, figure));
+    }
+    // Heaviest first; each lighter lump must consume at least as much.
+    declared.sort_by(|a, b| b.0.total_cmp(&a.0));
+    for pair in declared.windows(2) {
+        let ((_, heavy, heavy_figure), (_, light, light_figure)) = (pair[0], pair[1]);
+        if light_figure < heavy_figure {
+            return Err(SimError::Scenario(format!(
+                "hydrogen pass '{name}' declares {light_figure} kg of hydrogen per kg of \
+                 '{light}' but {heavy_figure} per kg of the heavier '{heavy}': the figures must \
+                 not fall as the lumps get lighter, or cracking '{heavy}' to '{light}' would \
+                 give hydrogen back (docs/DESIGN.md §64.11)"
+            )));
+        }
+    }
+    Ok(HydrogenConsumption { uptake, rate: 0.0 })
 }
 
 /// Resolve each hydrogen pass's `bed` (M59.1, docs/DESIGN.md §64.2) now that

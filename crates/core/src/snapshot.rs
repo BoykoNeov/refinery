@@ -386,6 +386,25 @@ pub struct NodeSnapshot {
     /// the hydrogen cools the bed. Absent exactly where `hydrogen_factor` is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hydrogen_heat_w: Option<f64>,
+    /// The hydrogen a catalyst bed's reaction consumed from its pass over the
+    /// last tick [kg/s] (M59.2, docs/DESIGN.md §64.11): the pass's net inflow,
+    /// what the gas side lost. The BOOKED figure — a loop's mass closes on it.
+    ///
+    /// **Absent on every bed whose pass declares no consumption**, and wherever
+    /// `hydrogen_factor` is absent. Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hydrogen_consumed_kg_s: Option<f64>,
+    /// The sensible enthalpy that consumed hydrogen took off the books [W]: it
+    /// is consumed at the bed's outlet temperature. A loop's energy closes on
+    /// it beside `reaction_heat_w`. Absent exactly where
+    /// `hydrogen_consumed_kg_s` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hydrogen_consumed_heat_w: Option<f64>,
+    /// What the last tick's reaction draws [kg/s], `ṁ_oil · Σ Δyᵢ · uptakeᵢ`:
+    /// consumed over the NEXT tick, scaled by how the pass's pressure moves.
+    /// Absent exactly where `hydrogen_consumed_kg_s` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hydrogen_demand_kg_s: Option<f64>,
     /// The trips' stop of this equipment, and whether they will hand it back
     /// (M43, docs/DESIGN.md §48): `{"status":"held","barred_by":[…]}` while a
     /// trip holds it, `{"status":"not_restarted","at_tick":…,"barred_by":[…]}`

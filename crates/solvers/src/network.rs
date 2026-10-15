@@ -683,13 +683,23 @@ pub fn capacitance(node: &Node, slate: &Slate) -> Option<Capacitance> {
             c: vessel.capacitance(slate),
             p_prev: vessel.pressure(slate).value(),
         }),
+        // A consuming hydrogen pass (M59.2, docs/DESIGN.md §64.11) at a rate
+        // above zero. At zero — its first tick, or a bed that reacted nothing —
+        // it is the plain zero-volume pass, term and all.
+        NodeKind::BedHydrogen {
+            consumption: Some(consumption),
+            ..
+        } if consumption.rate > 0.0 => Some(Capacitance::Consumed {
+            rate: consumption.rate,
+        }),
         _ => None,
     }
 }
 
 /// One free node's own term in its own mass balance.
 ///
-/// Two forms, and the second is M24's (docs/DESIGN.md §28 fork 2). Both enter
+/// Three forms: the second is M24's (docs/DESIGN.md §28 fork 2), the third
+/// M59.2's (§64.11). All enter
 /// the residual through `accumulation` and nowhere else, so the sites that
 /// assemble a residual — Newton's `assemble`, the Simple sweep, its grading, its
 /// group correction and its per-node trial — needed no second list to keep in
@@ -725,6 +735,20 @@ pub enum Capacitance {
         /// warm start has a value — it never reaches the residual.
         p_pinned: f64,
     },
+    /// A hydrogen pass whose bed CONSUMES what flows through it (M59.2,
+    /// docs/DESIGN.md §64.11): a sink `rate · P` at its own pressure.
+    ///
+    /// **Not an anchor**, like a starved tank: a sink proportional to the
+    /// pressure would pin a node it alone held at zero, which is a pressure the
+    /// plant does not determine. A pass is anchored through its loop's vessel.
+    /// Linear in `P`, so it vanishes as the pass's pressure goes to zero — a
+    /// starved loop has a solution (§64.6) — and its slope `−rate` only
+    /// strengthens the node's diagonal, as a vessel's does.
+    Consumed {
+        /// `rate` [kg/(s·Pa)]: the last tick's demand over the pressure its
+        /// reaction ran at (`HydrogenConsumption::rate`). Positive.
+        rate: f64,
+    },
 }
 
 /// The supply a starved tank delivers [kg/s]: its start-of-tick inventory over
@@ -746,6 +770,9 @@ pub fn starved_supply(tank: &TankState, dt: Seconds) -> f64 {
 /// pressure. The zero slope leaves the node's diagonal to its branches, so a
 /// starved tank is conditioned exactly like a junction.
 ///
+/// **A consuming hydrogen pass** (M59.2): `−rate·P` and `−rate`, mass leaving
+/// the network at the pass in proportion to its pressure.
+///
 /// Lives HERE, in the shared file, rather than in either solver: it is the same
 /// term in the same residual, and both fidelities must inherit it from one
 /// definition or I5 stops meaning anything. Newton adds it to `R_i` and to the
@@ -761,6 +788,8 @@ pub fn accumulation(cap: &Capacitance, pressure: f64, dt: f64) -> (f64, f64) {
     match *cap {
         Capacitance::Vessel { c, p_prev } => (-c * (pressure - p_prev) / dt, -c / dt),
         Capacitance::Starved { supply, .. } => (supply, 0.0),
+        // Mass LEAVING the network at the pass: it subtracts.
+        Capacitance::Consumed { rate } => (-rate * pressure, -rate),
     }
 }
 
@@ -2219,7 +2248,9 @@ pub fn prepare_anchored(
                 // a tank always follows the pass that found it over-drawn. Its
                 // pinned pressure is the nearest thing it has to a history.
                 Some(Capacitance::Starved { p_pinned, .. }) => *p_pinned,
-                None => classes.cold,
+                // A pass has no pressure of its own to start from: the cold
+                // mean, as it had before it consumed.
+                Some(Capacitance::Consumed { .. }) | None => classes.cold,
             });
         pressures.insert(nid, seed);
     }
@@ -3171,6 +3202,9 @@ fn report_holdups(
                         .insert(nid, KgPerSec(term - net_out));
                 }
             }
+            // A pass's consumption is booked by the sweep, from the flows
+            // (`energy::PassConsumption`): nothing to report here.
+            Capacitance::Consumed { .. } => {}
         }
     }
 }

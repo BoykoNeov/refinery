@@ -606,6 +606,14 @@ pub enum NodeDef {
         /// The pressure at which the factor is 1 [bar absolute]: the plant's
         /// design hydrogen pressure. REQUIRED. Finite and > 0.
         hydrogen_reference_bar: f64,
+        /// Hydrogen the bed's reaction consumes per kilogram of each lump
+        /// FORMED [kg/kg], keyed by component name (M59.2, docs/DESIGN.md
+        /// §64.11): `{ distillate = 0.020, naphtha = 0.035, gas = 0.070 }`. A
+        /// GAME VALUE. OPTIONAL — absent, the bed consumes nothing, which is
+        /// every pass before M59.2. Each figure finite and >= 0, on a liquid
+        /// component, and never falling as the declared lumps get lighter.
+        #[serde(default)]
+        hydrogen_uptake_kg_per_kg: Option<BTreeMap<String, f64>>,
     },
     /// Centrifugal gas compressor at fixed speed (M59.1, docs/DESIGN.md §64.3):
     /// polytropic head `H(Q) = head − a·Q²` at the suction volume flow `Q`
