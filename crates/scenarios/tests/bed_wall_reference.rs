@@ -434,6 +434,7 @@ fn repair_bed_wall_refusals_success_and_a_second_failure() {
 fn every_bed_in_the_repo_owns_a_wall_hole() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scenarios");
     let mut beds = 0;
+    let mut hydrogen_holes = 0;
     let mut files: Vec<_> = std::fs::read_dir(&dir)
         .unwrap()
         .filter_map(Result::ok)
@@ -477,12 +478,46 @@ fn every_bed_in_the_repo_owns_a_wall_hole() {
                 engine.graph.pipe(hole).name,
                 format!("{}__leak", engine.graph.pipe(outlet).name)
             );
+            // The hydrogen hole (M59.4, docs/DESIGN.md §64.7): on the pass's own
+            // outlet, dormant, exactly where the pass declares a heating value.
+            if let Some(leak) = &wall.hydrogen_leak {
+                hydrogen_holes += 1;
+                let (pass, _) = engine
+                    .graph
+                    .hydrogen_pass_of(nid)
+                    .unwrap_or_else(|| panic!("{}: a hydrogen leak, no pass", path.display()));
+                let hole = leak
+                    .hole
+                    .unwrap_or_else(|| panic!("{}: no hydrogen hole", path.display()));
+                assert_eq!(
+                    engine.graph.pipe(hole).leak,
+                    LeakRole::Orifice {
+                        area: SquareMeter::ZERO
+                    },
+                    "{}: a dormant hydrogen orifice",
+                    path.display()
+                );
+                let outlet = engine
+                    .graph
+                    .edge_ids()
+                    .find(|&e| engine.graph.endpoints(e).0 == pass)
+                    .expect("a pass has an outlet");
+                assert_eq!(
+                    engine.graph.pipe(outlet).leak,
+                    LeakRole::Punctureable { orifice: hole },
+                    "{}: the hydrogen hole is on the pass's own outlet",
+                    path.display()
+                );
+            }
         }
     }
     // Seven since M59.1 (docs/DESIGN.md §64): `hydrocracker_hydrogen.toml`'s bed;
     // eight since M59.2 (§64.11): `hydrocracker_makeup.toml`'s; ten since M59.3
     // (§64.12): `hydrocracker_hydrogen_quench.toml`'s two.
-    assert_eq!(beds, 10, "eight shipped hydrocracker files, ten beds");
+    // Eleven since M59.4 (§64.13): `hydrocracker_hydrogen_leak.toml`'s, the one
+    // bed whose pass leaks hydrogen.
+    assert_eq!(beds, 11, "nine shipped hydrocracker files, eleven beds");
+    assert_eq!(hydrogen_holes, 1, "one pass declares a heating value");
     let engine = build_src(DEMO, "newton");
     assert!(engine.graph.find_node("burnout_atmosphere").is_some());
 }

@@ -13,9 +13,11 @@
 # With its makeup cut, a hotter bed eats the loop's hydrogen faster, the loop
 # sags (150 bar to 35 bar in 14 minutes), and the reaction starves itself:
 # the bed turns at about 521 °C, 29 K under its wall's limit, and is back at
-# its feed by 40 minutes. The loop comes to rest near 1 kPa, where nothing
-# reacts (§64.11's regularisation). Without the trip the makeup cannot keep up
-# with a run-away bed's demand either — its valve tops out near 1.15 kg/s
+# its feed by 40 minutes. The loop comes to rest near 1.2 bar, where nothing
+# reacts (§64.11's regularisation, its floor above the atmosphere since
+# M59.4, §64.13; until then it rested near 1 kPa). Without the trip the
+# makeup cannot keep up with a run-away bed's demand either — its valve tops
+# out near 1.15 kg/s
 # against 3.4 — but the loop sags too late: the wall fails 22 minutes in and
 # the bed settles at about 517 °C, burning, its loop held near 4.7 bar.
 #

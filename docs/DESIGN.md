@@ -23540,8 +23540,9 @@ confirmed on the engine):
   each term is exactly non-negative. **M59.3's first step**, with the second
   bed that is fed products: order the figures over the reaction's own lumps
   (inert members such as water exempt), and admit a rounding-sized band.
-- **A starved loop rests BELOW atmospheric pressure** (~1 kPa), and a leak
-  there back-feeds, which `network::finalize` refuses (§3b): the tripped demo
+- ~~**A starved loop rests BELOW atmospheric pressure**~~ — **CLOSED by
+  M59.4** (§64.13): the floor raised to 1.2 bar. It rested at ~1 kPa, and a
+  leak there back-feeds, which `network::finalize` refuses (§3b): the tripped demo
   punctured on `reactor_gas_line` at tick 50 000 (1 076.6 Pa at the pass)
   refuses the next tick. Unreached by M59.2, which opens no hole on the loop;
   **M59.4's** hydrogen wall hole and M59.5's puncture key reach it. A floor
@@ -23645,7 +23646,9 @@ still the single owners:
   pressure boundary, so a trickle of hydrogen (~0.01 kg/s) flows back through
   the vent. A real flare header would not feed the reactor; a check valve on
   the vent would rest the loop near the 1 kPa floor instead (A28's regime).
-  The demo's story does not turn on it.
+  The demo's story does not turn on it. *(M59.4, §64.13: with the floor at
+  1.2 bar the vented loop now rests near 1.59 bar, and a check valve would
+  rest it near the 1.2 bar floor.)*
 
 **The demo**, `scenarios/hydrocracker_hydrogen_quench.toml` (the fifty-third
 file): the M59.2 bed twice, oil 385 °C straight from one to the other, the
@@ -23708,3 +23711,126 @@ pass not a mix target, or every pass one; no tee; no compressor; no vessel
 origin; a joining junction taken for a tee, or refused only by the catch-all;
 the vessel read a kelvin off; the main stream always read off the bed). The
 vessel-reading mutation is caught by the faceplate gate alone.
+
+### 64.13 The stopping trip, the hydrogen leak and the floor (M59.4)
+
+Three parts, each on the user's decision (2026-10-15): §64.7 as written, and
+§64.11's second open edge closed by a FLOOR above the atmosphere, applied to
+every plant. Two of the decisions were re-asked after the advisor caught that
+the first offer was wrong: the floor does move two M59 plants' long-run
+endings (not the corpus), and a dormant hole on every pass would move all three
+shipped hydrogen plants. The user kept the floor for every plant and took the
+hydrogen hole as an opt-in key.
+
+**The floor.** `HYDROGEN_FACTOR_RAMP_FROM` 1 bar → **1.8 bar**,
+`HYDROGEN_FACTOR_ZERO_AT` 1 kPa → **1.2 bar** (A28, still a numerical
+regularisation). The ramp starts under the 2 bar flare every shipped loop
+vents to, so a loop that only vents never reaches it; the floor sits 18.7 kPa
+above the atmosphere. Measured on the starved makeup plant (90 minutes,
+Newton): the PASS closes on 1.2 bar from above (the factor reads the pass),
+and the loop's lowest point, the separator on the compressor's suction, rests
+at 1.1993 bar — a hair under the floor, never under the atmosphere. Why a
+floor and not an opt-in: `network::finalize` refuses a hole that draws air in
+(§3b) on `ṁ < 0` exactly, with no tolerance, so the only safe rest for a
+consuming loop with a hole is above `P_ATM`.
+
+- **What it moved**: no corpus row (every hydrogen loop is far above 1.8 bar at
+  10 minutes). The makeup plant's tripped story now ends with its loop near
+  1.25 bar at 40 minutes, where it was under 1 bar, and rests near 1.2 bar, not
+  1 kPa; the turn (521.25 °C), the trip tick and the untripped story are
+  unchanged. **The quench plant's vented loop** (bed loop in MANUAL, the
+  backup trip depressuring; 60 minutes, Newton, against the build before
+  M59.4): byte-for-byte the same until the separator falls through the ramp's
+  1.8 bar near minute 29; the trip, the turn and the 30-minute bed
+  (391.25 → 391.23 °C) unchanged. After it the beds' uptake is throttled
+  sooner, so the loop rests near **1.59 bar** under the 2 bar flare, where it
+  drifted to 1.17 bar and still falling; the second bed is 387.6 °C at
+  40 minutes (388.2 before) and ends 0.7 K cooler (386.9 °C at 60 minutes), the
+  first 0.3 K cooler. The flare still feeds it back (§64.12), now less.
+- **§64.11's exact probe, closed**: the tripped makeup plant punctured on
+  `reactor_gas_line` at tick 50 000 (which refused the next tick at 1 076.6 Pa)
+  now blows outward for ten minutes on both solvers, the loop draining toward
+  the atmosphere from above.
+- **A limit, said here**: the floor bounds what the REACTION can do to the
+  loop, not every way a loop's pressure can fall. A loop vented to the
+  atmosphere through a hole and then cooled would still go under it; no shipped
+  plant does (the separator is not cooled at rest), and the refusal would name
+  it if one did.
+
+**D10, lifted for a hydrogen bed** (ledger D10). A trip watching a bed may shut
+a valve on the bed's own oil line when the bed has a hydrogen pass: with its
+oil stopped, `bed_with_hydrogen` already steps the bed on the hydrogen alone
+(its oil stream at zero, as M59.1 wrote it), so the bed falls toward the gas's
+own temperature. **Narrowed, on the advisor's call**: refused when the SAME
+trip also fully shuts a valve on the pass's own line (`shut_on_line`,
+`on_bed_line` walked from the pass: upstream to the loop valve and the
+compressor, stopping at the separator; downstream to the gas cooler), in its
+own words. A bed with no pass keeps M57.3's refusal. A valve closed only
+partway, and one off the pass's line (the makeup), are admitted.
+
+**The hydrogen leak.** `fluid_heating_value_mj_per_kg` on a `bed_hydrogen`
+node, OPTIONAL: declared, the loader splits the pass's outlet pipe for a
+second dormant hole (§42's split, `burnout_atmosphere_for`'s outside), and the
+bed's wall carries `hydrogen_leak: Some(HydrogenLeak { heating_value, hole })`
+(skipped when absent, so every earlier snapshot keeps its shape).
+`BedWall::holes()` is the one list the burn-out pass (opens every hole to the
+declared area), `RepairBedWall` (every hole patched first, the refusal naming
+the pipe still open) and the fire read. **The fire** is
+`Σ ṁ_out,hole · LHV_hole` over both holes, the wall's `fire_share` of the sum
+heating the bed. Each hole is patched by its own `PuncturePipe` at zero — so
+§64.7's "patching a bed's wall patches both holes" is built as "the repair
+asks for both patched"; M59.5's P key must send both.
+
+**The demo**, `scenarios/hydrocracker_hydrogen_leak.toml` (the fifty-fourth
+file): the M59.2 bed and loop, consuming, with the pass's heating value
+declared (119.96 MJ/kg) and the 420 °C trip SHUTTING THE OIL FEED. On Newton:
+
+- the trip fires on tick **3 795** (6 min 20 s, the M59.2 bed's own tick); with
+  the oil stopped the hydrogen (5.53 kg/s) sweeps the bed, which turns within
+  seconds just past 420 °C; the trip is reset the first tick its reading is
+  under the limit; the bed is at 401.4 °C at 15 minutes, 397.9 °C at 20 and
+  395.7 °C at 30, settling on the gas heater's 395 °C; the loop holds near
+  152 bar, the bed consuming nothing;
+- **without the trip** the wall fails on tick **13 394** (the M59.2 plant's
+  tick: the same bed until then), BOTH holes open to 1 cm²; the hydrogen hole
+  leaks 0.21 kg/s while the loop is near 56 bar (~25 MW of an ~81 MW fire);
+  the loop, about 90 bar when the wall fails, is at 19.5 bar 3.7 minutes later
+  and at 1.24 bar 5.7 minutes later — an uncontrolled depressuring, its pass
+  held off the floor by the wide-open makeup; the bed
+  peaks at **640.49 °C** (636 °C without the hydrogen fire) and settles at
+  **516.92 °C** burning ~68 MW, its loop at 4.34 bar (4.7 bar on the M59.2
+  plant, which leaks no hydrogen).
+
+The game solver: the same trip tick within the gate's 20 ticks and the bed
+within half a kelvin every minute of the tripped story; untripped, the same
+failure tick, the same 640.49 °C peak and 516.92 °C, 4.34 bar.
+
+**Gates**, `crates/scenarios/tests/hydrogen_leak_reference.rs` (7): the second
+hole built dormant on the pass's outlet for a pass with the key, none without
+(the M59.2 plant), two loader refusals; the trip admitted, refused with the
+loop valve or an outlet valve on the pass's line, admitted partway or on the
+makeup; the stopped bed's first law, `C·ΔT/Δt` against the hydrogen's heat to
+1e-6, every tick for a minute; the tripped story on both solvers, the reset
+refused only while the reading is at the limit; the failure's two holes at the
+declared area and the fire as both leaks at their heating values to 1e-12
+every tick for 20 minutes, the loop under 20 bar four minutes after; the
+repair refused naming each hole until both are patched; §64.11's probe on both
+solvers. `consumption_reference` gates 4, 6 and 7 re-pinned to the floor; the
+bed census eleven beds (one hydrogen hole), the burn-out census 25 furnaces.
+
+**Timing** (`tools/steptime`, 36 000 ticks, fastest of three): the tripped
+story on the game solver mean 0.19 ms, worst 0.57 ms; untripped (a copy with
+the trip out of reach), mean 0.29 ms, worst 0.87 ms at the depressuring; Newton
+mean 0.06–0.07 ms, worst 0.17 ms. None over the 2.5 ms budget.
+
+**Corpus** (6 000 ticks, both fidelities, against baselines from the commit
+before M59.4): **53 plants byte-identical, the new file new.**
+
+**Mutations**: thirteen, each run against its predicted gate only (release),
+all caught — D10 kept for a hydrogen bed, the pass-line check removed, a
+partway valve counted as shut, the hydrogen hole never written, a hole on every
+pass, a negative heating value admitted, the second hole not opened, the
+hydrogen burned at the oil's value or not at all, the repair checking only the
+oil hole, and three on the floor (back at 1 kPa, at the atmosphere, the ramp
+starting under it) — those three by the probe's pass reading before the hole
+is punched (1 454 Pa, 101 330 Pa, 99 988 Pa).

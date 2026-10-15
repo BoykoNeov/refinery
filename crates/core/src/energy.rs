@@ -2569,20 +2569,33 @@ fn bed_reactor(
     // read off THIS tick's solve — §42 fork 3's fire, nothing circular and
     // nothing stored. Only an OUTWARD flow burns. It is read whether or not
     // the bed itself has flow: a hole on its outlet can be fed from downstream.
+    // A bed whose pass leaks hydrogen burns both holes, each at its own heating
+    // value (M59.4, docs/DESIGN.md §64.7).
     let wall_fire = if wall.state.is_failed() {
-        let hole = wall.hole.ok_or_else(|| {
-            SimError::Scenario(format!(
-                "catalyst bed '{name}' has a failed wall but owns no hole. The loader builds \
-                 one on every bed's outlet pipe; a graph built by hand must do the same \
-                 (docs/DESIGN.md §63.1)"
-            ))
-        })?;
-        let leaked = edge_mass_flow.get(&hole).copied().ok_or_else(|| {
-            SimError::Numerical(format!(
-                "catalyst bed '{name}': the solve reported no flow for its wall's hole {hole:?}"
-            ))
-        })?;
-        leaked.max(0.0) * wall.heating_value.value()
+        let burning = std::iter::once((wall.hole, wall.heating_value)).chain(
+            wall.hydrogen_leak
+                .as_ref()
+                .map(|leak| (leak.hole, leak.heating_value)),
+        );
+        let mut fire = 0.0;
+        for (hole, heating_value) in burning {
+            let hole = hole.ok_or_else(|| {
+                SimError::Scenario(format!(
+                    "catalyst bed '{name}' has a failed wall but owns no hole. The loader builds \
+                     one on every bed's outlet pipe, and on its hydrogen pass's when the pass \
+                     declares a heating value; a graph built by hand must do the same \
+                     (docs/DESIGN.md §63.1, §64.7)"
+                ))
+            })?;
+            let leaked = edge_mass_flow.get(&hole).copied().ok_or_else(|| {
+                SimError::Numerical(format!(
+                    "catalyst bed '{name}': the solve reported no flow for its wall's hole \
+                     {hole:?}"
+                ))
+            })?;
+            fire += leaked.max(0.0) * heating_value.value();
+        }
+        fire
     } else {
         0.0
     };
@@ -4766,6 +4779,7 @@ mod tests {
                         heating_value: JPerKg(0.0),
                         fire_share: 0.0,
                         hole: None,
+                        hydrogen_leak: None,
                         state: WallState::Intact,
                     },
                 },

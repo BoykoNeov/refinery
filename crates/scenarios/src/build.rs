@@ -10,10 +10,10 @@ use refinery_core::error::SimError;
 use refinery_core::graph::{
     Actuator, BedWall, Blowdown, CascadeSpec, CatalystBed, ColumnDraw, ControlAction, ControlLoop,
     ControlMode, ControlledValue, EdgeId, FurnaceCoil, FurnaceTubes, HeatExchangerCoupling,
-    HydrogenConsumption, HydrogenKinetics, LeakRole, LoopId, MeasuredVariable, MeasurementPoint,
-    Node, NodeId, NodeKind, OnPumpStop, Pipe, PlantGraph, PumpSuction, QuenchCheck, QuenchReading,
-    SetpointRange, TankState, Trip, TripAction, TripDirection, TripId, TripReset, TripState,
-    TubeState, VesselState, WallState,
+    HydrogenConsumption, HydrogenKinetics, HydrogenLeak, LeakRole, LoopId, MeasuredVariable,
+    MeasurementPoint, Node, NodeId, NodeKind, OnPumpStop, Pipe, PlantGraph, PumpSuction,
+    QuenchCheck, QuenchReading, SetpointRange, TankState, Trip, TripAction, TripDirection, TripId,
+    TripReset, TripState, TubeState, VesselState, WallState,
 };
 use refinery_core::stream::Stream;
 use refinery_core::traits::{
@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use crate::schema::{
     bar_to_pa, c_to_k, kv_to_cv_si, ActuatorDef, ComponentDef, ControlDef, ExchangerDef,
-    MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile, TripDef,
+    MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile, TripActionDef, TripDef,
 };
 use crate::validate::{
     plant_phases, require_bed_reactor_plant, require_blowdown_cushion, require_compatible_fidelity,
@@ -125,9 +125,18 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
         // plant's outside (`burnout_atmosphere_for`). Every catalyst bed's
         // outlet carries the hole its wall fails into the same way (M58,
         // docs/DESIGN.md §63.1).
+        // A hydrogen pass's outlet carries the wall's second hole when the
+        // pass declares what its hydrogen releases burning (M59.4, §64.7).
         let furnace_outlet = matches!(
             scenario.nodes.get(&pipe.from),
-            Some(NodeDef::Furnace { .. } | NodeDef::BedReactor { .. })
+            Some(
+                NodeDef::Furnace { .. }
+                    | NodeDef::BedReactor { .. }
+                    | NodeDef::BedHydrogen {
+                        fluid_heating_value_mj_per_kg: Some(_),
+                        ..
+                    }
+            )
         );
         let atmosphere = match (&pipe.leak_to, furnace_outlet) {
             (Some(declared), _) => Some(declared.clone()),
@@ -148,10 +157,30 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
                     whole,
                     &atmosphere,
                 )?;
-                match &mut graph.node_mut(from).kind {
-                    NodeKind::Furnace { tubes, .. } => tubes.hole = Some(hole),
-                    NodeKind::BedReactor { wall, .. } => wall.hole = Some(hole),
-                    _ => {}
+                let bed = match graph.node(from).kind {
+                    NodeKind::BedHydrogen { bed, .. } => Some(bed),
+                    _ => None,
+                };
+                match bed {
+                    // Passes are resolved (step 2a'), so the bed is known.
+                    Some(bed) => {
+                        if let NodeKind::BedReactor {
+                            wall:
+                                BedWall {
+                                    hydrogen_leak: Some(leak),
+                                    ..
+                                },
+                            ..
+                        } = &mut graph.node_mut(bed).kind
+                        {
+                            leak.hole = Some(hole);
+                        }
+                    }
+                    None => match &mut graph.node_mut(from).kind {
+                        NodeKind::Furnace { tubes, .. } => tubes.hole = Some(hole),
+                        NodeKind::BedReactor { wall, .. } => wall.hole = Some(hole),
+                        _ => {}
+                    },
                 }
             }
         }
@@ -2062,12 +2091,31 @@ fn build_trips(
                     }
                     // The bed's trap (M57.3, docs/DESIGN.md §62.10): a bed at zero
                     // flow holds its temperature exactly, so a bed trip that shuts
-                    // the bed's only flow could never be reset.
+                    // the bed's only flow could never be reset. Lifted for a bed
+                    // with a hydrogen pass (M59.4, §64.7, ledger D10): with its oil
+                    // stopped, the hydrogen still sweeps it toward the gas's own
+                    // temperature — unless this same trip shuts the pass's line too.
                     if let MeasurementPoint::Node(bed) = point {
-                        if matches!(graph.node(bed).kind, NodeKind::BedReactor { .. })
+                        let on_line = matches!(graph.node(bed).kind, NodeKind::BedReactor { .. })
                             && position == 0.0
-                            && on_bed_line(graph, bed, node)
-                        {
+                            && on_bed_line(graph, bed, node);
+                        let swept = graph
+                            .hydrogen_pass_of(bed)
+                            .map(|(pass, _)| (pass, shut_on_line(graph, &def.actions, pass)));
+                        if let (true, Some((pass, Some(shut)))) = (on_line, swept) {
+                            return Err(SimError::Scenario(format!(
+                                "{owner} watches catalyst bed '{point_name}' and shuts valve \
+                                 '{name}' on the bed's own line, and also shuts valve '{shut}' \
+                                 on the line of its hydrogen pass '{}'. A bed with a hydrogen \
+                                 pass may have its oil stopped by a trip, because the hydrogen \
+                                 still carries its heat away (docs/DESIGN.md §64.7) — but not \
+                                 when the same trip stops the hydrogen too: the bed would hold \
+                                 its temperature exactly and refuse every reset (§62.10). Leave \
+                                 one of the two flowing",
+                                graph.node(pass).name
+                            )));
+                        }
+                        if on_line && swept.is_none() {
                             return Err(SimError::Scenario(format!(
                                 "{owner} watches catalyst bed '{point_name}' and shuts valve \
                                  '{name}', which is on the bed's own line: all the oil through \
@@ -2078,7 +2126,8 @@ fn build_trips(
                                  limit, and refuse every reset for as long as anyone waits \
                                  (§62.10). Cut the heat ahead of the bed and leave the oil \
                                  flowing to carry it away, or close the valve only partway; a \
-                                 quench or dump valve on a branch of the line is admitted"
+                                 quench or dump valve on a branch of the line is admitted, and \
+                                 so is this trip on a bed with a hydrogen pass (§64.7)"
                             )));
                         }
                     }
@@ -2124,6 +2173,25 @@ fn build_trips(
         });
     }
     build_restart_permissives(graph, defs)
+}
+
+/// The first valve among a trip's `actions` that it shuts fully on `pass`'s own
+/// line (`on_bed_line`, walked from the hydrogen pass), by name — `None` if it
+/// shuts none (M59.4, docs/DESIGN.md §64.7). A name that is no valve is skipped
+/// here: the action loop refuses it in its own words.
+fn shut_on_line<'a>(
+    graph: &PlantGraph,
+    actions: &'a [TripActionDef],
+    pass: NodeId,
+) -> Option<&'a str> {
+    actions.iter().find_map(|action| {
+        let name = action.valve.as_ref()?;
+        let valve = graph.find_node(name)?;
+        let shut = matches!(graph.node(valve).kind, NodeKind::Valve { .. })
+            && action.position == Some(0.0)
+            && on_bed_line(graph, pass, valve);
+        shut.then_some(name.as_str())
+    })
 }
 
 /// Whether `valve` is on `bed`'s own single line: every drop of the bed's flow
@@ -3849,6 +3917,9 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
                 heating_value: JPerKg(*fluid_heating_value_mj_per_kg * 1e6),
                 fire_share: *wall_fire_share,
                 hole: None,
+                // Written by `resolve_hydrogen_passes` for a bed whose pass
+                // declares a heating value (M59.4, §64.7).
+                hydrogen_leak: None,
                 state: WallState::Intact,
             },
         },
@@ -4011,7 +4082,12 @@ fn resolve_hydrogen_passes(
 ) -> Result<(), SimError> {
     let mut taken: BTreeMap<NodeId, String> = BTreeMap::new();
     for (name, def) in &scenario.nodes {
-        let NodeDef::BedHydrogen { bed, .. } = def else {
+        let NodeDef::BedHydrogen {
+            bed,
+            fluid_heating_value_mj_per_kg,
+            ..
+        } = def
+        else {
             continue;
         };
         let target = graph.find_node(bed).ok_or_else(|| {
@@ -4038,6 +4114,17 @@ fn resolve_hydrogen_passes(
         })?;
         if let NodeKind::BedHydrogen { bed: slot, .. } = &mut graph.node_mut(pass).kind {
             *slot = target;
+        }
+        // The wall's hydrogen side (M59.4, docs/DESIGN.md §64.7): its hole is
+        // written once the pass's outlet pipe is split, as the oil's is.
+        if let (Some(value), NodeKind::BedReactor { wall, .. }) = (
+            fluid_heating_value_mj_per_kg,
+            &mut graph.node_mut(target).kind,
+        ) {
+            wall.hydrogen_leak = Some(HydrogenLeak {
+                heating_value: JPerKg(*value * 1e6),
+                hole: None,
+            });
         }
     }
     Ok(())

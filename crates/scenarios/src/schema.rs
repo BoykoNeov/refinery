@@ -614,6 +614,13 @@ pub enum NodeDef {
         /// component, and never falling as the declared lumps get lighter.
         #[serde(default)]
         hydrogen_uptake_kg_per_kg: Option<BTreeMap<String, f64>>,
+        /// Lower heating value of the hydrogen [MJ/kg] (M59.4, docs/DESIGN.md
+        /// §64.7): declared, the bed's wall failure opens a second hole, on
+        /// this pass's outlet pipe, and what leaks there burns at this value
+        /// beside the oil. OPTIONAL — absent, the wall leaks only oil, which is
+        /// every pass before M59.4. Finite and >= 0; hydrogen's is 119.96.
+        #[serde(default)]
+        fluid_heating_value_mj_per_kg: Option<f64>,
     },
     /// Centrifugal gas compressor at fixed speed (M59.1, docs/DESIGN.md §64.3):
     /// polytropic head `H(Q) = head − a·Q²` at the suction volume flow `Q`

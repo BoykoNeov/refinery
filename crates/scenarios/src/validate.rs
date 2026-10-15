@@ -242,9 +242,20 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
     if let NodeDef::BedHydrogen {
         hydrogen_order,
         hydrogen_reference_bar,
+        fluid_heating_value_mj_per_kg,
         ..
     } = def
     {
+        // The hydrogen the wall leaks burns at it (M59.4, docs/DESIGN.md §64.7).
+        if let Some(value) = fluid_heating_value_mj_per_kg {
+            if !value.is_finite() || *value < 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "hydrogen pass '{name}' has fluid_heating_value_mj_per_kg = {value}: it \
+                     must be finite and >= 0, what a leaked kilogram releases burning \
+                     (hydrogen's lower heating value is 119.96 MJ/kg)."
+                )));
+            }
+        }
         // The hydrogen factor `(p/p_ref)^n` (M59.1, docs/DESIGN.md §64.1).
         if !hydrogen_order.is_finite() || *hydrogen_order <= 0.0 {
             return Err(SimError::Scenario(format!(

@@ -143,12 +143,18 @@ fn main() {
     // catching the second bed and holding it, its valve moving every tick
     // (the shape A27 found too slow on the game solver).
     let quench = vec![Run(36000)];
+    // The hydrogen leak's (M59.4, docs/DESIGN.md §64.13): the creep, the trip
+    // that stops the oil, the bed swept back by its hydrogen. Its untripped
+    // twin — the wall failing, both holes venting — is timed by pointing the
+    // directory at a copy with the trip's limit out of reach.
+    let leak = vec![Run(36000)];
     for (name, beats) in [
         ("pump_gas_lock", &gas_lock),
         ("flashing_rundown", &rundown),
         ("hydrocracker_hydrogen", &hydrogen),
         ("hydrocracker_makeup", &makeup),
         ("hydrocracker_hydrogen_quench", &quench),
+        ("hydrocracker_hydrogen_leak", &leak),
     ] {
         for solver in ["simple", "newton"] {
             if only

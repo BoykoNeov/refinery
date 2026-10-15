@@ -514,20 +514,26 @@ pub struct HydrogenKinetics {
 }
 
 /// The pressure below which the hydrogen factor leaves its power law [Pa]:
-/// 1 bar absolute (M59.2, docs/DESIGN.md §64.11). A NUMERICAL REGULARISATION,
-/// like the flow branches' 1 Pa linear zone, not a fact about catalysts.
-pub const HYDROGEN_FACTOR_RAMP_FROM: Pascal = Pascal(1.0e5);
+/// 1.8 bar absolute (M59.4, docs/DESIGN.md §64.13; 1 bar from M59.2). A
+/// NUMERICAL REGULARISATION, like the flow branches' 1 Pa linear zone, not a
+/// fact about catalysts. Under 2 bar, the flare every shipped loop vents to,
+/// so a loop that only vents never reaches it.
+pub const HYDROGEN_FACTOR_RAMP_FROM: Pascal = Pascal(1.8e5);
 
-/// The pressure at and below which nothing reacts [Pa]: 1 kPa (M59.2,
-/// §64.11). A loop starved of its makeup comes to REST here, holding a stock
-/// far above the solve's tolerance, instead of being drained toward a vacuum
-/// no solve can resolve. The same regularisation as
+/// The pressure at and below which nothing reacts [Pa]: 1.2 bar absolute, a
+/// FLOOR above the atmosphere's 1.013 25 bar (M59.4, docs/DESIGN.md §64.13;
+/// 1 kPa from M59.2). A loop starved of its makeup comes to REST here, holding
+/// a stock far above the solve's tolerance, instead of being drained toward a
+/// vacuum no solve can resolve — and, since M59.4, above the atmosphere, so a
+/// hole in a starved loop still blows outward (a hole that draws air in is
+/// refused, `network::finalize`). The same regularisation as
 /// [`HYDROGEN_FACTOR_RAMP_FROM`].
-pub const HYDROGEN_FACTOR_ZERO_AT: Pascal = Pascal(1.0e3);
+pub const HYDROGEN_FACTOR_ZERO_AT: Pascal = Pascal(1.2e5);
 
 impl HydrogenKinetics {
     /// `f = (p/p_ref)^n` at a pass pressure `pressure` [Pa] (dimensionless),
-    /// regularised near vacuum (M59.2, docs/DESIGN.md §64.11): from
+    /// regularised at low pressure (M59.2, docs/DESIGN.md §64.11; its floor
+    /// raised above the atmosphere by M59.4, §64.13): from
     /// [`HYDROGEN_FACTOR_RAMP_FROM`] down it falls on a straight line to zero
     /// at [`HYDROGEN_FACTOR_ZERO_AT`], and is zero below.
     ///
@@ -535,8 +541,8 @@ impl HydrogenKinetics {
     /// loop's stock grows without bound as the pressure falls (`∝ p^(n−1)`),
     /// so a consuming loop with no makeup would drain itself faster each tick
     /// — measured, it drew a tick's stock twelve times over at 1e-6 Pa. On the
-    /// ramp the demand falls with the stock and vanishes above zero.
-    /// Unchanged at and above 1 bar, so no plant whose loop stays there moves.
+    /// ramp the demand falls with the stock and vanishes above the floor.
+    /// Unchanged at and above 1.8 bar, so no plant whose loop stays there moves.
     pub fn factor(&self, pressure: Pascal) -> f64 {
         let p = pressure.value();
         let ramp_from = HYDROGEN_FACTOR_RAMP_FROM.value();
@@ -615,10 +621,37 @@ pub struct BedWall {
     /// by hand without one — which the burn-out pass refuses rather than skips.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hole: Option<EdgeId>,
+    /// The hydrogen side of the failure (M59.4, docs/DESIGN.md §64.7): a
+    /// second hole, on the bed's hydrogen pass's outlet pipe, opened with the
+    /// first and to the same area. `None` on a bed without a pass, and on one
+    /// whose pass declares no heating value — every bed before M59.4, whose
+    /// snapshot keeps its shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hydrogen_leak: Option<HydrogenLeak>,
     pub state: WallState,
 }
 
+/// The hydrogen a failed bed wall leaks (M59.4, docs/DESIGN.md §64.7): the
+/// hole on the pass's outlet pipe and what a kilogram through it releases
+/// burning. Its fire joins the oil's, and the wall's `fire_share` of the sum
+/// heats the bed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HydrogenLeak {
+    /// Lower heating value of the hydrogen [J/kg]. Non-negative.
+    pub heating_value: JPerKg,
+    /// The orifice edge the failure opens, on the pass's outlet pipe. Written
+    /// by the loader once it has split that pipe, as `BedWall::hole` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hole: Option<EdgeId>,
+}
+
 impl BedWall {
+    /// Every hole a failure of this wall opens, the oil's first (M59.4): one
+    /// on a bed without a hydrogen leak, two on one with.
+    pub fn holes(&self) -> impl Iterator<Item = Option<EdgeId>> + '_ {
+        std::iter::once(self.hole).chain(self.hydrogen_leak.as_ref().map(|leak| leak.hole))
+    }
+
     /// A bed at `bed_temperature` [K] is at or past this wall's limit: the next
     /// burn-out pass fails it if it is intact. The one owner of the comparison,
     /// shared by the burn-out pass and `Command::RepairBedWall`.

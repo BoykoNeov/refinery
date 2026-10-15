@@ -874,16 +874,21 @@ impl Engine {
                         "catalyst bed '{name}' has an intact wall: there is nothing to repair"
                     )));
                 }
-                // The player's order: patch the hole, cool the bed, repair.
-                let hole = self.wall_hole(node, wall.hole)?;
-                if let LeakRole::Orifice { area } = self.graph.pipe(hole).leak {
-                    if area.value() > 0.0 {
-                        return Err(SimError::InvalidCommand(format!(
-                            "catalyst bed '{name}' still leaks through a {:.2} cm² hole: patch \
-                             it first (`puncture_pipe` at area 0 on '{}'), then repair the wall",
-                            area.value() * 1e4,
-                            self.punctured_pipe_name(hole)
-                        )));
+                // The player's order: patch the hole, cool the bed, repair. Every
+                // hole: a bed whose pass leaks hydrogen has two, each patched by
+                // its own puncture (M59.4, docs/DESIGN.md §64.7).
+                for hole in wall.holes() {
+                    let hole = self.wall_hole(node, hole)?;
+                    if let LeakRole::Orifice { area } = self.graph.pipe(hole).leak {
+                        if area.value() > 0.0 {
+                            return Err(SimError::InvalidCommand(format!(
+                                "catalyst bed '{name}' still leaks through a {:.2} cm² hole: \
+                                 patch it first (`puncture_pipe` at area 0 on '{}'), then \
+                                 repair the wall",
+                                area.value() * 1e4,
+                                self.punctured_pipe_name(hole)
+                            )));
+                        }
                     }
                 }
                 // Measured FRESH: the bed is a state, and the one standing now
@@ -2888,14 +2893,15 @@ impl Engine {
     ///
     /// **A catalyst bed's wall fails the same way** (M58, docs/DESIGN.md
     /// §63.2): an intact wall whose bed stands at or past its limit opens its
-    /// hole and latches `Failed`. No trip holds a bed, so it marks no stop.
+    /// hole — both holes, on a bed whose hydrogen pass leaks (M59.4, §64.7) —
+    /// and latches `Failed`. No trip holds a bed, so it marks no stop.
     ///
     /// Measure then write, like the trips: every furnace and bed is checked
     /// before any hole is opened, though no burn-out reads what another writes.
     fn run_burnouts(&mut self) -> Result<(), SimError> {
         let this_tick = self.tick + 1;
         let mut bursts: Vec<(NodeId, Option<crate::graph::EdgeId>, SquareMeter)> = Vec::new();
-        let mut walls: Vec<(NodeId, Option<crate::graph::EdgeId>, SquareMeter)> = Vec::new();
+        let mut walls: Vec<(NodeId, Vec<Option<crate::graph::EdgeId>>, SquareMeter)> = Vec::new();
         for nid in self.graph.node_ids() {
             match &self.graph.node(nid).kind {
                 NodeKind::Furnace { coil, tubes, .. }
@@ -2906,14 +2912,18 @@ impl Engine {
                 NodeKind::BedReactor { bed, wall }
                     if !wall.state.is_failed() && wall.limit_reached(bed.temperature) =>
                 {
-                    walls.push((nid, wall.hole, wall.rupture_area));
+                    walls.push((nid, wall.holes().collect(), wall.rupture_area));
                 }
                 _ => {}
             }
         }
-        for (nid, hole, rupture_area) in walls {
-            let hole = self.wall_hole(nid, hole)?;
-            self.open_hole_to(hole, rupture_area);
+        // Every hole, each to the declared area: the oil's, and the hydrogen's
+        // on a bed whose pass leaks (M59.4, docs/DESIGN.md §64.7).
+        for (nid, holes, rupture_area) in walls {
+            for hole in holes {
+                let hole = self.wall_hole(nid, hole)?;
+                self.open_hole_to(hole, rupture_area);
+            }
             if let NodeKind::BedReactor { wall, .. } = &mut self.graph.node_mut(nid).kind {
                 wall.state = WallState::Failed { at_tick: this_tick };
             }

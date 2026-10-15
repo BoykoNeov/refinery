@@ -1,0 +1,342 @@
+# M59.4 (docs/DESIGN.md §64.13): a trip that stops a hydrogen bed's oil, and a
+# wall that leaks hydrogen when it fails.
+#
+# The M59.2 file's bed and loop, consuming its hydrogen, with two changes.
+#
+# The protection: the trip at 420 °C SHUTS THE OIL FEED. Until M59.4 the loader
+# refused it (ledger D10): a bed with no flow holds its temperature exactly, so
+# the trip could never be reset. A bed with a hydrogen pass is different: the
+# hydrogen keeps flowing through it and carries its heat to the gas cooler, so
+# the stopped bed falls back toward the hydrogen's own temperature, the gas
+# heater's 395 °C, and the trip can be reset.
+#
+# The plant: the pass declares hydrogen's heating value, so a failed wall opens
+# a second hole, on the pass's outlet pipe, beside the oil's: the loop vents
+# through it, an uncontrolled depressuring, and the hydrogen burns with the oil.
+#
+# Oil and hydrogen keep their own pressures through the bed, sharing only its
+# temperature: the stated compromise (§64.2).
+
+[meta]
+name = "hydrocracker_hydrogen_leak"
+description = "A hydrocracker bed with its hydrogen loop, fed 395 °C oil: a trip at 420 °C stops the oil, the hydrogen sweeps the bed back under its limit and the trip resets; untripped, the wall fails and leaks hydrogen too."
+
+[simulation]
+dt = 0.1
+
+[fidelity]
+flow = "newton"
+thermo = "constant"
+reactions = "hydrocracking"
+
+[[components]]
+name = "vgo"
+tb_c = 450.0
+molar_mass_kg_per_mol = 0.400
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "distillate"
+tb_c = 260.0
+molar_mass_kg_per_mol = 0.200
+density_kg_per_m3 = 830.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "naphtha"
+tb_c = 120.0
+molar_mass_kg_per_mol = 0.110
+density_kg_per_m3 = 740.0
+cp_j_per_kg_k = 3200.0
+
+[[components]]
+name = "gas"
+tb_c = -10.0
+molar_mass_kg_per_mol = 0.050
+density_kg_per_m3 = 550.0
+cp_j_per_kg_k = 3200.0
+
+# Hydrogen: 2.016 g/mol, cp 14.3 kJ/(kg·K) near room temperature (recalled
+# standard values; γ = cp/(cp − R/M) ≈ 1.40).
+[[components]]
+name = "hydrogen"
+phase = "gas"
+tb_c = -252.87
+molar_mass_kg_per_mol = 0.002016
+cp_j_per_kg_k = 14300.0
+
+# Cooling water for the gas cooler: inert to the chemistry (a slate member the
+# reaction does not name keeps its mass).
+[[components]]
+name = "water"
+tb_c = 100.0
+molar_mass_kg_per_mol = 0.018015
+density_kg_per_m3 = 998.0
+cp_j_per_kg_k = 4180.0
+
+# --- the oil -----------------------------------------------------------------
+
+[nodes.vgo_feed]
+type = "source"
+pressure_bar = 8.0
+temperature_c = 395.0
+composition = { vgo = 1.0 }
+
+[nodes.feed_valve]
+type = "valve"
+kv = 110.0
+opening = 1.0
+
+[nodes.bed]
+type = "bed_reactor"
+bed_heat_capacity_mj_per_k = 30.0
+catalyst_volume_m3 = 20.0
+bed_temperature_c = 395.0
+wall_failure_c = 550.0
+wall_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.8
+wall_fire_share = 0.1
+
+[nodes.product]
+type = "sink"
+pressure_bar = 5.0
+composition = { vgo = 1.0 }
+
+# --- the hydrogen loop --------------------------------------------------------
+
+[nodes.separator]
+type = "vessel"
+volume_m3 = 100.0
+pressure_bar = 150.0
+temperature_c = 50.0
+composition = { hydrogen = 1.0 }
+
+[nodes.compressor]
+type = "compressor"
+head_kj_per_kg = 120.0
+head_curve_kj_per_kg_s2_per_m6 = 100.0
+polytropic_efficiency = 0.75
+
+[nodes.loop_valve]
+type = "valve"
+kv = 60.0
+opening = 1.0
+x_t = 0.7
+
+[nodes.gas_heater]
+type = "furnace"
+duty_mw = 24.0
+coil_heat_capacity_mj_per_k = 5.0
+coil_ua_kw_per_k = 200.0
+coil_temperature_c = 415.0
+flame_temperature_c = 1951.1
+tube_failure_c = 650.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 119.96
+
+# The hydrogen through the bed. hydrogen_order is a GAME VALUE (§64.1), and so
+# are the uptake figures (§64.11): kg of hydrogen per kg of each lump formed,
+# the feed's vgo the datum.
+[nodes.pass]
+type = "bed_hydrogen"
+bed = "bed"
+hydrogen_order = 0.5
+hydrogen_reference_bar = 155.0
+hydrogen_uptake_kg_per_kg = { distillate = 0.020, naphtha = 0.035, gas = 0.070 }
+# What the hydrogen releases burning, if the wall fails and it leaks: its lower
+# heating value, 119.96 MJ/kg (a recalled standard figure). Declared, the wall's
+# failure opens a second hole, on this pass's outlet pipe (M59.4, §64.7).
+fluid_heating_value_mj_per_kg = 119.96
+
+# The gas cooler: the hydrogen against cooling water, an exchanger whose
+# effectiveness holds the gas near the water's temperature at any flow.
+[nodes.gas_cooler]
+type = "heat_exchanger"
+
+[nodes.cw_side]
+type = "heat_exchanger"
+
+[nodes.cw_supply]
+type = "source"
+pressure_bar = 5.0
+temperature_c = 30.0
+composition = { water = 1.0 }
+
+[nodes.cw_return]
+type = "sink"
+pressure_bar = 2.0
+temperature_c = 30.0
+composition = { water = 1.0 }
+
+[[exchangers]]
+side_a = "gas_cooler"
+side_b = "cw_side"
+effectiveness = 0.9
+
+[nodes.makeup]
+type = "source"
+pressure_bar = 170.0
+temperature_c = 40.0
+composition = { hydrogen = 1.0 }
+
+[nodes.makeup_valve]
+type = "valve"
+kv = 5.0
+opening = 0.0
+x_t = 0.7
+
+[nodes.vent_valve]
+type = "valve"
+kv = 10.0
+opening = 0.0
+x_t = 0.7
+
+[nodes.flare]
+type = "sink"
+pressure_bar = 2.0
+temperature_c = 40.0
+composition = { hydrogen = 1.0 }
+
+# --- pipes --------------------------------------------------------------------
+
+[[pipes]]
+name = "feed_line"
+from = "vgo_feed"
+to = "feed_valve"
+length_m = 30.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "valve_line"
+from = "feed_valve"
+to = "bed"
+length_m = 5.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "product_line"
+from = "bed"
+to = "product"
+length_m = 30.0
+diameter_m = 0.25
+
+[[pipes]]
+name = "suction_line"
+from = "separator"
+to = "compressor"
+length_m = 20.0
+diameter_m = 0.2
+
+[[pipes]]
+name = "discharge_line"
+from = "compressor"
+to = "loop_valve"
+length_m = 20.0
+diameter_m = 0.2
+
+[[pipes]]
+name = "heater_inlet"
+from = "loop_valve"
+to = "gas_heater"
+length_m = 10.0
+diameter_m = 0.2
+
+[[pipes]]
+name = "reactor_gas_line"
+from = "gas_heater"
+to = "pass"
+length_m = 20.0
+diameter_m = 0.2
+
+[[pipes]]
+name = "reactor_gas_outlet"
+from = "pass"
+to = "gas_cooler"
+length_m = 20.0
+diameter_m = 0.2
+
+[[pipes]]
+name = "separator_inlet"
+from = "gas_cooler"
+to = "separator"
+length_m = 20.0
+diameter_m = 0.2
+
+[[pipes]]
+name = "cw_inlet"
+from = "cw_supply"
+to = "cw_side"
+length_m = 30.0
+diameter_m = 0.1
+
+[[pipes]]
+name = "cw_outlet"
+from = "cw_side"
+to = "cw_return"
+length_m = 30.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "makeup_line"
+from = "makeup"
+to = "makeup_valve"
+length_m = 20.0
+diameter_m = 0.05
+
+[[pipes]]
+name = "makeup_inlet"
+from = "makeup_valve"
+to = "separator"
+length_m = 10.0
+diameter_m = 0.05
+
+[[pipes]]
+name = "vent_line"
+from = "separator"
+to = "vent_valve"
+length_m = 10.0
+diameter_m = 0.1
+
+[[pipes]]
+name = "flare_line"
+from = "vent_valve"
+to = "flare"
+length_m = 30.0
+diameter_m = 0.15
+
+# --- control ------------------------------------------------------------------
+
+[[controls]]
+name = "separator_pressure"
+measurement = { node = "separator", variable = "pressure" }
+actuator = "makeup_valve"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_bar = 150.0
+gain_per_bar = 0.2
+integral_time_s = 30.0
+initial_output = 0.0
+
+[[controls]]
+name = "gas_heater_outlet"
+measurement = { node = "gas_heater", variable = "temperature" }
+actuator = "gas_heater"
+algorithm = "pi"
+mode = "auto"
+action = "reverse"
+setpoint_c = 395.0
+gain_per_k = 0.02
+integral_time_s = 60.0
+initial_output = 0.5
+max_duty_mw = 48.0
+
+[[trips]]
+name = "bed_high"
+measurement = { node = "bed", variable = "temperature" }
+direction = "high"
+limit_c = 420.0
+# The oil feed, shut: the hydrogen keeps flowing and sweeps the bed down to
+# the gas heater's 395 °C, so the trip can be reset (D10 lifted, §64.7).
+actions = [{ valve = "feed_valve", position = 0.0 }]

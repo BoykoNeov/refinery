@@ -33,7 +33,7 @@ use refinery_core::graph::{
     HYDROGEN_FACTOR_ZERO_AT,
 };
 use refinery_core::snapshot::{NodeSnapshot, Snapshot};
-use refinery_core::units::Pascal;
+use refinery_core::units::{Pascal, P_ATM};
 use refinery_core::Engine;
 
 const DEMO: &str = include_str!("../../../scenarios/hydrocracker_makeup.toml");
@@ -320,9 +320,10 @@ fn story(
 ///    6 min 20 s in, and only shuts the makeup. The hotter bed eats the loop
 ///    down — below 40 bar by 20 minutes — and starves itself: it turns near
 ///    521 °C, under its wall's 550 °C, and is back near its feed at 40 minutes,
-///    the reaction nearly stopped. Without the trip the makeup valve, wide
-///    open, cannot keep up with a run-away bed's demand, but the loop sags too
-///    late: the wall fails about 22 minutes in, and by the hour the bed burns at
+///    the reaction nearly stopped and the loop near its 1.2 bar floor (M59.4;
+///    under 1 bar before it). Without the trip the makeup valve, wide open,
+///    cannot keep up with a run-away bed's demand, but the loop sags too late:
+///    the wall fails about 22 minutes in, and by the hour the bed burns at
 ///    about 517 °C with its loop held where the makeup just feeds the demand.
 #[test]
 fn cutting_the_makeup_starves_the_runaway() {
@@ -339,7 +340,12 @@ fn cutting_the_makeup_starves_the_runaway() {
     let last = cut[39];
     assert!(last.0 < 400.0, "40 min: {} °C", last.0);
     assert!(last.1 < 0.02, "40 min: the reaction runs at {}", last.1);
-    assert!(last.2 < 1.0, "40 min: the loop at {} bar", last.2);
+    // Near the floor (M59.4, §64.13): 1.25 bar, where it was under 1 bar.
+    assert!(
+        (1.2..1.3).contains(&last.2),
+        "40 min: the loop at {} bar",
+        last.2
+    );
 
     let open = story(&untripped(), "newton", 60);
     assert!(open.iter().all(|r| r.4.is_none()));
@@ -393,11 +399,13 @@ fn the_game_solver_agrees_through_the_sag() {
 }
 
 /// 6. A loop starved of its makeup comes to rest ABOVE the factor's floor: on
-///    the ramp the demand falls with the stock left above 1 kPa, so the loop
-///    closes on the floor and never crosses it. By 90 minutes the bed draws a
-///    ten-thousandth of what it drew at the height of the sag, the loop stands
-///    within half the floor above it, and the separator holds a stock a
-///    million times the solve's tolerance over a tick.
+///    the ramp the demand falls with the pass's pressure left above 1.2 bar, so
+///    the pass closes on the floor and never crosses it. By 90 minutes the bed
+///    draws a ten-thousandth of what it drew at the height of the sag, the pass
+///    stands within a hundredth of the floor above it, and the loop's lowest
+///    point, the separator on the compressor's suction, stays above the
+///    atmosphere by more than 15 kPa (M59.4, docs/DESIGN.md §64.13) — a hole
+///    anywhere in the loop blows outward. It once rested at 1 kPa (M59.2).
 #[test]
 fn a_starved_loop_comes_to_rest() {
     let mut engine = build_src(DEMO, "newton");
@@ -411,27 +419,33 @@ fn a_starved_loop_comes_to_rest() {
     // A ten-thousandth of the 1.5 kg/s the bed drew at the height of the sag.
     assert!(demand(&s) < 1e-4, "{} kg/s", demand(&s));
     let floor = HYDROGEN_FACTOR_ZERO_AT.value();
-    let p = node(&s, "separator").pressure_pa;
-    let p_80 = node(&at_80, "separator").pressure_pa;
-    assert!(p > floor && p < 1.5 * floor, "the loop at {p} Pa");
+    let p = node(&s, "pass").pressure_pa;
+    let p_80 = node(&at_80, "pass").pressure_pa;
+    assert!(p > floor && p < 1.01 * floor, "the pass at {p} Pa");
     // Closing on the floor from above, never crossing it.
     assert!(p < p_80, "{p} Pa against {p_80} Pa ten minutes before");
+    let lowest = node(&s, "separator").pressure_pa;
+    assert!(
+        lowest > P_ATM.value() + 15.0e3,
+        "the separator at {lowest} Pa"
+    );
     let stock = separator_kg(&s);
     assert!(stock > 1e6 * TOL_ABS * DT_S, "{stock} kg held");
     assert!((bed_k(&s) - KELVIN - 395.0).abs() < 0.5, "at its feed");
 }
 
-/// 7. The factor near vacuum, by hand: the power law from 1 bar up, a straight
-///    line from there to zero at 1 kPa, zero below — continuous at both ends.
+/// 7. The factor at low pressure, by hand: the power law from 1.8 bar up, a
+///    straight line from there to zero at 1.2 bar (M59.4's floor, above the
+///    atmosphere), zero below — continuous at both ends.
 #[test]
-fn the_factor_ramps_to_zero_near_vacuum() {
+fn the_factor_ramps_to_zero_above_the_atmosphere() {
     let kinetics = HydrogenKinetics {
         order: std::hint::black_box(0.5),
         reference_pressure: Pascal(155.0e5),
     };
     let ramp_from = HYDROGEN_FACTOR_RAMP_FROM.value();
     let zero_at = HYDROGEN_FACTOR_ZERO_AT.value();
-    assert_eq!((ramp_from, zero_at), (1.0e5, 1.0e3));
+    assert_eq!((ramp_from, zero_at), (1.8e5, 1.2e5));
     let top = (ramp_from / 155.0e5).powf(std::hint::black_box(0.5));
     for p in [ramp_from, 2.0e5, 150.0e5, 155.0e5] {
         assert_eq!(
@@ -440,7 +454,7 @@ fn the_factor_ramps_to_zero_near_vacuum() {
             "{p} Pa: the power law"
         );
     }
-    for p in [0.5e5, 2.0e3, 1.0e3 + 1e-6] {
+    for p in [1.5e5, 1.25e5, 1.2e5 + 1e-6] {
         let by_hand = top * (p - zero_at) / (ramp_from - zero_at);
         assert!(
             (kinetics.factor(Pascal(p)) - by_hand).abs() < 1e-15,
@@ -448,8 +462,8 @@ fn the_factor_ramps_to_zero_near_vacuum() {
         );
     }
     let just_below = kinetics.factor(Pascal(ramp_from * (1.0 - 1e-12)));
-    assert!((just_below - top).abs() < 1e-12, "continuous at 1 bar");
-    for p in [zero_at, 10.0, 0.0, -5.0] {
+    assert!((just_below - top).abs() < 1e-12, "continuous at 1.8 bar");
+    for p in [zero_at, P_ATM.value(), 10.0, 0.0, -5.0] {
         assert_eq!(kinetics.factor(Pascal(p)), 0.0, "{p} Pa: nothing reacts");
     }
 }

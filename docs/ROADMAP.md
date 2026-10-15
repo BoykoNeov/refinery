@@ -9455,3 +9455,33 @@ with no trip either, the second bed's wall fails on tick 17 081. DESIGN
   fed products); three band tests in `energy.rs`; `hydrogen_quench_reference`
   (8); the bed census ten beds, the burn-out census 24 furnaces.
 - Mutations: fifteen, all caught.
+
+### M59.4 — **LANDED** 2026-10-15: the stopping trip, the hydrogen leak, the floor
+
+Three parts (DESIGN §64.13). **The floor**, the user's decision for every
+plant: the hydrogen factor ramps from 1.8 bar to zero at 1.2 bar (A28; 1 bar
+to 1 kPa before), so a starved loop rests above the atmosphere and a hole in it
+blows outward — §64.11's punctured probe now runs on both solvers. It moves the
+makeup plant's tripped ending (its loop near 1.2 bar, not 1 kPa), the quench
+plant's vented ending after minute 29 (its loop near 1.59 bar, not 1.17, the
+beds under 1 K cooler) and no corpus row. **D10 lifted for a hydrogen bed**: a trip may shut the bed's oil line when
+the bed has a hydrogen pass, unless the same trip shuts the pass's line too.
+**The hydrogen leak**: a pass that declares `fluid_heating_value_mj_per_kg`
+gets a second dormant hole on its outlet; a wall failure opens both, the fire
+is both leaks at their own heating values, and the repair asks for both
+patched. New file `hydrocracker_hydrogen_leak.toml`: the trip at 420 °C (tick
+3 795) stops the oil, the hydrogen sweeps the bed back to 395 °C and the trip
+resets; untripped, the wall fails on tick 13 394, the loop vents through the
+hydrogen hole to ~1.2 bar in under six minutes, and the bed peaks at
+640.49 °C and settles burning at 516.92 °C.
+
+- Corrected while planning, by the advisor: the first offer said the floor
+  moved no plant (it moves two M59 endings), and a hole on every pass would
+  have moved three plants (the key is opt-in); the D10 lift narrowed to a
+  hydrogen line left flowing.
+- Corpus: 53 plants byte-identical on both fidelities, the new file new.
+- Timing: game solver mean 0.19 ms, worst 0.87 ms (untripped), none over;
+  Newton 0.07 ms.
+- Gates: `hydrogen_leak_reference` (7); `consumption_reference` re-pinned to
+  the floor; the bed census eleven beds, the burn-out census 25 furnaces.
+- Mutations: thirteen, all caught.
