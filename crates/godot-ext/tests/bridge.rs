@@ -269,6 +269,9 @@ fn wire_text(cmd: &Command) -> &'static str {
         Command::SetSourceTemperature { .. } => {
             r#"{"cmd":"set_source_temperature","node":0,"temperature":373.15}"#
         }
+        Command::SetRefluxRatio { .. } => {
+            r#"{"cmd":"set_reflux_ratio","node":2,"reflux_ratio":3.5}"#
+        }
     }
 }
 
@@ -320,6 +323,10 @@ fn every_variant() -> Vec<Command> {
             node: NodeId(0),
             temperature: Kelvin(373.15),
         },
+        Command::SetRefluxRatio {
+            node: NodeId(2),
+            reflux_ratio: 3.5,
+        },
     ]
 }
 
@@ -349,7 +356,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 15, "a Command variant was added");
+    assert_eq!(every_variant().len(), 16, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -395,6 +402,8 @@ fn fixture(cmd: &Command) -> Fixture {
         Command::SetSourceTemperature { .. } => {
             Fixture::shipped("pump_cavitation_flow_limit.toml", "rundown_source")
         }
+        // M60: a heat-balance column's declared reflux.
+        Command::SetRefluxRatio { .. } => Fixture::shipped("crude_column_hot_feed.toml", "column"),
         // A vent is legal only on a gas-locked pump that is stopped, so the
         // inline flashing pump plant is run until it locks, then stopped — see
         // `Fixture::GasLocked` (M54, docs/DESIGN.md §59.2).

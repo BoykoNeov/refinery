@@ -597,6 +597,35 @@ impl Engine {
                     ))),
                 }
             }
+            // A cascade column's declared reflux ratio (M60, docs/DESIGN.md
+            // §65.3). The same bounds `CascadePlan::new` holds a file to.
+            Command::SetRefluxRatio { node, reflux_ratio } => {
+                if !reflux_ratio.is_finite() || reflux_ratio < 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "a reflux ratio must be finite and >= 0 (0 is a column run with no \
+                         reflux). Got {reflux_ratio}"
+                    )));
+                }
+                let name = self.graph.node(node).name.clone();
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Column {
+                        cascade: Some(spec),
+                        ..
+                    } => {
+                        spec.reflux_ratio = reflux_ratio;
+                        Ok(())
+                    }
+                    NodeKind::Column { cascade: None, .. } => {
+                        Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') is a cut-point column: it splits its feed by \
+                             boiling range and has no reflux to set"
+                        )))
+                    }
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') is not a column"
+                    ))),
+                }
+            }
             // A loop is put in AUTO or MANUAL. The transfer is bumpless in both
             // directions (docs/DESIGN.md §10 fork 4), and the two directions cost
             // different things:
@@ -3331,7 +3360,8 @@ impl Engine {
             | Command::SetFurnaceDuty { node, .. }
             | Command::SetCoolerDuty { node, .. }
             | Command::SetReservoirPressure { node, .. }
-            | Command::SetSourceTemperature { node, .. } => {
+            | Command::SetSourceTemperature { node, .. }
+            | Command::SetRefluxRatio { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::PuncturePipe { edge, .. } => {

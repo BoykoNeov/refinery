@@ -187,6 +187,16 @@ pub enum Command {
         node: NodeId,
         temperature: Kelvin,
     },
+    /// Set a cascade column's declared molar reflux ratio `R = L/D` [-] (M60,
+    /// docs/DESIGN.md §65.3) — the control-room handle §5 fork 3 names; never a
+    /// product rate. Finite and >= 0; refused on a column with no cascade (the
+    /// cut-point splitter has no reflux) and on every other node. Its
+    /// consequence is the declared ratio on the column's `kind`; a heat-balance
+    /// column may RUN above it (`NodeSnapshot::column_operation`).
+    SetRefluxRatio {
+        node: NodeId,
+        reflux_ratio: f64,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

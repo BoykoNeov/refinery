@@ -24253,3 +24253,58 @@ top vapour without the distillate, the flash comparison flipped, the enthalpy
 above frozen at the reflux's, the enthalpy datum dropped. Uncaught, and acted
 on: the vapour criterion and the CMO first iteration (both removed, above), the
 sharp seed (predicted uncaught; the heavy cold-start gate added, now caught).
+
+### 65.8 The reflux that rises, built (M60.2)
+
+As §65.3 specifies.
+
+- **The floor** (`VAPOUR_FLOOR_OF_FEED = 0.20`, a game value) inside
+  `stage_balance_flows`: the top-down sweep is a closure run first at the
+  declared reflux; if any stage below the top carries less vapour than
+  `0.20·F`, a second sweep one distillate higher gives each stage's slope
+  `dV_j/dV₁`, and the top vapour is lifted to the largest `V₁` any short stage
+  needs; one more sweep at it. A short stage whose slope is not positive is
+  refused by name — more reflux cannot help it. Where the floor does not bind
+  the sweep's operations are M60.1's, so `crude_column_hot_feed.toml`'s
+  fingerprint is unchanged from the M60.1 build on both fidelities (the floor
+  never binds there, any tick of 3 000).
+- **Reported**: the ratio the column ran at, `Separation::reflux_ratio` →
+  `column_operation.reflux_ratio`; the declared one stays on the column's
+  `kind`.
+- **`Command::SetRefluxRatio { node, reflux_ratio }`** writes a cascade
+  column's declared ratio on either cascade model (`StageCascade` is not
+  special-cased: the engine does not know fidelities, rule 2 — its own plant
+  fails past `R = 4`, as its file says); refused for a negative or non-finite
+  ratio, on a cut-point column ("has no reflux to set") and on every other node.
+  Wire text `{"cmd":"set_reflux_ratio","node":2,"reflux_ratio":3.5}`, pinned in
+  the bridge's wire test; the bridge's referent and the engine's id check name
+  it.
+
+**The sweep the screen's keys will make** (`the_furnace_and_the_reflux_run_through_the_limit`):
+on the hot-feed plant, the furnace stepped 46 → 70 → 90 → 110 MW (the feed
+250 → 298 → 335 → 371 °C) runs the reflux 2.00 → 2.10 → 2.92 → 3.71 and the
+condenser 51.6 → 53.4 → 67.5 → 81.0 MW, the reboiler held near 21 MW by the
+floor; then the setting dropped to 1 and to 0 runs at the floor's 3.71; set
+above it, the column runs as set. Probed further (not shipped): at 150 MW the
+feed reaches 438 °C, wholly vapour, and the column still runs (reflux 5.19,
+condenser 106 MW) — but that furnace's coil passes its 550 °C tube limit.
+
+**New plant** `crude_column_overheated.toml`: the hot-feed plant at 100 MW.
+At 6 000 ticks the feed is at 353.5 °C, 78 % flashing; the column runs at a
+reflux ratio of 3.32 against its declared 2; condenser 74.3 MW, reboiler 20.7
+MW; the bottoms' kerosene 8.5 %. The coil stays under its tube limit.
+
+**Gates**: the floor test in `heat_balance.rs` (a feed 400 K past its bubble
+point runs above its declared reflux, the rebuilt profile's lowest stage on the
+floor to 1e-6, the declared ratio reported exactly below the limit);
+`heat_balance_column.rs` (6) adds the sweep, the command's refusals and its
+consequence, and the overheated plant; the bridge's wire and every-variant
+tests (16 variants). The furnace census counts 28.
+
+**Timing**: the overheated plant mean 0.12 ms, worst 0.89 ms on both solvers
+(the floor binding every tick); none over.
+
+**Mutations**: six, all caught — the floor at zero, the lift to the least
+rather than the most, the slope off by two, the declared ratio reported when
+the floor binds, the command writing nothing, a slightly negative ratio
+admitted.

@@ -9587,3 +9587,22 @@ the saturated twin's 80.3; the `"cascade"` model refuses the same plant. DESIGN
 - Gates: `heat_balance` unit tests (8), `heat_balance_column` (3); the furnace
   census 27. Mutations: eight; five caught, three acted on (two aids removed,
   one gate added and then caught).
+
+### M60.2 — **LANDED** 2026-10-16: the reflux rises
+
+Past its limit a heat-balance column no longer halts: every stage's vapour is
+held at a floor of 20 % of the feed's molar rate (a game value standing in for
+tray hydraulics), the top vapour and the reflux rise until it holds, and the
+column reports the reflux ratio it ran at. `SetRefluxRatio` sets a cascade
+column's declared ratio. New file `crude_column_overheated.toml`: the furnace
+at 100 MW, the feed at 353.5 °C, the column running at a reflux of 3.32
+against its declared 2, the condenser 74.3 MW. Swept like the screen will: the
+furnace from 46 to 110 MW and the reflux setting down to 0, nothing halts.
+DESIGN §65.8.
+
+- Corpus: 55 plants byte-identical on both fidelities; the hot-feed plant
+  unchanged from M60.1; the new file new.
+- Timing: mean 0.12 ms, worst 0.89 ms, none over.
+- Gates: the floor unit test, `heat_balance_column` (6), the bridge's wire and
+  every-variant tests (16 variants); the godot-feature clippy run. The furnace
+  census 28. Mutations: six, all caught.

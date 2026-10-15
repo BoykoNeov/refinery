@@ -53,6 +53,18 @@ use crate::molar::MoleFractions;
 /// iterations to converge at a saturated feed); one or three did not.
 const SHARP_SEED_ITERATIONS: u32 = 10;
 
+/// The smallest vapour any stage below the top may carry, as a share of the
+/// feed's molar rate [-] (DESIGN §65.3).
+///
+/// **A GAME VALUE**, standing in for the tray hydraulics C1 defers — a real tray
+/// weeps below its turndown. What it does: when the feed brings more heat than
+/// the declared reflux carries away, a stage's vapour would fall toward zero
+/// and the solve stiffen (1 575 iterations, then the cap, measured in §65.0);
+/// held here, the top vapour and the reflux rise instead and the column keeps
+/// running — the user's decision 2. 0.20 is the measured smallest that keeps the
+/// solve out of the stiff zone on the demo crude with margin; 0.05 did not.
+const VAPOUR_FLOOR_OF_FEED: f64 = 0.20;
+
 /// The heat-balance cascade: the complex separation fidelity for a column fed
 /// off its bubble point, selected by `[fidelity] separation = "heat_balance"`.
 ///
@@ -225,7 +237,7 @@ impl SeparationModel for HeatBalanceCascade {
                     }
                 }
             }
-            let flows = stage_balance_flows(
+            let (flows, _) = stage_balance_flows(
                 &plan,
                 spec,
                 &StageState {
@@ -317,7 +329,7 @@ impl SeparationModel for HeatBalanceCascade {
 
         // The converged flows, from the CONVERGED draw states (`StageCascade`'s
         // reason: the loop's last flows are one iterate stale).
-        let flows = stage_balance_flows(
+        let (flows, reflux_ratio) = stage_balance_flows(
             &plan,
             spec,
             &StageState {
@@ -354,7 +366,7 @@ impl SeparationModel for HeatBalanceCascade {
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
             feed_vapour_fraction: Some(feed_vapour_fraction),
-            reflux_ratio: Some(spec.reflux_ratio),
+            reflux_ratio: Some(reflux_ratio),
         })
     }
 }
@@ -389,6 +401,9 @@ struct StageState<'a> {
 /// `U_j` leave at their stage's liquid enthalpy, which is why they appear only
 /// in the material balance. The bottoms is the reboiler's mole balance,
 /// `B = L_{N−1} + F_N − V_N`, as under constant molar overflow.
+///
+/// Returns the flows and the reflux ratio they ran at: the declared one, or
+/// above it where the vapour floor binds (`VAPOUR_FLOOR_OF_FEED`, §65.3).
 fn stage_balance_flows(
     plan: &CascadePlan,
     spec: &CascadeSpec,
@@ -396,7 +411,7 @@ fn stage_balance_flows(
     feed_mass: f64,
     feed_molar: f64,
     feed_enthalpy: f64,
-) -> Result<Flows, SimError> {
+) -> Result<(Flows, f64), SimError> {
     let slate = state.slate;
     let stages = plan.stages;
     let last = state.draws.len() - 1;
@@ -437,38 +452,87 @@ fn stage_balance_flows(
     )?;
     let reflux_enthalpy = liquid_enthalpy(slate, &condensate, condenser_t);
 
-    let mut vapour = vec![0.0; stages];
-    let mut liquid_in = vec![0.0; stages];
-    let mut liquid_down = vec![0.0; stages];
-    vapour[0] = reflux + distillate;
-    liquid_in[0] = reflux;
-    let mut enthalpy_above = reflux_enthalpy;
+    // The top-down sweep from a top vapour `top` and a reflux `top − D`. With
+    // the enthalpies of this iterate fixed, every rate it returns is AFFINE in
+    // `top`: the liquid from above enters each balance linearly and the
+    // material balance carries it down (§65.3).
+    let sweep = |top: f64, reflux: f64| -> (Vec<f64>, Vec<f64>, Vec<f64>) {
+        let mut vapour = vec![0.0; stages];
+        let mut liquid_in = vec![0.0; stages];
+        let mut liquid_down = vec![0.0; stages];
+        vapour[0] = top;
+        liquid_in[0] = reflux;
+        let mut enthalpy_above = reflux_enthalpy;
+        for j in 0..stages - 1 {
+            let feed_here = if j == plan.feed_stage {
+                feed_molar
+            } else {
+                0.0
+            };
+            let here = liquid_enthalpies[j];
+            // Energy balance on stage j: the liquid from above warmed to this
+            // stage, the feed brought to it, the vapour leaving it made, all
+            // paid for by the vapour arriving from below condensing here.
+            vapour[j + 1] = (liquid_in[j] * (here - enthalpy_above)
+                + feed_here * (here - feed_enthalpy)
+                + vapour[j] * (vapour_enthalpies[j] - here))
+                / (vapour_enthalpies[j + 1] - here);
+            // Material balance on stage j.
+            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
+            liquid_in[j + 1] = liquid_down[j];
+            enthalpy_above = here;
+        }
+        (vapour, liquid_in, liquid_down)
+    };
+
+    // At the declared reflux first.
+    let declared_top = reflux + distillate;
+    let (mut vapour, mut liquid_in, mut liquid_down) = sweep(declared_top, reflux);
+    let mut reflux = reflux;
+    let mut reflux_ratio = spec.reflux_ratio;
+
+    // **The floor** (§65.3): every stage's vapour below the top held at
+    // `VAPOUR_FLOOR_OF_FEED · F`. A stage under it lifts the top vapour, and so
+    // the reflux, to the smallest value that holds every stage there — one
+    // division per stage on the affine coefficients a second sweep gives.
+    let floor = VAPOUR_FLOOR_OF_FEED * feed_molar;
+    if vapour[1..].iter().any(|v| v.is_nan() || *v < floor) {
+        let (lifted, _, _) = sweep(declared_top + distillate, reflux + distillate);
+        let mut top = declared_top;
+        for j in 1..stages {
+            if vapour[j] >= floor {
+                continue;
+            }
+            // dV_j / dV_1, from two sweeps one distillate apart.
+            let slope = (lifted[j] - vapour[j]) / distillate;
+            if !slope.is_finite() || slope <= 0.0 {
+                return Err(SimError::Numerical(format!(
+                    "heat-balance cascade: the vapour rising into stage {} is {:.4e} mol/s, \
+                     under the floor of {floor:.4e}, and more reflux does not raise it (its \
+                     rate of change with the top vapour is {slope:.4e}). The column has no \
+                     reflux at which this stage boils up.",
+                    j + 1,
+                    vapour[j]
+                )));
+            }
+            top = top.max(declared_top + (floor - vapour[j]) / slope);
+        }
+        reflux = top - distillate;
+        reflux_ratio = reflux / distillate;
+        (vapour, liquid_in, liquid_down) = sweep(top, reflux);
+    }
+
     for j in 0..stages - 1 {
-        let feed_here = if j == plan.feed_stage {
-            feed_molar
-        } else {
-            0.0
-        };
-        let here = liquid_enthalpies[j];
-        // Energy balance on stage j: the liquid from above warmed to this
-        // stage, the feed brought to it, the vapour leaving it made, all paid
-        // for by the vapour arriving from below condensing here.
-        let rising = (liquid_in[j] * (here - enthalpy_above)
-            + feed_here * (here - feed_enthalpy)
-            + vapour[j] * (vapour_enthalpies[j] - here))
-            / (vapour_enthalpies[j + 1] - here);
-        if !rising.is_finite() || rising <= 0.0 {
+        if !vapour[j + 1].is_finite() || vapour[j + 1] <= 0.0 {
             return Err(SimError::Numerical(format!(
-                "heat-balance cascade: the vapour rising into stage {} came out as {rising:.4e} \
-                 mol/s. The stage above it is given more heat than its vapour and liquid can \
-                 carry away at reflux ratio {} — a feed too hot for the declared reflux.",
+                "heat-balance cascade: the vapour rising into stage {} came out as {:.4e} \
+                 mol/s after the floor was applied — a sweep the floor's own algebra says \
+                 cannot happen.",
                 j + 1,
-                spec.reflux_ratio
+                vapour[j + 1]
             )));
         }
-        vapour[j + 1] = rising;
-        // Material balance on stage j.
-        let down = liquid_in[j] + rising + feed_here - drawn[j] - vapour[j];
+        let down = liquid_down[j];
         if !down.is_finite() || down < 0.0 {
             return Err(SimError::Numerical(format!(
                 "heat-balance cascade: the liquid leaving stage {} is {down:.4e} mol/s, which \
@@ -478,9 +542,6 @@ fn stage_balance_flows(
                 j + 1
             )));
         }
-        liquid_down[j] = down;
-        liquid_in[j + 1] = down;
-        enthalpy_above = here;
     }
 
     let reboiler = stages - 1;
@@ -502,13 +563,16 @@ fn stage_balance_flows(
     drawn[reboiler] = bottoms;
     liquid_down[reboiler] = 0.0;
 
-    Ok(Flows {
-        liquid_in,
-        liquid_down,
-        liquid_drawn: drawn,
-        vapour,
-        reflux,
-    })
+    Ok((
+        Flows {
+            liquid_in,
+            liquid_down,
+            liquid_drawn: drawn,
+            vapour,
+            reflux,
+        },
+        reflux_ratio,
+    ))
 }
 
 /// A liquid's molar enthalpy [J/mol] on the engine's datum: `Σ x·M·cp·(T − T_REF)`
@@ -762,7 +826,7 @@ mod tests {
         let states = plan.draw_states(&profile.liquid, &k, slate).unwrap();
         let moles = MoleFractions::from_mass(&feed(), slate).unwrap();
         let feed_molar = FEED_FLOW / moles.mean_molar_mass(slate).value();
-        let flows = stage_balance_flows(
+        let (flows, _) = stage_balance_flows(
             &plan,
             &spec,
             &StageState {
@@ -1014,15 +1078,30 @@ mod tests {
         assert!(message.contains("liquid profile"), "{message}");
     }
 
-    /// A feed far too hot for its reflux: the stage balances ask for vapour
-    /// flowing DOWN into the stage below the feed, and the model says so
-    /// rather than solving on a negative flow.
+    /// **Past the limit the reflux rises** (§65.3, the user's decision 2): a
+    /// feed far too hot for its declared reflux would ask for vapour flowing
+    /// DOWN below the feed; held at the floor instead, the column runs at a
+    /// higher reflux ratio and reports it — and every stage's vapour stands at
+    /// or above the floor. Below the limit the declared ratio is reported
+    /// exactly: the floor does not bind in normal operation.
     #[test]
-    fn a_feed_too_hot_for_its_reflux_is_refused() {
+    fn past_its_limit_the_column_raises_its_reflux() {
         let slate = slate_with_cp(2000.0);
         let thermo = thermo(&slate, UNEQUAL_DH_VAP);
-        let scorching = Kelvin(bubble(&slate, &thermo).value() + 400.0);
-        let message = run(
+        let bubble = bubble(&slate, &thermo);
+        let normal = run(
+            &HeatBalanceCascade::new(),
+            &slate,
+            &thermo,
+            Kelvin(bubble.value() + 15.0),
+            0.5,
+            None,
+        )
+        .unwrap();
+        assert_eq!(normal.reflux_ratio, Some(0.5));
+
+        let scorching = Kelvin(bubble.value() + 400.0);
+        let hot = run(
             &HeatBalanceCascade::new(),
             &slate,
             &thermo,
@@ -1030,11 +1109,49 @@ mod tests {
             0.5,
             None,
         )
-        .unwrap_err()
-        .to_string();
+        .unwrap_or_else(|e| panic!("a feed past the limit must run: {e}"));
+        let ran = hot.reflux_ratio.unwrap();
+        assert!(ran > 0.5, "the reflux should have risen, ran at {ran}");
+
+        // Every stage's vapour, rebuilt from the published profile, at or above
+        // the floor — and one of them ON it, or the floor did not bind.
+        let profile = hot.profile.as_ref().unwrap();
+        let stage_t: Vec<f64> = profile.temperatures.iter().map(|t| t.value()).collect();
+        let k = stage_k_values_profile(&slate, &thermo, &stage_t, P_ATM).unwrap();
+        let spec = spec(0.5);
+        let plan = CascadePlan::new(&spec, &draws(), slate.len()).unwrap();
+        let states = plan.draw_states(&profile.liquid, &k, &slate).unwrap();
+        let moles = MoleFractions::from_mass(&feed(), &slate).unwrap();
+        let feed_molar = FEED_FLOW / moles.mean_molar_mass(&slate).value();
+        let (flows, rebuilt) = stage_balance_flows(
+            &plan,
+            &spec,
+            &StageState {
+                slate: &slate,
+                thermo: &thermo,
+                draws: &states,
+                liquid: &profile.liquid,
+                k: &k,
+                temperatures: &stage_t,
+                pressure: P_ATM,
+            },
+            FEED_FLOW,
+            feed_molar,
+            liquid_enthalpy(&slate, moles.fractions(), scorching),
+        )
+        .unwrap();
         assert!(
-            message.contains("too hot for the declared reflux"),
-            "{message}"
+            (rebuilt - ran).abs() < 1e-6 * ran,
+            "{rebuilt} against {ran}"
+        );
+        let floor = VAPOUR_FLOOR_OF_FEED * feed_molar;
+        let lowest = flows.vapour[1..]
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min);
+        assert!(
+            (lowest - floor).abs() < 1e-6 * floor,
+            "the lowest stage vapour {lowest} should sit on the floor {floor}"
         );
     }
 }

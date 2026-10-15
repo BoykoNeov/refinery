@@ -4,7 +4,8 @@
 //! ran.
 
 use refinery_core::engine::Engine;
-use refinery_core::snapshot::Snapshot;
+use refinery_core::snapshot::{Command, Snapshot};
+use refinery_core::units::Watt;
 use refinery_scenarios::{build_engine, load_str};
 
 const HOT_FEED: &str = include_str!("../../../scenarios/crude_column_hot_feed.toml");
@@ -133,4 +134,186 @@ fn the_loader_refuses_a_heat_balance_column_without_a_k_value() {
         refusal.contains("separation = \"heat_balance\" with thermo = \"constant\""),
         "{refusal}"
     );
+}
+
+/// The furnace or the reflux setting, run through the column's limit — the
+/// keys the column screen will have (M60.2, docs/DESIGN.md §65.3). Nothing
+/// halts: past the limit the reflux the column RUNS at rises over the one it
+/// is set to and the condenser carries the furnace's extra heat; a setting
+/// below what the floor needs runs at the floor's; a setting above it is run
+/// as set.
+#[test]
+fn the_furnace_and_the_reflux_run_through_the_limit() {
+    let mut engine = engine(HOT_FEED);
+    let id = |engine: &Engine, name: &str| {
+        engine
+            .snapshot()
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap_or_else(|| panic!("no node '{name}'"))
+            .id
+    };
+    let furnace = id(&engine, "preheater");
+    let column_id = id(&engine, "column");
+    // (ran at, condenser W)
+    let step = |engine: &mut Engine, label: &str, ticks: u32| -> (f64, f64) {
+        for tick in 0..ticks {
+            if let Err(e) = engine.tick() {
+                panic!("{label}: tick {tick} failed: {e}");
+            }
+        }
+        let snapshot = engine.snapshot();
+        let node = column(&snapshot);
+        (
+            node.column_operation.unwrap().reflux_ratio,
+            node.column_duty.unwrap().condenser_w,
+        )
+    };
+
+    let (ran, mut condenser) = step(&mut engine, "the plant as shipped", 3000);
+    assert_eq!(ran, 2.0, "under its limit the column runs at its setting");
+    let mut previous = ran;
+    for megawatts in [70.0, 90.0, 110.0] {
+        engine
+            .apply(Command::SetFurnaceDuty {
+                node: furnace,
+                duty: Watt(megawatts * 1e6),
+            })
+            .unwrap();
+        let (ran, now) = step(&mut engine, &format!("furnace at {megawatts} MW"), 1500);
+        assert!(
+            ran > previous,
+            "{megawatts} MW: reflux {ran} after {previous}"
+        );
+        assert!(
+            now > condenser,
+            "{megawatts} MW: the condenser carries the heat"
+        );
+        (previous, condenser) = (ran, now);
+    }
+    let floor_needs = previous;
+    for setting in [1.0, 0.0] {
+        engine
+            .apply(Command::SetRefluxRatio {
+                node: column_id,
+                reflux_ratio: setting,
+            })
+            .unwrap();
+        let (ran, _) = step(&mut engine, &format!("reflux set to {setting}"), 600);
+        assert!(
+            (ran - floor_needs).abs() < 1e-3 * floor_needs,
+            "set to {setting}, the column should run at the floor's {floor_needs}, ran {ran}"
+        );
+    }
+    engine
+        .apply(Command::SetRefluxRatio {
+            node: column_id,
+            reflux_ratio: 2.0 * floor_needs,
+        })
+        .unwrap();
+    let (ran, _) = step(&mut engine, "reflux set above the floor", 600);
+    assert_eq!(
+        ran,
+        2.0 * floor_needs,
+        "a setting above the floor's is run as set"
+    );
+}
+
+/// `SetRefluxRatio` writes a cascade column's declared ratio and is refused
+/// everywhere it has nothing to write.
+#[test]
+fn the_reflux_command_is_refused_where_there_is_no_reflux() {
+    let mut engine = engine(HOT_FEED);
+    let id = |name: &str| {
+        engine
+            .snapshot()
+            .nodes
+            .iter()
+            .find(|n| n.name == name)
+            .unwrap()
+            .id
+    };
+    let (column_id, furnace) = (id("column"), id("preheater"));
+    for bad in [-0.1, f64::NAN, f64::INFINITY] {
+        let refusal = engine
+            .apply(Command::SetRefluxRatio {
+                node: column_id,
+                reflux_ratio: bad,
+            })
+            .unwrap_err()
+            .to_string();
+        assert!(refusal.contains("finite and >= 0"), "{bad}: {refusal}");
+    }
+    let refusal = engine
+        .apply(Command::SetRefluxRatio {
+            node: furnace,
+            reflux_ratio: 1.0,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("is not a column"), "{refusal}");
+
+    let mut splitter = self::engine(include_str!("../../../scenarios/crude_column.toml"));
+    let cut_point = splitter
+        .snapshot()
+        .nodes
+        .iter()
+        .find(|n| n.name == "column")
+        .unwrap()
+        .id;
+    let refusal = splitter
+        .apply(Command::SetRefluxRatio {
+            node: cut_point,
+            reflux_ratio: 1.0,
+        })
+        .unwrap_err()
+        .to_string();
+    assert!(refusal.contains("has no reflux to set"), "{refusal}");
+
+    engine
+        .apply(Command::SetRefluxRatio {
+            node: column_id,
+            reflux_ratio: 3.5,
+        })
+        .unwrap();
+    let declared = match &column(&engine.snapshot()).kind {
+        refinery_core::graph::NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } => spec.reflux_ratio,
+        other => panic!("not a cascade column: {other:?}"),
+    };
+    assert_eq!(declared, 3.5, "the consequence is the declared ratio");
+}
+
+/// **The shipped plant past its limit** (`crude_column_overheated.toml`): the
+/// feed near 350 °C, the column running above its declared reflux of 2, and
+/// the declared 2 still on its `kind`.
+#[test]
+fn the_overheated_plant_runs_above_its_declared_reflux() {
+    let snapshot = run(
+        &mut engine(include_str!(
+            "../../../scenarios/crude_column_overheated.toml"
+        )),
+        3000,
+    );
+    assert!(
+        feed_temperature(&snapshot) > 615.0,
+        "{}",
+        feed_temperature(&snapshot)
+    );
+    let node = column(&snapshot);
+    let ran = node.column_operation.unwrap().reflux_ratio;
+    assert!(
+        ran > 3.0,
+        "the reflux should have risen well above 2, ran at {ran}"
+    );
+    match &node.kind {
+        refinery_core::graph::NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } => assert_eq!(spec.reflux_ratio, 2.0, "the setting is not overwritten"),
+        other => panic!("not a cascade column: {other:?}"),
+    }
 }
