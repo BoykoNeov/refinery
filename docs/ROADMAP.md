@@ -9537,3 +9537,30 @@ key 5 and the shipped quench plant on key 6.
 **M59 CLOSED 2026-10-15**, after all six slices landed, on the user's standing
 rule ("close it, do so as a rule"). Close-out at the top of
 `docs/MILESTONES.md`. A27 and A28 stay open; D14–D21 and F6 new.
+
+## M60 — a column fed hot from its furnace: a heat-balance cascade, the reflux that rises, and pumparounds; ledger row C5; opened on a decision
+
+Asked after M59 closed (2026-10-15) as "what is next"; offered six directions,
+the user chose the distillation columns ("4"), then the hot, part-vapour feed:
+today a cascade column halts the run if its feed is more than ~1.2 K off its
+bubble point, so the furnace in front of it cannot be touched. Four decisions
+in plain words before anything was written (DESIGN §65): a new heat-balance
+column model chosen in the scenario file; past the column's limit the reflux
+rises rather than the run halting; a column screen at the end; a realistic
+crude unit as the demo — and, asked again when the probe showed that unit
+cannot run without them, pumparounds.
+
+### M60.0 — **SPECIFIED** 2026-10-15: the design note — M60 stays OPEN
+
+DESIGN §65. Probed first (`W:\temp\claude\m60-probe\`): a feed quality on
+constant molar overflow is either wrong for crude (fully vapour 118 K above
+its bubble point, whatever its heavy cuts) or inconsistent with the reboiler's
+closure (a reboiler with no heat and plenty of boil-up at 352 °C); the
+bubble-point method with its stage energy balances agrees with the closure to
+the printed digit, costs the same (40 outer iterations cold, 2 warm), and on
+the demo crude reaches its limit near 300 °C, past which a 20 %-of-feed vapour
+floor raises the reflux 2.0 → 4.2 with no stall. The realistic crude unit
+fails cold on every cascade (fixed by a sharp boiling-order seed) and runs dry
+above the feed on reflux alone; with 40 MW of pumparounds it runs at 250–390 °C
+feed. Slices: M60.1 the heat-balance cascade, M60.2 the reflux rises, M60.3
+pumparounds and the crude unit, M60.4 the column screen. No code changed.

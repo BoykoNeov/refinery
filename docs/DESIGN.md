@@ -23925,3 +23925,252 @@ frame. Both run on Newton, their files' solver (§62.13 decision 1).
 valve can then be reopened by hand" — debug text, and "reopened" where the
 move asked was a close. The wording kind M57.5 fixed for temperatures; left for
 a slice that touches the trip guard.
+
+## 65. A column fed hot from its furnace — a heat-balance cascade, the reflux that rises, and pumparounds (M60) — specified before building
+
+Asked after M59 closed (2026-10-15) as "what is next"; the user chose the
+distillation columns, then the hot, part-vapour feed (ledger row C5). Today the
+cascade refuses a feed more than `ε·λ̄/c̄p` off its bubble point — ±1.18 K on
+the demo crude (§5, M7.4b correction 6) — and the refusal is a tick `Err`, so
+on every cascade plant a furnace in front of the column cannot be touched. A
+real crude column takes its feed from the furnace at 350–370 °C, half of it
+vapour. Four decisions, asked in plain words before anything was written:
+
+1. **A new column model, the heat-balance cascade**, chosen in the scenario
+   file — not a feed quality patched into constant molar overflow (§65.1).
+2. **Past the column's limit the reflux rises** — the column keeps running,
+   the condenser carries the feed's surplus heat, and the reflux ratio climbs
+   above its setting, reported (§65.3). The alternative, a halt with a clear
+   message, was declined.
+3. **A column screen in Godot** ends the milestone.
+4. **A realistic crude unit as the demo** — a heavier crude whose residue
+   never boils, the feed near the bottom, the products drawn above it — and,
+   asked again after the probe showed it cannot run without them (§65.0),
+   **pumparounds** (§65.4).
+
+### 65.0 Probed before the rules were offered (2026-10-15)
+
+Throwaway prototypes in a detached worktree, `W:\temp\claude\m60-probe\`
+(`crates/solvers/src/cascade.rs` patched; drivers in `W:\temp\claude\m60-scripts\`).
+
+**Feed quality on constant molar overflow, two ways, and why neither.** With
+the feed's quality `q` setting the stripping section's flows (`L̄ = L + qF`,
+`V̄ = V − (1−q)F`) on `crude_column_cascade.toml`:
+
+- `q` from the feed's sensible excess over its latent heat,
+  `q = 1 − c̄p·(T_F − T_b)/λ̄`, is consistent with the reboiler's closure but
+  declares the crude fully vapour 118 K above its bubble point (`λ̄/c̄p`) —
+  whatever its heavy cuts are. True of a narrow-boiling feed, false of crude.
+- `q` from an adiabatic flash of the feed at the column's pressure (the feed
+  boils by cooling itself, M53's lesson) gives the honest share — 44 % (molar)
+  117 K above the bubble point where the first said 88 % — but on crude the
+  closure reboiler duty and the stripping vapour's own latent load disagree by
+  +22.6 MW at a saturated feed and −9.0 MW at 352 °C, where the closure duty
+  goes negative while the stripping vapour is still 400 mol/s: a reboiler with
+  no heat and plenty of boil-up.
+
+The disagreement is constant molar overflow itself, already ~34 % on this crude
+at a saturated feed (closure 80.3 MW against `V̄·λ̄` 52.7 MW, §5's stated cost
+of the closure). So the fork is the vapour profile, not the feed quality.
+
+**The heat-balance cascade.** Wang & Henke's bubble-point method with the
+stage energy balances it was published with (the step M7.3 replaced by
+constant molar overflow): each stage's vapour from its own balance, top-down
+from `V₁ = (R+1)·D`,
+
+```text
+V_{j+1} = [L_{j−1}·(h_j − h_{j−1}) + F_j·(h_j − h_F) + V_j·(H_j − h_j) + Q_j] / (H_{j+1} − h_j)
+L_j     = L_{j−1} + V_{j+1} + F_j − U_j − V_j
+```
+
+with `h` a liquid's molar enthalpy `Σ x·M·cp·(T − T_REF)`, `H` a vapour's
+`h(y, T) + λ̄(y)`, `h_F` the feed's at its own temperature, the reflux at the
+condenser's bubble point, and `Q_j` a pumparound's heat removed (§65.4). It
+reads only liquid `cp` and `Δh_vap`, which `duties()` already reads, so fork 1's
+verdict holds: no vapour density, nothing two-phase on the graph. On the demo
+crude:
+
+```text
+  feed °C (above bubble)   152.1 (0)   207 (55)   245 (93)   282 (130)
+  reboiler MW, closure        80.12       58.00      38.07      26.58
+  reboiler MW, its stage      80.12       58.00      38.07      26.58
+  bottoms kerosene, mass       0.8 %       1.1 %      2.2 %      4.8 %
+  outer iterations, cold      40 (constant molar overflow: 38); warm 2
+```
+
+The closure and the reboiler stage's own balance agree to the printed digit:
+consistency by construction, where constant molar overflow was off by a third.
+A hot feed takes load off the reboiler and weakens the stripping, as it should.
+A cold feed is the same formula — the reboiler works harder — so C5's subcooled
+half comes free.
+
+**Its limit, and the fallback.** Past about 296–304 °C (152 K above the
+bubble point) the vapour into the feed stage from below goes to zero: the feed
+brings more heat than the declared reflux carries away. Near it the solve
+stiffens (1 575 iterations at 304 °C, then the 2 000 cap). Holding every
+stage's vapour at a floor of 20 % of the feed's molar rate — raising the top
+vapour, and so the reflux, until it holds — runs straight through it:
+
+```text
+  furnace step (probe Δ)   150     180     200     250     300
+  reflux ratio            2.000   2.284   2.613   3.416   4.187
+  condenser MW            51.67   56.57   62.21   75.98   89.22
+  reboiler MW             26.58   21.54   21.23   20.68   20.30
+  outer iterations, cold  40–49 on every row
+```
+
+At a floor of 5 % the stiff zone is reached before the floor bites and the
+solve still stalls; at 20 % it never is. The floor is a GAME VALUE standing in
+for the tray hydraulics C1 defers (a real tray weeps below its turndown).
+
+**The realistic crude unit.** Six cuts (light naphtha 70 °C to a residue of
+560 °C and 0.55 kg/mol), ten stages, the feed on stage 8, naphtha overhead,
+kerosene, diesel and gas oil drawn at stages 3, 5 and 7, the residue at the
+reboiler. Two findings:
+
+- **Every cascade fails it cold — the shipped one too.** The draws' molar
+  rates come from their MASS ratios over their current molar masses, and a
+  first iterate with every stage at the feed's composition makes the draws'
+  moles exceed the feed's: a negative bottoms on tick 1. Seeding the draws'
+  molar masses from a sharp split of the feed by boiling order (each draw
+  takes the next-lightest cuts up to its mass ratio) for the first ten
+  iterations starts it (102 iterations at a saturated feed).
+- **It cannot run on reflux alone.** Going down the rectifying section every
+  stage's vapour is smaller than the one above it (954 → 251 mol/s from stage
+  1 to 6) — hotter vapour arrives, heavier vapour has the larger molar latent
+  heat, and the only cooling is the condenser — so the liquid thins and the
+  side draws run it dry above the feed. Higher reflux does not cure it (a
+  reflux ratio of 8 fails earlier), damping the vapour profile does not
+  either. It is physics, and it is why real crude units have pumparounds. With
+  40 MW of side cooling on three stages above the feed (15 / 15 / 10 MW on
+  stages 4, 6 and 7):
+
+```text
+  feed °C                 250     300     330     350     370     390
+  reboiler MW             59.66   49.59   43.54   39.51   35.48   31.44
+  condenser MW            44.84 on every row
+  outer iterations, cold  88–91
+```
+
+Real furnace outlet temperatures, and the reboiler stage's balance equals the
+closure once the pumparounds' heat is counted (109.73 − 40 = 69.73 MW).
+
+### 65.1 Fork 1 — a new model beside the old one: `separation = "heat_balance"`
+
+`HeatBalanceCascade`, a second `SeparationModel` in `solvers`, selected by
+`[fidelity] separation = "heat_balance"` beside `"cut_point"` and `"cascade"`.
+The two cascades share the stage machinery (the plan, the Thomas sweep per
+component, the bubble-point profile, the draws, the residual gate, the
+condenser duty) and differ in the vapour profile, which becomes a strategy the
+shared solve calls — two implementations of one internal trait, not a branch
+on a fidelity flag (rule 2). **`StageCascade`'s arithmetic does not change**:
+the four cascade plants stay byte-identical by construction, and the corpus
+confirms it at every slice.
+
+What only the heat-balance cascade does:
+
+- **Any feed temperature.** No saturated-liquid guard: the feed's enthalpy
+  enters its stage's balance. The `"cascade"` model keeps its guard.
+- **The stage energy balances** (§65.0), the first outer iteration on constant
+  molar overflow with a saturated feed (a flat seed profile makes the first
+  balance wild: measured, a vapour jump from 1 283 to 3 191 mol/s and a
+  negative bottoms), every later one on the balances. Converged when the
+  vapour profile has stopped moving too, beside the existing three criteria.
+- **The sharp boiling-order seed** for the draws' molar masses on a cold start
+  (§65.0). Not given to `StageCascade`: a different cold start moves its
+  converged answer within tolerance, and that would move four fingerprints.
+- **The feed's vaporised share** — an adiabatic flash of the feed at the
+  column's pressure, molar — reported on the column's snapshot. A reading for
+  the screen; the balances do not use it.
+- **The condenser** as the shared formula; **the reboiler** as the closure,
+  now with the pumparounds' heat (`Q_reb = Q_cond + ΣQ_pa + Σ draws − feed`),
+  gated against the reboiler stage's own balance.
+
+The loader treats `"heat_balance"` as it treats `"cascade"` for every rule a
+cascade column has (the `[cascade]` block, stage-located draws, Trouton thermo,
+constant heat capacity).
+
+### 65.2 Fork 2 — the feed stays liquid on the graph
+
+The pipe from the furnace to the column carries a liquid at the furnace's
+outlet temperature, as today; the column takes its enthalpy. A real transfer
+line is two-phase. `require_line_flash_plant` keeps refusing furnaces and
+columns, and §5 fork 0's flashing-feed-line clause stays deferred. Said so,
+not built.
+
+### 65.3 Fork 3 — past the limit the reflux rises
+
+**The floor.** Every stage's vapour below the top is held at or above
+`0.20 · F` (molar). With the enthalpies of an iteration fixed, each `V_j` is
+affine in the top vapour `V₁`, so the smallest `V₁` that holds every stage at
+the floor is one division per stage (two sweeps give the coefficients). When
+the declared reflux holds every stage above the floor nothing changes; when it
+does not, `V₁` rises and the reflux ratio `R = V₁/D − 1` with it.
+
+- **Reported**: the reflux ratio the column ran at, on the column's snapshot,
+  beside the declared one. A screen shows it climbing.
+- **The floor is a game value** (0.20, the measured smallest that keeps the
+  solve out of the stiff zone, with margin; a ledger row).
+- **On the heat-balance model only.** The `"cascade"` model's feed is
+  saturated and has no surplus to carry.
+
+**A reflux command.** `Command::SetRefluxRatio { node, reflux_ratio }` writes a
+cascade column's declared reflux ratio — the control-room handle §5 fork 3
+names — on either cascade model; refused on a splitter (no cascade), for a
+negative or non-finite ratio, and by id range as every command is. Its
+consequence is the declared ratio on the snapshot.
+
+### 65.4 Fork 4 — pumparounds, as side coolers on stages
+
+A pumparound draws liquid from a stage, cools it and returns it higher up. It
+is modelled as its effect on the balances, **a heat removal `Q_j` on a stage**
+— the side-cooler form. Said so: the liquid's circuit between two stages is
+not modelled.
+
+- Declared on the column's cascade block:
+  `pumparounds = [{ stage = 4, duty_mw = 15.0 }, …]`, a stage strictly between
+  the top stage and the reboiler, at most one per stage, a duty ≥ 0.
+  Admitted on `"heat_balance"` only; refused on `"cascade"` by name.
+- **A command**, `Command::SetPumparoundDuty { node, pumparound, duty }`,
+  writes one pumparound's duty (≥ 0, finite); the snapshot reports each
+  pumparound's stage and duty.
+- The reboiler's closure counts them (§65.1); the gate that the closure equals
+  the reboiler stage's own balance covers them.
+
+### 65.5 What moves, and what is deferred
+
+**Every shipped plant byte-identical** on both fidelities: the `"cascade"`
+model's arithmetic is untouched, the new snapshot fields are absent when
+`None`, and no shipped file selects the new model. New plants only.
+
+Deferred, each to a ledger row when M60 closes:
+
+- **The transfer line is liquid** (§65.2); §5 fork 0's clause stays.
+- **Steam stripping.** A real crude column strips its bottoms with steam and
+  has no reboiler; this one keeps the reboiler. Un-defer: water on the slate.
+- **The reflux floor is a game value** standing in for tray hydraulics (C1).
+- **A pumparound is a side cooler**; its liquid circuit is not modelled.
+- **The sharp seed and the first iteration on constant molar overflow** are
+  convergence aids, measured, not physics.
+- **C5 is taken for the heat-balance model**; the `"cascade"` model keeps its
+  saturated-liquid refusal.
+
+### 65.6 The slices
+
+- **M60.1 — the heat-balance cascade.** The model (vapour profile as a
+  strategy, the stage balances, the sharp seed, the feed's vaporised share),
+  the fidelity string, the loader, the snapshot field; gates: the closure
+  against the reboiler stage's balance, a reduction to constant molar overflow
+  where every stage's molar latent heat and enthalpy agree, start-
+  insensitivity, a hot and a cold feed; a new plant on the demo crude with a
+  hot furnace. Corpus byte-identical; steptime.
+- **M60.2 — the reflux rises.** The floor, the reported reflux,
+  `SetRefluxRatio`; a plant where the furnace is pushed past the limit.
+- **M60.3 — pumparounds and the crude unit.** The key, the command, the
+  snapshot; the realistic crude unit with its furnace at a real outlet
+  temperature.
+- **M60.4 — the column screen.** A Godot scene: the furnace, the column with
+  its stages' temperatures, the feed's vaporised share, the reflux (declared
+  and run), the condenser, the reboiler and each pumparound, the products'
+  compositions; keys for the furnace, the reflux and the pumparounds; a
+  recorded timeline.

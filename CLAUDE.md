@@ -152,8 +152,9 @@ godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto 
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the next
-milestone is the user's choice. **Latest closed: M59 (2026-10-15)**: hydrogen in
+Work only on the current milestone unless asked. **Current: M60** — a column fed hot from
+its furnace: a heat-balance cascade, the reflux that rises, pumparounds and a
+column screen (DESIGN §65; ROADMAP M60). **Latest closed: M59 (2026-10-15)**: hydrogen in
 the catalyst bed — a recycle loop, consumption, a hydrogen quench, depressuring,
 a trip that stops the oil, a wall that leaks hydrogen, two hydrogen plants on
 the reactor screen (DESIGN §64; A27 and A28 stay open; D14–D21 and F6 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
