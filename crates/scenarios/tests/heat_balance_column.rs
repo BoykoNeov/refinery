@@ -74,6 +74,26 @@ fn the_hot_feed_plant_runs_and_reports_its_flash() {
         hot_duty.reboiler_w,
         saturated_duty.reboiler_w
     );
+    // The stage balances, not the closure arithmetic: a hot feed leaves less
+    // vapour below it to strip the bottoms, so the bottoms keeps more kerosene
+    // (§65.7: 1.9 % against 0.7 %). The reboiler figure above holds on the
+    // closure alone; this one needs the feed's enthalpy on its stage.
+    let kerosene = |snapshot: &Snapshot| {
+        snapshot
+            .edges
+            .iter()
+            .find(|e| e.name == "bottoms_draw")
+            .expect("the bottoms draw")
+            .stream
+            .composition
+            .fractions()[2]
+    };
+    assert!(
+        kerosene(&hot) > 2.0 * kerosene(&saturated),
+        "bottoms kerosene {} hot against {} saturated",
+        kerosene(&hot),
+        kerosene(&saturated)
+    );
     // The reflux ratio fixes the top vapour, so the condenser barely moves.
     assert!(
         (hot_duty.condenser_w / saturated_duty.condenser_w - 1.0).abs() < 0.02,

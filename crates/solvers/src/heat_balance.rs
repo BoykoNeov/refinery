@@ -133,20 +133,15 @@ impl SeparationModel for HeatBalanceCascade {
         }
 
         let plan = CascadePlan::new(spec, pass.draws, slate.len())?;
-        let feed = MoleFractions::from_mass(pass.feed, slate)?;
-        let seed = bubble_temperature_unnormalized(
-            slate,
-            thermo,
-            feed.fractions(),
-            pass.pressure,
-            "the feed",
-        )?;
-        let feed_vapour_fraction =
-            adiabatic_flash_share(slate, thermo, &feed, pass.temperature, seed, pass.pressure)?;
 
         // An idle column: `StageCascade`'s convention and its argument — the
         // declared splits, inert placeholders for what nothing carries, and
-        // zero duties as an ANSWER rather than `None`.
+        // zero duties as an ANSWER rather than `None`. Returned BEFORE the feed
+        // is read at all (M7.1's correction 4: never refuse what you can
+        // answer) — an idle feed's composition and temperature are placeholders
+        // a bubble point or a flash may not be able to evaluate. No flash share:
+        // a share of nothing is not a number the model produced, so the
+        // snapshot's `column_operation` is absent while the column is idle.
         if feed_flow == 0.0 {
             return Ok(Separation {
                 profile: None,
@@ -161,10 +156,21 @@ impl SeparationModel for HeatBalanceCascade {
                     .collect(),
                 condenser_duty: Some(Watt::ZERO),
                 reboiler_duty: Some(Watt::ZERO),
-                feed_vapour_fraction: Some(feed_vapour_fraction),
+                feed_vapour_fraction: None,
                 reflux_ratio: Some(spec.reflux_ratio),
             });
         }
+
+        let feed = MoleFractions::from_mass(pass.feed, slate)?;
+        let seed = bubble_temperature_unnormalized(
+            slate,
+            thermo,
+            feed.fractions(),
+            pass.pressure,
+            "the feed",
+        )?;
+        let feed_vapour_fraction =
+            adiabatic_flash_share(slate, thermo, &feed, pass.temperature, seed, pass.pressure)?;
 
         let feed_molar = feed_flow / feed.mean_molar_mass(slate).value();
         // `StageCascade`'s tolerance, derived from I7 over this feed (fork 4).
@@ -950,6 +956,39 @@ mod tests {
         )
         .unwrap();
         assert!(composition_gap(&cold, &warm) < 1e-5);
+    }
+
+    /// **An idle column is idle, not broken** — `StageCascade`'s rule (M7.1
+    /// correction 4), held on the inputs an idle column can really be handed:
+    /// a placeholder feed of the heaviest cut alone at a non-finite
+    /// temperature. The declared splits, zero duties, no flash share.
+    #[test]
+    fn an_idle_column_is_answered_whatever_its_feed_holds() {
+        let slate = slate_with_cp(2000.0);
+        let thermo = thermo(&slate, UNEQUAL_DH_VAP);
+        let draws = draws();
+        let spec = spec(2.0);
+        for temperature in [Kelvin(f64::NAN), Kelvin(300.0), Kelvin(900.0)] {
+            let idle = HeatBalanceCascade::new()
+                .separate(
+                    &ColumnPass {
+                        slate: &slate,
+                        draws: &draws,
+                        smearing: Kelvin(0.0),
+                        pressure: P_ATM,
+                        feed: &Composition::pure(3, 2),
+                        feed_flow: KgPerSec(0.0),
+                        temperature,
+                        cascade: Some(&spec),
+                        seed: None,
+                    },
+                    &thermo,
+                )
+                .unwrap_or_else(|e| panic!("{temperature:?}: an idle column refused: {e}"));
+            assert_eq!(idle.draws[0].split, 0.3);
+            assert_eq!(idle.reboiler_duty, Some(Watt::ZERO));
+            assert_eq!(idle.feed_vapour_fraction, None);
+        }
     }
 
     /// The non-convergence `Err` is reached, naming what is unmet.
