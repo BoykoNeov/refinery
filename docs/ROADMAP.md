@@ -9388,7 +9388,9 @@ minutes, its wall intact — untripped, its wall fails on tick 13 860. DESIGN
   hydrogen below 0 K as the loop vented); the phase guard no longer joins parts
   of a plant through an atmosphere; a stagnant node's first composition is its
   pipe's seed, not the slate's first component; the story a too-hot feed and the
-  high-rate vent (a hot bed on a calm feed recovers by itself).
+  high-rate vent (a hot bed on a calm feed recovers by itself; at the true
+  low-rate pace the wall fails 22 minutes in — re-measured after a side
+  agent's catch that the first slow-vent try vented at half that pace).
 - Corpus: 50 plants byte-identical on both fidelities, the new file new.
 - Timing: game solver mean 0.89 ms, worst 1.40 ms, none over; Newton 0.10 ms.
 - Gates: `compressor_reference` (4), `hydrogen_reference` (8); the wall census

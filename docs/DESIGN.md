@@ -23352,8 +23352,16 @@ and `compressor` node types, `resolve_hydrogen_passes` and
      recovers BY ITSELF: with 5 kg/s of hydrogen through it the middle branch
      sits at 532 °C (§64.0's table), so only a bed past it runs on, 18 K from
      the wall.
-   - **A 395 °C feed with the low-rate vent** (half the pressure in 15 minutes):
-     the bed was still climbing at 506 °C 20 minutes on.
+   - **A 395 °C feed with the low-rate vent** (half the pressure in 15
+     minutes), measured on the finished plant (re-run after a side agent's
+     catch: the first try, on an early draft with a fixed-duty cooler, vented a
+     quarter of the pressure in 13 minutes, half the low-rate pace, and is not
+     evidence). At a vent of Kv 4 the separator stands at 82 bar 15 minutes
+     after the trip, at Kv 5 at 69 bar (a little faster than the low rate): the
+     wall fails on tick 13 222 and 13 388 (22 minutes in) and the bed reaches
+     784 and 792 °C at an hour — hotter than the untripped twin's 665 °C,
+     because the compressor's hydrogen, and its cooling, falls with the
+     pressure faster than `√p` slows the reaction (§64.0).
 
    What tells it is a 395 °C feed, which runs away even with the hydrogen,
    tripped at 420 °C onto the high-rate system's pace (a fifth of the design
