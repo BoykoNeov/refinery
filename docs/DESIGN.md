@@ -23913,8 +23913,8 @@ both plants (two pipes on the wall plant, one per bed on the quench plant).
 The bed census (`bed_wall_reference.rs`) counts twelve beds, two of them with a
 hydrogen hole; the burn-out census 26 furnaces (the new file's gas heater).
 
-**Corpus**: 54 plants on both fidelities, all run. No engine code changed, so
-the 53 shipped rows are the M59.4 build's; the new file new.
+**Corpus**: 55 plants on both fidelities, all run. No engine code changed, so
+the 54 shipped rows are the M59.4 build's; the new file new.
 
 **Speed**: debug-build ticks 1.7 ms (hydrogen wall) and 2.7 ms (hydrogen
 quench), a snapshot read about half that again; default speeds 4 and 2 ticks a

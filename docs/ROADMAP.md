@@ -9526,7 +9526,7 @@ key 5 and the shipped quench plant on key 6.
   `reactor_gas_outlet`). Recorded headless and windowed with screenshots,
   checked by eye; the four older plants re-recorded. The bed census twelve
   beds (two hydrogen holes), the burn-out census 26 furnaces.
-- Corpus: 54 plants on both fidelities, all run. No engine code changed: the 53
+- Corpus: 55 plants on both fidelities, all run. No engine code changed: the 54
   shipped rows are the M59.4 build's, the new file new.
 - Debug-build ticks: 1.7 ms (hydrogen wall), 2.7 ms (hydrogen quench); their
   default speeds 4 and 2 ticks a frame.
