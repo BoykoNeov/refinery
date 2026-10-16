@@ -8,7 +8,8 @@
 #   crude       scenarios/crude_unit.toml — a crude unit: a furnace firing a
 #               270 °C crude to 355 °C, a ten-stage column with naphtha,
 #               kerosene, diesel and gas oil drawn above the feed and three
-#               pumparounds. Its keys stop at the range measured safe (§65.9).
+#               pumparounds. Its keys stop at the range measured safe (§65.9),
+#               widened when M61 gave the column a Newton solve (§66.7).
 #   hot         scenarios/crude_column_hot_feed.toml — a light crude fed 100 K
 #               past its bubble point; fire the furnace through the column's
 #               limit and watch the reflux rise past its setting.
@@ -52,10 +53,13 @@ const PLANTS := {
 			["residue_draw", "residue"],
 		],
 		"ticks_per_frame": 8,
-		# The range measured warm from the running plant (§65.9), with margin.
+		# The range measured warm from the running plant under Newton (M61.2,
+		# §66.7): every corner of it — the furnace 0 or 40 MW, the reflux 1.5 or
+		# 15, the pumparounds 50 % or 400 % — runs in one step. Below it a low
+		# reflux with low pumparounds runs the gas-oil tray dry.
 		"furnace_mw": [0.0, 40.0],
-		"reflux": [2.0, 10.0],
-		"pumparounds": [0.75, 3.0],
+		"reflux": [1.5, 15.0],
+		"pumparounds": [0.5, 4.0],
 	},
 	"hot":
 	{
@@ -98,12 +102,12 @@ const PLANTS := {
 ## what it is there to show.
 ##
 ## crude: the furnace up to 30 MW at 600 heats the feed and flashes more of it;
-## the reflux down to 2 at 1 500 and the pumparounds to 150 % at 2 400 run as
-## set; at 3 000 the reflux key is pressed below 2 and the screen holds it —
-## the edge of the safe range (§65.9).
+## the reflux down to 1.5 at 1 500 (where M60's solve halted, §66.7) and the
+## pumparounds to 150 % at 2 400 run as set; at 3 000 the reflux key is pressed
+## below 1.5 and the screen holds it — the edge of the safe range.
 const AUTO_CRUDE := {
 	600: ["furnace_30"],
-	1500: ["reflux_2"],
+	1500: ["reflux_1.5"],
 	2400: ["pumparounds_1.5"],
 	3000: ["reflux_down"],
 	3300: ["quit"],
@@ -324,6 +328,8 @@ func _do(action: String) -> void:
 			_set_reflux(_reflux_set() + step)
 		"reflux_0":
 			_set_reflux(0.0)
+		"reflux_1.5":
+			_set_reflux(1.5)
 		"reflux_2":
 			_set_reflux(2.0)
 		"reflux_8":
@@ -372,7 +378,7 @@ func _set_pumparounds(scale: float) -> void:
 
 ## The screen's own refusal: the key is at the edge of the safe range.
 func _hold(what: String, at: String) -> void:
-	var text := "%s stays at %s — the edge of this plant's safe range (DESIGN §65.9)" % [what, at]
+	var text := "%s stays at %s — the edge of this plant's safe range (DESIGN §65.9, §66.7)" % [what, at]
 	_say(text, true)
 	if auto_run:
 		print("column: t=%d  HELD: %s" % [sim.tick_index(), text])

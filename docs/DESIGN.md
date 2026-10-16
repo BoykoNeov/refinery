@@ -24728,3 +24728,32 @@ mutant reports 0.37 where the declared 0.5 is right, and
 One equivalent: the summation on NORMALISED liquid has the same root — where
 every stage's `Σ K·x = Σ x`, the summed component balances (exact in the
 Thomas sweep) force `Σ x = 1` — so no test can tell it apart, and none should.
+
+### 66.7 The wider range on the screen, built (M61.2)
+
+The crude unit's range re-measured under Newton, warm, from the running plant
+(1 000 ticks), every setting moved in ONE step and run 1 000–2 000 ticks — the
+hardest way a player reaches it:
+
+- Each key alone: the reflux 0.8–15 and the pumparounds 0–400 % run; at a
+  reflux of 0.6 the kerosene tray (stage 3) runs dry.
+- **The keys combine, and the low ends interact**: a low reflux with low
+  pumparounds runs the gas-oil tray (stage 7) dry — nothing else makes liquid
+  there. With the furnace at 0 or 40 MW, a reflux of 1.0 fails at every
+  pumparound duty up to 50 %, 1.5 fails up to 25 %, 2 fails at 0 %, 3 runs at
+  0 %. So no box with both a reflux under 3 and pumparounds at zero is safe.
+- **The keys' box, the user's decision 3 ("widen")**: the reflux 1.5–15
+  (M60: 2–10), the pumparounds 50–400 % (M60: 75–300 %), the furnace 0–40 MW
+  unchanged (its coil's tube margin, not the column). All eight corners run, in
+  one step: the condenser 23.3–145.5 MW, the reboiler 26–311 MW.
+
+`demo/column.gd`'s crude plant takes the box; its timeline's reflux beat moves
+from 2 to 1.5 — a setting M60's solve halted at — and the key pressed below it
+at 3 000 is held at the new edge. The hot-feed and overheated plants' keys are
+unchanged (any setting already ran). `crude_unit.rs`'s range test now runs the
+eight corners in one step (it ran each key's two edges alone);
+`column_screen.rs` replays the timeline at 1.5. Run headless, the screen plays
+its timeline to the end: at 3 300 the feed 378.9 °C, 72.2 % flashing, the
+reflux 1.50 as set, the condenser 23.35 MW, the reboiler 71.82 MW.
+
+Engine untouched; the corpus is M61.1's.

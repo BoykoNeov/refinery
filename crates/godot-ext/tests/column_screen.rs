@@ -99,9 +99,10 @@ impl Screen {
 }
 
 /// **The crude unit** (`AUTO_CRUDE`): the furnace up to 30 MW at 600 heats the
-/// feed and flashes more of it; the reflux down to 2 at 1 500 and the
-/// pumparounds to 150 % at 2 400 are run as set; the column publishes ten
-/// stage temperatures rising down the column.
+/// feed and flashes more of it; the reflux down to 1.5 at 1 500 (where M60's
+/// solve halted; Newton runs it, DESIGN §66.7) and the pumparounds to 150 % at
+/// 2 400 are run as set; the column publishes ten stage temperatures rising
+/// down the column.
 #[test]
 fn the_crude_unit_timeline() {
     let mut screen = Screen::load(
@@ -140,10 +141,10 @@ fn the_crude_unit_timeline() {
 
     let column = screen.column;
     screen.send(&format!(
-        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":2.0}}"#
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":1.5}}"#
     ));
     screen.run_to(2400);
-    assert_eq!(screen.reading().2, 2.0);
+    assert_eq!(screen.reading().2, 1.5);
 
     for (i, mw) in [15.0, 15.0, 10.0].iter().enumerate() {
         screen.send(&format!(
@@ -152,7 +153,7 @@ fn the_crude_unit_timeline() {
         ));
     }
     screen.run_to(3300);
-    assert_eq!(screen.reading().2, 2.0);
+    assert_eq!(screen.reading().2, 1.5);
 }
 
 /// **The hot-feed column past its limit** (`AUTO_HOT`): the furnace to 70 MW

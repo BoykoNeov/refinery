@@ -9705,3 +9705,20 @@ reference. DESIGN §66.6.
 - Gates: `column_newton` (1), `heat_balance::newton_tests` (4), `crude_unit`
   (5, its past-the-range case at 0.6). Mutations: eight; seven caught (one
   after a gate was added for it), one equivalent.
+
+### M61.2 — **LANDED** 2026-10-16: the wider range on the screen
+
+The crude unit's range re-measured under Newton and the column screen's keys
+widened to it: the reflux 1.5–15 (was 2–10), the pumparounds 50–400 % (was
+75–300 %), the furnace unchanged. Every corner runs with all three keys moved
+in one step from the running plant; below the box a low reflux with low
+pumparounds runs the gas-oil tray dry. The screen's timeline sets the reflux
+to 1.5, where M60 halted, and is held below it. DESIGN §66.7.
+
+- Gates: `crude_unit` (5, the range test now the eight corners in one step),
+  `column_screen` (3, the timeline at 1.5); the screen run headless to its
+  end. Engine untouched; corpus as M61.1.
+
+**M61 CLOSED 2026-10-16**, after both slices landed, on the user's standing
+rule. Close-out at the top of `docs/MILESTONES.md`. C10 taken; C7 re-scoped
+as M62; C11 and C12 new.

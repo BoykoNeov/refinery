@@ -12,6 +12,38 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M61 is CLOSED (2026-10-16): a stronger column solve — Newton on the
+heat-balance cascade, and the screen's wider range — `docs/DEFERRED.md` C10
+taken, C7 re-scoped as M62, C6 and C8 measured, C11–C12 new.** Asked after
+M60 as "what is next"; the user chose steam stripping (C7), and the probe
+changed the plan twice before anything was written (DESIGN §66.0): without
+its reboiler the crude unit is short of heat because the furnace boils
+nothing; the boiling transfer line (C6) is not a precondition (a boiling
+stream carries its liquid equivalent's heat); and the fixed-point column solve
+cannot bring the reboiler near zero, while Newton on the same equations
+reaches every physical edge. The user's decisions: the solve first and steam
+as M62; Newton replaces the fixed point; the screen's keys widen. The 20 %
+vapour floor kept.
+- **M61.0, specified** (§66.0–66.5): the probe kept in
+  `tools/steptime/prototypes/m61_0/`; C7's trigger corrected (water on the
+  slate was the easy part).
+- **M61.1, Newton in the heat-balance cascade** (§66.6): every stage
+  temperature, vapour and draw rate at once (`column_newton.rs`), warm from
+  the previous tick or after 30 fixed-point iterations cold; the floor as an
+  active set; a refusal that names a dry tray. The three M60 plants agree with
+  the fixed point to a relative 5.2e-7; the crude unit runs at a reflux of
+  0.8–15 and pumparounds of 0–400 %.
+- **M61.2, the wider range on the screen** (§66.7): the crude unit's keys at
+  the reflux 1.5–15 and the pumparounds 50–400 %, every corner run in one step.
+- Corpus: 55 of 58 plants byte-identical on both fidelities at every slice;
+  the three M60 plants moved, the user's decision. No tick over the frame
+  budget (the crude unit mean 0.52 ms, worst 0.69).
+- **Left open**: C1–C4, C5 for the `"cascade"` model, C6 (measured: its
+  outlet would read 401–426 °C), C7 as M62 (needs the reboiler held at zero
+  with the reflux as the result, a pumparound above the top side draw, and an
+  answer on the floor below the feed — C8), C8, C9, C10's start aids (the cold
+  warm-up), C11 the Jacobian by finite differences, C12 the screen's box.
+
 **M60 is CLOSED (2026-10-16): a column fed hot from its furnace — a
 heat-balance cascade, the reflux that rises past the column's limit,
 pumparounds, a realistic crude unit and a column screen — `docs/DEFERRED.md`

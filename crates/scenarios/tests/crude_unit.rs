@@ -84,49 +84,48 @@ fn the_crude_unit_runs() {
     assert!(coil < 550.0 + 273.15 - 100.0, "the coil at {coil} K");
 }
 
-/// The keys the column screen gives, each to the edge of the range it stops
-/// at, from the running plant: the furnace 0 and 40 MW, the reflux 2 and 10,
-/// the pumparounds 75 % and 300 % of their duties. Every one runs.
+/// The keys the column screen gives, at every corner of the range they stop at
+/// (M61.2, DESIGN §66.7): the furnace 0 or 40 MW, the reflux 1.5 or 15, the
+/// pumparounds 50 % or 400 % of their duties, all three moved in ONE step from
+/// the running plant — the hardest way a player can reach a corner. Every one
+/// runs. (M60's range was the reflux 2–10 and the pumparounds 75–300 %, each
+/// key alone.)
 #[test]
-fn the_screen_range_runs_to_its_edges() {
-    let set_pumparounds = |engine: &mut Engine, column: NodeId, scale: f64| {
-        for (i, mw) in PUMPAROUND_MW.iter().enumerate() {
-            engine
-                .apply(Command::SetPumparoundDuty {
-                    node: column,
-                    pumparound: i as u32,
-                    duty: Watt(mw * scale * 1e6),
-                })
-                .unwrap();
+fn the_screen_range_runs_at_its_corners() {
+    for furnace_mw in [0.0, 40.0] {
+        for reflux_ratio in [1.5, 15.0] {
+            for scale in [0.5, 4.0] {
+                let mut engine = engine();
+                let (column, furnace) = (id(&engine, "column"), id(&engine, "furnace"));
+                run(&mut engine, 1000).expect("the plant settles");
+                engine
+                    .apply(Command::SetFurnaceDuty {
+                        node: furnace,
+                        duty: Watt(furnace_mw * 1e6),
+                    })
+                    .unwrap();
+                engine
+                    .apply(Command::SetRefluxRatio {
+                        node: column,
+                        reflux_ratio,
+                    })
+                    .unwrap();
+                for (i, mw) in PUMPAROUND_MW.iter().enumerate() {
+                    engine
+                        .apply(Command::SetPumparoundDuty {
+                            node: column,
+                            pumparound: i as u32,
+                            duty: Watt(mw * scale * 1e6),
+                        })
+                        .unwrap();
+                }
+                run(&mut engine, 1000).unwrap_or_else(|e| {
+                    panic!(
+                        "furnace {furnace_mw} MW, reflux {reflux_ratio}, pumparounds {scale}: {e}"
+                    )
+                });
+            }
         }
-    };
-    for (key, value) in [
-        ("furnace", 0.0),
-        ("furnace", 40.0),
-        ("reflux", 2.0),
-        ("reflux", 10.0),
-        ("pumparounds", 0.75),
-        ("pumparounds", 3.0),
-    ] {
-        let mut engine = engine();
-        let (column, furnace) = (id(&engine, "column"), id(&engine, "furnace"));
-        run(&mut engine, 1000).expect("the plant settles");
-        match key {
-            "furnace" => engine
-                .apply(Command::SetFurnaceDuty {
-                    node: furnace,
-                    duty: Watt(value * 1e6),
-                })
-                .unwrap(),
-            "reflux" => engine
-                .apply(Command::SetRefluxRatio {
-                    node: column,
-                    reflux_ratio: value,
-                })
-                .unwrap(),
-            _ => set_pumparounds(&mut engine, column, value),
-        }
-        run(&mut engine, 1000).unwrap_or_else(|e| panic!("{key} at {value}: {e}"));
     }
 }
 
