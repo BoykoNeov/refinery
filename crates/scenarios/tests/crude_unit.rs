@@ -59,6 +59,7 @@ fn the_crude_unit_runs() {
     let column = node(&snapshot, "column");
     let operation = column
         .column_operation
+        .as_ref()
         .expect("a heat-balance column reports");
     assert!(
         (0.55..0.75).contains(&operation.feed_vapour_fraction),

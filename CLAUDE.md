@@ -114,6 +114,8 @@ godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on scre
 godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
+godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated)
+godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated]
 ```
 
 ## Testing
@@ -152,12 +154,11 @@ godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto 
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M60** — a column fed hot from
-its furnace: a heat-balance cascade, the reflux that rises, pumparounds and a
-column screen (DESIGN §65; ROADMAP M60). **Latest closed: M59 (2026-10-15)**: hydrogen in
-the catalyst bed — a recycle loop, consumption, a hydrogen quench, depressuring,
-a trip that stops the oil, a wall that leaks hydrogen, two hydrogen plants on
-the reactor screen (DESIGN §64; A27 and A28 stay open; D14–D21 and F6 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — the next
+milestone is the user's choice. **Latest closed: M60 (2026-10-16)**: a column
+fed hot from its furnace — a heat-balance cascade, the reflux that rises past
+the column's limit, pumparounds, a realistic crude unit and a column screen
+(DESIGN §65; C5 taken for the heat-balance model; C6–C10 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

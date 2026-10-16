@@ -1,0 +1,218 @@
+//! Gates for the column screen's scripted timelines (M60.4, `demo/column.gd`).
+//!
+//! As `furnace_screen.rs` does for the furnace screen: the scene is
+//! demonstrated, not gated, but the story its `--auto` runs tell is — these
+//! tests send the scene's own command text through the same [`Session`] the
+//! gdext binding forwards to, at the ticks of its `TIMELINES`, and pin what each
+//! step is there to show. The plants' physics is gated in
+//! `crates/scenarios/tests` (`crude_unit.rs`, `heat_balance_column.rs`); these
+//! tests own only the timelines.
+//!
+//! **The command text is the scene's**: Godot's `JSON.stringify` sorts the keys
+//! and writes every number as a float, ids cast to int by the scene.
+
+use refinery_godot_ext::bridge::Session;
+use serde_json::Value;
+
+fn scenario_src(name: &str) -> String {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scenarios")
+        .join(name);
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()))
+}
+
+/// A loaded session and the ids the scene resolves at load.
+struct Screen {
+    session: Session,
+    furnace: i64,
+    column: i64,
+    feed_pipe: i64,
+}
+
+impl Screen {
+    /// `_load`'s resolution: a name missing from the plant halts the scene.
+    fn load(scenario: &str, furnace: &str, feed_pipe: &str, draws: &[&str]) -> Self {
+        let mut session = Session::default();
+        assert_eq!(session.load_scenario(&scenario_src(scenario)), "null");
+        let furnace = session.node_id(furnace);
+        let column = session.node_id("column");
+        let feed_pipe = session.edge_id(feed_pipe);
+        assert!(
+            furnace >= 0 && column >= 0 && feed_pipe >= 0,
+            "{scenario}: names"
+        );
+        for draw in draws {
+            assert!(session.edge_id(draw) >= 0, "{scenario} has no draw {draw}");
+        }
+        Screen {
+            session,
+            furnace,
+            column,
+            feed_pipe,
+        }
+    }
+
+    fn run_to(&mut self, tick: i64) {
+        while self.session.tick_index() < tick {
+            assert_eq!(
+                self.session.tick(),
+                "null",
+                "tick {}",
+                self.session.tick_index() + 1
+            );
+        }
+    }
+
+    fn send(&mut self, json: &str) {
+        assert_eq!(self.session.apply_command_json(json), "null", "{json}");
+    }
+
+    fn snapshot(&self) -> Value {
+        serde_json::from_str(&self.session.snapshot_json()).unwrap()
+    }
+
+    fn column_node(&self) -> Value {
+        self.snapshot()["nodes"][self.column as usize].clone()
+    }
+
+    /// (feed °C, flash share, reflux ran, condenser MW, reboiler MW)
+    fn reading(&self) -> (f64, f64, f64, f64, f64) {
+        let snapshot = self.snapshot();
+        let column = &snapshot["nodes"][self.column as usize];
+        let feed = snapshot["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"].as_i64() == Some(self.feed_pipe))
+            .unwrap()["stream"]["temperature"]
+            .as_f64()
+            .unwrap();
+        let op = &column["column_operation"];
+        (
+            feed - 273.15,
+            op["feed_vapour_fraction"].as_f64().unwrap(),
+            op["reflux_ratio"].as_f64().unwrap(),
+            column["column_duty"]["condenser_w"].as_f64().unwrap() / 1e6,
+            column["column_duty"]["reboiler_w"].as_f64().unwrap() / 1e6,
+        )
+    }
+}
+
+/// **The crude unit** (`AUTO_CRUDE`): the furnace up to 30 MW at 600 heats the
+/// feed and flashes more of it; the reflux down to 2 at 1 500 and the
+/// pumparounds to 150 % at 2 400 are run as set; the column publishes ten
+/// stage temperatures rising down the column.
+#[test]
+fn the_crude_unit_timeline() {
+    let mut screen = Screen::load(
+        "crude_unit.toml",
+        "furnace",
+        "transfer_line",
+        &[
+            "naphtha_draw",
+            "kerosene_draw",
+            "diesel_draw",
+            "gas_oil_draw",
+            "residue_draw",
+        ],
+    );
+    screen.run_to(600);
+    let (feed, flash, reflux, _, _) = screen.reading();
+    assert!((350.0..362.0).contains(&feed), "{feed}");
+    assert_eq!(reflux, 4.0);
+    let stages: Vec<f64> = screen.column_node()["column_operation"]["stage_temperatures_k"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t.as_f64().unwrap())
+        .collect();
+    assert_eq!(stages.len(), 10);
+    assert!(stages.windows(2).all(|w| w[1] > w[0]), "{stages:?}");
+
+    let furnace = screen.furnace;
+    screen.send(&format!(
+        r#"{{"cmd":"set_furnace_duty","duty":30000000.0,"node":{furnace}}}"#
+    ));
+    screen.run_to(1500);
+    let (hotter, more, _, _, _) = screen.reading();
+    assert!(hotter > feed + 10.0, "{hotter} after {feed}");
+    assert!(more > flash, "{more} after {flash}");
+
+    let column = screen.column;
+    screen.send(&format!(
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":2.0}}"#
+    ));
+    screen.run_to(2400);
+    assert_eq!(screen.reading().2, 2.0);
+
+    for (i, mw) in [15.0, 15.0, 10.0].iter().enumerate() {
+        screen.send(&format!(
+            r#"{{"cmd":"set_pumparound_duty","duty":{:.1},"node":{column},"pumparound":{i}}}"#,
+            mw * 1.5e6
+        ));
+    }
+    screen.run_to(3300);
+    assert_eq!(screen.reading().2, 2.0);
+}
+
+/// **The hot-feed column past its limit** (`AUTO_HOT`): the furnace to 70 MW
+/// at 600 and to 110 MW at 1 500 runs the reflux up past its setting of 2;
+/// the setting dropped to 0 at 2 400 changes nothing — the column runs at what
+/// the floor needs.
+#[test]
+fn the_hot_feed_timeline() {
+    let mut screen = Screen::load(
+        "crude_column_hot_feed.toml",
+        "preheater",
+        "hot_feed_line__downstream",
+        &["naphtha_draw", "distillate_draw", "bottoms_draw"],
+    );
+    let (furnace, column) = (screen.furnace, screen.column);
+    screen.run_to(600);
+    assert_eq!(screen.reading().2, 2.0);
+    screen.send(&format!(
+        r#"{{"cmd":"set_furnace_duty","duty":70000000.0,"node":{furnace}}}"#
+    ));
+    screen.run_to(1500);
+    let at_70 = screen.reading();
+    assert!(at_70.2 > 2.0, "{at_70:?}");
+    screen.send(&format!(
+        r#"{{"cmd":"set_furnace_duty","duty":110000000.0,"node":{furnace}}}"#
+    ));
+    screen.run_to(2400);
+    let at_110 = screen.reading();
+    assert!(at_110.2 > at_70.2 + 1.0, "{at_110:?} after {at_70:?}");
+    assert!(at_110.3 > at_70.3 + 10.0, "the condenser carries the heat");
+    screen.send(&format!(
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":0.0}}"#
+    ));
+    screen.run_to(3000);
+    let floor = screen.reading();
+    assert!(
+        (floor.2 - at_110.2).abs() < 1e-3 * at_110.2,
+        "set to 0, ran at {} where the floor needs {}",
+        floor.2,
+        at_110.2
+    );
+}
+
+/// **The overheated column** (`AUTO_OVERHEATED`): running above its setting of
+/// 2 from the start; set to 8 at 600, above what its floor needs, it runs as
+/// set.
+#[test]
+fn the_overheated_timeline() {
+    let mut screen = Screen::load(
+        "crude_column_overheated.toml",
+        "preheater",
+        "hot_feed_line__downstream",
+        &["naphtha_draw", "distillate_draw", "bottoms_draw"],
+    );
+    let column = screen.column;
+    screen.run_to(600);
+    assert!(screen.reading().2 > 3.0, "{:?}", screen.reading());
+    screen.send(&format!(
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":8.0}}"#
+    ));
+    screen.run_to(1200);
+    assert_eq!(screen.reading().2, 8.0);
+}

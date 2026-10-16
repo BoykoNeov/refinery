@@ -23950,8 +23950,12 @@ vapour. Four decisions, asked in plain words before anything was written:
 
 ### 65.0 Probed before the rules were offered (2026-10-15)
 
-Throwaway prototypes in a detached worktree, `W:\temp\claude\m60-probe\`
-(`crates/solvers/src/cascade.rs` patched; drivers in `W:\temp\claude\m60-scripts\`).
+Throwaway prototypes in a detached worktree, kept at M60's close in
+`tools/steptime/prototypes/m60_0/`: `probe_cascade.patch` (the probe's
+`crates/solvers/src/cascade.rs`, its modes chosen by `PROBE_*` environment
+variables), the drivers `run_demo_crude.py` and `run_crude_unit.py`, the
+feasibility map `envelope.py`, and the warm key walk `warm_key_walk.rs` (a
+throwaway test file, written for `crates/scenarios/tests/`).
 
 **Feed quality on constant molar overflow, two ways, and why neither.** With
 the feed's quality `q` setting the stripping section's flows (`L̄ = L + qF`,
@@ -24397,3 +24401,41 @@ crude unit's start aids removed (the relaxation, the first iteration on
 constant molar overflow, the warm vapour, the sharp seed). The sharp seed is
 now caught by the crude unit, not by M60.1's heavy fixture: the two aids that
 returned start that fixture without it.
+
+### 65.10 The column screen, built (M60.4)
+
+`demo/column.tscn` / `column.gd`, on three plants: key 1 the crude unit, key 2
+the hot-feed column, key 3 the overheated one. It draws the furnace (flames by
+its duty, the coil toward its tube limit), the transfer line into the feed
+stage, the column as one band per stage coloured and labelled by its
+temperature, the vapour each stage sends up as a bar beside it, the condenser
+with the reflux the column RAN at (marked RAISED, with its setting, when the
+floor lifted it), the reboiler, each pumparound on its stage, and every product
+as a bar of the slate's cuts with its flow and temperature; a panel with the
+feed's flash, the reflux set and run, both duties, the pumparounds, the
+furnace's books and the keys' safe range.
+
+- **Two new snapshot fields** on `column_operation`, heat-balance columns only:
+  `stage_temperatures_k` and `stage_vapour_mol_s` — the converged profile,
+  which every tick already computed (`CascadeProfile`). Absent everywhere
+  else, so every shipped plant is byte-identical.
+- **The keys** (Up/Down the furnace by 2.5 MW, W/S the reflux by 0.5, E/D the
+  pumparounds by 25 % of their declared duties) stop at each plant's safe
+  range — the user's decision (§65.9): the crude unit's furnace 0–40 MW,
+  reflux 2–10, pumparounds 75–300 %; the light columns' furnace 0–110 MW
+  (their coil under its tube limit), reflux 0–8 (any setting runs: the floor
+  lifts it). A key at the edge sends nothing and says so ("reflux stays at 2.0
+  — the edge of this plant's safe range"). A halt shows the engine's own
+  reason.
+- **Timelines**, each replayed by `crates/godot-ext/tests/column_screen.rs`
+  (3) with the scene's command text: the crude unit — the furnace to 30 MW at
+  600 (the feed 354 → 366 °C by 1 500, 66 → 69 % flashing), the reflux to 2 at
+  1 500 (the condenser 45.9 → 27.9 MW), the pumparounds to 150 % at 2 400, the
+  reflux key held at 2 at 3 000; the hot feed — the furnace to 70 MW at 600
+  (the reflux rises past 2 at tick 730, to 2.10) and to 110 MW at 1 500 (3.71,
+  the condenser 81 MW), the setting dropped to 0 at 2 400 changing nothing;
+  the overheated column — running at 3.32, set to 8 at 600 and run as set.
+- Recorded headless and windowed with screenshots, checked by eye: the stage
+  temperatures read 170 → 585 °C down the crude unit; on the hot feed at 110
+  MW the vapour bars below the feed stand at the floor and the reflux reads
+  RAISED.

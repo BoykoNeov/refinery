@@ -12,6 +12,44 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M60 is CLOSED (2026-10-16): a column fed hot from its furnace — a
+heat-balance cascade, the reflux that rises past the column's limit,
+pumparounds, a realistic crude unit and a column screen — `docs/DEFERRED.md`
+C5 taken for the heat-balance model, C6–C10 opened.** Asked after M59 as
+"what is next"; the user chose the columns, then the hot, part-vapour feed:
+until now a cascade column halted the run on a feed more than ~1.2 K off its
+bubble point, so the furnace in front of it could not be touched. Decided in
+plain words before anything was written (DESIGN §65): a new column model chosen
+in the file; past the limit the reflux rises; a screen; a realistic crude unit —
+then, when the probe showed it cannot run without them, pumparounds; then, when
+its range was measured, keys that stop at the safe range.
+- **M60.0, specified** (§65.0–65.6): probed first — a feed quality on
+  constant molar overflow is wrong for crude or inconsistent with the
+  reboiler's closure; the bubble-point method with its stage energy balances
+  agrees with the closure and costs the same.
+- **M60.1, the heat-balance cascade** (§65.7): `separation = "heat_balance"`,
+  each stage's vapour from its own energy balance, the feed's enthalpy on its
+  stage, the feed's flash share reported; the shared stage machinery lifted
+  out of `StageCascade` without changing an operation.
+  `crude_column_hot_feed.toml`: the feed at 250 °C, 41.5 % flashing, the
+  reboiler 40.5 MW against 80.3 saturated.
+- **M60.2, the reflux rises** (§65.8): a vapour floor of 20 % of the feed (a
+  game value) lifts the reflux past the limit; `SetRefluxRatio`.
+  `crude_column_overheated.toml`: running at 3.32 against a setting of 2.
+- **M60.3, pumparounds and the crude unit** (§65.9): side coolers on stages,
+  `SetPumparoundDuty`; `crude_unit.toml`, six cuts to a 560 °C residue, three
+  side draws above the feed, two-thirds of the feed flashing. Its start aids
+  came back (each measured needed) and a warm start carries the vapour.
+- **M60.4, the screen** (§65.10): `demo/column.tscn`, three plants, keys
+  stopping at each plant's safe range; the snapshot gains the stage
+  temperatures and vapour.
+- Corpus: 55 plants byte-identical on both fidelities at every slice; 58 now
+  (three new). The furnace census 29; 17 command variants.
+- **Left open**: C1–C4, C5 for the `"cascade"` model; new rows C6 the liquid
+  transfer line, C7 no steam stripping (the crude unit's reboiler near 587 °C),
+  C8 the reflux floor a game value, C9 the pumparound a side cooler, C10 the
+  start aids and the crude unit's range.
+
 **M59 is CLOSED (2026-10-15): hydrogen in the catalyst bed — a recycle loop
 through the beds, consumption, a hydrogen quench, depressuring, a trip that
 stops the oil, a wall that leaks hydrogen, and two hydrogen plants on the

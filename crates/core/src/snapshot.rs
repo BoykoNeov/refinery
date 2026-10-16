@@ -592,13 +592,22 @@ pub struct ColumnDuty {
 }
 
 /// How a heat-balance cascade column ran — see `NodeSnapshot::column_operation`.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ColumnOperation {
     /// The share of the feed's MOLES that is vapour after an adiabatic flash at
     /// the column's pressure [-], in `[0, 1]`.
     pub feed_vapour_fraction: f64,
     /// The molar reflux ratio `R = L/D` the column ran at [-].
     pub reflux_ratio: f64,
+    /// Each stage's temperature [K], top stage first, the reboiler last — the
+    /// converged profile (M60.4, docs/DESIGN.md §65.10). Empty when the pass
+    /// published no profile (an idle column).
+    #[serde(default)]
+    pub stage_temperatures_k: Vec<f64>,
+    /// The vapour leaving each stage upward [mol/s], in the same order; the
+    /// first is what the condenser takes. Empty when there is no profile.
+    #[serde(default)]
+    pub stage_vapour_mol_s: Vec<f64>,
 }
 
 /// One control loop's faceplate — what a frontend draws and what §7's rule

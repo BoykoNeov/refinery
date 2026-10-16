@@ -59,6 +59,7 @@ fn the_hot_feed_plant_runs_and_reports_its_flash() {
     );
     let operation = column(&hot)
         .column_operation
+        .as_ref()
         .expect("a heat-balance column reports how it ran");
     assert!(
         (0.3..0.55).contains(&operation.feed_vapour_fraction),
@@ -166,7 +167,7 @@ fn the_furnace_and_the_reflux_run_through_the_limit() {
         let snapshot = engine.snapshot();
         let node = column(&snapshot);
         (
-            node.column_operation.unwrap().reflux_ratio,
+            node.column_operation.as_ref().unwrap().reflux_ratio,
             node.column_duty.unwrap().condenser_w,
         )
     };
@@ -304,7 +305,7 @@ fn the_overheated_plant_runs_above_its_declared_reflux() {
         feed_temperature(&snapshot)
     );
     let node = column(&snapshot);
-    let ran = node.column_operation.unwrap().reflux_ratio;
+    let ran = node.column_operation.as_ref().unwrap().reflux_ratio;
     assert!(
         ran > 3.0,
         "the reflux should have risen well above 2, ran at {ran}"

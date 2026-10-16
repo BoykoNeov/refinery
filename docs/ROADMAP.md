@@ -9538,7 +9538,7 @@ key 5 and the shipped quench plant on key 6.
 rule ("close it, do so as a rule"). Close-out at the top of
 `docs/MILESTONES.md`. A27 and A28 stay open; D14–D21 and F6 new.
 
-## M60 — a column fed hot from its furnace: a heat-balance cascade, the reflux that rises, and pumparounds; ledger row C5; opened on a decision
+## M60 — **CLOSED** 2026-10-16 — a column fed hot from its furnace: a heat-balance cascade, the reflux that rises, and pumparounds; ledger row C5; opened on a decision
 
 Asked after M59 closed (2026-10-15) as "what is next"; offered six directions,
 the user chose the distillation columns ("4"), then the hot, part-vapour feed:
@@ -9629,3 +9629,22 @@ the settings. DESIGN §65.9.
   5.8 ms; none over.
 - Gates: pumparound unit tests (4), `crude_unit` (5), the bridge (17 variants);
   the furnace census 29. Mutations: twelve, all caught.
+
+### M60.4 — **LANDED** 2026-10-16: the column screen
+
+`demo/column.tscn`: the crude unit (key 1), the hot-feed column (2) and the
+overheated one (3). The furnace, the transfer line, the column's stages
+coloured by their temperatures with each stage's vapour beside it, the
+condenser with the reflux the column ran at (RAISED when the floor lifted it),
+the reboiler, the pumparounds, and every product as a bar of its cuts. Keys for
+the furnace, the reflux and the pumparounds, stopping at each plant's safe
+range. The snapshot gains each stage's temperature and vapour on heat-balance
+columns. DESIGN §65.10.
+
+- Gates: `column_screen.rs` (3), the scene's timelines with its command text.
+  Recorded headless and windowed with screenshots.
+- Corpus: 55 plants byte-identical on both fidelities; the three M60 files new.
+
+**M60 CLOSED 2026-10-16**, after all five slices landed, on the user's standing
+rule. Close-out at the top of `docs/MILESTONES.md`. C5 taken for the
+heat-balance model; C6–C10 new.

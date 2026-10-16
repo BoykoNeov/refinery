@@ -3504,15 +3504,23 @@ impl Engine {
                             reboiler_w: reboiler.value(),
                         }),
                     // Both-or-neither again, for the same reason as the duties.
-                    column_operation: self
-                        .node_states
-                        .column_separation
-                        .get(&id)
-                        .and_then(|s| s.feed_vapour_fraction.zip(s.reflux_ratio))
-                        .map(|(feed_vapour_fraction, reflux_ratio)| ColumnOperation {
+                    column_operation: self.node_states.column_separation.get(&id).and_then(|s| {
+                        let (feed_vapour_fraction, reflux_ratio) =
+                            s.feed_vapour_fraction.zip(s.reflux_ratio)?;
+                        let (stage_temperatures_k, stage_vapour_mol_s) = match &s.profile {
+                            Some(profile) => (
+                                profile.temperatures.iter().map(|t| t.value()).collect(),
+                                profile.vapour.clone(),
+                            ),
+                            None => (Vec::new(), Vec::new()),
+                        };
+                        Some(ColumnOperation {
                             feed_vapour_fraction,
                             reflux_ratio,
-                        }),
+                            stage_temperatures_k,
+                            stage_vapour_mol_s,
+                        })
+                    }),
                     // Absent wherever the criterion does not apply, which is
                     // three different sentences a frontend must read as
                     // "unknown" — see `NodeSnapshot::cavitation`.
