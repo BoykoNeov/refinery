@@ -72,3 +72,37 @@ furnace 65 MW, pumparounds 2.5 / 3.75 / 3.75 / 2.5 MW, declared reflux 3.
 7. **Books**: the published reboiler closure (which knows no steam) reads
    0.47 MW per kg/s = `S·cp_steam·(400 °C − top)` — the steam's sensible heat in
    minus out, exactly. The energy books close once steam is booked.
+
+# M62.0, after the user's water decisions (2026-10-16)
+
+The user chose ONE boiling water component, free water modelled everywhere,
+and steam into the column (reboiler kept) inside M62. Probed:
+
+8. **Unused steam and water components move nothing**: `crude_unit.toml` with
+   both added to the slate at zero, 2 000 ticks — every number in the first,
+   middle and last snapshots identical.
+9. **A pure steam line runs today** (a `phase = "gas"` steam, 10 bar, 400 °C,
+   a gas valve, a 1.8 bar destination): both solvers identical. The gas branch
+   heats the steam by the valve's `Δp/ρ` (+127 K here) — §64's known model
+   term; a line-flash vapour is not heated (§58 fork 6).
+10. **`crude_unit.toml` under `line_flash = "equilibrium"`, furnaces and
+    columns let through** (`water/crude_unit_flashing.toml`): the 8 cm
+    transfer line chokes on its vapour (feed 104 → 76 kg/s) and the column's
+    cold start refuses; at 40 cm it runs, both solvers identical, 126 kg/s.
+    Three findings: the furnace is not a flashing node (it heats a "liquid" at
+    its 341 °C liquid-equivalent where the boiling stream would stand near
+    284 °C at its 2.06 bar, so its coil reads the wrong fluid); EVERY column
+    draw carries the column node's feed vapour share (q = 0.428) — a draw is a
+    liquid at its own stage's temperature, so this is a bug to fix; and the hot
+    draws boil into 1-atm tanks (the naphtha tank vents 14.5 of its 27.8 kg/s,
+    partly the bug; the residue arrives at 587 °C). Real plants cool products
+    before storage; coolers are refused on a flashing plant today.
+11. **Free water, by hand** (`water/free_water_check.py`): water's vapour
+    pressure from Clausius–Clapeyron with a declared 40.65 kJ/mol reads steam
+    tables to 0.1 % at 100–150 °C, +3.9 % at 200, +9.1 % at 250, +14 % at
+    300 °C. Free water and oil boil together where `P_oil + P_w = P`: a heavy
+    naphtha boils at 174.3 °C dry at 1.8 bar, 110.7 °C wet. With one oil cut
+    the three-phase window is one temperature (Gibbs: two components, three
+    phases) — the water boils off in a jump, the M53 pure-cut case again; on a
+    three-cut naphtha with 5 mol % water it is a window of about 98–100 °C.
+    Above it every drop of water is vapour (`y_w·P < P_sat,w`).

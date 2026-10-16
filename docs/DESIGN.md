@@ -24769,3 +24769,265 @@ times the feed, convergence requires it within the bound, and a solve that runs
 out of iterations with only it unmet says so. **It never fired on a shipped
 plant**: the three M60 plants' fingerprints are M61.1's on both fidelities
 (`144a168d…`, `2a6d26ae…`, `bc2f12cd…` on Newton), 55 others byte-identical.
+
+## 67. Water as a real component — one boiling component, free water everywhere, and steam into the column (M62) — specified before building
+
+Asked after M61 closed (2026-10-16) as "what is next"; steam stripping (ledger
+row C7) was the planned M62 and the user said "go ahead". The steam probe
+(§67.0, findings 1–7) showed steam stripping works on M61's Newton; asked how
+steam enters the plant, the user chose **water as a real component** over a
+column setting, and the work was split: **M62 is water; M63 is steam stripping
+on it** (the reboiler held at zero, the cold start, the plant, the column
+screen's fourth plant). The decisions, each asked in plain words:
+
+1. **No vapour floor below the feed** ("whichever is more realistic"): a real
+   column with too little steam strips poorly and runs hot; it does not stop.
+2. **Water is a real component** on the plant graph, not a column setting.
+3. **The column screen gets a fourth plant** (M63).
+4. **Split: water first** (M62), steam stripping on it (M63).
+5. **One boiling water component** — water and steam are one slate member,
+   carried as vapour by the line flash (§58) — not a gas "steam" and a liquid
+   "water" joined by a conversion at the condenser. This takes the boiling
+   transfer line (C6) into M62: water can boil only on a flashing plant, so a
+   wet crude unit is a flashing plant with a furnace and a column on it.
+6. **Free water is modelled everywhere** — water and oil mix in any pipe, tank,
+   furnace or column, water never dissolving in the oil — not refused at load.
+7. **Steam into the column is M62** (the reboiler kept); M63 takes the
+   reboiler to zero.
+8. **Coolers on a flashing plant**: a cooler takes heat from a boiling stream
+   and part of it condenses — so products are cooled before their tanks.
+9. **A tank's outlet draws from the bottom**: the water layer first, then oil —
+   the water slug a real crude tank sends to its unit.
+10. **Free water on a column's trays is modelled**, not refused: where a tray
+    is colder than water's dew point, water stands on it and flows down.
+11. **Water declares a vapour heat capacity**, so a superheated steam supply
+    carries the heat steam tables give it.
+
+### 67.0 Probed before the rules were offered (2026-10-16)
+
+Throwaway prototypes in a detached worktree, kept in
+`tools/steptime/prototypes/m62_0/` with `FINDINGS.md` (every number below):
+`probe_steam.patch` and `m62_walk.rs` (steam as an inert vapour in M61's Newton,
+the reboiler's duty held, the reflux an unknown), the plants
+`crude_unit_steam_walk.toml` and `crude_unit_steam_cold.toml`, and under
+`water/` the hand check `free_water_check.py`.
+
+**Steam stripping, the M63 ground** (findings 1–7). Steam as an inert vapour —
+each stage's K-values at its oil partial pressure `P·V/(V+S)`, the steam's
+sensible heat in every stage balance, the bottom stage's balance an equation
+with the reboiler's duty held — walked warm from the crude unit: the reboiler
+reaches zero once the pumparounds come down with it (holding them, stage 1 runs
+dry at 22 MW: the heat the pumparounds take no longer comes in). Reboiler at
+zero, furnace 65 MW, pumparounds at a quarter:
+
+```text
+  steam kg/s   0.02   0.1    0.5    1      2      4      8
+  bottom °C    395.6  390.6  378.8  370.5  361.4  349.7  339.0
+```
+
+A real column's 8–10 lb of steam per barrel of residue is ~0.85 kg/s here
+(about 372 °C; a real atmospheric bottom reads ~340 °C). The temperature falls
+below the feed stage, as a stripping section's does. The floor (20 % of the
+feed, 98 mol/s) never binds above the feed (≥ 208 mol/s in every run); below
+it the oil vapour is 1–35 mol/s, so a floor counting steam would halt the
+column under ~1.6 kg/s (decision 1). With every pumparound off the column still
+runs: M61.0's "needs a pumparound above the top side draw" was an artefact of
+walking the reboiler down with 40 MW of pumparounds on (C7's item 2 corrected).
+A cold start needs a continuation from a column that keeps its reboiler, its
+side cooling 1.5–2 × the feed's latent heat flow spread over the stages above
+the feed (one crude measured; M63). Timing: mean 0.29–0.59 ms a tick, worst
+2.23 ms; the continuation's tick 1 about 19 ms.
+
+**Water** (findings 8–11):
+
+- Unused water and steam on the crude unit's slate move nothing — every number
+  of three snapshots identical.
+- A pure gas-phase steam line runs on both solvers today; the gas branch heats
+  it by the valve's `Δp/ρ` (+127 K), §64's known term. A line-flash vapour is
+  not heated (§58 fork 6) — decision 5's route avoids the artefact.
+- **The crude unit under the line flash** (no water; furnaces and columns let
+  through the refusal): its 8 cm transfer line chokes on vapour (104 → 76
+  kg/s) and the column's cold start refuses; widened to 40 cm it runs, both
+  solvers identical. Three things to build: **the furnace is not a flashing
+  node** (its coil heats a "liquid" at the 341 °C liquid-equivalent where the
+  boiling stream stands near 284 °C); **every column draw carries the column
+  node's feed vapour share** (q = 0.428 on all five — a bug: a draw is a liquid
+  at its own stage); **hot draws boil into 1-atm tanks** (decision 8).
+- **Free water by hand**: water's vapour pressure by Clausius–Clapeyron on a
+  declared 40.65 kJ/mol reads steam tables to 0.1 % at 100–150 °C, +3.9 % at
+  200, +9.1 % at 250, +14 % at 300 °C. Free water and oil boil together where
+  `P_oil + P_w = P`: a heavy naphtha boils at 174.3 °C dry, 110.7 °C wet, at
+  1.8 bar. With one oil cut the three-phase window is a single temperature (two
+  components, three phases); on a three-cut naphtha with 5 mol % water it spans
+  about 98–100 °C. Above it every drop of water is vapour.
+
+### 67.1 Fork 1 — water's own properties: a declared latent heat and a vapour heat capacity
+
+Water is a liquid-phase slate member (`density_kg_per_m3 = 998`) with new
+optional keys, available to any component:
+
+- **`dh_vap_j_per_mol`**: the latent heat at the normal boiling point. Under
+  Trouton it replaces `C·T_b` in BOTH `k_value` (the Clausius–Clapeyron
+  exponent) and `dh_vap` — the model's own consistency rule (`TroutonThermo::
+  dh_vap`: "the same number seen twice"). Water: 40 650 J/mol (recalled steam
+  table value at 100 °C).
+- **`cp_vapour_j_per_kg_k`**: the vapour's heat capacity. A vapour's enthalpy
+  becomes `h = cp·(T_b − T_REF) + λ_b + cp_v·(T − T_b)`, so its latent heat at
+  `T` is Kirchhoff's `λ(T) = λ_b + (cp_v − cp)·(T − T_b)`. Water: 2 000
+  J/(kg·K). **A stated inconsistency**: the K-value keeps Clausius–Clapeyron on
+  the constant `λ_b`, so the two halves of the Trouton identity part by
+  `(cp_v − cp)·(T − T_b)` — for water at 200 °C, λ 2 039 kJ/kg against steam
+  tables' 1 940, and the vapour pressure +3.9 %. A superheated 400 °C steam
+  supply then carries ~3 280 kJ/kg (steam tables 3 264) instead of 3 930.
+- **`free_water = true`** names water — at most one per slate. It is what every
+  flash reads to keep water out of the oil (§67.2). A name is not a property,
+  so the key, not the name, decides.
+- A component declaring none of the keys is untouched, bit for bit; every
+  shipped plant byte-identical on both fidelities.
+
+### 67.2 Fork 2 — free water in every flash
+
+Water never dissolves in the oil and the oil never dissolves in water (the
+standard "free water" approximation of refinery simulators). At `(T, P)` a
+mixture of oil cuts and water is in one of three states:
+
+```text
+  no vapour      Σ K_i·x_i + P_w/P < 1          oil liquid + free water
+  three phases   Σ K_i·x_i = 1 − P_w/P,         oil liquid + free water + vapour,
+                 y_w = P_w(T)/P                  the vapour saturated with water
+  two phases     Σ_oil z_i(K_i−1)/(1+β(K_i−1))  oil liquid + vapour holding all the
+                 + z_w/β = 0                     water, y_w·P < P_w(T)
+```
+
+(`K_i` the oil's Raoult K at the total pressure, `x` over the oil liquid only,
+`P_w` water's own vapour pressure; a three-phase flash with the water phase
+pure.) The same rule is applied wherever the engine flashes: the supply's
+isothermal flash and the isenthalpic flash of a valve, junction or tank (§58
+fork 2), the tank boil-off (`FlashBoilOff`), the bubble point and the column's
+stages (§67.5). Free water's appearance and disappearance are a second kink on
+a stream beside the oil's bubble point; the line flash's bisection on the
+energy is indifferent to kinks, and the flow solve's slope straddles each as it
+does the bubble point (§58 fork 3) — measured at M62.2, with Newton's and the
+game solver's iteration counts on the wet rundown.
+
+- **Free water is liquid**: a stream's liquid is oil plus free water, flowing at
+  the homogeneous density of the three (§58 fork 3's Wallis form with the two
+  liquids' volumes added).
+- **Fidelity by implementation** (rule 2): a slate with a `free_water` member
+  requires `thermo = "trouton"` and `line_flash = "equilibrium"`; the
+  `constant_alpha` model, the `"cascade"` column and the cut-point splitter
+  refuse it by name. With no `free_water` member the free-water path never
+  runs.
+
+### 67.3 Fork 3 — a tank's water layer, drawn first
+
+A tank holds what arrives as two layers: free water at the bottom, oil above,
+one temperature. Its inventory and composition are unchanged as STATE (the
+water is a slate member of the tank's composition); the layers are what its
+outlet reads: **the outlet draws the bottom layer** — free water while any
+stands, then oil (decision 9). The tank's level is the sum of both layers'
+volumes; its snapshot gains the water layer's height. Boil-off is the
+three-phase flash at the tank's pressure (§67.2). The water slug a real tank
+sends to its unit falls out of this: a crude tank with water in it feeds that
+water to the furnace first.
+
+### 67.4 Fork 4 — heat on a boiling stream: the furnace and the cooler flash their own contents; each column draw its own
+
+The two heat nodes on a flashing plant become flashing nodes: the stream they
+pass is settled by the isenthalpic flash at the node's pressure from its mixed
+inflow enthalpy PLUS the heat added (a furnace's coil duty) or removed (a
+cooler's duty), and the node's temperature is that flash's temperature — what
+the coil sees (`UA·(T_coil − T)`) and what the next pipe flows at. On a furnace
+this is C6's two-phase transfer line; on a cooler it is a condensing cooler
+(decision 8). A pipe's ambient exchange stays on the sensible term (§58's
+listed simplification).
+
+**A column's draws are liquids at their own stage**: each draw's stream is
+flashed from its own enthalpy at the draw's pressure, not handed the column
+node's feed share (the probe's bug, §67.0). A product leaves its stage at its
+bubble point, so a draw boils only where its pipe drops its pressure.
+
+The flashing-plant refusal (`require_line_flash_plant`) lifts for furnaces,
+coolers and columns; vessels, relief valves, exchangers, reactors, beds,
+compressors and leaks stay refused as §58 left them.
+
+### 67.5 Fork 5 — water through the column: an inert vapour, free water on the trays, decanted at the condenser
+
+In the heat-balance cascade water is a separate balance beside the oil's:
+
+- **Inert in the vapour above its dew point**: on a stage where `y_w·P <
+  P_w(T_j)` the water is all vapour, the oil's K-values taken at the total
+  pressure with `Σ y_oil = 1 − y_w` — the steam probe's partial pressure in its
+  general form.
+- **Free water on a tray** where the vapour would pass saturation: `y_w =
+  P_w(T_j)/P`, the rest stands as free water and flows down with the oil
+  liquid, to re-boil on a hotter tray (decision 10). In Newton this is an
+  active set, as the floor is (§66.3): per stage, either the free water is
+  zero and the water vapour an unknown, or the vapour is saturated and the free
+  water an unknown; a stage switches when its free water would turn negative or
+  its vapour pass saturation.
+- **Decanted at the condenser**: the total condenser condenses oil and water;
+  the water settles out of the reflux drum and leaves by a **water draw** (its
+  own outlet and pipe, at the condenser's temperature); the reflux and the
+  distillate are oil.
+- **The feed's water** enters its stage with the feed's enthalpy (§65.7) and
+  joins the stage's water balance.
+- **The reboiler's liquid** is oil and any free water reaching it; the bottoms
+  carries what free water arrives (decided by the active set — at the shipped
+  temperatures none does).
+
+### 67.6 Fork 6 — steam into the column
+
+A column declares **inlets by pipe**: the feed, and a steam inlet on a stage.
+`ColumnPass::feed_flow`, the inflow sum, is split by edge — summing the steam
+into the feed would be wrong. The steam supply is a source of water at its
+pressure and temperature, flashed isothermally (§58 fork 2: superheated, all
+vapour), through a valve and a pipe whose density is the vapour's; **the steam
+rate is a flow result** of the supply's pressure and the valve's opening, as on
+a real unit. Its water enters the named stage as vapour with its enthalpy
+(§67.1) and joins §67.5's water balance. M62 keeps the reboiler; M63 holds it
+at zero.
+
+### 67.7 What moves, and what is deferred
+
+**Moves**: nothing shipped. Every existing plant has no `free_water` member, no
+vapour heat capacity, no latent override and no steam inlet, and every rule
+above is gated on those; all 58 plants byte-identical on both fidelities at
+every slice. New plants carry the new behaviour.
+
+**Taken**: C6 (the boiling transfer line), by M62.4 for a flashing plant.
+
+Deferred, each to a ledger row at M62's close:
+
+- Water's vapour pressure by Clausius–Clapeyron on a constant latent heat
+  (+9 % at 250 °C, +14 % at 300 °C), and the Kirchhoff/Trouton inconsistency
+  §67.1 states.
+- Water dissolved in oil and oil in water — the free-water approximation.
+  Emulsions, desalting and salt.
+- A gas-phase component's `Δp/ρ` heating through a valve (§64; probe finding
+  9) — not touched, but now beside a line-flash vapour that is not heated.
+- The column's cold start on a wet plant leans on M61's fixed point — measured
+  at M62.5.
+- Steam stripping proper: the reboiler at zero, its cold start, the plant and
+  the screen — M63.
+
+### 67.8 The slices
+
+- **M62.1 — water's own properties.** `dh_vap_j_per_mol`,
+  `cp_vapour_j_per_kg_k` and `free_water` on a component (§67.1); gates against
+  steam tables (vapour pressure, latent heat, a superheated supply's enthalpy);
+  every plant byte-identical.
+- **M62.2 — free water in the flashes.** The three-state flash (§67.2) in the
+  line flash, the bubble point and the boil-off; the refusals; a wet rundown
+  plant (wet naphtha through a valve to a tank), gated against
+  `free_water_check.py`; iteration counts on both solvers; the books.
+- **M62.3 — a tank's water layer.** Two layers, the outlet from the bottom, the
+  snapshot's water height (§67.3); a slug story plant.
+- **M62.4 — heat on a boiling stream.** The furnace and the cooler as flashing
+  nodes, each column draw its own state (§67.4); the crude unit as a flashing
+  plant (a wide transfer line, product coolers) — C6.
+- **M62.5 — water through the column.** The water balance, free water on the
+  trays as an active set, the condenser's water draw (§67.5); a wet crude feed.
+- **M62.6 — steam into the column.** Inlets by pipe, the steam supply line,
+  the steam's water on its stage (§67.6); the wet crude unit with steam and its
+  reboiler — the plant M63 starts from.

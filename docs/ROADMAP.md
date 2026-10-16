@@ -9748,3 +9748,26 @@ cost, deferred). The user's decisions, in plain words:
 3. **The column screen gets a fourth plant**, the steam-stripped crude unit.
 4. **Split: water first.** M62 makes water a real component; **M63 is steam
    stripping on it**, with the screen. The steam probe above is M63's ground.
+5. Asked how water is represented and how far: **one boiling water
+   component** (water and steam one slate member, vapour by the line flash —
+   which takes the boiling transfer line, C6, into M62); **free water modelled
+   everywhere**, water never dissolving in the oil; **steam into the column in
+   M62** with the reboiler kept (M63: the reboiler at zero, the cold start, the
+   plant, the screen).
+6. After probing the crude unit under the line flash and free water by hand:
+   **coolers on a flashing plant** (products cooled before their tanks); **a
+   tank's outlet draws from the bottom**, water first; **free water on the
+   column's trays modelled**; **water declares a vapour heat capacity**.
+
+### M62.0 — **SPECIFIED** 2026-10-16: the design note — M62 stays OPEN
+
+DESIGN §67. Probed first (`tools/steptime/prototypes/m62_0/`, findings 8–11):
+unused water on the crude unit's slate moves nothing; the crude unit under the
+line flash needs a wide transfer line (8 cm chokes: 104 → 76 kg/s), its furnace
+is not a flashing node, every column draw carries the feed's vapour share (a
+bug), and its hot draws boil into their tanks; water's vapour pressure on a
+declared 40.65 kJ/mol reads steam tables to 0.1 % at 100–150 °C, +14 % at
+300 °C; free water lowers a heavy naphtha's boiling point at 1.8 bar from
+174.3 to 110.7 °C. Slices: M62.1 water's own properties, M62.2 free water in
+the flashes, M62.3 a tank's water layer, M62.4 heat on a boiling stream (C6),
+M62.5 water through the column, M62.6 steam into the column. No code changed.
