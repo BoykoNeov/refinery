@@ -59,6 +59,8 @@ fn slate(cuts: &[(&str, f64, f64)]) -> Slate {
                 cp: JPerKgK(2000.0),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             })
             .collect(),
     )

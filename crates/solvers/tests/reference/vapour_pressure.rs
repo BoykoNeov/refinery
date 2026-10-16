@@ -90,6 +90,8 @@ fn hexane_slate() -> Slate {
         cp: JPerKgK(2260.0),
         cp_shape: None,
         phase: Phase::Liquid,
+        dh_vap: None,
+        cp_vapour: None,
     }])
     .unwrap()
 }

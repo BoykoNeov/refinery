@@ -21,8 +21,8 @@ use refinery_core::traits::{
     SeparationModel, ThermoModel,
 };
 use refinery_core::units::{
-    CubicMeter, JPerK, JPerKg, JPerKgK, Kelvin, Kg, KgPerM3, KgPerMol, KgPerSec, Meter, Seconds,
-    SquareMeter, Watt, WattPerKelvin, P_ATM, T_AMBIENT,
+    CubicMeter, JPerK, JPerKg, JPerKgK, JPerMol, Kelvin, Kg, KgPerM3, KgPerMol, KgPerSec, Meter,
+    Seconds, SquareMeter, Watt, WattPerKelvin, P_ATM, T_AMBIENT,
 };
 use std::collections::BTreeMap;
 
@@ -3398,7 +3398,11 @@ fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
         .into_iter()
         .chain(def.cp_j_per_kg_k.map(|c| ("cp_j_per_kg_k", c)))
         .chain(def.density_kg_per_m3.map(|d| ("density_kg_per_m3", d)))
-        {
+        .chain(def.dh_vap_j_per_mol.map(|l| ("dh_vap_j_per_mol", l)))
+        .chain(
+            def.cp_vapour_j_per_kg_k
+                .map(|c| ("cp_vapour_j_per_kg_k", c)),
+        ) {
             if !value.is_finite() || value <= 0.0 {
                 return Err(SimError::Scenario(format!(
                     "component '{}' has a non-positive or non-finite {field} \
@@ -3429,6 +3433,31 @@ fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
             }
             _ => {}
         }
+        // A gas never condenses here (its phase is the component's, §3a), so a
+        // latent heat or a vapour heat capacity on one is a number nothing reads.
+        if component_phase(def)? == Phase::Gas {
+            if let Some(key) = [
+                ("dh_vap_j_per_mol", def.dh_vap_j_per_mol.is_some()),
+                ("cp_vapour_j_per_kg_k", def.cp_vapour_j_per_kg_k.is_some()),
+            ]
+            .into_iter()
+            .find_map(|(key, declared)| declared.then_some(key))
+            {
+                return Err(SimError::Scenario(format!(
+                    "gas component '{}' declares {key}, which nothing reads: a gas                      component is gas everywhere and never boils or condenses                      (docs/DESIGN.md §67.1). Remove the key.",
+                    def.name
+                )));
+            }
+        }
+        // A vapour heat capacity beside a cp SHAPE would need Kirchhoff's law on
+        // a shaped liquid — a pairing no plant asks for, so it is refused rather
+        // than given a meaning nothing tests.
+        if def.cp_vapour_j_per_kg_k.is_some() && def.declares_cp_shape() {
+            return Err(SimError::Scenario(format!(
+                "component '{}' declares cp_vapour_j_per_kg_k beside a cp shape: the                  vapour heat capacity is defined against the constant cp_j_per_kg_k                  (docs/DESIGN.md §67.1). Declare one or the other.",
+                def.name
+            )));
+        }
     }
     Slate::new(
         defs.iter()
@@ -3456,6 +3485,8 @@ fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
                     }),
                     cp_shape: component_cp_shape(d)?,
                     phase: component_phase(d)?,
+                    dh_vap: d.dh_vap_j_per_mol.map(JPerMol),
+                    cp_vapour: d.cp_vapour_j_per_kg_k.map(JPerKgK),
                 })
             })
             .collect::<Result<Vec<_>, SimError>>()?,

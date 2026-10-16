@@ -237,6 +237,8 @@ fn methane() -> Slate {
         cp: JPerKgK(2220.0),
         cp_shape: None,
         phase: refinery_core::components::Phase::Gas,
+        dh_vap: None,
+        cp_vapour: None,
     }])
     .expect("single-component gas slate")
 }

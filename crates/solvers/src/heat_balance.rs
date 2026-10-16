@@ -1145,6 +1145,8 @@ mod tests {
                 cp: JPerKgK(cp),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             })
             .collect(),
         )
@@ -1614,6 +1616,8 @@ mod start_tests {
                 cp: JPerKgK(2000.0),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             })
             .collect(),
         )
@@ -1712,6 +1716,8 @@ mod pumparound_tests {
                 cp: JPerKgK(2000.0),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             })
             .collect(),
         )
@@ -1949,6 +1955,8 @@ mod newton_tests {
                 cp: JPerKgK(2000.0),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             })
             .collect(),
         )
@@ -2137,6 +2145,8 @@ mod newton_tests {
                         cp: JPerKgK(*cp),
                         cp_shape: None,
                         phase: Phase::Liquid,
+                        dh_vap: None,
+                        cp_vapour: None,
                     })
                     .collect(),
             )

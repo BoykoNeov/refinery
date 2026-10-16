@@ -250,6 +250,8 @@ mod tests {
                     phase: Phase::Liquid,
                     cp: JPerKgK(2000.0),
                     cp_shape: None,
+                    dh_vap: None,
+                    cp_vapour: None,
                 })
                 .collect(),
         )

@@ -49,6 +49,8 @@ fn fcc_slate() -> Slate {
         phase: Phase::Liquid,
         cp: JPerKgK(cp),
         cp_shape: None,
+        dh_vap: None,
+        cp_vapour: None,
     };
     Slate::new(vec![
         cut("gas", 233.15, 0.030, 400.0, 2500.0),

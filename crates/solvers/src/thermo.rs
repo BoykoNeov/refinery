@@ -115,8 +115,24 @@ impl TroutonThermo {
     /// `k_value(…, P_ATM)` and multiplies: `K = Psat/P` makes that exact, and it
     /// is how the envelope gate gets its number.
     fn saturation_pressure(&self, slate: &Slate, component: usize, temperature: Kelvin) -> f64 {
-        let tb = slate.get(component).tb.value();
-        P_ATM.value() * ((self.trouton_constant / R_GAS) * (1.0 - tb / temperature.value())).exp()
+        let cut = slate.get(component);
+        let tb = cut.tb.value();
+        match cut.dh_vap {
+            // Trouton's rule, written as it always was so every undeclared cut's
+            // vapour pressure is the same float it was before M62.1.
+            None => {
+                P_ATM.value()
+                    * ((self.trouton_constant / R_GAS) * (1.0 - tb / temperature.value())).exp()
+            }
+            // A declared latent heat in the same Clausius–Clapeyron integral:
+            // ln(Psat/P_atm) = (Δh_vap/R)·(1/tb − 1/T), Δh_vap held constant
+            // (M62.1, docs/DESIGN.md §67.1). The overflow bound above holds with
+            // `Δh_vap/(R·tb)` in place of `C/R`.
+            Some(latent) => {
+                P_ATM.value()
+                    * ((latent.value() / R_GAS) * (1.0 / tb - 1.0 / temperature.value())).exp()
+            }
+        }
     }
 }
 
@@ -171,6 +187,14 @@ impl ThermoModel for TroutonThermo {
     /// together; the parameter is in the signature so that swap needs no trait
     /// churn.
     ///
+    /// **One exception, declared and stated** (M62.1, docs/DESIGN.md §67.1): a
+    /// cut declaring `cp_vapour` gets Kirchhoff's `λ(T) = λ_b + (cp_v − cp)·M·(T
+    /// − tb)` here while its K-value keeps `λ_b`. For water that buys a steam
+    /// supply's enthalpy within half a percent of steam tables, where the
+    /// constant latent heat over-states it by a fifth; the price is the
+    /// identity above failing by `(cp_v − cp)·M·(T − tb)` for that cut alone.
+    /// Every cut that declares no `cp_vapour` keeps it exactly.
+    ///
     /// The magnitude rests on the same single fitted constant `k_value` does,
     /// with the same honesty about it (DESIGN §5, correction 6): `tb` is slate
     /// data, `C` is one empirical number. Here it is not even attenuated —
@@ -188,15 +212,40 @@ impl ThermoModel for TroutonThermo {
         // correlation is integrated from keeps the guard honest without
         // implying a dependence.
         check_state(slate, component, temperature, P_ATM, "trouton")?;
-        // Trouton's rule: Δs_vap(tb) ≈ C, so Δh_vap = C·tb.
-        let dh = self.trouton_constant * slate.get(component).tb.value();
+        let cut = slate.get(component);
+        // Trouton's rule: Δs_vap(tb) ≈ C, so Δh_vap = C·tb — or the file's own
+        // latent heat at tb (M62.1), the number `saturation_pressure` uses.
+        let at_boiling = match cut.dh_vap {
+            None => self.trouton_constant * cut.tb.value(),
+            Some(latent) => latent.value(),
+        };
+        // A declared VAPOUR heat capacity moves the latent heat with temperature
+        // (Kirchhoff's law: dλ/dT = c_p,vapour − c_p,liquid, per mole), so that a
+        // vapour's enthalpy `h_liquid(T) + λ(T)` rises along `cp_vapour` above
+        // tb — a superheated steam supply carries steam tables' heat rather than
+        // liquid water's (M62.1, docs/DESIGN.md §67.1). The K-value keeps the
+        // constant `at_boiling`: the stated inconsistency of §67.1, which this
+        // method's note above names as the rule a T-dependent form breaks.
+        let dh = match cut.cp_vapour {
+            None => at_boiling,
+            Some(cp_vapour) => {
+                at_boiling
+                    + (cp_vapour.value() - cut.cp.value())
+                        * cut.molar_mass.value()
+                        * (temperature.value() - cut.tb.value())
+            }
+        };
         if !dh.is_finite() || dh <= 0.0 {
             return Err(SimError::NonFiniteState {
                 location: format!(
-                    "trouton dh_vap for '{}' (tb = {} K, C = {})",
-                    slate.get(component).name,
-                    slate.get(component).tb.value(),
-                    self.trouton_constant
+                    "trouton dh_vap for '{}' at {} K (tb = {} K, C = {}, declared Δh_vap {:?}, \
+                     vapour cp {:?}) is {dh} J/mol: a latent heat must be positive",
+                    cut.name,
+                    temperature.value(),
+                    cut.tb.value(),
+                    self.trouton_constant,
+                    cut.dh_vap.map(|l| l.value()),
+                    cut.cp_vapour.map(|c| c.value()),
                 ),
             });
         }
@@ -521,6 +570,8 @@ mod tests {
                     cp: JPerKgK(2000.0),
                     cp_shape: None,
                     phase: Phase::Liquid,
+                    dh_vap: None,
+                    cp_vapour: None,
                 })
                 .collect(),
         )
@@ -969,6 +1020,8 @@ mod tests {
                 cp: JPerKgK(2200.0),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             },
             PseudoComponent {
                 name: "heavy".into(),
@@ -978,6 +1031,8 @@ mod tests {
                 cp: JPerKgK(2100.0),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             },
         ])
         .unwrap();

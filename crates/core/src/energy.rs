@@ -3559,6 +3559,8 @@ mod tests {
                 cp: JPerKgK(cp),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             }
         }
 
@@ -4476,6 +4478,8 @@ mod tests {
                 cp: JPerKgK(cp),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             };
             Slate::new(vec![cut("feed_lump", 2000.0), cut("product_lump", 3000.0)]).unwrap()
         }
@@ -4698,6 +4702,8 @@ mod tests {
                 cp: JPerKgK(cp),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             };
             Slate::new(vec![
                 cut("feed_lump", FEED_CP, FEED_DENSITY),
@@ -5067,6 +5073,8 @@ mod tests {
                 cp: JPerKgK(3200.0),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             };
             Slate::new(vec![cut("heavy", 600.0), cut("light", 400.0)]).unwrap()
         }

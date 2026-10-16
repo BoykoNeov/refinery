@@ -25031,3 +25031,45 @@ Deferred, each to a ledger row at M62's close:
 - **M62.6 — steam into the column.** Inlets by pipe, the steam supply line,
   the steam's water on its stage (§67.6); the wet crude unit with steam and its
   reboiler — the plant M63 starts from.
+
+### 67.9 Water's own properties, built (M62.1)
+
+As §67.1 specifies, with one correction.
+
+- **`PseudoComponent::dh_vap`** [J/mol] and **`cp_vapour`** [J/(kg·K)], both
+  optional and skipped in serialisation when absent; the plant file's
+  `dh_vap_j_per_mol` and `cp_vapour_j_per_kg_k`. **`TroutonThermo`** reads
+  them: the vapour pressure integrates Clausius–Clapeyron on the declared latent
+  heat, `P_atm·exp[(λ_b/R)(1/tb − 1/T)]`, and `dh_vap(T)` is `λ_b + (cp_v −
+  cp)·M·(T − tb)`. An undeclared cut takes the expressions it always took,
+  written as they were, so its floats are unchanged.
+- **Refused**, each by name: either key under any model but `thermo =
+  "trouton"`; either on a gas component; `cp_vapour_j_per_kg_k` beside a `cp`
+  shape; a non-positive or non-finite value.
+- **Corrected while building**: `free_water = true` moves to M62.2. On its own
+  it would change nothing — no flash reads it until M62.2 teaches them free
+  water — and a key that changes nothing is the number-nothing-reads this
+  workspace refuses.
+
+**Measured against steam tables** (IAPWS-IF97): with 40 650 J/mol water's
+vapour pressure is within 0.2 % at 100 and 150 °C and 4 % at 200 °C, where
+Trouton's rule reads 26 % low at 150 °C; Kirchhoff's latent heat is 2 038 kJ/kg
+at 200 °C against the table's 1 940.7; a 10 bar, 400 °C steam supply carries
+3 275 kJ/kg against the table's 3 263.9 (0.3 %), and 3 931 on the liquid's
+capacity alone (+20 %). Through a valve to 1.8 bar on a flashing plant the
+steam arrives with the same enthalpy, all vapour, on both solvers.
+
+**Gates**: `crates/solvers/tests/reference/water.rs` (4: the vapour pressure
+against the table; the declared latent heat one number seen twice — `K = 1` at
+`tb` and `P_atm`, `dh_vap(tb)` the declared number, the slope of `ln K` on
+`1/T` exactly `−λ/R`; Kirchhoff's slope and the vapour pressure untouched by
+`cp_vapour`; the superheated supply's enthalpy, with and without
+`cp_vapour`); `crates/scenarios/tests/water_properties.rs` (2: a steam line
+on both solvers carries the table's enthalpy through its valve; every refusal
+by name).
+
+**Mutations**: seven, all caught by the two gate files alone — the vapour
+pressure on Trouton despite a declared latent heat, the latent heat on Trouton
+despite one, Kirchhoff's term dropped, its sign flipped, the loader dropping
+the key, the Trouton-only refusal disabled, the gas refusal disabled.
+**Corpus**: 58 of 58 plants byte-identical on both fidelities.

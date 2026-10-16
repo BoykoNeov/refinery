@@ -160,6 +160,8 @@ impl Fluid {
                 cp: JPerKgK(2220.0),
                 cp_shape: None,
                 phase: refinery_core::components::Phase::Gas,
+                dh_vap: None,
+                cp_vapour: None,
             },
             PseudoComponent {
                 name: "propane".into(),
@@ -169,6 +171,8 @@ impl Fluid {
                 cp: JPerKgK(1670.0),
                 cp_shape: None,
                 phase: refinery_core::components::Phase::Gas,
+                dh_vap: None,
+                cp_vapour: None,
             },
         ])
         .expect("two-component gas slate");

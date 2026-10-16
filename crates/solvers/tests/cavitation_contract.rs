@@ -110,6 +110,8 @@ fn one_cut_slate() -> Slate {
         phase: Phase::Liquid,
         cp: JPerKgK(2000.0),
         cp_shape: None,
+        dh_vap: None,
+        cp_vapour: None,
     }])
     .expect("a one-component slate is valid")
 }

@@ -60,6 +60,8 @@ fn hydrogen() -> Slate {
         density: None,
         cp: JPerKgK(CP_H2),
         cp_shape: None,
+        dh_vap: None,
+        cp_vapour: None,
     }])
     .expect("a one-gas slate")
 }

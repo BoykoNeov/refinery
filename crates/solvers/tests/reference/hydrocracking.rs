@@ -39,6 +39,8 @@ fn slate() -> Slate {
                 phase: Phase::Liquid,
                 cp: JPerKgK(3200.0),
                 cp_shape: None,
+                dh_vap: None,
+                cp_vapour: None,
             })
             .collect(),
     )

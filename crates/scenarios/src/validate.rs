@@ -543,6 +543,31 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
     require_compatible_heat_capacity(scenario)?;
     require_line_flash_plant(scenario)?;
     require_gas_fill_time_on_flashing_plant(scenario)?;
+    require_trouton_for_declared_latent(scenario)?;
+    Ok(())
+}
+
+/// A component's `dh_vap_j_per_mol` and `cp_vapour_j_per_kg_k` are read by
+/// `thermo = "trouton"` alone (M62.1, docs/DESIGN.md §67.1): the constant model
+/// has no latent heat at all and the constant-alpha model takes its K-values
+/// from the file, so under either the keys would be numbers nothing reads.
+pub(crate) fn require_trouton_for_declared_latent(scenario: &ScenarioFile) -> Result<(), SimError> {
+    if scenario.fidelity.thermo == "trouton" {
+        return Ok(());
+    }
+    for def in &scenario.components {
+        for (key, declared) in [
+            ("dh_vap_j_per_mol", def.dh_vap_j_per_mol.is_some()),
+            ("cp_vapour_j_per_kg_k", def.cp_vapour_j_per_kg_k.is_some()),
+        ] {
+            if declared {
+                return Err(SimError::Scenario(format!(
+                    "component '{}' declares {key}, but this plant selects thermo = \"{}\":                      only thermo = \"trouton\" reads a component's own latent heat or vapour                      heat capacity, so the number would change nothing (docs/DESIGN.md §67.1).                      Select thermo = \"trouton\", or remove {key}.",
+                    def.name, scenario.fidelity.thermo
+                )));
+            }
+        }
+    }
     Ok(())
 }
 

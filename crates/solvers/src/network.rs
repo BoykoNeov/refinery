@@ -3536,6 +3536,8 @@ mod density_memo_tests {
             cp: JPerKgK(cp),
             cp_shape: None,
             phase: Phase::Liquid,
+            dh_vap: None,
+            cp_vapour: None,
         };
         Slate::new(vec![
             cut("light_naphtha", 80.0, 0.100, 680.0, 2200.0),

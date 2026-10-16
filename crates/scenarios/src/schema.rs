@@ -101,6 +101,18 @@ pub struct ComponentDef {
     /// files bit-identical rather than merely still-loading.
     #[serde(default)]
     pub phase: Option<String>,
+    /// The latent heat of vaporization at the normal boiling point [J/mol]
+    /// (M62.1, docs/DESIGN.md §67.1). Absent means Trouton's `C·tb`. Read by
+    /// `thermo = "trouton"` alone, in its vapour pressure and its latent heat
+    /// both; refused under any other model and on a gas.
+    #[serde(default)]
+    pub dh_vap_j_per_mol: Option<f64>,
+    /// The vapour's heat capacity [J/(kg·K)] (M62.1, docs/DESIGN.md §67.1):
+    /// the latent heat then follows Kirchhoff's law above and below `tb`.
+    /// Absent means the vapour rides on `cp_j_per_kg_k`. Same refusals as
+    /// `dh_vap_j_per_mol`, and refused beside a `cp` shape.
+    #[serde(default)]
+    pub cp_vapour_j_per_kg_k: Option<f64>,
 }
 
 impl ComponentDef {

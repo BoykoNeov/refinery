@@ -47,6 +47,8 @@ fn shaped_slate() -> Slate {
         cp: JPerKgK(s.at_datum(T_REF).0),
         cp_shape: Some(s),
         phase: Phase::Gas,
+        dh_vap: None,
+        cp_vapour: None,
     }])
     .expect("a one-cut slate")
 }
@@ -62,6 +64,8 @@ fn flat_slate() -> Slate {
         cp: JPerKgK(2220.0),
         cp_shape: None,
         phase: Phase::Gas,
+        dh_vap: None,
+        cp_vapour: None,
     }])
     .expect("a one-cut slate")
 }
@@ -648,6 +652,8 @@ fn a_partly_shaped_mixture_is_refused_rather_than_silently_weighted() {
             cp: JPerKgK(shaped.at_datum(T_REF).0),
             cp_shape: Some(shaped),
             phase: Phase::Gas,
+            dh_vap: None,
+            cp_vapour: None,
         },
         PseudoComponent {
             name: "flat".into(),
@@ -657,6 +663,8 @@ fn a_partly_shaped_mixture_is_refused_rather_than_silently_weighted() {
             cp: JPerKgK(1700.0),
             cp_shape: None,
             phase: Phase::Gas,
+            dh_vap: None,
+            cp_vapour: None,
         },
     ])
     .expect("a two-cut slate");

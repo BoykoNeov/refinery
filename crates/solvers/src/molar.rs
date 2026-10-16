@@ -153,6 +153,8 @@ mod tests {
                     cp: JPerKgK(2000.0),
                     cp_shape: None,
                     phase: Phase::Gas,
+                    dh_vap: None,
+                    cp_vapour: None,
                 })
                 .collect(),
         )
@@ -171,6 +173,8 @@ mod tests {
                     cp: JPerKgK(2000.0),
                     cp_shape: None,
                     phase: Phase::Liquid,
+                    dh_vap: None,
+                    cp_vapour: None,
                 })
                 .collect(),
         )
@@ -289,6 +293,8 @@ mod tests {
             cp: JPerKgK(2000.0),
             cp_shape: None,
             phase: Phase::Liquid,
+            dh_vap: None,
+            cp_vapour: None,
         }])
         .unwrap();
         let message = MoleFractions::from_mass(&Composition::pure(1, 0), &slate)

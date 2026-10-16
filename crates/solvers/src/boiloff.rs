@@ -310,6 +310,8 @@ mod tests {
                 cp: JPerKgK(2200.0),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             },
             PseudoComponent {
                 name: "heavy_naphtha".into(),
@@ -319,6 +321,8 @@ mod tests {
                 cp: JPerKgK(2100.0),
                 cp_shape: None,
                 phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
             },
         ])
         .expect("two-cut slate")

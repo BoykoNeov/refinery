@@ -9771,3 +9771,17 @@ declared 40.65 kJ/mol reads steam tables to 0.1 % at 100–150 °C, +14 % at
 174.3 to 110.7 °C. Slices: M62.1 water's own properties, M62.2 free water in
 the flashes, M62.3 a tank's water layer, M62.4 heat on a boiling stream (C6),
 M62.5 water through the column, M62.6 steam into the column. No code changed.
+
+### M62.1 — **LANDED** 2026-10-16: water's own properties
+
+A component may declare `dh_vap_j_per_mol` (its latent heat at the normal
+boiling point, read by Trouton's vapour pressure AND latent heat) and
+`cp_vapour_j_per_kg_k` (the latent heat then follows Kirchhoff's law). Water on
+40 650 J/mol reads steam tables to 0.2 % at 100–150 °C; a 10 bar, 400 °C steam
+supply carries 3 275 kJ/kg against the table's 3 263.9 (+20 % without the
+vapour capacity). Refused under any other thermo model, on a gas, beside a `cp`
+shape. Corrected while building: `free_water` moves to M62.2, where a flash
+first reads it. DESIGN §67.9.
+
+- Gates: `reference/water.rs` (4), `water_properties.rs` (2). Mutations: seven,
+  all caught. Corpus: 58 of 58 byte-identical on both fidelities.

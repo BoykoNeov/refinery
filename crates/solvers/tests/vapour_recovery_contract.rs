@@ -43,6 +43,8 @@ fn naphtha_slate() -> Slate {
             cp: JPerKgK(2200.0),
             cp_shape: None,
             phase: refinery_core::components::Phase::Liquid,
+            dh_vap: None,
+            cp_vapour: None,
         },
         refinery_core::components::PseudoComponent {
             name: "heavy".into(),
@@ -52,6 +54,8 @@ fn naphtha_slate() -> Slate {
             cp: JPerKgK(2100.0),
             cp_shape: None,
             phase: refinery_core::components::Phase::Liquid,
+            dh_vap: None,
+            cp_vapour: None,
         },
     ])
     .expect("a two-cut slate")

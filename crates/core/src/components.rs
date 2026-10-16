@@ -6,7 +6,7 @@
 //! one-component slate.
 
 use crate::error::SimError;
-use crate::units::{JPerKgK, Kelvin, KgPerM3, KgPerMol, Pascal, R_GAS};
+use crate::units::{JPerKgK, JPerMol, Kelvin, KgPerM3, KgPerMol, Pascal, R_GAS};
 use serde::{Deserialize, Serialize};
 
 /// Which phase a pseudo-component is in.
@@ -68,6 +68,27 @@ pub struct PseudoComponent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cp_shape: Option<CpShape>,
     pub phase: Phase,
+    /// The latent heat of vaporization at the normal boiling point [J/mol], when
+    /// the file declares one (M62.1, docs/DESIGN.md §67.1) — water's 40 650,
+    /// where Trouton's `C·tb` gives about 32 800.
+    ///
+    /// `None` is Trouton's rule. Declared, it replaces `C·tb` in BOTH halves of
+    /// `TroutonThermo` — the Clausius–Clapeyron exponent of `k_value` and the
+    /// latent heat of `dh_vap` — because the two are one number seen twice. The
+    /// loader admits it only under `thermo = "trouton"`, the one model that
+    /// reads it. Skipped when absent, as `cp_shape` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dh_vap: Option<JPerMol>,
+    /// The VAPOUR's heat capacity [J/(kg·K)], when the file declares one (M62.1,
+    /// docs/DESIGN.md §67.1) — water vapour's 2 000, where `cp` is the liquid's
+    /// 4 184.
+    ///
+    /// With it a vapour's enthalpy is `cp·(tb − T_REF) + λ_b + cp_vapour·(T − tb)`,
+    /// so the latent heat at `T` is Kirchhoff's `λ_b + (cp_vapour − cp)·M·(T −
+    /// tb)` (`TroutonThermo::dh_vap`). `None` keeps the vapour on `cp`, and the
+    /// latent heat constant. Skipped when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cp_vapour: Option<JPerKgK>,
 }
 
 /// A declared temperature dependence for one cut's heat capacity [J/(kg·K)]:
@@ -135,6 +156,8 @@ impl PseudoComponent {
             // instead (docs/DESIGN.md §20 fork 5).
             cp_shape: None,
             phase: Phase::Liquid,
+            dh_vap: None,
+            cp_vapour: None,
         }
     }
 }
@@ -461,6 +484,8 @@ mod tests {
             cp: JPerKgK(2000.0),
             cp_shape: None,
             phase: Phase::Gas,
+            dh_vap: None,
+            cp_vapour: None,
         }
     }
 
@@ -473,6 +498,8 @@ mod tests {
             cp: JPerKgK(2000.0),
             cp_shape: None,
             phase: Phase::Liquid,
+            dh_vap: None,
+            cp_vapour: None,
         }
     }
 

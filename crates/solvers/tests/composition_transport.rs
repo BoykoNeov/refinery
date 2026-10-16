@@ -53,6 +53,8 @@ fn two_cut_slate() -> Slate {
             phase: Phase::Liquid,
             cp: JPerKgK(1000.0),
             cp_shape: None,
+            dh_vap: None,
+            cp_vapour: None,
         },
         PseudoComponent {
             name: "heavy".into(),
@@ -62,6 +64,8 @@ fn two_cut_slate() -> Slate {
             phase: Phase::Liquid,
             cp: JPerKgK(4000.0),
             cp_shape: None,
+            dh_vap: None,
+            cp_vapour: None,
         },
     ])
     .expect("a two-component slate is valid")
@@ -682,6 +686,8 @@ fn cascade_slate() -> Slate {
             phase: Phase::Liquid,
             cp: JPerKgK(1500.0),
             cp_shape: None,
+            dh_vap: None,
+            cp_vapour: None,
         },
         PseudoComponent {
             name: "heavy".into(),
@@ -691,6 +697,8 @@ fn cascade_slate() -> Slate {
             phase: Phase::Liquid,
             cp: JPerKgK(2500.0),
             cp_shape: None,
+            dh_vap: None,
+            cp_vapour: None,
         },
     ])
     .expect("a two-component slate is valid")

@@ -121,6 +121,8 @@ impl Balance {
                     phase: Phase::Liquid,
                     cp: JPerKgK(CP),
                     cp_shape: None,
+                    dh_vap: None,
+                    cp_vapour: None,
                 })
                 .collect(),
         )
