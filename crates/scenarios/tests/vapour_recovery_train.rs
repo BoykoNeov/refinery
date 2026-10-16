@@ -306,7 +306,7 @@ fn train_run() -> Run {
 /// one more node — so the bound is 1e-8 and is a float-noise bound, not a
 /// physics one.
 #[test]
-fn the_train_recovers_more_and_the_emitting_tanks_do_not_notice() {
+fn slow_the_train_recovers_more_and_the_emitting_tanks_do_not_notice() {
     let train = train_run();
     let one_stage = run(
         body(ONE_STAGE),

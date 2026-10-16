@@ -447,7 +447,7 @@ fn the_trip_timeline_cuts_the_fire_and_relights_by_hand() {
 /// quench cut, the bed creeps into the trip; reset after it cools and handed
 /// back, the loops relight the preheater and hold the bed at 380 °C again.
 #[test]
-fn the_quench_timeline_loses_the_bed_by_hand_and_wins_it_back() {
+fn slow_the_quench_timeline_loses_the_bed_by_hand_and_wins_it_back() {
     let mut screen = Screen::load(
         "hydrocracker_quench.toml",
         &[
@@ -521,7 +521,7 @@ const HYDROGEN_WALL_NODES: &[&str] = &[
 /// both; with the oil stopped the refilled hydrogen sweeps the bed under its
 /// limit, the wall is repaired, and on cooler oil and hydrogen the bed is calm.
 #[test]
-fn the_hydrogen_wall_timeline_patches_both_holes_and_sweeps_the_bed_down() {
+fn slow_the_hydrogen_wall_timeline_patches_both_holes_and_sweeps_the_bed_down() {
     let mut screen = Screen::load(
         "hydrocracker_hydrogen_wall.toml",
         HYDROGEN_WALL_NODES,
@@ -657,7 +657,7 @@ fn a_hydrogen_wall_burns_until_both_holes_are_patched() {
 /// limit; admitted after, with both loops handed back, the makeup refills the
 /// loop and the cold hydrogen holds the bed at 400 °C again.
 #[test]
-fn the_hydrogen_quench_timeline_vents_the_loop_and_wins_the_bed_back() {
+fn slow_the_hydrogen_quench_timeline_vents_the_loop_and_wins_the_bed_back() {
     let mut screen = Screen::load(
         "hydrocracker_hydrogen_quench.toml",
         &[

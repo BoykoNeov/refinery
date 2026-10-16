@@ -257,7 +257,7 @@ const SETTLED_TICKS: u64 = 150_000;
 /// plants could deliver: a HOLDUP whose temperature moves over a span where the
 /// shape error is large.
 #[test]
-fn the_shaped_demo_settles_hundreds_of_kelvin_from_its_constant_twin() {
+fn slow_the_shaped_demo_settles_hundreds_of_kelvin_from_its_constant_twin() {
     let (heater, drum, mass, flow) = run(DEMO, SETTLED_TICKS);
     let (heater_c, drum_c, mass_c, flow_c) = run(&constant_twin(), SETTLED_TICKS);
 
@@ -284,7 +284,7 @@ fn the_shaped_demo_settles_hundreds_of_kelvin_from_its_constant_twin() {
 /// The demo reaches the state its own comments claim: a gas holdup crossing most
 /// of the fit's range, and settling inside it.
 #[test]
-fn the_demo_actually_traverses_the_span_its_shape_is_fitted_over() {
+fn slow_the_demo_actually_traverses_the_span_its_shape_is_fitted_over() {
     let (_, start, _, _) = run(DEMO, 1);
     let (_, settled, _, _) = run(DEMO, SETTLED_TICKS);
     assert!(

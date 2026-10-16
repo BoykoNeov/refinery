@@ -217,168 +217,175 @@ fn expect_refused(result: Result<(), String>, what: &str, says: &str) {
 /// warming while it cools: 86.73 °C at the end of the cutting tick, 20.003 °C by
 /// tick 4 000 (89.09 °C on the cutting tick before M36's flame, docs/DESIGN.md
 /// §40). That is asserted as the first law with zero duty, every tick.
-#[test]
-fn the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow() {
-    for solver in ["newton", "simple"] {
-        // Neither may burst its tubes (M37, docs/DESIGN.md §42): the untripped
-        // twin's dry coil passes the shipped 550 °C at tick 5 253, and the hole
-        // that opens carries ~1e-10 kg/s of rounding — damage, not the cut this
-        // gate compares. So both take a limit above their flame.
-        let never = |src: &str| swap(src, "tube_failure_c = 550.0", "tube_failure_c = 3000.0");
-        let mut demo = build(&with_solver(&never(DEMO), solver));
-        let mut twin = build(&with_solver(&never(&swap(DEMO, DEMO_TRIP, "")), solver));
-        assert!(twin.snapshot().trips.is_empty(), "the twin has no trip");
+fn the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow(solver: &str) {
+    // Neither may burst its tubes (M37, docs/DESIGN.md §42): the untripped
+    // twin's dry coil passes the shipped 550 °C at tick 5 253, and the hole
+    // that opens carries ~1e-10 kg/s of rounding — damage, not the cut this
+    // gate compares. So both take a limit above their flame.
+    let never = |src: &str| swap(src, "tube_failure_c = 550.0", "tube_failure_c = 3000.0");
+    let mut demo = build(&with_solver(&never(DEMO), solver));
+    let mut twin = build(&with_solver(&never(&swap(DEMO, DEMO_TRIP, "")), solver));
+    assert!(twin.snapshot().trips.is_empty(), "the twin has no trip");
 
-        let mut previous_coil = coil_k(&demo);
-        for t in 1..=6000u64 {
-            tick(&mut demo);
-            tick(&mut twin);
-            let snapshot = demo.snapshot();
-            let twin_snapshot = twin.snapshot();
-            let trip = &snapshot.trips[0];
-            if t == 1 {
-                // The pass ran before any solve: nothing to compare (§36 fork 1).
-                assert_eq!(trip.measurement, None, "{solver}: no flow on tick 1");
-                assert_eq!(trip.state, TripState::Armed, "{solver}");
-            } else {
-                // From tick 2 the pass compares the LAST solve's flow, which is
-                // the previous snapshot's.
-                assert!(trip.measurement.is_some(), "{solver}, tick {t}");
-            }
-            if t < DEMO_TRIP_TICK {
-                assert_eq!(trip.state, TripState::Armed, "{solver}, tick {t}");
-                assert_eq!(duty_w(&demo), DUTY_W, "{solver}, tick {t}");
-                // An armed trip is inert: the plant is its twin to the bit.
-                assert_eq!(
-                    serde_json::to_string(&snapshot.nodes).unwrap(),
-                    serde_json::to_string(&twin_snapshot.nodes).unwrap(),
-                    "{solver}, tick {t}: an armed trip moved the plant"
-                );
-                assert_eq!(
-                    serde_json::to_string(&snapshot.edges).unwrap(),
-                    serde_json::to_string(&twin_snapshot.edges).unwrap(),
-                    "{solver}, tick {t}: an armed trip moved the plant"
-                );
-            } else {
-                assert_eq!(
-                    trip.state,
-                    TripState::Tripped {
-                        at_tick: DEMO_TRIP_TICK,
-                        by_hand: false
-                    },
-                    "{solver}, tick {t}: tripped on its tick, and latched"
-                );
-                assert_eq!(duty_w(&demo), 0.0, "{solver}, tick {t}: the fuel is cut");
-                // A cut furnace adds no heat of its own: its coil only cools,
-                // the fluid leaves between its inlet and the coil, and what the
-                // fluid gains is exactly what the coil lost — the first law at
-                // the furnace with zero duty.
-                let coil = coil_k(&demo);
-                let (outlet, inlet) = (outlet_k(&snapshot), inlet_k(&snapshot));
-                // Only cools — or, once it has cooled to its inlet within rounding, is
-                // warmed back to it and no further: never above the larger of the two.
-                assert!(
-                    coil <= previous_coil.max(inlet),
-                    "{solver}, tick {t}: a cut coil only cools"
-                );
-                // The flow INTO the furnace, on its own inlet pipe: the game
-                // solver closes the valve upstream of it only to its tolerance,
-                // so the feed line's flow differs from it in the sixth digit.
-                let flow = snapshot
-                    .edges
-                    .iter()
-                    .find(|e| e.name == "valve_line")
-                    .expect("the furnace's inlet pipe")
-                    .stream
-                    .mass_flow
-                    .value();
-                if flow > 0.0 {
-                    // Between its inlet and the coil, in either order: late in a run the
-                    // coil has cooled to its inlet within rounding and may sit a hair
-                    // below. Widened by what one rounding step of the STORED coil
-                    // carries into the fluid, `C·ulp(T_c)/(dt·ṁ·cp)`, which matters
-                    // only on the vanishing trickle (energy::furnace_coil).
-                    let cp_in = snapshot.edges[0]
-                        .stream
-                        .composition
-                        .mixture_cp(&demo.slate)
-                        .value();
-                    let rounding = COIL_C_J_PER_K * previous_coil * f64::EPSILON / (flow * cp_in);
-                    let (low, high) = (inlet.min(previous_coil), inlet.max(previous_coil));
-                    assert!(
-                        low - rounding <= outlet && outlet <= high + rounding,
-                        "{solver}, tick {t}: the fluid leaves at {outlet} K, outside its inlet                          {inlet} K and the coil's {previous_coil} K"
-                    );
-                    let cp = snapshot.edges[0]
-                        .stream
-                        .composition
-                        .mixture_cp(&demo.slate)
-                        .value();
-                    let gained = flow * cp * (outlet - inlet);
-                    let released = COIL_C_J_PER_K * (previous_coil - coil);
-                    assert!(
-                        (gained - released).abs() <= 1.0e-6 * released.max(1.0),
-                        "{solver}, tick {t}: the fluid gained {gained} W, the coil gave \
-                         {released} W"
-                    );
-                }
-            }
-            previous_coil = coil_k(&demo);
-            // A fuel cut moves no flow: at constant density nothing hydraulic
-            // reads a furnace's duty. So the condition never clears on this
-            // plant, and its latch is gated on gate 3's fixture instead.
-            let flows = |s: &Snapshot| {
-                s.edges
-                    .iter()
-                    .map(|e| e.stream.mass_flow.value())
-                    .collect::<Vec<_>>()
-            };
+    let mut previous_coil = coil_k(&demo);
+    for t in 1..=6000u64 {
+        tick(&mut demo);
+        tick(&mut twin);
+        let snapshot = demo.snapshot();
+        let twin_snapshot = twin.snapshot();
+        let trip = &snapshot.trips[0];
+        if t == 1 {
+            // The pass ran before any solve: nothing to compare (§36 fork 1).
+            assert_eq!(trip.measurement, None, "{solver}: no flow on tick 1");
+            assert_eq!(trip.state, TripState::Armed, "{solver}");
+        } else {
+            // From tick 2 the pass compares the LAST solve's flow, which is
+            // the previous snapshot's.
+            assert!(trip.measurement.is_some(), "{solver}, tick {t}");
+        }
+        if t < DEMO_TRIP_TICK {
+            assert_eq!(trip.state, TripState::Armed, "{solver}, tick {t}");
+            assert_eq!(duty_w(&demo), DUTY_W, "{solver}, tick {t}");
+            // An armed trip is inert: the plant is its twin to the bit.
             assert_eq!(
-                flows(&snapshot),
-                flows(&twin_snapshot),
-                "{solver}, tick {t}: the cut moved a flow"
+                serde_json::to_string(&snapshot.nodes).unwrap(),
+                serde_json::to_string(&twin_snapshot.nodes).unwrap(),
+                "{solver}, tick {t}: an armed trip moved the plant"
             );
-            if t == DEMO_TRIP_TICK - 2 {
+            assert_eq!(
+                serde_json::to_string(&snapshot.edges).unwrap(),
+                serde_json::to_string(&twin_snapshot.edges).unwrap(),
+                "{solver}, tick {t}: an armed trip moved the plant"
+            );
+        } else {
+            assert_eq!(
+                trip.state,
+                TripState::Tripped {
+                    at_tick: DEMO_TRIP_TICK,
+                    by_hand: false
+                },
+                "{solver}, tick {t}: tripped on its tick, and latched"
+            );
+            assert_eq!(duty_w(&demo), 0.0, "{solver}, tick {t}: the fuel is cut");
+            // A cut furnace adds no heat of its own: its coil only cools,
+            // the fluid leaves between its inlet and the coil, and what the
+            // fluid gains is exactly what the coil lost — the first law at
+            // the furnace with zero duty.
+            let coil = coil_k(&demo);
+            let (outlet, inlet) = (outlet_k(&snapshot), inlet_k(&snapshot));
+            // Only cools — or, once it has cooled to its inlet within rounding, is
+            // warmed back to it and no further: never above the larger of the two.
+            assert!(
+                coil <= previous_coil.max(inlet),
+                "{solver}, tick {t}: a cut coil only cools"
+            );
+            // The flow INTO the furnace, on its own inlet pipe: the game
+            // solver closes the valve upstream of it only to its tolerance,
+            // so the feed line's flow differs from it in the sixth digit.
+            let flow = snapshot
+                .edges
+                .iter()
+                .find(|e| e.name == "valve_line")
+                .expect("the furnace's inlet pipe")
+                .stream
+                .mass_flow
+                .value();
+            if flow > 0.0 {
+                // Between its inlet and the coil, in either order: late in a run the
+                // coil has cooled to its inlet within rounding and may sit a hair
+                // below. Widened by what one rounding step of the STORED coil
+                // carries into the fluid, `C·ulp(T_c)/(dt·ṁ·cp)`, which matters
+                // only on the vanishing trickle (energy::furnace_coil).
+                let cp_in = snapshot.edges[0]
+                    .stream
+                    .composition
+                    .mixture_cp(&demo.slate)
+                    .value();
+                let rounding = COIL_C_J_PER_K * previous_coil * f64::EPSILON / (flow * cp_in);
+                let (low, high) = (inlet.min(previous_coil), inlet.max(previous_coil));
                 assert!(
-                    feed_flow(&snapshot) > LIMIT_KG_PER_S,
-                    "{solver}: the feed is above its limit at the end of tick {t}: {}",
-                    feed_flow(&snapshot)
+                    low - rounding <= outlet && outlet <= high + rounding,
+                    "{solver}, tick {t}: the fluid leaves at {outlet} K, outside its inlet                          {inlet} K and the coil's {previous_coil} K"
                 );
-            }
-            if t == DEMO_TRIP_TICK - 1 {
+                let cp = snapshot.edges[0]
+                    .stream
+                    .composition
+                    .mixture_cp(&demo.slate)
+                    .value();
+                let gained = flow * cp * (outlet - inlet);
+                let released = COIL_C_J_PER_K * (previous_coil - coil);
                 assert!(
-                    feed_flow(&snapshot) <= LIMIT_KG_PER_S,
-                    "{solver}: the feed crosses its limit at the end of tick {t}: {}",
-                    feed_flow(&snapshot)
-                );
-            }
-            if t == DEMO_TRIP_TICK + 100 {
-                // Reachable on the demo itself: the feed only fades.
-                expect_refused(
-                    reset(&mut demo),
-                    "a reset on a feed still below its limit",
-                    "condition still holds",
-                );
-            }
-            if t == 5000 {
-                // What the trip prevents: the twin, still fired on a 0.096 kg/s
-                // trickle, reads 368 °C at its furnace outlet (measured; 419 °C
-                // before M36's flame sent part of the duty up the stack, and
-                // 1 521 °C before M34's coil, which bounds the outlet by its own
-                // temperature instead of letting it grow as 1/ṁ).
-                assert!(
-                    outlet_c(&twin_snapshot) > 350.0,
-                    "{solver}: {}",
-                    outlet_c(&twin_snapshot)
-                );
-                assert!(
-                    outlet_c(&snapshot) < 20.01,
-                    "{solver}: {}",
-                    outlet_c(&snapshot)
+                    (gained - released).abs() <= 1.0e-6 * released.max(1.0),
+                    "{solver}, tick {t}: the fluid gained {gained} W, the coil gave \
+                     {released} W"
                 );
             }
         }
+        previous_coil = coil_k(&demo);
+        // A fuel cut moves no flow: at constant density nothing hydraulic
+        // reads a furnace's duty. So the condition never clears on this
+        // plant, and its latch is gated on gate 3's fixture instead.
+        let flows = |s: &Snapshot| {
+            s.edges
+                .iter()
+                .map(|e| e.stream.mass_flow.value())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            flows(&snapshot),
+            flows(&twin_snapshot),
+            "{solver}, tick {t}: the cut moved a flow"
+        );
+        if t == DEMO_TRIP_TICK - 2 {
+            assert!(
+                feed_flow(&snapshot) > LIMIT_KG_PER_S,
+                "{solver}: the feed is above its limit at the end of tick {t}: {}",
+                feed_flow(&snapshot)
+            );
+        }
+        if t == DEMO_TRIP_TICK - 1 {
+            assert!(
+                feed_flow(&snapshot) <= LIMIT_KG_PER_S,
+                "{solver}: the feed crosses its limit at the end of tick {t}: {}",
+                feed_flow(&snapshot)
+            );
+        }
+        if t == DEMO_TRIP_TICK + 100 {
+            // Reachable on the demo itself: the feed only fades.
+            expect_refused(
+                reset(&mut demo),
+                "a reset on a feed still below its limit",
+                "condition still holds",
+            );
+        }
+        if t == 5000 {
+            // What the trip prevents: the twin, still fired on a 0.096 kg/s
+            // trickle, reads 368 °C at its furnace outlet (measured; 419 °C
+            // before M36's flame sent part of the duty up the stack, and
+            // 1 521 °C before M34's coil, which bounds the outlet by its own
+            // temperature instead of letting it grow as 1/ṁ).
+            assert!(
+                outlet_c(&twin_snapshot) > 350.0,
+                "{solver}: {}",
+                outlet_c(&twin_snapshot)
+            );
+            assert!(
+                outlet_c(&snapshot) < 20.01,
+                "{solver}: {}",
+                outlet_c(&snapshot)
+            );
+        }
     }
+}
+
+#[test]
+fn the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow_newton() {
+    the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow("newton");
+}
+
+#[test]
+fn the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow_simple() {
+    the_demo_cuts_the_fuel_on_its_tick_and_moves_no_flow("simple");
 }
 
 // ------------------------------------------------------------------- gate 2
@@ -425,111 +432,118 @@ fn a_flow_trip_serialises_no_measurement_on_tick_one_and_its_unit_after() {
 ///   solve, which has not seen the valve move. One tick later it is admitted.
 /// - The reset relights nothing — the coil goes on cooling; a human relights,
 ///   and the coil and the outlet heat again.
-#[test]
-fn a_restored_feed_leaves_the_cut_latched_until_a_reset_and_a_relight() {
-    for solver in ["newton", "simple"] {
-        let mut engine = source_fixture(solver, 1.0, 0.6);
-        for _ in 0..20 {
-            tick(&mut engine);
-        }
-        let running = engine.snapshot();
-        let running_coil = coil_k(&engine);
-        assert!(
-            feed_flow(&running) > 4.0,
-            "{solver}: {}",
-            feed_flow(&running)
-        );
-        assert_eq!(state(&engine), TripState::Armed);
-
-        // Throttle the feed. The next solve sees it.
-        set_valve(&mut engine, 0.2);
+fn a_restored_feed_leaves_the_cut_latched_until_a_reset_and_a_relight(solver: &str) {
+    let mut engine = source_fixture(solver, 1.0, 0.6);
+    for _ in 0..20 {
         tick(&mut engine);
-        let throttled = engine.snapshot();
-        let throttled_tick = throttled.tick;
-        assert!(
-            feed_flow(&throttled) < LIMIT_KG_PER_S,
-            "{solver}: {}",
-            feed_flow(&throttled)
-        );
-        assert_eq!(
-            state(&engine),
-            TripState::Armed,
-            "{solver}: one tick of lag"
-        );
-        assert_eq!(duty_w(&engine), DUTY_W);
-        assert!(
-            coil_k(&engine) > running_coil + 0.1,
-            "{solver}: the furnace fired one tick on the low flow, into its coil: {} then \
-             {} K",
-            running_coil,
-            coil_k(&engine)
-        );
-        tick(&mut engine);
-        assert_eq!(
-            state(&engine),
-            TripState::Tripped {
-                at_tick: throttled_tick + 1,
-                by_hand: false
-            },
-            "{solver}"
-        );
-        assert_eq!(duty_w(&engine), 0.0, "{solver}: cut on the tripping tick");
-
-        expect_refused(set_duty(&mut engine, DUTY_W), "relighting", "fuel cut");
-        expect_refused(
-            reset(&mut engine),
-            "a reset on a low feed",
-            "condition still holds",
-        );
-        set_duty(&mut engine, 0.0).expect("writing the cut itself is admitted");
-
-        // Restore the feed. The latch, not the flow, now holds the cut.
-        set_valve(&mut engine, 1.0);
-        expect_refused(
-            reset(&mut engine),
-            "a reset before any solve has seen the valve reopen",
-            "condition still holds",
-        );
-        for _ in 0..10 {
-            tick(&mut engine);
-            assert!(feed_flow(&engine.snapshot()) > 4.0, "{solver}");
-            assert!(state(&engine).is_tripped(), "{solver}: the latch holds");
-            assert_eq!(duty_w(&engine), 0.0, "{solver}");
-        }
-        expect_refused(
-            set_duty(&mut engine, DUTY_W),
-            "relighting while latched",
-            "fuel cut",
-        );
-
-        reset(&mut engine).expect("the feed is back, so the reset is admitted");
-        assert_eq!(state(&engine), TripState::Armed);
-        assert_eq!(duty_w(&engine), 0.0, "{solver}: a reset relights nothing");
-        let before = coil_k(&engine);
-        tick(&mut engine);
-        assert_eq!(duty_w(&engine), 0.0, "{solver}");
-        assert!(
-            coil_k(&engine) < before && outlet_k(&engine.snapshot()) <= before,
-            "{solver}: still unlit, so the coil only cools and the fluid takes no more \
-             than it gives"
-        );
-
-        set_duty(&mut engine, DUTY_W).expect("after the reset a human may relight");
-        let unlit = coil_k(&engine);
-        tick(&mut engine);
-        assert_eq!(state(&engine), TripState::Armed, "{solver}");
-        assert!(coil_k(&engine) > unlit, "{solver}: the relit coil heats");
-        // 0.6 MW on about 4.9 kg/s of water: about 29 K, once the coil (34 s) has
-        // caught up.
-        for _ in 0..300 {
-            tick(&mut engine);
-        }
-        assert!(
-            outlet_c(&engine.snapshot()) > 45.0,
-            "{solver}: {}",
-            outlet_c(&engine.snapshot())
-        );
     }
+    let running = engine.snapshot();
+    let running_coil = coil_k(&engine);
+    assert!(
+        feed_flow(&running) > 4.0,
+        "{solver}: {}",
+        feed_flow(&running)
+    );
+    assert_eq!(state(&engine), TripState::Armed);
+
+    // Throttle the feed. The next solve sees it.
+    set_valve(&mut engine, 0.2);
+    tick(&mut engine);
+    let throttled = engine.snapshot();
+    let throttled_tick = throttled.tick;
+    assert!(
+        feed_flow(&throttled) < LIMIT_KG_PER_S,
+        "{solver}: {}",
+        feed_flow(&throttled)
+    );
+    assert_eq!(
+        state(&engine),
+        TripState::Armed,
+        "{solver}: one tick of lag"
+    );
+    assert_eq!(duty_w(&engine), DUTY_W);
+    assert!(
+        coil_k(&engine) > running_coil + 0.1,
+        "{solver}: the furnace fired one tick on the low flow, into its coil: {} then \
+         {} K",
+        running_coil,
+        coil_k(&engine)
+    );
+    tick(&mut engine);
+    assert_eq!(
+        state(&engine),
+        TripState::Tripped {
+            at_tick: throttled_tick + 1,
+            by_hand: false
+        },
+        "{solver}"
+    );
+    assert_eq!(duty_w(&engine), 0.0, "{solver}: cut on the tripping tick");
+
+    expect_refused(set_duty(&mut engine, DUTY_W), "relighting", "fuel cut");
+    expect_refused(
+        reset(&mut engine),
+        "a reset on a low feed",
+        "condition still holds",
+    );
+    set_duty(&mut engine, 0.0).expect("writing the cut itself is admitted");
+
+    // Restore the feed. The latch, not the flow, now holds the cut.
+    set_valve(&mut engine, 1.0);
+    expect_refused(
+        reset(&mut engine),
+        "a reset before any solve has seen the valve reopen",
+        "condition still holds",
+    );
+    for _ in 0..10 {
+        tick(&mut engine);
+        assert!(feed_flow(&engine.snapshot()) > 4.0, "{solver}");
+        assert!(state(&engine).is_tripped(), "{solver}: the latch holds");
+        assert_eq!(duty_w(&engine), 0.0, "{solver}");
+    }
+    expect_refused(
+        set_duty(&mut engine, DUTY_W),
+        "relighting while latched",
+        "fuel cut",
+    );
+
+    reset(&mut engine).expect("the feed is back, so the reset is admitted");
+    assert_eq!(state(&engine), TripState::Armed);
+    assert_eq!(duty_w(&engine), 0.0, "{solver}: a reset relights nothing");
+    let before = coil_k(&engine);
+    tick(&mut engine);
+    assert_eq!(duty_w(&engine), 0.0, "{solver}");
+    assert!(
+        coil_k(&engine) < before && outlet_k(&engine.snapshot()) <= before,
+        "{solver}: still unlit, so the coil only cools and the fluid takes no more \
+         than it gives"
+    );
+
+    set_duty(&mut engine, DUTY_W).expect("after the reset a human may relight");
+    let unlit = coil_k(&engine);
+    tick(&mut engine);
+    assert_eq!(state(&engine), TripState::Armed, "{solver}");
+    assert!(coil_k(&engine) > unlit, "{solver}: the relit coil heats");
+    // 0.6 MW on about 4.9 kg/s of water: about 29 K, once the coil (34 s) has
+    // caught up.
+    for _ in 0..300 {
+        tick(&mut engine);
+    }
+    assert!(
+        outlet_c(&engine.snapshot()) > 45.0,
+        "{solver}: {}",
+        outlet_c(&engine.snapshot())
+    );
+}
+
+#[test]
+fn a_restored_feed_leaves_the_cut_latched_until_a_reset_and_a_relight_newton() {
+    a_restored_feed_leaves_the_cut_latched_until_a_reset_and_a_relight("newton");
+}
+
+#[test]
+fn a_restored_feed_leaves_the_cut_latched_until_a_reset_and_a_relight_simple() {
+    a_restored_feed_leaves_the_cut_latched_until_a_reset_and_a_relight("simple");
 }
 
 // ------------------------------------------------------------------- gate 4

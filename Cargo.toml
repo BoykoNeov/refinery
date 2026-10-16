@@ -52,3 +52,12 @@ lto = "thin"
 # Property tests and Newton iterations are slow in debug; optimize deps.
 [profile.dev.package."*"]
 opt-level = 2
+
+# The workspace's own crates, optimized under `cargo test` only: the scenario
+# tests run whole plants for thousands of ticks, which unoptimized took most of
+# an hour (reactor_screen alone 840 s). Debug assertions and overflow checks
+# stay on (they are separate settings), and Rust does not change float
+# semantics with the optimization level, so every result is the same number.
+# `cargo build` keeps the fast-compiling dev profile.
+[profile.test]
+opt-level = 2

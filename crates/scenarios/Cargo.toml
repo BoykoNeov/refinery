@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "refinery-scenarios"
 edition.workspace = true
 version.workspace = true
@@ -17,3 +18,7 @@ indexmap.workspace = true
 serde_json.workspace = true
 # Tolerance comparisons for the Kv / hand-calc reference tests.
 approx.workspace = true
+
+[[test]]
+name = "suite"
+path = "tests/suite.rs"

@@ -139,48 +139,55 @@ fn refused(engine: &mut Engine, cmd: Command) -> String {
 /// one is `Failed { at_tick }` with the hole open to exactly the declared area —
 /// and leaking, and burning, from that same tick. Both fidelities, and the tick
 /// is the measured one the file quotes.
-#[test]
-fn the_tubes_burst_on_the_tick_after_the_coil_reaches_their_limit() {
-    for solver in ["newton", "simple"] {
-        let mut engine = build_src(DEMO, solver);
-        let mut reached = None;
-        for t in 1..=BURST_TICK + 5 {
-            tick(&mut engine, 1);
-            match (reached, tube_state(&engine)) {
-                (None, TubeState::Intact) => {
-                    assert_eq!(
-                        hole_area(&engine),
-                        0.0,
-                        "{solver}, tick {t}: intact tubes, no hole"
-                    );
-                    if coil_k(&engine) >= LIMIT_K {
-                        reached = Some(t);
-                    }
-                }
-                (Some(r), TubeState::Failed { at_tick }) => {
-                    assert_eq!(
-                        at_tick,
-                        r + 1,
-                        "{solver}: the pass after the coil reached it"
-                    );
-                    assert_eq!(hole_area(&engine), HOLE_M2, "{solver}: the declared hole");
-                }
-                (r, state) => {
-                    panic!("{solver}, tick {t}: {state:?} with the limit reached at {r:?}")
+fn the_tubes_burst_on_the_tick_after_the_coil_reaches_their_limit(solver: &str) {
+    let mut engine = build_src(DEMO, solver);
+    let mut reached = None;
+    for t in 1..=BURST_TICK + 5 {
+        tick(&mut engine, 1);
+        match (reached, tube_state(&engine)) {
+            (None, TubeState::Intact) => {
+                assert_eq!(
+                    hole_area(&engine),
+                    0.0,
+                    "{solver}, tick {t}: intact tubes, no hole"
+                );
+                if coil_k(&engine) >= LIMIT_K {
+                    reached = Some(t);
                 }
             }
+            (Some(r), TubeState::Failed { at_tick }) => {
+                assert_eq!(
+                    at_tick,
+                    r + 1,
+                    "{solver}: the pass after the coil reached it"
+                );
+                assert_eq!(hole_area(&engine), HOLE_M2, "{solver}: the declared hole");
+            }
+            (r, state) => {
+                panic!("{solver}, tick {t}: {state:?} with the limit reached at {r:?}")
+            }
         }
-        assert_eq!(
-            reached.map(|r| r + 1),
-            Some(BURST_TICK),
-            "{solver}: the measured burst tick"
-        );
-        let s = engine.snapshot();
-        assert!(
-            leak(&s) > 0.5 && fire(&s) > 1e7,
-            "{solver}: it leaks and burns"
-        );
     }
+    assert_eq!(
+        reached.map(|r| r + 1),
+        Some(BURST_TICK),
+        "{solver}: the measured burst tick"
+    );
+    let s = engine.snapshot();
+    assert!(
+        leak(&s) > 0.5 && fire(&s) > 1e7,
+        "{solver}: it leaks and burns"
+    );
+}
+
+#[test]
+fn the_tubes_burst_on_the_tick_after_the_coil_reaches_their_limit_newton() {
+    the_tubes_burst_on_the_tick_after_the_coil_reaches_their_limit("newton");
+}
+
+#[test]
+fn the_tubes_burst_on_the_tick_after_the_coil_reaches_their_limit_simple() {
+    the_tubes_burst_on_the_tick_after_the_coil_reaches_their_limit("simple");
 }
 
 /// **Gate 2 — the fire is the leak times the heating value, to the bit**, and

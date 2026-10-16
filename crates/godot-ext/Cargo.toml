@@ -17,6 +17,7 @@
 # header of refinery.gdextension.
 
 [package]
+autotests = false
 name = "refinery-godot-ext"
 edition.workspace = true
 version.workspace = true
@@ -43,3 +44,7 @@ godot = { version = "0.5.5", features = ["api-4-7"], optional = true }
 [features]
 default = []
 godot = ["dep:godot"]
+
+[[test]]
+name = "suite"
+path = "tests/suite.rs"

@@ -194,40 +194,47 @@ fn set_feed_c(engine: &mut Engine, celsius: f64) {
 /// — and leaking, and burning, from that same tick. Both fidelities, on the
 /// shipped file at its own heat capacity, and the tick is the measured one the
 /// design note quotes.
-#[test]
-fn the_wall_fails_on_the_tick_after_the_bed_reaches_its_limit() {
-    for solver in ["newton", "simple"] {
-        let mut engine = build_src(DEMO, solver);
-        let mut reached = None;
-        for t in 1..=FAIL_TICK + 5 {
-            tick(&mut engine, 1);
-            match (reached, wall_state(&engine)) {
-                (None, WallState::Intact) => {
-                    assert_eq!(hole_area(&engine), 0.0, "{solver}: intact, tick {t}");
-                    assert_eq!(fire(&engine.snapshot()), 0.0, "{solver}: intact, tick {t}");
-                    if bed_k(&engine) >= LIMIT_K {
-                        reached = Some(t);
-                    }
+fn the_wall_fails_on_the_tick_after_the_bed_reaches_its_limit(solver: &str) {
+    let mut engine = build_src(DEMO, solver);
+    let mut reached = None;
+    for t in 1..=FAIL_TICK + 5 {
+        tick(&mut engine, 1);
+        match (reached, wall_state(&engine)) {
+            (None, WallState::Intact) => {
+                assert_eq!(hole_area(&engine), 0.0, "{solver}: intact, tick {t}");
+                assert_eq!(fire(&engine.snapshot()), 0.0, "{solver}: intact, tick {t}");
+                if bed_k(&engine) >= LIMIT_K {
+                    reached = Some(t);
                 }
-                (Some(r), WallState::Failed { at_tick }) => {
-                    assert_eq!(at_tick, r + 1, "{solver}: fails the tick after");
-                    assert_eq!(at_tick, t, "{solver}: latched on the tick it failed");
-                    assert_eq!(at_tick, FAIL_TICK, "{solver}: the measured tick");
-                    assert_eq!(hole_area(&engine), HOLE_M2, "{solver}: the declared hole");
-                    let s = engine.snapshot();
-                    assert!(leak(&s) > 1.0, "{solver}: it leaks {} kg/s", leak(&s));
-                    assert!(fire(&s) > 40e6, "{solver}: it burns {} W", fire(&s));
-                    break;
-                }
-                (r, w) => panic!("{solver}: tick {t}, reached {r:?}, wall {w:?}"),
             }
+            (Some(r), WallState::Failed { at_tick }) => {
+                assert_eq!(at_tick, r + 1, "{solver}: fails the tick after");
+                assert_eq!(at_tick, t, "{solver}: latched on the tick it failed");
+                assert_eq!(at_tick, FAIL_TICK, "{solver}: the measured tick");
+                assert_eq!(hole_area(&engine), HOLE_M2, "{solver}: the declared hole");
+                let s = engine.snapshot();
+                assert!(leak(&s) > 1.0, "{solver}: it leaks {} kg/s", leak(&s));
+                assert!(fire(&s) > 40e6, "{solver}: it burns {} W", fire(&s));
+                break;
+            }
+            (r, w) => panic!("{solver}: tick {t}, reached {r:?}, wall {w:?}"),
         }
-        assert!(
-            wall_state(&engine).is_failed(),
-            "{solver}: the wall must have failed by tick {}",
-            FAIL_TICK + 5
-        );
     }
+    assert!(
+        wall_state(&engine).is_failed(),
+        "{solver}: the wall must have failed by tick {}",
+        FAIL_TICK + 5
+    );
+}
+
+#[test]
+fn the_wall_fails_on_the_tick_after_the_bed_reaches_its_limit_newton() {
+    the_wall_fails_on_the_tick_after_the_bed_reaches_its_limit("newton");
+}
+
+#[test]
+fn the_wall_fails_on_the_tick_after_the_bed_reaches_its_limit_simple() {
+    the_wall_fails_on_the_tick_after_the_bed_reaches_its_limit("simple");
 }
 
 /// **Gate 2 — the fire is the leak times the heating value**, to the bit, on

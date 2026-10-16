@@ -16592,7 +16592,7 @@ than replaced. Each catch was read for why it fired.
 | 6 | the term written for every valve | gate 1's "every other edge", and `closed_plant_conserves_mass_over_the_acceptance_run` by 1.1e-8 kg against a 1e-8 budget; 14 plants move | gate 1 — right; the conservation catch is an accident of a tight budget seeing a different answer inside the solver's tolerance, not a gate on this |
 | 8 | the skip-when-zero removed (always add) | nothing; corpus identical on all 29 | inert — right: `x − 0.0` is `x`, and a `−0.0` written off the diagonal changes no LU result on any shipped plant |
 
-**Gate 5 was a counter and is now a gate.** `the_relief_arm_lifts_relieves_and_floats`
+**Gate 5 was a counter and is now a gate.** `slow_the_relief_arm_lifts_relieves_and_floats`
 already bounded Newton's spur-tree failures at one in six (50), from 42 measured
 at M8.0. That bound passes mutation 1, whose 39 failures are this slice's
 "before". It is tightened to one in twenty (15) against the 5 measured, with a
@@ -24284,7 +24284,7 @@ As §65.3 specifies.
   the bridge's wire test; the bridge's referent and the engine's id check name
   it.
 
-**The sweep the screen's keys will make** (`the_furnace_and_the_reflux_run_through_the_limit`):
+**The sweep the screen's keys will make** (`slow_the_furnace_and_the_reflux_run_through_the_limit`):
 on the hot-feed plant, the furnace stepped 46 → 70 → 90 → 110 MW (the feed
 250 → 298 → 335 → 371 °C) runs the reflux 2.00 → 2.10 → 2.92 → 3.71 and the
 condenser 51.6 → 53.4 → 67.5 → 81.0 MW, the reboiler held near 21 MW by the

@@ -144,60 +144,67 @@ fn make_up_fixture() -> String {
 /// Measured (Newton and simple agree to 1e-9): peak 4.007483 m, inside 0.01 m
 /// of the setpoint from tick 1 570–1 580, the fill never leaving
 /// [0.2598, 0.5099], 3.998491 m at tick 6 000.
-#[test]
-fn the_fill_loop_holds_its_level_where_the_parked_loop_runs_to_the_roof() {
-    for solver in ["newton", "simple"] {
-        let plant = swap(DEMO, "flow = \"newton\"", &format!("flow = \"{solver}\""));
-        let mut auto = build(&plant);
-        assert_eq!(
-            auto.snapshot().controls[0].action,
-            ControlAction::Reverse,
-            "{solver}: a fill-valve loop publishes its action"
-        );
-        let (mut peak, mut low, mut high) = (f64::MIN, f64::MAX, f64::MIN);
-        let mut last_outside = 0;
-        for t in 1..=6_000 {
-            tick(&mut auto, t);
-            let (level, fill) = (measured(&auto), opening(&auto, "discharge_valve"));
-            peak = peak.max(level);
-            low = low.min(fill);
-            high = high.max(fill);
-            if (level - SETPOINT_M).abs() > 0.01 {
-                last_outside = t;
-            }
+fn the_fill_loop_holds_its_level_where_the_parked_loop_runs_to_the_roof(solver: &str) {
+    let plant = swap(DEMO, "flow = \"newton\"", &format!("flow = \"{solver}\""));
+    let mut auto = build(&plant);
+    assert_eq!(
+        auto.snapshot().controls[0].action,
+        ControlAction::Reverse,
+        "{solver}: a fill-valve loop publishes its action"
+    );
+    let (mut peak, mut low, mut high) = (f64::MIN, f64::MAX, f64::MIN);
+    let mut last_outside = 0;
+    for t in 1..=6_000 {
+        tick(&mut auto, t);
+        let (level, fill) = (measured(&auto), opening(&auto, "discharge_valve"));
+        peak = peak.max(level);
+        low = low.min(fill);
+        high = high.max(fill);
+        if (level - SETPOINT_M).abs() > 0.01 {
+            last_outside = t;
         }
-        assert!(
-            peak < SETPOINT_M + 0.01,
-            "{solver}: the tuning overshoots by under a centimetre (measured 4.007483 m), \
-             peaked at {peak} m"
-        );
-        assert!(
-            (1_500..=1_650).contains(&last_outside),
-            "{solver}: inside 0.01 m of the setpoint from tick ~1 580, last outside at \
-             {last_outside}"
-        );
-        assert!(
-            low > 0.25 && high < 0.52,
-            "{solver}: the fill stays interior, measured [0.2598, 0.5099], ran [{low}, {high}]"
-        );
-        assert_eq!(
-            opening(&auto, "level_valve"),
-            DECLARED_DRAIN_OPENING,
-            "{solver}: the drain is fixed in this file"
-        );
-
-        let mut parked = build(&manual(&plant));
-        for t in 1..=6_000 {
-            tick(&mut parked, t);
-        }
-        assert_eq!(opening(&parked, "discharge_valve"), DECLARED_FILL_OPENING);
-        assert!(
-            measured(&parked) > 0.9 * TANK_HEIGHT_M,
-            "{solver}: parked, the fill at 0.5 overruns the fixed drain (measured 9.190452 m), \
-             ended at {} m",
-            measured(&parked)
-        );
     }
+    assert!(
+        peak < SETPOINT_M + 0.01,
+        "{solver}: the tuning overshoots by under a centimetre (measured 4.007483 m), \
+         peaked at {peak} m"
+    );
+    assert!(
+        (1_500..=1_650).contains(&last_outside),
+        "{solver}: inside 0.01 m of the setpoint from tick ~1 580, last outside at \
+         {last_outside}"
+    );
+    assert!(
+        low > 0.25 && high < 0.52,
+        "{solver}: the fill stays interior, measured [0.2598, 0.5099], ran [{low}, {high}]"
+    );
+    assert_eq!(
+        opening(&auto, "level_valve"),
+        DECLARED_DRAIN_OPENING,
+        "{solver}: the drain is fixed in this file"
+    );
+
+    let mut parked = build(&manual(&plant));
+    for t in 1..=6_000 {
+        tick(&mut parked, t);
+    }
+    assert_eq!(opening(&parked, "discharge_valve"), DECLARED_FILL_OPENING);
+    assert!(
+        measured(&parked) > 0.9 * TANK_HEIGHT_M,
+        "{solver}: parked, the fill at 0.5 overruns the fixed drain (measured 9.190452 m), \
+         ended at {} m",
+        measured(&parked)
+    );
+}
+
+#[test]
+fn the_fill_loop_holds_its_level_where_the_parked_loop_runs_to_the_roof_newton() {
+    the_fill_loop_holds_its_level_where_the_parked_loop_runs_to_the_roof("newton");
+}
+
+#[test]
+fn the_fill_loop_holds_its_level_where_the_parked_loop_runs_to_the_roof_simple() {
+    the_fill_loop_holds_its_level_where_the_parked_loop_runs_to_the_roof("simple");
 }
 
 // ------------------------------------------------------------------ gate 2

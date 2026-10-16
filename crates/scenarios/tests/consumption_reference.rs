@@ -254,7 +254,7 @@ fn pass_books_close(s: &Snapshot) {
 ///    pass's outlet. The loop's only stock is the separator: it falls by what
 ///    came in, less what was vented and consumed, to the solves' tolerance.
 #[test]
-fn the_books_close_on_the_solves_own_flows() {
+fn slow_the_books_close_on_the_solves_own_flows() {
     for (src, ticks) in [(DEMO.to_string(), 15_000), (untripped(), 20_000)] {
         let mut engine = build_src(&src, "newton");
         tick(&mut engine, 1);
@@ -326,7 +326,7 @@ fn story(
 ///    the wall fails about 22 minutes in, and by the hour the bed burns at
 ///    about 517 °C with its loop held where the makeup just feeds the demand.
 #[test]
-fn cutting_the_makeup_starves_the_runaway() {
+fn slow_cutting_the_makeup_starves_the_runaway() {
     let cut = story(DEMO, "newton", 40);
     let trip_tick = cut[6].4.expect("tripped by minute 7");
     assert!(
@@ -376,7 +376,7 @@ fn cutting_the_makeup_starves_the_runaway() {
 
 /// 5. The game solver tells the same story, through the sag and the turn.
 #[test]
-fn the_game_solver_agrees_through_the_sag() {
+fn slow_the_game_solver_agrees_through_the_sag() {
     let newton = story(DEMO, "newton", 30);
     let simple = story(DEMO, "simple", 30);
     for (minute, (n, s)) in newton.iter().zip(&simple).enumerate() {
@@ -407,7 +407,7 @@ fn the_game_solver_agrees_through_the_sag() {
 ///    atmosphere by more than 15 kPa (M59.4, docs/DESIGN.md §64.13) — a hole
 ///    anywhere in the loop blows outward. It once rested at 1 kPa (M59.2).
 #[test]
-fn a_starved_loop_comes_to_rest() {
+fn slow_a_starved_loop_comes_to_rest() {
     let mut engine = build_src(DEMO, "newton");
     tick(&mut engine, 48_000);
     let at_80 = engine.snapshot();

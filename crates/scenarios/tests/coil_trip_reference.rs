@@ -135,97 +135,104 @@ fn measured_c(snapshot: &Snapshot, trip: usize) -> Option<f64> {
 /// nothing on tick 1 and a measurement on every tick after, and stays armed to
 /// tick 6 000. The twin, with no trips, settles its outlet on 60 °C with its coil
 /// at 117.3 °C: the outlet never shows what the tubes are doing.
-#[test]
-fn the_tube_skin_trip_cuts_the_fuel_with_the_outlet_on_target() {
-    for solver in ["newton", "simple"] {
-        let mut demo = build(&with_solver(DEMO, solver));
-        let mut twin = build(&with_solver(&swap(DEMO, DEMO_TRIPS, ""), solver));
-        assert!(twin.snapshot().trips.is_empty(), "the twin has no trips");
-        let mut outlet_peak = f64::MIN;
-        for t in 1..=6000u64 {
-            tick(&mut demo);
-            tick(&mut twin);
-            let snapshot = demo.snapshot();
-            // `outlet_high` (trip 1): blind on tick 1 only.
-            if t == 1 {
-                assert_eq!(
-                    measured_c(&snapshot, 1),
-                    None,
-                    "{solver}: no outlet on tick 1"
-                );
-            } else {
-                assert!(measured_c(&snapshot, 1).is_some(), "{solver}, tick {t}");
-            }
+fn the_tube_skin_trip_cuts_the_fuel_with_the_outlet_on_target(solver: &str) {
+    let mut demo = build(&with_solver(DEMO, solver));
+    let mut twin = build(&with_solver(&swap(DEMO, DEMO_TRIPS, ""), solver));
+    assert!(twin.snapshot().trips.is_empty(), "the twin has no trips");
+    let mut outlet_peak = f64::MIN;
+    for t in 1..=6000u64 {
+        tick(&mut demo);
+        tick(&mut twin);
+        let snapshot = demo.snapshot();
+        // `outlet_high` (trip 1): blind on tick 1 only.
+        if t == 1 {
             assert_eq!(
-                snapshot.trips[1].state,
+                measured_c(&snapshot, 1),
+                None,
+                "{solver}: no outlet on tick 1"
+            );
+        } else {
+            assert!(measured_c(&snapshot, 1).is_some(), "{solver}, tick {t}");
+        }
+        assert_eq!(
+            snapshot.trips[1].state,
+            TripState::Armed,
+            "{solver}, tick {t}"
+        );
+        // `tube_skin_high` (trip 0): a state, so measured from tick 1.
+        assert!(measured_c(&snapshot, 0).is_some(), "{solver}, tick {t}");
+        outlet_peak = outlet_peak.max(outlet_c(&snapshot));
+        if t < DEMO_TRIP_TICK {
+            assert_eq!(
+                snapshot.trips[0].state,
                 TripState::Armed,
                 "{solver}, tick {t}"
             );
-            // `tube_skin_high` (trip 0): a state, so measured from tick 1.
-            assert!(measured_c(&snapshot, 0).is_some(), "{solver}, tick {t}");
-            outlet_peak = outlet_peak.max(outlet_c(&snapshot));
-            if t < DEMO_TRIP_TICK {
-                assert_eq!(
-                    snapshot.trips[0].state,
-                    TripState::Armed,
-                    "{solver}, tick {t}"
-                );
-                let twin_snapshot = twin.snapshot();
-                assert_eq!(
-                    serde_json::to_string(&snapshot.nodes).unwrap(),
-                    serde_json::to_string(&twin_snapshot.nodes).unwrap(),
-                    "{solver}, tick {t}: an armed trip moved the plant"
-                );
-                assert_eq!(
-                    serde_json::to_string(&snapshot.edges).unwrap(),
-                    serde_json::to_string(&twin_snapshot.edges).unwrap(),
-                    "{solver}, tick {t}: an armed trip moved the plant"
-                );
-            } else {
-                assert_eq!(
-                    snapshot.trips[0].state,
-                    TripState::Tripped {
-                        at_tick: DEMO_TRIP_TICK,
-                        by_hand: false
-                    },
-                    "{solver}, tick {t}: tripped on its tick, and latched"
-                );
-                assert_eq!(duty_w(&demo), 0.0, "{solver}, tick {t}: the fuel is cut");
-            }
-            if t == DEMO_TRIP_TICK - 2 {
-                assert!(coil_c(&demo) < SKIN_LIMIT_C, "{solver}: {}", coil_c(&demo));
-            }
-            if t == DEMO_TRIP_TICK - 1 {
-                assert!(coil_c(&demo) >= SKIN_LIMIT_C, "{solver}: {}", coil_c(&demo));
-            }
-            if t == DEMO_TRIP_TICK {
-                let outlet = outlet_c(&snapshot);
-                assert!(
-                    outlet < 60.0 && OUTLET_LIMIT_C - outlet > 14.0,
-                    "{solver}: the tubes trip with the outlet at {outlet} °C, under its \
-                     setpoint and far under the outlet trip"
-                );
-            }
+            let twin_snapshot = twin.snapshot();
+            assert_eq!(
+                serde_json::to_string(&snapshot.nodes).unwrap(),
+                serde_json::to_string(&twin_snapshot.nodes).unwrap(),
+                "{solver}, tick {t}: an armed trip moved the plant"
+            );
+            assert_eq!(
+                serde_json::to_string(&snapshot.edges).unwrap(),
+                serde_json::to_string(&twin_snapshot.edges).unwrap(),
+                "{solver}, tick {t}: an armed trip moved the plant"
+            );
+        } else {
+            assert_eq!(
+                snapshot.trips[0].state,
+                TripState::Tripped {
+                    at_tick: DEMO_TRIP_TICK,
+                    by_hand: false
+                },
+                "{solver}, tick {t}: tripped on its tick, and latched"
+            );
+            assert_eq!(duty_w(&demo), 0.0, "{solver}, tick {t}: the fuel is cut");
         }
-        assert!(
-            outlet_peak < OUTLET_LIMIT_C,
-            "{solver}: the outlet never reaches the outlet trip: {outlet_peak} °C"
-        );
-        // What the tube-skin trip prevents: the twin's outlet on target, its tubes
-        // at 117.3 °C.
-        let twin_snapshot = twin.snapshot();
-        assert!(
-            (outlet_c(&twin_snapshot) - 60.0).abs() < 0.01 && coil_c(&twin) > 115.0,
-            "{solver}: the twin holds 60 °C at the outlet ({}) with its tubes at {} °C",
-            outlet_c(&twin_snapshot),
-            coil_c(&twin)
-        );
-        // Cut, the coil gives its heat back and the plant cools to its feed.
-        assert!(
-            coil_c(&demo) < 40.01 && outlet_c(&demo.snapshot()) < 40.01,
-            "{solver}"
-        );
+        if t == DEMO_TRIP_TICK - 2 {
+            assert!(coil_c(&demo) < SKIN_LIMIT_C, "{solver}: {}", coil_c(&demo));
+        }
+        if t == DEMO_TRIP_TICK - 1 {
+            assert!(coil_c(&demo) >= SKIN_LIMIT_C, "{solver}: {}", coil_c(&demo));
+        }
+        if t == DEMO_TRIP_TICK {
+            let outlet = outlet_c(&snapshot);
+            assert!(
+                outlet < 60.0 && OUTLET_LIMIT_C - outlet > 14.0,
+                "{solver}: the tubes trip with the outlet at {outlet} °C, under its \
+                 setpoint and far under the outlet trip"
+            );
+        }
     }
+    assert!(
+        outlet_peak < OUTLET_LIMIT_C,
+        "{solver}: the outlet never reaches the outlet trip: {outlet_peak} °C"
+    );
+    // What the tube-skin trip prevents: the twin's outlet on target, its tubes
+    // at 117.3 °C.
+    let twin_snapshot = twin.snapshot();
+    assert!(
+        (outlet_c(&twin_snapshot) - 60.0).abs() < 0.01 && coil_c(&twin) > 115.0,
+        "{solver}: the twin holds 60 °C at the outlet ({}) with its tubes at {} °C",
+        outlet_c(&twin_snapshot),
+        coil_c(&twin)
+    );
+    // Cut, the coil gives its heat back and the plant cools to its feed.
+    assert!(
+        coil_c(&demo) < 40.01 && outlet_c(&demo.snapshot()) < 40.01,
+        "{solver}"
+    );
+}
+
+#[test]
+fn the_tube_skin_trip_cuts_the_fuel_with_the_outlet_on_target_newton() {
+    the_tube_skin_trip_cuts_the_fuel_with_the_outlet_on_target("newton");
+}
+
+#[test]
+fn the_tube_skin_trip_cuts_the_fuel_with_the_outlet_on_target_simple() {
+    the_tube_skin_trip_cuts_the_fuel_with_the_outlet_on_target("simple");
 }
 
 // ------------------------------------------------------------------- gate 2

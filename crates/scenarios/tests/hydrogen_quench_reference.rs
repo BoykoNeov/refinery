@@ -220,49 +220,56 @@ fn quench_from_supply(src: &str) -> String {
 /// settles onto it, the valve about a quarter open, the quench cold and the
 /// loop in AUTO on every tick, the trip armed throughout. The first bed warms
 /// a little as the quench takes its hydrogen, and stays calm.
-#[test]
-fn the_cascade_catches_the_second_bed() {
-    for solver in ["newton", "simple"] {
-        let mut engine = build(&with_solver(DEMO, solver));
-        let mut peak = f64::MIN;
-        let mut widest = 0.0_f64;
-        for _ in 0..HALF_HOUR {
-            tick(&mut engine);
-            let snapshot = engine.snapshot();
-            assert!(quench_cold(&snapshot), "{solver}: the quench stays cold");
-            assert_eq!(
-                faceplate(&snapshot, "bed2_temperature").mode,
-                ControlMode::Auto,
-                "{solver}: the bed loop stays in AUTO"
-            );
-            assert_eq!(snapshot.trips[0].state, TripState::Armed, "{solver}");
-            peak = peak.max(bed_c(&engine, "bed2"));
-            widest = widest.max(opening(&engine, "quench_valve"));
-        }
-        let end = bed_c(&engine, "bed2");
-        assert!(
-            peak > SETPOINT_C && peak < SETPOINT_C + 0.5,
-            "{solver}: the bed peaks just over its target, at {peak:.3} °C"
+fn the_cascade_catches_the_second_bed(solver: &str) {
+    let mut engine = build(&with_solver(DEMO, solver));
+    let mut peak = f64::MIN;
+    let mut widest = 0.0_f64;
+    for _ in 0..HALF_HOUR {
+        tick(&mut engine);
+        let snapshot = engine.snapshot();
+        assert!(quench_cold(&snapshot), "{solver}: the quench stays cold");
+        assert_eq!(
+            faceplate(&snapshot, "bed2_temperature").mode,
+            ControlMode::Auto,
+            "{solver}: the bed loop stays in AUTO"
         );
-        assert!(
-            (end - SETPOINT_C).abs() < 0.02,
-            "{solver}: settled on the target, {end:.4} °C"
-        );
-        assert!(
-            widest > 0.2 && widest < 0.4,
-            "{solver}: the quench valve opens, at most {widest:.3}"
-        );
-        let first = bed_c(&engine, "bed1");
-        assert!(
-            first > 404.0 && first < 405.5,
-            "{solver}: the first bed stays calm, {first:.3} °C"
-        );
-        let quench = flow(&engine.snapshot(), "quench_line");
-        assert!(
-            quench > 0.8 && quench < 1.0,
-            "{solver}: about 0.9 kg/s of cold hydrogen holds it, {quench:.4}"
-        );
+        assert_eq!(snapshot.trips[0].state, TripState::Armed, "{solver}");
+        peak = peak.max(bed_c(&engine, "bed2"));
+        widest = widest.max(opening(&engine, "quench_valve"));
     }
+    let end = bed_c(&engine, "bed2");
+    assert!(
+        peak > SETPOINT_C && peak < SETPOINT_C + 0.5,
+        "{solver}: the bed peaks just over its target, at {peak:.3} °C"
+    );
+    assert!(
+        (end - SETPOINT_C).abs() < 0.02,
+        "{solver}: settled on the target, {end:.4} °C"
+    );
+    assert!(
+        widest > 0.2 && widest < 0.4,
+        "{solver}: the quench valve opens, at most {widest:.3}"
+    );
+    let first = bed_c(&engine, "bed1");
+    assert!(
+        first > 404.0 && first < 405.5,
+        "{solver}: the first bed stays calm, {first:.3} °C"
+    );
+    let quench = flow(&engine.snapshot(), "quench_line");
+    assert!(
+        quench > 0.8 && quench < 1.0,
+        "{solver}: about 0.9 kg/s of cold hydrogen holds it, {quench:.4}"
+    );
+}
+
+#[test]
+fn slow_the_cascade_catches_the_second_bed_newton() {
+    the_cascade_catches_the_second_bed("newton");
+}
+
+#[test]
+fn slow_the_cascade_catches_the_second_bed_simple() {
+    the_cascade_catches_the_second_bed("simple");
 }
 
 /// **Gate 2: the quench cools through the pass.** Hydrogen at constant `c_p`
@@ -331,43 +338,50 @@ fn the_quench_cools_through_the_pass() {
 /// 420 °C five minutes in (tick 3 047 on both solvers), the trip opens the
 /// vent and shuts the makeup, and the starved bed turns near 432 °C and is
 /// back under 390 °C by forty minutes, both walls intact.
-#[test]
-fn in_manual_the_trip_depressures_the_loop() {
-    for solver in ["newton", "simple"] {
-        let mut engine = build(&with_solver(&bed_loop_manual(DEMO), solver));
-        let mut fired = None;
-        let mut peak = f64::MIN;
-        for _ in 0..24_000 {
-            tick(&mut engine);
-            let snapshot = engine.snapshot();
-            if fired.is_none() && snapshot.trips[0].state.is_tripped() {
-                fired = Some(snapshot.tick);
-                assert_eq!(opening(&engine, "vent_valve"), 1.0, "{solver}: vented");
-                assert_eq!(opening(&engine, "makeup_valve"), 0.0, "{solver}: shut");
-            }
-            peak = peak.max(bed_c(&engine, "bed2"));
+fn in_manual_the_trip_depressures_the_loop(solver: &str) {
+    let mut engine = build(&with_solver(&bed_loop_manual(DEMO), solver));
+    let mut fired = None;
+    let mut peak = f64::MIN;
+    for _ in 0..24_000 {
+        tick(&mut engine);
+        let snapshot = engine.snapshot();
+        if fired.is_none() && snapshot.trips[0].state.is_tripped() {
+            fired = Some(snapshot.tick);
+            assert_eq!(opening(&engine, "vent_valve"), 1.0, "{solver}: vented");
+            assert_eq!(opening(&engine, "makeup_valve"), 0.0, "{solver}: shut");
         }
-        let fired = fired.unwrap_or_else(|| panic!("{solver}: the trip must fire"));
-        assert!(
-            (2_400..3_600).contains(&fired),
-            "{solver}: the trip fires between 4 and 6 minutes, on tick {fired}"
-        );
-        assert!(
-            peak > 425.0 && peak < 440.0,
-            "{solver}: the starved bed turns near 432 °C, {peak:.2}"
-        );
-        let end = bed_c(&engine, "bed2");
-        assert!(end < 390.0, "{solver}: back near its feed, {end:.2} °C");
-        for bed in ["bed1", "bed2"] {
-            assert_eq!(wall(&engine, bed), WallState::Intact, "{solver}: {bed}");
-        }
+        peak = peak.max(bed_c(&engine, "bed2"));
     }
+    let fired = fired.unwrap_or_else(|| panic!("{solver}: the trip must fire"));
+    assert!(
+        (2_400..3_600).contains(&fired),
+        "{solver}: the trip fires between 4 and 6 minutes, on tick {fired}"
+    );
+    assert!(
+        peak > 425.0 && peak < 440.0,
+        "{solver}: the starved bed turns near 432 °C, {peak:.2}"
+    );
+    let end = bed_c(&engine, "bed2");
+    assert!(end < 390.0, "{solver}: back near its feed, {end:.2} °C");
+    for bed in ["bed1", "bed2"] {
+        assert_eq!(wall(&engine, bed), WallState::Intact, "{solver}: {bed}");
+    }
+}
+
+#[test]
+fn slow_in_manual_the_trip_depressures_the_loop_newton() {
+    in_manual_the_trip_depressures_the_loop("newton");
+}
+
+#[test]
+fn slow_in_manual_the_trip_depressures_the_loop_simple() {
+    in_manual_the_trip_depressures_the_loop("simple");
 }
 
 /// **Gate 3, continued: with no trip either, the second bed's wall fails**
 /// 28 minutes in (tick 17 081 on Newton), past 550 °C.
 #[test]
-fn with_no_trip_either_the_wall_fails() {
+fn slow_with_no_trip_either_the_wall_fails() {
     let mut engine = build(&without_trip(&bed_loop_manual(DEMO)));
     let mut failed = None;
     for _ in 0..HALF_HOUR {
@@ -391,118 +405,131 @@ fn with_no_trip_either_the_wall_fails() {
 /// after THAT reads it and switches the loop to MANUAL. The flow target is
 /// held, AUTO is refused while the quench stands warm, and once the supply is
 /// cold again AUTO is admitted on the first tick the check reads it cold.
-#[test]
-fn a_warm_quench_freezes_the_loop() {
-    for solver in ["newton", "simple"] {
-        let mut engine = build(&with_solver(&quench_from_supply(DEMO), solver));
-        for _ in 0..6_000 {
-            tick(&mut engine);
-        }
-        let snapshot = engine.snapshot();
-        assert!(quench_cold(&snapshot), "{solver}: cold while holding");
+fn a_warm_quench_freezes_the_loop(solver: &str) {
+    let mut engine = build(&with_solver(&quench_from_supply(DEMO), solver));
+    for _ in 0..6_000 {
+        tick(&mut engine);
+    }
+    let snapshot = engine.snapshot();
+    assert!(quench_cold(&snapshot), "{solver}: cold while holding");
+    assert_eq!(
+        faceplate(&snapshot, "bed2_temperature").mode,
+        ControlMode::Auto
+    );
+    let id = loop_id(&snapshot, "bed2_temperature");
+    let held = flow_target(&snapshot);
+    let supply = engine.graph.find_node("quench_gas").expect("the supply");
+    engine
+        .apply(Command::SetSourceTemperature {
+            node: supply,
+            temperature: Kelvin(420.0 + 273.15),
+        })
+        .unwrap_or_else(|e| panic!("{solver}: heat the supply: {e}"));
+    let command_tick = snapshot.tick;
+    tick(&mut engine);
+    let carried = engine.snapshot();
+    assert!(
+        quench_cold(&carried) && faceplate(&carried, "bed2_temperature").mode == ControlMode::Auto,
+        "{solver}: the first tick's pass still reads the cold pipe"
+    );
+    tick(&mut engine);
+    let frozen = engine.snapshot();
+    assert_eq!(frozen.tick, command_tick + 2);
+    let plate = faceplate(&frozen, "bed2_temperature");
+    let reading = plate.quench.expect("published");
+    assert!(!reading.is_cold(), "{solver}: {reading:?}");
+    // The quench valve's dissipation warms the gas a few kelvin past the
+    // supply (§64.12), so the reading sits just over 420 °C.
+    let quench_c = reading.quench_k.value() - 273.15;
+    assert!(
+        quench_c > 420.0 && quench_c < 430.0,
+        "{solver}: the quench reads the hot supply, {quench_c:.2} °C"
+    );
+    assert_eq!(plate.mode, ControlMode::Manual, "{solver}: frozen");
+    let target = flow_target(&frozen);
+    for _ in 0..600 {
+        tick(&mut engine);
         assert_eq!(
-            faceplate(&snapshot, "bed2_temperature").mode,
-            ControlMode::Auto
-        );
-        let id = loop_id(&snapshot, "bed2_temperature");
-        let held = flow_target(&snapshot);
-        let supply = engine.graph.find_node("quench_gas").expect("the supply");
-        engine
-            .apply(Command::SetSourceTemperature {
-                node: supply,
-                temperature: Kelvin(420.0 + 273.15),
-            })
-            .unwrap_or_else(|e| panic!("{solver}: heat the supply: {e}"));
-        let command_tick = snapshot.tick;
-        tick(&mut engine);
-        let carried = engine.snapshot();
-        assert!(
-            quench_cold(&carried)
-                && faceplate(&carried, "bed2_temperature").mode == ControlMode::Auto,
-            "{solver}: the first tick's pass still reads the cold pipe"
-        );
-        tick(&mut engine);
-        let frozen = engine.snapshot();
-        assert_eq!(frozen.tick, command_tick + 2);
-        let plate = faceplate(&frozen, "bed2_temperature");
-        let reading = plate.quench.expect("published");
-        assert!(!reading.is_cold(), "{solver}: {reading:?}");
-        // The quench valve's dissipation warms the gas a few kelvin past the
-        // supply (§64.12), so the reading sits just over 420 °C.
-        let quench_c = reading.quench_k.value() - 273.15;
-        assert!(
-            quench_c > 420.0 && quench_c < 430.0,
-            "{solver}: the quench reads the hot supply, {quench_c:.2} °C"
-        );
-        assert_eq!(plate.mode, ControlMode::Manual, "{solver}: frozen");
-        let target = flow_target(&frozen);
-        for _ in 0..600 {
-            tick(&mut engine);
-            assert_eq!(
-                flow_target(&engine.snapshot()),
-                target,
-                "{solver}: the flow target is held while frozen"
-            );
-        }
-        assert!(
-            (target - held).abs() < 0.2,
-            "{solver}: held near where it stood, {target} against {held}"
-        );
-        let auto = |engine: &mut Engine| {
-            engine.apply(Command::SetControllerMode {
-                loop_id: id,
-                mode: ControlMode::Auto,
-            })
-        };
-        let err = auto(&mut engine)
-            .expect_err("AUTO is refused while the quench is warm")
-            .to_string();
-        assert!(
-            err.contains("bed2_temperature") && err.contains("not colder than"),
-            "{solver}: {err}"
-        );
-        engine
-            .apply(Command::SetSourceTemperature {
-                node: supply,
-                temperature: Kelvin(67.8 + 273.15),
-            })
-            .unwrap_or_else(|e| panic!("{solver}: cool the supply: {e}"));
-        assert!(
-            auto(&mut engine).is_err(),
-            "{solver}: still warm in its pipe"
-        );
-        tick(&mut engine);
-        auto(&mut engine).unwrap_or_else(|e| panic!("{solver}: AUTO once cold: {e}"));
-        for _ in 0..HALF_HOUR / 2 {
-            tick(&mut engine);
-        }
-        let end = bed_c(&engine, "bed2");
-        assert!(
-            (end - SETPOINT_C).abs() < 0.5,
-            "{solver}: back in AUTO, the loop brings the bed back, {end:.3} °C"
+            flow_target(&engine.snapshot()),
+            target,
+            "{solver}: the flow target is held while frozen"
         );
     }
+    assert!(
+        (target - held).abs() < 0.2,
+        "{solver}: held near where it stood, {target} against {held}"
+    );
+    let auto = |engine: &mut Engine| {
+        engine.apply(Command::SetControllerMode {
+            loop_id: id,
+            mode: ControlMode::Auto,
+        })
+    };
+    let err = auto(&mut engine)
+        .expect_err("AUTO is refused while the quench is warm")
+        .to_string();
+    assert!(
+        err.contains("bed2_temperature") && err.contains("not colder than"),
+        "{solver}: {err}"
+    );
+    engine
+        .apply(Command::SetSourceTemperature {
+            node: supply,
+            temperature: Kelvin(67.8 + 273.15),
+        })
+        .unwrap_or_else(|e| panic!("{solver}: cool the supply: {e}"));
+    assert!(
+        auto(&mut engine).is_err(),
+        "{solver}: still warm in its pipe"
+    );
+    tick(&mut engine);
+    auto(&mut engine).unwrap_or_else(|e| panic!("{solver}: AUTO once cold: {e}"));
+    for _ in 0..HALF_HOUR / 2 {
+        tick(&mut engine);
+    }
+    let end = bed_c(&engine, "bed2");
+    assert!(
+        (end - SETPOINT_C).abs() < 0.5,
+        "{solver}: back in AUTO, the loop brings the bed back, {end:.3} °C"
+    );
+}
+
+#[test]
+fn slow_a_warm_quench_freezes_the_loop_newton() {
+    a_warm_quench_freezes_the_loop("newton");
+}
+
+#[test]
+fn slow_a_warm_quench_freezes_the_loop_simple() {
+    a_warm_quench_freezes_the_loop("simple");
 }
 
 /// **Gate 5: the single-loop form.** The bed loop on the quench valve itself,
 /// declared direct, holds the bed as the cascade does.
-#[test]
-fn a_single_loop_on_the_quench_valve_holds_the_bed() {
-    for solver in ["newton", "simple"] {
-        let mut engine = build(&with_solver(&single_loop(DEMO), solver));
-        let mut peak = f64::MIN;
-        for _ in 0..HALF_HOUR {
-            tick(&mut engine);
-            assert!(quench_cold(&engine.snapshot()), "{solver}");
-            peak = peak.max(bed_c(&engine, "bed2"));
-        }
-        let end = bed_c(&engine, "bed2");
-        assert!(peak < SETPOINT_C + 1.0, "{solver}: peak {peak:.3} °C");
-        assert!(
-            (end - SETPOINT_C).abs() < 0.05,
-            "{solver}: settled, {end:.4} °C"
-        );
+fn a_single_loop_on_the_quench_valve_holds_the_bed(solver: &str) {
+    let mut engine = build(&with_solver(&single_loop(DEMO), solver));
+    let mut peak = f64::MIN;
+    for _ in 0..HALF_HOUR {
+        tick(&mut engine);
+        assert!(quench_cold(&engine.snapshot()), "{solver}");
+        peak = peak.max(bed_c(&engine, "bed2"));
     }
+    let end = bed_c(&engine, "bed2");
+    assert!(peak < SETPOINT_C + 1.0, "{solver}: peak {peak:.3} °C");
+    assert!(
+        (end - SETPOINT_C).abs() < 0.05,
+        "{solver}: settled, {end:.4} °C"
+    );
+}
+
+#[test]
+fn slow_a_single_loop_on_the_quench_valve_holds_the_bed_newton() {
+    a_single_loop_on_the_quench_valve_holds_the_bed("newton");
+}
+
+#[test]
+fn slow_a_single_loop_on_the_quench_valve_holds_the_bed_simple() {
+    a_single_loop_on_the_quench_valve_holds_the_bed("simple");
 }
 
 /// **Gate 6: the layouts refused**, each on a substring of its own message.

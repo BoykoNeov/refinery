@@ -104,7 +104,7 @@ impl Screen {
 /// 2 400 are run as set; the column publishes ten stage temperatures rising
 /// down the column.
 #[test]
-fn the_crude_unit_timeline() {
+fn slow_the_crude_unit_timeline() {
     let mut screen = Screen::load(
         "crude_unit.toml",
         "furnace",

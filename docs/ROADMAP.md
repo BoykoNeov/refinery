@@ -1666,7 +1666,7 @@ unedited so the corrections above can be read against what they corrected.
       in `invariants.rs` — written as characterization tests that are MEANT to fail
       when the defect is fixed, at which point their assertions become the
       description of the fix. The generated rates are bounded in
-      `the_relief_arm_lifts_relieves_and_floats` so the deferral cannot quietly
+      `slow_the_relief_arm_lifts_relieves_and_floats` so the deferral cannot quietly
       worsen. DESIGN §3a's claim that `conducts` "cannot differ between iterates
       anyway" is corrected in place rather than left standing
       ([[a-cached-classification-expires]]).
@@ -1682,7 +1682,7 @@ unedited so the corrections above can be read against what they corrected.
       re-sizing that plant's PSV inlet line. Across generated spur trees Simple
       converges on **59/306**. That is documented behaviour, not a new defect — a
       normally-shut PSV leaves a fat branch carrying no net flow, which is what
-      starves the Gauss–Seidel diagonal — but `tree_fidelity_agreement` has no
+      starves the Gauss–Seidel diagonal — but `slow_tree_fidelity_agreement` has no
       non-vacuity guard of its own, so a further collapse would have gone unseen.
       It now has a floor.
 
@@ -2975,7 +2975,7 @@ atmospheric.
       that `conducts` is pressure-independent for every other element, which is
       what the whole anchor rests on.
 - [x] Tests: the two deferral floors in
-      `the_relief_arm_lifts_relieves_and_floats` bounded a defect. Re-measure and
+      `slow_the_relief_arm_lifts_relieves_and_floats` bounded a defect. Re-measure and
       TIGHTEN both, or they become the vacuous counters this repo has shipped
       twice already ([[a-counter-is-not-a-gate]]). Add the new measurement the
       loop owes: how many spur trees cycle or hit the cap — nonzero is the chatter

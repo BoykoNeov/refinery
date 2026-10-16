@@ -105,119 +105,126 @@ fn run(engine: &mut Engine, ticks: u32, label: &str) -> u32 {
 /// dead; a vent is refused while it runs; stopped, vented and started it runs as
 /// it did at first; into 3 bar it still pushes; at 125 °C it locks again and the
 /// check valve holds the line shut instead of letting the destination run back.
+fn the_files_story_on_both_fidelities(solver: &str) {
+    let mut engine = build(solver);
+    let mut worst = run(&mut engine, 20, solver);
+    let s = engine.snapshot();
+    let liquid = flow(&s);
+    assert_eq!(
+        node(&s, "feed_pump").pump_two_phase,
+        None,
+        "{solver}: vapour at 100 °C"
+    );
+    assert!(
+        (14.5..15.5).contains(&liquid),
+        "{solver}: {liquid} kg/s at 100 °C"
+    );
+
+    apply(&mut engine, &Beat::Supply(110.0)).unwrap();
+    worst = worst.max(run(&mut engine, 20, solver));
+    let s = engine.snapshot();
+    let pump = node(&s, "feed_pump")
+        .pump_two_phase
+        .expect("vapour at 110 °C");
+    assert!(
+        (0.07..0.165).contains(&pump.void_fraction),
+        "{solver}: {pump:?}"
+    );
+    assert!(
+        pump.head_multiplier > 0.1 && pump.head_multiplier < 0.9,
+        "{solver}: {pump:?}"
+    );
+    assert!(!locked(&engine), "{solver}: locked at 110 °C");
+
+    // A one-second surge to 120 °C: the suction offers over a third of its
+    // volume in vapour, the pump has no push, and its pocket fills a third
+    // of the way (M55.1, 3 s to fill). Back at 110 °C it drains at the same
+    // rate, the push it takes fading as it goes, and the pump is where it was.
+    let fall = flow(&engine.snapshot());
+    apply(&mut engine, &Beat::Supply(120.0)).unwrap();
+    worst = worst.max(run(&mut engine, 10, solver));
+    assert!(!locked(&engine), "{solver}: a one-second surge locked it");
+    let surged = pocket(&engine);
+    assert!(
+        (surged - 1.0 / 3.0).abs() < 1e-9,
+        "{solver}: pocket {surged} after a second past the lock point"
+    );
+    apply(&mut engine, &Beat::Supply(110.0)).unwrap();
+    worst = worst.max(run(&mut engine, 2, solver));
+    let recovering = flow(&engine.snapshot());
+    assert!(
+        pocket(&engine) > 0.0 && recovering < fall,
+        "{solver}: {recovering} kg/s with a part-full pocket, {fall} without"
+    );
+    worst = worst.max(run(&mut engine, 18, solver));
+    assert_eq!(pocket(&engine), 0.0, "{solver}: the pocket did not drain");
+    let after = flow(&engine.snapshot());
+    assert!(
+        (after - fall).abs() <= 1e-6 * fall,
+        "{solver}: {after} kg/s after the surge, {fall} before it"
+    );
+
+    // Held at 120 °C the pocket fills in 3 s and the pump locks.
+    apply(&mut engine, &Beat::Supply(120.0)).unwrap();
+    worst = worst.max(run(&mut engine, 25, solver));
+    assert!(
+        !locked(&engine),
+        "{solver}: locked before its pocket filled"
+    );
+    worst = worst.max(run(&mut engine, 15, solver));
+    assert!(locked(&engine), "{solver}: not locked after 4 s at 120 °C");
+
+    apply(&mut engine, &Beat::Supply(100.0)).unwrap();
+    worst = worst.max(run(&mut engine, 20, solver));
+    assert!(locked(&engine), "{solver}: cooling cleared the lock");
+    let dead = flow(&engine.snapshot());
+    assert!(
+        dead < 0.6 * liquid,
+        "{solver}: locked {dead} kg/s against {liquid}"
+    );
+
+    let refused = apply(&mut engine, &Beat::Vent).expect_err("vented while running");
+    assert!(refused.contains("still running"), "{refused}");
+    apply(&mut engine, &Beat::Pump(false)).unwrap();
+    worst = worst.max(run(&mut engine, 10, solver));
+    apply(&mut engine, &Beat::Vent).expect("a stopped, locked pump vents");
+    apply(&mut engine, &Beat::Pump(true)).unwrap();
+    worst = worst.max(run(&mut engine, 20, solver));
+    let back = flow(&engine.snapshot());
+    assert!(
+        (back - liquid).abs() <= 1e-6 * liquid,
+        "{solver}: vented and restarted at {back} kg/s, first {liquid}"
+    );
+
+    apply(&mut engine, &Beat::Destination(3.0)).unwrap();
+    worst = worst.max(run(&mut engine, 20, solver));
+    let into_3_bar = flow(&engine.snapshot());
+    assert!(into_3_bar > 5.0, "{solver}: {into_3_bar} kg/s into 3 bar");
+    assert!(!locked(&engine));
+
+    apply(&mut engine, &Beat::Supply(125.0)).unwrap();
+    worst = worst.max(run(&mut engine, 40, solver));
+    assert!(locked(&engine), "{solver}: not locked at 125 °C");
+    let shut = flow(&engine.snapshot());
+    assert!(shut.abs() < 1e-6, "{solver}: {shut} kg/s past a shut disc");
+
+    // Measured worst a tick over the story: Newton 11, the game solver 19
+    // (21 before M55).
+    let cap = if solver == "newton" { 14 } else { 26 };
+    assert!(
+        worst <= cap,
+        "{solver}: {worst} iterations a tick, cap {cap}"
+    );
+}
+
 #[test]
-fn the_files_story_on_both_fidelities() {
-    for solver in ["newton", "simple"] {
-        let mut engine = build(solver);
-        let mut worst = run(&mut engine, 20, solver);
-        let s = engine.snapshot();
-        let liquid = flow(&s);
-        assert_eq!(
-            node(&s, "feed_pump").pump_two_phase,
-            None,
-            "{solver}: vapour at 100 °C"
-        );
-        assert!(
-            (14.5..15.5).contains(&liquid),
-            "{solver}: {liquid} kg/s at 100 °C"
-        );
+fn the_files_story_on_both_fidelities_newton() {
+    the_files_story_on_both_fidelities("newton");
+}
 
-        apply(&mut engine, &Beat::Supply(110.0)).unwrap();
-        worst = worst.max(run(&mut engine, 20, solver));
-        let s = engine.snapshot();
-        let pump = node(&s, "feed_pump")
-            .pump_two_phase
-            .expect("vapour at 110 °C");
-        assert!(
-            (0.07..0.165).contains(&pump.void_fraction),
-            "{solver}: {pump:?}"
-        );
-        assert!(
-            pump.head_multiplier > 0.1 && pump.head_multiplier < 0.9,
-            "{solver}: {pump:?}"
-        );
-        assert!(!locked(&engine), "{solver}: locked at 110 °C");
-
-        // A one-second surge to 120 °C: the suction offers over a third of its
-        // volume in vapour, the pump has no push, and its pocket fills a third
-        // of the way (M55.1, 3 s to fill). Back at 110 °C it drains at the same
-        // rate, the push it takes fading as it goes, and the pump is where it was.
-        let fall = flow(&engine.snapshot());
-        apply(&mut engine, &Beat::Supply(120.0)).unwrap();
-        worst = worst.max(run(&mut engine, 10, solver));
-        assert!(!locked(&engine), "{solver}: a one-second surge locked it");
-        let surged = pocket(&engine);
-        assert!(
-            (surged - 1.0 / 3.0).abs() < 1e-9,
-            "{solver}: pocket {surged} after a second past the lock point"
-        );
-        apply(&mut engine, &Beat::Supply(110.0)).unwrap();
-        worst = worst.max(run(&mut engine, 2, solver));
-        let recovering = flow(&engine.snapshot());
-        assert!(
-            pocket(&engine) > 0.0 && recovering < fall,
-            "{solver}: {recovering} kg/s with a part-full pocket, {fall} without"
-        );
-        worst = worst.max(run(&mut engine, 18, solver));
-        assert_eq!(pocket(&engine), 0.0, "{solver}: the pocket did not drain");
-        let after = flow(&engine.snapshot());
-        assert!(
-            (after - fall).abs() <= 1e-6 * fall,
-            "{solver}: {after} kg/s after the surge, {fall} before it"
-        );
-
-        // Held at 120 °C the pocket fills in 3 s and the pump locks.
-        apply(&mut engine, &Beat::Supply(120.0)).unwrap();
-        worst = worst.max(run(&mut engine, 25, solver));
-        assert!(
-            !locked(&engine),
-            "{solver}: locked before its pocket filled"
-        );
-        worst = worst.max(run(&mut engine, 15, solver));
-        assert!(locked(&engine), "{solver}: not locked after 4 s at 120 °C");
-
-        apply(&mut engine, &Beat::Supply(100.0)).unwrap();
-        worst = worst.max(run(&mut engine, 20, solver));
-        assert!(locked(&engine), "{solver}: cooling cleared the lock");
-        let dead = flow(&engine.snapshot());
-        assert!(
-            dead < 0.6 * liquid,
-            "{solver}: locked {dead} kg/s against {liquid}"
-        );
-
-        let refused = apply(&mut engine, &Beat::Vent).expect_err("vented while running");
-        assert!(refused.contains("still running"), "{refused}");
-        apply(&mut engine, &Beat::Pump(false)).unwrap();
-        worst = worst.max(run(&mut engine, 10, solver));
-        apply(&mut engine, &Beat::Vent).expect("a stopped, locked pump vents");
-        apply(&mut engine, &Beat::Pump(true)).unwrap();
-        worst = worst.max(run(&mut engine, 20, solver));
-        let back = flow(&engine.snapshot());
-        assert!(
-            (back - liquid).abs() <= 1e-6 * liquid,
-            "{solver}: vented and restarted at {back} kg/s, first {liquid}"
-        );
-
-        apply(&mut engine, &Beat::Destination(3.0)).unwrap();
-        worst = worst.max(run(&mut engine, 20, solver));
-        let into_3_bar = flow(&engine.snapshot());
-        assert!(into_3_bar > 5.0, "{solver}: {into_3_bar} kg/s into 3 bar");
-        assert!(!locked(&engine));
-
-        apply(&mut engine, &Beat::Supply(125.0)).unwrap();
-        worst = worst.max(run(&mut engine, 40, solver));
-        assert!(locked(&engine), "{solver}: not locked at 125 °C");
-        let shut = flow(&engine.snapshot());
-        assert!(shut.abs() < 1e-6, "{solver}: {shut} kg/s past a shut disc");
-
-        // Measured worst a tick over the story: Newton 11, the game solver 19
-        // (21 before M55).
-        let cap = if solver == "newton" { 14 } else { 26 };
-        assert!(
-            worst <= cap,
-            "{solver}: {worst} iterations a tick, cap {cap}"
-        );
-    }
+#[test]
+fn the_files_story_on_both_fidelities_simple() {
+    the_files_story_on_both_fidelities("simple");
 }
 
 /// Net power [W] and mass rate [kg/s] across the plant's boundary, INTO it, and

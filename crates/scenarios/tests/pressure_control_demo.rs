@@ -323,7 +323,7 @@ fn step_setpoint_and_read(gain_per_bar: f64, to_bar: f64) -> f64 {
 /// only from a fixture. Sizing this plant's operating point to sit interior is
 /// what makes both arms reachable from the demo itself, by a command.
 #[test]
-fn the_shipped_gain_clamps_on_neither_side_where_its_neighbours_clamp_on_both() {
+fn slow_the_shipped_gain_clamps_on_neither_side_where_its_neighbours_clamp_on_both() {
     // First, the settled operating point the two bounds are computed from. If this
     // moves, both bounds below move with it and the file's header is wrong.
     let mut shipped = build(DEMO);

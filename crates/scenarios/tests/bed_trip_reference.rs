@@ -158,62 +158,69 @@ fn reset(engine: &mut Engine) -> Result<(), String> {
 /// the fourth decimal). The bed ends tick 3 697 at or over 400 °C and tick 3 696
 /// under it, so the pass at the top of 3 698 fires, and on that tick's own
 /// snapshot the preheater reads zero duty with the feed still flowing.
-#[test]
-fn the_bed_trip_reads_the_bed_and_cuts_the_fire_on_its_tick() {
-    for solver in ["newton", "simple"] {
-        let mut demo = build(&with_solver(DEMO, solver));
-        let mut twin = build(&with_solver(&swap(DEMO, DEMO_TRIP, ""), solver));
-        let bed_id = demo.graph.find_node("bed").expect("a bed");
+fn the_bed_trip_reads_the_bed_and_cuts_the_fire_on_its_tick(solver: &str) {
+    let mut demo = build(&with_solver(DEMO, solver));
+    let mut twin = build(&with_solver(&swap(DEMO, DEMO_TRIP, ""), solver));
+    let bed_id = demo.graph.find_node("bed").expect("a bed");
+    assert_eq!(
+        demo.snapshot().trips[0].watches,
+        MeasurementPoint::Node(bed_id),
+        "{solver}: the trip watches the bed node"
+    );
+    for t in 1..=DEMO_TRIP_TICK {
+        let bed_before = bed_k(&demo);
+        tick(&mut demo);
+        tick(&mut twin);
+        let snapshot = demo.snapshot();
         assert_eq!(
-            demo.snapshot().trips[0].watches,
-            MeasurementPoint::Node(bed_id),
-            "{solver}: the trip watches the bed node"
+            measured_k(&snapshot),
+            Some(bed_before),
+            "{solver}, tick {t}: the trip compares the bed's state, from tick 1"
         );
-        for t in 1..=DEMO_TRIP_TICK {
-            let bed_before = bed_k(&demo);
-            tick(&mut demo);
-            tick(&mut twin);
-            let snapshot = demo.snapshot();
+        if t < DEMO_TRIP_TICK {
             assert_eq!(
-                measured_k(&snapshot),
-                Some(bed_before),
-                "{solver}, tick {t}: the trip compares the bed's state, from tick 1"
+                snapshot.trips[0].state,
+                TripState::Armed,
+                "{solver}, tick {t}"
             );
-            if t < DEMO_TRIP_TICK {
-                assert_eq!(
-                    snapshot.trips[0].state,
-                    TripState::Armed,
-                    "{solver}, tick {t}"
-                );
-                assert!(bed_before - 273.15 < BED_LIMIT_C, "{solver}, tick {t}");
-                assert_eq!(
-                    plant_bytes(&snapshot),
-                    plant_bytes(&twin.snapshot()),
-                    "{solver}, tick {t}: an armed trip moved the plant"
-                );
-            } else {
-                assert!(
-                    bed_before - 273.15 >= BED_LIMIT_C,
-                    "{solver}: fired on {}",
-                    bed_before - 273.15
-                );
-                assert_eq!(
-                    snapshot.trips[0].state,
-                    TripState::Tripped {
-                        at_tick: DEMO_TRIP_TICK,
-                        by_hand: false
-                    },
-                    "{solver}: tripped on its tick"
-                );
-                assert_eq!(duty_w(&demo), 0.0, "{solver}: the fire is cut");
-                let flow = bed_feed_kg_per_s(&snapshot);
-                assert!(
-                    (flow - 49.9).abs() < 0.1,
-                    "{solver}: the feed keeps flowing, {flow} kg/s"
-                );
-            }
+            assert!(bed_before - 273.15 < BED_LIMIT_C, "{solver}, tick {t}");
+            assert_eq!(
+                plant_bytes(&snapshot),
+                plant_bytes(&twin.snapshot()),
+                "{solver}, tick {t}: an armed trip moved the plant"
+            );
+        } else {
+            assert!(
+                bed_before - 273.15 >= BED_LIMIT_C,
+                "{solver}: fired on {}",
+                bed_before - 273.15
+            );
+            assert_eq!(
+                snapshot.trips[0].state,
+                TripState::Tripped {
+                    at_tick: DEMO_TRIP_TICK,
+                    by_hand: false
+                },
+                "{solver}: tripped on its tick"
+            );
+            assert_eq!(duty_w(&demo), 0.0, "{solver}: the fire is cut");
+            let flow = bed_feed_kg_per_s(&snapshot);
+            assert!(
+                (flow - 49.9).abs() < 0.1,
+                "{solver}: the feed keeps flowing, {flow} kg/s"
+            );
         }
     }
+}
+
+#[test]
+fn the_bed_trip_reads_the_bed_and_cuts_the_fire_on_its_tick_newton() {
+    the_bed_trip_reads_the_bed_and_cuts_the_fire_on_its_tick("newton");
+}
+
+#[test]
+fn the_bed_trip_reads_the_bed_and_cuts_the_fire_on_its_tick_simple() {
+    the_bed_trip_reads_the_bed_and_cuts_the_fire_on_its_tick("simple");
 }
 
 // ------------------------------------------------------------------- gate 2
@@ -227,33 +234,40 @@ fn the_bed_trip_reads_the_bed_and_cuts_the_fire_on_its_tick() {
 /// the trip still latched (a manual reset). The twin, with no trip, is past
 /// 740 °C by then, nearly all its oil cracked to light ends (§62.9's hot
 /// branch, on a 385 °C feed).
-#[test]
-fn cutting_the_fire_saves_the_bed_that_its_twin_loses() {
-    for solver in ["newton", "simple"] {
-        let mut demo = build(&with_solver(DEMO, solver));
-        let mut twin = build(&with_solver(&swap(DEMO, DEMO_TRIP, ""), solver));
-        let mut peak_c = f64::MIN;
-        for _ in 0..LONG_RUN {
-            tick(&mut demo);
-            peak_c = peak_c.max(bed_c(&demo));
-        }
-        run(&mut twin, LONG_RUN);
-        assert!(
-            peak_c < BED_LIMIT_C + 1.0,
-            "{solver}: the bed turns at once, peaking at {peak_c} °C"
-        );
-        let end_c = bed_c(&demo);
-        assert!(
-            end_c > FEED_C && end_c < FEED_C + 1.0,
-            "{solver}: the bed settles onto its feed, at {end_c} °C"
-        );
-        assert!(demo.snapshot().trips[0].state.is_tripped(), "{solver}");
-        let twin_c = bed_c(&twin);
-        assert!(
-            twin_c > 740.0,
-            "{solver}: the twin runs away, to {twin_c} °C"
-        );
+fn cutting_the_fire_saves_the_bed_that_its_twin_loses(solver: &str) {
+    let mut demo = build(&with_solver(DEMO, solver));
+    let mut twin = build(&with_solver(&swap(DEMO, DEMO_TRIP, ""), solver));
+    let mut peak_c = f64::MIN;
+    for _ in 0..LONG_RUN {
+        tick(&mut demo);
+        peak_c = peak_c.max(bed_c(&demo));
     }
+    run(&mut twin, LONG_RUN);
+    assert!(
+        peak_c < BED_LIMIT_C + 1.0,
+        "{solver}: the bed turns at once, peaking at {peak_c} °C"
+    );
+    let end_c = bed_c(&demo);
+    assert!(
+        end_c > FEED_C && end_c < FEED_C + 1.0,
+        "{solver}: the bed settles onto its feed, at {end_c} °C"
+    );
+    assert!(demo.snapshot().trips[0].state.is_tripped(), "{solver}");
+    let twin_c = bed_c(&twin);
+    assert!(
+        twin_c > 740.0,
+        "{solver}: the twin runs away, to {twin_c} °C"
+    );
+}
+
+#[test]
+fn cutting_the_fire_saves_the_bed_that_its_twin_loses_newton() {
+    cutting_the_fire_saves_the_bed_that_its_twin_loses("newton");
+}
+
+#[test]
+fn cutting_the_fire_saves_the_bed_that_its_twin_loses_simple() {
+    cutting_the_fire_saves_the_bed_that_its_twin_loses("simple");
 }
 
 // ------------------------------------------------------------------- gate 3
@@ -324,40 +338,47 @@ fn the_bed_trip_resets_once_the_bed_cools_and_relights_nothing() {
 /// wall loss, §62.7).
 /// So the bed sits at the very value the trip fired on, over its limit, and
 /// every reset is refused, for as long as anyone waits.
-#[test]
-fn a_shut_feed_traps_the_bed_over_its_limit() {
-    for solver in ["newton", "simple"] {
-        let mut engine = build(&with_solver(DEMO, solver));
-        run(&mut engine, DEMO_TRIP_TICK - 1);
-        let feed_valve = engine.graph.find_node("feed_valve").expect("a feed valve");
-        engine
-            .apply(Command::SetValveOpening {
-                node: feed_valve,
-                opening: 0.0,
-            })
-            .unwrap_or_else(|e| panic!("{solver}: shutting the feed by hand: {e}"));
-        let fired_on = bed_k(&engine);
-        tick(&mut engine);
-        assert!(engine.snapshot().trips[0].state.is_tripped(), "{solver}");
-        assert!(fired_on - 273.15 >= BED_LIMIT_C, "{solver}");
-        for minute in 0..10 {
-            let snapshot = engine.snapshot();
-            // Below the solve's own 1e-8 kg/s floor rather than exactly zero
-            // since M58: the bed's outlet is split for its wall's hole, one more
-            // free node, and the game solver leaves a rounding residual through
-            // the shut line (§63.6; §42 correction 5 for the furnace's hole).
-            let feed = bed_feed_kg_per_s(&snapshot);
-            assert!(feed.abs() < 1e-8, "{solver}, minute {minute}: {feed}");
-            let held = bed_k(&engine) - fired_on;
-            assert!(
-                held.abs() < BED_HOLD_K,
-                "{solver}, minute {minute}: the stopped bed holds, moved {held:e} K"
-            );
-            let refused = reset(&mut engine).expect_err("a trapped bed never resets");
-            assert!(refused.contains("condition still holds"), "{refused}");
-            run(&mut engine, 600);
-        }
+fn a_shut_feed_traps_the_bed_over_its_limit(solver: &str) {
+    let mut engine = build(&with_solver(DEMO, solver));
+    run(&mut engine, DEMO_TRIP_TICK - 1);
+    let feed_valve = engine.graph.find_node("feed_valve").expect("a feed valve");
+    engine
+        .apply(Command::SetValveOpening {
+            node: feed_valve,
+            opening: 0.0,
+        })
+        .unwrap_or_else(|e| panic!("{solver}: shutting the feed by hand: {e}"));
+    let fired_on = bed_k(&engine);
+    tick(&mut engine);
+    assert!(engine.snapshot().trips[0].state.is_tripped(), "{solver}");
+    assert!(fired_on - 273.15 >= BED_LIMIT_C, "{solver}");
+    for minute in 0..10 {
+        let snapshot = engine.snapshot();
+        // Below the solve's own 1e-8 kg/s floor rather than exactly zero
+        // since M58: the bed's outlet is split for its wall's hole, one more
+        // free node, and the game solver leaves a rounding residual through
+        // the shut line (§63.6; §42 correction 5 for the furnace's hole).
+        let feed = bed_feed_kg_per_s(&snapshot);
+        assert!(feed.abs() < 1e-8, "{solver}, minute {minute}: {feed}");
+        let held = bed_k(&engine) - fired_on;
+        assert!(
+            held.abs() < BED_HOLD_K,
+            "{solver}, minute {minute}: the stopped bed holds, moved {held:e} K"
+        );
+        let refused = reset(&mut engine).expect_err("a trapped bed never resets");
+        assert!(refused.contains("condition still holds"), "{refused}");
+        run(&mut engine, 600);
     }
+}
+
+#[test]
+fn a_shut_feed_traps_the_bed_over_its_limit_newton() {
+    a_shut_feed_traps_the_bed_over_its_limit("newton");
+}
+
+#[test]
+fn a_shut_feed_traps_the_bed_over_its_limit_simple() {
+    a_shut_feed_traps_the_bed_over_its_limit("simple");
 }
 
 // ------------------------------------------------------------------- gate 5

@@ -1417,7 +1417,7 @@ proptest! {
 
     /// TREE — I5 breadth over branching topologies (same both-converged rule).
     #[test]
-    fn tree_fidelity_agreement(inputs in tree_inputs_strategy()) {
+    fn slow_tree_fidelity_agreement(inputs in tree_inputs_strategy()) {
         let g = build_tree(&inputs);
         let fluid = &inputs.4;
         let newton = NewtonFlowSolver::default().solve(&g, &fluid.slate, &Default::default(), Seconds(0.1));
@@ -1431,7 +1431,7 @@ proptest! {
     /// I4 for the Simple solver: two fresh instances (empty warm-start) on the
     /// same tree produce byte-identical results, or both diverge.
     #[test]
-    fn tree_simple_is_deterministic(inputs in tree_inputs_strategy()) {
+    fn slow_tree_simple_is_deterministic(inputs in tree_inputs_strategy()) {
         let g = build_tree(&inputs);
         let slate = &inputs.4.slate;
         let a = SimpleFlowSolver::default().solve(&g, slate, &Default::default(), Seconds(0.1));
@@ -1697,7 +1697,7 @@ fn outlet_of(graph: &PlantGraph, nid: NodeId) -> Option<(refinery_core::graph::E
 }
 
 #[test]
-fn the_relief_arm_lifts_relieves_and_floats() {
+fn slow_the_relief_arm_lifts_relieves_and_floats() {
     const SAMPLES: usize = 400;
     let mut runner = TestRunner::deterministic();
 

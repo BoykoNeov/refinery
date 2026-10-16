@@ -74,6 +74,11 @@ enum Cmd {
         /// its namesake and the process exits nonzero if any fingerprint moved.
         #[arg(long)]
         baseline: Option<PathBuf>,
+        /// Plants run at once, each on its own thread. Every plant is its own
+        /// engine, so the fingerprints do not depend on it; the wall-time column
+        /// does (the plants share the processor), which is why the default is 1.
+        #[arg(long, default_value_t = 1)]
+        jobs: usize,
     },
 }
 
@@ -93,7 +98,8 @@ fn main() -> Result<()> {
             solver,
             out,
             baseline,
-        } => corpus(&paths, ticks, solver.as_deref(), out, baseline),
+            jobs,
+        } => corpus(&paths, ticks, solver.as_deref(), out, baseline, jobs),
     }
 }
 
@@ -205,6 +211,7 @@ fn corpus(
     solver: Option<&str>,
     out: Option<PathBuf>,
     baseline: Option<PathBuf>,
+    jobs: usize,
 ) -> Result<()> {
     let files = collect_scenarios(paths)?;
     anyhow::ensure!(!files.is_empty(), "no scenario files found");
@@ -218,10 +225,7 @@ fn corpus(
         None => None,
     };
 
-    let mut rows = Vec::with_capacity(files.len());
-    for file in &files {
-        rows.push(run_one(file, ticks, solver));
-    }
+    let rows = run_all(&files, ticks, solver, jobs);
 
     print_table(&rows, baseline.as_deref());
 
@@ -284,6 +288,37 @@ fn collect_scenarios(paths: &[PathBuf]) -> Result<Vec<PathBuf>> {
     files.sort();
     files.dedup();
     Ok(files)
+}
+
+/// Every plant's row, in `files` order whatever `jobs` is: `jobs` threads take
+/// the next plant off a shared counter and write its row into that plant's own
+/// slot, so the table and the `--out` file line up as they do on one thread.
+fn run_all(files: &[PathBuf], ticks: u64, solver: Option<&str>, jobs: usize) -> Vec<CorpusRow> {
+    let jobs = jobs.clamp(1, files.len().max(1));
+    if jobs == 1 {
+        return files.iter().map(|f| run_one(f, ticks, solver)).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<CorpusRow>>> =
+        files.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..jobs {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(file) = files.get(i) else { break };
+                let row = run_one(file, ticks, solver);
+                *slots[i].lock().expect("no thread panics holding a slot") = Some(row);
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .expect("no thread panics holding a slot")
+                .expect("every slot is filled before the scope ends")
+        })
+        .collect()
 }
 
 fn run_one(file: &Path, ticks: u64, solver: Option<&str>) -> CorpusRow {

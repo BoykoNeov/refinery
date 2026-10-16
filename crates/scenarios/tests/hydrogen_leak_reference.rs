@@ -324,7 +324,7 @@ type Reading = (f64, f64, f64, Option<u64>, bool);
 ///    395 °C. The loop holds near 152 bar, the bed consuming nothing. The game
 ///    solver tells the same story.
 #[test]
-fn the_hydrogen_sweeps_a_stopped_bed_and_the_trip_resets() {
+fn slow_the_hydrogen_sweeps_a_stopped_bed_and_the_trip_resets() {
     let story = |solver: &str| -> Vec<Reading> {
         let mut engine = build_src(DEMO, solver);
         let mut reset_at = None;
@@ -402,7 +402,7 @@ fn the_hydrogen_sweeps_a_stopped_bed_and_the_trip_resets() {
 ///    bed, hottest near 640 °C, settles burning near 517 °C with its loop held
 ///    near 4.3 bar, where the wide-open makeup feeds the hole and the bed.
 #[test]
-fn a_failed_wall_leaks_hydrogen_and_burns_it() {
+fn slow_a_failed_wall_leaks_hydrogen_and_burns_it() {
     let mut engine = build_src(&untripped(), "newton");
     let mut failed_at = None;
     for _ in 0..16_000 {
@@ -464,7 +464,7 @@ fn a_failed_wall_leaks_hydrogen_and_burns_it() {
 ///    still open. The bed is under its limit throughout, so the holes are all
 ///    that stands in the way.
 #[test]
-fn the_repair_asks_for_both_holes_patched() {
+fn slow_the_repair_asks_for_both_holes_patched() {
     let mut engine = build_src(&untripped(), "newton");
     for _ in 0..16_000 {
         tick(&mut engine, 1);
@@ -502,28 +502,35 @@ fn the_repair_asks_for_both_holes_patched() {
 ///    exact probe, which then refused the next tick) blows OUTWARD for ten
 ///    minutes on both solvers, and the loop drains toward the atmosphere from
 ///    above.
-#[test]
-fn a_starved_loop_punctured_blows_outward() {
-    for solver in ["newton", "simple"] {
-        let mut engine = build_src(MAKEUP, solver);
-        tick(&mut engine, 50_000);
-        let before = engine.snapshot();
-        assert!(
-            node(&before, "pass").pressure_pa > P_ATM.value() + 15.0e3,
-            "{solver}: the pass at {} Pa",
-            node(&before, "pass").pressure_pa
-        );
-        puncture(&mut engine, "reactor_gas_line", RUPTURE_M2);
-        for _ in 0..6_000 {
-            tick(&mut engine, 1);
-            let leak = flow(&engine.snapshot(), "reactor_gas_line__leak");
-            assert!(leak >= 0.0, "{solver}: the hole draws {leak} kg/s in");
-        }
-        let s = engine.snapshot();
-        let lowest = node(&s, "separator").pressure_pa;
-        assert!(
-            lowest > P_ATM.value() && lowest < node(&before, "separator").pressure_pa,
-            "{solver}: the separator at {lowest} Pa"
-        );
+fn a_starved_loop_punctured_blows_outward(solver: &str) {
+    let mut engine = build_src(MAKEUP, solver);
+    tick(&mut engine, 50_000);
+    let before = engine.snapshot();
+    assert!(
+        node(&before, "pass").pressure_pa > P_ATM.value() + 15.0e3,
+        "{solver}: the pass at {} Pa",
+        node(&before, "pass").pressure_pa
+    );
+    puncture(&mut engine, "reactor_gas_line", RUPTURE_M2);
+    for _ in 0..6_000 {
+        tick(&mut engine, 1);
+        let leak = flow(&engine.snapshot(), "reactor_gas_line__leak");
+        assert!(leak >= 0.0, "{solver}: the hole draws {leak} kg/s in");
     }
+    let s = engine.snapshot();
+    let lowest = node(&s, "separator").pressure_pa;
+    assert!(
+        lowest > P_ATM.value() && lowest < node(&before, "separator").pressure_pa,
+        "{solver}: the separator at {lowest} Pa"
+    );
+}
+
+#[test]
+fn slow_a_starved_loop_punctured_blows_outward_newton() {
+    a_starved_loop_punctured_blows_outward("newton");
+}
+
+#[test]
+fn slow_a_starved_loop_punctured_blows_outward_simple() {
+    a_starved_loop_punctured_blows_outward("simple");
 }

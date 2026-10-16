@@ -91,7 +91,7 @@ fn the_crude_unit_runs() {
 /// runs. (M60's range was the reflux 2–10 and the pumparounds 75–300 %, each
 /// key alone.)
 #[test]
-fn the_screen_range_runs_at_its_corners() {
+fn slow_the_screen_range_runs_at_its_corners() {
     for furnace_mw in [0.0, 40.0] {
         for reflux_ratio in [1.5, 15.0] {
             for scale in [0.5, 4.0] {

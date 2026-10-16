@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "refinery-solvers"
 edition.workspace = true
 version.workspace = true
@@ -17,42 +18,7 @@ proptest.workspace = true
 
 # Reference cases live in `tests/reference/` (CLAUDE.md). Cargo only
 # auto-discovers `tests/*.rs` at the top level, so each one is declared here.
-[[test]]
-name = "four_lump_reference"
-path = "tests/reference/four_lump.rs"
 
 [[test]]
-name = "hydrocracking_reference"
-path = "tests/reference/hydrocracking.rs"
-
-[[test]]
-name = "orifice_reference"
-path = "tests/reference/orifice.rs"
-
-[[test]]
-name = "vapour_pressure_reference"
-path = "tests/reference/vapour_pressure.rs"
-
-[[test]]
-name = "water_reference"
-path = "tests/reference/water.rs"
-
-[[test]]
-name = "flash_reference"
-path = "tests/reference/flash.rs"
-
-[[test]]
-name = "cascade_reference"
-path = "tests/reference/cascade.rs"
-
-[[test]]
-name = "line_flash_reference"
-path = "tests/reference/line_flash.rs"
-
-[[test]]
-name = "two_phase_head_reference"
-path = "tests/reference/two_phase_head.rs"
-
-[[test]]
-name = "compressor_reference"
-path = "tests/reference/compressor.rs"
+name = "suite"
+path = "tests/suite.rs"

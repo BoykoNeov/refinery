@@ -144,7 +144,7 @@ fn the_loader_refuses_a_heat_balance_column_without_a_k_value() {
 /// below what the floor needs runs at the floor's; a setting above it is run
 /// as set.
 #[test]
-fn the_furnace_and_the_reflux_run_through_the_limit() {
+fn slow_the_furnace_and_the_reflux_run_through_the_limit() {
     let mut engine = engine(HOT_FEED);
     let id = |engine: &Engine, name: &str| {
         engine

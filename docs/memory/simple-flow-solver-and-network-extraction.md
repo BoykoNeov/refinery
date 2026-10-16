@@ -37,7 +37,7 @@ diverges, lower it — no under-relaxation was needed on any test network.
 - `tests/fidelity_agreement.rs` — 6 curated well-posed cases (guaranteed
   convergence, non-vacuous), incl. the `tank_pump_valve` reference topology.
 - `tests/invariants.rs` — random chain/tree cross-check (compare flows only when
-  BOTH converge, absolute flow floor, 5% bound) + `tree_simple_is_deterministic`
+  BOTH converge, absolute flow floor, 5% bound) + `slow_tree_simple_is_deterministic`
   + `simple_agrees_on_a_healthy_fraction` meta-guard (Simple agrees on ≈100% —
   295/296 — of Newton-converged chains; 50% floor). All green, clippy+fmt clean.
 

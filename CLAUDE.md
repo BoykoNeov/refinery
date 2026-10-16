@@ -68,25 +68,54 @@ scenarios/    # *.toml plant definitions
 
 ```
 cargo build --workspace
-cargo test  --workspace                       # must pass before any commit
+cargo test  --workspace -- --skip slow_       # FAST tier: every commit (~1 min)
+cargo test  --workspace                       # FULL: + the slow_ tier (~3 min)
+cargo test  -p refinery-scenarios --test suite crude_unit::   # one file's tests
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all
-cargo test -p refinery-solvers --release      # slow property tests
+cargo test -p refinery-solvers --release      # CI only: same tests, release mode
 cargo run -p refinery-cli -- run scenarios/<file>.toml --ticks 6000
 #   (relief_twin_vessels.toml is the M21 demo: add --solver simple)
 
 # Corpus: every scenario's worst iterations/tick, wall time, snapshot fingerprint.
 # --out before a change, --baseline after = "byte-identical" as an exit code.
 # Release (wall time is a column). Baselines match by plant NAME only, so keep
-# one baseline per fidelity — mixing them reads "moved" and fails.
+# one baseline per fidelity — mixing them reads "moved" and fails. --jobs 16
+# runs plants in parallel (~5 s per fidelity; fingerprints unchanged, the wall
+# column then meaningless — use --jobs 1 when wall time is the measurement).
 cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 [--solver simple]
-cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --out before.json
-cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --baseline before.json
+cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --jobs 16 \
+    --solver newton --baseline B/newton.json --out B/newton.json
 ```
+
+**Which tests run when** (all at below-normal priority):
+
+| when | what |
+|---|---|
+| while editing | the touched area: `--test suite <module>::`, or `-p <crate> --lib` |
+| every commit with code | FAST tier, clippy, `fmt --check` (docs-only commits: none) |
+| a commit that changes `crates/*/src` | FULL tier, plus the corpus on BOTH fidelities against the rolling baseline |
+| a slice that adds code and tests | plus the targeted mutation pass (`--test suite <module>::` per mutation) |
+| CI, every push | everything, incl. the release property tests |
+
+- **Test layout.** Each crate's integration tests are ONE program,
+  `tests/suite.rs`, each file a module (`#[path]`); add a new test file there
+  or it never runs (`autotests = false`). Tests run in parallel across files.
+  `[profile.test]` optimizes the workspace's crates (results unchanged).
+- **The slow tier is a name prefix**: a test that takes ≥ 2 s of CPU is named
+  `slow_…`; the FAST tier skips it with `--skip slow_`. A test that loops over
+  both solvers is written as one `#[test]` per solver, so the halves run in
+  parallel.
+- **The rolling corpus baseline** lives in `W:\temp\claude\refinery-corpus\`
+  (`B` above), one file per fidelity, always the LAST COMMITTED engine's
+  fingerprints: an engine commit checks `--baseline` and refreshes it with
+  `--out` in the same run. Kept on purpose across sessions (not temp cleanup);
+  if it is missing, rebuild it once from a clean worktree of HEAD. A move the
+  user approved is committed with its refreshed baseline.
 
 CI runs the four gate commands, the godot-feature clippy, the release property
 tests and the corpus under both fidelities. No baseline is committed, so CI only
-asserts every plant runs; the before/after comparison is a per-slice manual step.
+asserts every plant runs; the before/after comparison is local, per the table.
 
 **Godot.** `godot-ext` builds by default as its pure-Rust bridge only; the gdext
 binding is behind the `godot` feature (needs Godot ≥ 4.7):
@@ -149,8 +178,9 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 - Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
   `test:`), scope optional.
-- Every commit builds and passes `cargo test`, `cargo clippy -D warnings`,
-  `cargo fmt --check`. `Cargo.lock` is committed.
+- Every commit builds and passes the FAST tier, `cargo clippy -D warnings`,
+  `cargo fmt --check`; a commit touching `crates/*/src` passes the FULL tier and
+  the corpus too ("Which tests run when"). `Cargo.lock` is committed.
 
 ## Current milestone
 

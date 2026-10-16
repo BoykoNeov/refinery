@@ -629,7 +629,7 @@ fn recovered_fraction(src: &str) -> f64 {
 /// wherever it happened to sample. This one asserts the two ENDS, which is what
 /// fork 4 is actually about.
 #[test]
-fn the_drums_recovery_is_interior_and_the_condenser_is_what_moves_it() {
+fn slow_the_drums_recovery_is_interior_and_the_condenser_is_what_moves_it() {
     let shipped = recovered_fraction(body(DEMO));
     assert!(
         shipped > 0.05 && shipped < 0.95,

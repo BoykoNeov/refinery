@@ -308,7 +308,7 @@ fn story(src: &str, solver: &str, minutes: usize) -> Vec<(f64, f64, f64, WallSta
 ///    turned below 470 °C; at 40 minutes it is back near its feed, its wall
 ///    intact all the way. Without the trip the same bed runs on past them.
 #[test]
-fn depressuring_catches_the_excursion() {
+fn slow_depressuring_catches_the_excursion() {
     let tripped_story = story(DEMO, "newton", 40);
     let trip_tick = tripped_story[6].4.expect("tripped by minute 7");
     assert!(
@@ -345,7 +345,7 @@ fn depressuring_catches_the_excursion() {
 
 /// 6. The game solver tells the same story to just past the trip.
 #[test]
-fn the_game_solver_agrees_to_the_trip() {
+fn slow_the_game_solver_agrees_to_the_trip() {
     let newton = story(DEMO, "newton", 7);
     let simple = story(DEMO, "simple", 7);
     for (minute, (n, s)) in newton.iter().zip(&simple).enumerate() {
