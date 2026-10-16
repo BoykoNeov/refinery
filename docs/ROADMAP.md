@@ -9552,7 +9552,7 @@ cannot run without them, pumparounds.
 
 ### M60.0 — **SPECIFIED** 2026-10-15: the design note — M60 stays OPEN
 
-DESIGN §65. Probed first (`W:\temp\claude\m60-probe\`): a feed quality on
+DESIGN §65. Probed first (kept in `tools/steptime/prototypes/m60_0/`): a feed quality on
 constant molar overflow is either wrong for crude (fully vapour 118 K above
 its bubble point, whatever its heavy cuts) or inconsistent with the reboiler's
 closure (a reboiler with no heat and plenty of boil-up at 352 °C); the
