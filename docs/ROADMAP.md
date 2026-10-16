@@ -9722,3 +9722,29 @@ to 1.5, where M60 halted, and is held below it. DESIGN §66.7.
 **M61 CLOSED 2026-10-16**, after both slices landed, on the user's standing
 rule. Close-out at the top of `docs/MILESTONES.md`. C10 taken; C7 re-scoped
 as M62; C11 and C12 new.
+
+## M62 — water as a real component, for steam stripping; ledger row C7, re-scoped again; opened on a decision
+
+Asked after M61 closed (2026-10-16) as "what is next"; steam stripping (C7) was
+the planned M62 and the user said "go ahead". Probed before anything was
+written (kept in `tools/steptime/prototypes/m62_0/`, `FINDINGS.md`): steam as
+an inert vapour on M61's Newton, the reboiler's duty held at zero and the reflux
+the result, takes the crude unit's bottom from 587 °C to 396–339 °C over
+0.02–8 kg/s of steam (about 372 °C at a real column's 8–10 lb of steam per
+barrel of residue, ~0.85 kg/s here; a real bottom reads ~340 °C); the
+pumparounds must come down with the reboiler (all of them off still runs — the
+top pumparound M61.0 asked for is not needed); the 20 % floor never binds above
+the feed; a cold start needs a continuation from a column that keeps its
+reboiler; the furnace fires ~65 MW to a 500 °C liquid-equivalent outlet (C6's
+cost, deferred). The user's decisions, in plain words:
+
+1. **The floor below the feed: "whichever is more realistic"** — no floor below
+   the feed. Steam counted toward a floor of 20 % of the feed would halt the
+   column under ~1.6 kg/s, below a real column's rate; a real column with too
+   little steam strips poorly and runs hot, it does not stop.
+2. **Steam enters the plant as WATER, a real component** — a steam supply on
+   the plant graph and the condensed water drawn to its own tank — not as a
+   column setting.
+3. **The column screen gets a fourth plant**, the steam-stripped crude unit.
+4. **Split: water first.** M62 makes water a real component; **M63 is steam
+   stripping on it**, with the screen. The steam probe above is M63's ground.

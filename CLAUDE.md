@@ -154,8 +154,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the next
-milestone is the user's choice; steam stripping (C7) is planned as M62. **Latest closed:
+Work only on the current milestone unless asked. **Current: M62 (open, 2026-10-16)** —
+water as a real component (ROADMAP M62); steam stripping on it (C7) is planned as M63. **Latest closed:
 M61 (2026-10-16)**: a stronger column solve — Newton on the heat-balance cascade's
 own equations, replacing the fixed point (kept as the cold warm-up), and the
 column screen's wider range (DESIGN §66; C10 taken; C7 re-scoped; C11–C12 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one

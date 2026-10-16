@@ -1,0 +1,297 @@
+diff --git a/crates/solvers/src/cascade.rs b/crates/solvers/src/cascade.rs
+index 65f723f..33cc95a 100644
+--- a/crates/solvers/src/cascade.rs
++++ b/crates/solvers/src/cascade.rs
+@@ -639,6 +639,7 @@ pub(crate) struct Flows {
+ 
+ /// Everything about a cascade column that does not change between iterations: the
+ /// validated geometry, the draw locations, and the mass ratios.
++#[derive(Clone)]
+ pub(crate) struct CascadePlan {
+     pub(crate) stages: usize,
+     /// Zero-based index of the feed stage.
+diff --git a/crates/solvers/src/column_newton.rs b/crates/solvers/src/column_newton.rs
+index 4149c0e..fbed6a9 100644
+--- a/crates/solvers/src/column_newton.rs
++++ b/crates/solvers/src/column_newton.rs
+@@ -69,9 +69,12 @@ pub(crate) enum Specification {
+     /// The vapour leaving this stage (zero-based) held at the floor, with the
+     /// reflux ratio an unknown — M60.2's rule as an active set (§66.3).
+     Floor(usize),
++    /// PROBE: the reboiler's duty held at this value [W], the reflux an unknown.
++    Held(f64),
+ }
+ 
+ /// One column's equations, everything but the unknowns fixed.
++#[derive(Clone)]
+ pub(crate) struct ColumnEquations<'a> {
+     pub(crate) plan: &'a CascadePlan,
+     pub(crate) spec: &'a CascadeSpec,
+@@ -93,6 +96,9 @@ pub(crate) struct ColumnEquations<'a> {
+     pub(crate) energy_scale: f64,
+     /// The convergence tolerance every scaled residual must meet [-].
+     pub(crate) tolerance: f64,
++    /// PROBE: stripping steam entering below the bottom stage [mol/s], and its temperature [K].
++    pub(crate) steam_molar: f64,
++    pub(crate) steam_inlet_t: f64,
+ }
+ 
+ /// Where a solve starts: temperatures [K], vapours leaving each stage [mol/s]
+@@ -141,13 +147,13 @@ impl ColumnEquations<'_> {
+         let n = self.plan.stages;
+         2 * n - 1
+             + self.draw_count()
+-            + usize::from(matches!(specification, Specification::Floor(_)))
++            + usize::from(matches!(specification, Specification::Floor(_) | Specification::Held(_)))
+     }
+ 
+     fn reflux_ratio(&self, u: &[f64], specification: Specification) -> f64 {
+         match specification {
+             Specification::Reflux => self.spec.reflux_ratio,
+-            Specification::Floor(_) => u[u.len() - 1],
++            Specification::Floor(_) | Specification::Held(_) => u[u.len() - 1],
+         }
+     }
+ 
+@@ -221,11 +227,17 @@ impl ColumnEquations<'_> {
+             reflux,
+         };
+ 
++        let steam = self.steam_molar;
++        let stage_pressure: Vec<f64> = flows
++            .vapour
++            .iter()
++            .map(|v| if steam > 0.0 { self.pressure.value() * v / (v + steam) } else { self.pressure.value() })
++            .collect();
+         let mut k = Vec::with_capacity(n);
+-        for t in temperatures {
++        for (j, t) in temperatures.iter().enumerate() {
+             let mut row = Vec::with_capacity(slate.len());
+             for c in 0..slate.len() {
+-                let value = self.thermo.k_value(slate, c, Kelvin(*t), self.pressure)?;
++                let value = self.thermo.k_value(slate, c, Kelvin(*t), Pascal(stage_pressure[j]))?;
+                 if !value.is_finite() || value <= 0.0 {
+                     return Err(outside("a K-value left the physical region"));
+                 }
+@@ -284,9 +296,23 @@ impl ColumnEquations<'_> {
+                 + feed_here * self.feed_enthalpy
+                 - (flows.liquid_down[j] + flows.liquid_drawn[j]) * h[j]
+                 - flows.vapour[j] * big_h[j]
+-                - plan.side_heat[j];
++                - plan.side_heat[j]
++                + steam * (crate::probe::steam_h(temperatures[j + 1]) - crate::probe::steam_h(temperatures[j]));
+             residual.push(imbalance / self.energy_scale);
+         }
++        let held_residual = if let Specification::Held(duty) = specification {
++            let j = n - 1;
++            let feed_here = if j == plan.feed_stage { self.feed_molar } else { 0.0 };
++            let above = if j == 0 { reflux_enthalpy } else { h[j - 1] };
++            let imbalance = flows.liquid_in[j] * above + feed_here * self.feed_enthalpy + duty
++                - flows.liquid_drawn[j] * h[j]
++                - flows.vapour[j] * big_h[j]
++                - plan.side_heat[j]
++                + steam * (crate::probe::steam_h(self.steam_inlet_t) - crate::probe::steam_h(temperatures[j]));
++            Some(imbalance / self.energy_scale)
++        } else {
++            None
++        };
+         // Each draw's mass ratio: its molar rate times its molar mass.
+         for (i, rate) in rates.iter().enumerate() {
+             let composition = match plan.locations[i] {
+@@ -305,6 +331,9 @@ impl ColumnEquations<'_> {
+             let floor = VAPOUR_FLOOR_OF_FEED * self.feed_molar;
+             residual.push((flows.vapour[stage] - floor) / self.feed_molar);
+         }
++        if let Some(r) = held_residual {
++            residual.push(r);
++        }
+         if residual.iter().any(|r| !r.is_finite()) {
+             return Err(outside("a residual is not finite"));
+         }
+@@ -319,6 +348,22 @@ impl ColumnEquations<'_> {
+         })
+     }
+ 
++    /// PROBE: the reboiler duty [W] a solved profile's bottom stage balance implies.
++    pub(crate) fn held_duty_of(&self, temperatures: &[f64], flows: &Flows, reflux_ratio: f64) -> Result<f64, SimError> {
++        let n = self.plan.stages;
++        let mut u = temperatures.to_vec();
++        u.extend_from_slice(&flows.vapour[1..n]);
++        for i in 0..self.draw_count() {
++            u.push(match self.plan.locations[i] {
++                DrawLocation::Condenser => flows.vapour[0] - flows.reflux,
++                DrawLocation::Stage(j) => flows.liquid_drawn[j],
++            });
++        }
++        u.push(reflux_ratio);
++        let e = self.evaluate(&u, Specification::Held(0.0))?;
++        Ok(-e.residual[e.residual.len() - 1] * self.energy_scale)
++    }
++
+     /// Newton from `start` under `specification`, at most `max_iterations`
+     /// steps.
+     pub(crate) fn solve(
+@@ -337,6 +382,9 @@ impl ColumnEquations<'_> {
+             let ran = start.vapour[0] / start.draw_rates[0] - 1.0;
+             u.push(ran.max(self.spec.reflux_ratio));
+         }
++        if let Specification::Held(_) = specification {
++            u.push(start.vapour[0] / start.draw_rates[0] - 1.0);
++        }
+         let mut current = self.evaluate(&u, specification).map_err(|e| Unsolved {
+             reason: format!("its starting point is outside the physical region ({e})"),
+             flows: None,
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index ce46115..b6f45e2 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -566,6 +566,8 @@ impl HeatBalanceCascade {
+             feed_enthalpy: setup.feed_enthalpy,
+             energy_scale: setup.feed_molar * latent,
+             tolerance: setup.tolerance,
++            steam_molar: crate::probe::get().kg_s / crate::probe::MW_WATER,
++            steam_inlet_t: crate::probe::get().inlet_c + 273.15,
+         };
+ 
+         let mut warm_failure = None;
+@@ -578,7 +580,7 @@ impl HeatBalanceCascade {
+             let k = stage_k_values_profile(slate, setup.thermo, &temperatures, pass.pressure)?;
+             let draws = plan.draw_states(&previous.liquid, &k, slate)?;
+             // A warm Newton that fails is retried cold, where the aids are.
+-            match self.newton(&equations, &temperatures, &previous.vapour, &draws) {
++            match self.newton(&equations, &temperatures, &previous.vapour, &draws, true) {
+                 Ok(profile) => return Ok(profile),
+                 Err(unsolved) => warm_failure = Some(unsolved),
+             }
+@@ -593,6 +595,72 @@ impl HeatBalanceCascade {
+         let cause_of =
+             |unsolved: &Unsolved| physical_cause(plan, unsolved.flows.as_deref(), setup.feed_molar);
+         let cap = COLD_WARM_UP_ITERATIONS.min(self.max_iterations);
++        if let Some(held) = crate::probe::get().held_mw {
++            // PROBE cold start: a saturated feed with its reboiler, then a continuation.
++            let saturated = if std::env::var("PROBE_BASE_SAT").is_ok() { liquid_enthalpy(slate, setup.feed.fractions(), setup.seed) } else { setup.feed_enthalpy };
++            let mut plan0 = setup.plan.clone();
++            if let Ok(list) = std::env::var("PROBE_BASE_PA") {
++                let mws: Vec<f64> = list.split(',').map(|v| v.parse().unwrap()).collect();
++                for (pa, mw) in setup.spec.pumparounds.iter().zip(&mws) {
++                    plan0.side_heat[pa.stage as usize - 1] = mw * 1e6;
++                }
++            }
++            let mut spec0 = setup.spec.clone();
++            if let Ok(r) = std::env::var("PROBE_BASE_R") { spec0.reflux_ratio = r.parse().unwrap(); }
++            let spec0 = &spec0;
++            let setup0 = ColumnSetup {
++                pass: setup.pass,
++                thermo: setup.thermo,
++                spec: spec0,
++                plan: plan0.clone(),
++                feed: setup.feed.clone(),
++                seed: setup.seed,
++                feed_molar: setup.feed_molar,
++                feed_enthalpy: saturated,
++                tolerance: setup.tolerance,
++            };
++            let fail = |r: String| refusal(&format!("PROBE continuation: {r}"), "");
++            let state = self.fixed_point_iterations(&setup0, None, cap).map_err(|e| fail(e.to_string()))?;
++            let eq0 = ColumnEquations { feed_enthalpy: saturated, steam_molar: 0.0, plan: &plan0, spec: spec0, ..equations.clone() };
++            let vapour = state.vapour.clone().unwrap_or_else(|| vec![setup.feed_molar; plan.stages]);
++            let mut profile = self
++                .newton(&eq0, &state.temperatures, &vapour, &state.draws, false)
++                .map_err(|u| fail(format!("base: {}", u.reason)))?;
++            let q0 = eq0
++                .held_duty_of(&profile.temperatures, &profile.flows, profile.reflux_ratio)
++                .map_err(|e| fail(e.to_string()))?;
++            let steps: u32 = std::env::var("PROBE_STEPS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
++            for step in 1..=steps {
++                let lambda = step as f64 / steps as f64;
++                let mut plan_l = plan0.clone();
++                for (h, (a, b)) in plan_l.side_heat.iter_mut().zip(plan0.side_heat.iter().zip(&plan.side_heat)) {
++                    *h = a + lambda * (b - a);
++                }
++                let plan_l = &plan_l;
++                let eq = ColumnEquations {
++                    plan: plan_l,
++                    feed_enthalpy: saturated + lambda * (setup.feed_enthalpy - saturated),
++                    steam_molar: lambda * equations.steam_molar,
++                    ..equations.clone()
++                };
++                let f = &profile.flows;
++                let mut rates = Vec::new();
++                for i in 0..plan.mass_ratios.len() - 1 {
++                    rates.push(match plan.locations[i] {
++                        DrawLocation::Condenser => f.vapour[0] - f.reflux,
++                        DrawLocation::Stage(j) => f.liquid_drawn[j],
++                    });
++                }
++                let start = Start { temperatures: &profile.temperatures, vapour: &f.vapour, draw_rates: &rates };
++                let duty = q0 + lambda * (held * 1e6 - q0);
++                let solved = eq
++                    .solve(&start, Specification::Held(duty), self.max_iterations)
++                    .map_err(|u| fail(format!("step {step}/{steps} (base reboiler {:.1} MW, now {:.1}): {}", q0 / 1e6, duty / 1e6, u.reason)))?;
++                profile = Profile { temperatures: solved.temperatures, liquid: solved.liquid, flows: solved.flows, reflux_ratio: solved.reflux_ratio };
++            }
++            *crate::probe::LAST.lock().unwrap() = format!("cold continuation from base reboiler {:.1} MW in {steps} steps", q0 / 1e6);
++            return Ok(profile);
++        }
+         let state = match self.fixed_point_iterations(setup, None, cap) {
+             Ok(state) => state,
+             // The cold warm-up refused outright (an infeasible first iterate):
+@@ -609,7 +677,7 @@ impl HeatBalanceCascade {
+             .vapour
+             .clone()
+             .unwrap_or_else(|| vec![setup.feed_molar; plan.stages]);
+-        match self.newton(&equations, &state.temperatures, &vapour, &state.draws) {
++        match self.newton(&equations, &state.temperatures, &vapour, &state.draws, true) {
+             Ok(profile) => Ok(profile),
+             // The cold failure is reported, with the warm one's physical cause
+             // where only the warm one's last iterate shows an edge.
+@@ -635,6 +703,7 @@ impl HeatBalanceCascade {
+         temperatures: &[f64],
+         vapour: &[f64],
+         draws: &[DrawState],
++        allow_held: bool,
+     ) -> Result<Profile, Unsolved> {
+         let plan = equations.plan;
+         let n = plan.stages;
+@@ -666,6 +735,29 @@ impl HeatBalanceCascade {
+             reflux_ratio: solved.reflux_ratio,
+         };
+ 
++        if let Some(held) = crate::probe::get().held_mw.filter(|_| allow_held) {
++            let solved = equations.solve(&start, Specification::Held(held * 1e6), self.max_iterations)?;
++            let f = &solved.flows;
++            let s = equations.steam_molar;
++            let p = equations.pressure.value();
++            let pressures: Vec<String> = f.vapour.iter().map(|v| format!("{:.3}", if s > 0.0 { p * v / (v + s) } else { p } / 1e5)).collect();
++            let t1 = solved.temperatures[0];
++            let pw = p * s / (f.vapour[0] + s);
++            let dew = if s > 0.0 { crate::probe::water_tsat(pw) - 273.15 } else { f64::NAN };
++            let steam_cond = s * crate::probe::MW_WATER * (2000.0 * (t1 - 373.15) + 2.257e6 + 4184.0 * 60.0);
++            let min_oil: Vec<String> = f.vapour.iter().map(|v| format!("{:.0}", v)).collect();
++            *crate::probe::LAST.lock().unwrap() = format!(
++                "R={:.3} T_C=[{}] V=[{}] (floor {:.0}, steam {:.0} mol/s) p_oil_bar=[{}] top {:.1}C water_dew {:.1}C steam_cond {:.2} MW L=[{}]",
++                solved.reflux_ratio,
++                solved.temperatures.iter().map(|t| format!("{:.1}", t - 273.15)).collect::<Vec<_>>().join(" "),
++                min_oil.join(" "),
++                floor, s,
++                pressures.join(" "),
++                t1 - 273.15, dew, steam_cond / 1e6,
++                f.liquid_down.iter().map(|l| format!("{:.0}", l)).collect::<Vec<_>>().join(" "),
++            );
++            return Ok(profile(solved));
++        }
+         let ran = vapour[0] / draw_rates[0] - 1.0;
+         if ran > declared * (1.0 + 1.0e-6) {
+             if let Ok(solved) = equations.solve(
+diff --git a/crates/solvers/src/lib.rs b/crates/solvers/src/lib.rs
+index 5c0200a..1b8eb0d 100644
+--- a/crates/solvers/src/lib.rs
++++ b/crates/solvers/src/lib.rs
+@@ -29,6 +29,7 @@ pub mod boiloff;
+ pub mod bubble;
+ pub mod cascade;
+ mod column_newton;
++pub mod probe;
+ pub mod control;
+ pub mod elements;
+ pub mod enthalpy;
