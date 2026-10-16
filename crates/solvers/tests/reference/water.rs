@@ -34,6 +34,7 @@ fn water(dh_vap: Option<f64>, cp_vapour: Option<f64>) -> PseudoComponent {
         phase: Phase::Liquid,
         dh_vap: dh_vap.map(JPerMol),
         cp_vapour: cp_vapour.map(JPerKgK),
+        free_water: false,
     }
 }
 

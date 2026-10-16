@@ -239,6 +239,7 @@ fn methane() -> Slate {
         phase: refinery_core::components::Phase::Gas,
         dh_vap: None,
         cp_vapour: None,
+        free_water: false,
     }])
     .expect("single-component gas slate")
 }

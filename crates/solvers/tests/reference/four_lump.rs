@@ -51,6 +51,7 @@ fn fcc_slate() -> Slate {
         cp_shape: None,
         dh_vap: None,
         cp_vapour: None,
+        free_water: false,
     };
     Slate::new(vec![
         cut("gas", 233.15, 0.030, 400.0, 2500.0),

@@ -45,6 +45,7 @@ fn naphtha_slate() -> Slate {
             phase: refinery_core::components::Phase::Liquid,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         },
         refinery_core::components::PseudoComponent {
             name: "heavy".into(),
@@ -56,6 +57,7 @@ fn naphtha_slate() -> Slate {
             phase: refinery_core::components::Phase::Liquid,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         },
     ])
     .expect("a two-cut slate")

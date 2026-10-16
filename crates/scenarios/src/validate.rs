@@ -544,6 +544,29 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
     require_line_flash_plant(scenario)?;
     require_gas_fill_time_on_flashing_plant(scenario)?;
     require_trouton_for_declared_latent(scenario)?;
+    require_line_flash_for_free_water(scenario)?;
+    Ok(())
+}
+
+/// A `free_water` member is read by the line flash's three-state flash alone
+/// (M62.2, docs/DESIGN.md §67.2). Without `line_flash = "equilibrium"` no flash
+/// runs on the line, so the key would change nothing — and the line flash
+/// brings the rest of what free water needs with it: `thermo = "trouton"`,
+/// liquids only, and none of the units (a furnace, a column, the cut-point
+/// splitter) that do not flash their own contents yet (§67.4–§67.5).
+pub(crate) fn require_line_flash_for_free_water(scenario: &ScenarioFile) -> Result<(), SimError> {
+    if scenario.fidelity.line_flash == "equilibrium" {
+        return Ok(());
+    }
+    if let Some(water) = scenario.components.iter().find(|c| c.free_water) {
+        return Err(SimError::Scenario(format!(
+            "component '{}' declares free_water, but this plant selects line_flash = \
+             \"{}\": only the line flash keeps free water out of the oil, so the key \
+             would change nothing (docs/DESIGN.md §67.2). Select line_flash = \
+             \"equilibrium\" in [fidelity], or remove free_water.",
+            water.name, scenario.fidelity.line_flash
+        )));
+    }
     Ok(())
 }
 

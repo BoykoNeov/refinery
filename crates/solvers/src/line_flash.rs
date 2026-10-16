@@ -251,6 +251,54 @@ impl EquilibriumLineFlash {
     }
 }
 
+/// What a holdup's contents do when flashed isenthalpically at its pressure:
+/// `flash_holdup`'s answer, for the boil-off of a holdup over free water (M62.2,
+/// docs/DESIGN.md §67.2).
+pub(crate) struct HoldupFlash {
+    /// Where the contents settle [K].
+    pub(crate) temperature: Kelvin,
+    /// The vapour's share of the mass [-], from the energy (`settle_full`).
+    pub(crate) vapour_share: f64,
+    /// The vapour's composition, as MASS fractions, from the flash at
+    /// `temperature`.
+    pub(crate) vapour: Composition,
+    /// The vapour's latent heat per kilogram of vapour [J/kg] at `temperature`
+    /// — the number `vapour_share` was divided by.
+    pub(crate) latent_per_vapour: f64,
+}
+
+/// The isenthalpic flash of `composition` from `liquid_equivalent` at
+/// `pressure` (`EquilibriumLineFlash::settle_full`), with the vapour it boils.
+/// `None` where nothing boils.
+pub(crate) fn flash_holdup(
+    slate: &Slate,
+    composition: &Composition,
+    liquid_equivalent: Kelvin,
+    pressure: Pascal,
+    thermo: &dyn ThermoModel,
+    enthalpy: &dyn EnthalpyModel,
+) -> Result<Option<HoldupFlash>, SimError> {
+    let (settled, two_phase) = EquilibriumLineFlash::settle_full(
+        slate,
+        composition,
+        liquid_equivalent,
+        pressure,
+        thermo,
+        enthalpy,
+    )?;
+    let Some((split, vapour_share)) = two_phase else {
+        return Ok(None);
+    };
+    let feed = MoleFractions::from_mass(composition, slate)?;
+    let flash = flash_on_the_line(&feed, slate, thermo, settled.temperature, pressure)?;
+    Ok(Some(HoldupFlash {
+        temperature: settled.temperature,
+        vapour_share,
+        vapour: flash.vapour.to_mass(slate)?,
+        latent_per_vapour: split.latent_per_vapour,
+    }))
+}
+
 /// The root of `excess` on `[low, high]`, an increasing function with
 /// `excess(low) < 0 ≤ excess(high)`, closed to `2ε·T` — the temperature search
 /// of `settle_full` (M56, docs/DESIGN.md §61.3).
@@ -375,91 +423,13 @@ fn flash_on_the_line(
         }
         k.push(kc);
     }
-    // Rachford–Rice, f(β) = Σ z(K−1)/(1 + β(K−1)), and its slope.
-    let objective = |beta: f64| -> f64 {
-        z.iter()
-            .zip(&k)
-            .map(|(zc, kc)| zc * (kc - 1.0) / (1.0 + beta * (kc - 1.0)))
-            .sum()
-    };
-    // What rounding alone can leave in that sum: `n·ε·Σ|term|`, the textbook
-    // bound on a recursive sum (Higham, *Accuracy and Stability of Numerical
-    // Algorithms*, 2nd ed., §4.2). A value inside it is a root to an f64.
-    let rounding = |beta: f64| -> f64 {
-        z.len() as f64
-            * f64::EPSILON
-            * z.iter()
-                .zip(&k)
-                .map(|(zc, kc)| (zc * (kc - 1.0) / (1.0 + beta * (kc - 1.0))).abs())
-                .sum::<f64>()
-    };
-    let slope = |beta: f64| -> f64 {
-        -z.iter()
-            .zip(&k)
-            .map(|(zc, kc)| {
-                let denominator = 1.0 + beta * (kc - 1.0);
-                zc * (kc - 1.0) * (kc - 1.0) / (denominator * denominator)
-            })
-            .sum::<f64>()
-    };
-    let beta = if objective(0.0) <= 0.0 {
-        // Below the bubble point, or every K = 1: all liquid (`flash_isothermal`).
-        0.0
-    } else if objective(1.0) >= 0.0 {
-        1.0
-    } else {
-        let (mut low, mut high) = (0.0f64, 1.0f64);
-        // `rtsafe` (Press et al., *Numerical Recipes*, 3rd ed., §9.4): the
-        // step before last, against which a Newton step must at least halve.
-        let (mut step_before_last, mut step) = (1.0f64, 1.0f64);
-        let mut beta = 0.5;
-        let mut closed = false;
-        for _ in 0..VAPOUR_FRACTION_MAX_EVALUATIONS {
-            let value = objective(beta);
-            // At the root to rounding: a Newton step from here is noise, and
-            // the safeguard would halve the bracket shut for nothing.
-            if value.abs() <= rounding(beta) {
-                closed = true;
-                break;
-            }
-            if value > 0.0 {
-                low = beta;
-            } else {
-                high = beta;
-            }
-            let derivative = slope(beta);
-            let newton = beta - value / derivative;
-            // Bisect where Newton leaves the bracket or is not at least halving
-            // its steps — what keeps a slow or wandering Newton bounded.
-            let next = if !(newton > low && newton < high)
-                || (2.0 * value).abs() > (step_before_last * derivative).abs()
-            {
-                step_before_last = step;
-                step = 0.5 * (high - low);
-                low + step
-            } else {
-                step_before_last = step;
-                step = beta - newton;
-                newton
-            };
-            let width = high - low;
-            let done = width <= 2.0 * f64::EPSILON * high || width <= f64::MIN_POSITIVE;
-            beta = next;
-            if done {
-                closed = true;
-                break;
-            }
-        }
-        if !closed {
-            return Err(SimError::Numerical(format!(
-                "line flash at {} K, {} Pa: Rachford–Rice did not close within \
-                 {VAPOUR_FRACTION_MAX_EVALUATIONS} evaluations",
-                temperature.value(),
-                pressure.value()
-            )));
-        }
-        beta
-    };
+    // Free water standing in the stream takes the three-state flash (M62.2,
+    // docs/DESIGN.md §67.2); a dry stream, or a slate without free water, the
+    // flash it always took.
+    if let Some(water) = feed.standing_water(slate) {
+        return free_water_flash(z, &k, water, temperature, pressure);
+    }
+    let beta = rachford_rice(z, &k, temperature, pressure)?;
     let x: Vec<f64> = z
         .iter()
         .zip(&k)
@@ -470,6 +440,289 @@ fn flash_on_the_line(
         vapour_fraction: beta,
         liquid: MoleFractions::from_amounts(&x)?,
         vapour: MoleFractions::from_amounts(&y)?,
+    })
+}
+
+/// Rachford–Rice's `β` for feed `z` at K-values `k`: `0` at or below the bubble
+/// point, `1` at or above the dew point, else the root of `f(β) = Σ z(K−1)/(1 +
+/// β(K−1))` by the safeguarded Newton search (`safeguarded_root`).
+fn rachford_rice(
+    z: &[f64],
+    k: &[f64],
+    temperature: Kelvin,
+    pressure: Pascal,
+) -> Result<f64, SimError> {
+    // Rachford–Rice, f(β) = Σ z(K−1)/(1 + β(K−1)), and its slope.
+    let objective = |beta: f64| -> f64 {
+        z.iter()
+            .zip(k)
+            .map(|(zc, kc)| zc * (kc - 1.0) / (1.0 + beta * (kc - 1.0)))
+            .sum()
+    };
+    // What rounding alone can leave in that sum: `n·ε·Σ|term|`, the textbook
+    // bound on a recursive sum (Higham, *Accuracy and Stability of Numerical
+    // Algorithms*, 2nd ed., §4.2). A value inside it is a root to an f64.
+    let rounding = |beta: f64| -> f64 {
+        z.len() as f64
+            * f64::EPSILON
+            * z.iter()
+                .zip(k)
+                .map(|(zc, kc)| (zc * (kc - 1.0) / (1.0 + beta * (kc - 1.0))).abs())
+                .sum::<f64>()
+    };
+    let slope = |beta: f64| -> f64 {
+        -z.iter()
+            .zip(k)
+            .map(|(zc, kc)| {
+                let denominator = 1.0 + beta * (kc - 1.0);
+                zc * (kc - 1.0) * (kc - 1.0) / (denominator * denominator)
+            })
+            .sum::<f64>()
+    };
+    if objective(0.0) <= 0.0 {
+        // Below the bubble point, or every K = 1: all liquid (`flash_isothermal`).
+        Ok(0.0)
+    } else if objective(1.0) >= 0.0 {
+        Ok(1.0)
+    } else {
+        safeguarded_root(
+            &objective,
+            &slope,
+            &rounding,
+            (0.0, 1.0),
+            temperature,
+            pressure,
+        )
+    }
+}
+
+/// The root of a decreasing `objective` inside `bracket` — positive at its low
+/// end, negative at its high end — by Newton's method kept inside the bracket.
+///
+/// `rtsafe` (Press et al., *Numerical Recipes*, 3rd ed., §9.4): a Newton step
+/// that leaves the bracket, or does not halve the step before last, bisects
+/// instead. Closed when the objective is within its own `rounding` (measured:
+/// without that test, a third of the searches ground on through noise-driven
+/// bisections to 30–60 evaluations; with it, every measured search closes
+/// there), or when the bracket is `2ε` of its top or the smallest normal `f64`
+/// wide; `VAPOUR_FRACTION_MAX_EVALUATIONS` is the backstop. Started at the
+/// bracket's middle, its steps at the bracket's width — on `[0, 1]` exactly the
+/// search M56 wrote, float for float.
+fn safeguarded_root(
+    objective: &dyn Fn(f64) -> f64,
+    slope: &dyn Fn(f64) -> f64,
+    rounding: &dyn Fn(f64) -> f64,
+    bracket: (f64, f64),
+    temperature: Kelvin,
+    pressure: Pascal,
+) -> Result<f64, SimError> {
+    let (mut low, mut high) = bracket;
+    // `rtsafe`: the step before last, against which a Newton step must at
+    // least halve.
+    let (mut step_before_last, mut step) = (high - low, high - low);
+    let mut beta = 0.5 * (low + high);
+    for _ in 0..VAPOUR_FRACTION_MAX_EVALUATIONS {
+        let value = objective(beta);
+        // At the root to rounding: a Newton step from here is noise, and
+        // the safeguard would halve the bracket shut for nothing.
+        if value.abs() <= rounding(beta) {
+            return Ok(beta);
+        }
+        if value > 0.0 {
+            low = beta;
+        } else {
+            high = beta;
+        }
+        let derivative = slope(beta);
+        let newton = beta - value / derivative;
+        // Bisect where Newton leaves the bracket or is not at least halving
+        // its steps — what keeps a slow or wandering Newton bounded.
+        let next = if !(newton > low && newton < high)
+            || (2.0 * value).abs() > (step_before_last * derivative).abs()
+        {
+            step_before_last = step;
+            step = 0.5 * (high - low);
+            low + step
+        } else {
+            step_before_last = step;
+            step = beta - newton;
+            newton
+        };
+        let width = high - low;
+        let done = width <= 2.0 * f64::EPSILON * high || width <= f64::MIN_POSITIVE;
+        beta = next;
+        if done {
+            return Ok(beta);
+        }
+    }
+    Err(SimError::Numerical(format!(
+        "line flash at {} K, {} Pa: Rachford–Rice did not close within \
+         {VAPOUR_FRACTION_MAX_EVALUATIONS} evaluations",
+        temperature.value(),
+        pressure.value()
+    )))
+}
+
+/// The three-state flash of oil and free water (M62.2, docs/DESIGN.md §67.2):
+/// water never dissolves in the oil, nor the oil in water.
+///
+/// With `K_w = P_w(T)/P` water's own K, `s = Σ_oil z` and `z'` the oil's own
+/// fractions, the stream is in one of four states:
+///
+/// ```text
+///   no vapour            Σ_oil K·z' + K_w ≤ 1      oil liquid + free water
+///   three phases         K_w < 1, water lasts      oil liquid + free water + vapour
+///   oil all vapour       K_w < 1, water lasts      free water + vapour
+///   water all vapour     otherwise                 oil liquid (or none) + vapour
+/// ```
+///
+/// **While free water stands the oil flashes at its own partial pressure**
+/// `P − P_w`: the vapour holds water at `y_w = K_w`, so the oil's share of it
+/// sums to `1 − K_w`, and `Σ_oil K·x' = 1 − K_w` is Rachford–Rice on the oil
+/// alone at `K'' = K/(1 − K_w)`. Its root `φ` is the oil's vapour fraction;
+/// the vapour is `V = s·φ/(1 − K_w)` moles and takes `V·K_w` of the water.
+/// Where that is all the water there is, the water is wholly vapour and the
+/// stream flashes as `Σ_oil z(K−1)/(1 + β(K−1)) + z_w/β = 0` on `[z_w, 1]`
+/// (`f(z_w) ≥ 0`: each oil term is at least `−z/(1 − z_w)`). Pure water boils
+/// at `K_w = 1`, and its flash jumps there as any pure component's does.
+///
+/// The liquid returned is BOTH liquids, the oil's and the free water, as one
+/// mole-fraction vector: what flows, and what its density is read from
+/// (volumes add, `Composition::mixture_density`).
+fn free_water_flash(
+    z: &[f64],
+    k: &[f64],
+    water: usize,
+    temperature: Kelvin,
+    pressure: Pascal,
+) -> Result<FlashResult, SimError> {
+    let n = z.len();
+    let water_feed = z[water];
+    let water_k = k[water];
+    let oil: f64 = (0..n).filter(|&c| c != water).map(|c| z[c]).sum();
+    if oil <= 0.0 {
+        // Pure water: liquid below its boiling point, vapour above. At `K_w = 1`
+        // exactly, liquid — the convention `flash_isothermal` holds.
+        let pure = MoleFractions::from_amounts(z)?;
+        return Ok(FlashResult {
+            vapour_fraction: if water_k <= 1.0 { 0.0 } else { 1.0 },
+            liquid: pure.clone(),
+            vapour: pure,
+        });
+    }
+    if water_k < 1.0 {
+        // The oil alone, at its own partial pressure. Water's place holds a
+        // zero feed, so it adds nothing to the oil's Rachford–Rice.
+        let oil_feed: Vec<f64> = (0..n)
+            .map(|c| if c == water { 0.0 } else { z[c] / oil })
+            .collect();
+        let oil_k: Vec<f64> = (0..n)
+            .map(|c| {
+                if c == water {
+                    1.0
+                } else {
+                    k[c] / (1.0 - water_k)
+                }
+            })
+            .collect();
+        let phi = rachford_rice(&oil_feed, &oil_k, temperature, pressure)?;
+        if phi <= 0.0 {
+            // Below the wet bubble point. The incipient vapour: `K·z'` of each
+            // oil cut and `K_w` of water.
+            let incipient: Vec<f64> = (0..n)
+                .map(|c| {
+                    if c == water {
+                        water_k
+                    } else {
+                        k[c] * oil_feed[c]
+                    }
+                })
+                .collect();
+            return Ok(FlashResult {
+                vapour_fraction: 0.0,
+                liquid: MoleFractions::from_amounts(z)?,
+                vapour: MoleFractions::from_amounts(&incipient)?,
+            });
+        }
+        let vapour_moles = oil * phi / (1.0 - water_k);
+        let water_in_vapour = vapour_moles * water_k;
+        if water_in_vapour < water_feed {
+            // Free water stands: three phases, or two if the oil is all vapour.
+            let mut liquid = vec![0.0; n];
+            let mut vapour = vec![0.0; n];
+            for c in 0..n {
+                if c == water {
+                    continue;
+                }
+                let oil_liquid = oil_feed[c] / (1.0 + phi * (oil_k[c] - 1.0));
+                liquid[c] = oil * (1.0 - phi) * oil_liquid;
+                vapour[c] = oil * phi * oil_k[c] * oil_liquid;
+            }
+            liquid[water] = water_feed - water_in_vapour;
+            vapour[water] = water_in_vapour;
+            return Ok(FlashResult {
+                vapour_fraction: vapour_moles,
+                liquid: MoleFractions::from_amounts(&liquid)?,
+                vapour: MoleFractions::from_amounts(&vapour)?,
+            });
+        }
+    }
+    // Every drop of water is vapour: Rachford–Rice over the oil, with the water
+    // a term of its own that never enters the liquid.
+    let oil_term = |c: usize, beta: f64| z[c] * (k[c] - 1.0) / (1.0 + beta * (k[c] - 1.0));
+    let objective = |beta: f64| -> f64 {
+        (0..n)
+            .filter(|&c| c != water)
+            .map(|c| oil_term(c, beta))
+            .sum::<f64>()
+            + water_feed / beta
+    };
+    let rounding = |beta: f64| -> f64 {
+        n as f64
+            * f64::EPSILON
+            * ((0..n)
+                .filter(|&c| c != water)
+                .map(|c| oil_term(c, beta).abs())
+                .sum::<f64>()
+                + water_feed / beta)
+    };
+    let slope = |beta: f64| -> f64 {
+        -(0..n)
+            .filter(|&c| c != water)
+            .map(|c| {
+                let denominator = 1.0 + beta * (k[c] - 1.0);
+                z[c] * (k[c] - 1.0) * (k[c] - 1.0) / (denominator * denominator)
+            })
+            .sum::<f64>()
+            - water_feed / (beta * beta)
+    };
+    let beta = if objective(1.0) >= 0.0 {
+        1.0
+    } else {
+        safeguarded_root(
+            &objective,
+            &slope,
+            &rounding,
+            (water_feed, 1.0),
+            temperature,
+            pressure,
+        )?
+    };
+    let mut liquid = vec![0.0; n];
+    let mut vapour = vec![0.0; n];
+    for c in 0..n {
+        if c == water {
+            vapour[c] = water_feed / beta;
+        } else {
+            liquid[c] = z[c] / (1.0 + beta * (k[c] - 1.0));
+            vapour[c] = k[c] * liquid[c];
+        }
+    }
+    Ok(FlashResult {
+        vapour_fraction: beta,
+        // At `β = 1` this is the oil's incipient dew, `z/K` normalised.
+        liquid: MoleFractions::from_amounts(&liquid)?,
+        vapour: MoleFractions::from_amounts(&vapour)?,
     })
 }
 
@@ -586,6 +839,7 @@ mod search_tests {
                     phase: Phase::Liquid,
                     dh_vap: None,
                     cp_vapour: None,
+                    free_water: false,
                 })
                 .collect(),
         )
@@ -604,6 +858,7 @@ mod search_tests {
             phase: Phase::Liquid,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         };
         Slate::new(vec![
             cut("light_naphtha", 80.0, 0.100, 680.0, 2200.0),
@@ -740,5 +995,196 @@ mod search_tests {
         assert_eq!(at_high, 410.0);
         let inside = temperature_root(400.0, 410.0, |t| Ok((t - 403.0).powi(3))).unwrap();
         assert!((inside - 403.0).abs() < 1e-9, "{inside}");
+    }
+}
+
+#[cfg(test)]
+mod free_water_tests {
+    //! The three-state flash's own properties (M62.2, docs/DESIGN.md §67.2);
+    //! its numbers against a hand calculation are `tests/reference/free_water.rs`.
+
+    use super::*;
+    use crate::TroutonThermo;
+    use refinery_core::components::{Phase, PseudoComponent};
+    use refinery_core::units::{JPerKgK, JPerMol, KgPerM3, KgPerMol};
+
+    fn component(name: &str, tb_c: f64, molar_mass: f64, free_water: bool) -> PseudoComponent {
+        PseudoComponent {
+            name: name.into(),
+            tb: Kelvin(tb_c + 273.15),
+            molar_mass: KgPerMol(molar_mass),
+            density: Some(KgPerM3(if free_water { 998.0 } else { 750.0 })),
+            cp: JPerKgK(if free_water { 4184.0 } else { 2100.0 }),
+            cp_shape: None,
+            phase: Phase::Liquid,
+            dh_vap: free_water.then_some(JPerMol(40_650.0)),
+            cp_vapour: None,
+            free_water,
+        }
+    }
+
+    /// Three naphtha cuts and water, water LAST or FIRST in the slate.
+    fn slate(water_first: bool) -> Slate {
+        let mut cuts = vec![
+            component("light_naphtha", 70.0, 0.095, false),
+            component("heavy_naphtha", 150.0, 0.130, false),
+            component("kerosene", 220.0, 0.165, false),
+        ];
+        let water = component("water", 100.0, 0.018, true);
+        if water_first {
+            cuts.insert(0, water);
+        } else {
+            cuts.push(water);
+        }
+        Slate::new(cuts).unwrap()
+    }
+
+    fn flash(slate: &Slate, z: &[f64], celsius: f64, pressure: f64) -> FlashResult {
+        flash_on_the_line(
+            &MoleFractions::from_amounts(z).unwrap(),
+            slate,
+            &TroutonThermo::new(),
+            Kelvin(celsius + 273.15),
+            Pascal(pressure),
+        )
+        .unwrap()
+    }
+
+    /// Swept a hundredth of a kelvin at a time from below the wet bubble point
+    /// to past the dew point — through no vapour, three phases, water all
+    /// vapour and all vapour — the flash conserves every component, never
+    /// supersaturates the vapour, keeps the oil's own Raoult equilibrium, and
+    /// moves its vapour fraction smoothly: a mixture's three-phase window has
+    /// width, so no state change is a jump. With water first in the slate and
+    /// last, so its position is read from the key and nowhere else.
+    #[test]
+    fn swept_across_every_state_the_flash_conserves_and_does_not_jump() {
+        let thermo = TroutonThermo::new();
+        let pressure = 1.8e5;
+        for water_first in [false, true] {
+            let s = slate(water_first);
+            let water = s.free_water().unwrap();
+            let mut z = vec![0.95 / 3.0; 4];
+            z[water] = 0.05;
+            let mut previous: Option<f64> = None;
+            let mut free_water_seen = false;
+            let mut all_vapour_seen = false;
+            for step in 0..=20_000 {
+                let celsius = 90.0 + 0.01 * f64::from(step);
+                let r = flash(&s, &z, celsius, pressure);
+                let beta = r.vapour_fraction;
+                let (x, y) = (r.liquid.fractions(), r.vapour.fractions());
+                for c in 0..4 {
+                    let balance = beta * y[c] + (1.0 - beta) * x[c];
+                    assert!(
+                        (balance - z[c]).abs() < 1e-12,
+                        "{celsius} °C: component {c} leaves {balance} of {}",
+                        z[c]
+                    );
+                }
+                let t = Kelvin(celsius + 273.15);
+                let water_k = thermo.k_value(&s, water, t, Pascal(pressure)).unwrap();
+                // Below the bubble point `y` is the incipient bubble, normalised
+                // from a sum under one, so the test is on a vapour that exists.
+                assert!(
+                    beta == 0.0 || y[water] <= water_k * (1.0 + 1e-12),
+                    "{celsius} °C: vapour holds water {} above its saturation {water_k}",
+                    y[water]
+                );
+                // The oil liquid is the liquid less its free water, and its own
+                // fractions are in Raoult equilibrium with the vapour.
+                let oil_liquid: f64 = (0..4).filter(|&c| c != water).map(|c| x[c]).sum();
+                if beta > 0.0 && beta < 1.0 && oil_liquid > 1e-9 {
+                    for c in (0..4).filter(|&c| c != water) {
+                        let k = thermo.k_value(&s, c, t, Pascal(pressure)).unwrap();
+                        assert!(
+                            (y[c] - k * x[c] / oil_liquid).abs() < 1e-10,
+                            "{celsius} °C: cut {c} off Raoult's line"
+                        );
+                    }
+                }
+                if beta > 0.0 && x[water] > 0.0 {
+                    free_water_seen = true;
+                    assert!(
+                        (y[water] - water_k).abs() < 1e-12,
+                        "{celsius} °C: free water stands, so the vapour is saturated"
+                    );
+                }
+                all_vapour_seen |= beta == 1.0;
+                if let Some(before) = previous {
+                    assert!(
+                        (beta - before).abs() < 2e-3,
+                        "{celsius} °C: the vapour fraction jumps from {before} to {beta}"
+                    );
+                }
+                previous = Some(beta);
+            }
+            assert!(
+                free_water_seen && all_vapour_seen,
+                "the sweep missed a state"
+            );
+        }
+    }
+
+    /// The state M62.0's script reached only by accident: water-rich, the oil
+    /// wholly vapour over free water. The liquid is pure water and the vapour
+    /// holds every mole of oil, and water at its saturation.
+    #[test]
+    fn a_water_rich_stream_boils_its_oil_away_over_free_water() {
+        let thermo = TroutonThermo::new();
+        let s = slate(false);
+        let r = flash(&s, &[0.0, 0.10, 0.0, 0.90], 112.0, 1.8e5);
+        let water_k = thermo
+            .k_value(&s, 3, Kelvin(385.15), Pascal(1.8e5))
+            .unwrap();
+        approx::assert_relative_eq!(
+            r.vapour_fraction,
+            0.10 / (1.0 - water_k),
+            max_relative = 1e-12
+        );
+        approx::assert_relative_eq!(r.liquid.fractions()[3], 1.0, max_relative = 1e-12);
+        approx::assert_relative_eq!(r.vapour.fractions()[3], water_k, max_relative = 1e-12);
+    }
+
+    /// Pure water: liquid below its boiling point, vapour above, with a liquid
+    /// to read a density from either side — and the all-vapour state's phases
+    /// are compositions the mass boundary accepts.
+    #[test]
+    fn pure_water_and_all_vapour_have_both_phases() {
+        let s = slate(false);
+        let water = [0.0, 0.0, 0.0, 1.0];
+        assert_eq!(flash(&s, &water, 110.0, 1.8e5).vapour_fraction, 0.0);
+        let boiling = flash(&s, &water, 120.0, 1.8e5);
+        assert_eq!(boiling.vapour_fraction, 1.0);
+        assert_eq!(boiling.liquid.fractions()[3], 1.0);
+        let gone = flash(&s, &[0.3, 0.3, 0.3, 0.1], 400.0, 1.8e5);
+        assert_eq!(gone.vapour_fraction, 1.0);
+        assert_eq!(
+            gone.liquid.fractions()[3],
+            0.0,
+            "no water in the incipient dew"
+        );
+        assert!(gone.liquid.to_mass(&s).is_ok() && gone.vapour.to_mass(&s).is_ok());
+    }
+
+    /// A slate that declares free water, with none of it in the stream, flashes
+    /// exactly as the slate without the key: the free-water path runs only where
+    /// water stands, so a dry stream's floats are the ones it always had.
+    #[test]
+    fn a_dry_stream_on_a_wet_slate_flashes_as_it_always_did() {
+        let wet = slate(false);
+        let mut components: Vec<PseudoComponent> = wet.iter().cloned().collect();
+        components[3].free_water = false;
+        let plain = Slate::new(components).unwrap();
+        for celsius in [80.0, 100.0, 130.0, 200.0] {
+            let z = [0.4, 0.35, 0.25, 0.0];
+            let (a, b) = (
+                flash(&wet, &z, celsius, 1.8e5),
+                flash(&plain, &z, celsius, 1.8e5),
+            );
+            assert_eq!(a.vapour_fraction.to_bits(), b.vapour_fraction.to_bits());
+            assert_eq!(a.liquid.fractions(), b.liquid.fractions());
+            assert_eq!(a.vapour.fractions(), b.vapour.fractions());
+        }
     }
 }

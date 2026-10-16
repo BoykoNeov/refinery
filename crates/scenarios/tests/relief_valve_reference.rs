@@ -228,6 +228,7 @@ fn the_solver_refuses_a_gas_valve_with_no_x_t_even_bypassing_the_loader() {
         phase: Phase::Gas,
         dh_vap: None,
         cp_vapour: None,
+        free_water: false,
     }])
     .expect("a single gas cut is a valid slate");
     let pure = Composition::pure(1, 0);

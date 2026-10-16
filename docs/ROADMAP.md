@@ -9785,3 +9785,25 @@ first reads it. DESIGN §67.9.
 
 - Gates: `reference/water.rs` (4), `water_properties.rs` (2). Mutations: seven,
   all caught. Corpus: 58 of 58 byte-identical on both fidelities.
+
+### M62.2 — **LANDED** 2026-10-16: free water in the flashes
+
+A component may declare `free_water = true` (at most one; only on a plant with
+`line_flash = "equilibrium"`): water that never dissolves in the oil. The line
+flash, the bubble point, the bubble pressure and the tank boil-off take it
+where water stands, and the path they always took where it does not. Corrected
+while building: a FOURTH state (the oil all vapour over free water, where the
+condenser's water lives); the oil flashes at its own partial pressure `P − P_w`;
+the bubble pressure is wet in the thermo model so its four readers agree; a
+wet tank boils by the isenthalpic flash, not the dry rule, and is left below
+its dry bubble point — steam stripping, M63's ground; a rounding trace of
+water (≤ 1e-9) is no free water; no column refusal by name (a flashing plant
+refuses columns already — M62.5's). The wet rundown (`scenarios/
+wet_rundown.toml`, 3 % water, 5 bar): three phases after the valve, the tank on
+its wet bubble point at 74.2 °C. DESIGN §67.10.
+
+- Gates: `reference/free_water.rs` (3), `line_flash.rs` free-water unit tests
+  (4), `boiloff.rs` (1), `wet_rundown_reference.rs` (4). Mutations: sixteen,
+  all caught. Iterations: worst 9 (Newton) and 7 (game solver) a tick, the dry
+  rundown's 11 and 8. Corpus: 58 of 58 byte-identical on both fidelities;
+  `wet_rundown` new.

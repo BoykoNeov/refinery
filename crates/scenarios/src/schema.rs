@@ -113,6 +113,13 @@ pub struct ComponentDef {
     /// `dh_vap_j_per_mol`, and refused beside a `cp` shape.
     #[serde(default)]
     pub cp_vapour_j_per_kg_k: Option<f64>,
+    /// This component is water that never dissolves in the oil (M62.2,
+    /// docs/DESIGN.md §67.2): every flash keeps it out of the oil liquid.
+    /// Absent means false. At most one per slate; refused on a
+    /// plant without `line_flash = "equilibrium"`, the one model that reads it
+    /// (which refuses a gas component itself).
+    #[serde(default)]
+    pub free_water: bool,
 }
 
 impl ComponentDef {

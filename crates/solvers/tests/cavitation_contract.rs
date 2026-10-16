@@ -112,6 +112,7 @@ fn one_cut_slate() -> Slate {
         cp_shape: None,
         dh_vap: None,
         cp_vapour: None,
+        free_water: false,
     }])
     .expect("a one-component slate is valid")
 }

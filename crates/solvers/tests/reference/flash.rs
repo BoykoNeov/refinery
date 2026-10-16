@@ -33,6 +33,7 @@ fn slate(n: usize) -> Slate {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             })
             .collect(),
     )

@@ -3487,6 +3487,7 @@ fn build_slate(defs: &[ComponentDef]) -> Result<Slate, SimError> {
                     phase: component_phase(d)?,
                     dh_vap: d.dh_vap_j_per_mol.map(JPerMol),
                     cp_vapour: d.cp_vapour_j_per_kg_k.map(JPerKgK),
+                    free_water: d.free_water,
                 })
             })
             .collect::<Result<Vec<_>, SimError>>()?,

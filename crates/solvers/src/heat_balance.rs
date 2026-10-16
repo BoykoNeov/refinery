@@ -1147,6 +1147,7 @@ mod tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             })
             .collect(),
         )
@@ -1618,6 +1619,7 @@ mod start_tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             })
             .collect(),
         )
@@ -1718,6 +1720,7 @@ mod pumparound_tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             })
             .collect(),
         )
@@ -1957,6 +1960,7 @@ mod newton_tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             })
             .collect(),
         )
@@ -2147,6 +2151,7 @@ mod newton_tests {
                         phase: Phase::Liquid,
                         dh_vap: None,
                         cp_vapour: None,
+                        free_water: false,
                     })
                     .collect(),
             )

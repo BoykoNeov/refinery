@@ -25073,3 +25073,112 @@ pressure on Trouton despite a declared latent heat, the latent heat on Trouton
 despite one, Kirchhoff's term dropped, its sign flipped, the loader dropping
 the key, the Trouton-only refusal disabled, the gas refusal disabled.
 **Corpus**: 58 of 58 plants byte-identical on both fidelities.
+
+### 67.10 Free water in the flashes, built (M62.2)
+
+As §67.2 specifies, with six corrections. One flash (`line_flash.rs`,
+`free_water_flash`) behind the line flash's isothermal split; the bubble
+temperature (`bubble_temperature`), the bubble pressure
+(`TroutonThermo::bubble_pressure`) and the tank boil-off (`FlashBoilOff`) each
+take the free-water path where water stands, and the path they always took
+where it does not — on every shipped plant, and on a dry stream of a wet slate,
+float for float.
+
+- **`PseudoComponent::free_water`** (a bool, skipped in serialisation when
+  false), the plant file's `free_water = true`; `Slate::free_water()` its
+  position. **Refused**, each by name: two members declaring it (`Slate::new`),
+  and the key without `line_flash = "equilibrium"`, which itself requires
+  `thermo = "trouton"`, refuses a gas component and refuses every unit that
+  does not flash its own contents (furnaces, coolers, columns).
+- **Where water stands**: `MoleFractions::standing_water`, the slate's free-water
+  member where its mole fraction exceeds `FREE_WATER_TRACE` (1e-9, the
+  engine's own rounding guard on a holdup's components).
+
+**Corrections, found while building:**
+
+1. **A fourth state.** §67.2's table has three; a water-rich stream has a
+   fourth — the oil all vapour over free water, the liquid pure water and the
+   vapour saturated with it. The condenser's water lives there (M62.5). The
+   M62.0 script reached it only by accident of its bisection; the M62.2 script
+   tests it explicitly.
+2. **The oil flashes at its own partial pressure.** While free water stands the
+   vapour holds water at `y_w = K_w`, so `Σ_oil K·x' = 1 − K_w`: Rachford–Rice
+   on the oil alone at `K'' = K/(1 − K_w)`, its root `φ` the oil's vapour
+   fraction, the vapour `V = s·φ/(1 − K_w)` moles taking `V·K_w` of the water.
+   Where that is all the water, the water-all-vapour equation `Σ_oil z(K−1)/(1 +
+   β(K−1)) + z_w/β = 0` on `[z_w, 1]` (`f(z_w) ≥ 0`). Both searches are M56's
+   safeguarded Newton, moved into one helper (`safeguarded_root`) whose `[0, 1]`
+   call is M56's arithmetic exactly.
+3. **The bubble pressure is wet in the thermo model, not only in the line
+   flash.** `Σ_oil x'·Psat + Psat_w` in `TroutonThermo::bubble_pressure`, so its
+   four readers — the boil-off's cheap test, the cavitation readout,
+   `supply_boiling` and the loader's NPSH check — agree with the line flash on
+   what boiling is. Raoult over the whole liquid would weight water by its mole
+   fraction, as if it dissolved.
+4. **A wet holdup boils by the isenthalpic flash, not the dry rule.** The dry
+   rule sizes the vapour as `c̄p·ΔT/Δh̄_vap` with the latent heat weighted by the
+   LIQUID and parks the liquid at its bubble point; over free water the vapour at
+   the bubble point is largely steam, so a tank with a little water would hit the
+   per-component cap on the water at once and keep the oil's superheat. The wet
+   boil-off is `settle_full` at the tank's pressure (`line_flash::flash_holdup`):
+   vapour `q·m` at the flash's composition, the liquid at the flash's
+   temperature, `BoilOff::latent_heat` the vapour's — what `q` was divided by,
+   so the books close as they do dry. **What it shows**: a holdup whose water
+   all boils is left BELOW its dry bubble point, `Σ_oil K·x = 1 − y_w` — the
+   steam in the vapour lowers the oil's partial pressure. That is steam
+   stripping, M63's ground, and the gate checks it to 1e-9.
+5. **A rounding trace is no free water.** A boil-off that takes every drop of
+   water leaves the water's books a few ULP off zero (the engine's `max(0)`);
+   free water acts at any amount, so the trace held the tank's bubble pressure
+   up by water's whole vapour pressure (measured: an outlet reading 1.24 bar
+   where its dry oil reads 0.76). `FREE_WATER_TRACE` (1e-9) is five orders below
+   what water dissolves to in a naphtha.
+6. **No refusal of the cascade, the cut-point splitter or constant-alpha by
+   name.** A column is refused on a flashing plant already, so a free-water
+   refusal of one could not be reached (a guard nothing reaches reads as
+   coverage it is not); it is M62.5's to write when columns join flashing plants
+   (§67.4). `ConstantAlphaThermo` is not selectable from a plant file, and the
+   free-water flash needs only K-values, which it has.
+
+**The wet rundown** (`scenarios/wet_rundown.toml`): the flashing rundown's
+naphtha with 3 % free water by mass, from 5 bar (water's 1.69 bar of vapour
+pressure takes the stream's bubble pressure at 115 °C from 2.07 to 3.76 bar,
+above the dry plant's 3 bar supply), its control valve at 0.35. Settled: the
+junction three-phase at 1.50 bar and 85.6 °C, 12.8 % of the mass vapour and
+1.7 % free water; the tank on its wet bubble point, 74.2 °C, where its oil dry
+boils near 90 °C, 1.5 % of its mass free water; 1.09 kg/s vented of the 6.03
+fed; the level 5.4 m.
+
+**Kinks and the solvers** (§67.2 promised the measurement): over 6 000 ticks the
+wet rundown's worst iterations per tick are 9 on Newton and 7 on the game
+solver, against the dry rundown's 11 and 8; its tick costs 0.21 ms on Newton
+and 0.23 ms on the game solver (`--jobs 1`), 16 % and 10 % above the dry
+plant's. The line flash's bisection on the energy and the flow solve's slope
+straddle free water's appearance and disappearance as they do the bubble
+point.
+
+**Gates**: `crates/solvers/tests/reference/free_water.rs` (3: every state of a
+one-cut and a three-cut naphtha over water and of a water-rich stream against
+`tools/steptime/prototypes/m62_2/free_water_flash.py` to 1e-8; the wet bubble
+points and the bubble pressure at each; a rounding trace boils dry);
+`line_flash.rs`'s `free_water_tests` (4: a 0.01 K sweep through every state
+conserving each component, never supersaturating the vapour, keeping the oil
+on Raoult's line and never jumping, with water first and last in the slate; the
+oil all vapour over free water; pure water and all vapour; a dry stream on a
+wet slate bit for bit); `boiloff.rs` (1: a wet holdup well above its bubble point boils
+dry in one step, its books exact, its oil left at `Σ K·x = 1 − y_w`);
+`crates/scenarios/tests/wet_rundown_reference.rs` (4: the junction against the
+script at the engine's own state; the tank on its wet bubble point; energy and
+every component's mass books each tick, with the latent counterfactual; both
+fidelities; the refusals).
+
+**Mutations**: sixteen, all caught by their predicted files — the free-water
+path skipped, the oil at the total pressure, the water term dropped from the
+water-all-vapour equation, free water never running out, the three-phase
+liquid keeping all the water, the wet bubble point forgetting water and on
+unnormalised oil, the bubble pressure by Raoult and on unnormalised oil, the wet
+holdup on the dry rule, a short latent heat booked, the holdup's vapour read at
+the superheated state, the trace counted as water, the line-flash refusal
+disabled, the two-member refusal disabled, the loader dropping the key.
+**Corpus**: 58 of 58 plants byte-identical on both fidelities; `wet_rundown`
+new.

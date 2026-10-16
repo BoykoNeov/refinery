@@ -55,6 +55,7 @@ fn two_cut_slate() -> Slate {
             cp_shape: None,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         },
         PseudoComponent {
             name: "heavy".into(),
@@ -66,6 +67,7 @@ fn two_cut_slate() -> Slate {
             cp_shape: None,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         },
     ])
     .expect("a two-component slate is valid")
@@ -688,6 +690,7 @@ fn cascade_slate() -> Slate {
             cp_shape: None,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         },
         PseudoComponent {
             name: "heavy".into(),
@@ -699,6 +702,7 @@ fn cascade_slate() -> Slate {
             cp_shape: None,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         },
     ])
     .expect("a two-component slate is valid")

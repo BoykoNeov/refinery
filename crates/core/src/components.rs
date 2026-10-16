@@ -89,6 +89,22 @@ pub struct PseudoComponent {
     /// latent heat constant. Skipped when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cp_vapour: Option<JPerKgK>,
+    /// This component is WATER that never dissolves in the oil (M62.2,
+    /// docs/DESIGN.md §67.2): every flash keeps it out of the oil liquid, so it
+    /// stands as free water beside the oil or goes wholly to the vapour.
+    ///
+    /// A key, not a name: what decides is the file's `free_water = true`, never
+    /// a component called "water". At most one per slate (`Slate::new`).
+    /// `false` keeps the component in the oil's ideal solution, as every
+    /// component was before M62.2. Skipped when false, as `cp_shape` is when
+    /// absent, so no shipped plant's bytes move.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub free_water: bool,
+}
+
+/// `skip_serializing_if` for a flag that is absent unless set.
+fn is_false(flag: &bool) -> bool {
+    !*flag
 }
 
 /// A declared temperature dependence for one cut's heat capacity [J/(kg·K)]:
@@ -158,6 +174,7 @@ impl PseudoComponent {
             phase: Phase::Liquid,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         }
     }
 }
@@ -174,7 +191,24 @@ impl Slate {
         if components.is_empty() {
             return Err(SimError::Scenario("slate must have >= 1 component".into()));
         }
+        // Free water is ONE liquid phase of pure water (docs/DESIGN.md §67.2);
+        // two members claiming it would be two immiscible pure phases of the
+        // same substance, which no flash here poses.
+        let mut free_water = components.iter().filter(|c| c.free_water);
+        if let (Some(first), Some(second)) = (free_water.next(), free_water.next()) {
+            return Err(SimError::Scenario(format!(
+                "components '{}' and '{}' both declare free_water: a slate holds at most \
+                 one free-water member (docs/DESIGN.md §67.2)",
+                first.name, second.name
+            )));
+        }
         Ok(Self { components })
+    }
+    /// The slate position of the free-water member, if one is declared (M62.2,
+    /// docs/DESIGN.md §67.2). `None` on every slate written before M62.2, and
+    /// then no flash takes the free-water path.
+    pub fn free_water(&self) -> Option<usize> {
+        self.components.iter().position(|c| c.free_water)
     }
     pub fn water_only() -> Self {
         Self {
@@ -486,6 +520,7 @@ mod tests {
             phase: Phase::Gas,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         }
     }
 
@@ -500,6 +535,7 @@ mod tests {
             phase: Phase::Liquid,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         }
     }
 

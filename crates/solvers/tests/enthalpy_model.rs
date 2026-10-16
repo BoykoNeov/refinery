@@ -49,6 +49,7 @@ fn shaped_slate() -> Slate {
         phase: Phase::Gas,
         dh_vap: None,
         cp_vapour: None,
+        free_water: false,
     }])
     .expect("a one-cut slate")
 }
@@ -66,6 +67,7 @@ fn flat_slate() -> Slate {
         phase: Phase::Gas,
         dh_vap: None,
         cp_vapour: None,
+        free_water: false,
     }])
     .expect("a one-cut slate")
 }
@@ -654,6 +656,7 @@ fn a_partly_shaped_mixture_is_refused_rather_than_silently_weighted() {
             phase: Phase::Gas,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         },
         PseudoComponent {
             name: "flat".into(),
@@ -665,6 +668,7 @@ fn a_partly_shaped_mixture_is_refused_rather_than_silently_weighted() {
             phase: Phase::Gas,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         },
     ])
     .expect("a two-cut slate");

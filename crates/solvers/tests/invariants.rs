@@ -162,6 +162,7 @@ impl Fluid {
                 phase: refinery_core::components::Phase::Gas,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             },
             PseudoComponent {
                 name: "propane".into(),
@@ -173,6 +174,7 @@ impl Fluid {
                 phase: refinery_core::components::Phase::Gas,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             },
         ])
         .expect("two-component gas slate");

@@ -42,6 +42,12 @@ use crate::molar::MoleFractions;
 /// As `bubble_temperature_unnormalized`: no root in the bracket (which is where a
 /// model with no temperature dependence lands, by construction), or a `K` the
 /// model cannot produce.
+///
+/// **Free water** (M62.2, docs/DESIGN.md §67.2): on a slate with a `free_water`
+/// member that `x` holds, the liquid is two immiscible phases, and it boils
+/// where their vapour pressures add up to the pressure — `P_oil + P_w = P`, or
+/// `Σ_oil K_c·x'_c + K_w = 1` with `x'` the oil's own mole fractions. Pure water
+/// boils at `K_w = 1`. Every other liquid takes the search it always took.
 pub fn bubble_temperature(
     slate: &Slate,
     thermo: &dyn ThermoModel,
@@ -49,7 +55,69 @@ pub fn bubble_temperature(
     pressure: Pascal,
     what: &str,
 ) -> Result<Kelvin, SimError> {
-    bubble_temperature_unnormalized(slate, thermo, x.fractions(), pressure, what)
+    match x.standing_water(slate) {
+        Some(water) => wet_bubble_temperature(slate, thermo, x.fractions(), water, pressure, what),
+        None => bubble_temperature_unnormalized(slate, thermo, x.fractions(), pressure, what),
+    }
+}
+
+/// The bubble point of oil standing over free water: `ln(Σ_oil K_c·x_c/s + K_w)
+/// = 0`, `s = Σ_oil x_c` (Dalton: the two liquids each exert their own vapour
+/// pressure, docs/DESIGN.md §67.2), by the same bracketed search.
+fn wet_bubble_temperature(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    x: &[f64],
+    water: usize,
+    pressure: Pascal,
+    what: &str,
+) -> Result<Kelvin, SimError> {
+    let oil: f64 = x
+        .iter()
+        .enumerate()
+        .filter(|(c, _)| *c != water)
+        .map(|(_, xc)| xc)
+        .sum();
+    let ln_excess = |t: f64| -> Result<f64, SimError> {
+        let mut oil_sum = 0.0;
+        let mut water_k = 0.0;
+        for (c, xc) in x.iter().enumerate() {
+            if c != water && *xc <= 0.0 {
+                continue;
+            }
+            let k = checked_k(slate, thermo, c, t, pressure, what)?;
+            if c == water {
+                water_k = k;
+            } else {
+                oil_sum += k * xc;
+            }
+        }
+        let oil_part = if oil > 0.0 { oil_sum / oil } else { 0.0 };
+        Ok((oil_part + water_k).ln())
+    };
+    bracketed_search(&ln_excess, pressure, thermo, what)
+}
+
+/// One K-value, refused unless finite and positive, naming the subject.
+fn checked_k(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    c: usize,
+    t: f64,
+    pressure: Pascal,
+    what: &str,
+) -> Result<f64, SimError> {
+    let k = thermo.k_value(slate, c, Kelvin(t), pressure)?;
+    if !k.is_finite() || k <= 0.0 {
+        return Err(SimError::NonFiniteState {
+            location: format!(
+                "thermo model '{}' returned K = {k} for '{}' at {t} K while finding the                  bubble point of {what}",
+                thermo.name(),
+                slate.get(c).name
+            ),
+        });
+    }
+    Ok(k)
 }
 
 /// The bracket every stage's bubble point is sought in [K], and the relative width
@@ -185,6 +253,18 @@ pub(crate) fn bubble_temperature_unnormalized(
         Ok(sum.ln())
     };
 
+    bracketed_search(&ln_excess, pressure, thermo, what)
+}
+
+/// The root of `ln_excess` on `[BUBBLE_POINT_LOW_K, BUBBLE_POINT_HIGH_K]`, closed
+/// to `BUBBLE_POINT_RESOLUTION` — the search both bubble points share; the
+/// commentary on its method is above, in `bubble_temperature_unnormalized`.
+fn bracketed_search(
+    ln_excess: &dyn Fn(f64) -> Result<f64, SimError>,
+    pressure: Pascal,
+    thermo: &dyn ThermoModel,
+    what: &str,
+) -> Result<Kelvin, SimError> {
     let low = ln_excess(BUBBLE_POINT_LOW_K)?;
     let high = ln_excess(BUBBLE_POINT_HIGH_K)?;
     if low > 0.0 || high < 0.0 {

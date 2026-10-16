@@ -21,6 +21,18 @@ use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
 use refinery_core::units::KgPerMol;
 
+/// The water mole fraction at or below which no free water stands (M62.2,
+/// docs/DESIGN.md §67.2): the engine's own rounding guard on a holdup's
+/// components (`ROUNDING_MASS_FRACTION`, 1e-9), carried to the flashes.
+///
+/// A boil-off that takes every drop of water leaves the water's books at a few
+/// ULP of zero, not at zero, and free water acts at ANY amount — so without
+/// this a tank's rounding trace would hold its bubble point down by the whole
+/// of water's vapour pressure. Five orders below what water dissolves to in a
+/// naphtha (tens to hundreds of ppm, the solubility the free-water
+/// approximation sets aside), so it removes nothing the model claims.
+pub const FREE_WATER_TRACE: f64 = 1e-9;
+
 /// Mole fractions over the slate, in slate order. Invariant: non-negative and
 /// summing to 1 — every constructor normalizes.
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +134,17 @@ impl MoleFractions {
         &self.fractions
     }
 
+    /// The slate position of the free water standing in this mixture: the
+    /// slate's `free_water` member, where it holds more than
+    /// `FREE_WATER_TRACE` (M62.2, docs/DESIGN.md §67.2). `None` on a slate
+    /// without one, and on a dry mixture — where every flash takes the path it
+    /// always took.
+    pub fn standing_water(&self, slate: &Slate) -> Option<usize> {
+        slate
+            .free_water()
+            .filter(|&water| self.fractions[water] > FREE_WATER_TRACE)
+    }
+
     pub fn len(&self) -> usize {
         self.fractions.len()
     }
@@ -155,6 +178,7 @@ mod tests {
                     phase: Phase::Gas,
                     dh_vap: None,
                     cp_vapour: None,
+                    free_water: false,
                 })
                 .collect(),
         )
@@ -175,6 +199,7 @@ mod tests {
                     phase: Phase::Liquid,
                     dh_vap: None,
                     cp_vapour: None,
+                    free_water: false,
                 })
                 .collect(),
         )
@@ -295,6 +320,7 @@ mod tests {
             phase: Phase::Liquid,
             dh_vap: None,
             cp_vapour: None,
+            free_water: false,
         }])
         .unwrap();
         let message = MoleFractions::from_mass(&Composition::pure(1, 0), &slate)

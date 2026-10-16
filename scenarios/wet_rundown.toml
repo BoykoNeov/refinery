@@ -1,0 +1,138 @@
+# M62.2 demo plant: a WET hot rundown — free water boils with the oil.
+#
+# The flashing rundown (flashing_rundown.toml, M53) with 3 % free water by
+# mass in its naphtha: the wired demonstration of docs/DESIGN.md §67.2, water
+# as a real component that never dissolves in the oil. The water is declared
+# `free_water = true`, so every flash keeps it out of the oil liquid; its
+# latent heat (40 650 J/mol) and its vapour's heat capacity are steam tables'
+# (M62.1).
+#
+# --- why the plant is shaped like this -------------------------------------
+#
+# 1. THE SUPPLY IS 5 bar, NOT 3. Free water and oil each exert their own vapour
+#    pressure, and they add: at 115 °C the oil alone boils below 2.07 bar, but
+#    with water standing beside it the stream boils below 3.76 bar (2.07 +
+#    water's 1.69). The dry plant's 3 bar supply would boil where it stands.
+#
+# 2. THE LINE IS THREE-PHASE AFTER THE VALVE. The control valve, opened less
+#    than the dry plant's (0.35) to feed about the same 6 kg/s from 5 bar,
+#    drops the stream to about 1.50 bar; at the junction, 85.6 °C, it is oil
+#    liquid, free water and vapour together: 12.8 % of the mass is vapour,
+#    holding water at its saturation, and 1.7 % is free water still standing
+#    (the hand calculation, tools/steptime/prototypes/m62_2/
+#    free_water_flash.py).
+#
+# 3. THE TANK SITS ON ITS WET BUBBLE POINT. Vented, it boils where the oil's
+#    vapour pressure and water's add up to the atmosphere — about 74.2 °C,
+#    where the same oil dry boils near 90 °C. Free water stands in it (about
+#    1.5 % of its mass, mixed through it until M62.3 layers it), and its
+#    boil-off vents about 1.09 kg/s of the 6.03 fed, water and oil together.
+#
+# 4. THE OUTLET SETTLES THE LEVEL, as on the dry plant, near 5.4 m; the tank
+#    starts there, at about its own wet boiling point.
+
+[meta]
+name = "wet_rundown"
+description = "Wet hot naphtha let down through a control valve into a vented tank; free water boils with the oil."
+
+[simulation]
+dt = 0.5
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+boiloff = "flash"
+line_flash = "equilibrium"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[[components]]
+name = "water"
+tb_c = 100.0
+molar_mass_kg_per_mol = 0.018
+density_kg_per_m3 = 998.0
+cp_j_per_kg_k = 4184.0
+dh_vap_j_per_mol = 40650.0
+cp_vapour_j_per_kg_k = 2000.0
+free_water = true
+
+[nodes.rundown]
+type = "source"
+pressure_bar = 5.0
+temperature_c = 115.0
+composition = { light_naphtha = 0.679, heavy_naphtha = 0.291, water = 0.03 }
+
+[nodes.rundown_valve]
+type = "valve"
+kv = 40.0
+opening = 0.35
+
+[nodes.valve_outlet]
+type = "junction"
+
+[nodes.rundown_tank]
+type = "tank"
+area_m2 = 0.5
+height_m = 8.0
+initial_level_m = 5.4
+temperature_c = 74.0
+composition = { light_naphtha = 0.679, heavy_naphtha = 0.291, water = 0.03 }
+
+[nodes.outlet_valve]
+type = "valve"
+kv = 60.0
+opening = 0.5
+
+[nodes.product]
+type = "sink"
+pressure_bar = 1.01325
+temperature_c = 40.0
+composition = { light_naphtha = 0.5, heavy_naphtha = 0.5 }
+
+[[pipes]]
+name = "rundown_line"
+from = "rundown"
+to = "rundown_valve"
+length_m = 30.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "valve_spool"
+from = "rundown_valve"
+to = "valve_outlet"
+length_m = 2.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "flash_line"
+from = "valve_outlet"
+to = "rundown_tank"
+length_m = 40.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "tank_outlet"
+from = "rundown_tank"
+to = "outlet_valve"
+length_m = 5.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "product_line"
+from = "outlet_valve"
+to = "product"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = -2.0

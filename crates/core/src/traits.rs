@@ -822,6 +822,11 @@ pub struct BoilOff {
     /// stop the balance closing: the invariant checks bookkeeping consistency,
     /// not thermodynamic virtue, and if the two ever disagree the fix belongs
     /// in the model rather than in the term the vent carries.
+    ///
+    /// A holdup over free water is the model's other case (M62.2,
+    /// docs/DESIGN.md §67.2): `FlashBoilOff` sizes it by the isenthalpic flash,
+    /// which divides by the VAPOUR's latent heat, so that is the number here —
+    /// the same rule, "what the model divided by".
     pub latent_heat: JPerKg,
 }
 

@@ -3561,6 +3561,7 @@ mod tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             }
         }
 
@@ -4480,6 +4481,7 @@ mod tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             };
             Slate::new(vec![cut("feed_lump", 2000.0), cut("product_lump", 3000.0)]).unwrap()
         }
@@ -4704,6 +4706,7 @@ mod tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             };
             Slate::new(vec![
                 cut("feed_lump", FEED_CP, FEED_DENSITY),
@@ -5075,6 +5078,7 @@ mod tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             };
             Slate::new(vec![cut("heavy", 600.0), cut("light", 400.0)]).unwrap()
         }

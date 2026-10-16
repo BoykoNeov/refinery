@@ -136,6 +136,49 @@ impl TroutonThermo {
     }
 }
 
+impl TroutonThermo {
+    /// `Σ_oil x'_c·Psat_c + Psat_w` [Pa] — the bubble pressure of oil over free
+    /// water (see `bubble_pressure`).
+    fn wet_bubble_pressure(
+        &self,
+        slate: &Slate,
+        x: &[f64],
+        water: usize,
+        temperature: Kelvin,
+    ) -> Result<Pascal, SimError> {
+        let oil: f64 = x
+            .iter()
+            .enumerate()
+            .filter(|(c, _)| *c != water)
+            .map(|(_, xc)| xc)
+            .sum();
+        let mut oil_pressure = 0.0;
+        for (component, xc) in x.iter().enumerate() {
+            if component == water || *xc <= 0.0 {
+                continue;
+            }
+            check_state(slate, component, temperature, P_ATM, "trouton")?;
+            oil_pressure += xc * self.saturation_pressure(slate, component, temperature);
+        }
+        check_state(slate, water, temperature, P_ATM, "trouton")?;
+        let water_pressure = self.saturation_pressure(slate, water, temperature);
+        let bubble = if oil > 0.0 {
+            oil_pressure / oil + water_pressure
+        } else {
+            water_pressure
+        };
+        if !bubble.is_finite() || bubble <= 0.0 {
+            return Err(SimError::NonFiniteState {
+                location: format!(
+                    "trouton bubble_pressure over free water at {} K gave {bubble} Pa",
+                    temperature.value()
+                ),
+            });
+        }
+        Ok(Pascal(bubble))
+    }
+}
+
 impl Default for TroutonThermo {
     fn default() -> Self {
         Self::new()
@@ -280,6 +323,14 @@ impl ThermoModel for TroutonThermo {
         temperature: Kelvin,
     ) -> Result<Pascal, SimError> {
         let mole = MoleFractions::from_mass(composition, slate)?;
+        // Free water standing beside the oil (M62.2, docs/DESIGN.md §67.2): two
+        // immiscible liquids, each exerting its own vapour pressure (Dalton), so
+        // `P_bub = Σ_oil x'_c·Psat_c + Psat_w` with `x'` the oil's own fractions.
+        // Raoult over the whole liquid would weight water by its mole fraction
+        // as if it dissolved in the oil.
+        if let Some(water) = mole.standing_water(slate) {
+            return self.wet_bubble_pressure(slate, mole.fractions(), water, temperature);
+        }
         let mut bubble = 0.0;
         for (component, x) in mole.fractions().iter().enumerate() {
             if *x <= 0.0 {
@@ -572,6 +623,7 @@ mod tests {
                     phase: Phase::Liquid,
                     dh_vap: None,
                     cp_vapour: None,
+                    free_water: false,
                 })
                 .collect(),
         )
@@ -1022,6 +1074,7 @@ mod tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             },
             PseudoComponent {
                 name: "heavy".into(),
@@ -1033,6 +1086,7 @@ mod tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             },
         ])
         .unwrap();

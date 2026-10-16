@@ -37,6 +37,8 @@ mod reference_compressor;
 mod reference_flash;
 #[path = "reference/four_lump.rs"]
 mod reference_four_lump;
+#[path = "reference/free_water.rs"]
+mod reference_free_water;
 #[path = "reference/hydrocracking.rs"]
 mod reference_hydrocracking;
 #[path = "reference/line_flash.rs"]

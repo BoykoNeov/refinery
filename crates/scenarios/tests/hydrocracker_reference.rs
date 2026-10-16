@@ -123,6 +123,7 @@ impl Balance {
                     cp_shape: None,
                     dh_vap: None,
                     cp_vapour: None,
+                    free_water: false,
                 })
                 .collect(),
         )

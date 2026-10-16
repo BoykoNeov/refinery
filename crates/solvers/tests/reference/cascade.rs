@@ -61,6 +61,7 @@ fn slate(cuts: &[(&str, f64, f64)]) -> Slate {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             })
             .collect(),
     )

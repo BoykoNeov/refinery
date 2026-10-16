@@ -21,6 +21,7 @@ use refinery_core::traits::{BoilOff, BoilOffModel, EnthalpyModel, ThermoModel};
 use refinery_core::units::{JPerKg, Kelvin, Kg, Pascal};
 
 use crate::bubble::bubble_temperature;
+use crate::line_flash::flash_holdup;
 use crate::molar::MoleFractions;
 
 /// A holdup never boils: the `[fidelity] boiloff = "none"` implementation, and
@@ -133,6 +134,22 @@ impl BoilOffModel for FlashBoilOff {
         }
         if !is_boiling(slate, composition, temperature, pressure, thermo)? {
             return Ok(None);
+        }
+        // A holdup over free water boils by the line's own isenthalpic flash
+        // (M62.2, docs/DESIGN.md §67.2); everything below is the dry holdup's.
+        if MoleFractions::from_mass(composition, slate)?
+            .standing_water(slate)
+            .is_some()
+        {
+            return wet_boil_off(
+                slate,
+                composition,
+                mass,
+                temperature,
+                pressure,
+                thermo,
+                enthalpy,
+            );
         }
 
         let x = MoleFractions::from_mass(composition, slate)?;
@@ -290,6 +307,71 @@ impl BoilOffModel for FlashBoilOff {
     }
 }
 
+/// The boil-off of a holdup with free water in it (M62.2, docs/DESIGN.md §67.2):
+/// the isenthalpic flash at the holdup's pressure, which the line flash already
+/// solves (`line_flash::flash_holdup`) — the vapour is `q·m` at the flash's
+/// composition, the liquid is left where the flash settles, and the latent heat
+/// the books multiply by is the VAPOUR's, the one `q` was divided by.
+///
+/// **Not the dry holdup's rule, and the difference is water.** That rule sizes
+/// the vapour as `c̄p·ΔT/Δh̄_vap` with the latent heat weighted by the LIQUID's
+/// fractions and parks the liquid at its bubble point. Over free water the
+/// vapour at the bubble point is largely steam: a tank holding a little water
+/// would weight water's 2 260 kJ/kg by its small mass share while the vapour is
+/// mostly water, and the per-component cap below would bind on the water at
+/// once and leave the oil's superheat in the tank. The isenthalpic flash moves
+/// through the three-phase window into the water-all-vapour state in one solve.
+///
+/// The cap is kept for the same reason the dry rule keeps it: at a temperature
+/// the bracket pins (one oil cut over water: two components, three phases) the
+/// energy's `q` and the flash's own split can part by a rounding; where it
+/// binds, the liquid is left where the energy allows, `h(T_liq) = h(T) − f·λ`.
+#[allow(clippy::too_many_arguments)]
+fn wet_boil_off(
+    slate: &Slate,
+    composition: &Composition,
+    mass: Kg,
+    temperature: Kelvin,
+    pressure: Pascal,
+    thermo: &dyn ThermoModel,
+    enthalpy: &dyn EnthalpyModel,
+) -> Result<Option<BoilOff>, SimError> {
+    let Some(flash) = flash_holdup(slate, composition, temperature, pressure, thermo, enthalpy)?
+    else {
+        return Ok(None);
+    };
+    let wanted = flash.vapour_share;
+    let mut cap = wanted;
+    for (c, &y) in flash.vapour.fractions().iter().enumerate() {
+        if y > 0.0 {
+            cap = cap.min(composition.fractions()[c] / y);
+        }
+    }
+    let applied = wanted.min(cap);
+    if !applied.is_finite() || applied <= 0.0 {
+        return Ok(None);
+    }
+    let liquid_temperature = if applied >= wanted {
+        flash.temperature
+    } else {
+        let held = enthalpy
+            .specific_enthalpy(slate, composition, temperature)?
+            .value();
+        enthalpy.temperature_from_enthalpy(
+            slate,
+            composition,
+            held - applied * flash.latent_per_vapour,
+            1.0,
+        )?
+    };
+    Ok(Some(BoilOff {
+        vapour_mass: Kg(applied * mass.value()),
+        vapour: flash.vapour,
+        liquid_temperature,
+        latent_heat: JPerKg(flash.latent_per_vapour),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +394,7 @@ mod tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             },
             PseudoComponent {
                 name: "heavy_naphtha".into(),
@@ -323,6 +406,7 @@ mod tests {
                 phase: Phase::Liquid,
                 dh_vap: None,
                 cp_vapour: None,
+                free_water: false,
             },
         ])
         .expect("two-cut slate")
@@ -496,6 +580,118 @@ mod tests {
             "the capped flash left the liquid at {} K, at or below the bubble point it \
              could not have reached with the mass it was allowed to boil",
             out.liquid_temperature.value()
+        );
+    }
+
+    /// A holdup over a little free water and far above its wet bubble point
+    /// boils its water off with its oil's superheat (M62.2, docs/DESIGN.md
+    /// §67.2): the first boil-off takes every drop of water — the isenthalpic
+    /// flash passes through the three-phase window into the water-all-vapour
+    /// state — the enthalpy the books close on is exact at every step, and the
+    /// holdup ends dry at its own bubble point with no component over-drawn.
+    #[test]
+    fn a_wet_superheated_holdup_boils_dry_and_closes_its_books() {
+        let mut components: Vec<PseudoComponent> = crude_slate().iter().cloned().collect();
+        let mut water = PseudoComponent::water();
+        water.dh_vap = Some(refinery_core::units::JPerMol(40_650.0));
+        water.free_water = true;
+        components.push(water);
+        let slate = Slate::new(components).unwrap();
+        let thermo = TroutonThermo::new();
+        let enthalpy = crate::ConstantEnthalpy;
+        let mut composition = Composition::from_weights(&[0.6, 0.39, 0.01]).unwrap();
+        let mut mass = 1000.0;
+        let mut temperature = Kelvin(130.0 + 273.15);
+        let h =
+            |c: &Composition, t: Kelvin| enthalpy.specific_enthalpy(&slate, c, t).unwrap().value();
+        let mut boils = 0;
+        while let Some(boil) = FlashBoilOff
+            .boil_off(
+                &slate,
+                &composition,
+                Kg(mass),
+                temperature,
+                refinery_core::units::P_ATM,
+                &thermo,
+                &enthalpy,
+            )
+            .unwrap()
+        {
+            boils += 1;
+            assert!(boils < 10, "the holdup never stops boiling");
+            let vapour = boil.vapour_mass.value();
+            let left: Vec<f64> = composition
+                .fractions()
+                .iter()
+                .zip(boil.vapour.fractions())
+                .map(|(x, y)| x * mass - y * vapour)
+                .collect();
+            for (c, l) in left.iter().enumerate() {
+                assert!(*l > -1e-9 * mass, "component {c} over-drawn by {l} kg");
+            }
+            let remaining =
+                Composition::from_weights(&left.iter().map(|l| l.max(0.0)).collect::<Vec<_>>())
+                    .unwrap();
+            // The books: what the holdup held is what stays plus what leaves
+            // as vapour, sensible at the liquid's temperature plus its latent.
+            let before = mass * h(&composition, temperature);
+            let after = (mass - vapour) * h(&remaining, boil.liquid_temperature)
+                + vapour * (h(&boil.vapour, boil.liquid_temperature) + boil.latent_heat.value());
+            assert!(
+                (after - before).abs() <= 1e-9 * before.abs(),
+                "boil {boils}: the books part by {} J of {before}",
+                after - before
+            );
+            if boils == 1 {
+                assert!(
+                    left[2] <= 1e-9 * mass,
+                    "the first boil-off leaves {} kg of water",
+                    left[2]
+                );
+                // Every drop of water went to the vapour, undersaturated, so the
+                // oil left boiled at its own partial pressure: `Σ_oil K·x = 1 −
+                // y_w`, below its dry bubble point at the total pressure — the
+                // steam stripping M63 is built on.
+                let x = MoleFractions::from_mass(&remaining, &slate).unwrap();
+                let y = MoleFractions::from_mass(&boil.vapour, &slate).unwrap();
+                let oil_pressure: f64 = (0..2)
+                    .map(|c| {
+                        thermo
+                            .k_value(
+                                &slate,
+                                c,
+                                boil.liquid_temperature,
+                                refinery_core::units::P_ATM,
+                            )
+                            .unwrap()
+                            * x.fractions()[c]
+                    })
+                    .sum();
+                assert!(
+                    (oil_pressure - (1.0 - y.fractions()[2])).abs() < 1e-9,
+                    "Σ K·x = {oil_pressure} against 1 − y_w = {}",
+                    1.0 - y.fractions()[2]
+                );
+            }
+            composition = remaining;
+            mass -= vapour;
+            temperature = boil.liquid_temperature;
+        }
+        assert!(boils >= 1, "nothing boiled");
+        assert!(composition.fractions()[2] <= 1e-12, "the holdup ends wet");
+        assert_eq!(
+            boils, 1,
+            "a dry holdup below its bubble point boils no more"
+        );
+        let dry = MoleFractions::from_mass(&composition, &slate).unwrap();
+        let bubble =
+            bubble_temperature(&slate, &thermo, &dry, refinery_core::units::P_ATM, "a test")
+                .unwrap();
+        assert!(
+            temperature.value() < bubble.value(),
+            "the holdup ends at {} K, its dry bubble point is {} K",
+            temperature.value(),
+            bubble.value()
         );
     }
 }
