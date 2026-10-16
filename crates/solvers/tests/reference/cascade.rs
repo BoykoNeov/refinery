@@ -146,6 +146,7 @@ fn two_product(stages: u32, feed_stage: u32, reflux_ratio: f64, d_over_f: f64) -
             stages,
             feed_stage,
             reflux_ratio,
+            pumparounds: Vec::new(),
         },
         draws: vec![
             ColumnDraw::by_stage(NodeId(1), 0, Some(d_over_f)),
@@ -471,6 +472,7 @@ fn equal_volatility_produces_no_separation_at_any_stage_count() {
                     stages,
                     feed_stage,
                     reflux_ratio: reflux,
+                    pumparounds: Vec::new(),
                 },
                 draws: vec![
                     ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
@@ -517,6 +519,7 @@ fn the_splits_are_the_declared_mass_ratios_and_the_components_balance() {
             stages: 6,
             feed_stage: 3,
             reflux_ratio: 2.0,
+            pumparounds: Vec::new(),
         },
         draws: vec![
             ColumnDraw::by_stage(NodeId(1), 0, Some(0.25)),
@@ -775,10 +778,12 @@ fn a_seed_of_the_wrong_shape_is_ignored_and_the_answer_is_the_cold_one() {
     let too_short = CascadeProfile {
         temperatures: good.temperatures[..good.temperatures.len() - 1].to_vec(),
         liquid: good.liquid[..good.liquid.len() - 1].to_vec(),
+        vapour: Vec::new(),
     };
     let wrong_slate = CascadeProfile {
         temperatures: good.temperatures.clone(),
         liquid: good.liquid.iter().map(|row| vec![row[0]]).collect(),
+        vapour: Vec::new(),
     };
 
     for (name, seed) in [("too short", &too_short), ("wrong slate", &wrong_slate)] {

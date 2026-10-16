@@ -626,6 +626,36 @@ impl Engine {
                     ))),
                 }
             }
+            // One pumparound's duty (M60, docs/DESIGN.md §65.4).
+            Command::SetPumparoundDuty {
+                node,
+                pumparound,
+                duty,
+            } => {
+                check_duty(duty, "pumparound")?;
+                let name = self.graph.node(node).name.clone();
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Column {
+                        cascade: Some(spec),
+                        ..
+                    } => {
+                        let count = spec.pumparounds.len();
+                        match spec.pumparounds.get_mut(pumparound as usize) {
+                            Some(slot) => {
+                                slot.duty = duty;
+                                Ok(())
+                            }
+                            None => Err(SimError::InvalidCommand(format!(
+                                "{node:?} ('{name}') has {count} pumparound(s); there is no \
+                                 pumparound {pumparound}"
+                            ))),
+                        }
+                    }
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') is not a column with pumparounds"
+                    ))),
+                }
+            }
             // A loop is put in AUTO or MANUAL. The transfer is bumpless in both
             // directions (docs/DESIGN.md §10 fork 4), and the two directions cost
             // different things:
@@ -3361,7 +3391,8 @@ impl Engine {
             | Command::SetCoolerDuty { node, .. }
             | Command::SetReservoirPressure { node, .. }
             | Command::SetSourceTemperature { node, .. }
-            | Command::SetRefluxRatio { node, .. } => {
+            | Command::SetRefluxRatio { node, .. }
+            | Command::SetPumparoundDuty { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::PuncturePipe { edge, .. } => {

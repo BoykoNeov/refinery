@@ -4572,10 +4572,29 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
 
         let spec = match (cascade_selected, cascade) {
             (true, Some(def)) => {
+                // Pumparounds are heat on the stage balances, which only the
+                // heat-balance cascade solves; `StageCascade` would read nothing.
+                if !def.pumparounds.is_empty() && scenario.fidelity.separation != "heat_balance" {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' declares pumparounds, but [fidelity] separation is \
+                         \"{}\": a pumparound is heat taken off a stage's energy balance, and \
+                         only separation = \"heat_balance\" solves those (docs/DESIGN.md \
+                         §65.4). Constant molar overflow would read nothing from it.",
+                        scenario.fidelity.separation
+                    )));
+                }
                 let spec = CascadeSpec {
                     stages: def.stages,
                     feed_stage: def.feed_stage,
                     reflux_ratio: def.reflux_ratio,
+                    pumparounds: def
+                        .pumparounds
+                        .iter()
+                        .map(|p| refinery_core::graph::Pumparound {
+                            stage: p.stage,
+                            duty: Watt(p.duty_mw * 1.0e6),
+                        })
+                        .collect(),
                 };
                 // One source of truth for the cascade's structural rules: the model
                 // that has to satisfy them. Duplicating them here would be two

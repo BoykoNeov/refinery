@@ -197,6 +197,15 @@ pub enum Command {
         node: NodeId,
         reflux_ratio: f64,
     },
+    /// Set one pumparound's duty [W] on a heat-balance cascade column (M60,
+    /// docs/DESIGN.md §65.4): `pumparound` indexes the column's
+    /// `cascade.pumparounds` as its `kind` lists them. Finite and >= 0 (heat
+    /// removed). Its consequence is the duty on the column's `kind`.
+    SetPumparoundDuty {
+        node: NodeId,
+        pumparound: u32,
+        duty: Watt,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

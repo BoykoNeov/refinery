@@ -319,6 +319,14 @@ impl SeparationModel for StageCascade {
         // The geometry is validated before the flow is looked at, so which plants
         // are legal never depends on how much is flowing through them.
         let plan = CascadePlan::new(spec, pass.draws, slate.len())?;
+        if !spec.pumparounds.is_empty() {
+            return Err(SimError::Scenario(
+                "stage cascade: this column declares pumparounds, heat taken off a stage's \
+                 energy balance — which constant molar overflow does not solve. Select \
+                 separation = \"heat_balance\" (docs/DESIGN.md §65.4)."
+                    .into(),
+            ));
+        }
 
         // **M7.1's correction 4, and it is a convention rather than a refusal.**
         // That correction predicted a cascade would "solve on the zero and fail
@@ -578,6 +586,7 @@ impl SeparationModel for StageCascade {
             profile: Some(CascadeProfile {
                 temperatures: stage_t.iter().copied().map(Kelvin).collect(),
                 liquid: liquid.clone(),
+                vapour: Vec::new(),
             }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
@@ -640,6 +649,9 @@ pub(crate) struct CascadePlan {
     /// Stage index → the draw that leaves from it, if any.
     pub(crate) draw_at_stage: Vec<Option<usize>>,
     pub(crate) components: usize,
+    /// Heat removed on each stage [W] by a pumparound (M60, §65.4); zero on
+    /// every stage of a column without one.
+    pub(crate) side_heat: Vec<f64>,
 }
 
 impl CascadePlan {
@@ -794,6 +806,40 @@ impl CascadePlan {
             }
         }
 
+        // Pumparounds (M60, docs/DESIGN.md §65.4): strictly between the top
+        // stage and the reboiler — the top stage's heat is the condenser's and
+        // the reboiler's is the reboiler's — one per stage, a duty >= 0.
+        let mut side_heat = vec![0.0; stages];
+        for pumparound in &spec.pumparounds {
+            let stage = pumparound.stage as usize;
+            if stage < 2 || stage >= stages {
+                return Err(SimError::Scenario(format!(
+                    "stage cascade: a pumparound is on stage {stage}; it must be strictly \
+                     between the top stage (1) and the reboiler ({stages})."
+                )));
+            }
+            let duty = pumparound.duty.value();
+            if !duty.is_finite() || duty < 0.0 {
+                return Err(SimError::Scenario(format!(
+                    "stage cascade: the pumparound on stage {stage} has duty {duty} W, which \
+                     must be finite and >= 0 (it is heat REMOVED)."
+                )));
+            }
+            if side_heat[stage - 1] != 0.0
+                || spec
+                    .pumparounds
+                    .iter()
+                    .filter(|p| p.stage == pumparound.stage)
+                    .count()
+                    > 1
+            {
+                return Err(SimError::Scenario(format!(
+                    "stage cascade: stage {stage} has more than one pumparound."
+                )));
+            }
+            side_heat[stage - 1] = duty;
+        }
+
         Ok(Self {
             stages,
             feed_stage: spec.feed_stage as usize - 1,
@@ -801,6 +847,7 @@ impl CascadePlan {
             mass_ratios,
             draw_at_stage,
             components,
+            side_heat,
         })
     }
 
@@ -1405,6 +1452,7 @@ mod tests {
             stages,
             feed_stage,
             reflux_ratio,
+            pumparounds: Vec::new(),
         }
     }
 

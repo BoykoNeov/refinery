@@ -845,6 +845,7 @@ fn build_cascade_plant(inputs: &CascadeInputs) -> PlantGraph {
                 // shrinks to.
                 feed_stage: (1 + (feed_position * stages as f64) as u32).min(stages),
                 reflux_ratio: reflux,
+                pumparounds: Vec::new(),
             }),
         },
     ));

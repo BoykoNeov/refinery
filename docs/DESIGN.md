@@ -24308,3 +24308,92 @@ tests (16 variants). The furnace census counts 28.
 rather than the most, the slope off by two, the declared ratio reported when
 the floor binds, the command writing nothing, a slightly negative ratio
 admitted.
+
+### 65.9 Pumparounds and the crude unit, built (M60.3)
+
+As §65.4 specifies, with two corrections, and two decisions the user made on
+the way.
+
+- **`Pumparound { stage, duty }`** on `CascadeSpec::pumparounds` (`serde`
+  default, skipped when empty: the four cascade plants' `kind` is unchanged).
+  The file key `pumparounds = [{ stage, duty_mw }]` is refused at load on any
+  fidelity but `"heat_balance"`, by name; `CascadePlan::new` refuses a
+  pumparound on the top stage or the reboiler, a second one on a stage, and a
+  duty that is negative or not finite; `StageCascade` refuses any pumparound
+  at all (constant molar overflow has no stage balance to take it off).
+- **In the stage balance**, `+ Q_j` in the numerator of `V_{j+1}`; in the
+  closure, `Q_reb = Q_cond + ΣQ_pa + Σ draws − feed`.
+- **`Command::SetPumparoundDuty { node, pumparound, duty }`**, the
+  pumparound by its index in the column's list; refused for an index the
+  column does not have, a duty below zero, a node that is not a column with
+  pumparounds. Wire text pinned; 17 command variants.
+
+**Corrected while building:**
+
+- **The crude unit needs both aids M60.1 removed**, and they are back: the
+  first iteration of a cold start on constant molar overflow, and the
+  relaxation of every later vapour profile halfway toward the previous one
+  (`RELAXATION = 0.5`), applied inside the stage balance before its checks —
+  a full step leaves the physical region where a half step does not. Each is
+  needed: without either the crude unit fails on tick 1 (measured, both
+  ways). M60.1 removed them because no plant then needed them; this plant is
+  the test that shows why.
+- **A warm start carries the previous tick's vapour profile**
+  (`CascadeProfile::vapour`, empty from `StageCascade`), so the first stage
+  balance of a tick is relaxed too. Without it, a key that moves the reflux
+  from 4 to 2 in one step failed on the next tick (the walk 4 → 3 → 2.5 → 2
+  ran). It is a hint like the rest of the profile: the fixed point does not
+  move.
+
+**The working range, and the user's decision.** §65.0's probe numbers were
+re-measured on the shipped model, cold and warm (the advisor's point: the
+probe had aids the model did not). Cold, the crude unit's feasible region at a
+350 °C feed is narrow (40 MW of pumparounds with a reflux of 2–4); warm, from
+the running plant, it is wide: the furnace 0–50 MW (the feed 298–428 °C, 50–82
+% flashing), the reflux 2–10, the pumparounds 60–300 % of their duties. Past it
+— a reflux of 1.5, or half the pumparound duty — the solve stops settling. Put
+to the user ("trays run dry — what should happen?"): **the screen's keys stop
+at the safe range** (reflux ≥ 2, pumparounds ≥ 75 %, the furnace ≤ 40 MW),
+and past it the run halts with a plain reason. Measured, those halts are not
+trays at zero liquid (the thinnest stage held 22 % and 59 % of the feed): the
+solve oscillates. So the refusal names the settings it could not settle at
+("The column could not settle at reflux ratio 1.5 with its pumparounds at 15.0
+MW on stage 4, …"), not a cause it cannot see.
+
+**New plant** `crude_unit.toml`: six cuts down to a 560 °C residue; a supply at
+270 °C and 30 bar (the exchanger train), a 20 MW furnace, about 104 kg/s
+through 8 cm pipe; a ten-stage column at 1.8 bar, the feed on stage 8,
+naphtha overhead, kerosene, diesel and gas oil off stages 3, 5 and 7, the
+residue from the reboiler; reflux 4; pumparounds 15 / 15 / 10 MW on stages 4,
+6 and 7. At 6 000 ticks the feed reaches the column at 355 °C and 65 % of it
+flashes; the side draws are 71 % kerosene, 68 % diesel, 72 % gas oil, the
+residue 98 %; condenser 45.9 MW, reboiler 80.8 MW (the pumparounds' 40 MW
+included); the coil settles near 356 °C. Its reboiler runs at about 587 °C —
+a real crude column strips its residue with steam near 350 °C; the reboiler
+is this model's stand-in (§65.5).
+
+**Gates**: `heat_balance.rs` pumparound tests (4: the closure equals the
+reboiler stage's balance with a pumparound in it; the reboiler pays for the
+pumparound's heat; a misplaced pumparound refused five ways; `StageCascade`
+refuses one); `crude_unit.rs` (5: the plant runs as its file says from a cold
+tick 1; the screen's range at each of its six edges, each in one step from
+the running plant; past the range the halt names the settings; the command;
+pumparounds refused on `"cascade"` at load); the bridge's wire and
+every-variant tests (17). The furnace census 29.
+
+**Timing**: the crude unit mean 0.15 ms, worst 0.22 ms on both solvers; its
+cold first tick 5.8 ms (89-odd iterations, once). The hot-feed plants' worst
+fell from 0.89 to 0.58 ms with the warm vapour.
+
+**Corpus**: 55 plants byte-identical on both fidelities; the three M60 files
+new against the pre-M60 baseline (the two hot-feed plants' fingerprints move
+with the relaxation and the warm vapour — new plants of this milestone).
+
+**Mutations**: twelve, all caught — the pumparound's heat dropped from the
+stage balance, its sign flipped, dropped from the closure; a pumparound
+admitted on stage 1, two on a stage; `StageCascade` answering one; the loader
+admitting one on `"cascade"`; the command writing nothing; and each of the
+crude unit's start aids removed (the relaxation, the first iteration on
+constant molar overflow, the warm vapour, the sharp seed). The sharp seed is
+now caught by the crude unit, not by M60.1's heavy fixture: the two aids that
+returned start that fixture without it.

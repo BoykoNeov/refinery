@@ -717,6 +717,19 @@ pub struct CascadeDef {
     /// format cannot express is not a refusal.
     #[serde(default = "default_total")]
     pub condenser: String,
+    /// Side coolers on stages (M60, docs/DESIGN.md §65.4):
+    /// `pumparounds = [{ stage = 4, duty_mw = 15.0 }]`. Only
+    /// `separation = "heat_balance"` models them.
+    #[serde(default)]
+    pub pumparounds: Vec<PumparoundDef>,
+}
+
+/// One pumparound in a cascade block: the stage it cools and the heat it takes
+/// out [MW].
+#[derive(Debug, Deserialize)]
+pub struct PumparoundDef {
+    pub stage: u32,
+    pub duty_mw: f64,
 }
 
 fn default_true() -> bool {

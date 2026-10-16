@@ -272,6 +272,9 @@ fn wire_text(cmd: &Command) -> &'static str {
         Command::SetRefluxRatio { .. } => {
             r#"{"cmd":"set_reflux_ratio","node":2,"reflux_ratio":3.5}"#
         }
+        Command::SetPumparoundDuty { .. } => {
+            r#"{"cmd":"set_pumparound_duty","node":2,"pumparound":1,"duty":15000000.0}"#
+        }
     }
 }
 
@@ -327,6 +330,11 @@ fn every_variant() -> Vec<Command> {
             node: NodeId(2),
             reflux_ratio: 3.5,
         },
+        Command::SetPumparoundDuty {
+            node: NodeId(2),
+            pumparound: 1,
+            duty: Watt(15.0e6),
+        },
     ]
 }
 
@@ -356,7 +364,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 16, "a Command variant was added");
+    assert_eq!(every_variant().len(), 17, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -404,6 +412,8 @@ fn fixture(cmd: &Command) -> Fixture {
         }
         // M60: a heat-balance column's declared reflux.
         Command::SetRefluxRatio { .. } => Fixture::shipped("crude_column_hot_feed.toml", "column"),
+        // M60.3: the crude unit's second pumparound.
+        Command::SetPumparoundDuty { .. } => Fixture::shipped("crude_unit.toml", "column"),
         // A vent is legal only on a gas-locked pump that is stopped, so the
         // inline flashing pump plant is run until it locks, then stopped — see
         // `Fixture::GasLocked` (M54, docs/DESIGN.md §59.2).

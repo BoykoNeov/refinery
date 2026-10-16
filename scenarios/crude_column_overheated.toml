@@ -74,6 +74,10 @@ composition = { light_naphtha = 0.12, heavy_naphtha = 0.18, kerosene = 0.25, die
 [nodes.preheater]
 type = "furnace"
 duty_mw = 100.0
+# THE COIL BELOW IS THE SATURATED TWIN'S, sized on its 2.26 MW trim and kept
+# unchanged here; this file fires more through it (see the header), so the coil
+# starts below its working temperature and warms in the first minutes. The twin's
+# notes, as written for it:
 # Fired, not absorbed (docs/DESIGN.md §40): the coil absorbs the 2.1051 MW the
 # feed's trim to saturation needs, which at its 0.9312 efficiency is 2.2607 MW
 # released by the burners. The coil keeps the 2.105 MW metal it was sized on.

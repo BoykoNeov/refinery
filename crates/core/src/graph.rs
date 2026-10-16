@@ -817,6 +817,26 @@ pub struct CascadeSpec {
     /// reflux, and at `stages = 1` it is exactly the M7.2 single-stage flash,
     /// which is one of the cascade's gates.
     pub reflux_ratio: f64,
+    /// Heat removed on stages between the top stage and the reboiler — the
+    /// pumparounds of a crude column, modelled as side coolers (M60, docs/
+    /// DESIGN.md §65.4). Only the heat-balance cascade reads them; empty on
+    /// every other column, and then not serialized, which keeps every plant
+    /// that predates them byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pumparounds: Vec<Pumparound>,
+}
+
+/// One pumparound on a cascade column (M60, docs/DESIGN.md §65.4): heat taken
+/// out of one stage. A real pumparound draws liquid off a stage, cools it and
+/// returns it higher up; what the stage balances see of it is the heat, and
+/// that is all this models — the liquid's circuit between two stages is not.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Pumparound {
+    /// The stage it cools, one-based from the top, strictly between the top
+    /// stage and the reboiler.
+    pub stage: u32,
+    /// Heat removed [W], a non-negative magnitude (the cooler convention).
+    pub duty: Watt,
 }
 
 /// The thermal pairing of two `HeatExchanger` sides.

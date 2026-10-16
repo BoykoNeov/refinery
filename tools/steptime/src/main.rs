@@ -161,6 +161,7 @@ fn main() {
         ("hydrocracker_hydrogen_leak", &leak),
         ("crude_column_hot_feed", &hot_feed),
         ("crude_column_overheated", &hot_feed),
+        ("crude_unit", &hot_feed),
     ] {
         for solver in ["simple", "newton"] {
             if only

@@ -65,6 +65,16 @@ const SHARP_SEED_ITERATIONS: u32 = 10;
 /// solve out of the stiff zone on the demo crude with margin; 0.05 did not.
 const VAPOUR_FLOOR_OF_FEED: f64 = 0.20;
 
+/// How far each iteration's vapour profile moves from the previous one toward
+/// what the stage balances ask for [-].
+///
+/// **A convergence aid, measured, not physics**: on the crude unit (§65.9) a
+/// full step from the first iterate leaves the physical region (a negative
+/// liquid above the feed) where a half step does not. It moves no fixed point —
+/// at convergence the relaxed and the raw profiles agree, and the converged
+/// flows are taken raw.
+const RELAXATION: f64 = 0.5;
+
 /// The heat-balance cascade: the complex separation fidelity for a column fed
 /// off its bubble point, selected by `[fidelity] separation = "heat_balance"`.
 ///
@@ -222,6 +232,11 @@ impl SeparationModel for HeatBalanceCascade {
         let mut temperature_change = f64::INFINITY;
         let mut converged = false;
         let mut draws: Vec<DrawState> = Vec::new();
+        // A warm start relaxes its first stage balance toward the previous
+        // tick's vapour (`CascadeProfile::vapour`); a cold one has none.
+        let mut last_vapour: Option<Vec<f64>> = warm
+            .map(|previous| previous.vapour.clone())
+            .filter(|vapour| vapour.len() == plan.stages);
         let mut k = stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?;
 
         while iterations < self.max_iterations {
@@ -237,22 +252,32 @@ impl SeparationModel for HeatBalanceCascade {
                     }
                 }
             }
-            let (flows, _) = stage_balance_flows(
-                &plan,
-                spec,
-                &StageState {
-                    slate,
-                    thermo,
-                    draws: &previous,
-                    liquid: &liquid,
-                    k: &k,
-                    temperatures: &stage_t,
-                    pressure: pass.pressure,
-                },
-                feed_flow,
-                feed_molar,
-                feed_enthalpy,
-            )?;
+            // A cold start's first iteration on constant molar overflow: from a
+            // flat seed profile the stage balances are wild — on the crude unit
+            // (§65.9) a vapour 30 times the feed's, refused on tick 1.
+            let flows = if warm.is_none() && iterations == 1 {
+                plan.flows(spec, &previous, feed_flow, feed_molar)?
+            } else {
+                stage_balance_flows(
+                    &plan,
+                    spec,
+                    &StageState {
+                        slate,
+                        thermo,
+                        draws: &previous,
+                        liquid: &liquid,
+                        k: &k,
+                        temperatures: &stage_t,
+                        pressure: pass.pressure,
+                        previous_vapour: last_vapour.as_deref(),
+                    },
+                    feed_flow,
+                    feed_molar,
+                    feed_enthalpy,
+                )?
+                .0
+            };
+            last_vapour = Some(flows.vapour.clone());
 
             let next = plan.liquid_profile(&flows, &k, &feed, feed_molar)?;
             profile_change = max_abs_difference(&liquid, &next);
@@ -299,11 +324,29 @@ impl SeparationModel for HeatBalanceCascade {
                      bound of {COMPONENT_RESIDUAL_KG_PER_S:.3e} kg/s"
                 ));
             }
+            // The settings a player can act on (§65.9): past the crude unit's
+            // working range the solve stops settling, and the settings it was
+            // given are the plain part of the reason.
+            let duties: Vec<String> = spec
+                .pumparounds
+                .iter()
+                .map(|p| format!("{:.1} MW on stage {}", p.duty.value() / 1e6, p.stage))
+                .collect();
+            let settings = format!(
+                " The column could not settle at reflux ratio {}{} — outside the range it \
+                 runs in.",
+                spec.reflux_ratio,
+                if duties.is_empty() {
+                    String::new()
+                } else {
+                    format!(" with its pumparounds at {}", duties.join(", "))
+                }
+            );
             return Err(SimError::Numerical(format!(
                 "heat-balance cascade did not converge in {iterations} iterations: {}. The \
                  bound on the residual is I7's own number over this column's feed rate; a \
                  solve that fails publishes no profile, so this is a refusal, not a stale \
-                 number.",
+                 number.{settings}",
                 unmet.join("; ")
             )));
         }
@@ -340,6 +383,7 @@ impl SeparationModel for HeatBalanceCascade {
                 k: &k,
                 temperatures: &stage_t,
                 pressure: pass.pressure,
+                previous_vapour: None,
             },
             feed_flow,
             feed_molar,
@@ -354,7 +398,7 @@ impl SeparationModel for HeatBalanceCascade {
             condenser_t,
             &result,
             pass,
-            0.0,
+            plan.side_heat.iter().sum(),
         )?;
 
         Ok(Separation {
@@ -362,6 +406,7 @@ impl SeparationModel for HeatBalanceCascade {
             profile: Some(CascadeProfile {
                 temperatures: stage_t.iter().copied().map(Kelvin).collect(),
                 liquid,
+                vapour: flows.vapour.clone(),
             }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
@@ -380,6 +425,9 @@ struct StageState<'a> {
     k: &'a [Vec<f64>],
     temperatures: &'a [f64],
     pressure: Pascal,
+    /// The previous iteration's vapour profile, toward which this one is
+    /// relaxed (`RELAXATION`); `None` for the raw balances.
+    previous_vapour: Option<&'a [f64]>,
 }
 
 /// The molar flows from each stage's energy balance, top-down from the
@@ -452,6 +500,10 @@ fn stage_balance_flows(
     )?;
     let reflux_enthalpy = liquid_enthalpy(slate, &condensate, condenser_t);
 
+    // A pumparound's heat, per mole: the stage balances are molar flows times
+    // molar enthalpies, so its watts enter as they are (J/s against mol/s ·
+    // J/mol).
+    let side_heat = &plan.side_heat;
     // The top-down sweep from a top vapour `top` and a reflux `top − D`. With
     // the enthalpies of this iterate fixed, every rate it returns is AFFINE in
     // `top`: the liquid from above enters each balance linearly and the
@@ -471,11 +523,13 @@ fn stage_balance_flows(
             };
             let here = liquid_enthalpies[j];
             // Energy balance on stage j: the liquid from above warmed to this
-            // stage, the feed brought to it, the vapour leaving it made, all
-            // paid for by the vapour arriving from below condensing here.
+            // stage, the feed brought to it, the vapour leaving it made and a
+            // pumparound's heat taken out, all paid for by the vapour arriving
+            // from below condensing here.
             vapour[j + 1] = (liquid_in[j] * (here - enthalpy_above)
                 + feed_here * (here - feed_enthalpy)
-                + vapour[j] * (vapour_enthalpies[j] - here))
+                + vapour[j] * (vapour_enthalpies[j] - here)
+                + side_heat[j])
                 / (vapour_enthalpies[j + 1] - here);
             // Material balance on stage j.
             liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
@@ -520,6 +574,25 @@ fn stage_balance_flows(
         reflux = top - distillate;
         reflux_ratio = reflux / distillate;
         (vapour, liquid_in, liquid_down) = sweep(top, reflux);
+    }
+
+    // Relaxation toward the previous iterate (`RELAXATION`): the vapour below
+    // the top moves part of the way, and the liquid follows from the material
+    // balances — before the checks, because a full step can leave the physical
+    // region where the relaxed one does not. At the fixed point the two agree.
+    if let Some(previous) = state.previous_vapour.filter(|p| p.len() == stages) {
+        for j in 1..stages {
+            vapour[j] = previous[j] + RELAXATION * (vapour[j] - previous[j]);
+        }
+        for j in 0..stages - 1 {
+            let feed_here = if j == plan.feed_stage {
+                feed_molar
+            } else {
+                0.0
+            };
+            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
+            liquid_in[j + 1] = liquid_down[j];
+        }
     }
 
     for j in 0..stages - 1 {
@@ -751,6 +824,7 @@ mod tests {
             stages: 8,
             feed_stage: 4,
             reflux_ratio,
+            pumparounds: Vec::new(),
         }
     }
 
@@ -837,6 +911,7 @@ mod tests {
                 k: &k,
                 temperatures: &stage_t,
                 pressure: P_ATM,
+                previous_vapour: None,
             },
             FEED_FLOW,
             feed_molar,
@@ -1134,6 +1209,7 @@ mod tests {
                 k: &k,
                 temperatures: &stage_t,
                 pressure: P_ATM,
+                previous_vapour: None,
             },
             FEED_FLOW,
             feed_molar,
@@ -1223,6 +1299,7 @@ mod start_tests {
             stages: 8,
             feed_stage: 6,
             reflux_ratio: 2.0,
+            pumparounds: Vec::new(),
         };
         model.separate(
             &ColumnPass {
@@ -1253,5 +1330,214 @@ mod start_tests {
             let share = separation.feed_vapour_fraction.unwrap();
             assert!(offset == 0.0 || share > 0.1, "{offset}: {share}");
         }
+    }
+}
+
+/// Pumparounds (M60.3, docs/DESIGN.md §65.4): heat taken off a stage.
+#[cfg(test)]
+mod pumparound_tests {
+    use super::*;
+    use crate::{ConstantAlphaThermo, StageCascade};
+    use refinery_core::components::{Phase, PseudoComponent};
+    use refinery_core::graph::{ColumnDraw, NodeId, Pumparound};
+    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, KgPerSec, P_ATM};
+
+    fn slate() -> Slate {
+        Slate::new(
+            [
+                ("light", 350.0, 0.100),
+                ("middle", 420.0, 0.150),
+                ("heavy", 500.0, 0.250),
+            ]
+            .iter()
+            .map(|(name, tb, molar_mass)| PseudoComponent {
+                name: (*name).into(),
+                tb: Kelvin(*tb),
+                molar_mass: KgPerMol(*molar_mass),
+                density: Some(KgPerM3(800.0)),
+                cp: JPerKgK(2000.0),
+                cp_shape: None,
+                phase: Phase::Liquid,
+            })
+            .collect(),
+        )
+        .unwrap()
+    }
+
+    fn thermo(slate: &Slate) -> ConstantAlphaThermo {
+        ConstantAlphaThermo::with_temperature_exponent(
+            slate,
+            vec![3.0, 1.0, 0.25],
+            Kelvin(400.0),
+            10.0,
+        )
+        .unwrap()
+        .with_dh_vap(slate, vec![30_000.0, 36_000.0, 45_000.0])
+        .unwrap()
+    }
+
+    fn spec(pumparounds: Vec<Pumparound>) -> CascadeSpec {
+        CascadeSpec {
+            stages: 8,
+            feed_stage: 4,
+            reflux_ratio: 2.0,
+            pumparounds,
+        }
+    }
+
+    fn draws() -> Vec<ColumnDraw> {
+        vec![
+            ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
+            ColumnDraw::by_stage(NodeId(2), 8, None),
+        ]
+    }
+
+    fn separate(model: &dyn SeparationModel, spec: &CascadeSpec) -> Result<Separation, SimError> {
+        let slate = slate();
+        let thermo = thermo(&slate);
+        let feed = Composition::from_weights(&[0.3, 0.3, 0.4]).unwrap();
+        let moles = MoleFractions::from_mass(&feed, &slate).unwrap();
+        let hot = Kelvin(
+            bubble_temperature_unnormalized(&slate, &thermo, moles.fractions(), P_ATM, "feed")
+                .unwrap()
+                .value()
+                + 15.0,
+        );
+        let draws = draws();
+        model.separate(
+            &ColumnPass {
+                slate: &slate,
+                draws: &draws,
+                smearing: Kelvin(0.0),
+                pressure: P_ATM,
+                feed: &feed,
+                feed_flow: KgPerSec(10.0),
+                temperature: hot,
+                cascade: Some(spec),
+                seed: None,
+            },
+            &thermo,
+        )
+    }
+
+    /// **A pumparound's heat comes back through the reboiler**: the column's
+    /// external balance moves by exactly the heat taken out, so with the
+    /// condenser held by the reflux the reboiler carries it — to within what
+    /// the moved profile changes in the draws' sensible heat, a few per cent.
+    /// And the stage it cools makes more liquid below it.
+    #[test]
+    fn a_pumparound_is_paid_for_by_the_reboiler() {
+        let bare = separate(&HeatBalanceCascade::new(), &spec(vec![])).unwrap();
+        let duty = 200_000.0;
+        let cooled = separate(
+            &HeatBalanceCascade::new(),
+            &spec(vec![Pumparound {
+                stage: 3,
+                duty: Watt(duty),
+            }]),
+        )
+        .unwrap();
+        let extra = cooled.reboiler_duty.unwrap().value() - bare.reboiler_duty.unwrap().value();
+        assert!(
+            (extra / duty - 1.0).abs() < 0.1,
+            "the reboiler rose {extra} W for a {duty} W pumparound"
+        );
+        assert_eq!(cooled.reflux_ratio, Some(2.0));
+    }
+
+    /// **The closure is the reboiler stage's own balance with a pumparound
+    /// in it** — the stage balances, not the closure arithmetic: the closure
+    /// counts the pumparound's heat by formula, and only a stage balance that
+    /// takes it off its stage agrees with it.
+    #[test]
+    fn with_a_pumparound_the_closure_is_still_the_reboiler_stage() {
+        let slate = slate();
+        let thermo = thermo(&slate);
+        let spec = spec(vec![Pumparound {
+            stage: 3,
+            duty: Watt(200_000.0),
+        }]);
+        let separation = separate(&HeatBalanceCascade::new(), &spec).unwrap();
+        let profile = separation.profile.as_ref().unwrap();
+        let stage_t: Vec<f64> = profile.temperatures.iter().map(|t| t.value()).collect();
+        let k = stage_k_values_profile(&slate, &thermo, &stage_t, P_ATM).unwrap();
+        let plan = CascadePlan::new(&spec, &draws(), slate.len()).unwrap();
+        let states = plan.draw_states(&profile.liquid, &k, &slate).unwrap();
+        let feed = Composition::from_weights(&[0.3, 0.3, 0.4]).unwrap();
+        let moles = MoleFractions::from_mass(&feed, &slate).unwrap();
+        let feed_molar = 10.0 / moles.mean_molar_mass(&slate).value();
+        let hot = Kelvin(
+            bubble_temperature_unnormalized(&slate, &thermo, moles.fractions(), P_ATM, "feed")
+                .unwrap()
+                .value()
+                + 15.0,
+        );
+        let (flows, _) = stage_balance_flows(
+            &plan,
+            &spec,
+            &StageState {
+                slate: &slate,
+                thermo: &thermo,
+                draws: &states,
+                liquid: &profile.liquid,
+                k: &k,
+                temperatures: &stage_t,
+                pressure: P_ATM,
+                previous_vapour: None,
+            },
+            10.0,
+            feed_molar,
+            liquid_enthalpy(&slate, moles.fractions(), hot),
+        )
+        .unwrap();
+        let n = plan.stages - 1;
+        let h = |j: usize| liquid_enthalpy(&slate, &profile.liquid[j], Kelvin(stage_t[j]));
+        let y = equilibrium_vapour(&profile.liquid[n], &k[n]).unwrap();
+        let vapour_enthalpy = liquid_enthalpy(&slate, &y, Kelvin(stage_t[n]))
+            + mixture_dh_vap(&slate, &thermo, &y, Kelvin(stage_t[n])).unwrap();
+        let stage = flows.vapour[n] * vapour_enthalpy + flows.liquid_drawn[n] * h(n)
+            - flows.liquid_in[n] * h(n - 1);
+        let closure = separation.reboiler_duty.unwrap().value();
+        assert!(
+            (closure - stage).abs() <= 1e-6 * closure,
+            "closure {closure} W against the stage's {stage} W"
+        );
+    }
+
+    /// Where a pumparound may not go, and what may not be one — refused by the
+    /// plan both models share.
+    #[test]
+    fn a_misplaced_pumparound_is_refused() {
+        let at = |stage: u32, duty: f64| Pumparound {
+            stage,
+            duty: Watt(duty),
+        };
+        for (pumparounds, expected) in [
+            (vec![at(1, 1e5)], "strictly between"),
+            (vec![at(8, 1e5)], "strictly between"),
+            (vec![at(3, -1.0)], "finite and >= 0"),
+            (vec![at(3, f64::NAN)], "finite and >= 0"),
+            (vec![at(3, 1e5), at(3, 2e5)], "more than one pumparound"),
+        ] {
+            let message = separate(&HeatBalanceCascade::new(), &spec(pumparounds))
+                .unwrap_err()
+                .to_string();
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+
+    /// Constant molar overflow cannot answer a pumparound and says so.
+    #[test]
+    fn the_overflow_cascade_refuses_pumparounds() {
+        let message = separate(
+            &StageCascade::new(),
+            &spec(vec![Pumparound {
+                stage: 3,
+                duty: Watt(1e5),
+            }]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(message.contains("heat_balance"), "{message}");
     }
 }

@@ -9606,3 +9606,26 @@ DESIGN §65.8.
 - Gates: the floor unit test, `heat_balance_column` (6), the bridge's wire and
   every-variant tests (16 variants); the godot-feature clippy run. The furnace
   census 28. Mutations: six, all caught.
+
+### M60.3 — **LANDED** 2026-10-16: pumparounds and the crude unit
+
+Pumparounds as side coolers on a heat-balance column's stages (a file key, a
+command, refused on the `"cascade"` model), and a realistic crude unit: six
+cuts down to a 560 °C residue, a furnace firing the 270 °C crude to 355 °C, a
+ten-stage column with three side draws above the feed and three pumparounds;
+two-thirds of the feed flashes, the side draws come out 68–72 % their own cut.
+Asked the user what happens when a player turns the reflux or pumparounds too
+far down: the screen's keys stop at the measured safe range (reflux 2–10,
+pumparounds 75–300 %, furnace up to 40 MW), and past it the run halts naming
+the settings. DESIGN §65.9.
+
+- Corrected while building: the crude unit needs the two start aids M60.1
+  removed (the first iteration on constant molar overflow, the vapour profile
+  relaxed halfway each iteration) — each is needed, measured both ways; and a
+  warm start now carries the previous tick's vapour, so a key that moves the
+  reflux in one step is damped from the first iteration.
+- Corpus: 55 plants byte-identical on both fidelities; the three M60 files new.
+- Timing: the crude unit mean 0.15 ms, worst 0.22 ms; its cold first tick
+  5.8 ms; none over.
+- Gates: pumparound unit tests (4), `crude_unit` (5), the bridge (17 variants);
+  the furnace census 29. Mutations: twelve, all caught.

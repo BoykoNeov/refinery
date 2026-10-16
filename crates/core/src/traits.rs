@@ -640,6 +640,14 @@ pub struct CascadeProfile {
     /// here, because `core` never interprets this field — it stores the value the
     /// model returned and hands the same value back. See `docs/DEFERRED.md`.
     pub liquid: Vec<Vec<f64>>,
+    /// The vapour leaving each stage [mol/s], or empty from a model whose vapour
+    /// profile is not an iterate (`StageCascade`'s is uniform, `(R+1)·D`). The
+    /// heat-balance cascade (M60) relaxes its first stage balance of a tick
+    /// toward it, so a key that moves the reflux or a pumparound in one step
+    /// is damped from the first iteration (docs/DESIGN.md §65.9). A hint like
+    /// the rest of this struct: a model must reach the same fixed point
+    /// without it.
+    pub vapour: Vec<f64>,
 }
 
 /// The outcome of one column pass: every draw's split, plus the column's two
