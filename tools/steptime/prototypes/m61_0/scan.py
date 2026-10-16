@@ -2,15 +2,20 @@
 
 usage: python scan.py <ticks> <furnace_mw> <pa_scale> <steam_kg_s|none> [steam_C] [feed_stage] [stages]
 Prints the last PROBE summary line (or the error) for the variant.
+
+The probe ran from a detached worktree with `probe_heat_balance.patch` applied
+(DESIGN §66.0); that worktree and its scratch folder were deleted at M61's
+close. To re-run, apply the patch to a worktree at commit bafead0, build its
+CLI, and point PROBE_BIN, PROBE_SRC and PROBE_OUT at it.
 """
 import os
 import re
 import subprocess
 import sys
 
-BIN = r"W:/temp/claude/m61_probe/target/release/refinery.exe"
-SRC = r"W:/Claude_projects/refinery/scenarios/crude_unit.toml"
-OUT = r"W:/temp/claude/m61_probe_tools/variants"
+BIN = os.environ.get("PROBE_BIN", "target/release/refinery.exe")
+SRC = os.environ.get("PROBE_SRC", "scenarios/crude_unit.toml")
+OUT = os.environ.get("PROBE_OUT", "probe_variants")
 
 
 def variant(furnace_mw, pa_scale):

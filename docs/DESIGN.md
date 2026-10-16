@@ -24757,3 +24757,15 @@ its timeline to the end: at 3 300 the feed 378.9 °C, 72.2 % flashing, the
 reflux 1.50 as set, the condenser 23.35 MW, the reboiler 71.82 MW.
 
 Engine untouched; the corpus is M61.1's.
+
+**Corrected after the close-out review (2026-10-16), a follow-up commit.**
+§66.1 says Newton converges only when the per-component residual is within
+I7's 1e-5 kg/s as well; as built in M61.1 it checked the scaled residuals
+alone (§66.6's bullet described the code, not the note). The tolerance does
+not imply I7: a summation off by `1e-5/F` moves a normalised composition by
+about as much, which over the feed is I7's bound itself. The gate now holds
+as §66.1 states — every evaluation carries `CascadePlan::component_residual`
+times the feed, convergence requires it within the bound, and a solve that runs
+out of iterations with only it unmet says so. **It never fired on a shipped
+plant**: the three M60 plants' fingerprints are M61.1's on both fidelities
+(`144a168d…`, `2a6d26ae…`, `bc2f12cd…` on Newton), 55 others byte-identical.

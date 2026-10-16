@@ -24,14 +24,16 @@
 //! component's liquid profile by the same Thomas sweep. So where both methods
 //! converge they agree, and the reboiler's duty is still the closure.
 
-use refinery_core::components::Slate;
+use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
 use refinery_core::graph::CascadeSpec;
 use refinery_core::traits::ThermoModel;
 use refinery_core::units::{Kelvin, Pascal};
 
 use crate::bubble::bubble_temperature_unnormalized;
-use crate::cascade::{mixture_dh_vap, CascadePlan, DrawLocation, Flows};
+use crate::cascade::{
+    mixture_dh_vap, CascadePlan, DrawLocation, Flows, COMPONENT_RESIDUAL_KG_PER_S,
+};
 use crate::heat_balance::{equilibrium_vapour, liquid_enthalpy, VAPOUR_FLOOR_OF_FEED};
 use crate::molar::MoleFractions;
 
@@ -77,6 +79,9 @@ pub(crate) struct ColumnEquations<'a> {
     pub(crate) thermo: &'a dyn ThermoModel,
     pub(crate) pressure: Pascal,
     pub(crate) feed: &'a MoleFractions,
+    /// The same feed as MASS fractions — the basis I7's per-component residual
+    /// is taken in.
+    pub(crate) feed_composition: &'a Composition,
     /// The feed's mass rate [kg/s].
     pub(crate) feed_mass: f64,
     /// The feed's molar rate [mol/s].
@@ -120,6 +125,9 @@ pub(crate) struct Unsolved {
 /// One evaluation: the residuals and what they were built from.
 struct Evaluation {
     residual: Vec<f64>,
+    /// The worst per-component mass imbalance of the draws against the feed
+    /// [kg/s] — I7's number, `CascadePlan::component_residual` times the feed.
+    component_residual: f64,
     liquid: Vec<Vec<f64>>,
     flows: Flows,
 }
@@ -300,8 +308,12 @@ impl ColumnEquations<'_> {
         if residual.iter().any(|r| !r.is_finite()) {
             return Err(outside("a residual is not finite"));
         }
+        let draws = plan.draw_states(&liquid, &k, slate)?;
+        let component_residual =
+            plan.component_residual(&draws, self.feed_composition, slate) * self.feed_mass;
         Ok(Evaluation {
             residual,
+            component_residual,
             liquid,
             flows,
         })
@@ -333,7 +345,7 @@ impl ColumnEquations<'_> {
         let mut current_norm = norm(&current.residual);
         let mut iterations = 0u32;
         loop {
-            if self.converged(&current.residual) {
+            if self.converged(&current) {
                 return Ok(Solved {
                     temperatures: u[..n].to_vec(),
                     liquid: current.liquid,
@@ -345,7 +357,7 @@ impl ColumnEquations<'_> {
                 return Err(Unsolved {
                     reason: format!(
                         "did not converge in {iterations} iterations: {}",
-                        self.unmet(&current.residual)
+                        self.unmet(&current)
                     ),
                     flows: Some(Box::new(current.flows)),
                 });
@@ -358,7 +370,7 @@ impl ColumnEquations<'_> {
                 return Err(Unsolved {
                     reason: format!(
                         "its Jacobian is singular at iteration {iterations}: {}",
-                        self.unmet(&current.residual)
+                        self.unmet(&current)
                     ),
                     flows: Some(Box::new(current.flows)),
                 });
@@ -380,7 +392,7 @@ impl ColumnEquations<'_> {
                 if let Ok(evaluation) = self.evaluate(&trial, specification) {
                     let trial_norm = norm(&evaluation.residual);
                     if trial_norm <= (1.0 - ARMIJO * scale) * current_norm
-                        || self.converged(&evaluation.residual)
+                        || self.converged(&evaluation)
                     {
                         accepted = Some((trial, evaluation, trial_norm));
                         break;
@@ -392,7 +404,7 @@ impl ColumnEquations<'_> {
                 return Err(Unsolved {
                     reason: format!(
                         "found no step that improves it at iteration {iterations}: {}",
-                        self.unmet(&current.residual)
+                        self.unmet(&current)
                     ),
                     flows: Some(Box::new(current.flows)),
                 });
@@ -403,12 +415,22 @@ impl ColumnEquations<'_> {
         }
     }
 
-    fn converged(&self, residual: &[f64]) -> bool {
-        residual.iter().all(|r| r.abs() <= self.tolerance)
+    /// Every scaled residual within the tolerance AND the per-component mass
+    /// balance within I7's bound — the fixed point's own gate, which the
+    /// tolerance alone does not imply: a summation off by the tolerance moves a
+    /// normalised composition by about as much, which over the feed is I7's
+    /// bound itself.
+    fn converged(&self, evaluation: &Evaluation) -> bool {
+        evaluation
+            .residual
+            .iter()
+            .all(|r| r.abs() <= self.tolerance)
+            && evaluation.component_residual <= COMPONENT_RESIDUAL_KG_PER_S
     }
 
     /// The worst residual, in words.
-    fn unmet(&self, residual: &[f64]) -> String {
+    fn unmet(&self, evaluation: &Evaluation) -> String {
+        let residual = &evaluation.residual;
         let n = self.plan.stages;
         let (worst, size) = residual
             .iter()
@@ -429,6 +451,13 @@ impl ColumnEquations<'_> {
         } else {
             "the vapour floor".to_string()
         };
+        if size <= self.tolerance {
+            return format!(
+                "the worst per-component mass residual is {:.3e} kg/s against a bound of \
+                 {COMPONENT_RESIDUAL_KG_PER_S:.3e} kg/s",
+                evaluation.component_residual
+            );
+        }
         format!(
             "the worst equation is {what}, off by {size:.3e} (scaled) against a tolerance of {:.3e}",
             self.tolerance

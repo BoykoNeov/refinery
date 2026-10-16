@@ -560,6 +560,7 @@ impl HeatBalanceCascade {
             thermo: setup.thermo,
             pressure: pass.pressure,
             feed: &setup.feed,
+            feed_composition: pass.feed,
             feed_mass: pass.feed_flow.value(),
             feed_molar: setup.feed_molar,
             feed_enthalpy: setup.feed_enthalpy,
