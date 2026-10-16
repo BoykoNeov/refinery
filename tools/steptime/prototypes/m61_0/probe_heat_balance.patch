@@ -1,0 +1,1101 @@
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 8944e8f..11d1e5a 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -75,6 +75,79 @@ const VAPOUR_FLOOR_OF_FEED: f64 = 0.20;
+ /// flows are taken raw.
+ const RELAXATION: f64 = 0.5;
+ 
++// ---- M61.0 PROBE: stripping steam, inert in the vapour ----
++thread_local! { static PROBE_Q_LAST: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) }; }
++thread_local! { static PROBE_Q_TARGET: std::cell::Cell<f64> = const { std::cell::Cell::new(0.0) }; static PROBE_Q_START: std::cell::Cell<f64> = const { std::cell::Cell::new(f64::NAN) }; }
++thread_local! { static PROBE_CLAMP_BIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
++const MW_W: f64 = 0.018015;
++const CP_V_W: f64 = 2000.0;
++const CP_L_W: f64 = 4184.0;
++const LAMBDA_100_W: f64 = 2.257e6;
++#[derive(Clone, Copy)]
++struct ProbeSteam {
++    mol: f64,
++    t_in: f64,
++}
++fn probe_steam() -> Option<ProbeSteam> {
++    let kg: f64 = std::env::var("PROBE_STEAM_KG_S").ok()?.parse().ok()?;
++    let c: f64 = std::env::var("PROBE_STEAM_C")
++        .ok()
++        .and_then(|v| v.parse().ok())
++        .unwrap_or(400.0);
++    Some(ProbeSteam {
++        mol: kg / MW_W,
++        t_in: c + 273.15,
++    })
++}
++fn steam_h(t: f64) -> f64 {
++    MW_W * (CP_L_W * (373.15 - T_REF.value()) + LAMBDA_100_W + CP_V_W * (t - 373.15))
++}
++fn water_h(t: f64) -> f64 {
++    MW_W * CP_L_W * (t - T_REF.value())
++}
++fn water_tsat(p: f64) -> f64 {
++    1.0 / (1.0 / 373.15 - (8.314 / 40650.0) * (p / 101325.0).ln())
++}
++fn partial_pressures(p: f64, vapour: &[f64], steam: Option<ProbeSteam>) -> Vec<f64> {
++    vapour
++        .iter()
++        .map(|v| match steam {
++            Some(s) => p * v / (v + s.mol),
++            None => p,
++        })
++        .collect()
++}
++fn probe_bubble(
++    slate: &Slate,
++    thermo: &dyn ThermoModel,
++    liquid: &[Vec<f64>],
++    pressures: &[f64],
++) -> Result<Vec<f64>, SimError> {
++    liquid
++        .iter()
++        .zip(pressures)
++        .map(|(x, p)| {
++            bubble_temperature_unnormalized(slate, thermo, x, Pascal(*p), "probe stage")
++                .map(|t| t.value())
++        })
++        .collect()
++}
++fn probe_k(
++    slate: &Slate,
++    thermo: &dyn ThermoModel,
++    t: &[f64],
++    pressures: &[f64],
++) -> Result<Vec<Vec<f64>>, SimError> {
++    t.iter()
++        .zip(pressures)
++        .map(|(t, p)| {
++            (0..slate.len())
++                .map(|c| thermo.k_value(slate, c, Kelvin(*t), Pascal(*p)))
++                .collect()
++        })
++        .collect()
++}
++
+ /// The heat-balance cascade: the complex separation fidelity for a column fed
+ /// off its bubble point, selected by `[fidelity] separation = "heat_balance"`.
+ ///
+@@ -89,7 +162,7 @@ pub struct HeatBalanceCascade {
+ impl HeatBalanceCascade {
+     /// Outer iterations before the solve is declared failed — `StageCascade`'s
+     /// cap and its argument (the pinch case is the stiff one).
+-    pub const DEFAULT_MAX_ITERATIONS: u32 = 2000;
++    pub const DEFAULT_MAX_ITERATIONS: u32 = 40000;
+ 
+     pub fn new() -> Self {
+         Self {
+@@ -133,6 +206,21 @@ impl SeparationModel for HeatBalanceCascade {
+         &self,
+         pass: &ColumnPass<'_>,
+         thermo: &dyn ThermoModel,
++    ) -> Result<Separation, SimError> {
++        let clock = std::time::Instant::now();
++        let result = self.separate_inner(pass, thermo);
++        if std::env::var("PROBE_TIME").is_ok() {
++            eprintln!("PROBE time_us={}", clock.elapsed().as_micros());
++        }
++        result
++    }
++}
++
++impl HeatBalanceCascade {
++    fn separate_inner(
++        &self,
++        pass: &ColumnPass<'_>,
++        thermo: &dyn ThermoModel,
+     ) -> Result<Separation, SimError> {
+         let slate = pass.slate;
+         let spec = pass.cascade.ok_or_else(|| {
+@@ -154,7 +242,11 @@ impl SeparationModel for HeatBalanceCascade {
+             )));
+         }
+ 
+-        let plan = CascadePlan::new(spec, pass.draws, slate.len())?;
++        let mut plan = CascadePlan::new(spec, pass.draws, slate.len())?;
++        let base_side_heat = plan.side_heat.clone();
++        let feed_target_c: Option<f64> = std::env::var("PROBE_FEED_C").ok().and_then(|v| v.parse().ok());
++        let pa_target: f64 = std::env::var("PROBE_PA_SCALE").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
++        let mut feed_t_now = pass.temperature.value();
+ 
+         // An idle column: `StageCascade`'s convention and its argument — the
+         // declared splits, inert placeholders for what nothing carries, and
+@@ -200,7 +292,7 @@ impl SeparationModel for HeatBalanceCascade {
+         // The feed's molar enthalpy on the engine's liquid datum — the number
+         // `energy::enthalpy_flux` carries into the column, so the stage balance
+         // and the plant's books read the same feed.
+-        let feed_enthalpy = liquid_enthalpy(slate, feed.fractions(), pass.temperature);
++        let mut feed_enthalpy = liquid_enthalpy(slate, feed.fractions(), pass.temperature);
+ 
+         // The warm start (M9.3b): both profiles or neither, a wrong-shaped seed
+         // ignored — `StageCascade`'s rules.
+@@ -237,10 +329,44 @@ impl SeparationModel for HeatBalanceCascade {
+         let mut last_vapour: Option<Vec<f64>> = warm
+             .map(|previous| previous.vapour.clone())
+             .filter(|vapour| vapour.len() == plan.stages);
++        let steam = probe_steam();
++        let mut pressures = vec![pass.pressure.value(); plan.stages];
+         let mut k = stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?;
+ 
+-        while iterations < self.max_iterations {
++        PROBE_Q_START.with(|c| c.set(f64::NAN));
++        let mut ramp_from = 0u32;
++        let ramp: f64 = std::env::var("PROBE_RAMP").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0);
++        let newton_mode = std::env::var("PROBE_NEWTON").is_ok();
++        let bp_cap: u32 = if newton_mode {
++            if warm.is_some() { 0 } else { std::env::var("PROBE_NEWTON_BP").ok().and_then(|v| v.parse().ok()).unwrap_or(30) }
++        } else {
++            self.max_iterations
++        };
++        let mut newton_iterations = 0u32;
++        let mut newton_flows: Option<Flows> = None;
++        let mut newton_r = spec.reflux_ratio;
++        while iterations < bp_cap {
+             iterations += 1;
++            {
++                let start = PROBE_Q_START.with(|c| c.get());
++                let t = if ramp <= 0.0 || steam.is_none() {
++                    0.0
++                } else if start.is_nan() {
++                    f64::NAN
++                } else {
++                    let share = (1.0 - (iterations - ramp_from) as f64 / ramp).clamp(0.0, 1.0);
++                    let done = 1.0 - share;
++                    if let Some(tc) = feed_target_c {
++                        feed_t_now = pass.temperature.value() + done * (tc + 273.15 - pass.temperature.value());
++                        feed_enthalpy = liquid_enthalpy(slate, feed.fractions(), Kelvin(feed_t_now));
++                    }
++                    for (q, b) in plan.side_heat.iter_mut().zip(&base_side_heat) {
++                        *q = b * (1.0 + done * (pa_target - 1.0));
++                    }
++                    share * start
++                };
++                PROBE_Q_TARGET.with(|c| c.set(t));
++            }
+ 
+             let mut previous = plan.draw_states(&liquid, &k, slate)?;
+             if let Some(masses) = &sharp {
+@@ -256,7 +382,77 @@ impl SeparationModel for HeatBalanceCascade {
+             // flat seed profile the stage balances are wild — on the crude unit
+             // (§65.9) a vapour 30 times the feed's, refused on tick 1.
+             let flows = if warm.is_none() && iterations == 1 {
+-                plan.flows(spec, &previous, feed_flow, feed_molar)?
++                {
++                    let mut f = plan.flows(spec, &previous, feed_flow, feed_molar)?;
++                    if steam.is_some() && std::env::var("PROBE_NO_SEED").is_err() {
++                        // PROBE seed: little hydrocarbon vapour below the feed.
++                        let share: f64 = std::env::var("PROBE_SEED_STRIP")
++                            .ok()
++                            .and_then(|v| v.parse().ok())
++                            .unwrap_or(0.02);
++                        let n = plan.stages;
++                        for j in plan.feed_stage + 1..n {
++                            f.vapour[j] = share * feed_molar;
++                        }
++                        for j in 0..n - 1 {
++                            let feed_here = if j == plan.feed_stage { feed_molar } else { 0.0 };
++                            f.liquid_down[j] = f.liquid_in[j] + f.vapour[j + 1] + feed_here
++                                - f.liquid_drawn[j]
++                                - f.vapour[j];
++                            f.liquid_in[j + 1] = f.liquid_down[j];
++                        }
++                        let feed_n = if n - 1 == plan.feed_stage { feed_molar } else { 0.0 };
++                        f.liquid_drawn[n - 1] = f.liquid_in[n - 1] + feed_n - f.vapour[n - 1];
++                        f.liquid_down[n - 1] = 0.0;
++                        if std::env::var("PROBE_PRINT").is_ok() {
++                            eprintln!(
++                                "PROBE seed L=[{}] V=[{}]",
++                                f.liquid_down.iter().map(|v| format!("{:.0}", v)).collect::<Vec<_>>().join(","),
++                                f.vapour.iter().map(|v| format!("{:.0}", v)).collect::<Vec<_>>().join(",")
++                            );
++                        }
++                    }
++                    f
++                }
++            } else if let Some(st) = steam.filter(|_| std::env::var("PROBE_BOTTOM_UP").is_ok()) {
++                let (mut f, _, temps) = probe_bottom_up(
++                    &plan,
++                    &StageState {
++                        slate,
++                        thermo,
++                        draws: &previous,
++                        liquid: &liquid,
++                        k: &k,
++                        temperatures: &stage_t,
++                        pressure: pass.pressure,
++                        previous_vapour: None,
++                    },
++                    feed_flow,
++                    feed_molar,
++                    feed_enthalpy,
++                    st,
++                )?;
++                let _ = temps;
++                if let Some(prev) = last_vapour.as_ref() {
++                    let relax: f64 = std::env::var("PROBE_RELAX").ok().and_then(|v| v.parse().ok()).unwrap_or(0.5);
++                    let n = plan.stages;
++                    for j in 0..n {
++                        f.vapour[j] = prev[j] + relax * (f.vapour[j] - prev[j]);
++                    }
++                    // liquids top-down from the (relaxed) reflux L0 = V1 - D
++                    let d = plan.mass_ratios[0] * feed_flow / previous[0].mean_molar_mass;
++                    f.reflux = f.vapour[0] - d;
++                    f.liquid_in[0] = f.reflux;
++                    for j in 0..n - 1 {
++                        let feed_here = if j == plan.feed_stage { feed_molar } else { 0.0 };
++                        f.liquid_down[j] = f.liquid_in[j] + f.vapour[j + 1] + feed_here - f.liquid_drawn[j] - f.vapour[j];
++                        f.liquid_in[j + 1] = f.liquid_down[j];
++                    }
++                    let feed_n = if n - 1 == plan.feed_stage { feed_molar } else { 0.0 };
++                    f.liquid_drawn[n - 1] = f.liquid_in[n - 1] + feed_n - f.vapour[n - 1];
++                    f.liquid_down[n - 1] = 0.0;
++                }
++                f
+             } else {
+                 stage_balance_flows(
+                     &plan,
+@@ -274,16 +470,31 @@ impl SeparationModel for HeatBalanceCascade {
+                     feed_flow,
+                     feed_molar,
+                     feed_enthalpy,
++                    steam,
+                 )?
+                 .0
+             };
+             last_vapour = Some(flows.vapour.clone());
++            if std::env::var("PROBE_TRACE").is_ok() {
++                eprintln!(
++                    "PROBE trace it={iterations} V=[{}] T=[{}]",
++                    flows.vapour.iter().map(|v| format!("{:.0}", v)).collect::<Vec<_>>().join(","),
++                    stage_t.iter().map(|t| format!("{:.0}", t - 273.15)).collect::<Vec<_>>().join(",")
++                );
++            }
+ 
+             let next = plan.liquid_profile(&flows, &k, &feed, feed_molar)?;
+             profile_change = max_abs_difference(&liquid, &next);
+             liquid = next;
+ 
+-            let next_t = bubble_profile(slate, thermo, &liquid, pass.pressure)?;
++            if steam.is_some() {
++                pressures = partial_pressures(pass.pressure.value(), &flows.vapour, steam);
++            }
++            let next_t = if steam.is_some() {
++                probe_bubble(slate, thermo, &liquid, &pressures)?
++            } else {
++                bubble_profile(slate, thermo, &liquid, pass.pressure)?
++            };
+             temperature_change = stage_t
+                 .iter()
+                 .zip(&next_t)
+@@ -291,7 +502,11 @@ impl SeparationModel for HeatBalanceCascade {
+                 .fold(0.0f64, f64::max);
+             stage_t = next_t;
+ 
+-            k = stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?;
++            k = if steam.is_some() {
++                probe_k(slate, thermo, &stage_t, &pressures)?
++            } else {
++                stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?
++            };
+             draws = plan.draw_states(&liquid, &k, slate)?;
+             residual = plan.component_residual(&draws, pass.feed, slate) * feed_flow;
+ 
+@@ -299,11 +514,50 @@ impl SeparationModel for HeatBalanceCascade {
+                 && temperature_change <= tolerance
+                 && residual <= COMPONENT_RESIDUAL_KG_PER_S
+             {
++                let t = PROBE_Q_TARGET.with(|c| c.get());
++                if steam.is_some() && t.is_nan() {
++                    // phase A done: the reboiler column has converged; ramp its duty to zero
++                    PROBE_Q_START.with(|c| c.set(PROBE_Q_LAST.with(|q| q.get())));
++                    ramp_from = iterations;
++                    if std::env::var("PROBE_PRINT").is_ok() {
++                        eprintln!("PROBE phaseA it={iterations} Q={:.2} MW", PROBE_Q_LAST.with(|q| q.get()) / 1e6);
++                    }
++                    continue;
++                }
++                if steam.is_some() && t != 0.0 {
++                    continue;
++                }
+                 converged = true;
+                 break;
+             }
+         }
+ 
++        if newton_mode && !converged {
++            // starting point: the BP iterate (cold) or the warm profile
++            let v0: Vec<f64> = match last_vapour.as_ref() {
++                Some(v) if v.len() == plan.stages => v.clone(),
++                _ => vec![feed_molar; plan.stages],
++            };
++            let states = plan.draw_states(&liquid, &k, slate)?;
++            let ndraw = plan.mass_ratios.len() - 1;
++            let rates0: Vec<f64> = (0..ndraw)
++                .map(|i| plan.mass_ratios[i] * feed_flow / states[i].mean_molar_mass)
++                .collect();
++            let out = newton_solve(&plan, spec, slate, thermo, pass.pressure, &feed, feed_flow, feed_molar, feed_enthalpy, &stage_t, &v0, &rates0)?;
++            newton_iterations = out.iterations;
++            stage_t = out.t.clone();
++            k = stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?;
++            liquid = out.liquid.clone();
++            draws = plan.draw_states(&liquid, &k, slate)?;
++            residual = plan.component_residual(&draws, pass.feed, slate) * feed_flow;
++            last_vapour = Some(out.v.clone());
++            newton_flows = Some(out.flows);
++            newton_r = out.reflux_ratio;
++            converged = true;
++            if std::env::var("PROBE_PRINT").is_ok() {
++                eprintln!("PROBE newton done bp_its={iterations} newton_its={newton_iterations} norm={:.2e} component_residual={residual:.2e}", out.norm);
++            }
++        }
+         if !converged {
+             let mut unmet = Vec::new();
+             if profile_change > tolerance {
+@@ -372,7 +626,29 @@ impl SeparationModel for HeatBalanceCascade {
+ 
+         // The converged flows, from the CONVERGED draw states (`StageCascade`'s
+         // reason: the loop's last flows are one iterate stale).
+-        let (flows, reflux_ratio) = stage_balance_flows(
++        PROBE_Q_TARGET.with(|c| c.set(0.0));
++        let (flows, reflux_ratio) = if let Some(f) = newton_flows.take() {
++            (f, newton_r)
++        } else if let Some(st) = steam.filter(|_| std::env::var("PROBE_BOTTOM_UP").is_ok()) {
++            let (f, r, _) = probe_bottom_up(
++                &plan,
++                &StageState {
++                    slate,
++                    thermo,
++                    draws: &draws,
++                    liquid: &liquid,
++                    k: &k,
++                    temperatures: &stage_t,
++                    pressure: pass.pressure,
++                    previous_vapour: None,
++                },
++                feed_flow,
++                feed_molar,
++                feed_enthalpy,
++                st,
++            )?;
++            (f, r)
++        } else { stage_balance_flows(
+             &plan,
+             spec,
+             &StageState {
+@@ -388,7 +664,8 @@ impl SeparationModel for HeatBalanceCascade {
+             feed_flow,
+             feed_molar,
+             feed_enthalpy,
+-        )?;
++            steam,
++        )? };
+         let (condenser_duty, reboiler_duty) = column_duties(
+             slate,
+             thermo,
+@@ -401,6 +678,65 @@ impl SeparationModel for HeatBalanceCascade {
+             plan.side_heat.iter().sum(),
+         )?;
+ 
++        if std::env::var("PROBE_PRINT").is_ok() {
++            let n = plan.stages;
++            let s = steam.map(|s| s.mol).unwrap_or(0.0);
++            let t_cond = condenser_t.value();
++            let q_steam_cond = steam
++                .map(|st| st.mol * (steam_h(stage_t[0]) - water_h(t_cond)))
++                .unwrap_or(0.0);
++            let q_steam_net_in = steam
++                .map(|st| st.mol * (steam_h(st.t_in) - water_h(t_cond)))
++                .unwrap_or(0.0);
++            let feed_flux_now = pass.feed_flow.value() * pass.feed.mixture_cp(slate).value() * (feed_t_now - T_REF.value());
++            let feed_flux_pass = pass.feed_flow.value() * pass.feed.mixture_cp(slate).value() * (pass.temperature.value() - T_REF.value());
++            // column_duties' closure used pass.temperature; correct it to the homotopy's feed
++            let closure = reboiler_duty.value() - (feed_flux_now - feed_flux_pass) + q_steam_cond - q_steam_net_in;
++            eprintln!("PROBE feed_used_C={:.1} pa_MW=[{}]", feed_t_now - 273.15, plan.side_heat.iter().filter(|q| **q > 0.0).map(|q| format!("{:.2}", q / 1e6)).collect::<Vec<_>>().join(","));
++            let last = result.len() - 1;
++            let res_idx = slate.len() - 1;
++            let res_purity = result[last].composition.fractions()[res_idx];
++            let ys_top = if s > 0.0 { s / (s + flows.vapour[0]) } else { 0.0 };
++            let ys_bot = if s > 0.0 { s / (s + flows.vapour[n - 1]) } else { 0.0 };
++            let dew_top = if s > 0.0 {
++                water_tsat(pass.pressure.value() * ys_top) - 273.15
++            } else {
++                f64::NAN
++            };
++            let vmin = flows.vapour[1..].iter().cloned().fold(f64::INFINITY, f64::min) / feed_molar;
++            eprintln!(
++                "PROBE clamp_bit={} iters={iterations} warm={} feed_C={:.1} flash={:.3} reflux={:.3} Qcond_hc={:.2} Qcond_steam={:.2} Qreb_closure={:.3} T_C=[{}] P_bar=[{}] res_purity={:.4} ys_top={:.3} ys_bot={:.3} water_dew_top_C={:.1} cond_C={:.1} vmin_over_F={:.3} V=[{}]",
++                PROBE_CLAMP_BIT.with(|c| c.get()),
++                warm.is_some(),
++                pass.temperature.value() - 273.15,
++                feed_vapour_fraction,
++                reflux_ratio,
++                condenser_duty.value() / 1e6,
++                q_steam_cond / 1e6,
++                closure / 1e6,
++                stage_t.iter().map(|t| format!("{:.1}", t - 273.15)).collect::<Vec<_>>().join(","),
++                pressures.iter().map(|p| format!("{:.3}", p / 1e5)).collect::<Vec<_>>().join(","),
++                res_purity,
++                ys_top,
++                ys_bot,
++                dew_top,
++                t_cond - 273.15,
++                vmin,
++                flows.vapour.iter().map(|v| format!("{:.0}", v)).collect::<Vec<_>>().join(",")
++            );
++            for (i, d) in result.iter().enumerate() {
++                eprintln!(
++                    "PROBE draw{i} T_C={:.1} comp=[{}]",
++                    d.temperature.value() - 273.15,
++                    d.composition
++                        .fractions()
++                        .iter()
++                        .map(|f| format!("{:.3}", f))
++                        .collect::<Vec<_>>()
++                        .join(",")
++                );
++            }
++        }
+         Ok(Separation {
+             draws: result,
+             profile: Some(CascadeProfile {
+@@ -416,6 +752,514 @@ impl SeparationModel for HeatBalanceCascade {
+     }
+ }
+ 
++/// PROBE: bottom-up from the steam, each stage's vapour and temperature solved
++/// together (its bubble point at the hydrocarbon partial pressure its own vapour
++/// sets). Returns the flows, the reflux ratio and the stage temperatures.
++#[allow(clippy::too_many_arguments)]
++fn probe_bottom_up(
++    plan: &CascadePlan,
++    state: &StageState<'_>,
++    feed_mass: f64,
++    feed_molar: f64,
++    feed_enthalpy: f64,
++    st: ProbeSteam,
++) -> Result<(Flows, f64, Vec<f64>), SimError> {
++    let slate = state.slate;
++    let thermo = state.thermo;
++    let n = plan.stages;
++    let last = state.draws.len() - 1;
++    let p = state.pressure.value();
++    let mut drawn = vec![0.0; n];
++    for (j, slot) in plan.draw_at_stage.iter().enumerate() {
++        if let Some(i) = slot {
++            drawn[j] = plan.mass_ratios[*i] * feed_mass / state.draws[*i].mean_molar_mass;
++        }
++    }
++    let _ = last;
++    let distillate = plan.mass_ratios[0] * feed_mass / state.draws[0].mean_molar_mass;
++    // reflux enthalpy from the iterate's stage-1 vapour
++    let condensate = equilibrium_vapour(&state.liquid[0], &state.k[0])?;
++    let condenser_t = bubble_temperature_unnormalized(slate, thermo, &condensate, state.pressure, "probe condenser")?;
++    let reflux_enthalpy = liquid_enthalpy(slate, &condensate, condenser_t);
++    let h_above = |j: usize| -> f64 {
++        if j == 0 {
++            reflux_enthalpy
++        } else {
++            liquid_enthalpy(slate, &state.liquid[j - 1], Kelvin(state.temperatures[j - 1]))
++        }
++    };
++    // stage j at hydrocarbon vapour v: (T, h_liquid, H_vapour)
++    let at = |j: usize, v: f64| -> Result<(f64, f64, f64), SimError> {
++        let php = p * v / (v + st.mol);
++        let t = bubble_temperature_unnormalized(slate, thermo, &state.liquid[j], Pascal(php), "probe stage")?;
++        let k: Vec<f64> = (0..slate.len())
++            .map(|c| thermo.k_value(slate, c, t, Pascal(php)))
++            .collect::<Result<_, _>>()?;
++        let y = equilibrium_vapour(&state.liquid[j], &k)?;
++        let h = liquid_enthalpy(slate, &state.liquid[j], t);
++        let big_h = liquid_enthalpy(slate, &y, t) + mixture_dh_vap(slate, thermo, &y, t)?;
++        Ok((t.value(), h, big_h))
++    };
++    let mut vapour = vec![0.0; n];
++    let mut temps = vec![0.0; n];
++    let mut liquid_down = vec![0.0; n]; // L_j leaving stage j downward (0 at bottom)
++    let mut liquid_in = vec![0.0; n]; // L_{j-1}
++    // what arrives from below stage j
++    let mut v_below = 0.0;
++    let mut big_h_below = 0.0;
++    let mut steam_h_below = steam_h(st.t_in);
++    let mut l_here = 0.0; // L_j leaving downward
++    for j in (0..n).rev() {
++        let u = drawn[j];
++        let f = if j == plan.feed_stage { feed_molar } else { 0.0 };
++        let q = plan.side_heat[j];
++        let ha = h_above(j);
++        let g = |v: f64| -> Result<f64, SimError> {
++            let (t, h, big_h) = at(j, v)?;
++            let rhs = (l_here + u) * (ha - h) + v_below * (big_h_below - ha) + f * (feed_enthalpy - ha)
++                + st.mol * (steam_h_below - steam_h(t))
++                - q;
++            Ok(v * (big_h - ha) - rhs)
++        };
++        let (mut lo, mut hi) = ((1.0e-7 * st.mol).ln(), (50.0 * feed_molar).ln());
++        let g_lo = g(lo.exp())?;
++        let g_hi = g(hi.exp())?;
++        if g_lo > 0.0 || g_hi < 0.0 {
++            for v in [lo.exp(), (1.0e-3 * st.mol), st.mol, 0.1 * feed_molar, feed_molar, hi.exp()] {
++                let (t, h, big_h) = at(j, v)?;
++                eprintln!("PROBE dbg stage {} v={v:.3e} T={:.1}C h={h:.4e} H={big_h:.4e} ha={ha:.4e} g={:.4e}", j + 1, t - 273.15, g(v)?);
++            }
++            return Err(SimError::Numerical(format!(
++                "PROBE bottom-up: stage {} has no vapour root (g(lo) {g_lo:.4e}, g(hi) {g_hi:.4e}); L_down {l_here:.3e} V_below {v_below:.3e}",
++                j + 1
++            )));
++        }
++        for _ in 0..60 {
++            let mid = 0.5 * (lo + hi);
++            if g(mid.exp())? < 0.0 {
++                lo = mid;
++            } else {
++                hi = mid;
++            }
++        }
++        let v = (0.5 * (lo + hi)).exp();
++        let (t, _, big_h) = at(j, v)?;
++        vapour[j] = v;
++        temps[j] = t;
++        liquid_down[j] = l_here;
++        // L_{j-1} = L_j + U_j + V_j - V_{j+1} - F_j
++        let l_above = l_here + u + v - v_below - f;
++        liquid_in[j] = l_above;
++        if !(l_above >= 0.0) {
++            return Err(SimError::Numerical(format!(
++                "PROBE bottom-up: the liquid onto stage {} is {l_above:.4e} mol/s",
++                j + 1
++            )));
++        }
++        l_here = l_above;
++        v_below = v;
++        big_h_below = big_h;
++        steam_h_below = steam_h(t);
++    }
++    let reflux = liquid_in[0];
++    let reflux_ratio = reflux / distillate;
++    liquid_down[n - 1] = 0.0;
++    Ok((
++        Flows {
++            liquid_in,
++            liquid_down,
++            liquid_drawn: drawn,
++            vapour,
++            reflux,
++        },
++        reflux_ratio,
++        temps,
++    ))
++}
++
++/// PROBE (M61.0): the heat-balance cascade's equations solved by Newton on every
++/// stage temperature, every vapour rate below the top and every molar draw rate
++/// but the bottoms at once (Tomich's 2N arrangement, with the draws added): the
++/// compositions from the Thomas sweeps at those flows, the residuals the
++/// summation `Σ K·x − 1` per stage, each stage's energy balance but the
++/// reboiler's, and each draw's mass ratio. No vapour floor.
++pub(crate) struct NewtonOut {
++    pub(crate) t: Vec<f64>,
++    pub(crate) v: Vec<f64>,
++    pub(crate) liquid: Vec<Vec<f64>>,
++    pub(crate) flows: Flows,
++    pub(crate) iterations: u32,
++    pub(crate) norm: f64,
++    pub(crate) reflux_ratio: f64,
++}
++
++#[allow(clippy::too_many_arguments)]
++fn newton_residual(
++    plan: &CascadePlan,
++    spec: &CascadeSpec,
++    slate: &Slate,
++    thermo: &dyn ThermoModel,
++    pressure: Pascal,
++    feed: &MoleFractions,
++    feed_mass: f64,
++    feed_molar: f64,
++    feed_enthalpy: f64,
++    u: &[f64],
++) -> Result<Vec<f64>, SimError> {
++    newton_residual_full(plan, spec, slate, thermo, pressure, feed, feed_mass, feed_molar, feed_enthalpy, u).map(|x| x.0)
++}
++
++#[allow(clippy::too_many_arguments)]
++#[derive(Clone, Copy)]
++pub(crate) enum SpecMode {
++    Reflux,
++    Floor(usize),
++    Reboiler(f64),
++}
++
++pub(crate) fn spec_mode() -> SpecMode {
++    match std::env::var("PROBE_SPEC").ok() {
++        Some(v) if v.starts_with("floor:") => SpecMode::Floor(v[6..].parse().unwrap()),
++        Some(v) if v.starts_with("reb:") => SpecMode::Reboiler(v[4..].parse::<f64>().unwrap() * 1e6),
++        _ => SpecMode::Reflux,
++    }
++}
++
++thread_local! { pub(crate) static PROBE_MODE: std::cell::Cell<Option<SpecMode>> = const { std::cell::Cell::new(None) }; }
++
++fn newton_residual_full(
++    plan: &CascadePlan,
++    spec: &CascadeSpec,
++    slate: &Slate,
++    thermo: &dyn ThermoModel,
++    pressure: Pascal,
++    feed: &MoleFractions,
++    feed_mass: f64,
++    feed_molar: f64,
++    feed_enthalpy: f64,
++    u: &[f64],
++) -> Result<(Vec<f64>, Vec<Vec<f64>>, Flows), SimError> {
++    let n = plan.stages;
++    let ndraw = plan.mass_ratios.len() - 1; // all but the bottoms
++    let t = &u[0..n];
++    let mut rates = vec![0.0; ndraw];
++    rates.copy_from_slice(&u[2 * n - 1..2 * n - 1 + ndraw]);
++    if t.iter().any(|x| !x.is_finite() || *x <= 100.0) || rates.iter().any(|r| !(*r > 0.0)) {
++        return Err(SimError::Numerical("newton: iterate out of range".into()));
++    }
++    let distillate = rates[0];
++    let mode = PROBE_MODE.with(|m| m.get()).unwrap_or(SpecMode::Reflux);
++    let reflux_ratio = match mode {
++        SpecMode::Reflux => spec.reflux_ratio,
++        _ => u[u.len() - 1],
++    };
++    if !(reflux_ratio > 0.0) {
++        return Err(SimError::Numerical("newton: non-positive reflux".into()));
++    }
++    let mut vapour = vec![0.0; n];
++    vapour[0] = (reflux_ratio + 1.0) * distillate;
++    vapour[1..n].copy_from_slice(&u[n..2 * n - 1]);
++    if vapour.iter().any(|v| !(*v > 0.0)) {
++        return Err(SimError::Numerical("newton: non-positive vapour".into()));
++    }
++    let mut drawn = vec![0.0; n];
++    for (j, slot) in plan.draw_at_stage.iter().enumerate() {
++        if let Some(i) = slot {
++            if *i < ndraw && *i > 0 {
++                drawn[j] = rates[*i];
++            }
++        }
++    }
++    let reflux = reflux_ratio * distillate;
++    let mut liquid_in = vec![0.0; n];
++    let mut liquid_down = vec![0.0; n];
++    liquid_in[0] = reflux;
++    for j in 0..n - 1 {
++        let f = if j == plan.feed_stage { feed_molar } else { 0.0 };
++        liquid_down[j] = liquid_in[j] + vapour[j + 1] + f - drawn[j] - vapour[j];
++        liquid_in[j + 1] = liquid_down[j];
++    }
++    let f_last = if n - 1 == plan.feed_stage { feed_molar } else { 0.0 };
++    let bottoms = liquid_in[n - 1] + f_last - vapour[n - 1];
++    if liquid_down[..n - 1].iter().any(|l| !(*l >= 0.0)) || !(bottoms > 0.0) {
++        return Err(SimError::Numerical("newton: a liquid went negative".into()));
++    }
++    drawn[n - 1] = bottoms;
++    liquid_down[n - 1] = 0.0;
++    let flows = Flows {
++        liquid_in: liquid_in.clone(),
++        liquid_down: liquid_down.clone(),
++        liquid_drawn: drawn.clone(),
++        vapour: vapour.clone(),
++        reflux,
++    };
++    let k: Vec<Vec<f64>> = t
++        .iter()
++        .map(|tj| {
++            (0..slate.len())
++                .map(|c| thermo.k_value(slate, c, Kelvin(*tj), pressure))
++                .collect::<Result<Vec<f64>, _>>()
++        })
++        .collect::<Result<_, _>>()?;
++    let mut amounts = vec![vec![0.0; slate.len()]; n];
++    for c in 0..slate.len() {
++        let col = plan.solve_component(&flows, &k, c, feed.fractions()[c], feed_molar)?;
++        for j in 0..n {
++            amounts[j][c] = col[j];
++        }
++    }
++    let mut r = Vec::with_capacity(2 * n - 1 + ndraw);
++    // summation, one per stage
++    for j in 0..n {
++        let sum: f64 = amounts[j].iter().zip(&k[j]).map(|(x, k)| x * k).sum();
++        r.push(sum - 1.0);
++    }
++    let liquid: Vec<Vec<f64>> = amounts
++        .iter()
++        .map(|a| MoleFractions::from_amounts(a).map(|m| m.fractions().to_vec()))
++        .collect::<Result<_, _>>()?;
++    let mut h = Vec::with_capacity(n);
++    let mut big_h = Vec::with_capacity(n);
++    for j in 0..n {
++        let y = equilibrium_vapour(&liquid[j], &k[j])?;
++        h.push(liquid_enthalpy(slate, &liquid[j], Kelvin(t[j])));
++        big_h.push(liquid_enthalpy(slate, &y, Kelvin(t[j])) + mixture_dh_vap(slate, thermo, &y, Kelvin(t[j]))?);
++    }
++    let condensate = equilibrium_vapour(&liquid[0], &k[0])?;
++    let condenser_t = bubble_temperature_unnormalized(slate, thermo, &condensate, pressure, "newton condenser")?;
++    let h_reflux = liquid_enthalpy(slate, &condensate, condenser_t);
++    let energy_scale = feed_molar * 1.0e4;
++    for j in 0..n - 1 {
++        let f = if j == plan.feed_stage { feed_molar } else { 0.0 };
++        let above = if j == 0 { h_reflux } else { h[j - 1] };
++        let e = liquid_in[j] * above + vapour[j + 1] * big_h[j + 1] + f * feed_enthalpy
++            - (liquid_down[j] + drawn[j]) * h[j]
++            - vapour[j] * big_h[j]
++            - plan.side_heat[j];
++        r.push(e / energy_scale);
++    }
++    // each draw's mass ratio: U·M̄ = ratio·F
++    for (i, rate) in rates.iter().enumerate() {
++        let comp: Vec<f64> = match plan.locations[i] {
++            DrawLocation::Condenser => condensate.clone(),
++            DrawLocation::Stage(j) => liquid[j].clone(),
++        };
++        let m: f64 = comp.iter().enumerate().map(|(c, x)| x * slate.get(c).molar_mass.value()).sum();
++        r.push((rate * m - plan.mass_ratios[i] * feed_mass) / feed_mass);
++    }
++    match mode {
++        SpecMode::Reflux => {}
++        SpecMode::Floor(j) => r.push((vapour[j] - VAPOUR_FLOOR_OF_FEED * feed_molar) / feed_molar),
++        SpecMode::Reboiler(q) => {
++            let last = n - 1;
++            let f = if last == plan.feed_stage { feed_molar } else { 0.0 };
++            let e = liquid_in[last] * h[last - 1] + f * feed_enthalpy + q
++                - drawn[last] * h[last]
++                - vapour[last] * big_h[last];
++            r.push(e / energy_scale);
++        }
++    }
++    Ok((r, liquid, flows))
++}
++
++fn solve_dense(mut a: Vec<Vec<f64>>, mut b: Vec<f64>) -> Option<Vec<f64>> {
++    let n = b.len();
++    for col in 0..n {
++        let piv = (col..n).max_by(|i, j| a[*i][col].abs().total_cmp(&a[*j][col].abs()))?;
++        if a[piv][col].abs() < 1e-300 {
++            return None;
++        }
++        a.swap(col, piv);
++        b.swap(col, piv);
++        for row in col + 1..n {
++            let f = a[row][col] / a[col][col];
++            if f != 0.0 {
++                for c in col..n {
++                    a[row][c] -= f * a[col][c];
++                }
++                b[row] -= f * b[col];
++            }
++        }
++    }
++    let mut x = vec![0.0; n];
++    for row in (0..n).rev() {
++        let mut acc = b[row];
++        for c in row + 1..n {
++            acc -= a[row][c] * x[c];
++        }
++        x[row] = acc / a[row][row];
++    }
++    x.iter().all(|v| v.is_finite()).then_some(x)
++}
++
++#[allow(clippy::too_many_arguments)]
++pub(crate) fn newton_solve(
++    plan: &CascadePlan,
++    spec: &CascadeSpec,
++    slate: &Slate,
++    thermo: &dyn ThermoModel,
++    pressure: Pascal,
++    feed: &MoleFractions,
++    feed_mass: f64,
++    feed_molar: f64,
++    feed_enthalpy: f64,
++    t0: &[f64],
++    v0: &[f64],
++    rates0: &[f64],
++) -> Result<NewtonOut, SimError> {
++    let requested = std::env::var("PROBE_SPEC").ok();
++    if requested.as_deref() != Some("auto") {
++        return newton_solve_mode(plan, spec, slate, thermo, pressure, feed, feed_mass, feed_molar, feed_enthalpy, t0, v0, rates0, spec_mode());
++    }
++    let floor = VAPOUR_FLOOR_OF_FEED * feed_molar;
++    let n = plan.stages;
++    // a warm start that ran above its declared reflux tries the floor first, on the stage it bound
++    let seed_r = v0[0] / rates0[0] - 1.0;
++    if seed_r > spec.reflux_ratio * (1.0 + 1.0e-6) {
++        let binding = (1..n).min_by(|a, b| v0[*a].total_cmp(&v0[*b])).unwrap();
++        if let Ok(out) = newton_solve_mode(plan, spec, slate, thermo, pressure, feed, feed_mass, feed_molar, feed_enthalpy, t0, v0, rates0, SpecMode::Floor(binding)) {
++            if out.reflux_ratio >= spec.reflux_ratio && out.v[1..].iter().all(|v| *v >= floor * (1.0 - 1.0e-9)) {
++                return Ok(out);
++            }
++        }
++    }
++    let first = newton_solve_mode(plan, spec, slate, thermo, pressure, feed, feed_mass, feed_molar, feed_enthalpy, t0, v0, rates0, SpecMode::Reflux);
++    let mut binding = match &first {
++        Ok(out) if out.v[1..].iter().all(|v| *v >= floor) => return first,
++        Ok(out) => (1..n).min_by(|a, b| out.v[*a].total_cmp(&out.v[*b])).unwrap(),
++        Err(_) => (1..n).min_by(|a, b| v0[*a].total_cmp(&v0[*b])).unwrap(),
++    };
++    for _ in 0..n {
++        let out = newton_solve_mode(plan, spec, slate, thermo, pressure, feed, feed_mass, feed_molar, feed_enthalpy, t0, v0, rates0, SpecMode::Floor(binding))?;
++        match (1..n).find(|j| out.v[*j] < floor * (1.0 - 1.0e-9)) {
++            None => {
++                if std::env::var("PROBE_PRINT").is_ok() {
++                    eprintln!("PROBE floor active on vapour index {binding}, reflux {:.4}", out.reflux_ratio);
++                }
++                return Ok(out);
++            }
++            Some(j) => binding = j,
++        }
++    }
++    Err(SimError::Numerical("newton: the floor's active set did not settle".into()))
++}
++
++#[allow(clippy::too_many_arguments)]
++pub(crate) fn newton_solve_mode(
++    plan: &CascadePlan,
++    spec: &CascadeSpec,
++    slate: &Slate,
++    thermo: &dyn ThermoModel,
++    pressure: Pascal,
++    feed: &MoleFractions,
++    feed_mass: f64,
++    feed_molar: f64,
++    feed_enthalpy: f64,
++    t0: &[f64],
++    v0: &[f64],
++    rates0: &[f64],
++    mode: SpecMode,
++) -> Result<NewtonOut, SimError> {
++    let n = plan.stages;
++    PROBE_MODE.with(|m| m.set(Some(mode)));
++    let mut u: Vec<f64> = t0.to_vec();
++    u.extend_from_slice(&v0[1..n]);
++    u.extend_from_slice(rates0);
++    if !matches!(mode, SpecMode::Reflux) {
++        let r0 = (v0[0] / rates0[0] - 1.0).max(spec.reflux_ratio);
++        u.push(r0);
++    }
++    let f = |u: &[f64]| newton_residual(plan, spec, slate, thermo, pressure, feed, feed_mass, feed_molar, feed_enthalpy, u);
++    let norm = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>().sqrt();
++    let mut r = f(&u)?;
++    let mut nr = norm(&r);
++    if std::env::var("PROBE_NEWTON_TRACE").is_ok() {
++        eprintln!("PROBE newton start r=[{}] u_tail={:?}", r.iter().map(|x| format!("{x:.2e}")).collect::<Vec<_>>().join(","), &u[u.len()-6..]);
++    }
++    let max_it: u32 = std::env::var("PROBE_NEWTON_MAX").ok().and_then(|v| v.parse().ok()).unwrap_or(60);
++    let mut it = 0;
++    while nr > 1.0e-11 && it < max_it {
++        it += 1;
++        let m = u.len();
++        let mut jac = vec![vec![0.0; m]; m];
++        for col in 0..m {
++            let step = if col < n { 1.0e-4 } else { 1.0e-7 * u[col].abs().max(1.0e-3) };
++            let mut up = u.clone();
++            up[col] += step;
++            let rp = match f(&up) {
++                Ok(rp) => rp,
++                Err(_) => {
++                    up[col] = u[col] - step;
++                    let rm = f(&up)?;
++                    for row in 0..m {
++                        jac[row][col] = (r[row] - rm[row]) / step;
++                    }
++                    continue;
++                }
++            };
++            for row in 0..m {
++                jac[row][col] = (rp[row] - r[row]) / step;
++            }
++        }
++        let neg: Vec<f64> = r.iter().map(|x| -x).collect();
++        let du = solve_dense(jac, neg).ok_or_else(|| SimError::Numerical("newton: singular Jacobian".into()))?;
++        // limit the temperature move to 25 K and keep flows positive
++        let mut scale = 1.0f64;
++        for j in 0..n {
++            if du[j].abs() > 25.0 {
++                scale = scale.min(25.0 / du[j].abs());
++            }
++        }
++        for col in n..m {
++            if u[col] + scale * du[col] <= 0.0 {
++                scale = scale.min(0.9 * u[col] / (-du[col]));
++            }
++        }
++        let mut accepted = false;
++        for _ in 0..30 {
++            let trial: Vec<f64> = u.iter().zip(&du).map(|(a, d)| a + scale * d).collect();
++            if let Ok(rt) = f(&trial) {
++                let nt = norm(&rt);
++                if nt < nr * (1.0 - 1.0e-4 * scale) || nt < 1.0e-11 {
++                    u = trial;
++                    r = rt;
++                    nr = nt;
++                    accepted = true;
++                    break;
++                }
++            }
++            scale *= 0.5;
++        }
++        if std::env::var("PROBE_NEWTON_TRACE").is_ok() {
++            eprintln!("PROBE newton it={it} norm={nr:.3e} scale={scale:.3e}");
++        }
++        if !accepted {
++            // where the iterate sits: the worst residual, the smallest vapour, the reboiler closure
++            let (worst, wv) = r.iter().enumerate().fold((0, 0.0f64), |acc, (i, x)| if x.abs() > acc.1 { (i, x.abs()) } else { acc });
++            let vmin = u[n..2 * n - 1].iter().cloned().fold(f64::INFINITY, f64::min);
++            let kind = if worst < n { format!("summation on stage {}", worst + 1) } else if worst < 2 * n - 1 { format!("energy on stage {}", worst - n + 1) } else { format!("draw {}", worst - (2 * n - 1)) };
++            let v_str = u[n..2 * n - 1].iter().map(|v| format!("{v:.0}")).collect::<Vec<_>>().join(",");
++            let t_str = u[0..n].iter().map(|t| format!("{:.0}", t - 273.15)).collect::<Vec<_>>().join(",");
++            let l_str = match newton_residual_full(plan, spec, slate, thermo, pressure, feed, feed_mass, feed_molar, feed_enthalpy, &u) {
++                Ok((_, _, fl)) => fl.liquid_down.iter().map(|l| format!("{l:.0}")).collect::<Vec<_>>().join(",") + &format!(" reflux {:.0} drawn [{}]", fl.reflux, fl.liquid_drawn.iter().map(|l| format!("{l:.0}")).collect::<Vec<_>>().join(",")),
++                Err(e) => format!("({e})"),
++            };
++            return Err(SimError::Numerical(format!("newton: no descent at iteration {it}, norm {nr:.3e}; worst {kind} ({wv:.2e}); V=[{v_str}] (min {vmin:.1}) T=[{t_str}] L_down=[{l_str}]")));
++        }
++    }
++    if nr > 1.0e-11 {
++        return Err(SimError::Numerical(format!("newton: not converged in {it} iterations, norm {nr:.3e}")));
++    }
++    let solved_r = match mode {
++        SpecMode::Reflux => spec.reflux_ratio,
++        _ => u[u.len() - 1],
++    };
++    let mut v = vec![(solved_r + 1.0) * u[2 * n - 1]];
++    v.extend_from_slice(&u[n..2 * n - 1]);
++    let (_, liquid, flows) = newton_residual_full(plan, spec, slate, thermo, pressure, feed, feed_mass, feed_molar, feed_enthalpy, &u)?;
++    Ok(NewtonOut { t: u[0..n].to_vec(), v, liquid, flows, iterations: it, norm: nr, reflux_ratio: solved_r })
++}
++
+ /// What one iteration's stage balances read: the profile as it stands.
+ struct StageState<'a> {
+     slate: &'a Slate,
+@@ -459,7 +1303,9 @@ fn stage_balance_flows(
+     feed_mass: f64,
+     feed_molar: f64,
+     feed_enthalpy: f64,
++    steam: Option<ProbeSteam>,
+ ) -> Result<(Flows, f64), SimError> {
++    let steam_mol = steam.map(|s| s.mol).unwrap_or(0.0);
+     let slate = state.slate;
+     let stages = plan.stages;
+     let last = state.draws.len() - 1;
+@@ -529,7 +1375,9 @@ fn stage_balance_flows(
+             vapour[j + 1] = (liquid_in[j] * (here - enthalpy_above)
+                 + feed_here * (here - feed_enthalpy)
+                 + vapour[j] * (vapour_enthalpies[j] - here)
+-                + side_heat[j])
++                + side_heat[j]
++                + steam_mol
++                    * (steam_h(state.temperatures[j]) - steam_h(state.temperatures[j + 1])))
+                 / (vapour_enthalpies[j + 1] - here);
+             // Material balance on stage j.
+             liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
+@@ -544,16 +1392,48 @@ fn stage_balance_flows(
+     let (mut vapour, mut liquid_in, mut liquid_down) = sweep(declared_top, reflux);
+     let mut reflux = reflux;
+     let mut reflux_ratio = spec.reflux_ratio;
++    let mut base_top = declared_top;
+ 
+     // **The floor** (§65.3): every stage's vapour below the top held at
+     // `VAPOUR_FLOOR_OF_FEED · F`. A stage under it lifts the top vapour, and so
+     // the reflux, to the smallest value that holds every stage there — one
+     // division per stage on the affine coefficients a second sweep gives.
++    if let Some(st) = steam {
++        // No reboiler: the bottom stage's balance with zero heat fixes the top vapour.
++        let n1 = stages - 1;
++        let feed_n = if n1 == plan.feed_stage { feed_molar } else { 0.0 };
++        let q_reb = |v: &[f64], lin: &[f64]| -> f64 {
++            let h_n = liquid_enthalpies[n1];
++            lin[n1] * (h_n - liquid_enthalpies[n1 - 1])
++                + v[n1] * (vapour_enthalpies[n1] - h_n)
++                + feed_n * (h_n - feed_enthalpy)
++                + st.mol * (steam_h(state.temperatures[n1]) - steam_h(st.t_in))
++        };
++        let q0 = q_reb(&vapour, &liquid_in);
++        PROBE_Q_LAST.with(|c| c.set(q0));
++        let target = PROBE_Q_TARGET.with(|c| c.get());
++        let target = if target.is_nan() { q0 } else { target };
++        let (v1, l1, _) = sweep(declared_top + distillate, reflux + distillate);
++        let q1 = q_reb(&v1, &l1);
++        let slope = (q1 - q0) / distillate;
++        let top = declared_top - (q0 - target) / slope;
++        if !top.is_finite() || top <= distillate {
++            return Err(SimError::Numerical(format!(
++                "PROBE: no top vapour closes the bottom stage with zero heat: top {top:.4e}, D {distillate:.4e}, q0 {q0:.4e}, slope {slope:.4e}"
++            )));
++        }
++        reflux = top - distillate;
++        reflux_ratio = reflux / distillate;
++        base_top = top;
++        (vapour, liquid_in, liquid_down) = sweep(top, reflux);
++    }
+     let floor = VAPOUR_FLOOR_OF_FEED * feed_molar;
+-    if vapour[1..].iter().any(|v| v.is_nan() || *v < floor) {
+-        let (lifted, _, _) = sweep(declared_top + distillate, reflux + distillate);
+-        let mut top = declared_top;
+-        for j in 1..stages {
++    // PROBE: with steam, the floor holds above the feed only (stripping vapour is mostly steam)
++    let floor_end = if steam.is_some() { plan.feed_stage + 1 } else { stages };
++    if vapour[1..floor_end].iter().any(|v| v.is_nan() || *v < floor) {
++        let (lifted, _, _) = sweep(base_top + distillate, reflux + distillate);
++        let mut top = base_top;
++        for j in 1..floor_end {
+             if vapour[j] >= floor {
+                 continue;
+             }
+@@ -569,20 +1449,43 @@ fn stage_balance_flows(
+                     vapour[j]
+                 )));
+             }
+-            top = top.max(declared_top + (floor - vapour[j]) / slope);
++            top = top.max(base_top + (floor - vapour[j]) / slope);
+         }
+         reflux = top - distillate;
+         reflux_ratio = reflux / distillate;
+         (vapour, liquid_in, liquid_down) = sweep(top, reflux);
+     }
+ 
++    if let Some(st) = steam {
++        let clamp_floor: f64 = std::env::var("PROBE_CLAMP")
++            .ok()
++            .and_then(|v| v.parse().ok())
++            .unwrap_or(0.05)
++            * st.mol;
++        let mut bit = false;
++        for j in 1..stages {
++            if !(vapour[j] >= clamp_floor) {
++                vapour[j] = clamp_floor;
++                bit = true;
++            }
++        }
++        if bit {
++            for j in 0..stages - 1 {
++                let feed_here = if j == plan.feed_stage { feed_molar } else { 0.0 };
++                liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
++                liquid_in[j + 1] = liquid_down[j];
++            }
++        }
++        PROBE_CLAMP_BIT.with(|c| c.set(bit));
++    }
+     // Relaxation toward the previous iterate (`RELAXATION`): the vapour below
+     // the top moves part of the way, and the liquid follows from the material
+     // balances — before the checks, because a full step can leave the physical
+     // region where the relaxed one does not. At the fixed point the two agree.
+     if let Some(previous) = state.previous_vapour.filter(|p| p.len() == stages) {
+         for j in 1..stages {
+-            vapour[j] = previous[j] + RELAXATION * (vapour[j] - previous[j]);
++            let relax: f64 = std::env::var("PROBE_RELAX").ok().and_then(|v| v.parse().ok()).unwrap_or(RELAXATION);
++            vapour[j] = previous[j] + relax * (vapour[j] - previous[j]);
+         }
+         for j in 0..stages - 1 {
+             let feed_here = if j == plan.feed_stage {

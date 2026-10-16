@@ -9648,3 +9648,35 @@ columns. DESIGN §65.10.
 **M60 CLOSED 2026-10-16**, after all five slices landed, on the user's standing
 rule. Close-out at the top of `docs/MILESTONES.md`. C5 taken for the
 heat-balance model; C6–C10 new.
+
+## M61 — a stronger column solve: Newton on the heat-balance cascade; ledger row C10, opened for C7; opened on a decision
+
+Asked after M60 closed (2026-10-16) as "what is next"; offered seven
+directions, the user chose steam stripping ("1", ledger row C7: the crude
+unit's reboiler runs near 587 °C where a real column's steam-stripped bottoms
+sit near 350 °C). Probed before anything was written, and the probe changed the
+plan twice: without its reboiler the crude unit is short of heat because the
+furnace boils nothing; the boiling transfer line (C6) turned out NOT to be a
+precondition (a boiling stream carries the same heat as its liquid equivalent);
+and today's fixed-point solve cannot bring the reboiler near zero at all, while
+Newton on the same equations reaches every physical edge. The user's three
+decisions (DESIGN §66): the solve first and steam as M62; Newton REPLACES the
+fixed point (the three M60 plants' fingerprints are re-recorded, their numbers
+unchanged); the column screen's keys widen. The 20 % vapour floor is kept,
+stated without objection.
+
+### M61.0 — **SPECIFIED** 2026-10-16: the design note — M61 stays OPEN
+
+DESIGN §66. Probed first (kept in `tools/steptime/prototypes/m61_0/`): steam as
+an inert vapour with the reboiler at zero closes no reflux on the shipped crude
+unit (~26 MW short); the needed flash is 89.3 % of the feed's moles, a liquid
+feed reaches it near 500 °C; walked warm with its reboiler kept, the furnace to
+80 MW takes the reboiler 80 → 42 MW and leaves the bottom at 582–587 °C; the
+fixed point stalls at ~21 MW or fails at half pumparound duty, and oscillates
+when its reboiler is ramped to zero; Newton reproduces all three M60 plants to
+the printed digit, reaches 6.6–9.6 MW where the fixed point stops, fails only
+on a dry kerosene tray or a starved reboiler, carries the floor as an active
+set (the overheated plant's 3.318 exactly) and a held reboiler duty (to 10 MW;
+stopped by the dry tray, so M62's plant needs a top pumparound); mean 0.18–0.58
+ms, worst 1.79 ms. Slices: M61.1 Newton in the heat-balance cascade, M61.2 the
+wider range on the screen. No code changed.

@@ -1,0 +1,217 @@
+# M60.3 demo plant: a crude unit (docs/DESIGN.md §65.9).
+#
+# A crude preheated to 270 °C by its exchanger train (the supply), fired to about
+# 355 °C in a furnace, and fed to a heat-balance column (`separation =
+# "heat_balance"`) at 1.8 bar — the shape of a real atmospheric crude unit, as
+# far as this model goes:
+#
+# - SIX CUTS, down to a residue of 0.55 kg/mol that boils at 560 °C: two-thirds
+#   of the feed's moles flash on entering the column, and the residue never
+#   does. (`crude_column_hot_feed.toml`'s light crude, whose heaviest cut boils
+#   at 400 °C, is all vapour by 438 °C.)
+# - THE FEED NEAR THE BOTTOM (stage 8 of 10) and the products drawn ABOVE it:
+#   naphtha from the total condenser, kerosene, diesel and gas oil off stages
+#   3, 5 and 7, the residue from the reboiler. Draw ratios are mass fractions
+#   of the feed (DESIGN §5 fork 3), set to the crude's own cut yields.
+# - THREE PUMPAROUNDS, 15 / 15 / 10 MW on stages 4, 6 and 7, modelled as side
+#   coolers (§65.4). They are why the column runs at all: on reflux alone each
+#   stage below the top carries less vapour than the one above it — heavier
+#   vapour, larger molar latent heat — so the liquid thins and the side draws
+#   run the trays above the feed dry (§65.0). Real crude units have them for
+#   the same reason.
+#
+# What it does not have: STEAM STRIPPING. A real crude column strips its
+# residue with steam and has no reboiler; this one keeps the reboiler, which
+# runs at about 587 °C — far hotter than a real column's bottoms (about 350 °C)
+# would be allowed to get. Deferred with a ledger row.
+#
+# The screen's keys stay inside the range measured warm (§65.9): the furnace
+# 0–40 MW (the feed 298–404 °C), the reflux 2–10, the pumparounds 75–300 % of
+# these duties. At reflux 1.5, or at half the pumparound duty, the column no
+# longer settles and the run halts, naming the settings it could not run at.
+#
+# The furnace is sized for this flow (about 104 kg/s at 30 bar through 8 cm
+# pipe): 20 MW fired, 45 MJ/K of coil, UA 600 kW/K; the coil starts at 359.5 °C
+# and settles near 356 °C, far under the 550 °C tube limit (a game
+# value, as in every furnace plant). The supply is at 30 bar so a crude at
+# 270 °C is liquid there; it flashes only in the column.
+
+[meta]
+name = "crude_unit"
+description = "A crude unit: a preheated crude, a furnace, and a heat-balance column with three side draws and three pumparounds."
+
+[simulation]
+dt = 0.1
+
+[[components]]
+name = "light_naphtha"
+tb_c = 70.0
+molar_mass_kg_per_mol = 0.095
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.13
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[[components]]
+name = "kerosene"
+tb_c = 220.0
+molar_mass_kg_per_mol = 0.17
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2050.0
+
+[[components]]
+name = "diesel"
+tb_c = 300.0
+molar_mass_kg_per_mol = 0.22
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "gas_oil"
+tb_c = 380.0
+molar_mass_kg_per_mol = 0.3
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 1950.0
+
+[[components]]
+name = "residue"
+tb_c = 560.0
+molar_mass_kg_per_mol = 0.55
+density_kg_per_m3 = 980.0
+cp_j_per_kg_k = 1850.0
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+separation = "heat_balance"
+reactions = "none"
+boiloff = "none"
+
+[nodes.crude_source]
+type = "source"
+pressure_bar = 30.0
+temperature_c = 270.0
+composition = { light_naphtha = 0.08, heavy_naphtha = 0.14, kerosene = 0.16, diesel = 0.20, gas_oil = 0.14, residue = 0.28 }
+
+[nodes.furnace]
+type = "furnace"
+duty_mw = 20.0
+coil_heat_capacity_mj_per_k = 45.0
+coil_ua_kw_per_k = 6000
+coil_temperature_c = 359.5
+flame_temperature_c = 1951.1
+tube_failure_c = 900.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.686
+
+[nodes.column]
+type = "column"
+pressure_bar = 1.8
+draws = [
+    { outlet = "naphtha_tank", stage = 0, draw_ratio = 0.22 },
+    { outlet = "kerosene_tank", stage = 3, draw_ratio = 0.16 },
+    { outlet = "diesel_tank", stage = 5, draw_ratio = 0.2 },
+    { outlet = "gas_oil_tank", stage = 7, draw_ratio = 0.14 },
+    { outlet = "residue_tank", stage = 10 },
+]
+
+[nodes.column.cascade]
+stages = 10
+feed_stage = 8
+reflux_ratio = 4.0
+pumparounds = [{ stage = 4, duty_mw = 15.0 }, { stage = 6, duty_mw = 15.0 }, { stage = 7, duty_mw = 10.0 }]
+
+[nodes.naphtha_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { light_naphtha = 1.0 }
+
+[nodes.kerosene_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { kerosene = 1.0 }
+
+[nodes.diesel_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { diesel = 1.0 }
+
+[nodes.gas_oil_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { gas_oil = 1.0 }
+
+[nodes.residue_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { residue = 1.0 }
+
+[[pipes]]
+name = "crude_line"
+from = "crude_source"
+to = "furnace"
+length_m = 30.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "transfer_line"
+from = "furnace"
+to = "column"
+length_m = 15.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "naphtha_draw"
+from = "column"
+to = "naphtha_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "kerosene_draw"
+from = "column"
+to = "kerosene_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "diesel_draw"
+from = "column"
+to = "diesel_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "gas_oil_draw"
+from = "column"
+to = "gas_oil_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "residue_draw"
+from = "column"
+to = "residue_tank"
+length_m = 20.0
+diameter_m = 0.15
+

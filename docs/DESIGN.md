@@ -24439,3 +24439,215 @@ furnace's books and the keys' safe range.
   temperatures read 170 → 585 °C down the crude unit; on the hot feed at 110
   MW the vapour bars below the feed stand at the floor and the reflux reads
   RAISED.
+
+## 66. A stronger column solve — Newton on the heat-balance cascade (M61) — specified before building
+
+Asked after M60 closed (2026-10-16) as "what is next"; the user chose steam
+stripping (ledger row C7: the crude unit's reboiler runs near 587 °C, where a
+real crude column strips its residue with steam near 350 °C). The probe below
+found that steam cannot be built on today's column solve, and the user re-scoped
+twice on what it measured: **M61 is a stronger solve for the heat-balance
+cascade; steam stripping is M62.** Three decisions, asked in plain words:
+
+1. **Order: the solve first, then steam** — not the boiling transfer line (C6)
+   first, which the probe showed is not a precondition (§66.0, finding 2).
+2. **Newton REPLACES the heat-balance cascade's fixed-point solve** rather than
+   joining it as a second option: one method to maintain. The three M60 plants
+   keep their numbers (measured identical to every printed digit) and their
+   fingerprints are re-recorded; every other plant is untouched.
+3. **The column screen's keys widen** to the new measured range.
+
+And one stated without objection: **M60's 20 % vapour floor is kept** with its
+behaviour unchanged (§66.3). A physical rule in its place ("a reboiler cannot
+give less than nothing") could not be solved at its own edge in the probe.
+
+### 66.0 Probed before the rules were offered (2026-10-16)
+
+Throwaway prototypes in a detached worktree, kept in
+`tools/steptime/prototypes/m61_0/`: `probe_heat_balance.patch` (the probe's
+`crates/solvers/src/heat_balance.rs`, its modes chosen by `PROBE_*` environment
+variables), the walks `m61_walk.rs`, `m61_walk2.rs` and `m61_walk3.rs`
+(throwaway tests written for `crates/scenarios/tests/`), their plant
+`crude_unit_hot.toml` (`crude_unit.toml` with a coil of 6 000 kW/K and a tube
+limit of 900 °C, so the furnace can be fired to 80 MW without bursting), the
+hand check `flash_check.py` and the driver `scan.py`.
+
+**Finding 1 — without its reboiler the crude unit is short of heat, and the
+furnace is why.** Steam was modelled as an inert vapour — never in a stage's
+liquid, its share lowering the hydrocarbon partial pressure each stage's bubble
+point is taken at (Dalton with Raoult), condensing only at the condenser — and
+the reboiler's duty held at zero, so the reflux became the heat balance's
+result. On the shipped crude unit no reflux closes it: the column is ~26 MW
+short at tick 1. The furnace warms a LIQUID; today the 80 MW reboiler (four
+times the furnace) does the boiling at the bottom, and that is why the bottom
+sits at the residue's bubble point, 587 °C. The hand check (`flash_check.py`,
+the model's own Trouton flash, matching §65.9's recorded shares) puts the need
+at 89.3 % of the feed's moles boiled — everything but the residue — against a
+flash of 66.5 % at 356 °C and 81.8 % at 428 °C; a liquid feed reaches 91 % only
+near 500 °C.
+
+**Finding 2 — the boiling transfer line is NOT a precondition of steam.** A
+boiling stream is booked as its liquid-equivalent temperature (§58 fork 2), so
+the column receives the same heat whether the crude arrives boiling or as a
+490 °C liquid. Walked warm with the reboiler kept, the furnace from 20 to 80 MW
+took the feed from 356 to 541 °C liquid-equivalent (66 → 96 % flashing) with
+nothing failing, the reboiler falling 80.0 → 41.6 MW, the bottom staying at
+582–587 °C. The boiling line changes what the furnace and the pipe SHOW: on
+this crude, at the heat the column needs (~65 MW fired), its outlet would read
+401–426 °C at 1.8–5 bar — not the ~360 °C first offered to the user, and said
+so — and today's coil (600 kW/K) would pass its 550 °C tube limit there. The
+reboiler's bottom temperature does not move with heat at all; only steam's
+partial pressure can lower it.
+
+**Finding 3 — today's solve cannot bring the reboiler near zero.** From the hot
+states (65 and 80 MW), warm: lowering the reflux stalls at ~21 MW (the 20 %
+floor lifts it back); lowering the pumparounds fails at half their duty (the
+fixed point stops settling); both together fail at the first step. Holding the
+reboiler's duty at zero inside the fixed point (a ramp from its converged duty,
+`PROBE_RAMP`) oscillates at the feed stage and fails part-way; harder damping
+moved the failure from ~52 % to ~71 % of the ramp, so it is the iteration
+losing stability, not the solution ending. Steam cannot be built on it.
+
+**Finding 4 — Newton reaches the physical edges.** The same equations solved
+simultaneously (§66.1): on the shipped crude unit it reproduces today's profile
+to every printed digit (stages 167.3 → 586.6 °C, condenser 45.94 MW, reboiler
+80.19), 2 iterations a warm tick. Warm from the hot states:
+
+```text
+  walk, from 80 MW            today's solve             Newton
+  reflux down                 stalls at ~21 MW (floor)  8.2 MW at reflux 1.0
+  pumparounds down            fails at 50 %             8.8 MW at 30 %
+  both down                   fails at the first step   6.6 MW (reflux 2.4, 60 %)
+```
+
+(From 65 MW the pumparounds went to 10 %, the reboiler 9.6 MW.) The reflux walk
+is not like for like — Newton ran without the floor that stalled the fixed
+point — so the pumparound walk is the clean comparison. Every remaining failure
+was diagnosed at its last iterate, and each is a physical edge: either the
+vapour below the feed has gone to zero (the reboiler has nothing left to boil
+up), or the liquid leaving stage 3 — the kerosene draw — is exactly zero (the
+draw takes all its tray holds; nothing cools the trays above the top
+pumparound but the reflux). That second edge is also what stopped the
+low-reflux walks, whose worst residual sat on stage 1.
+
+**Finding 5 — Newton carries the shapes M60 and M62 need.** With the reflux as
+an unknown in place of its declared value:
+
+- **(a) the floor as an active set** — the stage the floor binds held at
+  exactly `0.20·F` — reproduces `crude_column_overheated.toml` exactly: reflux
+  3.318 against a declared 2, condenser 74.30 MW, reboiler 20.73. Without the
+  floor Newton walks that plant's stripping vapour to ~1 mol/s and fails, so the
+  floor (or a rule) stays.
+- **(b) the reboiler's duty held at a target** — M62's shape — converges from
+  the 80 MW state at 30, 20 and 10 MW (the reflux floating to 2.55, 1.65,
+  0.90), and stops at 5 MW on the kerosene tray running dry. **So M62's steam
+  plant needs a pumparound above its top side draw**, as real crude units have;
+  a plant's layout, not the solve.
+
+**Cost.** Newton's Jacobian by forward differences (one residual evaluation per
+unknown; a residual is one Thomas sweep per component). Fastest of three runs,
+per column solve, 6 000 ticks:
+
+```text
+                          today's solve                Newton
+  crude_unit              mean 0.18, worst 0.28 ms     mean 0.58, worst 1.01 ms
+  crude_column_hot_feed   mean 0.15, worst 0.74 ms     mean 0.18, worst 0.77 ms
+  crude_column_overheated mean 0.15                    mean 0.52, worst 1.79 ms
+  cold first solve        1.4–4.4 ms                   1.5–3.3 ms
+```
+
+Inside M9.3a's 2.5 ms. The overheated plant cost 4.1 ms a solve until a warm
+start began in the mode its seed ran in (the floor active when the seed's
+reflux is above the declared one).
+
+**Cold starts still need the fixed point.** Newton from 30 or 10 fixed-point
+iterations converged (4 and 12 Newton iterations); from 3 it left the physical
+region. So the old method is not retired: it is the cold start's warm-up, with
+its aids (§65.9), and the reference the new solve is gated against.
+
+### 66.1 Fork 1 — Newton on temperatures, vapours and draw rates
+
+The unknowns are every stage's temperature `T_j`, every vapour rate below the
+top `V_2 … V_N`, and the molar rate of every draw but the bottoms `U_k` —
+Tomich's arrangement of the bubble-point method's own unknowns (*AIChE J.* 16
+(1970) 229), with the draws added because their molar rates hang on their
+compositions. Given them: the top vapour `V_1 = (R+1)·D`, the liquids from the
+stage material balances top-down, the bottoms from the reboiler's mole balance
+(as today), the K-values at each `T_j`, and each component's liquid profile by
+the same Thomas sweep. The residuals:
+
+```text
+  S_j = Σ_c K_jc·x_jc − 1                               every stage (x unnormalised)
+  E_j = L_{j−1}·h_{j−1} + V_{j+1}·H_{j+1} + F_j·h_F
+        − (L_j + U_j)·h_j − V_j·H_j − Q_j                every stage but the reboiler
+  W_k = U_k·M̄(x_k) − r_k·F                              every draw but the bottoms
+```
+
+— the summation, the stage energy balance and the draw's mass ratio, each an
+equation the fixed point satisfies at its fixed point, so where both converge
+they agree. The reboiler's balance stays the closure; nothing about the duties
+changes. The Jacobian is by forward differences, the step solved by dense LU
+(at most ~25 unknowns on a shipped column), damped: a temperature moves at most
+25 K a step, a flow keeps a tenth of its distance to zero, and the step halves
+until the residual norm falls (Armijo). Converged when every summation is within
+the existing tolerance, every energy balance within that tolerance times the
+feed's latent heat flow, every draw ratio within it, and the per-component
+residual within I7's 1e-5 kg/s — the existing gates.
+
+- **Cold**: the fixed point with all its aids for at most 30 iterations, then
+  Newton from wherever it stands. **Warm**: Newton from the previous tick's
+  temperatures and vapours, the draw rates from its liquids. A warm Newton that
+  fails retries cold before the solve is refused.
+- `StageCascade` is untouched: constant molar overflow needs none of this, and
+  its four plants stay byte-identical by construction.
+
+### 66.2 Fork 2 — refusals that name a cause
+
+Past the range the solve still refuses, with the settings (§65.9) — and now,
+where the last iterate shows one, the physical cause: a tray whose liquid has
+gone to zero (the trays at that stage run dry: the side draw there takes all
+the liquid they hold), or the stripping vapour gone to zero (the reboiler has
+no heat left to boil up). C10 asked for exactly that.
+
+### 66.3 Fork 3 — the floor, kept, as an active set
+
+M60.2's rule unchanged: every stage's vapour below the top at least `0.20·F`;
+where the declared reflux does not hold it, the reflux rises to the smallest
+value that does, and the column reports what it ran at. In Newton that is a
+change of specification: the reflux ratio joins the unknowns and the binding
+stage's `V_j = 0.20·F` joins the residuals; if another stage then falls under
+the floor it becomes the binding one (the stage needing the most reflux holds
+every other above). A warm start whose seed ran above its declared reflux tries
+the floor first, on the stage it bound. **The floor stays a game value** (C8).
+
+### 66.4 What moves, and what is deferred
+
+**Moves**: the three M60 plants' fingerprints — `crude_unit`,
+`crude_column_hot_feed`, `crude_column_overheated` — the user's decision 2;
+their published numbers agree to the printed digit and are gated. Every other
+plant byte-identical on both fidelities. The crude unit's working range widens;
+the screen's keys follow it (decision 3).
+
+Deferred, each to a ledger row at M61's close:
+
+- **Steam stripping** (C7) is M62, with what the probe showed it needs: the
+  reboiler held at zero with the reflux as the result (finding 5b), steam as an
+  inert vapour, a pumparound above the top side draw, and its own warm path to
+  zero (the probe reached 10 MW, not 0).
+- **The boiling transfer line** (C6) is not a precondition; on this crude it
+  would read 401–426 °C at its outlet, fired at ~65 MW.
+- **The Jacobian by finite differences** — an analytic one would cost less; the
+  measured cost fits.
+- **Cold starts lean on the fixed point** and its aids (C10's start aids stay).
+
+### 66.5 The slices
+
+- **M61.1 — Newton in the heat-balance cascade.** The solve (§66.1), the floor
+  as an active set (§66.3), the refusals naming a cause (§66.2); gates: Newton
+  against the fixed point on every fixture where both converge, the three M60
+  plants' published numbers unchanged, a walk the fixed point fails now runs,
+  a dry tray and a starved reboiler each refused by name, start-insensitivity.
+  Corpus: every plant but the three byte-identical; steptime.
+- **M61.2 — the wider range on the screen.** The crude unit's range re-measured
+  warm under Newton; the column screen's keys widened to just short of its
+  edges; `crude_unit.rs` and `column_screen.rs` follow.

@@ -154,8 +154,9 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the next
-milestone is the user's choice. **Latest closed: M60 (2026-10-16)**: a column
+Work only on the current milestone unless asked. **Current: M61** — a stronger column
+solve: Newton on the heat-balance cascade, then the screen's wider range (DESIGN §66;
+ROADMAP M61); steam stripping follows as M62. **Latest closed: M60 (2026-10-16)**: a column
 fed hot from its furnace — a heat-balance cascade, the reflux that rises past
 the column's limit, pumparounds, a realistic crude unit and a column screen
 (DESIGN §65; C5 taken for the heat-balance model; C6–C10 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
