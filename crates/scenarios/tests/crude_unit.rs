@@ -131,7 +131,9 @@ fn the_screen_range_runs_to_its_edges() {
 }
 
 /// Past the range the run halts, and the reason names the settings it could
-/// not settle at (the user's decision, §65.9).
+/// not settle at (the user's decision, §65.9) — and, since M61, the physical
+/// edge it stopped at (§66.2): at a reflux of 0.6 the kerosene tray (stage 3)
+/// runs dry, its draw taking all the liquid the reflux sends it.
 #[test]
 fn past_the_range_the_halt_names_the_settings() {
     let mut engine = engine();
@@ -140,14 +142,15 @@ fn past_the_range_the_halt_names_the_settings() {
     engine
         .apply(Command::SetRefluxRatio {
             node: column,
-            reflux_ratio: 1.5,
+            reflux_ratio: 0.6,
         })
         .unwrap();
-    let halt = run(&mut engine, 1000).expect_err("reflux 1.5 is past the range");
+    let halt = run(&mut engine, 1000).expect_err("reflux 0.6 is past the range");
     assert!(
-        halt.contains("could not settle at reflux ratio 1.5 with its pumparounds at 15.0 MW"),
+        halt.contains("could not settle at reflux ratio 0.6 with its pumparounds at 15.0 MW"),
         "{halt}"
     );
+    assert!(halt.contains("The trays at stage 3 run dry"), "{halt}");
 }
 
 /// `SetPumparoundDuty` writes one pumparound's duty, which the column's `kind`

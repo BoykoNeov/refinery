@@ -9680,3 +9680,28 @@ set (the overheated plant's 3.318 exactly) and a held reboiler duty (to 10 MW;
 stopped by the dry tray, so M62's plant needs a top pumparound); mean 0.18–0.58
 ms, worst 1.79 ms. Slices: M61.1 Newton in the heat-balance cascade, M61.2 the
 wider range on the screen. No code changed.
+
+### M61.1 — **LANDED** 2026-10-16: Newton in the heat-balance cascade
+
+The heat-balance cascade's equations solved by Newton on every stage
+temperature, every vapour below the top and every draw rate at once
+(`column_newton.rs`), warm from the previous tick or after 30 fixed-point
+iterations cold; the 20 % floor as an active set; a refusal that names a dry
+tray. The fixed point is kept as the cold warm-up and, test-only, as the
+reference. DESIGN §66.6.
+
+- Corrected while building: the probe's second edge, a reboiler with nothing
+  left to boil up, cannot be reached while the floor holds the reboiler's
+  boil-up at 20 % of the feed, so the refusal does not name it.
+- The three M60 plants agree with the fixed point to a relative 5.2e-7 across
+  their final snapshots; the crude unit now runs at a reflux of 0.8–15 and
+  pumparounds of 0–400 % (M60: 2–10, 75–300 %); at 0.6 the kerosene tray runs
+  dry and the refusal says so.
+- Corpus: 55 of 58 plants byte-identical on both fidelities; the three M60
+  plants moved (the user's decision).
+- Timing: the crude unit mean 0.23 → 0.52 ms, worst 0.36 → 0.69, first tick
+  10.4 → 5.9; the hot-feed and overheated columns mean 0.15–0.16, worst
+  0.62–1.04; none over.
+- Gates: `column_newton` (1), `heat_balance::newton_tests` (4), `crude_unit`
+  (5, its past-the-range case at 0.6). Mutations: eight; seven caught (one
+  after a gate was added for it), one equivalent.

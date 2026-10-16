@@ -38,6 +38,7 @@ use crate::cascade::{
     stage_k_values_profile, CascadePlan, DrawLocation, DrawState, Flows,
     COMPONENT_RESIDUAL_KG_PER_S,
 };
+use crate::column_newton::{ColumnEquations, Solved, Specification, Start, Unsolved};
 use crate::flash::flash_isothermal;
 use crate::molar::MoleFractions;
 
@@ -63,7 +64,7 @@ const SHARP_SEED_ITERATIONS: u32 = 10;
 /// held here, the top vapour and the reflux rise instead and the column keeps
 /// running — the user's decision 2. 0.20 is the measured smallest that keeps the
 /// solve out of the stiff zone on the demo crude with margin; 0.05 did not.
-const VAPOUR_FLOOR_OF_FEED: f64 = 0.20;
+pub(crate) const VAPOUR_FLOOR_OF_FEED: f64 = 0.20;
 
 /// How far each iteration's vapour profile moves from the previous one toward
 /// what the stage balances ask for [-].
@@ -75,6 +76,34 @@ const VAPOUR_FLOOR_OF_FEED: f64 = 0.20;
 /// flows are taken raw.
 const RELAXATION: f64 = 0.5;
 
+/// Fixed-point iterations a COLD start runs before Newton takes over
+/// (M61, docs/DESIGN.md §66.1).
+///
+/// **A convergence aid, measured, not physics**: on the crude unit Newton
+/// converged from 30 and from 10 fixed-point iterations (4 and 12 Newton steps)
+/// and left the physical region from 3 (§66.0). The fixed point carries every
+/// cold aid above — the sharp seed, the first iteration on constant molar
+/// overflow, the relaxation — so Newton starts inside the region they reach.
+const COLD_WARM_UP_ITERATIONS: u32 = 30;
+
+/// Outer iterations of the fixed point when it is solved to convergence on its
+/// own — the reference [`HeatBalanceCascade::fixed_point`] gates Newton
+/// against. M60's cap and its argument (the pinch case is the stiff one).
+#[cfg_attr(not(test), allow(dead_code))]
+const FIXED_POINT_MAX_ITERATIONS: u32 = 2000;
+
+/// How a heat-balance cascade solves its equations.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Method {
+    /// Newton on every temperature, vapour and draw rate at once (M61,
+    /// §66.1), after a short fixed-point warm-up on a cold start.
+    Newton,
+    /// M60's fixed point alone, solved to convergence — kept as the reference
+    /// the tests gate Newton against, where both converge.
+    #[cfg_attr(not(test), allow(dead_code))]
+    FixedPoint,
+}
+
 /// The heat-balance cascade: the complex separation fidelity for a column fed
 /// off its bubble point, selected by `[fidelity] separation = "heat_balance"`.
 ///
@@ -84,26 +113,29 @@ const RELAXATION: f64 = 0.5;
 pub struct HeatBalanceCascade {
     max_iterations: u32,
     seed_offset: Kelvin,
+    method: Method,
 }
 
 impl HeatBalanceCascade {
-    /// Outer iterations before the solve is declared failed — `StageCascade`'s
-    /// cap and its argument (the pinch case is the stiff one).
-    pub const DEFAULT_MAX_ITERATIONS: u32 = 2000;
+    /// Newton steps before the solve is declared failed (M61). A warm tick
+    /// takes 2; a cold start 4–12 after its warm-up (§66.0).
+    pub const DEFAULT_MAX_ITERATIONS: u32 = 50;
 
     pub fn new() -> Self {
         Self {
             max_iterations: Self::DEFAULT_MAX_ITERATIONS,
             seed_offset: Kelvin::ZERO,
+            method: Method::Newton,
         }
     }
 
-    /// A cascade capped at `max_iterations` outer iterations — for the gate
-    /// that reaches the non-convergence `Err` on purpose.
+    /// A cascade capped at `max_iterations` Newton steps (and as many warm-up
+    /// iterations, if fewer than the usual) — for the gate that reaches the
+    /// non-convergence `Err` on purpose.
     pub fn with_max_iterations(max_iterations: u32) -> Self {
         Self {
             max_iterations,
-            seed_offset: Kelvin::ZERO,
+            ..Self::new()
         }
     }
 
@@ -112,8 +144,19 @@ impl HeatBalanceCascade {
     /// the fixed point; DESIGN §5 fork 5).
     pub fn with_seed_offset(seed_offset: Kelvin) -> Self {
         Self {
-            max_iterations: Self::DEFAULT_MAX_ITERATIONS,
             seed_offset,
+            ..Self::new()
+        }
+    }
+
+    /// M60's fixed point alone, to convergence: the reference Newton agrees
+    /// with wherever both converge (§66.1).
+    #[cfg(test)]
+    pub(crate) fn fixed_point() -> Self {
+        Self {
+            max_iterations: FIXED_POINT_MAX_ITERATIONS,
+            seed_offset: Kelvin::ZERO,
+            method: Method::FixedPoint,
         }
     }
 }
@@ -122,6 +165,43 @@ impl Default for HeatBalanceCascade {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// What a solve hands to the column's published answer: the converged
+/// temperatures, liquids and flows and the reflux they ran at.
+struct Profile {
+    temperatures: Vec<f64>,
+    liquid: Vec<Vec<f64>>,
+    flows: Flows,
+    reflux_ratio: f64,
+}
+
+/// One column's fixed-point state after some iterations.
+struct FixedPointState {
+    temperatures: Vec<f64>,
+    liquid: Vec<Vec<f64>>,
+    k: Vec<Vec<f64>>,
+    draws: Vec<DrawState>,
+    /// The last iteration's vapour profile; `None` before any.
+    vapour: Option<Vec<f64>>,
+    converged: bool,
+    iterations: u32,
+    /// What was unmet when the iterations ran out, in words.
+    unmet: Vec<String>,
+}
+
+/// Everything a column's solve reads that the iterations do not change.
+struct ColumnSetup<'a> {
+    pass: &'a ColumnPass<'a>,
+    thermo: &'a dyn ThermoModel,
+    spec: &'a CascadeSpec,
+    plan: CascadePlan,
+    feed: MoleFractions,
+    /// The feed's bubble point at the column's pressure — the cold seed.
+    seed: Kelvin,
+    feed_molar: f64,
+    feed_enthalpy: f64,
+    tolerance: f64,
 }
 
 impl SeparationModel for HeatBalanceCascade {
@@ -209,21 +289,102 @@ impl SeparationModel for HeatBalanceCascade {
                 && previous.liquid.len() == plan.stages
                 && previous.liquid.iter().all(|row| row.len() == slate.len())
         });
+        let setup = ColumnSetup {
+            pass,
+            thermo,
+            spec,
+            plan,
+            feed,
+            seed,
+            feed_molar,
+            feed_enthalpy,
+            tolerance,
+        };
+
+        let profile = match self.method {
+            Method::FixedPoint => self.solve_by_fixed_point(&setup, warm)?,
+            Method::Newton => self.solve_by_newton(&setup, warm)?,
+        };
+        let plan = &setup.plan;
+
+        let k = stage_k_values_profile(slate, thermo, &profile.temperatures, pass.pressure)?;
+        let draws = plan.draw_states(&profile.liquid, &k, slate)?;
+        let condenser_t = bubble_temperature_unnormalized(
+            slate,
+            thermo,
+            draws[0].moles.fractions(),
+            pass.pressure,
+            "the total condenser",
+        )?;
+        let mut result = Vec::with_capacity(draws.len());
+        for (i, draw) in draws.iter().enumerate() {
+            result.push(DrawSeparation {
+                split: plan.mass_ratios[i],
+                composition: draw.moles.to_mass(slate)?,
+                temperature: match plan.locations[i] {
+                    DrawLocation::Condenser => condenser_t,
+                    DrawLocation::Stage(j) => Kelvin(profile.temperatures[j]),
+                },
+            });
+        }
+        let (condenser_duty, reboiler_duty) = column_duties(
+            slate,
+            thermo,
+            &profile.flows,
+            &draws[0],
+            Kelvin(profile.temperatures[0]),
+            condenser_t,
+            &result,
+            pass,
+            plan.side_heat.iter().sum(),
+        )?;
+
+        Ok(Separation {
+            draws: result,
+            profile: Some(CascadeProfile {
+                temperatures: profile.temperatures.iter().copied().map(Kelvin).collect(),
+                liquid: profile.liquid,
+                vapour: profile.flows.vapour.clone(),
+            }),
+            condenser_duty: Some(condenser_duty),
+            reboiler_duty: Some(reboiler_duty),
+            feed_vapour_fraction: Some(feed_vapour_fraction),
+            reflux_ratio: Some(profile.reflux_ratio),
+        })
+    }
+}
+
+impl HeatBalanceCascade {
+    /// M60's fixed point, from `warm` or cold, for at most `cap` iterations.
+    fn fixed_point_iterations(
+        &self,
+        setup: &ColumnSetup<'_>,
+        warm: Option<&CascadeProfile>,
+        cap: u32,
+    ) -> Result<FixedPointState, SimError> {
+        let pass = setup.pass;
+        let slate = pass.slate;
+        let thermo = setup.thermo;
+        let plan = &setup.plan;
+        let spec = setup.spec;
+        let feed_flow = pass.feed_flow.value();
+        let tolerance = setup.tolerance;
+
         let mut stage_t: Vec<f64> = match warm {
             Some(previous) => previous
                 .temperatures
                 .iter()
                 .map(|t| t.value() + self.seed_offset.value())
                 .collect(),
-            None => vec![seed.value() + self.seed_offset.value(); plan.stages],
+            None => vec![setup.seed.value() + self.seed_offset.value(); plan.stages],
         };
         let mut liquid: Vec<Vec<f64>> = match warm {
             Some(previous) => previous.liquid.clone(),
-            None => vec![feed.fractions().to_vec(); plan.stages],
+            None => vec![setup.feed.fractions().to_vec(); plan.stages],
         };
         let sharp = match warm {
             Some(_) => None,
-            None => Some(sharp_split_molar_masses(&plan, pass.feed, slate)),
+            None => Some(sharp_split_molar_masses(plan, pass.feed, slate)),
         };
 
         let mut iterations = 0u32;
@@ -231,15 +392,15 @@ impl SeparationModel for HeatBalanceCascade {
         let mut profile_change = f64::INFINITY;
         let mut temperature_change = f64::INFINITY;
         let mut converged = false;
-        let mut draws: Vec<DrawState> = Vec::new();
         // A warm start relaxes its first stage balance toward the previous
         // tick's vapour (`CascadeProfile::vapour`); a cold one has none.
         let mut last_vapour: Option<Vec<f64>> = warm
             .map(|previous| previous.vapour.clone())
             .filter(|vapour| vapour.len() == plan.stages);
         let mut k = stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?;
+        let mut draws = plan.draw_states(&liquid, &k, slate)?;
 
-        while iterations < self.max_iterations {
+        while iterations < cap {
             iterations += 1;
 
             let mut previous = plan.draw_states(&liquid, &k, slate)?;
@@ -256,10 +417,10 @@ impl SeparationModel for HeatBalanceCascade {
             // flat seed profile the stage balances are wild — on the crude unit
             // (§65.9) a vapour 30 times the feed's, refused on tick 1.
             let flows = if warm.is_none() && iterations == 1 {
-                plan.flows(spec, &previous, feed_flow, feed_molar)?
+                plan.flows(spec, &previous, feed_flow, setup.feed_molar)?
             } else {
                 stage_balance_flows(
-                    &plan,
+                    plan,
                     spec,
                     &StageState {
                         slate,
@@ -272,14 +433,14 @@ impl SeparationModel for HeatBalanceCascade {
                         previous_vapour: last_vapour.as_deref(),
                     },
                     feed_flow,
-                    feed_molar,
-                    feed_enthalpy,
+                    setup.feed_molar,
+                    setup.feed_enthalpy,
                 )?
                 .0
             };
             last_vapour = Some(flows.vapour.clone());
 
-            let next = plan.liquid_profile(&flows, &k, &feed, feed_molar)?;
+            let next = plan.liquid_profile(&flows, &k, &setup.feed, setup.feed_molar)?;
             profile_change = max_abs_difference(&liquid, &next);
             liquid = next;
 
@@ -304,8 +465,8 @@ impl SeparationModel for HeatBalanceCascade {
             }
         }
 
+        let mut unmet = Vec::new();
         if !converged {
-            let mut unmet = Vec::new();
             if profile_change > tolerance {
                 unmet.push(format!(
                     "the liquid profile still moved {profile_change:.3e} against a tolerance \
@@ -324,95 +485,285 @@ impl SeparationModel for HeatBalanceCascade {
                      bound of {COMPONENT_RESIDUAL_KG_PER_S:.3e} kg/s"
                 ));
             }
-            // The settings a player can act on (§65.9): past the crude unit's
-            // working range the solve stops settling, and the settings it was
-            // given are the plain part of the reason.
-            let duties: Vec<String> = spec
-                .pumparounds
-                .iter()
-                .map(|p| format!("{:.1} MW on stage {}", p.duty.value() / 1e6, p.stage))
-                .collect();
-            let settings = format!(
-                " The column could not settle at reflux ratio {}{} — outside the range it \
-                 runs in.",
-                spec.reflux_ratio,
-                if duties.is_empty() {
-                    String::new()
-                } else {
-                    format!(" with its pumparounds at {}", duties.join(", "))
-                }
-            );
+        }
+        Ok(FixedPointState {
+            temperatures: stage_t,
+            liquid,
+            k,
+            draws,
+            vapour: last_vapour,
+            converged,
+            iterations,
+            unmet,
+        })
+    }
+
+    /// M60's solve: the fixed point to convergence, its flows from the
+    /// CONVERGED draw states (`StageCascade`'s reason: the loop's last flows are
+    /// one iterate stale).
+    fn solve_by_fixed_point(
+        &self,
+        setup: &ColumnSetup<'_>,
+        warm: Option<&CascadeProfile>,
+    ) -> Result<Profile, SimError> {
+        let state = self.fixed_point_iterations(setup, warm, self.max_iterations)?;
+        if !state.converged {
             return Err(SimError::Numerical(format!(
-                "heat-balance cascade did not converge in {iterations} iterations: {}. The \
-                 bound on the residual is I7's own number over this column's feed rate; a \
-                 solve that fails publishes no profile, so this is a refusal, not a stale \
-                 number.{settings}",
-                unmet.join("; ")
+                "heat-balance cascade (the fixed point) did not converge in {} iterations: \
+                 {}.{}",
+                state.iterations,
+                state.unmet.join("; "),
+                settings_sentence(setup.spec)
             )));
         }
-
-        let condenser_t = bubble_temperature_unnormalized(
-            slate,
-            thermo,
-            draws[0].moles.fractions(),
-            pass.pressure,
-            "the total condenser",
-        )?;
-        let mut result = Vec::with_capacity(draws.len());
-        for (i, draw) in draws.iter().enumerate() {
-            result.push(DrawSeparation {
-                split: plan.mass_ratios[i],
-                composition: draw.moles.to_mass(slate)?,
-                temperature: match plan.locations[i] {
-                    DrawLocation::Condenser => condenser_t,
-                    DrawLocation::Stage(j) => Kelvin(stage_t[j]),
-                },
-            });
-        }
-
-        // The converged flows, from the CONVERGED draw states (`StageCascade`'s
-        // reason: the loop's last flows are one iterate stale).
+        let pass = setup.pass;
         let (flows, reflux_ratio) = stage_balance_flows(
-            &plan,
-            spec,
+            &setup.plan,
+            setup.spec,
             &StageState {
-                slate,
-                thermo,
-                draws: &draws,
-                liquid: &liquid,
-                k: &k,
-                temperatures: &stage_t,
+                slate: pass.slate,
+                thermo: setup.thermo,
+                draws: &state.draws,
+                liquid: &state.liquid,
+                k: &state.k,
+                temperatures: &state.temperatures,
                 pressure: pass.pressure,
                 previous_vapour: None,
             },
-            feed_flow,
-            feed_molar,
-            feed_enthalpy,
+            pass.feed_flow.value(),
+            setup.feed_molar,
+            setup.feed_enthalpy,
         )?;
-        let (condenser_duty, reboiler_duty) = column_duties(
-            slate,
-            thermo,
-            &flows,
-            &draws[0],
-            Kelvin(stage_t[0]),
-            condenser_t,
-            &result,
-            pass,
-            plan.side_heat.iter().sum(),
-        )?;
-
-        Ok(Separation {
-            draws: result,
-            profile: Some(CascadeProfile {
-                temperatures: stage_t.iter().copied().map(Kelvin).collect(),
-                liquid,
-                vapour: flows.vapour.clone(),
-            }),
-            condenser_duty: Some(condenser_duty),
-            reboiler_duty: Some(reboiler_duty),
-            feed_vapour_fraction: Some(feed_vapour_fraction),
-            reflux_ratio: Some(reflux_ratio),
+        Ok(Profile {
+            temperatures: state.temperatures,
+            liquid: state.liquid,
+            flows,
+            reflux_ratio,
         })
+    }
+
+    /// M61's solve (§66.1): Newton warm from the previous tick, or after a
+    /// short fixed-point warm-up cold — and cold again if the warm one fails.
+    fn solve_by_newton(
+        &self,
+        setup: &ColumnSetup<'_>,
+        warm: Option<&CascadeProfile>,
+    ) -> Result<Profile, SimError> {
+        let pass = setup.pass;
+        let slate = pass.slate;
+        let plan = &setup.plan;
+        let latent = mixture_dh_vap(slate, setup.thermo, setup.feed.fractions(), setup.seed)?;
+        let equations = ColumnEquations {
+            plan,
+            spec: setup.spec,
+            slate,
+            thermo: setup.thermo,
+            pressure: pass.pressure,
+            feed: &setup.feed,
+            feed_mass: pass.feed_flow.value(),
+            feed_molar: setup.feed_molar,
+            feed_enthalpy: setup.feed_enthalpy,
+            energy_scale: setup.feed_molar * latent,
+            tolerance: setup.tolerance,
+        };
+
+        let mut warm_failure = None;
+        if let Some(previous) = warm.filter(|p| p.vapour.len() == plan.stages) {
+            let temperatures: Vec<f64> = previous
+                .temperatures
+                .iter()
+                .map(|t| t.value() + self.seed_offset.value())
+                .collect();
+            let k = stage_k_values_profile(slate, setup.thermo, &temperatures, pass.pressure)?;
+            let draws = plan.draw_states(&previous.liquid, &k, slate)?;
+            // A warm Newton that fails is retried cold, where the aids are.
+            match self.newton(&equations, &temperatures, &previous.vapour, &draws) {
+                Ok(profile) => return Ok(profile),
+                Err(unsolved) => warm_failure = Some(unsolved),
+            }
+        }
+
+        let refusal = |reason: &str, cause: &str| {
+            SimError::Numerical(format!(
+                "heat-balance cascade {reason}.{cause}{}",
+                settings_sentence(setup.spec)
+            ))
+        };
+        let cause_of =
+            |unsolved: &Unsolved| physical_cause(plan, unsolved.flows.as_deref(), setup.feed_molar);
+        let cap = COLD_WARM_UP_ITERATIONS.min(self.max_iterations);
+        let state = match self.fixed_point_iterations(setup, None, cap) {
+            Ok(state) => state,
+            // The cold warm-up refused outright (an infeasible first iterate):
+            // the warm attempt's last iterate, if there was one, is where the
+            // edge shows.
+            Err(e) => {
+                return Err(match warm_failure {
+                    Some(warm) => refusal(&warm.reason, &cause_of(&warm)),
+                    None => refusal(&format!("could not start: {e}"), ""),
+                })
+            }
+        };
+        let vapour = state
+            .vapour
+            .clone()
+            .unwrap_or_else(|| vec![setup.feed_molar; plan.stages]);
+        match self.newton(&equations, &state.temperatures, &vapour, &state.draws) {
+            Ok(profile) => Ok(profile),
+            // The cold failure is reported, with the warm one's physical cause
+            // where only the warm one's last iterate shows an edge.
+            Err(cold) => {
+                let mut cause = cause_of(&cold);
+                if cause.is_empty() {
+                    if let Some(warm) = &warm_failure {
+                        cause = cause_of(warm);
+                    }
+                }
+                Err(refusal(&cold.reason, &cause))
+            }
+        }
+    }
+
+    /// Newton under the vapour floor's active set (§66.3): the declared reflux
+    /// first, and where that leaves a stage under the floor, the floor on the
+    /// stage that binds with the reflux an unknown. A start that ran above its
+    /// declared reflux tries the floor first, on the stage it bound.
+    fn newton(
+        &self,
+        equations: &ColumnEquations<'_>,
+        temperatures: &[f64],
+        vapour: &[f64],
+        draws: &[DrawState],
+    ) -> Result<Profile, Unsolved> {
+        let plan = equations.plan;
+        let n = plan.stages;
+        let draw_rates: Vec<f64> = (0..plan.mass_ratios.len() - 1)
+            .map(|i| plan.mass_ratios[i] * equations.feed_mass / draws[i].mean_molar_mass)
+            .collect();
+        let start = Start {
+            temperatures,
+            vapour,
+            draw_rates: &draw_rates,
+        };
+        let declared = equations.spec.reflux_ratio;
+        let floor = VAPOUR_FLOOR_OF_FEED * equations.feed_molar;
+        let holds = |solved: &Solved| {
+            solved.reflux_ratio >= declared
+                && solved.flows.vapour[1..]
+                    .iter()
+                    .all(|v| *v >= floor * (1.0 - 1.0e-9))
+        };
+        let lowest = |vapour: &[f64]| {
+            (1..n)
+                .min_by(|a, b| vapour[*a].total_cmp(&vapour[*b]).then(a.cmp(b)))
+                .unwrap_or(1)
+        };
+        let profile = |solved: Solved| Profile {
+            temperatures: solved.temperatures,
+            liquid: solved.liquid,
+            flows: solved.flows,
+            reflux_ratio: solved.reflux_ratio,
+        };
+
+        let ran = vapour[0] / draw_rates[0] - 1.0;
+        if ran > declared * (1.0 + 1.0e-6) {
+            if let Ok(solved) = equations.solve(
+                &start,
+                Specification::Floor(lowest(vapour)),
+                self.max_iterations,
+            ) {
+                if holds(&solved) {
+                    return Ok(profile(solved));
+                }
+            }
+        }
+        let declared_solve = equations.solve(&start, Specification::Reflux, self.max_iterations);
+        let mut binding = match &declared_solve {
+            Ok(solved) if solved.flows.vapour[1..].iter().all(|v| *v >= floor) => {
+                return declared_solve.map(profile);
+            }
+            Ok(solved) => lowest(&solved.flows.vapour),
+            // A declared solve that failed with every stage of its start above
+            // the floor did not fail on the floor: report it.
+            Err(_) if vapour[1..].iter().all(|v| *v >= floor) => {
+                return declared_solve.map(profile);
+            }
+            Err(_) => lowest(vapour),
+        };
+        let mut last = None;
+        for _ in 1..n {
+            match equations.solve(&start, Specification::Floor(binding), self.max_iterations) {
+                Ok(solved) if holds(&solved) => return Ok(profile(solved)),
+                Ok(solved) => {
+                    match (1..n).find(|j| solved.flows.vapour[*j] < floor * (1.0 - 1.0e-9)) {
+                        Some(j) if j != binding => binding = j,
+                        _ => break,
+                    }
+                }
+                Err(unsolved) => {
+                    last = Some(unsolved);
+                    break;
+                }
+            }
+        }
+        Err(match (declared_solve, last) {
+            (_, Some(unsolved)) => unsolved,
+            (Err(unsolved), None) => unsolved,
+            (Ok(solved), None) => Unsolved {
+                reason: "found no reflux at which every stage's vapour stands at the floor".into(),
+                flows: Some(Box::new(solved.flows)),
+            },
+        })
+    }
+}
+
+/// The settings a player can act on (§65.9): past the crude unit's working
+/// range the solve stops settling, and the settings it was given are the plain
+/// part of the reason.
+fn settings_sentence(spec: &CascadeSpec) -> String {
+    let duties: Vec<String> = spec
+        .pumparounds
+        .iter()
+        .map(|p| format!("{:.1} MW on stage {}", p.duty.value() / 1e6, p.stage))
+        .collect();
+    format!(
+        " The column could not settle at reflux ratio {}{} — outside the range it runs in.",
+        spec.reflux_ratio,
+        if duties.is_empty() {
+            String::new()
+        } else {
+            format!(" with its pumparounds at {}", duties.join(", "))
+        }
+    )
+}
+
+/// A physical edge the last iterate shows, in words (§66.2), or nothing: a tray
+/// whose liquid has run out. (The probe's other edge, a reboiler with nothing
+/// left to boil up, cannot be reached here: the vapour floor holds the
+/// reboiler's boil-up at 20 % of the feed.)
+///
+/// A share of the feed's molar rate below which a flow counts as gone: 1 %. The
+/// line search never steps a flow through zero, so a solve that stopped at an
+/// edge stopped with that flow close to it — measured at exactly zero on the
+/// crude unit's dry kerosene tray (§66.0).
+fn physical_cause(plan: &CascadePlan, flows: Option<&Flows>, feed_molar: f64) -> String {
+    const GONE_SHARE_OF_FEED: f64 = 0.01;
+    let Some(flows) = flows else {
+        return String::new();
+    };
+    let gone = GONE_SHARE_OF_FEED * feed_molar;
+    let n = plan.stages;
+    let driest = (0..n - 1)
+        .filter(|j| flows.liquid_down[*j] <= gone)
+        .min_by(|a, b| flows.liquid_down[*a].total_cmp(&flows.liquid_down[*b]));
+    match driest {
+        Some(j) => format!(
+            " The trays at stage {} run dry: the liquid leaving it has fallen to {:.3} mol/s, \
+             the draws above it taking all the liquid the column makes there.",
+            j + 1,
+            flows.liquid_down[j]
+        ),
+        None => String::new(),
     }
 }
 
@@ -655,7 +1006,7 @@ pub(crate) fn liquid_enthalpy(slate: &Slate, fractions: &[f64], temperature: Kel
 }
 
 /// The vapour in equilibrium with a stage's liquid, `y = K·x` normalised.
-fn equilibrium_vapour(liquid: &[f64], k: &[f64]) -> Result<Vec<f64>, SimError> {
+pub(crate) fn equilibrium_vapour(liquid: &[f64], k: &[f64]) -> Result<Vec<f64>, SimError> {
     let amounts: Vec<f64> = liquid.iter().zip(k).map(|(x, k)| x * k).collect();
     MoleFractions::from_amounts(&amounts)
         .map(|y| y.fractions().to_vec())
@@ -1130,7 +1481,8 @@ mod tests {
         }
     }
 
-    /// The non-convergence `Err` is reached, naming what is unmet.
+    /// The non-convergence `Err` is reached, naming what is unmet: the worst of
+    /// Newton's equations, and the settings it could not settle at.
     #[test]
     fn a_solve_out_of_iterations_is_refused() {
         let slate = slate_with_cp(2000.0);
@@ -1150,7 +1502,8 @@ mod tests {
             message.contains("did not converge in 2 iterations"),
             "{message}"
         );
-        assert!(message.contains("liquid profile"), "{message}");
+        assert!(message.contains("the worst equation is"), "{message}");
+        assert!(message.contains("reflux ratio 2"), "{message}");
     }
 
     /// **Past the limit the reflux rises** (§65.3, the user's decision 2): a
@@ -1539,5 +1892,360 @@ mod pumparound_tests {
         .unwrap_err()
         .to_string();
         assert!(message.contains("heat_balance"), "{message}");
+    }
+}
+
+/// Newton against the fixed point (M61, docs/DESIGN.md §66): the same
+/// equations, so the same answer wherever both converge — and a column only
+/// Newton can run.
+#[cfg(test)]
+mod newton_tests {
+    use super::*;
+    use crate::{ConstantAlphaThermo, TroutonThermo};
+    use refinery_core::components::{Phase, PseudoComponent};
+    use refinery_core::graph::{ColumnDraw, NodeId, Pumparound};
+    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, KgPerSec, P_ATM};
+
+    /// The largest relative gap between two separations: every draw's mass
+    /// fractions (absolute), both duties and the reflux they ran at.
+    fn gap(a: &Separation, b: &Separation) -> f64 {
+        let mut worst = 0.0f64;
+        for (x, y) in a.draws.iter().zip(&b.draws) {
+            for (p, q) in x
+                .composition
+                .fractions()
+                .iter()
+                .zip(y.composition.fractions())
+            {
+                worst = worst.max((p - q).abs());
+            }
+        }
+        let relative = |p: f64, q: f64| (p - q).abs() / p.abs().max(q.abs()).max(1.0);
+        worst = worst.max(relative(
+            a.condenser_duty.unwrap().value(),
+            b.condenser_duty.unwrap().value(),
+        ));
+        worst = worst.max(relative(
+            a.reboiler_duty.unwrap().value(),
+            b.reboiler_duty.unwrap().value(),
+        ));
+        worst.max(relative(a.reflux_ratio.unwrap(), b.reflux_ratio.unwrap()))
+    }
+
+    fn three_cut_slate() -> Slate {
+        Slate::new(
+            [
+                ("light", 350.0, 0.100),
+                ("middle", 420.0, 0.150),
+                ("heavy", 500.0, 0.250),
+            ]
+            .iter()
+            .map(|(name, tb, molar_mass)| PseudoComponent {
+                name: (*name).into(),
+                tb: Kelvin(*tb),
+                molar_mass: KgPerMol(*molar_mass),
+                density: Some(KgPerM3(800.0)),
+                cp: JPerKgK(2000.0),
+                cp_shape: None,
+                phase: Phase::Liquid,
+            })
+            .collect(),
+        )
+        .unwrap()
+    }
+
+    /// **Where both converge, Newton lands where the fixed point does** — on
+    /// the fixtures M60 gated the fixed point on: a cold, a saturated and two
+    /// hot feeds, a pumparound, and a feed so hot the vapour floor binds (the
+    /// floor as Newton's active set, §66.3, against M60.2's sweep). Agreement to
+    /// a millionth: both stop at the same tolerance from the same root.
+    #[test]
+    fn newton_lands_where_the_fixed_point_does() {
+        let slate = three_cut_slate();
+        let thermo = ConstantAlphaThermo::with_temperature_exponent(
+            &slate,
+            vec![3.0, 1.0, 0.25],
+            Kelvin(400.0),
+            10.0,
+        )
+        .unwrap()
+        .with_dh_vap(&slate, vec![30_000.0, 36_000.0, 45_000.0])
+        .unwrap();
+        let feed = Composition::from_weights(&[0.3, 0.3, 0.4]).unwrap();
+        let moles = MoleFractions::from_mass(&feed, &slate).unwrap();
+        let bubble =
+            bubble_temperature_unnormalized(&slate, &thermo, moles.fractions(), P_ATM, "feed")
+                .unwrap();
+        let draws = vec![
+            ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
+            ColumnDraw::by_stage(NodeId(2), 8, None),
+        ];
+        let cases = [
+            ("cold", -10.0, 2.0, None),
+            ("saturated", 0.0, 2.0, None),
+            ("hot", 15.0, 2.0, None),
+            ("hotter", 30.0, 2.0, None),
+            ("pumparound", 15.0, 2.0, Some(200_000.0)),
+            ("past the floor", 400.0, 0.5, None),
+        ];
+        for (label, offset, reflux_ratio, pumparound) in cases {
+            let spec = CascadeSpec {
+                stages: 8,
+                feed_stage: 4,
+                reflux_ratio,
+                pumparounds: pumparound
+                    .map(|duty| {
+                        vec![Pumparound {
+                            stage: 3,
+                            duty: Watt(duty),
+                        }]
+                    })
+                    .unwrap_or_default(),
+            };
+            let pass = ColumnPass {
+                slate: &slate,
+                draws: &draws,
+                smearing: Kelvin(0.0),
+                pressure: P_ATM,
+                feed: &feed,
+                feed_flow: KgPerSec(10.0),
+                temperature: Kelvin(bubble.value() + offset),
+                cascade: Some(&spec),
+                seed: None,
+            };
+            let newton = HeatBalanceCascade::new()
+                .separate(&pass, &thermo)
+                .unwrap_or_else(|e| panic!("{label}: Newton: {e}"));
+            let fixed = HeatBalanceCascade::fixed_point()
+                .separate(&pass, &thermo)
+                .unwrap_or_else(|e| panic!("{label}: the fixed point: {e}"));
+            let gap = gap(&newton, &fixed);
+            assert!(
+                gap < 1e-6,
+                "{label}: Newton and the fixed point differ by {gap}"
+            );
+        }
+        // And the floor bound on the last case, or it compared nothing.
+        let spec = CascadeSpec {
+            stages: 8,
+            feed_stage: 4,
+            reflux_ratio: 0.5,
+            pumparounds: Vec::new(),
+        };
+        let scorching = HeatBalanceCascade::new()
+            .separate(
+                &ColumnPass {
+                    slate: &slate,
+                    draws: &draws,
+                    smearing: Kelvin(0.0),
+                    pressure: P_ATM,
+                    feed: &feed,
+                    feed_flow: KgPerSec(10.0),
+                    temperature: Kelvin(bubble.value() + 400.0),
+                    cascade: Some(&spec),
+                    seed: None,
+                },
+                &thermo,
+            )
+            .unwrap();
+        assert!(scorching.reflux_ratio.unwrap() > 0.5);
+    }
+
+    /// **A floor that stops binding lets go** (§66.3): a column held at the
+    /// floor (a feed 60 K past its bubble point, the reflux lifted to 0.79
+    /// above its declared 0.5) whose feed then cools to 40 K past it runs at
+    /// exactly its declared reflux again — warm from the floored profile, which
+    /// tries the floor first and must refuse the floored answer it finds there,
+    /// a reflux of 0.37, below the declared one (the M61.1 mutation pass).
+    #[test]
+    fn a_floor_that_stops_binding_lets_go() {
+        let slate = three_cut_slate();
+        let thermo = ConstantAlphaThermo::with_temperature_exponent(
+            &slate,
+            vec![3.0, 1.0, 0.25],
+            Kelvin(400.0),
+            10.0,
+        )
+        .unwrap()
+        .with_dh_vap(&slate, vec![30_000.0, 36_000.0, 45_000.0])
+        .unwrap();
+        let feed = Composition::from_weights(&[0.3, 0.3, 0.4]).unwrap();
+        let moles = MoleFractions::from_mass(&feed, &slate).unwrap();
+        let bubble =
+            bubble_temperature_unnormalized(&slate, &thermo, moles.fractions(), P_ATM, "feed")
+                .unwrap();
+        let draws = vec![
+            ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
+            ColumnDraw::by_stage(NodeId(2), 8, None),
+        ];
+        let spec = CascadeSpec {
+            stages: 8,
+            feed_stage: 4,
+            reflux_ratio: 0.5,
+            pumparounds: Vec::new(),
+        };
+        let at = |offset: f64, seed: Option<&CascadeProfile>| {
+            HeatBalanceCascade::new()
+                .separate(
+                    &ColumnPass {
+                        slate: &slate,
+                        draws: &draws,
+                        smearing: Kelvin(0.0),
+                        pressure: P_ATM,
+                        feed: &feed,
+                        feed_flow: KgPerSec(10.0),
+                        temperature: Kelvin(bubble.value() + offset),
+                        cascade: Some(&spec),
+                        seed,
+                    },
+                    &thermo,
+                )
+                .unwrap()
+        };
+        let floored = at(60.0, None);
+        assert!(floored.reflux_ratio.unwrap() > 0.7);
+        let cooled = at(40.0, floored.profile.as_ref());
+        assert_eq!(cooled.reflux_ratio, Some(0.5));
+    }
+
+    /// The crude unit's column (`scenarios/crude_unit.toml`, §65.9): six cuts,
+    /// Trouton K-values, ten stages, three side draws, three pumparounds.
+    struct CrudeUnit {
+        slate: Slate,
+        feed: Composition,
+        draws: Vec<ColumnDraw>,
+    }
+
+    impl CrudeUnit {
+        fn new() -> Self {
+            let cuts = [
+                ("light_naphtha", 70.0, 0.095, 680.0, 2200.0),
+                ("heavy_naphtha", 150.0, 0.13, 750.0, 2100.0),
+                ("kerosene", 220.0, 0.17, 800.0, 2050.0),
+                ("diesel", 300.0, 0.22, 850.0, 2000.0),
+                ("gas_oil", 380.0, 0.30, 900.0, 1950.0),
+                ("residue", 560.0, 0.55, 980.0, 1850.0),
+            ];
+            let slate = Slate::new(
+                cuts.iter()
+                    .map(|(name, tb_c, molar_mass, density, cp)| PseudoComponent {
+                        name: (*name).into(),
+                        tb: Kelvin(tb_c + 273.15),
+                        molar_mass: KgPerMol(*molar_mass),
+                        density: Some(KgPerM3(*density)),
+                        cp: JPerKgK(*cp),
+                        cp_shape: None,
+                        phase: Phase::Liquid,
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            Self {
+                slate,
+                feed: Composition::from_weights(&[0.08, 0.14, 0.16, 0.20, 0.14, 0.28]).unwrap(),
+                draws: vec![
+                    ColumnDraw::by_stage(NodeId(1), 0, Some(0.22)),
+                    ColumnDraw::by_stage(NodeId(2), 3, Some(0.16)),
+                    ColumnDraw::by_stage(NodeId(3), 5, Some(0.20)),
+                    ColumnDraw::by_stage(NodeId(4), 7, Some(0.14)),
+                    ColumnDraw::by_stage(NodeId(5), 10, None),
+                ],
+            }
+        }
+
+        fn spec(reflux_ratio: f64, pumparound_scale: f64) -> CascadeSpec {
+            CascadeSpec {
+                stages: 10,
+                feed_stage: 8,
+                reflux_ratio,
+                pumparounds: [(4, 15.0e6), (6, 15.0e6), (7, 10.0e6)]
+                    .iter()
+                    .map(|(stage, duty)| Pumparound {
+                        stage: *stage,
+                        duty: Watt(duty * pumparound_scale),
+                    })
+                    .collect(),
+            }
+        }
+
+        fn separate(
+            &self,
+            model: &HeatBalanceCascade,
+            spec: &CascadeSpec,
+            seed: Option<&CascadeProfile>,
+        ) -> Result<Separation, SimError> {
+            model.separate(
+                &ColumnPass {
+                    slate: &self.slate,
+                    draws: &self.draws,
+                    smearing: Kelvin(0.0),
+                    pressure: Pascal(1.8e5),
+                    feed: &self.feed,
+                    feed_flow: KgPerSec(104.0),
+                    temperature: Kelvin(355.0 + 273.15),
+                    cascade: Some(spec),
+                    seed,
+                },
+                &TroutonThermo::new(),
+            )
+        }
+    }
+
+    /// **Newton runs the crude unit where the fixed point cannot** (§66.0,
+    /// finding 3): from the running column, the pumparounds halved in one step
+    /// — M60's measured edge, where the fixed point stops settling — run on
+    /// Newton, warm, and agree with nothing the fixed point produced, because
+    /// it produced nothing. And at the running column itself, where both
+    /// settle, they agree.
+    #[test]
+    fn newton_runs_the_crude_unit_where_the_fixed_point_cannot() {
+        let unit = CrudeUnit::new();
+        let running = CrudeUnit::spec(4.0, 1.0);
+        let newton = unit
+            .separate(&HeatBalanceCascade::new(), &running, None)
+            .expect("the crude unit runs on Newton");
+        let fixed = unit
+            .separate(&HeatBalanceCascade::fixed_point(), &running, None)
+            .expect("the crude unit runs on the fixed point");
+        let gap = gap(&newton, &fixed);
+        assert!(gap < 1e-6, "Newton and the fixed point differ by {gap}");
+
+        let halved = CrudeUnit::spec(4.0, 0.5);
+        let seed = newton.profile.as_ref();
+        let fixed = unit.separate(&HeatBalanceCascade::fixed_point(), &halved, seed);
+        assert!(
+            fixed.is_err(),
+            "the fixed point settled at half the pumparound duty; this gate needs a case it \
+             cannot run"
+        );
+        let halved_run = unit
+            .separate(&HeatBalanceCascade::new(), &halved, seed)
+            .unwrap_or_else(|e| panic!("Newton at half the pumparound duty: {e}"));
+        // Less heat taken out above the feed: the reboiler carries less.
+        assert!(halved_run.reboiler_duty.unwrap().value() < newton.reboiler_duty.unwrap().value());
+    }
+
+    /// **A dry tray is refused by name** (§66.2): at a reflux of 0.6 the
+    /// kerosene tray (stage 3) runs dry — its draw takes all the liquid the
+    /// reflux sends it — and the refusal says so beside the settings.
+    #[test]
+    fn a_dry_tray_is_refused_by_name() {
+        let unit = CrudeUnit::new();
+        let running = unit
+            .separate(&HeatBalanceCascade::new(), &CrudeUnit::spec(4.0, 1.0), None)
+            .unwrap();
+        let message = unit
+            .separate(
+                &HeatBalanceCascade::new(),
+                &CrudeUnit::spec(0.6, 1.0),
+                running.profile.as_ref(),
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            message.contains("The trays at stage 3 run dry"),
+            "{message}"
+        );
+        assert!(message.contains("reflux ratio 0.6"), "{message}");
     }
 }

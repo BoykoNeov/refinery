@@ -24606,8 +24606,10 @@ residual within I7's 1e-5 kg/s — the existing gates.
 Past the range the solve still refuses, with the settings (§65.9) — and now,
 where the last iterate shows one, the physical cause: a tray whose liquid has
 gone to zero (the trays at that stage run dry: the side draw there takes all
-the liquid they hold), or the stripping vapour gone to zero (the reboiler has
-no heat left to boil up). C10 asked for exactly that.
+the liquid they hold). C10 asked for exactly that. The probe's other edge, the
+stripping vapour gone to zero, is not named: with the floor kept (§66.3) the
+reboiler's boil-up never falls under 20 % of the feed, so no refusal can reach
+it — it returns with M62, where the reboiler is held at zero.
 
 ### 66.3 Fork 3 — the floor, kept, as an active set
 
@@ -24651,3 +24653,78 @@ Deferred, each to a ledger row at M61's close:
 - **M61.2 — the wider range on the screen.** The crude unit's range re-measured
   warm under Newton; the column screen's keys widened to just short of its
   edges; `crude_unit.rs` and `column_screen.rs` follow.
+
+### 66.6 Newton in the heat-balance cascade, built (M61.1)
+
+As §66.1–66.3 specify, with one correction.
+
+- **`column_newton.rs`** (`ColumnEquations`): the residuals of §66.1 at an
+  iterate, built from the fixed point's own arithmetic (the stage material
+  balances, `CascadePlan::solve_component`'s Thomas sweep left unnormalised for
+  the summation, `liquid_enthalpy`, `mixture_dh_vap`, the condenser's bubble
+  point for the reflux); the Jacobian by forward differences (1e-4 K on a
+  temperature, 1e-7 relative on a flow, backward where forward leaves the
+  physical region); the step by dense Gaussian elimination with partial
+  pivoting (Golub & Van Loan alg. 3.4.1); damped — 25 K on a temperature, a
+  tenth of a flow's distance to zero kept, Armijo halving up to 30 times.
+  Energy residuals scaled by the feed's molar rate times its molar latent heat;
+  converged when every scaled residual is within the existing tolerance
+  `(1e-5 kg/s ÷ F)` clamped to `[1e-12, 1e-6]`.
+- **In `HeatBalanceCascade`**: a warm tick runs Newton from the previous
+  profile (draw rates from its liquids); a cold one, or a warm one that fails,
+  runs the fixed point with all its aids for `COLD_WARM_UP_ITERATIONS = 30`,
+  then Newton. `DEFAULT_MAX_ITERATIONS` is now Newton's cap, 50.
+  `HeatBalanceCascade::fixed_point()` (test-only) keeps M60's solve whole, to
+  convergence, as the reference.
+- **The floor as an active set** (§66.3) exactly as specified; a solve under
+  the floor is accepted only if its reflux is at or above the declared one and
+  every stage stands at the floor or over it.
+- **The refusal** names the worst equation, the settings, and — from either
+  attempt's last iterate — a dry tray. **Corrected while building**: the
+  probe's other edge, the reboiler with nothing left to boil up, was dropped
+  from the refusal: with the floor kept, the reboiler's boil-up never falls
+  under 20 % of the feed, so the branch could not be reached (§66.2).
+
+**Measured on the shipped plants** (6 000 ticks, both solvers): the three M60
+plants' final snapshots agree with the fixed point's everywhere to a relative
+5.2e-7 (the crude unit's residue tank, a mass fraction of 0.00965); reflux,
+condenser and reboiler to every printed digit — the crude unit 4.0000 /
+45.942 / 80.752 MW, the hot feed 2.0000 / 51.609 / 40.484, the overheated
+column 3.3183 / 74.301 / 20.733.
+
+**The crude unit's range**, each setting in one step from the running plant:
+the reflux 0.8–15 and the pumparounds 0–400 % of their duties all run
+(M60: 2–10 and 75–300 %); at a reflux of 0.6 the kerosene tray runs dry and
+the refusal says so. The furnace to 50 MW runs as before.
+
+**Timing** (steptime, the column stories, fastest of five, old → new): the
+crude unit mean 0.23 → 0.52 ms, worst 0.36 → 0.69, first tick 10.4 → 5.9;
+the hot feed mean 0.18 → 0.15, worst 0.86 → 0.62; the overheated column mean
+0.18 → 0.16, worst 0.96 → 1.04. No tick over 2.5 ms on either solver.
+
+**Corpus**: 55 of 58 plants byte-identical on both fidelities; the three M60
+plants moved, the user's decision 2.
+
+**Gates**: `column_newton` (1: the dense solve pivots and refuses a singular
+matrix); `heat_balance::newton_tests` (4: Newton lands where the fixed point
+does on six fixtures — a cold, a saturated and two hot feeds, a pumparound, the
+floor binding — to a millionth; Newton runs the crude unit's column at half its
+pumparound duty, warm, where the fixed point is checked to fail; a dry tray
+refused by name; a floor that stops binding lets go, back to the declared
+reflux exactly); M60's fourteen heat-balance tests unchanged but one (the
+out-of-iterations refusal now names Newton's worst equation); `crude_unit.rs`'s
+past-the-range case moved from a reflux of 1.5 (which now runs) to 0.6, and
+checks the dry tray is named.
+
+**Mutations**: eight. Seven caught — the floor never tried (by
+`heat_balance_column`'s furnace-and-reflux walk), a pumparound's heat dropped
+from Newton's energy balance, the draws' mass-ratio residual zeroed, the dry
+tray never named, the cold warm-up cut to 3 iterations, the warm start skipped
+(each by `newton_tests`), and a floored answer accepted below the declared
+reflux — MISSED at first: from a profile floored at a reflux of 7 Newton never
+reaches the bad answer, so no fixture held one; from a seed floored at 0.79 the
+mutant reports 0.37 where the declared 0.5 is right, and
+`a_floor_that_stops_binding_lets_go` was written on that case and catches it.
+One equivalent: the summation on NORMALISED liquid has the same root — where
+every stage's `Σ K·x = Σ x`, the summed component balances (exact in the
+Thomas sweep) force `Σ x = 1` — so no test can tell it apart, and none should.
