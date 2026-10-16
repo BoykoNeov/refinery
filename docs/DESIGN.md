@@ -25161,11 +25161,12 @@ point.
 one-cut and a three-cut naphtha over water and of a water-rich stream against
 `tools/steptime/prototypes/m62_2/free_water_flash.py` to 1e-8; the wet bubble
 points and the bubble pressure at each; a rounding trace boils dry);
-`line_flash.rs`'s `free_water_tests` (4: a 0.01 K sweep through every state
+`line_flash.rs`'s `free_water_tests` (5: a 0.01 K sweep through every state
 conserving each component, never supersaturating the vapour, keeping the oil
 on Raoult's line and never jumping, with water first and last in the slate; the
 oil all vapour over free water; pure water and all vapour; a dry stream on a
-wet slate bit for bit); `boiloff.rs` (1: a wet holdup well above its bubble point boils
+wet slate bit for bit; one cut over water settled isenthalpically through its
+pinned three-phase point, its energy kept and its temperature never falling); `boiloff.rs` (1: a wet holdup well above its bubble point boils
 dry in one step, its books exact, its oil left at `Σ K·x = 1 − y_w`);
 `crates/scenarios/tests/wet_rundown_reference.rs` (4: the junction against the
 script at the engine's own state; the tank on its wet bubble point; energy and

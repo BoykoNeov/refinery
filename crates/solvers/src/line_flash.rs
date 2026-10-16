@@ -1187,4 +1187,65 @@ mod free_water_tests {
             assert_eq!(a.vapour.fractions(), b.vapour.fractions());
         }
     }
+
+    /// One oil cut over water: two components, three phases, so the three-phase
+    /// state is ONE temperature and the isothermal flash jumps there, as a pure
+    /// component's does. The isenthalpic flash takes `q` from the energy, so it
+    /// still settles: swept across that temperature it never fails, holds
+    /// `h(T*) + latent = h(T_le)` to rounding, and its temperature never falls as
+    /// the stream's enthalpy rises — it sits on the pinned point while the
+    /// vapour grows, then climbs.
+    #[test]
+    fn one_cut_over_water_settles_through_its_pinned_three_phase_point() {
+        use crate::ConstantEnthalpy;
+        let s = Slate::new(vec![
+            component("heavy_naphtha", 150.0, 0.130, false),
+            component("water", 100.0, 0.018, true),
+        ])
+        .unwrap();
+        let thermo = TroutonThermo::new();
+        let enthalpy = ConstantEnthalpy;
+        let feed = MoleFractions::from_amounts(&[0.8, 0.2])
+            .unwrap()
+            .to_mass(&s)
+            .unwrap();
+        let pressure = Pascal(1.8e5);
+        let mut previous = f64::NEG_INFINITY;
+        let mut pinned = 0;
+        for step in 0..=600 {
+            let liquid_equivalent = Kelvin(370.0 + 0.1 * f64::from(step));
+            let settled = EquilibriumLineFlash
+                .settle(&s, &feed, liquid_equivalent, pressure, &thermo, &enthalpy)
+                .unwrap();
+            let t = settled.temperature.value();
+            let latent = settled.vapour.map_or(0.0, |v| v.latent.value());
+            let held = enthalpy
+                .specific_enthalpy(&s, &feed, liquid_equivalent)
+                .unwrap()
+                .value();
+            let now = enthalpy
+                .specific_enthalpy(&s, &feed, settled.temperature)
+                .unwrap()
+                .value();
+            assert!(
+                (now + latent - held).abs() <= 1e-9 * held.abs(),
+                "{} K: the flash keeps {} J/kg of {held}",
+                liquid_equivalent.value(),
+                now + latent
+            );
+            assert!(
+                t >= previous - 1e-9,
+                "{} K: settles at {t} K, below the {previous} K before it",
+                liquid_equivalent.value()
+            );
+            if settled.vapour.is_some() && (t - previous).abs() < 1e-9 {
+                pinned += 1;
+            }
+            previous = t;
+        }
+        assert!(
+            pinned > 5,
+            "the sweep never sat on the pinned point ({pinned})"
+        );
+    }
 }
