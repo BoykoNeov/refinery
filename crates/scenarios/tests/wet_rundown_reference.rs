@@ -57,17 +57,17 @@ fn refusal(source: &str) -> String {
 }
 
 /// **Three phases in the line, on the hand calculation.** At 2 000 ticks the
-/// junction after the valve stands at 85.59 °C and 1.505 bar, 12.78 % of the
-/// mass vapour — and the independent script, flashing the supply's composition
-/// at that same temperature and pressure, finds it in the three-phase state,
-/// 1.66 % of the mass free water beside the oil liquid, and the vapour share
-/// 0.127 786 880 6. The junction's `q` is the ENERGY's
+/// junction after the valve stands at 85.71 °C and 1.504 bar, 12.77 % of the
+/// mass vapour (water on IAPWS-IF97's saturation line since M63.2, §68.2) —
+/// and the independent script, flashing the supply's composition at that same
+/// temperature and pressure, finds it in the three-phase state, 1.67 % of the
+/// mass free water beside the oil liquid, and the vapour share 0.127 735 012 0. The junction's `q` is the ENERGY's
 /// (`settle_full`), the script's the flash's: on a mixture they meet at the
 /// root, and they do here to the script's printed digits.
 ///
 /// And the tank stands on its WET bubble point at atmospheric pressure, with
 /// free water in it: free water acts at any amount, so the oil boils where its
-/// vapour pressure and water's add up to the atmosphere — 74.13 °C, more than
+/// vapour pressure and water's add up to the atmosphere — 74.41 °C (74.13 before M63.2), more than
 /// 10 K below where the same oil boils dry. Since M62.3 the water is a layer
 /// its outlet draws first (docs/DESIGN.md §67.3), so the tank holds less than
 /// one tick's arriving water — about 0.002 % of its mass, where M62.2's mixed
@@ -81,16 +81,16 @@ fn the_line_stands_three_phase_after_the_valve_on_the_hand_calculation() {
     let s = engine.snapshot();
     let junction = node(&s, "valve_outlet");
     assert!(
-        (junction.temperature_k / 358.733_320_372_142_1 - 1.0).abs() < 1e-9
-            && (junction.pressure_pa / 150_446.442_817_913_54 - 1.0).abs() < 1e-9,
+        (junction.temperature_k / 358.855_459_081_289_5 - 1.0).abs() < 1e-9
+            && (junction.pressure_pa / 150_410.346_041_178_88 - 1.0).abs() < 1e-9,
         "the junction settled at {} K, {} Pa — not the state the script was run at",
         junction.temperature_k,
         junction.pressure_pa
     );
     let q = junction.vapour_fraction.expect("the line boils");
     assert!(
-        (q - 0.127_814_395_2).abs() < 1e-10,
-        "the junction carries {q} of its mass as vapour, the script 0.127 814 395 2"
+        (q - 0.127_735_012_0).abs() < 1e-10,
+        "the junction carries {q} of its mass as vapour, the script 0.127 735 012 0"
     );
 
     let slate = engine.slate.clone();
@@ -308,7 +308,8 @@ fn both_fidelities_agree_on_the_wet_rundown() {
 }
 
 /// `free_water` is refused wherever nothing would read it: on a plant without
-/// the line flash (which a gas member never passes either), and twice on one slate.
+/// the line flash (which a gas member never passes either), and twice on one slate;
+/// and on a member that is not water by its declared numbers (M63.2).
 #[test]
 fn free_water_is_refused_where_nothing_reads_it() {
     let no_flash = PLANT.replace("line_flash = \"equilibrium\"\n", "");
@@ -332,4 +333,34 @@ fn free_water_is_refused_where_nothing_reads_it() {
         e.contains("'water' and 'brine' both declare free_water"),
         "{e}"
     );
+
+    // Free water is water (M63.2, docs/DESIGN.md §68.2): its vapour pressure is
+    // the steam tables' curve, so a member boiling or weighing as another
+    // fluid is refused by name.
+    for (key, other) in [
+        (
+            "tb_c = 100.0
+molar_mass_kg_per_mol = 0.018
+",
+            "tb_c = 150.0
+molar_mass_kg_per_mol = 0.018
+",
+        ),
+        (
+            "tb_c = 100.0
+molar_mass_kg_per_mol = 0.018
+",
+            "tb_c = 100.0
+molar_mass_kg_per_mol = 0.030
+",
+        ),
+    ] {
+        let not_water = PLANT.replace(key, other);
+        assert_ne!(not_water, PLANT);
+        let e = refusal(&not_water);
+        assert!(
+            e.contains("'water' declares free_water with") && e.contains("§68.2"),
+            "{e}"
+        );
+    }
 }

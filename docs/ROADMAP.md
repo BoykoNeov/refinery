@@ -10068,3 +10068,19 @@ reached the lowered limit at 30. Ledger row B62 closed. DESIGN §68.1.
 - Gates: `heat_on_boiling_reference.rs` (1 new; the furnace gate re-cast).
   Mutations: one (the refusal lifted), caught. Corpus: 64 of 64
   byte-identical on both fidelities.
+
+### M63.2 — **LANDED** 2026-10-17: water's vapour pressure, the steam tables' own curve
+
+A `free_water` member's vapour pressure is IAPWS-IF97's saturation line (steam
+tables to 0.015 % at 100–370 °C, where Clausius–Clapeyron on the declared
+latent heat read +14 % at 300 °C), continued C¹ past the triple and critical
+points; a `free_water` member must be water by its declared boiling point and
+molar mass. The independent references (`m62_2`, `m62_5`, `m62_6` scripts)
+carry the same curve and were re-run. Moved: the four water plants, slightly —
+the crude unit's condenser 93.77 °C against 93.72, the wet rundown's tank
+74.41 against 74.13 °C. Ledger row B64 closed. DESIGN §68.2.
+
+- Gates: `reference/water.rs` (1 new), `wet_rundown_reference.rs` (refusals
+  widened), four reference files re-pinned. Mutations: five, all caught.
+  Corpus: 60 of 64 byte-identical on both fidelities, the four water plants
+  moved (the user's decision).

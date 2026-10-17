@@ -26407,3 +26407,63 @@ coil adds little drop and the gates read the same physics:
 — the lumped coil refused by name, the same furnace in cells admitted, the
 lumped coil off a boiling plant admitted. **Corpus**: byte-identical on both
 fidelities (no shipped plant has a lumped coil on a boiling plant).
+
+### 68.2 Water's vapour pressure, the steam tables' own curve (M63.2)
+
+M62.1 gave water Clausius–Clapeyron on its declared latent heat, held constant:
+0.2 % against steam tables at 100–150 °C, +3.9 % at 200, +9.1 % at 250, +14 %
+at 300 °C (ledger row B64). The obvious fix, integrating Kirchhoff's `λ(T)` on
+the declared capacities (`cp` 4 184, `cp_vapour` 2 000), is measured worse — −8
+% at 200, −22 % at 300 °C — since the vapour is no ideal gas there and the real
+latent heat falls faster than constant capacities say.
+
+**The rule**: a `free_water` member's vapour pressure is IAPWS-IF97's
+saturation-pressure equation (IAPWS R7-97(2012), region 4, eq. 30), closed
+form, between the triple point (273.15 K) and the critical point (647.096 K):
+steam tables to 0.015 % at 100–370 °C, the tables' own rounding. Outside that
+range `ln P_sat` runs on linear in `1/T` from the end on the curve's own slope
+there (−5 422.1 K at 273.15 K, −5 088.8 K at the critical point, computed from
+the equation at 40 digits): finite, rising and C¹. Above the critical point no
+liquid exists; the continuation reads 147 MPa at a column bottom's 580 °C (the
+old law 161 MPa), so free water never stands there and nothing hot moves.
+Every other declared latent heat keeps Clausius–Clapeyron; free water is the
+only member that is a named fluid, so it is the only one with its own curve.
+`TroutonThermo::water_saturation_pressure`.
+
+**Free water is water by its numbers**: IF97 knows no declared boiling point or
+molar mass, so a `free_water` member must declare `tb_c` within 0.5 K of 100
+(IF97 boils at 99.974 °C at one atmosphere) and a molar mass within 0.5 % of
+0.018015, or the load is refused naming it.
+
+**Two latent heats, still** (B64's second clause): the enthalpy keeps M62.1's
+Kirchhoff `λ(T)` on the declared latent heat (+5 % at 200 °C), the vapour
+pressure is IF97's. The identity `d ln K/d(1/T) = −Δh_vap/R` was already broken
+for water by its `cp_vapour` (§67.1) and is now not water's at all. Nothing
+reads it as a slope: the column's Jacobian is by finite differences
+(`column_newton.rs`) and the bubble point a safeguarded secant (`bubble.rs`).
+
+**The independent references moved with it**: `m62_2/free_water_flash.py`,
+`m62_5/wet_column.py` (and `check_engine.py`, which imports it) and
+`m62_6/steam_column.py` carry the same curve, re-run and re-pinned; the wet
+rundown's junction re-read at the engine's new state. The wet column's floor
+case now runs at a reflux of 2.152 (2.016 before), five trays wet.
+
+**What moved** (plain): only the four plants with water. The crude unit's
+condenser decants its water at 93.77 °C (93.72 before), on both the wet and
+the steamed crude units, nothing else in them past 0.01 K; the wet rundown's
+tank stands at 74.41 °C (74.13), the junction after its valve at 85.71 °C
+(85.58), its vent 0.1 % more; the water slug's tank nothing measurable. Newton
+iterations unchanged on all four (the wet rundown's total 6 952 → 6 046).
+
+**Gates**: `reference/water.rs` `free_water_boils_on_the_steam_tables_
+saturation_line` (the table at 100–370 °C to 2e-4; the continuation C¹ at both
+ends, rising, at a column bottom above 1 000 bar; the old law +13 % at 300 °C);
+`wet_rundown_reference.rs` (a member not water refused, by boiling point and by
+molar mass); the re-pinned references (`reference/free_water.rs`,
+`reference/wet_column.rs`, `reference/steam_column.rs`,
+`wet_rundown_reference.rs`). **Mutations**: five (the curve off, the high end
+on the low end's slope, a flat continuation, each refusal lifted), all caught.
+**Corpus**: 60 of 64 byte-identical on both fidelities; `crude_unit_steam`,
+`crude_unit_wet`, `water_slug` and `wet_rundown` moved, the user's decision
+(asked, they took B64 knowing it moved the wet plants); the baseline refreshed
+with it.

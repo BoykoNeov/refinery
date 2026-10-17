@@ -55,7 +55,7 @@ fn edge<'a>(s: &'a Snapshot, name: &str) -> &'a EdgeSnapshot {
 /// naphtha over its water (computed here independently from the drawn
 /// naphtha), and every tray from the top down to the feed stands hotter than
 /// water's dew point at its share of the vapour. Measured at 6 000 ticks:
-/// 112.83 kg/s of crude, 0.3385 kg/s of water at 93.72 °C, the top tray at
+/// 112.83 kg/s of crude, 0.3385 kg/s of water at 93.77 °C (93.72 before M63.2), the top tray at
 /// 166.2 °C.
 #[test]
 fn the_crude_unit_decants_its_crudes_water_at_the_condenser() {

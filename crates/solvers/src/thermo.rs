@@ -116,6 +116,12 @@ impl TroutonThermo {
     /// is how the envelope gate gets its number.
     fn saturation_pressure(&self, slate: &Slate, component: usize, temperature: Kelvin) -> f64 {
         let cut = slate.get(component);
+        // Free water is water: its own saturation curve, not the Clausius–
+        // Clapeyron integral on its declared latent heat (M63.2, docs/DESIGN.md
+        // §68.2, ledger row B64).
+        if cut.free_water {
+            return water_saturation_pressure(temperature.value());
+        }
         let tb = cut.tb.value();
         match cut.dh_vap {
             // Trouton's rule, written as it always was so every undeclared cut's
@@ -134,6 +140,67 @@ impl TroutonThermo {
             }
         }
     }
+}
+
+/// IAPWS-IF97's saturation-pressure equation, its coefficients `n₁…n₁₀`
+/// (IAPWS R7-97(2012), Table 34).
+const IF97_SATURATION: [f64; 10] = [
+    0.116_705_214_527_67e4,
+    -0.724_213_167_032_06e6,
+    -0.170_738_469_400_92e2,
+    0.120_208_247_024_70e5,
+    -0.323_255_503_223_33e7,
+    0.149_151_086_135_30e2,
+    -0.482_326_573_615_91e4,
+    0.405_113_405_420_57e6,
+    -0.238_555_575_678_49,
+    0.650_175_348_447_98e3,
+];
+
+/// Where IF97's saturation line holds [K]: the triple point's 273.15 K (to
+/// 0.01 K) and the critical point's 647.096 K.
+const IF97_SATURATION_RANGE: (f64, f64) = (273.15, 647.096);
+
+/// The curve's slope `d ln P_sat/d(1/T)` [K] at each end of its range,
+/// computed from the equation itself at 40 digits (mpmath, M63.2) — the
+/// continuation outside the range starts on it, so the curve is C¹ there.
+const IF97_SATURATION_END_SLOPES: (f64, f64) = (-5_422.112_747_837_726, -5_088.781_405_301_052);
+
+/// IAPWS-IF97 region 4's saturation pressure on its own range [Pa]:
+///
+/// ```text
+/// ϑ = T + n₉/(T − n₁₀)
+/// A = ϑ² + n₁ϑ + n₂,  B = n₃ϑ² + n₄ϑ + n₅,  C = n₆ϑ² + n₇ϑ + n₈
+/// P_sat = (2C / (−B + √(B² − 4AC)))⁴  MPa          IAPWS R7-97(2012), eq. 30
+/// ```
+fn if97_saturation_pressure(temperature: f64) -> f64 {
+    let n = IF97_SATURATION;
+    let theta = temperature + n[8] / (temperature - n[9]);
+    let a = theta * theta + n[0] * theta + n[1];
+    let b = n[2] * theta * theta + n[3] * theta + n[4];
+    let c = n[5] * theta * theta + n[6] * theta + n[7];
+    (2.0 * c / (-b + (b * b - 4.0 * a * c).sqrt())).powi(4) * 1.0e6
+}
+
+/// Water's saturation pressure [Pa] (M63.2, docs/DESIGN.md §68.2): IAPWS-IF97's
+/// saturation line between the triple and critical points — steam tables to
+/// 0.015 % at 100–370 °C, where Clausius–Clapeyron on a constant latent heat
+/// read +14 % at 300 °C. Outside that range `ln P_sat` runs on linear in `1/T`
+/// from the end on the curve's own slope there: finite, rising and C¹. Above
+/// the critical point no liquid exists; the continuation stands at 147 MPa at
+/// 580 °C, far above any plant's pressure, so free water never stands there
+/// (the constant-latent-heat integral read 161 MPa).
+pub(crate) fn water_saturation_pressure(temperature: f64) -> f64 {
+    let (low, high) = IF97_SATURATION_RANGE;
+    let (slope_low, slope_high) = IF97_SATURATION_END_SLOPES;
+    let (end, slope) = if temperature < low {
+        (low, slope_low)
+    } else if temperature > high {
+        (high, slope_high)
+    } else {
+        return if97_saturation_pressure(temperature);
+    };
+    if97_saturation_pressure(end) * (slope * (1.0 / temperature - 1.0 / end)).exp()
 }
 
 impl TroutonThermo {
@@ -237,6 +304,10 @@ impl ThermoModel for TroutonThermo {
     /// constant latent heat over-states it by a fifth; the price is the
     /// identity above failing by `(cp_v − cp)·M·(T − tb)` for that cut alone.
     /// Every cut that declares no `cp_vapour` keeps it exactly.
+    ///
+    /// **And free water** (M63.2, docs/DESIGN.md §68.2): its K-value is
+    /// IAPWS-IF97's saturation line, not the integral of any latent heat
+    /// returned here, so the identity is not a free-water cut's at all.
     ///
     /// The magnitude rests on the same single fitted constant `k_value` does,
     /// with the same honesty about it (DESIGN §5, correction 6): `tb` is slate

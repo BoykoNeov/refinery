@@ -59,9 +59,38 @@ def psat_oil(cut, t):
     return P_ATM * math.exp((TROUTON / R_GAS) * (1.0 - cut["tb"] / t))
 
 
+# Water's saturation pressure since M63.2 (docs/DESIGN.md §68.2): IAPWS-IF97's
+# saturation line (IAPWS R7-97(2012), eq. 30) between 273.15 and 647.096 K,
+# ln P continued linear in 1/T outside it on the curve's own end slopes -- the
+# engine's `thermo::water_saturation_pressure`. (Before M63.2: Clausius-
+# Clapeyron on the declared 40 650 J/mol.)
+IF97_N = (0.11670521452767e4, -0.72421316703206e6, -0.17073846940092e2,
+          0.12020824702470e5, -0.32325550322333e7, 0.14915108613530e2,
+          -0.48232657361591e4, 0.40511340542057e6, -0.23855557567849,
+          0.65017534844798e3)
+IF97_RANGE = (273.15, 647.096)
+IF97_END_SLOPES = (-5422.112747837726, -5088.781405301052)
+
+
+def _if97_psat(t):
+    n = IF97_N
+    th = t + n[8] / (t - n[9])
+    a = th * th + n[0] * th + n[1]
+    b = n[2] * th * th + n[3] * th + n[4]
+    c = n[5] * th * th + n[6] * th + n[7]
+    return (2.0 * c / (-b + math.sqrt(b * b - 4.0 * a * c))) ** 4 * 1.0e6
+
+
 def psat_water(t):
-    w = WATER
-    return P_ATM * math.exp((w["dh"] / R_GAS) * (1.0 / w["tb"] - 1.0 / t))
+    low, high = IF97_RANGE
+    if t < low:
+        end, slope = low, IF97_END_SLOPES[0]
+    elif t > high:
+        end, slope = high, IF97_END_SLOPES[1]
+    else:
+        return _if97_psat(t)
+    return _if97_psat(end) * math.exp(slope * (1.0 / t - 1.0 / end))
+
 
 
 def h_oil(cut, t):

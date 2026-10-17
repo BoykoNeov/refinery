@@ -9,8 +9,9 @@
 //! a bisection on the vapour's moles with the oil liquid found by a nested
 //! bisection, where the engine solves the oil's Rachford–Rice at its partial
 //! pressure `P − P_w` — so the two share only the physics: Trouton oil cuts at
-//! `C = 88`, water's vapour pressure by Clausius–Clapeyron on its declared
-//! 40 650 J/mol (M62.1), Dalton for the two liquids.
+//! `C = 88`, water's vapour pressure IAPWS-IF97's saturation line (M63.2,
+//! docs/DESIGN.md §68.2; Clausius–Clapeyron on its declared 40 650 J/mol
+//! before), Dalton for the two liquids.
 
 use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::traits::{LineFlashModel, ThermoModel};
@@ -124,7 +125,7 @@ fn the_free_water_flash_matches_the_hand_calculation_in_every_state() {
         &[0.10, 0.90],
         &[
             (105.0, 0.0, "no vapour"),
-            (112.0, 0.785_685_502_1, "oil all vapour"),
+            (112.0, 0.798_787_857_8, "oil all vapour"),
             (115.0, 1.0, "all vapour"),
             (125.0, 1.0, "all vapour"),
         ],
@@ -135,8 +136,8 @@ fn the_free_water_flash_matches_the_hand_calculation_in_every_state() {
         &[third, third, third, 0.05],
         &[
             (97.0, 0.0, "no vapour"),
-            (98.5, 0.007_531_258_6, "three phases"),
-            (99.0, 0.028_483_158_4, "three phases"),
+            (98.5, 0.007_546_882_2, "three phases"),
+            (99.0, 0.028_719_265_7, "three phases"),
             (99.3, 0.040_143_738_6, "water all vapour"),
             (110.0, 0.061_121_610_9, "water all vapour"),
             (130.0, 0.145_841_621_1, "water all vapour"),
@@ -146,9 +147,9 @@ fn the_free_water_flash_matches_the_hand_calculation_in_every_state() {
 }
 
 /// Oil over free water boils where the two vapour pressures add up to the
-/// pressure (Dalton): the heavy naphtha at 110.65 °C where alone it boils at
+/// pressure (Dalton): the heavy naphtha at 110.52 °C where alone it boils at
 /// 174.3 °C (M62.0's finding 11), the three-cut naphtha at 98.32 °C, pure water
-/// at 117.12 °C — and the bubble PRESSURE at each is the pressure, so the
+/// at 116.91 °C — and the bubble PRESSURE at each is the pressure, so the
 /// boil-off's cheap test, the cavitation readout and the line flash agree on
 /// what boiling is.
 #[test]
@@ -160,9 +161,9 @@ fn the_wet_bubble_point_adds_the_two_liquids_vapour_pressures() {
         (s, vec![0.0, 1.0])
     };
     for ((slate, moles), expected_c) in [
-        ((heavy_naphtha(), vec![0.98, 0.02]), 110.652_663),
-        ((three_cut(), vec![third, third, third, 0.05]), 98.322_825),
-        (pure_water, 117.115_960),
+        ((heavy_naphtha(), vec![0.98, 0.02]), 110.520_662),
+        ((three_cut(), vec![third, third, third, 0.05]), 98.324_304),
+        (pure_water, 116.912_408),
     ] {
         let x = MoleFractions::from_amounts(&moles).unwrap();
         let bubble = bubble_temperature(&slate, &thermo, &x, Pascal(PRESSURE), "a test")

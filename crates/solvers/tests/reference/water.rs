@@ -76,6 +76,69 @@ fn a_declared_latent_heat_gives_water_its_steam_table_vapour_pressure() {
     );
 }
 
+/// **Free water boils on the steam tables' own curve** (M63.2, docs/DESIGN.md
+/// §68.2, ledger row B64): IAPWS-IF97's saturation line, where the declared
+/// latent heat's Clausius–Clapeyron integral reads +9 % at 250 °C and +14 % at
+/// 300 °C. Table values: IAPWS-IF97 steam tables (as in Rogers & Mayhew) at
+/// 100–370 °C; the IF97 equation meets them to 0.015 %, the tables' own
+/// rounding. Past either end of the line's range the curve runs on, finite,
+/// rising and C¹ — above the critical point at a pressure no plant reaches.
+#[test]
+fn free_water_boils_on_the_steam_tables_saturation_line() {
+    let thermo = TroutonThermo::new();
+    let free = slate(PseudoComponent {
+        free_water: true,
+        ..water(Some(WATER_DH_VAP), Some(2000.0))
+    });
+    let declared = slate(water(Some(WATER_DH_VAP), Some(2000.0)));
+    for (celsius, table_bar) in [
+        (100.0, 1.01418),
+        (150.0, 4.7617),
+        (200.0, 15.549),
+        (250.0, 39.762),
+        (300.0, 85.879),
+        (350.0, 165.29),
+        (370.0, 210.43),
+    ] {
+        let got = psat(&thermo, &free, celsius) / 1e5;
+        assert!(
+            (got / table_bar - 1.0).abs() < 2e-4,
+            "free water at {celsius} °C: {got} bar against the table's {table_bar}"
+        );
+    }
+    // The law it replaces, still every other declared latent heat's.
+    let old = psat(&thermo, &declared, 300.0) / 1e5;
+    assert!(
+        old / 85.879 - 1.0 > 0.13,
+        "Clausius–Clapeyron on 40 650 J/mol at 300 °C: {old} bar"
+    );
+    // The continuation: on at each end of IF97's range in value and in slope
+    // (`ln P` against `1/T`), rising past the critical point, and far above
+    // any plant's pressure at a column's bottom.
+    let ln_p = |kelvin: f64| psat(&thermo, &free, kelvin - 273.15).ln();
+    for end in [273.15, 647.096] {
+        let h = 1.0e-4;
+        let below = (ln_p(end) - ln_p(end - h)) / (1.0 / end - 1.0 / (end - h));
+        let above = (ln_p(end + h) - ln_p(end)) / (1.0 / (end + h) - 1.0 / end);
+        assert!(
+            (above / below - 1.0).abs() < 1e-4,
+            "at {end} K the slope {below} below against {above} above"
+        );
+        assert!((ln_p(end + 1e-9) - ln_p(end - 1e-9)).abs() < 1e-9);
+    }
+    let mut last = 0.0;
+    for celsius in [380.0, 450.0, 580.0, 800.0] {
+        let bar = psat(&thermo, &free, celsius) / 1e5;
+        assert!(bar.is_finite() && bar > last, "{bar} bar at {celsius} °C");
+        last = bar;
+    }
+    let at_bottom = psat(&thermo, &free, 580.0) / 1e5;
+    assert!(
+        at_bottom > 1_000.0,
+        "free water at a column's 580 °C bottom: {at_bottom} bar"
+    );
+}
+
 #[test]
 fn the_declared_latent_heat_is_one_number_seen_twice() {
     // The exact identities, independent of the steam tables: K = 1 at tb and

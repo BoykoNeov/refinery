@@ -721,17 +721,45 @@ pub(crate) fn require_water_draws(scenario: &ScenarioFile) -> Result<(), SimErro
     Ok(())
 }
 
+/// Water's molar mass [kg/mol].
+const WATER_MOLAR_MASS_KG_PER_MOL: f64 = 0.018015;
+/// How far a `free_water` member's declared normal boiling point may stand from
+/// 100 °C [K]: IF97's saturation line boils at 99.974 °C at one atmosphere.
+const FREE_WATER_TB_TOLERANCE_C: f64 = 0.5;
+/// How far a `free_water` member's molar mass may stand from water's, relative.
+const FREE_WATER_MOLAR_MASS_TOLERANCE: f64 = 0.005;
+
 /// A `free_water` member is read by the line flash's three-state flash alone
 /// (M62.2, docs/DESIGN.md §67.2). Without `line_flash = "equilibrium"` no flash
 /// runs on the line, so the key would change nothing — and the line flash
 /// brings the rest of what free water needs with it: `thermo = "trouton"`,
 /// liquids only, and a column that decants the water at its condenser
 /// (`require_water_draws`, M62.5, §67.17).
+///
+/// And it must be water by its declared numbers (M63.2, §68.2): its vapour
+/// pressure is IAPWS-IF97's saturation line, which knows no declared boiling
+/// point or molar mass, so a member declaring another fluid's would read two
+/// fluids at once.
 pub(crate) fn require_line_flash_for_free_water(scenario: &ScenarioFile) -> Result<(), SimError> {
-    if scenario.fidelity.line_flash == "equilibrium" {
+    let Some(water) = scenario.components.iter().find(|c| c.free_water) else {
         return Ok(());
+    };
+    if (water.tb_c - 100.0).abs() > FREE_WATER_TB_TOLERANCE_C
+        || (water.molar_mass_kg_per_mol / WATER_MOLAR_MASS_KG_PER_MOL - 1.0).abs()
+            > FREE_WATER_MOLAR_MASS_TOLERANCE
+    {
+        return Err(SimError::Scenario(format!(
+            "component '{}' declares free_water with tb_c = {} and molar_mass_kg_per_mol = \
+             {}: free water is water, its vapour pressure the steam tables' (docs/DESIGN.md \
+             §68.2), so it boils at 100 °C (within {FREE_WATER_TB_TOLERANCE_C} K) and \
+             weighs {WATER_MOLAR_MASS_KG_PER_MOL} kg/mol (within {} %).",
+            water.name,
+            water.tb_c,
+            water.molar_mass_kg_per_mol,
+            FREE_WATER_MOLAR_MASS_TOLERANCE * 100.0
+        )));
     }
-    if let Some(water) = scenario.components.iter().find(|c| c.free_water) {
+    if scenario.fidelity.line_flash != "equilibrium" {
         return Err(SimError::Scenario(format!(
             "component '{}' declares free_water, but this plant selects line_flash = \
              \"{}\": only the line flash keeps free water out of the oil, so the key \

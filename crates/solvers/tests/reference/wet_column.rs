@@ -14,7 +14,7 @@
 //! - `dry_trays`, 1 % water at 1.8 bar: the water rises from the feed tray as
 //!   vapour, no tray holds any;
 //! - `wet_trays`, 4 % water at 1 atm, declared reflux 1: the floor raises the
-//!   reflux to 2.016, and free water stands on trays 1–5 and re-boils on the
+//!   reflux to 2.152, and free water stands on trays 1–5 and re-boils on the
 //!   one below — checked by `check_engine.py`, the same equations with the
 //!   floor, solved from the engine's own state.
 
@@ -177,52 +177,52 @@ struct Expected {
 
 const DRY_EXPECTED: Expected = Expected {
     temperatures_c: [
-        132.783001, 155.338236, 165.466261, 180.49031, 197.273043, 231.591808, 248.591166,
-        265.06842,
+        132.783913, 155.334582, 165.461166, 180.484047, 197.260794, 231.58102, 248.585526,
+        265.065749,
     ],
     free_water: [0.0; 8],
-    condenser_c: 85.97726063732284,
+    condenser_c: 86.08688996425269,
     water_draw_kg_s: 0.1,
     distillate_kg_s: 2.97,
-    distillate_light: 0.6383138012811421,
+    distillate_light: 0.638302886379038,
     bottoms_kg_s: 4.455,
-    bottoms_kerosene: 0.5490909228311737,
-    condenser_w: 3871164.215134324,
-    reboiler_w: 2867978.309629447,
+    bottoms_kerosene: 0.5490840167692286,
+    condenser_w: 3869018.965083436,
+    reboiler_w: 2866533.383717073,
     reflux_ratio: 2.0,
     feed_vapour_fraction: 0.48122816505874716,
 };
 
 /// `check_engine.txt`: at the declared reflux of 1 this column's stripping
 /// vapour falls under the floor (20 % of the oil's moles), so the engine
-/// raises its reflux to 2.016 to hold stage 6 there, and the wet zone moves to
+/// raises its reflux to 2.152 to hold stage 6 there, and the wet zone moves to
 /// trays 1–5. The reference solves the same equations with that floor, from
-/// the engine's state, and settles where the engine did (residual 6e-16, its
+/// the engine's state, and settles where the engine did (residual 1.2e-15, its
 /// own checks held: no dry tray past saturation, no wet one with negative free
 /// water, no stage under the floor).
 const WET_EXPECTED: Expected = Expected {
     temperatures_c: [
-        61.929273, 62.072903, 63.200414, 69.465814, 82.572499, 105.776658, 122.723024, 155.630214,
+        62.227842, 62.349099, 63.329378, 69.168583, 82.747566, 98.652314, 121.61348, 155.359552,
     ],
     free_water: [
-        0.11041748264950749,
-        0.992807994075975,
-        6.432925429143067,
-        21.507421736972436,
-        0.11589447610332688,
+        0.09840151922832972,
+        0.9066440533493163,
+        6.217217400705946,
+        22.625006182112454,
+        3.2624485247551265,
         0.0,
         0.0,
         0.0,
     ],
-    condenser_c: 61.91197437162771,
+    condenser_c: 62.21353147373918,
     water_draw_kg_s: 0.4,
     distillate_kg_s: 2.4,
-    distillate_light: 0.9998993454301901,
+    distillate_light: 0.9999165877088064,
     bottoms_kg_s: 5.76,
-    bottoms_kerosene: 0.2826956644036328,
-    condenser_w: 3236646.8445077445,
-    reboiler_w: 1466003.4285207326,
-    reflux_ratio: 2.0155932068734637,
+    bottoms_kerosene: 0.282311946802264,
+    condenser_w: 3340191.207385565,
+    reboiler_w: 1547003.1382592362,
+    reflux_ratio: 2.1517153755875884,
     feed_vapour_fraction: 0.5773175681778613,
 };
 
