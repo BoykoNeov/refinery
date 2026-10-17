@@ -26939,3 +26939,85 @@ and every column reading the earlier pass (M64.2's declared-column gate).
 
 **What moved**: nothing shipped — 64 of 64 byte-identical on both fidelities;
 `crude_unit_stripped` new, the corpus's 65th plant.
+
+### 69.10 The column screen's fourth plant, built (M64.4)
+
+`demo/column.gd`, key 4: `crude_unit_stripped.toml`. Its keys are the user's
+decision 2 (§69): the furnace (Up/Down, 2.5 MW), the steam valve (R/F, 5 % of
+its opening, new) and the pumparounds (E/D); the reflux keys say why they do
+nothing ("the reflux is a result on this column: its reboiler is held at
+0.0 MW …") and send nothing. The screen reads a held column from the
+snapshot's `cascade.reboiler_duty`, and on one: draws no reboiler and the
+panel says "held"; labels the reflux "a result" and never "RAISED" (its
+declared `reflux_ratio` is only the start's seed, which the column runs
+below and above); draws the stripping steam into the bottom stage with its
+flow, temperature and valve; and puts the bottom temperature on the panel.
+The decanter's sour water gets its own row above the naphtha it is drawn
+beside, and water a seventh colour on the slate.
+
+**The pumparound keys — the user's decision (2026-10-18), against picking one
+pumparound and stepping it**: all three together, 1 MW a press, every one at
+the same duty. The crude unit's keys scale the duties its file declares, and
+this plant declares them at zero.
+
+**The box, measured warm** (`tools/steptime/prototypes/m64_4/m64_4_probe.rs`,
+through the bridge's `Session` with the scene's command text, release; each
+setting reached in one step after 1 000 ticks of the running plant, then run
+5 000):
+
+- Each key alone: the furnace 50–90 MW runs (at 90 the coil 520 °C, the feed
+  all vapour); 48 and 46 refuse 2 500–4 600 ticks in, as the coil cools (the
+  bottom stage's bubble point, through the continuation). The steam valve
+  1–100 % runs (0.022–2.15 kg/s, the bottom 381 → 353 °C). All three
+  pumparounds at 10 MW each run (the reflux 0.92); at 12 they refuse at once
+  (stage 1's energy balance, the walk stopping at step 8 of 10).
+- **The keys interact through the steam**: the pumparounds at 10 MW refuse at
+  once with the valve at 5 % (at 50 MW and at 80) or at 10 % (at 58); the furnace at 50 MW with
+  the valve at 5, 10 or 20 % refuses 1 700–4 400 ticks in. The furnace and the
+  steam combine as the M61.2 crude unit's reflux and pumparounds do (C12).
+- **The box: the furnace 52.5–65 MW, the steam valve 10–100 %, every
+  pumparound 0–8 MW.** All eight corners run, each reached in one step from
+  the running plant and then from its opposite corner (5 000 ticks each), the
+  two low-furnace corners reached from the top for 20 000 ticks (measured with
+  an 80 MW top, which ran as well).
+- **The top is the user's decision (2026-10-18), on a side review's point**:
+  measured first at 80 MW, which runs (the coil 495 °C), the user took it, and
+  a review then noticed that 80 MW flashes 0.966 of the feed's moles. On a
+  sharp split (the lightest cuts boil first; M64.0 finding 4's conversion)
+  that is 91 % by mass, where a real flash zone takes 60–75 %: 52.5 MW is 68 %,
+  58 MW 71 %, 66 MW 77 %, 74 MW 85 %. Asked again with those numbers, the user
+  chose 65 MW (0.911 molar, about 76 % by mass, the coil 455 °C) over 70 and
+  80; the eight corners and their jumps re-measured at 65, all run.
+
+**The cost on the screen, and the build it forced — the user's decision
+(2026-10-18)**. The screen's `t=` line now prints the wall time of each tick
+and its snapshot. Godot loads the library's debug build, whose workspace
+crates were unoptimized: the stripped plant ran 28–60 ms a tick settled and
+~200 ms a tick while its coil drifted after a furnace step (A29) — about five
+frames a second for minutes; the crude unit 4 ms. Chosen over running the
+plant slowly: a Cargo profile, `godot` (the dev profile at `opt-level = 2`,
+as `[profile.test]` already is), built with `--profile godot` into
+`target/godot/godot/`, which `refinery.gdextension`'s debug entries now name.
+Optimization does not change Rust's float arithmetic: every plant's timeline
+prints the same numbers as before, and the screen ends the stripped timeline
+on the release probe's numbers. On the screen, optimized: the stripped plant
+5 ms a tick settled, 10–12 over its first 600 ticks, 24–26 in the drift after
+the step to 65 MW (28–31 after one to 80); the crude unit 0.6–1 ms, the light columns 0.4–0.8. Three
+ticks a frame for the stripped plant keep a settled frame near 15 ms; the
+drift overruns any frame (ledger A29, Phase 3 of `docs/PLAN.md`).
+
+**The timeline** (`AUTO_STRIPPED`, replayed by `column_screen.rs`'s
+`slow_the_stripped_timeline`): at 600 the steam valve wide open (0.867 →
+2.15 kg/s; the bottom 363.6 → 353.0 °C, the reflux 3.460 → 3.672); at 1 500
+the pumparounds to 8 MW each (the reflux 1.619, the condenser 56.95 →
+34.41 MW); at 2 400 the furnace to 65 MW (by 3 600 the feed 387.5 → 397.1 °C,
+the flash 0.888 → 0.901, the reflux 1.807, still rising with the coil); at
+3 300 the pumparound key pressed past 8 MW, held at the edge. The reboiler
+reads zero throughout. Recorded headless and windowed with screenshots,
+checked by eye; the three other plants' timelines print their M61.2 numbers.
+
+**Gates**: `column_screen.rs` (+1, the timeline above). Mutations: three, each
+of the timeline's commands dropped in turn; three caught. The godot-feature
+clippy is clean.
+
+**What moved**: nothing in the engine; no plant's numbers.

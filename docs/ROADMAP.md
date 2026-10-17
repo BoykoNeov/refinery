@@ -10128,7 +10128,7 @@ standard (B67), a column too wet to separate passing its feed through (C13).
 Kept deferred by the user: B61, B63, B65, B66; new: C14. Its close-out report is
 at the top of `docs/MILESTONES.md`. Steam stripping proper (C7) is M64.
 
-## M64 — steam stripping: the reboiler held at zero, the reflux the result; ledger row C7; opened on a decision
+## M64 — **CLOSED** 2026-10-18 — steam stripping: the reboiler held at zero, the reflux the result; ledger row C7; opened on a decision
 
 Asked after M63 closed (2026-10-17) as "refinery", then "scope and plan M64",
 then "write a plan that includes M64 and all open items ... and start the
@@ -10209,3 +10209,33 @@ DESIGN §69.9.
   (+1), `burnout_reference.rs` (33 furnaces). Mutations: three, three caught.
   Corpus: 64 of 64 byte-identical on both fidelities, `crude_unit_stripped`
   new.
+
+### M64.4 — **LANDED** 2026-10-18: the column screen's fourth plant
+
+`demo/column.gd`, key 4: the stripped crude unit, its keys the furnace, the
+steam valve (R/F, new) and the pumparounds — all three together in MW (the
+user's decision: its file declares them at zero, so the crude unit's percent
+keys cannot work). The reflux is drawn as a result and its keys say why they
+do nothing; no reboiler is drawn; the steam goes into the bottom stage. The box,
+measured warm with the scene's commands (every corner in one step from the
+running plant and from its opposite corner): the furnace 52.5–65 MW, the steam
+10–100 %, the pumparounds 0–8 MW each. The keys interact through the steam (a
+low valve fails a low furnace or high pumparounds). The furnace's top is the
+user's: 80 MW ran, but flashes about 91 % of the feed by mass; asked again with
+the numbers, 65 MW (about 76 %). Measured on the screen, the debug library ran
+the plant at 28–60 ms a tick and ~200 in a coil drift; the user chose an
+optimized build: a `godot` Cargo profile (`--profile godot`, the gdextension's
+debug entries), 5 ms settled and 24–26 in the drift, the other plants 0.4–1 ms,
+every number unchanged. DESIGN §69.10.
+
+- Gates: `column_screen.rs` (+1, the timeline). Mutations: three (each
+  command dropped), three caught. The godot-feature clippy clean. Engine
+  untouched.
+
+**M64 — CLOSED 2026-10-18.** Steam stripping (C7): a heat-balance column can
+hold its reboiler (`reboiler_duty_mw`), the reflux then its result; such a
+column starts cold by a continuation from the same column with its reboiler;
+`crude_unit_stripped.toml` runs a crude unit on its steam alone, its charge on
+a flow loop; and the column screen plays it. New along the way: E30 (a loop
+cannot meter the pipe into a celled coil). Its close-out report is at the top
+of `docs/MILESTONES.md`. Next is `docs/PLAN.md`'s Phase 2.

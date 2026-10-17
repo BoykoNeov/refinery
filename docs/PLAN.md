@@ -36,8 +36,8 @@ Ticked when it lands; struck when the user rules it out.
 - [x] **M64.3 — the stripped crude unit** (done 2026-10-17, DESIGN §69.9): a new plant file, gated on the probe
       and the first law; both fidelities; and a move that forces the held
       column's fallback (its warm start failing mid-run), owed by M64.2.
-- [ ] **M64.4 — the column screen's fourth plant**, its keys measured; the
-      godot-feature clippy.
+- [x] **M64.4 — the column screen's fourth plant** (done 2026-10-18, DESIGN §69.10), its keys measured; the
+      godot-feature clippy. M64 closed.
 
 ## Phase 2 — the column after M64
 

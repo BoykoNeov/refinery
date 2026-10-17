@@ -15,6 +15,11 @@
 #               limit and watch the reflux rise past its setting.
 #   overheated  scenarios/crude_column_overheated.toml — that column already
 #               past its limit, running above the reflux it is set to.
+#   stripped    scenarios/crude_unit_stripped.toml — the crude unit with no
+#               reboiler (M64, §69): its bottom stripped by steam alone, the
+#               furnace carrying the heat, the reflux a result. Its keys are
+#               the furnace, the steam valve and the pumparounds (the user's
+#               decision 2, §69); the reflux keys say why they do nothing.
 #
 # Same rule as every screen: this script computes nothing physical. Every
 # number it draws is a snapshot field — the stage temperatures and vapour, the
@@ -25,7 +30,7 @@
 # to MW (CLAUDE.md rule 4).
 #
 # Interactive:  godot --path . res://demo/column.tscn
-#               (keys listed on screen and in _input; 1 / 2 / 3 switch plants)
+#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 switch plants)
 # Recorded:     godot --headless --path . res://demo/column.tscn --quit-after 20000 -- --auto [--plant=hot]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line at a fixed interval plus one line per command.
@@ -95,6 +100,40 @@ const PLANTS := {
 		"furnace_mw": [0.0, 110.0],
 		"reflux": [0.0, 8.0],
 	},
+	"stripped":
+	{
+		"scenario": "res://scenarios/crude_unit_stripped.toml",
+		"title": "A crude unit stripped by steam: no reboiler, the reflux a result",
+		"furnace": "furnace",
+		"feed_pipe": "transfer_line",
+		"steam_valve": "steam_valve",
+		"steam_pipe": "stripping_steam",
+		"draws":
+		[
+			["naphtha_suction", "naphtha"],
+			["water_draw", "sour water"],
+			["kerosene_suction", "kerosene"],
+			["diesel_suction", "diesel"],
+			["gas_oil_suction", "gas oil"],
+			["residue_suction", "residue"],
+		],
+		# Measured on the screen (M64.4, §69.10): 5 ms a tick settled, 10–12
+		# over its first 600 ticks and 24–26 while the coil drifts after a
+		# furnace step (ledger A29); three ticks keep a settled frame near 15 ms.
+		"ticks_per_frame": 3,
+		# The range measured warm from the running plant (M64.4, §69.10): every
+		# corner — the furnace 52.5 or 65 MW, the steam valve 10 % or 100 %,
+		# every pumparound 0 or 8 MW — runs, reached in one step from the
+		# running plant or from the opposite corner. Past it: the furnace at
+		# 50 MW with the steam at 10 % (the bottom stage, as the coil cools),
+		# the pumparounds at 10 MW with the steam at 10 % (at once). The top is
+		# the user's (§69.10): past 65 MW the column still runs, but more of
+		# the feed boils off than a real flash zone's 60–75 % by mass.
+		"furnace_mw": [52.5, 65.0],
+		"steam": [0.1, 1.0],
+		"pumparound_mw": [0.0, 8.0],
+		"range_ref": "§69.10",
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks. Each is replayed with the
@@ -127,11 +166,24 @@ const AUTO_OVERHEATED := {
 	600: ["reflux_8"],
 	1200: ["quit"],
 }
-const TIMELINES := {"crude": AUTO_CRUDE, "hot": AUTO_HOT, "overheated": AUTO_OVERHEATED}
+## stripped: the steam valve wide open at 600 strips the bottom cooler; the
+## pumparounds to 8 MW each at 1 500 take heat off the trays and the reflux
+## falls with the condenser's load; the furnace to 65 MW at 2 400 flashes more
+## of the feed and the reflux rises again; at 3 300 the pumparound key is
+## pressed past 8 MW and the screen holds it — the edge of the safe range.
+const AUTO_STRIPPED := {
+	600: ["steam_1.0"],
+	1500: ["pumparounds_8mw"],
+	2400: ["furnace_65"],
+	3300: ["pumparounds_up"],
+	3600: ["quit"],
+}
+const TIMELINES := {"crude": AUTO_CRUDE, "hot": AUTO_HOT, "overheated": AUTO_OVERHEATED, "stripped": AUTO_STRIPPED}
 const AUTO_SHOT_TICKS := {
 	"crude": [600, 1500, 2400, 3000],
 	"hot": [600, 1500, 2400, 3000],
 	"overheated": [600, 1200],
+	"stripped": [600, 1500, 2400, 3300],
 }
 const PRINT_EVERY := 300
 
@@ -139,6 +191,10 @@ const PRINT_EVERY := 300
 const DUTY_STEP_MW := 2.5
 const REFLUX_STEP := 0.5
 const PUMPAROUND_STEP := 0.25
+## On a plant whose pumparounds start at zero the keys step every one by
+## this much [MW], not by a share of a duty the file declares.
+const PUMPAROUND_STEP_MW := 1.0
+const STEAM_STEP := 0.05
 const MAX_TICKS_PER_FRAME := 64
 
 @onready var sim: RefinerySim = $Sim
@@ -147,6 +203,9 @@ var plant_key := "crude"
 var furnace_id := -1
 var column_id := -1
 var feed_pipe_id := -1
+## The steam valve and its pipe into the bottom stage, -1 on a plant without.
+var steam_valve_id := -1
+var steam_pipe_id := -1
 var draw_ids: Array = []
 ## The pumparounds' duties as the file declares them [W]: the 100 % the keys
 ## scale from.
@@ -164,6 +223,9 @@ var message_bad := false
 ## The reflux the column ran at last frame, to print a line when it parts from
 ## (or rejoins) its setting.
 var seen_raised := false
+## The wall time the last PRINT_EVERY ticks took [µs], tick and snapshot both:
+## the screen's own cost, printed on the `t=` line.
+var block_usec := 0
 
 
 func _ready() -> void:
@@ -175,7 +237,7 @@ func _ready() -> void:
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (crude | hot | overheated)" % plant_key)
+		_halt("no plant '%s' (crude | hot | overheated | stripped)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -186,6 +248,7 @@ func _load(key: String) -> void:
 	finished = false
 	snapshot = {}
 	seen_raised = false
+	block_usec = 0
 	var plant: Dictionary = PLANTS[key]
 	ticks_per_frame = plant["ticks_per_frame"]
 
@@ -200,7 +263,10 @@ func _load(key: String) -> void:
 	draw_ids = []
 	for draw in plant["draws"]:
 		draw_ids.append(sim.edge_id(draw[0]))
-	if furnace_id < 0 or column_id < 0 or feed_pipe_id < 0 or draw_ids.has(-1):
+	steam_valve_id = sim.node_id(plant["steam_valve"]) if plant.has("steam_valve") else -1
+	steam_pipe_id = sim.edge_id(plant["steam_pipe"]) if plant.has("steam_pipe") else -1
+	var steam_missing := plant.has("steam_valve") and (steam_valve_id < 0 or steam_pipe_id < 0)
+	if furnace_id < 0 or column_id < 0 or feed_pipe_id < 0 or draw_ids.has(-1) or steam_missing:
 		_halt("this scenario does not have the names the scene expects")
 		return
 
@@ -225,6 +291,7 @@ func _physics_process(_delta: float) -> void:
 ## One engine tick, then the scripted timeline for it. False when the scene must
 ## stop ticking this frame.
 func _step() -> bool:
+	var started := Time.get_ticks_usec()
 	var err = JSON.parse_string(sim.tick())
 	if err != null:
 		# The engine's own reason — past the safe range it names the settings
@@ -232,13 +299,15 @@ func _step() -> bool:
 		_halt("tick %d: %s" % [sim.tick_index(), err["message"]])
 		return false
 	snapshot = JSON.parse_string(sim.snapshot_json())
+	block_usec += Time.get_ticks_usec() - started
 	var tick := sim.tick_index()
 	_report_events(tick)
 
 	if not auto_run:
 		return true
 	if tick % PRINT_EVERY == 0:
-		print(_readout(tick))
+		print("%s  [%.1f ms/tick]" % [_readout(tick), block_usec / 1000.0 / PRINT_EVERY])
+		block_usec = 0
 	var timeline: Dictionary = TIMELINES[plant_key]
 	if timeline.has(tick):
 		for action in timeline[tick]:
@@ -254,8 +323,9 @@ func _step() -> bool:
 
 
 ## A line when the column starts or stops running above its reflux setting.
+## A held column has no setting to part from: its reflux is a result.
 func _report_events(tick: int) -> void:
-	var raised := _reflux_ran() > _reflux_set() + 1e-9
+	var raised := _raised()
 	if raised != seen_raised:
 		print(
 			"column: t=%d  reflux %s (set %.2f, ran %.3f)"
@@ -286,6 +356,8 @@ func _input(event: InputEvent) -> void:
 			_load("hot")
 		KEY_3:
 			_load("overheated")
+		KEY_4:
+			_load("stripped")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -304,6 +376,10 @@ func _input(event: InputEvent) -> void:
 			_do("pumparounds_up")
 		KEY_D:
 			_do("pumparounds_down")
+		KEY_R:
+			_do("steam_up")
+		KEY_F:
+			_do("steam_down")
 	queue_redraw()
 
 
@@ -321,9 +397,14 @@ func _do(action: String) -> void:
 			_set_furnace_mw(30.0)
 		"furnace_70":
 			_set_furnace_mw(70.0)
+		"furnace_65":
+			_set_furnace_mw(65.0)
 		"furnace_110":
 			_set_furnace_mw(110.0)
 		"reflux_up", "reflux_down":
+			if not plant.has("reflux"):
+				_say("the reflux is a result on this column: its reboiler is held at %.1f MW, so the heat the feed brings sets it" % _held_mw(), true)
+				return
 			var step := REFLUX_STEP if action == "reflux_up" else -REFLUX_STEP
 			_set_reflux(_reflux_set() + step)
 		"reflux_0":
@@ -335,10 +416,22 @@ func _do(action: String) -> void:
 		"reflux_8":
 			_set_reflux(8.0)
 		"pumparounds_up", "pumparounds_down":
-			var step := PUMPAROUND_STEP if action == "pumparounds_up" else -PUMPAROUND_STEP
-			_set_pumparounds(_pumparound_scale() + step)
+			var up := action == "pumparounds_up"
+			if plant.has("pumparound_mw"):
+				_set_pumparound_mw(_pumparound_mw() + (PUMPAROUND_STEP_MW if up else -PUMPAROUND_STEP_MW))
+			else:
+				_set_pumparounds(_pumparound_scale() + (PUMPAROUND_STEP if up else -PUMPAROUND_STEP))
 		"pumparounds_1.5":
 			_set_pumparounds(1.5)
+		"pumparounds_8mw":
+			_set_pumparound_mw(8.0)
+		"steam_up", "steam_down":
+			if steam_valve_id < 0:
+				_say("this column has no steam valve", true)
+				return
+			_set_steam(snappedf(_steam_opening() + (STEAM_STEP if action == "steam_up" else -STEAM_STEP), STEAM_STEP))
+		"steam_1.0":
+			_set_steam(1.0)
 
 
 func _set_furnace_mw(megawatts: float) -> void:
@@ -376,9 +469,35 @@ func _set_pumparounds(scale: float) -> void:
 		)
 
 
+## Every pumparound to `megawatts`, on a plant whose keys step them together
+## in MW (its file declares them at zero).
+func _set_pumparound_mw(megawatts: float) -> void:
+	var limits: Array = PLANTS[plant_key]["pumparound_mw"]
+	var held := clampf(megawatts, limits[0], limits[1])
+	if not is_equal_approx(held, megawatts) and is_equal_approx(held, _pumparound_mw()):
+		_hold("pumparounds", "%.1f MW each" % held)
+		return
+	for i in _pumparounds().size():
+		_send(
+			"pumparound on stage %d to %.1f MW" % [int(_pumparounds()[i]["stage"]), held],
+			{"cmd": "set_pumparound_duty", "node": column_id, "pumparound": i, "duty": held * 1.0e6}
+		)
+
+
+## The stripping steam's valve to `opening` (0–1).
+func _set_steam(opening: float) -> void:
+	var limits: Array = PLANTS[plant_key]["steam"]
+	var held := clampf(opening, limits[0], limits[1])
+	if not is_equal_approx(held, opening) and is_equal_approx(held, _steam_opening()):
+		_hold("steam valve", "%.0f %%" % (held * 100.0))
+		return
+	_send("open the steam valve to %.0f %%" % (held * 100.0), {"cmd": "set_valve_opening", "node": steam_valve_id, "opening": held})
+
+
 ## The screen's own refusal: the key is at the edge of the safe range.
 func _hold(what: String, at: String) -> void:
-	var text := "%s stays at %s — the edge of this plant's safe range (DESIGN §65.9, §66.7)" % [what, at]
+	var ref: String = PLANTS[plant_key].get("range_ref", "§65.9, §66.7")
+	var text := "%s stays at %s — the edge of this plant's safe range (DESIGN %s)" % [what, at, ref]
 	_say(text, true)
 	if auto_run:
 		print("column: t=%d  HELD: %s" % [sim.tick_index(), text])
@@ -429,6 +548,41 @@ func _pumparound_scale() -> float:
 	if design_pumparounds.is_empty():
 		return 1.0
 	return float(_pumparounds()[0]["duty"]) / float(design_pumparounds[0])
+
+
+## The first pumparound's duty [MW]: the keys that step them in MW keep every
+## one at the same duty.
+func _pumparound_mw() -> float:
+	if _pumparounds().is_empty():
+		return 0.0
+	return float(_pumparounds()[0]["duty"]) / 1.0e6
+
+
+## Whether the column holds its reboiler (`reboiler_duty_mw`, M64): its
+## reflux is then a result, and its declared `reflux_ratio` only a seed.
+func _held() -> bool:
+	return _cascade().has("reboiler_duty")
+
+
+func _held_mw() -> float:
+	return float(_cascade().get("reboiler_duty", 0.0)) / 1.0e6
+
+
+## Whether the column runs above the reflux it is set to (never on a held one).
+func _raised() -> bool:
+	return not _held() and _reflux_ran() > _reflux_set() + 1e-9
+
+
+func _steam_opening() -> float:
+	return float(_node(steam_valve_id)["kind"]["opening"])
+
+
+func _steam_kg_s() -> float:
+	return float(_edge(steam_pipe_id)["stream"]["mass_flow"])
+
+
+func _steam_k() -> float:
+	return float(_edge(steam_pipe_id)["stream"]["temperature"])
 
 
 func _operation() -> Dictionary:
@@ -489,20 +643,30 @@ func _mw(field: String) -> float:
 
 
 func _readout(tick: int) -> String:
-	return (
-		"t=%5d  furnace=%6.2f MW  feed=%6.1f C  flash=%5.1f%%  reflux set=%.2f ran=%.3f  condenser=%6.2f MW  reboiler=%6.2f MW  pumparounds=%s"
+	var pumparounds := "none"
+	if PLANTS[plant_key].has("pumparound_mw"):
+		pumparounds = "%.1f MW each" % _pumparound_mw()
+	elif not design_pumparounds.is_empty():
+		pumparounds = "%.0f%%" % (_pumparound_scale() * 100.0)
+	var line := (
+		"t=%5d  furnace=%6.2f MW  feed=%6.1f C  flash=%5.1f%%  reflux %s  condenser=%6.2f MW  reboiler=%6.2f MW  pumparounds=%s"
 		% [
 			tick,
 			_duty_w() / 1.0e6,
 			_feed_k() - 273.15,
 			_flash() * 100.0,
-			_reflux_set(),
-			_reflux_ran(),
+			"ran=%.3f (a result)" % _reflux_ran() if _held() else "set=%.2f ran=%.3f" % [_reflux_set(), _reflux_ran()],
 			_mw("condenser_w"),
 			_mw("reboiler_w"),
-			"none" if design_pumparounds.is_empty() else "%.0f%%" % (_pumparound_scale() * 100.0),
+			pumparounds,
 		]
 	)
+	if steam_valve_id >= 0:
+		var stages := _stage_temperatures()
+		line += "  steam=%.0f%% %.3f kg/s  bottom=%.1f C" % [
+			_steam_opening() * 100.0, _steam_kg_s(), float(stages[-1]) - 273.15 if not stages.is_empty() else 0.0
+		]
+	return line
 
 
 # ---------------------------------------------------------------- drawing
@@ -534,7 +698,10 @@ const CUT_COLORS := [
 	Color(0.40, 0.70, 0.95),
 	Color(0.65, 0.50, 0.90),
 	Color(0.55, 0.40, 0.35),
+	# Water, the seventh member on a wet plant's slate (M62).
+	Color(0.30, 0.85, 0.85),
 ]
+const STEAM := Color(0.92, 0.92, 0.98)
 ## The stage colour scale [K]: cool at the top of a crude column, hot at its foot.
 const STAGE_COLD_K := 373.15
 const STAGE_HOT_K := 873.15
@@ -564,8 +731,11 @@ func _draw() -> void:
 		ThemeDB.fallback_font, Vector2(30, 556), message, HORIZONTAL_ALIGNMENT_LEFT,
 		get_viewport_rect().size.x - 60, 15, 2, BAD if message_bad else GOOD
 	)
-	_text(Vector2(30, 600), "Up/Down furnace   W/S reflux   E/D pumparounds   Space pause   [ ] speed", DIM)
-	_text(Vector2(30, 624), "1 crude unit   2 hot feed   3 overheated", DIM)
+	var keys := "Up/Down furnace   W/S reflux   E/D pumparounds   Space pause   [ ] speed"
+	if steam_valve_id >= 0:
+		keys = "Up/Down furnace   R/F steam   E/D pumparounds   Space pause   [ ] speed"
+	_text(Vector2(30, 600), keys, DIM)
+	_text(Vector2(30, 624), "1 crude unit   2 hot feed   3 overheated   4 stripped by steam", DIM)
 	if halted != "":
 		draw_multiline_string(
 			ThemeDB.fallback_font, Vector2(30, 90), "HALTED — %s" % halted, HORIZONTAL_ALIGNMENT_LEFT,
@@ -646,22 +816,29 @@ func _draw_column() -> void:
 	var condenser := top + Vector2(0, -40)
 	draw_line(top, condenser, PIPE, 4.0)
 	draw_circle(condenser, 14, COOLER)
-	var raised := _reflux_ran() > _reflux_set() + 1e-9
+	var raised := _raised()
 	_text(condenser + Vector2(-250, -4), "condenser %.1f MW" % _mw("condenser_w"), INK, 14)
-	_text(
-		condenser + Vector2(-250, 14),
-		"reflux %.2f%s" % [_reflux_ran(), "  RAISED (set %.1f)" % _reflux_set() if raised else ""],
-		WARN if raised else DIM,
-		14
-	)
+	var reflux_label := "reflux %.2f%s" % [_reflux_ran(), "  RAISED (set %.1f)" % _reflux_set() if raised else ""]
+	if _held():
+		reflux_label = "reflux %.2f, a result" % _reflux_ran()
+	_text(condenser + Vector2(-250, 14), reflux_label, WARN if raised else DIM, 14)
 
-	# Reboiler.
 	var foot := COLUMN_RECT.position + Vector2(COLUMN_RECT.size.x * 0.5, COLUMN_RECT.size.y)
-	var reboiler := Rect2(foot + Vector2(-30, 10), Vector2(60, 26))
-	draw_line(foot, reboiler.position + Vector2(30, 0), PIPE, 4.0)
-	draw_rect(reboiler, Color(0.35, 0.18, 0.10))
-	draw_rect(reboiler, SHELL, false, 2.0)
-	_text(reboiler.position + Vector2(-60, 46), "reboiler %.1f MW" % _mw("reboiler_w"), INK, 14)
+	if steam_pipe_id >= 0:
+		# The stripping steam, into the bottom stage from the left.
+		var bottom_y := _stage_y(_stage_count() - 1)
+		var from := Vector2(FURNACE_RECT.end.x + 6, bottom_y)
+		draw_line(from, Vector2(COLUMN_RECT.position.x, bottom_y), STEAM, 3.0)
+		_text(from + Vector2(0, -22), "steam %.2f kg/s" % _steam_kg_s(), STEAM, 13)
+		_text(from + Vector2(0, -7), "%s, valve %.0f %%" % [_c(_steam_k()), _steam_opening() * 100.0], DIM, 11)
+	# A held column has no reboiler to draw: its bottom stage's balance is
+	# held at its duty (the panel says so).
+	if not _held():
+		var reboiler := Rect2(foot + Vector2(-30, 10), Vector2(60, 26))
+		draw_line(foot, reboiler.position + Vector2(30, 0), PIPE, 4.0)
+		draw_rect(reboiler, Color(0.35, 0.18, 0.10))
+		draw_rect(reboiler, SHELL, false, 2.0)
+		_text(reboiler.position + Vector2(-60, 46), "reboiler %.1f MW" % _mw("reboiler_w"), INK, 14)
 
 	# Pumparounds, left of the column at their stages.
 	for pumparound in _pumparounds():
@@ -682,7 +859,10 @@ func _draw_products() -> void:
 		var edge := _edge(draw_ids[i])
 		var stage := int(draws[i]["stage"])
 		var y: float
-		if stage == 0:
+		if stage == 0 and draws[i].get("water", false):
+			# The decanter's free water, above the naphtha drawn beside it.
+			y = COLUMN_RECT.position.y - 72
+		elif stage == 0:
 			y = COLUMN_RECT.position.y - 40
 		elif stage >= _stage_count():
 			y = COLUMN_RECT.end.y + 23
@@ -713,17 +893,23 @@ func _draw_products() -> void:
 
 ## The right-hand panel: the column's books.
 func _draw_panel() -> void:
-	var y := 140.0
+	# Below the slate's legend, three cuts to a row.
+	var y := 108.0 + ceili(snapshot["slate"].size() / 3.0) * 16.0
 	_text(Vector2(PANEL_X, y), "COLUMN", DIM)
 	y += 24
 	_text(Vector2(PANEL_X, y), "feed            %s" % _c(_feed_k()), INK)
 	y += 22
 	_text(Vector2(PANEL_X, y), "flashes          %5.1f %%" % (_flash() * 100.0), WARN if _flash() > 0.0 else INK)
 	y += 22
-	var raised := _reflux_ran() > _reflux_set() + 1e-9
-	_text(Vector2(PANEL_X, y), "reflux set      %6.2f" % _reflux_set(), INK)
-	y += 22
-	_text(Vector2(PANEL_X, y), "reflux ran      %6.3f" % _reflux_ran(), WARN if raised else INK)
+	var raised := _raised()
+	if _held():
+		_text(Vector2(PANEL_X, y), "reflux ran      %6.3f  (a result)" % _reflux_ran(), INK)
+		y += 18
+		_text(Vector2(PANEL_X + 12, y), "no reboiler: the feed's heat sets it", DIM, 13)
+	else:
+		_text(Vector2(PANEL_X, y), "reflux set      %6.2f" % _reflux_set(), INK)
+		y += 22
+		_text(Vector2(PANEL_X, y), "reflux ran      %6.3f" % _reflux_ran(), WARN if raised else INK)
 	if raised:
 		y += 18
 		_text(Vector2(PANEL_X + 12, y), "the feed brings more heat than", WARN, 13)
@@ -732,12 +918,25 @@ func _draw_panel() -> void:
 	y += 22
 	_text(Vector2(PANEL_X, y), "condenser      %6.2f MW" % _mw("condenser_w"), INK)
 	y += 22
-	_text(Vector2(PANEL_X, y), "reboiler       %6.2f MW" % _mw("reboiler_w"), INK)
+	if _held():
+		_text(Vector2(PANEL_X, y), "reboiler       %6.2f MW  held" % _mw("reboiler_w"), INK)
+	else:
+		_text(Vector2(PANEL_X, y), "reboiler       %6.2f MW" % _mw("reboiler_w"), INK)
 	y += 22
+	if steam_valve_id >= 0:
+		_text(Vector2(PANEL_X, y), "steam          %6.3f kg/s (%.0f %%)" % [_steam_kg_s(), _steam_opening() * 100.0], STEAM)
+		y += 22
+		var stages := _stage_temperatures()
+		if not stages.is_empty():
+			_text(Vector2(PANEL_X, y), "bottom          %s" % _c(float(stages[-1])), INK)
+			y += 22
 	var total := 0.0
 	for pumparound in _pumparounds():
 		total += float(pumparound["duty"])
-	if not _pumparounds().is_empty():
+	if PLANTS[plant_key].has("pumparound_mw"):
+		_text(Vector2(PANEL_X, y), "pumparounds    %6.2f MW (%.1f each)" % [total / 1.0e6, _pumparound_mw()], COOLER)
+		y += 22
+	elif not _pumparounds().is_empty():
 		_text(Vector2(PANEL_X, y), "pumparounds    %6.2f MW (%.0f %%)" % [total / 1.0e6, _pumparound_scale() * 100.0], COOLER)
 		y += 22
 
@@ -754,9 +953,17 @@ func _draw_panel() -> void:
 	_text(Vector2(PANEL_X, y), "SAFE RANGE OF THE KEYS", DIM)
 	y += 22
 	var plant: Dictionary = PLANTS[plant_key]
-	_text(Vector2(PANEL_X, y), "furnace  %.0f–%.0f MW" % [plant["furnace_mw"][0], plant["furnace_mw"][1]], DIM, 14)
-	y += 18
-	_text(Vector2(PANEL_X, y), "reflux   %.1f–%.1f" % [plant["reflux"][0], plant["reflux"][1]], DIM, 14)
+	var low: float = plant["furnace_mw"][0]
+	_text(Vector2(PANEL_X, y), ("furnace  %.0f–%.0f MW" if low == roundf(low) else "furnace  %.1f–%.0f MW") % [low, plant["furnace_mw"][1]], DIM, 14)
+	if plant.has("reflux"):
+		y += 18
+		_text(Vector2(PANEL_X, y), "reflux   %.1f–%.1f" % [plant["reflux"][0], plant["reflux"][1]], DIM, 14)
+	if plant.has("steam"):
+		y += 18
+		_text(Vector2(PANEL_X, y), "steam valve  %.0f–%.0f %%" % [plant["steam"][0] * 100.0, plant["steam"][1] * 100.0], DIM, 14)
+	if plant.has("pumparound_mw"):
+		y += 18
+		_text(Vector2(PANEL_X, y), "pumparounds  %.0f–%.0f MW each" % [plant["pumparound_mw"][0], plant["pumparound_mw"][1]], DIM, 14)
 	if plant.has("pumparounds"):
 		y += 18
 		_text(

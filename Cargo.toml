@@ -61,3 +61,12 @@ opt-level = 2
 # `cargo build` keeps the fast-compiling dev profile.
 [profile.test]
 opt-level = 2
+
+# The library the Godot editor loads (`--profile godot`, refinery.gdextension's
+# debug entries): the dev profile with the workspace's crates optimized, for
+# the same reason and with the same numbers. Unoptimized, the stripped crude
+# unit ran 28–60 ms a tick on the column screen and ~200 ms while its coil
+# drifted after a furnace step; optimized, 4–11 and ~30 (M64.4, DESIGN §69.10).
+[profile.godot]
+inherits = "dev"
+opt-level = 2

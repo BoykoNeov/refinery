@@ -16,7 +16,7 @@
 ;
 ; SETUP IN A FRESH CLONE — two steps, in this order:
 ;
-;     cargo build -p refinery-godot-ext --features godot --target-dir target/godot
+;     cargo build -p refinery-godot-ext --features godot --target-dir target/godot --profile godot
 ;     godot --headless --path . --editor --quit
 ;
 ; The first builds the library. The second is the one that is easy to miss and
@@ -68,13 +68,13 @@ reloadable = true
 [libraries]
 
 ; Verified: built and loaded on this platform.
-windows.debug.x86_64 = "res://target/godot/debug/refinery_godot_ext.dll"
+windows.debug.x86_64 = "res://target/godot/godot/refinery_godot_ext.dll"
 windows.release.x86_64 = "res://target/godot/release/refinery_godot_ext.dll"
 
 ; Conventional cargo output names for the other desktop targets. NOT built or
 ; loaded here — listed so a port has a starting point, not as a claim that it
 ; works.
-linux.debug.x86_64 = "res://target/godot/debug/librefinery_godot_ext.so"
+linux.debug.x86_64 = "res://target/godot/godot/librefinery_godot_ext.so"
 linux.release.x86_64 = "res://target/godot/release/librefinery_godot_ext.so"
-macos.debug = "res://target/godot/debug/librefinery_godot_ext.dylib"
+macos.debug = "res://target/godot/godot/librefinery_godot_ext.dylib"
 macos.release = "res://target/godot/release/librefinery_godot_ext.dylib"

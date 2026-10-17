@@ -123,7 +123,7 @@ asserts every plant runs; the before/after comparison is local, per the table.
 binding is behind the `godot` feature (needs Godot ≥ 4.7):
 
 ```
-cargo build  -p refinery-godot-ext --features godot --target-dir target/godot
+cargo build  -p refinery-godot-ext --features godot --target-dir target/godot --profile godot
 cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
 ```
 
@@ -132,6 +132,9 @@ cargo clippy -p refinery-godot-ext --features godot --all-targets -- -D warnings
 - `--target-dir` is REQUIRED: the crate is `cdylib`+`rlib`, so `cargo test
   --workspace` would overwrite Godot's `.dll` with a feature-off build. Symptom:
   `GDExtension entry point 'gdext_rust_init' not found`.
+- `--profile godot` (M64.4): the engine optimized in the library the editor
+  loads (`target/godot/godot/`); unoptimized, the stripped crude unit's column
+  screen ran ~8 times slower. Same numbers to the bit.
 - After cloning, open the editor once so it writes `.godot/extension_list.cfg`
   (else: a GDScript parse error naming nothing relevant). Its nonzero exit is a
   harmless shutdown crash.
@@ -145,8 +148,8 @@ godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on scre
 godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
-godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated)
-godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated]
+godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped)
+godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped]
 ```
 
 ## Testing
@@ -186,11 +189,11 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M64 (open)** — steam stripping
-proper on M62's water (ledger C7: the reboiler held at zero, its cold start, the column screen's fourth
-plant); M64.0 specified (DESIGN §69), M64.1, M64.2 (the cold start) and M64.3 (the stripped crude unit) landed, M64.4 (the column screen's fourth plant) next. The order after it is `docs/PLAN.md`. **Latest closed: M63 (2026-10-17)**: M62's loose ends — a lumped coil on a
-boiling plant refused, water's vapour pressure on IAPWS-IF97, steam an ideal gas through a valve or a
-hole, a too-wet column passing its feed through (DESIGN §68; B62, B64, B67, C13 taken; C14 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — the next work is
+`docs/PLAN.md`'s Phase 2 (C14, C15, C12, …), each opened as a milestone on the user's word. **Latest closed:
+M64 (2026-10-18)**: steam stripping — a column's reboiler held at zero with the reflux the result, its cold
+start by a continuation, `crude_unit_stripped.toml`, and the column screen's fourth plant on an optimized
+Godot build (DESIGN §69; C7 taken; E30 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

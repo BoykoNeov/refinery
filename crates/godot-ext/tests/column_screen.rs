@@ -217,3 +217,91 @@ fn the_overheated_timeline() {
     screen.run_to(1200);
     assert_eq!(screen.reading().2, 8.0);
 }
+
+/// **The stripped crude unit** (`AUTO_STRIPPED`, M64.4): its reboiler held at
+/// zero, the reflux a result. The steam valve wide open at 600 strips the
+/// bottom cooler; the pumparounds to 8 MW each at 1 500 take heat off the trays
+/// and the reflux and the condenser fall; the furnace to 65 MW at 2 400 flashes
+/// more of the feed and the reflux rises again. The reboiler stays at zero
+/// throughout.
+#[test]
+fn slow_the_stripped_timeline() {
+    let mut screen = Screen::load(
+        "crude_unit_stripped.toml",
+        "furnace",
+        "transfer_line",
+        &[
+            "naphtha_suction",
+            "water_draw",
+            "kerosene_suction",
+            "diesel_suction",
+            "gas_oil_suction",
+            "residue_suction",
+        ],
+    );
+    let steam_valve = screen.session.node_id("steam_valve");
+    let steam_pipe = screen.session.edge_id("stripping_steam");
+    assert!(steam_valve >= 0 && steam_pipe >= 0, "the steam's names");
+    // (bottom stage °C, steam kg/s)
+    let stripping = |screen: &Screen| {
+        let snapshot = screen.snapshot();
+        let stages = snapshot["nodes"][screen.column as usize]["column_operation"]
+            ["stage_temperatures_k"]
+            .as_array()
+            .unwrap()
+            .clone();
+        let steam = snapshot["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"].as_i64() == Some(steam_pipe))
+            .unwrap()["stream"]["mass_flow"]
+            .as_f64()
+            .unwrap();
+        (stages.last().unwrap().as_f64().unwrap() - 273.15, steam)
+    };
+    let (furnace, column) = (screen.furnace, screen.column);
+
+    screen.run_to(600);
+    let start = screen.reading();
+    assert_eq!(start.4, 0.0, "the reboiler held at zero");
+    assert!((start.2 - 3.460).abs() < 1e-3, "{start:?}");
+    let (bottom, steam) = stripping(&screen);
+    assert!((bottom - 363.63).abs() < 0.05, "{bottom}");
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_valve_opening","node":{steam_valve},"opening":1.0}}"#
+    ));
+    screen.run_to(1500);
+    let (stripped, more_steam) = stripping(&screen);
+    assert!(more_steam > 2.0 * steam, "{more_steam} after {steam}");
+    assert!(stripped < bottom - 8.0, "{stripped} after {bottom}");
+    let steamed = screen.reading();
+    assert_eq!(steamed.4, 0.0);
+
+    for i in 0..3 {
+        screen.send(&format!(
+            r#"{{"cmd":"set_pumparound_duty","duty":8000000.0,"node":{column},"pumparound":{i}}}"#
+        ));
+    }
+    screen.run_to(2400);
+    let cooled = screen.reading();
+    assert!(cooled.2 < steamed.2 - 1.5, "{cooled:?} after {steamed:?}");
+    assert!(cooled.3 < steamed.3 - 15.0, "the condenser carries less");
+    assert_eq!(cooled.4, 0.0);
+
+    screen.send(&format!(
+        r#"{{"cmd":"set_furnace_duty","duty":65000000.0,"node":{furnace}}}"#
+    ));
+    screen.run_to(3600);
+    let fired = screen.reading();
+    assert!(
+        fired.1 > cooled.1 && fired.0 > cooled.0 + 5.0,
+        "{fired:?} after {cooled:?}"
+    );
+    assert!(
+        fired.2 > cooled.2 + 0.1,
+        "the reflux rises: {fired:?} after {cooled:?}"
+    );
+    assert_eq!(fired.4, 0.0);
+}

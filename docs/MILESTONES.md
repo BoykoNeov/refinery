@@ -12,6 +12,40 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M64 is CLOSED (2026-10-18): steam stripping — the reboiler held at zero, the
+reflux the result — `docs/DEFERRED.md` C7 taken, E30 new.** Asked after M63 as
+"refinery", then "scope and plan M64", then a plan of every open item with M64
+first (`docs/PLAN.md`). Decided in plain words along the way: the spelling
+`reboiler_duty_mw = 0.0`; the new plant's keys the steam, the furnace and the
+pumparounds, the reflux a result; a slower first tick accepted for now; the
+charge held on a flow loop, "how a real unit runs"; the cold start's side
+cooling derived from the feed; the meter that cannot sit on the coil's inlet
+pipe logged, not fixed; a held column's start from this tick's earlier pass
+fixed in M64.3; at M64.4 the pumparounds stepped together in MW, the keys' box
+as measured, the furnace's top lowered to 65 MW once its flash was shown by
+mass, and an optimized build for the Godot library.
+- **M64.0, the probe and the design note** (§69.0–§69.6): the reboiler walks
+  to zero warm on the steamed crude unit; a cold coil cannot start a
+  reboiler-free column; the held solve costs what the declared one does.
+- **M64.1, the reboiler held** (§69.7): the bottom stage's balance an equation
+  of the column Newton at the held duty, the reflux its unknown, no vapour
+  floor; the held duty published, its closure required to agree.
+- **M64.2, the cold start** (§69.8): a continuation from the same column with
+  its reboiler, its side cooling topped up to 1.5 times the feed's latent heat
+  flow, ten Newton solves to the held duty; one continuation a tick.
+- **M64.3, the stripped crude unit** (§69.9): `crude_unit_stripped.toml`, the
+  bottom 363.6 °C on 0.867 kg/s of steam, the furnace at 58 MW, the charge on a
+  PI loop; the fallback forced by a charge step; E30 found.
+- **M64.4, the column screen's fourth plant** (§69.10): key 4; the furnace
+  52.5–65 MW, the steam valve 10–100 % (R/F, new), the pumparounds 0–8 MW each,
+  every corner measured warm; the reflux drawn as a result; a `godot` Cargo
+  profile, the screen 5 ms a tick settled where the debug library took 28–60.
+- Corpus: 64 of 64 byte-identical on both fidelities at every slice;
+  `crude_unit_stripped` the 65th plant.
+- **Left open**: C15 (a start-up from a cold plant), C14 (a wetter crude), A29
+  (the coil's drift, now on the screen: 24–26 ms a tick for minutes after a
+  furnace step), E30, C12 (the screen's keys a box, the stripped plant's too).
+
 **M63 is CLOSED (2026-10-17): M62's loose ends — `docs/DEFERRED.md` B62, B64,
 B67 and C13 taken, C14 new.** Asked after M62 as "what is next"; steam
 stripping was the plan, and the user chose instead to "tie the loose ends of
