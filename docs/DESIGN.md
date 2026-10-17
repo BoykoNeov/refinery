@@ -26016,10 +26016,11 @@ density, so a steam valve never chokes. Asked whether to build that now, the
 user chose **"choke every boiling flow"** — the boiling-jet law M62.4d put on a
 burst hole, on every valve a boiling stream passes, part-liquid included,
 which moves existing plants (the wet crude unit's control valve passes a
-two-phase crude). M62.6 is three slices: **M62.6a** steam into the column (this
-section, nothing shipped moves), **M62.6b** valves choke on boiling flows (the
-user-approved move), **M62.6c** the steam-stripped crude unit on a 10 bar
-supply, and M62's close.
+two-phase crude). M62.6 was then three slices: **M62.6a** steam into the
+column (this section, nothing shipped moves), **M62.6b** valves choke on
+boiling flows (the user-approved move), **M62.6c** the steam-stripped crude
+unit on a 10 bar supply, and M62's close — re-sliced again into four at
+M62.6b (§67.19).
 
 **Measured on the reference** (M62.5's `dry_trays` column: 8 stages, feed on
 5, four cuts and 1 % water at 1.8 bar; 0.15 kg/s of steam at 400 °C):
@@ -26135,3 +26136,92 @@ coolers' books gate it), and the fixed point's sweep without the steam (only
 Newton's warm-up reads it, and Newton still converges to the right answer —
 the fixed point solved on its own, against Newton, gates it).
 **Corpus**: 63 of 63 byte-identical on both fidelities.
+
+### 67.19 A valve chokes on an all-vapour stream (M62.6b) — specified, re-sliced, then built
+
+**Asked twice.** Building M62.6a, the engine was found to pass a boiling stream
+through a valve as an incompressible fluid at its upwind homogeneous density, so
+no valve ever chokes; the user chose "choke every boiling flow" (§67.18). Built
+that way first — Leung's ω jet, the burst hole's law (§67.15), on every valve a
+boiling stream crosses, subcooled-flashing and two-phase inlets included — and
+measured before anything was kept:
+
+```text
+  plant                valve            inlet                     outlet     before      after
+  crude_unit_boiling   feed_valve       30.0 bar, 270 °C liquid   14.7 bar   134.44 kg/s 134.44 kg/s
+  crude_unit_wet       feed_valve       30.0 bar, 1.4 % vapour    15.8 bar   112.83      88.87  (−21 %)
+  flashing_rundown     rundown_valve    2.93 bar, boils at 2.07   1.39 bar     5.73       4.36  (−24 %)
+  product_cooler       rundown_valve    4.85 bar, 140 °C          1.43 bar     8.33       5.10  (−39 %)
+  wet_rundown          rundown_valve    4.92 bar, 115 °C wet      1.50 bar     6.03       3.60  (−40 %)
+```
+
+Five plants moved on both fidelities; the wet crude unit, charged 21 % less on a
+20 MW furnace, drifted off its settled coil start (322 → 330 °C, not settled at
+6 000 ticks), its tick 3–4 times dearer (A29); and 19 tests in 10 files failed,
+about half by the flow solve DIVERGING in 3–4 iterations — on tick 1 of a cold
+start, through a gas lock — where a subcooled inlet starts to boil in the valve
+and the jet's slope jumps (§67.15 says so of the hole; a hole is dormant at a
+start, a valve is not). Asked again, the user chose to **split it**: all-vapour
+flows now, part-liquid choking — with the solve smoothed where a stream starts to
+boil in the valve, the moved plants and the re-pinned tests — as its own slice
+before M62 closes. **M62.6 is now four slices**: 6a steam into the column, 6b
+this, **6c** part-liquid choking, **6d** the steam-stripped crude unit and M62's
+close (after 6c, which moves the wet crude unit it is generated from).
+
+**The rules, as built:**
+
+1. **Which valves**: a control valve or a check valve (a relief valve shares the
+   fold and is refused on a flashing plant, §58) on a plant whose line flash
+   carries vapour, in liquid service (a gas-service valve keeps the ISA fold,
+   §3a fork 4), whose upwind state is ALL vapour — its `VapourShare` exactly 1,
+   superheated or saturated steam (`network::valve_flashing`). Every other valve,
+   and every valve on its first tick (no resolved state yet), keeps the liquid
+   fold bit for bit.
+2. **The law**: `flashing_inlet`'s `(η_s, ω)` — the burst hole's reading of the
+   same state, from the valve's upwind state to the far end of its branch — and
+   Leung's jet on the VALVE'S OWN share of the drop (`elements::
+   fold_flashing_valve`): `fold_gas_valve`'s arrangement, the share `s` the root
+   of `s + α_pipe·Q_v(s)² = |dp − β|`, `Q_v(s) = √(s/α_v)·r(s)`, `r` the jet's
+   flux over the liquid law's at that drop, `η_t = max(1 − s/p_up, η_c)`.
+   `Q_v` is non-decreasing (it rises to the choke and holds), so bisection
+   finds the one root; the branch returned is `α_v/r²` in series with the pipe,
+   which reproduces `Q_v` there, frozen at the iterate as every compiled
+   coefficient is. `η_c` is found once per compile, outside the bisection.
+3. **Steam all vapour takes `ω = 1`**: two isenthalpic flashes of an ideal gas
+   are isothermal, so the ω law is the isothermal nozzle, choked at a drop of
+   `1 − e^{−1/2}` (39.3 %) of the valve's inlet pressure at
+   `√(P₀ρ₀)·e^{−1/2}`. **Stated gaps**: a real steam nozzle expands
+   isentropically and chokes at `√(2ψ*)·√(P₀ρ₀)`, 0.6675 at `γ = 1.30` — the
+   ω law reads 0.9086 of it, 9 % low (the isenthalpic flash standing in for the
+   API's isentropic one, §67.15); and the nozzle has no pressure recovery, where
+   a real globe valve (`F_L ≈ 0.9`) chokes at a smaller drop.
+4. **Found in passing (M62.6a's)**: the engine's reverse-feed refusal now reads
+   the column's feed alone, steam excluded, so steam outweighing a feed that
+   runs backwards cannot hide it; the draw writes still split everything that
+   flows in. On the crude unit the transport sweep refuses a backward feed
+   first (the feed line then leaves the column and names no draw).
+
+**Measured**: a 10 bar, 400 °C steam supply through a Kv 20 valve half open on
+short wide pipes chokes from a 6 bar sink down, 0.2135 kg/s, the ω law's at the
+state the solve read to 1e-6 on both fidelities (the old law would pass 2.15×
+that at a 1.5 bar sink). M62.6a's steam fixture (3.5 bar into the 1.8 bar
+column) now passes 0.618 kg/s half open, 1.215 full open (0.982 and 1.83
+before), the bottom at 582.04 and 577.64 °C.
+
+**Gates**:
+- `elements.rs` (4): a valve whose stream stays liquid is the liquid fold bit
+  for bit (and a shut one shut); the folded valve is the jet on its own share
+  of the drop; past its choke a steam valve passes no more; the 9 % gap to the
+  isentropic nozzle, stated.
+- `crates/scenarios/tests/steam_valve_reference.rs` (3): the flow rises to the
+  choke and holds, both fidelities; the choked flow the ω law's at the solved
+  state; a check valve chokes too.
+- `crude_unit_wet_reference.rs`: its charge pinned at 112.83 kg/s — a two-phase
+  inlet keeps the liquid law until M62.6c, which re-pins it.
+
+**Mutations**: five, all caught: the all-vapour gate widened to any vapour (by
+the pinned charge, added for it — it first survived, no test pinning the
+charge); the fold always the liquid one; no choke; the jet read at the whole
+branch's drop; the liquid fold whatever the inlet. **Corpus**: 63 of 63
+byte-identical on both fidelities — no shipped plant passes all-vapour flow
+through a valve.

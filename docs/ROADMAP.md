@@ -9976,10 +9976,32 @@ column's bottom from 265.07 to 256.90 °C. On the wet crude unit (an inline
 fixture, 3.5 bar steam), 0.98 kg/s of steam takes the bottom from 586.8 to
 579.3 °C with the reboiler still on. **Re-sliced while building**: asked
 whether a steam valve should choke, the user chose to choke every boiling flow
-through a valve (M62.6b), which moves existing plants; the steam-stripped crude
-unit on a 10 bar supply is M62.6c. DESIGN §67.18.
+through a valve, which moves existing plants (re-sliced again at M62.6b,
+below). DESIGN §67.18.
 M62 stays open: M62.6b, valves that choke on a boiling flow, is next.
 
 - Gates: `reference/steam_column.rs` (7), `column_steam_reference.rs` (6),
   `heat_balance.rs` (1). Mutations: thirteen, all caught (two after a gate was
   added). Corpus: 63 of 63 byte-identical on both fidelities.
+
+### M62.6b — **LANDED** 2026-10-17: a valve chokes on an all-vapour stream
+
+A control or check valve whose stream arrives all vapour (steam) on a plant
+with the line flash flows by Leung's ω jet — the burst hole's law (M62.4d) — on
+the valve's own share of its branch's drop: it chokes past a drop of 39 % of
+its inlet pressure, where it used to pass a vapour as an incompressible fluid,
+its flow rising for ever. A 10 bar steam valve into a 1.5 bar header now passes
+a 2.15th of what it did. Stated gaps: 9 % under an isentropic steam nozzle, and
+no pressure recovery. **Re-sliced again**: built first on every boiling flow,
+it moved five plants 21–40 % in flow, diverged the flow solve where a
+subcooled stream starts to boil in a valve, and failed 19 tests; asked, the
+user chose to split it — part-liquid choking, with the solve smoothed there, is
+M62.6c; the steam-stripped crude unit and M62's close are M62.6d. In passing:
+a column's reverse-feed refusal reads its feed alone, steam excluded.
+DESIGN §67.19.
+M62 stays open: M62.6c, part-liquid flow choking in a valve, is next.
+
+- Gates: `elements.rs` (4), `steam_valve_reference.rs` (3),
+  `crude_unit_wet_reference.rs` (the charge pinned), `column_steam_reference.rs`
+  (a backward feed under steam). Mutations: five, all caught (one after the
+  charge was pinned). Corpus: 63 of 63 byte-identical on both fidelities.

@@ -331,3 +331,26 @@ fn the_product_coolers_books_close_with_steam_on() {
     }
     assert!(worst < 1e-9, "a product cooler's books: worst {worst:e}");
 }
+
+/// **A feed running backwards is refused with steam on too**: steam
+/// outweighing a backward feed must not hide it and leave the draws splitting
+/// a sum of the two. The transport sweep refuses first here (the feed line
+/// then LEAVES the column, and names no draw); the engine's reverse-feed
+/// refusal reads the feed alone too, as the backstop.
+#[test]
+fn a_backward_feed_is_refused_under_steam() {
+    let backward = with_steam(1.0, 10).replace("pressure_bar = 30.0", "pressure_bar = 1.0");
+    let mut engine = build(&backward);
+    let mut error = None;
+    for _ in 0..20 {
+        if let Err(e) = engine.tick() {
+            error = Some(e.to_string());
+            break;
+        }
+    }
+    let error = error.expect("a backward feed must be refused");
+    assert!(
+        error.contains("reverse feed flow") || error.contains("transfer_line"),
+        "{error}"
+    );
+}

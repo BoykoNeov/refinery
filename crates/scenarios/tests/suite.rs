@@ -159,6 +159,8 @@ mod reverse_action_reference;
 mod slate_loading;
 #[path = "snapshot_slate.rs"]
 mod snapshot_slate;
+#[path = "steam_valve_reference.rs"]
+mod steam_valve_reference;
 #[path = "step_tick_reference.rs"]
 mod step_tick_reference;
 #[path = "stiff_pair_reference.rs"]

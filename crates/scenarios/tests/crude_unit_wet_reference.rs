@@ -65,6 +65,15 @@ fn the_crude_unit_decants_its_crudes_water_at_the_condenser() {
     let slate = engine.slate.clone();
     let water = slate.free_water().expect("the slate has its water");
     let crude = edge(&s, "crude_line");
+    // The charge, 1.4 % vapour through the feed valve: the liquid law at its
+    // inlet's mixture density. A valve chokes only an ALL-vapour stream in
+    // M62.6b (docs/DESIGN.md §67.19); part-liquid choking is M62.6c's, and
+    // re-pins this.
+    assert!(
+        (crude.stream.mass_flow.value() / 112.8327 - 1.0).abs() < 1e-4,
+        "the charge is {} kg/s",
+        crude.stream.mass_flow.value()
+    );
     let crude_water = crude.stream.mass_flow.value() * crude.stream.composition.fractions()[water];
     let draw = edge(&s, "water_draw");
     assert!(

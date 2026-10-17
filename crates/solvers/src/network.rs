@@ -11,9 +11,9 @@
 
 use crate::elements::{
     cavitation_head_fraction, cavitation_head_fraction_dsigma, check_opening, check_opening_slope,
-    compressor_multiplier, flashing_orifice, fold_gas_valve, gas_orifice, pipe_resistance,
-    relief_opening, relief_opening_slope, specific_heat_ratio_factor, two_phase_head_multiplier,
-    QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
+    compressor_multiplier, flashing_orifice, fold_flashing_valve, fold_gas_valve, gas_orifice,
+    pipe_resistance, relief_opening, relief_opening_slope, specific_heat_ratio_factor,
+    two_phase_head_multiplier, QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
 };
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::energy::{boundary_temperature, upwind_end, NodeStates};
@@ -2112,7 +2112,20 @@ fn compile_edge_at(
             }
             let rho_rel = rho / RHO_WATER_REF;
             let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);
-            branch = fold_gas_service(graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind)?;
+            let downwind = if upwind_node == src { tgt } else { src };
+            let flashing = valve_flashing(
+                graph,
+                slate,
+                previous_states,
+                pipe,
+                upwind_node,
+                (upwind, pressures[&downwind]),
+                flash,
+                x_t.is_some(),
+            )?;
+            branch = fold_gas_service(
+                graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind, flashing,
+            )?;
         }
         // A check valve is a valve whose opening is read off the FORWARD DRIVE
         // across this branch, `S = dp − β` with `β` the outlet pipe's static head
@@ -2140,7 +2153,20 @@ fn compile_edge_at(
             });
             let rho_rel = rho / RHO_WATER_REF;
             let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);
-            branch = fold_gas_service(graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind)?;
+            let downwind = if upwind_node == src { tgt } else { src };
+            let flashing = valve_flashing(
+                graph,
+                slate,
+                previous_states,
+                pipe,
+                upwind_node,
+                (upwind, pressures[&downwind]),
+                flash,
+                x_t.is_some(),
+            )?;
+            branch = fold_gas_service(
+                graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind, flashing,
+            )?;
         }
         _ => {}
     }
@@ -2222,6 +2248,11 @@ fn compile_edge_at(
 /// SECOND door on the same correspondence — and it exists because the loader is
 /// not the only way in: the invariant proptests build a `PlantGraph` directly
 /// and never call `build_engine`.
+///
+/// `flashing = Some((η_s, ω))`: liquid service whose stream boils across the
+/// valve (`valve_flashing`, M62.6b, docs/DESIGN.md §67.19) — Leung's ω jet on
+/// the valve's share of the drop, `fold_flashing_valve`. `None` keeps the
+/// liquid fold bit for bit.
 #[allow(clippy::too_many_arguments)]
 fn fold_gas_service(
     graph: &PlantGraph,
@@ -2233,6 +2264,7 @@ fn fold_gas_service(
     x_t: Option<f64>,
     dp: f64,
     upwind: f64,
+    flashing: Option<(f64, f64)>,
 ) -> Result<QuadraticBranch, SimError> {
     match x_t {
         Some(x_t) => {
@@ -2264,9 +2296,55 @@ fn fold_gas_service(
                     graph.node(src).name
                 )));
             }
-            Ok(branch.in_series(liquid))
+            Ok(match flashing {
+                None => branch.in_series(liquid),
+                Some((eta_s, omega)) => {
+                    fold_flashing_valve(branch, liquid, dp, upwind, eta_s, omega)
+                }
+            })
         }
     }
+}
+
+/// A valve's boiling inlet (M62.6b, docs/DESIGN.md §67.19): `(η_s, ω)` for a
+/// stream that arrives at the valve ALL VAPOUR — superheated or saturated
+/// steam — read as the burst hole reads its inlet (`flashing_inlet`), from the
+/// valve's upwind state to the far end of its branch. `None`, and the liquid
+/// fold bit for bit: off a plant whose line flash carries vapour, in gas
+/// service (the ISA fold's), before the valve has a resolved state (its first
+/// tick), and on a stream with any liquid in it — part-liquid flow through a
+/// valve chokes too, but needs the solve smoothed where it starts to boil in
+/// the valve, and is M62.6c's.
+#[allow(clippy::too_many_arguments)]
+fn valve_flashing(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pipe: &Pipe,
+    upwind_node: NodeId,
+    (p_up, p_down): (f64, f64),
+    flash: LineFlash<'_>,
+    gas_service: bool,
+) -> Result<Option<(f64, f64)>, SimError> {
+    if gas_service || !flash.model.carries_vapour() {
+        return Ok(None);
+    }
+    let all_vapour = previous_states
+        .vapour
+        .get(&upwind_node)
+        .is_some_and(|share| share.mass_fraction == 1.0);
+    if !all_vapour {
+        return Ok(None);
+    }
+    flashing_inlet(
+        graph,
+        slate,
+        previous_states,
+        pipe,
+        upwind_node,
+        (p_up, p_down),
+        flash,
+    )
 }
 
 /// A pressure-actuated valve's `d ln ṁ` through its opening [1/Pa], per pascal of

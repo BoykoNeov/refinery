@@ -828,10 +828,161 @@ pub fn flashing_orifice(
     }
 }
 
+/// A valve whose stream boils across it, composed with the pipe it discharges
+/// through (M62.6b, docs/DESIGN.md §67.19): Leung's ω jet — the burst hole's
+/// law, `flashing_orifice` — on the valve's OWN share of the drop.
+///
+/// `fold_gas_valve`'s arrangement, and for its reason: the jet depends on the
+/// valve's drop as a share of its inlet pressure, and a compiled edge knows only
+/// the drop across the whole folded branch. The valve's share `s` is the root of
+///
+/// ```text
+/// g(s) = s + α_pipe·Q_v(s)²  =  |dp − β| ,   Q_v(s) = √(s/α_v)·r(s)
+/// ```
+///
+/// `r(s) = g_ω(η_t)/√(2·s/p_up)` the jet's flux over the liquid law's at that
+/// drop, `η_t = max(1 − s/p_up, η_c)` — exactly 1 while the stream stays liquid
+/// through the valve (`1 − s/p_up ≥ η_s`). `Q_v` is non-decreasing in `s` (it
+/// rises to the choke and holds there), so `g` is strictly increasing and
+/// bisection finds the one root. The returned branch is `α_eff = α_v/r²` in
+/// series with the pipe, which reproduces `Q_v` at the root: a valve whose
+/// stream stays liquid through it is the liquid fold, bit for bit.
+///
+/// `η_c` is found once, outside the bisection (`omega_critical_ratio` is a
+/// search of its own). A closed valve and a zero drop return the liquid fold.
+pub fn fold_flashing_valve(
+    pipe: QuadraticBranch,
+    valve: QuadraticBranch,
+    dp: f64,
+    p_up: f64,
+    eta_s: f64,
+    omega: f64,
+) -> QuadraticBranch {
+    if !valve.alpha.is_finite() || valve.alpha <= 0.0 || !p_up.is_finite() || p_up <= 0.0 {
+        return pipe.in_series(valve);
+    }
+    let s_total = (dp - pipe.beta).abs();
+    if !s_total.is_finite() || s_total <= 0.0 {
+        return pipe.in_series(valve);
+    }
+    let eta_c = omega_critical_ratio(eta_s, omega);
+    // The jet's flux over the liquid law's at a valve drop `s`.
+    let ratio = |s: f64| -> f64 {
+        let drop = s / p_up;
+        let eta_a = (1.0 - drop).max(0.0);
+        if drop <= 0.0 || eta_a >= eta_s {
+            return 1.0;
+        }
+        omega_flux(eta_a.max(eta_c), eta_s, omega) / (2.0 * drop).sqrt()
+    };
+    let g = |s: f64| {
+        let r = ratio(s);
+        s + pipe.alpha * (s / valve.alpha) * r * r
+    };
+    let (mut lo, mut hi) = (0.0f64, s_total);
+    for _ in 0..GAS_VALVE_BISECTIONS {
+        let mid = 0.5 * (lo + hi);
+        if g(mid) < s_total {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let r = ratio(0.5 * (lo + hi));
+    if r == 1.0 {
+        return pipe.in_series(valve);
+    }
+    pipe.in_series(QuadraticBranch {
+        alpha: valve.alpha / (r * r),
+        beta: 0.0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    /// **A valve whose stream stays liquid through it is the liquid fold, bit
+    /// for bit** (M62.6b, docs/DESIGN.md §67.19): its drop never takes it under
+    /// the pressure it boils at, so the jet's ratio is exactly 1.
+    #[test]
+    fn a_valve_whose_stream_stays_liquid_is_the_liquid_fold_bit_for_bit() {
+        let pipe = QuadraticBranch::pipe(1.0e3, 2.0e3);
+        let valve = QuadraticBranch {
+            alpha: 5.0e3,
+            beta: 0.0,
+        };
+        let folded = fold_flashing_valve(pipe, valve, 2.0e5, 10.0e5, 0.3, 5.0);
+        let liquid = pipe.in_series(valve);
+        assert_eq!(folded.alpha, liquid.alpha);
+        assert_eq!(folded.beta, liquid.beta);
+        // A closed valve stays closed.
+        let shut = QuadraticBranch {
+            alpha: f64::INFINITY,
+            beta: 0.0,
+        };
+        assert_eq!(
+            fold_flashing_valve(pipe, shut, 6.0e5, 10.0e5, 1.0, 1.0).alpha,
+            f64::INFINITY
+        );
+    }
+
+    /// **The folded valve is Leung's jet on its own share of the drop**: the
+    /// branch's flow, the pipe taking `α_p·Q²` of the drive, leaves the valve
+    /// a drop `s` at which `Q = √(s/α_v)·r(s)`, `r` the jet's flux over the
+    /// liquid law's there — computed here from `omega_flux` directly.
+    #[test]
+    fn the_folded_valve_is_the_jet_on_its_own_share() {
+        let (p_up, eta_s, omega) = (10.0e5, 1.0, 1.0);
+        let pipe = QuadraticBranch::pipe(4.0e3, 0.0);
+        let valve = QuadraticBranch {
+            alpha: 6.0e3,
+            beta: 0.0,
+        };
+        for dp in [0.5e5, 2.0e5, 4.0e5, 6.0e5, 9.0e5] {
+            let q = fold_flashing_valve(pipe, valve, dp, p_up, eta_s, omega).flow(dp, 0.0);
+            let s = dp - pipe.alpha * q * q;
+            let drop = s / p_up;
+            let throat = (1.0 - drop).max(omega_critical_ratio(eta_s, omega));
+            let r = omega_flux(throat, eta_s, omega) / (2.0 * drop).sqrt();
+            assert_relative_eq!(q, (s / valve.alpha).sqrt() * r, max_relative = 1e-9);
+        }
+    }
+
+    /// **Past its choke a steam valve passes no more**: all vapour on the ω
+    /// law (`ω = 1`, `η_s = 1`, an isothermal ideal gas), no pipe, the flow at
+    /// every drop past `1 − e^{−1/2}` of the inlet pressure is the choked
+    /// `e^{−1/2}·√(P₀/(2α_v))` — and below the choke it is less.
+    #[test]
+    fn past_its_choke_a_steam_valve_passes_no_more() {
+        let p_up = 10.0e5;
+        let none = QuadraticBranch::pipe(0.0, 0.0);
+        let valve = QuadraticBranch {
+            alpha: 6.0e3,
+            beta: 0.0,
+        };
+        let choked = (-0.5f64).exp() * (p_up / (2.0 * valve.alpha)).sqrt();
+        for dp in [4.5e5, 6.0e5, 9.0e5] {
+            let q = fold_flashing_valve(none, valve, dp, p_up, 1.0, 1.0).flow(dp, 0.0);
+            assert_relative_eq!(q, choked, max_relative = 1e-7);
+        }
+        let below = fold_flashing_valve(none, valve, 2.0e5, p_up, 1.0, 1.0).flow(2.0e5, 0.0);
+        assert!(below < choked * (1.0 - 1e-3), "{below} against {choked}");
+    }
+
+    /// **The stated gap**: the ω law takes all-vapour steam as an isothermal
+    /// gas (`ω = 1` from two isenthalpic flashes, the line flash's), where a
+    /// real steam nozzle expands isentropically. Its choked flux is 0.9086 of
+    /// the isentropic nozzle's at steam's `γ = 1.30` (`cp_v = 2000 J/(kg·K)`,
+    /// `R/M = 461.5`): `e^{−1/2}` against `√(2ψ*)` (Saint-Venant–Wantzel).
+    #[test]
+    fn a_steam_valve_chokes_nine_percent_under_an_isentropic_nozzle() {
+        let gamma = 2000.0 / (2000.0 - 8.314_462_618 / 0.018015);
+        let isentropic = (2.0 * isentropic_flow_function(1.0, gamma)).sqrt();
+        let omega_law = omega_flux(omega_critical_ratio(1.0, 1.0), 1.0, 1.0);
+        assert_relative_eq!(omega_law / isentropic, 0.9086, max_relative = 1e-3);
+    }
 
     /// **The ω jet's two limits, exactly** (M62.4d, docs/DESIGN.md §67.15). At
     /// `ω = 1` from an inlet already boiling, `v/v₀ = P₀/P`: an isothermal ideal

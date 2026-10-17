@@ -1300,9 +1300,15 @@ impl Engine {
 
             // Sum the feed inflow and collect the draw edges. The feed is the one
             // incident edge whose far end is NOT a draw outlet (validate_degrees
-            // guarantees exactly one). Draw edges carry the split out of the
+            // guarantees exactly one), beside a cascade column's steam inlet
+            // (M62.6, docs/DESIGN.md §67.18): every split is a share of both,
+            // so `feed_into` sums both. Draw edges carry the split out of the
             // column regardless of the direction they were stored in.
+            let steam_edge = crate::energy::column_steam_inlet(&self.graph, nid).map(|s| s.edge);
             let mut feed_into = 0.0;
+            // The feed alone, for the reverse-feed refusal: steam outweighing a
+            // feed that runs backwards must not hide it.
+            let mut feed_alone = 0.0;
             let mut draw_edges: Vec<(crate::graph::EdgeId, usize, f64)> = Vec::new();
             for (eid, other, incoming) in self.graph.incident(nid) {
                 if let Some(idx) = draws.iter().position(|d| d.outlet == other) {
@@ -1312,10 +1318,15 @@ impl Engine {
                     draw_edges.push((eid, idx, sign_out));
                 } else {
                     let flow = self.graph.pipe(eid).stream.mass_flow.value();
-                    feed_into += if incoming { flow } else { -flow };
+                    let into = if incoming { flow } else { -flow };
+                    feed_into += into;
+                    if Some(eid) != steam_edge {
+                        feed_alone += into;
+                    }
                 }
             }
-            if feed_into < 0.0 {
+            if feed_into < 0.0 || feed_alone < 0.0 {
+                let feed_into = feed_into.min(feed_alone);
                 return Err(SimError::Numerical(format!(
                     "column '{}' has reverse feed flow ({feed_into:.4e} kg/s): the simple \
                      column splits its feed by boiling range, which names nothing when the \
