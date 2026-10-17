@@ -25768,3 +25768,35 @@ subcooled inlet read as boiling, no choke, Torricelli's flux at the wrong drop
 early return for a liquid that stays liquid to the downstream — the jet law's
 own guard (`η_a ≥ η_s`) returns the liquid branch there anyway; the return
 saves two flashes. **Corpus**: 61 of 61 byte-identical on both fidelities.
+
+### 67.16 The crude unit as a plant that models boiling (M62.4)
+
+`scenarios/crude_unit_boiling.toml`, generated from `crude_unit.toml` by
+`tools/steptime/prototypes/m62_4/make_boiling.py` (its header comment kept
+beside it): the line flash and the flash boil-off; the 30 bar charge through a
+fully open control valve (`kv` 135) into the furnace's coil in eight cells,
+800 m of 24 cm tube (§67.14); its tubes bursting at 550 °C, as every furnace
+plant's, into a choked boiling jet (§67.15); a 40 cm two-phase transfer line
+into the heat-balance column (§67.12); every draw a product line — a 15 m fall
+through 20 cm to its pump (40 m, `a` 2 000), a water cooler, 100 m of 15 cm
+rising 15 m into its tank (§67.13), the cooling water from 30 °C at 75, 115,
+190, 150 and 460 kg/s through 150, 90, 120, 70 and 100 kW/K.
+
+**Measured settled** (6 000 ticks, both fidelities alike): 134.2 kg/s; the
+coil's inlet 14.8 bar, liquid; its outlet 282.2 °C at 2.08 bar, 39.5 % vapour;
+its metal 319.3 °C; the products into their tanks at 40.6 (naphtha), 58.9,
+60.8, 81.4 and 165.5 °C (residue), nothing vented, the water back at 45.2–46.0
+°C. **Its cost**: 7.9 ms a tick on Newton, 24.9 on the game solver, past the
+2.5 ms frame budget — every tick re-solving at the density tolerance's noise
+floor, 3.2 and 6.7 times: ledger row A29.
+
+What it still lacks is steam stripping (M63): its column keeps the reboiler,
+near 586 °C.
+
+**Gates**: `crates/scenarios/tests/crude_unit_boiling_reference.rs` (2: the
+crude entering its coil liquid and leaving it boiling, the transfer line
+two-phase, the draws liquid, every product cooled with nothing vented, the
+water under 50 °C, the metal far under its limit; both fidelities, slow).
+**Corpus**: 61 of 62 byte-identical on both fidelities; `crude_unit_boiling`
+new, worst 10 iterations a tick on Newton and 34 on the game solver — the
+corpus's slowest plant, its wall on the game fidelity about 140 s (A29).

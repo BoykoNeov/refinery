@@ -9913,3 +9913,18 @@ already boiling. DESIGN §67.15.
 - Gates: `elements.rs` (2), `boiling_jet_reference.rs` (4). Mutations:
   seven, six caught, one equivalent. Corpus: 61 of 61 byte-identical on both
   fidelities.
+
+### M62.4 — **LANDED** 2026-10-17: the crude unit as a plant that models boiling
+
+M62.4a–d's pieces on one shipped plant, `scenarios/crude_unit_boiling.toml`:
+the charge through a control valve into a coil in eight cells that the crude
+enters liquid at 14.8 bar and leaves 39.5 % vapour at 2.08 bar and 282 °C; a
+two-phase transfer line into the column, which takes its latent heat and draws
+liquids; every product pumped through a water cooler into its tank, cooled to
+41–166 °C with nothing vented, the water back near 45 °C; tubes that burst
+into a choked boiling jet. Its cost, 7.9 ms a tick on Newton and 24.9 on the
+game solver, is past the frame budget — ledger row A29. Ledger row C6 taken.
+M62 stays open: M62.5, water through the column, is next. DESIGN §67.16.
+
+- Gates: `crude_unit_boiling_reference.rs` (2). Corpus: 61 of 62
+  byte-identical on both fidelities; `crude_unit_boiling` new.

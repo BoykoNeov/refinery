@@ -47,6 +47,8 @@ mod cooler_reference;
 mod crude_column_cascade;
 #[path = "crude_unit.rs"]
 mod crude_unit;
+#[path = "crude_unit_boiling_reference.rs"]
+mod crude_unit_boiling_reference;
 #[path = "dissipation_reference.rs"]
 mod dissipation_reference;
 #[path = "dry_fired_reference.rs"]

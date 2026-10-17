@@ -81,7 +81,8 @@ cargo run -p refinery-cli -- run scenarios/<file>.toml --ticks 6000
 # --out before a change, --baseline after = "byte-identical" as an exit code.
 # Release (wall time is a column). Baselines match by plant NAME only, so keep
 # one baseline per fidelity — mixing them reads "moved" and fails. --jobs 16
-# runs plants in parallel (~5 s per fidelity; fingerprints unchanged, the wall
+# runs plants in parallel (~55 s Newton, ~140 s game solver, set by
+# crude_unit_boiling alone, DEFERRED A29; fingerprints unchanged, the wall
 # column then meaningless — use --jobs 1 when wall time is the measurement).
 cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 [--solver simple]
 cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --jobs 16 \

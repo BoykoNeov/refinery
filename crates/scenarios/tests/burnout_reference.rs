@@ -506,11 +506,12 @@ fn every_furnace_in_the_repo_owns_a_burnout_hole() {
         }
     }
     assert_eq!(
-        furnaces, 29,
+        furnaces, 30,
         "fifteen furnace plants, the burn-out demo, M40's self-resetting trip demo, \
          M43's burst-during-a-stop demo, M44's start-permissive demo, M57.3's \
          hydrocracker preheater, M57.4's, and M59.1's, M59.2's, M59.3's, M59.4's and \
-         M59.5's hydrogen heaters, M60.1's and M60.2's hot-feed furnaces, and M60.3's crude unit"
+         M59.5's hydrogen heaters, M60.1's and M60.2's hot-feed furnaces, M60.3's crude \
+         unit, and M62.4's boiling crude unit, its coil in cells"
     );
     let heater_only = build_src(
         include_str!("../../../scenarios/furnace_heater.toml"),
