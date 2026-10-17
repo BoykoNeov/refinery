@@ -465,7 +465,10 @@ pub enum NodeDef {
         /// IEC 60534-2-1's pressure differential ratio factor. REQUIRED in gas
         /// service and REFUSED in liquid service, both decided by the
         /// topological single-phase analysis M5.2 already builds — see
-        /// `require_gas_valve_x_t`.
+        /// `require_gas_valve_x_t`. On a plant with the line flash it is
+        /// optional and read when the valve's stream arrives all vapour
+        /// (steam): the ISA gas law on it, an ideal nozzle without it (M63.3,
+        /// docs/DESIGN.md §68.3).
         x_t: Option<f64>,
     },
     /// Spring-loaded pressure safety valve. Set pressure and accumulation band in
@@ -496,7 +499,8 @@ pub enum NodeDef {
         /// datasheet number, and a silent default would be an invented one.
         /// Must be > 0, for the relief valve's `accumulation_bar` reason.
         full_open_bar: f64,
-        /// As `Valve::x_t`: required in gas service, refused in liquid.
+        /// As `Valve::x_t`: required in gas service, refused in liquid, and
+        /// optional on a plant with the line flash, read on steam (M63.3).
         x_t: Option<f64>,
     },
     /// Fired heater. Duty in MW — the unit refinery heaters are actually

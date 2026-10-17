@@ -1409,7 +1409,17 @@ pub(crate) fn require_supplies_below_boiling(
 /// a silent default would be an invented value in disguise: the sizing gate and
 /// the choked-plateau gate would both pass for whatever it was, which is the
 /// circularity that defers pump `η`.
-pub(crate) fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Result<(), SimError> {
+///
+/// **On a plant that boils** (`line_flash`, M63.3, docs/DESIGN.md §68.3) a
+/// control or check valve may declare `x_t` in liquid service: it is read when
+/// the valve's stream arrives all vapour (steam), the ISA gas law on that
+/// vapour; without it such a valve is an ideal nozzle. The line flash admits no
+/// gas-phase member, so nothing there is in gas service.
+pub(crate) fn require_gas_valve_x_t(
+    graph: &PlantGraph,
+    phases: &[Phase],
+    line_flash: bool,
+) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);
         // All three valve kinds, for one reason: they reach the same compressible
@@ -1433,6 +1443,12 @@ pub(crate) fn require_gas_valve_x_t(graph: &PlantGraph, phases: &[Phase]) -> Res
                     node.name
                 )));
             }
+            (Phase::Liquid, Some(_))
+                if line_flash
+                    && matches!(
+                        node.kind,
+                        NodeKind::Valve { .. } | NodeKind::CheckValve { .. }
+                    ) => {}
             (Phase::Liquid, Some(x)) => {
                 return Err(SimError::Scenario(format!(
                     "valve '{}' is in liquid service and declares `x_t = {x}`, which \

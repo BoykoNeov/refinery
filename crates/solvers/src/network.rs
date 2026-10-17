@@ -11,9 +11,10 @@
 
 use crate::elements::{
     cavitation_head_fraction, cavitation_head_fraction_dsigma, check_opening, check_opening_slope,
-    compressor_multiplier, flashing_orifice, fold_flashing_valve, fold_gas_valve, gas_orifice,
-    pipe_resistance, relief_opening, relief_opening_slope, specific_heat_ratio_factor,
-    two_phase_head_multiplier, QuadraticBranch, CHOKE_BLEND, FLASHING_ONSET_BAND, ORIFICE_CD,
+    compressor_multiplier, flashing_orifice, fold_flashing_valve, fold_gas_valve,
+    fold_vapour_valve, gas_orifice, pipe_resistance, relief_opening, relief_opening_slope,
+    specific_heat_ratio_factor, two_phase_head_multiplier, QuadraticBranch, CHOKE_BLEND,
+    FLASHING_ONSET_BAND, ORIFICE_CD,
 };
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::energy::{boundary_temperature, upwind_end, NodeStates};
@@ -25,7 +26,9 @@ use refinery_core::traits::{
     EnthalpyModel, HydraulicSolution, LineFlashModel, PumpSuctionState, PumpTwoPhaseState,
     SolveDiagnostics, StarvedTank, ThermoModel, TwoPhaseDensity,
 };
-use refinery_core::units::{Kelvin, KgPerM3, KgPerSec, Meter, Pascal, Seconds, Watt, G, P_ATM};
+use refinery_core::units::{
+    Kelvin, KgPerM3, KgPerSec, Meter, Pascal, Seconds, Watt, G, P_ATM, R_GAS,
+};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1197,6 +1200,77 @@ fn two_phase_density(
         .map_err(|e| SimError::Numerical(format!("pipe {}: {e}", pipe.name)))
 }
 
+/// An ALL-VAPOUR inlet on a plant whose line flash carries vapour (M63.3,
+/// docs/DESIGN.md §68.3): `Some(γ)`, the vapour's heat-capacity ratio, where
+/// the stream reaches a valve or a hole from `upwind_node` all vapour — at a
+/// supply by its own flash, elsewhere by the node's last resolved state — and
+/// `None` otherwise (any liquid in it, no resolved state yet, or a plant whose
+/// line flash carries none). Through the valve or the hole it is then an ideal
+/// gas, not Leung's two-phase jet.
+///
+/// `γ = Σ w·c_p,v / Σ w·(c_p,v − R/M)` over the stream's mass fractions, each
+/// member's vapour capacity its declared `cp_vapour` (water's 2 000 J/(kg·K):
+/// `γ = 1.30`, steam's own near 10 bar) or, undeclared, the `cp` its enthalpy
+/// carries the vapour on.
+fn vapour_inlet(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pipe: &Pipe,
+    upwind_node: NodeId,
+    flash: LineFlash<'_>,
+) -> Result<Option<f64>, SimError> {
+    if !flash.model.carries_vapour() {
+        return Ok(None);
+    }
+    let (all_vapour, composition) = match &graph.node(upwind_node).kind {
+        NodeKind::Source {
+            temperature,
+            pressure,
+            composition,
+        } => {
+            let share = flash.model.supply(
+                slate,
+                composition,
+                *temperature,
+                *pressure,
+                flash.thermo,
+                flash.enthalpy,
+            )?;
+            (share.is_some_and(|s| s.mass_fraction == 1.0), composition)
+        }
+        _ => (
+            previous_states
+                .vapour
+                .get(&upwind_node)
+                .is_some_and(|share| share.mass_fraction == 1.0),
+            previous_states
+                .composition
+                .get(&upwind_node)
+                .unwrap_or(&pipe.stream.composition),
+        ),
+    };
+    if !all_vapour {
+        return Ok(None);
+    }
+    let (mut cp, mut cv) = (0.0, 0.0);
+    for (i, w) in composition.fractions().iter().enumerate() {
+        let member = slate.get(i);
+        let cp_vapour = member.cp_vapour.unwrap_or(member.cp).value();
+        cp += w * cp_vapour;
+        cv += w * (cp_vapour - R_GAS / member.molar_mass.value());
+    }
+    let gamma = cp / cv;
+    if !gamma.is_finite() || gamma <= 1.0 {
+        return Err(SimError::Numerical(format!(
+            "pipe '{}' carries an all-vapour stream whose cp/cv = {gamma:.4} is not above \
+             1, so it has no choke to size a valve or a hole by",
+            pipe.name
+        )));
+    }
+    Ok(Some(gamma))
+}
+
 /// Leung's inlet for a hole on a boiling plant (M62.4d, docs/DESIGN.md
 /// §67.15): `(η_s, ω)`, where its stream starts to boil as a share of its
 /// upwind pressure and the ω equation of state's parameter from two line
@@ -1900,8 +1974,25 @@ fn compile_edge_at(
             // ω jet (M62.4d, docs/DESIGN.md §67.15) wherever its stream boils
             // through it: choked as a boiling jet chokes. A stream that stays
             // liquid to the downstream keeps Torricelli bit for bit.
+            //
+            // A stream that reaches the hole ALL VAPOUR (steam) is an ideal gas
+            // through it, the isentropic nozzle a gas hole is (M63.3,
+            // docs/DESIGN.md §68.3): the ω jet on two isenthalpic flashes took
+            // it as an isothermal gas, 9 % short (ledger row B67).
             let downwind = if upwind_node == src { tgt } else { src };
-            if let Some((eta_s, omega)) = flashing_inlet(
+            if let Some(gamma) =
+                vapour_inlet(graph, slate, previous_states, pipe, upwind_node, flash)?
+            {
+                let dp = pressures[&src] - pressures[&tgt];
+                branch = gas_orifice(branch, dp, upwind, gamma);
+                if !branch.alpha.is_finite() || branch.alpha <= 0.0 {
+                    return Err(SimError::Numerical(format!(
+                        "leak orifice '{}' ({eid:?}) compiled to a resistance of {:e} on \
+                         an all-vapour stream (γ = {gamma:.4}, upstream {upwind:e} Pa)",
+                        pipe.name, branch.alpha
+                    )));
+                }
+            } else if let Some((eta_s, omega)) = flashing_inlet(
                 graph,
                 slate,
                 previous_states,
@@ -2173,45 +2264,18 @@ fn compile_edge_at(
             let rho_rel = rho / RHO_WATER_REF;
             let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);
             let downwind = if upwind_node == src { tgt } else { src };
-            let flashing = valve_flashing(
+            (branch, choke) = fold_valve(
                 graph,
+                src,
+                pipe,
                 slate,
                 previous_states,
-                pipe,
                 upwind_node,
-                (upwind, pressures[&downwind]),
+                (branch, liquid),
+                *x_t,
+                (dp, upwind, pressures[&downwind]),
                 flash,
-                x_t.is_some(),
             )?;
-            let unfolded = branch;
-            branch = fold_gas_service(
-                graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind, flashing,
-            )?;
-            if flashing.is_some() {
-                // The inlet's `(η_s, ω)` move with its pressure: read afresh
-                // at each side of the difference.
-                let inlet = |pressure: f64| {
-                    valve_flashing(
-                        graph,
-                        slate,
-                        previous_states,
-                        pipe,
-                        upwind_node,
-                        (pressure, pressures[&downwind]),
-                        flash,
-                        false,
-                    )
-                };
-                choke = choke_slope(
-                    unfolded,
-                    liquid,
-                    dp,
-                    upwind,
-                    upwind_node == src,
-                    inlet,
-                    branch,
-                )?;
-            }
         }
         // A check valve is a valve whose opening is read off the FORWARD DRIVE
         // across this branch, `S = dp − β` with `β` the outlet pipe's static head
@@ -2240,45 +2304,18 @@ fn compile_edge_at(
             let rho_rel = rho / RHO_WATER_REF;
             let liquid = QuadraticBranch::valve(*cv_max, op, rho_rel);
             let downwind = if upwind_node == src { tgt } else { src };
-            let flashing = valve_flashing(
+            (branch, choke) = fold_valve(
                 graph,
+                src,
+                pipe,
                 slate,
                 previous_states,
-                pipe,
                 upwind_node,
-                (upwind, pressures[&downwind]),
+                (branch, liquid),
+                *x_t,
+                (dp, upwind, pressures[&downwind]),
                 flash,
-                x_t.is_some(),
             )?;
-            let unfolded = branch;
-            branch = fold_gas_service(
-                graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind, flashing,
-            )?;
-            if flashing.is_some() {
-                // The inlet's `(η_s, ω)` move with its pressure: read afresh
-                // at each side of the difference.
-                let inlet = |pressure: f64| {
-                    valve_flashing(
-                        graph,
-                        slate,
-                        previous_states,
-                        pipe,
-                        upwind_node,
-                        (pressure, pressures[&downwind]),
-                        flash,
-                        false,
-                    )
-                };
-                choke = choke_slope(
-                    unfolded,
-                    liquid,
-                    dp,
-                    upwind,
-                    upwind_node == src,
-                    inlet,
-                    branch,
-                )?;
-            }
         }
         _ => {}
     }
@@ -2336,33 +2373,112 @@ fn compile_edge_at(
     })
 }
 
+/// A control or check valve composed with the pipe it discharges through, and
+/// its `ChokeSlope` where its law chokes — one owner for both arms of
+/// `compile_edge` (M63.3, docs/DESIGN.md §68.3):
+///
+/// - **All vapour on a plant that boils** (`vapour_inlet`): an ideal gas
+///   through the valve, `fold_vapour_valve` — the ISA gas law on the valve's
+///   declared `x_t`, or an ideal nozzle without one. On such a plant `x_t` is
+///   read here alone: the line flash admits no gas-phase member, so no valve
+///   there is in gas service.
+/// - **Otherwise** `fold_gas_service`: the ISA fold in gas service, the liquid
+///   fold in liquid service, and a valve whose stream boils across it
+///   (`valve_flashing`, dormant behind its gate, ledger row B63) Leung's jet.
+#[allow(clippy::too_many_arguments)]
+fn fold_valve(
+    graph: &PlantGraph,
+    src: NodeId,
+    pipe: &Pipe,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    upwind_node: NodeId,
+    (branch, liquid): (QuadraticBranch, QuadraticBranch),
+    x_t: Option<f64>,
+    (dp, upwind, downwind_pressure): (f64, f64, f64),
+    flash: LineFlash<'_>,
+) -> Result<(QuadraticBranch, Option<ChokeSlope>), SimError> {
+    let upwind_is_src = upwind_node == src;
+    if let Some(gamma) = vapour_inlet(graph, slate, previous_states, pipe, upwind_node, flash)? {
+        if let Some(x_t) = x_t {
+            let x_choke = specific_heat_ratio_factor(gamma) * x_t;
+            if !x_choke.is_finite() || x_choke <= 0.0 {
+                return Err(SimError::Numerical(format!(
+                    "valve '{}' has a non-positive critical pressure-drop ratio \
+                     F_k·x_T = {x_choke:.3e} on its vapour (γ = {gamma:.4}, x_T = {x_t})",
+                    graph.node(src).name
+                )));
+            }
+        }
+        let folded = fold_vapour_valve(branch, liquid, dp, upwind, gamma, x_t);
+        let fold =
+            |dp: f64, at: f64| Ok(fold_vapour_valve(branch, liquid, dp, at, gamma, x_t).alpha);
+        let choke = choke_slope(dp, upwind, upwind_is_src, fold, folded)?;
+        return Ok((folded, choke));
+    }
+    let gas_x_t = if flash.model.carries_vapour() {
+        None
+    } else {
+        x_t
+    };
+    let flashing = valve_flashing(
+        graph,
+        slate,
+        previous_states,
+        pipe,
+        upwind_node,
+        (upwind, downwind_pressure),
+        flash,
+        gas_x_t.is_some(),
+    )?;
+    let folded = fold_gas_service(
+        graph, src, pipe, slate, branch, liquid, gas_x_t, dp, upwind, flashing,
+    )?;
+    if flashing.is_none() {
+        return Ok((folded, None));
+    }
+    // The inlet's `(η_s, ω)` move with its pressure: read afresh at each side
+    // of the difference.
+    let fold = |dp: f64, at: f64| -> Result<f64, SimError> {
+        Ok(
+            match valve_flashing(
+                graph,
+                slate,
+                previous_states,
+                pipe,
+                upwind_node,
+                (at, downwind_pressure),
+                flash,
+                false,
+            )? {
+                Some((eta, omega)) => fold_flashing_valve(branch, liquid, dp, at, eta, omega).alpha,
+                None => branch.in_series(liquid).alpha,
+            },
+        )
+    };
+    let choke = choke_slope(dp, upwind, upwind_is_src, fold, folded)?;
+    Ok((folded, choke))
+}
+
 /// A choking valve's `ChokeSlope` at the iterate (M62.6c, docs/DESIGN.md
-/// §67.20): `α_eff` refolded with each end's pressure moved by
-/// `±DENSITY_SLOPE_DELTA` — the drop with it, and the inlet's pressure where
-/// that end is upwind, its `(η_s, ω)` read afresh there by `inlet` (near its
-/// bubble pressure ω moves fast with it) — and `∂ ln Q/∂α = −1/(2α)` at the
-/// frozen branch. The inlet's DENSITY is not moved here: `DensitySlope` carries
+/// §67.20): `α_eff` refolded by `fold(dp, p_inlet)` with each end's pressure
+/// moved by `±DENSITY_SLOPE_DELTA` — the drop with it, and the inlet's pressure
+/// where that end is upwind (a boiling inlet's `(η_s, ω)` read afresh there:
+/// near its bubble pressure ω moves fast with it) — and `∂ ln Q/∂α = −1/(2α)`
+/// at the frozen branch. The inlet's DENSITY is not moved here: `DensitySlope` carries
 /// that share. `None` where the fold left the liquid branch (no jet to move).
 fn choke_slope(
-    pipe: QuadraticBranch,
-    valve: QuadraticBranch,
     dp: f64,
     p_up: f64,
     upwind_is_src: bool,
-    inlet: impl Fn(f64) -> Result<Option<(f64, f64)>, SimError>,
+    fold: impl Fn(f64, f64) -> Result<f64, SimError>,
     folded: QuadraticBranch,
 ) -> Result<Option<ChokeSlope>, SimError> {
     if !folded.alpha.is_finite() || folded.alpha <= 0.0 {
         return Ok(None);
     }
     let delta = DENSITY_SLOPE_DELTA;
-    let alpha_at = |dp: f64, at: f64| -> Result<f64, SimError> {
-        let at = at.max(RHO_EVAL_P_FLOOR);
-        Ok(match inlet(at)? {
-            Some((eta, omega)) => fold_flashing_valve(pipe, valve, dp, at, eta, omega).alpha,
-            None => pipe.in_series(valve).alpha,
-        })
-    };
+    let alpha_at = |dp: f64, at: f64| fold(dp, at.max(RHO_EVAL_P_FLOOR));
     let (src_up, tgt_up) = if upwind_is_src {
         (delta, 0.0)
     } else {
@@ -2475,6 +2591,12 @@ fn fold_gas_service(
 /// tick), and on a stream with any liquid in it — part-liquid flow through a
 /// valve chokes too, but needs the solve smoothed where it starts to boil in
 /// the valve, and is M62.6c's.
+///
+/// **Since M63.3 never reached on an all-vapour stream**: `fold_valve` sends
+/// steam to the ideal gas law (`vapour_inlet`, docs/DESIGN.md §68.3) before it
+/// asks here, so with today's gate this answers `None` on every live path —
+/// the ω valve kept, dormant, for part-liquid choking (ledger row B63), whose
+/// gate widening opens it to a stream with liquid in it.
 #[allow(clippy::too_many_arguments)]
 fn valve_flashing(
     graph: &PlantGraph,

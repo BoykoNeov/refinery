@@ -3,7 +3,8 @@
 
 The wet crude unit with stripping steam: a 10 bar, 400 °C supply, a control
 valve and a 15 cm line into the column's bottom stage. The valve chokes on the
-all-vapour steam (M62.6b), so its opening sets the rate.
+all-vapour steam (M62.6b; the ISA gas law on its x_t since M63.3), so its
+opening sets the rate.
 
 Run: python -I make_steam.py <repo root>
 """
@@ -12,7 +13,11 @@ import re
 import sys
 
 STEAM_KV = 80.0
-STEAM_OPENING = 0.5
+STEAM_OPENING = 0.4
+# The valve's pressure differential ratio factor (IEC 60534-2-1), a globe
+# valve's, as `gas_valve.toml`'s (M63.3, docs/DESIGN.md §68.3); with the
+# opening lowered from M62.6d's 0.5 to keep the steam near 0.85 kg/s.
+STEAM_X_T = 0.72
 STEAM_STAGE = 10
 
 root = sys.argv[1]
@@ -41,6 +46,7 @@ composition = {{ water = 1.0 }}
 type = "valve"
 kv = {STEAM_KV}
 opening = {STEAM_OPENING}
+x_t = {STEAM_X_T}
 
 [nodes.sour_water_tank]'''
 assert body.count("[nodes.sour_water_tank]") == 1

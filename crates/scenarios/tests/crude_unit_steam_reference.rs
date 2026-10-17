@@ -41,9 +41,10 @@ fn edge<'a>(s: &'a Snapshot, name: &str) -> &'a EdgeSnapshot {
 }
 
 /// **The steam rate is the choked valve's, and it leaves by the water draw.**
-/// Half open, the valve passes the ω law's choked flow at the state the solve
-/// read (`ω = 1`, `ṁ = ρ₀·e^{−1/2}·√(P₀/(2α_v))`) — 0.853 kg/s, a real column's
-/// 8–10 lb of steam per barrel of residue. The water draw carries the crude's
+/// At 40 % open the valve passes the ISA gas law's choked flow on its declared
+/// `x_T` at the state the solve read (M63.3, docs/DESIGN.md §68.3:
+/// `ṁ = ρ₀·(2/3)·√(F_k·x_T·P₀/α_v)`, `F_k = γ/1.4`, `γ` steam's 1.30) — about
+/// 0.85 kg/s, a real column's 8–10 lb of steam per barrel of residue. The water draw carries the crude's
 /// water and the steam's; no product carries any; the column sends out what
 /// both lines bring; and the bottom stands colder than the wet plant's.
 #[test]
@@ -56,14 +57,21 @@ fn the_steam_is_the_choked_valves_and_leaves_by_the_water_draw() {
     let valve = node(&s, "steam_valve");
     let (p0, t0) = (valve.pressure_pa, valve.temperature_k);
     let rho0 = p0 * 0.018015 / (8.314_462_618 * t0);
-    let (cv, opening) = match &valve.kind {
+    let (cv, opening, x_t) = match &valve.kind {
         NodeKind::Valve {
-            cv_max, opening, ..
-        } => (*cv_max, *opening),
+            cv_max,
+            opening,
+            x_t,
+        } => (
+            *cv_max,
+            *opening,
+            x_t.expect("the steam valve declares x_t"),
+        ),
         _ => panic!("the steam valve is a valve"),
     };
     let alpha = QuadraticBranch::valve(cv, opening, rho0 / RHO_WATER_REF).alpha;
-    let choked = rho0 * (-0.5f64).exp() * (p0 / (2.0 * alpha)).sqrt();
+    let gamma = 2000.0 / (2000.0 - 8.314_462_618 / 0.018015);
+    let choked = rho0 * (2.0 / 3.0) * (gamma / 1.4 * x_t * p0 / alpha).sqrt();
     let steam = edge(&s, "stripping_steam").stream.mass_flow.value();
     assert!(
         (steam / choked - 1.0).abs() < 1e-6,

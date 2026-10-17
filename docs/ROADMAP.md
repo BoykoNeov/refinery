@@ -10084,3 +10084,21 @@ the crude unit's condenser 93.77 °C against 93.72, the wet rundown's tank
   widened), four reference files re-pinned. Mutations: five, all caught.
   Corpus: 60 of 64 byte-identical on both fidelities, the four water plants
   moved (the user's decision).
+
+### M63.3 — **LANDED** 2026-10-17: steam through a valve or a hole, an ideal gas
+
+A valve whose stream arrives all vapour (steam) is the ISA gas law on its
+declared `x_t` — a globe valve's 0.72 chokes at 67 % of its inlet pressure and
+passes 27 % more than M62.6b's ω law did — or, without `x_t`, an ideal nozzle
+(+10 %); a hole on steam is the isentropic nozzle a gas hole is. `x_t` is
+admitted on a boiling plant's control and check valves, read on vapour alone.
+Corrected while building: the ledger's "a real valve chokes sooner" is the
+liquid case; for a gas, recovery chokes LATER. The steamed crude unit's valve
+declares `x_t = 0.72` and opens 40 %, keeping 0.867 kg/s of steam (the user's
+choice). Ledger row B67 closed. DESIGN §68.3.
+
+- Gates: `steam_valve_reference.rs` (4 new, 2 rewritten),
+  `crude_unit_steam_reference.rs` (re-cast), `elements.rs` (1). Mutations:
+  seven, all caught (one after a gate was added). Corpus: 63 of 64
+  byte-identical on both fidelities, `crude_unit_steam` moved (the user's
+  decision).

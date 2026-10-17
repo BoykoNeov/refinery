@@ -954,6 +954,92 @@ pub fn fold_flashing_valve(
     })
 }
 
+/// A valve whose stream arrives ALL VAPOUR on a plant that boils — steam —
+/// composed with the pipe it discharges through (M63.3, docs/DESIGN.md §68.3):
+/// the vapour an ideal gas of heat-capacity ratio `γ` through the valve.
+///
+/// - **`x_t = Some`**: the valve's own pressure differential ratio factor, the
+///   ISA/IEC 60534-2-1 gas law a gas valve runs (`fold_gas_valve`, choked at
+///   `F_k·x_T`) — the valve's pressure recovery in it: a globe valve's
+///   `x_T ≈ 0.7` chokes at a LARGER drop than a nozzle and passes more.
+/// - **`x_t = None`**: an ideal converging nozzle on the valve's share of the
+///   drop, Saint-Venant–Wantzel (`fold_nozzle_valve`).
+///
+/// Until M63.3 such a valve ran Leung's ω jet on two isenthalpic flashes, an
+/// isothermal gas (`ω = 1`), 9 % under the isentropic nozzle at `γ = 1.30`
+/// (ledger row B67).
+pub fn fold_vapour_valve(
+    pipe: QuadraticBranch,
+    valve: QuadraticBranch,
+    dp: f64,
+    p_up: f64,
+    gamma: f64,
+    x_t: Option<f64>,
+) -> QuadraticBranch {
+    match x_t {
+        Some(x_t) => fold_gas_valve(
+            pipe,
+            valve,
+            dp,
+            p_up,
+            specific_heat_ratio_factor(gamma) * x_t,
+            CHOKE_BLEND,
+        ),
+        None => fold_nozzle_valve(pipe, valve, dp, p_up, gamma),
+    }
+}
+
+/// An ideal converging nozzle on a valve's own share `s` of its branch's drop
+/// (M63.3, docs/DESIGN.md §68.3): the valve's liquid law scaled, as
+/// `gas_orifice` scales a hole's, by `r(s) = √(ψ(u)/u)`, `u = s/p_up` and `ψ`
+/// the isentropic flow function — `ṁ = √(2ρ₀·P₀·ψ(u))` against the liquid
+/// law's `√(2ρ₀·Δp)` at the same drop (Saint-Venant–Wantzel).
+///
+/// `fold_flashing_valve`'s arrangement, and for its reason: `ψ` reads the
+/// valve's own share, the root of `g(s) = s + α_pipe·(s/α_v)·r(s)² = |dp − β|`.
+/// `(s/α_v)·r² = ψ(u)·p_up/α_v` is non-decreasing (`ψ` rises to the choke and
+/// is clamped flat past it, with zero slope there — C¹), so `g` is strictly
+/// increasing and bisection finds its one root. `ψ(u) → u` as `u → 0`, so a
+/// small drop is the liquid law; a closed valve and a zero drop return the
+/// liquid fold.
+pub fn fold_nozzle_valve(
+    pipe: QuadraticBranch,
+    valve: QuadraticBranch,
+    dp: f64,
+    p_up: f64,
+    gamma: f64,
+) -> QuadraticBranch {
+    if !valve.alpha.is_finite() || valve.alpha <= 0.0 || !p_up.is_finite() || p_up <= 0.0 {
+        return pipe.in_series(valve);
+    }
+    let s_total = (dp - pipe.beta).abs();
+    if !s_total.is_finite() || s_total <= 0.0 {
+        return pipe.in_series(valve);
+    }
+    // The valve's flux over the liquid law's, squared, at a valve drop `s`.
+    let ratio_squared = |s: f64| -> f64 {
+        let drop = s / p_up;
+        if drop <= 0.0 {
+            return 1.0;
+        }
+        isentropic_flow_function(drop, gamma) / drop
+    };
+    let g = |s: f64| s + pipe.alpha * (s / valve.alpha) * ratio_squared(s);
+    let (mut lo, mut hi) = (0.0f64, s_total);
+    for _ in 0..GAS_VALVE_BISECTIONS {
+        let mid = 0.5 * (lo + hi);
+        if g(mid) < s_total {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    pipe.in_series(QuadraticBranch {
+        alpha: valve.alpha / ratio_squared(0.5 * (lo + hi)),
+        beta: 0.0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1085,7 +1171,9 @@ mod tests {
         }
     }
 
-    /// **The stated gap**: the ω law takes all-vapour steam as an isothermal
+    /// **The gap M63.3 closed** (ledger row B67; steam through a valve or a
+    /// hole is an ideal gas since, `fold_vapour_valve`, docs/DESIGN.md §68.3):
+    /// the ω law takes all-vapour steam as an isothermal
     /// gas (`ω = 1` from two isenthalpic flashes, the line flash's), where a
     /// real steam nozzle expands isentropically. Its choked flux is 0.9086 of
     /// the isentropic nozzle's at steam's `γ = 1.30` (`cp_v = 2000 J/(kg·K)`,
@@ -1096,6 +1184,42 @@ mod tests {
         let isentropic = (2.0 * isentropic_flow_function(1.0, gamma)).sqrt();
         let omega_law = omega_flux(omega_critical_ratio(1.0, 1.0), 1.0, 1.0);
         assert_relative_eq!(omega_law / isentropic, 0.9086, max_relative = 1e-3);
+    }
+
+    /// **The nozzle valve that took the ω law's place on steam** (M63.3,
+    /// docs/DESIGN.md §68.3): alone, its flow is `√(ψ(u)·P₀/α_v)` at every drop
+    /// `u` — the liquid law's `√(Δp/α_v)` at a small drop, the choked plateau
+    /// past `x*` — and in series with a pipe the returned branch reproduces the
+    /// valve's own law at the split its bisection found.
+    #[test]
+    fn a_nozzle_valve_is_saint_venant_wantzel_on_its_own_share() {
+        let (gamma, p_up) = (1.30, 10.0e5);
+        let none = QuadraticBranch::pipe(0.0, 0.0);
+        let valve = QuadraticBranch {
+            alpha: 6.0e3,
+            beta: 0.0,
+        };
+        let law = |s: f64| (isentropic_flow_function(s / p_up, gamma) * p_up / valve.alpha).sqrt();
+        for dp in [1.0e3, 2.0e5, 4.0e5, 6.0e5, 9.0e5] {
+            let q = fold_nozzle_valve(none, valve, dp, p_up, gamma).flow(dp, 0.0);
+            assert_relative_eq!(q, law(dp), max_relative = 1e-9);
+        }
+        let small = fold_nozzle_valve(none, valve, 1.0e3, p_up, gamma).flow(1.0e3, 0.0);
+        assert_relative_eq!(small, (1.0e3 / valve.alpha).sqrt(), max_relative = 1e-3);
+        let choked = law(9.0e5);
+        assert_relative_eq!(law(6.0e5), choked, max_relative = 1e-12);
+        assert!(law(4.0e5) < choked * (1.0 - 1e-3));
+
+        let pipe = QuadraticBranch {
+            alpha: 2.0e3,
+            beta: 0.0,
+        };
+        for dp in [2.0e5, 8.0e5] {
+            let q = fold_nozzle_valve(pipe, valve, dp, p_up, gamma).flow(dp, 0.0);
+            let s = dp - pipe.alpha * q * q;
+            assert!(s > 0.0 && s < dp, "the valve's share {s} of {dp}");
+            assert_relative_eq!(q, law(s), max_relative = 1e-9);
+        }
     }
 
     /// **The ω jet's two limits, exactly** (M62.4d, docs/DESIGN.md §67.15). At

@@ -245,7 +245,11 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // topology, so it happens here rather than in the pipe loop above; the value
     // is a tick-1 density seed only (see `seed_component_index`).
     let phases = plant_phases(&graph, &slate)?;
-    require_gas_valve_x_t(&graph, &phases)?;
+    require_gas_valve_x_t(
+        &graph,
+        &phases,
+        scenario.fidelity.line_flash == "equilibrium",
+    )?;
     // A catalyst bed needs a reaction model it can ask at an infinite residence
     // time, and a liquid to measure that time in (M57.1, docs/DESIGN.md §62.2).
     require_bed_reactor_plant(&graph, &phases, &scenario.fidelity.reactions)?;

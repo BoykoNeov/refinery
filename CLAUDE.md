@@ -187,7 +187,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 Work only on the current milestone unless asked. **Current: M63, M62's loose ends** (the user's
 choice, 2026-10-17; ledger B62, B64, B67, C13 — DESIGN §68): M63.1 (a lumped coil on a boiling plant
-refused) and M63.2 (water's vapour pressure on IAPWS-IF97) landed; M63.3 the steam valve is next. Steam stripping proper (C7) moves to M64. **Latest closed: M62 (2026-10-17)**: water as a real component —
+refused), M63.2 (water's vapour pressure on IAPWS-IF97) and M63.3 (steam through a valve or a hole
+an ideal gas) landed; M63.4, a column fed nearly all water (C13), is next. Steam stripping proper (C7) moves to M64. **Latest closed: M62 (2026-10-17)**: water as a real component —
 free water in every flash, water through the column, steam into it, a valve that chokes on steam
 (DESIGN §67; C6 taken; B61–B67, C13 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
