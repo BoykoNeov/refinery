@@ -376,6 +376,23 @@ impl Engine {
                     ));
                 }
                 match self.graph.pipe(edge).leak {
+                    // A plant whose line flash carries vapour models no hole: a
+                    // two-phase jet chokes, which no law here models. The loader
+                    // refuses a declared leak path there; a furnace's outlet
+                    // still carries its dormant burn-out hole, so a puncture of
+                    // it is refused here (M62.4, docs/DESIGN.md §67.4). A repair
+                    // (`area = 0`) changes nothing and stays legal.
+                    LeakRole::Punctureable { .. }
+                        if self.line_flash.carries_vapour() && area.value() > 0.0 =>
+                    {
+                        Err(SimError::InvalidCommand(format!(
+                            "pipe '{}' ({edge:?}) is on a plant that selects `[fidelity] \
+                             line_flash = \"equilibrium\"`, and a hole in a line that may \
+                             boil is a two-phase jet, which chokes — no law here models it \
+                             (docs/DESIGN.md §58, §67.4)",
+                            self.graph.pipe(edge).name
+                        )))
+                    }
                     LeakRole::Punctureable { orifice } => {
                         self.graph.pipe_mut(orifice).leak = LeakRole::Orifice { area };
                         Ok(())

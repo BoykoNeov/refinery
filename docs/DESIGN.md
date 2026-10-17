@@ -25282,3 +25282,108 @@ at the mixture's density, the snapshot never reporting it, the spilled tank
 left a rounding over its brim. **Corpus**: 58 of
 60 plants byte-identical on both fidelities; `wet_rundown` moved (the user's
 approval, 2026-10-17), `water_slug` new.
+
+### 67.12 Heat on a boiling stream: re-scoped, and its first part built (M62.4a)
+
+**Asked while building (the user, 2026-10-17).** §67.4 asked for product
+coolers, and the loader allows only a product store (a tank, a sink or the
+atmosphere) at the end of a draw: a draw's flow is prescribed (`splitᵢ·ṁ_feed`,
+written after the sweep) and stays out of the flow solve, so a cooler on a draw
+line would sweep before its column with no inflow and stand at no pressure.
+Measured first on the crude unit under the line flash with its products
+uncooled (40 cm transfer line, its tubes set never to burst): after 3.3 h of
+plant time a fifth of the column's output goes up its tanks' vents — naphtha
+3.4 of 27.8 kg/s, kerosene 2.9 of 20.2, diesel 4.9 of 25.3, residue 14.3 of
+35.4, gas oil starting. Three questions, in plain words, then a fourth after
+the answers; the user's answers:
+
+7. **Real coolers on the product lines** (over a cooling declared on the draw,
+   or products left uncooled), built as their own step.
+8. **A furnace on a boiling plant does not burst** — then, reconsidered, the
+   real thing: **the boiling jet through a hole, choked.**
+9. **The tubes heat against the crude's real, boiling temperature** — then,
+   reconsidered, the real thing: **the pressure falls along the tubes**, so the
+   crude enters them liquid and boils partway.
+10. Asked which answers "closer to reality" meant: **everything** — the most
+    realistic option on every question, the product coolers exchanging heat
+    with cooling water and the product line's pressure set by its pump.
+
+**The re-slicing** (M62.5 and M62.6 keep their names):
+
+- **M62.4a — the furnace, the cooler and the column on a boiling plant**:
+  built, below.
+- **M62.4b — product coolers.** A draw line runs from its column through
+  coolers to its product store. Each cooler exchanges heat with cooling water
+  (its UA, the water's inlet temperature and flow), not a fixed duty; a
+  product pump sets the line's pressure. Traps to specify against: the sweep
+  counts dependencies by the sign of each edge's solved flow and a draw's is
+  zero then, so a draw edge must count as an inflow by topology and the cooler
+  mix the separation's `splitᵢ·ṁ_feed`; a free node all of whose edges are
+  prescribed has no pressure equation; the draw write after the sweep covers
+  every edge of the line; the cooling water's heat reaches the energy books; a
+  cooling-water cooler is a new kind or key, so `cooler_chiller.toml` and the
+  M17 loops on a cooler's duty stay byte-identical.
+- **M62.4c — the furnace coil in cells.** The coil a line of cells in series,
+  each a flashing node at its own pressure with its share of the coil's UA,
+  joined by coil segments with friction, all sharing one metal temperature —
+  one sweep vertex. The boiling inside the tubes then falls out of the cells
+  and needs no stretched heat capacity (the law decision 9 first chose, never
+  built). Built only from a declared key, so every furnace plant stays
+  byte-identical. Traps: every reader of the furnace kind (outlet loops, the
+  duty and tube commands, the burn-out hole on the last cell's outlet, the
+  snapshot, the furnace screen); the trial plant's 28 bar dropped in its 8 cm
+  feed pipe belongs in the coil. Probe the outlet and the coil against the
+  number of cells first.
+- **M62.4d — the choked boiling jet.** A hole on a boiling line flows by
+  Leung's omega method (API 520 Part I, Annex C), ω from two line flashes at
+  `P₀` and `0.9·P₀` (isenthalpic for isentropic, stated); smooth at the
+  critical ratio for Newton (`elements::CHOKE_BLEND`'s finding); a subcooled
+  inlet by Leung's extension or refused; gated against the Annex's worked
+  example. It lifts M62.4a's two interim refusals below.
+
+The boiling crude unit ships once, as a new plant file, after M62.4b and
+M62.4c; until then every gate is an inline fixture.
+
+**Built (M62.4a)**, as §67.4 specifies:
+
+- **The furnace** (`energy::furnace_coil`): the latent heat a two-phase inflow
+  carries joins its inflow's enthalpy (`inflow_latent`, as at any mixing
+  point), so the coil heats the inflow's liquid-equivalent; what leaves is
+  settled by the line flash at the furnace's solved pressure (`settle_node`).
+  `CoilPass::flowing`: only a coil something flowed through has a stream to
+  settle. The coil's exchange `G·(T_c − T_in)` keeps the liquid's capacity
+  rate — the interim law M62.4c replaces.
+- **The cooler** already took the mixing path, which settles; only the
+  refusal is lifted.
+- **The column is not settled**: its separation takes the whole feed at its
+  liquid-equivalent temperature, the transfer line's latent heat included, and
+  records no line vapour — which every draw would otherwise inherit (M62.0
+  finding 10's bug). Each draw leaves at its stage, a liquid.
+- **Refusals** (`require_line_flash_plant`): furnaces, coolers and columns
+  admitted; refused by name until their models exist — a furnace whose tubes
+  can burst (`tube_failure_c` below its flame: the hole would be a boiling jet,
+  M62.4d) and a column on a slate with free water (its stages have no water
+  balance, M62.5). `Command::PuncturePipe` on a plant whose line flash carries
+  vapour is refused for any area above zero: the furnace's outlet carries its
+  dormant burn-out hole. A repair stays legal.
+
+**Measured** on the crude unit fixture: the furnace's outlet at 283.7 °C and
+2.05 bar, 40 % vapour by mass (M62.0's probe: about 284 °C at 2.06 bar),
+126.3 kg/s on both solvers (the probe's 126); the coil at 344.6 °C on the
+liquid's capacity rate. The column's first law, its feed's latent heat
+included, closes to 1.7e-16 of the heat through it; without that heat it misses
+by 4.2 %.
+
+**Gates**: `crates/scenarios/tests/heat_on_boiling_reference.rs` (4: a
+furnace's outlet the independent flash of its inflow plus what its coil's first
+law gave, on the crude unit, where the crude boils in the tubes, and on a
+naphtha arriving boiling; a cooler condensing a boiling naphtha from 14.3 % to
+7.0 % vapour, at the flash of what arrived less its duty, on both fidelities;
+the column at its feed's liquid-equivalent, its draws liquid and its first law
+closed every tick, with the latent counterfactual; the refusals by name and the
+puncture).
+
+**Mutations**: seven, all caught by that file — the furnace not settled, its
+inflow's latent heat dropped, the column settled, a bursting furnace admitted,
+a wet column admitted, the puncture admitted, the cooler refused.
+**Corpus**: 60 of 60 plants byte-identical on both fidelities.

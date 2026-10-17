@@ -255,8 +255,9 @@ pub struct Fidelity {
     /// this plant** (§58 fork 1; ledger row B46). And it is refused at load
     /// beside anything it does not model (`require_line_flash_plant`): a thermo
     /// with no bubble pressure, a gas, a tank that cannot boil off what arrives,
-    /// and every unit but a supply, a destination, a junction, a control valve
-    /// and a tank.
+    /// and every unit but a supply, a destination, a junction, a control valve,
+    /// a tank, a pump, a check valve, a furnace, a cooler and a column (M62.4a,
+    /// §67.12).
     #[serde(default = "default_no_line_flash")]
     pub line_flash: String,
     /// "constant" (M1–M16.1) | "linear" (M16.2).

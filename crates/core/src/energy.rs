@@ -1728,6 +1728,7 @@ pub fn resolve_node_states(
                             &temperature,
                             &composition,
                             &separations,
+                            &vapour,
                             id,
                             *duty,
                             coil,
@@ -1735,7 +1736,26 @@ pub fn resolve_node_states(
                             tubes,
                             dt,
                         )?;
-                        temperature.insert(id, pass.fluid);
+                        // What leaves the coil is settled by the line flash at
+                        // the furnace's own pressure, as at a junction: a stream
+                        // that boils in the tubes leaves partly vapour, at the
+                        // flash's temperature (M62.4, docs/DESIGN.md §67.4).
+                        // `NoLineFlash` hands the outlet back untouched.
+                        let fluid = if pass.flowing {
+                            settle_node(
+                                graph,
+                                slate,
+                                (line_flash, thermo, enthalpy),
+                                node_pressure,
+                                &composition,
+                                &mut vapour,
+                                id,
+                                pass.fluid,
+                            )?
+                        } else {
+                            pass.fluid
+                        };
+                        temperature.insert(id, fluid);
                         coil_temperature.insert(id, pass.coil);
                         flue_loss.insert(id, pass.flue);
                         tube_fire.insert(id, pass.fire);
@@ -1765,6 +1785,19 @@ pub fn resolve_node_states(
                             // what that enthalpy boils there (M53,
                             // docs/DESIGN.md §58 fork 2). `NoLineFlash` hands
                             // the mix back untouched.
+                            //
+                            // A COLUMN is not settled (M62.4, docs/DESIGN.md
+                            // §67.4): its separation takes the whole feed at its
+                            // liquid-equivalent temperature — the latent heat
+                            // the feed carries in its enthalpy — and boils it on
+                            // the column's own stages, and each draw leaves as a
+                            // liquid at its own stage. A vapour share recorded
+                            // here would be handed to every draw.
+                            Some(liquid_equivalent)
+                                if matches!(graph.node(id).kind, NodeKind::Column { .. }) =>
+                            {
+                                liquid_equivalent
+                            }
                             Some(liquid_equivalent) => settle_node(
                                 graph,
                                 slate,
@@ -2293,9 +2326,14 @@ fn mix_inflows(
 
 /// What one tick does to a furnace: its fluid's temperature and its coil's.
 struct CoilPass {
-    /// The fluid's temperature [K]: the outlet when something flows, the coil's
-    /// own end-of-tick temperature when nothing does.
+    /// The fluid's temperature [K]: the outlet when something flows — its
+    /// LIQUID-EQUIVALENT, the latent heat its inflow carried in included, which
+    /// the caller settles by the line flash (M62.4, docs/DESIGN.md §67.4) — the
+    /// coil's own end-of-tick temperature when nothing does.
     fluid: Kelvin,
+    /// Whether anything flowed through the coil this tick: only then is there
+    /// a stream for the line flash to settle.
+    flowing: bool,
     /// The coil's temperature at the END of the tick [K].
     coil: Kelvin,
     /// The tick's average stack loss [W] (M36, docs/DESIGN.md §40).
@@ -2364,6 +2402,7 @@ fn furnace_coil(
     temperature: &BTreeMap<NodeId, Kelvin>,
     composition: &BTreeMap<NodeId, Composition>,
     separations: &BTreeMap<NodeId, Separation>,
+    vapour: &BTreeMap<NodeId, VapourShare>,
     node: NodeId,
     duty: Watt,
     coil: &FurnaceCoil,
@@ -2420,6 +2459,19 @@ fn furnace_coil(
         separations,
         node,
     )?;
+    // The latent heat a two-phase inflow carries joins the inflow's enthalpy, as
+    // at any mixing point (M62.4, docs/DESIGN.md §67.4): the inlet is then its
+    // liquid-equivalent temperature. Absent, not zero, on a plant with no
+    // vapour, so this adds nothing to its bits.
+    let totals = totals.map(
+        |totals| match inflow_latent(graph, edge_mass_flow, vapour, node) {
+            Some(latent) => InflowEnthalpy {
+                enthalpy_rate: totals.enthalpy_rate + latent,
+                ..totals
+            },
+            None => totals,
+        },
+    );
     // The fluid's inlet temperature and the coil's conductance to it. With no
     // inflow there is no fluid to heat: `G = 0` and the inlet is never read.
     let (inlet, conductance) = match totals {
@@ -2466,6 +2518,7 @@ fn furnace_coil(
     let Some(totals) = totals else {
         return Ok(CoilPass {
             fluid: coil_end,
+            flowing: false,
             coil: coil_end,
             flue: Watt(flue),
             fire: Watt(leak_fire),
@@ -2498,6 +2551,7 @@ fn furnace_coil(
     })?;
     Ok(CoilPass {
         fluid,
+        flowing: true,
         coil: coil_end,
         flue: Watt(flue),
         fire: Watt(leak_fire),

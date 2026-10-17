@@ -552,8 +552,8 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
 /// (M62.2, docs/DESIGN.md §67.2). Without `line_flash = "equilibrium"` no flash
 /// runs on the line, so the key would change nothing — and the line flash
 /// brings the rest of what free water needs with it: `thermo = "trouton"`,
-/// liquids only, and none of the units (a furnace, a column, the cut-point
-/// splitter) that do not flash their own contents yet (§67.4–§67.5).
+/// liquids only, and no column, whose stages have no water balance yet
+/// (M62.4–M62.5, §67.4–§67.5).
 pub(crate) fn require_line_flash_for_free_water(scenario: &ScenarioFile) -> Result<(), SimError> {
     if scenario.fidelity.line_flash == "equilibrium" {
         return Ok(());
@@ -633,9 +633,12 @@ pub(crate) fn require_gas_fill_time_on_flashing_plant(
 ///   takes the latent heat of what arrives into its balance and its boil-off
 ///   vents it (fork 4); under `"none"` that heat would sit as superheat for ever.
 /// - **Supplies, destinations, the atmosphere, junctions, control valves,
-///   tanks, pumps and check valves.** A furnace, a cooler, an exchanger, a
-///   column, a reactor, a vessel and a relief valve are each a model not built,
-///   and a boiling stream reaching one would be read as liquid. A pump in
+///   tanks, pumps, check valves, furnaces, coolers and columns.** A furnace and
+///   a cooler settle what passes by the line flash from their inflow's enthalpy
+///   and their duty, and a column separates its feed whole and sends each draw
+///   out as a liquid at its own stage (M62.4, §67.4). An exchanger, a reactor, a
+///   vessel and a relief valve are each a model not built, and a boiling stream
+///   reaching one would be read as liquid. A pump in
 ///   two-phase service loses its head to RELAP5's multiplier (M54, §59.0); a
 ///   check valve reads its drive at the mixture's density, its law the liquid
 ///   one there, as a control valve's is (M54, §59.1).
@@ -650,7 +653,12 @@ pub(crate) fn require_gas_fill_time_on_flashing_plant(
 ///   problem, not two.
 /// - **No leak path** (`leak_to`): a hole is an orifice, and a two-phase jet
 ///   chokes, which no law here models — the valve's caveat, without a user's
-///   decision to accept it.
+///   decision to accept it. **A furnace's tubes never burst** for the same
+///   reason (M62.4): the burn-out hole on its outlet would be that jet, so its
+///   `tube_failure_c` stands at or above its flame, which means "never".
+/// - **No column on a slate with free water** (M62.4): the heat-balance
+///   cascade has no water balance yet and would dissolve the water in the oil
+///   as one more cut (M62.5, §67.5).
 pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), SimError> {
     if scenario.fidelity.line_flash != "equilibrium" {
         return Ok(());
@@ -699,10 +707,38 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             | NodeDef::Valve { .. }
             | NodeDef::Tank { .. }
             | NodeDef::CheckValve { .. }
+            | NodeDef::Cooler { .. }
             | NodeDef::Pump {
                 npsh_required_m: None,
                 ..
             } => continue,
+            NodeDef::Furnace {
+                tube_failure_c,
+                flame_temperature_c,
+                ..
+            } => {
+                if tube_failure_c < flame_temperature_c {
+                    return refuse(format!(
+                        "with furnace '{name}' whose tubes can burst (tube_failure_c = \
+                         {tube_failure_c} °C, below its {flame_temperature_c} °C flame): a \
+                         burst opens a hole in its outlet pipe, and a two-phase jet through \
+                         a hole chokes, which no law here models. Set tube_failure_c at or \
+                         above flame_temperature_c, which means the tubes never burst"
+                    ));
+                }
+                continue;
+            }
+            NodeDef::Column { .. } => {
+                if let Some(water) = scenario.components.iter().find(|c| c.free_water) {
+                    return refuse(format!(
+                        "with column '{name}' on a slate whose '{}' declares free_water: \
+                         the column's stages have no water balance yet, and would dissolve \
+                         the water in the oil as one more cut (M62.5, docs/DESIGN.md §67.5)",
+                        water.name
+                    ));
+                }
+                continue;
+            }
             NodeDef::Pump { .. } => {
                 return refuse(format!(
                     "with '{name}' declaring npsh_required_m: on a flashing plant a pump's \
@@ -715,10 +751,7 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             }
             NodeDef::Vessel { .. } => "a vessel",
             NodeDef::ReliefValve { .. } => "a relief valve",
-            NodeDef::Furnace { .. } => "a furnace",
-            NodeDef::Cooler { .. } => "a cooler",
             NodeDef::HeatExchanger => "a heat exchanger",
-            NodeDef::Column { .. } => "a column",
             NodeDef::Reactor { .. } => "a reactor",
             NodeDef::BedReactor { .. } => "a catalyst bed",
             NodeDef::BedHydrogen { .. } => "a hydrogen pass",
@@ -727,7 +760,7 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
         return refuse(format!(
             "with '{name}', {kind}: a plant that selects the line flash may hold only \
              supplies, destinations, the atmosphere, junctions, control valves, tanks, \
-             pumps and check valves"
+             pumps, check valves, furnaces, coolers and columns"
         ));
     }
     if let Some(pipe) = scenario.pipes.iter().find(|p| p.leak_to.is_some()) {

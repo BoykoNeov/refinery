@@ -79,6 +79,8 @@ mod gas_lock_reference;
 mod gas_pocket_reference;
 #[path = "heat_balance_column.rs"]
 mod heat_balance_column;
+#[path = "heat_on_boiling_reference.rs"]
+mod heat_on_boiling_reference;
 #[path = "heat_recovery_reference.rs"]
 mod heat_recovery_reference;
 #[path = "hydrocracker_reference.rs"]

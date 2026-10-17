@@ -9758,6 +9758,14 @@ cost, deferred). The user's decisions, in plain words:
    **coolers on a flashing plant** (products cooled before their tanks); **a
    tank's outlet draws from the bottom**, water first; **free water on the
    column's trays modelled**; **water declares a vapour heat capacity**.
+7. Asked while building M62.4, with the crude unit's uncooled products
+   measured boiling a fifth of its output off in their tanks: **real coolers
+   on the product lines**; **the boiling jet through a furnace's burst hole,
+   choked** (first "refuse bursting", reconsidered); **the pressure falling
+   along the furnace's tubes** (first "the tubes heat against the boiling
+   crude", reconsidered); and, asked what "closer to reality" covered,
+   **everything** — the coolers on cooling water, the product line's pressure
+   set by its pump. M62.4 re-sliced into M62.4a–d (DESIGN §67.12).
 
 ### M62.0 — **SPECIFIED** 2026-10-16: the design note — M62 stays OPEN
 
@@ -9829,3 +9837,22 @@ water leaves a crude tank first, for 390.5 s, the flow stepping down by
   caught. Iterations: worst 8 (Newton) and 7 (game solver) a tick on the slug;
   the wet rundown's 9 and 7 unchanged. Corpus: 58 of 60 byte-identical on both
   fidelities; `wet_rundown` moved (approved), `water_slug` new.
+
+### M62.4a — **LANDED** 2026-10-17: the furnace, the cooler and the column on a boiling plant
+
+A plant that selects the line flash may hold furnaces, coolers and columns. A
+furnace heats its inflow's liquid-equivalent (the latent heat a boiling inflow
+carries included) and settles what leaves by the line flash at its own
+pressure; a cooler settles what passes, condensing part of a boiling stream; a
+column separates its feed whole, the transfer line's latent heat included, and
+each draw leaves a liquid at its stage (M62.0 finding 10's bug: every draw had
+carried the feed's vapour). Refused by name until their models exist: a
+furnace whose tubes can burst (M62.4d) and a column on a wet slate (M62.5); a
+puncture on a boiling plant. On the crude unit fixture (40 cm transfer line)
+the furnace's outlet stands at 283.7 °C, 40 % vapour, 126.3 kg/s, on both
+solvers. Re-scoped while building (decisions 7): M62.4b product coolers on
+cooling water, M62.4c the furnace coil in cells, M62.4d the choked boiling
+jet; the boiling crude unit ships after M62.4b and M62.4c. DESIGN §67.12.
+
+- Gates: `heat_on_boiling_reference.rs` (4). Mutations: seven, all caught.
+  Corpus: 60 of 60 byte-identical on both fidelities.
