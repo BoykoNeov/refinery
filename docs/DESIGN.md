@@ -26848,7 +26848,9 @@ the answer: the walk still converges to the same column).
 steam as shipped (0.867 kg/s), and fork 4's charge loop. **Measured anew, not
 copied from M64.0**: the probe never ran a held charge, so every number here is
 the running plant's (a throwaway probe in a detached worktree, release, one
-machine), M64.0's read only as cross-checks.
+machine: `tools/steptime/prototypes/m64_3/m64_3_probe.rs` and
+`probe_counters.patch`, which counts the held column's warm failures and
+continuations), M64.0's read only as cross-checks.
 
 **The charge loop.** The feed valve widened from Kv 135 to 400; a reverse-acting
 PI loop, `charge_flow`, holds 112.8 kg/s (the steamed plant's charge). Tick 1

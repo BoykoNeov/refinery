@@ -1,0 +1,57 @@
+diff --git a/crates/scenarios/tests/suite.rs b/crates/scenarios/tests/suite.rs
+index 26556da..7a8790a 100644
+--- a/crates/scenarios/tests/suite.rs
++++ b/crates/scenarios/tests/suite.rs
+@@ -201,3 +201,5 @@ mod water_properties;
+ mod water_slug_reference;
+ #[path = "wet_rundown_reference.rs"]
+ mod wet_rundown_reference;
++#[path = "m64_3_probe.rs"]
++mod m64_3_probe;
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index bd3c12b..bbb3d97 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -493,7 +493,7 @@ impl HeatBalanceCascade {
+         // starts from this tick's earlier pass where there is one (M64.2,
+         // docs/DESIGN.md §69.3): its start from nothing costs ten solves.
+         let earlier = spec.reboiler_duty.and(pass.earlier_pass);
+-        let warm = pass.seed.or(earlier).filter(|previous| {
++        let warm = earlier.or(pass.seed).filter(|previous| {
+             previous.temperatures.len() == plan.stages
+                 && previous.liquid.len() == plan.stages
+                 && previous.liquid.iter().all(|row| row.len() == slate.len())
+@@ -937,7 +937,7 @@ impl HeatBalanceCascade {
+                 free_water,
+             ) {
+                 Ok(profile) => return Ok(profile),
+-                Err(unsolved) => warm_failure = Some(unsolved),
++                Err(unsolved) => { if setup.spec.reboiler_duty.is_some() { crate::probe3::WARM_FAIL.fetch_add(1, std::sync::atomic::Ordering::Relaxed); } warm_failure = Some(unsolved) }
+             }
+         }
+ 
+@@ -953,6 +953,8 @@ impl HeatBalanceCascade {
+         // reboiler (M64.2, docs/DESIGN.md §69.3): M61's cold start below lands
+         // a column without one nowhere.
+         if let Some(held) = setup.spec.reboiler_duty {
++            crate::probe3::CONT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++            if std::env::var("NO_FALLBACK").is_ok() && warm_failure.is_some() { return Err(SimError::Numerical("probe: no fallback".into())); }
+             return self.continuation(setup, &equations, held.value());
+         }
+         let cap = COLD_WARM_UP_ITERATIONS.min(self.max_iterations);
+diff --git a/crates/solvers/src/lib.rs b/crates/solvers/src/lib.rs
+index 5c0200a..6a01471 100644
+--- a/crates/solvers/src/lib.rs
++++ b/crates/solvers/src/lib.rs
+@@ -197,3 +197,11 @@ mod constant_thermo_tests {
+         );
+     }
+ }
++
++#[allow(missing_docs)]
++pub mod probe3 {
++    use std::sync::atomic::AtomicUsize;
++    pub static WARM_FAIL: AtomicUsize = AtomicUsize::new(0);
++    pub static CONT: AtomicUsize = AtomicUsize::new(0);
++    pub fn counts() -> (usize, usize) { (WARM_FAIL.load(std::sync::atomic::Ordering::Relaxed), CONT.load(std::sync::atomic::Ordering::Relaxed)) }
++}
