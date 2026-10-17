@@ -711,11 +711,11 @@ pub(crate) fn require_gas_fill_time_on_flashing_plant(
 /// - **No two pumps joined by one pipe** (M54, §59): each pump's inlet is
 ///   solved with its neighbours held, and two pumps back to back are one
 ///   problem, not two.
-/// - **No leak path** (`leak_to`): a hole is an orifice, and a two-phase jet
-///   chokes, which no law here models — the valve's caveat, without a user's
-///   decision to accept it. **A furnace's tubes never burst** for the same
-///   reason (M62.4): the burn-out hole on its outlet would be that jet, so its
-///   `tube_failure_c` stands at or above its flame, which means "never".
+/// - **A hole is admitted** — a leak path, a puncture, a furnace's burst tubes
+///   — since M62.4d: on a plant that boils it flows as Leung's ω jet, choked
+///   as a boiling jet chokes (`elements::flashing_orifice`, docs/DESIGN.md
+///   §67.15). Until then it was refused, the valve's caveat without a user's
+///   decision to accept it.
 /// - **No column on a slate with free water** (M62.4): the heat-balance
 ///   cascade has no water balance yet and would dissolve the water in the oil
 ///   as one more cut (M62.5, §67.5).
@@ -769,26 +769,13 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             | NodeDef::CheckValve { .. }
             | NodeDef::Cooler { .. }
             | NodeDef::WaterCooler { .. }
+            // A furnace's burst tubes, like any hole here, are Leung's ω jet
+            // (M62.4d, docs/DESIGN.md §67.15).
+            | NodeDef::Furnace { .. }
             | NodeDef::Pump {
                 npsh_required_m: None,
                 ..
             } => continue,
-            NodeDef::Furnace {
-                tube_failure_c,
-                flame_temperature_c,
-                ..
-            } => {
-                if tube_failure_c < flame_temperature_c {
-                    return refuse(format!(
-                        "with furnace '{name}' whose tubes can burst (tube_failure_c = \
-                         {tube_failure_c} °C, below its {flame_temperature_c} °C flame): a \
-                         burst opens a hole in its outlet pipe, and a two-phase jet through \
-                         a hole chokes, which no law here models. Set tube_failure_c at or \
-                         above flame_temperature_c, which means the tubes never burst"
-                    ));
-                }
-                continue;
-            }
             NodeDef::Column { .. } => {
                 if let Some(water) = scenario.components.iter().find(|c| c.free_water) {
                     return refuse(format!(
@@ -822,13 +809,6 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             "with '{name}', {kind}: a plant that selects the line flash may hold only \
              supplies, destinations, the atmosphere, junctions, control valves, tanks, \
              pumps, check valves, furnaces, coolers and columns"
-        ));
-    }
-    if let Some(pipe) = scenario.pipes.iter().find(|p| p.leak_to.is_some()) {
-        return refuse(format!(
-            "with a leak path on pipe '{}': a two-phase jet through a hole chokes, which \
-             no law here models",
-            pipe.name
         ));
     }
     // Each pump's inlet is solved with its neighbours held (M54, §59), so two

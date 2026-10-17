@@ -723,10 +723,179 @@ pub fn gas_orifice(liquid: QuadraticBranch, dp: f64, p_up: f64, gamma: f64) -> Q
     }
 }
 
+/// Leung's ω-method mass flux at a throat pressure ratio `eta = P/P₀`,
+/// normalised by `√(P₀/v₀)` (Leung, *AIChE J.* 32 (1986) 1743; API 520 Part I,
+/// Annex C; M62.4d, docs/DESIGN.md §67.15):
+///
+/// ```text
+///   g(η) = √(2·[(1 − η_s) + ω·η_s·ln(η_s/η) − (ω − 1)·(η_s − η)]) / (ω·(η_s/η − 1) + 1)
+/// ```
+///
+/// the liquid's Bernoulli from `P₀` to where it boils, `η_s = P_s/P₀`, and the
+/// ω equation of state `v/v_s = ω·(P_s/P − 1) + 1` below it: `√(2∫v dP)/v` at
+/// the throat. Above `η_s` the stream is liquid, `g = √(2·(1 − η))`. A non-finite
+/// or non-positive ratio, or an argument whose square root would be negative
+/// (past where the expansion has no flow), is zero flux.
+pub fn omega_flux(eta: f64, eta_s: f64, omega: f64) -> f64 {
+    if !eta.is_finite() || eta <= 0.0 {
+        return 0.0;
+    }
+    if eta >= eta_s {
+        return (2.0 * (1.0 - eta)).max(0.0).sqrt();
+    }
+    let work = (1.0 - eta_s) + omega * eta_s * (eta_s / eta).ln() - (omega - 1.0) * (eta_s - eta);
+    let volume = omega * (eta_s / eta - 1.0) + 1.0;
+    // NaN fails both tests, so it is zero flux too.
+    if work.is_nan() || volume.is_nan() || work <= 0.0 || volume <= 0.0 {
+        return 0.0;
+    }
+    (2.0 * work).sqrt() / volume
+}
+
+/// Golden-section halvings of `omega_critical_ratio`'s bracket: 0.618⁸⁰ is
+/// 2e-17, below an `f64`'s spacing on `(0, 1]`.
+const OMEGA_CRITICAL_ITERATIONS: u32 = 80;
+
+/// The critical pressure ratio `η_c` of Leung's ω jet: where `omega_flux` is
+/// greatest on `(0, η_s]` — the throat a falling downstream pressure chokes
+/// at. Found by golden-section search (Kiefer 1953; `g` is unimodal there), not
+/// by Annex C's transcendental equations, which are its stationarity
+/// condition: the maximum is a number either way, and the search needs no
+/// separate equation for each inlet. At `ω = 1`, `η_s = 1` (an isothermal ideal
+/// gas) it is `e^{−1/2}`.
+pub fn omega_critical_ratio(eta_s: f64, omega: f64) -> f64 {
+    let golden = 0.5 * (5.0_f64.sqrt() - 1.0);
+    let (mut low, mut high) = (1e-12 * eta_s, eta_s);
+    let mut left = high - golden * (high - low);
+    let mut right = low + golden * (high - low);
+    let (mut f_left, mut f_right) = (
+        omega_flux(left, eta_s, omega),
+        omega_flux(right, eta_s, omega),
+    );
+    for _ in 0..OMEGA_CRITICAL_ITERATIONS {
+        if f_left < f_right {
+            low = left;
+            left = right;
+            f_left = f_right;
+            right = low + golden * (high - low);
+            f_right = omega_flux(right, eta_s, omega);
+        } else {
+            high = right;
+            right = left;
+            f_right = f_left;
+            left = high - golden * (high - low);
+            f_left = omega_flux(left, eta_s, omega);
+        }
+    }
+    0.5 * (low + high)
+}
+
+/// A leak orifice whose stream boils through it, as the branch `compile_edge`
+/// hands the solvers (M62.4d, docs/DESIGN.md §67.15): its liquid branch
+/// (`QuadraticBranch::orifice` at the upwind mixture density, Torricelli) with
+/// an effective resistance that reproduces Leung's ω jet at drop `dp`.
+///
+/// The jet's flux at the throat `η_t = max(η_a, η_c)` — `η_a = 1 − |dp|/p_up`,
+/// the downstream's ratio, and `η_c` where it chokes (`omega_critical_ratio`) —
+/// against Torricelli's at the same drop, `r = g(η_t)/√(2·(1 − η_a))`, so
+/// `α_eff = α/r²`: exactly the liquid branch while the stream stays liquid to
+/// the downstream (`η_a ≥ η_s`). Like `gas_orifice`: `beta = 0` and the flow's
+/// sign are kept, a dormant hole (`α = +∞`) and a zero drop return the liquid
+/// branch untouched, and the Jacobian freezes `α_eff` at the iterate.
+pub fn flashing_orifice(
+    liquid: QuadraticBranch,
+    dp: f64,
+    p_up: f64,
+    eta_s: f64,
+    omega: f64,
+) -> QuadraticBranch {
+    if !liquid.alpha.is_finite() || liquid.alpha <= 0.0 || !p_up.is_finite() || p_up <= 0.0 {
+        return liquid;
+    }
+    let drop = dp.abs() / p_up;
+    if !drop.is_finite() || drop <= 0.0 {
+        return liquid;
+    }
+    let eta_a = (1.0 - drop).max(0.0);
+    if eta_a >= eta_s {
+        return liquid;
+    }
+    let throat = eta_a.max(omega_critical_ratio(eta_s, omega));
+    let ratio = omega_flux(throat, eta_s, omega) / (2.0 * drop).sqrt();
+    QuadraticBranch {
+        alpha: liquid.alpha / (ratio * ratio),
+        beta: 0.0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use approx::assert_relative_eq;
+
+    /// **The ω jet's two limits, exactly** (M62.4d, docs/DESIGN.md §67.15). At
+    /// `ω = 1` from an inlet already boiling, `v/v₀ = P₀/P`: an isothermal ideal
+    /// gas, whose choked flux is `√(P₀ρ₀)·e^{−1/2}` at `P/P₀ = e^{−1/2}` (Shapiro,
+    /// *Compressible Fluid Flow*, 1953, the isothermal nozzle). At `ω = 0` the
+    /// stream never expands: Torricelli, `g = √(2·(1 − η))`, at every ratio.
+    #[test]
+    fn the_omega_jet_is_an_isothermal_gas_at_one_and_a_liquid_at_zero() {
+        // The flux is flat at its greatest, so where it is greatest is found to
+        // about the root of an `f64`'s spacing (measured 2.8e-9) and the
+        // greatest flux itself to rounding — which is what the jet reads.
+        let critical = omega_critical_ratio(1.0, 1.0);
+        assert_relative_eq!(critical, (-0.5f64).exp(), max_relative = 1e-7);
+        assert_relative_eq!(
+            omega_flux(critical, 1.0, 1.0),
+            (-0.5f64).exp(),
+            max_relative = 1e-14
+        );
+        for eta in [0.05, 0.3, 0.7, 0.99] {
+            assert_relative_eq!(
+                omega_flux(eta, 1.0, 0.0),
+                (2.0 * (1.0 - eta)).sqrt(),
+                max_relative = 1e-14
+            );
+        }
+        // Subcooled to `η_s`, the liquid's Bernoulli above it, continuous there.
+        assert_relative_eq!(
+            omega_flux(0.6, 0.6, 5.0),
+            (2.0f64 * 0.4).sqrt(),
+            max_relative = 1e-14
+        );
+    }
+
+    /// **The jet chokes**: past `η_c` a lower downstream adds no flow, and the
+    /// branch's mass flow is the ω flux there; above the boiling pressure it is
+    /// the liquid orifice bit for bit; a dormant hole stays shut.
+    #[test]
+    fn a_flashing_orifice_chokes_and_is_the_liquid_one_above_its_bubble_point() {
+        let (area, rho, p_up) = (1e-3, 400.0, 10e5);
+        let liquid = QuadraticBranch::orifice(area, ORIFICE_CD, rho);
+        let (eta_s, omega) = (1.0, 8.0);
+        let critical = omega_critical_ratio(eta_s, omega);
+        let flux = |dp: f64| {
+            let branch = flashing_orifice(liquid, dp, p_up, eta_s, omega);
+            rho * branch.flow(dp, 0.0)
+        };
+        let choked = ORIFICE_CD * area * (p_up * rho).sqrt() * omega_flux(critical, eta_s, omega);
+        for drop in [1.0 - critical + 0.01, 0.8, 0.95] {
+            assert_relative_eq!(flux(drop * p_up), choked, max_relative = 1e-9);
+        }
+        let below = flux(0.5 * (1.0 - critical) * p_up);
+        assert!(below < choked, "{below} is not below the choked {choked}");
+        // Subcooled above the downstream: the liquid branch, bit for bit.
+        let sub = flashing_orifice(liquid, 2e5, p_up, 0.5, omega);
+        assert_eq!((sub.alpha, sub.beta), (liquid.alpha, liquid.beta));
+        let shut = QuadraticBranch {
+            alpha: f64::INFINITY,
+            beta: 0.0,
+        };
+        assert_eq!(
+            flashing_orifice(shut, 5e5, p_up, eta_s, omega).alpha,
+            f64::INFINITY
+        );
+    }
 
     /// The air value by hand: `1 − (2/2.4)^3.5 = 1 − (5/6)^3.5`.
     #[test]

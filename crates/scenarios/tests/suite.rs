@@ -11,6 +11,8 @@ mod bed_reactor_reference;
 mod bed_trip_reference;
 #[path = "bed_wall_reference.rs"]
 mod bed_wall_reference;
+#[path = "boiling_jet_reference.rs"]
+mod boiling_jet_reference;
 #[path = "boiloff_reference.rs"]
 mod boiloff_reference;
 #[path = "burnout_reference.rs"]

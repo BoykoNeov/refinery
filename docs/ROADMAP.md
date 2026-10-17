@@ -9898,3 +9898,18 @@ where the lumped coil does. DESIGN §67.14; probe
 
 - Gates: `coil_cell_reference.rs` (7). Mutations: ten, all caught. Corpus:
   61 of 61 byte-identical on both fidelities.
+
+### M62.4d — **LANDED** 2026-10-17: the choked boiling jet
+
+A hole on a plant that boils — a declared leak path, a puncture, a furnace's
+burst tubes — flows as Leung's ω jet (API 520 Part I, Annex C): the
+homogeneous equilibrium expansion on the ω equation of state, ω from two line
+flashes, choked where the flux is greatest; a liquid that stays liquid to the
+downstream keeps Torricelli bit for bit. The three refusals M62.4a held are
+lifted. Measured against the jet integrated directly on the engine's own
+flash: +0.03 % for a subcooled naphtha that boils in the hole, +1.1 % for one
+already boiling. DESIGN §67.15.
+
+- Gates: `elements.rs` (2), `boiling_jet_reference.rs` (4). Mutations:
+  seven, six caught, one equivalent. Corpus: 61 of 61 byte-identical on both
+  fidelities.

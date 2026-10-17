@@ -11,9 +11,9 @@
 
 use crate::elements::{
     cavitation_head_fraction, cavitation_head_fraction_dsigma, check_opening, check_opening_slope,
-    compressor_multiplier, fold_gas_valve, gas_orifice, pipe_resistance, relief_opening,
-    relief_opening_slope, specific_heat_ratio_factor, two_phase_head_multiplier, QuadraticBranch,
-    CHOKE_BLEND, ORIFICE_CD,
+    compressor_multiplier, flashing_orifice, fold_gas_valve, gas_orifice, pipe_resistance,
+    relief_opening, relief_opening_slope, specific_heat_ratio_factor, two_phase_head_multiplier,
+    QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
 };
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::energy::{boundary_temperature, upwind_end, NodeStates};
@@ -1136,6 +1136,103 @@ fn two_phase_density(
         .map_err(|e| SimError::Numerical(format!("pipe {}: {e}", pipe.name)))
 }
 
+/// Leung's inlet for a hole on a boiling plant (M62.4d, docs/DESIGN.md
+/// §67.15): `(η_s, ω)`, where its stream starts to boil as a share of its
+/// upwind pressure and the ω equation of state's parameter from two line
+/// flashes, `ω = (v₉/v_s − 1)/(P_s/P₉ − 1)`, `P₉ = 0.9·P_s` — at the upwind
+/// pressure itself for a stream already boiling there (`η_s = 1`), at its
+/// bubble pressure for a subcooled one. `None` where the stream stays liquid
+/// to the downstream (its bubble pressure at or below it), or has no resolved
+/// state yet: the orifice is then Torricelli's.
+fn flashing_inlet(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    pipe: &Pipe,
+    upwind_node: NodeId,
+    (p_up, p_down): (f64, f64),
+    flash: LineFlash<'_>,
+) -> Result<Option<(f64, f64)>, SimError> {
+    let (composition, liquid_equivalent) = match &graph.node(upwind_node).kind {
+        NodeKind::Source {
+            temperature,
+            pressure,
+            composition,
+        } => {
+            let share = flash.model.supply(
+                slate,
+                composition,
+                *temperature,
+                *pressure,
+                flash.thermo,
+                flash.enthalpy,
+            )?;
+            (
+                composition,
+                share.map_or(*temperature, |s| s.liquid_equivalent),
+            )
+        }
+        _ => {
+            let liquid_equivalent = previous_states
+                .vapour
+                .get(&upwind_node)
+                .map(|s| s.liquid_equivalent)
+                .or_else(|| previous_states.temperature.get(&upwind_node).copied());
+            let Some(liquid_equivalent) = liquid_equivalent else {
+                return Ok(None);
+            };
+            let composition = previous_states
+                .composition
+                .get(&upwind_node)
+                .unwrap_or(&pipe.stream.composition);
+            (composition, liquid_equivalent)
+        }
+    };
+    // The specific volume [m³/kg] the stream has at `pressure`.
+    let volume = |pressure: f64| -> Result<f64, SimError> {
+        let at = Pascal(pressure.max(RHO_EVAL_P_FLOOR));
+        Ok(
+            match flash.density(slate, composition, liquid_equivalent, at)? {
+                Some(two_phase) => 1.0 / two_phase.mixture.value(),
+                None => {
+                    1.0 / composition
+                        .density_at(slate, at, liquid_equivalent)?
+                        .value()
+                }
+            },
+        )
+    };
+    let boiling = flash
+        .density(
+            slate,
+            composition,
+            liquid_equivalent,
+            Pascal(p_up.max(RHO_EVAL_P_FLOOR)),
+        )?
+        .is_some();
+    let saturation = if boiling {
+        p_up
+    } else {
+        let bubble = flash
+            .thermo
+            .bubble_pressure(slate, composition, liquid_equivalent)?
+            .value();
+        if bubble <= p_down {
+            return Ok(None);
+        }
+        bubble.min(p_up)
+    };
+    let omega =
+        ((volume(0.9 * saturation)? / volume(saturation)? - 1.0) / (1.0 / 0.9 - 1.0)).max(0.0);
+    if !omega.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "leak orifice on pipe '{}': its jet's ω is not finite at {saturation:e} Pa",
+            pipe.name
+        )));
+    }
+    Ok(Some((saturation / p_up, omega)))
+}
+
 /// The node an edge's branch is characterised at: the end at the higher
 /// pressure — except a running pump's outlet in a plant with a line flash, which
 /// is ALWAYS characterised at the pump, its inlet (M54, docs/DESIGN.md §59).
@@ -1735,6 +1832,31 @@ fn compile_edge_at(
                      service (γ = {gamma:.4}, upstream {upwind:e} Pa)",
                     pipe.name, branch.alpha
                 )));
+            }
+        } else if flash.model.carries_vapour() && branch.alpha.is_finite() {
+            // On a plant whose line flash carries vapour an open hole is Leung's
+            // ω jet (M62.4d, docs/DESIGN.md §67.15) wherever its stream boils
+            // through it: choked as a boiling jet chokes. A stream that stays
+            // liquid to the downstream keeps Torricelli bit for bit.
+            let downwind = if upwind_node == src { tgt } else { src };
+            if let Some((eta_s, omega)) = flashing_inlet(
+                graph,
+                slate,
+                previous_states,
+                pipe,
+                upwind_node,
+                (upwind, pressures[&downwind]),
+                flash,
+            )? {
+                let dp = pressures[&src] - pressures[&tgt];
+                branch = flashing_orifice(branch, dp, upwind, eta_s, omega);
+                if !branch.alpha.is_finite() || branch.alpha <= 0.0 {
+                    return Err(SimError::Numerical(format!(
+                        "leak orifice '{}' ({eid:?}) compiled to a resistance of {:e} as a \
+                         boiling jet (η_s = {eta_s:.6}, ω = {omega:.4}, upstream {upwind:e} Pa)",
+                        pipe.name, branch.alpha
+                    )));
+                }
             }
         }
         debug_assert_eq!(branch.beta, 0.0, "an orifice branch must carry no offset");

@@ -310,13 +310,8 @@ fn a_flashing_plant_holds_only_what_the_flash_models() {
             ),
             "a relief valve",
         ),
-        (
-            base.replace(
-                "length_m = 30.0\ndiameter_m = 0.08",
-                "length_m = 30.0\ndiameter_m = 0.08\nleak_to = \"outside\"\n\n[nodes.outside]\ntype = \"atmosphere\"",
-            ),
-            "leak path",
-        ),
+        // A leak path is admitted since M62.4d (§67.15): on a plant that boils
+        // its hole is Leung's ω jet (`boiling_jet_reference.rs`).
     ];
     for (src, expected) in cases {
         let err = match build(&src) {

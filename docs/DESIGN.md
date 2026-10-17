@@ -25678,3 +25678,93 @@ inlet not settled (by the per-cell gate, added for it), one pass of the fixed
 point, a cell's inflow without its latent heat, the feed not rewired to the
 first cell, each segment the whole length (by the Darcy gate, added for it),
 one cell admitted. **Corpus**: 61 of 61 byte-identical on both fidelities.
+
+### 67.15 The choked boiling jet (M62.4d) — specified before building
+
+A hole on a plant whose line flash carries vapour — a declared leak path, a
+punctured pipe, a furnace's burst tubes — flows by **Leung's ω method** (Leung,
+*AIChE J.* 32 (1986) 1743; API 520 Part I, Annex C): the homogeneous
+equilibrium jet through an orifice, its specific volume along the expansion the
+ω equation of state, `v/v_s = ω·(P_s/P − 1) + 1` below the pressure `P_s` where
+it boils and the liquid's above it. With `η = P/P₀`, `η_s = P_s/P₀`, the mass
+flux at a throat pressure `η` is `G = √(P₀/v₀) · g(η)`,
+
+```text
+  g(η) = √(2·[(1 − η_s) + ω·η_s·ln(η_s/η) − (ω − 1)·(η_s − η)]) / (ω·(η_s/η − 1) + 1)
+```
+
+— the liquid's Bernoulli from `P₀` to `P_s` and the ω law below it, `∫v dP`
+over the expansion and `G = √(2∫v dP)/v` at the throat (Leung's derivation,
+from the equation of state; for an inlet already boiling `η_s = 1`, Annex C's
+two-phase form; for a subcooled inlet, its "low subcooling" form). **The
+throat**: the flux rises as the downstream pressure falls until `g` reaches its
+maximum, `η_c` — choked — and stays there; so `η_t = max(η_a, η_c)`, `η_a` the
+downstream's. `η_c` is found by maximising `g` on `(0, η_s]` (it is unimodal),
+not by Annex C's transcendental equations, which are its stationarity condition.
+At `η_c` `dg/dη = 0`, so the flux is C¹ in the drop: Newton's slope is
+continuous through the choke (`CHOKE_BLEND`'s finding, §3a fork 4).
+
+**ω from two line flashes**, the API's two-point method: an inlet already
+boiling at `P₀`, `ω = (v₉/v₀ − 1)/(P₀/P₉ − 1)`, `P₉ = 0.9·P₀`; a subcooled inlet
+whose bubble pressure `P_s` stands above the downstream, the same at `P_s`
+and `0.9·P_s`, `v_s` the liquid's. Isenthalpic flashes for the API's
+isentropic ones: a stated simplification (the line flash is isenthalpic
+everywhere, §58). A subcooled inlet whose bubble pressure is at or below the
+downstream is a liquid all the way: Torricelli, the orifice law it always had,
+bit for bit.
+
+**In the solve** the hole keeps its liquid branch, `α = ρ₀/(2·C_d²·A²)` at its
+upwind mixture density, with an effective resistance that reproduces the jet at
+the iterate's drop: `α_eff = α / r²`, `r = g(η_t)/√(2·(1 − η_a))` — exactly 1
+for a liquid all the way — frozen at the iterate, as the gas orifice is
+(`elements::gas_orifice`). `β = 0` and the flow's sign are kept, so the leak
+back-feed refusal holds as it does.
+
+**Lifts**: the refusal of a leak path on a plant that selects the line flash,
+of a furnace whose tubes can burst there (M62.4a), and of a puncture there
+(M62.4a). **Gates** to write: the isothermal ideal-gas limit (`ω = 1`, `η_s = 1`:
+`η_c = e^{−1/2}`, `g = e^{−1/2}`, exactly); the liquid limit (Torricelli bit for
+bit); the ω jet against a direct homogeneous-equilibrium integration on the
+engine's own flash, `G = max_P √(2∫_P^{P₀} v dP)/v(P)`, for a boiling and a
+subcooled-flashing inlet (the ω law's own approximation, measured); a punctured
+boiling line and a furnace's tubes bursting on the boiling crude unit, their
+books closing; both fidelities. The API's worked example is not reproduced: the
+document is not at hand, and the ω law is gated against its own derivation and
+the engine's flash instead.
+
+**Built (M62.4d)**, as specified: `elements::omega_flux`,
+`omega_critical_ratio`, `flashing_orifice`; `network::flashing_inlet` and the
+leak orifice's branch on a plant whose line flash carries vapour. The three
+refusals lifted (a leak path on a boiling plant, a furnace whose tubes can
+burst there, a puncture there); `line_flash_reference.rs` and
+`heat_on_boiling_reference.rs` rewritten where they asserted them.
+
+**Measured** on the punctured rundown (a 2 cm² hole on its 3 bar line, venting
+to the atmosphere): the 115 °C naphtha there, subcooled with a bubble pressure
+of 2.07 bar, has `ω` 28.9 at `η_s` 0.704 and chokes at its bubble pressure
+(`η_c = η_s`: the "high subcooling" case, the liquid's Bernoulli to saturation)
+— 11 040.5 kg/(m²·s) against the homogeneous equilibrium jet integrated
+directly on the engine's flash, 11 037.6, +0.03 %. Warmed to 135 °C it boils
+at the hole's inlet: `ω` 1.64, `η_c` 0.669, 1 412.4 against 1 396.9, +1.1 % —
+the ω equation of state's own approximation. The critical ratio is found to
+about the root of an `f64`'s spacing (the flux is flat at its greatest; 2.8e-9
+at `ω = 1`), the flux there to rounding.
+
+**Gates**: `elements.rs` (2: the isothermal ideal-gas limit, `η_c = g =
+e^{−1/2}`, and the liquid limit, Torricelli at every ratio and continuous at the
+bubble pressure; the branch choked past `η_c`, the liquid branch bit for bit
+above the bubble pressure, a dormant hole shut);
+`crates/scenarios/tests/boiling_jet_reference.rs` (4: the hole's flow the ω jet
+at the state the solve read, subcooled and boiling, both choked, and the ω law
+against the direct HEM integration to 2 %; the plant's energy and mass books
+through the puncture, the subcooled jet and the boiling one, every tick, to
+1e-8; both fidelities, slow; a furnace's tubes bursting on the boiling crude
+unit, its hole leaking a boiling jet and the fire it feeds the leak times the
+heating value).
+
+**Mutations**: seven. Six caught — no jet law, ω's two-point ratio unscaled, a
+subcooled inlet read as boiling, no choke, Torricelli's flux at the wrong drop
+(and the lifted refusals, by the rewritten gates). One equivalent: dropping the
+early return for a liquid that stays liquid to the downstream — the jet law's
+own guard (`η_a ≥ η_s`) returns the liquid branch there anyway; the return
+saves two flashes. **Corpus**: 61 of 61 byte-identical on both fidelities.

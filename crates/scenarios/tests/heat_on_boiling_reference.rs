@@ -475,16 +475,13 @@ fn a_column_on_a_boiling_plant_takes_its_feed_whole_and_draws_liquids() {
     );
 }
 
-/// **What a boiling plant still refuses, by name** (§67.4): a furnace whose
-/// tubes can burst — the hole would be a two-phase jet, which chokes — and a
-/// column on a slate with free water, which its stages do not balance yet
-/// (M62.5). The furnace's outlet carries its dormant burn-out hole, so a
-/// puncture of it is refused too; a repair (area zero) changes nothing and is
-/// taken.
+/// **What a boiling plant still refuses, by name** (§67.4): a column on a slate
+/// with free water, which its stages do not balance yet (M62.5). **What it
+/// admits since M62.4d** (§67.15), where M62.4a refused both: a furnace whose
+/// tubes can burst, and a puncture — a hole on a boiling plant is Leung's ω
+/// jet, gated in `boiling_jet_reference.rs`.
 #[test]
-fn a_boiling_plant_refuses_a_bursting_furnace_a_wet_column_and_a_puncture() {
-    let bursting =
-        crude_unit_flashing().replace("tube_failure_c = 1951.1", "tube_failure_c = 550.0");
+fn a_boiling_plant_refuses_a_wet_column_and_admits_a_hole() {
     let wet = crude_unit_flashing().replace(
         "[[components]]\nname = \"residue\"",
         "[[components]]\nname = \"water\"\ntb_c = 100.0\nmolar_mass_kg_per_mol = 0.018015\n\
@@ -492,30 +489,30 @@ fn a_boiling_plant_refuses_a_bursting_furnace_a_wet_column_and_a_puncture() {
          cp_vapour_j_per_kg_k = 2000.0\nfree_water = true\n\n[[components]]\nname = \"residue\"",
     );
     assert!(wet.contains("free_water"));
-    for (src, expected) in [(bursting, "tubes can burst"), (wet, "free_water")] {
-        let err = match build(&src) {
-            Ok(_) => panic!("must refuse ({expected})"),
-            Err(e) => e,
-        };
-        assert!(
-            err.contains("line_flash") && err.contains(expected),
-            "expected a line-flash refusal naming {expected}: {err}"
-        );
-    }
+    let err = match build(&wet) {
+        Ok(_) => panic!("must refuse a wet column"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("line_flash") && err.contains("free_water"),
+        "expected a line-flash refusal naming free_water: {err}"
+    );
 
-    let mut engine = build(&crude_unit_flashing()).unwrap();
+    let bursting =
+        crude_unit_flashing().replace("tube_failure_c = 1951.1", "tube_failure_c = 550.0");
+    assert!(bursting.contains("tube_failure_c = 550.0"));
+    let mut engine = build(&bursting).expect("a furnace whose tubes can burst is admitted");
     let transfer_line = edge(&engine.snapshot(), "transfer_line").id;
-    let err = engine
+    engine
         .apply(Command::PuncturePipe {
             edge: transfer_line,
             area: SquareMeter(1e-4),
         })
-        .expect_err("a hole in a boiling line is refused");
-    assert!(err.to_string().contains("two-phase jet"), "{err}");
+        .expect("a hole in a boiling line is admitted");
     engine
         .apply(Command::PuncturePipe {
             edge: transfer_line,
             area: SquareMeter(0.0),
         })
-        .expect("a repair changes nothing and is taken");
+        .expect("a repair is taken");
 }
