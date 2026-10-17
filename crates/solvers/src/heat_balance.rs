@@ -109,6 +109,18 @@ const CONTINUATION_STEPS: u32 = 10;
 /// refused on a later pass of its first tick (its warm-up's bottoms negative).
 const BASE_SIDE_COOLING: f64 = 1.5;
 
+/// How many times a column whose cold start refuses halves its pumparounds to
+/// start again (M65.1, docs/DESIGN.md §70.1), each start then walked back to
+/// the column's own in [`CONTINUATION_STEPS`].
+///
+/// **A convergence aid, measured, not physics**: the wet crude unit on a crude
+/// 2–20 % water starts cold only in a narrow band of pumparounds, closing as the
+/// water rises (0.45–0.95 of its 40 MW at 2 %, 0.55–0.65 at 10 %), while warm it
+/// runs from zero to three times them; its 40 MW start from a half, 80 MW from
+/// a quarter, at every share (M65.0's probe, §70.0). Four halvings reach a
+/// sixteenth.
+const PUMPAROUND_HALVINGS: u32 = 4;
+
 /// Outer iterations of the fixed point when it is solved to convergence on its
 /// own — the reference [`HeatBalanceCascade::fixed_point`] gates Newton
 /// against. M60's cap and its argument (the pinch case is the stiff one).
@@ -910,39 +922,87 @@ impl HeatBalanceCascade {
 
         let mut warm_failure = None;
         if let Some(previous) = warm.filter(|p| p.vapour.len() == plan.stages) {
-            let temperatures: Vec<f64> = previous
-                .temperatures
-                .iter()
-                .map(|t| t.value() + self.seed_offset.value())
-                .collect();
-            let k = stage_k_values_profile(slate, setup.thermo, &temperatures, pass.pressure)?;
-            let draws = plan.draw_states(&previous.liquid, &k, slate)?;
-            // The last tick's wet stages start this one's wet set (§67.17
-            // rule 6) — a hint: on a dry feed there is none.
-            let free_water: &[f64] =
-                if setup.water.is_some() && previous.free_water.len() == plan.stages {
-                    &previous.free_water
-                } else {
-                    &[]
-                };
-            let wet: Vec<usize> = (0..free_water.len())
-                .filter(|j| free_water[*j] > 0.0)
-                .collect();
             // A warm Newton that fails is retried cold, where the aids are.
-            match self.newton_with_water(
-                &equations,
-                &temperatures,
-                &previous.vapour,
-                &draw_rates(plan, &draws, setup.feed_mass),
-                previous.reflux_ratio,
-                wet,
-                free_water,
-            ) {
+            match self.warm_newton(setup, &equations, previous)? {
                 Ok(profile) => return Ok(profile),
                 Err(unsolved) => warm_failure = Some(unsolved),
             }
         }
 
+        // A held column starts by a continuation from the same column with its
+        // reboiler (M64.2, docs/DESIGN.md §69.3): M61's cold start below lands
+        // a column without one nowhere.
+        if let Some(held) = setup.spec.reboiler_duty {
+            return self.continuation(setup, &equations, held.value());
+        }
+        let refused = match self.cold_start(setup, &equations, warm_failure.as_ref()) {
+            Ok(profile) => return Ok(profile),
+            Err(refused) => refused,
+        };
+        // A cold start that refuses starts again from its pumparounds halved
+        // (M65.1, docs/DESIGN.md §70.1); a column with none has nothing to halve.
+        if plan.side_heat.iter().all(|heat| *heat == 0.0) {
+            return Err(refused);
+        }
+        self.halved_start(setup, &equations)
+            .map_err(|how| match refused {
+                SimError::Numerical(reason) => SimError::Numerical(format!("{reason} {how}")),
+                other => other,
+            })
+    }
+
+    /// Newton from `previous`, a profile of this column's shape (the last
+    /// tick's, or this tick's earlier pass): its temperatures offset by the
+    /// seed offset, its draws read off its liquid. The outer `Err` is a profile
+    /// whose K-values or draws cannot be read; the inner one Newton's failure.
+    fn warm_newton(
+        &self,
+        setup: &ColumnSetup<'_>,
+        equations: &ColumnEquations<'_>,
+        previous: &CascadeProfile,
+    ) -> Result<Result<Profile, Unsolved>, SimError> {
+        let pass = setup.pass;
+        let slate = pass.slate;
+        let plan = &setup.plan;
+        let temperatures: Vec<f64> = previous
+            .temperatures
+            .iter()
+            .map(|t| t.value() + self.seed_offset.value())
+            .collect();
+        let k = stage_k_values_profile(slate, setup.thermo, &temperatures, pass.pressure)?;
+        let draws = plan.draw_states(&previous.liquid, &k, slate)?;
+        // The last tick's wet stages start this one's wet set (§67.17
+        // rule 6) — a hint: on a dry feed there is none.
+        let free_water: &[f64] =
+            if setup.water.is_some() && previous.free_water.len() == plan.stages {
+                &previous.free_water
+            } else {
+                &[]
+            };
+        let wet: Vec<usize> = (0..free_water.len())
+            .filter(|j| free_water[*j] > 0.0)
+            .collect();
+        Ok(self.newton_with_water(
+            equations,
+            &temperatures,
+            &previous.vapour,
+            &draw_rates(plan, &draws, setup.feed_mass),
+            previous.reflux_ratio,
+            wet,
+            free_water,
+        ))
+    }
+
+    /// M61's cold start (§66.1): a short fixed-point warm-up, then Newton. A
+    /// refusal names the cold failure, with the warm one's physical cause where
+    /// only the warm attempt's last iterate shows an edge.
+    fn cold_start(
+        &self,
+        setup: &ColumnSetup<'_>,
+        equations: &ColumnEquations<'_>,
+        warm_failure: Option<&Unsolved>,
+    ) -> Result<Profile, SimError> {
+        let plan = &setup.plan;
         let refusal = |reason: &str, cause: &str| {
             SimError::Numerical(format!(
                 "heat-balance cascade {reason}.{cause}{}",
@@ -951,12 +1011,6 @@ impl HeatBalanceCascade {
         };
         let cause_of =
             |unsolved: &Unsolved| physical_cause(plan, unsolved.flows.as_deref(), setup.feed_molar);
-        // A held column starts by a continuation from the same column with its
-        // reboiler (M64.2, docs/DESIGN.md §69.3): M61's cold start below lands
-        // a column without one nowhere.
-        if let Some(held) = setup.spec.reboiler_duty {
-            return self.continuation(setup, &equations, held.value());
-        }
         let cap = COLD_WARM_UP_ITERATIONS.min(self.max_iterations);
         let state = match self.fixed_point_iterations(setup, None, cap) {
             Ok(state) => state,
@@ -965,7 +1019,7 @@ impl HeatBalanceCascade {
             // edge shows.
             Err(e) => {
                 return Err(match warm_failure {
-                    Some(warm) => refusal(&warm.reason, &cause_of(&warm)),
+                    Some(warm) => refusal(&warm.reason, &cause_of(warm)),
                     None => refusal(&format!("could not start: {e}"), ""),
                 })
             }
@@ -975,7 +1029,7 @@ impl HeatBalanceCascade {
             .clone()
             .unwrap_or_else(|| vec![setup.feed_molar; plan.stages]);
         match self.newton_with_water(
-            &equations,
+            equations,
             &state.temperatures,
             &vapour,
             &draw_rates(plan, &state.draws, setup.feed_mass),
@@ -989,13 +1043,140 @@ impl HeatBalanceCascade {
             Err(cold) => {
                 let mut cause = cause_of(&cold);
                 if cause.is_empty() {
-                    if let Some(warm) = &warm_failure {
+                    if let Some(warm) = warm_failure {
                         cause = cause_of(warm);
                     }
                 }
                 Err(refusal(&cold.reason, &cause))
             }
         }
+    }
+
+    /// An unheld column whose cold start refused (M65.1, docs/DESIGN.md §70.1):
+    /// Newton from this tick's earlier pass, where the engine hands one; else
+    /// the same column with every pumparound halved, cold, up to
+    /// [`PUMPAROUND_HALVINGS`] times, the first that starts walked back to the
+    /// column's own pumparounds ([`Self::walked_back`]). `Err` is a sentence
+    /// saying how the last attempt failed, for the cold refusal to carry.
+    fn halved_start(
+        &self,
+        setup: &ColumnSetup<'_>,
+        equations: &ColumnEquations<'_>,
+    ) -> Result<Profile, String> {
+        let plan = &setup.plan;
+        // The walk is paid once a tick: a later pass starts where it landed.
+        let earlier = setup.pass.earlier_pass.filter(|previous| {
+            previous.temperatures.len() == plan.stages
+                && previous.vapour.len() == plan.stages
+                && previous.liquid.len() == plan.stages
+                && previous
+                    .liquid
+                    .iter()
+                    .all(|row| row.len() == setup.pass.slate.len())
+        });
+        if let Some(earlier) = earlier {
+            if let Ok(Ok(profile)) = self.warm_newton(setup, equations, earlier) {
+                return Ok(profile);
+            }
+        }
+        let mut failure = String::new();
+        for halvings in 1..=PUMPAROUND_HALVINGS {
+            match self.walked_back(setup, equations, 0.5f64.powi(halvings as i32)) {
+                Ok(profile) => return Ok(profile),
+                Err(how) => failure = how,
+            }
+        }
+        Err(format!(
+            "Started again from its pumparounds halved, up to {PUMPAROUND_HALVINGS} times \
+             (docs/DESIGN.md §70.1), it did not start either: {failure}"
+        ))
+    }
+
+    /// The column with every pumparound at `share` of its duty [-], started
+    /// cold as [`Self::cold_start`] starts any column, then walked back to the
+    /// column's own pumparounds in [`CONTINUATION_STEPS`] Newton solves, each
+    /// from the last, the last the column's own equations exactly — M64.2's walk
+    /// with the reboiler closing the column. `Err` says where it stopped.
+    fn walked_back(
+        &self,
+        setup: &ColumnSetup<'_>,
+        equations: &ColumnEquations<'_>,
+        share: f64,
+    ) -> Result<Profile, String> {
+        let plan = &setup.plan;
+        let mut base_plan = plan.clone();
+        for heat in base_plan.side_heat.iter_mut() {
+            *heat *= share;
+        }
+        let base_spec = CascadeSpec {
+            pumparounds: setup
+                .spec
+                .pumparounds
+                .iter()
+                .map(|pumparound| Pumparound {
+                    stage: pumparound.stage,
+                    duty: Watt(pumparound.duty.value() * share),
+                })
+                .collect(),
+            ..setup.spec.clone()
+        };
+        let base_setup = ColumnSetup {
+            pass: setup.pass,
+            thermo: setup.thermo,
+            spec: &base_spec,
+            plan: base_plan.clone(),
+            feed: setup.feed.clone(),
+            feed_composition: setup.feed_composition.clone(),
+            feed_mass: setup.feed_mass,
+            seed: setup.seed,
+            feed_molar: setup.feed_molar,
+            feed_enthalpy: setup.feed_enthalpy,
+            tolerance: setup.tolerance,
+            water: setup.water.clone(),
+        };
+        let base_equations = ColumnEquations {
+            plan: &base_plan,
+            spec: &base_spec,
+            ..*equations
+        };
+        let mut profile = self
+            .cold_start(&base_setup, &base_equations, None)
+            .map_err(|refused| match refused {
+                SimError::Numerical(reason) => format!("at {share} of them, {reason}"),
+                other => format!("at {share} of them, {other}"),
+            })?;
+        for step in 1..=CONTINUATION_STEPS {
+            let last = step == CONTINUATION_STEPS;
+            let fraction = f64::from(step) / f64::from(CONTINUATION_STEPS);
+            let mut step_plan = base_plan.clone();
+            for (heat, target) in step_plan.side_heat.iter_mut().zip(&plan.side_heat) {
+                *heat += fraction * (target - *heat);
+            }
+            let walked = ColumnEquations {
+                plan: &step_plan,
+                ..*equations
+            };
+            let step_equations = if last { equations } else { &walked };
+            profile = self
+                .newton_with_water(
+                    step_equations,
+                    &profile.temperatures,
+                    &profile.flows.vapour,
+                    &profile_draw_rates(plan, &profile),
+                    Some(profile.reflux_ratio),
+                    profile.wet_stages(),
+                    &profile.free_water,
+                )
+                .map_err(|unsolved| {
+                    format!(
+                        "started at {share} of them, the walk back stopped at step {step} of \
+                         {CONTINUATION_STEPS}, the pumparounds at {:.3} MW in all: Newton {}",
+                        step_plan.side_heat.iter().sum::<f64>() / 1.0e6,
+                        unsolved.reason
+                    )
+                })?;
+        }
+        Ok(profile)
     }
 
     /// A held column's start from nothing (M64.2, docs/DESIGN.md §69.3): the

@@ -10261,3 +10261,17 @@ rule halts the crude unit at 15–20 %: its pumped naphtha line refuses the empt
 draw. Slices: M65.1 the cold start retried, M65.2 the flooded column's pumped
 lines, M65.3 the crude's water by command, M65.4 the wetter crude unit. No
 engine code changed.
+
+### M65.1 — **LANDED** 2026-10-18: the cold start retried
+
+A heat-balance column whose cold start refuses, with pumparounds and no held
+reboiler, starts from this tick's earlier pass if it has one, else again from
+its pumparounds halved (up to four times), the first start walked back to its
+own in ten Newton solves. When none lands, the refusal is the column's own,
+then how the halvings failed. The wet crude unit on a crude 2, 5 or 10 % water
+now starts on tick 1 at its 40 MW (62–81 ms against the shipped plant's 73–76).
+DESIGN §70.7.
+
+- Gates: `reference/halved_start.rs` (3), `wetter_crude_reference.rs` (6).
+  Mutations: six, six caught (one gate rewritten after its first pass let one
+  through). Corpus: 65 of 65 byte-identical on both fidelities.

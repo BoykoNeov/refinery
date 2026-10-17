@@ -203,3 +203,5 @@ mod water_properties;
 mod water_slug_reference;
 #[path = "wet_rundown_reference.rs"]
 mod wet_rundown_reference;
+#[path = "wetter_crude_reference.rs"]
+mod wetter_crude_reference;

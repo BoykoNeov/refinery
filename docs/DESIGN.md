@@ -27163,3 +27163,48 @@ plant wetter than 2 %.
 - **M65.3 — the crude's water by command.** Fork 3, its refusals, the bridge's
   referent, and the slug story.
 - **M65.4 — the wetter crude unit.** Fork 4.
+
+### 70.7 The cold start retried, built (M65.1)
+
+`HeatBalanceCascade::solve_by_newton` splits M61's cold start out as
+`cold_start` (unchanged) and, when it refuses on a column with pumparounds and
+no held reboiler, calls `halved_start`:
+
+1. **This tick's earlier pass first**, where the engine hands one
+   (`ColumnPass::earlier_pass`): Newton warm from it. A later pass of a tick
+   whose first pass walked pays no second walk — M64.3's rule for the held
+   column, here only after the cold start has refused, so a column that starts
+   cold still ignores the earlier pass to the bit (`a_declared_column_ignores_an_earlier_pass`).
+2. **Then the halvings** (`PUMPAROUND_HALVINGS = 4`): the column with every
+   pumparound at a half, a quarter, an eighth, a sixteenth of its duty, each
+   started by `cold_start`; the first that starts is walked back
+   (`walked_back`) in `CONTINUATION_STEPS` Newton solves, each from the last,
+   the last the column's own equations. A start that fails, or a walk that
+   stops, moves on to the next halving.
+3. **The refusal** when none lands is the cold start's own, word for word —
+   its reason, physical cause and settings — followed by "Started again from
+   its pumparounds halved, up to 4 times (docs/DESIGN.md §70.1), it did not
+   start either: …" and how the last attempt failed.
+
+Measured (one machine, release): the 2 % wet crude unit's tick 1 at 62–81 ms
+against the shipped 0.3 % plant's 73–76; every share 0.3–20 % starts at the
+shipped 40 MW and at 80 MW.
+
+**Gates**: `reference/halved_start.rs` (3: the crude unit's own column fed as
+the 2 % plant feeds it on tick 1 — 76.052 kg/s at a 658.327 K liquid-equivalent
+temperature — started cold at its 40 MW lands within 1e-8 of Newton warm from
+the column at 28 MW, inside the band; 80 MW, which needs a quarter, likewise;
+handed a neighbouring column's earlier pass it is the warm solve from it to the
+bit and not the walk's), `wetter_crude_reference.rs` (6: the 2, 5 and 10 %
+plants start on tick 1 at their measured charges; at 2 and 10 % the retried
+plant stands with one started inside its band and stepped to 40 MW, 200 ticks
+on; at a reflux of 0.6 the refusal leads with the column's own reason and
+settings, then the halvings down to a sixteenth). **Mutations**: six — no
+retry, one halving, the walk stopping short of the column's own pumparounds,
+the earlier pass skipped, the refusal without the halvings' sentence, the
+refusal without the column's own reason — all caught (the earlier-pass gate
+first survived, its earlier pass the walk's own answer, from which Newton lands
+on the same bits; rewritten on a neighbouring column's).
+
+**What moved**: nothing shipped — every plant starts cold today, so none
+halves.
