@@ -41,6 +41,9 @@ Ticked when it lands; struck when the user rules it out.
 
 - [ ] **C14** — the wet crude unit on a wetter crude: the pumparounds against the
       charge.
+- [ ] **C15** — the stripped crude unit started from a cold plant: the furnace
+      lit, the column on its reboiler, the steam cut in and the reboiler handed
+      down to zero as the feed heats (asked for 2026-10-17; M64 starts hot).
 - [ ] **C12** — the column screen's keys as a box set by its worst corner.
 - [ ] **C11** — Newton's Jacobian by forward differences (cost; feeds Phase 3).
 - [ ] **C9** — a pumparound as a real liquid circuit, not a side cooler.
