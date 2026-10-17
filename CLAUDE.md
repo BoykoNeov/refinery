@@ -185,9 +185,9 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — M64, steam stripping
-proper on M62's water (ledger C7: the reboiler at zero, its cold start, the column screen's fourth
-plant), is planned next. **Latest closed: M63 (2026-10-17)**: M62's loose ends — a lumped coil on a
+Work only on the current milestone unless asked. **Current: M64 (open)** — steam stripping
+proper on M62's water (ledger C7: the reboiler held at zero, its cold start, the column screen's fourth
+plant); M64.0 specified (DESIGN §69), M64.1 next. The order after it is `docs/PLAN.md`. **Latest closed: M63 (2026-10-17)**: M62's loose ends — a lumped coil on a
 boiling plant refused, water's vapour pressure on IAPWS-IF97, steam an ideal gas through a valve or a
 hole, a too-wet column passing its feed through (DESIGN §68; B62, B64, B67, C13 taken; C14 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at

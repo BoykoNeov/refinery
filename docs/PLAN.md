@@ -20,7 +20,7 @@ Ticked when it lands; struck when the user rules it out.
 
 ## Phase 1 — M64, steam stripping (C7)
 
-- [ ] **M64.0 — probe and design note** (DESIGN §69): on a copy of
+- [x] **M64.0 — probe and design note** (DESIGN §69; done 2026-10-17, `tools/steptime/prototypes/m64_0/FINDINGS.md`): on a copy of
       `crude_unit_steam.toml`, the reboiler held at zero and the reflux the
       result, no vapour floor below the feed. Measure: the bottom temperature
       against the steam rate; the heat the column needs, and whether the coil

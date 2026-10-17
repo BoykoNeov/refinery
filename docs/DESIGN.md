@@ -26594,3 +26594,114 @@ the bottoms that tick the feed's water and oil, the run on; a slug that ends at
 any refusal, steam not counted, the reason dropped, the oil to the distillate,
 the water at the feed's temperature, no boil-up, the snapshot never flagging),
 all caught.
+
+## 69. Steam stripping — the reboiler held at zero, the reflux the result (M64) — specified before building
+
+Asked after M63 closed (2026-10-17) as "refinery", then "scope and plan M64";
+the plan (`docs/PLAN.md`) puts M64 first. Steam stripping is ledger row C7: a
+real crude column strips its residue with steam and has no reboiler, and the
+heat-balance column keeps one, its bottom near 580 °C on
+`crude_unit_steam.toml`. M62 laid the ground (§67.21): water a real component,
+steam into the column's bottom stage by its own valve and pipe. The user's
+decisions, in plain words (2026-10-17):
+
+1. **The spelling: `reboiler_duty_mw = 0.0`** on the column's cascade table — a
+   new optional key; a column without it closes its reboiler as today.
+2. **The new plant's keys on the column screen: the steam valve's opening, the
+   furnace and the pumparounds.** The reflux is a result there, not a key.
+3. **A slower first tick is acceptable for now** (measured: 183–186 ms on this
+   machine, the shipped plant's 55–62).
+4. **C14 (a wetter crude) is not in M64** — left to the plan's call, and the
+   probe found it does not bite (finding 7).
+
+### 69.0 Probed before the rules were offered (2026-10-17)
+
+Throwaway prototypes in a detached worktree, kept in
+`tools/steptime/prototypes/m64_0/` with `FINDINGS.md` (every number below):
+`probe_held.patch` (the column Newton under a held reboiler duty, the cold
+start by continuation), `m64_walk.rs`, and `crude_unit_stripped_probe.toml`.
+
+- **The reboiler walks to zero, warm**, on `crude_unit_steam.toml` (finding 1):
+  5 MW steps, 60 % of each off the pumparounds (zero at 18 MW), the rest onto
+  the furnace (20 → 68 MW). Every step converges; the published closure equals
+  the held duty at every step and rounds to −2.7e-7 W at zero, which
+  `column_duties` refuses — a held zero needs publishing as zero.
+- **Settled at zero: the bottom 383 °C** on the plant's 0.867 kg/s of steam,
+  reflux 4.81, the coil 488 °C under its 550 °C limit. Steam 0.22 → 2.15 kg/s
+  takes the bottom 396 → 366 °C (finding 2) — M62.0's stripping, 5–8 K hotter.
+- **The furnace's range** at zero reboiler: 40–80 MW; at 35 MW the gas-oil tray
+  runs dry and the refusal names it (finding 3).
+- **The charge falls as the furnace fires** (finding 4): nothing holds it, so a
+  coil boiling harder passes less — 112.8 → 93.6 kg/s at 68 MW — and the feed
+  flashes 98 % of its moles (100 % at 80 MW), where a real flash zone takes
+  60–75 %. The column runs; the number is not a real unit's.
+- **The cold start** (finding 5): impossible on a plant whose coil starts cold —
+  a 290 °C feed cannot run without its reboiler, whatever the method. On a plant
+  that starts at its hot state, a continuation from a base column that keeps
+  its reboiler (the shipped 15/15/10 MW pumparounds; 41.8 MW) in 10 Newton
+  solves lands on the warm answer (383.0 °C against 383.1); tick 1 183–186 ms.
+- **Cost** (finding 6): the held solve costs what the declared one does (5.70
+  against 5.54 ms a tick). The coil's drift is what costs (A29): the shipped
+  plant runs 14.7 ms a tick after a furnace step, 2.9 at rest; the stripped
+  plant 12.0 → 7.0 ms over 9 000 ticks while its coil creeps 0.4 K.
+
+### 69.1 Fork 1 — the reboiler held: one equation traded for one unknown
+
+`reboiler_duty_mw` on a heat-balance column turns its bottom stage's energy
+balance from the closure into an equation, `Q_reb` held, and makes the reflux
+ratio an unknown — Newton's `Specification::Held`, beside M61's `Reflux` and
+`Floor` (§66.3). The declared `reflux_ratio` stays required: it is the start's
+seed and the base column's (fork 3). The published reboiler duty is the held
+value; the closure is computed as today and the two must agree to the books'
+tolerance, a difference past it refused by name.
+
+### 69.2 Fork 2 — no vapour floor on a held column
+
+M62's decision 1 ("no floor below the feed") taken whole: the probe ran with no
+floor anywhere and the trays above the feed never came near it (≥ 500 mol/s
+against its 140). A held column's dry tray is answered by Newton's own refusal
+(finding 3), as M61 answers it. The floor stays as it is on every other column
+(C8 open for them).
+
+### 69.3 Fork 3 — the cold start: a continuation from the column with its reboiler
+
+Cold (no warm profile), a held column first solves its base — the same column
+with its reboiler closing it, M61's cold warm-up and Newton — at its declared
+reflux, then walks the held duty from the base's closure to its own in ten
+Newton solves (the pumparounds walked from a base set to the plant's alongside
+when the plant's own fail, finding 5). Each solve starts at the last; a failed
+step is a refusal naming the step and the duty it reached. The plant must start
+hot: a held column whose base refuses is refused, and the cold coil's case is
+a plant-file matter (fork 4), not a solver one.
+
+### 69.4 Fork 4 — the plant: a new file that starts hot
+
+`scenarios/crude_unit_stripped.toml`, generated from `crude_unit_steam.toml`:
+`reboiler_duty_mw = 0.0`, the furnace and its coil at their settled state, the
+pumparounds off, the steam as shipped. **Open for the user, finding 4**: hold
+the charge on a flow loop (a real unit's way; the furnace then sets the flash,
+not the charge), or ship it as the hydraulics give it.
+
+### 69.5 What moves, and what is deferred
+
+**Moves**: nothing shipped — every rule is gated on `reboiler_duty_mw`, which no
+shipped plant declares; 64 of 64 byte-identical on both fidelities at every
+slice. The new plant carries the new behaviour.
+
+**Taken**: C7. C8's below-the-feed clause, for held columns.
+
+Deferred: the coil drift's cost (A29, now on a plant that drifts longer); a
+held duty other than zero is built but not shipped; the realistic flash share
+if the user keeps the charge free (finding 4).
+
+### 69.6 The slices
+
+- **M64.1 — the reboiler held.** `reboiler_duty_mw` in the schema and the
+  `CascadeSpec`; `Specification::Held`; no floor on a held column; the duty
+  published as held; gates against the probe's walk (a column held at a duty
+  reproduces the closure's profile; held at zero the bottom stage balances).
+- **M64.2 — the cold start.** The continuation (fork 3) and its refusals.
+- **M64.3 — the stripped crude unit.** The plant (fork 4); gates on the probe's
+  numbers and the first law; both fidelities; the corpus's 65th plant.
+- **M64.4 — the column screen's fourth plant**, its keys (steam, furnace,
+  pumparounds) measured warm; the godot-feature clippy.

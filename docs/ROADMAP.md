@@ -10127,3 +10127,27 @@ own curve (B64), steam through a valve or a hole an ideal gas on the valve
 standard (B67), a column too wet to separate passing its feed through (C13).
 Kept deferred by the user: B61, B63, B65, B66; new: C14. Its close-out report is
 at the top of `docs/MILESTONES.md`. Steam stripping proper (C7) is M64.
+
+## M64 — steam stripping: the reboiler held at zero, the reflux the result; ledger row C7; opened on a decision
+
+Asked after M63 closed (2026-10-17) as "refinery", then "scope and plan M64",
+then "write a plan that includes M64 and all open items ... and start the
+first one" (`docs/PLAN.md`, M64 first). The user's decisions (DESIGN §69):
+`reboiler_duty_mw = 0.0` as the spelling; the new plant's screen keys the steam,
+the furnace and the pumparounds; a slower first tick accepted for now; C14 not
+in M64.
+
+### M64.0 — **SPECIFIED** 2026-10-17: the design note — M64 stays OPEN
+
+DESIGN §69. Probed first (`tools/steptime/prototypes/m64_0/`, `FINDINGS.md`):
+the steamed crude unit's reboiler walks to zero warm (pumparounds off at 18 MW,
+furnace 20 → 68 MW); settled, the bottom stands at 383 °C on 0.867 kg/s of
+steam (396 → 366 °C over 0.22–2.15 kg/s), the coil at 488 °C under its 550 °C
+limit; the furnace runs 40–80 MW, the gas-oil tray dry at 35; the charge falls
+112.8 → 93.6 kg/s as the coil boils harder and the feed flashes 98 % (open:
+a charge flow loop, or not); a cold coil cannot start a reboiler-free column,
+a hot plant starts by a continuation from the column with its reboiler (tick 1
+183–186 ms); the held solve costs what the declared one does, the coil's drift
+(A29) what the plant pays. Slices: M64.1 the reboiler held, M64.2 the cold
+start, M64.3 the stripped crude unit, M64.4 the screen's fourth plant. No
+engine code changed.
