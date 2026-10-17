@@ -12,6 +12,45 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M62 is CLOSED (2026-10-17): water as a real component — and steam into the
+column on it — `docs/DEFERRED.md` C6 taken, C7 re-scheduled as M63 on its
+ground, B61–B67 and C13 new.** Asked after M61 as "what is next"; steam
+stripping (C7) was the plan, and the probe (DESIGN §67.0) split it: water
+first, as one boiling component, free water modelled everywhere and never
+dissolving in the oil; M63 is steam stripping on it. Decided in plain words
+along the way: coolers on a flashing plant, a tank's outlet drawing water
+first, free water on the column's trays, the choked boiling jet through a burst
+furnace tube, the pressure falling along the coil, "everything" closer to
+reality; at M62.6 a steam valve that chokes — first "choke every boiling flow",
+then, measured, split: all vapour now, part-liquid deferred.
+- **M62.1, water's own properties** (§67.9): a declared latent heat and vapour
+  heat capacity; steam tables to 0.2 % at 100–150 °C.
+- **M62.2, free water in the flashes** (§67.10); **M62.3, a tank's water layer**
+  (§67.11).
+- **M62.4, heat on a boiling stream** (§67.12–67.16, C6): the furnace and the
+  cooler as flashing nodes, each column draw its own state, product coolers on
+  cooling water, the coil in cells with the pressure falling along it, the
+  choked boiling jet through a burst tube; `crude_unit_boiling.toml`.
+- **M62.5, water through the column** (§67.17): the water a balance of its own,
+  free water on the trays as an active set, decanted at the condenser to a water
+  draw; `crude_unit_wet.toml`.
+- **M62.6, steam into the column** (§67.18–67.21): a steam inlet by pipe on a
+  stage (6a); a valve that chokes on an all-vapour stream, Leung's ω jet on its
+  own share of the drop (6b); part-liquid choking built, measured (four plants
+  −21 to −40 % in flow, the pump screen's gas lock gone) and deferred, keeping
+  the three solver repairs it needed — the choking valve's slope in the
+  Jacobian, the onset rounded, and a correction to M62.4d's density slope (6c);
+  `crude_unit_steam.toml`, 0.85 kg/s of steam with the reboiler kept (6d).
+- Corpus: every shipped plant byte-identical on both fidelities at every slice
+  but the ones a slice made or the user moved; 64 plants at the close.
+- **Left open**: B61 free water settling at once, B62 a lumped coil on a
+  boiling plant, B63 part-liquid valve choking (with its dormant repairs and
+  the coil re-tune the user chose), B64 water's vapour pressure above 250 °C,
+  B65 dissolved water and emulsions, B66 two models of a throttled vapour, B67
+  a choked steam valve 9 % low with no pressure recovery, C13 a column fed
+  nearly all water; C7 as M63 (the reboiler at zero, its cold start, the
+  column screen's fourth plant).
+
 **M61 is CLOSED (2026-10-16): a stronger column solve — Newton on the
 heat-balance cascade, and the screen's wider range — `docs/DEFERRED.md` C10
 taken, C7 re-scoped as M62, C6 and C8 measured, C11–C12 new.** Asked after

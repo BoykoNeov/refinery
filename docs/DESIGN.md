@@ -26311,3 +26311,42 @@ the jet (no shipped plant or gate has a jet on a density slope's liquid side:
 it needs an inlet at its bubble pressure through a choking valve or a hole,
 which the widened gate reached and the all-vapour one does not). **Corpus**: 63
 of 63 byte-identical on both fidelities.
+
+### 67.21 The steamed crude unit (M62.6d) — the plant M63 starts from
+
+`scenarios/crude_unit_steam.toml`, generated from `crude_unit_wet.toml` by
+`tools/steptime/prototypes/m62_6/make_steam.py`: the wet crude unit with a 10
+bar, 400 °C superheated steam supply, a Kv 80 control valve half open, and a
+15 cm line into the column's bottom stage (stage 10, the reboiler, kept). The
+valve chokes on the all-vapour steam (§67.19), so its opening sets the rate and
+the column's pressure does not.
+
+**Measured** at tick 600 (the cost over 6 000), both fidelities alike:
+
+- **The steam**: 0.853 kg/s, the ω law's choked flow at the valve's 9.99 bar
+  inlet to 1e-6 — a real crude column's 8–10 lb of steam per barrel of residue
+  (~0.85 kg/s on this charge). The charge is unchanged, 112.83 kg/s.
+- **The column**: the water draw takes 1.1914 kg/s (the crude's 0.3385 and the
+  steam's), decanted at 93.72 °C; no product carries water. The bottom stands at
+  580.29 °C against the wet plant's 586.76; the reboiler adds 88.00 MW against
+  89.54, the condenser removes 58.08 MW against 56.50 — the steam's heat in at
+  the bottom, out at the top.
+- **The books**: the column's first law closes on the plant's own books, the
+  steam's enthalpy among them, to 1e-12 every tick.
+- **Cost**: 470 Newton iterations over 6 000 ticks (the wet plant's 469: no
+  drift, the coil's start unchanged at 322.05 °C); one job, release, 2.41 ms a
+  tick on Newton against the wet plant's 2.27, 3.59 on the game solver against
+  2.79 — the valve's jet read at every sweep.
+
+**What M63 inherits**: the reboiler held at zero and the reflux the result
+(M61's Newton can, §66.0), the pumparounds brought down with it (finding 5,
+§67.0), the cold start (a continuation from a column that keeps its reboiler,
+finding 4), no vapour floor below the feed (decision 1), and the column screen's
+fourth plant (decision 3).
+
+**Gates**: `crates/scenarios/tests/crude_unit_steam_reference.rs` (3): the steam
+the choked valve's at the solved state, leaving by the water draw, the column
+balancing both lines, the bottom colder than the wet plant's; the first law on
+the plant's books; both fidelities, slow. `burnout_reference.rs` counts the
+thirty-second furnace. **Corpus**: 63 of 64 byte-identical on both fidelities,
+`crude_unit_steam` new; the baseline refreshed with it.

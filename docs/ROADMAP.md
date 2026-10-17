@@ -9723,7 +9723,7 @@ to 1.5, where M60 halted, and is held below it. DESIGN §66.7.
 rule. Close-out at the top of `docs/MILESTONES.md`. C10 taken; C7 re-scoped
 as M62; C11 and C12 new.
 
-## M62 — water as a real component, for steam stripping; ledger row C7, re-scoped again; opened on a decision
+## M62 — **CLOSED** 2026-10-17 — water as a real component, for steam stripping; ledger row C7, re-scoped again; opened on a decision
 
 Asked after M61 closed (2026-10-16) as "what is next"; steam stripping (C7) was
 the planned M62 and the user said "go ahead". Probed before anything was
@@ -10025,3 +10025,23 @@ M62 stays open: M62.6d, the steam-stripped crude unit, and M62's close, are next
 - Gates: `elements.rs` (2), `steam_valve_reference.rs` (2). Mutations: five,
   three caught, two surviving where nothing live reaches them (§67.20).
   Corpus: 63 of 63 byte-identical on both fidelities.
+
+### M62.6d — **LANDED** 2026-10-17: the steamed crude unit
+
+`scenarios/crude_unit_steam.toml`: the wet crude unit with a 10 bar, 400 °C
+steam supply through a valve half open into the column's bottom stage, its
+reboiler kept. The valve chokes on the steam, 0.853 kg/s — a real crude
+column's 8–10 lb per barrel of residue; the water draw takes the crude's water
+and the steam's; the bottom stands at 580.3 °C against the wet plant's 586.8,
+the reboiler at 88.0 MW against 89.5. The plant M63 starts from. DESIGN §67.21.
+**M62 closes with it** (2026-10-17).
+
+- Gates: `crude_unit_steam_reference.rs` (3); `burnout_reference.rs` counts the
+  thirty-second furnace. Corpus: 63 of 64 byte-identical on both fidelities,
+  `crude_unit_steam` new.
+
+**M62 — CLOSED 2026-10-17.** Water is a real component: its own properties, free
+water in every flash, a tank's water layer, heat on a boiling stream (C6 taken),
+water through the column and steam into it, a valve that chokes on steam. Its
+close-out report is at the top of `docs/MILESTONES.md`. Deferred: B61–B67, C13;
+steam stripping proper is M63 (C7).

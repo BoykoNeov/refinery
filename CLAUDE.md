@@ -185,11 +185,11 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M62 (open, 2026-10-16)** —
-water as a real component (ROADMAP M62); steam stripping on it (C7) is planned as M63. **Latest closed:
-M61 (2026-10-16)**: a stronger column solve — Newton on the heat-balance cascade's
-own equations, replacing the fixed point (kept as the cold warm-up), and the
-column screen's wider range (DESIGN §66; C10 taken; C7 re-scoped; C11–C12 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — M63, steam stripping
+proper on M62's water (ledger C7: the reboiler at zero, its cold start, the column screen's
+fourth plant), is planned next. **Latest closed: M62 (2026-10-17)**: water as a real component —
+free water in every flash, water through the column, steam into it, a valve that chokes on steam
+(DESIGN §67; C6 taken; B61–B67, C13 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 
