@@ -187,6 +187,7 @@ fn referent(cmd: &Command) -> Referent {
         Command::SetHeatInput { node, .. } => Referent::Node(*node),
         Command::SetFurnaceDuty { node, .. } => Referent::Node(*node),
         Command::SetCoolerDuty { node, .. } => Referent::Node(*node),
+        Command::SetCoolingWaterFlow { node, .. } => Referent::Node(*node),
         Command::SetControllerMode { loop_id, .. } => Referent::Loop(*loop_id),
         Command::SetSetpoint { loop_id, .. } => Referent::Loop(*loop_id),
         Command::ReplaceTubes { node } => Referent::Node(*node),

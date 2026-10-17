@@ -3281,7 +3281,12 @@ fn a_starved_tank_with_no_other_reference_floats() {
     // The classification itself, on the real code: starved, `t` is free and
     // not among the anchors.
     let supplies: BTreeMap<NodeId, f64> = [(t, 1.0)].into_iter().collect();
-    let classes = refinery_solvers::network::classify(&g, &fluid.slate, &supplies);
+    let classes = refinery_solvers::network::classify(
+        &g,
+        &fluid.slate,
+        &supplies,
+        &refinery_solvers::network::DrawLinePins::default(),
+    );
     assert!(classes.free.contains(&t), "a starved tank is a free node");
     assert!(
         refinery_solvers::network::base_anchors(&classes).is_empty(),

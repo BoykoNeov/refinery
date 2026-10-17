@@ -597,6 +597,7 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
             | NodeKind::CheckValve { .. }
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
+            | NodeKind::WaterCooler { .. }
             // A reactor is the furnace's process constraint too: "the stream it
             // converts" names one definite feed, so it is 1-in-1-out.
             | NodeKind::Reactor { .. }
@@ -661,6 +662,7 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         | NodeKind::Junction
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
+        | NodeKind::WaterCooler { .. }
         | NodeKind::Reactor { .. }
         | NodeKind::BedReactor { .. }
         | NodeKind::BedHydrogen { .. }
@@ -1503,6 +1505,11 @@ fn suction_offer(
             graph.node(pump).name
         )));
     };
+    // A pump on a draw line draws the DRAW, a liquid at its stage — not the
+    // column's mixed feed (M62.4b, docs/DESIGN.md §67.13).
+    if let Some((composition, temperature)) = drawn_state(graph, previous_states, inflow) {
+        return state_densities(slate, composition, temperature, Pascal(pressure), flash);
+    }
     let offer = two_phase_density(
         graph,
         slate,
@@ -1513,6 +1520,49 @@ fn suction_offer(
         flash,
     )?;
     let liquid = liquid_density(graph, slate, previous_states, inflow, upstream, pressure)?;
+    Ok((liquid, offer))
+}
+
+/// The state a draw line's FIRST pipe carries (M62.4b, docs/DESIGN.md §67.13):
+/// the draw's composition and temperature from the previous tick's
+/// separation — a liquid at its stage — or, before any, the pipe's stored
+/// stream. `None` on every pipe that is not a draw line's first.
+fn drawn_state<'a>(
+    graph: &'a PlantGraph,
+    previous_states: &'a NodeStates,
+    edge: EdgeId,
+) -> Option<(&'a Composition, Kelvin)> {
+    let (column, index, _) = graph
+        .draw_lines()
+        .into_iter()
+        .find(|(_, _, line)| line.first() == Some(&edge))?;
+    let pipe = graph.pipe(edge);
+    Some(
+        match previous_states
+            .column_separation
+            .get(&column)
+            .and_then(|separation| separation.draws.get(index))
+        {
+            Some(draw) => (&draw.composition, draw.temperature),
+            None => (&pipe.stream.composition, pipe.stream.temperature),
+        },
+    )
+}
+
+/// The liquid density [kg/m³] of a stream of `composition` at `temperature` (a
+/// liquid-equivalent) under `pressure`, and its two-phase density where it
+/// boils there — `suction_offer`'s pair, for a stated state.
+fn state_densities(
+    slate: &Slate,
+    composition: &Composition,
+    temperature: Kelvin,
+    pressure: Pascal,
+    flash: LineFlash<'_>,
+) -> Result<(f64, Option<TwoPhaseDensity>), SimError> {
+    let offer = flash.density(slate, composition, temperature, pressure)?;
+    let liquid = composition
+        .density_at(slate, pressure, temperature)?
+        .value();
     Ok((liquid, offer))
 }
 
@@ -2184,6 +2234,7 @@ pub fn prepare(
         None,
         &BTreeMap::new(),
         LineFlash::LIQUID,
+        &DrawLinePins::default(),
     )
 }
 
@@ -2217,8 +2268,9 @@ pub fn prepare_anchored(
     anchored_override: Option<&BTreeSet<NodeId>>,
     starved: &BTreeMap<NodeId, f64>,
     flash: LineFlash<'_>,
+    pins: &DrawLinePins,
 ) -> Result<Prepared, SimError> {
-    let classes = classify(graph, slate, starved);
+    let classes = classify(graph, slate, starved, pins);
 
     // Seed every free node before compiling, because a gas edge's density is
     // evaluated at a node pressure. Floating nodes are re-pinned below, once
@@ -2299,6 +2351,7 @@ pub fn classify(
     graph: &PlantGraph,
     slate: &Slate,
     starved: &BTreeMap<NodeId, f64>,
+    pins: &DrawLinePins,
 ) -> Classification {
     let mut fixed: BTreeMap<NodeId, f64> = BTreeMap::new();
     let mut free: Vec<NodeId> = Vec::new();
@@ -2312,10 +2365,14 @@ pub fn classify(
             }),
             _ => None,
         };
+        // A draw line's node is pinned where its line stands (M62.4b,
+        // docs/DESIGN.md §67.13): every edge at it is prescribed, so it has no
+        // equation of its own in the solve.
+        let line_pin = pins.pressure.get(&nid).copied();
         if let Some(cap) = starved_tank {
             free.push(nid);
             capacitive.insert(nid, cap);
-        } else if let Some(p) = fixed_pressure(graph.node(nid), slate) {
+        } else if let Some(p) = line_pin.or_else(|| fixed_pressure(graph.node(nid), slate)) {
             fixed.insert(nid, p);
             fixed_sum += p;
             fixed_cnt += 1;
@@ -2525,6 +2582,38 @@ pub fn solve_with_active_anchoring_with<F>(
     warm_start: &mut BTreeMap<NodeId, f64>,
     dt: Seconds,
     flash: LineFlash<'_>,
+    pass: F,
+) -> Result<HydraulicSolution, SimError>
+where
+    F: FnMut(Prepared) -> AnchorPass,
+{
+    let pins = march_draw_lines(graph, slate, previous_states, flash)?;
+    let mut solution = solve_anchored_passes(
+        graph,
+        slate,
+        previous_states,
+        warm_start,
+        dt,
+        flash,
+        &pins,
+        pass,
+    )?;
+    // A line pump's two-phase state is the march's (M62.4b, docs/DESIGN.md
+    // §67.13): the solve's own flow on its outlet is the draw guard's zero.
+    solution.pump_two_phase.extend(pins.pump_two_phase);
+    Ok(solution)
+}
+
+/// The body of `solve_with_active_anchoring_with`, under the draw lines' pins.
+#[allow(clippy::too_many_arguments)] // the driver's inputs and the pins
+fn solve_anchored_passes<F>(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    warm_start: &mut BTreeMap<NodeId, f64>,
+    dt: Seconds,
+    flash: LineFlash<'_>,
+    pins: &DrawLinePins,
     mut pass: F,
 ) -> Result<HydraulicSolution, SimError>
 where
@@ -2562,6 +2651,7 @@ where
             override_set.as_ref(),
             &supplies,
             flash,
+            pins,
         )?;
         // Taken before the pass consumes `prep`: the free list for the warm-start
         // commit, the anchors so the reclassification below runs against the
@@ -2651,7 +2741,7 @@ where
         let mut next_override = if next_starved == starved {
             next.clone()
         } else {
-            next_anchored_set(graph, slate, &compiled, &next_starved, dt)
+            next_anchored_set(graph, slate, &compiled, &next_starved, dt, pins)
         };
         // A repeat is a CYCLE only when the pass that produced it CONVERGED, and
         // that qualifier is a correction the code made to this slice's own design
@@ -2744,7 +2834,7 @@ where
                 }
                 recovery_frozen = true;
                 next_starved = starved.union(&next_starved).copied().collect();
-                next_override = next_anchored_set(graph, slate, &compiled, &next_starved, dt);
+                next_override = next_anchored_set(graph, slate, &compiled, &next_starved, dt, pins);
             }
         }
         previous_pass = Some(pressures);
@@ -3117,8 +3207,9 @@ fn next_anchored_set(
     compiled: &BTreeMap<EdgeId, CompiledEdge>,
     starved: &BTreeSet<NodeId>,
     dt: Seconds,
+    pins: &DrawLinePins,
 ) -> BTreeSet<NodeId> {
-    let classes = classify(graph, slate, &starved_supplies(graph, starved, dt));
+    let classes = classify(graph, slate, &starved_supplies(graph, starved, dt), pins);
     anchored_set(graph, compiled, &base_anchors(&classes))
 }
 
@@ -3318,7 +3409,8 @@ pub fn edge_flows(
     let mut pump_two_phase = BTreeMap::new();
     for eid in graph.edge_ids() {
         let c = &compiled[&eid];
-        if let Some(s) = c.pump_suction {
+        let drawn = is_column_draw_edge(graph, eid);
+        if let Some(s) = c.pump_suction.filter(|_| !drawn) {
             if anchored.contains(&c.src) {
                 pump_suction.insert(
                     c.src,
@@ -3329,7 +3421,7 @@ pub fn edge_flows(
                 );
             }
         }
-        let mdot = if is_column_draw_edge(graph, eid) || graph.pipe(eid).leak.is_engine_written() {
+        let mdot = if drawn || graph.pipe(eid).leak.is_engine_written() {
             0.0
         } else if anchored.contains(&c.src) && anchored.contains(&c.tgt) {
             let dp = pressures[&c.src] - pressures[&c.tgt];
@@ -3351,7 +3443,7 @@ pub fn edge_flows(
         };
         // The pressure a two-phase pump makes at this flow, `−(α_p·Q|Q| + β_p)`
         // on its own share of the branch (M54, docs/DESIGN.md §59).
-        if let Some(t) = c.pump_two_phase {
+        if let Some(t) = c.pump_two_phase.filter(|_| !drawn) {
             if anchored.contains(&c.src) {
                 let rise = -(t.pump_branch.alpha * q * q.abs() + t.pump_branch.beta);
                 pump_two_phase.insert(
@@ -3382,6 +3474,15 @@ pub fn edge_flows(
 /// far endpoint is the feeder, not a draw — is not matched, so it stays an
 /// ordinary pressure-driven edge.
 pub fn is_column_draw_edge(graph: &PlantGraph, edge: EdgeId) -> bool {
+    // Every pipe of a draw LINE carries the draw too (M62.4b, docs/DESIGN.md
+    // §67.13): prescribed, out of the solve, written by the engine.
+    if graph
+        .draw_lines()
+        .iter()
+        .any(|(_, _, line)| line.contains(&edge))
+    {
+        return true;
+    }
     let (from, to) = graph.endpoints(edge);
     for (maybe_column, other) in [(from, to), (to, from)] {
         if let NodeKind::Column { draws, .. } = &graph.node(maybe_column).kind {
@@ -3958,4 +4059,130 @@ mod pump_inlet_search_tests {
             assert!(root.is_none(), "positive everywhere, held {held}");
         }
     }
+}
+
+/// Where each draw line pins its nodes for this tick's solve, and its pumps'
+/// two-phase states (M62.4b, docs/DESIGN.md §67.13). Empty on every plant
+/// whose draws end at their stores.
+#[derive(Debug, Default)]
+pub struct DrawLinePins {
+    /// Each line node's pressure [Pa].
+    pub pressure: BTreeMap<NodeId, f64>,
+    /// Each line pump's state at the line's flow, where its suction is a
+    /// boiling plant's (`compile_edge_at`'s two-phase pump branch).
+    pub pump_two_phase: BTreeMap<NodeId, PumpTwoPhaseState>,
+}
+
+/// March every draw line from its column's pinned pressure, edge by edge,
+/// `P_{k+1} = P_k − Δp_k(ṁ)`, each edge's own branch — friction and elevation,
+/// a pump's curve on its outlet with M54's two-phase multiplier — at its upwind
+/// state's density, `ṁ` the line's stored flow: last tick's draw, written by
+/// the engine after its sweep (zero on the first tick, static heads only).
+///
+/// The first edge's upwind state is the DRAW's, from the previous tick's
+/// separation (a liquid at its stage), not the column's mixed feed; before any
+/// separation, the pipe's stored stream. The last edge's arrival must reach
+/// its store's pressure — the rest is the line's control valve, implicit — or
+/// the line cannot deliver its draw, and the solve refuses, naming it.
+pub fn march_draw_lines(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    flash: LineFlash<'_>,
+) -> Result<DrawLinePins, SimError> {
+    let mut pins = DrawLinePins::default();
+    for (column, _, line) in graph.draw_lines() {
+        let NodeKind::Column { pressure, .. } = &graph.node(column).kind else {
+            continue;
+        };
+        let mass_flow = graph.pipe(line[0]).stream.mass_flow.value().max(0.0);
+        let mut here = pressure.value();
+        for (k, &eid) in line.iter().enumerate() {
+            let (src, tgt) = graph.endpoints(eid);
+            let pipe = graph.pipe(eid);
+            let (rho, branch, pump) = if k == 0 {
+                // The draw itself: its separation's composition and temperature.
+                let (composition, temperature) = drawn_state(graph, previous_states, eid)
+                    .ok_or_else(|| {
+                        SimError::Numerical(format!(
+                            "internal: pipe '{}' starts a draw line but carries no draw",
+                            pipe.name
+                        ))
+                    })?;
+                let at = Pascal(here.max(RHO_EVAL_P_FLOOR));
+                let (liquid, offer) = state_densities(slate, composition, temperature, at, flash)?;
+                let rho = offer.map_or(liquid, |two_phase| two_phase.mixture.value());
+                let k_pipe = pipe_resistance(
+                    pipe.friction_factor,
+                    pipe.length.value(),
+                    pipe.diameter.value(),
+                    rho,
+                );
+                let branch = QuadraticBranch::pipe(k_pipe, rho * G * pipe.elevation_change.value());
+                (rho, branch, None)
+            } else {
+                let pressures = BTreeMap::from([(src, here), (tgt, here)]);
+                let compiled = compile_edge_at(
+                    graph,
+                    eid,
+                    slate,
+                    previous_states,
+                    &pressures,
+                    flash,
+                    src,
+                    None,
+                )?;
+                (compiled.rho, compiled.branch, compiled.pump_two_phase)
+            };
+            // Δp = α·Q|Q| + β, the branch's own law (`QuadraticBranch::flow`).
+            let q = mass_flow / rho;
+            let drop = branch.alpha * q * q.abs() + branch.beta;
+            if let Some(t) = pump {
+                pins.pump_two_phase.insert(
+                    src,
+                    PumpTwoPhaseState {
+                        void_fraction: t.void_fraction,
+                        head_multiplier: t.head_multiplier,
+                        pressure_rise: Pascal(
+                            -(t.pump_branch.alpha * q * q.abs() + t.pump_branch.beta),
+                        ),
+                    },
+                );
+            }
+            let next = here - drop;
+            if !next.is_finite() {
+                return Err(SimError::Numerical(format!(
+                    "the draw line of column '{}' marched to a non-finite pressure on pipe '{}'",
+                    graph.node(column).name,
+                    pipe.name
+                )));
+            }
+            if k + 1 < line.len() {
+                pins.pressure.insert(tgt, next);
+                here = next;
+                continue;
+            }
+            let store = fixed_pressure(graph.node(tgt), slate).ok_or_else(|| {
+                SimError::Numerical(format!(
+                    "internal: the draw line of column '{}' ends at '{}', which pins no pressure",
+                    graph.node(column).name,
+                    graph.node(tgt).name
+                ))
+            })?;
+            if next < store {
+                return Err(SimError::Numerical(format!(
+                    "the draw line of column '{}' through '{}' cannot deliver its {mass_flow:.4} \
+                     kg/s to '{}': it arrives at {:.4} bar against the store's {:.4} bar. A \
+                     line's pump must push its draw through its pipes and coolers to its store \
+                     (docs/DESIGN.md §67.13): start or strengthen the pump, or widen the line",
+                    graph.node(column).name,
+                    graph.node(graph.endpoints(line[0]).1).name,
+                    graph.node(tgt).name,
+                    next / 1e5,
+                    store / 1e5
+                )));
+            }
+        }
+    }
+    Ok(pins)
 }

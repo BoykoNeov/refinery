@@ -317,6 +317,22 @@ pub enum NodeKind {
     /// coolant model, and `mix_inflows` rejects it. Cooling to a realistic
     /// approach temperature is the `HeatExchanger`'s job (M2.2), not this one's.
     Cooler { duty: Watt },
+    /// A cooler on cooling water (M62.4b, docs/DESIGN.md §67.13): a
+    /// counter-current exchanger between the stream through it and a
+    /// cooling-water utility — liquid water at a constant heat capacity, not a
+    /// plant stream — its duty a RESULT of the two inlets, the water's flow and
+    /// its `UA`. Hydraulically a pass-through, like a `Cooler`; a separate unit
+    /// so a duty cooler, its loops and its command keep their meaning.
+    WaterCooler {
+        /// Overall conductance times area, `UA` [W/K]. Positive and finite.
+        ua: WattPerKelvin,
+        /// The cooling water's inlet temperature [K]. Above its freezing point,
+        /// below its boiling point.
+        water_inlet: Kelvin,
+        /// The cooling water's mass flow [kg/s], `Command::SetCoolingWaterFlow`.
+        /// Non-negative; zero cools nothing.
+        water_flow: KgPerSec,
+    },
     /// One side of a two-stream heat exchanger.
     ///
     /// A side is an ordinary zero-volume pass-through — hydraulically identical
@@ -754,6 +770,12 @@ pub struct ColumnDraw {
     /// specification.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draw_ratio: Option<f64>,
+    /// The draw's LINE when it runs through pumps and coolers to its store
+    /// (M62.4b, docs/DESIGN.md §67.13): its pipes in order from the column,
+    /// every one carrying the draw. Empty — and absent from the wire — on a
+    /// draw whose `outlet` is its store, which keeps its single pipe.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line: Vec<EdgeId>,
 }
 
 impl ColumnDraw {
@@ -765,6 +787,7 @@ impl ColumnDraw {
             upper_cut,
             stage: None,
             draw_ratio: None,
+            line: Vec::new(),
         }
     }
 
@@ -780,6 +803,7 @@ impl ColumnDraw {
             upper_cut: None,
             stage: Some(stage),
             draw_ratio,
+            line: Vec::new(),
         }
     }
 }
@@ -2728,6 +2752,24 @@ impl PlantGraph {
         })
     }
 
+    /// Every column draw that runs through a LINE of pumps and coolers to its
+    /// store (M62.4b, docs/DESIGN.md §67.13): the column, the draw's index on
+    /// it, and the line's pipes in order from the column. Ascending by column,
+    /// then by draw; empty on every plant whose draws end at their stores.
+    pub fn draw_lines(&self) -> Vec<(NodeId, usize, &[EdgeId])> {
+        let mut lines = Vec::new();
+        for id in self.node_ids() {
+            if let NodeKind::Column { draws, .. } = &self.node(id).kind {
+                for (index, draw) in draws.iter().enumerate() {
+                    if !draw.line.is_empty() {
+                        lines.push((id, index, draw.line.as_slice()));
+                    }
+                }
+            }
+        }
+        lines
+    }
+
     /// The hydrogen pass running through bed `bed`, with its kinetics (M59.1,
     /// docs/DESIGN.md §64.2), or `None` for a bed without one — and for any node
     /// that is not a bed. The loader admits at most one pass per bed; the lowest
@@ -2959,6 +3001,7 @@ impl PlantGraph {
                 | NodeKind::Vessel(_)
                 | NodeKind::Furnace { .. }
                 | NodeKind::Cooler { .. }
+                | NodeKind::WaterCooler { .. }
                 | NodeKind::BedReactor { .. },
             ) => {
                 if !k.is_finite() || k.value() <= 0.0 {
@@ -3288,6 +3331,9 @@ impl PlantGraph {
                 // refused with the other pass-throughs, on scope alone.
                 | NodeKind::CheckValve { .. }
                 | NodeKind::HeatExchanger
+                // A water cooler (M62.4b) on the same scope: no loop needs its
+                // outlet yet, and its actuator would be the water's flow.
+                | NodeKind::WaterCooler { .. }
                 // A compressor and a bed's hydrogen pass (M59.1) are zero-volume
                 // gas pass-throughs: refused on the same scope. The bed itself
                 // is what a loop measures.

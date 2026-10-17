@@ -223,6 +223,10 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // Step 3: validate topology at load — a clear error here beats solve-time
     // divergence for the same structural fault.
     validate_topology(&graph, &slate)?;
+    // Step 3′: each draw that runs through pumps and coolers to its store, its
+    // line resolved now that the pipes are wired and their degrees checked
+    // (M62.4b, docs/DESIGN.md §67.13).
+    resolve_draw_lines(&mut graph)?;
 
     // Step 3a: the single-phase connected-component guard, which also tells each
     // pipe which phase it carries. Seeding the stream's composition needs the
@@ -654,6 +658,7 @@ fn resolve_vent_destination(
         | NodeKind::CheckValve { .. }
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
+        | NodeKind::WaterCooler { .. }
         | NodeKind::BedReactor { .. }
         | NodeKind::BedHydrogen { .. }
         | NodeKind::Compressor { .. }
@@ -3907,6 +3912,15 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
         NodeDef::Cooler { duty_mw } => NodeKind::Cooler {
             duty: Watt(*duty_mw * 1e6),
         },
+        NodeDef::WaterCooler {
+            ua_kw_per_k,
+            water_inlet_c,
+            water_flow_kg_per_s,
+        } => NodeKind::WaterCooler {
+            ua: WattPerKelvin(*ua_kw_per_k * 1e3),
+            water_inlet: c_to_k(*water_inlet_c),
+            water_flow: KgPerSec(*water_flow_kg_per_s),
+        },
         NodeDef::HeatExchanger => NodeKind::HeatExchanger,
         NodeDef::Junction => NodeKind::Junction,
         NodeDef::Column {
@@ -4480,7 +4494,9 @@ fn build_couplings(graph: &mut PlantGraph, defs: &[ExchangerDef]) -> Result<(), 
 /// - **Outlet is a product store** (tank/sink/atmosphere) — a free node on a draw
 ///   line puts a prescribed edge back into the Jacobian (unsupported), and a
 ///   source or column outlet is pressure-fixing but still wrong (vanishes the
-///   product, or chains columns the draw write cannot feed); both refused.
+///   product, or chains columns the draw write cannot feed); both refused —
+///   **or the first pump or cooler of a draw LINE** to one (M62.4b,
+///   `resolve_draw_lines`), whose nodes the flow solve pins.
 ///
 /// Under the **cascade** fidelity the boiling-range half of that list is replaced
 /// rather than extended: `up_to_c` and `smearing_k` are refused, each draw
@@ -4577,6 +4593,10 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
             // restricted to the three product-store kinds explicitly.
             match &graph.node(outlet).kind {
                 NodeKind::Tank(_) | NodeKind::Sink { .. } | NodeKind::Atmosphere => {}
+                // The first node of a draw LINE through pumps and coolers to its
+                // store (M62.4b, docs/DESIGN.md §67.13), resolved once the pipes
+                // exist (`resolve_draw_lines`).
+                NodeKind::Pump { .. } | NodeKind::Cooler { .. } | NodeKind::WaterCooler { .. } => {}
                 NodeKind::Source { .. } | NodeKind::Column { .. } => {
                     return Err(SimError::Scenario(format!(
                         "column '{name}' draws to '{}', a source or column. A draw must end at a \
@@ -4650,6 +4670,117 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
         {
             *draws = resolved;
             *slot = spec;
+        }
+    }
+    Ok(())
+}
+
+/// Resolve every draw whose outlet is a pump or a cooler into its LINE — the
+/// pipes from the column through pumps and coolers to a product store (M62.4b,
+/// docs/DESIGN.md §67.13) — and refuse, by name, a line that is not one.
+///
+/// Each node on a line has one pipe in and one out (`validate_degrees`), each
+/// pipe declared from upstream to downstream, so the walk is the outlet pipe of
+/// each node in turn. Refused: a line through any other kind (a junction, a
+/// valve — and the junction a leak path's split puts on a pipe); a pipe stored
+/// against the flow; a line pump declaring `npsh_required_m`, whose model reads
+/// the flow solve's state of its inlet, which a pinned pump has none of. Its gas
+/// pocket reads the march's two-phase state (`network::march_draw_lines`).
+fn resolve_draw_lines(graph: &mut PlantGraph) -> Result<(), SimError> {
+    let is_store = |graph: &PlantGraph, id: NodeId| {
+        matches!(
+            graph.node(id).kind,
+            NodeKind::Tank(_) | NodeKind::Sink { .. } | NodeKind::Atmosphere
+        )
+    };
+    let mut lines: Vec<(NodeId, usize, Vec<EdgeId>)> = Vec::new();
+    for column in graph.node_ids().collect::<Vec<_>>() {
+        let NodeKind::Column { draws, .. } = &graph.node(column).kind else {
+            continue;
+        };
+        let column_name = &graph.node(column).name;
+        for (index, draw) in draws.iter().enumerate() {
+            if is_store(graph, draw.outlet) {
+                continue;
+            }
+            let first = graph
+                .incident(column)
+                .into_iter()
+                .find(|&(_, other, incoming)| !incoming && other == draw.outlet)
+                .map(|(edge, _, _)| edge)
+                .ok_or_else(|| {
+                    SimError::Scenario(format!(
+                        "column '{column_name}' draw to '{}' has no pipe from the column",
+                        graph.node(draw.outlet).name
+                    ))
+                })?;
+            let mut line = vec![first];
+            let mut at = draw.outlet;
+            loop {
+                let name = &graph.node(at).name;
+                match &graph.node(at).kind {
+                    NodeKind::Pump { suction, .. } => {
+                        if suction.is_some() {
+                            return Err(SimError::Scenario(format!(
+                                "pump '{name}' is on the draw line of column '{column_name}' and \
+                                 declares npsh_required_m: a line pump is pinned at its line's \
+                                 pressure, and M50's suction model reads the flow solve's state \
+                                 of its inlet, which a pinned pump has none of (docs/DESIGN.md \
+                                 §67.13). Remove the key"
+                            )));
+                        }
+                    }
+                    NodeKind::Cooler { .. } | NodeKind::WaterCooler { .. } => {}
+                    NodeKind::Junction if name.ends_with("__leak_point") => {
+                        return Err(SimError::Scenario(format!(
+                            "a pipe on the draw line of column '{column_name}' declares a leak \
+                             path: a draw line's flow is prescribed by the feed split, and a \
+                             hole in it would be a pressure-driven flow off it (docs/DESIGN.md \
+                             §3b, §67.13)"
+                        )));
+                    }
+                    other => {
+                        return Err(SimError::Scenario(format!(
+                            "the draw line of column '{column_name}' runs through '{name}' \
+                             ({other:?}): a draw line holds only pumps and coolers between the \
+                             column and its product store (docs/DESIGN.md §67.13)"
+                        )));
+                    }
+                }
+                let mut out = graph
+                    .incident(at)
+                    .into_iter()
+                    .filter(|&(_, _, incoming)| !incoming);
+                let (edge, next) = match (out.next(), out.next()) {
+                    (Some((edge, next, _)), None) => (edge, next),
+                    _ => {
+                        return Err(SimError::Scenario(format!(
+                            "the draw line of column '{column_name}' does not leave '{name}' by \
+                             exactly one pipe declared from it: a draw line's pipes run from the \
+                             column to its store, each declared from upstream (docs/DESIGN.md \
+                             §67.13)"
+                        )))
+                    }
+                };
+                line.push(edge);
+                if is_store(graph, next) {
+                    break;
+                }
+                if next == column || line.len() > graph.edge_ids().count() {
+                    return Err(SimError::Scenario(format!(
+                        "the draw line of column '{column_name}' through '{}' loops back \
+                         instead of reaching a product store",
+                        graph.node(draw.outlet).name
+                    )));
+                }
+                at = next;
+            }
+            lines.push((column, index, line));
+        }
+    }
+    for (column, index, line) in lines {
+        if let NodeKind::Column { draws, .. } = &mut graph.node_mut(column).kind {
+            draws[index].line = line;
         }
     }
     Ok(())

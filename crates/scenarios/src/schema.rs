@@ -548,6 +548,16 @@ pub enum NodeDef {
     Cooler {
         duty_mw: f64,
     },
+    /// Cooler on cooling water (M62.4b, docs/DESIGN.md §67.13): a
+    /// counter-current exchanger with a cooling-water utility, its duty a result.
+    WaterCooler {
+        /// Overall conductance times area [kW/K]. Finite and > 0.
+        ua_kw_per_k: f64,
+        /// The cooling water's inlet temperature [°C]. Above 0, below 100.
+        water_inlet_c: f64,
+        /// The cooling water's mass flow [kg/s]. Finite and >= 0.
+        water_flow_kg_per_s: f64,
+    },
     /// One side of a two-stream heat exchanger. Carries no parameters: the
     /// pairing and its effectiveness live in an `[[exchangers]]` entry, which
     /// every side must appear in exactly once.

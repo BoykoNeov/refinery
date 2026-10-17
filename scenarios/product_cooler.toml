@@ -1,0 +1,118 @@
+# M62.4b demo plant: a water cooler condensing a boiling product before its
+# tank (docs/DESIGN.md §67.13).
+#
+# The flashing rundown's naphtha, hotter: let down from 5 bar through a control
+# valve, it boils in the line after it. A water cooler — a counter-current
+# exchanger with cooling water, its duty a RESULT of the two inlets, the
+# water's flow and its UA — condenses it, and the product reaches its tank as a
+# liquid below its bubble point, so the tank vents nothing. Turn the water's
+# flow down (`SetCoolingWaterFlow`) and the product reaches the tank boiling.
+
+[meta]
+name = "product_cooler"
+description = "A boiling naphtha condensed by a water cooler before its tank."
+
+[simulation]
+dt = 0.5
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+boiloff = "flash"
+line_flash = "equilibrium"
+
+[[components]]
+name = "light_naphtha"
+tb_c = 80.0
+molar_mass_kg_per_mol = 0.100
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.130
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[nodes.rundown]
+type = "source"
+pressure_bar = 5.0
+temperature_c = 140.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+[nodes.rundown_valve]
+type = "valve"
+kv = 40.0
+opening = 0.5
+
+[nodes.valve_outlet]
+type = "junction"
+
+[nodes.product_cooler]
+type = "water_cooler"
+ua_kw_per_k = 40.0
+water_inlet_c = 30.0
+water_flow_kg_per_s = 20.0
+
+[nodes.product_tank]
+type = "tank"
+area_m2 = 2.0
+height_m = 8.0
+initial_level_m = 3.0
+temperature_c = 40.0
+composition = { light_naphtha = 0.7, heavy_naphtha = 0.3 }
+
+[nodes.outlet_valve]
+type = "valve"
+kv = 60.0
+opening = 0.5
+
+[nodes.product]
+type = "sink"
+pressure_bar = 1.01325
+temperature_c = 40.0
+composition = { light_naphtha = 0.5, heavy_naphtha = 0.5 }
+
+[[pipes]]
+name = "rundown_line"
+from = "rundown"
+to = "rundown_valve"
+length_m = 30.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "valve_spool"
+from = "rundown_valve"
+to = "valve_outlet"
+length_m = 2.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "flash_line"
+from = "valve_outlet"
+to = "product_cooler"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "cooled_line"
+from = "product_cooler"
+to = "product_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "tank_outlet"
+from = "product_tank"
+to = "outlet_valve"
+length_m = 5.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "product_line"
+from = "outlet_valve"
+to = "product"
+length_m = 20.0
+diameter_m = 0.10
+elevation_change_m = -2.0

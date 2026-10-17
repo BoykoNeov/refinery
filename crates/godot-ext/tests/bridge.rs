@@ -6,7 +6,7 @@
 
 use refinery_core::graph::{ControlMode, ControlledValue, EdgeId, LoopId, NodeId, TripId};
 use refinery_core::snapshot::{Command, Snapshot};
-use refinery_core::units::{Kelvin, Meter, Pascal, SquareMeter, Watt};
+use refinery_core::units::{Kelvin, KgPerSec, Meter, Pascal, SquareMeter, Watt};
 use refinery_core::SimError;
 use refinery_godot_ext::bridge::{Bridge, BridgeError, ErrorReport, Session, MISSING_ID};
 use serde_json::Value;
@@ -248,6 +248,9 @@ fn wire_text(cmd: &Command) -> &'static str {
         Command::SetHeatInput { .. } => r#"{"cmd":"set_heat_input","node":0,"power":1000.0}"#,
         Command::SetFurnaceDuty { .. } => r#"{"cmd":"set_furnace_duty","node":1,"duty":500000.0}"#,
         Command::SetCoolerDuty { .. } => r#"{"cmd":"set_cooler_duty","node":1,"duty":500000.0}"#,
+        Command::SetCoolingWaterFlow { .. } => {
+            r#"{"cmd":"set_cooling_water_flow","node":1,"flow":20.0}"#
+        }
         Command::SetControllerMode { .. } => {
             r#"{"cmd":"set_controller_mode","loop_id":0,"mode":"manual"}"#
         }
@@ -304,6 +307,10 @@ fn every_variant() -> Vec<Command> {
         Command::SetCoolerDuty {
             node: NodeId(1),
             duty: Watt(500_000.0),
+        },
+        Command::SetCoolingWaterFlow {
+            node: NodeId(1),
+            flow: KgPerSec(20.0),
         },
         Command::SetControllerMode {
             loop_id: LoopId(0),
@@ -364,7 +371,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 17, "a Command variant was added");
+    assert_eq!(every_variant().len(), 18, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -382,6 +389,9 @@ fn fixture(cmd: &Command) -> Fixture {
         Command::SetHeatInput { .. } => Fixture::shipped(LEAKY, "receiving_tank"),
         Command::SetFurnaceDuty { .. } => Fixture::shipped("furnace_heater.toml", "heater"),
         Command::SetCoolerDuty { .. } => Fixture::shipped("cooler_chiller.toml", "chiller"),
+        Command::SetCoolingWaterFlow { .. } => {
+            Fixture::shipped("product_cooler.toml", "product_cooler")
+        }
         // A loop-addressed command needs a plant with a loop, and the one it gets
         // is written above rather than shipped — see `LEVEL`.
         Command::SetControllerMode { .. } => Fixture::inline(LEVEL, "tank_level"),

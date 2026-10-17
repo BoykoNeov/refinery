@@ -60,7 +60,7 @@ use crate::graph::{
 };
 use crate::traits::{
     ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel, Reaction,
-    ReactionModel, Separation, SeparationModel, StarvedTank, ThermoModel, VapourShare,
+    ReactionModel, Separation, SeparationModel, Settled, StarvedTank, ThermoModel, VapourShare,
 };
 use crate::units::{
     JPerKgK, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, T_AMBIENT,
@@ -739,6 +739,7 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
         | NodeKind::CheckValve { .. }
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
+            | NodeKind::WaterCooler { .. }
             | NodeKind::HeatExchanger
             // A column holds no inventory: its composition is the instantaneous
             // feed mix and its draws separate that, never a holdup (DESIGN §5).
@@ -811,6 +812,7 @@ pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Compositio
         | NodeKind::CheckValve { .. }
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
+        | NodeKind::WaterCooler { .. }
         | NodeKind::HeatExchanger
         | NodeKind::Column { .. }
         // A reactor's composition is its feed mix, then `react`'d — mixed here,
@@ -856,6 +858,7 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         | NodeKind::CheckValve { .. }
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
+        | NodeKind::WaterCooler { .. }
         | NodeKind::HeatExchanger
         // A column's temperature is its feed mix — the draws leave at the feed
         // temperature (DESIGN §5), which falls out for free: a zero-volume node
@@ -1015,7 +1018,36 @@ pub struct NodeStates {
     /// read straight off the graph. Empty on every plant whose slate has no
     /// free-water member.
     pub tank_draw: BTreeMap<NodeId, Composition>,
+    /// What each water cooler did this tick (M62.4b, docs/DESIGN.md §67.13):
+    /// its duty and its cooling water's outlet. Empty on a plant without one.
+    pub water_cooler: BTreeMap<NodeId, WaterCoolerPass>,
 }
+
+/// What one tick does at a water cooler (M62.4b, docs/DESIGN.md §67.13).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterCoolerPass {
+    /// Heat taken from the stream into the cooling water [W]; negative where the
+    /// water is the warmer of the two inlets and heats the stream.
+    pub duty: Watt,
+    /// The cooling water's outlet temperature [K], `T_in + Q/(ṁ_w·cp_w)`.
+    pub water_outlet: Kelvin,
+}
+
+/// Cooling water's heat capacity [J/(kg·K)]: liquid water near 30 °C, held
+/// constant (§67.13) — the utility is a liquid that does not boil.
+pub const COOLING_WATER_CP: f64 = 4186.0;
+
+/// The cooling water's boiling point at atmospheric pressure [K]: a water
+/// cooler whose water would leave at or past it halts the run (§67.13).
+pub const COOLING_WATER_BOILING: Kelvin = Kelvin(373.15);
+
+/// Equal-duty zones a water cooler's condensing side is rated over (§67.13,
+/// Kern's zone analysis). Probed: see docs/DESIGN.md §67.13's build note.
+pub const WATER_COOLER_ZONES: usize = 10;
+
+/// Evaluations the zone method's duty search may spend: a backstop past which
+/// it is an `Err`. Its bracket halves at least once every two steps.
+const WATER_COOLER_MAX_EVALUATIONS: u32 = 200;
 
 /// A swept node's temperature from its LIQUID-EQUIVALENT mix, settled by the line
 /// flash at the node's own solved pressure (M53, docs/DESIGN.md §58 fork 2); its
@@ -1320,6 +1352,14 @@ pub fn resolve_node_states(
     let mut separations: BTreeMap<NodeId, Separation> = BTreeMap::new();
     let mut held: BTreeSet<NodeId> = BTreeSet::new();
     let mut tank_draw: BTreeMap<NodeId, Composition> = BTreeMap::new();
+    let mut water_cooler: BTreeMap<NodeId, WaterCoolerPass> = BTreeMap::new();
+    // Every draw LINE's pipes (M62.4b, docs/DESIGN.md §67.13): each node on one
+    // depends on its line's pipe in by topology — the solve wrote it zero — and
+    // the sweep's own flows carry the draw on each from the moment its column
+    // separates. On every plant without one, nothing below reads these.
+    let lines = graph.draw_lines();
+    let line_edge = |edge: EdgeId| lines.iter().any(|(_, _, line)| line.contains(&edge));
+    let mut flows: Cow<BTreeMap<EdgeId, f64>> = Cow::Borrowed(edge_mass_flow);
 
     // 1. Inertial nodes are the roots of the sweep: known before it starts.
     //    Both fields are seeded from the SAME node, so the two boundary helpers
@@ -1435,9 +1475,16 @@ pub fn resolve_node_states(
         let deps = sides
             .iter()
             .flat_map(|&id| inflow_edges(graph, edge_mass_flow, id))
-            .filter(|(_, upstream, _)| swept(*upstream))
+            .filter(|(edge, upstream, _)| swept(*upstream) && !line_edge(*edge))
             .count();
-        pending.insert(leader, deps);
+        // A draw line's node waits on its line's pipe in, whatever the solve
+        // wrote on it (M62.4b).
+        let line_deps = sides
+            .iter()
+            .flat_map(|&id| graph.incident(id))
+            .filter(|&(edge, _, incoming)| incoming && line_edge(edge))
+            .count();
+        pending.insert(leader, deps + line_deps);
     }
 
     // 4. Kahn sweep. BTreeSet, always popping the lowest id: the order is then
@@ -1455,6 +1502,10 @@ pub fn resolve_node_states(
     while let Some(&leader) = ready.iter().next() {
         ready.remove(&leader);
         let sides = &members[&leader];
+        let edge_mass_flow: &BTreeMap<EdgeId, f64> = &flows;
+        // The draws a column separated in this vertex, written on its lines'
+        // pipes once the vertex is released (M62.4b).
+        let mut line_writes: Vec<(EdgeId, f64)> = Vec::new();
 
         // Composition first, and uniformly across both branches: it is settled
         // by mass alone, so an exchanger's two sides are ordinary mixing points
@@ -1760,18 +1811,44 @@ pub fn resolve_node_states(
                         flue_loss.insert(id, pass.flue);
                         tube_fire.insert(id, pass.fire);
                     } else {
-                        let mixed = mix_inflows(
-                            graph,
-                            slate,
-                            enthalpy,
-                            edge_mass_flow,
-                            edge_dissipation,
-                            &temperature,
-                            &composition,
-                            &separations,
-                            &vapour,
-                            id,
-                        )?;
+                        let mixed = match &graph.node(id).kind {
+                            // A water cooler's duty is a RESULT of its two inlets
+                            // (M62.4b, docs/DESIGN.md §67.13); the stream then
+                            // mixes on what the water took, as a cooler's does.
+                            NodeKind::WaterCooler {
+                                ua,
+                                water_inlet,
+                                water_flow,
+                            } => match water_cooler_pass(
+                                graph,
+                                slate,
+                                (line_flash, thermo, enthalpy),
+                                edge_mass_flow,
+                                edge_dissipation,
+                                (&temperature, &composition, &separations, &vapour),
+                                node_pressure,
+                                id,
+                                (*ua, *water_inlet, *water_flow),
+                            )? {
+                                Some((pass, liquid_equivalent)) => {
+                                    water_cooler.insert(id, pass);
+                                    Some(liquid_equivalent)
+                                }
+                                None => None,
+                            },
+                            _ => mix_inflows(
+                                graph,
+                                slate,
+                                enthalpy,
+                                edge_mass_flow,
+                                edge_dissipation,
+                                &temperature,
+                                &composition,
+                                &separations,
+                                &vapour,
+                                id,
+                            )?,
+                        };
                         // No inflow: indeterminate but inert (mass balance ⇒ no
                         // outflow either), so the node HOLDS the last value it
                         // resolved — a placeholder that keeps the field finite and
@@ -1855,6 +1932,24 @@ pub fn resolve_node_states(
                                 },
                                 thermo,
                             )?;
+                            // Each draw LINE carries its draw on every pipe,
+                            // `splitᵢ·ṁ_feed` — the engine's draw write, to the
+                            // bit (M62.4b, docs/DESIGN.md §67.13).
+                            let feed_flow = column_feed_flow(graph, edge_mass_flow, id).value();
+                            for (column, index, line) in &lines {
+                                if *column != id {
+                                    continue;
+                                }
+                                let cut = pass.draws.get(*index).ok_or_else(|| {
+                                    SimError::Numerical(format!(
+                                        "separation model returned {} draws for column '{}'",
+                                        pass.draws.len(),
+                                        graph.node(id).name
+                                    ))
+                                })?;
+                                let drawn = cut.split * feed_flow;
+                                line_writes.extend(line.iter().map(|&edge| (edge, drawn)));
+                            }
                             separations.insert(id, pass);
                         }
                     }
@@ -1877,10 +1972,18 @@ pub fn resolve_node_states(
                 if downstream_leader == leader {
                     continue; // self-dependency: counted, never cleared (step 3)
                 }
-                let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
-                let into_id = if incoming { flow } else { -flow };
-                if into_id >= 0.0 {
-                    continue; // not an outflow ⇒ not an inflow to `downstream`
+                // A draw line's pipe was counted by topology, and is cleared so
+                // (M62.4b): out of `id` along the line, whatever its flow.
+                if line_edge(edge) {
+                    if incoming {
+                        continue;
+                    }
+                } else {
+                    let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
+                    let into_id = if incoming { flow } else { -flow };
+                    if into_id >= 0.0 {
+                        continue; // not an outflow ⇒ not an inflow to `downstream`
+                    }
                 }
                 if let Some(count) = pending.get_mut(&downstream_leader) {
                     *count = count.saturating_sub(1);
@@ -1888,6 +1991,12 @@ pub fn resolve_node_states(
                         ready.insert(downstream_leader);
                     }
                 }
+            }
+        }
+        if !line_writes.is_empty() {
+            let written = flows.to_mut();
+            for (edge, drawn) in line_writes {
+                written.insert(edge, drawn);
             }
         }
     }
@@ -1945,6 +2054,7 @@ pub fn resolve_node_states(
         bed,
         vapour,
         tank_draw,
+        water_cooler,
     })
 }
 
@@ -2322,6 +2432,257 @@ fn mix_inflows(
         // coil is the thermal mass (M34, docs/DESIGN.md §37, DEFERRED B39).
         Ok(None)
     }
+}
+
+/// One water cooler's tick (M62.4b, docs/DESIGN.md §67.13): its duty, its
+/// cooling water's outlet, and the stream's liquid-equivalent temperature after
+/// the water took the duty — which the caller settles by the line flash, as at
+/// any cooler. `None` with no inflow: the caller holds the node, as a cooler's.
+///
+/// A counter-current exchanger between the stream and a cooling-water utility
+/// (`COOLING_WATER_CP`), rated two ways:
+///
+/// - **The stream arrives liquid** (its inflow, settled at the cooler's
+///   pressure, holds no vapour — it then only cools, so it stays liquid): the
+///   counter-flow effectiveness, `Q = ε·C_min·(T_h,in − T_c,in)`,
+///   `ε = (1 − e^{−NTU(1−C_r)})/(1 − C_r·e^{−NTU(1−C_r)})`, `NTU/(1 + NTU)` at
+///   `C_r = 1`, `NTU = UA/C_min` (Incropera & DeWitt, 6th ed., Table 11.3), the
+///   stream's capacity rate its inflow's spot one — closed form. Also where the
+///   water is the warmer inlet, which heats the stream.
+/// - **It arrives boiling** and condenses in the cooler: zone analysis (Kern,
+///   *Process Heat Transfer*, 1950, ch. 12), `zone_duty`.
+#[allow(clippy::too_many_arguments)] // one argument per seam the rating reads
+#[allow(clippy::type_complexity)]
+fn water_cooler_pass(
+    graph: &PlantGraph,
+    slate: &Slate,
+    (line_flash, thermo, enthalpy): (&dyn LineFlashModel, &dyn ThermoModel, &dyn EnthalpyModel),
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    edge_dissipation: &BTreeMap<EdgeId, Watt>,
+    (temperature, composition, separations, vapour): (
+        &BTreeMap<NodeId, Kelvin>,
+        &BTreeMap<NodeId, Composition>,
+        &BTreeMap<NodeId, Separation>,
+        &BTreeMap<NodeId, VapourShare>,
+    ),
+    node_pressure: &BTreeMap<NodeId, Pascal>,
+    node: NodeId,
+    (ua, water_inlet, water_flow): (WattPerKelvin, Kelvin, KgPerSec),
+) -> Result<Option<(WaterCoolerPass, Kelvin)>, SimError> {
+    let Some(totals) = inflow_totals(
+        graph,
+        slate,
+        enthalpy,
+        edge_mass_flow,
+        edge_dissipation,
+        temperature,
+        composition,
+        separations,
+        node,
+    )?
+    else {
+        return Ok(None);
+    };
+    let name = &graph.node(node).name;
+    // What arrives [W]: the inflow's enthalpy, the latent heat a boiling inflow
+    // carries, and a fire on the cooler, which heats the stream before the
+    // water sees it.
+    let arriving = totals.enthalpy_rate
+        + inflow_latent(graph, edge_mass_flow, vapour, node).unwrap_or(0.0)
+        + heat_load(graph.node(node)).value();
+    let mix = mixed_composition_at(composition, node)?;
+    let liquid_equivalent = |energy: f64| {
+        enthalpy.mix_temperature(
+            slate,
+            mix,
+            InflowEnthalpy {
+                enthalpy_rate: energy,
+                ..totals
+            },
+        )
+    };
+    // The stream's state at an enthalpy [W]: its liquid-equivalent, settled at
+    // the cooler's pressure by the line flash (`NoLineFlash` hands it back).
+    let state = |energy: f64| -> Result<Settled, SimError> {
+        let le = liquid_equivalent(energy)?;
+        if !line_flash.carries_vapour() {
+            return Ok(Settled {
+                temperature: le,
+                vapour: None,
+            });
+        }
+        let pressure = node_pressure.get(&node).copied().ok_or_else(|| {
+            SimError::Numerical(format!(
+                "internal: water cooler '{name}' has no solved pressure for its line flash"
+            ))
+        })?;
+        line_flash.settle(slate, mix, le, pressure, thermo, enthalpy)
+    };
+    let inlet = state(arriving)?;
+    let hot_in = inlet.temperature.value();
+    let cold_in = water_inlet.value();
+    let water_capacity = water_flow.value() * COOLING_WATER_CP;
+    let duty = if water_capacity <= 0.0 {
+        0.0
+    } else if inlet.vapour.is_none() || hot_in <= cold_in {
+        // Counter-flow effectiveness (Incropera & DeWitt, Table 11.3).
+        let (c_min, c_max) = if totals.capacity_rate <= water_capacity {
+            (totals.capacity_rate, water_capacity)
+        } else {
+            (water_capacity, totals.capacity_rate)
+        };
+        let c_r = c_min / c_max;
+        let ntu = ua.value() / c_min;
+        let effectiveness = if (1.0 - c_r).abs() < 1e-12 {
+            ntu / (1.0 + ntu)
+        } else {
+            let decay = (-ntu * (1.0 - c_r)).exp();
+            (1.0 - decay) / (1.0 - c_r * decay)
+        };
+        effectiveness * c_min * (hot_in - cold_in)
+    } else {
+        // The most the water can take: the stream cooled, all liquid, to the
+        // water's inlet, or the water heated to the stream's inlet.
+        let floor = enthalpy
+            .enthalpy_flux(slate, mix, KgPerSec(totals.mass_rate), water_inlet)?
+            .value();
+        let ceiling = (arriving - floor).min(water_capacity * (hot_in - cold_in));
+        zone_duty(
+            name,
+            arriving,
+            hot_in,
+            ceiling,
+            (ua.value(), water_capacity, cold_in),
+            |energy| state(energy).map(|settled| settled.temperature.value()),
+        )?
+    };
+    let water_outlet = if water_capacity > 0.0 {
+        cold_in + duty / water_capacity
+    } else {
+        cold_in
+    };
+    if water_outlet >= COOLING_WATER_BOILING.value() {
+        return Err(SimError::Numerical(format!(
+            "water cooler '{name}' would boil its cooling water: it takes {:.4} MW into \
+             {:.4} kg/s of water from {:.2} °C, which would leave at {:.2} °C. Cooling \
+             water is a liquid utility (docs/DESIGN.md §67.13): raise its flow \
+             (`SetCoolingWaterFlow`) or cool the stream before it",
+            duty / 1e6,
+            water_flow.value(),
+            cold_in - 273.15,
+            water_outlet - 273.15
+        )));
+    }
+    let outlet = liquid_equivalent(arriving - duty)?.value();
+    let outlet = checked_temperature(outlet, || {
+        format!("water cooler '{name}' cools its stream to {outlet:.2} K, below absolute zero")
+    })?;
+    Ok(Some((
+        WaterCoolerPass {
+            duty: Watt(duty),
+            water_outlet: Kelvin(water_outlet),
+        },
+        outlet,
+    )))
+}
+
+/// The duty [W] of a counter-current water cooler whose stream condenses in it
+/// — zone analysis (Kern, *Process Heat Transfer*, 1950, ch. 12; M62.4b,
+/// docs/DESIGN.md §67.13).
+///
+/// For a trial duty `Q` the stream's enthalpy falls from `arriving` in
+/// `WATER_COOLER_ZONES` equal steps, its temperature at each from the line
+/// flash (`hot_at`, a function of the stream's enthalpy [W]), and the water's
+/// rises linearly from its inlet at the stream's outlet end:
+/// `T_c,j = T_c,in + Q·(K − j)/(K·C_w)`. Each zone's area is `ΔQ/ΔT_lm`, and
+/// `UA(Q)` their sum, which rises with `Q`. **A zone whose approach is zero or
+/// less needs infinite area**: a condensing curve can pinch inside the
+/// exchanger before `ceiling`, so the duty is the root of `UA(Q) = UA` below
+/// the first that pinches — bisection where an end is infinite, the Illinois
+/// regula falsi otherwise (Dowell & Jarratt, *BIT* 11, 1971).
+fn zone_duty(
+    name: &str,
+    arriving: f64,
+    hot_in: f64,
+    ceiling: f64,
+    (ua, water_capacity, cold_in): (f64, f64, f64),
+    hot_at: impl Fn(f64) -> Result<f64, SimError>,
+) -> Result<f64, SimError> {
+    if ceiling <= 0.0 || ua <= 0.0 {
+        return Ok(0.0);
+    }
+    let zones = WATER_COOLER_ZONES;
+    let area_needed = |duty: f64| -> Result<f64, SimError> {
+        let step = duty / zones as f64;
+        let mut hot = hot_in;
+        let mut cold = cold_in + duty / water_capacity;
+        let mut area = 0.0;
+        for j in 1..=zones {
+            let next_hot = hot_at(arriving - step * j as f64)?;
+            let next_cold = cold_in + duty * (zones - j) as f64 / (zones as f64 * water_capacity);
+            let (a, b) = (hot - cold, next_hot - next_cold);
+            if a <= 0.0 || b <= 0.0 {
+                return Ok(f64::INFINITY);
+            }
+            // Log-mean temperature difference, its limit where the two agree.
+            let lmtd = if (a - b).abs() <= 1e-12 * a.max(b) {
+                0.5 * (a + b)
+            } else {
+                (a - b) / (a / b).ln()
+            };
+            area += step / lmtd;
+            hot = next_hot;
+            cold = next_cold;
+        }
+        Ok(area)
+    };
+    let (mut low, mut high) = (0.0_f64, ceiling);
+    let (mut f_low, mut f_high) = (-ua, area_needed(ceiling)? - ua);
+    if f_high <= 0.0 {
+        return Ok(ceiling);
+    }
+    let mut side = 0i8;
+    for _ in 0..WATER_COOLER_MAX_EVALUATIONS {
+        let trial = if f_high.is_finite() {
+            let secant = (low * f_high - high * f_low) / (f_high - f_low);
+            if secant > low && secant < high {
+                secant
+            } else {
+                0.5 * (low + high)
+            }
+        } else {
+            0.5 * (low + high)
+        };
+        if trial <= low || trial >= high {
+            return Ok(low);
+        }
+        let f = area_needed(trial)? - ua;
+        if f == 0.0 {
+            return Ok(trial);
+        }
+        if f < 0.0 {
+            low = trial;
+            f_low = f;
+            if side == -1 && f_high.is_finite() {
+                f_high *= 0.5;
+            }
+            side = -1;
+        } else {
+            high = trial;
+            f_high = f;
+            if side == 1 {
+                f_low *= 0.5;
+            }
+            side = 1;
+        }
+        if high - low <= 4.0 * f64::EPSILON * high {
+            return Ok(low);
+        }
+    }
+    Err(SimError::Numerical(format!(
+        "water cooler '{name}': its zone duty did not close within \
+         {WATER_COOLER_MAX_EVALUATIONS} evaluations, bracketed in [{low:.6e}, {high:.6e}] W"
+    )))
 }
 
 /// What one tick does to a furnace: its fluid's temperature and its coil's.
@@ -3255,6 +3616,71 @@ mod tests {
     use crate::stream::Stream;
     use crate::traits::Reaction;
     use crate::units::*;
+
+    /// **A condensing curve pinches inside a water cooler, and the zone duty
+    /// stops there** (M62.4b, docs/DESIGN.md §67.13). A hand-built hot side:
+    /// 1 MW of superheated vapour from 150 °C to its dew point at 100 °C
+    /// (0.02 MW/K), 8 MW condensing at 100 °C, its liquid then cooling at
+    /// 0.1 MW/K; against 0.2 MW/K of water from 30 °C, counter-current. The
+    /// ceiling — the hot side cooled to 30 °C — is 16 MW, but the water reaches
+    /// 100 °C at the dew point once the duty passes 15 MW: the pinch, inside the
+    /// exchanger. With unlimited area the duty stops at the pinch the zone
+    /// boundaries see (between 15 MW and 15.56 MW, where the first boundary past
+    /// the dew point crosses), never at the ceiling; a modest area takes
+    /// less, and every boundary's approach stays positive.
+    #[test]
+    fn a_zone_duty_stops_at_an_internal_pinch() {
+        let arriving = 16.0e6;
+        let hot_at = |energy: f64| -> Result<f64, SimError> {
+            let x = arriving - energy;
+            Ok(if x <= 1.0e6 {
+                423.15 - x / 0.02e6
+            } else if x <= 9.0e6 {
+                373.15
+            } else {
+                373.15 - (x - 9.0e6) / 0.1e6
+            })
+        };
+        let water = 0.2e6;
+        let ceiling = 16.0e6;
+        let unlimited = zone_duty(
+            "pinch",
+            arriving,
+            423.15,
+            ceiling,
+            (1e15, water, 303.15),
+            hot_at,
+        )
+        .unwrap();
+        assert!(
+            unlimited > 15.0e6 && unlimited < 15.6e6,
+            "unlimited area: {unlimited} W, not at the pinch"
+        );
+        for ua in [1e15, 2.0e5] {
+            let duty = zone_duty(
+                "pinch",
+                arriving,
+                423.15,
+                ceiling,
+                (ua, water, 303.15),
+                hot_at,
+            )
+            .unwrap();
+            let zones = WATER_COOLER_ZONES;
+            for j in 0..=zones {
+                let hot = hot_at(arriving - duty * j as f64 / zones as f64).unwrap();
+                let cold = 303.15 + duty * (zones - j) as f64 / (zones as f64 * water);
+                assert!(
+                    hot > cold,
+                    "UA {ua}: boundary {j} crosses ({hot} K against {cold} K)"
+                );
+            }
+            assert!(
+                duty <= unlimited,
+                "UA {ua}: {duty} W past the unlimited {unlimited} W"
+            );
+        }
+    }
 
     /// Identity reaction for the sweep tests that carry no reactor — mirrors the
     /// `solvers::NoReactions` the engine uses, kept here so `core`'s own tests

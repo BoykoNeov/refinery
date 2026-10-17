@@ -501,8 +501,28 @@ impl Engine {
                         *d = duty;
                         Ok(())
                     }
+                    NodeKind::WaterCooler { .. } => Err(SimError::InvalidCommand(format!(
+                        "{node:?} is a water cooler, whose duty is a result of its cooling                          water, not a setting: set its water's flow                          (`SetCoolingWaterFlow`, docs/DESIGN.md §67.13)"
+                    ))),
                     _ => Err(SimError::InvalidCommand(format!(
                         "{node:?} is not a cooler"
+                    ))),
+                }
+            }
+            Command::SetCoolingWaterFlow { node, flow } => {
+                if !flow.value().is_finite() || flow.value() < 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "a cooling-water flow must be finite and >= 0 kg/s. Got {} kg/s",
+                        flow.value()
+                    )));
+                }
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::WaterCooler { water_flow, .. } => {
+                        *water_flow = flow;
+                        Ok(())
+                    }
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} is not a water cooler, so it has no cooling water"
                     ))),
                 }
             }
@@ -1328,7 +1348,14 @@ impl Engine {
                         draws.len()
                     ))
                 })?;
-                draw_writes.push((eid, sign_out * cut.split * feed_into));
+                let drawn = sign_out * cut.split * feed_into;
+                draw_writes.push((eid, drawn));
+                // A draw LINE carries the draw on every pipe to its store, each
+                // declared from upstream (M62.4b, docs/DESIGN.md §67.13) — the
+                // flow the sweep carried on it, to the bit.
+                if let Some(line) = draws.get(idx).map(|d| &d.line) {
+                    draw_writes.extend(line.iter().skip(1).map(|&edge| (edge, drawn)));
+                }
             }
         }
         for (eid, flow) in draw_writes {
@@ -3432,6 +3459,7 @@ impl Engine {
             | Command::SetHeatInput { node, .. }
             | Command::SetFurnaceDuty { node, .. }
             | Command::SetCoolerDuty { node, .. }
+            | Command::SetCoolingWaterFlow { node, .. }
             | Command::SetReservoirPressure { node, .. }
             | Command::SetSourceTemperature { node, .. }
             | Command::SetRefluxRatio { node, .. }
@@ -3595,6 +3623,13 @@ impl Engine {
                     // every node that is not a furnace — see
                     // `NodeSnapshot::flue_loss_w`.
                     flue_loss_w: self.node_states.flue_loss.get(&id).map(|w| w.value()),
+                    // The last sweep's — see `NodeSnapshot::water_cooler`.
+                    water_cooler: self.node_states.water_cooler.get(&id).map(|pass| {
+                        crate::snapshot::WaterCoolerSnapshot {
+                            duty_w: pass.duty.value(),
+                            water_outlet_k: pass.water_outlet.value(),
+                        }
+                    }),
                     // Likewise — see `NodeSnapshot::tube_fire_w`.
                     tube_fire_w: self.node_states.tube_fire.get(&id).map(|w| w.value()),
                     // The last sweep's, on a bed only — see
@@ -3834,7 +3869,7 @@ fn cavitation_subject(kind: &NodeKind) -> bool {
         // downstream is a real and expensive failure. Both are zero-volume flow-
         // path nodes like the five above; they are called out separately only
         // because B1's trigger omitted them.
-        NodeKind::Furnace { .. } | NodeKind::Cooler { .. } => true,
+        NodeKind::Furnace { .. } | NodeKind::Cooler { .. } | NodeKind::WaterCooler { .. } => true,
         // Holdups, and this exclusion is load-bearing. A tank or vessel below
         // its bubble point is a TWO-PHASE INVENTORY (`docs/DEFERRED.md` B3), not
         // cavitation, which is a flow-path phenomenon. Two shipped plants are

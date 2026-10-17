@@ -25387,3 +25387,176 @@ puncture).
 inflow's latent heat dropped, the column settled, a bursting furnace admitted,
 a wet column admitted, the puncture admitted, the cooler refused.
 **Corpus**: 60 of 60 plants byte-identical on both fidelities.
+
+### 67.13 Product coolers on cooling water, and the line's pump (M62.4b) — specified before building
+
+**A draw line.** A column's draw may run through a chain of PUMPS and COOLERS,
+each with one pipe in and one out, to its product store (a tank, a sink or the
+atmosphere). The loader resolves the chain from the draw's `outlet` (the
+line's first node) to its store and records it on the draw
+(`ColumnDraw::line`, its edges in order, and `ColumnDraw::store`); anything
+else on the chain — a junction, a valve, a second branch, a loop back — is
+refused by name. A draw whose outlet IS a store keeps its single edge and every
+byte it had.
+
+**The flow is the draw's on every edge of the line**: `splitᵢ·ṁ_feed`,
+prescribed, mass-conserving through each zero-volume node, out of the flow
+solve exactly as a draw edge is (`network::edge_flows` guards each to zero; the
+engine writes each after the sweep).
+
+**The line's pressures: marched from the column, at the draw's last flow.** The
+line's nodes have no pressure equation — every edge at them is prescribed — so
+the flow solve pins each at the pressure its line gives it before it solves:
+from the column's pinned pressure, edge by edge,
+`P_{k+1} = P_k − Δp_k(ṁ)`, each edge's own compiled branch (Darcy–Weisbach
+friction and its elevation; a pump's curve on its outlet, with M54's two-phase
+multiplier where its suction holds vapour) at its upwind state's density, and
+`ṁ` the line's stored flow — last tick's draw, the one-tick lag of a slow state
+(the draw moves with the feed's composition, over ticks). The first tick's
+stored flow is zero: static heads only. **The last edge into the store**: its
+arrival `P_last − Δp(ṁ)` must reach the store's pressure; the remainder is the
+line's control valve, implicit — a real line's level or flow valve, taken as
+perfectly tuned. A line whose arrival falls short of its store (a pump off or
+too weak, a line too narrow) halts the run, naming the line and the shortfall.
+Friction heat and pump work on a draw line are not booked (`Φ = 0`), as on
+every draw (§5): a stated simplification.
+
+**The sweep.** A line node's inflow edge counts as a dependency by topology
+(the solve wrote it zero, and the sweep releases by flow sign), and once its
+column separates, each of the line's edges carries the draw in the sweep's own
+flows. A pump and a cooler on the line settle what passes by the line flash at
+their pinned pressure, as on any flashing plant: a draw pumped above its
+bubble point stays liquid; one let down boils.
+
+**A cooler on cooling water** — a new unit, `type = "water_cooler"`
+(`ua_kw_per_k`, `water_inlet_c`, `water_flow_kg_per_s`), not a key on the
+duty cooler, so every `cooler` and its loops keep their bytes and their
+actuator: a counter-current exchanger with a cooling-water utility (liquid
+water, `cp_w` 4 186 J/(kg·K), not a plant stream), its duty a RESULT. Its
+duty:
+
+- **The process side stays liquid** (it arrives liquid and the liquid law's
+  outlet is below its bubble point at the cooler's pressure): the counter-flow
+  effectiveness, `Q = ε·C_min·(T_h,in − T_c,in)`,
+  `ε = (1 − e^{−NTU(1−C_r)})/(1 − C_r·e^{−NTU(1−C_r)})` (`C_r = 1`:
+  `NTU/(1 + NTU)`), `NTU = UA/C_min` (Incropera & DeWitt, 6th ed., Table
+  11.3), the process side at its inflow's spot heat capacity — closed form.
+- **The process side condenses or boils in it**: zone analysis (Kern,
+  *Process Heat Transfer*, 1950, ch. 12; the method of every condenser rating
+  program). For a trial duty `Q`, the hot side's temperature at `K` equal
+  steps of enthalpy from the line flash, the water's linear, and the area the
+  duty needs, `UA(Q) = Σ ΔQ_k/ΔT_lm,k`; `Q` the root of `UA(Q) = UA` on
+  `(0, Q_max)` — `UA(Q)` increases with `Q`, and `Q_max` is the smaller of the
+  hot side cooled to the water's inlet and the water heated to the hot side's
+  inlet. **A zone whose approach is zero or less needs infinite area**: a
+  condensing curve can pinch inside the exchanger before `Q_max`, so the
+  bracket's top is the first duty that pinches. `K` probed first. Only where
+  the line flash carries vapour; without it the closed form is the model.
+- **The water must not boil**: a water outlet at or past 100 °C halts the
+  run, naming the cooler — a liquid utility at a constant heat capacity cannot
+  be steam.
+
+The cooler then settles what passes as every cooler does, its duty the result.
+Published: the duty and the water's outlet temperature. **Commands**:
+`SetCoolerDuty` refused on a cooling-water cooler (its duty is a result);
+`SetCoolingWaterFlow` new. A temperature loop whose actuator is a water
+cooler is refused at load, as on any unit that is not a heater (none is needed
+yet; its actuator would be the water's flow).
+
+**A pump on a draw line** is out of M54's boiling-plant pump machinery: it is
+pinned, so its inlet is never solved inside an iterate; its head at the draw is
+the march's, which reports its two-phase state in the solution in place of the
+flow solve's (whose flow on a draw edge is zero) — so its gas pocket fills, as
+any running pump's on a boiling plant does, where its suction boils, and a
+locked pump makes no head. Refused on a line pump by name: `npsh_required_m`
+(M50's suction model reads the solve's state of its inlet). A line pump switched
+off, tripped or gas-locked cannot deliver its draw: the run halts at the line's
+shortfall. **Suction head is the plant's design**:
+a draw leaves at its bubble point, so its suction pipe must fall (a negative
+`elevation_change_m`, the 10–20 m a real column stands above its pumps) or the
+pump's suction boils. **Elsewhere**: a leak path on any pipe of a line is
+refused (the split would put a junction on the line); `is_column_draw_edge`
+answers for every edge of a line.
+
+**Gates** to write: a line's pressures against a hand march; a liquid product
+cooler against the counter-flow ε-NTU by hand; a condensing cooler against a
+zone script outside the engine; the books with the cooling water's heat every
+tick; the halt; the refusals; both solvers.
+
+**Built (M62.4b)**, as specified above, with three corrections found while
+building:
+
+1. **A line pump draws the DRAW.** A pump's suction offer is its inflow's
+   upwind node's state at the pump's pressure; on a line that node is the
+   column, whose state is the mixed FEED (its liquid-equivalent, 351 °C on the
+   crude unit), which flashed to 98.5 % vapour by volume at the pump's 2.9 bar
+   and marched the naphtha line to −2·10⁶ bar on its second tick.
+   `network::suction_offer` reads the draw's own state for a draw line's first
+   pipe (`drawn_state`: the previous separation's composition and temperature),
+   as the march's first edge does.
+2. **The march reads the sweep the solve was handed.** On a tick a boiling
+   plant re-solves (M55.0), that is this tick's own first sweep, not the last
+   tick's: the draw's density by hand, at the stored flow, matches the pins to
+   1e-9 only at this tick's state.
+3. **`gas_fill_time_s` is not refused on a line pump.** Every running pump on a
+   boiling plant has a gas pocket (its fill time defaulted), and the march
+   reports a line pump's two-phase state in the solution where the pocket reads
+   it — so a line pump whose suction boils fills its pocket and locks, and the
+   line halts. Only `npsh_required_m` is refused (M50's model reads the solve's
+   own inlet state).
+
+A stopped line pump does not by itself halt its line: the column's 1.8 bar and
+the 15 m its draw falls to the pump push the draw through the stopped pump's
+resistance into a tank 15 m up (measured). A tank 40 m up halts the line when
+its pump stops.
+
+**The crude unit with product lines** (`product_line_reference.rs`'s fixture,
+not shipped: M62.4c reshapes its furnace): every draw falls 15 m through a
+20 cm suction to its pump (40 m, `a` = 2 000), through a water cooler, and 15 m
+up into its tank. Settled: every product reaches its tank liquid — naphtha
+39.2 °C, kerosene 55.5, diesel 56.9, gas oil 75.8, residue 153.9 — every tank
+vents nothing, and every water returns at 44.6–45.4 °C (4.6, 7.3, 12.0, 9.6
+and 28.3 MW into 75, 115, 190, 150 and 460 kg/s of water: about 990 kg/s,
+3 560 m³/h). Uncooled (M62.4a's fixture) a fifth of the column's output went
+up the vents. One Newton iteration a tick.
+
+**The zone count** (`WATER_COOLER_ZONES` = 10): `zone_cooler.py` on
+`product_cooler.toml`'s state at tick 2000 gives the duty at 2, 5, 10, 20, 40,
+80 zones −0.53, −0.12, −0.044, −0.009, −0.003, −0.0002 % from 160; the engine's
+10-zone duty is the script's to 1e-10. **Cost**: `product_cooler` 0.86 ms a
+tick (Newton, release, one plant), `flashing_rundown` 0.19 — the zone method's
+flashes.
+
+**Gates**: `crates/scenarios/tests/product_line_reference.rs` (6: each line's
+pump and cooler pressures against a hand march at the stored flow, every line
+pipe carrying the draw; a liquid product cooler against the counter-flow
+effectiveness by hand, its product and its water outlet, nothing vented; the
+condensing cooler against `zone_cooler.py`; each line's first law every tick,
+no friction booked on a line pipe, on both fidelities and without the line
+flash; the halts — a stopped pump under a high tank, water that would boil —
+and the cooler commands; the loader's refusals by name); the bridge's command
+sweep (`SetCoolingWaterFlow`, on `product_cooler.toml`); `energy.rs`'s
+`a_zone_duty_stops_at_an_internal_pinch` (a hand-built curve, superheated
+vapour, a condensing plateau and its liquid, pinching at its dew point inside
+the exchanger: the duty stops between 15 and 15.56 MW, never at the 16 MW
+ceiling, every zone boundary's approach positive); and a line declared before
+its column (the sweep visits the lowest ready id).
+
+**Found by the mutation pass**: with the topological wait removed, a line node
+numbered below its column is visited first with no inflow, HELD, and visited
+again on the column's release, which overwrites every number — so the results
+match, but the node stays in `NodeStates::held`, a placeholder a loop must not
+read. The gate checks no line node carrying its draw is held.
+
+**Mutations**: seventeen. Sixteen caught by their predicted files — the pins
+ignored, the march at zero flow, a line pump drawing the column's feed, no halt
+at a shortfall, the line pipes pressure-driven, the sweep writing no line
+flows, the topological wait, water allowed to boil, five zones, the
+parallel-flow effectiveness, the engine writing only the first pipe, a pinch
+counted as no area, the line `npsh_required_m` admitted, the duty command's
+message, a negative water flow admitted, the outlet ignoring the duty. One
+equivalent: dropping the explicit pinch test — a crossing anywhere puts a zone
+with one approach of each sign, whose log-mean is NaN, which the search already
+reads as too much duty; kept as the stated rule. **Corpus**: 60 of 60 plants
+byte-identical on both fidelities; `product_cooler` new (worst 9 iterations a
+tick on both solvers).

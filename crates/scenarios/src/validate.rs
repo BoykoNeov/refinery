@@ -370,6 +370,29 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
             )));
         }
     }
+    if let NodeDef::WaterCooler {
+        ua_kw_per_k,
+        water_inlet_c,
+        water_flow_kg_per_s,
+    } = def
+    {
+        if !ua_kw_per_k.is_finite() || *ua_kw_per_k <= 0.0 {
+            return Err(SimError::Scenario(format!(
+                "water cooler '{name}' has ua_kw_per_k = {ua_kw_per_k}: it must be finite and                  > 0 — an exchanger that passes no heat cools nothing."
+            )));
+        }
+        // Liquid water at a constant heat capacity (§67.13): neither ice nor steam.
+        if !water_inlet_c.is_finite() || *water_inlet_c <= 0.0 || *water_inlet_c >= 100.0 {
+            return Err(SimError::Scenario(format!(
+                "water cooler '{name}' has water_inlet_c = {water_inlet_c}: cooling water is                  liquid, so its inlet must lie above 0 and below 100 °C."
+            )));
+        }
+        if !water_flow_kg_per_s.is_finite() || *water_flow_kg_per_s < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "water cooler '{name}' has water_flow_kg_per_s = {water_flow_kg_per_s}: it must                  be finite and >= 0."
+            )));
+        }
+    }
     let duty = match def {
         NodeDef::Furnace { duty_mw, .. } => Some(("furnace", *duty_mw)),
         NodeDef::Cooler { duty_mw } => Some(("cooler", *duty_mw)),
@@ -708,6 +731,7 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             | NodeDef::Tank { .. }
             | NodeDef::CheckValve { .. }
             | NodeDef::Cooler { .. }
+            | NodeDef::WaterCooler { .. }
             | NodeDef::Pump {
                 npsh_required_m: None,
                 ..

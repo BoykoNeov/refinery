@@ -9856,3 +9856,26 @@ jet; the boiling crude unit ships after M62.4b and M62.4c. DESIGN §67.12.
 
 - Gates: `heat_on_boiling_reference.rs` (4). Mutations: seven, all caught.
   Corpus: 60 of 60 byte-identical on both fidelities.
+
+### M62.4b — **LANDED** 2026-10-17: product lines and water coolers
+
+A column's draw may run through pumps and coolers to its store: every pipe of
+the line carries the draw, and its nodes are pinned where the line stands —
+marched from the column's pressure at the draw's last flow, a line pump's curve
+included — a line that cannot reach its store halting the run by name. A new
+unit, `water_cooler`, is a counter-current exchanger with cooling water, its
+duty a result: the counter-flow effectiveness for a liquid, Kern's zone
+analysis (10 zones) for a stream that condenses in it, a water that would boil
+halting the run; `SetCoolingWaterFlow` its command. Corrected while building: a
+line pump draws the draw, not the column's feed; `gas_fill_time_s` is admitted
+on a line pump. On the crude unit with product lines (an inline fixture: each
+draw falling 15 m to its pump, through its cooler, 15 m up to its tank) every
+product reaches its tank liquid at 39–154 °C and nothing vents, the water
+returning near 45 °C (about 990 kg/s of it); uncooled, a fifth of the column's
+output had gone up the vents. The demo: `scenarios/product_cooler.toml`, a
+boiling naphtha condensed before its tank. DESIGN §67.13.
+
+- Gates: `product_line_reference.rs` (7), `energy.rs` zone pinch (1), the
+  bridge's command sweep. Mutations: seventeen, sixteen caught, one
+  equivalent. Corpus: 60 of 60 byte-identical on both fidelities;
+  `product_cooler` new.

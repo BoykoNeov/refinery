@@ -7,7 +7,7 @@ use crate::graph::{
 };
 use crate::stream::Stream;
 use crate::traits::SolveDiagnostics;
-use crate::units::{Kelvin, Pascal, Seconds, SquareMeter, Watt};
+use crate::units::{Kelvin, KgPerSec, Pascal, Seconds, SquareMeter, Watt};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +52,13 @@ pub enum Command {
     SetCoolerDuty {
         node: NodeId,
         duty: Watt,
+    },
+    /// A water cooler's cooling-water flow [kg/s] (M62.4b, docs/DESIGN.md
+    /// §67.13): its duty is a result of the flow, so this is its handle, where
+    /// a duty cooler's is `SetCoolerDuty`. Finite and `>= 0`.
+    SetCoolingWaterFlow {
+        node: NodeId,
+        flow: KgPerSec,
     },
     /// Put one control loop in `Auto` (it drives its actuator) or `Manual` (a
     /// human does). See [`crate::graph::ControlMode`].
@@ -363,6 +370,12 @@ pub struct NodeSnapshot {
     /// it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flue_loss_w: Option<f64>,
+    /// A water cooler's last tick (M62.4b, docs/DESIGN.md §67.13): the heat its
+    /// cooling water took and the water's outlet. Absent on every other node,
+    /// and on a water cooler nothing flowed through. A DIAGNOSTIC the plant's
+    /// energy books need beside the streams, as a furnace's flue loss is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water_cooler: Option<WaterCoolerSnapshot>,
     /// A furnace's burn-out fire [W] over the last tick (M37, docs/DESIGN.md
     /// §42): what leaked out of its burst tubes, times the fluid's heating
     /// value, burning in its firebox as extra fuel. `0.0` on intact tubes and on
@@ -586,6 +599,16 @@ pub struct PumpTwoPhaseSnapshot {
     pub head_multiplier: f64,
     /// The pressure the pump makes at the solved flow [Pa].
     pub pressure_rise_pa: f64,
+}
+
+/// A water cooler's tick — see `NodeSnapshot::water_cooler`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WaterCoolerSnapshot {
+    /// Heat taken from the stream into the cooling water [W]; negative where
+    /// the water was the warmer inlet.
+    pub duty_w: f64,
+    /// The cooling water's outlet temperature [K].
+    pub water_outlet_k: f64,
 }
 
 /// A column's two emergent heat duties [W] — see `NodeSnapshot::column_duty`.
