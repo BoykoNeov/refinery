@@ -26612,7 +26612,10 @@ decisions, in plain words (2026-10-17):
 3. **A slower first tick is acceptable for now** — said against M62.0's 19 ms;
    measured since at 183–186 ms (the shipped plant's 55–62), the continuation
    running once per engine sweep. M64.2 carries it across the tick's sweeps;
-   the number goes back to the user with that.
+   told so, the user kept it: **"acceptable for now"**.
+5. **The charge held on a flow loop, "how a real unit runs"** (asked after the
+   probe, finding 4): the new plant's feed valve sized to throttle, a flow loop
+   holding the charge, the furnace setting the flash.
 4. **C14 (a wetter crude) is not in M64** — left to the plan's call, and the
    probe found it does not bite (finding 7).
 
@@ -26690,11 +26693,10 @@ a plant-file matter (fork 4), not a solver one.
 
 `scenarios/crude_unit_stripped.toml`, generated from `crude_unit_steam.toml`:
 `reboiler_duty_mw = 0.0`, the furnace and its coil at their settled state, the
-pumparounds off, the steam as shipped. **Open for the user, finding 4**: hold
-the charge on a flow loop (a real unit's way; the furnace then sets the flash,
-not the charge) — the feed valve is wide open already, so a loop can only
-throttle, and holding ~113 kg/s needs a larger valve and more furnace for the
-same bottom — or ship it as the hydraulics give it.
+pumparounds off, the steam as shipped, **and the charge held on a flow loop**
+(decision 5): the feed valve widened so the loop throttles it, the setpoint
+the steamed plant's charge (~113 kg/s), the furnace re-measured to the bottom
+and flash that charge gives, under the coil's limit.
 
 ### 69.5 What moves, and what is deferred
 

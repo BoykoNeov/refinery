@@ -10134,8 +10134,9 @@ Asked after M63 closed (2026-10-17) as "refinery", then "scope and plan M64",
 then "write a plan that includes M64 and all open items ... and start the
 first one" (`docs/PLAN.md`, M64 first). The user's decisions (DESIGN §69):
 `reboiler_duty_mw = 0.0` as the spelling; the new plant's screen keys the steam,
-the furnace and the pumparounds; a slower first tick accepted for now; C14 not
-in M64.
+the furnace and the pumparounds; a slower first tick accepted for now (kept
+after its 183–186 ms was measured); C14 not in M64; after the probe, the charge
+held on a flow loop, "how a real unit runs".
 
 ### M64.0 — **SPECIFIED** 2026-10-17: the design note — M64 stays OPEN
 
