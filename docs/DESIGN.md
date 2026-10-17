@@ -25355,7 +25355,9 @@ every gate is an inline fixture.
   settled by the line flash at the furnace's solved pressure (`settle_node`).
   `CoilPass::flowing`: only a coil something flowed through has a stream to
   settle. The coil's exchange `G·(T_c − T_in)` keeps the liquid's capacity
-  rate — the interim law M62.4c replaces.
+  rate. M62.4c's coil in cells is the boiling coil's law; a lumped coil on a
+  boiling plant keeps this one, its metal reading hot (about 40 K on this
+  crude unit) — ledger row B62.
 - **The cooler** already took the mixing path, which settles; only the
   refusal is lifted.
 - **The column is not settled**: its separation takes the whole feed at its
@@ -25656,10 +25658,10 @@ past 170 kg/s and the column could not settle; with the valve at 131 and a
 falling pressure flashes more of it: a real heater's profile. Eight cells put
 the outlet within 0.6 K of 32 and the metal 4 K below; each cell costs about
 0.6 ms a tick (its flash in every pass of the coil's fixed point and of every
-re-solve, and its two-phase segment in every Newton step). Every tick of a
-boiling crude unit re-solves 3–4 times on its own states, even settled (2 on
-the lumped coil) — a cost to look at before the plant ships, not a wrong
-number.
+re-solve, and its two-phase segment in every Newton step). The probe's plant
+re-solves 3–4 times a tick on its own states (2 on the lumped coil): measured
+at M62.4's close to be the coil still settling from its 359.5 °C start, not
+noise (§67.16, DEFERRED A29).
 
 **Gates**: `crates/scenarios/tests/coil_cell_reference.rs` (7: on water the
 coil in cells settles where the lumped coil does — the outlet and the metal to
@@ -25701,8 +25703,12 @@ throat**: the flux rises as the downstream pressure falls until `g` reaches its
 maximum, `η_c` — choked — and stays there; so `η_t = max(η_a, η_c)`, `η_a` the
 downstream's. `η_c` is found by maximising `g` on `(0, η_s]` (it is unimodal),
 not by Annex C's transcendental equations, which are its stationarity condition.
-At `η_c` `dg/dη = 0`, so the flux is C¹ in the drop: Newton's slope is
-continuous through the choke (`CHOKE_BLEND`'s finding, §3a fork 4).
+At an interior `η_c` `dg/dη = 0`, so the flux is C¹ in the drop there:
+Newton's slope is continuous through the choke (`CHOKE_BLEND`'s finding, §3a
+fork 4). **Not at the boiling pressure**: a subcooled inlet's slope jumps where
+the stream starts to flash in the hole (`η_a = η_s`), as a line's does at its
+bubble point (§58 fork 3) — and where the jet chokes there (`η_c = η_s`, high
+subcooling, the case M62.4d's gate meets) the choke is that kink.
 
 **ω from two line flashes**, the API's two-point method: an inlet already
 boiling at `P₀`, `ω = (v₉/v₀ − 1)/(P₀/P₉ − 1)`, `P₉ = 0.9·P₀`; a subcooled inlet
@@ -25782,13 +25788,26 @@ through 20 cm to its pump (40 m, `a` 2 000), a water cooler, 100 m of 15 cm
 rising 15 m into its tank (§67.13), the cooling water from 30 °C at 75, 115,
 190, 150 and 460 kg/s through 150, 90, 120, 70 and 100 kW/K.
 
-**Measured settled** (6 000 ticks, both fidelities alike): 134.2 kg/s; the
-coil's inlet 14.8 bar, liquid; its outlet 282.2 °C at 2.08 bar, 39.5 % vapour;
-its metal 319.3 °C; the products into their tanks at 40.6 (naphtha), 58.9,
-60.8, 81.4 and 165.5 °C (residue), nothing vented, the water back at 45.2–46.0
-°C. **Its cost**: 7.9 ms a tick on Newton, 24.9 on the game solver, past the
-2.5 ms frame budget — every tick re-solving at the density tolerance's noise
-floor, 3.2 and 6.7 times: ledger row A29.
+**Measured** (6 000 ticks, both fidelities alike): 134.4 kg/s; the coil's
+inlet 14.7 bar, liquid; its outlet 281.4 °C at 2.08 bar, 39.2 % vapour; its
+metal 318.3 °C; the products into their tanks at 40.7 (naphtha), 59.0, 60.9,
+81.5 and 165.8 °C (residue), nothing vented, the water back at 45.2–46.0 °C.
+
+**Its cost, and what it was** (measured at M62.4's close, after the plant
+first shipped with its coil at `crude_unit.toml`'s 359.5 °C): started 40 K
+above its own settled metal, the coil settles over some 20 minutes (its
+`C/G` near 75 s), and every tick of that drift re-solved on its own states
+(M55.0) — 3–4 times on Newton, 6–9 on the game solver, at 7.9 and 24.9 ms a
+tick. Not the solvers' noise: each tick's first solve reads the last tick's
+states, and the move it sees, 5.8e-5 of a density every tick, is always the
+second cell's — the first that boils, at 1.4 % vapour, where the density moves
+fastest with the state; the passes then fall geometrically (Newton 5.8e-5,
+3.3e-6, 4.8e-8, 2.5e-9). Settled — past 12 000 ticks — it re-solved 0.7 times a
+tick on either solver. **Started at its settled 318.3 °C** (the plant as
+shipped, a fix commit after the first): 2.28 ms a tick on Newton and 2.67 on
+the game solver over 6 000 ticks, one re-solve a tick for the first 2 000 and
+0.1 after. A move a player makes — a duty, a valve — starts such a drift
+again: ledger row A29.
 
 What it still lacks is steam stripping (M63): its column keeps the reboiler,
 near 586 °C.

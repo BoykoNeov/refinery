@@ -9922,8 +9922,12 @@ enters liquid at 14.8 bar and leaves 39.5 % vapour at 2.08 bar and 282 °C; a
 two-phase transfer line into the column, which takes its latent heat and draws
 liquids; every product pumped through a water cooler into its tank, cooled to
 41–166 °C with nothing vented, the water back near 45 °C; tubes that burst
-into a choked boiling jet. Its cost, 7.9 ms a tick on Newton and 24.9 on the
-game solver, is past the frame budget — ledger row A29. Ledger row C6 taken.
+into a choked boiling jet. Corrected at the close: first shipped with its coil
+at `crude_unit.toml`'s 359.5 °C, 40 K from its own settled metal, it re-solved
+every tick of the 20-minute drift (7.9 / 24.9 ms a tick); started at its
+settled 318.3 °C it runs 2.3 / 2.7 ms — measured, not noise: the coil's first
+boiling cell, ledger row A29. A lumped coil on a boiling plant reads its metal
+hot, ledger row B62. Ledger row C6 closed.
 M62 stays open: M62.5, water through the column, is next. DESIGN §67.16.
 
 - Gates: `crude_unit_boiling_reference.rs` (2). Corpus: 61 of 62

@@ -42,10 +42,10 @@ fn edge<'a>(s: &'a Snapshot, name: &str) -> &'a EdgeSnapshot {
 /// transfer line is two-phase into the column; the column draws liquids; every
 /// product reaches its tank cooled and liquid, so no tank vents; the cooling
 /// water returns below 50 °C; the coil's metal stands far under its 550 °C
-/// limit. Measured settled (6 000 ticks): 134.2 kg/s, the coil's inlet at
-/// 14.8 bar, its outlet 282.2 °C at 2.08 bar and 39.5 % vapour, its metal
-/// 319.3 °C; the products 40.6–165.5 °C into their tanks, the water back at
-/// 45.2–46.0 °C.
+/// limit. Measured at 6 000 ticks: 134.4 kg/s, the coil's inlet at 14.7 bar,
+/// its outlet 281.4 °C at 2.08 bar and 39.2 % vapour, its metal 318.3 °C
+/// (where it starts); the products 40.7–165.8 °C into their tanks, the water
+/// back at 45.2–46.0 °C.
 #[test]
 fn the_boiling_crude_unit_boils_in_its_coil_and_nowhere_downstream() {
     let mut engine = build(PLANT);

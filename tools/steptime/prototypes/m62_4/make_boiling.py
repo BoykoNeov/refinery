@@ -24,6 +24,10 @@ rep(
     'description = "The crude unit as a plant that models boiling: a coil the crude boils in, a two-phase transfer line, and product lines cooled before their tanks."',
 )
 rep('boiloff = "none"', 'boiloff = "flash"\nline_flash = "equilibrium"')
+# The coil starts at its own settled metal, as crude_unit.toml's does at its
+# 359.5 °C: started 40 K hot, it settles over some 20 minutes, and every tick of
+# that drift re-solves on its own states (DEFERRED A29).
+rep("coil_temperature_c = 359.5", "coil_temperature_c = 318.3")
 rep(
     "fluid_heating_value_mj_per_kg = 42.686",
     "fluid_heating_value_mj_per_kg = 42.686\ncoil_cells = 8\ncoil_length_m = 800.0\ncoil_diameter_m = 0.24",

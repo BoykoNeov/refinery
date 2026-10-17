@@ -18,7 +18,10 @@
 #   on cooling water from 30 °C, returning near 45 °C — about 990 kg/s of it.
 #   Uncooled, a fifth of the column's output went up the tanks' vents.
 # - THE TUBES burst at 550 °C, as in every furnace plant; burst, their hole on
-#   the transfer line is a choked boiling jet (M62.4d).
+#   the transfer line is a choked boiling jet (M62.4d). The coil's metal starts
+#   at its own settled 318.3 °C, as `crude_unit.toml`'s does at its 359.5 °C:
+#   started 40 K away it takes some 20 minutes to settle, and a boiling plant
+#   re-solves every tick of that drift (docs/DEFERRED.md A29).
 #
 # What it still does not have: steam stripping (M63, on water, M62.5–M62.6) —
 # the column keeps its reboiler, which runs near 586 °C.
