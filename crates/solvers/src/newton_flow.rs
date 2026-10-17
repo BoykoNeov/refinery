@@ -568,6 +568,21 @@ fn assemble(
                 }
             }
         }
+        // A choking valve's flow through its jet's frozen resistance (M62.6c,
+        // docs/DESIGN.md §67.20): each end's share in its own column.
+        if let Some(choke) = c.choke {
+            for (column, k) in [(si, choke.src), (ti, choke.tgt)] {
+                if let Some(col) = column {
+                    let term = mdot * k;
+                    if let Some(s) = si {
+                        jac[s][col] -= term;
+                    }
+                    if let Some(t) = ti {
+                        jac[t][col] += term;
+                    }
+                }
+            }
+        }
         // R_src -= ṁ (outgoing), R_tgt += ṁ (incoming); J = −L.
         if let Some(s) = si {
             r[s] -= mdot;

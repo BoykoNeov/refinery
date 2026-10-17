@@ -188,3 +188,83 @@ full_open_bar = 0.1
         "choked, the flow holds: {flows:?}"
     );
 }
+
+/// **A move across the choke settles in a handful of iterations** (M62.6c,
+/// docs/DESIGN.md §67.20): the header dropped from 9 bar (unchoked) to 2
+/// (choked) in one command. Choked, the valve's flow no longer moves with the
+/// header, where its frozen branch says it moves as the √-law's; Newton reads
+/// the jet's own slope (`ChokeSlope`), and the game solver's node step too.
+#[test]
+fn a_move_across_the_choke_settles_quickly() {
+    for solver in ["newton", "simple"] {
+        let mut engine = settled(solver, 9.0);
+        let header = engine.graph.find_node("header").unwrap();
+        engine
+            .apply(refinery_core::snapshot::Command::SetReservoirPressure {
+                node: header,
+                pressure: refinery_core::units::Pascal(2.0e5),
+            })
+            .unwrap();
+        let mut worst = 0;
+        for t in 1..=20 {
+            engine
+                .tick()
+                .unwrap_or_else(|e| panic!("{solver}: tick {t}: {e}"));
+            let s = engine.snapshot();
+            assert!(s.solver.converged, "{solver}: tick {t}");
+            worst = worst.max(s.solver.iterations);
+        }
+        let choked = flow(&settled(solver, 1.5).snapshot());
+        let got = flow(&engine.snapshot());
+        assert!(
+            (got - choked).abs() < 1e-5 * choked,
+            "{solver}: {got} against {choked}"
+        );
+    }
+}
+
+/// The steam line with a junction past the valve and a long line on to the
+/// header: the valve's downstream end an unknown of the solve.
+fn steam_line_to_junction(solver: &str, sink_bar: f64) -> String {
+    steam_line(solver, sink_bar)
+        .replace(
+            "[[pipes]]\nname = \"steam_line\"\nfrom = \"steam_valve\"\nto = \"header\"\nlength_m = 2.0\ndiameter_m = 0.3\n",
+            "[nodes.manifold]\ntype = \"junction\"\n\n[[pipes]]\nname = \"steam_line\"\nfrom = \"steam_valve\"\nto = \"manifold\"\nlength_m = 2.0\ndiameter_m = 0.3\n\n[[pipes]]\nname = \"header_line\"\nfrom = \"manifold\"\nto = \"header\"\nlength_m = 200.0\ndiameter_m = 0.08\n",
+        )
+}
+
+/// **The choking valve's slope is in the solve** (M62.6c, docs/DESIGN.md
+/// §67.20): the valve into a manifold, a long line on to the header, the
+/// header dropped from 9 bar to 1.2 in one command. Choked, the valve's flow
+/// stops moving with the manifold's pressure, where its frozen branch says it
+/// moves as the √-law's. Measured on the first tick after the move: 5 Newton
+/// iterations and 5 game-solver sweeps with the jet's slope, 8 and 7 without.
+#[test]
+fn the_choking_valves_slope_shortens_the_solve() {
+    for solver in ["newton", "simple"] {
+        let src = steam_line_to_junction(solver, 9.0);
+        assert!(src.contains("manifold"), "the fixture's line was replaced");
+        let mut engine =
+            refinery_scenarios::build_engine(&refinery_scenarios::load_str(&src).unwrap()).unwrap();
+        for _ in 0..30 {
+            engine.tick().unwrap();
+        }
+        let header = engine.graph.find_node("header").unwrap();
+        engine
+            .apply(refinery_core::snapshot::Command::SetReservoirPressure {
+                node: header,
+                pressure: refinery_core::units::Pascal(1.2e5),
+            })
+            .unwrap();
+        let mut worst = 0;
+        for t in 1..=30 {
+            engine
+                .tick()
+                .unwrap_or_else(|e| panic!("{solver}: tick {t}: {e}"));
+            let s = engine.snapshot();
+            assert!(s.solver.converged, "{solver}: tick {t}");
+            worst = worst.max(s.solver.iterations);
+        }
+        assert!(worst <= 6, "{solver}: {worst} iterations a tick");
+    }
+}

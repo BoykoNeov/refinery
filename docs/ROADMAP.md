@@ -10005,3 +10005,23 @@ M62 stays open: M62.6c, part-liquid flow choking in a valve, is next.
   `crude_unit_wet_reference.rs` (the charge pinned), `column_steam_reference.rs`
   (a backward feed under steam). Mutations: five, all caught (one after the
   charge was pinned). Corpus: 63 of 63 byte-identical on both fidelities.
+
+### M62.6c — **LANDED** 2026-10-17: part-liquid choking measured and deferred; the solver repairs it needed
+
+Part-liquid choking in a valve — a subcooled stream that starts to boil in it,
+a two-phase one — was built behind a widened gate and measured: the flow solve
+first diverged on the gas-lock plant and the hot naphtha let-down, and three
+repairs made every plant converge on both fidelities: the choking valve's own
+slope in the Jacobian (choked, its flow stops moving with the downstream
+pressure, which the frozen branch could not say); the jet's onset rounded over
+a band of 2 % of the inlet's pressure, its switch opened at the band; and a
+correction to M62.4d — the density slope dropped every jet on its liquid side,
+reading a whole choke as a density slope. With the law on, four plants lost
+21–40 % of their flow and the pump screen's gas lock no longer happened; asked,
+the user chose to keep the repairs and defer the law (ledger row B63, with the
+coil re-tune they chose for when it ships). Nothing shipped moves. DESIGN §67.20.
+M62 stays open: M62.6d, the steam-stripped crude unit, and M62's close, are next.
+
+- Gates: `elements.rs` (2), `steam_valve_reference.rs` (2). Mutations: five,
+  three caught, two surviving where nothing live reaches them (§67.20).
+  Corpus: 63 of 63 byte-identical on both fidelities.

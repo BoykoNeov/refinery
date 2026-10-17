@@ -828,6 +828,59 @@ pub fn flashing_orifice(
     }
 }
 
+/// The half-width of the band, as a share of a valve's inlet pressure [-],
+/// across which a subcooled stream's start of boiling in the valve is rounded
+/// (`flashing_valve_flux`, M62.6c, docs/DESIGN.md §67.20).
+///
+/// **A CONVERGENCE AID, measured, not physics.** Where a subcooled stream starts
+/// to boil in a valve its flux turns a corner — the liquid's `√u` meets the ω
+/// jet with a smaller slope, flat at once where the jet chokes at its bubble
+/// pressure (high subcooling) — and a flow solve whose root sits near that
+/// corner stalls, every step's merit flat (§67.20). Rounded over this band the
+/// flux is C¹, and moves nowhere outside it.
+pub const FLASHING_ONSET_BAND: f64 = 0.02;
+
+/// A valve's normalised flux `G(u) = Q·√(α_v/P₀)` at a drop `u = s/P₀` [-]
+/// (M62.6c, docs/DESIGN.md §67.20): the liquid's `√u` below the drop
+/// `u_b = 1 − η_s` where its stream starts to boil, Leung's jet above it,
+/// `g(max(1 − u, η_c))/√2` — the same function, `omega_flux` being the
+/// liquid's Bernoulli above `η_s` — and on `[u_b − w, u_b + w]`, `w` the band
+/// (`FLASHING_ONSET_BAND`, narrowed to `u_b/2` near zero drop), a cubic Hermite
+/// from the liquid's value and slope to the jet's: C¹ at both ends, monotone by
+/// Fritsch and Carlson's condition (*SIAM J. Numer. Anal.* 17 (1980) 238), its
+/// two slopes scaled to `α² + β² ≤ 9` where they would not be. An inlet already
+/// boiling (`η_s = 1`) has no corner and no band.
+pub fn flashing_valve_flux(u: f64, eta_s: f64, omega: f64, eta_c: f64) -> f64 {
+    let jet = |u: f64| omega_flux((1.0 - u).max(0.0).max(eta_c), eta_s, omega) / 2f64.sqrt();
+    let onset = 1.0 - eta_s;
+    let half = FLASHING_ONSET_BAND.min(0.5 * onset);
+    if half <= 0.0 || u <= onset - half || u >= onset + half {
+        return jet(u);
+    }
+    let (a, b) = (onset - half, onset + half);
+    let h = b - a;
+    let (y0, y1) = (a.sqrt(), jet(b));
+    let d = 1e-3 * half;
+    let mut m0 = 0.5 / a.sqrt();
+    let mut m1 = (jet(b + d) - jet(b - d)) / (2.0 * d);
+    let secant = (y1 - y0) / h;
+    if secant > 0.0 {
+        let (alpha, beta) = (m0 / secant, m1 / secant);
+        let size = alpha * alpha + beta * beta;
+        if size > 9.0 {
+            let scale = 3.0 / size.sqrt();
+            m0 *= scale;
+            m1 *= scale;
+        }
+    }
+    let t = (u - a) / h;
+    let (t2, t3) = (t * t, t * t * t);
+    (2.0 * t3 - 3.0 * t2 + 1.0) * y0
+        + (t3 - 2.0 * t2 + t) * h * m0
+        + (-2.0 * t3 + 3.0 * t2) * y1
+        + (t3 - t2) * h * m1
+}
+
 /// A valve whose stream boils across it, composed with the pipe it discharges
 /// through (M62.6b, docs/DESIGN.md §67.19): Leung's ω jet — the burst hole's
 /// law, `flashing_orifice` — on the valve's OWN share of the drop.
@@ -840,13 +893,15 @@ pub fn flashing_orifice(
 /// g(s) = s + α_pipe·Q_v(s)²  =  |dp − β| ,   Q_v(s) = √(s/α_v)·r(s)
 /// ```
 ///
-/// `r(s) = g_ω(η_t)/√(2·s/p_up)` the jet's flux over the liquid law's at that
-/// drop, `η_t = max(1 − s/p_up, η_c)` — exactly 1 while the stream stays liquid
-/// through the valve (`1 − s/p_up ≥ η_s`). `Q_v` is non-decreasing in `s` (it
-/// rises to the choke and holds there), so `g` is strictly increasing and
-/// bisection finds the one root. The returned branch is `α_eff = α_v/r²` in
-/// series with the pipe, which reproduces `Q_v` at the root: a valve whose
-/// stream stays liquid through it is the liquid fold, bit for bit.
+/// `r(s) = G(u)/√u`, `u = s/p_up`, the valve's flux over the liquid law's at
+/// that drop (`flashing_valve_flux`: the jet, its onset rounded on a subcooled
+/// inlet, M62.6c) — exactly 1 while the stream stays liquid through the valve
+/// short of the onset's band. `Q_v` is non-decreasing in `s` (it rises to the
+/// choke and holds there; the rounding is monotone), so `g` is strictly
+/// increasing and bisection finds the one root. The returned branch is
+/// `α_eff = α_v/r²` in series with the pipe, which reproduces `Q_v` at the
+/// root: a valve whose stream stays liquid through it, short of the band, is
+/// the liquid fold, bit for bit.
 ///
 /// `η_c` is found once, outside the bisection (`omega_critical_ratio` is a
 /// search of its own). A closed valve and a zero drop return the liquid fold.
@@ -866,14 +921,15 @@ pub fn fold_flashing_valve(
         return pipe.in_series(valve);
     }
     let eta_c = omega_critical_ratio(eta_s, omega);
-    // The jet's flux over the liquid law's at a valve drop `s`.
+    // Short of the onset's band the stream is liquid through the valve.
+    let liquid_to = (1.0 - eta_s) - FLASHING_ONSET_BAND.min(0.5 * (1.0 - eta_s)).max(0.0);
+    // The valve's flux over the liquid law's at a valve drop `s`.
     let ratio = |s: f64| -> f64 {
         let drop = s / p_up;
-        let eta_a = (1.0 - drop).max(0.0);
-        if drop <= 0.0 || eta_a >= eta_s {
+        if drop <= 0.0 || drop <= liquid_to {
             return 1.0;
         }
-        omega_flux(eta_a.max(eta_c), eta_s, omega) / (2.0 * drop).sqrt()
+        flashing_valve_flux(drop, eta_s, omega, eta_c) / drop.sqrt()
     };
     let g = |s: f64| {
         let r = ratio(s);
@@ -969,6 +1025,64 @@ mod tests {
         }
         let below = fold_flashing_valve(none, valve, 2.0e5, p_up, 1.0, 1.0).flow(2.0e5, 0.0);
         assert!(below < choked * (1.0 - 1e-3), "{below} against {choked}");
+    }
+
+    /// The valve's subcooled inlets the onset's rounding is gated on: a high
+    /// subcooling that chokes at its bubble pressure at once (`η_c = η_s`, the
+    /// flashing rundown's naphtha), a low one, and one so near boiling its band
+    /// narrows to half its onset — `(η_s, ω)`.
+    const SUBCOOLED: [(f64, f64); 3] = [(0.704, 28.9), (0.93, 4.0), (0.985, 2.0)];
+
+    /// **The rounded onset moves nothing outside its band** (M62.6c,
+    /// docs/DESIGN.md §67.20): below it the liquid's `√u`, above it the jet's
+    /// flux, both to rounding.
+    #[test]
+    fn the_rounded_onset_moves_nothing_outside_its_band() {
+        for (eta_s, omega) in SUBCOOLED {
+            let eta_c = omega_critical_ratio(eta_s, omega);
+            let onset = 1.0 - eta_s;
+            let half = FLASHING_ONSET_BAND.min(0.5 * onset);
+            for u in [0.2 * onset, onset - 1.01 * half] {
+                assert_relative_eq!(
+                    flashing_valve_flux(u, eta_s, omega, eta_c),
+                    u.sqrt(),
+                    max_relative = 1e-14
+                );
+            }
+            for u in [onset + 1.01 * half, onset + 0.2, 0.9] {
+                let jet = omega_flux((1.0 - u).max(eta_c), eta_s, omega) / 2f64.sqrt();
+                assert_eq!(flashing_valve_flux(u, eta_s, omega, eta_c), jet);
+            }
+        }
+    }
+
+    /// **The rounded onset is C¹ and monotone**: its slope is continuous at both
+    /// ends of the band (one-sided differences agree), and the flux never falls
+    /// as the drop grows — what keeps the valve fold's inner root unique.
+    #[test]
+    fn the_rounded_onset_is_continuous_in_slope_and_never_falls() {
+        for (eta_s, omega) in SUBCOOLED {
+            let eta_c = omega_critical_ratio(eta_s, omega);
+            let g = |u: f64| flashing_valve_flux(u, eta_s, omega, eta_c);
+            let onset = 1.0 - eta_s;
+            let half = FLASHING_ONSET_BAND.min(0.5 * onset);
+            let h = 1e-7 * half;
+            for end in [onset - half, onset + half] {
+                let left = (g(end) - g(end - h)) / h;
+                let right = (g(end + h) - g(end)) / h;
+                assert!(
+                    (left - right).abs() <= 1e-3 * left.abs().max(right.abs()).max(1e-12),
+                    "(η_s {eta_s}, ω {omega}) at {end}: slope {left} then {right}"
+                );
+            }
+            let mut previous = g(onset - 2.0 * half);
+            for k in 1..=400 {
+                let u = onset - 2.0 * half + 4.0 * half * k as f64 / 400.0;
+                let here = g(u);
+                assert!(here >= previous, "(η_s {eta_s}, ω {omega}): falls at {u}");
+                previous = here;
+            }
+        }
     }
 
     /// **The stated gap**: the ω law takes all-vapour steam as an isothermal

@@ -26225,3 +26225,89 @@ charge); the fold always the liquid one; no choke; the jet read at the whole
 branch's drop; the liquid fold whatever the inlet. **Corpus**: 63 of 63
 byte-identical on both fidelities — no shipped plant passes all-vapour flow
 through a valve.
+
+### 67.20 Part-liquid choking in a valve (M62.6c) — built, measured, deferred; its solver repairs kept
+
+M62.6b choked a valve only on an all-vapour stream (§67.19). M62.6c built the
+rest — a subcooled stream that starts to boil in the valve, and a two-phase one
+— behind a widened gate, measured it, and on the user's decision **kept the
+solver repairs it needed and deferred the law** (ledger row B63): with the gate
+widened four shipped plants lost 21–40 % of their flow, the pump screen's gas
+lock at 120 °C no longer happened, and three hand-calculation scripts carry the
+old valve law. Nothing shipped moves: the gate stays at all vapour.
+
+**Why the widened law first diverged, and the three repairs.** Measured on the
+failing fixtures (the gas-lock plant at 118–122 °C, the hot naphtha let-down at
+2.4 bar), comparing Newton's assembled Jacobian with a brute-force one
+(`±10 Pa` on each unknown, every edge recompiled) and probing the merit along
+the failed step:
+
+1. **The jet's resistance is frozen at the iterate, and choked that freezing is
+   wrong in sign of effect.** The branch's `α_eff = α_v/r²` reproduces the jet
+   at the iterate's drop, but its flow then moves with the downstream pressure
+   as the √-law's, where a choked jet's does not move at all; a step built on it
+   is not a descent direction for the recompiled residual. **`ChokeSlope`**
+   (`network::choke_slope`): `α_eff` refolded with each end's pressure moved by
+   `±DENSITY_SLOPE_DELTA` — the drop with it, the inlet's pressure where that end
+   is upwind, its `(η_s, ω)` read afresh there (near its bubble pressure ω moves
+   fast) — and `∂ ln Q/∂α = −1/(2α)`; Newton adds `ṁ·k` in each end's column
+   (the relief slope's arrangement), the game solver's node step reads the same
+   through `CompiledEdge::choke_share`. Choked, it cancels the frozen
+   downstream slope to 0.1 %. The inlet's DENSITY is not moved there:
+   `DensitySlope` carries that share.
+2. **The jet's onset is a corner.** Where a subcooled stream starts to boil in
+   the valve the liquid's flux `√u` meets the jet with a smaller slope — at high
+   subcooling the jet chokes at its bubble pressure at once and is flat — and a
+   root near it stalls Newton, every step's merit flat. **Rounded**
+   (`elements::flashing_valve_flux`): on `[u_b − w, u_b + w]`, `u_b = 1 − η_s`,
+   `w = FLASHING_ONSET_BAND` (2 % of the inlet's pressure, narrowed to `u_b/2`
+   near zero drop; none on an inlet already boiling), a cubic Hermite from the
+   liquid's value and slope to the jet's, monotone by Fritsch–Carlson. **A
+   convergence aid, measured, not physics**: the answer is unmoved outside the
+   band, and a valve short of it is the liquid fold bit for bit. **And the
+   switch opens at the band**: `valve_flashing` reads the jet from where the
+   rounded onset starts (the far end's pressure lowered by `w·P₀`), not where the
+   stream's bubble pressure reaches the far end — measured, a check valve whose
+   drop stood in the band jumped 13 % in `α` between two trial steps 30 Pa
+   apart, the line search's whole stall.
+3. **Found while building: the density slope dropped the jet on its liquid
+   side** — a correction to M62.4d's density slope. Its liquid side compiled the
+   edge under `LineFlash::LIQUID`, which switches off every jet with the
+   density; on a choking valve whose inlet stood at its bubble pressure the
+   difference read the jet's whole choke as a density slope, 20 times the slope
+   (0.0375 kg/(s·Pa) against the brute force's 8.7e-4). The liquid side now
+   compiles under the plant's line flash with the LIQUID'S density as the
+   override, so a valve's or a hole's jet stands on both sides. It moves no
+   shipped plant (63 of 63 byte-identical on both fidelities) and no burst-hole
+   gate (`boiling_jet_reference.rs` unchanged).
+
+With all three and the gate widened, every plant and fixture converged on both
+fidelities; the one remaining cost miss was a fixture at 12 Newton iterations a
+tick against its gate's 10.
+
+**What runs today.** Under the all-vapour gate repair 1 runs (on steam valves,
+gated below) and repair 3 runs (on every density slope, moving nothing shipped).
+Repair 2 — the rounding and the early switch — is **dormant**: no all-vapour inlet
+has an onset (`η_s = 1`). Its plant-level evidence came from a temporary widened
+gate, since removed; only its unit tests gate it. Widening the gate (B63) must
+re-run the FULL tier and the corpus on both fidelities before trusting it.
+
+**Gates** (the law's rounding, and the repairs live under the all-vapour gate):
+- `elements.rs` (2): the rounded onset moves nothing outside its band (the
+  liquid's `√u` below to 1e-14, the jet's flux above exactly); it is C¹ at both
+  band ends and never falls across the band — three subcooled inlets, high
+  subcooling, low, and one whose band narrows.
+- `steam_valve_reference.rs` (2): a move across the choke settles (both
+  fidelities); the choking valve's slope shortens the solve — a steam valve
+  into a manifold, the header dropped 9 → 1.2 bar, 5 Newton iterations and 5
+  game-solver sweeps on the first tick, 8 and 7 without the slope.
+
+**Mutations**: five. Three caught: Newton without the choke slope, the game
+solver without its share (both by the manifold's iteration gate), no rounding
+(by the C¹ gate). Two survive, and are said so rather than gated by a fixture
+built to fail: the switch at the bubble pressure rather than the band (dormant
+under the all-vapour gate, B63), and the density slope's liquid side without
+the jet (no shipped plant or gate has a jet on a density slope's liquid side:
+it needs an inlet at its bubble pressure through a choking valve or a hole,
+which the widened gate reached and the all-vapour one does not). **Corpus**: 63
+of 63 byte-identical on both fidelities.

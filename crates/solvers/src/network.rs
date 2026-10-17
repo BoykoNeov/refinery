@@ -13,7 +13,7 @@ use crate::elements::{
     cavitation_head_fraction, cavitation_head_fraction_dsigma, check_opening, check_opening_slope,
     compressor_multiplier, flashing_orifice, fold_flashing_valve, fold_gas_valve, gas_orifice,
     pipe_resistance, relief_opening, relief_opening_slope, specific_heat_ratio_factor,
-    two_phase_head_multiplier, QuadraticBranch, CHOKE_BLEND, ORIFICE_CD,
+    two_phase_head_multiplier, QuadraticBranch, CHOKE_BLEND, FLASHING_ONSET_BAND, ORIFICE_CD,
 };
 use refinery_core::components::{Composition, Phase, Slate};
 use refinery_core::energy::{boundary_temperature, upwind_end, NodeStates};
@@ -106,6 +106,26 @@ pub struct CompiledEdge {
     /// line flash. How the push moves with the pump's pressure rides on the
     /// edge's `density_slope`, whose two sides recompile this whole branch.
     pub pump_two_phase: Option<PumpTwoPhase>,
+    /// How a valve's flow moves with its two ends' pressures through its
+    /// boiling jet, which the branch above holds frozen at the iterate (M62.6c,
+    /// docs/DESIGN.md §67.20). `None` on every edge whose valve passes its
+    /// stream by the liquid law.
+    pub choke: Option<ChokeSlope>,
+}
+
+/// A choking valve's slope at one iterate (M62.6c, docs/DESIGN.md §67.20):
+/// `d ln ṁ / d P` [1/Pa] in each end's column through the jet's effective
+/// resistance, `α_eff`, which the branch holds frozen. Choked, the flow stops
+/// moving with the downstream pressure, where the frozen branch says it moves
+/// as the √-law's — and a Newton step built on that is not a descent direction
+/// for the recompiled residual. Newton adds `ṁ·k` to each column, the relief
+/// slope's arrangement.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChokeSlope {
+    /// `∂ ln ṁ/∂P_src` [1/Pa] through `α_eff`.
+    pub src: f64,
+    /// `∂ ln ṁ/∂P_tgt` [1/Pa] through `α_eff`.
+    pub tgt: f64,
 }
 
 /// A running pump whose inlet is partly vapour, at one iterate (M54,
@@ -464,6 +484,25 @@ impl CompiledEdge {
     /// sits inside its band in ordinary running, its opening moves with its
     /// own drop, and a node step on the frozen slope overshoots by the ratio of
     /// the two — about three on the M30 fixture, which diverged at tick 959.
+    /// A choking valve's share of the slope of `node`'s balance [kg/(s·Pa)],
+    /// signed as `conductance` is — `∂ṁ/∂P_src` at the source, `−∂ṁ/∂P_tgt` at
+    /// the target — through the jet's frozen resistance (`ChokeSlope`, M62.6c,
+    /// docs/DESIGN.md §67.20). `0.0` on every other edge and node. The game
+    /// solver's node step reads it; Newton's assembly takes both columns.
+    pub fn choke_share(&self, node: NodeId, dp: f64, eps: f64) -> f64 {
+        let Some(choke) = self.choke else {
+            return 0.0;
+        };
+        let mdot = self.rho * self.branch.flow(dp, eps);
+        if node == self.src {
+            mdot * choke.src
+        } else if node == self.tgt {
+            -mdot * choke.tgt
+        } else {
+            0.0
+        }
+    }
+
     pub fn conductance(&self, dp: f64, eps: f64) -> f64 {
         let frozen = self.rho * self.branch.flow_ddp(dp, eps);
         if self.check_opening_log_slope == 0.0 {
@@ -1045,15 +1084,32 @@ pub fn compile_edge_with(
                 upwind_node,
                 Some(d),
             )?,
+            // The liquid's own density — with the plant's line flash still
+            // reading the stream's state for what boils THROUGH the edge, a
+            // valve's or a hole's jet (M62.6c, docs/DESIGN.md §67.20). Compiled
+            // under `LineFlash::LIQUID` instead, the liquid side dropped the
+            // jet with the density, and the difference read the jet's whole
+            // choke as a density slope: 20 times the slope on a choking valve
+            // whose inlet stands at its bubble pressure.
             None => compile_edge_at(
                 graph,
                 eid,
                 slate,
                 previous_states,
                 pressures,
-                LineFlash::LIQUID,
+                flash,
                 upwind_node,
-                None,
+                Some(TwoPhaseDensity {
+                    mixture: KgPerM3(liquid_density(
+                        graph,
+                        slate,
+                        previous_states,
+                        eid,
+                        upwind_node,
+                        upwind,
+                    )?),
+                    liquid_volume_share: 1.0,
+                }),
             )?,
         };
         Ok((c.rho, c.branch))
@@ -1771,6 +1827,7 @@ fn compile_edge_at(
             density_slope: None,
             heated_share: 1.0,
             pump_two_phase: None,
+            choke: None,
         });
     }
     let upwind = pressures[&upwind_node].max(RHO_EVAL_P_FLOOR);
@@ -1879,6 +1936,7 @@ fn compile_edge_at(
             density_slope: None,
             heated_share: 1.0,
             pump_two_phase: None,
+            choke: None,
         });
     }
 
@@ -1908,6 +1966,8 @@ fn compile_edge_at(
     let mut check: Option<(f64, f64)> = None;
     let mut check_band: Option<CheckBand> = None;
     let mut pump_suction: Option<PumpSuctionSlope> = None;
+    // A choking valve's slope through its jet (M62.6c), likewise.
+    let mut choke: Option<ChokeSlope> = None;
     let mut pump_two_phase: Option<PumpTwoPhase> = None;
 
     match &graph.node(src).kind {
@@ -2123,9 +2183,35 @@ fn compile_edge_at(
                 flash,
                 x_t.is_some(),
             )?;
+            let unfolded = branch;
             branch = fold_gas_service(
                 graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind, flashing,
             )?;
+            if flashing.is_some() {
+                // The inlet's `(η_s, ω)` move with its pressure: read afresh
+                // at each side of the difference.
+                let inlet = |pressure: f64| {
+                    valve_flashing(
+                        graph,
+                        slate,
+                        previous_states,
+                        pipe,
+                        upwind_node,
+                        (pressure, pressures[&downwind]),
+                        flash,
+                        false,
+                    )
+                };
+                choke = choke_slope(
+                    unfolded,
+                    liquid,
+                    dp,
+                    upwind,
+                    upwind_node == src,
+                    inlet,
+                    branch,
+                )?;
+            }
         }
         // A check valve is a valve whose opening is read off the FORWARD DRIVE
         // across this branch, `S = dp − β` with `β` the outlet pipe's static head
@@ -2164,9 +2250,35 @@ fn compile_edge_at(
                 flash,
                 x_t.is_some(),
             )?;
+            let unfolded = branch;
             branch = fold_gas_service(
                 graph, src, pipe, slate, branch, liquid, *x_t, dp, upwind, flashing,
             )?;
+            if flashing.is_some() {
+                // The inlet's `(η_s, ω)` move with its pressure: read afresh
+                // at each side of the difference.
+                let inlet = |pressure: f64| {
+                    valve_flashing(
+                        graph,
+                        slate,
+                        previous_states,
+                        pipe,
+                        upwind_node,
+                        (pressure, pressures[&downwind]),
+                        flash,
+                        false,
+                    )
+                };
+                choke = choke_slope(
+                    unfolded,
+                    liquid,
+                    dp,
+                    upwind,
+                    upwind_node == src,
+                    inlet,
+                    branch,
+                )?;
+            }
         }
         _ => {}
     }
@@ -2220,7 +2332,55 @@ fn compile_edge_at(
         density_slope: None,
         heated_share,
         pump_two_phase,
+        choke,
     })
+}
+
+/// A choking valve's `ChokeSlope` at the iterate (M62.6c, docs/DESIGN.md
+/// §67.20): `α_eff` refolded with each end's pressure moved by
+/// `±DENSITY_SLOPE_DELTA` — the drop with it, and the inlet's pressure where
+/// that end is upwind, its `(η_s, ω)` read afresh there by `inlet` (near its
+/// bubble pressure ω moves fast with it) — and `∂ ln Q/∂α = −1/(2α)` at the
+/// frozen branch. The inlet's DENSITY is not moved here: `DensitySlope` carries
+/// that share. `None` where the fold left the liquid branch (no jet to move).
+fn choke_slope(
+    pipe: QuadraticBranch,
+    valve: QuadraticBranch,
+    dp: f64,
+    p_up: f64,
+    upwind_is_src: bool,
+    inlet: impl Fn(f64) -> Result<Option<(f64, f64)>, SimError>,
+    folded: QuadraticBranch,
+) -> Result<Option<ChokeSlope>, SimError> {
+    if !folded.alpha.is_finite() || folded.alpha <= 0.0 {
+        return Ok(None);
+    }
+    let delta = DENSITY_SLOPE_DELTA;
+    let alpha_at = |dp: f64, at: f64| -> Result<f64, SimError> {
+        let at = at.max(RHO_EVAL_P_FLOOR);
+        Ok(match inlet(at)? {
+            Some((eta, omega)) => fold_flashing_valve(pipe, valve, dp, at, eta, omega).alpha,
+            None => pipe.in_series(valve).alpha,
+        })
+    };
+    let (src_up, tgt_up) = if upwind_is_src {
+        (delta, 0.0)
+    } else {
+        (0.0, delta)
+    };
+    let d_src = (alpha_at(dp + delta, p_up + src_up)? - alpha_at(dp - delta, p_up - src_up)?)
+        / (2.0 * delta);
+    let d_tgt = (alpha_at(dp - delta, p_up + tgt_up)? - alpha_at(dp + delta, p_up - tgt_up)?)
+        / (2.0 * delta);
+    let k = -1.0 / (2.0 * folded.alpha);
+    let slope = ChokeSlope {
+        src: k * d_src,
+        tgt: k * d_tgt,
+    };
+    Ok(
+        (slope.src.is_finite() && slope.tgt.is_finite() && (slope.src != 0.0 || slope.tgt != 0.0))
+            .then_some(slope),
+    )
 }
 
 /// Compose a valve of any kind with the pipe it discharges through: in closed
@@ -2336,13 +2496,18 @@ fn valve_flashing(
     if !all_vapour {
         return Ok(None);
     }
+    // The jet is read from where its rounded onset starts — half a band short
+    // of the stream's bubble pressure reaching the far end — so a valve whose
+    // drop stands in the band does not jump from the liquid law to the rounded
+    // flux as the far end crosses that pressure (M62.6c, §67.20). Short of the
+    // band the fold IS the liquid law, so reading it early moves nothing.
     flashing_inlet(
         graph,
         slate,
         previous_states,
         pipe,
         upwind_node,
-        (p_up, p_down),
+        (p_up, p_down - FLASHING_ONSET_BAND * p_up),
         flash,
     )
 }

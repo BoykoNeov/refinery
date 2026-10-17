@@ -378,6 +378,8 @@ impl SimpleFlowSolver {
                     if share != 0.0 {
                         g_sum += if c.src == nid { share } else { -share };
                     }
+                    // A choking valve's flow through its jet (M62.6c, §67.20).
+                    g_sum += c.choke_share(nid, dp, self.eps_dp);
                     imbalance += if incoming { mdot } else { -mdot };
                     scale = scale.max(mdot.abs());
                 }
