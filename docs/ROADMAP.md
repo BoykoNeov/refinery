@@ -10239,3 +10239,25 @@ column starts cold by a continuation from the same column with its reboiler;
 a flow loop; and the column screen plays it. New along the way: E30 (a loop
 cannot meter the pipe into a celled coil). Its close-out report is at the top
 of `docs/MILESTONES.md`. Next is `docs/PLAN.md`'s Phase 2.
+
+## M65 — a wetter crude: the column's cold start retried, a flooded column's pumped lines, the crude's water by command; ledger row C14; opened on a decision
+
+Asked after M64 closed (2026-10-18) as "Phase 2 of `docs/PLAN.md`, starting
+with C14, the wetter crude — do it". The user's decisions (DESIGN §70): a
+column that cannot start cold starts again from halved pumparounds and walks
+them back; a new plant at 2 % water; the flooded column's halt on pumped
+product lines fixed here; the crude's water changed by command, here.
+
+### M65.0 — **SPECIFIED** 2026-10-18: the design note — M65 stays OPEN
+
+DESIGN §70. Probed first (`tools/steptime/prototypes/m65_0/`, `FINDINGS.md`):
+the wetter crude's charge falls (112.8 kg/s at 0.3 % water, 76.1 at 2 %, 43.7
+at 10 %) and the column's cold start runs only in a narrow range of
+pumparounds that closes as the water rises (0.45–0.95 of the shipped 40 MW at
+2 %, 0.55–0.65 at 10 %); warm, the same column runs from zero to three times
+them. No feed-derived base fits; halving the pumparounds and walking them back
+starts every share 0.3–20 % (tick 1 108–114 ms against 95–102). M63.4's flood
+rule halts the crude unit at 15–20 %: its pumped naphtha line refuses the empty
+draw. Slices: M65.1 the cold start retried, M65.2 the flooded column's pumped
+lines, M65.3 the crude's water by command, M65.4 the wetter crude unit. No
+engine code changed.

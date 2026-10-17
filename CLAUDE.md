@@ -189,8 +189,10 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the next work is
-`docs/PLAN.md`'s Phase 2 (C14, C15, C12, …), each opened as a milestone on the user's word. **Latest closed:
+Work only on the current milestone unless asked. **Current: M65 (open)** — a wetter crude (ledger C14:
+the column's cold start retried from halved pumparounds, a flooded column's pumped product lines, the crude's
+water by command, a 2 % wet crude unit); M65.0 specified (DESIGN §70), M65.1 next. After it, `docs/PLAN.md`'s
+Phase 2 (C15, C12, …). **Latest closed:
 M64 (2026-10-18)**: steam stripping — a column's reboiler held at zero with the reflux the result, its cold
 start by a continuation, `crude_unit_stripped.toml`, and the column screen's fourth plant on an optimized
 Godot build (DESIGN §69; C7 taken; E30 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one

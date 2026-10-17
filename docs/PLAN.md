@@ -42,7 +42,11 @@ Ticked when it lands; struck when the user rules it out.
 ## Phase 2 — the column after M64
 
 - [ ] **C14** — the wet crude unit on a wetter crude: the pumparounds against the
-      charge.
+      charge. **M65** (DESIGN §70): M65.0 probe and design note (done
+      2026-10-18, `tools/steptime/prototypes/m65_0/FINDINGS.md` — the cold
+      start, not the column); [ ] M65.1 the cold start retried from halved
+      pumparounds; [ ] M65.2 a flooded column's pumped product lines; [ ] M65.3
+      the crude's water by command; [ ] M65.4 the wetter crude unit (2 %).
 - [ ] **C15** — the stripped crude unit started from a cold plant: the furnace
       lit, the column on its reboiler, the steam cut in and the reboiler handed
       down to zero as the feed heats (asked for 2026-10-17; M64 starts hot).

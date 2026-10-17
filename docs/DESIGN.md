@@ -27027,3 +27027,139 @@ of the timeline's commands dropped in turn; three caught. The godot-feature
 clippy is clean.
 
 **What moved**: nothing in the engine; no plant's numbers.
+
+## 70. A wetter crude — the column's cold start retried, a flooded column's pumped lines, the crude's water by command (M65) — specified before building
+
+Ledger row C14, the first of `docs/PLAN.md`'s Phase 2, asked for as "Phase 2 …
+starting with C14, the wetter crude — do it" (2026-10-18). C14 said the wet
+crude unit (`crude_unit_wet.toml`, 0.3 % water) halts on tick 1 with 2 % water
+or more, and suggested scaling the pumparounds with the feed or refusing the
+setting by name. The probe says neither (§70.0). The user's decisions, in plain
+words (2026-10-18):
+
+1. **A column that cannot start on tick 1 starts again from half its
+   pumparounds** (halved up to four times) **and walks them back to its own**
+   within the tick. Not "scale the pumparounds with the feed", not a refusal
+   by name.
+2. **A new plant: the wet crude unit on a crude 2 % water** — a desalter upset.
+3. **The flooded column's gap is fixed in M65** (found by the probe, §70.0):
+   M63.4's pass-through halts the crude unit, its pumped product lines refusing
+   their empty draws.
+4. **The crude's water changes by command, in M65**, and a running plant is
+   tested through a wet slug.
+
+### 70.0 Probed before the forks were offered (2026-10-18)
+
+Throwaway, kept in `tools/steptime/prototypes/m65_0/` with `FINDINGS.md` (every
+number below): generators for the wetter crude and its pumparounds, a warm walk
+(`probe_walk.rs`) and `probe_start.patch` (two start aids behind switches).
+
+- **The charge falls as the water rises** — the supply boils harder through the
+  fixed valve: 112.8 kg/s at 0.3 %, 91.1 at 1 %, 76.1 at 2 %, 56.6 at 5 %, 43.7
+  at 10 % (finding 1). 2 % and more halt on tick 1.
+- **The cold start runs in a narrow range of pumparounds** that closes as the
+  water rises: 0.40–1.30 of the shipped 40 MW at 0.3 %, 0.45–0.95 at 2 %,
+  0.55–0.65 at 10 % (finding 2).
+- **Warm, there is no range**: started inside it and walked 4 MW every 300
+  ticks, the column runs from zero to three times the shipped pumparounds at
+  2, 3, 5 and 10 % (finding 3). C14 is the cold start, not the column.
+- **No feed-derived base fits** (finding 4): the low edge sits near 20 MW
+  whatever the feed, the high one falls with it — in units of the feed's latent
+  heat flow (M64.2's base) the ranges do not overlap. Scaled with the charge,
+  the pumparounds miss 10 %.
+- **Halved, then walked back, starts every share** 0.3–20 %, at the shipped 40
+  MW (from half) and at 80 MW (from a quarter); zero is not a base that always
+  starts (finding 6). Tick 1: 108–114 ms against the shipped plant's 95–102.
+  Run 12 000 ticks on both fidelities, identical to every printed digit: at 2 %
+  the charge 75.1 kg/s, 59 % of it vapour by mass into the column, the coil
+  settled at 340 °C; at 5 % 55.4 kg/s, 73 %, the coil still creeping (363 °C);
+  at 10 % 42.5 kg/s, 89 %, 394 °C and creeping (limit 550).
+- **The low edge has its own cure**, not taken (decision 1): a cold warm-up
+  that stops at its last physical iterate starts every share from 0.2 (finding
+  5). It does not move the high edge.
+- **A charge loop does not hold the charge** past about 3 % (finding 7): a Kv
+  400 valve fully open passes 97.5 kg/s at 5 %, 75.2 at 10 %.
+- **M63.4's flood rule halts the crude unit** (finding 8): at 15 and 20 % without
+  the fix the column refuses, floods — and the naphtha line refuses its empty
+  draw ("arrives at 0.81 bar against the store's 1.05 bar"). The pass-through
+  hands its empty draws the feed's composition at the feed's temperature
+  (`flooded_pass_through`), a hot stream mostly vapour at the line's pressure,
+  and the line's march (`march_draw_lines`, §67.13) reads its static heads and
+  its pump's head through that density. M63.4 measured the rule on a tank-fed
+  column with no pumped lines.
+
+### 70.1 Fork 1 — the cold start retried from halved pumparounds
+
+On a heat-balance column under Newton with pumparounds and no held reboiler,
+when M61's cold start (the fixed-point warm-up, then Newton) refuses: solve the
+same column with every pumparound at half its duty, cold, the same way; if that
+refuses, at a quarter, and so on, at most four halvings. From the first that
+solves, walk the pumparounds back to the column's own in `CONTINUATION_STEPS`
+Newton solves, each from the last, the last the column's own equations exactly
+— M64.2's walk with the duty unheld. The halving is a convergence aid, not
+physics (C10's kind): the warm column runs at any of these duties.
+
+- **Only on a refusal.** A column whose cold start solves never halves, so
+  every shipped plant is byte-identical.
+- **A refusal stays honest.** When no halving starts, or the walk stops, the
+  refusal is the column's original cold one — its reason and physical cause —
+  with a sentence saying the halved starts failed too and where the walk
+  stopped (M63.4's review: a fallback must not hide a cause).
+- **The held column keeps M64.2's continuation**; the two do not nest.
+- Its cost is paid on the passes that need it; M65.1 measures whether
+  `ColumnPass::earlier_pass` should carry the walked profile to the tick's
+  later passes, as M64.2 does for the held column.
+
+### 70.2 Fork 2 — a flooded column's pumped product lines
+
+The pass-through's empty draws must not halt a plant whose product lines are
+pumped. The rule is set in M65.2 after a probe on the crude unit — first finding
+the water share at which the crude unit still floods once M65.1 is in. The
+candidates: the empty draws carry a liquid state rather than the hot feed (the
+line is full of liquid that is not moving), or a line that carries nothing is
+not asked to deliver (its pump dead-headed against its check). Offered to the
+user with the numbers if they differ in what a player sees.
+
+### 70.3 Fork 3 — the crude's water by command
+
+`Command::SetSourceComposition { node, composition }` — a supply's mass
+fractions over the slate, from the next tick on, as `SetSourceTemperature`
+moves its temperature (M52, §57): finite, non-negative, one per slate member,
+summing to one; refused off a supply; refused where the new liquid would boil
+at the supply's pressure, unless the plant's line flash carries vapour (the
+same `refuse_boiling_supply`). General rather than a water key: the engine
+gains a handle on a supply's composition, and a wetter crude is one use of it.
+Downstream holdups mix it in through their inventories. The story test: the
+shipped wet crude unit settled, its crude stepped to 2 % water and back, and a
+wet slug past the flood (§70.2).
+
+### 70.4 Fork 4 — the plant: a new file at 2 %
+
+`scenarios/crude_unit_wetter.toml`, generated from `crude_unit_wet.toml`: the
+crude 2 % water, the oil scaled to 98 %, the coil declared at its settled
+temperature, everything else as shipped — its tick 1 started by fork 1. Both
+fidelities; the corpus's 66th plant.
+
+### 70.5 What moves, and what is deferred
+
+**Moves**: nothing shipped at M65.1 and M65.3 (a fallback only on a refusal; a
+new command). M65.2 changes what a flooded column's empty draws carry, on a
+tick that today halts or (on the tank-fed column) passes; a fingerprint moves
+only if a shipped plant floods — measured at the slice.
+
+**Taken**: C14.
+
+Deferred: the low edge of the cold start (finding 5's cure, not taken); the
+coil's creep on a charge under half the shipped (5 % and wetter: a furnace on
+outlet-temperature control would hold it — E1b); the realistic flash of a
+plant wetter than 2 %.
+
+### 70.6 The slices
+
+- **M65.1 — the cold start retried.** Fork 1; gates on the wetter crude at 2,
+  5 and 10 % (tick 1 runs; settled, the column the same as one started inside
+  the range) and on the refusal's text when nothing starts.
+- **M65.2 — a flooded column's pumped lines.** Fork 2, probed first.
+- **M65.3 — the crude's water by command.** Fork 3, its refusals, the bridge's
+  referent, and the slug story.
+- **M65.4 — the wetter crude unit.** Fork 4.

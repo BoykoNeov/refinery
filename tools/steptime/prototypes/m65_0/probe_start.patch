@@ -1,0 +1,154 @@
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 9c2b194..7858bbd 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -94,6 +94,8 @@ const COLD_WARM_UP_ITERATIONS: u32 = 30;
+ /// steamed crude unit's 41.8 MW to zero in ten and landed on the warm walk's
+ /// answer (§69.0, finding 5).
+ const CONTINUATION_STEPS: u32 = 10;
++const M65_HALVINGS: u32 = 4;
++thread_local! { static M65_IN_BASE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+ 
+ /// The side cooling a held column's base carries in all, its own pumparounds
+ /// topped up to it, as a share of the feed's latent heat flow [-] (M64.2,
+@@ -725,7 +727,7 @@ impl HeatBalanceCascade {
+             let flows = if warm.is_none() && iterations == 1 {
+                 plan.flows(spec, &previous, feed_flow, setup.feed_molar)?
+             } else {
+-                stage_balance_flows(
++                match stage_balance_flows(
+                     plan,
+                     spec,
+                     &StageState {
+@@ -742,8 +744,17 @@ impl HeatBalanceCascade {
+                     feed_flow,
+                     setup.feed_molar,
+                     setup.feed_enthalpy,
+-                )?
+-                .0
++                ) {
++                    Ok(f) => f.0,
++                    // M65PROBE: a cold warm-up stops at its last physical iterate.
++                    Err(e) => {
++                        if warm.is_none() && std::env::var("M65_WARMUP_STOP").is_ok() {
++                            eprintln!("M65PROBE warm-up stopped at iteration {iterations}: {}", e.to_string().chars().take(90).collect::<String>());
++                            break;
++                        }
++                        return Err(e);
++                    }
++                }
+             };
+             last_vapour = Some(flows.vapour.clone());
+             if dry_water.is_some() {
+@@ -957,6 +968,111 @@ impl HeatBalanceCascade {
+         if let Some(held) = setup.spec.reboiler_duty {
+             return self.continuation(setup, &equations, held.value());
+         }
++        eprintln!(
++            "M65PROBE feed_molar={:.3} latent={:.1} energy_scale_mw={:.4} pa_mw={:.4}",
++            setup.feed_molar,
++            latent,
++            setup.feed_molar * latent / 1e6,
++            plan.side_heat.iter().sum::<f64>() / 1e6
++        );
++        if std::env::var("M65_CONT").is_ok()
++            && !M65_IN_BASE.with(|f| f.get())
++            && plan.side_heat.iter().sum::<f64>() > 0.0
++        {
++            let first = self.m65_cold(setup, &equations, warm_failure.as_ref());
++            if first.is_ok() {
++                return first;
++            }
++            for halvings in 1..=M65_HALVINGS {
++                let scale = 0.5f64.powi(halvings as i32);
++                if let Ok(profile) = self.m65_walk(setup, &equations, scale) {
++                    eprintln!("M65PROBE started from {scale} of the pumparounds");
++                    return Ok(profile);
++                }
++            }
++            return first;
++        }
++        self.m65_cold(setup, &equations, warm_failure.as_ref())
++    }
++
++    fn m65_walk(
++        &self,
++        setup: &ColumnSetup<'_>,
++        equations: &ColumnEquations<'_>,
++        scale: f64,
++    ) -> Result<Profile, SimError> {
++        let plan = &setup.plan;
++        let mut base_plan = plan.clone();
++        for heat in base_plan.side_heat.iter_mut() {
++            *heat *= scale;
++        }
++        let base_spec = CascadeSpec {
++            pumparounds: setup
++                .spec
++                .pumparounds
++                .iter()
++                .map(|p| Pumparound { stage: p.stage, duty: Watt(p.duty.value() * scale) })
++                .collect(),
++            ..setup.spec.clone()
++        };
++        let base_setup = ColumnSetup {
++            pass: setup.pass,
++            thermo: setup.thermo,
++            spec: &base_spec,
++            plan: base_plan.clone(),
++            feed: setup.feed.clone(),
++            feed_composition: setup.feed_composition.clone(),
++            feed_mass: setup.feed_mass,
++            seed: setup.seed,
++            feed_molar: setup.feed_molar,
++            feed_enthalpy: setup.feed_enthalpy,
++            tolerance: setup.tolerance,
++            water: setup.water.clone(),
++        };
++        let base_equations = ColumnEquations { plan: &base_plan, spec: &base_spec, ..*equations };
++        M65_IN_BASE.with(|f| f.set(true));
++        let base = self.m65_cold(&base_setup, &base_equations, None);
++        M65_IN_BASE.with(|f| f.set(false));
++        let mut profile = base?;
++        for step in 1..=CONTINUATION_STEPS {
++            let last = step == CONTINUATION_STEPS;
++            let share = f64::from(step) / f64::from(CONTINUATION_STEPS);
++            let mut step_plan = base_plan.clone();
++            for (heat, target) in step_plan.side_heat.iter_mut().zip(&plan.side_heat) {
++                *heat += share * (target - *heat);
++            }
++            let walked = ColumnEquations { plan: &step_plan, ..*equations };
++            let step_equations = if last { equations } else { &walked };
++            profile = self
++                .newton_with_water(
++                    step_equations,
++                    &profile.temperatures,
++                    &profile.flows.vapour,
++                    &profile_draw_rates(plan, &profile),
++                    Some(profile.reflux_ratio),
++                    profile.wet_stages(),
++                    &profile.free_water,
++                )
++                .map_err(|u| SimError::Numerical(format!("M65 walk step {step}: {}", u.reason)))?;
++        }
++        Ok(profile)
++    }
++
++    fn m65_cold(
++        &self,
++        setup: &ColumnSetup<'_>,
++        equations: &ColumnEquations<'_>,
++        warm_failure: Option<&Unsolved>,
++    ) -> Result<Profile, SimError> {
++        let plan = &setup.plan;
++        let refusal = |reason: &str, cause: &str| {
++            SimError::Numerical(format!(
++                "heat-balance cascade {reason}.{cause}{}",
++                settings_sentence(setup.spec)
++            ))
++        };
++        let cause_of =
++            |unsolved: &Unsolved| physical_cause(plan, unsolved.flows.as_deref(), setup.feed_molar);
+         let cap = COLD_WARM_UP_ITERATIONS.min(self.max_iterations);
+         let state = match self.fixed_point_iterations(setup, None, cap) {
+             Ok(state) => state,
