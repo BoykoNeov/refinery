@@ -583,6 +583,7 @@ impl HeatBalanceCascade {
             pass,
             plan.side_heat.iter().sum(),
             water_condensed,
+            spec.reboiler_duty.map(|duty| duty.value()),
         )?;
 
         Ok(Separation {
@@ -785,6 +786,13 @@ impl HeatBalanceCascade {
         setup: &ColumnSetup<'_>,
         warm: Option<&CascadeProfile>,
     ) -> Result<Profile, SimError> {
+        if setup.spec.reboiler_duty.is_some() {
+            return Err(SimError::Scenario(
+                "heat-balance cascade (the fixed point): a held reboiler is Newton's alone \
+                 (docs/DESIGN.md §69.1)."
+                    .into(),
+            ));
+        }
         let state = self.fixed_point_iterations(setup, warm, self.max_iterations)?;
         if !state.converged {
             return Err(SimError::Numerical(format!(
@@ -1069,6 +1077,28 @@ impl HeatBalanceCascade {
                 .unwrap_or(1)
         };
         let profile = Profile::from_solved;
+
+        // A held reboiler (M64, §69.1): its duty the equation, the reflux the
+        // result, no floor — one solve, no active set.
+        if let Some(duty) = equations.spec.reboiler_duty {
+            let mut start_vapour = vapour.to_vec();
+            if let Some(ran) = reflux_ratio {
+                // A warm start's own reflux, carried by its top vapour.
+                start_vapour[0] = (ran + 1.0) * draw_rates[0];
+            }
+            let start = Start {
+                vapour: &start_vapour,
+                ..start
+            };
+            return equations
+                .solve(
+                    &start,
+                    Specification::Held(duty.value()),
+                    wet,
+                    self.max_iterations,
+                )
+                .map(profile);
+        }
 
         // The reflux the start ran at: a warm start's own, where its profile
         // carries it, else its top vapour over its distillate.
@@ -2156,6 +2186,7 @@ mod tests {
             reflux_ratio,
             pumparounds: Vec::new(),
             steam: None,
+            reboiler_duty: None,
         }
     }
 
@@ -2641,6 +2672,7 @@ mod start_tests {
             reflux_ratio: 2.0,
             pumparounds: Vec::new(),
             steam: None,
+            reboiler_duty: None,
         };
         model.separate(
             &ColumnPass {
@@ -2728,6 +2760,7 @@ mod pumparound_tests {
             reflux_ratio: 2.0,
             pumparounds,
             steam: None,
+            reboiler_duty: None,
         }
     }
 
@@ -3000,6 +3033,7 @@ mod newton_tests {
                     })
                     .unwrap_or_default(),
                 steam: None,
+                reboiler_duty: None,
             };
             let pass = ColumnPass {
                 slate: &slate,
@@ -3032,6 +3066,7 @@ mod newton_tests {
             reflux_ratio: 0.5,
             pumparounds: Vec::new(),
             steam: None,
+            reboiler_duty: None,
         };
         let scorching = HeatBalanceCascade::new()
             .separate(
@@ -3086,6 +3121,7 @@ mod newton_tests {
             reflux_ratio: 0.5,
             pumparounds: Vec::new(),
             steam: None,
+            reboiler_duty: None,
         };
         let at = |offset: f64, seed: Option<&CascadeProfile>| {
             HeatBalanceCascade::new()
@@ -3173,6 +3209,7 @@ mod newton_tests {
                     })
                     .collect(),
                 steam: None,
+                reboiler_duty: None,
             }
         }
 
@@ -3325,6 +3362,7 @@ mod steam_tests {
             reflux_ratio: 2.0,
             pumparounds: Vec::new(),
             steam: None,
+            reboiler_duty: None,
         };
         // 0.15 kg/s of steam at 400 °C, as its liquid-equivalent temperature.
         let latent = 40_650.0 / 0.018015 + (2000.0 - 4184.0) * 300.0;

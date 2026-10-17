@@ -780,6 +780,12 @@ pub struct CascadeDef {
     /// "heat_balance"` models it, on a slate with a `free_water` member.
     #[serde(default)]
     pub steam: Option<SteamDef>,
+    /// The reboiler's duty held [MW] (M64, docs/DESIGN.md §69):
+    /// `reboiler_duty_mw = 0.0` is a steam-stripped column with no reboiler,
+    /// its reflux the result. Absent, the reboiler closes the column's energy
+    /// balance. Only `separation = "heat_balance"` models it.
+    #[serde(default)]
+    pub reboiler_duty_mw: Option<f64>,
 }
 
 /// A cascade column's steam inlet: the pipe its steam arrives by and the stage

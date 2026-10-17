@@ -859,6 +859,7 @@ fn build_cascade_plant(inputs: &CascadeInputs) -> PlantGraph {
                 reflux_ratio: reflux,
                 pumparounds: Vec::new(),
                 steam: None,
+                reboiler_duty: None,
             }),
         },
     ));

@@ -879,6 +879,14 @@ pub struct CascadeSpec {
     /// that predates it, and then not serialized.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub steam: Option<SteamInlet>,
+    /// The reboiler's duty held [W] (M64, docs/DESIGN.md §69), or `None`: the
+    /// reboiler closes the column's energy balance, as it always has. Held, the
+    /// bottom stage's balance is an equation and the reflux ratio the result —
+    /// a steam-stripped column holds it at zero. Only the heat-balance cascade
+    /// reads it; absent on every column that predates it, and then not
+    /// serialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reboiler_duty: Option<Watt>,
 }
 
 /// A steam inlet on a cascade column (M62.6, docs/DESIGN.md §67.18): the pipe

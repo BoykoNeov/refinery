@@ -16,6 +16,7 @@
 //!         − (L_j + U_j)·h_j − V_j·H_j − Q_j           every stage but the reboiler
 //!   W_k = U_k·M̄(x_k) − r_k·F                         every draw but the bottoms
 //!   V_b = 0.20·F                                      the binding stage, floor active
+//!   E_N with Q_reb held                               the reboiler held (M64), R unknown
 //! ```
 //!
 //! Given the unknowns, everything else is the fixed point's own arithmetic: the
@@ -87,6 +88,11 @@ pub(crate) enum Specification {
     /// The vapour leaving this stage (zero-based) held at the floor, with the
     /// reflux ratio an unknown — M60.2's rule as an active set (§66.3).
     Floor(usize),
+    /// The reboiler's duty held at this value [W], with the reflux ratio an
+    /// unknown (M64, docs/DESIGN.md §69.1): the bottom stage's energy balance,
+    /// the closure everywhere else, is the equation. No floor — the reflux is
+    /// the one unknown a floor would move (§69.2).
+    Held(f64),
 }
 
 /// One column's equations, everything but the unknowns fixed.
@@ -183,13 +189,18 @@ impl ColumnEquations<'_> {
         let n = self.plan.stages;
         2 * n - 1
             + self.draw_count()
-            + usize::from(matches!(specification, Specification::Floor(_)))
+            + usize::from(matches!(
+                specification,
+                Specification::Floor(_) | Specification::Held(_)
+            ))
     }
 
     fn reflux_ratio(&self, u: &[f64], specification: Specification) -> f64 {
         match specification {
             Specification::Reflux => self.spec.reflux_ratio,
-            Specification::Floor(_) => u[2 * self.plan.stages - 1 + self.draw_count()],
+            Specification::Floor(_) | Specification::Held(_) => {
+                u[2 * self.plan.stages - 1 + self.draw_count()]
+            }
         }
     }
 
@@ -361,27 +372,43 @@ impl ColumnEquations<'_> {
                 water_big_h.push(water.vapour_enthalpy(slate, self.thermo, Kelvin(*t))?);
             }
         }
-        // Each stage's energy balance but the reboiler's (which is the closure).
-        for j in 0..n - 1 {
+        // Each stage's energy balance but the reboiler's (which is the closure),
+        // and the reboiler's too where its duty is held.
+        for j in 0..n {
+            let held = match specification {
+                Specification::Held(duty) if j == n - 1 => duty,
+                _ if j == n - 1 => continue,
+                _ => 0.0,
+            };
             let feed_here = if j == plan.feed_stage {
                 self.feed_molar
             } else {
                 0.0
             };
             let above = if j == 0 { reflux_enthalpy } else { h[j - 1] };
-            let imbalance = flows.liquid_in[j] * above
-                + flows.vapour[j + 1] * big_h[j + 1]
-                + feed_here * self.feed_enthalpy
-                - (flows.liquid_down[j] + flows.liquid_drawn[j]) * h[j]
-                - flows.vapour[j] * big_h[j]
-                - plan.side_heat[j];
+            // Nothing rises into the bottom stage but the steam, its own term.
+            let from_below = if j + 1 < n {
+                flows.vapour[j + 1] * big_h[j + 1]
+            } else {
+                0.0
+            };
+            let imbalance =
+                flows.liquid_in[j] * above + from_below + feed_here * self.feed_enthalpy + held
+                    - (flows.liquid_down[j] + flows.liquid_drawn[j]) * h[j]
+                    - flows.vapour[j] * big_h[j]
+                    - plan.side_heat[j];
             let imbalance = if let Some(water) = self.water {
                 let from_above = if j == 0 {
                     0.0
                 } else {
                     free_water[j - 1] * water_h[j - 1]
                 };
-                let imbalance = imbalance + water_vapour[j + 1] * water_big_h[j + 1] + from_above
+                let water_from_below = if j + 1 < n {
+                    water_vapour[j + 1] * water_big_h[j + 1]
+                } else {
+                    0.0
+                };
+                let imbalance = imbalance + water_from_below + from_above
                     - water_vapour[j] * water_big_h[j]
                     - free_water[j] * water_h[j];
                 // The steam into its own stage (M62.6, docs/DESIGN.md §67.18).
@@ -461,6 +488,11 @@ impl ColumnEquations<'_> {
             // floor only ever raises it.
             let ran = start.vapour[0] / start.draw_rates[0] - 1.0;
             u.push(ran.max(self.spec.reflux_ratio));
+        }
+        if let Specification::Held(_) = specification {
+            // The reflux the start ran at: the held duty sets it, not the
+            // declared one.
+            u.push(start.vapour[0] / start.draw_rates[0] - 1.0);
         }
         for j in wet {
             u.push(start.free_water.get(*j).copied().unwrap_or(0.0));
@@ -578,12 +610,15 @@ impl ColumnEquations<'_> {
                     best
                 }
             });
+        // A held reboiler's balance follows the other stages' (§69.1).
+        let held = usize::from(matches!(specification, Specification::Held(_)));
+        let energies = 2 * n - 1 + held;
         let what = if worst < n {
             format!("the bubble point of stage {}", worst + 1)
-        } else if worst < 2 * n - 1 {
+        } else if worst < energies {
             format!("the energy balance of stage {}", worst - n + 1)
-        } else if worst < 2 * n - 1 + self.draw_count() {
-            format!("the mass ratio of draw {}", worst - (2 * n - 1) + 1)
+        } else if worst < energies + self.draw_count() {
+            format!("the mass ratio of draw {}", worst - energies + 1)
         } else if worst < self.free_water_offset(specification) {
             "the vapour floor".to_string()
         } else {

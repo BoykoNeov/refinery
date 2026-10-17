@@ -247,6 +247,13 @@ pub(crate) fn refuse_steam(pass: &ColumnPass<'_>, model: &str) -> Result<(), Sim
 /// bubble point, which is lower. Reading a total condenser as pure latent
 /// heat is wrong by `V·c̄p·(T₁ − T_cond)`, and on a wide-boiling cut that is
 /// not small.
+/// How far a held reboiler's closure may sit from the held duty, as a share of
+/// the larger of the condenser's duty and the feed's enthalpy flux [-]. The
+/// two are the same balance taken two ways, apart by the solve's tolerance on
+/// its scaled residuals (at most 1e-6) and rounding; 1e-5 is that with a
+/// decade's margin, and far under any duty a book error would show.
+const HELD_DUTY_AGREEMENT: f64 = 1.0e-5;
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn column_duties(
     slate: &Slate,
@@ -259,6 +266,7 @@ pub(crate) fn column_duties(
     pass: &ColumnPass<'_>,
     heat_removed_between: f64,
     water_condensed: f64,
+    held_reboiler: Option<f64>,
 ) -> Result<(Watt, Watt), SimError> {
     let vapour = flows.vapour[0];
     let y_one = distillate.moles.fractions();
@@ -304,6 +312,25 @@ pub(crate) fn column_duties(
     // the reboiler [W] — the heat-balance cascade's pumparounds (M60, §65.4);
     // the `"cascade"` model passes zero, and `x + 0.0` is `x` exactly.
     let reboiler_duty = condenser_duty + heat_removed_between + (draw_flux - feed_flux);
+    // A held reboiler (M64, docs/DESIGN.md §69.1) is published as held: its own
+    // stage balance was an equation of the solve, and the closure must agree
+    // with it — the column's books, read the other way round. A held zero's
+    // closure rounds to either side of zero, so the held value, not the
+    // closure, is what the sign check below reads.
+    let reboiler_duty = match held_reboiler {
+        None => reboiler_duty,
+        Some(held) => {
+            let bound = HELD_DUTY_AGREEMENT * condenser_duty.abs().max(feed_flux.abs());
+            if !reboiler_duty.is_finite() || (reboiler_duty - held).abs() > bound {
+                return Err(SimError::Numerical(format!(
+                    "heat-balance cascade: the reboiler is held at {held:.6e} W and the \
+                     column's external balance closes on {reboiler_duty:.6e} W, more than \
+                     {bound:.3e} W apart — the solve's books do not close."
+                )));
+            }
+            held
+        }
+    };
 
     for (name, duty) in [("condenser", condenser_duty), ("reboiler", reboiler_duty)] {
         // Two checks with different standing, and it is worth not conflating
@@ -637,6 +664,7 @@ impl SeparationModel for StageCascade {
             pass,
             0.0,
             0.0,
+            None,
         )?;
 
         Ok(Separation {
@@ -1557,6 +1585,7 @@ mod tests {
             reflux_ratio,
             pumparounds: Vec::new(),
             steam: None,
+            reboiler_duty: None,
         }
     }
 

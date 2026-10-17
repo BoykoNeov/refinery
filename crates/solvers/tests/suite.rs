@@ -41,6 +41,8 @@ mod reference_flooded_column;
 mod reference_four_lump;
 #[path = "reference/free_water.rs"]
 mod reference_free_water;
+#[path = "reference/held_reboiler.rs"]
+mod reference_held_reboiler;
 #[path = "reference/hydrocracking.rs"]
 mod reference_hydrocracking;
 #[path = "reference/line_flash.rs"]

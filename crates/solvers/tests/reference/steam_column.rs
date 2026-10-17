@@ -102,6 +102,7 @@ fn spec() -> CascadeSpec {
         reflux_ratio: 2.0,
         pumparounds: Vec::new(),
         steam: None,
+        reboiler_duty: None,
     }
 }
 

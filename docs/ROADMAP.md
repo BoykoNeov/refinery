@@ -10152,3 +10152,19 @@ a hot plant starts by a continuation from the column with its reboiler (tick 1
 (A29) what the plant pays. Slices: M64.1 the reboiler held, M64.2 the cold
 start, M64.3 the stripped crude unit, M64.4 the screen's fourth plant. No
 engine code changed.
+
+### M64.1 — **LANDED** 2026-10-17: the reboiler held
+
+`reboiler_duty_mw` on a heat-balance column holds its reboiler's duty: the
+bottom stage's energy balance an equation of the column Newton, the reflux
+ratio the result, no vapour floor; the held duty published, its closure
+required to agree; refused under any other model and below zero. Warm, or cold
+after M61's warm-up (M64.2 replaces that start). DESIGN §69.7.
+
+- Gates: `reference/held_reboiler.rs` (2: held at its closure the column is the
+  declared one; walked warm to zero, the reflux and the bottom falling),
+  `held_reboiler_reference.rs` (3: the steamed crude unit's tick 1 held at its
+  closure as shipped, held 10 MW under it on less reflux, the refusals).
+  Mutations: nine, seven caught, two stated (a guard no input reaches; the
+  start's reflux, not the answer). Corpus: 64 of 64 byte-identical on both
+  fidelities.

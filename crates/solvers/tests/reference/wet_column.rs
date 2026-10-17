@@ -124,6 +124,7 @@ impl Case {
             reflux_ratio: self.reflux_ratio,
             pumparounds: Vec::new(),
             steam: None,
+            reboiler_duty: None,
         }
     }
 

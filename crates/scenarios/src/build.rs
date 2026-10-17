@@ -4676,6 +4676,7 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                     // Resolved to its edge once the pipes exist
                     // (`resolve_steam_inlets`).
                     steam: None,
+                    reboiler_duty: def.reboiler_duty_mw.map(|mw| Watt(mw * 1.0e6)),
                 };
                 // One source of truth for the cascade's structural rules: the model
                 // that has to satisfy them. Duplicating them here would be two

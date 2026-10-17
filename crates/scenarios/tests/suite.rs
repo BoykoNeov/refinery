@@ -95,6 +95,8 @@ mod heat_balance_column;
 mod heat_on_boiling_reference;
 #[path = "heat_recovery_reference.rs"]
 mod heat_recovery_reference;
+#[path = "held_reboiler_reference.rs"]
+mod held_reboiler_reference;
 #[path = "hydrocracker_reference.rs"]
 mod hydrocracker_reference;
 #[path = "hydrogen_leak_reference.rs"]

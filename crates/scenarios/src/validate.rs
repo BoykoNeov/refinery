@@ -608,6 +608,8 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
     require_line_flash_plant(scenario)?;
     require_gas_fill_time_on_flashing_plant(scenario)?;
     require_trouton_for_declared_latent(scenario)?;
+    // Before the steam inlet's: a held reboiler is the column's own key.
+    require_held_reboilers(scenario)?;
     // Before the water draws': a steam inlet's own refusal names the inlet.
     require_steam_inlets(scenario)?;
     require_line_flash_for_free_water(scenario)?;
@@ -665,6 +667,42 @@ pub(crate) fn require_steam_inlets(scenario: &ScenarioFile) -> Result<(), SimErr
                 )))
             }
             Some(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// A column's held reboiler duty (M64, docs/DESIGN.md §69), refused under any
+/// model but `separation = "heat_balance"` — the only one with a bottom stage
+/// whose energy balance can be held — and anything but a finite, non-negative
+/// duty (a reboiler adds heat; the cooler convention).
+pub(crate) fn require_held_reboilers(scenario: &ScenarioFile) -> Result<(), SimError> {
+    for (name, def) in &scenario.nodes {
+        let NodeDef::Column {
+            cascade: Some(cascade),
+            ..
+        } = def
+        else {
+            continue;
+        };
+        let Some(duty) = cascade.reboiler_duty_mw else {
+            continue;
+        };
+        if scenario.fidelity.separation != "heat_balance" {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' holds its reboiler at {duty} MW, but [fidelity] separation is \
+                 \"{}\": only separation = \"heat_balance\" solves a stage energy balance, so \
+                 only it can hold the reboiler's and take the reflux as the result \
+                 (docs/DESIGN.md §69).",
+                scenario.fidelity.separation
+            )));
+        }
+        if !duty.is_finite() || duty < 0.0 {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' holds its reboiler at {duty} MW: a reboiler's duty is heat \
+                 added, a finite magnitude at least zero (0.0 is a column with no reboiler, \
+                 stripped by steam)."
+            )));
         }
     }
     Ok(())

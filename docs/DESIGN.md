@@ -26721,3 +26721,41 @@ if the user keeps the charge free (finding 4).
   numbers and the first law; both fidelities; the corpus's 65th plant.
 - **M64.4 — the column screen's fourth plant**, its keys (steam, furnace,
   pumparounds) measured warm; the godot-feature clippy.
+
+### 69.7 The reboiler held, built (M64.1)
+
+`reboiler_duty_mw` on a column's cascade table (`CascadeDef`), refused at load
+under any model but `separation = "heat_balance"` and below zero
+(`require_held_reboilers`, ahead of the steam inlet's checks); carried as
+`CascadeSpec::reboiler_duty` [W], not serialized when absent. In the column
+Newton, `Specification::Held(Q)` adds the bottom stage's energy balance — its
+water, free water and steam terms as every other stage's, and `Q` — to the
+equations and the reflux ratio to the unknowns; no floor (§69.2). The
+heat-balance cascade solves a held column under `Held` alone, warm from the
+last tick's profile and reflux, cold after M61's warm-up (M64.2's continuation
+replaces that start). `column_duties` publishes the held duty, refusing a
+closure more than `HELD_DUTY_AGREEMENT = 1e-5` of the larger of the condenser's
+duty and the feed's flux away from it; a held zero's closure rounds to either
+side of zero, so the held value is what the sign check reads. The fixed-point
+reference refuses a held column.
+
+**Gates**: `crates/solvers/tests/reference/held_reboiler.rs` (2): M62.6's
+steamed test column held at its own closure comes back at its declared reflux
+to 1e-6, its stages to 1e-5 K, its draws to 1e-8, the held duty published to
+the bit; walked warm from its closure to zero on a 330 °C feed, every duty
+published exactly, the reflux 2.40 → 2.10 and the bottom 237 → 183 °C falling
+together, and the first step back at the reflux the floor had held the
+declared column at. `crates/scenarios/tests/held_reboiler_reference.rs` (3):
+the steamed crude unit held at its own tick-1 closure runs its tick 1 as
+shipped (reflux to 1e-6, stages to 1e-4 K); held 10 MW under it, the held duty
+published and the reflux under 4; the loader's two refusals.
+
+**Mutations**: nine; seven caught (the duty left out of the balance, the
+closure published, the loader dropping the key, either refusal lifted, the
+steam left out of the held bottom stage, a held column solved as declared).
+Two survive, both stated: the agreement bound widened a billionfold (a guard
+on the books no input reaches — on every gate the two agree far inside it),
+and the held start's reflux taken as the declared one (the path, not the
+answer: Newton converges to the same column).
+
+**What moved**: nothing shipped — 64 of 64 byte-identical on both fidelities.
