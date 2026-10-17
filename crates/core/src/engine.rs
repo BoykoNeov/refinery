@@ -502,7 +502,9 @@ impl Engine {
                         Ok(())
                     }
                     NodeKind::WaterCooler { .. } => Err(SimError::InvalidCommand(format!(
-                        "{node:?} is a water cooler, whose duty is a result of its cooling                          water, not a setting: set its water's flow                          (`SetCoolingWaterFlow`, docs/DESIGN.md §67.13)"
+                        "{node:?} is a water cooler, whose duty is a result of its cooling \
+                         water, not a setting: set its water's flow \
+                         (`SetCoolingWaterFlow`, docs/DESIGN.md §67.13)"
                     ))),
                     _ => Err(SimError::InvalidCommand(format!(
                         "{node:?} is not a cooler"
@@ -3869,7 +3871,10 @@ fn cavitation_subject(kind: &NodeKind) -> bool {
         // downstream is a real and expensive failure. Both are zero-volume flow-
         // path nodes like the five above; they are called out separately only
         // because B1's trigger omitted them.
-        NodeKind::Furnace { .. } | NodeKind::Cooler { .. } | NodeKind::WaterCooler { .. } => true,
+        NodeKind::Furnace { .. }
+        | NodeKind::Cooler { .. }
+        | NodeKind::WaterCooler { .. }
+        | NodeKind::CoilCell { .. } => true,
         // Holdups, and this exclusion is load-bearing. A tank or vessel below
         // its bubble point is a TWO-PHASE INVENTORY (`docs/DEFERRED.md` B3), not
         // cavitation, which is a flow-path phenomenon. Two shipped plants are

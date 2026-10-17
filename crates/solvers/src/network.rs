@@ -598,6 +598,7 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
             | NodeKind::WaterCooler { .. }
+            | NodeKind::CoilCell { .. }
             // A reactor is the furnace's process constraint too: "the stream it
             // converts" names one definite feed, so it is 1-in-1-out.
             | NodeKind::Reactor { .. }
@@ -663,6 +664,7 @@ pub fn fixed_pressure(node: &Node, slate: &Slate) -> Option<f64> {
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::WaterCooler { .. }
+        | NodeKind::CoilCell { .. }
         | NodeKind::Reactor { .. }
         | NodeKind::BedReactor { .. }
         | NodeKind::BedHydrogen { .. }

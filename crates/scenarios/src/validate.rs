@@ -370,6 +370,40 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
             )));
         }
     }
+    if let NodeDef::Furnace {
+        coil_cells,
+        coil_length_m,
+        coil_diameter_m,
+        ..
+    } = def
+    {
+        match (coil_cells, coil_length_m, coil_diameter_m) {
+            (None, None, None) => {}
+            (Some(cells), Some(length), Some(diameter)) => {
+                if *cells < 2 {
+                    return Err(SimError::Scenario(format!(
+                        "furnace '{name}' has coil_cells = {cells}: a coil in cells has at \
+                         least two — one is the lumped coil every furnace has without the key \
+                         (docs/DESIGN.md §67.14)."
+                    )));
+                }
+                for (key, value) in [("coil_length_m", length), ("coil_diameter_m", diameter)] {
+                    if !value.is_finite() || *value <= 0.0 {
+                        return Err(SimError::Scenario(format!(
+                            "furnace '{name}' has {key} = {value}: it must be finite and > 0."
+                        )));
+                    }
+                }
+            }
+            _ => {
+                return Err(SimError::Scenario(format!(
+                    "furnace '{name}' declares some of coil_cells, coil_length_m and \
+                     coil_diameter_m but not all three: a coil in cells is a tube of a length \
+                     and a bore, cut into a number of cells (docs/DESIGN.md §67.14)."
+                )));
+            }
+        }
+    }
     if let NodeDef::WaterCooler {
         ua_kw_per_k,
         water_inlet_c,
@@ -378,18 +412,21 @@ pub(crate) fn validate_node_def(name: &str, def: &NodeDef) -> Result<(), SimErro
     {
         if !ua_kw_per_k.is_finite() || *ua_kw_per_k <= 0.0 {
             return Err(SimError::Scenario(format!(
-                "water cooler '{name}' has ua_kw_per_k = {ua_kw_per_k}: it must be finite and                  > 0 — an exchanger that passes no heat cools nothing."
+                "water cooler '{name}' has ua_kw_per_k = {ua_kw_per_k}: it must be finite and \
+                 > 0 — an exchanger that passes no heat cools nothing."
             )));
         }
         // Liquid water at a constant heat capacity (§67.13): neither ice nor steam.
         if !water_inlet_c.is_finite() || *water_inlet_c <= 0.0 || *water_inlet_c >= 100.0 {
             return Err(SimError::Scenario(format!(
-                "water cooler '{name}' has water_inlet_c = {water_inlet_c}: cooling water is                  liquid, so its inlet must lie above 0 and below 100 °C."
+                "water cooler '{name}' has water_inlet_c = {water_inlet_c}: cooling water is \
+                 liquid, so its inlet must lie above 0 and below 100 °C."
             )));
         }
         if !water_flow_kg_per_s.is_finite() || *water_flow_kg_per_s < 0.0 {
             return Err(SimError::Scenario(format!(
-                "water cooler '{name}' has water_flow_kg_per_s = {water_flow_kg_per_s}: it must                  be finite and >= 0."
+                "water cooler '{name}' has water_flow_kg_per_s = {water_flow_kg_per_s}: it must \
+                 be finite and >= 0."
             )));
         }
     }

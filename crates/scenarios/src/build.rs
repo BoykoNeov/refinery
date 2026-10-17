@@ -27,8 +27,9 @@ use refinery_core::units::{
 use std::collections::BTreeMap;
 
 use crate::schema::{
-    bar_to_pa, c_to_k, kv_to_cv_si, ActuatorDef, ComponentDef, ControlDef, ExchangerDef,
-    MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile, TripActionDef, TripDef,
+    bar_to_pa, c_to_k, default_friction_factor, kv_to_cv_si, ActuatorDef, ComponentDef, ControlDef,
+    ExchangerDef, MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile, TripActionDef,
+    TripDef,
 };
 use crate::validate::{
     plant_phases, require_bed_reactor_plant, require_blowdown_cushion, require_compatible_fidelity,
@@ -90,6 +91,10 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     resolve_column_draws(&mut graph, scenario)?;
     // Step 2a': each hydrogen pass's bed, for the same reason (M59.1).
     resolve_hydrogen_passes(&mut graph, scenario)?;
+    // Step 2a'': each furnace coil's cells ahead of its furnace (M62.4c,
+    // docs/DESIGN.md §67.14): built before the pipes, so a pipe into the
+    // furnace lands on its first cell.
+    let coil_inlets = build_coil_cells(&mut graph, scenario, &slate)?;
 
     for pipe in &scenario.pipes {
         validate_pipe_def(pipe)?;
@@ -105,6 +110,8 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
                 pipe.name, pipe.to
             ))
         })?;
+        // Into a furnace whose coil has cells: into its first cell.
+        let to = coil_inlets.get(&to).copied().unwrap_or(to);
         let whole = Pipe {
             name: pipe.name.clone(),
             length: Meter(pipe.length_m),
@@ -659,6 +666,7 @@ fn resolve_vent_destination(
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::WaterCooler { .. }
+        | NodeKind::CoilCell { .. }
         | NodeKind::BedReactor { .. }
         | NodeKind::BedHydrogen { .. }
         | NodeKind::Compressor { .. }
@@ -3891,6 +3899,8 @@ fn node_kind(name: &str, def: &NodeDef, slate: &Slate) -> Result<NodeKind, SimEr
             tube_failure_c,
             tube_rupture_area_cm2,
             fluid_heating_value_mj_per_kg,
+            // The coil's cells are nodes of their own (`build_coil_cells`).
+            ..
         } => NodeKind::Furnace {
             duty: Watt(*duty_mw * 1e6),
             coil: FurnaceCoil {
@@ -4784,4 +4794,66 @@ fn resolve_draw_lines(graph: &mut PlantGraph) -> Result<(), SimError> {
         }
     }
     Ok(())
+}
+
+/// Build every furnace coil's cells and segments (M62.4c, docs/DESIGN.md
+/// §67.14): `coil_cells − 1` cells ahead of the furnace, `{furnace}__cell_k`,
+/// joined to each other and to the furnace by `{furnace}__coil_k`, the coil's
+/// bore and an equal share of its length each. Returns each celled furnace's
+/// first cell, where the pipes declared into the furnace land.
+fn build_coil_cells(
+    graph: &mut PlantGraph,
+    scenario: &ScenarioFile,
+    slate: &Slate,
+) -> Result<BTreeMap<NodeId, NodeId>, SimError> {
+    let mut inlets = BTreeMap::new();
+    for (name, def) in &scenario.nodes {
+        let NodeDef::Furnace {
+            coil_cells: Some(cells),
+            coil_length_m: Some(length),
+            coil_diameter_m: Some(diameter),
+            ..
+        } = def
+        else {
+            continue;
+        };
+        let furnace = graph.find_node(name).ok_or_else(|| {
+            SimError::Scenario(format!("internal: furnace '{name}' was not built"))
+        })?;
+        let mut chain = Vec::new();
+        for k in 1..*cells {
+            let cell = format!("{name}__cell_{k}");
+            if scenario.nodes.contains_key(&cell) {
+                return Err(SimError::Scenario(format!(
+                    "furnace '{name}' builds a coil cell named '{cell}', and this plant \
+                     already has a node by that name. Rename one"
+                )));
+            }
+            chain.push(graph.add_node(Node {
+                name: cell,
+                kind: NodeKind::CoilCell { furnace },
+                heat_input: Watt::ZERO,
+            }));
+        }
+        chain.push(furnace);
+        let segments = (*cells - 1) as f64;
+        for (k, pair) in chain.windows(2).enumerate() {
+            graph.add_pipe(
+                pair[0],
+                pair[1],
+                Pipe {
+                    name: format!("{name}__coil_{}", k + 1),
+                    length: Meter(length / segments),
+                    diameter: Meter(*diameter),
+                    friction_factor: default_friction_factor(),
+                    elevation_change: Meter(0.0),
+                    leak: LeakRole::None,
+                    ambient_ua: WattPerKelvin(0.0),
+                    stream: Stream::stagnant(slate.len(), T_AMBIENT, P_ATM),
+                },
+            );
+        }
+        inlets.insert(furnace, chain[0]);
+    }
+    Ok(inlets)
 }

@@ -740,6 +740,7 @@ pub fn is_zero_volume(kind: &NodeKind) -> bool {
             | NodeKind::Furnace { .. }
             | NodeKind::Cooler { .. }
             | NodeKind::WaterCooler { .. }
+            | NodeKind::CoilCell { .. }
             | NodeKind::HeatExchanger
             // A column holds no inventory: its composition is the instantaneous
             // feed mix and its draws separate that, never a holdup (DESIGN §5).
@@ -813,6 +814,7 @@ pub fn boundary_composition(kind: &NodeKind, slate: &Slate) -> Option<Compositio
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::WaterCooler { .. }
+        | NodeKind::CoilCell { .. }
         | NodeKind::HeatExchanger
         | NodeKind::Column { .. }
         // A reactor's composition is its feed mix, then `react`'d — mixed here,
@@ -859,6 +861,7 @@ pub fn boundary_temperature(kind: &NodeKind) -> Option<Kelvin> {
         | NodeKind::Furnace { .. }
         | NodeKind::Cooler { .. }
         | NodeKind::WaterCooler { .. }
+        | NodeKind::CoilCell { .. }
         | NodeKind::HeatExchanger
         // A column's temperature is its feed mix — the draws leave at the feed
         // temperature (DESIGN §5), which falls out for free: a zero-volume node
@@ -1448,7 +1451,12 @@ pub fn resolve_node_states(
     //    A catalyst bed and its hydrogen pass are one vertex too (M59.1,
     //    docs/DESIGN.md §64.2), for the same reason: both leave at the bed's
     //    temperature, which both inflows set.
+    //    A furnace and its coil's cells are one vertex too (M62.4c,
+    //    docs/DESIGN.md §67.14), led by the furnace: they share one metal.
     let leader_of = |id: NodeId| -> NodeId {
+        if let NodeKind::CoilCell { furnace } = graph.node(id).kind {
+            return furnace;
+        }
         match graph.sweep_partner(id) {
             Some(partner) => id.min(partner),
             None => id,
@@ -1475,7 +1483,9 @@ pub fn resolve_node_states(
         let deps = sides
             .iter()
             .flat_map(|&id| inflow_edges(graph, edge_mass_flow, id))
-            .filter(|(edge, upstream, _)| swept(*upstream) && !line_edge(*edge))
+            .filter(|(edge, upstream, _)| {
+                swept(*upstream) && !line_edge(*edge) && !graph.is_coil_segment(*edge)
+            })
             .count();
         // A draw line's node waits on its line's pipe in, whatever the solve
         // wrote on it (M62.4b).
@@ -1507,11 +1517,38 @@ pub fn resolve_node_states(
         // pipes once the vertex is released (M62.4b).
         let mut line_writes: Vec<(EdgeId, f64)> = Vec::new();
 
+        // A furnace whose coil has cells: the vertex in the coil's order, its
+        // first cell's inflow mix every member's composition — nothing reacts
+        // in a coil (M62.4c, docs/DESIGN.md §67.14).
+        let coil = (sides.len() > 1)
+            .then(|| {
+                sides
+                    .iter()
+                    .copied()
+                    .find(|&id| matches!(graph.node(id).kind, NodeKind::Furnace { .. }))
+            })
+            .flatten()
+            .map(|furnace| graph.coil_chain(furnace));
+
         // Composition first, and uniformly across both branches: it is settled
         // by mass alone, so an exchanger's two sides are ordinary mixing points
         // to it. Heat crosses between them; mass does not, and a pair whose
         // compositions influenced each other would be modelling a leak.
-        for &id in sides {
+        if let Some(chain) = &coil {
+            let mixed = mix_compositions(
+                graph,
+                slate,
+                edge_mass_flow,
+                &separations,
+                &composition,
+                previous,
+                chain[0],
+            )?;
+            for &id in chain {
+                composition.insert(id, mixed.clone());
+            }
+        }
+        for &id in sides.iter().filter(|_| coil.is_none()) {
             let mixed = match starved_tank(graph, starved, id) {
                 Some((tank, supply)) => starved_tank_composition(
                     graph,
@@ -1536,6 +1573,37 @@ pub fn resolve_node_states(
         }
 
         match sides.as_slice() {
+            _ if coil.is_some() => {
+                let chain = coil.as_deref().unwrap_or_default();
+                let furnace = chain[chain.len() - 1];
+                let NodeKind::Furnace {
+                    duty,
+                    coil: metal,
+                    flame_temperature,
+                    tubes,
+                } = &graph.node(furnace).kind
+                else {
+                    return Err(SimError::Numerical(format!(
+                        "internal: the coil ending at '{}' does not end at its furnace",
+                        graph.node(furnace).name
+                    )));
+                };
+                let pass = furnace_coil_cells(
+                    graph,
+                    slate,
+                    (line_flash, thermo, enthalpy),
+                    (edge_mass_flow, edge_dissipation),
+                    (&mut temperature, &composition, &separations, &mut vapour),
+                    node_pressure,
+                    previous,
+                    chain,
+                    (*duty, metal, *flame_temperature, tubes),
+                    dt,
+                )?;
+                coil_temperature.insert(furnace, pass.coil);
+                flue_loss.insert(furnace, pass.flue);
+                tube_fire.insert(furnace, pass.fire);
+            }
             [a, b] if graph.exchanger_partner(*a).is_none() => {
                 // A catalyst bed and its hydrogen pass (M59.1, docs/DESIGN.md
                 // §64.2): the bed steps on both inflows, and both streams leave
@@ -2772,30 +2840,7 @@ fn furnace_coil(
     dt: Seconds,
 ) -> Result<CoilPass, SimError> {
     let name = &graph.node(node).name;
-    // The burn-out fire (M37, docs/DESIGN.md §42): while the tubes are FAILED,
-    // what flows out of their hole this tick burns in the firebox. It is FUEL —
-    // the process fluid burning in the burners' air — so unlike a commanded
-    // fire it fires through the flame law below, as extra firing beside the
-    // duty. Read off THIS tick's solve, which never reads a duty, so nothing is
-    // circular and nothing is stored. Only an OUTWARD flow burns; a hole the
-    // plant draws in through is refused by the solve before it gets here.
-    let leak_fire = if tubes.state.is_failed() {
-        let hole = tubes.hole.ok_or_else(|| {
-            SimError::Scenario(format!(
-                "furnace '{name}' has burst tubes but owns no burn-out hole. The loader \
-                 builds one on every furnace's outlet pipe; a graph built by hand must do \
-                 the same (docs/DESIGN.md §42)"
-            ))
-        })?;
-        let leaked = edge_mass_flow.get(&hole).copied().ok_or_else(|| {
-            SimError::Numerical(format!(
-                "furnace '{name}': the solve reported no flow for its burn-out hole {hole:?}"
-            ))
-        })?;
-        leaked.max(0.0) * tubes.heating_value.value()
-    } else {
-        0.0
-    };
+    let leak_fire = burnout_fire(edge_mass_flow, name, tubes)?;
     // Duty, burn-out fire and any commanded fire all go into the metal:
     // `heat_load` is still the one owner of the duty and the commanded fire.
     // The duty and the burn-out fire are fuel, so they have a flue; a
@@ -2916,6 +2961,311 @@ fn furnace_coil(
         coil: coil_end,
         flue: Watt(flue),
         fire: Watt(leak_fire),
+    })
+}
+
+/// The burn-out fire [W] a furnace's failed tubes feed this tick (M37,
+/// docs/DESIGN.md §42), zero while they are intact.
+fn burnout_fire(
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    name: &str,
+    tubes: &FurnaceTubes,
+) -> Result<f64, SimError> {
+    // The burn-out fire (M37, docs/DESIGN.md §42): while the tubes are FAILED,
+    // what flows out of their hole this tick burns in the firebox. It is FUEL —
+    // the process fluid burning in the burners' air — so unlike a commanded
+    // fire it fires through the flame law below, as extra firing beside the
+    // duty. Read off THIS tick's solve, which never reads a duty, so nothing is
+    // circular and nothing is stored. Only an OUTWARD flow burns; a hole the
+    // plant draws in through is refused by the solve before it gets here.
+    Ok(if tubes.state.is_failed() {
+        let hole = tubes.hole.ok_or_else(|| {
+            SimError::Scenario(format!(
+                "furnace '{name}' has burst tubes but owns no burn-out hole. The loader \
+                 builds one on every furnace's outlet pipe; a graph built by hand must do \
+                 the same (docs/DESIGN.md §42)"
+            ))
+        })?;
+        let leaked = edge_mass_flow.get(&hole).copied().ok_or_else(|| {
+            SimError::Numerical(format!(
+                "furnace '{name}': the solve reported no flow for its burn-out hole {hole:?}"
+            ))
+        })?;
+        leaked.max(0.0) * tubes.heating_value.value()
+    } else {
+        0.0
+    })
+}
+
+/// Iterations of a celled coil's fixed point (§67.14): its cells' inlets
+/// move the metal's average and the average the inlets. The metal's heat
+/// capacity is large against a tick's conductance, so a few suffice; past this
+/// it is an `Err`, never a silent answer.
+const COIL_CELL_MAX_PASSES: u32 = 50;
+
+/// What the fixed point closes on [K]: the largest move of any cell's inlet
+/// between two passes.
+const COIL_CELL_TOLERANCE_K: f64 = 1e-9;
+
+/// One tick of a furnace whose coil is cut into cells (M62.4c, docs/DESIGN.md
+/// §67.14): `chain` its cells in the stream's order, the furnace last.
+///
+/// One metal at `T_c`, the lumped capacitance of `furnace_coil`; each of the
+/// `N` cells holds `UA/N` and exchanges `G_i·(T̄_c − T_in,i)` with it,
+/// `G_i = W_i·(1 − e^{−UA_i/W_i})` on its inflow's capacity rate (Incropera &
+/// DeWitt eq. 8.42b), `T_in,i` its inflow settled at its own pressure — the
+/// first cell's from outside, every other's the cell before it, through the
+/// segment between them (its friction heat and the latent heat the vapour
+/// carries included, `inflow_totals` and `inflow_latent`). The metal's exact
+/// step runs on `G = ΣG_i` and `Σ G_i·(T_c − T_in,i)`; the fluid takes what the
+/// first law leaves, each cell `G_i·(T̄_c − T_in,i)` and the last the
+/// remainder, so the books close by construction. Each cell's outlet is
+/// settled by the line flash at its own pressure (`settle_node`), recorded in
+/// `vapour` for the next cell, the edge write and the next solve. The inlets
+/// move the average and the average the inlets: iterated to
+/// `COIL_CELL_TOLERANCE_K`.
+#[allow(clippy::too_many_arguments)] // one argument per seam the coil reads
+#[allow(clippy::type_complexity)]
+fn furnace_coil_cells(
+    graph: &PlantGraph,
+    slate: &Slate,
+    (line_flash, thermo, enthalpy): (&dyn LineFlashModel, &dyn ThermoModel, &dyn EnthalpyModel),
+    (edge_mass_flow, edge_dissipation): (&BTreeMap<EdgeId, f64>, &BTreeMap<EdgeId, Watt>),
+    (temperature, composition, separations, vapour): (
+        &mut BTreeMap<NodeId, Kelvin>,
+        &BTreeMap<NodeId, Composition>,
+        &BTreeMap<NodeId, Separation>,
+        &mut BTreeMap<NodeId, VapourShare>,
+    ),
+    node_pressure: &BTreeMap<NodeId, Pascal>,
+    previous: &NodeStates,
+    chain: &[NodeId],
+    (duty, coil, flame_temperature, tubes): (Watt, &FurnaceCoil, Kelvin, &FurnaceTubes),
+    dt: Seconds,
+) -> Result<CoilPass, SimError> {
+    let furnace = chain[chain.len() - 1];
+    let name = &graph.node(furnace).name;
+    let leak_fire = burnout_fire(edge_mass_flow, name, tubes)?;
+    let fired = heat_load(graph.node(furnace)).value() + leak_fire;
+    let air = T_AMBIENT.value();
+    let flue_conductance = (duty.value() + leak_fire) / (flame_temperature.value() - air);
+    let capacity = coil.heat_capacity.value();
+    let cell_ua = coil.conductance.value() / chain.len() as f64;
+    let start = coil.temperature.value();
+
+    // A cell's inflow [W, kg/s, W/K], its latent heat included.
+    let arriving = |temperature: &BTreeMap<NodeId, Kelvin>,
+                    vapour: &BTreeMap<NodeId, VapourShare>,
+                    cell: NodeId|
+     -> Result<Option<InflowEnthalpy>, SimError> {
+        let totals = inflow_totals(
+            graph,
+            slate,
+            enthalpy,
+            edge_mass_flow,
+            edge_dissipation,
+            temperature,
+            composition,
+            separations,
+            cell,
+        )?;
+        Ok(totals.map(
+            |totals| match inflow_latent(graph, edge_mass_flow, vapour, cell) {
+                Some(latent) => InflowEnthalpy {
+                    enthalpy_rate: totals.enthalpy_rate + latent,
+                    ..totals
+                },
+                None => totals,
+            },
+        ))
+    };
+    let mix = mixed_composition_at(composition, chain[0])?;
+    // A stream's temperature where it stands: its liquid-equivalent settled at
+    // the cell's pressure (`NoLineFlash` hands it back).
+    let standing = |le: Kelvin, cell: NodeId| -> Result<Kelvin, SimError> {
+        if !line_flash.carries_vapour() {
+            return Ok(le);
+        }
+        let pressure = node_pressure.get(&cell).copied().ok_or_else(|| {
+            SimError::Numerical(format!(
+                "internal: coil cell '{}' has no solved pressure for its line flash",
+                graph.node(cell).name
+            ))
+        })?;
+        Ok(line_flash
+            .settle(slate, mix, le, pressure, thermo, enthalpy)?
+            .temperature)
+    };
+
+    let Some(first) = arriving(temperature, vapour, chain[0])? else {
+        // No flow: the metal keeps all the flame lets it absorb, and the fluid
+        // standing in every cell is reported at the metal's end-of-tick
+        // temperature, as in a lumped coil.
+        let step = coil_step(fired, flue_conductance, capacity, start, 0.0, 0.0, dt, name)?;
+        for &cell in chain {
+            temperature.insert(cell, Kelvin(step.end));
+        }
+        return Ok(CoilPass {
+            fluid: Kelvin(step.end),
+            flowing: false,
+            coil: Kelvin(step.end),
+            flue: Watt(step.flue),
+            fire: Watt(leak_fire),
+        });
+    };
+
+    // The first guess of every inlet: the coil's own inflow where it stands,
+    // and each later cell's last resolved temperature.
+    let first_inlet = standing(enthalpy.mix_temperature(slate, mix, first)?, chain[0])?.value();
+    let mut inlets: Vec<f64> = (0..chain.len())
+        .map(|i| match i {
+            0 => first_inlet,
+            _ => previous
+                .temperature
+                .get(&chain[i - 1])
+                .map_or(first_inlet, |t| t.value()),
+        })
+        .collect();
+    let mut capacities = vec![first.capacity_rate; chain.len()];
+    for _ in 0..COIL_CELL_MAX_PASSES {
+        let conductances: Vec<f64> = capacities
+            .iter()
+            .map(|&w| w * -(-cell_ua / w).exp_m1())
+            .collect();
+        let conductance: f64 = conductances.iter().sum();
+        let exchange: f64 = conductances
+            .iter()
+            .zip(&inlets)
+            .map(|(g, t_in)| g * (start - t_in))
+            .sum();
+        let step = coil_step(
+            fired,
+            flue_conductance,
+            capacity,
+            start,
+            conductance,
+            exchange,
+            dt,
+            name,
+        )?;
+        let mut taken = 0.0;
+        let mut moved = 0.0_f64;
+        let mut outlet = Kelvin(step.end);
+        for (i, &cell) in chain.iter().enumerate() {
+            let totals = arriving(temperature, vapour, cell)?.ok_or_else(|| {
+                SimError::Numerical(format!(
+                    "internal: coil cell '{}' has no inflow while its coil does",
+                    graph.node(cell).name
+                ))
+            })?;
+            capacities[i] = totals.capacity_rate;
+            let inlet = standing(enthalpy.mix_temperature(slate, mix, totals)?, cell)?.value();
+            moved = moved.max((inlet - inlets[i]).abs());
+            inlets[i] = inlet;
+            let heat = if i + 1 < chain.len() {
+                conductances[i] * (step.average - inlet)
+            } else {
+                step.to_fluid - taken
+            };
+            taken += heat;
+            let le = enthalpy
+                .mix_temperature(
+                    slate,
+                    mix,
+                    InflowEnthalpy {
+                        enthalpy_rate: totals.enthalpy_rate + heat,
+                        ..totals
+                    },
+                )?
+                .value();
+            let le = checked_temperature(le, || {
+                format!(
+                    "coil cell '{}' of furnace '{name}' leaves at {le:.2} K, below absolute zero",
+                    graph.node(cell).name
+                )
+            })?;
+            vapour.remove(&cell);
+            outlet = settle_node(
+                graph,
+                slate,
+                (line_flash, thermo, enthalpy),
+                node_pressure,
+                composition,
+                vapour,
+                cell,
+                le,
+            )?;
+            temperature.insert(cell, outlet);
+        }
+        if moved <= COIL_CELL_TOLERANCE_K {
+            return Ok(CoilPass {
+                fluid: outlet,
+                flowing: true,
+                coil: Kelvin(step.end),
+                flue: Watt(step.flue),
+                fire: Watt(leak_fire),
+            });
+        }
+    }
+    Err(SimError::Numerical(format!(
+        "furnace '{name}': its coil's cells did not settle on one metal within \
+         {COIL_CELL_MAX_PASSES} passes"
+    )))
+}
+
+/// One tick of a coil's metal (§37, §40): its end temperature, its average
+/// over the tick, the flue loss at that average, and what the fluid took.
+struct CoilStep {
+    end: f64,
+    average: f64,
+    flue: f64,
+    to_fluid: f64,
+}
+
+/// The coil's exact step, `furnace_coil`'s arithmetic for `G = conductance`
+/// and an exchange at the start of the tick of `exchange` [W] — `G·(T_c −
+/// T_in)` on a lumped coil, `Σ G_i·(T_c − T_in,i)` on cells.
+#[allow(clippy::too_many_arguments)] // the step's own inputs
+fn coil_step(
+    fired: f64,
+    flue_conductance: f64,
+    capacity: f64,
+    start: f64,
+    conductance: f64,
+    exchange: f64,
+    dt: Seconds,
+    name: &str,
+) -> Result<CoilStep, SimError> {
+    let air = T_AMBIENT.value();
+    let x = (conductance + flue_conductance) * dt.value() / capacity;
+    let rate = fired - flue_conductance * (start - air) - exchange;
+    let phi = if x > 0.0 { -(-x).exp_m1() / x } else { 1.0 };
+    let end = start + rate * dt.value() / capacity * phi;
+    if !end.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "furnace '{name}' coil temperature is not finite ({end}) after a tick fired \
+             at {fired:.4e} W from {start:.2} K"
+        )));
+    }
+    let end = checked_temperature(end, || {
+        format!(
+            "furnace '{name}' coil cools to {end:.2} K, below absolute zero, from \
+             {start:.2} K on a fired heat of {fired:.4e} W"
+        )
+    })?
+    .value();
+    let average = start + rate * dt.value() / capacity * psi(x);
+    let flue = if flue_conductance > 0.0 {
+        flue_conductance * (average - air)
+    } else {
+        0.0
+    };
+    let to_fluid = fired - capacity * (end - start) / dt.value() - flue;
+    Ok(CoilStep {
+        end,
+        average,
+        flue,
+        to_fluid,
     })
 }
 

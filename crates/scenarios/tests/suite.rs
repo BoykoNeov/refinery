@@ -29,6 +29,8 @@ mod cavitation_reference;
 mod check_valve_reference;
 #[path = "choked_flow_reference.rs"]
 mod choked_flow_reference;
+#[path = "coil_cell_reference.rs"]
+mod coil_cell_reference;
 #[path = "coil_trip_reference.rs"]
 mod coil_trip_reference;
 #[path = "column_reference.rs"]

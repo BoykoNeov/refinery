@@ -317,6 +317,15 @@ pub enum NodeKind {
     /// coolant model, and `mix_inflows` rejects it. Cooling to a realistic
     /// approach temperature is the `HeatExchanger`'s job (M2.2), not this one's.
     Cooler { duty: Watt },
+    /// One cell of a furnace's coil ahead of the furnace node itself (M62.4c,
+    /// docs/DESIGN.md §67.14): a zero-volume pass-through at its own pressure,
+    /// holding its share of the coil's conductance against the furnace's one
+    /// metal. Built by the loader from the furnace's `coil_cells`; the furnace
+    /// node is the coil's last cell, its outlet.
+    CoilCell {
+        /// The furnace whose coil this cell is part of.
+        furnace: NodeId,
+    },
     /// A cooler on cooling water (M62.4b, docs/DESIGN.md §67.13): a
     /// counter-current exchanger between the stream through it and a
     /// cooling-water utility — liquid water at a constant heat capacity, not a
@@ -2770,6 +2779,45 @@ impl PlantGraph {
         lines
     }
 
+    /// A furnace's coil in the stream's order (M62.4c, docs/DESIGN.md §67.14):
+    /// its cells from the coil's inlet, then the furnace itself, the outlet —
+    /// walked back from the furnace through the cells that feed it. A furnace
+    /// with no cells is its own one-member coil.
+    pub fn coil_chain(&self, furnace: NodeId) -> Vec<NodeId> {
+        let mut chain = vec![furnace];
+        let mut at = furnace;
+        while let Some(cell) = self
+            .incident(at)
+            .into_iter()
+            .find_map(|(_, other, incoming)| match self.node(other).kind {
+                NodeKind::CoilCell { furnace: f } if incoming && f == furnace => Some(other),
+                _ => None,
+            })
+        {
+            if chain.contains(&cell) {
+                break;
+            }
+            chain.push(cell);
+            at = cell;
+        }
+        chain.reverse();
+        chain
+    }
+
+    /// Whether `edge` is a segment of a furnace's coil — between two of its
+    /// cells, or its last cell and the furnace (M62.4c, docs/DESIGN.md §67.14).
+    pub fn is_coil_segment(&self, edge: EdgeId) -> bool {
+        let (from, to) = self.endpoints(edge);
+        let coil_of = |id: NodeId| match self.node(id).kind {
+            NodeKind::CoilCell { furnace } => Some(furnace),
+            NodeKind::Furnace { .. } => Some(id),
+            _ => None,
+        };
+        matches!(self.node(from).kind, NodeKind::CoilCell { .. })
+            && coil_of(from).is_some()
+            && coil_of(from) == coil_of(to)
+    }
+
     /// Whether `edge` is a pipe of a draw LINE (M62.4b, docs/DESIGN.md §67.13).
     /// Asked of every edge on every pass of a flow solve, so it answers from
     /// the edge's own ends first: a line pipe leaves a column, a pump or a
@@ -3355,6 +3403,7 @@ impl PlantGraph {
                 // A water cooler (M62.4b) on the same scope: no loop needs its
                 // outlet yet, and its actuator would be the water's flow.
                 | NodeKind::WaterCooler { .. }
+                | NodeKind::CoilCell { .. }
                 // A compressor and a bed's hydrogen pass (M59.1) are zero-volume
                 // gas pass-throughs: refused on the same scope. The bed itself
                 // is what a loop measures.

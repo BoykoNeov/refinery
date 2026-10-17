@@ -9879,3 +9879,22 @@ boiling naphtha condensed before its tank. DESIGN §67.13.
   bridge's command sweep. Mutations: seventeen, sixteen caught, one
   equivalent. Corpus: 60 of 60 byte-identical on both fidelities;
   `product_cooler` new.
+
+### M62.4c — **LANDED** 2026-10-17: the furnace coil in cells
+
+A furnace may declare `coil_cells`, `coil_length_m` and `coil_diameter_m`: its
+coil a tube cut into cells, each a flashing node at its own pressure with its
+share of the coil's conductance against the one metal, joined by segments of
+the coil's bore, the furnace node the last cell — the outlet every reader of a
+furnace means. The crude enters the coil liquid and boils partway along it as
+its pressure falls; a boiling cell's temperature barely moves, so the next
+sees a colder fluid and takes more — no stretched heat capacity (decision 9).
+On the crude unit fed through a control valve into 800 m of 24 cm coil in
+eight cells: liquid at 15 bar in, 41 % vapour at 2.1 bar and 286 °C out, the
+stream peaking at 304 °C partway; the metal 325 °C (eight cells within 0.6 K
+of 32 at the outlet, 4 K at the metal), 7 ms a tick. On water the cells settle
+where the lumped coil does. DESIGN §67.14; probe
+`tools/steptime/prototypes/m62_4/probe_coil.py`.
+
+- Gates: `coil_cell_reference.rs` (7). Mutations: ten, all caught. Corpus:
+  61 of 61 byte-identical on both fidelities.

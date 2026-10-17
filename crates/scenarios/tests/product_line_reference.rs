@@ -309,7 +309,7 @@ fn a_liquid_product_cooler_is_the_counter_flow_effectiveness() {
 /// at 10 zones — 0.044 % under its 160-zone limit, 1 672 359.45 W (2 zones
 /// −0.53 %, 5 −0.12 %, 20 −0.009 %).
 #[test]
-fn a_condensing_cooler_is_its_zone_analysis() {
+fn slow_a_condensing_cooler_is_its_zone_analysis() {
     let mut engine = build(PRODUCT_COOLER).unwrap();
     run(&mut engine, 2000);
     let s = engine.snapshot();

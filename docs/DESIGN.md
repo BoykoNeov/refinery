@@ -25341,8 +25341,11 @@ the answers; the user's answers:
   inlet by Leung's extension or refused; gated against the Annex's worked
   example. It lifts M62.4a's two interim refusals below.
 
-The boiling crude unit ships once, as a new plant file, after M62.4b and
-M62.4c; until then every gate is an inline fixture.
+The boiling crude unit ships once, as a new plant file, after M62.4b,
+M62.4c **and M62.4d** (corrected at M62.4b's close, the advisor's review:
+shipped before the choked jet, it would carry tubes that never burst, and
+M62.4d would then leave that or move a shipped plant's fingerprint); until then
+every gate is an inline fixture.
 
 **Built (M62.4a)**, as §67.4 specifies:
 
@@ -25596,8 +25599,82 @@ boiling cell's temperature barely moves while it absorbs heat, so the next cell
 sees a colder fluid and takes more: the boiling coil's heat transfer falls out
 of the cells, no stretched capacity in it (decision 9).
 
+**In the sweep**, four rules the vertex needs (the advisor's review):
+
+1. **Chain order.** The furnace node has the lowest id (its cells are built
+   after it), so the vertex runs its members in the coil's order — the first
+   cell, the cells in turn, the furnace — not by id. Nothing reacts in a coil:
+   the first cell's inflow mix is every member's composition.
+2. **The coil's segments are not a recycle.** The vertex counts no dependency
+   on its own segments (by role), where an exchanger side feeding its partner
+   stays the refused self-dependency.
+3. **Each cell through the helpers.** Its inlet is `inflow_totals` over its
+   segment — the segment's friction heat and the latent heat its upstream
+   cell's vapour carries (`inflow_latent`) included — and its outlet is
+   `settle_node`'s, recorded in `vapour` for the edge write and the next solve.
+   The coil's outside inflow arrives at the first cell.
+4. **The books**: fired = `C·ΔT_c/dt` + flue + (outlet flux − inlet flux −
+   the segments' friction), every tick — the gate.
+
 **Refused**: the coil keys apart or out of range, by name. A furnace with cells
 is otherwise any furnace. Probe first: the outlet, the coil's metal and the
-coil's pressure drop against the number of cells, on a crude unit whose feed
-enters the coil at a real heater's inlet pressure (the trial plant drops 28 bar
-in its 8 cm feed pipe; that drop belongs in the coil).
+coil's pressure drop against the number of cells — and the worst iterations, the
+re-solves and the milliseconds a tick, and the outlet's mixture velocity — on a
+crude unit whose feed enters the coil above its bubble pressure (about 12–14
+bar at 270 °C), so it enters liquid (the trial plant drops 28 bar in its 8 cm
+feed pipe; that drop belongs in the coil). The cells take the liquid's capacity
+rate, so a boiling cell is under-conductive by about `NTU_i/2`: the count is
+chosen where the boiling coil's outlet and metal converge.
+
+**Built (M62.4c)**, as specified, the four sweep rules in place
+(`energy::furnace_coil_cells`, `PlantGraph::coil_chain`, `is_coil_segment`,
+`scenarios::build::build_coil_cells`). The lumped coil's exact step and its
+burn-out fire are shared helpers now (`coil_step`, `burnout_fire`), written
+as they were: every furnace plant byte-identical.
+
+**The probe** (`tools/steptime/prototypes/m62_4/probe_coil.py`; its plant is
+`coil_cell_reference.rs`'s fixture): the crude unit under the line flash, its
+supply's 30 bar let down by a feed control valve (`kv` 135, fully open — the
+heater's pass flow valve) into a coil of 800 m of 24 cm tube, which the crude
+enters liquid at 15.0 bar. With a wide feed pipe and no valve the crude ran
+past 170 kg/s and the column could not settle; with the valve at 131 and a
+30 cm coil its inlet stood at 10.9 bar, below the crude's bubble pressure at
+270 °C, and it boiled in the first cell. Against the number of cells:
+
+```text
+  cells   flow kg/s   outlet °C   metal °C   ms a tick   worst iterations   re-solves
+  2       145.0       283.9       316.0       3.5          9                 7
+  4       136.9       285.7       320.8       5.1          9                 7
+  8       133.1       286.4       324.9       7.2         10                 7
+  16      130.9       286.8       327.4      12.5         10                 7
+  32      129.7       287.0       329.0      22.6         10                 7
+  lumped  181.4       273.5       333.2       1.8          9                 4
+```
+
+(Release, one plant, 3 000 ticks.) The stream's temperature peaks partway —
+303.6 °C in the sixth of eight cells — and falls to 286 °C at the outlet as the
+falling pressure flashes more of it: a real heater's profile. Eight cells put
+the outlet within 0.6 K of 32 and the metal 4 K below; each cell costs about
+0.6 ms a tick (its flash in every pass of the coil's fixed point and of every
+re-solve, and its two-phase segment in every Newton step). Every tick of a
+boiling crude unit re-solves 3–4 times on its own states, even settled (2 on
+the lumped coil) — a cost to look at before the plant ships, not a wrong
+number.
+
+**Gates**: `crates/scenarios/tests/coil_cell_reference.rs` (7: on water the
+coil in cells settles where the lumped coil does — the outlet and the metal to
+1e-6, the flow to its segments' friction, 2.9e-6; the coil's first law every
+tick to 1.3e-14 of its duty, the outlet pipe's own friction heat counted out;
+the crude entering liquid at 15 bar and boiling partway, every cell's state the
+flash of its own enthalpy; each cell's heat `G_i·(T̄_c − T_in,i)` by hand, the
+metal's average recovered from its flue, and each segment's drop by
+Darcy–Weisbach at its upwind cell's density, to 1e-3; both fidelities, slow;
+no flow, every cell at the metal; the refusals by name).
+
+**Mutations**: ten, all caught — the chain not reversed, the segments counted
+as a recycle, every cell the whole UA, the last cell not the remainder (once
+the first-law bound was tightened to 1e-12; it closes to 1.3e-14), a cell's
+inlet not settled (by the per-cell gate, added for it), one pass of the fixed
+point, a cell's inflow without its latent heat, the feed not rewired to the
+first cell, each segment the whole length (by the Darcy gate, added for it),
+one cell admitted. **Corpus**: 61 of 61 byte-identical on both fidelities.

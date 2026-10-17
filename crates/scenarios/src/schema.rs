@@ -541,6 +541,19 @@ pub enum NodeDef {
         /// leaked kilogram releases burning in the firebox. REQUIRED. Finite and
         /// >= 0; 0 is a fluid that does not burn (water).
         fluid_heating_value_mj_per_kg: f64,
+        /// The coil cut into this many cells along its length (M62.4c,
+        /// docs/DESIGN.md §67.14), the furnace node the last: an integer, at
+        /// least 2, declared with `coil_length_m` and `coil_diameter_m`. Absent:
+        /// the coil is one lumped node, as it always was.
+        #[serde(default)]
+        coil_cells: Option<u32>,
+        /// The coil's tube length [m], shared equally by its segments. Finite
+        /// and > 0; only with `coil_cells`.
+        #[serde(default)]
+        coil_length_m: Option<f64>,
+        /// The coil's tube bore [m]. Finite and > 0; only with `coil_cells`.
+        #[serde(default)]
+        coil_diameter_m: Option<f64>,
     },
     /// Cooler. Duty in MW REMOVED from the stream — a positive magnitude, like
     /// a furnace's. Use this rather than a negative `furnace` duty; the loader
@@ -1240,6 +1253,12 @@ pub struct PipeDef {
 
 fn default_friction() -> f64 {
     0.02
+}
+
+/// A pipe's friction factor where the file declares none — what a furnace's
+/// coil segments take (M62.4c), the same number as a declared pipe's default.
+pub(crate) fn default_friction_factor() -> f64 {
+    default_friction()
 }
 
 pub fn load_str(toml_src: &str) -> Result<ScenarioFile, SimError> {
