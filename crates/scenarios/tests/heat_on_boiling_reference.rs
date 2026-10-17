@@ -32,6 +32,13 @@ fn crude_unit_flashing() -> String {
         )
         .replace("tube_failure_c = 550.0", "tube_failure_c = 1951.1")
         .replace(
+            "fluid_heating_value_mj_per_kg = 42.686",
+            "fluid_heating_value_mj_per_kg = 42.686
+coil_cells = 2
+coil_length_m = 20.0
+coil_diameter_m = 0.40",
+        )
+        .replace(
             "name = \"transfer_line\"\nfrom = \"furnace\"\nto = \"column\"\nlength_m = 15.0\ndiameter_m = 0.08",
             "name = \"transfer_line\"\nfrom = \"furnace\"\nto = \"column\"\nlength_m = 15.0\ndiameter_m = 0.40",
         );
@@ -58,7 +65,10 @@ coil_temperature_c = 120.0
 flame_temperature_c = 1951.1
          tube_failure_c = 1951.1
 tube_rupture_area_cm2 = 1.0
-fluid_heating_value_mj_per_kg = 44.0"
+fluid_heating_value_mj_per_kg = 44.0
+coil_cells = 2
+coil_length_m = 10.0
+coil_diameter_m = 0.15"
     )
 }
 
@@ -265,6 +275,17 @@ fn furnace_gate(
             * (coil_temperature(&now, furnace_name) - coil_temperature(&before, furnace_name))
             / dt
         - flue;
+    // The coil's segments' friction heat, which the stream carries but the
+    // metal did not give (§67.14 rule 4); the coil's inflow lands on its first
+    // cell, so the coil's whole first law is the furnace's.
+    let friction: f64 = now
+        .edges
+        .iter()
+        .filter(|e| e.name.starts_with(&format!("{furnace_name}__coil_")))
+        .map(|e| e.dissipation_w)
+        .sum();
+    assert!(friction > 0.0, "{furnace_name}: the coil is in cells");
+    let to_fluid = to_fluid + friction;
     let inflow = edge(&now, inflow_name);
     assert_eq!(
         inflow.stream.latent.is_some(),
@@ -301,8 +322,10 @@ fn furnace_gate(
         share.mass_fraction
     );
     let latent = outlet.stream.latent.unwrap().value();
+    // 1e-8: the coil's segment friction summed in another order than the
+    // engine's (measured 1.4e-9 on the crude unit's coil in cells).
     assert!(
-        (latent - share.latent.value()).abs() < 1e-9 * latent,
+        (latent - share.latent.value()).abs() < 1e-8 * latent,
         "the outlet carries {latent} J/kg of latent heat against {}",
         share.latent.value()
     );
@@ -317,9 +340,10 @@ fn furnace_gate(
         (leaving - arriving - to_fluid).abs() < 1e-9 * leaving.abs(),
         "the fluid left with {leaving} W of the {arriving} + {to_fluid} W it had"
     );
-    // Measured at tick 201: the crude unit's furnace at 291.8 °C against its
-    // 350.1 °C liquid-equivalent, 43 % vapour; the rundown's at 94.9 °C against
-    // 131.4 °C, 26 % vapour from the 14 % that arrived.
+    // Measured at tick 201, each coil in two cells (M63.1): the crude unit's
+    // furnace at 322.4 °C against its 392.7 °C liquid-equivalent, 54 % vapour;
+    // the rundown's at 96.1 °C against 139.5 °C, 30 % vapour from the 12 % that
+    // arrived.
     assert!(
         share.liquid_equivalent.value() - furnace.temperature_k > 10.0,
         "the boiling stream must stand well below its liquid-equivalent temperature \
@@ -473,6 +497,33 @@ fn a_column_on_a_boiling_plant_takes_its_feed_whole_and_draws_liquids() {
         worst_without > 1e-2,
         "without the transfer line's latent heat the books still close ({worst_without:e})"
     );
+}
+
+/// **A lumped coil on a boiling plant is refused, by name** (M63.1, ledger
+/// row B62, docs/DESIGN.md §68.1): it heats on its inflow's liquid capacity
+/// rate, so on a stream that boils in it the metal reads some 40 K hot. The
+/// same furnace in cells loads (every fixture here is one); off a boiling
+/// plant the lumped coil is every furnace's, unchanged.
+#[test]
+fn a_boiling_plant_refuses_a_lumped_coil() {
+    let lumped = crude_unit_flashing().replace(
+        "
+coil_cells = 2
+coil_length_m = 20.0
+coil_diameter_m = 0.40",
+        "",
+    );
+    assert!(!lumped.contains("coil_cells"));
+    let err = match build(&lumped) {
+        Ok(_) => panic!("must refuse a lumped coil on a boiling plant"),
+        Err(e) => e,
+    };
+    assert!(
+        err.contains("furnace 'furnace'") && err.contains("coil_cells"),
+        "expected a refusal naming the furnace and coil_cells: {err}"
+    );
+    build(&crude_unit_flashing()).expect("the same furnace in cells loads");
+    build(CRUDE_UNIT).expect("off a boiling plant the lumped coil loads");
 }
 
 /// **What a boiling plant still refuses, by name**: a column on a slate with

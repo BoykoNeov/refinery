@@ -806,7 +806,10 @@ pub(crate) fn require_gas_fill_time_on_flashing_plant(
 ///   takes the latent heat of what arrives into its balance and its boil-off
 ///   vents it (fork 4); under `"none"` that heat would sit as superheat for ever.
 /// - **Supplies, destinations, the atmosphere, junctions, control valves,
-///   tanks, pumps, check valves, furnaces, coolers and columns.** A furnace and
+///   tanks, pumps, check valves, furnaces in cells, coolers and columns.** A
+///   furnace's coil must be in cells (M63.1, docs/DESIGN.md §68.1, ledger row
+///   B62): a lumped coil heats on its inflow's liquid capacity rate, so on a
+///   stream that boils in it the metal reads some 40 K hot. A furnace and
 ///   a cooler settle what passes by the line flash from their inflow's enthalpy
 ///   and their duty, and a column separates its feed whole and sends each draw
 ///   out as a liquid at its own stage (M62.4, §67.4). An exchanger, a reactor, a
@@ -884,7 +887,10 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             | NodeDef::WaterCooler { .. }
             // A furnace's burst tubes, like any hole here, are Leung's ω jet
             // (M62.4d, docs/DESIGN.md §67.15).
-            | NodeDef::Furnace { .. }
+            | NodeDef::Furnace {
+                coil_cells: Some(_),
+                ..
+            }
             | NodeDef::Pump {
                 npsh_required_m: None,
                 ..
@@ -893,6 +899,15 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
             // own and decants it at the condenser (M62.5, docs/DESIGN.md
             // §67.17); `require_water_draws` holds it to that.
             NodeDef::Column { .. } => continue,
+            NodeDef::Furnace { .. } => {
+                return refuse(format!(
+                    "with furnace '{name}' declaring no coil_cells: a lumped coil heats on \
+                     its inflow's liquid capacity rate, and a stream that boils in it barely \
+                     warms while it absorbs heat, so its metal reads some 40 K hot \
+                     (docs/DESIGN.md §68.1). Declare coil_cells, coil_length_m and \
+                     coil_diameter_m: a coil in cells sees the boiling crude (§67.14)"
+                ));
+            }
             NodeDef::Pump { .. } => {
                 return refuse(format!(
                     "with '{name}' declaring npsh_required_m: on a flashing plant a pump's \

@@ -26350,3 +26350,60 @@ balancing both lines, the bottom colder than the wet plant's; the first law on
 the plant's books; both fidelities, slow. `burnout_reference.rs` counts the
 thirty-second furnace. **Corpus**: 63 of 64 byte-identical on both fidelities,
 `crude_unit_steam` new; the baseline refreshed with it.
+
+## 68. M62's loose ends — the lumped coil, water's vapour pressure, the steam valve, a column fed nearly all water (M63)
+
+Asked after M62 closed (2026-10-17) as "what is next"; steam stripping (C7) was
+the planned M63, and the user chose instead to "tie the loose ends of M62"
+first. Asked which of M62's eight deferred rows (B61–B67, C13), they chose the
+four smaller ones and kept the four larger deferred (B61 a tank's water settling
+at once, B63 part-liquid valve choking, B65 dissolved water and emulsions, B66
+two models of a throttled vapour):
+
+1. **B62 — a lumped coil on a boiling plant**: refused by name (M63.1, §68.1).
+2. **B64 — water's vapour pressure**: a real saturation curve in place of
+   Clausius–Clapeyron on a constant latent heat (M63.2).
+3. **B67 — the choked steam valve 9 % low, with no pressure recovery** (M63.3).
+4. **C13 — a column fed nearly all water**: measured first, then answered
+   (M63.4).
+
+Steam stripping proper is **M64** (C7), on the ground §67.21 describes.
+
+### 68.1 A lumped coil on a boiling plant, refused (M63.1)
+
+A furnace without `coil_cells` exchanges `G·(T_c − T_in)` with its inflow, `G`
+on the inflow's liquid capacity rate (§67.12). A stream that boils in the coil
+barely warms while it absorbs heat, so the lumped coil's metal reads hot — some
+40 K on M62.4a's crude unit (345 °C against about 306 °C for the boiling
+crude). The coil in cells (§67.14) is the model of a boiling coil the user
+chose (§67.12 decision 9); the lumped coil stayed admitted on a boiling plant
+only for the test fixtures that used it, and no shipped plant did (the three
+boiling crude units are in cells).
+
+**The rule**: on a plant with `line_flash = "equilibrium"`, a furnace must
+declare `coil_cells`, `coil_length_m` and `coil_diameter_m`, or the load is
+refused naming the furnace and the keys (`require_line_flash_plant`). Off a
+boiling plant the lumped coil is every furnace's, unchanged.
+
+**The fixtures moved to cells**, each a short wide coil — two cells, 20 m of
+40 cm bore on the crude unit, 10 m of 15 cm on the naphtha rundown — so the
+coil adds little drop and the gates read the same physics:
+
+- `heat_on_boiling_reference.rs`: the furnace gate now takes the whole coil's
+  first law — its inflow lands on the first cell, and the segments' friction
+  heat, which the stream carries but the metal did not give (§67.14 rule 4), is
+  added to what the coil gave. Measured at tick 201: the crude unit's furnace at
+  322.4 °C against its 392.7 °C liquid-equivalent, 54 % vapour (lumped: 291.8,
+  350.1 and 43 % — the cells give the cold inlet more heat); the rundown's at
+  96.1 °C, 30 % vapour. The outlet's latent heat agrees to 1.4e-9 (the
+  segments' friction summed in another order), the gate's tolerance 1e-8.
+- `boiling_jet_reference.rs`: the burst furnace fires 60 MW where it fired 30 —
+  in cells the metal reads cooler, the point of the row, and at 30 MW it no
+  longer passes the lowered 362 °C limit.
+- `product_line_reference.rs`: the boiling crude unit's coil in cells; every
+  pinned number held.
+
+**Gates**: `heat_on_boiling_reference.rs` `a_boiling_plant_refuses_a_lumped_coil`
+— the lumped coil refused by name, the same furnace in cells admitted, the
+lumped coil off a boiling plant admitted. **Corpus**: byte-identical on both
+fidelities (no shipped plant has a lumped coil on a boiling plant).

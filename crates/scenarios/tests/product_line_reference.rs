@@ -48,7 +48,14 @@ fn crude_unit_lines(flashing: bool) -> String {
                 "boiloff = \"none\"",
                 "boiloff = \"flash\"\nline_flash = \"equilibrium\"",
             )
-            .replace("tube_failure_c = 550.0", "tube_failure_c = 1951.1");
+            .replace("tube_failure_c = 550.0", "tube_failure_c = 1951.1")
+            .replace(
+                "fluid_heating_value_mj_per_kg = 42.686",
+                "fluid_heating_value_mj_per_kg = 42.686
+    coil_cells = 2
+    coil_length_m = 20.0
+    coil_diameter_m = 0.40",
+            );
     }
     src = src.replace(
         "name = \"transfer_line\"\nfrom = \"furnace\"\nto = \"column\"\nlength_m = 15.0\ndiameter_m = 0.08",

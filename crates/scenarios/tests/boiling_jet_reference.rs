@@ -364,6 +364,13 @@ fn a_furnace_bursts_on_a_boiling_plant() {
         )
         .replace("tube_failure_c = 550.0", "tube_failure_c = 362.0")
         .replace(
+            "fluid_heating_value_mj_per_kg = 42.686",
+            "fluid_heating_value_mj_per_kg = 42.686
+coil_cells = 2
+coil_length_m = 20.0
+coil_diameter_m = 0.40",
+        )
+        .replace(
             "name = \"transfer_line\"\nfrom = \"furnace\"\nto = \"column\"\nlength_m = 15.0\ndiameter_m = 0.08",
             "name = \"transfer_line\"\nfrom = \"furnace\"\nto = \"column\"\nlength_m = 15.0\ndiameter_m = 0.40",
         );
@@ -372,7 +379,7 @@ fn a_furnace_bursts_on_a_boiling_plant() {
     engine
         .apply(Command::SetFurnaceDuty {
             node: furnace,
-            duty: refinery_core::units::Watt(30e6),
+            duty: refinery_core::units::Watt(60e6),
         })
         .unwrap();
     let mut burst_at = None;

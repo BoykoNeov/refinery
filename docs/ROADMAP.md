@@ -10046,3 +10046,25 @@ water in every flash, a tank's water layer, heat on a boiling stream (C6 taken),
 water through the column and steam into it, a valve that chokes on steam. Its
 close-out report is at the top of `docs/MILESTONES.md`. Deferred: B61–B67, C13;
 steam stripping proper is M63 (C7).
+
+## M63 — OPEN — M62's loose ends: the lumped coil, water's vapour pressure, the steam valve, a column fed nearly all water; ledger rows B62, B64, B67, C13
+
+Asked after M62 closed (2026-10-17) as "what is next": steam stripping (C7) was
+the plan, and the user chose to "tie the loose ends of M62" first. Asked which
+of M62's eight deferred rows, they took the four smaller (B62, B64, B67, C13)
+and kept the four larger deferred (B61, B63, B65, B66). Steam stripping proper
+moves to **M64**. DESIGN §68.
+
+### M63.1 — **LANDED** 2026-10-17: a lumped coil on a boiling plant, refused
+
+A furnace on a plant with `line_flash = "equilibrium"` must be in cells
+(`coil_cells`, `coil_length_m`, `coil_diameter_m`); a lumped coil, whose metal
+reads some 40 K hot on a stream that boils in it, is refused by name. No shipped
+plant had one; the test fixtures that did moved to short wide coils in cells,
+the furnace gate now the whole coil's first law (its segments' friction heat
+included), the burst furnace firing 60 MW where its cooler metal no longer
+reached the lowered limit at 30. Ledger row B62 closed. DESIGN §68.1.
+
+- Gates: `heat_on_boiling_reference.rs` (1 new; the furnace gate re-cast).
+  Mutations: one (the refusal lifted), caught. Corpus: 64 of 64
+  byte-identical on both fidelities.
