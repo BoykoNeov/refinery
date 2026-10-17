@@ -9955,6 +9955,6 @@ settled 322.05 °C (from 318.3 it re-solved every tick, A29). A feed nearly all
 water is not answered, ledger row C13. DESIGN §67.17.
 M62 stays open: M62.6, steam into the column, is next.
 
-- Gates: `reference/wet_column.rs` (7), `crude_unit_wet_reference.rs` (3),
+- Gates: `reference/wet_column.rs` (6), `crude_unit_wet_reference.rs` (4),
   `heat_on_boiling_reference.rs` re-pinned. Mutations: seventeen, all caught.
   Corpus: 62 of 63 byte-identical on both fidelities; `crude_unit_wet` new.

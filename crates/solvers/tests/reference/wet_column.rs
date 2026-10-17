@@ -19,7 +19,6 @@
 //!   floor, solved from the engine's own state.
 
 use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
-use refinery_core::energy::T_REF;
 use refinery_core::graph::{CascadeSpec, ColumnDraw, NodeId};
 use refinery_core::traits::{ColumnPass, Separation, SeparationModel, ThermoModel};
 use refinery_core::units::{JPerKgK, JPerMol, Kelvin, KgPerM3, KgPerMol, KgPerSec, Pascal};
@@ -341,37 +340,6 @@ fn water_rides_up_a_column_whose_trays_are_hotter_than_its_dew_point() {
 #[test]
 fn free_water_stands_on_the_top_trays_and_reboils_below_them() {
     against_the_reference(&WET_TRAYS, &WET_EXPECTED);
-}
-
-/// **The first law, water and all**: the reboiler's duty is the closure on the
-/// column's external balance, so the condenser's water term is the one thing
-/// it cannot see on its own. Rebuilt here from the published draws alone: the
-/// feed's enthalpy in, every draw's out at its temperature, the duties between.
-#[test]
-fn the_wet_column_closes_its_first_law_on_its_published_draws() {
-    let slate = slate();
-    for case in [&DRY_TRAYS, &WET_TRAYS] {
-        let separation = case.run();
-        let feed = case.feed(case.water);
-        let flux = |composition: &Composition, kg_per_s: f64, temperature: Kelvin| {
-            kg_per_s
-                * composition.mixture_cp(&slate).value()
-                * (temperature.value() - T_REF.value())
-        };
-        let into = flux(&feed, FEED_KG_PER_S, Kelvin(case.feed_c + 273.15));
-        let out: f64 = separation
-            .draws
-            .iter()
-            .map(|d| flux(&d.composition, d.split * FEED_KG_PER_S, d.temperature))
-            .sum();
-        let balance = into + separation.reboiler_duty.unwrap().value()
-            - separation.condenser_duty.unwrap().value()
-            - out;
-        assert!(
-            balance.abs() < 1e-9 * into.abs(),
-            "the column's first law misses by {balance} W"
-        );
-    }
 }
 
 /// **A dry feed on a wet slate is the dry column, bit for bit**: no standing

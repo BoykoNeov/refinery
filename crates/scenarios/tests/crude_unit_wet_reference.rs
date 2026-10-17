@@ -5,6 +5,7 @@
 //! plant to what it is for, and the loader to its refusals.
 
 use refinery_core::components::Composition;
+use refinery_core::graph::NodeKind;
 use refinery_core::snapshot::{EdgeSnapshot, NodeSnapshot, Snapshot};
 use refinery_core::traits::ThermoModel;
 use refinery_core::units::{Kelvin, Pascal};
@@ -133,6 +134,64 @@ fn the_crude_unit_decants_its_crudes_water_at_the_condenser() {
     // The decanted water reaches its tank liquid.
     let vent = edge(&s, "sour_water_tank__boiloff_vent");
     assert_eq!(vent.stream.mass_flow.value(), 0.0, "the water tank vents");
+}
+
+/// **The column's first law closes on the plant's own books**, water and all
+/// (M62.4a's gate, `heat_on_boiling_reference.rs`, on the wet plant): the
+/// feed's enthalpy as the engine carries it — the transfer line's latent heat
+/// included, its water's at Kirchhoff's λ(T) — the reboiler in, the condenser
+/// and the pumparounds out, and every draw's enthalpy, the water draw's among
+/// them, each from the engine's enthalpy model on the published stream. The
+/// counterfactuals: without the water draw's enthalpy, and without the feed's
+/// latent heat, the books miss by far more than the residual.
+#[test]
+fn the_wet_column_closes_its_first_law_on_the_plants_books() {
+    let mut engine = build(PLANT);
+    let pumparounds: f64 = match &node(&engine.snapshot(), "column").kind {
+        NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } => spec.pumparounds.iter().map(|p| p.duty.value()).sum(),
+        _ => panic!("the crude unit's column has a cascade"),
+    };
+    let flux = |engine: &Engine, e: &EdgeSnapshot| {
+        engine
+            .enthalpy()
+            .stream_enthalpy_flux(&engine.slate, &e.stream)
+            .unwrap()
+            .value()
+    };
+    let (mut worst, mut without_water, mut without_latent) = (0.0f64, f64::INFINITY, f64::INFINITY);
+    for _ in 0..100 {
+        run(&mut engine, 1);
+        let s = engine.snapshot();
+        let feed = edge(&s, "transfer_line__downstream");
+        let arriving = flux(&engine, feed);
+        let latent = feed.stream.mass_flow.value() * feed.stream.latent.unwrap().value();
+        let water = flux(&engine, edge(&s, "water_draw"));
+        let mut leaving = water;
+        for product in ["naphtha", "kerosene", "diesel", "gas_oil", "residue"] {
+            leaving += flux(&engine, edge(&s, &format!("{product}_suction")));
+        }
+        let duty = node(&s, "column").column_duty.unwrap();
+        let books = arriving + duty.reboiler_w - duty.condenser_w - pumparounds - leaving;
+        let gross =
+            arriving.abs() + duty.reboiler_w + duty.condenser_w + pumparounds + leaving.abs();
+        worst = worst.max(books.abs() / gross);
+        without_water = without_water.min((books + water).abs() / gross);
+        without_latent = without_latent.min((books - latent).abs() / gross);
+    }
+    // Measured: 1.8e-16 relative; 3.9e-4 without the water draw, 4.2e-2
+    // without the feed's latent heat.
+    assert!(
+        worst <= 1e-12,
+        "the column's first law: worst residual {worst:e}"
+    );
+    assert!(
+        without_water > 1e-5 && without_latent > 1e-2,
+        "the books close without the water draw ({without_water:e}) or the feed's latent \
+         heat ({without_latent:e})"
+    );
 }
 
 /// **Both fidelities agree** on the shipped plant.

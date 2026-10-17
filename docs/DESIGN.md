@@ -25920,6 +25920,8 @@ run.
    (`validate::require_water_draws`). `ColumnDraw::water` carries it, absent
    from the wire when false; the plan never sees it
    (`cascade::split_water_draw`), and every answer puts it back in its place.
+   The snapshot's `stage_vapour_mol_s` is the OIL's vapour on a wet column;
+   the water vapour rides beside it (its docs say so).
 10. **Answered, not refused**: a dry feed on a wet slate (the water draw's
     split zero, its composition pure water), and a feed with no oil at all, the
     water slug's. All of that feed leaves by the water draw at water's bubble
@@ -25962,16 +25964,21 @@ sour-water tank. Measured over 6 000 ticks, the same on both fidelities:
   plant's 3.7 and 3.0 on the same loaded machine, one job.
 
 **Gates**:
-- `crates/solvers/tests/reference/wet_column.rs` (7): both reference cases
+- `crates/solvers/tests/reference/wet_column.rs` (6): both reference cases
   (temperatures, free water, the condenser, the draws, both duties, the
-  reflux, the feed's flash share); the first law on the published draws; a dry
-  feed on a wet slate bit-identical to the dry slate's; the all-water feed; the
-  refusal of a wet feed without a water draw; the wet answer the same cold,
-  warm, and warm 10 K off.
-- `crates/scenarios/tests/crude_unit_wet_reference.rs` (3): the plant decants
+  reflux, the feed's flash share); a dry feed on a wet slate bit-identical to
+  the dry slate's; the all-water feed; the refusal of a wet feed without a
+  water draw; the wet answer the same cold, warm, and warm 10 K off. (A first
+  law rebuilt from the separation's own draws was dropped at the close: the
+  reboiler is that balance's closure, so it could not fail, and the condenser
+  mutation was caught by the reference's duties, not by it.)
+- `crates/scenarios/tests/crude_unit_wet_reference.rs` (4): the plant decants
   its crude's water, at the overhead's wet bubble point computed independently,
-  with every tray under saturation; both fidelities alike; the loader's
-  refusals.
+  with every tray under saturation; the column's first law on the plant's own
+  books — each stream's enthalpy from the engine's model, the transfer line's
+  latent heat with its water's — closing to 1.8e-16, missing by 3.9e-4 without
+  the water draw and 4.2e-2 without the latent heat; both fidelities alike; the
+  loader's refusals.
 - `heat_on_boiling_reference.rs` re-pinned: M62.4a's refusal of a wet column
   is now the refusal of one with no water draw.
 - `burnout_reference.rs` counts the thirty-first furnace.

@@ -639,6 +639,11 @@ pub struct ColumnOperation {
     pub stage_temperatures_k: Vec<f64>,
     /// The vapour leaving each stage upward [mol/s], in the same order; the
     /// first is what the condenser takes. Empty when there is no profile.
+    ///
+    /// **The OIL's vapour** on a column whose feed carries free water (M62.5,
+    /// docs/DESIGN.md §67.17): the water vapour rides beside it and is not in
+    /// this number. A stage's whole vapour is this plus its water's — above
+    /// the feed stage on dry trays the water draw's molar rate.
     #[serde(default)]
     pub stage_vapour_mol_s: Vec<f64>,
 }
