@@ -391,7 +391,7 @@ fn temperature_root(
 /// would move them for a cost they do not have. Its refusals are kept here word
 /// for word in substance: a feed of the wrong length, a K that is not finite
 /// and positive.
-fn flash_on_the_line(
+pub(crate) fn flash_on_the_line(
     feed: &MoleFractions,
     slate: &Slate,
     thermo: &dyn ThermoModel,

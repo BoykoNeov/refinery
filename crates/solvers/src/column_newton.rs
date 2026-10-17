@@ -23,6 +23,20 @@
 //! the bottoms from the reboiler's mole balance, the K-values at each `T_j`, each
 //! component's liquid profile by the same Thomas sweep. So where both methods
 //! converge they agree, and the reboiler's duty is still the closure.
+//!
+//! **Water** (M62.5, docs/DESIGN.md §67.17): on a feed with free water the
+//! cascade is the OIL's, and water a balance of its own. Each wet stage adds
+//! its free water `FW_j` to the unknowns and its saturation to the equations;
+//! the water vapour follows top-down from them (`water_vapour_profile`), each
+//! cut's K is taken at the oil's partial pressure, and every energy balance
+//! carries water's enthalpy:
+//!
+//! ```text
+//!   unknowns   … and FW_j on every wet stage
+//!   S_j        Σ_c K_jc·x_jc·(V_j + W_j)/V_j − 1
+//!   E_j        … + W_{j+1}·H_w,j+1 + FW_{j−1}·h_w,j−1 − W_j·H_w,j − FW_j·h_w,j
+//!   Z_j = W_j·(1 − K_w,j) − K_w,j·V_j                 every wet stage (y_w = P_w/P)
+//! ```
 
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
@@ -34,7 +48,10 @@ use crate::bubble::bubble_temperature_unnormalized;
 use crate::cascade::{
     mixture_dh_vap, CascadePlan, DrawLocation, Flows, COMPONENT_RESIDUAL_KG_PER_S,
 };
-use crate::heat_balance::{equilibrium_vapour, liquid_enthalpy, VAPOUR_FLOOR_OF_FEED};
+use crate::heat_balance::{
+    condenser_temperature, equilibrium_vapour, liquid_enthalpy, water_vapour_profile, WaterFeed,
+    VAPOUR_FLOOR_OF_FEED,
+};
 use crate::molar::MoleFractions;
 
 /// The most a stage temperature may move in one Newton step [K].
@@ -93,6 +110,11 @@ pub(crate) struct ColumnEquations<'a> {
     pub(crate) energy_scale: f64,
     /// The convergence tolerance every scaled residual must meet [-].
     pub(crate) tolerance: f64,
+    /// The feed's free water (M62.5), or `None` on a feed with none — where
+    /// every equation is M61's, bit for bit. With it, `feed`, `feed_mass`,
+    /// `feed_molar` and `feed_composition` are the OIL's, and `feed_enthalpy`
+    /// is the WHOLE feed's enthalpy flux per mole of oil.
+    pub(crate) water: Option<&'a WaterFeed>,
 }
 
 /// Where a solve starts: temperatures [K], vapours leaving each stage [mol/s]
@@ -102,6 +124,9 @@ pub(crate) struct Start<'a> {
     pub(crate) temperatures: &'a [f64],
     pub(crate) vapour: &'a [f64],
     pub(crate) draw_rates: &'a [f64],
+    /// Free water leaving each stage downward [mol/s], read on the wet stages;
+    /// empty for none.
+    pub(crate) free_water: &'a [f64],
 }
 
 /// A converged solve.
@@ -113,6 +138,13 @@ pub(crate) struct Solved {
     /// The reflux ratio the column ran at: the declared one, or above it where
     /// the floor binds.
     pub(crate) reflux_ratio: f64,
+    /// Water vapour leaving each stage [mol/s] (M62.5); empty on a dry feed.
+    pub(crate) water_vapour: Vec<f64>,
+    /// Free water leaving each stage downward [mol/s]; empty on a dry feed.
+    pub(crate) free_water: Vec<f64>,
+    /// Each stage's water vapour share over its saturation share, `y_w/K_w`
+    /// [-]: past 1 a dry stage would hold free water. Empty on a dry feed.
+    pub(crate) saturation: Vec<f64>,
 }
 
 /// A solve that did not converge: why, and the flows at its last iterate —
@@ -130,6 +162,9 @@ struct Evaluation {
     component_residual: f64,
     liquid: Vec<Vec<f64>>,
     flows: Flows,
+    water_vapour: Vec<f64>,
+    free_water: Vec<f64>,
+    saturation: Vec<f64>,
 }
 
 impl ColumnEquations<'_> {
@@ -137,7 +172,13 @@ impl ColumnEquations<'_> {
         self.plan.mass_ratios.len() - 1
     }
 
-    fn unknowns(&self, specification: Specification) -> usize {
+    fn unknowns(&self, specification: Specification, wet: &[usize]) -> usize {
+        self.free_water_offset(specification) + wet.len()
+    }
+
+    /// Where the wet stages' free water starts in the unknowns: after the
+    /// temperatures, the vapours, the draws and the floor's reflux.
+    fn free_water_offset(&self, specification: Specification) -> usize {
         let n = self.plan.stages;
         2 * n - 1
             + self.draw_count()
@@ -147,14 +188,19 @@ impl ColumnEquations<'_> {
     fn reflux_ratio(&self, u: &[f64], specification: Specification) -> f64 {
         match specification {
             Specification::Reflux => self.spec.reflux_ratio,
-            Specification::Floor(_) => u[u.len() - 1],
+            Specification::Floor(_) => u[2 * self.plan.stages - 1 + self.draw_count()],
         }
     }
 
     /// The residuals at `u`. An `Err` is an iterate outside the physical region
     /// (a negative flow, a temperature a K-value refuses): the line search
     /// treats it as a step too long.
-    fn evaluate(&self, u: &[f64], specification: Specification) -> Result<Evaluation, SimError> {
+    fn evaluate(
+        &self,
+        u: &[f64],
+        specification: Specification,
+        wet: &[usize],
+    ) -> Result<Evaluation, SimError> {
         let plan = self.plan;
         let slate = self.slate;
         let n = plan.stages;
@@ -221,8 +267,22 @@ impl ColumnEquations<'_> {
             reflux,
         };
 
+        // The water: the free water on the wet stages, the vapour from it.
+        let mut free_water = Vec::new();
+        let mut water_vapour = Vec::new();
+        if let Some(water) = self.water {
+            free_water = vec![0.0; n];
+            let offset = self.free_water_offset(specification);
+            for (slot, j) in wet.iter().enumerate() {
+                free_water[*j] = u[offset + slot];
+            }
+            water_vapour = water_vapour_profile(plan, water, &free_water)
+                .map_err(|_| outside("a water vapour rate left the physical region"))?;
+        }
+
         let mut k = Vec::with_capacity(n);
-        for t in temperatures {
+        let mut water_k = Vec::new();
+        for (j, t) in temperatures.iter().enumerate() {
             let mut row = Vec::with_capacity(slate.len());
             for c in 0..slate.len() {
                 let value = self.thermo.k_value(slate, c, Kelvin(*t), self.pressure)?;
@@ -230,6 +290,15 @@ impl ColumnEquations<'_> {
                     return Err(outside("a K-value left the physical region"));
                 }
                 row.push(value);
+            }
+            if let Some(water) = self.water {
+                // Each cut at the oil's partial pressure `P·V/(V + W)`: Raoult's
+                // K ∝ 1/P, so the total pressure's K times `(V + W)/V`.
+                water_k.push(row[water.index]);
+                let scale = (flows.vapour[j] + water_vapour[j]) / flows.vapour[j];
+                for value in &mut row {
+                    *value *= scale;
+                }
             }
             k.push(row);
         }
@@ -243,7 +312,7 @@ impl ColumnEquations<'_> {
             }
         }
 
-        let mut residual = Vec::with_capacity(self.unknowns(specification));
+        let mut residual = Vec::with_capacity(self.unknowns(specification, wet));
         // The summation, one per stage: `Σ K·x = 1` (the bubble point).
         for (row, k_row) in amounts.iter().zip(&k) {
             residual.push(row.iter().zip(k_row).map(|(x, k)| x * k).sum::<f64>() - 1.0);
@@ -263,14 +332,34 @@ impl ColumnEquations<'_> {
         // The reflux: stage 1's vapour, condensed, at its own bubble point —
         // the fixed point's `reflux_enthalpy`.
         let condensate = equilibrium_vapour(&liquid[0], &k[0])?;
-        let condenser_t = bubble_temperature_unnormalized(
-            slate,
-            self.thermo,
-            &condensate,
-            self.pressure,
-            "the total condenser",
-        )?;
+        let condenser_t = match self.water {
+            None => bubble_temperature_unnormalized(
+                slate,
+                self.thermo,
+                &condensate,
+                self.pressure,
+                "the total condenser",
+            )?,
+            Some(water) => condenser_temperature(
+                slate,
+                self.thermo,
+                &condensate,
+                flows.vapour[0],
+                water,
+                water_vapour[0],
+                self.pressure,
+            )?,
+        };
         let reflux_enthalpy = liquid_enthalpy(slate, &condensate, condenser_t);
+        // Water's own enthalpies at each stage, liquid and vapour [J/mol].
+        let mut water_h = Vec::new();
+        let mut water_big_h = Vec::new();
+        if let Some(water) = self.water {
+            for t in temperatures {
+                water_h.push(water.liquid_enthalpy(Kelvin(*t)));
+                water_big_h.push(water.vapour_enthalpy(slate, self.thermo, Kelvin(*t))?);
+            }
+        }
         // Each stage's energy balance but the reboiler's (which is the closure).
         for j in 0..n - 1 {
             let feed_here = if j == plan.feed_stage {
@@ -285,6 +374,18 @@ impl ColumnEquations<'_> {
                 - (flows.liquid_down[j] + flows.liquid_drawn[j]) * h[j]
                 - flows.vapour[j] * big_h[j]
                 - plan.side_heat[j];
+            let imbalance = if self.water.is_some() {
+                let from_above = if j == 0 {
+                    0.0
+                } else {
+                    free_water[j - 1] * water_h[j - 1]
+                };
+                imbalance + water_vapour[j + 1] * water_big_h[j + 1] + from_above
+                    - water_vapour[j] * water_big_h[j]
+                    - free_water[j] * water_h[j]
+            } else {
+                imbalance
+            };
             residual.push(imbalance / self.energy_scale);
         }
         // Each draw's mass ratio: its molar rate times its molar mass.
@@ -305,6 +406,20 @@ impl ColumnEquations<'_> {
             let floor = VAPOUR_FLOOR_OF_FEED * self.feed_molar;
             residual.push((flows.vapour[stage] - floor) / self.feed_molar);
         }
+        // Each wet stage's vapour saturated with water: `y_w = K_w`, or
+        // `W·(1 − K_w) = K_w·V` with `V` the oil vapour.
+        for j in wet {
+            residual.push(
+                (water_vapour[*j] * (1.0 - water_k[*j]) - water_k[*j] * flows.vapour[*j])
+                    / self.feed_molar,
+            );
+        }
+        let saturation = water_vapour
+            .iter()
+            .zip(&water_k)
+            .zip(&flows.vapour)
+            .map(|((w, kw), v)| w / ((v + w) * kw))
+            .collect();
         if residual.iter().any(|r| !r.is_finite()) {
             return Err(outside("a residual is not finite"));
         }
@@ -316,6 +431,9 @@ impl ColumnEquations<'_> {
             component_residual,
             liquid,
             flows,
+            water_vapour,
+            free_water,
+            saturation,
         })
     }
 
@@ -325,6 +443,7 @@ impl ColumnEquations<'_> {
         &self,
         start: &Start<'_>,
         specification: Specification,
+        wet: &[usize],
         max_iterations: u32,
     ) -> Result<Solved, Unsolved> {
         let n = self.plan.stages;
@@ -337,10 +456,18 @@ impl ColumnEquations<'_> {
             let ran = start.vapour[0] / start.draw_rates[0] - 1.0;
             u.push(ran.max(self.spec.reflux_ratio));
         }
-        let mut current = self.evaluate(&u, specification).map_err(|e| Unsolved {
-            reason: format!("its starting point is outside the physical region ({e})"),
-            flows: None,
-        })?;
+        for j in wet {
+            u.push(start.free_water.get(*j).copied().unwrap_or(0.0));
+        }
+        // The free water's sign is the wet set's to judge (§67.17 rule 6), so
+        // the fraction-to-the-boundary rule stops short of it.
+        let bounded = u.len() - wet.len();
+        let mut current = self
+            .evaluate(&u, specification, wet)
+            .map_err(|e| Unsolved {
+                reason: format!("its starting point is outside the physical region ({e})"),
+                flows: None,
+            })?;
         let norm = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>().sqrt();
         let mut current_norm = norm(&current.residual);
         let mut iterations = 0u32;
@@ -351,26 +478,29 @@ impl ColumnEquations<'_> {
                     liquid: current.liquid,
                     flows: current.flows,
                     reflux_ratio: self.reflux_ratio(&u, specification),
+                    water_vapour: current.water_vapour,
+                    free_water: current.free_water,
+                    saturation: current.saturation,
                 });
             }
             if iterations >= max_iterations {
                 return Err(Unsolved {
                     reason: format!(
                         "did not converge in {iterations} iterations: {}",
-                        self.unmet(&current)
+                        self.unmet(&current, specification)
                     ),
                     flows: Some(Box::new(current.flows)),
                 });
             }
             iterations += 1;
 
-            let jacobian = self.jacobian(&u, &current.residual, specification);
+            let jacobian = self.jacobian(&u, &current.residual, specification, wet);
             let negative: Vec<f64> = current.residual.iter().map(|r| -r).collect();
             let Some(step) = solve_dense(jacobian, negative) else {
                 return Err(Unsolved {
                     reason: format!(
                         "its Jacobian is singular at iteration {iterations}: {}",
-                        self.unmet(&current)
+                        self.unmet(&current, specification)
                     ),
                     flows: Some(Box::new(current.flows)),
                 });
@@ -381,7 +511,7 @@ impl ColumnEquations<'_> {
                     scale = scale.min(MAX_TEMPERATURE_STEP_K / d.abs());
                 }
             }
-            for (value, d) in u[n..].iter().zip(&step[n..]) {
+            for (value, d) in u[n..bounded].iter().zip(&step[n..bounded]) {
                 if value + scale * d <= 0.0 {
                     scale = scale.min(FRACTION_TO_BOUNDARY * value / -d);
                 }
@@ -389,7 +519,7 @@ impl ColumnEquations<'_> {
             let mut accepted = None;
             for _ in 0..=MAX_HALVINGS {
                 let trial: Vec<f64> = u.iter().zip(&step).map(|(a, d)| a + scale * d).collect();
-                if let Ok(evaluation) = self.evaluate(&trial, specification) {
+                if let Ok(evaluation) = self.evaluate(&trial, specification, wet) {
                     let trial_norm = norm(&evaluation.residual);
                     if trial_norm <= (1.0 - ARMIJO * scale) * current_norm
                         || self.converged(&evaluation)
@@ -404,7 +534,7 @@ impl ColumnEquations<'_> {
                 return Err(Unsolved {
                     reason: format!(
                         "found no step that improves it at iteration {iterations}: {}",
-                        self.unmet(&current)
+                        self.unmet(&current, specification)
                     ),
                     flows: Some(Box::new(current.flows)),
                 });
@@ -429,7 +559,7 @@ impl ColumnEquations<'_> {
     }
 
     /// The worst residual, in words.
-    fn unmet(&self, evaluation: &Evaluation) -> String {
+    fn unmet(&self, evaluation: &Evaluation, specification: Specification) -> String {
         let residual = &evaluation.residual;
         let n = self.plan.stages;
         let (worst, size) = residual
@@ -448,8 +578,10 @@ impl ColumnEquations<'_> {
             format!("the energy balance of stage {}", worst - n + 1)
         } else if worst < 2 * n - 1 + self.draw_count() {
             format!("the mass ratio of draw {}", worst - (2 * n - 1) + 1)
-        } else {
+        } else if worst < self.free_water_offset(specification) {
             "the vapour floor".to_string()
+        } else {
+            "the water saturation of a wet stage".to_string()
         };
         if size <= self.tolerance {
             return format!(
@@ -466,7 +598,13 @@ impl ColumnEquations<'_> {
 
     /// The Jacobian by forward differences — one evaluation per unknown, a
     /// backward difference where the forward one leaves the physical region.
-    fn jacobian(&self, u: &[f64], residual: &[f64], specification: Specification) -> Vec<Vec<f64>> {
+    fn jacobian(
+        &self,
+        u: &[f64],
+        residual: &[f64],
+        specification: Specification,
+        wet: &[usize],
+    ) -> Vec<Vec<f64>> {
         let n = self.plan.stages;
         let size = u.len();
         let mut jacobian = vec![vec![0.0; size]; size];
@@ -478,12 +616,12 @@ impl ColumnEquations<'_> {
                 FLOW_DIFFERENCE * u[column].abs().max(1.0e-3)
             };
             probe[column] = u[column] + step;
-            let (shifted, signed) = match self.evaluate(&probe, specification) {
+            let (shifted, signed) = match self.evaluate(&probe, specification, wet) {
                 Ok(e) => (Some(e.residual), step),
                 Err(_) => {
                     probe[column] = u[column] - step;
                     (
-                        self.evaluate(&probe, specification)
+                        self.evaluate(&probe, specification, wet)
                             .ok()
                             .map(|e| e.residual),
                         -step,

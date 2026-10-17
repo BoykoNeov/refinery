@@ -475,13 +475,15 @@ fn a_column_on_a_boiling_plant_takes_its_feed_whole_and_draws_liquids() {
     );
 }
 
-/// **What a boiling plant still refuses, by name** (§67.4): a column on a slate
-/// with free water, which its stages do not balance yet (M62.5). **What it
-/// admits since M62.4d** (§67.15), where M62.4a refused both: a furnace whose
-/// tubes can burst, and a puncture — a hole on a boiling plant is Leung's ω
-/// jet, gated in `boiling_jet_reference.rs`.
+/// **What a boiling plant still refuses, by name**: a column on a slate with
+/// free water and no water draw to decant it (M62.5, §67.17 — M62.4a refused
+/// any column on a wet slate; its stages balance water now, gated in
+/// `crude_unit_wet_reference.rs` and the solvers' `reference/wet_column.rs`).
+/// **What it admits since M62.4d** (§67.15), where M62.4a refused both: a
+/// furnace whose tubes can burst, and a puncture — a hole on a boiling plant
+/// is Leung's ω jet, gated in `boiling_jet_reference.rs`.
 #[test]
-fn a_boiling_plant_refuses_a_wet_column_and_admits_a_hole() {
+fn a_boiling_plant_refuses_a_wet_column_without_its_water_draw_and_admits_a_hole() {
     let wet = crude_unit_flashing().replace(
         "[[components]]\nname = \"residue\"",
         "[[components]]\nname = \"water\"\ntb_c = 100.0\nmolar_mass_kg_per_mol = 0.018015\n\
@@ -490,12 +492,12 @@ fn a_boiling_plant_refuses_a_wet_column_and_admits_a_hole() {
     );
     assert!(wet.contains("free_water"));
     let err = match build(&wet) {
-        Ok(_) => panic!("must refuse a wet column"),
+        Ok(_) => panic!("must refuse a wet column with no water draw"),
         Err(e) => e,
     };
     assert!(
-        err.contains("line_flash") && err.contains("free_water"),
-        "expected a line-flash refusal naming free_water: {err}"
+        err.contains("has no water draw") && err.contains("free_water"),
+        "expected a refusal naming the missing water draw: {err}"
     );
 
     let bursting =

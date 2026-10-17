@@ -785,6 +785,13 @@ pub struct ColumnDraw {
     /// draw whose `outlet` is its store, which keeps its single pipe.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub line: Vec<EdgeId>,
+    /// The condenser's WATER draw (M62.5, docs/DESIGN.md §67.17): the free
+    /// water decanted from the total condenser's drum, at its temperature. Its
+    /// rate is a result of the column's water balance, so it declares no
+    /// `draw_ratio`; it sits at `stage = 0`, listed second, after the
+    /// distillate. False — and absent from the wire — on every other draw.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub water: bool,
 }
 
 impl ColumnDraw {
@@ -797,6 +804,7 @@ impl ColumnDraw {
             stage: None,
             draw_ratio: None,
             line: Vec::new(),
+            water: false,
         }
     }
 
@@ -813,6 +821,15 @@ impl ColumnDraw {
             stage: Some(stage),
             draw_ratio,
             line: Vec::new(),
+            water: false,
+        }
+    }
+
+    /// The condenser's water draw (M62.5): stage 0, no ratio.
+    pub fn water_draw(outlet: NodeId) -> Self {
+        Self {
+            water: true,
+            ..Self::by_stage(outlet, 0, None)
         }
     }
 }

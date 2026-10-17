@@ -51,6 +51,8 @@ mod reference_two_phase_head;
 mod reference_vapour_pressure;
 #[path = "reference/water.rs"]
 mod reference_water;
+#[path = "reference/wet_column.rs"]
+mod reference_wet_column;
 #[path = "separation_contract.rs"]
 mod separation_contract;
 #[path = "vapour_recovery_contract.rs"]

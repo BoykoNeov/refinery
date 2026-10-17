@@ -9932,3 +9932,29 @@ M62 stays open: M62.5, water through the column, is next. DESIGN §67.16.
 
 - Gates: `crude_unit_boiling_reference.rs` (2). Corpus: 61 of 62
   byte-identical on both fidelities; `crude_unit_boiling` new.
+
+### M62.5 — **LANDED** 2026-10-17: water through the column
+
+A column on a slate with free water carries its water as a balance of its own:
+the cascade separates the oil, each cut boiling at its partial pressure, and
+water rides up as vapour above its dew point; on a tray colder than that, free
+water stands and runs down to re-boil, the wet trays found as an active set
+around the floor's. The total condenser condenses both at their wet bubble
+point and decants the water to a new draw, `phase = "water"`; the reflux and
+the naphtha are oil, and a wet column's draw ratios are shares of its oil.
+Gated against an independent solve (`tools/steptime/prototypes/m62_5/`), dry
+trays and wet. Corrected while building: the wet set flips every stage at once,
+each solve from the call's own start (one at a time walked through a tray
+boiling its water at 35 °C); the warm start carries the reflux it ran at (the
+feed's drift between passes sent every wet solve down the floor's path first,
+14 Newton steps a call). The plant, `scenarios/crude_unit_wet.toml`: the
+boiling crude unit with 0.3 % water in its crude, which already boils at the
+supply, so the charge falls to 112.8 kg/s; every kilogram of water leaves the
+condenser at 93.7 °C into a sour-water tank. Its coil starts at its own
+settled 322.05 °C (from 318.3 it re-solved every tick, A29). A feed nearly all
+water is not answered, ledger row C13. DESIGN §67.17.
+M62 stays open: M62.6, steam into the column, is next.
+
+- Gates: `reference/wet_column.rs` (7), `crude_unit_wet_reference.rs` (3),
+  `heat_on_boiling_reference.rs` re-pinned. Mutations: seventeen, all caught.
+  Corpus: 62 of 63 byte-identical on both fidelities; `crude_unit_wet` new.

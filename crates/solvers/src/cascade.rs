@@ -150,7 +150,8 @@ impl StageCascade {
         // The component count is not part of a column's geometry and nothing on
         // this path reads it — `CascadePlan::components` is for the solve. Passed
         // as 0 rather than invented, and the plan is discarded immediately.
-        CascadePlan::new(spec, draws, 0).map(|_| ())
+        let (oil, _) = split_water_draw(draws)?;
+        CascadePlan::new(spec, &oil, 0).map(|_| ())
     }
 }
 
@@ -220,6 +221,7 @@ pub(crate) fn column_duties(
     draws: &[DrawSeparation],
     pass: &ColumnPass<'_>,
     heat_removed_between: f64,
+    water_condensed: f64,
 ) -> Result<(Watt, Watt), SimError> {
     let vapour = flows.vapour[0];
     let y_one = distillate.moles.fractions();
@@ -233,7 +235,10 @@ pub(crate) fn column_duties(
     // as liquid once condensed.
     let sensible =
         vapour * mixture_molar_cp(slate, y_one) * (stage_one_t.value() - condenser_t.value());
-    let condenser_duty = latent + sensible;
+    // `water_condensed` is the heat the decanted water gives up [W] — its vapour
+    // at stage 1's temperature to liquid at the condenser's (M62.5,
+    // docs/DESIGN.md §67.17 rule 5); zero on a dry feed, and `x + 0.0` is `x`.
+    let condenser_duty = latent + sensible + water_condensed;
 
     // The external sensible balance, in the ENGINE's datum (`energy::T_REF`)
     // rather than a datum local to this function — `datum-consistency-in-a-
@@ -318,6 +323,15 @@ impl SeparationModel for StageCascade {
 
         // The geometry is validated before the flow is looked at, so which plants
         // are legal never depends on how much is flowing through them.
+        if pass.draws.iter().any(|d| d.water) {
+            return Err(SimError::Scenario(
+                "stage cascade: this column declares a water draw, the decanted water of a \
+                 column whose stages carry a water balance — which constant molar overflow \
+                 does not solve. Select separation = \"heat_balance\" (docs/DESIGN.md \
+                 §67.17)."
+                    .into(),
+            ));
+        }
         let plan = CascadePlan::new(spec, pass.draws, slate.len())?;
         if !spec.pumparounds.is_empty() {
             return Err(SimError::Scenario(
@@ -575,6 +589,7 @@ impl SeparationModel for StageCascade {
             &result,
             pass,
             0.0,
+            0.0,
         )?;
 
         Ok(Separation {
@@ -587,6 +602,8 @@ impl SeparationModel for StageCascade {
                 temperatures: stage_t.iter().copied().map(Kelvin).collect(),
                 liquid: liquid.clone(),
                 vapour: Vec::new(),
+                free_water: Vec::new(),
+                reflux_ratio: None,
             }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
@@ -594,6 +611,41 @@ impl SeparationModel for StageCascade {
             reflux_ratio: None,
         })
     }
+}
+
+/// A column's draws without its condenser WATER draw, and where the water draw
+/// stood (M62.5, docs/DESIGN.md §67.17): the cascade's plan is the oil's draws,
+/// and the water draw is put back in its place in every answer.
+///
+/// # Errors
+/// More than one water draw, or one that is not listed second (after the
+/// distillate), not at stage 0, or declaring a `draw_ratio` — its rate is the
+/// water balance's, not a specification.
+pub(crate) fn split_water_draw(
+    draws: &[ColumnDraw],
+) -> Result<(Vec<ColumnDraw>, Option<usize>), SimError> {
+    let mut at = None;
+    for (i, draw) in draws.iter().enumerate().filter(|(_, d)| d.water) {
+        if at.is_some() {
+            return Err(SimError::Scenario(
+                "stage cascade: more than one water draw; the total condenser decants its \
+                 water to one."
+                    .into(),
+            ));
+        }
+        if i != 1 || draw.stage != Some(0) || draw.draw_ratio.is_some() {
+            return Err(SimError::Scenario(format!(
+                "stage cascade: the water draw is draw {i} at stage {:?} with draw_ratio {:?}; \
+                 it is the water decanted at the total condenser — stage 0, listed second, \
+                 right after the distillate — and declares no draw_ratio, its rate being the \
+                 column's water balance.",
+                draw.stage, draw.draw_ratio
+            )));
+        }
+        at = Some(i);
+    }
+    let oil = draws.iter().filter(|d| !d.water).cloned().collect();
+    Ok((oil, at))
 }
 
 /// Where a draw leaves from, resolved from `ColumnDraw::stage` once.

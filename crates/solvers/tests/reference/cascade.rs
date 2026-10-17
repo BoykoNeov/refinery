@@ -782,11 +782,15 @@ fn a_seed_of_the_wrong_shape_is_ignored_and_the_answer_is_the_cold_one() {
         temperatures: good.temperatures[..good.temperatures.len() - 1].to_vec(),
         liquid: good.liquid[..good.liquid.len() - 1].to_vec(),
         vapour: Vec::new(),
+        free_water: Vec::new(),
+        reflux_ratio: None,
     };
     let wrong_slate = CascadeProfile {
         temperatures: good.temperatures.clone(),
         liquid: good.liquid.iter().map(|row| vec![row[0]]).collect(),
         vapour: Vec::new(),
+        free_water: Vec::new(),
+        reflux_ratio: None,
     };
 
     for (name, seed) in [("too short", &too_short), ("wrong slate", &wrong_slate)] {

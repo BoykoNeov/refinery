@@ -527,6 +527,10 @@ pub(crate) fn require_declared_iff_used(
             }
             match d.phase.as_deref() {
                 None | Some("liquid") => {}
+                // The condenser's decanted water (M62.5, docs/DESIGN.md
+                // §67.17): its slate and its separation are checked by
+                // `require_water_draws`.
+                Some("water") => {}
                 Some(other) => {
                     return Err(SimError::Scenario(format!(
                         "column '{name}' draw '{}' declares phase = \"{other}\": only \"liquid\" \
@@ -605,6 +609,58 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
     require_gas_fill_time_on_flashing_plant(scenario)?;
     require_trouton_for_declared_latent(scenario)?;
     require_line_flash_for_free_water(scenario)?;
+    require_water_draws(scenario)?;
+    Ok(())
+}
+
+/// A column's water draw (`phase = "water"`, M62.5, docs/DESIGN.md §67.17)
+/// in both directions: a heat-balance column on a slate with a `free_water`
+/// member declares one — the water its feed brings leaves the condenser by it
+/// — and no other column may. Only `separation = "heat_balance"` carries a
+/// water balance; the `"cascade"` model and the splitter would dissolve the
+/// water in the oil as one more cut, so a wet slate's column is refused under
+/// them. Where the draw sits (second, stage 0, no ratio) is the model's own
+/// rule, `StageCascade::validate`.
+pub(crate) fn require_water_draws(scenario: &ScenarioFile) -> Result<(), SimError> {
+    let water = scenario.components.iter().find(|c| c.free_water);
+    let heat_balance = scenario.fidelity.separation == "heat_balance";
+    for (name, def) in &scenario.nodes {
+        let NodeDef::Column { draws, .. } = def else {
+            continue;
+        };
+        let declared = draws
+            .iter()
+            .filter(|d| d.phase.as_deref() == Some("water"))
+            .count();
+        match water {
+            None if declared > 0 => {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' declares a water draw (phase = \"water\"), but no \
+                     component declares free_water: there is no water to decant. Mark the \
+                     slate's water free_water = true, or remove the draw."
+                )));
+            }
+            Some(water) if !heat_balance => {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' is on a slate whose '{}' declares free_water, under \
+                     separation = \"{}\": only separation = \"heat_balance\" carries the \
+                     column's water as a balance of its own; this model would dissolve it in \
+                     the oil as one more cut (docs/DESIGN.md §67.17).",
+                    water.name, scenario.fidelity.separation
+                )));
+            }
+            Some(water) if declared == 0 => {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' is on a slate whose '{}' declares free_water and has no \
+                     water draw: the water its feed brings condenses with the overhead and \
+                     must leave the condenser by its own draw — {{ outlet = \"...\", stage = \
+                     0, phase = \"water\" }}, listed second (docs/DESIGN.md §67.17).",
+                    water.name
+                )));
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 
@@ -612,8 +668,8 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
 /// (M62.2, docs/DESIGN.md §67.2). Without `line_flash = "equilibrium"` no flash
 /// runs on the line, so the key would change nothing — and the line flash
 /// brings the rest of what free water needs with it: `thermo = "trouton"`,
-/// liquids only, and no column, whose stages have no water balance yet
-/// (M62.4–M62.5, §67.4–§67.5).
+/// liquids only, and a column that decants the water at its condenser
+/// (`require_water_draws`, M62.5, §67.17).
 pub(crate) fn require_line_flash_for_free_water(scenario: &ScenarioFile) -> Result<(), SimError> {
     if scenario.fidelity.line_flash == "equilibrium" {
         return Ok(());
@@ -776,17 +832,10 @@ pub(crate) fn require_line_flash_plant(scenario: &ScenarioFile) -> Result<(), Si
                 npsh_required_m: None,
                 ..
             } => continue,
-            NodeDef::Column { .. } => {
-                if let Some(water) = scenario.components.iter().find(|c| c.free_water) {
-                    return refuse(format!(
-                        "with column '{name}' on a slate whose '{}' declares free_water: \
-                         the column's stages have no water balance yet, and would dissolve \
-                         the water in the oil as one more cut (M62.5, docs/DESIGN.md §67.5)",
-                        water.name
-                    ));
-                }
-                continue;
-            }
+            // A column on a wet slate carries its water as a balance of its
+            // own and decants it at the condenser (M62.5, docs/DESIGN.md
+            // §67.17); `require_water_draws` holds it to that.
+            NodeDef::Column { .. } => continue,
             NodeDef::Pump { .. } => {
                 return refuse(format!(
                     "with '{name}' declaring npsh_required_m: on a flashing plant a pump's \

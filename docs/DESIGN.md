@@ -25819,3 +25819,176 @@ water under 50 °C, the metal far under its limit; both fidelities, slow).
 **Corpus**: 61 of 62 byte-identical on both fidelities; `crude_unit_boiling`
 new, worst 10 iterations a tick on Newton and 34 on the game solver — the
 corpus's slowest plant, its wall on the game fidelity about 140 s (A29).
+
+### 67.17 Water through the column (M62.5) — specified before building, then built
+
+§67.5's rules on the heat-balance cascade, written down after an independent
+reference was built and run (`tools/steptime/prototypes/m62_5/`):
+`wet_column.py` solves the MESH equations whole with scipy, each cut's K at
+the TOTAL pressure over a vapour that holds water, the free water an unknown
+per tray; `check_engine.py` solves the same equations with the engine's vapour
+floor from the engine's own state. It is a different arrangement from the
+engine's, so the two agree only if both are right.
+
+**Measured on the reference** (8 stages, feed on 5, four cuts and water, a
+side draw):
+
+```text
+                    water   P        R             wet trays   condenser   Q_cond / Q_reb
+  dry_trays         1 %     1.8 bar  2.0           none        85.98 °C    3.871 / 2.868 MW
+  wet_trays         4 %     1 atm    1.0 → 2.016   1–5         61.91 °C    3.237 / 1.466 MW
+```
+
+On `dry_trays` the feed's water rises from the feed tray as vapour, its share
+of each tray's vapour 1–4 % of saturation. `wet_trays` is the same column with
+more water and a lighter top product at 1 atm, its side draw below the feed. If
+its top trays stayed dry, the top three would sit 8–13 % past saturation. Free
+water stands on trays 1–5 (0.11, 0.99, 6.43, 21.5 and 0.12 mol/s) and re-boils
+on the tray below: water circulates in the top of the column, the "water in the
+top trays" a real crude column is run hot to avoid. At its declared reflux of 1
+the stripping vapour falls under the floor (20 % of the oil's moles), so the
+engine raises the reflux to 2.016 to hold stage 6 there. Started from the
+engine's state, the reference settles on the engine's answer: residual 6e-16,
+temperatures within 1e-5 °C, and its own end checks hold (no dry tray past
+saturation, no wet one with negative free water, no stage under the floor).
+Two fixtures were dropped on the way: a side draw on tray 3 left tray 4 with
+negative liquid, and at reflux 1 without the floor, the reference reached trays
+1–4 wet with a stripping vapour of 3–10 mol/s, a column the engine does not
+run.
+
+**The rules, as built:**
+
+1. **Water leaves every oil loop.** The cascade's plan, its Thomas sweeps, its
+   bubble points, its K-values, the sharp seed and the per-component residual
+   run on the OIL: the feed's water removed, its mole fractions renormalised,
+   water's place held at zero. Water is a balance of its own (rule 2). On a feed
+   with no standing water (`MoleFractions::standing_water`) none of this runs:
+   every dry column, on a wet slate or not, takes its old arithmetic bit for
+   bit.
+2. **The water balance.** Per stage `j`, `W_j` the water vapour leaving and
+   `FW_j` the free water leaving downward: `W_{j+1} + FW_{j−1} + F_w[j = f] =
+   W_j + FW_j`. The reflux brings none, since it is decanted. So `W_1 = F_w −
+   FW_N` and the rest follow top-down from the `FW`s
+   (`heat_balance::water_vapour_profile`). A stage is **dry** (`FW_j = 0`,
+   checked `y_w ≤ K_w`) or **wet** (`FW_j` an unknown, its equation `W_j·(1 −
+   K_w) = K_w·V_j`, with `V_j` the OIL vapour).
+3. **The oil boils at its partial pressure**: each cut's K at `P·V_j/(V_j +
+   W_j)`. Raoult's `K ∝ 1/P` makes that the total pressure's K times `(V +
+   W)/V`, so `Σ K·x = 1` there is `Σ K(P)·x = 1 − y_w` at the total pressure.
+4. **Water's enthalpy in every stage balance**: `W·H_w(T)` with `H_w = h_w +
+   λ_w(T)` (Kirchhoff, §67.1) and `FW·h_w(T)`. The feed's term is the WHOLE
+   feed's flux at its liquid-equivalent temperature, its water's latent heat
+   paid on the feed stage (`feed_enthalpy` is that flux per mole of oil). The
+   material balances take the oil's moles.
+5. **The total condenser condenses both** at the WET bubble point of the
+   overhead (`Σ K_c·y_c + P_w/P = 1`, `bubble::bubble_temperature`). The
+   reflux and the distillate are oil at that temperature, and the decanted
+   water leaves by the **water draw** at it. The condenser duty takes the
+   water's condensation and cooling, `W_1·(H_w(T_1) − h_w(T_c))`, the term a
+   reboiler closed on the external balance would otherwise absorb unseen.
+6. **Newton's unknowns** gain one `FW_j` per wet stage, its equation the
+   saturation. **The wet set is an outer loop** around the floor's (§66.3). It
+   starts from the warm start's wet stages (`CascadeProfile::free_water`, a hint
+   like the rest of the profile) and solves. Then every dry stage past
+   saturation turns wet, or else every wet stage with negative free water
+   turns dry, and the next solve starts again from the call's own start,
+   carrying only the free water found. At most `N + 1` solves, else the column
+   refuses by name. **Corrected while building**, two rules first written
+   otherwise:
+   - One stage at a time walked through sets no column stands in. On
+     `wet_trays` from dry, the top tray wet alone sends its water to a dry tray
+     2, which must boil it and so falls to 35 °C, and the next solve from there
+     fails.
+   - Restarting from the last solve's end ran into the same trap one tray
+     lower: trays 1–3 wet left tray 4 at 315 K.
+
+   `FW` is exempt from the step's fraction-to-the-boundary rule; its sign is
+   the active set's to judge, not the line search's.
+7. **The cold warm-up** (M61's fixed point) carries water as rule 3's inert
+   vapour on dry trays: the feed's water above the feed stage, none below. The
+   wet set does the rest.
+8. **Draw ratios on a wet column are shares of the OIL fed** (decided while
+   building). The water leaves by its own draw, whose rate is a result, and a
+   real column's yields are on its dry crude. So an oil draw's split of the
+   whole feed is `(1 − w)·rᵢ`, the water draw's is `W_1·M_w/ṁ_F`, and the
+   bottoms carries any `FW_N`, which keeps `Σ split = 1` over the whole feed.
+   The vapour floor is 20 % of the oil's moles.
+9. **The file**: `{ outlet = "...", stage = 0, phase = "water" }`, listed
+   second, after the distillate, with no `draw_ratio`. It is required on a
+   heat-balance column on a slate with a `free_water` member, and refused on
+   any other column; the `"cascade"` model and the splitter refuse a wet slate
+   (`validate::require_water_draws`). `ColumnDraw::water` carries it, absent
+   from the wire when false; the plan never sees it
+   (`cascade::split_water_draw`), and every answer puts it back in its place.
+10. **Answered, not refused**: a dry feed on a wet slate (the water draw's
+    split zero, its composition pure water), and a feed with no oil at all, the
+    water slug's. All of that feed leaves by the water draw at water's bubble
+    point, the condenser taking its latent heat there and the reboiler closing
+    the balance; the oil draws carry nothing. **Deferred**: a feed that is
+    nearly all water solves or refuses as any column does, which halts the run.
+    A tank-fed wet column meets that on the tick its water slug runs out (ledger
+    row C13).
+11. **The feed's flash share** (a reading) on a wet feed comes from the
+    free-water flash (`line_flash::flash_on_the_line`), from the feed's wet
+    bubble point. The dry one is unchanged.
+12. **Found while building: the warm start carries the reflux it ran at**
+    (`CascadeProfile::reflux_ratio`, a hint). A start above its declared reflux
+    tries the floor first (§66.3). Re-derived from the last tick's top vapour
+    over this tick's distillate, it carried the feed's drift between the flow
+    solve's passes: 2.7e-6 on the wet crude unit, past the 1e-6 the test
+    allows. Every solve then tried the floor first, failed it in about 17
+    steps, and solved the declared reflux in one: 14 Newton steps a call where
+    the dry plant takes 0.3. The answer did not move, by fingerprint.
+
+**Built.** `scenarios/crude_unit_wet.toml`, generated from
+`crude_unit_boiling.toml` by `tools/steptime/prototypes/m62_5/make_wet.py`, is
+the boiling crude unit with water on its slate. Its crude is 0.3 % water by
+mass, a desalted crude's, and its column's water draw falls 15 m to a
+sour-water tank. Measured over 6 000 ticks, the same on both fidelities:
+
+- **The charge is 112.83 kg/s, against the dry plant's 134.4.** The water boils
+  already at the 270 °C, 30 bar supply (1.4 % vapour; water cannot stand liquid
+  at 270 °C below about 55 bar), so the control valve and the coil pass a
+  two-phase stream.
+- **The coil** leaves the crude 44.1 % vapour at 2.03 bar. Its metal settles at
+  322.05 °C, against the dry plant's 318.3 °C, and the plant starts there: from
+  318.3 °C its drift re-solved every tick, 9.9 and 31.7 ms a tick (A29).
+- **The column** sends every kilogram of the crude's water up as vapour. Every
+  tray down to the feed is hotter than water's dew point at its share of the
+  vapour, the top at 166.2 °C. The water is decanted at the wet bubble point,
+  93.72 °C: 0.3385 kg/s into its tank, liquid. The naphtha carries none, and
+  nothing reaches the bottoms.
+- **Cost**: 2.7 and 3.0 ms a tick on Newton and the game solver, against the dry
+  plant's 3.7 and 3.0 on the same loaded machine, one job.
+
+**Gates**:
+- `crates/solvers/tests/reference/wet_column.rs` (7): both reference cases
+  (temperatures, free water, the condenser, the draws, both duties, the
+  reflux, the feed's flash share); the first law on the published draws; a dry
+  feed on a wet slate bit-identical to the dry slate's; the all-water feed; the
+  refusal of a wet feed without a water draw; the wet answer the same cold,
+  warm, and warm 10 K off.
+- `crates/scenarios/tests/crude_unit_wet_reference.rs` (3): the plant decants
+  its crude's water, at the overhead's wet bubble point computed independently,
+  with every tray under saturation; both fidelities alike; the loader's
+  refusals.
+- `heat_on_boiling_reference.rs` re-pinned: M62.4a's refusal of a wet column
+  is now the refusal of one with no water draw.
+- `burnout_reference.rs` counts the thirty-first furnace.
+
+**Mutations**: seventeen, all caught, each by its predicted file: the
+condenser without the water's heat; each cut's K at the total pressure; the
+stage balances without the water vapour; the saturation without `1 − K_w`; one
+stage flipped at a time; the oil splits not scaled to the whole feed; the water
+draw carrying nothing; the condenser at the dry bubble point; the water draw at
+stage 1's temperature; the feed's flux without its water; the warm-up without
+the water's energy; the wet feed's share by the dry flash; a wet feed without a
+water draw solved; and in the loader, a wet column with no water draw, a dry
+slate's water draw, a wet slate under the `"cascade"` model, a water draw
+anywhere in the list. One of them first survived: the `"cascade"` refusal's
+gate matched the pumparounds' refusal, which also names `heat_balance`; it
+reads its own words now. The reflux hint (rule 12) moves no answer, only the
+cost, and the corpus's wall is its gate.
+
+**Corpus**: 62 of 63 byte-identical on both fidelities; `crude_unit_wet` new,
+worst 10 iterations a tick on Newton and 33 on the game solver.

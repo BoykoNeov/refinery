@@ -32,14 +32,15 @@ use refinery_core::traits::{
 };
 use refinery_core::units::{Kelvin, Pascal, Watt};
 
-use crate::bubble::bubble_temperature_unnormalized;
+use crate::bubble::{bubble_temperature, bubble_temperature_unnormalized};
 use crate::cascade::{
     bubble_profile, column_duties, max_abs_difference, mixture_dh_vap, mixture_molar_cp,
-    stage_k_values_profile, CascadePlan, DrawLocation, DrawState, Flows,
+    split_water_draw, stage_k_values_profile, CascadePlan, DrawLocation, DrawState, Flows,
     COMPONENT_RESIDUAL_KG_PER_S,
 };
 use crate::column_newton::{ColumnEquations, Solved, Specification, Start, Unsolved};
 use crate::flash::flash_isothermal;
+use crate::line_flash::flash_on_the_line;
 use crate::molar::MoleFractions;
 
 /// Outer iterations on a COLD start whose draws' molar masses come from a sharp
@@ -174,6 +175,25 @@ struct Profile {
     liquid: Vec<Vec<f64>>,
     flows: Flows,
     reflux_ratio: f64,
+    /// Water vapour and free water leaving each stage [mol/s], and each stage's
+    /// water saturation `y_w/K_w` (M62.5); all three empty on a dry feed.
+    water_vapour: Vec<f64>,
+    free_water: Vec<f64>,
+    saturation: Vec<f64>,
+}
+
+impl Profile {
+    fn from_solved(solved: Solved) -> Self {
+        Self {
+            temperatures: solved.temperatures,
+            liquid: solved.liquid,
+            flows: solved.flows,
+            reflux_ratio: solved.reflux_ratio,
+            water_vapour: solved.water_vapour,
+            free_water: solved.free_water,
+            saturation: solved.saturation,
+        }
+    }
 }
 
 /// One column's fixed-point state after some iterations.
@@ -196,12 +216,21 @@ struct ColumnSetup<'a> {
     thermo: &'a dyn ThermoModel,
     spec: &'a CascadeSpec,
     plan: CascadePlan,
+    /// What the cascade separates, as mole fractions: the whole feed, or on a
+    /// feed with free water the OIL (§67.17 rule 1).
     feed: MoleFractions,
+    /// The same as MASS fractions, and its rate [kg/s].
+    feed_composition: Composition,
+    feed_mass: f64,
     /// The feed's bubble point at the column's pressure — the cold seed.
     seed: Kelvin,
     feed_molar: f64,
+    /// The whole feed's enthalpy flux per mole of `feed` [J/mol] — on a dry
+    /// feed its own molar enthalpy.
     feed_enthalpy: f64,
     tolerance: f64,
+    /// The feed's free water, `None` on a dry feed.
+    water: Option<WaterFeed>,
 }
 
 impl SeparationModel for HeatBalanceCascade {
@@ -234,7 +263,24 @@ impl SeparationModel for HeatBalanceCascade {
             )));
         }
 
-        let plan = CascadePlan::new(spec, pass.draws, slate.len())?;
+        // The condenser's water draw (M62.5) is the water balance's, never the
+        // plan's: the plan is the oil's draws, the water draw put back in its
+        // place in every answer.
+        let (oil_draws, water_draw) = split_water_draw(pass.draws)?;
+        let plan = CascadePlan::new(spec, &oil_draws, slate.len())?;
+        let water_draw = match water_draw {
+            Some(at) => Some((
+                at,
+                slate.free_water().ok_or_else(|| {
+                    SimError::Scenario(
+                        "heat-balance cascade: this column declares a water draw on a slate \
+                         with no free_water member, so there is no water to decant."
+                            .into(),
+                    )
+                })?,
+            )),
+            None => None,
+        };
 
         // An idle column: `StageCascade`'s convention and its argument — the
         // declared splits, inert placeholders for what nothing carries, and
@@ -245,17 +291,28 @@ impl SeparationModel for HeatBalanceCascade {
         // a share of nothing is not a number the model produced, so the
         // snapshot's `column_operation` is absent while the column is idle.
         if feed_flow == 0.0 {
+            let mut draws: Vec<DrawSeparation> = plan
+                .mass_ratios
+                .iter()
+                .map(|split| DrawSeparation {
+                    split: *split,
+                    composition: pass.feed.clone(),
+                    temperature: pass.temperature,
+                })
+                .collect();
+            if let Some((at, water)) = water_draw {
+                draws.insert(
+                    at,
+                    DrawSeparation {
+                        split: 0.0,
+                        composition: pure(slate, water)?,
+                        temperature: pass.temperature,
+                    },
+                );
+            }
             return Ok(Separation {
                 profile: None,
-                draws: plan
-                    .mass_ratios
-                    .iter()
-                    .map(|split| DrawSeparation {
-                        split: *split,
-                        composition: pass.feed.clone(),
-                        temperature: pass.temperature,
-                    })
-                    .collect(),
+                draws,
                 condenser_duty: Some(Watt::ZERO),
                 reboiler_duty: Some(Watt::ZERO),
                 feed_vapour_fraction: None,
@@ -263,7 +320,45 @@ impl SeparationModel for HeatBalanceCascade {
             });
         }
 
-        let feed = MoleFractions::from_mass(pass.feed, slate)?;
+        // Free water in the feed (§67.17 rule 1): the cascade separates the
+        // OIL, the water a balance of its own. A feed with none takes M61's
+        // arithmetic bit for bit, on a wet slate or a dry one.
+        let whole = MoleFractions::from_mass(pass.feed, slate)?;
+        let standing = whole.standing_water(slate);
+        let (feed_composition, feed_mass, water) = match standing {
+            None => (pass.feed.clone(), feed_flow, None),
+            Some(index) => {
+                if water_draw.is_none() {
+                    return Err(SimError::Scenario(format!(
+                        "heat-balance cascade: the feed carries free water ('{}', {:.3e} of \
+                         its mass) and this column declares no water draw to decant it at \
+                         the condenser — {{ outlet = \"...\", stage = 0, phase = \"water\" }} \
+                         (docs/DESIGN.md §67.17).",
+                        slate.get(index).name,
+                        pass.feed.fractions()[index]
+                    )));
+                }
+                let oil: Vec<f64> = pass
+                    .feed
+                    .fractions()
+                    .iter()
+                    .enumerate()
+                    .map(|(c, x)| if c == index { 0.0 } else { *x })
+                    .collect();
+                let oil_share: f64 = oil.iter().sum();
+                if oil_share <= 0.0 {
+                    return oil_free_feed(pass, thermo, &plan, water_draw, spec.reflux_ratio);
+                }
+                let water_molar =
+                    feed_flow * pass.feed.fractions()[index] / slate.get(index).molar_mass.value();
+                (
+                    Composition::from_weights(&oil)?,
+                    feed_flow * oil_share,
+                    Some(WaterFeed::new(slate, index, water_molar)),
+                )
+            }
+        };
+        let feed = MoleFractions::from_mass(&feed_composition, slate)?;
         let seed = bubble_temperature_unnormalized(
             slate,
             thermo,
@@ -271,16 +366,41 @@ impl SeparationModel for HeatBalanceCascade {
             pass.pressure,
             "the feed",
         )?;
-        let feed_vapour_fraction =
-            adiabatic_flash_share(slate, thermo, &feed, pass.temperature, seed, pass.pressure)?;
+        let feed_vapour_fraction = match &water {
+            None => {
+                adiabatic_flash_share(slate, thermo, &feed, pass.temperature, seed, pass.pressure)?
+            }
+            // The whole feed's share, oil and water, by the free-water flash
+            // from its own wet bubble point (§67.17 rule 11).
+            Some(_) => {
+                let bubble = bubble_temperature(slate, thermo, &whole, pass.pressure, "the feed")?;
+                adiabatic_flash_share(
+                    slate,
+                    thermo,
+                    &whole,
+                    pass.temperature,
+                    bubble,
+                    pass.pressure,
+                )?
+            }
+        };
 
-        let feed_molar = feed_flow / feed.mean_molar_mass(slate).value();
+        let feed_molar = feed_mass / feed.mean_molar_mass(slate).value();
         // `StageCascade`'s tolerance, derived from I7 over this feed (fork 4).
         let tolerance = (COMPONENT_RESIDUAL_KG_PER_S / feed_flow).clamp(1.0e-12, 1.0e-6);
         // The feed's molar enthalpy on the engine's liquid datum — the number
         // `energy::enthalpy_flux` carries into the column, so the stage balance
-        // and the plant's books read the same feed.
-        let feed_enthalpy = liquid_enthalpy(slate, feed.fractions(), pass.temperature);
+        // and the plant's books read the same feed. On a wet feed, the WHOLE
+        // feed's flux per mole of oil: the oil's moles carry the material
+        // balances, its water's latent heat is paid on the feed stage.
+        let feed_enthalpy = match &water {
+            None => liquid_enthalpy(slate, feed.fractions(), pass.temperature),
+            Some(_) => {
+                let whole_molar = feed_flow / whole.mean_molar_mass(slate).value();
+                liquid_enthalpy(slate, whole.fractions(), pass.temperature) * whole_molar
+                    / feed_molar
+            }
+        };
 
         // The warm start (M9.3b): both profiles or neither, a wrong-shaped seed
         // ignored — `StageCascade`'s rules.
@@ -295,10 +415,13 @@ impl SeparationModel for HeatBalanceCascade {
             spec,
             plan,
             feed,
+            feed_composition,
+            feed_mass,
             seed,
             feed_molar,
             feed_enthalpy,
             tolerance,
+            water,
         };
 
         let profile = match self.method {
@@ -307,25 +430,91 @@ impl SeparationModel for HeatBalanceCascade {
         };
         let plan = &setup.plan;
 
-        let k = stage_k_values_profile(slate, thermo, &profile.temperatures, pass.pressure)?;
+        let mut k = stage_k_values_profile(slate, thermo, &profile.temperatures, pass.pressure)?;
+        if setup.water.is_some() {
+            k = effective_k(k, &profile.flows.vapour, &profile.water_vapour);
+        }
         let draws = plan.draw_states(&profile.liquid, &k, slate)?;
-        let condenser_t = bubble_temperature_unnormalized(
-            slate,
-            thermo,
-            draws[0].moles.fractions(),
-            pass.pressure,
-            "the total condenser",
-        )?;
-        let mut result = Vec::with_capacity(draws.len());
+        let condenser_t = match &setup.water {
+            None => bubble_temperature_unnormalized(
+                slate,
+                thermo,
+                draws[0].moles.fractions(),
+                pass.pressure,
+                "the total condenser",
+            )?,
+            Some(water) => condenser_temperature(
+                slate,
+                thermo,
+                draws[0].moles.fractions(),
+                profile.flows.vapour[0],
+                water,
+                profile.water_vapour[0],
+                pass.pressure,
+            )?,
+        };
+        let last = draws.len() - 1;
+        let mut result = Vec::with_capacity(pass.draws.len());
         for (i, draw) in draws.iter().enumerate() {
-            result.push(DrawSeparation {
-                split: plan.mass_ratios[i],
-                composition: draw.moles.to_mass(slate)?,
-                temperature: match plan.locations[i] {
-                    DrawLocation::Condenser => condenser_t,
-                    DrawLocation::Stage(j) => Kelvin(profile.temperatures[j]),
+            let temperature = match plan.locations[i] {
+                DrawLocation::Condenser => condenser_t,
+                DrawLocation::Stage(j) => Kelvin(profile.temperatures[j]),
+            };
+            result.push(match &setup.water {
+                None => DrawSeparation {
+                    split: plan.mass_ratios[i],
+                    composition: draw.moles.to_mass(slate)?,
+                    temperature,
                 },
+                // A share of the OIL fed, as a split of the whole feed; the
+                // bottoms carries whatever free water reaches the reboiler
+                // (§67.17 rule 8).
+                Some(water) => {
+                    let oil_mass = plan.mass_ratios[i] * setup.feed_mass;
+                    let water_mass = if i == last {
+                        profile.free_water[plan.stages - 1] * water.molar_mass
+                    } else {
+                        0.0
+                    };
+                    let mut masses: Vec<f64> = draw
+                        .moles
+                        .to_mass(slate)?
+                        .fractions()
+                        .iter()
+                        .map(|x| x * oil_mass)
+                        .collect();
+                    masses[water.index] += water_mass;
+                    DrawSeparation {
+                        split: (oil_mass + water_mass) / feed_flow,
+                        composition: Composition::from_weights(&masses)?,
+                        temperature,
+                    }
+                }
             });
+        }
+        // The water decanted at the condenser: its draw, and the heat its
+        // condensing and cooling gives up (§67.17 rule 5).
+        let mut water_condensed = 0.0;
+        if let Some((at, index)) = water_draw {
+            let split = match &setup.water {
+                None => 0.0,
+                Some(water) => {
+                    let overhead = profile.water_vapour[0];
+                    let top = Kelvin(profile.temperatures[0]);
+                    water_condensed = overhead
+                        * (water.vapour_enthalpy(slate, thermo, top)?
+                            - water.liquid_enthalpy(condenser_t));
+                    overhead * water.molar_mass / feed_flow
+                }
+            };
+            result.insert(
+                at,
+                DrawSeparation {
+                    split,
+                    composition: pure(slate, index)?,
+                    temperature: condenser_t,
+                },
+            );
         }
         let (condenser_duty, reboiler_duty) = column_duties(
             slate,
@@ -337,6 +526,7 @@ impl SeparationModel for HeatBalanceCascade {
             &result,
             pass,
             plan.side_heat.iter().sum(),
+            water_condensed,
         )?;
 
         Ok(Separation {
@@ -345,6 +535,8 @@ impl SeparationModel for HeatBalanceCascade {
                 temperatures: profile.temperatures.iter().copied().map(Kelvin).collect(),
                 liquid: profile.liquid,
                 vapour: profile.flows.vapour.clone(),
+                free_water: profile.free_water,
+                reflux_ratio: Some(profile.reflux_ratio),
             }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
@@ -367,8 +559,22 @@ impl HeatBalanceCascade {
         let thermo = setup.thermo;
         let plan = &setup.plan;
         let spec = setup.spec;
-        let feed_flow = pass.feed_flow.value();
+        let feed_flow = setup.feed_mass;
         let tolerance = setup.tolerance;
+        // A wet feed's water as the warm-up carries it (§67.17 rule 7): inert
+        // vapour on dry stages, the feed's water above its stage and none
+        // below, each cut's K at the oil's partial pressure.
+        let dry_water = match &setup.water {
+            Some(water) => Some(water_vapour_profile(plan, water, &vec![0.0; plan.stages])?),
+            None => None,
+        };
+        let k_at = |temperatures: &[f64], oil_vapour: &[f64]| -> Result<Vec<Vec<f64>>, SimError> {
+            let k = stage_k_values_profile(slate, thermo, temperatures, pass.pressure)?;
+            Ok(match &dry_water {
+                None => k,
+                Some(water_vapour) => effective_k(k, oil_vapour, water_vapour),
+            })
+        };
 
         let mut stage_t: Vec<f64> = match warm {
             Some(previous) => previous
@@ -384,7 +590,11 @@ impl HeatBalanceCascade {
         };
         let sharp = match warm {
             Some(_) => None,
-            None => Some(sharp_split_molar_masses(plan, pass.feed, slate)),
+            None => Some(sharp_split_molar_masses(
+                plan,
+                &setup.feed_composition,
+                slate,
+            )),
         };
 
         let mut iterations = 0u32;
@@ -397,7 +607,10 @@ impl HeatBalanceCascade {
         let mut last_vapour: Option<Vec<f64>> = warm
             .map(|previous| previous.vapour.clone())
             .filter(|vapour| vapour.len() == plan.stages);
-        let mut k = stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?;
+        let start_vapour = last_vapour
+            .clone()
+            .unwrap_or_else(|| vec![setup.feed_molar; plan.stages]);
+        let mut k = k_at(&stage_t, &start_vapour)?;
         let mut draws = plan.draw_states(&liquid, &k, slate)?;
 
         while iterations < cap {
@@ -431,6 +644,7 @@ impl HeatBalanceCascade {
                         temperatures: &stage_t,
                         pressure: pass.pressure,
                         previous_vapour: last_vapour.as_deref(),
+                        water: setup.water.as_ref().zip(dry_water.as_deref()),
                     },
                     feed_flow,
                     setup.feed_molar,
@@ -439,12 +653,20 @@ impl HeatBalanceCascade {
                 .0
             };
             last_vapour = Some(flows.vapour.clone());
+            if dry_water.is_some() {
+                k = k_at(&stage_t, &flows.vapour)?;
+            }
 
             let next = plan.liquid_profile(&flows, &k, &setup.feed, setup.feed_molar)?;
             profile_change = max_abs_difference(&liquid, &next);
             liquid = next;
 
-            let next_t = bubble_profile(slate, thermo, &liquid, pass.pressure)?;
+            let next_t = match &dry_water {
+                None => bubble_profile(slate, thermo, &liquid, pass.pressure)?,
+                Some(water_vapour) => {
+                    oil_bubble_profile(slate, thermo, &liquid, &flows.vapour, water_vapour, pass)?
+                }
+            };
             temperature_change = stage_t
                 .iter()
                 .zip(&next_t)
@@ -452,9 +674,9 @@ impl HeatBalanceCascade {
                 .fold(0.0f64, f64::max);
             stage_t = next_t;
 
-            k = stage_k_values_profile(slate, thermo, &stage_t, pass.pressure)?;
+            k = k_at(&stage_t, &flows.vapour)?;
             draws = plan.draw_states(&liquid, &k, slate)?;
-            residual = plan.component_residual(&draws, pass.feed, slate) * feed_flow;
+            residual = plan.component_residual(&draws, &setup.feed_composition, slate) * feed_flow;
 
             if profile_change <= tolerance
                 && temperature_change <= tolerance
@@ -517,6 +739,14 @@ impl HeatBalanceCascade {
             )));
         }
         let pass = setup.pass;
+        let dry_water = match &setup.water {
+            Some(water) => Some(water_vapour_profile(
+                &setup.plan,
+                water,
+                &vec![0.0; setup.plan.stages],
+            )?),
+            None => None,
+        };
         let (flows, reflux_ratio) = stage_balance_flows(
             &setup.plan,
             setup.spec,
@@ -529,16 +759,25 @@ impl HeatBalanceCascade {
                 temperatures: &state.temperatures,
                 pressure: pass.pressure,
                 previous_vapour: None,
+                water: setup.water.as_ref().zip(dry_water.as_deref()),
             },
-            pass.feed_flow.value(),
+            setup.feed_mass,
             setup.feed_molar,
             setup.feed_enthalpy,
         )?;
+        let free_water = if dry_water.is_some() {
+            vec![0.0; setup.plan.stages]
+        } else {
+            Vec::new()
+        };
         Ok(Profile {
             temperatures: state.temperatures,
             liquid: state.liquid,
             flows,
             reflux_ratio,
+            water_vapour: dry_water.unwrap_or_default(),
+            free_water,
+            saturation: Vec::new(),
         })
     }
 
@@ -560,12 +799,13 @@ impl HeatBalanceCascade {
             thermo: setup.thermo,
             pressure: pass.pressure,
             feed: &setup.feed,
-            feed_composition: pass.feed,
-            feed_mass: pass.feed_flow.value(),
+            feed_composition: &setup.feed_composition,
+            feed_mass: setup.feed_mass,
             feed_molar: setup.feed_molar,
             feed_enthalpy: setup.feed_enthalpy,
             energy_scale: setup.feed_molar * latent,
             tolerance: setup.tolerance,
+            water: setup.water.as_ref(),
         };
 
         let mut warm_failure = None;
@@ -577,8 +817,27 @@ impl HeatBalanceCascade {
                 .collect();
             let k = stage_k_values_profile(slate, setup.thermo, &temperatures, pass.pressure)?;
             let draws = plan.draw_states(&previous.liquid, &k, slate)?;
+            // The last tick's wet stages start this one's wet set (§67.17
+            // rule 6) — a hint: on a dry feed there is none.
+            let free_water: &[f64] =
+                if setup.water.is_some() && previous.free_water.len() == plan.stages {
+                    &previous.free_water
+                } else {
+                    &[]
+                };
+            let wet: Vec<usize> = (0..free_water.len())
+                .filter(|j| free_water[*j] > 0.0)
+                .collect();
             // A warm Newton that fails is retried cold, where the aids are.
-            match self.newton(&equations, &temperatures, &previous.vapour, &draws) {
+            match self.newton_with_water(
+                &equations,
+                &temperatures,
+                &previous.vapour,
+                &draw_rates(plan, &draws, setup.feed_mass),
+                previous.reflux_ratio,
+                wet,
+                free_water,
+            ) {
                 Ok(profile) => return Ok(profile),
                 Err(unsolved) => warm_failure = Some(unsolved),
             }
@@ -609,7 +868,15 @@ impl HeatBalanceCascade {
             .vapour
             .clone()
             .unwrap_or_else(|| vec![setup.feed_molar; plan.stages]);
-        match self.newton(&equations, &state.temperatures, &vapour, &state.draws) {
+        match self.newton_with_water(
+            &equations,
+            &state.temperatures,
+            &vapour,
+            &draw_rates(plan, &state.draws, setup.feed_mass),
+            None,
+            Vec::new(),
+            &[],
+        ) {
             Ok(profile) => Ok(profile),
             // The cold failure is reported, with the warm one's physical cause
             // where only the warm one's last iterate shows an edge.
@@ -625,26 +892,111 @@ impl HeatBalanceCascade {
         }
     }
 
+    /// Newton under the wet stages' active set (§67.17 rule 6), around the
+    /// floor's: solve with `wet`; every dry stage past saturation turns wet, or
+    /// else every wet stage whose free water came out negative turns dry, and
+    /// the next solve starts again from THIS call's start, carrying only the
+    /// free water the last one found — a solve on the wrong set ends where no
+    /// column stands (a dry tray under a wet one boiling its water at 315 K,
+    /// measured on the wet-trays reference), and Newton from there fails. A dry
+    /// feed has no wet set and is `newton` alone.
+    #[allow(clippy::too_many_arguments)]
+    fn newton_with_water(
+        &self,
+        equations: &ColumnEquations<'_>,
+        temperatures: &[f64],
+        vapour: &[f64],
+        draw_rates: &[f64],
+        reflux_ratio: Option<f64>,
+        mut wet: Vec<usize>,
+        free_water: &[f64],
+    ) -> Result<Profile, Unsolved> {
+        if equations.water.is_none() {
+            return self.newton(
+                equations,
+                temperatures,
+                vapour,
+                draw_rates,
+                reflux_ratio,
+                &[],
+                &[],
+            );
+        }
+        let plan = equations.plan;
+        let n = plan.stages;
+        let mut profile = self.newton(
+            equations,
+            temperatures,
+            vapour,
+            draw_rates,
+            reflux_ratio,
+            &wet,
+            free_water,
+        )?;
+        for _ in 0..=n {
+            let over: Vec<usize> = (0..n)
+                .filter(|j| !wet.contains(j) && profile.saturation[*j] > 1.0 + SATURATION_MARGIN)
+                .collect();
+            let negative: Vec<usize> = wet
+                .iter()
+                .copied()
+                .filter(|j| profile.free_water[*j] < 0.0)
+                .collect();
+            if negative.is_empty() && over.is_empty() {
+                return Ok(profile);
+            }
+            // Every stage that flips, flips together: one at a time walks
+            // through sets no column stands in — the top tray wet alone sends
+            // its water to a dry tray below, which boils it at 35 °C (measured
+            // on the wet-trays reference, §67.17).
+            if negative.is_empty() {
+                wet.extend(over);
+                wet.sort_unstable();
+            } else {
+                wet.retain(|j| !negative.contains(j));
+            }
+            profile = self.newton(
+                equations,
+                temperatures,
+                vapour,
+                draw_rates,
+                reflux_ratio,
+                &wet,
+                &profile.free_water,
+            )?;
+        }
+        Err(Unsolved {
+            reason: format!(
+                "found no set of wet stages that holds in {} solves: a stage's free water and \
+                 its saturation kept trading places",
+                n + 2
+            ),
+            flows: Some(Box::new(profile.flows)),
+        })
+    }
+
     /// Newton under the vapour floor's active set (§66.3): the declared reflux
     /// first, and where that leaves a stage under the floor, the floor on the
     /// stage that binds with the reflux an unknown. A start that ran above its
     /// declared reflux tries the floor first, on the stage it bound.
+    #[allow(clippy::too_many_arguments)]
     fn newton(
         &self,
         equations: &ColumnEquations<'_>,
         temperatures: &[f64],
         vapour: &[f64],
-        draws: &[DrawState],
+        draw_rates: &[f64],
+        reflux_ratio: Option<f64>,
+        wet: &[usize],
+        free_water: &[f64],
     ) -> Result<Profile, Unsolved> {
         let plan = equations.plan;
         let n = plan.stages;
-        let draw_rates: Vec<f64> = (0..plan.mass_ratios.len() - 1)
-            .map(|i| plan.mass_ratios[i] * equations.feed_mass / draws[i].mean_molar_mass)
-            .collect();
         let start = Start {
             temperatures,
             vapour,
-            draw_rates: &draw_rates,
+            draw_rates,
+            free_water,
         };
         let declared = equations.spec.reflux_ratio;
         let floor = VAPOUR_FLOOR_OF_FEED * equations.feed_molar;
@@ -659,18 +1011,16 @@ impl HeatBalanceCascade {
                 .min_by(|a, b| vapour[*a].total_cmp(&vapour[*b]).then(a.cmp(b)))
                 .unwrap_or(1)
         };
-        let profile = |solved: Solved| Profile {
-            temperatures: solved.temperatures,
-            liquid: solved.liquid,
-            flows: solved.flows,
-            reflux_ratio: solved.reflux_ratio,
-        };
+        let profile = Profile::from_solved;
 
-        let ran = vapour[0] / draw_rates[0] - 1.0;
+        // The reflux the start ran at: a warm start's own, where its profile
+        // carries it, else its top vapour over its distillate.
+        let ran = reflux_ratio.unwrap_or_else(|| vapour[0] / draw_rates[0] - 1.0);
         if ran > declared * (1.0 + 1.0e-6) {
             if let Ok(solved) = equations.solve(
                 &start,
                 Specification::Floor(lowest(vapour)),
+                wet,
                 self.max_iterations,
             ) {
                 if holds(&solved) {
@@ -678,7 +1028,8 @@ impl HeatBalanceCascade {
                 }
             }
         }
-        let declared_solve = equations.solve(&start, Specification::Reflux, self.max_iterations);
+        let declared_solve =
+            equations.solve(&start, Specification::Reflux, wet, self.max_iterations);
         let mut binding = match &declared_solve {
             Ok(solved) if solved.flows.vapour[1..].iter().all(|v| *v >= floor) => {
                 return declared_solve.map(profile);
@@ -693,7 +1044,12 @@ impl HeatBalanceCascade {
         };
         let mut last = None;
         for _ in 1..n {
-            match equations.solve(&start, Specification::Floor(binding), self.max_iterations) {
+            match equations.solve(
+                &start,
+                Specification::Floor(binding),
+                wet,
+                self.max_iterations,
+            ) {
                 Ok(solved) if holds(&solved) => return Ok(profile(solved)),
                 Ok(solved) => {
                     match (1..n).find(|j| solved.flows.vapour[*j] < floor * (1.0 - 1.0e-9)) {
@@ -716,6 +1072,95 @@ impl HeatBalanceCascade {
             },
         })
     }
+}
+
+/// A dry stage counts as past its saturation once its water vapour share is
+/// this much over `K_w` [-] — a rounding margin, so a stage that a solve left
+/// AT saturation (one just dried) is not flipped back on its last bit.
+const SATURATION_MARGIN: f64 = 1.0e-9;
+
+/// Each draw but the bottoms' molar rate [mol/s], from its mass ratio and its
+/// current molar mass.
+fn draw_rates(plan: &CascadePlan, draws: &[DrawState], feed_mass: f64) -> Vec<f64> {
+    (0..plan.mass_ratios.len() - 1)
+        .map(|i| plan.mass_ratios[i] * feed_mass / draws[i].mean_molar_mass)
+        .collect()
+}
+
+/// Pure `component`, as mass fractions — the water draw's composition.
+fn pure(slate: &Slate, component: usize) -> Result<Composition, SimError> {
+    let mut weights = vec![0.0; slate.len()];
+    weights[component] = 1.0;
+    Composition::from_weights(&weights)
+}
+
+/// A feed with no oil at all — the water slug a tank sends first (M62.3) —
+/// answered rather than refused (§67.17 rule 10): every drop leaves by the
+/// water draw, at water's own bubble point at the column's pressure, boiled up
+/// and condensed; the oil draws carry nothing. The condenser takes the
+/// water's latent heat there, and the reboiler closes the column's external
+/// balance on it — a feed hotter than steam at that point would need a
+/// negative reboiler and is refused, as `column_duties` refuses one.
+fn oil_free_feed(
+    pass: &ColumnPass<'_>,
+    thermo: &dyn ThermoModel,
+    plan: &CascadePlan,
+    water_draw: Option<(usize, usize)>,
+    reflux_ratio: f64,
+) -> Result<Separation, SimError> {
+    let slate = pass.slate;
+    let Some((at, water)) = water_draw else {
+        return Err(SimError::Scenario(
+            "heat-balance cascade: the feed is all water and this column has no water draw".into(),
+        ));
+    };
+    let feed_flow = pass.feed_flow.value();
+    let boiling = bubble_temperature(
+        slate,
+        thermo,
+        &MoleFractions::from_mass(pass.feed, slate)?,
+        pass.pressure,
+        "the feed's water",
+    )?;
+    let mut draws: Vec<DrawSeparation> = plan
+        .mass_ratios
+        .iter()
+        .map(|_| DrawSeparation {
+            split: 0.0,
+            composition: pass.feed.clone(),
+            temperature: pass.temperature,
+        })
+        .collect();
+    draws.insert(
+        at,
+        DrawSeparation {
+            split: 1.0,
+            composition: pure(slate, water)?,
+            temperature: boiling,
+        },
+    );
+    let component = slate.get(water);
+    let condenser =
+        feed_flow / component.molar_mass.value() * thermo.dh_vap(slate, water, boiling)?.value();
+    let reboiler =
+        condenser + feed_flow * component.cp.value() * (boiling.value() - pass.temperature.value());
+    if !reboiler.is_finite() || reboiler < 0.0 || !condenser.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "heat-balance cascade: the feed is all water, arriving at {:.2} K above steam at \
+             {:.2} K, so its column would need a reboiler of {reboiler:.4e} W — heat taken out, \
+             which a reboiler does not do.",
+            pass.temperature.value(),
+            boiling.value()
+        )));
+    }
+    Ok(Separation {
+        draws,
+        profile: None,
+        condenser_duty: Some(Watt(condenser)),
+        reboiler_duty: Some(Watt(reboiler)),
+        feed_vapour_fraction: None,
+        reflux_ratio: Some(reflux_ratio),
+    })
 }
 
 /// The settings a player can act on (§65.9): past the crude unit's working
@@ -780,6 +1225,9 @@ struct StageState<'a> {
     /// The previous iteration's vapour profile, toward which this one is
     /// relaxed (`RELAXATION`); `None` for the raw balances.
     previous_vapour: Option<&'a [f64]>,
+    /// A wet feed's water and the water vapour leaving each stage [mol/s]
+    /// (§67.17 rule 7); `None` on a dry feed.
+    water: Option<(&'a WaterFeed, &'a [f64])>,
 }
 
 /// The molar flows from each stage's energy balance, top-down from the
@@ -843,14 +1291,35 @@ fn stage_balance_flows(
     }
     // The reflux: stage 1's vapour, condensed, at its own bubble point.
     let condensate = equilibrium_vapour(&state.liquid[0], &state.k[0])?;
-    let condenser_t = bubble_temperature_unnormalized(
-        slate,
-        state.thermo,
-        &condensate,
-        state.pressure,
-        "the total condenser",
-    )?;
+    let condenser_t = match state.water {
+        None => bubble_temperature_unnormalized(
+            slate,
+            state.thermo,
+            &condensate,
+            state.pressure,
+            "the total condenser",
+        )?,
+        Some((water, water_vapour)) => condenser_temperature(
+            slate,
+            state.thermo,
+            &condensate,
+            reflux + distillate,
+            water,
+            water_vapour[0],
+            state.pressure,
+        )?,
+    };
     let reflux_enthalpy = liquid_enthalpy(slate, &condensate, condenser_t);
+    // The water vapour's enthalpy flux leaving each stage [W] (zero free water
+    // on the warm-up's stages): a stage's balance pays for the water it sends
+    // up and is paid by the water arriving from below.
+    let mut water_flux = vec![0.0; stages];
+    if let Some((water, water_vapour)) = state.water {
+        for j in 0..stages {
+            water_flux[j] = water_vapour[j]
+                * water.vapour_enthalpy(slate, state.thermo, Kelvin(state.temperatures[j]))?;
+        }
+    }
 
     // A pumparound's heat, per mole: the stage balances are molar flows times
     // molar enthalpies, so its watts enter as they are (J/s against mol/s ·
@@ -878,11 +1347,21 @@ fn stage_balance_flows(
             // stage, the feed brought to it, the vapour leaving it made and a
             // pumparound's heat taken out, all paid for by the vapour arriving
             // from below condensing here.
-            vapour[j + 1] = (liquid_in[j] * (here - enthalpy_above)
-                + feed_here * (here - feed_enthalpy)
-                + vapour[j] * (vapour_enthalpies[j] - here)
-                + side_heat[j])
-                / (vapour_enthalpies[j + 1] - here);
+            vapour[j + 1] = if state.water.is_some() {
+                (liquid_in[j] * (here - enthalpy_above)
+                    + feed_here * (here - feed_enthalpy)
+                    + vapour[j] * (vapour_enthalpies[j] - here)
+                    + side_heat[j]
+                    + water_flux[j]
+                    - water_flux[j + 1])
+                    / (vapour_enthalpies[j + 1] - here)
+            } else {
+                (liquid_in[j] * (here - enthalpy_above)
+                    + feed_here * (here - feed_enthalpy)
+                    + vapour[j] * (vapour_enthalpies[j] - here)
+                    + side_heat[j])
+                    / (vapour_enthalpies[j + 1] - here)
+            };
             // Material balance on stage j.
             liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
             liquid_in[j + 1] = liquid_down[j];
@@ -1006,6 +1485,163 @@ pub(crate) fn liquid_enthalpy(slate: &Slate, fractions: &[f64], temperature: Kel
     mixture_molar_cp(slate, fractions) * (temperature.value() - T_REF.value())
 }
 
+/// A column feed's free water (M62.5, docs/DESIGN.md §67.17): where water sits
+/// on the slate and how much of it the feed brings.
+pub(crate) struct WaterFeed {
+    /// The slate's `free_water` member.
+    pub(crate) index: usize,
+    /// The feed's water [mol/s], entering on the feed stage.
+    pub(crate) feed_molar: f64,
+    /// Water's molar mass [kg/mol].
+    pub(crate) molar_mass: f64,
+    /// Liquid water's molar heat capacity [J/(mol·K)], `M·cp`.
+    molar_cp: f64,
+}
+
+impl WaterFeed {
+    fn new(slate: &Slate, index: usize, feed_molar: f64) -> Self {
+        let water = slate.get(index);
+        Self {
+            index,
+            feed_molar,
+            molar_mass: water.molar_mass.value(),
+            molar_cp: water.molar_mass.value() * water.cp.value(),
+        }
+    }
+
+    /// Liquid water's molar enthalpy [J/mol] on the engine's datum.
+    pub(crate) fn liquid_enthalpy(&self, temperature: Kelvin) -> f64 {
+        self.molar_cp * (temperature.value() - T_REF.value())
+    }
+
+    /// Water vapour's molar enthalpy [J/mol]: the liquid's plus the latent heat
+    /// at `temperature` — Kirchhoff's on a declared vapour heat capacity (§67.1),
+    /// the line flash's own vapour.
+    pub(crate) fn vapour_enthalpy(
+        &self,
+        slate: &Slate,
+        thermo: &dyn ThermoModel,
+        temperature: Kelvin,
+    ) -> Result<f64, SimError> {
+        Ok(self.liquid_enthalpy(temperature)
+            + thermo.dh_vap(slate, self.index, temperature)?.value())
+    }
+}
+
+/// The water vapour leaving each stage [mol/s], from the free water leaving
+/// each stage downward (§67.17 rule 2): `W_1 = F_w − FW_N`, then
+/// `W_{j+1} = W_j + FW_j − FW_{j−1} − F_w[j = f]` top-down — each stage's water
+/// balance, the reflux bringing none (it is decanted).
+///
+/// Below a dry feed stage the water vapour is `F_w − F_w`, zero exactly; with
+/// free water it can come out a rounding error under zero, which is zero — a
+/// share of the feed's water under `WATER_ROUNDING`. Further under is an
+/// iterate outside the physical region, an `Err`.
+pub(crate) fn water_vapour_profile(
+    plan: &CascadePlan,
+    water: &WaterFeed,
+    free_water: &[f64],
+) -> Result<Vec<f64>, SimError> {
+    const WATER_ROUNDING: f64 = 1.0e-9;
+    let n = plan.stages;
+    let mut vapour = vec![0.0; n];
+    vapour[0] = water.feed_molar - free_water[n - 1];
+    for j in 0..n - 1 {
+        let from_above = if j == 0 { 0.0 } else { free_water[j - 1] };
+        let fed = if j == plan.feed_stage {
+            water.feed_molar
+        } else {
+            0.0
+        };
+        vapour[j + 1] = vapour[j] + free_water[j] - from_above - fed;
+    }
+    for (j, v) in vapour.iter_mut().enumerate() {
+        if *v < 0.0 {
+            if !v.is_finite() || *v < -WATER_ROUNDING * water.feed_molar {
+                return Err(SimError::Numerical(format!(
+                    "heat-balance cascade: the water vapour leaving stage {} is {v:.4e} mol/s",
+                    j + 1
+                )));
+            }
+            *v = 0.0;
+        }
+    }
+    Ok(vapour)
+}
+
+/// The total condenser's temperature [K] on a feed with free water: the WET
+/// bubble point of the oil it condenses over the water decanted with it
+/// (§67.17 rule 5), `Σ K_c·y_c + P_w/P = 1`; the dry bubble point of the oil
+/// where no water reaches it.
+pub(crate) fn condenser_temperature(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    condensate: &[f64],
+    oil_vapour: f64,
+    water: &WaterFeed,
+    water_vapour: f64,
+    pressure: Pascal,
+) -> Result<Kelvin, SimError> {
+    if water_vapour <= 0.0 {
+        return bubble_temperature_unnormalized(
+            slate,
+            thermo,
+            condensate,
+            pressure,
+            "the total condenser",
+        );
+    }
+    let mut amounts: Vec<f64> = condensate.iter().map(|y| y * oil_vapour).collect();
+    amounts[water.index] += water_vapour;
+    let mixture = MoleFractions::from_amounts(&amounts)?;
+    bubble_temperature(
+        slate,
+        thermo,
+        &mixture,
+        pressure,
+        "the total condenser's oil over its water",
+    )
+}
+
+/// Each cut's K at the oil's partial pressure `P·V/(V + W)` (§67.17 rule 3),
+/// from the total pressure's: Raoult's `K ∝ 1/P`, so times `(V + W)/V`.
+fn effective_k(mut k: Vec<Vec<f64>>, oil_vapour: &[f64], water_vapour: &[f64]) -> Vec<Vec<f64>> {
+    for ((row, v), w) in k.iter_mut().zip(oil_vapour).zip(water_vapour) {
+        let scale = (v + w) / v;
+        for value in row {
+            *value *= scale;
+        }
+    }
+    k
+}
+
+/// Every stage's bubble point at the oil's partial pressure `P·V/(V + W)`
+/// (§67.17 rule 3) — the warm-up's stage temperatures on a wet feed.
+fn oil_bubble_profile(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    liquid: &[Vec<f64>],
+    oil_vapour: &[f64],
+    water_vapour: &[f64],
+    pass: &ColumnPass<'_>,
+) -> Result<Vec<f64>, SimError> {
+    let mut temperatures = Vec::with_capacity(liquid.len());
+    for (j, x) in liquid.iter().enumerate() {
+        let pressure = pass.pressure.value() * oil_vapour[j] / (oil_vapour[j] + water_vapour[j]);
+        temperatures.push(
+            bubble_temperature_unnormalized(
+                slate,
+                thermo,
+                x,
+                Pascal(pressure),
+                &format!("stage {} of {}", j + 1, liquid.len()),
+            )?
+            .value(),
+        );
+    }
+    Ok(temperatures)
+}
+
 /// The vapour in equilibrium with a stage's liquid, `y = K·x` normalised.
 pub(crate) fn equilibrium_vapour(liquid: &[f64], k: &[f64]) -> Result<Vec<f64>, SimError> {
     let amounts: Vec<f64> = liquid.iter().zip(k).map(|(x, k)| x * k).collect();
@@ -1091,7 +1727,12 @@ fn adiabatic_flash_share(
     }
     let heat_capacity = mixture_molar_cp(slate, feed.fractions());
     let energy_share = |t: f64| -> Result<(f64, f64), SimError> {
-        let flash = flash_isothermal(feed, slate, thermo, Kelvin(t), pressure)?;
+        // A feed with free water flashes by the free-water flash (§67.17 rule
+        // 11); every other feed by the flash it always took.
+        let flash = match feed.standing_water(slate) {
+            None => flash_isothermal(feed, slate, thermo, Kelvin(t), pressure)?,
+            Some(_) => flash_on_the_line(feed, slate, thermo, Kelvin(t), pressure)?,
+        };
         let latent = mixture_dh_vap(slate, thermo, flash.vapour.fractions(), Kelvin(t))?;
         Ok((
             flash.vapour_fraction,
@@ -1267,6 +1908,7 @@ mod tests {
                 temperatures: &stage_t,
                 pressure: P_ATM,
                 previous_vapour: None,
+                water: None,
             },
             FEED_FLOW,
             feed_molar,
@@ -1567,6 +2209,7 @@ mod tests {
                 temperatures: &stage_t,
                 pressure: P_ATM,
                 previous_vapour: None,
+                water: None,
             },
             FEED_FLOW,
             feed_molar,
@@ -1847,6 +2490,7 @@ mod pumparound_tests {
                 temperatures: &stage_t,
                 pressure: P_ATM,
                 previous_vapour: None,
+                water: None,
             },
             10.0,
             feed_molar,

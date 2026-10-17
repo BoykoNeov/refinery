@@ -4625,7 +4625,14 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                     )));
                 }
             }
-            resolved.push(if cascade_selected {
+            resolved.push(if cascade_selected && d.phase.as_deref() == Some("water") {
+                // The condenser's decanted water (M62.5): its stage and ratio
+                // are the model's to check, `StageCascade::validate` below.
+                ColumnDraw {
+                    water: true,
+                    ..ColumnDraw::by_stage(outlet, d.stage.unwrap_or(0), d.draw_ratio)
+                }
+            } else if cascade_selected {
                 ColumnDraw::by_stage(outlet, d.stage.unwrap_or(0), d.draw_ratio)
             } else {
                 ColumnDraw::by_cut(outlet, upper_cut_c.map(c_to_k))

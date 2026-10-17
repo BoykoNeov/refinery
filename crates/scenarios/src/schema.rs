@@ -730,6 +730,11 @@ pub struct DrawDef {
     /// inside the column condenses inside it, the latent flows cancel, and the
     /// external balance stays purely sensible against the workspace's one datum.
     /// A vapour draw carries latent heat across the unit boundary and breaks that.
+    ///
+    /// **Or `"water"`** (M62.5, docs/DESIGN.md §67.17): the free water decanted
+    /// at the total condenser, at `stage = 0`, listed second, with no
+    /// `draw_ratio` — its rate is the column's water balance. Required on a
+    /// heat-balance column on a slate with a `free_water` member.
     /// **Cascade fidelity only.**
     #[serde(default)]
     pub phase: Option<String>,

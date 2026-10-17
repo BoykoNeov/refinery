@@ -648,6 +648,19 @@ pub struct CascadeProfile {
     /// the rest of this struct: a model must reach the same fixed point
     /// without it.
     pub vapour: Vec<f64>,
+    /// The free water leaving each stage downward [mol/s] (M62.5, docs/DESIGN.md
+    /// §67.17), or empty from a column whose feed carried none. Its positive
+    /// entries are the stages the last tick found wet, where the next tick's
+    /// Newton starts its wet set. A hint like the rest of this struct.
+    pub free_water: Vec<f64>,
+    /// The molar reflux ratio this iterate ran at [-] (M62.5), or `None` from a
+    /// model that does not raise it. A start above its declared reflux tries
+    /// the vapour floor first (docs/DESIGN.md §66.3), and only this number says
+    /// so: re-derived from the last tick's vapour over this tick's draw, it
+    /// carries the feed's drift between the two — measured at 2.7e-6 on the
+    /// wet crude unit, past the 1e-6 the floor-first test allows, and every
+    /// solve tried the floor first and failed it.
+    pub reflux_ratio: Option<f64>,
 }
 
 /// The outcome of one column pass: every draw's split, plus the column's two
