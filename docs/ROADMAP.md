@@ -9974,7 +9974,8 @@ backwards is refused by name. Gated against an independent solve
 (`tools/steptime/prototypes/m62_6/`): steam on the reboiler takes M62.5's
 column's bottom from 265.07 to 256.90 °C. On the wet crude unit (an inline
 fixture, 3.5 bar steam), 0.98 kg/s of steam takes the bottom from 586.8 to
-579.3 °C with the reboiler still on. **Re-sliced while building**: asked
+579.3 °C with the reboiler still on (before the valve choked: since M62.6b the
+same fixture passes 0.618 kg/s, the bottom at 582.04 °C, DESIGN §67.19). **Re-sliced while building**: asked
 whether a steam valve should choke, the user chose to choke every boiling flow
 through a valve, which moves existing plants (re-sliced again at M62.6b,
 below). DESIGN §67.18.
