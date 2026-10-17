@@ -40,8 +40,9 @@ mass, and an optimized build for the Godot library.
   52.5–65 MW, the steam valve 10–100 % (R/F, new), the pumparounds 0–8 MW each,
   every corner measured warm; the reflux drawn as a result; a `godot` Cargo
   profile, the screen 5 ms a tick settled where the debug library took 28–60.
-- Corpus: 64 of 64 byte-identical on both fidelities at every slice;
-  `crude_unit_stripped` the 65th plant.
+- Corpus: 64 of 64 byte-identical on both fidelities at M64.1–M64.3;
+  `crude_unit_stripped` the 65th plant. M64.4 left the engine untouched (no
+  corpus run).
 - **Left open**: C15 (a start-up from a cold plant), C14 (a wetter crude), A29
   (the coil's drift, now on the screen: 24–26 ms a tick for minutes after a
   furnace step), E30, C12 (the screen's keys a box, the stripped plant's too).

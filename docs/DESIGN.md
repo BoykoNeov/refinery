@@ -26984,10 +26984,15 @@ setting reached in one step after 1 000 ticks of the running plant, then run
   measured first at 80 MW, which runs (the coil 495 °C), the user took it, and
   a review then noticed that 80 MW flashes 0.966 of the feed's moles. On a
   sharp split (the lightest cuts boil first; M64.0 finding 4's conversion)
-  that is 91 % by mass, where a real flash zone takes 60–75 %: 52.5 MW is 68 %,
-  58 MW 71 %, 66 MW 77 %, 74 MW 85 %. Asked again with those numbers, the user
-  chose 65 MW (0.911 molar, about 76 % by mass, the coil 455 °C) over 70 and
-  80; the eight corners and their jumps re-measured at 65, all run.
+  that is at least 91 % by mass, where a real flash zone takes 60–75 %: 52.5 MW
+  at least 68 %, 58 MW 71 %, 66 MW 77 %, 74 MW 85 %. **A lower bound**: the
+  lightest cuts are also the smallest molecules, so the sharp split gives the
+  least mass a molar share can carry. Asked again with those numbers (the 65 MW
+  option worded as "at most about 78 %", the bound's direction inverted, and
+  corrected to the user after the commit), the user chose 65 MW (0.911 molar,
+  at least about 76 % by mass, the coil 455 °C) over 70 and 80; the eight
+  corners and their jumps re-measured at 65, all run. Under 75 % on the bound
+  would be a top near 63 MW (offered to the user).
 
 **The cost on the screen, and the build it forced — the user's decision
 (2026-10-18)**. The screen's `t=` line now prints the wall time of each tick
@@ -26995,8 +27000,9 @@ and its snapshot. Godot loads the library's debug build, whose workspace
 crates were unoptimized: the stripped plant ran 28–60 ms a tick settled and
 ~200 ms a tick while its coil drifted after a furnace step (A29) — about five
 frames a second for minutes; the crude unit 4 ms. Chosen over running the
-plant slowly: a Cargo profile, `godot` (the dev profile at `opt-level = 2`,
-as `[profile.test]` already is), built with `--profile godot` into
+plant slowly (told "about 20 s longer" a build, the incremental figure: the
+first build under the profile took 2 min 57 s): a Cargo profile, `godot` (the
+dev profile at `opt-level = 2`, as `[profile.test]` already is), built with `--profile godot` into
 `target/godot/godot/`, which `refinery.gdextension`'s debug entries now name.
 Optimization does not change Rust's float arithmetic: every plant's timeline
 prints the same numbers as before, and the screen ends the stripped timeline

@@ -10221,8 +10221,8 @@ measured warm with the scene's commands (every corner in one step from the
 running plant and from its opposite corner): the furnace 52.5–65 MW, the steam
 10–100 %, the pumparounds 0–8 MW each. The keys interact through the steam (a
 low valve fails a low furnace or high pumparounds). The furnace's top is the
-user's: 80 MW ran, but flashes about 91 % of the feed by mass; asked again with
-the numbers, 65 MW (about 76 %). Measured on the screen, the debug library ran
+user's: 80 MW ran, but flashes at least 91 % of the feed by mass; asked again
+with the numbers, 65 MW (at least about 76 %). Measured on the screen, the debug library ran
 the plant at 28–60 ms a tick and ~200 in a coil drift; the user chose an
 optimized build: a `godot` Cargo profile (`--profile godot`, the gdextension's
 debug entries), 5 ms settled and 24–26 in the drift, the other plants 0.4–1 ms,

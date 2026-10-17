@@ -127,8 +127,9 @@ const PLANTS := {
 		# running plant or from the opposite corner. Past it: the furnace at
 		# 50 MW with the steam at 10 % (the bottom stage, as the coil cools),
 		# the pumparounds at 10 MW with the steam at 10 % (at once). The top is
-		# the user's (§69.10): past 65 MW the column still runs, but more of
-		# the feed boils off than a real flash zone's 60–75 % by mass.
+		# the user's (§69.10): at 65 MW at least about 76 % of the feed boils
+		# off by mass, near a real flash zone's 60–75 %; at 80 MW (which runs)
+		# at least 91 %.
 		"furnace_mw": [52.5, 65.0],
 		"steam": [0.1, 1.0],
 		"pumparound_mw": [0.0, 8.0],
