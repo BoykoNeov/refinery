@@ -433,6 +433,7 @@ impl SeparationModel for StageCascade {
                 reboiler_duty: Some(Watt::ZERO),
                 feed_vapour_fraction: None,
                 reflux_ratio: None,
+                water_flooded: None,
             });
         }
 
@@ -655,6 +656,7 @@ impl SeparationModel for StageCascade {
             reboiler_duty: Some(reboiler_duty),
             feed_vapour_fraction: None,
             reflux_ratio: None,
+            water_flooded: None,
         })
     }
 }

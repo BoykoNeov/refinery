@@ -139,6 +139,7 @@ impl SeparationModel for CutPointSplitter {
             reboiler_duty: None,
             feed_vapour_fraction: None,
             reflux_ratio: None,
+            water_flooded: None,
         })
     }
 }

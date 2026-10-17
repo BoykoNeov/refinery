@@ -26533,3 +26533,64 @@ nozzle's; a hole in a steam line the nozzle's `C_d·A·√(2ρ₀P₀ψ*)` to 1e
 choke slope), all caught, one after its gate was added. **Corpus**: 63 of 64
 byte-identical on both fidelities, `crude_unit_steam` moved (the user's
 decision); the baseline refreshed with it.
+
+### 68.4 A column flooded with water (M63.4)
+
+Ledger row C13 said a column fed "nearly all water" could refuse and halt the
+run, and asked for a measurement first. Measured (probes kept out of the repo;
+the numbers here):
+
+1. **On M62.5's eight-stage test column** (1.8 bar and 1 atm, feeds at 200–300
+   °C) the solve separates to 16 % water by mass and refuses from 18–20 %
+   (Newton's wet active set — "the water saturation of a wet stage" — or a
+   negative tray liquid), cold and warm alike, up to 99.99 %; all water is §67.17
+   rule 10's and answered.
+2. **On the crude unit's own column** (ten stages, its draws and pumparounds),
+   the oil held at the wet plant's settled 112.5 kg/s and water added on top, at
+   a fixed 351 °C liquid-equivalent feed and at a fixed feed enthalpy: it
+   separates to 40 % water and refuses from 50 %, cold and warm alike. Water is
+   not what stops a wet crude short of that.
+3. **The shipped wet crude unit with a wetter crude** halts on tick 1 from 2 %
+   water — not the column's water: the supply boils harder, the charge falls,
+   and the fixed pumparounds no longer fit the smaller feed. A new ledger row,
+   C14, deferred (the user's decision).
+4. **The story C13 is for** — a tank whose free water runs out into a column —
+   sends all water (rule 10), then ONE tick of the last water and the first oil
+   together, then oil. On a small tank-fed column that tick was 14 % water with
+   4 % water in the tank (separated) and 34–67 % a few kilograms of water later
+   (refused: the run halted).
+
+So a fixed cut-off is the wrong shape (the limit is the column's, 18 % on one,
+50 % on another). **The user's decisions**: the column always tries to separate,
+and passes the feed through only when its solve refuses AND at least 15 % of
+what enters it is water; the refusal stays visible (raised by a side review: a
+pass-through must not hide a cause that is not the water).
+
+**The rule** (`flooded_pass_through`, `FLOODED_WATER_SHARE = 0.15`, a game value
+under every measured limit): when the heat-balance cascade refuses a pass, and
+the column has a water draw, and the feed's free water and the steam together
+are at least 15 % of what enters it, the column does not fractionate this tick.
+Every drop of water leaves by the water draw at water's bubble point at the
+column's pressure — boiled up by the reboiler and condensed, as
+`water_only_inflow` takes water (§67.18) — and the oil falls to the bottoms
+whole, at the feed's temperature, carrying its own heat; the other draws carry
+nothing. `Separation::water_flooded` carries the refusal's text, and the
+snapshot publishes it as the column's `column_flooded` (absent while it
+fractionates, so no plant's bytes move). No profile is published, so the next
+tick starts cold — and on the tank-fed column the oil after the slug separates
+from the next tick on. Under 15 % water, or with no water draw, a refusal halts
+the run with its reason, as it always did.
+
+**What moved**: nothing shipped — 64 of 64 byte-identical on both fidelities.
+
+**Gates**: `reference/flooded_column.rs` (4: the pass-through at 30 % water —
+splits, the oil whole, the water at its bubble point, the books, the condenser
+exactly the water's latent heat; 10 % and all-water not flooded; a refusal at
+10 % water kept, the same setting at 30 % flooded; steam counted toward the
+share and out by the water draw), `water_flooded_column_reference.rs` (3: the
+tank-fed column's slug running out floods it for one tick, the water draw and
+the bottoms that tick the feed's water and oil, the run on; a slug that ends at
+14 % separated; the game solver alike, slow). **Mutations**: seven (flood on
+any refusal, steam not counted, the reason dropped, the oil to the distillate,
+the water at the feed's temperature, no boil-up, the snapshot never flagging),
+all caught.

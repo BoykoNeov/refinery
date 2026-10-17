@@ -12,6 +12,42 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M63 is CLOSED (2026-10-17): M62's loose ends — `docs/DEFERRED.md` B62, B64,
+B67 and C13 taken, C14 new.** Asked after M62 as "what is next"; steam
+stripping was the plan, and the user chose instead to "tie the loose ends of
+M62" — of its eight deferred rows the four smaller, the four larger kept
+deferred (B61, B63, B65, B66). Steam stripping moves to M64. Decided in plain
+words along the way: the valve standard for a steam valve, its recovery
+factor declared (an ideal nozzle without one); the steamed crude unit kept
+near 0.85 kg/s; a steam hole the same fix; a too-wet column passing its feed
+through only when it cannot solve, its reason kept; a wetter crude's start-up
+failure recorded, not fixed.
+- **M63.1, a lumped coil on a boiling plant refused** (§68.1, B62): a furnace on
+  a plant that boils must be in cells; the test fixtures moved to short wide
+  coils, the furnace gate the whole coil's first law.
+- **M63.2, water's vapour pressure** (§68.2, B64): free water on IAPWS-IF97's
+  saturation line (tables to 0.015 % at 100–370 °C, where the old law read
+  +14 % at 300 °C), continued C¹ past its ends; a free-water member must be
+  water by its numbers; the independent reference scripts carry the same curve.
+  The four water plants moved slightly (the crude unit's condenser 93.77
+  against 93.72 °C, the wet rundown's tank 74.41 against 74.13 °C).
+- **M63.3, steam an ideal gas through a valve or a hole** (§68.3, B67): the ISA
+  gas law on a declared `x_t`, an ideal nozzle without, the isentropic nozzle
+  through a hole; the ledger's "a real valve chokes sooner" corrected (for a
+  gas, recovery chokes later). The steamed crude unit declares `x_t = 0.72` and
+  opens 40 %: 0.867 kg/s.
+- **M63.4, a column flooded with water** (§68.4, C13): measured first — the
+  crude unit's column separates to 40 % water, the test column to 16 %; a
+  refused pass at least 15 % water passes through for the tick, the refusal
+  in the snapshot's `column_flooded`; the tank-fed slug's last tick floods and
+  the run goes on.
+- Corpus: byte-identical on both fidelities at every slice but the ones the
+  user's decisions moved (M63.2: the four water plants; M63.3: the steamed
+  crude unit); 64 plants at the close.
+- **Left open**: B61, B63, B65, B66 (kept by the user), C14 the wet crude unit
+  that cannot start on a crude 2 % water; C7 as M64 (the reboiler at zero, its
+  cold start, the column screen's fourth plant).
+
 **M62 is CLOSED (2026-10-17): water as a real component — and steam into the
 column on it — `docs/DEFERRED.md` C6 taken, C7 re-scheduled as M63 on its
 ground, B61–B67 and C13 new.** Asked after M61 as "what is next"; steam

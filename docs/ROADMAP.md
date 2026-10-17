@@ -10047,7 +10047,7 @@ water through the column and steam into it, a valve that chokes on steam. Its
 close-out report is at the top of `docs/MILESTONES.md`. Deferred: B61–B67, C13;
 steam stripping proper is M63 (C7).
 
-## M63 — OPEN — M62's loose ends: the lumped coil, water's vapour pressure, the steam valve, a column fed nearly all water; ledger rows B62, B64, B67, C13
+## M63 — **CLOSED** 2026-10-17 — M62's loose ends: the lumped coil, water's vapour pressure, the steam valve, a column fed nearly all water; ledger rows B62, B64, B67, C13
 
 Asked after M62 closed (2026-10-17) as "what is next": steam stripping (C7) was
 the plan, and the user chose to "tie the loose ends of M62" first. Asked which
@@ -10102,3 +10102,28 @@ choice). Ledger row B67 closed. DESIGN §68.3.
   seven, all caught (one after a gate was added). Corpus: 63 of 64
   byte-identical on both fidelities, `crude_unit_steam` moved (the user's
   decision).
+
+### M63.4 — **LANDED** 2026-10-17: a column flooded with water
+
+Measured first, as ledger row C13 asked: the crude unit's column separates to
+40 % water and refuses from 50 %, M62.5's eight-stage column to 16 % and from
+18 %, cold and warm alike; on a tank-fed column a water slug's last tick (the
+last water and the first oil together) lands anywhere from 14 % to 67 % water
+and, refused, halted the run. Now a refused pass at least 15 % water (the steam
+counted) passes the feed through for that tick — its water out by the water
+draw at its bubble point, its oil to the bottoms — and the snapshot's
+`column_flooded` carries the refusal, so a pass-through never hides another
+cause (a side review's point). Found on the way and deferred, ledger row C14:
+the shipped wet crude unit cannot start on a crude 2 % water, its charge falling
+under its fixed pumparounds. Ledger row C13 closed. DESIGN §68.4.
+
+- Gates: `reference/flooded_column.rs` (4), `water_flooded_column_reference.rs`
+  (3). Mutations: seven, all caught. Corpus: 64 of 64 byte-identical on both
+  fidelities.
+
+**M63 — CLOSED 2026-10-17.** M62's four smaller loose ends tied: a lumped coil
+on a boiling plant refused (B62), water's vapour pressure on the steam tables'
+own curve (B64), steam through a valve or a hole an ideal gas on the valve
+standard (B67), a column too wet to separate passing its feed through (C13).
+Kept deferred by the user: B61, B63, B65, B66; new: C14. Its close-out report is
+at the top of `docs/MILESTONES.md`. Steam stripping proper (C7) is M64.

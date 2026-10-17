@@ -35,6 +35,8 @@ mod reference_cascade;
 mod reference_compressor;
 #[path = "reference/flash.rs"]
 mod reference_flash;
+#[path = "reference/flooded_column.rs"]
+mod reference_flooded_column;
 #[path = "reference/four_lump.rs"]
 mod reference_four_lump;
 #[path = "reference/free_water.rs"]

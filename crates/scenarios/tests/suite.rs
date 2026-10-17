@@ -191,6 +191,8 @@ mod upwind_temperature_reference;
 mod vapour_recovery_reference;
 #[path = "vapour_recovery_train.rs"]
 mod vapour_recovery_train;
+#[path = "water_flooded_column_reference.rs"]
+mod water_flooded_column_reference;
 #[path = "water_properties.rs"]
 mod water_properties;
 #[path = "water_slug_reference.rs"]

@@ -3573,6 +3573,11 @@ impl Engine {
                             reboiler_w: reboiler.value(),
                         }),
                     // Both-or-neither again, for the same reason as the duties.
+                    column_flooded: self
+                        .node_states
+                        .column_separation
+                        .get(&id)
+                        .and_then(|s| s.water_flooded.clone()),
                     column_operation: self.node_states.column_separation.get(&id).and_then(|s| {
                         let (feed_vapour_fraction, reflux_ratio) =
                             s.feed_vapour_fraction.zip(s.reflux_ratio)?;

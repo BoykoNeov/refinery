@@ -725,6 +725,14 @@ pub struct Separation {
     /// fidelity that does not report it. The heat-balance cascade reports it
     /// because it may run above the declared ratio (§65.3).
     pub reflux_ratio: Option<f64>,
+    /// `Some(reason)` when the pass did not fractionate: a feed too wet to
+    /// separate passed straight through for this tick, its water out by the
+    /// water draw and its oil to the bottoms (M63.4, docs/DESIGN.md §68.4).
+    /// The reason is the refusal the solve gave, kept so that a pass-through
+    /// never hides a failure that is not the water's (a setting out of range,
+    /// a tray run dry). `None` from every pass that separated, and from every
+    /// fidelity that never floods.
+    pub water_flooded: Option<String>,
 }
 
 /// Everything one column pass is a function of: the equipment, and the feed

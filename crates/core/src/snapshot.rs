@@ -270,6 +270,14 @@ pub struct NodeSnapshot {
     /// and what keeps every plant that predates it byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_operation: Option<ColumnOperation>,
+    /// A heat-balance column flooded with water this tick (M63.4,
+    /// docs/DESIGN.md §68.4): its feed, at least 15 % water, could not be
+    /// separated, so it passed straight through — its water out by the water
+    /// draw, its oil to the bottoms. The text is the refusal the column's solve
+    /// gave, kept so a pass-through never hides a cause that is not the water.
+    /// **Absent** while the column fractionates, and on every other node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_flooded: Option<String>,
     /// Whether the liquid at this node is boiling, and the bubble pressure the
     /// verdict was made against (M11, docs/DESIGN.md §13).
     ///

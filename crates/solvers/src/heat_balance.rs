@@ -238,7 +238,25 @@ impl SeparationModel for HeatBalanceCascade {
         "heat_balance"
     }
 
+    /// The column fractionates; a feed too wet to separate that its solve
+    /// refuses passes straight through instead (`flooded_pass_through`, M63.4,
+    /// docs/DESIGN.md §68.4).
     fn separate(
+        &self,
+        pass: &ColumnPass<'_>,
+        thermo: &dyn ThermoModel,
+    ) -> Result<Separation, SimError> {
+        match self.fractionate(pass, thermo) {
+            Ok(separation) => Ok(separation),
+            Err(refusal) => flooded_pass_through(pass, thermo, refusal),
+        }
+    }
+}
+
+impl HeatBalanceCascade {
+    /// One pass of the heat-balance cascade: every draw's split and the duties,
+    /// or a refusal that says why the column could not settle.
+    fn fractionate(
         &self,
         pass: &ColumnPass<'_>,
         thermo: &dyn ThermoModel,
@@ -330,6 +348,7 @@ impl SeparationModel for HeatBalanceCascade {
                 reboiler_duty: Some(Watt::ZERO),
                 feed_vapour_fraction: None,
                 reflux_ratio: Some(spec.reflux_ratio),
+                water_flooded: None,
             });
         }
 
@@ -579,6 +598,7 @@ impl SeparationModel for HeatBalanceCascade {
             reboiler_duty: Some(reboiler_duty),
             feed_vapour_fraction: Some(feed_vapour_fraction),
             reflux_ratio: Some(profile.reflux_ratio),
+            water_flooded: None,
         })
     }
 }
@@ -1197,6 +1217,121 @@ fn oil_free_feed(
         reboiler_duty: Some(Watt(reboiler)),
         feed_vapour_fraction: None,
         reflux_ratio: Some(reflux_ratio),
+        water_flooded: None,
+    })
+}
+
+/// The least share of a column's inflow by mass that is water — the feed's
+/// free water and the steam together — for a refused solve to be answered by
+/// passing the feed through (M63.4, docs/DESIGN.md §68.4). A GAME VALUE, set
+/// under what was measured: the crude unit's column separates to 40 % water and
+/// refuses from 50 %, M62.5's eight-stage test column separates to 16 % and
+/// refuses from 18 %. Under it a refusal halts the run with its reason, as any
+/// column's does.
+pub const FLOODED_WATER_SHARE: f64 = 0.15;
+
+/// A column whose solve refused a feed at least `FLOODED_WATER_SHARE` water
+/// (M63.4, docs/DESIGN.md §68.4) — a tank's water slug running out, the one
+/// tick it sends its last water and its first oil together (M62.3; ledger row
+/// C13) — answered rather than halted: the column does not fractionate this
+/// tick. Every drop of water, the feed's and the steam's, leaves by the water
+/// draw at water's bubble point at the column's pressure, boiled up and
+/// condensed as `water_only_inflow` takes it; the oil falls to the bottoms
+/// whole, at the feed's temperature, carrying its own heat; the other draws
+/// carry nothing. The refusal rides the answer (`Separation::water_flooded`),
+/// so a pass-through never hides a cause that is not the water.
+///
+/// Anything short of that — a drier feed, no water draw, no free water on the
+/// slate — returns the refusal untouched.
+fn flooded_pass_through(
+    pass: &ColumnPass<'_>,
+    thermo: &dyn ThermoModel,
+    refusal: SimError,
+) -> Result<Separation, SimError> {
+    let slate = pass.slate;
+    let (Some(index), Some(spec)) = (slate.free_water(), pass.cascade) else {
+        return Err(refusal);
+    };
+    let Ok((oil_draws, Some(at))) = split_water_draw(pass.draws) else {
+        return Err(refusal);
+    };
+    let Ok(plan) = CascadePlan::new(spec, &oil_draws, slate.len()) else {
+        return Err(refusal);
+    };
+    let Ok(steam) = steam_water(pass, slate, &plan, Some((at, index))) else {
+        return Err(refusal);
+    };
+    let feed_flow = pass.feed_flow.value();
+    let throughput = pass.throughput().value();
+    let molar_mass = slate.get(index).molar_mass.value();
+    let feed_water = feed_flow * pass.feed.fractions()[index];
+    let water_mass = feed_water + steam.map_or(0.0, |s| s.molar * molar_mass);
+    if !throughput.is_finite() || throughput <= 0.0 || water_mass / throughput < FLOODED_WATER_SHARE
+    {
+        return Err(refusal);
+    }
+    let oil_mass = feed_flow - feed_water;
+    let oil: Vec<f64> = pass
+        .feed
+        .fractions()
+        .iter()
+        .enumerate()
+        .map(|(c, x)| if c == index { 0.0 } else { *x })
+        .collect();
+
+    // The water: in at its own share of the feed's flux and the steam's, out
+    // a liquid at its bubble point — `water_only_inflow`'s balance.
+    let water = WaterFeed::new(slate, index, feed_water / molar_mass, steam);
+    let boiling = bubble_temperature(
+        slate,
+        thermo,
+        &MoleFractions::from_mass(&pure(slate, index)?, slate)?,
+        pass.pressure,
+        "the column's water",
+    )?;
+    let inflow =
+        feed_water * slate.get(index).cp.value() * (pass.temperature.value() - T_REF.value())
+            + steam.map_or(0.0, |s| s.enthalpy_flux);
+    let total = water.total_molar();
+    let liquid = total * water.liquid_enthalpy(boiling);
+    let vapour = total * water.vapour_enthalpy(slate, thermo, boiling)?;
+    let reboiler = (vapour - inflow).max(0.0);
+    let condenser = inflow + reboiler - liquid;
+    if !condenser.is_finite() || condenser < 0.0 || !reboiler.is_finite() {
+        return Err(refusal);
+    }
+
+    let bottoms = plan.mass_ratios.len() - 1;
+    let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
+        .map(|_| DrawSeparation {
+            split: 0.0,
+            composition: pass.feed.clone(),
+            temperature: pass.temperature,
+        })
+        .collect();
+    if oil_mass > 0.0 {
+        draws[bottoms] = DrawSeparation {
+            split: oil_mass / throughput,
+            composition: Composition::from_weights(&oil)?,
+            temperature: pass.temperature,
+        };
+    }
+    draws.insert(
+        at,
+        DrawSeparation {
+            split: water_mass / throughput,
+            composition: pure(slate, index)?,
+            temperature: boiling,
+        },
+    );
+    Ok(Separation {
+        draws,
+        profile: None,
+        condenser_duty: Some(Watt(condenser)),
+        reboiler_duty: Some(Watt(reboiler)),
+        feed_vapour_fraction: None,
+        reflux_ratio: Some(spec.reflux_ratio),
+        water_flooded: Some(refusal.to_string()),
     })
 }
 
@@ -1316,6 +1451,7 @@ fn water_only_inflow(
         reboiler_duty: Some(Watt(reboiler)),
         feed_vapour_fraction: None,
         reflux_ratio: Some(spec.reflux_ratio),
+        water_flooded: None,
     })
 }
 

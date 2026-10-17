@@ -48,6 +48,7 @@ impl SeparationModel for ShortSplitter {
             reboiler_duty: None,
             feed_vapour_fraction: None,
             reflux_ratio: None,
+            water_flooded: None,
         })
     }
 }
@@ -231,6 +232,7 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
             reboiler_duty: None,
             feed_vapour_fraction: None,
             reflux_ratio: None,
+            water_flooded: None,
         },
     );
 
