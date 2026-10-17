@@ -21,9 +21,9 @@ Run (Linux, 4 cores, release, `nice`):
 cargo test --release -p refinery-scenarios --test suite m64_walk -- --nocapture
 ```
 
-Timing on this machine reads about 2.4 × the Windows box's: the shipped
-`crude_unit_steam` at steady state is 2.9 ms a tick here against 2.41 ms there
-(DESIGN §67.21), with tick 1 at 55–62 ms.
+Timing on this machine reads about 1.2 × the Windows box's: the shipped
+`crude_unit_steam` at steady state is 2.9–3.1 ms a tick here against 2.41 ms
+there (DESIGN §67.21), with tick 1 at 55–62 ms.
 
 ## Results
 
@@ -75,10 +75,20 @@ Timing on this machine reads about 2.4 × the Windows box's: the shipped
    that boils harder drops more pressure, so 20 → 68 MW takes the charge 112.8 →
    93.6 kg/s, and the heat per kilogram rises with it: the feed flashes 0.98 of
    its moles at 68 MW and all of them at 80. A real unit holds its charge on a
-   flow loop and flashes about 60–75 % at the flash zone, its residue's heavy
-   end never vaporising. Here the column still runs — the stripping section
-   below the feed carries 8–18 mol/s of oil vapour over the steam — but the
-   furnace number that gives a realistic bottom gives an unrealistic flash.
+   flow loop and flashes about 60–75 % of its MASS at the flash zone, its
+   residue's heavy end never vaporising. `q` is a MOLE share: on this slate
+   (residue 0.55 kg/mol, 10 % of the moles) a sharp split reads 0.88 molar as
+   70 % by mass — realistic — but 0.955 as 88 % and 0.981 as 95 %: at 68 MW on
+   a charge fallen to 94 kg/s the residue is boiling off. The column still runs
+   (the stripping section carries 8–18 mol/s of oil vapour over the steam).
+
+   **The charge held, probed**: the probe plant with its feed valve's Kv 135 →
+   400 (no loop, so it overshoots to 148–156 kg/s): at 68 MW the coil cools
+   with the larger charge and the column, warm then cold, refuses (the bottom
+   stage's bubble point, step 10 of the continuation) — too little heat for
+   148 kg/s; at 80 MW it runs, settling at 155.9 kg/s, flash 0.884 (≈ 70 % by
+   mass), bottom 364.9 °C, coil 462.3 °C, 16.6 ms a tick at ticks 6 000–9 000
+   (still drifting). A flow loop holding 112.8 kg/s sits between the two.
 
 5. **The cold start.** On the shipped file's own start (coil 322 °C, furnace
    moved to 68 MW at tick 0) M61's warm-up refuses on tick 1 — a negative
@@ -90,13 +100,20 @@ Timing on this machine reads about 2.4 × the Windows box's: the shipped
    no start-up method fixes that. **On a plant that starts hot**
    (`crude_unit_stripped_probe.toml`, coil at its settled 488 °C) the
    continuation starts it: base reboiler 41.8 MW, 10 steps, about 15 ms each
-   time it runs (nine times within tick 1, the engine's sweeps); **tick 1
-   183–186 ms** against the shipped plant's 55–62; it lands on the warm walk's
-   answer — bottom 383.0 °C, reflux 4.809, against 383.1 and 4.810.
+   time it runs (nine times within tick 1, the engine's sweeps — each sweep's
+   column solve starting cold again); **tick 1 183–186 ms** against the
+   shipped plant's 55–62; it lands on the warm walk's answer — bottom 383.0 °C,
+   reflux 4.809, against 383.1 and 4.810. Carrying the first continuation's
+   profile to the tick's later sweeps would make tick 1 about one continuation.
+   **The base's pumparounds**: a base at the plant's own (zero) pumparounds
+   starts once (base reboiler 21.4 MW) and refuses on a later sweep of the same
+   tick — its warm-up's stage 7 liquid negative; the shipped 15/15/10 MW base
+   started all nine times. The base set is a setting the continuation needs.
 
-6. **Cost.** The held solve itself costs what the declared one does: held at
-   the plant's own 87.96 MW, 5.70 ms a tick against 5.54 unheld over the same
-   ticks. What costs is the coil's drift (ledger A29): the SHIPPED plant, its
+6. **Cost.** The held solve itself costs what the declared one does: the
+   shipped plant settled 3 600 ticks, then alternate 1 500-tick blocks unheld
+   and held at its own 87.9637 MW: 3.15 / 3.14 / 3.10 ms unheld, 3.05 / 3.05 /
+   2.85 held, every number the same. What costs is the coil's drift (ledger A29): the SHIPPED plant, its
    reboiler kept, its furnace stepped 20 → 30 MW, runs 14.7 ms a tick while its
    coil drifts and 8.6 ms twenty minutes later, against 2.9 ms at rest. The
    stripped probe plant started at its settled state runs 12.0 / 9.6 / 7.0 ms

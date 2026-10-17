@@ -26609,8 +26609,10 @@ decisions, in plain words (2026-10-17):
    new optional key; a column without it closes its reboiler as today.
 2. **The new plant's keys on the column screen: the steam valve's opening, the
    furnace and the pumparounds.** The reflux is a result there, not a key.
-3. **A slower first tick is acceptable for now** (measured: 183–186 ms on this
-   machine, the shipped plant's 55–62).
+3. **A slower first tick is acceptable for now** — said against M62.0's 19 ms;
+   measured since at 183–186 ms (the shipped plant's 55–62), the continuation
+   running once per engine sweep. M64.2 carries it across the tick's sweeps;
+   the number goes back to the user with that.
 4. **C14 (a wetter crude) is not in M64** — left to the plan's call, and the
    probe found it does not bite (finding 7).
 
@@ -26633,15 +26635,18 @@ start by continuation), `m64_walk.rs`, and `crude_unit_stripped_probe.toml`.
   runs dry and the refusal names it (finding 3).
 - **The charge falls as the furnace fires** (finding 4): nothing holds it, so a
   coil boiling harder passes less — 112.8 → 93.6 kg/s at 68 MW — and the feed
-  flashes 98 % of its moles (100 % at 80 MW), where a real flash zone takes
-  60–75 %. The column runs; the number is not a real unit's.
+  flashes 98 % of its moles — about 95 % of its mass, the residue boiling off,
+  where a real flash zone takes 60–75 % by mass. With the feed valve widened
+  (Kv 400) the charge overshoots to 156 kg/s, and 80 MW then gives a flash of
+  0.884 molar (≈ 70 % by mass), the bottom 365 °C, the coil 462 °C.
 - **The cold start** (finding 5): impossible on a plant whose coil starts cold —
   a 290 °C feed cannot run without its reboiler, whatever the method. On a plant
   that starts at its hot state, a continuation from a base column that keeps
   its reboiler (the shipped 15/15/10 MW pumparounds; 41.8 MW) in 10 Newton
   solves lands on the warm answer (383.0 °C against 383.1); tick 1 183–186 ms.
-- **Cost** (finding 6): the held solve costs what the declared one does (5.70
-  against 5.54 ms a tick). The coil's drift is what costs (A29): the shipped
+- **Cost** (finding 6): the held solve costs what the declared one does (3.05 /
+  3.05 / 2.85 ms a tick held against 3.15 / 3.14 / 3.10 unheld, alternate blocks
+  on the settled shipped plant). The coil's drift is what costs (A29): the shipped
   plant runs 14.7 ms a tick after a furnace step, 2.9 at rest; the stripped
   plant 12.0 → 7.0 ms over 9 000 ticks while its coil creeps 0.4 K.
 
@@ -26657,8 +26662,11 @@ tolerance, a difference past it refused by name.
 
 ### 69.2 Fork 2 — no vapour floor on a held column
 
-M62's decision 1 ("no floor below the feed") taken whole: the probe ran with no
-floor anywhere and the trays above the feed never came near it (≥ 500 mol/s
+Forced, not chosen: with the duty held, the reflux is the one unknown the floor
+would move, so a floor active set has nothing left to raise — the count of
+equations and unknowns admits one or the other. M62's decision 1 (no floor
+below the feed) is the part of it the user decided; above the feed it is moot
+on this plant: the probe ran with no floor anywhere and the trays above the feed never came near it (≥ 500 mol/s
 against its 140). A held column's dry tray is answered by Newton's own refusal
 (finding 3), as M61 answers it. The floor stays as it is on every other column
 (C8 open for them).
@@ -26668,8 +26676,12 @@ against its 140). A held column's dry tray is answered by Newton's own refusal
 Cold (no warm profile), a held column first solves its base — the same column
 with its reboiler closing it, M61's cold warm-up and Newton — at its declared
 reflux, then walks the held duty from the base's closure to its own in ten
-Newton solves (the pumparounds walked from a base set to the plant's alongside
-when the plant's own fail, finding 5). Each solve starts at the last; a failed
+Newton solves, the pumparounds walked alongside from a base set to the plant's.
+The base set is needed: at the plant's own (zero) pumparounds the base refused
+on a later sweep of the same tick, at the shipped 15/15/10 MW it never did — a
+labelled setting, or one derived from the feed (M62.0 finding 4's 1.5–2 × the
+feed's latent heat flow), decided in M64.2. The continuation's profile is
+carried to the tick's later sweeps, so tick 1 pays for one. Each solve starts at the last; a failed
 step is a refusal naming the step and the duty it reached. The plant must start
 hot: a held column whose base refuses is refused, and the cold coil's case is
 a plant-file matter (fork 4), not a solver one.
@@ -26680,7 +26692,9 @@ a plant-file matter (fork 4), not a solver one.
 `reboiler_duty_mw = 0.0`, the furnace and its coil at their settled state, the
 pumparounds off, the steam as shipped. **Open for the user, finding 4**: hold
 the charge on a flow loop (a real unit's way; the furnace then sets the flash,
-not the charge), or ship it as the hydraulics give it.
+not the charge) — the feed valve is wide open already, so a loop can only
+throttle, and holding ~113 kg/s needs a larger valve and more furnace for the
+same bottom — or ship it as the hydraulics give it.
 
 ### 69.5 What moves, and what is deferred
 
