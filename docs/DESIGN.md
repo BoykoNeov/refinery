@@ -26537,8 +26537,8 @@ decision); the baseline refreshed with it.
 ### 68.4 A column flooded with water (M63.4)
 
 Ledger row C13 said a column fed "nearly all water" could refuse and halt the
-run, and asked for a measurement first. Measured (probes kept out of the repo;
-the numbers here):
+run, and asked for a measurement first. Measured (probes and how to run them in
+`tools/steptime/prototypes/m63_4/`, `FINDINGS.md`):
 
 1. **On M62.5's eight-stage test column** (1.8 bar and 1 atm, feeds at 200–300
    °C) the solve separates to 16 % water by mass and refuses from 18–20 %

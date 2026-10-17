@@ -162,8 +162,9 @@ const IF97_SATURATION: [f64; 10] = [
 const IF97_SATURATION_RANGE: (f64, f64) = (273.15, 647.096);
 
 /// The curve's slope `d ln P_sat/d(1/T)` [K] at each end of its range,
-/// computed from the equation itself at 40 digits (mpmath, M63.2) — the
-/// continuation outside the range starts on it, so the curve is C¹ there.
+/// computed from the equation itself at 40 digits (mpmath, M63.2:
+/// `tools/steptime/prototypes/m63_2/if97_end_slopes.py`) — the continuation
+/// outside the range starts on it, so the curve is C¹ there.
 const IF97_SATURATION_END_SLOPES: (f64, f64) = (-5_422.112_747_837_726, -5_088.781_405_301_052);
 
 /// IAPWS-IF97 region 4's saturation pressure on its own range [Pa]:

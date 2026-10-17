@@ -651,7 +651,7 @@ mod tests {
                 // Every drop of water went to the vapour, undersaturated, so the
                 // oil left boiled at its own partial pressure: `Σ_oil K·x = 1 −
                 // y_w`, below its dry bubble point at the total pressure — the
-                // steam stripping M63 is built on.
+                // steam stripping M64 is built on.
                 let x = MoleFractions::from_mass(&remaining, &slate).unwrap();
                 let y = MoleFractions::from_mass(&boil.vapour, &slate).unwrap();
                 let oil_pressure: f64 = (0..2)
