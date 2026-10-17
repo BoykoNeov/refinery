@@ -1944,22 +1944,11 @@ impl Engine {
                 // first (M62.3, §67.3; the user's choice while building): its
                 // composition moves, so it is debited component by component.
                 let capacity = tank.capacity(&self.slate).value();
-                if let Some((spill, over)) = tank.top_spill(&self.slate)? {
-                    let held = tank.mass.value();
-                    let weights: Vec<f64> = tank
-                        .composition
-                        .fractions()
-                        .iter()
-                        .zip(over.fractions())
-                        .map(|(x, y)| (x * held - y * spill.value()).max(0.0))
-                        .collect();
-                    tank.composition = Composition::from_weights(&weights).map_err(|e| {
-                        SimError::Numerical(format!(
-                            "tank '{node_name}' has no valid composition left after spilling {:.4e} kg of its top layer: {e}",
-                            spill.value()
-                        ))
-                    })?;
-                    tank.mass = Kg(held - spill.value());
+                if let Some((spill, over)) = tank.spill_top(&self.slate).map_err(|e| {
+                    SimError::Numerical(format!(
+                        "tank '{node_name}' has no valid composition left after spilling its top layer: {e}"
+                    ))
+                })? {
                     spilled = Some((KgPerSec(spill.value() / dt.value()), over, tank.temperature));
                 } else if tank.mass.value() > capacity {
                     let excess = tank.mass.value() - capacity;

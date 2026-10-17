@@ -25223,7 +25223,13 @@ layer.** §67.3 said nothing of the overflow. A wet tank over its brim spills
 oil, at its own fractions, until the liquid's volume is back at `A·H` — the
 excess volume at the oil's own density `ρ_oil`, closed-form under ideal
 mixing — and water only once the oil is gone. The dry overflow keeps M23's rule
-on mass.
+on mass. **The brim stays a tie** (`TankState::spill_top`, found after the
+first commit): the spill moves the composition and so the capacity, and the
+remainder landed a few ULP above the new `ρ(x')·A·H` about half the time
+(measured, 3e-12 kg over on the first case tried), so a full wet tank whose
+inflow had stopped would spill a rounding error every other tick. The mass is
+set to the new capacity and the spill reported as the rest — M23's tie, the
+books moved by ULPs.
 
 **Measured: water settles at once, so a running tank holds almost none.**
 Water that arrives in a tick joins the layer at the tick's end, and the outlet
@@ -25250,11 +25256,12 @@ water, on the mixed tick and on oil, and the flow steps down by
 tick are 8 on Newton and 7 on the game solver; the wet rundown's stay at 9
 and 7.
 
-**Gates**: `crates/core/src/graph.rs`'s `water_layer` tests (3: the outlet's
+**Gates**: `crates/core/src/graph.rs`'s `water_layer` tests (4: the outlet's
 draw within, across and past the layer, and none where no water stands or
 the slate has none; the layer's height; the brim spilling oil only, all the
 oil, the water above the brim after it, water alone, and nothing at the brim
-or from a dry tank); `crates/scenarios/tests/water_slug_reference.rs` (7: the
+or from a dry tank; a spilled tank standing exactly at its brim over 400 fill
+heights); `crates/scenarios/tests/water_slug_reference.rs` (7: the
 layer on the hand calculation at load and leaving first, its last tick
 exact; the flow on the valve and the line at the density carried; every
 component's books each tick; the game solver within a tick; a dry tank on a
@@ -25265,12 +25272,13 @@ re-run at its moved junction (`free_water_flash.py`, 0.127 814 395 2 vapour
 by mass at 358.733 K and 1.504 bar), the tank holding free water but less
 than one tick's arrival.
 
-**Mutations**: twelve, all caught by their predicted files — no layer, the
+**Mutations**: fourteen, all caught by their predicted files — no layer, the
 transition's share over the whole inventory, the sweep recording the draw but
 seeding the inventory, the draw sized by inflow, a layered tank booked at its
 start-of-tick fractions, a layered tank with no inflow left undebited, the
 solve reading the inventory, a wet tank spilling its mix, the oil spilled at
 the mixture's density, the spill's composition not debited, the layer's height
-at the mixture's density, the snapshot never reporting it. **Corpus**: 58 of
+at the mixture's density, the snapshot never reporting it, the spilled tank
+left a rounding over its brim. **Corpus**: 58 of
 60 plants byte-identical on both fidelities; `wet_rundown` moved (the user's
 approval, 2026-10-17), `water_slug` new.

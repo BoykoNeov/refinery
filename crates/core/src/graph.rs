@@ -1313,6 +1313,37 @@ impl TankState {
             Composition::from_weights(&spilled_weights)?,
         )))
     }
+
+    /// Spill the top layer (`top_spill`) out of this tank: debit it component
+    /// by component and leave the tank exactly AT its brim, returning what
+    /// left, a mass [kg] and a composition. `None`, and nothing touched, where
+    /// `top_spill` has nothing to spill.
+    ///
+    /// **The brim is a tie, as on the dry overflow** (M23): the spill moves the
+    /// composition and so the capacity, and `held − spill` lands within a few
+    /// ULP of the new `ρ(x')·A·H` — above it about half the time, which would
+    /// spill a rounding error on every tick a full wet tank stands still. So
+    /// the mass is set to the new capacity and the spill reported as the
+    /// rest, at the spilled composition: the books move by ULPs.
+    ///
+    /// # Errors
+    /// `SimError::Numerical` if the remainder forms no valid composition.
+    pub fn spill_top(&mut self, slate: &Slate) -> Result<Option<(Kg, Composition)>, SimError> {
+        let Some((spill, over)) = self.top_spill(slate)? else {
+            return Ok(None);
+        };
+        let held = self.mass.value();
+        let weights: Vec<f64> = self
+            .composition
+            .fractions()
+            .iter()
+            .zip(over.fractions())
+            .map(|(x, y)| (x * held - y * spill.value()).max(0.0))
+            .collect();
+        self.composition = Composition::from_weights(&weights)?;
+        self.mass = Kg(self.capacity(slate).value().min(held));
+        Ok(Some((Kg(held - self.mass.value()), over)))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3580,6 +3611,32 @@ mod tests {
                 .unwrap()
                 .is_none());
             assert!(tank(8100.0, 0.0).top_spill(&wet).unwrap().is_none());
+        }
+
+        /// A tank that has spilled stands AT its brim, not a rounding over it:
+        /// spilled once, as `Engine::tick` debits it, it spills nothing on the
+        /// next tick — the tie M23's dry overflow keeps by construction, so a
+        /// full wet tank whose inflow stopped does not spill crumbs for ever.
+        /// Swept over fill heights and water shares, as the rounding is the
+        /// question.
+        #[test]
+        fn a_spilled_tank_stands_at_its_brim() {
+            let wet = slate(true);
+            for i in 0..400 {
+                let water_share = 0.01 + 0.002 * f64::from(i % 50);
+                let over = 1.0 + 1e-4 * f64::from(i) + 1e-7;
+                let mut t = tank(1.0, water_share);
+                t.mass = Kg(t.capacity(&wet).value() * over);
+                let held = t.mass.value();
+                let (spill, _) = t.spill_top(&wet).unwrap().unwrap();
+                assert!((t.mass.value() + spill.value() - held).abs() <= 1e-12 * held);
+                assert!(
+                    t.top_spill(&wet).unwrap().is_none(),
+                    "case {i}: {} kg left over a {} kg brim",
+                    t.mass.value(),
+                    t.capacity(&wet).value()
+                );
+            }
         }
     }
 
