@@ -784,6 +784,36 @@ pub struct ColumnPass<'a> {
     /// within tolerance whatever it holds. `separation_is_start_insensitive`
     /// gates exactly that.
     pub seed: Option<&'a CascadeProfile>,
+    /// The steam arriving on the column's steam inlet this tick (M62.6,
+    /// docs/DESIGN.md §67.18), or `None` on a column with none. Never part of
+    /// `feed`, `feed_flow` or `temperature`: it enters its own stage.
+    pub steam: Option<ColumnSteam>,
+}
+
+impl ColumnPass<'_> {
+    /// Everything entering the column [kg/s]: the feed and the steam. Every
+    /// draw's `split` is a share of this, so `Σ split = 1` with steam too.
+    pub fn throughput(&self) -> KgPerSec {
+        match self.steam {
+            None => self.feed_flow,
+            Some(steam) => KgPerSec(self.feed_flow.value() + steam.flow.value()),
+        }
+    }
+}
+
+/// The steam into a column's stage this tick (M62.6, docs/DESIGN.md §67.18):
+/// pure water, as its pipe delivers it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ColumnSteam {
+    /// The stage it enters, one-based from the top (`SteamInlet::stage`).
+    pub stage: u32,
+    /// Its mass rate [kg/s], never negative (the engine refuses a steam line
+    /// running backwards).
+    pub flow: KgPerSec,
+    /// Its LIQUID-EQUIVALENT temperature [K] — the temperature its enthalpy,
+    /// latent heat included, would have as all liquid, the convention the
+    /// feed's `temperature` keeps (§67.4).
+    pub temperature: Kelvin,
 }
 
 /// What one tick's boil-off removes from a holdup: the vapour that formed, and

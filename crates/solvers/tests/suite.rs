@@ -45,6 +45,8 @@ mod reference_hydrocracking;
 mod reference_line_flash;
 #[path = "reference/orifice.rs"]
 mod reference_orifice;
+#[path = "reference/steam_column.rs"]
+mod reference_steam_column;
 #[path = "reference/two_phase_head.rs"]
 mod reference_two_phase_head;
 #[path = "reference/vapour_pressure.rs"]

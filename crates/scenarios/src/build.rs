@@ -27,9 +27,9 @@ use refinery_core::units::{
 use std::collections::BTreeMap;
 
 use crate::schema::{
-    bar_to_pa, c_to_k, default_friction_factor, kv_to_cv_si, ActuatorDef, ComponentDef, ControlDef,
-    ExchangerDef, MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile, TripActionDef,
-    TripDef,
+    bar_to_pa, c_to_k, default_friction_factor, kv_to_cv_si, ActuatorDef, CascadeDef, ComponentDef,
+    ControlDef, ExchangerDef, MeasurementDef, NodeDef, OnPumpStopDef, PipeDef, ScenarioFile,
+    TripActionDef, TripDef,
 };
 use crate::validate::{
     plant_phases, require_bed_reactor_plant, require_blowdown_cushion, require_compatible_fidelity,
@@ -192,6 +192,11 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
             }
         }
     }
+
+    // Step 2a''': each column's steam inlet, now that its pipe exists (M62.6,
+    // docs/DESIGN.md §67.18) — before the topology is validated, which counts
+    // it as the column's second inlet.
+    resolve_steam_inlets(&mut graph, scenario)?;
 
     // Step 2b: thermally pair the exchanger sides, after every node exists so
     // both ends of a coupling can be resolved regardless of file order.
@@ -4664,6 +4669,9 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                             duty: Watt(p.duty_mw * 1.0e6),
                         })
                         .collect(),
+                    // Resolved to its edge once the pipes exist
+                    // (`resolve_steam_inlets`).
+                    steam: None,
                 };
                 // One source of truth for the cascade's structural rules: the model
                 // that has to satisfy them. Duplicating them here would be two
@@ -4687,6 +4695,51 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
         {
             *draws = resolved;
             *slot = spec;
+        }
+    }
+    Ok(())
+}
+
+/// Each cascade column's steam inlet, as the edge INTO the column its declared
+/// pipe arrives on (M62.6, docs/DESIGN.md §67.18): the pipe itself, or its
+/// downstream half where a `leak_to` split it (`split_for_leak`). The file's
+/// rules are `validate::require_steam_inlets`'.
+fn resolve_steam_inlets(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
+    for (name, def) in &scenario.nodes {
+        let NodeDef::Column {
+            cascade: Some(CascadeDef {
+                steam: Some(steam), ..
+            }),
+            ..
+        } = def
+        else {
+            continue;
+        };
+        let column = graph.find_node(name).ok_or_else(|| {
+            SimError::Scenario(format!("internal: column '{name}' was not built"))
+        })?;
+        let split = format!("{}__downstream", steam.pipe);
+        let edge = graph
+            .edge_ids()
+            .find(|&edge| {
+                let pipe = &graph.pipe(edge).name;
+                (*pipe == steam.pipe || *pipe == split) && graph.endpoints(edge).1 == column
+            })
+            .ok_or_else(|| {
+                SimError::Scenario(format!(
+                    "column '{name}' takes steam by pipe '{}', which does not end at it",
+                    steam.pipe
+                ))
+            })?;
+        if let NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } = &mut graph.node_mut(column).kind
+        {
+            spec.steam = Some(refinery_core::graph::SteamInlet {
+                stage: steam.stage,
+                edge,
+            });
         }
     }
     Ok(())

@@ -35,8 +35,8 @@ use refinery_core::units::{Kelvin, Pascal, Watt};
 use crate::bubble::{bubble_temperature, bubble_temperature_unnormalized};
 use crate::cascade::{
     bubble_profile, column_duties, max_abs_difference, mixture_dh_vap, mixture_molar_cp,
-    split_water_draw, stage_k_values_profile, CascadePlan, DrawLocation, DrawState, Flows,
-    COMPONENT_RESIDUAL_KG_PER_S,
+    split_water_draw, stage_k_values_profile, steam_enthalpy_flux, CascadePlan, DrawLocation,
+    DrawState, Flows, COMPONENT_RESIDUAL_KG_PER_S,
 };
 use crate::column_newton::{ColumnEquations, Solved, Specification, Start, Unsolved};
 use crate::flash::flash_isothermal;
@@ -282,6 +282,19 @@ impl SeparationModel for HeatBalanceCascade {
             None => None,
         };
 
+        // Steam on its own stage (M62.6, docs/DESIGN.md §67.18): only a flowing
+        // line is a steam the column takes; a closed one is a column without.
+        let steam = steam_water(pass, slate, &plan, water_draw)?;
+        // Everything entering the column [kg/s]: every split is a share of it.
+        let throughput = pass.throughput().value();
+
+        // Only steam flowing in: it leaves by the water draw, condensed.
+        if feed_flow == 0.0 {
+            if let Some(steam) = steam {
+                return water_only_inflow(pass, thermo, &plan, water_draw, steam, 0.0, spec);
+            }
+        }
+
         // An idle column: `StageCascade`'s convention and its argument — the
         // declared splits, inert placeholders for what nothing carries, and
         // zero duties as an ANSWER rather than `None`. Returned BEFORE the feed
@@ -325,9 +338,22 @@ impl SeparationModel for HeatBalanceCascade {
         // arithmetic bit for bit, on a wet slate or a dry one.
         let whole = MoleFractions::from_mass(pass.feed, slate)?;
         let standing = whole.standing_water(slate);
-        let (feed_composition, feed_mass, water) = match standing {
-            None => (pass.feed.clone(), feed_flow, None),
-            Some(index) => {
+        let (feed_composition, feed_mass, water) = match (standing, steam) {
+            (None, None) => (pass.feed.clone(), feed_flow, None),
+            // A dry feed under steam: the water is the steam's alone.
+            (None, Some(steam)) => {
+                let index = slate.free_water().ok_or_else(|| {
+                    SimError::Scenario(
+                        "heat-balance cascade: steam on a slate with no free_water member".into(),
+                    )
+                })?;
+                (
+                    pass.feed.clone(),
+                    feed_flow,
+                    Some(WaterFeed::new(slate, index, 0.0, Some(steam))),
+                )
+            }
+            (Some(index), steam) => {
                 if water_draw.is_none() {
                     return Err(SimError::Scenario(format!(
                         "heat-balance cascade: the feed carries free water ('{}', {:.3e} of \
@@ -346,15 +372,26 @@ impl SeparationModel for HeatBalanceCascade {
                     .map(|(c, x)| if c == index { 0.0 } else { *x })
                     .collect();
                 let oil_share: f64 = oil.iter().sum();
-                if oil_share <= 0.0 {
-                    return oil_free_feed(pass, thermo, &plan, water_draw, spec.reflux_ratio);
-                }
                 let water_molar =
                     feed_flow * pass.feed.fractions()[index] / slate.get(index).molar_mass.value();
+                if oil_share <= 0.0 {
+                    return match steam {
+                        None => oil_free_feed(pass, thermo, &plan, water_draw, spec.reflux_ratio),
+                        Some(steam) => water_only_inflow(
+                            pass,
+                            thermo,
+                            &plan,
+                            water_draw,
+                            steam,
+                            water_molar,
+                            spec,
+                        ),
+                    };
+                }
                 (
                     Composition::from_weights(&oil)?,
                     feed_flow * oil_share,
-                    Some(WaterFeed::new(slate, index, water_molar)),
+                    Some(WaterFeed::new(slate, index, water_molar, steam)),
                 )
             }
         };
@@ -485,7 +522,7 @@ impl SeparationModel for HeatBalanceCascade {
                         .collect();
                     masses[water.index] += water_mass;
                     DrawSeparation {
-                        split: (oil_mass + water_mass) / feed_flow,
+                        split: (oil_mass + water_mass) / throughput,
                         composition: Composition::from_weights(&masses)?,
                         temperature,
                     }
@@ -504,7 +541,7 @@ impl SeparationModel for HeatBalanceCascade {
                     water_condensed = overhead
                         * (water.vapour_enthalpy(slate, thermo, top)?
                             - water.liquid_enthalpy(condenser_t));
-                    overhead * water.molar_mass / feed_flow
+                    overhead * water.molar_mass / throughput
                 }
             };
             result.insert(
@@ -1163,6 +1200,125 @@ fn oil_free_feed(
     })
 }
 
+/// The steam the column takes this tick (M62.6, docs/DESIGN.md §67.18), or
+/// `None` when its line carries none — a column with its steam valve shut is a
+/// column without steam, M62.5's arithmetic bit for bit. Refused: steam on a
+/// stage the column does not have, and steam into a column with no water draw
+/// to decant its water.
+fn steam_water(
+    pass: &ColumnPass<'_>,
+    slate: &Slate,
+    plan: &CascadePlan,
+    water_draw: Option<(usize, usize)>,
+) -> Result<Option<SteamWater>, SimError> {
+    let Some(steam) = pass.steam else {
+        return Ok(None);
+    };
+    let flow = steam.flow.value();
+    if !flow.is_finite() || flow < 0.0 {
+        return Err(SimError::Numerical(format!(
+            "heat-balance cascade: the steam's rate is {flow:.4e} kg/s; the engine hands a \
+             column a steam rate that is finite and never negative."
+        )));
+    }
+    if steam.stage < 1 || steam.stage as usize > plan.stages {
+        return Err(SimError::Scenario(format!(
+            "heat-balance cascade: steam enters stage {}, and this column's stages are \
+             1..={} (docs/DESIGN.md §67.18).",
+            steam.stage, plan.stages
+        )));
+    }
+    let Some((_, index)) = water_draw else {
+        return Err(SimError::Scenario(
+            "heat-balance cascade: this column takes steam and declares no water draw to \
+             decant its water at the condenser — { outlet = \"...\", stage = 0, phase = \
+             \"water\" } (docs/DESIGN.md §67.18)."
+                .into(),
+        ));
+    };
+    if flow == 0.0 {
+        return Ok(None);
+    }
+    let enthalpy_flux = steam_enthalpy_flux(slate, pass)?.unwrap_or(0.0);
+    Ok(Some(SteamWater {
+        stage: steam.stage as usize - 1,
+        molar: flow / slate.get(index).molar_mass.value(),
+        enthalpy_flux,
+    }))
+}
+
+/// A column whose only inflow is water — steam with no feed (a feed pump
+/// tripped while the steam stays on), or steam over a feed that is all water —
+/// answered rather than refused (M62.6, docs/DESIGN.md §67.18): every drop
+/// leaves by the water draw at water's bubble point at the column's pressure,
+/// the oil draws carry nothing. The condenser takes what the water brings above
+/// liquid at that point; the reboiler adds only what it takes to boil it all up
+/// — none for steam, which arrives above saturation.
+fn water_only_inflow(
+    pass: &ColumnPass<'_>,
+    thermo: &dyn ThermoModel,
+    plan: &CascadePlan,
+    water_draw: Option<(usize, usize)>,
+    steam: SteamWater,
+    feed_water_molar: f64,
+    spec: &CascadeSpec,
+) -> Result<Separation, SimError> {
+    let slate = pass.slate;
+    let Some((at, index)) = water_draw else {
+        return Err(SimError::Scenario(
+            "heat-balance cascade: this column takes steam and has no water draw".into(),
+        ));
+    };
+    let water = WaterFeed::new(slate, index, feed_water_molar, Some(steam));
+    let boiling = bubble_temperature(
+        slate,
+        thermo,
+        &MoleFractions::from_mass(&pure(slate, index)?, slate)?,
+        pass.pressure,
+        "the column's water",
+    )?;
+    let feed_flux = pass.feed_flow.value()
+        * pass.feed.mixture_cp(slate).value()
+        * (pass.temperature.value() - T_REF.value());
+    let inflow = feed_flux + steam.enthalpy_flux;
+    let total = water.total_molar();
+    let liquid = total * water.liquid_enthalpy(boiling);
+    let vapour = total * water.vapour_enthalpy(slate, thermo, boiling)?;
+    let reboiler = (vapour - inflow).max(0.0);
+    let condenser = inflow + reboiler - liquid;
+    if !condenser.is_finite() || condenser < 0.0 || !reboiler.is_finite() {
+        return Err(SimError::Numerical(format!(
+            "heat-balance cascade: a column whose only inflow is water came out with a \
+             condenser duty of {condenser:.4e} W and a reboiler duty of {reboiler:.4e} W."
+        )));
+    }
+    let mut draws: Vec<DrawSeparation> = plan
+        .mass_ratios
+        .iter()
+        .map(|_| DrawSeparation {
+            split: 0.0,
+            composition: pass.feed.clone(),
+            temperature: pass.temperature,
+        })
+        .collect();
+    draws.insert(
+        at,
+        DrawSeparation {
+            split: 1.0,
+            composition: pure(slate, index)?,
+            temperature: boiling,
+        },
+    );
+    Ok(Separation {
+        draws,
+        profile: None,
+        condenser_duty: Some(Watt(condenser)),
+        reboiler_duty: Some(Watt(reboiler)),
+        feed_vapour_fraction: None,
+        reflux_ratio: Some(spec.reflux_ratio),
+    })
+}
+
 /// The settings a player can act on (§65.9): past the crude unit's working
 /// range the solve stops settling, and the settings it was given are the plain
 /// part of the reason.
@@ -1347,13 +1503,14 @@ fn stage_balance_flows(
             // stage, the feed brought to it, the vapour leaving it made and a
             // pumparound's heat taken out, all paid for by the vapour arriving
             // from below condensing here.
-            vapour[j + 1] = if state.water.is_some() {
+            vapour[j + 1] = if let Some((water, _)) = state.water {
                 (liquid_in[j] * (here - enthalpy_above)
                     + feed_here * (here - feed_enthalpy)
                     + vapour[j] * (vapour_enthalpies[j] - here)
                     + side_heat[j]
                     + water_flux[j]
-                    - water_flux[j + 1])
+                    - water_flux[j + 1]
+                    - SteamWater::flux_into(water.steam.as_ref(), j))
                     / (vapour_enthalpies[j + 1] - here)
             } else {
                 (liquid_in[j] * (here - enthalpy_above)
@@ -1485,8 +1642,8 @@ pub(crate) fn liquid_enthalpy(slate: &Slate, fractions: &[f64], temperature: Kel
     mixture_molar_cp(slate, fractions) * (temperature.value() - T_REF.value())
 }
 
-/// A column feed's free water (M62.5, docs/DESIGN.md §67.17): where water sits
-/// on the slate and how much of it the feed brings.
+/// A column's free water (M62.5, docs/DESIGN.md §67.17): where water sits on
+/// the slate, how much of it the feed brings, and any steam (M62.6, §67.18).
 pub(crate) struct WaterFeed {
     /// The slate's `free_water` member.
     pub(crate) index: usize,
@@ -1496,16 +1653,51 @@ pub(crate) struct WaterFeed {
     pub(crate) molar_mass: f64,
     /// Liquid water's molar heat capacity [J/(mol·K)], `M·cp`.
     molar_cp: f64,
+    /// The steam into its stage, `None` on a column with none flowing.
+    pub(crate) steam: Option<SteamWater>,
+}
+
+/// Steam into a stage (M62.6, docs/DESIGN.md §67.18).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SteamWater {
+    /// The stage it enters, zero-based.
+    pub(crate) stage: usize,
+    /// Its rate [mol/s], positive.
+    pub(crate) molar: f64,
+    /// Its enthalpy flux on the engine's datum [W], latent heat included — the
+    /// steam line's own, `ṁ·cp·(T_le − T_REF)` at its liquid-equivalent
+    /// temperature.
+    pub(crate) enthalpy_flux: f64,
+}
+
+impl SteamWater {
+    /// The steam's enthalpy flux into stage `j` [W]: its own on its stage,
+    /// zero elsewhere.
+    pub(crate) fn flux_into(steam: Option<&SteamWater>, j: usize) -> f64 {
+        match steam {
+            Some(steam) if steam.stage == j => steam.enthalpy_flux,
+            _ => 0.0,
+        }
+    }
 }
 
 impl WaterFeed {
-    fn new(slate: &Slate, index: usize, feed_molar: f64) -> Self {
+    fn new(slate: &Slate, index: usize, feed_molar: f64, steam: Option<SteamWater>) -> Self {
         let water = slate.get(index);
         Self {
             index,
             feed_molar,
             molar_mass: water.molar_mass.value(),
             molar_cp: water.molar_mass.value() * water.cp.value(),
+            steam,
+        }
+    }
+
+    /// All the water entering the column [mol/s]: the feed's and the steam's.
+    pub(crate) fn total_molar(&self) -> f64 {
+        match self.steam {
+            None => self.feed_molar,
+            Some(steam) => self.feed_molar + steam.molar,
         }
     }
 
@@ -1529,9 +1721,10 @@ impl WaterFeed {
 }
 
 /// The water vapour leaving each stage [mol/s], from the free water leaving
-/// each stage downward (§67.17 rule 2): `W_1 = F_w − FW_N`, then
-/// `W_{j+1} = W_j + FW_j − FW_{j−1} − F_w[j = f]` top-down — each stage's water
-/// balance, the reflux bringing none (it is decanted).
+/// each stage downward (§67.17 rule 2): `W_1 = F_w + S − FW_N`, then
+/// `W_{j+1} = W_j + FW_j − FW_{j−1} − F_w[j = f] − S[j = s]` top-down — each
+/// stage's water balance, the reflux bringing none (it is decanted), the steam
+/// `S` joining its own stage (M62.6, §67.18).
 ///
 /// Below a dry feed stage the water vapour is `F_w − F_w`, zero exactly; with
 /// free water it can come out a rounding error under zero, which is zero — a
@@ -1545,7 +1738,7 @@ pub(crate) fn water_vapour_profile(
     const WATER_ROUNDING: f64 = 1.0e-9;
     let n = plan.stages;
     let mut vapour = vec![0.0; n];
-    vapour[0] = water.feed_molar - free_water[n - 1];
+    vapour[0] = water.total_molar() - free_water[n - 1];
     for j in 0..n - 1 {
         let from_above = if j == 0 { 0.0 } else { free_water[j - 1] };
         let fed = if j == plan.feed_stage {
@@ -1553,11 +1746,16 @@ pub(crate) fn water_vapour_profile(
         } else {
             0.0
         };
-        vapour[j + 1] = vapour[j] + free_water[j] - from_above - fed;
+        vapour[j + 1] = match water.steam {
+            Some(steam) if steam.stage == j => {
+                vapour[j] + free_water[j] - from_above - fed - steam.molar
+            }
+            _ => vapour[j] + free_water[j] - from_above - fed,
+        };
     }
     for (j, v) in vapour.iter_mut().enumerate() {
         if *v < 0.0 {
-            if !v.is_finite() || *v < -WATER_ROUNDING * water.feed_molar {
+            if !v.is_finite() || *v < -WATER_ROUNDING * water.total_molar() {
                 return Err(SimError::Numerical(format!(
                     "heat-balance cascade: the water vapour leaving stage {} is {v:.4e} mol/s",
                     j + 1
@@ -1821,6 +2019,7 @@ mod tests {
             feed_stage: 4,
             reflux_ratio,
             pumparounds: Vec::new(),
+            steam: None,
         }
     }
 
@@ -1858,6 +2057,7 @@ mod tests {
                 temperature,
                 cascade: Some(&spec),
                 seed,
+                steam: None,
             },
             thermo,
         )
@@ -2117,6 +2317,7 @@ mod tests {
                         temperature,
                         cascade: Some(&spec),
                         seed: None,
+                        steam: None,
                     },
                     &thermo,
                 )
@@ -2303,6 +2504,7 @@ mod start_tests {
             feed_stage: 6,
             reflux_ratio: 2.0,
             pumparounds: Vec::new(),
+            steam: None,
         };
         model.separate(
             &ColumnPass {
@@ -2315,6 +2517,7 @@ mod start_tests {
                 temperature: Kelvin(bubble.value() + offset),
                 cascade: Some(&spec),
                 seed,
+                steam: None,
             },
             &thermo,
         )
@@ -2388,6 +2591,7 @@ mod pumparound_tests {
             feed_stage: 4,
             reflux_ratio: 2.0,
             pumparounds,
+            steam: None,
         }
     }
 
@@ -2421,6 +2625,7 @@ mod pumparound_tests {
                 temperature: hot,
                 cascade: Some(spec),
                 seed: None,
+                steam: None,
             },
             &thermo,
         )
@@ -2658,6 +2863,7 @@ mod newton_tests {
                         }]
                     })
                     .unwrap_or_default(),
+                steam: None,
             };
             let pass = ColumnPass {
                 slate: &slate,
@@ -2669,6 +2875,7 @@ mod newton_tests {
                 temperature: Kelvin(bubble.value() + offset),
                 cascade: Some(&spec),
                 seed: None,
+                steam: None,
             };
             let newton = HeatBalanceCascade::new()
                 .separate(&pass, &thermo)
@@ -2688,6 +2895,7 @@ mod newton_tests {
             feed_stage: 4,
             reflux_ratio: 0.5,
             pumparounds: Vec::new(),
+            steam: None,
         };
         let scorching = HeatBalanceCascade::new()
             .separate(
@@ -2701,6 +2909,7 @@ mod newton_tests {
                     temperature: Kelvin(bubble.value() + 400.0),
                     cascade: Some(&spec),
                     seed: None,
+                    steam: None,
                 },
                 &thermo,
             )
@@ -2740,6 +2949,7 @@ mod newton_tests {
             feed_stage: 4,
             reflux_ratio: 0.5,
             pumparounds: Vec::new(),
+            steam: None,
         };
         let at = |offset: f64, seed: Option<&CascadeProfile>| {
             HeatBalanceCascade::new()
@@ -2754,6 +2964,7 @@ mod newton_tests {
                         temperature: Kelvin(bubble.value() + offset),
                         cascade: Some(&spec),
                         seed,
+                        steam: None,
                     },
                     &thermo,
                 )
@@ -2825,6 +3036,7 @@ mod newton_tests {
                         duty: Watt(duty * pumparound_scale),
                     })
                     .collect(),
+                steam: None,
             }
         }
 
@@ -2845,6 +3057,7 @@ mod newton_tests {
                     temperature: Kelvin(355.0 + 273.15),
                     cascade: Some(spec),
                     seed,
+                    steam: None,
                 },
                 &TroutonThermo::new(),
             )
@@ -2907,5 +3120,110 @@ mod newton_tests {
             "{message}"
         );
         assert!(message.contains("reflux ratio 0.6"), "{message}");
+    }
+}
+
+#[cfg(test)]
+mod steam_tests {
+    use super::*;
+    use crate::TroutonThermo;
+    use refinery_core::components::{Phase, PseudoComponent};
+    use refinery_core::graph::{ColumnDraw, NodeId};
+    use refinery_core::traits::ColumnSteam;
+    use refinery_core::units::{JPerKgK, JPerMol, KgPerM3, KgPerMol, KgPerSec};
+
+    /// `reference/steam_column.rs`'s slate: four cuts and free water.
+    fn slate() -> Slate {
+        let cut = |name: &str, tb_c: f64, molar_mass: f64, cp: f64| PseudoComponent {
+            name: name.into(),
+            tb: Kelvin(tb_c + 273.15),
+            molar_mass: KgPerMol(molar_mass),
+            density: Some(KgPerM3(800.0)),
+            cp: JPerKgK(cp),
+            cp_shape: None,
+            phase: Phase::Liquid,
+            dh_vap: None,
+            cp_vapour: None,
+            free_water: false,
+        };
+        Slate::new(vec![
+            cut("light", 70.0, 0.095, 2200.0),
+            cut("naphtha", 150.0, 0.13, 2100.0),
+            cut("kerosene", 220.0, 0.17, 2050.0),
+            cut("diesel", 300.0, 0.22, 2000.0),
+            PseudoComponent {
+                name: "water".into(),
+                tb: Kelvin(373.15),
+                molar_mass: KgPerMol(0.018015),
+                density: Some(KgPerM3(998.0)),
+                cp: JPerKgK(4184.0),
+                cp_shape: None,
+                phase: Phase::Liquid,
+                dh_vap: Some(JPerMol(40_650.0)),
+                cp_vapour: Some(JPerKgK(2000.0)),
+                free_water: true,
+            },
+        ])
+        .unwrap()
+    }
+
+    /// **Newton lands where the fixed point does with steam in the column**
+    /// (M62.6, docs/DESIGN.md §67.18): the fixed point is Newton's cold
+    /// warm-up, and solved to convergence on its own it is the reference
+    /// Newton is gated against — so the steam must be in its stage balances
+    /// too, on a stripping tray and on the reboiler.
+    #[test]
+    fn newton_lands_where_the_fixed_point_does_under_steam() {
+        let slate = slate();
+        let thermo = TroutonThermo::new();
+        let feed = Composition::from_weights(&[0.198, 0.297, 0.297, 0.198, 0.01]).unwrap();
+        let draws = vec![
+            ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
+            ColumnDraw::water_draw(NodeId(2)),
+            ColumnDraw::by_stage(NodeId(3), 3, Some(0.25)),
+            ColumnDraw::by_stage(NodeId(4), 8, None),
+        ];
+        let spec = CascadeSpec {
+            stages: 8,
+            feed_stage: 5,
+            reflux_ratio: 2.0,
+            pumparounds: Vec::new(),
+            steam: None,
+        };
+        // 0.15 kg/s of steam at 400 °C, as its liquid-equivalent temperature.
+        let latent = 40_650.0 / 0.018015 + (2000.0 - 4184.0) * 300.0;
+        let steam_le = Kelvin(273.15 + 400.0 + latent / 4184.0);
+        for stage in [7, 8] {
+            let pass = ColumnPass {
+                slate: &slate,
+                draws: &draws,
+                smearing: Kelvin(0.0),
+                pressure: Pascal(1.8e5),
+                feed: &feed,
+                feed_flow: KgPerSec(10.0),
+                temperature: Kelvin(273.15 + 230.0),
+                cascade: Some(&spec),
+                seed: None,
+                steam: Some(ColumnSteam {
+                    stage,
+                    flow: KgPerSec(0.15),
+                    temperature: steam_le,
+                }),
+            };
+            let newton = HeatBalanceCascade::new().separate(&pass, &thermo).unwrap();
+            let fixed = HeatBalanceCascade::fixed_point()
+                .separate(&pass, &thermo)
+                .unwrap_or_else(|e| panic!("stage {stage}: the fixed point: {e}"));
+            let (a, b) = (newton.profile.unwrap(), fixed.profile.unwrap());
+            for (x, y) in a.temperatures.iter().zip(&b.temperatures) {
+                assert!(
+                    (x.value() - y.value()).abs() < 1e-4,
+                    "stage {stage}: Newton {x:?}, the fixed point {y:?}"
+                );
+            }
+            for (x, y) in newton.draws.iter().zip(&fixed.draws) {
+                assert!((x.split - y.split).abs() < 1e-6, "stage {stage}");
+            }
+        }
     }
 }

@@ -161,6 +161,43 @@ impl Default for StageCascade {
     }
 }
 
+/// The steam's enthalpy flux into the column [W] on the engine's datum — its
+/// line's `ṁ·cp_w·(T_le − T_REF)` at its liquid-equivalent temperature, latent
+/// heat included (M62.6, docs/DESIGN.md §67.18) — or `None` with no steam
+/// flowing. The one owner of the number, read by the stage balance and by the
+/// reboiler's closure alike.
+pub(crate) fn steam_enthalpy_flux(
+    slate: &Slate,
+    pass: &ColumnPass<'_>,
+) -> Result<Option<f64>, SimError> {
+    let Some(steam) = pass.steam.filter(|steam| steam.flow.value() > 0.0) else {
+        return Ok(None);
+    };
+    let water = slate.free_water().ok_or_else(|| {
+        SimError::Scenario(
+            "a column takes steam on a slate with no free_water member: steam enters as              water, and there is none to carry it (docs/DESIGN.md §67.18)."
+                .into(),
+        )
+    })?;
+    Ok(Some(
+        steam.flow.value()
+            * slate.get(water).cp.value()
+            * (steam.temperature.value() - T_REF.value()),
+    ))
+}
+
+/// A fidelity that models no steam inlet refuses a pass that carries one (rule
+/// 5): only the heat-balance cascade has stage energy balances for the steam to
+/// enter (M62.6, docs/DESIGN.md §67.18). The loader refuses the file first.
+pub(crate) fn refuse_steam(pass: &ColumnPass<'_>, model: &str) -> Result<(), SimError> {
+    match pass.steam {
+        None => Ok(()),
+        Some(_) => Err(SimError::Scenario(format!(
+            "separation = \"{model}\" has no stage energy balance for a steam inlet to              enter: steam into a column needs separation = \"heat_balance\"              (docs/DESIGN.md §67.18)."
+        ))),
+    }
+}
+
 /// The column's two heat duties [W], as emergent diagnostics.
 ///
 /// **Why they are not two symmetric envelope balances, which is what M7.4b
@@ -248,10 +285,18 @@ pub(crate) fn column_duties(
     let feed_flux = pass.feed_flow.value()
         * pass.feed.mixture_cp(slate).value()
         * (pass.temperature.value() - T_REF.value());
+    // Steam into a stage (M62.6, docs/DESIGN.md §67.18) is inflow too, and every
+    // split is a share of the feed and the steam together; without steam both
+    // are the feed's, bit for bit.
+    let feed_flux = match steam_enthalpy_flux(slate, pass)? {
+        None => feed_flux,
+        Some(steam) => feed_flux + steam,
+    };
+    let throughput = pass.throughput().value();
     let mut draw_flux = 0.0;
     for draw in draws {
         draw_flux += draw.split
-            * pass.feed_flow.value()
+            * throughput
             * draw.composition.mixture_cp(slate).value()
             * (draw.temperature.value() - T_REF.value());
     }
@@ -310,6 +355,7 @@ impl SeparationModel for StageCascade {
                     .into(),
             )
         })?;
+        refuse_steam(pass, "cascade")?;
 
         let feed_flow = pass.feed_flow.value();
         if !feed_flow.is_finite() || feed_flow < 0.0 {
@@ -1508,6 +1554,7 @@ mod tests {
             feed_stage,
             reflux_ratio,
             pumparounds: Vec::new(),
+            steam: None,
         }
     }
 
@@ -1539,6 +1586,7 @@ mod tests {
                 temperature: Kelvin(FEED_BUBBLE_K),
                 cascade: spec,
                 seed: None,
+                steam: None,
             },
             &thermo,
         )
@@ -1770,6 +1818,7 @@ mod tests {
                     temperature: Kelvin(400.0),
                     cascade: None,
                     seed: None,
+                    steam: None,
                 },
                 &thermo(&slate),
             )
@@ -1989,6 +2038,7 @@ mod tests {
                     temperature: saturated_feed(&wide_slate, &wide_thermo, &feed),
                     cascade: Some(&spec),
                     seed: None,
+                    steam: None,
                 },
                 &wide_thermo,
             )
@@ -2039,6 +2089,7 @@ mod tests {
                 temperature: Kelvin(400.0),
                 cascade: Some(&spec),
                 seed: None,
+                steam: None,
             },
             &crate::ConstantThermo,
         );
@@ -2070,6 +2121,7 @@ mod tests {
                 temperature: Kelvin(FEED_BUBBLE_K + offset),
                 cascade: Some(&spec),
                 seed: None,
+                steam: None,
             },
             &thermo,
         )
@@ -2244,6 +2296,7 @@ mod tests {
                         temperature: Kelvin(FEED_BUBBLE_K + offset),
                         cascade: Some(&spec),
                         seed: None,
+                        steam: None,
                     },
                     &thermo,
                 )
@@ -2329,6 +2382,7 @@ mod tests {
                         temperature: saturated_feed(&slate, &thermo, &feed),
                         cascade: Some(&spec),
                         seed: None,
+                        steam: None,
                     },
                     &thermo,
                 )

@@ -35,6 +35,7 @@
 //!   unknowns   … and FW_j on every wet stage
 //!   S_j        Σ_c K_jc·x_jc·(V_j + W_j)/V_j − 1
 //!   E_j        … + W_{j+1}·H_w,j+1 + FW_{j−1}·h_w,j−1 − W_j·H_w,j − FW_j·h_w,j
+//!              (+ S·H_S on the stage steam enters, M62.6, §67.18)
 //!   Z_j = W_j·(1 − K_w,j) − K_w,j·V_j                 every wet stage (y_w = P_w/P)
 //! ```
 
@@ -374,15 +375,20 @@ impl ColumnEquations<'_> {
                 - (flows.liquid_down[j] + flows.liquid_drawn[j]) * h[j]
                 - flows.vapour[j] * big_h[j]
                 - plan.side_heat[j];
-            let imbalance = if self.water.is_some() {
+            let imbalance = if let Some(water) = self.water {
                 let from_above = if j == 0 {
                     0.0
                 } else {
                     free_water[j - 1] * water_h[j - 1]
                 };
-                imbalance + water_vapour[j + 1] * water_big_h[j + 1] + from_above
+                let imbalance = imbalance + water_vapour[j + 1] * water_big_h[j + 1] + from_above
                     - water_vapour[j] * water_big_h[j]
-                    - free_water[j] * water_h[j]
+                    - free_water[j] * water_h[j];
+                // The steam into its own stage (M62.6, docs/DESIGN.md §67.18).
+                match water.steam {
+                    Some(steam) if steam.stage == j => imbalance + steam.enthalpy_flux,
+                    _ => imbalance,
+                }
             } else {
                 imbalance
             };

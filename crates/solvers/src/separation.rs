@@ -49,6 +49,7 @@ impl SeparationModel for CutPointSplitter {
         pass: &ColumnPass<'_>,
         _thermo: &dyn ThermoModel,
     ) -> Result<Separation, SimError> {
+        crate::cascade::refuse_steam(pass, "cut_point")?;
         let draws = pass.draws;
         let slate = pass.slate;
         let n = draws.len();
@@ -230,6 +231,7 @@ mod tests {
                     temperature: FEED_T,
                     cascade: None,
                     seed: None,
+                    steam: None,
                 },
                 &ConstantThermo,
             )
@@ -417,6 +419,7 @@ mod tests {
                     temperature: FEED_T,
                     cascade: None,
                     seed: None,
+                    steam: None,
                 },
                 &ConstantThermo,
             )

@@ -608,8 +608,65 @@ pub(crate) fn require_compatible_fidelity(scenario: &ScenarioFile) -> Result<(),
     require_line_flash_plant(scenario)?;
     require_gas_fill_time_on_flashing_plant(scenario)?;
     require_trouton_for_declared_latent(scenario)?;
+    // Before the water draws': a steam inlet's own refusal names the inlet.
+    require_steam_inlets(scenario)?;
     require_line_flash_for_free_water(scenario)?;
     require_water_draws(scenario)?;
+    Ok(())
+}
+
+/// A column's steam inlet (M62.6, docs/DESIGN.md §67.18), refused wherever it
+/// would be a number nothing reads or a pipe that is not one: under any model
+/// but `separation = "heat_balance"` (the only one whose stages have energy
+/// balances for the steam to enter), on a slate with no `free_water` member
+/// (steam enters as water, and the column decants it — `require_water_draws`
+/// then holds the column to a water draw), on a stage the column does not
+/// have, and naming a pipe that does not end at this column.
+pub(crate) fn require_steam_inlets(scenario: &ScenarioFile) -> Result<(), SimError> {
+    for (name, def) in &scenario.nodes {
+        let NodeDef::Column {
+            cascade: Some(cascade),
+            ..
+        } = def
+        else {
+            continue;
+        };
+        let Some(steam) = &cascade.steam else {
+            continue;
+        };
+        if scenario.fidelity.separation != "heat_balance" {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' declares a steam inlet, but [fidelity] separation is                  \"{}\": steam enters a stage's energy and water balances, and only                  separation = \"heat_balance\" solves those (docs/DESIGN.md §67.18).",
+                scenario.fidelity.separation
+            )));
+        }
+        if !scenario.components.iter().any(|c| c.free_water) {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' declares a steam inlet on a slate with no free_water                  member: steam enters the column as water, a real component, and leaves                  its condenser by the water draw. Mark the slate's water free_water = true                  (docs/DESIGN.md §67.18)."
+            )));
+        }
+        if steam.stage < 1 || steam.stage > cascade.stages {
+            return Err(SimError::Scenario(format!(
+                "column '{name}' takes steam on stage {}, and its stages are 1..={}                  (stage 1 the top tray, stage {} the reboiler).",
+                steam.stage, cascade.stages, cascade.stages
+            )));
+        }
+        match scenario.pipes.iter().find(|p| p.name == steam.pipe) {
+            None => {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' takes steam by pipe '{}', which is not a pipe in this                      plant.",
+                    steam.pipe
+                )))
+            }
+            Some(pipe) if pipe.to != *name => {
+                return Err(SimError::Scenario(format!(
+                    "column '{name}' takes steam by pipe '{}', which runs from '{}' to '{}':                      a steam inlet is a pipe INTO the column, declared from its supply's                      side.",
+                    steam.pipe, pipe.from, pipe.to
+                )))
+            }
+            Some(_) => {}
+        }
+    }
     Ok(())
 }
 

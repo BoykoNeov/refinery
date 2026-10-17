@@ -37,6 +37,8 @@ mod coil_cell_reference;
 mod coil_trip_reference;
 #[path = "column_reference.rs"]
 mod column_reference;
+#[path = "column_steam_reference.rs"]
+mod column_steam_reference;
 #[path = "consumption_reference.rs"]
 mod consumption_reference;
 #[path = "control_reference.rs"]

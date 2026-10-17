@@ -9958,3 +9958,28 @@ M62 stays open: M62.6, steam into the column, is next.
 - Gates: `reference/wet_column.rs` (6), `crude_unit_wet_reference.rs` (4),
   `heat_on_boiling_reference.rs` re-pinned. Mutations: seventeen, all caught.
   Corpus: 62 of 63 byte-identical on both fidelities; `crude_unit_wet` new.
+
+### M62.6a — **LANDED** 2026-10-17: steam into the column
+
+A heat-balance column may take steam on a stage by its own pipe:
+`[nodes.<column>.cascade] steam = { pipe = "...", stage = N }`. The steam rate
+is the pipe's flow, set by the supply's pressure and its valve; the steam is
+never mixed into the feed. Its water joins the stage's water balance, rides up
+as vapour and leaves by the condenser's water draw; its enthalpy enters the
+stage's energy balance (or, on the reboiler, the closure). Every split is now a
+share of the feed and the steam together. A shut steam line is the column
+without steam bit for bit; steam with no feed (a tripped feed pump) condenses
+into the water draw rather than halting the run; a steam line running
+backwards is refused by name. Gated against an independent solve
+(`tools/steptime/prototypes/m62_6/`): steam on the reboiler takes M62.5's
+column's bottom from 265.07 to 256.90 °C. On the wet crude unit (an inline
+fixture, 3.5 bar steam), 0.98 kg/s of steam takes the bottom from 586.8 to
+579.3 °C with the reboiler still on. **Re-sliced while building**: asked
+whether a steam valve should choke, the user chose to choke every boiling flow
+through a valve (M62.6b), which moves existing plants; the steam-stripped crude
+unit on a 10 bar supply is M62.6c. DESIGN §67.18.
+M62 stays open: M62.6b, valves that choke on a boiling flow, is next.
+
+- Gates: `reference/steam_column.rs` (7), `column_steam_reference.rs` (6),
+  `heat_balance.rs` (1). Mutations: thirteen, all caught (two after a gate was
+  added). Corpus: 63 of 63 byte-identical on both fidelities.

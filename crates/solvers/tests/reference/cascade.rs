@@ -150,6 +150,7 @@ fn two_product(stages: u32, feed_stage: u32, reflux_ratio: f64, d_over_f: f64) -
             feed_stage,
             reflux_ratio,
             pumparounds: Vec::new(),
+            steam: None,
         },
         draws: vec![
             ColumnDraw::by_stage(NodeId(1), 0, Some(d_over_f)),
@@ -177,6 +178,7 @@ fn try_run(
             temperature: feed_bubble_point(slate, thermo, &feed),
             cascade: Some(&column.spec),
             seed: None,
+            steam: None,
         },
         thermo,
     )
@@ -202,6 +204,7 @@ fn try_run_warm(
             temperature: feed_bubble_point(slate, thermo, &feed),
             cascade: Some(&column.spec),
             seed,
+            steam: None,
         },
         thermo,
     )
@@ -476,6 +479,7 @@ fn equal_volatility_produces_no_separation_at_any_stage_count() {
                     feed_stage,
                     reflux_ratio: reflux,
                     pumparounds: Vec::new(),
+                    steam: None,
                 },
                 draws: vec![
                     ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
@@ -523,6 +527,7 @@ fn the_splits_are_the_declared_mass_ratios_and_the_components_balance() {
             feed_stage: 3,
             reflux_ratio: 2.0,
             pumparounds: Vec::new(),
+            steam: None,
         },
         draws: vec![
             ColumnDraw::by_stage(NodeId(1), 0, Some(0.25)),
@@ -842,6 +847,7 @@ fn a_temperature_independent_k_has_no_bubble_point_and_is_refused() {
                 temperature: T_REF,
                 cascade: Some(&column.spec),
                 seed: None,
+                steam: None,
             },
             &flat,
         )

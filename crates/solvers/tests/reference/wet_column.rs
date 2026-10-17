@@ -123,6 +123,7 @@ impl Case {
             feed_stage: 5,
             reflux_ratio: self.reflux_ratio,
             pumparounds: Vec::new(),
+            steam: None,
         }
     }
 
@@ -140,6 +141,7 @@ impl Case {
                     temperature: Kelvin(self.feed_c + 273.15),
                     cascade: Some(&spec),
                     seed: None,
+                    steam: None,
                 },
                 &TroutonThermo::new(),
             )
@@ -425,6 +427,7 @@ fn a_wet_feed_without_a_water_draw_is_refused() {
                 temperature: Kelvin(case.feed_c + 273.15),
                 cascade: Some(&spec),
                 seed: None,
+                steam: None,
             },
             &TroutonThermo::new(),
         )
@@ -458,6 +461,7 @@ fn the_wet_column_is_start_insensitive() {
                     temperature: Kelvin(case.feed_c + 273.15),
                     cascade: Some(&spec),
                     seed,
+                    steam: None,
                 },
                 &TroutonThermo::new(),
             )

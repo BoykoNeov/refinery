@@ -56,11 +56,12 @@ use crate::components::{Composition, Slate};
 use crate::error::SimError;
 use crate::graph::{
     BedWall, CatalystBed, ColumnDraw, EdgeId, FurnaceCoil, FurnaceTubes, HydrogenConsumption,
-    HydrogenKinetics, NodeId, NodeKind, PlantGraph,
+    HydrogenKinetics, NodeId, NodeKind, PlantGraph, SteamInlet,
 };
 use crate::traits::{
-    ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel, Reaction,
-    ReactionModel, Separation, SeparationModel, Settled, StarvedTank, ThermoModel, VapourShare,
+    ColumnPass, ColumnSteam, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel,
+    Reaction, ReactionModel, Separation, SeparationModel, Settled, StarvedTank, ThermoModel,
+    VapourShare,
 };
 use crate::units::{
     JPerKgK, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, T_AMBIENT,
@@ -478,7 +479,7 @@ fn column_feed_flow(
     column: NodeId,
 ) -> KgPerSec {
     KgPerSec(
-        inflow_edges(graph, edge_mass_flow, column)
+        mixed_inflow_edges(graph, edge_mass_flow, column)
             .iter()
             .map(|(_, _, into_node)| *into_node)
             .sum(),
@@ -902,7 +903,9 @@ fn dissipation_on(edge_dissipation: &BTreeMap<EdgeId, Watt>, edge: EdgeId) -> Wa
 ///
 /// The single definition of "inflow" — the dependency count and the mixing sum
 /// both call it, so they cannot drift apart and leave the topological sort
-/// waiting on an edge the mix never reads (or vice versa).
+/// waiting on an edge the mix never reads (or vice versa). The one inflow a
+/// node waits on and does not mix is a column's steam inlet, which the column
+/// reads on its own (`mixed_inflow_edges`, M62.6).
 ///
 /// Self-loops are skipped: a pipe from a node to itself transports nothing
 /// anywhere, and admitting it would make the node its own upstream dependency.
@@ -924,6 +927,131 @@ fn inflow_edges(
         }
     }
     inflows
+}
+
+/// The inflows a node MIXES: `inflow_edges` but a column's steam inlet (M62.6,
+/// docs/DESIGN.md §67.18), which enters its own stage and is never part of the
+/// column's feed. The dependency count still waits on the steam (it reads
+/// `inflow_edges`), so the column is resolved after its steam line is; every
+/// node without a steam inlet mixes exactly what it always did.
+fn mixed_inflow_edges(
+    graph: &PlantGraph,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    node: NodeId,
+) -> Vec<(EdgeId, NodeId, f64)> {
+    let mut inflows = inflow_edges(graph, edge_mass_flow, node);
+    if let Some(inlet) = column_steam_inlet(graph, node) {
+        inflows.retain(|(edge, _, _)| *edge != inlet.edge);
+    }
+    inflows
+}
+
+/// `node`'s steam inlet, when it is a cascade column that declares one.
+pub(crate) fn column_steam_inlet(graph: &PlantGraph, node: NodeId) -> Option<SteamInlet> {
+    match &graph.node(node).kind {
+        NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } => spec.steam,
+        _ => None,
+    }
+}
+
+/// The steam reaching `column` on its steam inlet this tick (M62.6,
+/// docs/DESIGN.md §67.18): its rate, and its liquid-equivalent temperature — its
+/// pipe's outlet enthalpy, the latent heat its upwind vapour carries included,
+/// mixed as `mix_inflows` mixes one inflow. So the column's stage balance takes
+/// the steam's enthalpy as the plant's books carry it.
+///
+/// Refused: a steam line running BACKWARDS (the column's pressure above the
+/// supply's), which would draw from the column a flow no draw accounts for; and
+/// a stream that is not pure free water. A line with no flow is a zero rate at a
+/// placeholder temperature, the column's feed's, which nothing reads.
+#[allow(clippy::too_many_arguments)] // one argument per map the mix reads
+#[allow(clippy::type_complexity)]
+fn steam_into_column(
+    graph: &PlantGraph,
+    slate: &Slate,
+    enthalpy: &dyn EnthalpyModel,
+    edge_mass_flow: &BTreeMap<EdgeId, f64>,
+    edge_dissipation: &BTreeMap<EdgeId, Watt>,
+    (temperature, composition, separations, vapour): (
+        &BTreeMap<NodeId, Kelvin>,
+        &BTreeMap<NodeId, Composition>,
+        &BTreeMap<NodeId, Separation>,
+        &BTreeMap<NodeId, VapourShare>,
+    ),
+    column: NodeId,
+    inlet: SteamInlet,
+    placeholder: Kelvin,
+) -> Result<ColumnSteam, SimError> {
+    let edge = inlet.edge;
+    let flow = edge_mass_flow.get(&edge).copied().unwrap_or(0.0);
+    let (from, to) = graph.endpoints(edge);
+    let into = if to == column { flow } else { -flow };
+    let upstream = if to == column { from } else { to };
+    if !into.is_finite() || into < 0.0 {
+        return Err(SimError::Numerical(format!(
+            "the steam line '{}' into column '{}' runs backwards ({into:.4e} kg/s): the \
+             column's pressure is above what reaches it from the steam supply, so the line \
+             would draw from the column a flow none of its draws accounts for. Raise the \
+             supply's pressure or close its valve (docs/DESIGN.md §67.18).",
+            graph.pipe(edge).name,
+            graph.node(column).name
+        )));
+    }
+    if into == 0.0 {
+        return Ok(ColumnSteam {
+            stage: inlet.stage,
+            flow: KgPerSec(0.0),
+            temperature: placeholder,
+        });
+    }
+    let crossing = edge_composition_at(graph, separations, composition, edge, flow)?;
+    let water = slate.free_water();
+    let pure = water.is_some_and(|w| crossing.fractions()[w] == 1.0);
+    if !pure {
+        return Err(SimError::Numerical(format!(
+            "the steam line '{}' into column '{}' carries something other than pure water: \
+             a steam inlet's water joins the column's water balance, and nothing else may \
+             enter that way (docs/DESIGN.md §67.18).",
+            graph.pipe(edge).name,
+            graph.node(column).name
+        )));
+    }
+    let inlet_t = edge_temperature_at(
+        graph,
+        slate,
+        enthalpy,
+        temperature,
+        composition,
+        separations,
+        edge,
+        flow,
+        dissipation_on(edge_dissipation, edge),
+        column,
+    )?;
+    let sensible = enthalpy
+        .enthalpy_flux(slate, &crossing, KgPerSec(into), inlet_t)?
+        .value();
+    let latent = vapour
+        .get(&upstream)
+        .map_or(0.0, |share| into * share.latent.value());
+    let capacity = into * enthalpy.spot_cp(slate, &crossing, inlet_t)?.value();
+    let liquid_equivalent = enthalpy.mix_temperature(
+        slate,
+        &crossing,
+        InflowEnthalpy {
+            enthalpy_rate: sensible + latent,
+            mass_rate: into,
+            capacity_rate: capacity,
+        },
+    )?;
+    Ok(ColumnSteam {
+        stage: inlet.stage,
+        flow: KgPerSec(into),
+        temperature: liquid_equivalent,
+    })
 }
 
 /// Every node's resolved intensive state for one tick.
@@ -1106,7 +1234,7 @@ pub(crate) fn inflow_latent(
         return None;
     }
     let mut total = None;
-    for (_edge, upstream, into_node) in inflow_edges(graph, edge_mass_flow, node) {
+    for (_edge, upstream, into_node) in mixed_inflow_edges(graph, edge_mass_flow, node) {
         if let Some(share) = vapour.get(&upstream) {
             *total.get_or_insert(0.0) += into_node * share.latent.value();
         }
@@ -1976,6 +2104,22 @@ pub fn resolve_node_states(
                             let feed = composition
                                 .get(&id)
                                 .expect("this vertex's composition was mixed above");
+                            // The steam on its own inlet (M62.6, docs/DESIGN.md
+                            // §67.18), resolved upstream before this column.
+                            let steam = match cascade.as_ref().and_then(|spec| spec.steam) {
+                                None => None,
+                                Some(inlet) => Some(steam_into_column(
+                                    graph,
+                                    slate,
+                                    enthalpy,
+                                    edge_mass_flow,
+                                    edge_dissipation,
+                                    (&temperature, &composition, &separations, &vapour),
+                                    id,
+                                    inlet,
+                                    mixed,
+                                )?),
+                            };
                             let pass = separation.separate(
                                 &ColumnPass {
                                     slate,
@@ -1997,13 +2141,19 @@ pub fn resolve_node_states(
                                         .column_separation
                                         .get(&id)
                                         .and_then(|previous| previous.profile.as_ref()),
+                                    steam,
                                 },
                                 thermo,
                             )?;
                             // Each draw LINE carries its draw on every pipe,
-                            // `splitᵢ·ṁ_feed` — the engine's draw write, to the
-                            // bit (M62.4b, docs/DESIGN.md §67.13).
+                            // `splitᵢ·ṁ_in` — the engine's draw write, to the
+                            // bit (M62.4b, docs/DESIGN.md §67.13); `ṁ_in` the
+                            // feed and any steam (M62.6).
                             let feed_flow = column_feed_flow(graph, edge_mass_flow, id).value();
+                            let feed_flow = match steam {
+                                None => feed_flow,
+                                Some(steam) => feed_flow + steam.flow.value(),
+                            };
                             for (column, index, line) in &lines {
                                 if *column != id {
                                     continue;
@@ -2238,7 +2388,7 @@ fn mix_compositions(
     let mut weights = vec![0.0; slate.len()];
     let mut total_inflow = 0.0;
 
-    for (edge, _upstream, into_node) in inflow_edges(graph, edge_mass_flow, node) {
+    for (edge, _upstream, into_node) in mixed_inflow_edges(graph, edge_mass_flow, node) {
         // The raw stored flow, not `into_node`: `upwind_end` picks the end from
         // the SIGN, and `inflow_edges` has already re-signed `into_node`
         // positive-into-this-node, which would name the wrong end on every edge
@@ -2365,7 +2515,7 @@ fn inflow_totals(
     let mut capacity = 0.0; // Σ ṁ·cp [W/K]
     let mut mass_rate = 0.0; // Σ ṁ [kg/s]
 
-    for (edge, _upstream, into_node) in inflow_edges(graph, edge_mass_flow, node) {
+    for (edge, _upstream, into_node) in mixed_inflow_edges(graph, edge_mass_flow, node) {
         // The transformed OUTLET, not the raw upwind node temperature: with a
         // nonzero pipe `UA` those differ, and mixing the raw value would apply
         // the transform after the mixing that consumes it — i.e. never.

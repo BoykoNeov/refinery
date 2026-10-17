@@ -770,6 +770,20 @@ pub struct CascadeDef {
     /// `separation = "heat_balance"` models them.
     #[serde(default)]
     pub pumparounds: Vec<PumparoundDef>,
+    /// Steam into a stage by its own pipe (M62.6, docs/DESIGN.md §67.18):
+    /// `steam = { pipe = "stripping_steam", stage = 10 }`. The pipe ends at
+    /// this column; its flow is the steam rate. Only `separation =
+    /// "heat_balance"` models it, on a slate with a `free_water` member.
+    #[serde(default)]
+    pub steam: Option<SteamDef>,
+}
+
+/// A cascade column's steam inlet: the pipe its steam arrives by and the stage
+/// it enters, one-based from the top.
+#[derive(Debug, Deserialize)]
+pub struct SteamDef {
+    pub pipe: String,
+    pub stage: u32,
 }
 
 /// One pumparound in a cascade block: the stage it cools and the heat it takes

@@ -579,7 +579,9 @@ pub struct Prepared {
 ///   (inlet) but exactly `draws.len()` outlets, one per draw. `ṁ_drawᵢ = splitᵢ
 ///   · ṁ_feed` names one definite feed stream to split; two feeds would leave
 ///   "the feed's boiling range" ambiguous, and a draw with no outlet edge would
-///   silently drop `splitᵢ · ṁ_feed` and break mass conservation.
+///   silently drop `splitᵢ · ṁ_feed` and break mass conservation. A cascade
+///   column with a steam inlet (M62.6, docs/DESIGN.md §67.18) has two inlets:
+///   the steam enters its own stage and is never part of the feed.
 pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
     for nid in graph.node_ids() {
         let node = graph.node(nid);
@@ -613,7 +615,10 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
             // One feed, one outlet per draw. The feed is stored INTO the column
             // and each draw OUT of it (the loader enforces the direction), so the
             // graph-direction in/out counts are exactly (1, N).
-            NodeKind::Column { draws, .. } => Some((1, draws.len())),
+            NodeKind::Column { draws, cascade, .. } => Some((
+                1 + usize::from(cascade.as_ref().is_some_and(|spec| spec.steam.is_some())),
+                draws.len(),
+            )),
             _ => None,
         };
         if let Some((want_in, want_out)) = expected {

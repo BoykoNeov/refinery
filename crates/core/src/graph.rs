@@ -874,6 +874,25 @@ pub struct CascadeSpec {
     /// that predates them byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pumparounds: Vec<Pumparound>,
+    /// Steam into a stage by its own pipe (M62.6, docs/DESIGN.md §67.18), or
+    /// `None`. Only the heat-balance cascade reads it; absent on every column
+    /// that predates it, and then not serialized.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steam: Option<SteamInlet>,
+}
+
+/// A steam inlet on a cascade column (M62.6, docs/DESIGN.md §67.18): the pipe
+/// its water arrives by and the stage it enters. The steam's RATE is the pipe's
+/// flow — a result of the supply's pressure and its valve, as on a real unit —
+/// and its water joins the stage's water balance, its enthalpy the stage's
+/// energy balance.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SteamInlet {
+    /// The stage it enters, one-based from the top, in `1..=stages`.
+    pub stage: u32,
+    /// The edge INTO the column the steam arrives on — the column's second
+    /// inflow, never mixed into its feed.
+    pub edge: EdgeId,
 }
 
 /// One pumparound on a cascade column (M60, docs/DESIGN.md §65.4): heat taken

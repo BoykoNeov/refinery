@@ -25999,3 +25999,139 @@ cost, and the corpus's wall is its gate.
 
 **Corpus**: 62 of 63 byte-identical on both fidelities; `crude_unit_wet` new,
 worst 10 iterations a tick on Newton and 33 on the game solver.
+
+### 67.18 Steam into the column (M62.6a) — specified before building, then built
+
+§67.6's fork on M62.5's water balance, written down after an independent
+reference was built and run (`tools/steptime/prototypes/m62_6/steam_column.py`,
+output in `reference.txt`): M62.5's MESH solve, copied, with one stream added —
+steam `S` [mol/s] of pure water on stage `s` at its own temperature, joining
+that stage's water balance and bringing `S·H_w(T_s)` (Kirchhoff on the vapour
+heat capacity, the line flash's own vapour) to that stage's energy balance, or
+to the reboiler's own balance when `s = N`.
+
+**Re-sliced while building** (asked 2026-10-17): the engine passes a boiling
+stream through a VALVE as an incompressible fluid at its upwind homogeneous
+density, so a steam valve never chokes. Asked whether to build that now, the
+user chose **"choke every boiling flow"** — the boiling-jet law M62.4d put on a
+burst hole, on every valve a boiling stream passes, part-liquid included,
+which moves existing plants (the wet crude unit's control valve passes a
+two-phase crude). M62.6 is three slices: **M62.6a** steam into the column (this
+section, nothing shipped moves), **M62.6b** valves choke on boiling flows (the
+user-approved move), **M62.6c** the steam-stripped crude unit on a 10 bar
+supply, and M62's close.
+
+**Measured on the reference** (M62.5's `dry_trays` column: 8 stages, feed on
+5, four cuts and 1 % water at 1.8 bar; 0.15 kg/s of steam at 400 °C):
+
+```text
+                  steam on    bottom      top        water draw   Q_cond / Q_reb
+  dry_trays       none        265.07 °C   132.78 °C  0.100 kg/s   3.871 / 2.868 MW
+  steam_zero      8, 0 kg/s   265.07 °C   132.78 °C  0.100 kg/s   3.871 / 2.868 MW
+  steam_bottom    8           256.90 °C   129.40 °C  0.250 kg/s   4.161 / 2.626 MW
+  steam_mid       7           265.03 °C   129.40 °C  0.250 kg/s   4.161 / 2.700 MW
+  steam_dry_feed  8, dry feed 256.51 °C   131.65 °C  0.150 kg/s   4.005 / 2.530 MW
+```
+
+The steam strips: every stage it rises through boils its oil at a lower
+partial pressure, the bottom 8 K colder with the steam on the reboiler; on
+stage 7 the reboiler below it is untouched. No tray is cold enough to hold free
+water (each stage's water share at most 0.10 of saturation's). The engine
+matched every case at the reference's tolerances on its first build.
+
+**The rules, as built:**
+
+1. **The file**: `[nodes.<column>.cascade] steam = { pipe = "...", stage = N }`
+   — a pipe INTO the column, declared from the supply's side, and the stage it
+   enters, `1..=stages`. Refused under any model but `separation =
+   "heat_balance"`, on a slate with no `free_water` member, on a stage the
+   column does not have, naming a pipe that does not exist or does not end at
+   the column (`validate::require_steam_inlets`, checked before the water
+   draws so its own message names the inlet). A wet slate then holds the
+   column to a water draw (§67.17 rule 9). `CascadeSpec::steam`
+   (`SteamInlet { stage, edge }`) carries it, its edge resolved once the pipes
+   exist — the pipe's own, or its downstream half where a `leak_to` split it —
+   and absent from the wire when `None`.
+2. **The steam rate is the pipe's flow**, a result of the supply's pressure and
+   its valve, as on a real unit. `validate_degrees` admits the column's second
+   inlet. The transport sweep **waits** on the steam edge (`inflow_edges`, the
+   dependency count) and **does not mix** it into the column's feed
+   (`mixed_inflow_edges`: the feed's composition, temperature, latent heat and
+   `ColumnPass::feed_flow` are the feed pipe's alone). `ColumnPass::steam`
+   (`ColumnSteam { stage, flow, temperature }`) hands the column the steam's
+   rate and its LIQUID-EQUIVALENT temperature — its pipe's outlet enthalpy with
+   its upwind vapour's latent heat, mixed as one inflow is mixed — the feed's
+   convention (§67.4), so the stage balance takes the books' own number.
+3. **Every split is a share of the column's throughput**, feed and steam
+   (`ColumnPass::throughput`), so `Σ split = 1` with steam too and the engine's
+   two draw writes (`energy.rs`'s draw lines, `engine.rs`'s draw edges) keep
+   their shape: both multiply by everything flowing in. The declared
+   `draw_ratio`s stay shares of the OIL fed (§67.17 rule 8).
+4. **The water balance** gains the steam on its stage: `W_1 = F_w + S − FW_N`,
+   `W_{j+1} = W_j + FW_j − FW_{j−1} − F_w[j = f] − S[j = s]`
+   (`water_vapour_profile`, `WaterFeed::steam`). The steam's water rides up
+   from its stage, so the cold warm-up's inert-vapour rule (§67.17 rule 7)
+   reads "above the feed, and above the steam's stage".
+5. **The energy balances** gain `+S·H_S` on the steam's stage, in Newton's
+   residual and in the fixed point's sweep alike; the flux is the steam line's
+   `ṁ·cp_w·(T_le − T_REF)` (`cascade::steam_enthalpy_flux`, its one owner). On
+   the reboiler, whose balance is the closure, it enters `column_duties`'
+   external balance as inflow: `Q_reb = Q_cond + Q_pa + Σ draws − feed −
+   steam`.
+6. **A dry feed under steam** carries a water balance all the same, its water
+   the steam's alone; **a shut steam line** (zero flow) is a column without
+   steam, M62.5's arithmetic bit for bit.
+7. **A column whose only inflow is water** — steam with no feed (a feed pump
+   tripped, the steam still on), or steam over a feed that is all water — is
+   answered, not refused: all of it leaves by the water draw at water's bubble
+   point, the condenser taking what it brings above liquid there and the
+   reboiler only what boiling it all up would need (none for steam). M62.5's
+   all-water feed without steam keeps its rule.
+8. **Refused at the solve**: a steam line running backwards (the column's
+   pressure above the supply's: it would draw from the column a flow no draw
+   accounts for), a steam line carrying anything but pure free water, steam on
+   a stage out of range or into a column with no water draw, and steam under
+   the `"cascade"` model or the splitter (`cascade::refuse_steam`).
+9. **Not changed**: the vapour floor (20 % of the oil's moles, steam not
+   counted). Decision 1, "no floor below the feed", was taken for a column
+   whose reboiler is off — M63's; with the reboiler kept the floor does not
+   bind on the plants measured.
+
+**Built and measured** on an inline fixture (`column_steam_reference.rs`):
+`crude_unit_wet.toml` with a 3.5 bar, 350 °C steam supply, a valve (Kv 160)
+and a 15 cm line into the reboiler, stage 10. At half opening the line carries
+0.982 kg/s of steam, all vapour; the water draw 1.3207 kg/s (the crude's 0.3385
+and the steam's); the bottom stands at 579.34 °C against the wet plant's
+586.76, the reboiler at 87.87 MW against 89.54. Full open: 1.83 kg/s and
+573.32 °C. Tick cost unchanged (5.2 against 4.8 ms a tick, test profile, on a
+loaded machine).
+
+**Gates**:
+- `crates/solvers/tests/reference/steam_column.rs` (7): the three steam cases
+  against the reference (temperatures, the condenser, every draw, both duties,
+  the feed's flash share); a shut steam line bit-identical to no steam; steam
+  alone into the water draw (its condenser duty within 1 % of the steam
+  tables' 3 276 − 491 kJ/kg); the refusals; start-insensitive cold, warm and
+  10 K off.
+- `crates/scenarios/tests/column_steam_reference.rs` (6): the water draw takes
+  the crude's water and the steam's, the column sends out what both lines
+  bring, the bottom colder; the column's first law on the plant's books with
+  the steam's flux, on the reboiler and on stage 9; every product cooler's
+  books with steam on; a shut valve is the wet plant; a backward line refused;
+  the loader's refusals.
+- `heat_balance.rs` (1): Newton lands where the fixed point does under steam,
+  on a stripping tray and on the reboiler.
+
+**Mutations**: thirteen, all caught, each by its predicted file: Newton's
+stage balance without the steam; the water balance without it; the reboiler's
+closure without it; the splits of the feed rather than the throughput; the
+steam mixed into the feed; the steam without its latent heat; steam alone with
+the reboiler unclamped; a dry feed under steam without a water balance; the
+cascade model admitted; a backward line not refused; the stage off by one. Two
+first survived and are caught now: the draw lines' first-pass flows without the
+steam (the engine's draw write puts the real flow back before anything is
+published, so only the product coolers' rating that tick read it — the
+coolers' books gate it), and the fixed point's sweep without the steam (only
+Newton's warm-up reads it, and Newton still converges to the right answer —
+the fixed point solved on its own, against Newton, gates it).
+**Corpus**: 63 of 63 byte-identical on both fidelities.
