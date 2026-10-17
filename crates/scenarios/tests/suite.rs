@@ -53,6 +53,8 @@ mod crude_unit;
 mod crude_unit_boiling_reference;
 #[path = "crude_unit_steam_reference.rs"]
 mod crude_unit_steam_reference;
+#[path = "crude_unit_stripped_reference.rs"]
+mod crude_unit_stripped_reference;
 #[path = "crude_unit_wet_reference.rs"]
 mod crude_unit_wet_reference;
 #[path = "dissipation_reference.rs"]

@@ -81,8 +81,9 @@ cargo run -p refinery-cli -- run scenarios/<file>.toml --ticks 6000
 # --out before a change, --baseline after = "byte-identical" as an exit code.
 # Release (wall time is a column). Baselines match by plant NAME only, so keep
 # one baseline per fidelity — mixing them reads "moved" and fails. --jobs 16
-# runs plants in parallel (~20–25 s per fidelity, set by crude_unit_boiling
-# and crude_unit_wet, DEFERRED A29; fingerprints unchanged, the wall
+# runs plants in parallel (~20–25 s on Newton, set by crude_unit_boiling and
+# crude_unit_wet; on the game solver longer, set by crude_unit_stripped —
+# DEFERRED A29; fingerprints unchanged, the wall
 # column then meaningless — use --jobs 1 when wall time is the measurement).
 cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 [--solver simple]
 cargo run --release -p refinery-cli -- corpus scenarios --ticks 6000 --jobs 16 \
@@ -187,7 +188,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 Work only on the current milestone unless asked. **Current: M64 (open)** — steam stripping
 proper on M62's water (ledger C7: the reboiler held at zero, its cold start, the column screen's fourth
-plant); M64.0 specified (DESIGN §69), M64.1 and M64.2 (the cold start) landed, M64.3 (the stripped crude unit) next. The order after it is `docs/PLAN.md`. **Latest closed: M63 (2026-10-17)**: M62's loose ends — a lumped coil on a
+plant); M64.0 specified (DESIGN §69), M64.1, M64.2 (the cold start) and M64.3 (the stripped crude unit) landed, M64.4 (the column screen's fourth plant) next. The order after it is `docs/PLAN.md`. **Latest closed: M63 (2026-10-17)**: M62's loose ends — a lumped coil on a
 boiling plant refused, water's vapour pressure on IAPWS-IF97, steam an ideal gas through a valve or a
 hole, a too-wet column passing its feed through (DESIGN §68; B62, B64, B67, C13 taken; C14 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at

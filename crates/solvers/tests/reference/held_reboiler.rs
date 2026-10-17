@@ -315,6 +315,43 @@ fn a_held_column_starts_from_its_earlier_pass() {
     }
 }
 
+/// **A held column starts from its earlier pass before the last tick's**
+/// (M64.3, docs/DESIGN.md §69.9): mid-run, a move the last tick's profile
+/// cannot follow sends the first pass of the tick to the continuation; its
+/// later passes, handed that answer, start from it rather than failing on the
+/// last tick's profile again and walking the continuation once a pass. Capped
+/// at four Newton steps, a column handed a profile it cannot follow — the
+/// declared column on a 230 °C feed — and nothing else is refused; handed the
+/// earlier pass too, it answers, and answers the same column.
+#[test]
+fn a_held_column_starts_from_its_earlier_pass_before_its_last_tick() {
+    let feed_c = 330.0;
+    let answer = separate(&spec(2.0, Some(0.0)), feed_c, None).unwrap();
+    let stale = separate(&spec(2.0, None), 230.0, None).unwrap();
+    let capped = HeatBalanceCascade::with_max_iterations(4);
+    separate_by(&capped, &spec(2.0, Some(0.0)), feed_c, Some(&stale), None)
+        .expect_err("four Newton steps cannot follow the stale profile");
+    let again = separate_by(
+        &capped,
+        &spec(2.0, Some(0.0)),
+        feed_c,
+        Some(&stale),
+        Some(&answer),
+    )
+    .unwrap_or_else(|e| panic!("from the earlier pass: {e}"));
+    let (a, b) = (
+        answer.profile.as_ref().unwrap(),
+        again.profile.as_ref().unwrap(),
+    );
+    for (j, (x, y)) in a.temperatures.iter().zip(&b.temperatures).enumerate() {
+        assert!(
+            (x.value() - y.value()).abs() < 1.0e-8,
+            "stage {}: {x:?} against {y:?}",
+            j + 1
+        );
+    }
+}
+
 /// **A declared column ignores an earlier pass, to the bit** (M64.2, §69.3):
 /// only a held column reads it, which is what keeps every shipped plant's
 /// re-solved ticks what they were. Handed a held column's answer as its

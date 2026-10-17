@@ -10188,3 +10188,24 @@ A walk that stops is refused at the step it stopped. DESIGN §69.8.
   `separation_contract.rs` (+1). Mutations: eleven, nine caught, two stated
   (both the walk's path, not its answer). Corpus: 64 of 64 byte-identical on
   both fidelities.
+
+### M64.3 — **LANDED** 2026-10-17: the stripped crude unit
+
+`scenarios/crude_unit_stripped.toml`: the steamed crude unit with its reboiler
+held at zero, its pumparounds at zero, its furnace at 58 MW on a coil declared
+at its settled 436.88 °C, and its charge held at 112.8 kg/s by a PI loop on a
+widened feed valve (metered upstream: the pipe into a celled coil cannot be,
+ledger E30, logged on the user's decision). Measured anew: the bottom 363.6 °C,
+the feed flashing 0.888 molar (about 70 % by mass), the furnace running from
+about 50 MW to past 82 (coil 502 °C), a pumparound to 20 MW on stage 6 or 7.
+The fallback forced by a charge step (112.8 → 140 kg/s) — and with it a fix,
+the user's decision: a held column starts from this tick's earlier pass ahead
+of the last tick's, so a tick the last could not follow walks one
+continuation, not one per pass (230 → 83 ms on Newton, 500 → 227 on the game
+solver). The game solver pays A29 here: the corpus's slowest plant on it.
+DESIGN §69.9.
+
+- Gates: `crude_unit_stripped_reference.rs` (6), `reference/held_reboiler.rs`
+  (+1), `burnout_reference.rs` (33 furnaces). Mutations: three, three caught.
+  Corpus: 64 of 64 byte-identical on both fidelities, `crude_unit_stripped`
+  new.

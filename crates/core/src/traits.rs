@@ -802,7 +802,9 @@ pub struct ColumnPass<'a> {
     /// it holds. Only a column holding its reboiler reads it (M64.2,
     /// docs/DESIGN.md §69.3): its start from nothing is a continuation that
     /// costs ten solves, and a tick's later passes start from the first's
-    /// answer instead of paying it again. Every other column ignores it, so
+    /// answer instead of paying it again — ahead of `seed` (M64.3, §69.9), so
+    /// a move the last tick cannot follow sends one pass of the tick to the
+    /// continuation, not every one. Every other column ignores it, so
     /// their passes are what they were to the bit.
     pub earlier_pass: Option<&'a CascadeProfile>,
     /// The steam arriving on the column's steam inlet this tick (M62.6,

@@ -489,11 +489,13 @@ impl HeatBalanceCascade {
         };
 
         // The warm start (M9.3b): both profiles or neither, a wrong-shaped seed
-        // ignored — `StageCascade`'s rules. A held column with no last tick
-        // starts from this tick's earlier pass where there is one (M64.2,
-        // docs/DESIGN.md §69.3): its start from nothing costs ten solves.
+        // ignored — `StageCascade`'s rules. A held column starts from this
+        // tick's earlier pass where there is one, ahead of the last tick's
+        // (M64.2, M64.3, docs/DESIGN.md §69.3, §69.9): its start from nothing
+        // costs ten solves, and a last tick it could not follow would send
+        // every pass of the tick to them.
         let earlier = spec.reboiler_duty.and(pass.earlier_pass);
-        let warm = pass.seed.or(earlier).filter(|previous| {
+        let warm = earlier.or(pass.seed).filter(|previous| {
             previous.temperatures.len() == plan.stages
                 && previous.liquid.len() == plan.stages
                 && previous.liquid.iter().all(|row| row.len() == slate.len())
