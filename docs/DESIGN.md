@@ -26769,10 +26769,10 @@ below, against a labelled setting in the plant file and none at all.
 A held column with nothing to start from (no last tick's profile, no earlier
 pass) is started by `HeatBalanceCascade::continuation`. Its base is the same
 column with its reboiler closing it, at its declared reflux, its side cooling
-the column's own pumparounds plus `BASE_SIDE_COOLING = 1.5` times the feed's
-latent heat flow (the column equations' `energy_scale`), spread evenly over
-the stages between the top and the feed; M61's cold warm-up and Newton solve
-it. Its closure is read off its bottom stage (`implied_reboiler_duty`: the
+the column's own pumparounds TOPPED UP to `BASE_SIDE_COOLING = 1.5` times the
+feed's latent heat flow (the column equations' `energy_scale`), what is
+missing spread evenly over the stages between the top and the feed; M61's
+cold warm-up and Newton solve it. Its closure is read off its bottom stage (`implied_reboiler_duty`: the
 held balance at zero, negated). Then `CONTINUATION_STEPS = 10` Newton solves,
 each from the last, walk the held duty from that closure to the column's own
 and the side cooling from the base's to the column's, the last step on the
@@ -26797,9 +26797,23 @@ start lands on the warm walk's column — the coil at 488 °C gives a bottom of
 coil at 405 or 430 °C; with 0.75–3 times the feed's latent heat flow (about
 32 MW at 1), on the three pumparounds or spread over the stages above the
 feed, every coil from 405 to 512 °C starts. The continuation runs once in
-tick 1, which took 96–108 ms on the 488 °C plant on a quiet machine (M64.0's
-183–186 ms ran it on all nine sweeps); the later measurements on a busier
-machine read up to 2.5 times that, so read the ratio.
+tick 1: on the 488 °C plant, best of five, alternating builds on one machine,
+82–92 ms with the earlier pass handed over against 225–232 ms without (M64.0's
+183–186 ms were another machine's, about 1.2 times slower).
+
+**Topped up, not added — found after the first commit** (a review asked why
+two M64.1 plant gates failed with the hand-over removed). Added on top of the
+steamed crude unit's own 40 MW of pumparounds, the base's 1.5 times refused on
+a later pass of its first tick (its warm-up's bottoms negative: the draws
+above the reboiler taking more than the feed); the hand-over had hidden it, but
+the same continuation is the fallback whenever a held column's warm start
+fails mid-run. Topped up, every held plant gate passes with the hand-over
+removed too, so the hand-over is a cost, not a crutch. On a column with no
+pumparounds of its own (M64.3's plant) the two rules are one. No gate holds
+the difference: on the test column every case where adding fails, topping up
+fails too (the held column itself cannot run there), and on the plant the
+hand-over covers tick 1. M64.3 must gate a move that forces the fallback on
+its plant.
 
 **Gates**: `crates/solvers/tests/reference/held_reboiler.rs` (+4): cold, held
 at zero on its 330 °C feed, the test column lands on the warm walk's column

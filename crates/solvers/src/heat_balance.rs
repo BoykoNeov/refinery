@@ -95,16 +95,18 @@ const COLD_WARM_UP_ITERATIONS: u32 = 30;
 /// answer (§69.0, finding 5).
 const CONTINUATION_STEPS: u32 = 10;
 
-/// The side cooling a held column's base carries over its own, as a share of
-/// the feed's latent heat flow [-] (M64.2, docs/DESIGN.md §69.3; the user's
-/// decision: derived from the feed, no key).
+/// The side cooling a held column's base carries in all, its own pumparounds
+/// topped up to it, as a share of the feed's latent heat flow [-] (M64.2,
+/// docs/DESIGN.md §69.3; the user's decision: derived from the feed, no key).
 ///
 /// **A convergence aid, measured, not physics**: with none, the base of M64.0's
 /// stripped crude unit refuses once its feed arrives cooler than settled (its
 /// coil started at 405 or 430 °C against 488); with 0.75 to 3 times the feed's
 /// latent heat flow, spread over the stages above the feed or on its three
 /// pumparounds, every start from a coil at 405–512 °C ran and landed on the
-/// same column. M62.0's probe asked for 1.5–2 (§67.0, finding 4).
+/// same column. M62.0's probe asked for 1.5–2 (§67.0, finding 4). TOPPED UP,
+/// not added: the steamed crude unit's own 40 MW with 1.5 times on top
+/// refused on a later pass of its first tick (its warm-up's bottoms negative).
 const BASE_SIDE_COOLING: f64 = 1.5;
 
 /// Outer iterations of the fixed point when it is solved to convergence on its
@@ -1365,15 +1367,17 @@ fn profile_draw_rates(plan: &CascadePlan, profile: &Profile) -> Vec<f64> {
 }
 
 /// The heat each stage's side cooling removes [W] on a held column's base
-/// (M64.2, docs/DESIGN.md §69.3): the column's own pumparounds, and on top of
-/// them [`BASE_SIDE_COOLING`] times the feed's latent heat flow (`energy_scale`,
-/// [W]) spread evenly over the stages between the top and the feed. A column
-/// fed onto its top two stages has none between and takes its own alone.
+/// (M64.2, docs/DESIGN.md §69.3): the column's own pumparounds, topped up to
+/// [`BASE_SIDE_COOLING`] times the feed's latent heat flow (`energy_scale`,
+/// [W]) in all, what is missing spread evenly over the stages between the top
+/// and the feed. A column whose own already reach it, or fed onto its top two
+/// stages with none between, takes its own alone.
 fn base_side_heat(plan: &CascadePlan, energy_scale: f64) -> Vec<f64> {
     let mut heat = plan.side_heat.clone();
     let between = plan.feed_stage.saturating_sub(1);
-    if between > 0 {
-        let each = BASE_SIDE_COOLING * energy_scale / between as f64;
+    let missing = BASE_SIDE_COOLING * energy_scale - heat.iter().sum::<f64>();
+    if between > 0 && missing > 0.0 {
+        let each = missing / between as f64;
         for stage in heat.iter_mut().take(plan.feed_stage).skip(1) {
             *stage += each;
         }

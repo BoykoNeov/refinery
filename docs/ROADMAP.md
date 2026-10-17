@@ -10172,13 +10172,17 @@ after M61's warm-up (M64.2 replaces that start). DESIGN §69.7.
 ### M64.2 — **LANDED** 2026-10-17: the cold start
 
 A held column with nothing to start from is started by a continuation: the
-same column with its reboiler and 1.5 times the feed's latent heat flow of
-side cooling over the stages above the feed (the user's decision: derived
-from the feed, no key), then ten Newton solves walking the held duty and the
-side cooling to the column's own. `ColumnPass::earlier_pass` hands a tick's
-later passes the first's answer, so tick 1 runs one continuation (96–108 ms
-on the stripped probe plant against M64.0's 183–186). A walk that stops is
-refused at the step it stopped. DESIGN §69.8.
+same column with its reboiler, its side cooling topped up to 1.5 times the
+feed's latent heat flow over the stages above the feed (the user's decision:
+derived from the feed, no key), then ten Newton solves walking the held duty
+and the side cooling to the column's own. `ColumnPass::earlier_pass` hands a
+tick's later passes the first's answer, so tick 1 runs one continuation
+(82–92 ms on the stripped probe plant against 225–232 without, one machine).
+A walk that stops is refused at the step it stopped. DESIGN §69.8.
+- Follow-up (same day, on review): the base's cooling topped up rather than
+  added on top of a plant's own pumparounds — added, the steamed crude unit's
+  base refused on a later pass, which the hand-over had hidden. M64.3 owes a
+  gate that forces the fallback mid-run.
 
 - Gates: `reference/held_reboiler.rs` (+4), `held_reboiler_reference.rs` (+3),
   `separation_contract.rs` (+1). Mutations: eleven, nine caught, two stated

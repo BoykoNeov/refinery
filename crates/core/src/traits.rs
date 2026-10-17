@@ -619,8 +619,9 @@ pub struct DrawSeparation {
 ///
 /// Fork 5 permits a warm start because it changes the iteration count and not
 /// the fixed point. Nothing downstream consumes this: it is absent from
-/// `Snapshot`, no frontend sees it, and its only reader is the next tick's
-/// [`ColumnPass::seed`]. A model must return the same answer within tolerance
+/// `Snapshot`, no frontend sees it, and its only readers are the next tick's
+/// [`ColumnPass::seed`] and, on a tick the engine re-solves, the same tick's
+/// later pass's [`ColumnPass::earlier_pass`] (M64.2). A model must return the same answer within tolerance
 /// whether it gets one, gets a wrong one, or gets none.
 #[derive(Debug, Clone)]
 pub struct CascadeProfile {
@@ -699,7 +700,8 @@ pub struct Separation {
     /// knows one knows both, since M7.4b derives this one from the other plus
     /// the column's external sensible balance (`cascade::column_duties`).
     pub reboiler_duty: Option<Watt>,
-    /// This pass's converged iterate, for the next tick to start from, or `None`
+    /// This pass's converged iterate, for the next tick to start from (and a
+    /// re-solved tick's later pass, M64.2), or `None`
     /// from a fidelity that iterates nothing (the cut-point splitter) and from a
     /// pass that did not converge to anything worth reusing. See
     /// [`CascadeProfile`], which argues why both of its halves travel together.
