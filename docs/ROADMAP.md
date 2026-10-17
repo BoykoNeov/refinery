@@ -9807,3 +9807,24 @@ its wet bubble point at 74.2 °C. DESIGN §67.10.
   all caught. Iterations: worst 9 (Newton) and 7 (game solver) a tick, the dry
   rundown's 11 and 8. Corpus: 58 of 58 byte-identical on both fidelities;
   `wet_rundown` new.
+
+### M62.3 — **LANDED** 2026-10-17: a tank's water layer
+
+A tank's free water is a layer under its oil. Its outlets draw the bottom
+layer first — one stream for every outlet, from their total draw: water while
+any stands, the last water and the first oil on the tick it runs out, oil
+after — and its books debit what left, component by component; the snapshot
+reports the layer's height (`water_level_m`). Decided while building (the
+user): **the brim spills the top layer**, oil first. Measured: water settles at
+once, so a tank filled and drained together holds at most one tick's arriving
+water — the wet rundown's tank 0.002 % water where M62.2's mixed tank held
+1.6 %, on the same wet bubble point (74.134 against 74.136 °C); settling time
+deferred (B61). The water slug (`scenarios/water_slug.toml`): 796.8 kg of
+water leaves a crude tank first, for 390.5 s, the flow stepping down by
+`√(ρ_oil/ρ_w)` = 0.909 when it ends. DESIGN §67.11.
+
+- Gates: `graph.rs` `water_layer` unit tests (3), `water_slug_reference.rs`
+  (7), `wet_rundown_reference.rs` re-pinned (4). Mutations: twelve, all
+  caught. Iterations: worst 8 (Newton) and 7 (game solver) a tick on the slug;
+  the wet rundown's 9 and 7 unchanged. Corpus: 58 of 60 byte-identical on both
+  fidelities; `wet_rundown` moved (approved), `water_slug` new.

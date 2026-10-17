@@ -1173,6 +1173,146 @@ impl TankState {
         let density = self.density(slate);
         Pascal(P_ATM.value() + density.value() * G * self.level(slate).value())
     }
+
+    /// The free water standing at this tank's bottom: its slate position and
+    /// its mass [kg], or `None` on a slate with no free-water member or while
+    /// the tank holds none (M62.3, docs/DESIGN.md §67.3).
+    ///
+    /// Free water never dissolves in the oil (§67.2), so whatever water a tank
+    /// holds is a layer under the oil. The inventory is still one composition
+    /// as STATE; the layers are what its outlet and its brim read
+    /// (`drawn_composition`, `top_spill`). `level`, `bottom_pressure` and
+    /// `capacity` need nothing from this: ideal mixing makes the mixture's
+    /// volume the sum of the layers' volumes, and the floor carries `m·g/A`
+    /// however the mass is stacked.
+    pub fn free_water(&self, slate: &Slate) -> Option<(usize, Kg)> {
+        let water = slate.free_water()?;
+        let fraction = self.composition.fractions()[water];
+        (fraction > 0.0).then(|| (water, Kg(fraction * self.mass.value())))
+    }
+
+    /// The height of the water layer [m], `m_w/(ρ_w·A)`, on every tank of a
+    /// slate with a free-water member — zero while it holds none — and `None`
+    /// on any other slate (M62.3, docs/DESIGN.md §67.3).
+    pub fn water_level(&self, slate: &Slate) -> Option<Meter> {
+        let water = slate.free_water()?;
+        let mass = self.composition.fractions()[water] * self.mass.value();
+        let density = slate.get(water).density.map_or(f64::NAN, |d| d.value());
+        Some(Meter(mass / (density * self.area.value())))
+    }
+
+    /// What this tank's outlets carry while `drawn` [kg] leaves through them
+    /// over one tick: **the bottom layer first** (M62.3, docs/DESIGN.md §67.3,
+    /// decision 9). Free water while any stands, then the oil at its own
+    /// fractions; on the tick the water runs out, all of it and the oil after
+    /// it, so no outlet can take water the tank does not hold. `None` where no
+    /// water stands: the outlets carry the inventory itself, as they always
+    /// have.
+    ///
+    /// One answer for every outlet, from their TOTAL draw: two outlets sizing
+    /// their water share each from its own flow would each claim the whole
+    /// layer. `drawn` beyond the inventory is read as the whole inventory (a
+    /// tank drawn past empty is starved and swept as a mixing point instead).
+    ///
+    /// # Errors
+    /// `SimError::Numerical` if the weights form no valid composition.
+    pub fn drawn_composition(
+        &self,
+        slate: &Slate,
+        drawn: Kg,
+    ) -> Result<Option<Composition>, SimError> {
+        let Some((water, standing)) = self.free_water(slate) else {
+            return Ok(None);
+        };
+        let drawn = drawn.value().min(self.mass.value());
+        if drawn <= standing.value() {
+            return Ok(Some(Composition::pure(slate.len(), water)));
+        }
+        // All the water, and the oil's share `(drawn − m_w)/(m − m_w)` of each
+        // oil component: positive, because `drawn > m_w` and `drawn ≤ m`.
+        let oil_share = (drawn - standing.value()) / (self.mass.value() - standing.value());
+        let weights: Vec<f64> = self
+            .composition
+            .fractions()
+            .iter()
+            .enumerate()
+            .map(|(c, fraction)| {
+                if c == water {
+                    standing.value()
+                } else {
+                    fraction * self.mass.value() * oil_share
+                }
+            })
+            .collect();
+        Composition::from_weights(&weights).map(Some)
+    }
+
+    /// What spills over the brim of a tank holding free water, as a mass [kg]
+    /// and a composition, or `None` while it stands at or below its brim or
+    /// holds no water (M62.3, docs/DESIGN.md §67.3; the user chose it while building).
+    ///
+    /// **The top layer first**: the oil, at its own fractions, until the
+    /// liquid's volume `m/ρ(x)` is back at `A·H`; the water only once the oil
+    /// is gone. A volume, not a mass, is what the brim measures, and the oil's
+    /// is closed-form under ideal mixing: the excess volume over `A·H` is
+    /// spilled at the oil's own density `ρ_oil`. The dry overflow keeps its
+    /// own rule on mass (`capacity`), which this does not touch.
+    ///
+    /// # Errors
+    /// `SimError::Numerical` if the weights form no valid composition.
+    pub fn top_spill(&self, slate: &Slate) -> Result<Option<(Kg, Composition)>, SimError> {
+        let Some((water, standing)) = self.free_water(slate) else {
+            return Ok(None);
+        };
+        let capacity = self.capacity(slate).value();
+        if self.mass.value() <= capacity {
+            return Ok(None);
+        }
+        let excess_volume = (self.mass.value() - capacity) / self.density(slate).value();
+        let oil_mass = self.mass.value() - standing.value();
+        // The oil's own fractions and density: the inventory with its water
+        // taken out (`1/ρ_oil = Σ_oil w'/ρ`, the mixture's own rule).
+        let oil_weights: Vec<f64> = self
+            .composition
+            .fractions()
+            .iter()
+            .enumerate()
+            .map(|(c, fraction)| if c == water { 0.0 } else { *fraction })
+            .collect();
+        let spilled_weights: Vec<f64> = if oil_mass > 0.0 {
+            let oil = Composition::from_weights(&oil_weights)?;
+            let oil_volume = oil_mass / oil.mixture_density(slate).value();
+            if oil_volume >= excess_volume {
+                let spilled_oil = excess_volume * oil.mixture_density(slate).value();
+                oil.fractions().iter().map(|f| f * spilled_oil).collect()
+            } else {
+                // Every drop of oil, and the water above the brim after it.
+                let water_density = slate.get(water).density.map_or(f64::NAN, |d| d.value());
+                let spilled_water = (excess_volume - oil_volume) * water_density;
+                oil.fractions()
+                    .iter()
+                    .enumerate()
+                    .map(|(c, f)| {
+                        if c == water {
+                            spilled_water.min(standing.value())
+                        } else {
+                            f * oil_mass
+                        }
+                    })
+                    .collect()
+            }
+        } else {
+            let water_density = slate.get(water).density.map_or(f64::NAN, |d| d.value());
+            let mut weights = vec![0.0; slate.len()];
+            weights[water] = (excess_volume * water_density).min(standing.value());
+            weights
+        };
+        let spilled: f64 = spilled_weights.iter().sum();
+        Ok(Some((
+            Kg(spilled),
+            Composition::from_weights(&spilled_weights)?,
+        )))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2405,6 +2545,24 @@ impl PlantGraph {
         out
     }
 
+    /// The total mass rate [kg/s, a magnitude] the network draws out of `node`
+    /// through its SOLVED pipes, each pipe's signed flow [kg/s, positive along
+    /// it] read from `flow` (M62.3, docs/DESIGN.md §67.3): what a tank's
+    /// outlets share one bottom layer by (`TankState::drawn_composition`).
+    /// An engine-written pipe (a boil-off vent, an overflow) is left out: its
+    /// flow is written after the solve and leaves by its own rule. Summed in
+    /// `incident`'s edge order, a function of the graph alone (rule 3).
+    pub fn solved_outflow(&self, node: NodeId, flow: impl Fn(EdgeId) -> f64) -> f64 {
+        self.incident(node)
+            .into_iter()
+            .filter(|&(edge, other, _)| other != node && !self.pipe(edge).leak.is_engine_written())
+            .map(|(edge, _, incoming)| {
+                let into_node = if incoming { flow(edge) } else { -flow(edge) };
+                (-into_node).max(0.0)
+            })
+            .sum()
+    }
+
     /// The order in which `Engine::tick` must evaluate holdups, so that a vent's
     /// EMITTER is updated before its RECEIVER (M14, docs/DESIGN.md §16 fork 3).
     ///
@@ -3313,6 +3471,117 @@ fn unpaired_actuator(name: &str, max_duty: Option<Watt>) -> SimError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// M62.3's tank layers (docs/DESIGN.md §67.3): an oil of 800 kg/m³ over
+    /// free water, in a 1 m² tank 10 m tall.
+    mod water_layer {
+        use super::*;
+        use crate::components::PseudoComponent;
+
+        fn slate(free: bool) -> Slate {
+            let oil = PseudoComponent {
+                name: "oil".into(),
+                density: Some(KgPerM3(800.0)),
+                ..PseudoComponent::water()
+            };
+            let water = PseudoComponent {
+                free_water: free,
+                ..PseudoComponent::water()
+            };
+            Slate::new(vec![oil, water]).unwrap()
+        }
+
+        fn tank(mass: f64, water: f64) -> TankState {
+            TankState {
+                area: SquareMeter(1.0),
+                height: Meter(10.0),
+                mass: Kg(mass),
+                temperature: Kelvin(300.0),
+                composition: Composition::from_weights(&[1.0 - water, water]).unwrap(),
+                ambient_ua: WattPerKelvin::ZERO,
+            }
+        }
+
+        /// The outlet takes the water first: pure water while the draw is
+        /// within the layer, all of it and the oil after on the tick it runs
+        /// out, the whole inventory past empty — and the inventory itself
+        /// where no water stands or the slate has no free water.
+        #[test]
+        fn the_outlet_draws_the_water_first() {
+            let wet = slate(true);
+            let t = tank(1000.0, 0.1); // 100 kg of water under 900 kg of oil
+            let pure = t.drawn_composition(&wet, Kg(40.0)).unwrap().unwrap();
+            assert_eq!(pure.fractions(), &[0.0, 1.0]);
+            let edge = t.drawn_composition(&wet, Kg(100.0)).unwrap().unwrap();
+            assert_eq!(edge.fractions(), &[0.0, 1.0]);
+            let past = t.drawn_composition(&wet, Kg(250.0)).unwrap().unwrap();
+            assert!(
+                (past.fractions()[1] - 0.4).abs() < 1e-15,
+                "{:?}",
+                past.fractions()
+            );
+            let all = t.drawn_composition(&wet, Kg(5000.0)).unwrap().unwrap();
+            assert!((all.fractions()[1] - 0.1).abs() < 1e-15);
+            assert!(tank(1000.0, 0.0)
+                .drawn_composition(&wet, Kg(40.0))
+                .unwrap()
+                .is_none());
+            assert!(t
+                .drawn_composition(&slate(false), Kg(40.0))
+                .unwrap()
+                .is_none());
+        }
+
+        /// The layer's height `m_w/(ρ_w·A)`, zero on a wet slate with no water
+        /// in the tank, and not reported on a slate without free water.
+        #[test]
+        fn the_layer_has_a_height() {
+            let h = tank(1000.0, 0.1).water_level(&slate(true)).unwrap();
+            assert!((h.value() - 100.0 / 998.0).abs() < 1e-15);
+            assert_eq!(
+                tank(1000.0, 0.0).water_level(&slate(true)),
+                Some(Meter(0.0))
+            );
+            assert_eq!(tank(1000.0, 0.1).water_level(&slate(false)), None);
+        }
+
+        /// Over the brim goes the top layer: oil alone while oil is above the
+        /// excess, leaving the liquid exactly at the brim; all the oil and the
+        /// water above the brim after it once the water reaches it; water
+        /// alone from a tank of water. Nothing at or below the brim, nothing
+        /// from a dry tank (the dry rule spills it).
+        #[test]
+        fn the_brim_spills_the_top_layer() {
+            let wet = slate(true);
+            // 998 kg of water (1 m) under 7 300 kg of oil (9.125 m): 0.125 m over.
+            let over = tank(998.0 + 7300.0, 998.0 / 8298.0);
+            let (spill, what) = over.top_spill(&wet).unwrap().unwrap();
+            assert_eq!(what.fractions(), &[1.0, 0.0]);
+            assert!((spill.value() - 100.0).abs() < 1e-9, "{}", spill.value());
+            // 9 980 kg of water (10 m) under 160 kg of oil (0.2 m): all the
+            // oil, exactly, and none of the water, which stands at the brim.
+            let brimful = tank(9980.0 + 160.0, 9980.0 / 10140.0);
+            let (spill, what) = brimful.top_spill(&wet).unwrap().unwrap();
+            assert!((spill.value() - 160.0).abs() < 1e-9, "{}", spill.value());
+            assert!(what.fractions()[1].abs() < 1e-12);
+            // 10 179.6 kg of water (10.2 m) under 80 kg of oil (0.1 m): every
+            // drop of the oil, and the 0.2 m of water above the brim after it.
+            let flooded = tank(10_179.6 + 80.0, 10_179.6 / 10_259.6);
+            let (spill, what) = flooded.top_spill(&wet).unwrap().unwrap();
+            assert!((spill.value() - 279.6).abs() < 1e-9, "{}", spill.value());
+            assert!((what.fractions()[0] * spill.value() - 80.0).abs() < 1e-9);
+            // 10 179.6 kg of water: 0.2 m of it over the brim.
+            let water = tank(10_179.6, 1.0);
+            let (spill, what) = water.top_spill(&wet).unwrap().unwrap();
+            assert_eq!(what.fractions(), &[0.0, 1.0]);
+            assert!((spill.value() - 199.6).abs() < 1e-9);
+            assert!(tank(998.0 + 7000.0, 998.0 / 7998.0)
+                .top_spill(&wet)
+                .unwrap()
+                .is_none());
+            assert!(tank(8100.0, 0.0).top_spill(&wet).unwrap().is_none());
+        }
+    }
 
     /// The next representable value above a positive `x`, and below it.
     fn up(x: f64) -> f64 {

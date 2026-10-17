@@ -24,9 +24,11 @@
 #
 # 3. THE TANK SITS ON ITS WET BUBBLE POINT. Vented, it boils where the oil's
 #    vapour pressure and water's add up to the atmosphere — about 74.2 °C,
-#    where the same oil dry boils near 90 °C. Free water stands in it (about
-#    1.5 % of its mass, mixed through it until M62.3 layers it), and its
-#    boil-off vents about 1.09 kg/s of the 6.03 fed, water and oil together.
+#    where the same oil dry boils near 90 °C. Free water stands in it as a
+#    layer at its bottom, which its outlet draws first (M62.3): the layer is
+#    never more than one tick's arriving water, about 0.002 % of its mass (it
+#    was 1.5 % while M62.2 mixed the water through the tank). Its boil-off
+#    vents about 1.10 kg/s of the 6.03 fed, water and oil together.
 #
 # 4. THE OUTLET SETTLES THE LEVEL, as on the dry plant, near 5.4 m; the tank
 #    starts there, at about its own wet boiling point.

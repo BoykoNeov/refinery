@@ -1525,6 +1525,12 @@ fn suction_offer(
 /// was. Before M55 the stored copy was read, which a line flowed at for its
 /// first tick — `Stream::stagnant`'s placeholder, the slate's first component —
 /// and for one tick after its upwind composition moved.
+///
+/// A tank holding free water sends its bottom layer out, water first (M62.3,
+/// docs/DESIGN.md §67.3): its outlets flow at the layer the last sweep drew
+/// (`NodeStates::tank_draw`) — over the last tick's flows, which on the
+/// tick the water runs out is a lag of one tick in the density alone; the
+/// books read the sweep's own draw, never this.
 fn carried_composition<'a>(
     graph: &'a PlantGraph,
     previous_states: &'a NodeStates,
@@ -1534,7 +1540,10 @@ fn carried_composition<'a>(
     let node = upwind_end(graph, eid, pipe.stream.mass_flow.value());
     match &graph.node(node).kind {
         NodeKind::Source { composition, .. } | NodeKind::Sink { composition, .. } => composition,
-        NodeKind::Tank(tank) => &tank.composition,
+        NodeKind::Tank(tank) => previous_states
+            .tank_draw
+            .get(&node)
+            .unwrap_or(&tank.composition),
         NodeKind::Vessel(vessel) => &vessel.composition,
         _ => previous_states
             .composition

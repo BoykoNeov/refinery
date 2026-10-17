@@ -1653,6 +1653,11 @@ impl Engine {
                 node_states.composition.get(&nid).cloned(),
                 node_states.temperature.get(&nid).copied(),
             );
+            // Whether this tank sent its bottom layer out rather than its
+            // inventory: the sweep's verdict, read rather than re-asked, so the
+            // books debit exactly what the outlets carried (M62.3,
+            // docs/DESIGN.md §67.3).
+            let layered = node_states.tank_draw.contains_key(&nid);
             if let NodeKind::Tank(tank) = &mut self.graph.node_mut(nid).kind {
                 let mass_old = tank.mass.value();
                 // The inventory's enthalpy at the composition that actually
@@ -1697,7 +1702,13 @@ impl Engine {
                 // outflow is the mix the sweep resolved, not its start-of-tick
                 // fluid, so it is debited at that mix, below, once its end-of-
                 // tick mass says whether it has an inventory left to describe.
-                if inflow_mass_rate > 0.0 && starved.is_none() {
+                //
+                // A tank that sent its WATER LAYER out is the other (M62.3,
+                // §67.3): its outlets carried water first, not its start-of-tick
+                // fractions, so it is debited at what left, component by
+                // component, below — and with no inflow too, since draining the
+                // water moves the fractions.
+                if inflow_mass_rate > 0.0 && starved.is_none() && !layered {
                     tank.composition = energy::blended_holdup_composition(
                         &tank.composition,
                         mass_old,
@@ -1723,12 +1734,15 @@ impl Engine {
                 )?;
                 let energy_new = energy_old + (net_enthalpy + heat_input) * dt.value();
 
-                if starved.is_some() {
+                if starved.is_some() || layered {
                     if mass_new > MIN_THERMAL_MASS_KG {
                         // What is left is the inflow the solve does not see (a
                         // column draw, a received vent) and the solve's own
                         // residual here; debited at what left, component by
-                        // component, and bounded like the total.
+                        // component, and bounded like the total. A layered
+                        // tank's outflow is its water first: the same debit,
+                        // `x·m_old + (in − out)·dt`, which on its water is what
+                        // stood less what the outlets took.
                         let weights = energy::starved_holdup_weights(
                             &tank.composition,
                             mass_old,
@@ -1748,10 +1762,12 @@ impl Engine {
                         }
                         tank.composition = Composition::from_weights(&kept).map_err(|e| {
                             SimError::Numerical(format!(
-                                "dry tank '{node_name}' kept no valid composition: {e}"
+                                "tank '{node_name}' kept no valid composition after drawing what its outlets carried: {e}"
                             ))
                         })?;
-                    } else if let (Some(composition), Some(temperature)) = passing.clone() {
+                    } else if let (true, Some(composition), Some(temperature)) =
+                        (starved.is_some(), passing.0.clone(), passing.1)
+                    {
                         // Below the floor it is the fluid now in its lines. A
                         // temperature loop on a dry tank reads what is passing,
                         // not a number held from the last time it had liquid.
@@ -1923,8 +1939,29 @@ impl Engine {
                 // - **Temperature and composition are not recomputed.** Removing
                 //   part of a well-mixed liquid changes neither, and the energy
                 //   that leaves is `m_spill·h(T, x)`, carried by the edge.
+                //
+                // A tank holding free water spills its TOP layer, the oil
+                // first (M62.3, §67.3; the user's choice while building): its
+                // composition moves, so it is debited component by component.
                 let capacity = tank.capacity(&self.slate).value();
-                if tank.mass.value() > capacity {
+                if let Some((spill, over)) = tank.top_spill(&self.slate)? {
+                    let held = tank.mass.value();
+                    let weights: Vec<f64> = tank
+                        .composition
+                        .fractions()
+                        .iter()
+                        .zip(over.fractions())
+                        .map(|(x, y)| (x * held - y * spill.value()).max(0.0))
+                        .collect();
+                    tank.composition = Composition::from_weights(&weights).map_err(|e| {
+                        SimError::Numerical(format!(
+                            "tank '{node_name}' has no valid composition left after spilling {:.4e} kg of its top layer: {e}",
+                            spill.value()
+                        ))
+                    })?;
+                    tank.mass = Kg(held - spill.value());
+                    spilled = Some((KgPerSec(spill.value() / dt.value()), over, tank.temperature));
+                } else if tank.mass.value() > capacity {
                     let excess = tank.mass.value() - capacity;
                     tank.mass = Kg(capacity);
                     spilled = Some((
@@ -3543,6 +3580,11 @@ impl Engine {
                     // The solve's own verdict, never the tank's mass — see
                     // `NodeSnapshot::running_dry`.
                     running_dry: sol.is_some_and(|s| s.starved.contains_key(&id)),
+                    // The tank's own state — see `NodeSnapshot::water_level_m`.
+                    water_level_m: match &n.kind {
+                        NodeKind::Tank(tank) => tank.water_level(&self.slate).map(|h| h.value()),
+                        _ => None,
+                    },
                     // The last sweep's, absent before the first tick and on
                     // every node that is not a furnace — see
                     // `NodeSnapshot::flue_loss_w`.

@@ -62,7 +62,9 @@ use crate::traits::{
     ColumnPass, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel, Reaction,
     ReactionModel, Separation, SeparationModel, StarvedTank, ThermoModel, VapourShare,
 };
-use crate::units::{JPerKgK, Kelvin, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, T_AMBIENT};
+use crate::units::{
+    JPerKgK, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, T_AMBIENT,
+};
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -1004,6 +1006,15 @@ pub struct NodeStates {
     /// `latent`) and its tank balance, and the next tick's flow solve, which
     /// re-flashes the node at each trial pressure from `liquid_equivalent`.
     pub vapour: BTreeMap<NodeId, VapourShare>,
+    /// What each tank holding free water sends out of its outlets this tick:
+    /// its bottom layer, water first, over the tick's whole draw (M62.3,
+    /// docs/DESIGN.md §67.3; `TankState::drawn_composition`). The same
+    /// composition the sweep seeded in `composition` for that tank, kept apart
+    /// because the next solve reads it for its outlets' densities
+    /// (`network::carried_composition`) where every other tank's inventory is
+    /// read straight off the graph. Empty on every plant whose slate has no
+    /// free-water member.
+    pub tank_draw: BTreeMap<NodeId, Composition>,
 }
 
 /// A swept node's temperature from its LIQUID-EQUIVALENT mix, settled by the line
@@ -1308,6 +1319,7 @@ pub fn resolve_node_states(
     let mut reactor_duties: BTreeMap<NodeId, ReactorDuty> = BTreeMap::new();
     let mut separations: BTreeMap<NodeId, Separation> = BTreeMap::new();
     let mut held: BTreeSet<NodeId> = BTreeSet::new();
+    let mut tank_draw: BTreeMap<NodeId, Composition> = BTreeMap::new();
 
     // 1. Inertial nodes are the roots of the sweep: known before it starts.
     //    Both fields are seeded from the SAME node, so the two boundary helpers
@@ -1345,6 +1357,25 @@ pub fn resolve_node_states(
                         vapour.insert(id, share);
                     }
                 }
+                // A tank holding free water sends its bottom layer out, not
+                // its inventory (M62.3, docs/DESIGN.md §67.3): seeded HERE, so
+                // every reader of an outlet — the mixes downstream, the
+                // engine's books, the edge write — takes the one answer.
+                let c = match kind {
+                    NodeKind::Tank(tank) => {
+                        let drawn = graph.solved_outflow(id, |edge| {
+                            edge_mass_flow.get(&edge).copied().unwrap_or(0.0)
+                        }) * dt.value();
+                        match tank.drawn_composition(slate, Kg(drawn))? {
+                            Some(draw) => {
+                                tank_draw.insert(id, draw.clone());
+                                draw
+                            }
+                            None => c,
+                        }
+                    }
+                    _ => c,
+                };
                 temperature.insert(id, t);
                 composition.insert(id, c);
             }
@@ -1880,6 +1911,7 @@ pub fn resolve_node_states(
         tube_fire,
         bed,
         vapour,
+        tank_draw,
     })
 }
 

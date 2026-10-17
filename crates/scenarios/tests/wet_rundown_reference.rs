@@ -66,9 +66,12 @@ fn refusal(source: &str) -> String {
 /// root, and they do here to the script's printed digits.
 ///
 /// And the tank stands on its WET bubble point at atmospheric pressure, with
-/// 1.6 % water by mass in it: free water acts at any amount, so the oil boils
-/// where its vapour pressure and water's add up to the atmosphere — 74.14 °C,
-/// more than 10 K below where the same oil boils dry.
+/// free water in it: free water acts at any amount, so the oil boils where its
+/// vapour pressure and water's add up to the atmosphere — 74.13 °C, more than
+/// 10 K below where the same oil boils dry. Since M62.3 the water is a layer
+/// its outlet draws first (docs/DESIGN.md §67.3), so the tank holds less than
+/// one tick's arriving water — about 0.002 % of its mass, where M62.2's mixed
+/// tank held 1.6 % — and still stands on the same bubble point.
 #[test]
 fn the_line_stands_three_phase_after_the_valve_on_the_hand_calculation() {
     let mut engine = build(PLANT);
@@ -78,25 +81,39 @@ fn the_line_stands_three_phase_after_the_valve_on_the_hand_calculation() {
     let s = engine.snapshot();
     let junction = node(&s, "valve_outlet");
     assert!(
-        (junction.temperature_k / 358.739_295_425_816_3 - 1.0).abs() < 1e-9
-            && (junction.pressure_pa / 150_476.651_368_786_35 - 1.0).abs() < 1e-9,
+        (junction.temperature_k / 358.733_320_372_142_1 - 1.0).abs() < 1e-9
+            && (junction.pressure_pa / 150_446.442_817_913_54 - 1.0).abs() < 1e-9,
         "the junction settled at {} K, {} Pa — not the state the script was run at",
         junction.temperature_k,
         junction.pressure_pa
     );
     let q = junction.vapour_fraction.expect("the line boils");
     assert!(
-        (q - 0.127_786_880_6).abs() < 1e-10,
-        "the junction carries {q} of its mass as vapour, the script 0.127 786 880 6"
+        (q - 0.127_814_395_2).abs() < 1e-10,
+        "the junction carries {q} of its mass as vapour, the script 0.127 814 395 2"
     );
 
     let slate = engine.slate.clone();
     let NodeKind::Tank(tank) = &node(&s, "rundown_tank").kind else {
         panic!("the tank is a tank");
     };
-    let water = tank.composition.fractions()[2];
-    assert!(water > 0.01, "the tank holds {water} water: none stands");
+    let water = tank.composition.fractions()[2] * tank.mass.value();
     let x = MoleFractions::from_mass(&tank.composition, &slate).unwrap();
+    assert!(
+        x.standing_water(&slate).is_some(),
+        "the tank holds {water} kg of water: none stands"
+    );
+    let line = &s
+        .edges
+        .iter()
+        .find(|e| e.name == "flash_line")
+        .unwrap()
+        .stream;
+    let arriving = line.mass_flow.value() * line.composition.fractions()[2] * DT;
+    assert!(
+        water < arriving,
+        "the tank holds {water} kg of water, more than the {arriving} kg one tick brings:          its outlet does not draw the water layer first"
+    );
     let thermo = TroutonThermo::new();
     let wet = bubble_temperature(&slate, &thermo, &x, P_ATM, "the tank").unwrap();
     assert!(

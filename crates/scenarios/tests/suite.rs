@@ -175,5 +175,7 @@ mod vapour_recovery_reference;
 mod vapour_recovery_train;
 #[path = "water_properties.rs"]
 mod water_properties;
+#[path = "water_slug_reference.rs"]
+mod water_slug_reference;
 #[path = "wet_rundown_reference.rs"]
 mod wet_rundown_reference;

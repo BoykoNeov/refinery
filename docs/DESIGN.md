@@ -25183,3 +25183,94 @@ the superheated state, the trace counted as water, the line-flash refusal
 disabled, the two-member refusal disabled, the loader dropping the key.
 **Corpus**: 58 of 58 plants byte-identical on both fidelities; `wet_rundown`
 new.
+
+### 67.11 A tank's water layer, built (M62.3)
+
+As §67.3 specifies, with one decision added and one consequence measured. A
+tank's inventory stays one composition as STATE; its free water is a layer under
+the oil, which its outlets and its brim read.
+
+- **`TankState::free_water`, `water_level`, `drawn_composition`, `top_spill`**
+  (`graph.rs`): the layer's mass, its height `m_w/(ρ_w·A)`, what the outlets
+  carry over a tick's draw and what spills over the brim. `level`,
+  `bottom_pressure` and `capacity` are untouched: ideal mixing makes the
+  mixture's volume the sum of the layers', and the floor carries `m·g/A`
+  however the mass is stacked.
+- **One answer for every outlet, from their total draw.** The sweep seeds a
+  wet tank's composition with `drawn_composition` at
+  `PlantGraph::solved_outflow · dt` — the tank's whole solved outflow, engine-
+  written pipes (vent, overflow) left out — so every reader of an outlet (the
+  mixes downstream, the engine's books, the edge write) takes one stream. Two
+  outlets sizing their water share each from its own flow would each claim the
+  whole layer. Pure water while the draw is within the layer; on the tick it
+  runs out, all the water and the oil's share `(drawn − m_w)/(m − m_w)` after
+  it; the inventory itself where no water stands.
+- **The books debit what left.** A tank whose outlets drew its layer
+  (`NodeStates::tank_draw`, the sweep's verdict) is debited component by
+  component, `x·m_old + (in − out)·dt` — M24's starved-tank debit — and with no
+  inflow too, since draining the water moves the fractions. Every other tank
+  keeps `blended_holdup_composition`, untouched.
+- **The solve's densities.** `network::carried_composition` reads a wet tank's
+  outlets at `NodeStates::tank_draw`: the last sweep's draw, over the last
+  tick's flows. Every wet plant flashes, so it re-solves each tick on its own
+  sweep (M55.0) and the draw the solve reads is this tick's by the last pass.
+- **The snapshot**: `NodeSnapshot::water_level_m`, on every tank of a slate
+  with a free-water member (zero while it holds none), absent elsewhere — so
+  58 plants publish the bytes they did.
+
+**Decided while building (the user, 2026-10-17): the brim spills the TOP
+layer.** §67.3 said nothing of the overflow. A wet tank over its brim spills
+oil, at its own fractions, until the liquid's volume is back at `A·H` — the
+excess volume at the oil's own density `ρ_oil`, closed-form under ideal
+mixing — and water only once the oil is gone. The dry overflow keeps M23's rule
+on mass.
+
+**Measured: water settles at once, so a running tank holds almost none.**
+Water that arrives in a tick joins the layer at the tick's end, and the outlet
+draws it first on the next. A tank that is filled and drained together holds
+at most one tick's arriving water. The wet rundown's tank held 1.6 % water by
+mass when M62.2 mixed it through (30.9 kg); it now holds 0.002 % (0.037 kg, a
+0.075 mm layer) — and still stands on its wet bubble point, 74.134 °C against
+74.136 °C, venting 1.096 kg/s against 1.096, its product 1.51 % water against
+1.63 %. A real tank needs minutes to hours for water to fall through oil, and
+its outlet stands above its floor: ledger row B61.
+
+**The water slug** (`scenarios/water_slug.toml`): a crude tank 8 m full of a
+50/50 kerosene and diesel with 4 % free water by mass — 796.8 kg, a 0.2661 m
+layer — drains by gravity through a valve into a second tank. The outlet runs
+pure water for 781 ticks (390.5 s), the last water and the first oil together
+on tick 782 (11.4 % water, exactly what was left over that tick's draw), pure
+oil after; every kilogram of the water reaches the receiving tank's bottom.
+The valve (ISA-75.01) and the line (Darcy–Weisbach) each drop `ΔP ∝ ṁ²/ρ`, so
+`ρ·ΔP/ṁ²` is one constant, 1.30427e7 by hand; the engine holds it to 5e-5 on
+water, on the mixed tick and on oil, and the flow steps down by
+`√(ρ_oil/ρ_w)` = 0.909 when the slug ends (1.99 → 1.81 kg/s).
+
+**Kinks and the solvers**: over 6 000 ticks the slug's worst iterations per
+tick are 8 on Newton and 7 on the game solver; the wet rundown's stay at 9
+and 7.
+
+**Gates**: `crates/core/src/graph.rs`'s `water_layer` tests (3: the outlet's
+draw within, across and past the layer, and none where no water stands or
+the slate has none; the layer's height; the brim spilling oil only, all the
+oil, the water above the brim after it, water alone, and nothing at the brim
+or from a dry tank); `crates/scenarios/tests/water_slug_reference.rs` (7: the
+layer on the hand calculation at load and leaving first, its last tick
+exact; the flow on the valve and the line at the density carried; every
+component's books each tick; the game solver within a tick; a dry tank on a
+wet slate bit for bit against the same plant without `free_water`; two
+outlets drawing one stream and one layer; a wet tank spilling oil over its
+brim, its water untouched); `wet_rundown_reference.rs` re-pinned to the script
+re-run at its moved junction (`free_water_flash.py`, 0.127 814 395 2 vapour
+by mass at 358.733 K and 1.504 bar), the tank holding free water but less
+than one tick's arrival.
+
+**Mutations**: twelve, all caught by their predicted files — no layer, the
+transition's share over the whole inventory, the sweep recording the draw but
+seeding the inventory, the draw sized by inflow, a layered tank booked at its
+start-of-tick fractions, a layered tank with no inflow left undebited, the
+solve reading the inventory, a wet tank spilling its mix, the oil spilled at
+the mixture's density, the spill's composition not debited, the layer's height
+at the mixture's density, the snapshot never reporting it. **Corpus**: 58 of
+60 plants byte-identical on both fidelities; `wet_rundown` moved (the user's
+approval, 2026-10-17), `water_slug` new.

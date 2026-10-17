@@ -336,6 +336,16 @@ pub struct NodeSnapshot {
     /// never runs dry byte-identical.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub running_dry: bool,
+    /// The height [m] of the free-water layer at this tank's bottom (M62.3,
+    /// docs/DESIGN.md §67.3): `m_w/(ρ_w·A)`, under the oil, inside the tank's
+    /// whole level (which is both layers' volumes over its area). Zero while
+    /// the tank holds no water.
+    ///
+    /// **Absent** on every node that is not a tank and on every plant whose
+    /// slate declares no `free_water` member — skipped then, so those plants
+    /// publish the bytes they did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water_level_m: Option<f64>,
     /// A furnace's stack loss [W] over the last tick: the share of its duty
     /// that went up the flue rather than into its coil (M36, docs/DESIGN.md
     /// §40). `duty − flue_loss_w` is what the coil absorbed, so a frontend reads

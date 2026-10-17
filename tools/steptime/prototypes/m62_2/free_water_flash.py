@@ -127,9 +127,12 @@ print(f"  pure water, 1.8 bar: {bisect(lambda t: P - psat_w(t), 250.0, 700.0) - 
 # engine settles it on after 2 000 ticks on the Newton solver — the reference
 # crates/scenarios/tests/wet_rundown_reference.rs holds the plant to. The feed is
 # the supply's 67.9 / 29.1 / 3.0 mass % of light naphtha, heavy naphtha, water.
+# M62.3 moved the state (the tank's outlet draws its water first, so the tank
+# holds less of it and its level and back-pressure shift): 358.7392954 K and
+# 150 476.65 Pa at M62.2, the line below since.
 mass = [0.679, 0.291, 0.03]
 molar_mass = [0.100, 0.130, M_W]
 moles = [w / m for w, m in zip(mass, molar_mass)]
 z = [n / sum(moles) for n in moles]
 report("wet rundown junction, at the engine's (T, P)", z[:2], [80 + 273.15, 150 + 273.15], [0.100, 0.130], z[2],
-       [(358.7392954258163 - 273.15, 150476.65136878635)])
+       [(358.7333203721421 - 273.15, 150446.44281791354)])

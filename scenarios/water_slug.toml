@@ -1,0 +1,101 @@
+# M62.3 demo plant: a WATER SLUG — the water at a tank's bottom leaves first.
+#
+# A crude tank holding a distillate with 4 % free water by mass, drained by
+# gravity through a valve into a second tank: the wired demonstration of
+# docs/DESIGN.md §67.3. Free water never dissolves in the oil, so it stands as
+# a layer under it, and the outlet at the tank's bottom draws that layer first.
+#
+# --- why the plant is shaped like this -------------------------------------
+#
+# 1. THE WATER IS A LAYER, NOT A MIX. The crude tank starts 8 m full, of which
+#    about 0.27 m at the bottom is water (about 800 kg of its 20 t). Its level
+#    is both layers' volumes over its area, and its floor carries their whole
+#    weight, as before; what moves is what its outlet carries.
+#
+# 2. THE OUTLET SENDS WATER UNTIL THE LAYER IS GONE, THEN OIL. Over its first
+#    few hundred seconds the transfer line runs pure water; on the one tick the
+#    layer runs out it carries the last of the water and the first of the oil;
+#    after it, oil only. The receiving tank, which starts with 1 m of dry oil,
+#    gathers the water at its own bottom.
+#
+# 3. THE SLUG SHOWS IN THE FLOW. The valve and the line pass `ṁ = √(ρ·ΔP/C)`
+#    (ISA-75.01 for the valve, Darcy–Weisbach for the line: both drop
+#    `ΔP ∝ ṁ²/ρ`), so at one head the water flows `√(998/~830)`, about 10 %,
+#    faster by mass than the oil behind it — a step down in the flow the tick
+#    the slug ends.
+#
+# 4. NOTHING BOILS. At 30 °C water's vapour pressure (4.2 kPa) and the
+#    distillate's (well under 1 kPa) add up to far below the atmosphere, so
+#    the tanks stand still in temperature and the slug is the only story.
+
+[meta]
+name = "water_slug"
+description = "A crude tank with free water at its bottom drains by gravity into a second tank: the water leaves first."
+
+[simulation]
+dt = 0.5
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+boiloff = "flash"
+line_flash = "equilibrium"
+
+[[components]]
+name = "kerosene"
+tb_c = 200.0
+molar_mass_kg_per_mol = 0.170
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "diesel"
+tb_c = 280.0
+molar_mass_kg_per_mol = 0.230
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 1950.0
+
+[[components]]
+name = "water"
+tb_c = 100.0
+molar_mass_kg_per_mol = 0.018
+density_kg_per_m3 = 998.0
+cp_j_per_kg_k = 4184.0
+dh_vap_j_per_mol = 40650.0
+cp_vapour_j_per_kg_k = 2000.0
+free_water = true
+
+[nodes.crude_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 8.0
+temperature_c = 30.0
+composition = { kerosene = 0.48, diesel = 0.48, water = 0.04 }
+
+[nodes.outlet_valve]
+type = "valve"
+kv = 20.0
+opening = 0.5
+
+[nodes.receiving_tank]
+type = "tank"
+area_m2 = 3.0
+height_m = 10.0
+initial_level_m = 1.0
+temperature_c = 30.0
+composition = { kerosene = 0.5, diesel = 0.5 }
+
+[[pipes]]
+name = "tank_outlet"
+from = "crude_tank"
+to = "outlet_valve"
+length_m = 5.0
+diameter_m = 0.10
+
+[[pipes]]
+name = "transfer_line"
+from = "outlet_valve"
+to = "receiving_tank"
+length_m = 30.0
+diameter_m = 0.10
