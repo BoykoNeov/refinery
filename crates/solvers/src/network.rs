@@ -3476,11 +3476,7 @@ pub fn edge_flows(
 pub fn is_column_draw_edge(graph: &PlantGraph, edge: EdgeId) -> bool {
     // Every pipe of a draw LINE carries the draw too (M62.4b, docs/DESIGN.md
     // §67.13): prescribed, out of the solve, written by the engine.
-    if graph
-        .draw_lines()
-        .iter()
-        .any(|(_, _, line)| line.contains(&edge))
-    {
+    if graph.is_draw_line_edge(edge) {
         return true;
     }
     let (from, to) = graph.endpoints(edge);

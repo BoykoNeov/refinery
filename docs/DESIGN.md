@@ -25560,3 +25560,44 @@ with one approach of each sign, whose log-mean is NaN, which the search already
 reads as too much duty; kept as the stated rule. **Corpus**: 60 of 60 plants
 byte-identical on both fidelities; `product_cooler` new (worst 9 iterations a
 tick on both solvers).
+
+### 67.14 The furnace coil in cells, the pressure falling along it (M62.4c) — specified before building
+
+**Declared, or nothing changes**: a furnace may declare `coil_cells` (an
+integer, at least 2), `coil_length_m` and `coil_diameter_m` together — its coil
+a tube of that length and bore, cut into that many cells. A furnace that
+declares none keeps every byte.
+
+**The cells are nodes, the furnace node the LAST of them.** The loader builds
+`coil_cells − 1` cells ahead of the furnace (`{furnace}__cell_1` …, a new
+zero-volume kind, `NodeKind::CoilCell { furnace }`), the pipes into the furnace
+rewired to the first cell, and the cells and the furnace joined in series by
+segments of the coil's bore (`{furnace}__coil_1` …), the coil's length shared
+equally among them. The furnace node keeps everything it had — its coil metal,
+its duty, its tubes and their burn-out hole on its outlet pipe, its loops,
+trips and commands — and is the coil's OUTLET, which is what every reader of a
+furnace's temperature means. Hydraulically each cell is a pass-through: the
+flow solve finds every cell's pressure, the segments' friction at the stream's
+density there (two-phase where it boils, §58), so the crude enters liquid at the
+coil's inlet pressure and boils partway along as its pressure falls.
+
+**One metal, every cell's own fluid.** The cells and the furnace are one sweep
+vertex. Each cell `i` holds `UA/N` of the coil's conductance and exchanges
+`G_i·(T̄_c − T_in,i)` with the shared metal, `G_i = W·(1 − e^{−UA_i/W})` on the
+stream's liquid capacity rate `W` (Incropera & DeWitt eq. 8.42b, as §37), its
+inlet the previous cell's settled outlet, its outlet settled by the line flash
+at its own pressure. The coil's exact step (§37, §40) runs on the sum,
+`G = ΣG_i`, `T_in` the conductance-weighted mean of the inlets; the fluid takes
+what the first law leaves, `Q + L + F − C·ΔT_c/dt − flue`, shared by `G_i·(T̄_c
+− T_in,i)` with the last cell the remainder, so the books close by construction.
+The inlets depend on the coil's average and the average on the inlets: a fixed
+point, iterated to 1e-9 K (`C` large against `G·dt`, a few iterations). A
+boiling cell's temperature barely moves while it absorbs heat, so the next cell
+sees a colder fluid and takes more: the boiling coil's heat transfer falls out
+of the cells, no stretched capacity in it (decision 9).
+
+**Refused**: the coil keys apart or out of range, by name. A furnace with cells
+is otherwise any furnace. Probe first: the outlet, the coil's metal and the
+coil's pressure drop against the number of cells, on a crude unit whose feed
+enters the coil at a real heater's inlet pressure (the trial plant drops 28 bar
+in its 8 cm feed pipe; that drop belongs in the coil).

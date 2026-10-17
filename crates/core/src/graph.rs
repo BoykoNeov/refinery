@@ -2770,6 +2770,27 @@ impl PlantGraph {
         lines
     }
 
+    /// Whether `edge` is a pipe of a draw LINE (M62.4b, docs/DESIGN.md §67.13).
+    /// Asked of every edge on every pass of a flow solve, so it answers from
+    /// the edge's own ends first: a line pipe leaves a column, a pump or a
+    /// cooler, and every other pipe is refused before any walk.
+    pub fn is_draw_line_edge(&self, edge: EdgeId) -> bool {
+        let (from, _) = self.endpoints(edge);
+        if !matches!(
+            self.node(from).kind,
+            NodeKind::Column { .. }
+                | NodeKind::Pump { .. }
+                | NodeKind::Cooler { .. }
+                | NodeKind::WaterCooler { .. }
+        ) {
+            return false;
+        }
+        self.node_ids().any(|id| match &self.node(id).kind {
+            NodeKind::Column { draws, .. } => draws.iter().any(|d| d.line.contains(&edge)),
+            _ => false,
+        })
+    }
+
     /// The hydrogen pass running through bed `bed`, with its kinetics (M59.1,
     /// docs/DESIGN.md §64.2), or `None` for a bed without one — and for any node
     /// that is not a bed. The loader admits at most one pass per bed; the lowest
