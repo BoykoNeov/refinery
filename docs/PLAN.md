@@ -30,8 +30,9 @@ Ticked when it lands; struck when the user rules it out.
 - [x] **M64.1 — the reboiler held at zero** (done 2026-10-17, DESIGN §69.7): a held reboiler duty, the reflux an
       unknown in Newton; no floor below the feed on such a column only (C8's
       below-the-feed clause, M62 decision 1); every shipped plant byte-identical.
-- [ ] **M64.2 — the cold start**: a continuation from a column that keeps its
-      reboiler.
+- [x] **M64.2 — the cold start** (done 2026-10-17, DESIGN §69.8): a continuation
+      from a column that keeps its reboiler, its side cooling derived from the
+      feed (the user's decision); one continuation a tick.
 - [ ] **M64.3 — the stripped crude unit**: a new plant file, gated on the probe
       and the first law; both fidelities.
 - [ ] **M64.4 — the column screen's fourth plant**, its keys measured; the

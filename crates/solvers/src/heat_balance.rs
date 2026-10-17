@@ -26,7 +26,7 @@
 use refinery_core::components::{Composition, Slate};
 use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
-use refinery_core::graph::CascadeSpec;
+use refinery_core::graph::{CascadeSpec, Pumparound};
 use refinery_core::traits::{
     CascadeProfile, ColumnPass, DrawSeparation, Separation, SeparationModel, ThermoModel,
 };
@@ -86,6 +86,26 @@ const RELAXATION: f64 = 0.5;
 /// cold aid above — the sharp seed, the first iteration on constant molar
 /// overflow, the relaxation — so Newton starts inside the region they reach.
 const COLD_WARM_UP_ITERATIONS: u32 = 30;
+
+/// Newton solves a held column's continuation walks in (M64.2, docs/DESIGN.md
+/// §69.3), from its base's closure to its held duty.
+///
+/// **A convergence aid, measured, not physics**: M64.0's probe walked the
+/// steamed crude unit's 41.8 MW to zero in ten and landed on the warm walk's
+/// answer (§69.0, finding 5).
+const CONTINUATION_STEPS: u32 = 10;
+
+/// The side cooling a held column's base carries over its own, as a share of
+/// the feed's latent heat flow [-] (M64.2, docs/DESIGN.md §69.3; the user's
+/// decision: derived from the feed, no key).
+///
+/// **A convergence aid, measured, not physics**: with none, the base of M64.0's
+/// stripped crude unit refuses once its feed arrives cooler than settled (its
+/// coil started at 405 or 430 °C against 488); with 0.75 to 3 times the feed's
+/// latent heat flow, spread over the stages above the feed or on its three
+/// pumparounds, every start from a coil at 405–512 °C ran and landed on the
+/// same column. M62.0's probe asked for 1.5–2 (§67.0, finding 4).
+const BASE_SIDE_COOLING: f64 = 1.5;
 
 /// Outer iterations of the fixed point when it is solved to convergence on its
 /// own — the reference [`HeatBalanceCascade::fixed_point`] gates Newton
@@ -183,6 +203,14 @@ struct Profile {
 }
 
 impl Profile {
+    /// The stages holding free water — where a solve from this profile starts
+    /// its wet set (§67.17 rule 6). Empty on a dry feed.
+    fn wet_stages(&self) -> Vec<usize> {
+        (0..self.free_water.len())
+            .filter(|j| self.free_water[*j] > 0.0)
+            .collect()
+    }
+
     fn from_solved(solved: Solved) -> Self {
         Self {
             temperatures: solved.temperatures,
@@ -459,8 +487,11 @@ impl HeatBalanceCascade {
         };
 
         // The warm start (M9.3b): both profiles or neither, a wrong-shaped seed
-        // ignored — `StageCascade`'s rules.
-        let warm = pass.seed.filter(|previous| {
+        // ignored — `StageCascade`'s rules. A held column with no last tick
+        // starts from this tick's earlier pass where there is one (M64.2,
+        // docs/DESIGN.md §69.3): its start from nothing costs ten solves.
+        let earlier = spec.reboiler_duty.and(pass.earlier_pass);
+        let warm = pass.seed.or(earlier).filter(|previous| {
             previous.temperatures.len() == plan.stages
                 && previous.liquid.len() == plan.stages
                 && previous.liquid.iter().all(|row| row.len() == slate.len())
@@ -916,6 +947,12 @@ impl HeatBalanceCascade {
         };
         let cause_of =
             |unsolved: &Unsolved| physical_cause(plan, unsolved.flows.as_deref(), setup.feed_molar);
+        // A held column starts by a continuation from the same column with its
+        // reboiler (M64.2, docs/DESIGN.md §69.3): M61's cold start below lands
+        // a column without one nowhere.
+        if let Some(held) = setup.spec.reboiler_duty {
+            return self.continuation(setup, &equations, held.value());
+        }
         let cap = COLD_WARM_UP_ITERATIONS.min(self.max_iterations);
         let state = match self.fixed_point_iterations(setup, None, cap) {
             Ok(state) => state,
@@ -955,6 +992,148 @@ impl HeatBalanceCascade {
                 Err(refusal(&cold.reason, &cause))
             }
         }
+    }
+
+    /// A held column's start from nothing (M64.2, docs/DESIGN.md §69.3): the
+    /// BASE — the same column with its reboiler closing it, at its declared
+    /// reflux and the base pumparounds — solved as M61 solves any column cold;
+    /// then [`CONTINUATION_STEPS`] Newton solves, each from the last, walking
+    /// the held duty from the base's closure to `held` [W] and the pumparounds
+    /// from the base's to the column's own. The last step is the column's own
+    /// equations exactly. A base that refuses, or a step that fails, is a
+    /// refusal naming where the walk stopped.
+    fn continuation(
+        &self,
+        setup: &ColumnSetup<'_>,
+        equations: &ColumnEquations<'_>,
+        held: f64,
+    ) -> Result<Profile, SimError> {
+        let plan = &setup.plan;
+        let refusal = |reason: String, flows: Option<&Flows>| {
+            SimError::Numerical(format!(
+                "heat-balance cascade: a column holding its reboiler at {:.3} MW starts from \
+                 the same column with its reboiler (docs/DESIGN.md §69.3), and {reason}.{}{}",
+                held / 1.0e6,
+                physical_cause(plan, flows, setup.feed_molar),
+                settings_sentence(setup.spec)
+            ))
+        };
+
+        // The base: the declared column, its reboiler closing it.
+        let mut base_plan = plan.clone();
+        base_plan.side_heat = base_side_heat(plan, equations.energy_scale);
+        let base_spec = CascadeSpec {
+            reboiler_duty: None,
+            pumparounds: setup
+                .spec
+                .pumparounds
+                .iter()
+                .map(|pumparound| Pumparound {
+                    stage: pumparound.stage,
+                    duty: Watt(base_plan.side_heat[pumparound.stage as usize - 1]),
+                })
+                .collect(),
+            ..setup.spec.clone()
+        };
+        let base_setup = ColumnSetup {
+            pass: setup.pass,
+            thermo: setup.thermo,
+            spec: &base_spec,
+            plan: base_plan.clone(),
+            feed: setup.feed.clone(),
+            feed_composition: setup.feed_composition.clone(),
+            feed_mass: setup.feed_mass,
+            seed: setup.seed,
+            feed_molar: setup.feed_molar,
+            feed_enthalpy: setup.feed_enthalpy,
+            tolerance: setup.tolerance,
+            water: setup.water.clone(),
+        };
+        let base_equations = ColumnEquations {
+            plan: &base_plan,
+            spec: &base_spec,
+            ..*equations
+        };
+        let cap = COLD_WARM_UP_ITERATIONS.min(self.max_iterations);
+        let state = self
+            .fixed_point_iterations(&base_setup, None, cap)
+            .map_err(|e| refusal(format!("that column could not start: {e}"), None))?;
+        let vapour = state
+            .vapour
+            .clone()
+            .unwrap_or_else(|| vec![setup.feed_molar; plan.stages]);
+        let mut profile = self
+            .newton_with_water(
+                &base_equations,
+                &state.temperatures,
+                &vapour,
+                &draw_rates(plan, &state.draws, setup.feed_mass),
+                None,
+                Vec::new(),
+                &[],
+            )
+            .map_err(|unsolved| {
+                refusal(
+                    format!("that column {}", unsolved.reason),
+                    unsolved.flows.as_deref(),
+                )
+            })?;
+        let start_duty = base_equations
+            .implied_reboiler_duty(
+                &Start {
+                    temperatures: &profile.temperatures,
+                    vapour: &profile.flows.vapour,
+                    draw_rates: &profile_draw_rates(plan, &profile),
+                    free_water: &profile.free_water,
+                },
+                profile.reflux_ratio,
+                &profile.wet_stages(),
+            )
+            .map_err(|e| refusal(format!("its reboiler's duty could not be read: {e}"), None))?;
+
+        // The walk: duty and pumparounds together, a straight line in `λ`.
+        for step in 1..=CONTINUATION_STEPS {
+            let last = step == CONTINUATION_STEPS;
+            let share = f64::from(step) / f64::from(CONTINUATION_STEPS);
+            let duty = start_duty + share * (held - start_duty);
+            let mut step_plan = base_plan.clone();
+            for (heat, target) in step_plan.side_heat.iter_mut().zip(&plan.side_heat) {
+                *heat += share * (target - *heat);
+            }
+            let step_spec = CascadeSpec {
+                reboiler_duty: Some(Watt(duty)),
+                ..setup.spec.clone()
+            };
+            let walked = ColumnEquations {
+                plan: &step_plan,
+                spec: &step_spec,
+                ..*equations
+            };
+            let step_equations = if last { equations } else { &walked };
+            profile = self
+                .newton_with_water(
+                    step_equations,
+                    &profile.temperatures,
+                    &profile.flows.vapour,
+                    &profile_draw_rates(plan, &profile),
+                    Some(profile.reflux_ratio),
+                    profile.wet_stages(),
+                    &profile.free_water,
+                )
+                .map_err(|unsolved| {
+                    refusal(
+                        format!(
+                            "the walk from its closure of {:.3} MW stopped at step {step} of \
+                             {CONTINUATION_STEPS}, the reboiler at {:.3} MW: Newton {}",
+                            start_duty / 1.0e6,
+                            if last { held } else { duty } / 1.0e6,
+                            unsolved.reason
+                        ),
+                        unsolved.flows.as_deref(),
+                    )
+                })?;
+        }
+        Ok(profile)
     }
 
     /// Newton under the wet stages' active set (§67.17 rule 6), around the
@@ -1172,6 +1351,34 @@ fn draw_rates(plan: &CascadePlan, draws: &[DrawState], feed_mass: f64) -> Vec<f6
     (0..plan.mass_ratios.len() - 1)
         .map(|i| plan.mass_ratios[i] * feed_mass / draws[i].mean_molar_mass)
         .collect()
+}
+
+/// Each draw but the bottoms' molar rate [mol/s] as a solved profile ran it:
+/// the distillate the condenser's, every side draw its stage's.
+fn profile_draw_rates(plan: &CascadePlan, profile: &Profile) -> Vec<f64> {
+    (0..plan.mass_ratios.len() - 1)
+        .map(|i| match plan.locations[i] {
+            DrawLocation::Condenser => profile.flows.vapour[0] - profile.flows.reflux,
+            DrawLocation::Stage(j) => profile.flows.liquid_drawn[j],
+        })
+        .collect()
+}
+
+/// The heat each stage's side cooling removes [W] on a held column's base
+/// (M64.2, docs/DESIGN.md §69.3): the column's own pumparounds, and on top of
+/// them [`BASE_SIDE_COOLING`] times the feed's latent heat flow (`energy_scale`,
+/// [W]) spread evenly over the stages between the top and the feed. A column
+/// fed onto its top two stages has none between and takes its own alone.
+fn base_side_heat(plan: &CascadePlan, energy_scale: f64) -> Vec<f64> {
+    let mut heat = plan.side_heat.clone();
+    let between = plan.feed_stage.saturating_sub(1);
+    if between > 0 {
+        let each = BASE_SIDE_COOLING * energy_scale / between as f64;
+        for stage in heat.iter_mut().take(plan.feed_stage).skip(1) {
+            *stage += each;
+        }
+    }
+    heat
 }
 
 /// Pure `component`, as mass fractions — the water draw's composition.
@@ -1487,20 +1694,27 @@ fn water_only_inflow(
 
 /// The settings a player can act on (§65.9): past the crude unit's working
 /// range the solve stops settling, and the settings it was given are the plain
-/// part of the reason.
+/// part of the reason. A held column's reflux is a result, not a setting
+/// (M64, §69.1): its held duty is named instead.
 fn settings_sentence(spec: &CascadeSpec) -> String {
     let duties: Vec<String> = spec
         .pumparounds
         .iter()
         .map(|p| format!("{:.1} MW on stage {}", p.duty.value() / 1e6, p.stage))
         .collect();
+    let (setting, joint) = match spec.reboiler_duty {
+        None => (format!("at reflux ratio {}", spec.reflux_ratio), " with"),
+        Some(duty) => (
+            format!("with its reboiler held at {:.3} MW", duty.value() / 1e6),
+            " and",
+        ),
+    };
     format!(
-        " The column could not settle at reflux ratio {}{} — outside the range it runs in.",
-        spec.reflux_ratio,
+        " The column could not settle {setting}{} — outside the range it runs in.",
         if duties.is_empty() {
             String::new()
         } else {
-            format!(" with its pumparounds at {}", duties.join(", "))
+            format!("{joint} its pumparounds at {}", duties.join(", "))
         }
     )
 }
@@ -1810,6 +2024,7 @@ pub(crate) fn liquid_enthalpy(slate: &Slate, fractions: &[f64], temperature: Kel
 
 /// A column's free water (M62.5, docs/DESIGN.md §67.17): where water sits on
 /// the slate, how much of it the feed brings, and any steam (M62.6, §67.18).
+#[derive(Clone)]
 pub(crate) struct WaterFeed {
     /// The slate's `free_water` member.
     pub(crate) index: usize,
@@ -2224,6 +2439,7 @@ mod tests {
                 temperature,
                 cascade: Some(&spec),
                 seed,
+                earlier_pass: None,
                 steam: None,
             },
             thermo,
@@ -2484,6 +2700,7 @@ mod tests {
                         temperature,
                         cascade: Some(&spec),
                         seed: None,
+                        earlier_pass: None,
                         steam: None,
                     },
                     &thermo,
@@ -2685,6 +2902,7 @@ mod start_tests {
                 temperature: Kelvin(bubble.value() + offset),
                 cascade: Some(&spec),
                 seed,
+                earlier_pass: None,
                 steam: None,
             },
             &thermo,
@@ -2794,6 +3012,7 @@ mod pumparound_tests {
                 temperature: hot,
                 cascade: Some(spec),
                 seed: None,
+                earlier_pass: None,
                 steam: None,
             },
             &thermo,
@@ -3045,6 +3264,7 @@ mod newton_tests {
                 temperature: Kelvin(bubble.value() + offset),
                 cascade: Some(&spec),
                 seed: None,
+                earlier_pass: None,
                 steam: None,
             };
             let newton = HeatBalanceCascade::new()
@@ -3080,6 +3300,7 @@ mod newton_tests {
                     temperature: Kelvin(bubble.value() + 400.0),
                     cascade: Some(&spec),
                     seed: None,
+                    earlier_pass: None,
                     steam: None,
                 },
                 &thermo,
@@ -3136,6 +3357,7 @@ mod newton_tests {
                         temperature: Kelvin(bubble.value() + offset),
                         cascade: Some(&spec),
                         seed,
+                        earlier_pass: None,
                         steam: None,
                     },
                     &thermo,
@@ -3230,6 +3452,7 @@ mod newton_tests {
                     temperature: Kelvin(355.0 + 273.15),
                     cascade: Some(spec),
                     seed,
+                    earlier_pass: None,
                     steam: None,
                 },
                 &TroutonThermo::new(),
@@ -3378,6 +3601,7 @@ mod steam_tests {
                 temperature: Kelvin(273.15 + 230.0),
                 cascade: Some(&spec),
                 seed: None,
+                earlier_pass: None,
                 steam: Some(ColumnSteam {
                     stage,
                     flow: KgPerSec(0.15),

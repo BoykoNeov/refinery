@@ -470,6 +470,30 @@ impl ColumnEquations<'_> {
         })
     }
 
+    /// The reboiler duty [W] a solved column's bottom stage implies — its
+    /// energy balance held at zero, negated (M64.2, docs/DESIGN.md §69.3): where
+    /// the continuation's walk starts. `start` is the solved profile and
+    /// `reflux_ratio` the reflux it ran at.
+    pub(crate) fn implied_reboiler_duty(
+        &self,
+        start: &Start<'_>,
+        reflux_ratio: f64,
+        wet: &[usize],
+    ) -> Result<f64, SimError> {
+        let n = self.plan.stages;
+        let mut u: Vec<f64> = start.temperatures.to_vec();
+        u.extend_from_slice(&start.vapour[1..n]);
+        u.extend_from_slice(start.draw_rates);
+        u.push(reflux_ratio);
+        for j in wet {
+            u.push(start.free_water.get(*j).copied().unwrap_or(0.0));
+        }
+        let evaluation = self.evaluate(&u, Specification::Held(0.0), wet)?;
+        // The held balance follows the other stages' (§69.1): after the n
+        // bubble points and the n − 1 energy balances above it.
+        Ok(-evaluation.residual[2 * n - 1] * self.energy_scale)
+    }
+
     /// Newton from `start` under `specification`, at most `max_iterations`
     /// steps.
     pub(crate) fn solve(

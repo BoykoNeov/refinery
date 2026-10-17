@@ -101,6 +101,7 @@ fn separate(
                 temperature: Kelvin(FEED_C + 273.15),
                 cascade: Some(spec),
                 seed: None,
+                earlier_pass: None,
                 steam,
             },
             &TroutonThermo::new(),

@@ -792,6 +792,17 @@ pub struct ColumnPass<'a> {
     /// within tolerance whatever it holds. `separation_is_start_insensitive`
     /// gates exactly that.
     pub seed: Option<&'a CascadeProfile>,
+    /// THIS tick's earlier pass over this column, on a tick the engine re-solves
+    /// (M55.0's passes, docs/DESIGN.md §60.0) — `None` on a tick's first pass.
+    ///
+    /// The same history argument as `seed`, and the same contract: a hint the
+    /// model is free to ignore, the same fixed point within tolerance whatever
+    /// it holds. Only a column holding its reboiler reads it (M64.2,
+    /// docs/DESIGN.md §69.3): its start from nothing is a continuation that
+    /// costs ten solves, and a tick's later passes start from the first's
+    /// answer instead of paying it again. Every other column ignores it, so
+    /// their passes are what they were to the bit.
+    pub earlier_pass: Option<&'a CascadeProfile>,
     /// The steam arriving on the column's steam inlet this tick (M62.6,
     /// docs/DESIGN.md §67.18), or `None` on a column with none. Never part of
     /// `feed`, `feed_flow` or `temperature`: it enters its own stage.

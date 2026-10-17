@@ -10168,3 +10168,19 @@ after M61's warm-up (M64.2 replaces that start). DESIGN §69.7.
   Mutations: nine, seven caught, two stated (a guard no input reaches; the
   start's reflux, not the answer). Corpus: 64 of 64 byte-identical on both
   fidelities.
+
+### M64.2 — **LANDED** 2026-10-17: the cold start
+
+A held column with nothing to start from is started by a continuation: the
+same column with its reboiler and 1.5 times the feed's latent heat flow of
+side cooling over the stages above the feed (the user's decision: derived
+from the feed, no key), then ten Newton solves walking the held duty and the
+side cooling to the column's own. `ColumnPass::earlier_pass` hands a tick's
+later passes the first's answer, so tick 1 runs one continuation (96–108 ms
+on the stripped probe plant against M64.0's 183–186). A walk that stops is
+refused at the step it stopped. DESIGN §69.8.
+
+- Gates: `reference/held_reboiler.rs` (+4), `held_reboiler_reference.rs` (+3),
+  `separation_contract.rs` (+1). Mutations: eleven, nine caught, two stated
+  (both the walk's path, not its answer). Corpus: 64 of 64 byte-identical on
+  both fidelities.

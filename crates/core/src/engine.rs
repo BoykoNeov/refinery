@@ -1161,7 +1161,7 @@ impl Engine {
         //    step 2b writes prescribed column draw flows back into it once the
         //    feed composition is known — the solver deliberately leaves those at
         //    zero (see `network::edge_flows`).
-        let resolve = |solution: &HydraulicSolution| {
+        let resolve = |solution: &HydraulicSolution, earlier: Option<&energy::NodeStates>| {
             energy::resolve_node_states(
                 &self.graph,
                 &self.slate,
@@ -1174,6 +1174,7 @@ impl Engine {
                 self.line_flash.as_ref(),
                 &solution.node_pressure,
                 &self.node_states,
+                earlier,
                 &solution.starved,
                 dt,
             )
@@ -1188,7 +1189,7 @@ impl Engine {
         //     A tank the solve STARVED is a mixing point here too (M24,
         //     docs/DESIGN.md §28 fork 4): its outflow is the mix of what it held
         //     and what it was fed.
-        let mut node_states = resolve(&solution)?;
+        let mut node_states = resolve(&solution, None)?;
 
         // 1b. The same tick's states, re-solved on (M55.0, docs/DESIGN.md §60.0,
         //     ledger row B50). A zero-volume node has no state of its own: the
@@ -1236,7 +1237,7 @@ impl Engine {
                 .flow_solver
                 .solve(&self.graph, &self.slate, &node_states, dt)?;
             hardest = hardest.max(next.diagnostics.iterations);
-            let next_states = resolve(&next)?;
+            let next_states = resolve(&next, Some(&node_states))?;
             read = Some(std::mem::replace(&mut node_states, next_states));
             solution = next;
             passes += 1;

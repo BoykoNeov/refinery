@@ -26759,3 +26759,69 @@ and the held start's reflux taken as the declared one (the path, not the
 answer: Newton converges to the same column).
 
 **What moved**: nothing shipped — 64 of 64 byte-identical on both fidelities.
+
+### 69.8 The cold start, built (M64.2)
+
+**The user's decision (2026-10-17), fork 3's open clause**: the base's side
+cooling is **derived from the feed, no key** — asked with the measurements
+below, against a labelled setting in the plant file and none at all.
+
+A held column with nothing to start from (no last tick's profile, no earlier
+pass) is started by `HeatBalanceCascade::continuation`. Its base is the same
+column with its reboiler closing it, at its declared reflux, its side cooling
+the column's own pumparounds plus `BASE_SIDE_COOLING = 1.5` times the feed's
+latent heat flow (the column equations' `energy_scale`), spread evenly over
+the stages between the top and the feed; M61's cold warm-up and Newton solve
+it. Its closure is read off its bottom stage (`implied_reboiler_duty`: the
+held balance at zero, negated). Then `CONTINUATION_STEPS = 10` Newton solves,
+each from the last, walk the held duty from that closure to the column's own
+and the side cooling from the base's to the column's, the last step on the
+column's own equations exactly. A base that refuses, or a step that fails, is
+a refusal: "a column holding its reboiler at … MW starts from the same column
+with its reboiler, and …" — the base's own reason, or the walk's closure, the
+step and the duty it reached, with the dry tray where one shows. On a held
+column the settings sentence names the held duty, not the reflux (a result
+there); a declared column's sentence is unchanged.
+
+**One continuation a tick** (decision 3): `ColumnPass::earlier_pass`, new, is
+this tick's earlier pass over the column on a tick the engine re-solves
+(M55.0's passes), `None` on a tick's first; `resolve_node_states` takes the
+last sweep as `earlier`. Only a held column reads it — as its warm start where
+there is no last tick — so every other column's passes are what they were, to
+the bit.
+
+**Measured** (M64.0's stripped probe plant, held at zero, release): every
+start lands on the warm walk's column — the coil at 488 °C gives a bottom of
+383.05 °C at reflux 4.809 (the walk's 383.1 / 4.810), 405 °C gives 348.94 °C,
+512 °C gives 387.97 °C. With no side cooling at the base it refuses from a
+coil at 405 or 430 °C; with 0.75–3 times the feed's latent heat flow (about
+32 MW at 1), on the three pumparounds or spread over the stages above the
+feed, every coil from 405 to 512 °C starts. The continuation runs once in
+tick 1, which took 96–108 ms on the 488 °C plant on a quiet machine (M64.0's
+183–186 ms ran it on all nine sweeps); the later measurements on a busier
+machine read up to 2.5 times that, so read the ratio.
+
+**Gates**: `crates/solvers/tests/reference/held_reboiler.rs` (+4): cold, held
+at zero on its 330 °C feed, the test column lands on the warm walk's column
+(stages within 1e-8 K, measured 2e-11); capped at four Newton steps it starts
+only when handed its earlier pass; a declared column handed one is the column
+handed none, to the bit; at 240 °C the walk stops at step 9 of 10 and the
+refusal names the step, the duty, the dry tray and the held setting.
+`crates/scenarios/tests/held_reboiler_reference.rs` (+3): the stripped plant
+from a 488 °C coil runs its first three ticks at 383.05 °C and 4.809; from a
+405 °C coil it starts on the base's side cooling (348.94 °C); from the shipped
+322 °C coil it is refused on tick 1 (finding 5; a start-up from a cold plant is
+ledger row C15). `crates/solvers/tests/separation_contract.rs` (+1): a
+recording model sees every later pass of the first tick handed the one before
+it and no seed, and the next tick's first pass the last answer as its seed.
+
+**Mutations**: eleven; nine caught (the engine or the sweep dropping the
+earlier pass, a held column ignoring it, every column reading it, the
+continuation skipped, no base side cooling, the closure's sign flipped, a
+one-step walk, the held settings sentence lost). Two survive, both stated:
+the last step taken on the walked equations rather than the column's own
+(equal to the bit at a held zero, where the walk's arithmetic lands exactly),
+and the pumparounds jumped to the column's at the first step (the path, not
+the answer: the walk still converges to the same column).
+
+**What moved**: nothing shipped — 64 of 64 byte-identical on both fidelities.

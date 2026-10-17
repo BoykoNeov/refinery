@@ -1450,6 +1450,10 @@ pub fn swept_density_change(
 /// solve's own list (`HydraulicSolution::starved`), empty on every tick that
 /// starves nothing — and then this sweep is the pre-M24 one to the bit.
 ///
+/// `earlier` is this tick's last sweep on a tick the engine re-solves, `None`
+/// on its first: only its columns' profiles are read, as
+/// `ColumnPass::earlier_pass` (M64.2, docs/DESIGN.md §69.3).
+///
 /// # Errors
 /// `SimError::Numerical` if a recycle among zero-volume nodes leaves the sweep
 /// with no valid order (see the module docs) — with its own message when the
@@ -1469,6 +1473,7 @@ pub fn resolve_node_states(
     line_flash: &dyn LineFlashModel,
     node_pressure: &BTreeMap<NodeId, Pascal>,
     previous: &NodeStates,
+    earlier: Option<&NodeStates>,
     starved: &BTreeMap<NodeId, StarvedTank>,
     dt: Seconds,
 ) -> Result<NodeStates, SimError> {
@@ -2141,6 +2146,11 @@ pub fn resolve_node_states(
                                         .column_separation
                                         .get(&id)
                                         .and_then(|previous| previous.profile.as_ref()),
+                                    // This tick's earlier pass, on a re-solve
+                                    // (M64.2, docs/DESIGN.md §69.3).
+                                    earlier_pass: earlier
+                                        .and_then(|earlier| earlier.column_separation.get(&id))
+                                        .and_then(|earlier| earlier.profile.as_ref()),
                                     steam,
                                 },
                                 thermo,
@@ -4525,6 +4535,7 @@ mod tests {
             &NoLineFlashStub,
             &everywhere_atmospheric(graph),
             &NodeStates::default(),
+            None,
             &BTreeMap::new(),
             Seconds(1.0),
         )
@@ -4549,6 +4560,7 @@ mod tests {
             &NoLineFlashStub,
             &everywhere_atmospheric(graph),
             &NodeStates::default(),
+            None,
             &BTreeMap::new(),
             Seconds(1.0),
         )
@@ -4737,6 +4749,7 @@ mod tests {
                 &NoLineFlashStub,
                 &everywhere_atmospheric(&g),
                 &previous,
+                None,
                 &BTreeMap::new(),
                 Seconds(1.0),
             )
@@ -5260,6 +5273,7 @@ mod tests {
             &NoLineFlashStub,
             &everywhere_atmospheric(&g),
             &previous,
+            None,
             &BTreeMap::new(),
             Seconds(1.0),
         )
@@ -5587,6 +5601,7 @@ mod tests {
                 &NoLineFlashStub,
                 &everywhere_atmospheric(&g),
                 &NodeStates::default(),
+                None,
                 &BTreeMap::new(),
                 Seconds(1.0),
             )
@@ -5677,6 +5692,7 @@ mod tests {
                 &NoLineFlashStub,
                 &everywhere_atmospheric(&g),
                 &NodeStates::default(),
+                None,
                 &BTreeMap::new(),
                 Seconds(1.0),
             )
@@ -5850,6 +5866,7 @@ mod tests {
                 &NoLineFlashStub,
                 &everywhere_atmospheric(g),
                 previous,
+                None,
                 &BTreeMap::new(),
                 Seconds(dt),
             )

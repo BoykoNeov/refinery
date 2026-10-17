@@ -248,3 +248,82 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
     );
     let _ = slate; // the guard fires before any slate-dependent work
 }
+
+/// What one `separate` call was handed: the last tick's profile and this tick's
+/// earlier pass, each read by the marker its first stage temperature carries.
+type Handed = (Option<f64>, Option<f64>);
+
+/// A model that splits its feed in half and records what each call was handed,
+/// its profile marked with the call's own number so a later call can say whose
+/// profile reached it.
+struct Recorder(std::sync::Arc<std::sync::Mutex<Vec<Handed>>>);
+impl SeparationModel for Recorder {
+    fn name(&self) -> &'static str {
+        "test-recorder"
+    }
+    fn separate(
+        &self,
+        pass: &ColumnPass<'_>,
+        _thermo: &dyn ThermoModel,
+    ) -> Result<Separation, SimError> {
+        let marker = |profile: Option<&refinery_core::traits::CascadeProfile>| {
+            profile.map(|p| p.temperatures[0].value())
+        };
+        let mut calls = self.0.lock().unwrap();
+        calls.push((marker(pass.seed), marker(pass.earlier_pass)));
+        let call = calls.len() as f64;
+        let half = DrawSeparation {
+            split: 0.5,
+            composition: pass.feed.clone(),
+            temperature: pass.temperature,
+        };
+        Ok(Separation {
+            profile: Some(refinery_core::traits::CascadeProfile {
+                temperatures: vec![Kelvin(call)],
+                liquid: vec![vec![0.5, 0.5]],
+                vapour: Vec::new(),
+                free_water: Vec::new(),
+                reflux_ratio: None,
+            }),
+            draws: vec![half.clone(), half],
+            condenser_duty: None,
+            reboiler_duty: None,
+            feed_vapour_fraction: None,
+            reflux_ratio: None,
+            water_flooded: None,
+        })
+    }
+}
+
+/// **A tick's later pass is handed its earlier one** (M64.2, docs/DESIGN.md
+/// §69.3): the first tick re-solves (M55.0), and every pass after its first
+/// gets the pass just before it as `earlier_pass`, beside no `seed` — there is
+/// no last tick. The next tick's first pass gets the last tick's answer as its
+/// `seed` and no earlier pass.
+///
+/// THE MUTATION THIS EXISTS FOR: the engine handing `None` on its re-solves.
+/// A held column then pays its ten-solve continuation on every pass of its
+/// first tick, and nothing but the wall clock would say so.
+#[test]
+fn a_later_pass_is_handed_the_earlier_one() {
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut engine = engine_with(Box::new(Recorder(calls.clone())));
+    engine.tick().unwrap();
+    let first: Vec<Handed> = calls.lock().unwrap().clone();
+    assert!(
+        first.len() >= 2,
+        "the first tick re-solves at least once: {first:?}"
+    );
+    assert_eq!(first[0], (None, None), "a tick's first pass: {first:?}");
+    for (pass, handed) in first.iter().enumerate().skip(1) {
+        assert_eq!(*handed, (None, Some(pass as f64)), "pass {pass}: {first:?}");
+    }
+
+    engine.tick().unwrap();
+    let second = calls.lock().unwrap()[first.len()];
+    assert_eq!(
+        second,
+        (Some(first.len() as f64), None),
+        "the next tick's first pass"
+    );
+}

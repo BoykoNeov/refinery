@@ -767,6 +767,7 @@ pub(crate) struct Flows {
 
 /// Everything about a cascade column that does not change between iterations: the
 /// validated geometry, the draw locations, and the mass ratios.
+#[derive(Clone)]
 pub(crate) struct CascadePlan {
     pub(crate) stages: usize,
     /// Zero-based index of the feed stage.
@@ -1617,6 +1618,7 @@ mod tests {
                 temperature: Kelvin(FEED_BUBBLE_K),
                 cascade: spec,
                 seed: None,
+                earlier_pass: None,
                 steam: None,
             },
             &thermo,
@@ -1849,6 +1851,7 @@ mod tests {
                     temperature: Kelvin(400.0),
                     cascade: None,
                     seed: None,
+                    earlier_pass: None,
                     steam: None,
                 },
                 &thermo(&slate),
@@ -2069,6 +2072,7 @@ mod tests {
                     temperature: saturated_feed(&wide_slate, &wide_thermo, &feed),
                     cascade: Some(&spec),
                     seed: None,
+                    earlier_pass: None,
                     steam: None,
                 },
                 &wide_thermo,
@@ -2120,6 +2124,7 @@ mod tests {
                 temperature: Kelvin(400.0),
                 cascade: Some(&spec),
                 seed: None,
+                earlier_pass: None,
                 steam: None,
             },
             &crate::ConstantThermo,
@@ -2152,6 +2157,7 @@ mod tests {
                 temperature: Kelvin(FEED_BUBBLE_K + offset),
                 cascade: Some(&spec),
                 seed: None,
+                earlier_pass: None,
                 steam: None,
             },
             &thermo,
@@ -2327,6 +2333,7 @@ mod tests {
                         temperature: Kelvin(FEED_BUBBLE_K + offset),
                         cascade: Some(&spec),
                         seed: None,
+                        earlier_pass: None,
                         steam: None,
                     },
                     &thermo,
@@ -2413,6 +2420,7 @@ mod tests {
                         temperature: saturated_feed(&slate, &thermo, &feed),
                         cascade: Some(&spec),
                         seed: None,
+                        earlier_pass: None,
                         steam: None,
                     },
                     &thermo,
