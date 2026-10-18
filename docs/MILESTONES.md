@@ -32,7 +32,8 @@ to reality": a flash zone; the crude's water changeable by command.
   flashed adiabatically, the oil's liquid to the bottoms at the flash
   temperature and its vapour to the top draw, the empty lines standing full of
   liquid; M63.4's rule below the feed's bubble point; a flooding feed skips the
-  halvings (525 → 20 ms a tick). The crude unit separates to 15 % water and
+  halvings (525 → 20 ms a tick; made without asking, then kept by the user,
+  "keep it if it is realistic"). The crude unit separates to 15 % water and
   floods from 20 %, running to 80 %.
 - **M65.3, a supply's composition by command** (§70.9):
   `SetSourceComposition`, refused across a phase change and where the liquid

@@ -27156,6 +27156,15 @@ temperature. So:
    column fed that much water does not fractionate. So the crude unit at 15–40
    % water, which M65.1's halvings separated (§70.0, finding 6), floods instead
    wherever its plain cold start refuses — from 20 % on the probe's crude.
+   Made without asking, then put to the user with both consequences; their
+   answer: **"Keep it if it is realistic"**. Neither is fully: no refinery runs
+   a crude 15–40 % water steadily (desalting keeps it under ~0.5 %), and what
+   such water does to a real column is a transient — the slug flashing to
+   steam, a pressure surge, trays damaged, separation lost for a while. A
+   column that stops fractionating is the closer stand-in for that upset than
+   one separating cleanly at 30 % water, so it stands. The optimism left is
+   the other way: between about 5 and 15 % the column still separates cleanly
+   (C16).
 
 Not modelled: tray damage and the pressure surge of a water slug flashing (the
 column's pressure is pinned), entrainment, a pump's own two-phase trouble on a
