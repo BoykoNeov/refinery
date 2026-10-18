@@ -39,7 +39,7 @@ use crate::cascade::{
     DrawState, Flows, COMPONENT_RESIDUAL_KG_PER_S,
 };
 use crate::column_newton::{ColumnEquations, Solved, Specification, Start, Unsolved};
-use crate::flash::flash_isothermal;
+use crate::flash::{flash_isothermal, FlashResult};
 use crate::line_flash::flash_on_the_line;
 use crate::molar::MoleFractions;
 
@@ -940,8 +940,11 @@ impl HeatBalanceCascade {
             Err(refused) => refused,
         };
         // A cold start that refuses starts again from its pumparounds halved
-        // (M65.1, docs/DESIGN.md §70.1); a column with none has nothing to halve.
-        if plan.side_heat.iter().all(|heat| *heat == 0.0) {
+        // (M65.1, docs/DESIGN.md §70.1); a column with none has nothing to halve,
+        // and a feed wet enough to flood floods (M65.2, §70.2) — its halvings
+        // cost half a second a tick on the flooded crude unit, and a column fed
+        // that much water does not fractionate.
+        if plan.side_heat.iter().all(|heat| *heat == 0.0) || flooding(setup.pass).is_some() {
             return Err(refused);
         }
         self.halved_start(setup, &equations)
@@ -1654,15 +1657,73 @@ fn oil_free_feed(
 /// column's does.
 pub const FLOODED_WATER_SHARE: f64 = 0.15;
 
+/// What a flooded column's pass-through needs of its pass, or `None` where it
+/// would not pass the feed through: no free water on the slate, no cascade or
+/// no water draw, a plan or a steam rate that does not read, or the feed's free
+/// water and the steam together under [`FLOODED_WATER_SHARE`] of the inflow.
+/// The cold start's halvings ask it too (M65.2, docs/DESIGN.md §70.2): a feed
+/// that would flood is not retried.
+struct Flooding<'a> {
+    index: usize,
+    spec: &'a CascadeSpec,
+    at: usize,
+    plan: CascadePlan,
+    steam: Option<SteamWater>,
+    feed_flow: f64,
+    throughput: f64,
+    molar_mass: f64,
+    feed_water: f64,
+    water_mass: f64,
+}
+
+fn flooding<'a>(pass: &ColumnPass<'a>) -> Option<Flooding<'a>> {
+    let slate = pass.slate;
+    let (Some(index), Some(spec)) = (slate.free_water(), pass.cascade) else {
+        return None;
+    };
+    let Ok((oil_draws, Some(at))) = split_water_draw(pass.draws) else {
+        return None;
+    };
+    let plan = CascadePlan::new(spec, &oil_draws, slate.len()).ok()?;
+    let steam = steam_water(pass, slate, &plan, Some((at, index))).ok()?;
+    let feed_flow = pass.feed_flow.value();
+    let throughput = pass.throughput().value();
+    let molar_mass = slate.get(index).molar_mass.value();
+    let feed_water = feed_flow * pass.feed.fractions()[index];
+    let water_mass = feed_water + steam.map_or(0.0, |s| s.molar * molar_mass);
+    if !throughput.is_finite() || throughput <= 0.0 || water_mass / throughput < FLOODED_WATER_SHARE
+    {
+        return None;
+    }
+    Some(Flooding {
+        index,
+        spec,
+        at,
+        plan,
+        steam,
+        feed_flow,
+        throughput,
+        molar_mass,
+        feed_water,
+        water_mass,
+    })
+}
+
 /// A column whose solve refused a feed at least `FLOODED_WATER_SHARE` water
 /// (M63.4, docs/DESIGN.md §68.4) — a tank's water slug running out, the one
 /// tick it sends its last water and its first oil together (M62.3; ledger row
 /// C13) — answered rather than halted: the column does not fractionate this
 /// tick. Every drop of water, the feed's and the steam's, leaves by the water
 /// draw at water's bubble point at the column's pressure, boiled up and
-/// condensed as `water_only_inflow` takes it; the oil falls to the bottoms
-/// whole, at the feed's temperature, carrying its own heat; the other draws
-/// carry nothing. The refusal rides the answer (`Separation::water_flooded`),
+/// condensed as `water_only_inflow` takes it. The oil, below the feed's bubble
+/// point, falls to the bottoms whole at the feed's temperature, carrying its
+/// own heat, and the other draws carry nothing (M63.4). Above it the column is
+/// a flash zone with no trays (M65.2, §70.2): the whole feed flashes
+/// adiabatically at the column's pressure, as the feed's flash share is read
+/// every tick; the oil's liquid falls to the bottoms at the flash temperature,
+/// its vapour is condensed to the top draw at its bubble point, the other draws
+/// stand full of the bottoms' liquid, not moving, and the condenser takes what
+/// the oil gives up. The refusal rides the answer (`Separation::water_flooded`),
 /// so a pass-through never hides a cause that is not the water.
 ///
 /// Anything short of that — a drier feed, no water draw, no free water on the
@@ -1673,27 +1734,21 @@ fn flooded_pass_through(
     refusal: SimError,
 ) -> Result<Separation, SimError> {
     let slate = pass.slate;
-    let (Some(index), Some(spec)) = (slate.free_water(), pass.cascade) else {
+    let Some(Flooding {
+        index,
+        spec,
+        at,
+        plan,
+        steam,
+        feed_flow,
+        throughput,
+        molar_mass,
+        feed_water,
+        water_mass,
+    }) = flooding(pass)
+    else {
         return Err(refusal);
     };
-    let Ok((oil_draws, Some(at))) = split_water_draw(pass.draws) else {
-        return Err(refusal);
-    };
-    let Ok(plan) = CascadePlan::new(spec, &oil_draws, slate.len()) else {
-        return Err(refusal);
-    };
-    let Ok(steam) = steam_water(pass, slate, &plan, Some((at, index))) else {
-        return Err(refusal);
-    };
-    let feed_flow = pass.feed_flow.value();
-    let throughput = pass.throughput().value();
-    let molar_mass = slate.get(index).molar_mass.value();
-    let feed_water = feed_flow * pass.feed.fractions()[index];
-    let water_mass = feed_water + steam.map_or(0.0, |s| s.molar * molar_mass);
-    if !throughput.is_finite() || throughput <= 0.0 || water_mass / throughput < FLOODED_WATER_SHARE
-    {
-        return Err(refusal);
-    }
     let oil_mass = feed_flow - feed_water;
     let oil: Vec<f64> = pass
         .feed
@@ -1726,6 +1781,61 @@ fn flooded_pass_through(
     }
 
     let bottoms = plan.mass_ratios.len() - 1;
+    let whole = MoleFractions::from_mass(pass.feed, slate)?;
+    let feed_bubble = bubble_temperature(slate, thermo, &whole, pass.pressure, "the feed")?;
+    if oil_mass > 0.0 && pass.temperature.value() > feed_bubble.value() {
+        let Some(top) = plan
+            .locations
+            .iter()
+            .position(|location| matches!(location, DrawLocation::Condenser))
+        else {
+            // A flashing feed with no top draw has nowhere to send its vapour.
+            return Err(refusal);
+        };
+        let zone = FlashZone::new(pass, thermo, &whole, feed_bubble, index, &oil)?;
+        let condenser = condenser + zone.condenser;
+        if !condenser.is_finite() || condenser < 0.0 {
+            return Err(refusal);
+        }
+        let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
+            .map(|_| DrawSeparation {
+                split: 0.0,
+                composition: zone.standing.0.clone(),
+                temperature: zone.standing.1,
+            })
+            .collect();
+        if zone.bottoms_mass > 0.0 {
+            draws[bottoms] = DrawSeparation {
+                split: zone.bottoms_mass / throughput,
+                composition: zone.bottoms.clone(),
+                temperature: zone.temperature,
+            };
+        }
+        if let Some((mass, composition, temperature)) = zone.overhead {
+            draws[top] = DrawSeparation {
+                split: mass / throughput,
+                composition,
+                temperature,
+            };
+        }
+        draws.insert(
+            at,
+            DrawSeparation {
+                split: water_mass / throughput,
+                composition: pure(slate, index)?,
+                temperature: boiling,
+            },
+        );
+        return Ok(Separation {
+            draws,
+            profile: None,
+            condenser_duty: Some(Watt(condenser)),
+            reboiler_duty: Some(Watt(reboiler)),
+            feed_vapour_fraction: None,
+            reflux_ratio: Some(spec.reflux_ratio),
+            water_flooded: Some(refusal.to_string()),
+        });
+    }
     let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
         .map(|_| DrawSeparation {
             split: 0.0,
@@ -1757,6 +1867,114 @@ fn flooded_pass_through(
         reflux_ratio: Some(spec.reflux_ratio),
         water_flooded: Some(refusal.to_string()),
     })
+}
+
+/// A flooded column's flash zone (M65.2, docs/DESIGN.md §70.2): the whole feed
+/// flashed adiabatically at the column's pressure, the oil split by it.
+struct FlashZone {
+    /// The flash temperature [K]: the bottoms' and every standing draw's.
+    temperature: Kelvin,
+    /// The oil's liquid [kg/s] and its composition.
+    bottoms_mass: f64,
+    bottoms: Composition,
+    /// The oil's vapour condensed: [kg/s], composition, and its bubble point
+    /// at the column's pressure [K]. `None` when no oil flashes.
+    overhead: Option<(f64, Composition, Kelvin)>,
+    /// What an empty draw's line stands full of, and at what temperature [K]:
+    /// the bottoms' liquid at the flash temperature (below its own bubble point
+    /// at the column's pressure: it boiled at the oil's partial pressure), or,
+    /// where every drop of oil flashed, the overhead condensed at its bubble
+    /// point.
+    standing: (Composition, Kelvin),
+    /// The heat the oil gives up to the condenser [W]: its inflow on the
+    /// engine's liquid datum less the bottoms' and the overhead's outflows.
+    condenser: f64,
+}
+
+impl FlashZone {
+    fn new(
+        pass: &ColumnPass<'_>,
+        thermo: &dyn ThermoModel,
+        whole: &MoleFractions,
+        bubble: Kelvin,
+        water: usize,
+        oil: &[f64],
+    ) -> Result<Self, SimError> {
+        let slate = pass.slate;
+        let root = Kelvin(adiabatic_flash_temperature(
+            slate,
+            thermo,
+            whole,
+            pass.temperature,
+            bubble,
+            pass.pressure,
+        )?);
+        let flash = feed_flash(slate, thermo, whole, root, pass.pressure)?;
+        // Moles of feed per second; each cut's liquid `(1 - beta)·x` of them,
+        // the rest of the cut its vapour, so the oil's books close by
+        // construction.
+        let feed_flow = pass.feed_flow.value();
+        let feed_molar = feed_flow / whole.mean_molar_mass(slate).value();
+        let beta = flash.vapour_fraction;
+        let mut liquid = vec![0.0; slate.len()];
+        let mut vapour = vec![0.0; slate.len()];
+        for c in (0..slate.len()).filter(|&c| c != water) {
+            let cut = feed_flow * oil[c];
+            let held = (feed_molar
+                * (1.0 - beta)
+                * flash.liquid.fractions()[c]
+                * slate.get(c).molar_mass.value())
+            .clamp(0.0, cut);
+            liquid[c] = held;
+            vapour[c] = cut - held;
+        }
+        let bottoms_mass: f64 = liquid.iter().sum();
+        let overhead_mass: f64 = vapour.iter().sum();
+        // A stream's enthalpy flux on the engine's liquid datum [W]:
+        // `Σ m·cp·(T − T_REF)`, `energy::enthalpy_flux`'s for a liquid.
+        let datum = |masses: &[f64], t: Kelvin| -> Result<f64, SimError> {
+            let mass: f64 = masses.iter().sum();
+            if mass <= 0.0 {
+                return Ok(0.0);
+            }
+            Ok(mass
+                * Composition::from_weights(masses)?.mixture_cp(slate).value()
+                * (t.value() - T_REF.value()))
+        };
+        let inflow: Vec<f64> = oil.iter().map(|x| x * feed_flow).collect();
+        let mut condenser = datum(&inflow, pass.temperature)? - datum(&liquid, root)?;
+        let overhead = if overhead_mass > 0.0 {
+            let composition = Composition::from_weights(&vapour)?;
+            let condensed = bubble_temperature(
+                slate,
+                thermo,
+                &MoleFractions::from_mass(&composition, slate)?,
+                pass.pressure,
+                "the flooded column's overhead",
+            )?;
+            condenser -= datum(&vapour, condensed)?;
+            Some((overhead_mass, composition, condensed))
+        } else {
+            None
+        };
+        let (bottoms, standing) = match &overhead {
+            Some((_, composition, condensed)) if bottoms_mass <= 0.0 => {
+                (composition.clone(), (composition.clone(), *condensed))
+            }
+            _ => {
+                let bottoms = Composition::from_weights(&liquid)?;
+                (bottoms.clone(), (bottoms, root))
+            }
+        };
+        Ok(FlashZone {
+            temperature: root,
+            bottoms_mass,
+            standing,
+            bottoms,
+            overhead,
+            condenser,
+        })
+    }
 }
 
 /// The steam the column takes this tick (M62.6, docs/DESIGN.md §67.18), or
@@ -2487,41 +2705,77 @@ fn adiabatic_flash_share(
     bubble: Kelvin,
     pressure: Pascal,
 ) -> Result<f64, SimError> {
-    let feed_temperature = temperature.value();
-    if feed_temperature <= bubble.value() {
+    if temperature.value() <= bubble.value() {
         return Ok(0.0);
     }
-    let heat_capacity = mixture_molar_cp(slate, feed.fractions());
-    let energy_share = |t: f64| -> Result<(f64, f64), SimError> {
-        // A feed with free water flashes by the free-water flash (§67.17 rule
-        // 11); every other feed by the flash it always took.
-        let flash = match feed.standing_water(slate) {
-            None => flash_isothermal(feed, slate, thermo, Kelvin(t), pressure)?,
-            Some(_) => flash_on_the_line(feed, slate, thermo, Kelvin(t), pressure)?,
-        };
-        let latent = mixture_dh_vap(slate, thermo, flash.vapour.fractions(), Kelvin(t))?;
-        Ok((
-            flash.vapour_fraction,
-            heat_capacity * (feed_temperature - t) / latent,
-        ))
-    };
-    let (mut low, mut high) = (bubble.value(), feed_temperature);
-    for _ in 0..FLASH_TEMPERATURE_HALVINGS {
-        let middle = 0.5 * (low + high);
-        let (flashed, paid_for) = energy_share(middle)?;
-        if flashed < paid_for {
-            low = middle;
-        } else {
-            high = middle;
-        }
-    }
-    let (_, share) = energy_share(0.5 * (low + high))?;
+    let root = adiabatic_flash_temperature(slate, thermo, feed, temperature, bubble, pressure)?;
+    let (_, share) = flash_energy_share(slate, thermo, feed, temperature, pressure, root)?;
     if !share.is_finite() {
         return Err(SimError::Numerical(format!(
             "heat-balance cascade: the feed's flash share came out as {share}"
         )));
     }
     Ok(share.clamp(0.0, 1.0))
+}
+
+/// The flash temperature `T*` [K] of a feed above its `bubble` point (M65.2,
+/// split out of [`adiabatic_flash_share`], its arithmetic unchanged): the root,
+/// by bisection between the bubble point and the feed's temperature, of the
+/// isothermal flash's vapour share against the share the sensible heat pays for.
+fn adiabatic_flash_temperature(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    feed: &MoleFractions,
+    temperature: Kelvin,
+    bubble: Kelvin,
+    pressure: Pascal,
+) -> Result<f64, SimError> {
+    let (mut low, mut high) = (bubble.value(), temperature.value());
+    for _ in 0..FLASH_TEMPERATURE_HALVINGS {
+        let middle = 0.5 * (low + high);
+        let (flashed, paid_for) =
+            flash_energy_share(slate, thermo, feed, temperature, pressure, middle)?;
+        if flashed < paid_for {
+            low = middle;
+        } else {
+            high = middle;
+        }
+    }
+    Ok(0.5 * (low + high))
+}
+
+/// At a trial flash temperature `t` [K]: the isothermal flash's vapour share and
+/// the share the feed's sensible heat from `temperature` down to `t` pays for.
+fn flash_energy_share(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    feed: &MoleFractions,
+    temperature: Kelvin,
+    pressure: Pascal,
+    t: f64,
+) -> Result<(f64, f64), SimError> {
+    let heat_capacity = mixture_molar_cp(slate, feed.fractions());
+    let flash = feed_flash(slate, thermo, feed, Kelvin(t), pressure)?;
+    let latent = mixture_dh_vap(slate, thermo, flash.vapour.fractions(), Kelvin(t))?;
+    Ok((
+        flash.vapour_fraction,
+        heat_capacity * (temperature.value() - t) / latent,
+    ))
+}
+
+/// A column feed's isothermal flash: a feed with free water by the free-water
+/// flash (§67.17 rule 11); every other feed by the flash it always took.
+fn feed_flash(
+    slate: &Slate,
+    thermo: &dyn ThermoModel,
+    feed: &MoleFractions,
+    temperature: Kelvin,
+    pressure: Pascal,
+) -> Result<FlashResult, SimError> {
+    match feed.standing_water(slate) {
+        None => flash_isothermal(feed, slate, thermo, temperature, pressure),
+        Some(_) => flash_on_the_line(feed, slate, thermo, temperature, pressure),
+    }
 }
 
 /// The heat-balance cascade's own gates (M60.1, docs/DESIGN.md §65.6). The

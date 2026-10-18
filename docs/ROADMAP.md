@@ -10275,3 +10275,21 @@ DESIGN §70.7.
 - Gates: `reference/halved_start.rs` (3), `wetter_crude_reference.rs` (6).
   Mutations: six, six caught (one gate rewritten after its first pass let one
   through). Corpus: 65 of 65 byte-identical on both fidelities.
+
+### M65.2 — **LANDED** 2026-10-18: a flooded column as a flash zone
+
+The probe found M63.4's flood halting the crude unit twice over: its empty
+pumped lines read the hot feed's density, and its residue pump was handed the
+whole oil at the feed's ~650 K, a boiling stream. The user's decision: "do
+what is closer to reality". A flooded feed above its bubble point now flashes
+as a flash zone with no trays — the whole feed adiabatically at the column's
+pressure, each oil cut's liquid to the bottoms at the flash temperature, its
+vapour condensed to the top draw, the empty lines standing full of liquid, the
+condenser balancing the books; below its bubble point M63.4's rule stands to the
+bit. A feed wet enough to flood skips M65.1's halvings (525 ms a flooded tick
+against 20). The crude unit separates to 15 % water and floods from 20 %,
+running to 80 %. DESIGN §70.2, §70.8; probe in `tools/steptime/prototypes/m65_2/`.
+
+- Gates: `reference/flooded_column.rs` (two rewritten, one new),
+  `wetter_crude_reference.rs` (+3). Mutations: seven, seven caught. Corpus: 65
+  of 65 byte-identical on both fidelities.

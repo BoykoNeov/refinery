@@ -1,0 +1,61 @@
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index de3d3cc..c31d91f 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -1726,18 +1726,30 @@ fn flooded_pass_through(
+     }
+ 
+     let bottoms = plan.mass_ratios.len() - 1;
++    let bubble_mode = std::env::var("M65_BUBBLE").is_ok() && oil_mass > 0.0;
++    let (oil_t, extra) = if bubble_mode {
++        let oil_c = Composition::from_weights(&oil)?;
++        let t = bubble_temperature(slate, thermo, &MoleFractions::from_mass(&oil_c, slate)?, pass.pressure, "the oil")?;
++        let cp = oil_c.mixture_cp(slate).value();
++        let t = Kelvin(t.value().min(pass.temperature.value()));
++        eprintln!("M65PROBE flooded oil {oil_mass:.2} kg/s at {:.1} C (feed {:.1} C), condenser +{:.2} MW", t.value()-273.15, pass.temperature.value()-273.15, oil_mass*cp*(pass.temperature.value()-t.value())/1e6);
++        (t, oil_mass * cp * (pass.temperature.value() - t.value()))
++    } else {
++        (pass.temperature, 0.0)
++    };
++    let condenser = condenser + extra;
+     let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
+         .map(|_| DrawSeparation {
+             split: 0.0,
+-            composition: pass.feed.clone(),
+-            temperature: pass.temperature,
++            composition: if bubble_mode { Composition::from_weights(&oil).unwrap_or(pass.feed.clone()) } else { pass.feed.clone() },
++            temperature: oil_t,
+         })
+         .collect();
+     if oil_mass > 0.0 {
+         draws[bottoms] = DrawSeparation {
+             split: oil_mass / throughput,
+             composition: Composition::from_weights(&oil)?,
+-            temperature: pass.temperature,
++            temperature: oil_t,
+         };
+     }
+     draws.insert(
+diff --git a/crates/solvers/src/network.rs b/crates/solvers/src/network.rs
+index b5488fc..35696b9 100644
+--- a/crates/solvers/src/network.rs
++++ b/crates/solvers/src/network.rs
+@@ -1777,6 +1777,9 @@ fn drawn_state<'a>(
+             .get(&column)
+             .and_then(|separation| separation.draws.get(index))
+         {
++            Some(draw) if draw.split == 0.0 && std::env::var("M65_HOLD").is_ok() => {
++                (&pipe.stream.composition, pipe.stream.temperature)
++            }
+             Some(draw) => (&draw.composition, draw.temperature),
+             None => (&pipe.stream.composition, pipe.stream.temperature),
+         },
+@@ -4659,7 +4662,7 @@ pub fn march_draw_lines(
+                     graph.node(tgt).name
+                 ))
+             })?;
+-            if next < store {
++            if next < store && !(mass_flow == 0.0 && std::env::var("M65_IDLE").is_ok()) {
+                 return Err(SimError::Numerical(format!(
+                     "the draw line of column '{}' through '{}' cannot deliver its {mass_flow:.4} \
+                      kg/s to '{}': it arrives at {:.4} bar against the store's {:.4} bar. A \

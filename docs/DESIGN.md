@@ -27044,7 +27044,8 @@ words (2026-10-18):
 2. **A new plant: the wet crude unit on a crude 2 % water** — a desalter upset.
 3. **The flooded column's gap is fixed in M65** (found by the probe, §70.0):
    M63.4's pass-through halts the crude unit, its pumped product lines refusing
-   their empty draws.
+   their empty draws. Then, asked how a flooded column's oil should leave:
+   **"Do what is closer to reality"** — a flash zone (§70.2).
 4. **The crude's water changes by command, in M65**, and a running plant is
    tested through a wet slug.
 
@@ -27119,6 +27120,46 @@ candidates: the empty draws carry a liquid state rather than the hot feed (the
 line is full of liquid that is not moving), or a line that carries nothing is
 not asked to deliver (its pump dead-headed against its check). Offered to the
 user with the numbers if they differ in what a player sees.
+
+**Decided in M65.2 (2026-10-18).** The probe (`tools/steptime/prototypes/m65_2/`)
+found the empty lines only half of it: with them fixed either way, the
+RESIDUE pump failed next — M63.4 sends the oil to the bottoms whole at the
+feed's temperature, a liquid-equivalent near 650 K that boils at the column's
+pressure, so the line's march reads a vapour's density (once to −164 536
+bar). Asked whether to keep M63.4's hot bottoms, send the oil out at its own
+bubble point, or halt by name, the user answered: **"Do what is closer to
+reality"**. Taken to mean: a crude column fed that much water does not
+fractionate, but its flash zone still flashes the feed — vapour (the light oil
+and the water) up and condensed, the unflashed liquid down at the flash
+temperature. So:
+
+1. **A flooded feed above its bubble point flashes as a flash zone with no
+   trays**: the WHOLE feed, water and oil, adiabatically at the column's
+   pressure (the flash the column reads its feed's flash share by, so the
+   flooded tick and the tick before it agree); the steam's partial pressure
+   lifts the oil, as in a real flash zone. Each oil cut's liquid falls to the
+   bottoms at the flash temperature; its vapour is condensed to the top draw at
+   its own bubble point. The water leaves by its draw at water's bubble point,
+   as M63.4 has it. The condenser is what balances the column's books: the
+   water's (M63.4) and what the oil gives up between the feed and its draws.
+2. **The empty draws' lines stand full and still** of the bottoms' liquid at
+   the flash temperature — below its own bubble point at the column's
+   pressure, since it boiled at the oil's partial pressure — or, where every
+   drop of oil flashed (the crude unit from about 40 % water: the steam
+   carries even the residue over), of the condensed overhead at its bubble
+   point. The line code is untouched.
+3. **Below the feed's bubble point M63.4's rule stands to the bit**: the oil
+   whole to the bottoms at the feed's temperature (the tank-fed slug story).
+4. **A feed wet enough to flood is not retried by M65.1's halvings**: its
+   cold start refusing, it floods. Measured on the crude unit at 50 % water,
+   the halvings cost about 525 ms a flooded tick against 20 without; and a
+   column fed that much water does not fractionate. So the crude unit at 15–40
+   % water, which M65.1's halvings separated (§70.0, finding 6), floods instead
+   wherever its plain cold start refuses — from 20 % on the probe's crude.
+
+Not modelled: tray damage and the pressure surge of a water slug flashing (the
+column's pressure is pinned), entrainment, a pump's own two-phase trouble on a
+line that stands still.
 
 ### 70.3 Fork 3 — the crude's water by command
 
@@ -27208,3 +27249,50 @@ on the same bits; rewritten on a neighbouring column's).
 
 **What moved**: nothing shipped — every plant starts cold today, so none
 halves.
+
+### 70.8 A flooded column as a flash zone, built (M65.2)
+
+`flooded_pass_through` (`heat_balance.rs`) keeps M63.4's pass-through below the
+feed's bubble point, line for line, and above it builds a `FlashZone`:
+
+- **The flash**: `adiabatic_flash_temperature`, split out of
+  `adiabatic_flash_share` with its arithmetic unchanged (every column's
+  published flash share is byte-identical), on the WHOLE feed, then the
+  feed's isothermal flash there (`feed_flash`: the free-water flash where water
+  stands). Each oil cut's liquid is `(1 − β)·x` of the feed's moles, clamped to
+  the cut; its vapour the rest of the cut, so the oil's books close cut by cut.
+- **The draws**: the bottoms the liquid at the flash temperature; the top draw
+  (the one at the condenser) the vapour condensed at its own bubble point; a
+  flashing feed on a column with no top draw stays refused. Every empty draw
+  stands full of the bottoms' liquid at the flash temperature, or, where no oil
+  stays liquid, of the condensed overhead at its bubble point.
+- **The condenser**: M63.4's for the water, plus the oil's flux on the liquid
+  datum in, less the bottoms' and the overhead's out. A negative or non-finite
+  total stays a refusal.
+- **`flooding(pass)`** names when the pass-through answers (free water on the
+  slate, a water draw, the share): `flooded_pass_through` reads it, and
+  `solve_by_newton` skips M65.1's halvings where it holds.
+
+Measured on the crude unit (1 000 ticks, `tools/steptime/prototypes/m65_2/`):
+it separates to 15 % water and floods from 20 %, running at every share to
+80 %, a flooded tick about 14 ms; from about 40 % every drop of oil goes
+overhead (the naphtha line), the steam carrying even the residue.
+
+**Gates**: `reference/flooded_column.rs` (M63.4's two hot-feed gates
+rewritten to the flash zone — the split by cut, the light cuts overhead, the
+bottoms between the feed's bubble point and its temperature and below its own
+bubble point, the distillate at its own, the side draw standing at the
+bottoms' temperature, the books, the condenser the water's latent heat plus
+what the oil gives up — and a cool-feed gate holding M63.4's rule: the oil
+whole at the feed's temperature, the condenser exactly the water's latent
+heat), `wetter_crude_reference.rs` (+3: the crude unit half water floods every
+tick for 300 and its draws sum to its charge; 20 % floods on tick 1 without
+its halvings; the flooded column's first law on the plant's own books to
+1e-12). The tank-fed slug story (`water_flooded_column_reference.rs`, a 30 °C
+feed) passes unchanged. **Mutations**: seven — no flash zone, the lines
+standing full of the bottoms when there is none, the halvings on a flooding
+feed, the condenser without the oil, the distillate at the flash temperature,
+the bottoms at the feed's, the empty draws the feed as M63.4 had them — all
+caught.
+
+**What moved**: nothing shipped — no shipped plant floods.

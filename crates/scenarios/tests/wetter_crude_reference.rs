@@ -214,3 +214,100 @@ fn a_column_the_halvings_cannot_start_is_refused_with_its_own_reason() {
         "the last halving: {error}"
     );
 }
+
+fn flow(s: &Snapshot, edge: &str) -> f64 {
+    s.edges
+        .iter()
+        .find(|e| e.name == edge)
+        .unwrap_or_else(|| panic!("no edge '{edge}'"))
+        .stream
+        .mass_flow
+        .value()
+}
+
+/// **A crude half water floods the crude unit, and the run goes on** (M65.2,
+/// §70.2). Before M65.2 the flooded column handed its pumped lines the hot feed
+/// itself and the naphtha pump could not hold its empty line ("arrives at 0.81
+/// bar against the store's 1.05"), then the residue pump could not move the
+/// boiling oil. As a flash zone, every tick floods and runs: the water draw takes
+/// the crude's water, the oil leaves overhead and below, the side draws stand
+/// full and still.
+#[test]
+fn slow_a_crude_half_water_floods_and_runs() {
+    let mut engine = build(&wetter(0.50, 1.0));
+    for tick in 1..=300 {
+        engine.tick().unwrap_or_else(|e| panic!("tick {tick}: {e}"));
+        let s = engine.snapshot();
+        assert!(
+            node(&s, "column").column_flooded.is_some(),
+            "tick {tick}: the column floods"
+        );
+    }
+    let s = engine.snapshot();
+    let charge = charge(&s);
+    let (naphtha, residue, water) = (
+        flow(&s, "naphtha_suction"),
+        flow(&s, "residue_suction"),
+        flow(&s, "water_draw"),
+    );
+    assert!(
+        (naphtha + residue + water - charge).abs() < 1e-6 * charge,
+        "{naphtha} + {residue} + {water} kg/s out of {charge}"
+    );
+    assert!(
+        (water - 0.5 * charge).abs() < 1e-6 * charge,
+        "the water draw {water}"
+    );
+    for side in ["kerosene_suction", "diesel_suction", "gas_oil_suction"] {
+        assert_eq!(flow(&s, side), 0.0, "{side} stands still");
+    }
+}
+
+/// **A feed wet enough to flood is not retried** (M65.2, §70.2): at 20 % water
+/// the column's cold start refuses and the feed is past `FLOODED_WATER_SHARE`,
+/// so it floods on tick 1 — the halvings would have started it (M65.0, finding
+/// 6), at half a second a tick on a crude unit that stays flooded.
+#[test]
+fn a_crude_20_percent_water_floods_without_its_halvings() {
+    let mut engine = build(&wetter(0.20, 1.0));
+    let s = run(&mut engine, 1).expect("tick 1");
+    assert!(
+        node(&s, "column").column_flooded.is_some(),
+        "the column floods on tick 1"
+    );
+}
+
+/// **The flooded column's first law closes on the plant's own books** (the wet
+/// plant's gate, `crude_unit_wet_reference.rs`, on a flooded tick): the feed's
+/// enthalpy as the engine carries it, latent heat included, plus the reboiler,
+/// is every draw's enthalpy plus the condenser — no pumparound runs in a column
+/// with no trays.
+#[test]
+fn the_flooded_columns_first_law_closes_on_the_plants_books() {
+    let mut engine = build(&wetter(0.50, 1.0));
+    let flux = |engine: &Engine, s: &Snapshot, edge: &str| {
+        let e = s.edges.iter().find(|e| e.name == edge).unwrap();
+        engine
+            .enthalpy()
+            .stream_enthalpy_flux(&engine.slate, &e.stream)
+            .unwrap()
+            .value()
+    };
+    let mut worst = 0.0f64;
+    for _ in 0..20 {
+        let s = run(&mut engine, 1).expect("it runs");
+        let arriving = flux(&engine, &s, "transfer_line__downstream");
+        let mut leaving = flux(&engine, &s, "water_draw");
+        for product in ["naphtha", "kerosene", "diesel", "gas_oil", "residue"] {
+            leaving += flux(&engine, &s, &format!("{product}_suction"));
+        }
+        let duty = node(&s, "column").column_duty.unwrap();
+        let books = arriving + duty.reboiler_w - duty.condenser_w - leaving;
+        let gross = arriving.abs() + duty.reboiler_w + duty.condenser_w + leaving.abs();
+        worst = worst.max(books.abs() / gross);
+    }
+    assert!(
+        worst <= 1e-12,
+        "the flooded column's first law: worst residual {worst:e}"
+    );
+}
