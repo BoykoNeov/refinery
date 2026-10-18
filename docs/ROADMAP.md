@@ -10379,3 +10379,19 @@ DESIGN §71.9.
   `declined_hold_reference.rs` (2, slow). Mutations: eleven, ten caught; the
   kept duty without the continuation owed to M66.3's start-up story. Corpus: 66
   of 66 byte-identical on both fidelities.
+
+### M66.3 — **LANDED** 2026-10-18: the cold crude unit
+
+`scenarios/crude_unit_cold.toml`: the stripped crude unit before its start-up —
+the reboiler free at a reflux of 4, the furnace at 20 MW, the pumparounds on,
+its coil (322.06 °C) and the loop's opening (0.33737) declared where it settles.
+Started up by commands (the furnace to 58 MW, the pumparounds off, the reboiler
+walked down 2.5 MW at a time from the duty it runs at) it declines 1 534 ticks
+of the walk and reaches zero on tick 2 320, on both fidelities alike, never
+refused; run on, it settles on the stripped plant's column to every printed
+digit. DESIGN §71.10.
+
+- Gates: `crude_unit_cold_reference.rs` (4, two slow). Mutations: four on the
+  file, four caught; M66.2's survivor still unreached. No wall time recorded
+  (the machine under other load). Corpus: 66 of 66 byte-identical on both
+  fidelities, `crude_unit_cold` new.

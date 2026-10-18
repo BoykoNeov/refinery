@@ -51,6 +51,8 @@ mod crude_column_cascade;
 mod crude_unit;
 #[path = "crude_unit_boiling_reference.rs"]
 mod crude_unit_boiling_reference;
+#[path = "crude_unit_cold_reference.rs"]
+mod crude_unit_cold_reference;
 #[path = "crude_unit_steam_reference.rs"]
 mod crude_unit_steam_reference;
 #[path = "crude_unit_stripped_reference.rs"]
