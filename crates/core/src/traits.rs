@@ -735,6 +735,36 @@ pub struct Separation {
     /// a tray run dry). `None` from every pass that separated, and from every
     /// fidelity that never floods.
     pub water_flooded: Option<String>,
+    /// `Some` when the column was holding its reboiler at a duty it could not
+    /// run at and ran at its running duty instead (M66.2, docs/DESIGN.md
+    /// §71.2): the duty asked for, and the column's own reason. The published
+    /// `reboiler_duty` is the duty it ran at. `None` from every other pass.
+    pub reboiler_declined: Option<DeclinedHold>,
+}
+
+/// A held reboiler duty a column declined this pass (M66.2, docs/DESIGN.md
+/// §71.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeclinedHold {
+    /// The duty the column was asked to hold [W].
+    pub asked: Watt,
+    /// Why it could not run there: the column's own refusal at that duty.
+    pub reason: String,
+}
+
+/// The duty a column's reboiler last RAN at, handed to its next pass (M66.2,
+/// docs/DESIGN.md §71.2) — **state, not a hint**: unlike `ColumnPass::seed`,
+/// a held column's answer depends on it, so it is an argument and `separate`
+/// stays a function of its pass.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RunningReboiler<'a> {
+    /// The reboiler duty the column published [W] on this tick's earlier pass,
+    /// or, on a tick's first pass, on the last tick.
+    pub duty: Watt,
+    /// This tick's earlier pass's decline, where it declined its held duty — a
+    /// later pass of the same tick then goes straight to the running duty, so
+    /// a decline is paid once a tick, and reports the same reason.
+    pub declined: Option<&'a DeclinedHold>,
 }
 
 /// Everything one column pass is a function of: the equipment, and the feed
@@ -809,6 +839,16 @@ pub struct ColumnPass<'a> {
     /// the walk is paid once a tick. Every other column ignores it, so their
     /// passes are what they were to the bit.
     pub earlier_pass: Option<&'a CascadeProfile>,
+    /// The duty this column's reboiler last ran at (M66.2, docs/DESIGN.md
+    /// §71.2), `None` on a plant's first tick, after a load and from a
+    /// fidelity that publishes no reboiler duty. Only a column holding its
+    /// reboiler at a DIFFERENT duty reads it: when it cannot run at the held
+    /// duty it runs at this one and says so (`Separation::reboiler_declined`).
+    /// Every other column ignores it, so their passes are what they were to the
+    /// bit. Where the held duty sits on the column's edge, whether it is taken
+    /// can depend on which start converged; a run is still deterministic (the
+    /// same pass, the same start).
+    pub running_reboiler: Option<RunningReboiler<'a>>,
     /// The steam arriving on the column's steam inlet this tick (M62.6,
     /// docs/DESIGN.md §67.18), or `None` on a column with none. Never part of
     /// `feed`, `feed_flow` or `temperature`: it enters its own stage.

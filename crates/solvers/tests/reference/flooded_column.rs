@@ -117,6 +117,7 @@ fn separate_at(
                 temperature: Kelvin(feed_c + 273.15),
                 cascade: Some(spec),
                 seed: None,
+                running_reboiler: None,
                 earlier_pass: None,
                 steam,
             },

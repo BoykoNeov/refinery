@@ -33,6 +33,8 @@ mod pump_suction_contract;
 mod reference_cascade;
 #[path = "reference/compressor.rs"]
 mod reference_compressor;
+#[path = "reference/declined_hold.rs"]
+mod reference_declined_hold;
 #[path = "reference/flash.rs"]
 mod reference_flash;
 #[path = "reference/flooded_column.rs"]

@@ -28,7 +28,8 @@ use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
 use refinery_core::graph::{CascadeSpec, Pumparound};
 use refinery_core::traits::{
-    CascadeProfile, ColumnPass, DrawSeparation, Separation, SeparationModel, ThermoModel,
+    CascadeProfile, ColumnPass, DeclinedHold, DrawSeparation, Separation, SeparationModel,
+    ThermoModel,
 };
 use refinery_core::units::{Kelvin, Pascal, Watt};
 
@@ -273,6 +274,11 @@ struct ColumnSetup<'a> {
     tolerance: f64,
     /// The feed's free water, `None` on a dry feed.
     water: Option<WaterFeed>,
+    /// Whether a held column whose warm start fails may start by M64.2's
+    /// continuation. `false` only for the duty a column is asked to move its
+    /// hold to (M66.2, docs/DESIGN.md §71.2): the continuation there costs
+    /// 160–204 ms a held-back tick and reaches nothing the warm start does not.
+    continuation: bool,
 }
 
 impl SeparationModel for HeatBalanceCascade {
@@ -280,28 +286,92 @@ impl SeparationModel for HeatBalanceCascade {
         "heat_balance"
     }
 
-    /// The column fractionates; a feed too wet to separate that its solve
-    /// refuses passes straight through instead (`flooded_pass_through`, M63.4,
-    /// docs/DESIGN.md §68.4).
+    /// The column fractionates; a held reboiler it cannot run at is declined
+    /// for the duty it ran at last (`hold_or_decline`, M66.2, docs/DESIGN.md
+    /// §71.2); a feed too wet to separate that its solve refuses passes
+    /// straight through instead (`flooded_pass_through`, M63.4, §68.4).
     fn separate(
         &self,
         pass: &ColumnPass<'_>,
         thermo: &dyn ThermoModel,
     ) -> Result<Separation, SimError> {
-        match self.fractionate(pass, thermo) {
+        match self.hold_or_decline(pass, thermo) {
             Ok(separation) => Ok(separation),
             Err(refusal) => flooded_pass_through(pass, thermo, refusal),
         }
     }
 }
 
+/// A refusal's own words: a numerical failure's reason without its kind, so
+/// one refusal can quote another (M65.1's arrangement).
+fn message(refusal: SimError) -> String {
+    match refusal {
+        SimError::Numerical(reason) => reason,
+        other => other.to_string(),
+    }
+}
+
 impl HeatBalanceCascade {
+    /// A column whose held reboiler duty differs from the duty it last ran at
+    /// (M66.2, docs/DESIGN.md §71.2): Newton warm at the held duty, no
+    /// continuation; failing, the column held at its running duty — warm, then
+    /// the continuation — published at that duty with the decline named. A
+    /// later pass of a tick whose earlier pass declined goes straight to the
+    /// running duty. Every other column fractionates as it always has.
+    fn hold_or_decline(
+        &self,
+        pass: &ColumnPass<'_>,
+        thermo: &dyn ThermoModel,
+    ) -> Result<Separation, SimError> {
+        let held = pass.cascade.and_then(|spec| spec.reboiler_duty);
+        let (Some(spec), Some(held), Some(running)) = (pass.cascade, held, pass.running_reboiler)
+        else {
+            return self.fractionate(pass, thermo, true);
+        };
+        if running.duty == held {
+            return self.fractionate(pass, thermo, true);
+        }
+        // The held duty, unless this tick's earlier pass already declined it.
+        let reason = match running.declined.filter(|earlier| earlier.asked == held) {
+            Some(earlier) => earlier.reason.clone(),
+            None => match self.fractionate(pass, thermo, false) {
+                Ok(separation) => return Ok(separation),
+                Err(refusal) => message(refusal),
+            },
+        };
+        let kept_spec = CascadeSpec {
+            reboiler_duty: Some(running.duty),
+            ..spec.clone()
+        };
+        let kept_pass = ColumnPass {
+            cascade: Some(&kept_spec),
+            ..*pass
+        };
+        match self.fractionate(&kept_pass, thermo, true) {
+            Ok(mut separation) => {
+                separation.reboiler_declined = Some(DeclinedHold {
+                    asked: held,
+                    reason,
+                });
+                Ok(separation)
+            }
+            Err(kept) => Err(SimError::Numerical(format!(
+                "{reason} It could not keep the {:.3} MW its reboiler ran at either \
+                 (docs/DESIGN.md §71.2): {}",
+                running.duty.value() / 1.0e6,
+                message(kept)
+            ))),
+        }
+    }
+
     /// One pass of the heat-balance cascade: every draw's split and the duties,
-    /// or a refusal that says why the column could not settle.
+    /// or a refusal that says why the column could not settle. `continuation`
+    /// is `ColumnSetup::continuation`.
     fn fractionate(
         &self,
         pass: &ColumnPass<'_>,
         thermo: &dyn ThermoModel,
+        continuation: bool,
     ) -> Result<Separation, SimError> {
         let slate = pass.slate;
         let spec = pass.cascade.ok_or_else(|| {
@@ -390,6 +460,7 @@ impl HeatBalanceCascade {
                 reboiler_duty: Some(Watt::ZERO),
                 feed_vapour_fraction: None,
                 reflux_ratio: Some(spec.reflux_ratio),
+                reboiler_declined: None,
                 water_flooded: None,
             });
         }
@@ -525,6 +596,7 @@ impl HeatBalanceCascade {
             feed_enthalpy,
             tolerance,
             water,
+            continuation,
         };
 
         let profile = match self.method {
@@ -646,6 +718,7 @@ impl HeatBalanceCascade {
             reboiler_duty: Some(reboiler_duty),
             feed_vapour_fraction: Some(feed_vapour_fraction),
             reflux_ratio: Some(profile.reflux_ratio),
+            reboiler_declined: None,
             water_flooded: None,
         })
     }
@@ -933,6 +1006,14 @@ impl HeatBalanceCascade {
         // reboiler (M64.2, docs/DESIGN.md §69.3): M61's cold start below lands
         // a column without one nowhere.
         if let Some(held) = setup.spec.reboiler_duty {
+            if let (false, Some(warm)) = (setup.continuation, &warm_failure) {
+                return Err(SimError::Numerical(format!(
+                    "heat-balance cascade: {}.{}{}",
+                    warm.reason,
+                    physical_cause(plan, warm.flows.as_deref(), setup.feed_molar),
+                    settings_sentence(setup.spec)
+                )));
+            }
             return self.continuation(setup, &equations, held.value());
         }
         let refused = match self.cold_start(setup, &equations, warm_failure.as_ref()) {
@@ -1136,6 +1217,7 @@ impl HeatBalanceCascade {
             feed_enthalpy: setup.feed_enthalpy,
             tolerance: setup.tolerance,
             water: setup.water.clone(),
+            continuation: setup.continuation,
         };
         let base_equations = ColumnEquations {
             plan: &base_plan,
@@ -1236,6 +1318,7 @@ impl HeatBalanceCascade {
             feed_enthalpy: setup.feed_enthalpy,
             tolerance: setup.tolerance,
             water: setup.water.clone(),
+            continuation: setup.continuation,
         };
         let base_equations = ColumnEquations {
             plan: &base_plan,
@@ -1644,6 +1727,7 @@ fn oil_free_feed(
         reboiler_duty: Some(Watt(reboiler)),
         feed_vapour_fraction: None,
         reflux_ratio: Some(reflux_ratio),
+        reboiler_declined: None,
         water_flooded: None,
     })
 }
@@ -1833,6 +1917,7 @@ fn flooded_pass_through(
             reboiler_duty: Some(Watt(reboiler)),
             feed_vapour_fraction: None,
             reflux_ratio: Some(spec.reflux_ratio),
+            reboiler_declined: None,
             water_flooded: Some(refusal.to_string()),
         });
     }
@@ -1865,6 +1950,7 @@ fn flooded_pass_through(
         reboiler_duty: Some(Watt(reboiler)),
         feed_vapour_fraction: None,
         reflux_ratio: Some(spec.reflux_ratio),
+        reboiler_declined: None,
         water_flooded: Some(refusal.to_string()),
     })
 }
@@ -2093,6 +2179,7 @@ fn water_only_inflow(
         reboiler_duty: Some(Watt(reboiler)),
         feed_vapour_fraction: None,
         reflux_ratio: Some(spec.reflux_ratio),
+        reboiler_declined: None,
         water_flooded: None,
     })
 }
@@ -2880,6 +2967,7 @@ mod tests {
                 temperature,
                 cascade: Some(&spec),
                 seed,
+                running_reboiler: None,
                 earlier_pass: None,
                 steam: None,
             },
@@ -3141,6 +3229,7 @@ mod tests {
                         temperature,
                         cascade: Some(&spec),
                         seed: None,
+                        running_reboiler: None,
                         earlier_pass: None,
                         steam: None,
                     },
@@ -3343,6 +3432,7 @@ mod start_tests {
                 temperature: Kelvin(bubble.value() + offset),
                 cascade: Some(&spec),
                 seed,
+                running_reboiler: None,
                 earlier_pass: None,
                 steam: None,
             },
@@ -3453,6 +3543,7 @@ mod pumparound_tests {
                 temperature: hot,
                 cascade: Some(spec),
                 seed: None,
+                running_reboiler: None,
                 earlier_pass: None,
                 steam: None,
             },
@@ -3705,6 +3796,7 @@ mod newton_tests {
                 temperature: Kelvin(bubble.value() + offset),
                 cascade: Some(&spec),
                 seed: None,
+                running_reboiler: None,
                 earlier_pass: None,
                 steam: None,
             };
@@ -3741,6 +3833,7 @@ mod newton_tests {
                     temperature: Kelvin(bubble.value() + 400.0),
                     cascade: Some(&spec),
                     seed: None,
+                    running_reboiler: None,
                     earlier_pass: None,
                     steam: None,
                 },
@@ -3798,6 +3891,7 @@ mod newton_tests {
                         temperature: Kelvin(bubble.value() + offset),
                         cascade: Some(&spec),
                         seed,
+                        running_reboiler: None,
                         earlier_pass: None,
                         steam: None,
                     },
@@ -3893,6 +3987,7 @@ mod newton_tests {
                     temperature: Kelvin(355.0 + 273.15),
                     cascade: Some(spec),
                     seed,
+                    running_reboiler: None,
                     earlier_pass: None,
                     steam: None,
                 },
@@ -4042,6 +4137,7 @@ mod steam_tests {
                 temperature: Kelvin(273.15 + 230.0),
                 cascade: Some(&spec),
                 seed: None,
+                running_reboiler: None,
                 earlier_pass: None,
                 steam: Some(ColumnSteam {
                     stage,

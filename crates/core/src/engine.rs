@@ -14,8 +14,8 @@ use crate::graph::{
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, ColumnOperation, Command, ComponentSnapshot, ControlSnapshot,
-    EdgeSnapshot, NodeSnapshot, PumpSuctionSnapshot, PumpTwoPhaseSnapshot, RestartBar, Snapshot,
-    SupplyBoiling, TripSnapshot, TripStop,
+    EdgeSnapshot, NodeSnapshot, PumpSuctionSnapshot, PumpTwoPhaseSnapshot, ReboilerDeclined,
+    RestartBar, Snapshot, SupplyBoiling, TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, LineFlashModel, ReactionModel,
@@ -733,7 +733,10 @@ impl Engine {
                     } => {
                         if model != "heat_balance" {
                             return Err(SimError::InvalidCommand(format!(
-                                "{node:?} ('{name}') runs under separation \"{model}\": only                                  separation = \"heat_balance\" solves a stage energy balance, so                                  only it can hold a reboiler and take the reflux as the result                                  (docs/DESIGN.md §69)"
+                                "{node:?} ('{name}') runs under separation \"{model}\": only \
+                                 separation = \"heat_balance\" solves a stage energy balance, so \
+                                 only it can hold a reboiler and take the reflux as the result \
+                                 (docs/DESIGN.md §69)"
                             )));
                         }
                         spec.reboiler_duty = duty;
@@ -741,7 +744,8 @@ impl Engine {
                     }
                     NodeKind::Column { cascade: None, .. } => {
                         Err(SimError::InvalidCommand(format!(
-                            "{node:?} ('{name}') is a cut-point column: it splits its feed by                              boiling range and has no reboiler to hold"
+                            "{node:?} ('{name}') is a cut-point column: it splits its feed by \
+                             boiling range and has no reboiler to hold"
                         )))
                     }
                     _ => Err(SimError::InvalidCommand(format!(
@@ -3680,6 +3684,15 @@ impl Engine {
                         .column_separation
                         .get(&id)
                         .and_then(|s| s.water_flooded.clone()),
+                    column_reboiler_declined: self
+                        .node_states
+                        .column_separation
+                        .get(&id)
+                        .and_then(|s| s.reboiler_declined.as_ref())
+                        .map(|declined| ReboilerDeclined {
+                            asked_w: declined.asked.value(),
+                            reason: declined.reason.clone(),
+                        }),
                     column_operation: self.node_states.column_separation.get(&id).and_then(|s| {
                         let (feed_vapour_fraction, reflux_ratio) =
                             s.feed_vapour_fraction.zip(s.reflux_ratio)?;

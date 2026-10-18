@@ -60,8 +60,8 @@ use crate::graph::{
 };
 use crate::traits::{
     ColumnPass, ColumnSteam, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel,
-    Reaction, ReactionModel, Separation, SeparationModel, Settled, StarvedTank, ThermoModel,
-    VapourShare,
+    Reaction, ReactionModel, RunningReboiler, Separation, SeparationModel, Settled, StarvedTank,
+    ThermoModel, VapourShare,
 };
 use crate::units::{
     JPerKgK, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, T_AMBIENT,
@@ -2151,6 +2151,27 @@ pub fn resolve_node_states(
                                     earlier_pass: earlier
                                         .and_then(|earlier| earlier.column_separation.get(&id))
                                         .and_then(|earlier| earlier.profile.as_ref()),
+                                    // The duty it last ran at: this tick's
+                                    // earlier pass, else the last tick (M66.2,
+                                    // docs/DESIGN.md §71.2).
+                                    running_reboiler: match earlier
+                                        .and_then(|earlier| earlier.column_separation.get(&id))
+                                    {
+                                        Some(earlier) => {
+                                            earlier.reboiler_duty.map(|duty| RunningReboiler {
+                                                duty,
+                                                declined: earlier.reboiler_declined.as_ref(),
+                                            })
+                                        }
+                                        None => previous
+                                            .column_separation
+                                            .get(&id)
+                                            .and_then(|previous| previous.reboiler_duty)
+                                            .map(|duty| RunningReboiler {
+                                                duty,
+                                                declined: None,
+                                            }),
+                                    },
                                     steam,
                                 },
                                 thermo,

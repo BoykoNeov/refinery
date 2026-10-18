@@ -57,6 +57,8 @@ mod crude_unit_steam_reference;
 mod crude_unit_stripped_reference;
 #[path = "crude_unit_wet_reference.rs"]
 mod crude_unit_wet_reference;
+#[path = "declined_hold_reference.rs"]
+mod declined_hold_reference;
 #[path = "dissipation_reference.rs"]
 mod dissipation_reference;
 #[path = "dry_fired_reference.rs"]

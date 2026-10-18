@@ -10362,3 +10362,20 @@ off it is the stripped plant on that tick. DESIGN §71.8.
 - Gates: `reboiler_command_reference.rs` (3), `bridge.rs` (20 variants).
   Mutations: four, four caught. The godot-feature clippy clean. Corpus: 66 of
   66 byte-identical on both fidelities.
+
+### M66.2 — **LANDED** 2026-10-18: a hold the column declines
+
+A column holding its reboiler at a duty it cannot run at runs at the duty it
+last ran at and says so (`column_reboiler_declined` on the snapshot: the duty
+asked for and the column's own reason), and takes the held duty once it can. The
+duty it ran at is handed to the column as state (`ColumnPass::running_reboiler`),
+not as a hint; the new path runs only where the held duty differs from it, so
+every shipped plant is untouched. Held at zero too early on the start-up's feed
+the column keeps 28.4 MW for 532 ticks and lands on zero by itself at 363 °C;
+walked down from its running duty it follows the feed to zero. Never refused.
+DESIGN §71.9.
+
+- Gates: `reference/declined_hold.rs` (5), `separation_contract.rs` (+1),
+  `declined_hold_reference.rs` (2, slow). Mutations: eleven, ten caught; the
+  kept duty without the continuation owed to M66.3's start-up story. Corpus: 66
+  of 66 byte-identical on both fidelities.

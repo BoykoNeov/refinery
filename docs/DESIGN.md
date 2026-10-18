@@ -27545,3 +27545,72 @@ a real engine accepting it on the stripped plant; 20 variants.
 duty check, no model check — all caught.
 
 **What moved**: nothing shipped — 66 of 66 byte-identical on both fidelities.
+
+### 71.9 A hold the column declines, built (M66.2)
+
+`ColumnPass::running_reboiler: Option<RunningReboiler>` (`core::traits`): the
+reboiler duty this column published on this tick's earlier pass, else on the
+last tick, with the earlier pass's decline where it declined
+(`RunningReboiler::declined: Option<&DeclinedHold>`); the engine's sweep fills
+it (`energy.rs`), `None` on a plant's first tick. Its doc says what makes it
+different from `seed`: state, not a hint.
+
+`HeatBalanceCascade::hold_or_decline`, ahead of the flooded pass-through, takes
+the new path only on a held column handed a running duty that is not, to the
+bit, its held one (a held duty publishes exactly, §69.7, so a column at its
+hold compares equal):
+
+1. **The held duty, warm alone** (`fractionate(…, continuation: false)`:
+   `ColumnSetup::continuation`, read where a held column's failed warm start
+   would walk M64.2's continuation) — unless this tick's earlier pass declined
+   the same duty, whose reason it takes instead.
+2. **Failing, the running duty**: the same pass with the spec held there, warm
+   and then by the continuation; published at that duty, its `Separation`
+   carrying `reboiler_declined: Some(DeclinedHold { asked, reason })` — the duty
+   asked for and the column's own refusal at it (`message`: the reason without
+   its kind, so one refusal quotes another).
+3. **Failing too, a refusal**: the column's own words at the held duty, then
+   "It could not keep the … MW its reboiler ran at either (docs/DESIGN.md
+   §71.2): …" and why.
+
+The snapshot carries it as `NodeSnapshot::column_reboiler_declined`
+(`ReboilerDeclined { asked_w, reason }`), not serialized when absent. Neither of
+the start-insensitivity gates (`the_steamed_column_is_start_insensitive`,
+`the_wet_column_is_start_insensitive`) holds a reboiler or hands a running duty,
+so the new path's edge sensitivity (§71.2's last point) is outside them.
+
+**Found on the way**: M66.1's two new refusals had their line continuations
+lost to a shell's quoting (runs of spaces inside the message); rewritten here.
+
+**Gates**: `reference/declined_hold.rs` (5, the test column of
+`held_reboiler.rs`): held at zero on a 240 °C feed from the free column it is
+the column held at the free column's duty, to the bit, the decline naming the
+zero and the column's own warm refusal (not the continuation's); on 330 °C the
+zero is taken, within 1e-8 K of the column handed no running duty; handed an
+earlier decline of the same duty it does not ask again (the earlier reason word
+for word), of another duty it does; a running duty that fails too is refused
+with the column's own reason first; held at its running duty, or handed none,
+and free with or without one, the column it was, to the bit.
+`separation_contract.rs` (+1): a recording model sees a plant's first pass
+handed no running duty, every later pass of a tick the earlier pass's duty and
+decline, the next tick's first pass the last tick's duty and no decline.
+`declined_hold_reference.rs` (2, slow; the stripped plant on its reboiler, its
+pumparounds taken off after tick 1, the furnace at 58 MW): from a 400 °C coil,
+held at zero on tick 10 on a 351.9 °C feed it keeps the 28.40 MW it ran at,
+exactly, for 532 ticks, declining by name (stage 7 dry), and lands on zero on
+tick 542 on a 363.1 °C feed, there to stay; from a 380 °C coil, held every 10
+ticks at its running duty less 2.5 MW, its duty never rises, it declines 1 085
+ticks of the walk, and it reaches zero on tick 1 205. Never refused.
+
+**Mutations**: eleven; ten caught — no decline, the kept column published at
+the held duty, an earlier decline ignored, an earlier decline of another duty
+taken, the continuation tried at the held duty, the refusal without the
+column's own reason, no decline reported, the engine handing no running duty
+from an earlier pass, from the last tick, and reading only the last tick. One
+survives, owed to M66.3: **the kept duty without the continuation** — no gate
+here reaches a running duty whose own warm start fails (on the test column,
+wherever a capped warm start fails the continuation fails too); M66.0 finding
+14's walk from a cold furnace reached one at 3.3 MW, so M66.3's start-up story
+must.
+
+**What moved**: nothing shipped — 66 of 66 byte-identical on both fidelities.

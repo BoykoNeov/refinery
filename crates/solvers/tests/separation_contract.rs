@@ -48,6 +48,7 @@ impl SeparationModel for ShortSplitter {
             reboiler_duty: None,
             feed_vapour_fraction: None,
             reflux_ratio: None,
+            reboiler_declined: None,
             water_flooded: None,
         })
     }
@@ -232,6 +233,7 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
             reboiler_duty: None,
             feed_vapour_fraction: None,
             reflux_ratio: None,
+            reboiler_declined: None,
             water_flooded: None,
         },
     );
@@ -290,6 +292,7 @@ impl SeparationModel for Recorder {
             reboiler_duty: None,
             feed_vapour_fraction: None,
             reflux_ratio: None,
+            reboiler_declined: None,
             water_flooded: None,
         })
     }
@@ -324,6 +327,87 @@ fn a_later_pass_is_handed_the_earlier_one() {
     assert_eq!(
         second,
         (Some(first.len() as f64), None),
+        "the next tick's first pass"
+    );
+}
+
+/// What one `separate` call was handed as its running reboiler: the duty and
+/// the earlier decline's reason.
+type Running = Option<(f64, Option<String>)>;
+
+/// A model that publishes its call's number as its reboiler duty, declines on
+/// every even call, and records the running reboiler each call was handed.
+struct RunningRecorder(std::sync::Arc<std::sync::Mutex<Vec<Running>>>);
+impl SeparationModel for RunningRecorder {
+    fn name(&self) -> &'static str {
+        "test-running-recorder"
+    }
+    fn separate(
+        &self,
+        pass: &ColumnPass<'_>,
+        _thermo: &dyn ThermoModel,
+    ) -> Result<Separation, SimError> {
+        let mut calls = self.0.lock().unwrap();
+        calls.push(pass.running_reboiler.map(|running| {
+            (
+                running.duty.value(),
+                running.declined.map(|declined| declined.reason.clone()),
+            )
+        }));
+        let call = calls.len();
+        let half = DrawSeparation {
+            split: 0.5,
+            composition: pass.feed.clone(),
+            temperature: pass.temperature,
+        };
+        Ok(Separation {
+            profile: None,
+            draws: vec![half.clone(), half],
+            condenser_duty: Some(Watt::ZERO),
+            reboiler_duty: Some(Watt(call as f64)),
+            feed_vapour_fraction: None,
+            reflux_ratio: None,
+            reboiler_declined: call.is_multiple_of(2).then(|| {
+                refinery_core::traits::DeclinedHold {
+                    asked: Watt::ZERO,
+                    reason: format!("call {call}"),
+                }
+            }),
+            water_flooded: None,
+        })
+    }
+}
+
+/// **A pass is handed the duty its column last ran at** (M66.2, docs/DESIGN.md
+/// §71.2): a plant's first pass none; every later pass of a tick the earlier
+/// pass's duty, with its decline where it declined; the next tick's first pass
+/// the last tick's duty, its decline left behind.
+///
+/// THE MUTATION THIS EXISTS FOR: the engine reading only the last tick. A
+/// column that declined then asks for its held duty again on every later pass
+/// of the tick, and nothing but the wall clock would say so.
+#[test]
+fn a_pass_is_handed_the_duty_its_column_last_ran_at() {
+    let calls = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut engine = engine_with(Box::new(RunningRecorder(calls.clone())));
+    engine.tick().unwrap();
+    let first: Vec<Running> = calls.lock().unwrap().clone();
+    assert!(first.len() >= 2, "the first tick re-solves: {first:?}");
+    assert_eq!(first[0], None, "a plant's first pass");
+    for (pass, handed) in first.iter().enumerate().skip(1) {
+        let earlier = pass; // the earlier call's number, one-based
+        let declined = earlier.is_multiple_of(2).then(|| format!("call {earlier}"));
+        assert_eq!(
+            *handed,
+            Some((earlier as f64, declined)),
+            "pass {pass}: {first:?}"
+        );
+    }
+    engine.tick().unwrap();
+    let next = calls.lock().unwrap()[first.len()].clone();
+    assert_eq!(
+        next,
+        Some((first.len() as f64, None)),
         "the next tick's first pass"
     );
 }

@@ -248,6 +248,15 @@ pub enum Command {
     },
 }
 
+/// A held reboiler duty a column declined (M66.2, docs/DESIGN.md §71.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ReboilerDeclined {
+    /// The duty the column was asked to hold [W].
+    pub asked_w: f64,
+    /// Why it could not run there: the column's own refusal at that duty.
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeSnapshot {
     pub id: NodeId,
@@ -311,6 +320,13 @@ pub struct NodeSnapshot {
     /// **Absent** while the column fractionates, and on every other node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_flooded: Option<String>,
+    /// A heat-balance column that declined its held reboiler duty this tick
+    /// (M66.2, docs/DESIGN.md §71.2): it could not run at the duty asked for
+    /// and ran at the duty it ran at last — `column_duty.reboiler_w`. The duty
+    /// asked for and the column's own reason. **Absent** while the column runs
+    /// at the duty it holds, and on every other node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column_reboiler_declined: Option<ReboilerDeclined>,
     /// Whether the liquid at this node is boiling, and the bubble pressure the
     /// verdict was made against (M11, docs/DESIGN.md §13).
     ///

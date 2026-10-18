@@ -118,6 +118,7 @@ fn separate(
                 temperature: Kelvin(FEED_K),
                 cascade: Some(spec),
                 seed: seed.and_then(|s| s.profile.as_ref()),
+                running_reboiler: None,
                 earlier_pass: earlier.and_then(|s| s.profile.as_ref()),
                 steam: None,
             },

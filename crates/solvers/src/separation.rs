@@ -139,6 +139,7 @@ impl SeparationModel for CutPointSplitter {
             reboiler_duty: None,
             feed_vapour_fraction: None,
             reflux_ratio: None,
+            reboiler_declined: None,
             water_flooded: None,
         })
     }
@@ -232,6 +233,7 @@ mod tests {
                     temperature: FEED_T,
                     cascade: None,
                     seed: None,
+                    running_reboiler: None,
                     earlier_pass: None,
                     steam: None,
                 },
@@ -421,6 +423,7 @@ mod tests {
                     temperature: FEED_T,
                     cascade: None,
                     seed: None,
+                    running_reboiler: None,
                     earlier_pass: None,
                     steam: None,
                 },

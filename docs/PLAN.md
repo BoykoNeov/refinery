@@ -52,7 +52,7 @@ Ticked when it lands; struck when the user rules it out.
       down to zero as the feed heats (asked for 2026-10-17; M64 starts hot).
       **M66, OPEN** (DESIGN §71): [x] M66.0 probe and design note (done
       2026-10-18, `tools/steptime/prototypes/m66_0/FINDINGS.md`); [x] M66.1 the
-      reboiler by command (done 2026-10-18, DESIGN §71.8); [ ] M66.2 a hold the column declines; [ ] M66.3 the
+      reboiler by command (done 2026-10-18, DESIGN §71.8); [x] M66.2 a hold the column declines (done 2026-10-18, DESIGN §71.9); [ ] M66.3 the
       cold crude unit; [ ] M66.4 the column screen's fifth plant.
 - [ ] **C12** — the column screen's keys as a box set by its worst corner.
 - [ ] **C11** — Newton's Jacobian by forward differences (cost; feeds Phase 3).
