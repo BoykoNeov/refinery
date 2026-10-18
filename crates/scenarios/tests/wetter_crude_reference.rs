@@ -453,3 +453,59 @@ fn a_supply_composition_is_refused_by_name() {
     let e = refused(&mut dry, source, light);
     assert!(e.contains("would be boiling"), "{e}");
 }
+
+const WETTER: &str = include_str!("../../../scenarios/crude_unit_wetter.toml");
+
+fn coil_c(s: &Snapshot) -> f64 {
+    match &node(s, "furnace").kind {
+        refinery_core::graph::NodeKind::Furnace { coil, .. } => coil.temperature.value() - 273.15,
+        other => panic!("the furnace has a coil: {other:?}"),
+    }
+}
+
+/// **The wetter crude unit runs as its file says** (M65.4, §70.4): the wet crude
+/// unit on a crude 2 % water, its column started on tick 1 by M65.1's retry at
+/// the shipped 40 MW; it stands where it starts — the charge 75.078 kg/s and the
+/// coil at its declared 339.79 °C, measured settled over 60 000 ticks — the
+/// water draw carrying the crude's 2 %, the column fractionating, not flooded.
+#[test]
+fn the_wetter_crude_unit_runs_as_its_file_says() {
+    let mut engine = build(WETTER);
+    let s = run(&mut engine, 300).expect("the wetter crude unit runs");
+    let column = node(&s, "column");
+    assert!(column.column_operation.is_some() && column.column_flooded.is_none());
+    let charge = charge(&s);
+    assert!((charge - 75.078).abs() < 0.01, "the charge {charge} kg/s");
+    let coil = coil_c(&s);
+    assert!((coil - 339.79).abs() < 0.05, "the coil at {coil} °C");
+    let water = flow(&s, "water_draw");
+    assert!(
+        (water - 0.02 * charge).abs() < 1e-6 * charge,
+        "the water draw {water} kg/s"
+    );
+}
+
+/// **Both fidelities agree** on the wetter crude unit.
+#[test]
+fn slow_the_wetter_crude_unit_runs_on_both_fidelities() {
+    let mut answers = Vec::new();
+    for solver in ["newton", "simple"] {
+        let mut engine =
+            build(&WETTER.replace("flow = \"newton\"", &format!("flow = \"{solver}\"")));
+        let s = run(&mut engine, 150).unwrap_or_else(|e| panic!("{solver}: {e}"));
+        let operation = node(&s, "column")
+            .column_operation
+            .clone()
+            .expect("operating");
+        answers.push((
+            charge(&s),
+            flow(&s, "water_draw"),
+            operation.stage_temperatures_k,
+        ));
+    }
+    let (a, b) = (&answers[0], &answers[1]);
+    assert!((a.0 - b.0).abs() < 1e-6 * a.0 && (a.1 - b.1).abs() < 1e-6 * a.1);
+    for (ta, tb) in a.2.iter().zip(&b.2) {
+        assert!((ta - tb).abs() < 1e-4, "newton {ta} K, simple {tb} K");
+    }
+}

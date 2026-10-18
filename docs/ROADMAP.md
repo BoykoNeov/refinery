@@ -10308,3 +10308,19 @@ after. DESIGN §70.9.
 - Gates: `wetter_crude_reference.rs` (+3), `bridge.rs` (19 variants).
   Mutations: six, six caught. The godot-feature clippy clean. Corpus: 65 of 65
   byte-identical on both fidelities.
+
+### M65.4 — **LANDED** 2026-10-18: the wetter crude unit
+
+`scenarios/crude_unit_wetter.toml`: the wet crude unit on a crude 2 % water,
+its coil declared at its settled 339.79 °C; started on tick 1 by M65.1's retry,
+it stands at 75.078 kg/s on both fidelities. DESIGN §70.10.
+
+- Gates: `wetter_crude_reference.rs` (+2). Mutations: two on the file, two
+  caught. Corpus: 65 of 65 byte-identical on both fidelities,
+  `crude_unit_wetter` new.
+
+**M65 — CLOSED 2026-10-18.** A wetter crude (C14): the column's cold start
+retried from halved pumparounds and walked back; a flooded column a flash zone,
+its pumped lines standing full; a supply's composition by command; and
+`crude_unit_wetter.toml` on a crude 2 % water. Its close-out report is at the
+top of `docs/MILESTONES.md`. Next is `docs/PLAN.md`'s Phase 2 (C15).

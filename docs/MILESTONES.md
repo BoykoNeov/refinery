@@ -12,6 +12,40 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M65 is CLOSED (2026-10-18): a wetter crude — `docs/DEFERRED.md` C14 taken,
+C16 new.** Asked as "Phase 2 of `docs/PLAN.md`, starting with C14, the wetter
+crude — do it". The probe turned C14 round: not the column, which runs at any
+pumparound duty once warm, but its cold start, which runs only in a band that
+closes as the water rises. Decided in plain words along the way: a column that
+cannot start retried from halved pumparounds (not scaled with the feed, not a
+refusal by name); a new plant at 2 % water; the flooded column's halt on pumped
+lines fixed in M65, and — asked how its oil should leave — "do what is closer
+to reality": a flash zone; the crude's water changeable by command.
+- **M65.0, the probe and the design note** (§70.0–§70.6): the charge falls
+  112.8 → 76.1 → 43.7 kg/s at 0.3, 2 and 10 % water; the cold band 0.45–0.95 of
+  the 40 MW at 2 %, 0.55–0.65 at 10 %; warm, zero to three times; M63.4's flood
+  halting the crude unit on its pumped lines.
+- **M65.1, the cold start retried** (§70.7): this tick's earlier pass first,
+  then the pumparounds halved up to four times and walked back in ten Newton
+  solves; the column's own refusal kept first when none lands.
+- **M65.2, a flooded column as a flash zone** (§70.2, §70.8): the whole feed
+  flashed adiabatically, the oil's liquid to the bottoms at the flash
+  temperature and its vapour to the top draw, the empty lines standing full of
+  liquid; M63.4's rule below the feed's bubble point; a flooding feed skips the
+  halvings (525 → 20 ms a tick). The crude unit separates to 15 % water and
+  floods from 20 %, running to 80 %.
+- **M65.3, a supply's composition by command** (§70.9):
+  `SetSourceComposition`, refused across a phase change and where the liquid
+  would boil; 2 % by command runs at the 2 % plant's charge; a 50 % slug floods
+  and passes.
+- **M65.4, the wetter crude unit** (§70.10): `crude_unit_wetter.toml`, 75.078
+  kg/s, its coil at a settled 339.79 °C.
+- Corpus: 65 of 65 byte-identical on both fidelities at every slice;
+  `crude_unit_wetter` the 66th plant.
+- **Left open**: C16 (the flash zone's limits: no tray damage, no slug's
+  pressure surge); the cold start's low edge (C10: a cure measured, not taken);
+  the coil's creep on a charge under half the shipped (E1b); C15 next.
+
 **M64 is CLOSED (2026-10-18): steam stripping — the reboiler held at zero, the
 reflux the result — `docs/DEFERRED.md` C7 taken, E30 new.** Asked after M63 as
 "refinery", then "scope and plan M64", then a plan of every open item with M64
