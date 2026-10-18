@@ -1,0 +1,193 @@
+diff --git a/crates/core/src/engine.rs b/crates/core/src/engine.rs
+index 1cf40db..b2990d4 100644
+--- a/crates/core/src/engine.rs
++++ b/crates/core/src/engine.rs
+@@ -718,6 +718,16 @@ impl Engine {
+                     ))),
+                 }
+             }
++            // THROWAWAY M66.0 probe.
++            Command::SetReboilerDuty { node, duty } => {
++                match &mut self.graph.node_mut(node).kind {
++                    NodeKind::Column { cascade: Some(spec), .. } => {
++                        spec.reboiler_duty = duty;
++                        Ok(())
++                    }
++                    _ => Err(SimError::InvalidCommand("probe: not a cascade column".into())),
++                }
++            }
+             // One pumparound's duty (M60, docs/DESIGN.md §65.4).
+             Command::SetPumparoundDuty {
+                 node,
+@@ -3531,7 +3541,8 @@ impl Engine {
+             | Command::SetSourceTemperature { node, .. }
+             | Command::SetSourceComposition { node, .. }
+             | Command::SetRefluxRatio { node, .. }
+-            | Command::SetPumparoundDuty { node, .. } => {
++            | Command::SetPumparoundDuty { node, .. }
++            | Command::SetReboilerDuty { node, .. } => {
+                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
+             }
+             Command::PuncturePipe { edge, .. } => {
+diff --git a/crates/core/src/snapshot.rs b/crates/core/src/snapshot.rs
+index 76d528e..7940a48 100644
+--- a/crates/core/src/snapshot.rs
++++ b/crates/core/src/snapshot.rs
+@@ -233,6 +233,8 @@ pub enum Command {
+         pumparound: u32,
+         duty: Watt,
+     },
++    /// THROWAWAY M66.0 probe: hold the reboiler at `duty` [W], or free it.
++    SetReboilerDuty { node: NodeId, duty: Option<Watt> },
+ }
+ 
+ #[derive(Debug, Clone, Serialize, Deserialize)]
+diff --git a/crates/godot-ext/src/bridge.rs b/crates/godot-ext/src/bridge.rs
+index b599943..3ce47a7 100644
+--- a/crates/godot-ext/src/bridge.rs
++++ b/crates/godot-ext/src/bridge.rs
+@@ -199,6 +199,7 @@ fn referent(cmd: &Command) -> Referent {
+         Command::SetSourceComposition { node, .. } => Referent::Node(*node),
+         Command::SetRefluxRatio { node, .. } => Referent::Node(*node),
+         Command::SetPumparoundDuty { node, .. } => Referent::Node(*node),
++        Command::SetReboilerDuty { node, .. } => Referent::Node(*node),
+     }
+ }
+ 
+diff --git a/crates/scenarios/tests/suite.rs b/crates/scenarios/tests/suite.rs
+index 5ef1f3f..ff0451f 100644
+--- a/crates/scenarios/tests/suite.rs
++++ b/crates/scenarios/tests/suite.rs
+@@ -205,3 +205,5 @@ mod water_slug_reference;
+ mod wet_rundown_reference;
+ #[path = "wetter_crude_reference.rs"]
+ mod wetter_crude_reference;
++#[path = "m66_0_probe.rs"]
++mod m66_0_probe;
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index c693d64..01fcbc5 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -288,9 +288,52 @@ impl SeparationModel for HeatBalanceCascade {
+         pass: &ColumnPass<'_>,
+         thermo: &dyn ThermoModel,
+     ) -> Result<Separation, SimError> {
+-        match self.fractionate(pass, thermo) {
++        use crate::probe6 as p6;
++        use std::sync::atomic::Ordering::Relaxed;
++        // THROWAWAY M66.0: the hold declined, the column kept at its running duty.
++        let cmd = pass.cascade.and_then(|s| s.reboiler_duty).map(|d| d.value());
++        let run = p6::running();
++        let differs = matches!((cmd, run), (Some(c), Some(r)) if (c - r).abs() > 1.0);
++        let outer = !p6::IN_FALLBACK.load(Relaxed);
++        if outer && differs && std::env::var("CMD_CONT").is_err() {
++            p6::SKIP_CONT.store(true, Relaxed);
++        }
++        let skip_cmd = outer && differs && std::env::var("MEMO").is_ok() && p6::DECLINED.load(Relaxed);
++        let first = if skip_cmd {
++            Err(SimError::Numerical("probe: declined earlier this tick".into()))
++        } else {
++            self.fractionate(pass, thermo)
++        };
++        p6::SKIP_CONT.store(false, Relaxed);
++        match first {
+             Ok(separation) => Ok(separation),
+-            Err(refusal) => flooded_pass_through(pass, thermo, refusal),
++            Err(refusal) => {
++                if outer && differs && std::env::var("NO_KEEP").is_err() {
++                    let spec2 = CascadeSpec {
++                        reboiler_duty: Some(Watt(run.unwrap())),
++                        ..pass.cascade.unwrap().clone()
++                    };
++                    let pass2 = ColumnPass { cascade: Some(&spec2), ..*pass };
++                    p6::IN_FALLBACK.store(true, Relaxed);
++                    if std::env::var("RUN_CONT").is_err() {
++                        p6::SKIP_CONT.store(true, Relaxed);
++                    }
++                    let kept = self.fractionate(&pass2, thermo);
++                    p6::SKIP_CONT.store(false, Relaxed);
++                    p6::IN_FALLBACK.store(false, Relaxed);
++                    match kept {
++                        Ok(s) => {
++                            p6::DECLINED.store(true, Relaxed);
++                            p6::FALLBACK_OK.fetch_add(1, Relaxed);
++                            return Ok(s);
++                        }
++                        Err(_) => {
++                            p6::FALLBACK_FAIL.fetch_add(1, Relaxed);
++                        }
++                    }
++                }
++                flooded_pass_through(pass, thermo, refusal)
++            }
+         }
+     }
+ }
+@@ -925,16 +968,30 @@ impl HeatBalanceCascade {
+             // A warm Newton that fails is retried cold, where the aids are.
+             match self.warm_newton(setup, &equations, previous)? {
+                 Ok(profile) => return Ok(profile),
+-                Err(unsolved) => warm_failure = Some(unsolved),
++                Err(unsolved) => {
++                    crate::probe6::WARM_FAIL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++                    warm_failure = Some(unsolved)
++                }
+             }
+         }
+ 
+         // A held column starts by a continuation from the same column with its
+         // reboiler (M64.2, docs/DESIGN.md §69.3): M61's cold start below lands
+         // a column without one nowhere.
++        if setup.spec.reboiler_duty.is_some()
++            && warm_failure.is_some()
++            && crate::probe6::SKIP_CONT.load(std::sync::atomic::Ordering::Relaxed)
++        {
++            return Err(SimError::Numerical(format!(
++                "probe: continuation skipped after a warm failure: {}",
++                warm_failure.as_ref().unwrap().reason
++            )));
++        }
+         if let Some(held) = setup.spec.reboiler_duty {
++            crate::probe6::CONT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+             return self.continuation(setup, &equations, held.value());
+         }
++        crate::probe6::COLD.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         let refused = match self.cold_start(setup, &equations, warm_failure.as_ref()) {
+             Ok(profile) => return Ok(profile),
+             Err(refused) => refused,
+@@ -947,6 +1004,7 @@ impl HeatBalanceCascade {
+         if plan.side_heat.iter().all(|heat| *heat == 0.0) || flooding(setup.pass).is_some() {
+             return Err(refused);
+         }
++        crate::probe6::HALVED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         self.halved_start(setup, &equations)
+             .map_err(|how| match refused {
+                 SimError::Numerical(reason) => SimError::Numerical(format!("{reason} {how}")),
+diff --git a/crates/solvers/src/lib.rs b/crates/solvers/src/lib.rs
+index 5c0200a..4a07498 100644
+--- a/crates/solvers/src/lib.rs
++++ b/crates/solvers/src/lib.rs
+@@ -197,3 +197,23 @@ mod constant_thermo_tests {
+         );
+     }
+ }
++
++#[allow(missing_docs)]
++pub mod probe6 {
++    use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
++    pub static WARM_FAIL: AtomicUsize = AtomicUsize::new(0);
++    pub static CONT: AtomicUsize = AtomicUsize::new(0);
++    pub static COLD: AtomicUsize = AtomicUsize::new(0);
++    pub static HALVED: AtomicUsize = AtomicUsize::new(0);
++    pub static FALLBACK_OK: AtomicUsize = AtomicUsize::new(0);
++    pub static FALLBACK_FAIL: AtomicUsize = AtomicUsize::new(0);
++    pub static RUNNING: std::sync::Mutex<Option<f64>> = std::sync::Mutex::new(None);
++    pub static IN_FALLBACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++    pub static SKIP_CONT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++    pub static DECLINED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++    pub fn running() -> Option<f64> { *RUNNING.lock().unwrap() }
++    pub fn fallbacks() -> [usize; 2] { [FALLBACK_OK.load(Relaxed), FALLBACK_FAIL.load(Relaxed)] }
++    pub fn counts() -> [usize; 4] {
++        [WARM_FAIL.load(Relaxed), CONT.load(Relaxed), COLD.load(Relaxed), HALVED.load(Relaxed)]
++    }
++}

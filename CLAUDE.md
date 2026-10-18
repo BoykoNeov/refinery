@@ -189,8 +189,9 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the next work is
-`docs/PLAN.md`'s Phase 2 (C15, C12, …), each opened as a milestone on the user's word. **Latest closed:
+Work only on the current milestone unless asked. **Current: M66 (open)** — C15, the stripped
+crude unit started from a cold plant: the reboiler held or freed by command, a hold the column declines
+(DESIGN §71; slices in `docs/ROADMAP.md`'s M66). After it, `docs/PLAN.md`'s Phase 2 (C12, …). **Latest closed:
 M65 (2026-10-18)**: a wetter crude — a column's cold start retried from halved pumparounds, a flooded column
 a flash zone with its pumped lines standing full, a supply's composition by command, and
 `crude_unit_wetter.toml` on a crude 2 % water (DESIGN §70; C14 taken; C16 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one

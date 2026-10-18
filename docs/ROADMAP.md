@@ -10324,3 +10324,28 @@ retried from halved pumparounds and walked back; a flooded column a flash zone,
 its pumped lines standing full; a supply's composition by command; and
 `crude_unit_wetter.toml` on a crude 2 % water. Its close-out report is at the
 top of `docs/MILESTONES.md`. Next is `docs/PLAN.md`'s Phase 2 (C15).
+
+## M66 — a cold start-up: the reboiler handed down by command, a hold the column declines; ledger row C15; opened on a decision
+
+Asked after M65 closed (2026-10-18) as "C15: starting the steam-stripped crude
+unit from a cold plant — do it". The user's decisions (DESIGN §71): a hand-over
+too early keeps the last duty that worked and reports it; the operator hands the
+reboiler down by command, no automatic rule; "cold" is the furnace low (the
+steamed plant's own state), not ambient; the start-up on the column screen.
+
+### M66.0 — **SPECIFIED** 2026-10-18: the design note — M66 stays OPEN
+
+DESIGN §71. Probed first (`tools/steptime/prototypes/m66_0/`, `FINDINGS.md`):
+the cold plant runs on its reboiler; holding the reboiler at its own duty is
+bumpless and freeing it again too; the coil reaches the stripped plant's
+436.88 °C ~1 500 s after the furnace goes to 58 MW, whatever the column does;
+held at zero with the pumparounds off the column lands on the stripped plant
+once the feed passes ~362 °C, and settled IS the stripped plant on both
+fidelities to every printed digit. The lowest duty the column carries falls
+with the feed's temperature (28.5 MW on 289 °C, 5.6 on 356), the gas-oil tray
+the one that runs dry. A start from ambient is out of reach without holdup
+(C2). After the forks: a declined hold kept at the running duty lands on zero
+by itself, and a walk from the running duty follows the edge, 40–54 ms a
+held-back tick. Slices: M66.1 the reboiler by command, M66.2 a hold the column
+declines, M66.3 the cold crude unit, M66.4 the column screen's fifth plant. No
+engine code changed.

@@ -27358,3 +27358,163 @@ fidelities agree). **Mutations**: two on the file — the coil at the wet plant'
 
 **What moved**: the corpus's 66th plant, `crude_unit_wetter`; the other 65
 byte-identical on both fidelities.
+
+## 71. A cold start-up — the reboiler handed down by command, a hold the column declines (M66) — specified before building
+
+Ledger row C15, the second of `docs/PLAN.md`'s Phase 2, asked for as "C15:
+starting the steam-stripped crude unit from a cold plant — do it"
+(2026-10-18). M64's stripped plant starts hot: a column with its reboiler held
+at zero cannot run on the feed a cold furnace sends it (§69.0 finding 5), and
+nothing could change a held duty while the plant runs. The user's decisions, in
+plain words (2026-10-18), asked with the probe's numbers (§71.0):
+
+1. **A hand-over too early keeps the last duty that worked**: the column
+   declines the lower duty for that tick, runs at the duty it ran at last and
+   reports it — not a halt, not a command refused up front.
+2. **The operator hands the reboiler down, by command** — not an automatic rule
+   (its threshold would be a game value: the edge moves with the feed
+   temperature, the steam and the charge).
+3. **"Cold" is the furnace low**: the steamed plant's own state — the furnace at
+   20 MW, its coil at 322 °C, the crude from the preheat train at 270 °C, the
+   column on its reboiler. Not ambient (§71.0, finding 12).
+4. **The start-up goes on the column screen**, a fifth plant with a reboiler key.
+
+### 71.0 Probed before the forks were offered (2026-10-18)
+
+Throwaway, kept in `tools/steptime/prototypes/m66_0/` with `FINDINGS.md` (every
+number below): `probe_reboiler.patch` (a probe command holding or freeing the
+reboiler mid-run; counters; after the forks, the declined hold) and
+`m66_0_probe.rs`. The plant: `crude_unit_stripped.toml` with its reboiler free,
+its furnace at 20 MW, its coil at 322 °C, its pumparounds at 15/15/10 MW.
+
+- **The cold plant runs on its reboiler** (finding 1): reboiler 88 MW, bottom
+  580 °C, reflux 4.0 — the steamed plant, its charge on the loop at 112.8 kg/s.
+- **Holding the reboiler at its own closure is bumpless, and freeing it again**
+  (finding 2): the next tick agrees with the free column to 6e-6 in the reflux,
+  3e-5 K on the stages; no warm start fails, no continuation runs.
+- **The coil is the clock** (finding 3): furnace 20 → 58 MW, the coil reaches
+  419 °C by 300 s and its settled 436.88 °C — the stripped plant's — by ~1 500 s,
+  whatever the column does.
+- **The hand-over in one step lands where the stripped plant stands** (finding
+  4): held at zero with the pumparounds off on the same tick, the warm Newton
+  from the free column lands straight on the held one. Pumparounds kept, or the
+  steam shut, it is refused.
+- **The edge is the feed's temperature** (findings 5–7): held at zero, refused on
+  a 357.5 °C feed, runs on 365.5 °C; at part duties, the lowest duty that runs
+  is 28.5 MW on a 289 °C feed, 20.3 on 315, 12.0 on 340, 5.6 on 356; more steam
+  lowers it (on 340 °C: 14.8 MW at 0.22 kg/s, 12.0 at 0.87, 7.3 at 2.15). Every
+  refusal names the gas-oil tray (stage 7) dry — its draw a fixed share of the
+  feed, which a real unit would cut back (§71.6). A ramp from the furnace step
+  to zero over 300 s runs; over 150 s it outruns the coil and is refused.
+- **Settled, the start-up is the stripped plant** (finding 10): the step at
+  250 s, run to 2 400 s — bottom 363.634 °C, reflux 3.4604, condenser 52.217 MW,
+  the coil 436.88 °C — on both fidelities to every printed digit. One steady
+  state.
+- **Cost** (finding 11): Newton 22–24 ms a tick while the coil warms (~1 500 s),
+  4 ms settled; the game solver 63–91 ms over the first ~900 s, 11–12 settled
+  (A29).
+- **A start from ambient is out of reach** (finding 12): a cold feed asks the
+  free column's reboiler for 160–330 MW, the charge loop loses the charge, and
+  the network's solve diverges in the coil. The column is quasi-steady (no
+  holdup, C2): what a start from ambient needs — filling, circulating, the trays
+  loading, the products to slop — is holdup.
+- **The declined hold, probed after the forks** (findings 13–15): too early,
+  the column stays at its running duty and lands on zero by itself once the
+  feed allows (~362 °C). The continuation tried at the asked-for duty costs
+  160–204 ms a held-back tick and reaches nothing the warm start does not: not
+  taken. The key's walk — the running duty less 2.5 MW — tracks the edge as the
+  feed heats, and reaches zero once the running duty's warm start may fall
+  back on the continuation (4 times in ~1 700 held-back ticks) and a pass that
+  declined sends the tick's later passes straight to the running duty: 40–54 ms
+  a held-back tick against 23–29.
+
+### 71.1 Fork 1 — the handle: the reboiler held or freed by command
+
+`Command::SetReboilerDuty { node, duty: Option<Watt> }`: `Some(Q)` holds the
+column's reboiler at `Q` from the next tick on (M64's `reboiler_duty`, the
+reflux the result), `None` frees it (the reboiler closes the balance at the
+declared reflux, the reflux key live again). Refused at the command, as the
+loader refuses a file (`require_held_reboilers`): off a column, on a column
+with no cascade, on a separation model that cannot hold a reboiler (anything
+but the heat-balance cascade under Newton), a duty non-finite or below zero. A
+refusal leaves the column as it was. The bridge addresses it by node.
+
+### 71.2 Fork 2 — a hold the column declines
+
+The duty the column RAN at becomes state the column is handed:
+`ColumnPass::running_reboiler_duty`, this column's published reboiler duty
+from the last tick, `None` on a plant's first tick and after a load. It is an
+argument, not a hint — unlike `seed`, the answer depends on it — so
+`separate` stays a function of its pass, and the contract's doc says so.
+
+- **Only when the held duty differs from the running one.** A column whose hold
+  is the duty it ran at, or that is free, or that has no running duty, solves
+  as today, to the bit: every shipped plant byte-identical, the stripped plant
+  included, M64.3's fallback for a plant move included.
+- **The order**: Newton warm at the held duty, no continuation (finding 13);
+  failing, the column held at its running duty — warm, then M64.2's
+  continuation where the warm start fails (finding 15). The answer is
+  published at the duty it ran: the reboiler duty the running one, the books'
+  agreement read against it.
+- **One decline a tick**: a pass that declined hands the tick's later passes
+  (`earlier_pass`) a profile that ran at the running duty, and they go
+  straight to it.
+- **Reported**: the snapshot names the decline — the duty asked for and the
+  column's own reason — on the column, absent (not serialized) when there is
+  none.
+- **A refusal stays honest**: when the running duty fails too, the refusal is
+  the column's own at the asked-for duty, then that it could not keep its
+  running duty either, and why (M65.1's rule).
+- **At the edge** whether a hold is accepted can depend on which start
+  converged; a run is still deterministic (the same pass, the same start).
+
+### 71.3 Fork 3 — the operator, by command
+
+No rule in the engine hands the reboiler down. The start-up is a sequence of
+commands: the furnace fired, the steam in, the pumparounds off, the reboiler
+held at its running duty and walked down. Because a declined hold keeps the
+running duty, a walk that steps from the running duty follows the feed as it
+heats (finding 14); a target set below the edge waits there and lands once the
+feed allows (finding 13).
+
+### 71.4 Fork 4 — the plant: a new file on the cold furnace
+
+`scenarios/crude_unit_cold.toml`, generated from `crude_unit_stripped.toml`:
+the reboiler free (no `reboiler_duty_mw`) at the declared reflux 4.0, the
+furnace at 20 MW, the pumparounds at the steamed plant's 15/15/10 MW, the steam
+as shipped, the charge loop as shipped — its coil and the loop's opening
+re-measured where this plant settles, so it starts where it stays. Its start-up
+story (a `slow_` test, both fidelities): the furnace to 58 MW, the pumparounds
+off, the reboiler walked from its running duty to zero; settled, the stripped
+plant's numbers. The corpus's 67th plant.
+
+### 71.5 Fork 5 — the column screen's fifth plant
+
+`demo/column.gd`, key 5: the cold plant, its keys the furnace, the steam, the
+pumparounds and the reboiler — held at its running duty less a step, or freed
+(the reflux keys live while it is free). The panel shows a declined hold. Its
+box measured as M64.4's was; the godot-feature clippy.
+
+### 71.6 What moves, and what is deferred
+
+**Moves**: nothing shipped — a new command no plant sends, a fallback taken
+only where a held duty differs from the running one. The new plant carries it.
+
+**Taken**: C15.
+
+Deferred: a start-up from ambient (C2, holdup); a draw that shrinks when its
+tray runs dry, the real unit's answer to a cool feed (the gas-oil draw, a fixed
+share of the feed here — a new ledger row at the close); the coil's warm-up's
+cost (A29); an automatic hand-over (decision 2).
+
+### 71.7 The slices
+
+- **M66.1 — the reboiler by command.** Fork 1; gates: held at its closure the
+  next tick is the free column's (finding 2), freed again likewise, the step to
+  zero on the hot plant lands on the stripped plant (finding 4), the refusals.
+- **M66.2 — a hold the column declines.** Fork 2; gates on the cold plant's
+  feed: too early kept and landing later, the walk from the running duty
+  following the edge, the refusal when the running duty fails too, the shipped
+  plants untouched.
+- **M66.3 — the cold crude unit.** Fork 4, its story on both fidelities.
+- **M66.4 — the column screen's fifth plant.** Fork 5.
