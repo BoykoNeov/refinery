@@ -353,8 +353,9 @@ fn a_held_column_starts_from_its_earlier_pass_before_its_last_tick() {
 }
 
 /// **A declared column ignores an earlier pass, to the bit** (M64.2, §69.3):
-/// only a held column reads it, which is what keeps every shipped plant's
-/// re-solved ticks what they were. Handed a held column's answer as its
+/// only a held column reads it — or, since M65.1 (§70.7), one whose cold
+/// start refused, which this one's does not — which is what keeps every
+/// shipped plant's re-solved ticks what they were. Handed a held column's answer as its
 /// earlier pass, the declared column is the one it is handed nothing.
 #[test]
 fn a_declared_column_ignores_an_earlier_pass() {

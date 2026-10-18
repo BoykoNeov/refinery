@@ -1,3 +1,5 @@
+import os
+os.makedirs(r"W:/temp/claude/m65_0", exist_ok=True)
 import re, sys
 src = open(r"W:/Claude_projects/refinery/scenarios/crude_unit_wet.toml").read()
 oil = dict(light_naphtha=0.07976, heavy_naphtha=0.13958, kerosene=0.15952, diesel=0.1994, gas_oil=0.13958, residue=0.27916)

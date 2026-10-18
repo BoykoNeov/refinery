@@ -1452,7 +1452,7 @@ pub fn swept_density_change(
 ///
 /// `earlier` is this tick's last sweep on a tick the engine re-solves, `None`
 /// on its first: only its columns' profiles are read, as
-/// `ColumnPass::earlier_pass` (M64.2, docs/DESIGN.md §69.3).
+/// `ColumnPass::earlier_pass` (M64.2, docs/DESIGN.md §69.3; M65.1, §70.7).
 ///
 /// # Errors
 /// `SimError::Numerical` if a recycle among zero-volume nodes leaves the sweep
