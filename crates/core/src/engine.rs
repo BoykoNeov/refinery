@@ -718,6 +718,37 @@ impl Engine {
                     ))),
                 }
             }
+            // A column's reboiler held or freed (M66, docs/DESIGN.md §71.1):
+            // the loader's refusals of `reboiler_duty_mw`, at the command.
+            Command::SetReboilerDuty { node, duty } => {
+                if let Some(duty) = duty {
+                    check_duty(duty, "reboiler")?;
+                }
+                let model = self.separation.name();
+                let name = self.graph.node(node).name.clone();
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Column {
+                        cascade: Some(spec),
+                        ..
+                    } => {
+                        if model != "heat_balance" {
+                            return Err(SimError::InvalidCommand(format!(
+                                "{node:?} ('{name}') runs under separation \"{model}\": only                                  separation = \"heat_balance\" solves a stage energy balance, so                                  only it can hold a reboiler and take the reflux as the result                                  (docs/DESIGN.md §69)"
+                            )));
+                        }
+                        spec.reboiler_duty = duty;
+                        Ok(())
+                    }
+                    NodeKind::Column { cascade: None, .. } => {
+                        Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') is a cut-point column: it splits its feed by                              boiling range and has no reboiler to hold"
+                        )))
+                    }
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') is not a column"
+                    ))),
+                }
+            }
             // One pumparound's duty (M60, docs/DESIGN.md §65.4).
             Command::SetPumparoundDuty {
                 node,
@@ -3531,7 +3562,8 @@ impl Engine {
             | Command::SetSourceTemperature { node, .. }
             | Command::SetSourceComposition { node, .. }
             | Command::SetRefluxRatio { node, .. }
-            | Command::SetPumparoundDuty { node, .. } => {
+            | Command::SetPumparoundDuty { node, .. }
+            | Command::SetReboilerDuty { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
             Command::PuncturePipe { edge, .. } => {

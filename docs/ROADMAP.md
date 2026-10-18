@@ -10349,3 +10349,16 @@ by itself, and a walk from the running duty follows the edge, 40–54 ms a
 held-back tick. Slices: M66.1 the reboiler by command, M66.2 a hold the column
 declines, M66.3 the cold crude unit, M66.4 the column screen's fifth plant. No
 engine code changed.
+
+### M66.1 — **LANDED** 2026-10-18: the reboiler by command
+
+`Command::SetReboilerDuty { node, duty: Option<Watt> }`: a heat-balance column's
+reboiler held at a duty or freed, from the next tick on, refused where the
+loader would refuse the file's `reboiler_duty_mw` (a duty below zero or not
+finite, not a cascade column, any separation model but `heat_balance`). Held at
+its own duty the column runs on as it was; held at zero with its pumparounds
+off it is the stripped plant on that tick. DESIGN §71.8.
+
+- Gates: `reboiler_command_reference.rs` (3), `bridge.rs` (20 variants).
+  Mutations: four, four caught. The godot-feature clippy clean. Corpus: 66 of
+  66 byte-identical on both fidelities.

@@ -199,6 +199,7 @@ fn referent(cmd: &Command) -> Referent {
         Command::SetSourceComposition { node, .. } => Referent::Node(*node),
         Command::SetRefluxRatio { node, .. } => Referent::Node(*node),
         Command::SetPumparoundDuty { node, .. } => Referent::Node(*node),
+        Command::SetReboilerDuty { node, .. } => Referent::Node(*node),
     }
 }
 

@@ -149,6 +149,8 @@ mod pump_two_phase_reference;
 mod quench_reference;
 #[path = "reactor_reference.rs"]
 mod reactor_reference;
+#[path = "reboiler_command_reference.rs"]
+mod reboiler_command_reference;
 #[path = "relief_blowdown_reference.rs"]
 mod relief_blowdown_reference;
 #[path = "relief_slope_reference.rs"]

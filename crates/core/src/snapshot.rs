@@ -233,6 +233,19 @@ pub enum Command {
         pumparound: u32,
         duty: Watt,
     },
+    /// Hold a heat-balance cascade column's reboiler at `duty` [W], or free it
+    /// with `None` (M66, docs/DESIGN.md §71.1) — the file's `reboiler_duty_mw`,
+    /// from the next tick on. Held, the bottom stage's energy balance is an
+    /// equation and the reflux ratio the result (M64, §69); freed, the reboiler
+    /// closes the column's balance at the declared reflux, as it always has.
+    /// Finite and >= 0 (heat added; 0 is a column stripped by steam alone).
+    /// Refused off a cascade column and under any separation model but
+    /// `heat_balance`; a refusal leaves the column as it was. Its consequence
+    /// is `cascade.reboiler_duty` on the column's `kind`.
+    SetReboilerDuty {
+        node: NodeId,
+        duty: Option<Watt>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

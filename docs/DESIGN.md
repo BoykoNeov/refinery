@@ -27518,3 +27518,30 @@ cost (A29); an automatic hand-over (decision 2).
   plants untouched.
 - **M66.3 — the cold crude unit.** Fork 4, its story on both fidelities.
 - **M66.4 — the column screen's fifth plant.** Fork 5.
+
+### 71.8 The reboiler by command, built (M66.1)
+
+`Command::SetReboilerDuty { node, duty: Option<Watt> }` (`core::snapshot`), on
+the wire `{"cmd":"set_reboiler_duty","node":2,"duty":0.0}` (`null` frees it).
+`Engine::apply` writes `cascade.reboiler_duty` on the column's `kind`, from the
+next tick on. Refused, leaving the column as it was: a held duty non-finite or
+below zero (`check_duty`, the pumparound's words); a node that is not a column;
+a cut-point column ("no reboiler to hold"); a column whose plant runs any
+separation model but `heat_balance` (the loader's `require_held_reboilers`, at
+the command — the fixed point that refuses a held reboiler is test-only, so the
+model's name is the check). The bridge addresses it by node.
+
+**Gates**: `reboiler_command_reference.rs` (3), on the stripped crude unit with
+its reboiler free and its pumparounds at 15/15/10 MW (built inline): held at
+the duty it just published, for three ticks it publishes that duty exactly and
+runs where a free copy runs (reflux within 1e-5 of 4.0, stages within 1e-4 K),
+and freed it is the free copy on the next tick (stages within 1e-6 K); held at
+zero with its pumparounds off on one tick, it is `crude_unit_stripped.toml` on
+that tick (reflux within 1e-6, stages within 1e-5 K); the refusals (below zero,
+NaN, infinite, the furnace, the FCC plant's cut-point fractionator, the
+`"cascade"` model's column). `godot-ext` `bridge.rs`: the wire text both ways,
+a real engine accepting it on the stripped plant; 20 variants.
+**Mutations**: four — the duty never written, a freed reboiler kept held, no
+duty check, no model check — all caught.
+
+**What moved**: nothing shipped — 66 of 66 byte-identical on both fidelities.
