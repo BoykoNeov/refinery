@@ -219,12 +219,12 @@ const AUTO_STRIPPED := {
 ## pumparounds off at 500; from 500 the reboiler key pressed every 10 ticks
 ## (`WALKS`), each press the duty it runs at less 2.5 MW — the column declining
 ## the steps the feed is still too cool for, landing on zero near 2 320; at
-## 1 000 the furnace key pressed down while the reboiler is held, and the
-## screen holds it.
+## 1 005 (off the walk's ticks, so its message stays on screen) the furnace
+## key pressed down while the reboiler is held, and the screen holds it.
 const AUTO_COLD := {
 	10: ["furnace_58"],
 	500: ["pumparounds_0"],
-	1000: ["furnace_down"],
+	1005: ["furnace_down"],
 	2700: ["quit"],
 }
 ## The reboiler key pressed every `[2]` ticks from `[0]` to `[1]` on a timeline.
@@ -237,7 +237,7 @@ const AUTO_SHOT_TICKS := {
 	"hot": [600, 1500, 2400, 3000],
 	"overheated": [600, 1200],
 	"stripped": [600, 1500, 2400, 3300],
-	"cold": [500, 1000, 2000, 2400],
+	"cold": [500, 1005, 2000, 2400],
 }
 const PRINT_EVERY := 300
 
@@ -530,7 +530,7 @@ func _do(action: String) -> void:
 func _held_back(what: String, raises_edge: bool) -> bool:
 	if not (PLANTS[plant_key].has("reboiler") and _held() and raises_edge):
 		return false
-	var text := "%s stays where it is while the reboiler is held: the column runs on its edge, and this move could take the feed's heat below it — free the reboiler first (Y; DESIGN %s)" % [what, PLANTS[plant_key]["range_ref"]]
+	var text := "%s stays while the reboiler is held: it could take the column past its edge (Y frees it)" % what
 	_say(text, true)
 	if auto_run:
 		print("column: t=%d  HELD: %s" % [sim.tick_index(), text])

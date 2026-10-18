@@ -309,7 +309,7 @@ fn slow_the_stripped_timeline() {
 /// **The cold crude unit's start-up** (`AUTO_COLD` and `WALKS`, M66.4): the
 /// furnace to 58 MW at 10; the pumparounds off at 500; from 500 to 2 390, every
 /// 10 ticks, the reboiler key — held at the duty it runs at less 2.5 MW, the
-/// scene's own arithmetic (its 1 000-tick furnace press is the screen's to
+/// scene's own arithmetic (its 1 005-tick furnace press is the screen's to
 /// hold, while the reboiler is held, and sends nothing). The reboiler never
 /// rises; the column declines 1 534 ticks of the walk, the feed still too cool
 /// for the step asked, and lands on zero on tick 2 321; on 2 700 it is held

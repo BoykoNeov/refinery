@@ -27623,7 +27623,7 @@ the reboiler free at the declared reflux 4.0, the furnace at 20 MW, the
 pumparounds at 15/15/10 MW (a column on its reboiler with none cannot make its
 cold start, M64.0 finding 5), the steam and the charge loop as shipped. **Its
 coil and the loop's opening measured where this plant settles them** (60 000
-ticks from a first guess): the coil 322.06 °C, the opening 0.33737 — against the
+ticks from a first guess; `tools/steptime/prototypes/m66_3/m66_3_measure.rs`): the coil 322.06 °C, the opening 0.33737 — against the
 stripped plant's 0.419, which sent tick 1 to 131 kg/s. From there it stands
 still: over 12 000 ticks the coil moves 0.002 K, the charge 112.800 kg/s, the
 reboiler 87.945 MW, the bottom 580.181 °C.
@@ -27676,8 +27676,8 @@ the scene's table gets them; the stripped plant (key 4) is as M64.4 left it.
 **While the reboiler is held, the keys that could raise the column's edge are
 the screen's to hold** — the furnace down, the steam down, the pumparounds
 either way — with the reason on screen: "free the reboiler first". Measured
-before it was chosen, from points along the start-up (`zz_m66_4_box`, a
-throwaway driver): mid-walk (tick 1 500, the column held at 10 MW on a 347 °C
+before it was chosen, from points along the start-up
+(`tools/steptime/prototypes/m66_4/m66_4_box.rs`, every run in `RESULTS.md`): mid-walk (tick 1 500, the column held at 10 MW on a 347 °C
 feed) the steam one step down (40 → 35 %) halts the plant, the column refused
 (stage 7 dry); just after landing (tick 2 400, 364 °C) the steam to 10 % halts
 it. A decline protects only the reboiler's own commands, and through the walk
@@ -27700,14 +27700,14 @@ held under the keys' range; the `t=` line ends with the reboiler's state.
 
 **The timeline** (`AUTO_COLD`, with `WALKS`: the reboiler key pressed every 10
 ticks from 500 to 2 390): the furnace to 58 MW at 10, the pumparounds off at
-500, at 1 000 the furnace key pressed down while the reboiler is held (the
-screen holds it). Headless: 183 presses, none refused; the column declines
+500, at 1 005 (off the walk's ticks, so the message stays on screen) the
+furnace key pressed down while the reboiler is held (the screen holds it). Headless: 183 presses, none refused; the column declines
 1 534 ticks and lands on zero on tick 2 321 (a tick after
 `crude_unit_cold_reference.rs`'s 2 320: the scene sends each command after its
 tick); at 2 700 the feed 368.1 °C, the reflux 3.070, the condenser 47.80 MW.
-Recorded windowed with screenshots at 500, 1 000, 2 000 and 2 400, checked by
-eye. The four other plants' timelines run as before (the stripped and the crude
-unit's re-run headless).
+Recorded windowed with screenshots at 500, 1 005, 2 000 and 2 400, checked by
+eye. The four other plants' timelines run as before, each re-run headless to
+its end (the stripped plant's on M64.4's numbers: the reflux 1.807 at 3 600).
 
 **Not measured: the screen's cost.** The machine was under other load (the
 user's note); `ticks_per_frame` is the stripped plant's 3, unmeasured here. A
