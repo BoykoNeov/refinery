@@ -27296,3 +27296,36 @@ the bottoms at the feed's, the empty draws the feed as M63.4 had them — all
 caught.
 
 **What moved**: nothing shipped — no shipped plant floods.
+
+### 70.9 The crude's water by command, built (M65.3)
+
+`Command::SetSourceComposition { node, composition }` (`core::snapshot`), on
+the wire `{"cmd":"set_source_composition","node":0,"composition":{"mass_fractions":[…]}}`.
+`Engine::apply` holds it to `Composition`'s invariant itself — the wire's
+`Composition` deserializes field for field, so its constructor's checks never
+ran: one fraction per slate member, each finite and >= 0, the sum within 1e-9
+of one, then normalized by `Composition::from_weights`. Refused on anything but
+a supply (a destination with its own reason), where the supply's phase would
+change (`Composition::phase` before and after — a supply's composition votes on
+its part of the plant's phase, which the loader fixed, §3a), and where its
+liquid would boil at its pressure on a plant that cannot carry a boiling supply
+(`refuse_boiling_supply`, as `SetSourceTemperature`). A refusal leaves the
+supply as it was. The bridge addresses it by node (`Referent::Node`).
+
+Measured on the shipped wet crude unit: stepped from 0.3 % to 2 % water at
+tick 500, the charge falls from 112.833 kg/s to 75.835 by tick 1 100 (the 2 %
+plant file's 75.692 at the same tick, its coil's history its own), the water
+draw exactly 2 % of it; stepped back, 112.476. The supply's composition reaches
+the column on the tick it is set — the lines between are carried quasi-steady —
+so a 50 % slug floods the column on its first tick and the column separates
+again on the first tick after it.
+
+**Gates**: `wetter_crude_reference.rs` (+3: the step and back; the slug; the
+refusals — the wrong length, a negative fraction, a sum off one, a tank, the
+make-up plant's vgo feed turned to hydrogen, the dry crude unit's crude turned
+to light naphtha at 270 °C and 30 bar), `godot-ext` `bridge.rs` (the wire text
+both ways, a real engine accepting it; 19 variants). **Mutations**: six — the
+supply never written, no length check, no sum check, no phase check, no
+boiling check, any node accepted — all caught.
+
+**What moved**: nothing shipped — a new command no plant sends.

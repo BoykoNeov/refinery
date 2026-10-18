@@ -10293,3 +10293,18 @@ running to 80 %. DESIGN §70.2, §70.8; probe in `tools/steptime/prototypes/m65_
 - Gates: `reference/flooded_column.rs` (two rewritten, one new),
   `wetter_crude_reference.rs` (+3). Mutations: seven, seven caught. Corpus: 65
   of 65 byte-identical on both fidelities.
+
+### M65.3 — **LANDED** 2026-10-18: the crude's water by command
+
+`Command::SetSourceComposition { node, composition }`: a supply's mass
+fractions, from the next tick on, held to `Composition`'s invariant by the
+engine (the wire's fractions as given), refused off a supply, across a phase
+change, and where the liquid would boil at the supply's pressure on a plant
+that cannot carry one. The shipped wet crude unit stepped to 2 % water runs at
+the 2 % plant's charge (75.8 kg/s against 75.7) and steps back; a 50 % slug
+floods the column on its first tick and the column separates on the first tick
+after. DESIGN §70.9.
+
+- Gates: `wetter_crude_reference.rs` (+3), `bridge.rs` (19 variants).
+  Mutations: six, six caught. The godot-feature clippy clean. Corpus: 65 of 65
+  byte-identical on both fidelities.

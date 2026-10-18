@@ -621,6 +621,74 @@ impl Engine {
                     ))),
                 }
             }
+            // A supply's composition (M65.3, docs/DESIGN.md §70.3). Read by the
+            // next tick's sweep off the kind, as the temperature is.
+            Command::SetSourceComposition { node, composition } => {
+                let fractions = composition.fractions();
+                let sum: f64 = fractions.iter().sum();
+                if fractions.len() != self.slate.len()
+                    || fractions.iter().any(|x| !x.is_finite() || *x < 0.0)
+                    || (sum - 1.0).abs() > 1e-9
+                {
+                    return Err(SimError::InvalidCommand(format!(
+                        "a supply's composition must be one mass fraction per slate member \
+                         ({}), each finite and >= 0, summing to 1. Got {fractions:?}",
+                        self.slate.len()
+                    )));
+                }
+                let composition = Composition::from_weights(fractions)
+                    .map_err(|e| SimError::InvalidCommand(e.to_string()))?;
+                let name = self.graph.node(node).name.clone();
+                match &self.graph.node(node).kind {
+                    NodeKind::Source {
+                        pressure,
+                        temperature,
+                        composition: declared,
+                        ..
+                    } => {
+                        let (was, would) =
+                            (declared.phase(&self.slate), composition.phase(&self.slate));
+                        match (was, would) {
+                            (Ok(was), Ok(would)) if was == would => {}
+                            (was, would) => {
+                                return Err(SimError::InvalidCommand(format!(
+                                    "supply '{name}' would change its phase ({was:?} to \
+                                     {would:?}): its composition decides its part of the \
+                                     plant's phase, which the plant file fixed \
+                                     (docs/DESIGN.md §3a). A supply's composition can move \
+                                     only within its phase"
+                                )))
+                            }
+                        }
+                        self.refuse_boiling_supply(&name, *pressure, *temperature, &composition)?;
+                    }
+                    NodeKind::Sink { .. } => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') is a destination (a sink). Its composition is \
+                             only the fluid it would hand back if the plant drove flow \
+                             backwards into it, and is fixed by the plant file; only a supply's \
+                             composition can be set"
+                        )))
+                    }
+                    _ => {
+                        return Err(SimError::InvalidCommand(format!(
+                            "{node:?} ('{name}') is not a supply (a source)"
+                        )))
+                    }
+                }
+                match &mut self.graph.node_mut(node).kind {
+                    NodeKind::Source {
+                        composition: declared,
+                        ..
+                    } => {
+                        *declared = composition;
+                        Ok(())
+                    }
+                    _ => Err(SimError::InvalidCommand(format!(
+                        "{node:?} is not a source"
+                    ))),
+                }
+            }
             // A cascade column's declared reflux ratio (M60, docs/DESIGN.md
             // §65.3). The same bounds `CascadePlan::new` holds a file to.
             Command::SetRefluxRatio { node, reflux_ratio } => {
@@ -3461,6 +3529,7 @@ impl Engine {
             | Command::SetCoolingWaterFlow { node, .. }
             | Command::SetReservoirPressure { node, .. }
             | Command::SetSourceTemperature { node, .. }
+            | Command::SetSourceComposition { node, .. }
             | Command::SetRefluxRatio { node, .. }
             | Command::SetPumparoundDuty { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))

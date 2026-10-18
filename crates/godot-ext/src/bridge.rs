@@ -196,6 +196,7 @@ fn referent(cmd: &Command) -> Referent {
         Command::ManualTrip { trip_id } => Referent::Trip(*trip_id),
         Command::SetReservoirPressure { node, .. } => Referent::Node(*node),
         Command::SetSourceTemperature { node, .. } => Referent::Node(*node),
+        Command::SetSourceComposition { node, .. } => Referent::Node(*node),
         Command::SetRefluxRatio { node, .. } => Referent::Node(*node),
         Command::SetPumparoundDuty { node, .. } => Referent::Node(*node),
     }

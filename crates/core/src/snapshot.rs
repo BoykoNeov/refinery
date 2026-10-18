@@ -1,6 +1,7 @@
 //! Frontend contract: `Command` in, `Snapshot` out. Both plain serde data.
 //! Frontends never touch engine internals.
 
+use crate::components::Composition;
 use crate::graph::{
     ControlAction, ControlMode, ControlledValue, EdgeId, LoopId, MeasurementPoint, NodeId,
     NodeKind, TankState, TripDirection, TripId, TripReset, TripState,
@@ -193,6 +194,25 @@ pub enum Command {
     SetSourceTemperature {
         node: NodeId,
         temperature: Kelvin,
+    },
+    /// Move a supply's composition — mass fractions over the slate — the fluid
+    /// it feeds from the next tick on (M65.3, docs/DESIGN.md §70.3): a crude
+    /// whose water rises and falls, say. Holdups downstream mix it in through
+    /// their own inventories.
+    ///
+    /// One fraction per slate member, each finite and >= 0, summing to one
+    /// within 1e-9 (the wire carries the fractions as given; the engine holds
+    /// them to `Composition`'s invariant). Refused where the supply's phase
+    /// would change — its composition votes on its part of the plant's phase,
+    /// which the loader fixed (docs/DESIGN.md §3a) — and, as
+    /// [`Command::SetSourceTemperature`] is, where its liquid would boil at its
+    /// own pressure on a plant that cannot carry a boiling supply.
+    ///
+    /// Supplies only: a destination's composition is the fluid it returns if
+    /// the plant drives flow backwards into it, not an operating condition.
+    SetSourceComposition {
+        node: NodeId,
+        composition: Composition,
     },
     /// Set a cascade column's declared molar reflux ratio `R = L/D` [-] (M60,
     /// docs/DESIGN.md §65.3) — the control-room handle §5 fork 3 names; never a

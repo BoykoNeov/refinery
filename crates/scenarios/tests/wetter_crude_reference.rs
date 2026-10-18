@@ -311,3 +311,145 @@ fn the_flooded_columns_first_law_closes_on_the_plants_books() {
         "the flooded column's first law: worst residual {worst:e}"
     );
 }
+
+/// The shipped crude with `water` [mass fraction], as a supply's composition.
+fn crude_at(water: f64) -> refinery_core::components::Composition {
+    let oil: f64 = OIL.iter().map(|(_, f)| f).sum();
+    let mut weights: Vec<f64> = OIL.iter().map(|(_, f)| f / oil * (1.0 - water)).collect();
+    weights.push(water);
+    refinery_core::components::Composition::from_weights(&weights).unwrap()
+}
+
+fn set_crude(engine: &mut Engine, water: f64) -> Result<(), String> {
+    let node = node(&engine.snapshot(), "crude_source").id;
+    engine
+        .apply(Command::SetSourceComposition {
+            node,
+            composition: crude_at(water),
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// **The crude's water by command, into the running plant and out again**
+/// (M65.3, §70.3). The shipped wet crude unit (0.3 % water) settled, its crude
+/// stepped to 2 % water: the supply boils harder, the charge falls toward the
+/// 2 % plant's, the column follows warm, and the water draw carries the crude's
+/// water. Stepped back, the charge returns to the shipped plant's.
+#[test]
+fn slow_the_crudes_water_steps_by_command_and_back() {
+    let mut engine = build(WET);
+    let shipped = charge(&run(&mut engine, 500).expect("the shipped plant runs"));
+    set_crude(&mut engine, 0.02).expect("a wetter crude");
+    let wet = run(&mut engine, 600).expect("the wetter crude runs");
+    let wet_charge = charge(&wet);
+    let water = flow(&wet, "water_draw");
+    let mut file = build(&wetter(0.02, 1.0));
+    let file_charge = charge(&run(&mut file, 1100).expect("the 2 % plant runs"));
+    set_crude(&mut engine, 0.003).expect("the shipped crude");
+    let back = charge(&run(&mut engine, 600).expect("the shipped crude again"));
+    // Measured: 112.833 kg/s shipped; 75.835 at 2 % (the 2 % plant file's
+    // 75.692 at the same tick, its coil's history its own); back to 112.476.
+    assert!(node(&wet, "column").column_flooded.is_none());
+    assert!(
+        (wet_charge / file_charge - 1.0).abs() < 0.005,
+        "the charge at 2 %: {wet_charge} kg/s against the 2 % plant's {file_charge}"
+    );
+    assert!(
+        (water - 0.02 * wet_charge).abs() < 1e-6 * wet_charge,
+        "the water draw {water} kg/s against the crude's {}",
+        0.02 * wet_charge
+    );
+    assert!(
+        (back / shipped - 1.0).abs() < 0.005,
+        "back: {back} kg/s against {shipped}"
+    );
+}
+
+/// **A wet slug past the flood, and the column separating again**: the crude
+/// stepped to 50 % water floods the column within ticks (a flash zone, §70.2);
+/// stepped back to the shipped crude, it fractionates again.
+#[test]
+fn slow_a_wet_slug_floods_the_column_and_passes() {
+    let mut engine = build(WET);
+    run(&mut engine, 300).expect("the shipped plant runs");
+    set_crude(&mut engine, 0.50).expect("a slug of water");
+    let mut flooded_at = None;
+    for tick in 1..=200 {
+        let s = run(&mut engine, 1).unwrap_or_else(|e| panic!("slug tick {tick}: {e}"));
+        if flooded_at.is_none() && node(&s, "column").column_flooded.is_some() {
+            flooded_at = Some(tick);
+        }
+    }
+    set_crude(&mut engine, 0.003).expect("the shipped crude");
+    let mut separated_at = None;
+    for tick in 1..=400 {
+        let s = run(&mut engine, 1).unwrap_or_else(|e| panic!("after tick {tick}: {e}"));
+        if separated_at.is_none() && node(&s, "column").column_flooded.is_none() {
+            separated_at = Some(tick);
+        }
+    }
+    // The supply's composition reaches the column on the tick it is set: the
+    // lines between are carried quasi-steady.
+    assert_eq!(flooded_at, Some(1), "the slug floods the column");
+    assert_eq!(separated_at, Some(1), "the column separates again");
+}
+
+/// **A supply's composition is refused by name** where it is not one: the
+/// wrong length, a negative fraction, fractions that do not sum to one, a node
+/// that is not a supply; where it would change the supply's phase (the vgo
+/// feed of the make-up plant turned to hydrogen); and where the liquid would
+/// boil at the supply's pressure on a plant that cannot carry a boiling supply
+/// (the dry crude unit's crude turned to light naphtha at 270 °C, 30 bar). Each
+/// refusal leaves the supply as it was.
+#[test]
+fn a_supply_composition_is_refused_by_name() {
+    use refinery_core::components::Composition;
+    let mut engine = build(WET);
+    let crude = node(&engine.snapshot(), "crude_source").id;
+    let tank = node(&engine.snapshot(), "sour_water_tank").id;
+    let raw = |fractions: Vec<f64>| -> Composition {
+        serde_json::from_value(serde_json::json!({ "mass_fractions": fractions })).unwrap()
+    };
+    let refused = |engine: &mut Engine, node, composition| {
+        engine
+            .apply(Command::SetSourceComposition { node, composition })
+            .expect_err("refused")
+            .to_string()
+    };
+    let e = refused(&mut engine, crude, raw(vec![0.5, 0.5]));
+    assert!(e.contains("one mass fraction per slate member (7)"), "{e}");
+    let e = refused(
+        &mut engine,
+        crude,
+        raw(vec![0.2, 0.2, 0.2, 0.2, 0.2, 0.3, -0.1]),
+    );
+    assert!(e.contains("each finite and >= 0"), "{e}");
+    let e = refused(
+        &mut engine,
+        crude,
+        raw(vec![0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]),
+    );
+    assert!(e.contains("summing to 1"), "{e}");
+    let e = refused(&mut engine, tank, crude_at(0.02));
+    assert!(e.contains("is not a supply"), "{e}");
+    assert_eq!(
+        serde_json::to_value(&node(&engine.snapshot(), "crude_source").kind).unwrap(),
+        serde_json::to_value(&node(&build(WET).snapshot(), "crude_source").kind).unwrap(),
+        "the supply stands as it was"
+    );
+
+    let mut makeup = build(include_str!("../../../scenarios/hydrocracker_makeup.toml"));
+    let vgo = node(&makeup.snapshot(), "vgo_feed").id;
+    let hydrogen = Composition::pure(
+        makeup.slate.len(),
+        makeup.slate.index_of("hydrogen").unwrap(),
+    );
+    let e = refused(&mut makeup, vgo, hydrogen);
+    assert!(e.contains("would change its phase"), "{e}");
+
+    let mut dry = build(include_str!("../../../scenarios/crude_unit.toml"));
+    let source = node(&dry.snapshot(), "crude_source").id;
+    let light = Composition::pure(dry.slate.len(), 0);
+    let e = refused(&mut dry, source, light);
+    assert!(e.contains("would be boiling"), "{e}");
+}

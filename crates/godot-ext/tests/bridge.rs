@@ -4,6 +4,7 @@
 //! frontend writes, the ids it may send, the codes it branches on, and the
 //! shape of the snapshot it reads. Physics is gated in `scenarios/tests`.
 
+use refinery_core::components::Composition;
 use refinery_core::graph::{ControlMode, ControlledValue, EdgeId, LoopId, NodeId, TripId};
 use refinery_core::snapshot::{Command, Snapshot};
 use refinery_core::units::{Kelvin, KgPerSec, Meter, Pascal, SquareMeter, Watt};
@@ -272,6 +273,9 @@ fn wire_text(cmd: &Command) -> &'static str {
         Command::SetSourceTemperature { .. } => {
             r#"{"cmd":"set_source_temperature","node":0,"temperature":373.15}"#
         }
+        Command::SetSourceComposition { .. } => {
+            r#"{"cmd":"set_source_composition","node":0,"composition":{"mass_fractions":[0.08,0.14,0.16,0.2,0.14,0.26,0.02]}}"#
+        }
         Command::SetRefluxRatio { .. } => {
             r#"{"cmd":"set_reflux_ratio","node":2,"reflux_ratio":3.5}"#
         }
@@ -333,6 +337,12 @@ fn every_variant() -> Vec<Command> {
             node: NodeId(0),
             temperature: Kelvin(373.15),
         },
+        // M65.3: the wet crude unit's crude, 2 % water.
+        Command::SetSourceComposition {
+            node: NodeId(0),
+            composition: Composition::from_weights(&[0.08, 0.14, 0.16, 0.2, 0.14, 0.26, 0.02])
+                .unwrap(),
+        },
         Command::SetRefluxRatio {
             node: NodeId(2),
             reflux_ratio: 3.5,
@@ -371,7 +381,7 @@ fn command_wire_format_is_pinned_in_both_directions() {
 
     // The count is part of the claim: it is what makes "every variant" true
     // rather than "every variant someone remembered".
-    assert_eq!(every_variant().len(), 18, "a Command variant was added");
+    assert_eq!(every_variant().len(), 19, "a Command variant was added");
 }
 
 // -------------------------------------------- commands reach a real engine
@@ -419,6 +429,10 @@ fn fixture(cmd: &Command) -> Fixture {
         }
         Command::SetSourceTemperature { .. } => {
             Fixture::shipped("pump_cavitation_flow_limit.toml", "rundown_source")
+        }
+        // M65.3: the wet crude unit's crude, wetter.
+        Command::SetSourceComposition { .. } => {
+            Fixture::shipped("crude_unit_wet.toml", "crude_source")
         }
         // M60: a heat-balance column's declared reflux.
         Command::SetRefluxRatio { .. } => Fixture::shipped("crude_column_hot_feed.toml", "column"),
