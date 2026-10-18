@@ -148,8 +148,8 @@ godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on scre
 godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
-godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped)
-godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped]
+godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold)
+godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold]
 ```
 
 ## Testing
@@ -189,12 +189,11 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M66 (open)** — C15, the stripped
-crude unit started from a cold plant: the reboiler held or freed by command, a hold the column declines
-(DESIGN §71; slices in `docs/ROADMAP.md`'s M66). After it, `docs/PLAN.md`'s Phase 2 (C12, …). **Latest closed:
-M65 (2026-10-18)**: a wetter crude — a column's cold start retried from halved pumparounds, a flooded column
-a flash zone with its pumped lines standing full, a supply's composition by command, and
-`crude_unit_wetter.toml` on a crude 2 % water (DESIGN §70; C14 taken; C16 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none open** — the next work is
+`docs/PLAN.md`'s Phase 2 (C12, C11, …), each opened as a milestone on the user's word. **Latest closed:
+M66 (2026-10-18)**: a cold start-up — the reboiler held or freed by command, a hold the column cannot run
+at declined for the duty it ran at, `crude_unit_cold.toml` started up to the stripped plant, and the column
+screen's fifth plant (DESIGN §71; C15 taken; C17 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

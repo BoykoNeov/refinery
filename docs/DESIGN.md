@@ -27663,3 +27663,61 @@ column's warm start, unreached.
 
 **What moved**: the corpus's 67th plant, `crude_unit_cold`; the other 66
 byte-identical on both fidelities.
+
+### 71.11 The column screen's fifth plant, built (M66.4)
+
+`demo/column.gd`, key 5: `crude_unit_cold.toml`. Its keys are the user's
+decision 4 (§71): the furnace (Up/Down), the steam valve (R/F), the pumparounds
+(E/D, a share of the file's 15/15/10 MW) and the reboiler — T/G hold it at the
+duty it RUNS at plus or less 2.5 MW (the snapshot's `column_duty.reboiler_w`,
+so a walk follows the feed, §71.3), Y frees it. A plant carrying `reboiler` in
+the scene's table gets them; the stripped plant (key 4) is as M64.4 left it.
+
+**While the reboiler is held, the keys that could raise the column's edge are
+the screen's to hold** — the furnace down, the steam down, the pumparounds
+either way — with the reason on screen: "free the reboiler first". Measured
+before it was chosen, from points along the start-up (`zz_m66_4_box`, a
+throwaway driver): mid-walk (tick 1 500, the column held at 10 MW on a 347 °C
+feed) the steam one step down (40 → 35 %) halts the plant, the column refused
+(stage 7 dry); just after landing (tick 2 400, 364 °C) the steam to 10 % halts
+it. A decline protects only the reboiler's own commands, and through the walk
+the column runs on its edge by design (1 534 of its ~1 820 ticks declined). The
+furnace down to 50 MW and the pumparounds back to 50 % mid-walk happened to run
+— held all the same: nothing protects them. Allowed while held, and measured:
+the furnace to 65 MW, the steam to 100 %, the reboiler up a step — all run.
+**Free, the box**: the furnace 20–65 MW, the steam 10–100 %, the pumparounds
+0–100 %; all eight corners run, each reached in one step from the running cold
+plant and run 3 000 ticks; the reboiler key a step either way from the free
+plant runs. **Freeing it** runs from anywhere the walk was tried: its coolest
+point (tick 600, 318 °C, the pumparounds already off — the risk the review
+named, a freed column with nothing to halve), mid-walk, and just after landing.
+
+**Changed from §71.5**: the reflux keys are not live on this plant while its
+reboiler is free — their range is not measured; they say so. The panel names a
+decline ("asked … MW: DECLINED, kept the duty it ran at"), draws a reboiler
+held above zero with its duty, says "free" or "held", and lists the rule while
+held under the keys' range; the `t=` line ends with the reboiler's state.
+
+**The timeline** (`AUTO_COLD`, with `WALKS`: the reboiler key pressed every 10
+ticks from 500 to 2 390): the furnace to 58 MW at 10, the pumparounds off at
+500, at 1 000 the furnace key pressed down while the reboiler is held (the
+screen holds it). Headless: 183 presses, none refused; the column declines
+1 534 ticks and lands on zero on tick 2 321 (a tick after
+`crude_unit_cold_reference.rs`'s 2 320: the scene sends each command after its
+tick); at 2 700 the feed 368.1 °C, the reflux 3.070, the condenser 47.80 MW.
+Recorded windowed with screenshots at 500, 1 000, 2 000 and 2 400, checked by
+eye. The four other plants' timelines run as before (the stripped and the crude
+unit's re-run headless).
+
+**Not measured: the screen's cost.** The machine was under other load (the
+user's note); `ticks_per_frame` is the stripped plant's 3, unmeasured here. A
+declined tick costs about two to three of a held one (M66.0 finding 15), so the
+walk is this screen's worst stretch: owed when the machine is quiet.
+
+**Gates**: `column_screen.rs` (+1, `slow_the_cold_start_up_timeline`: the
+replay's reboiler never rising, zero on tick 2 321 after 1 534 declined ticks,
+the end above). **Mutations**: three, each of the replay's commands dropped in
+turn (the furnace step, the pumparounds' cut, the walk); three caught. The
+godot-feature clippy is clean.
+
+**What moved**: nothing in the engine; no plant's numbers.

@@ -47,13 +47,13 @@ Ticked when it lands; struck when the user rules it out.
       start, not the column); [x] M65.1 the cold start retried from halved
       pumparounds (done 2026-10-18, DESIGN §70.7); [x] M65.2 a flooded column's pumped product lines (done 2026-10-18, a flash zone, DESIGN §70.8); [x] M65.3
       the crude's water by command (done 2026-10-18, DESIGN §70.9); [x] M65.4 the wetter crude unit (2 %; done 2026-10-18, DESIGN §70.10).
-- [ ] **C15** — the stripped crude unit started from a cold plant: the furnace
+- [x] **C15** — the stripped crude unit started from a cold plant: the furnace
       lit, the column on its reboiler, the steam cut in and the reboiler handed
       down to zero as the feed heats (asked for 2026-10-17; M64 starts hot).
-      **M66, OPEN** (DESIGN §71): [x] M66.0 probe and design note (done
+      **M66, CLOSED 2026-10-18** (DESIGN §71): [x] M66.0 probe and design note (done
       2026-10-18, `tools/steptime/prototypes/m66_0/FINDINGS.md`); [x] M66.1 the
       reboiler by command (done 2026-10-18, DESIGN §71.8); [x] M66.2 a hold the column declines (done 2026-10-18, DESIGN §71.9); [x] M66.3 the
-      cold crude unit (done 2026-10-18, DESIGN §71.10); [ ] M66.4 the column screen's fifth plant.
+      cold crude unit (done 2026-10-18, DESIGN §71.10); [x] M66.4 the column screen's fifth plant (done 2026-10-18, DESIGN §71.11).
 - [ ] **C12** — the column screen's keys as a box set by its worst corner.
 - [ ] **C11** — Newton's Jacobian by forward differences (cost; feeds Phase 3).
 - [ ] **C9** — a pumparound as a real liquid circuit, not a side cooler.

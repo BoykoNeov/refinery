@@ -10395,3 +10395,23 @@ digit. DESIGN §71.10.
   file, four caught; M66.2's survivor still unreached. No wall time recorded
   (the machine under other load). Corpus: 66 of 66 byte-identical on both
   fidelities, `crude_unit_cold` new.
+
+### M66.4 — **LANDED** 2026-10-18: the column screen's fifth plant
+
+`demo/column.gd`, key 5: the cold crude unit, its reboiler on keys (T/G a step
+from the duty it runs at, Y to free it) beside the furnace, the steam and the
+pumparounds. While the reboiler is held the screen holds the keys that could
+take the feed's heat below the column's edge (the furnace down, the steam down,
+the pumparounds) — measured first: the steam one step down mid-walk halts the
+plant. Free, every corner of the box runs; freeing it runs from anywhere along
+the walk. The timeline starts the plant up and lands on zero on tick 2 321.
+DESIGN §71.11. The screen's cost is not measured (the machine under load).
+
+- Gates: `column_screen.rs` (+1). Mutations: three, three caught. The
+  godot-feature clippy clean. No engine change (no corpus run).
+
+**M66 — CLOSED 2026-10-18.** A cold start-up (C15): the reboiler held or freed
+by command; a hold the column cannot run at declined for the duty it ran at;
+`crude_unit_cold.toml`, started up by commands to the stripped plant's column;
+the column screen's fifth plant. Its close-out report is at the top of
+`docs/MILESTONES.md`. Next is `docs/PLAN.md`'s Phase 2 (C12).

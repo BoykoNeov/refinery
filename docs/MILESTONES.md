@@ -12,6 +12,42 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M66 is CLOSED (2026-10-18): a cold start-up — the reboiler handed down by
+command — `docs/DEFERRED.md` C15 taken, C17 new.** Asked as "C15: starting the
+steam-stripped crude unit from a cold plant — do it". The probe found the
+start-up needs no new physics: holding the reboiler at its own duty is
+bumpless, the coil is the clock, and the column held at zero lands on the
+stripped plant once the feed passes ~362 °C — settled, one steady state. What
+it needed was a handle and a rule for a hand-over too early. Decided in plain
+words along the way: a hand-over too early keeps the last duty that worked
+(not a halt, not a refused command); the operator hands it down by command, no
+automatic rule; "cold" the furnace low, not ambient (out of reach without
+column holdup, C2); the start-up on the column screen.
+- **M66.0, the probe and the design note** (§71.0–§71.7): the edge in feed
+  temperature (28.5 MW of reboiler on a 289 °C feed, 5.6 on 356, none from
+  ~362), every refusal the gas-oil tray dry; more steam lowers it; after the
+  forks, a declined hold kept and landing by itself, 40–54 ms a held-back tick.
+- **M66.1, the reboiler by command** (§71.8): `SetReboilerDuty`, refused where
+  the loader refuses the file's `reboiler_duty_mw`.
+- **M66.2, a hold the column declines** (§71.9): the duty the column ran at
+  handed to it as state (`ColumnPass::running_reboiler`); the held duty tried
+  warm, else the running one, published and named
+  (`column_reboiler_declined`); once a tick; the refusal the column's own first.
+- **M66.3, the cold crude unit** (§71.10): `crude_unit_cold.toml`, the coil and
+  the loop's opening measured where it settles; started up by commands it lands
+  on zero on tick 2 320 on both fidelities and settles on the stripped plant.
+- **M66.4, the column screen's fifth plant** (§71.11): key 5, the reboiler on
+  T/G/Y; while it is held the screen holds the keys that could raise the edge
+  (the steam one step down mid-walk halts the plant, measured); free, every
+  corner runs.
+- Corpus: 66 of 66 byte-identical on both fidelities at M66.1–M66.3;
+  `crude_unit_cold` the 67th plant. M66.4 left the engine untouched.
+- **Not measured**: the cold plant's and the screen's wall time — the machine
+  was under other load from M66.3 on (the user's note); owed when it is quiet.
+- **Left open**: C17 (a draw that halts instead of shrinking), C2 (a start from
+  ambient), the screen's cost on the walk, M66.2's one surviving mutation (the
+  kept duty's continuation, a guard no input found reaches).
+
 **M65 is CLOSED (2026-10-18): a wetter crude — `docs/DEFERRED.md` C14 taken,
 C16 new.** Asked as "Phase 2 of `docs/PLAN.md`, starting with C14, the wetter
 crude — do it". The probe turned C14 round: not the column, which runs at any

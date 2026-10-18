@@ -305,3 +305,75 @@ fn slow_the_stripped_timeline() {
     );
     assert_eq!(fired.4, 0.0);
 }
+
+/// **The cold crude unit's start-up** (`AUTO_COLD` and `WALKS`, M66.4): the
+/// furnace to 58 MW at 10; the pumparounds off at 500; from 500 to 2 390, every
+/// 10 ticks, the reboiler key — held at the duty it runs at less 2.5 MW, the
+/// scene's own arithmetic (its 1 000-tick furnace press is the screen's to
+/// hold, while the reboiler is held, and sends nothing). The reboiler never
+/// rises; the column declines 1 534 ticks of the walk, the feed still too cool
+/// for the step asked, and lands on zero on tick 2 321; on 2 700 it is held
+/// there, no decline, the feed 368.1 °C and the reflux 3.070.
+#[test]
+fn slow_the_cold_start_up_timeline() {
+    let mut screen = Screen::load(
+        "crude_unit_cold.toml",
+        "furnace",
+        "transfer_line",
+        &[
+            "naphtha_suction",
+            "water_draw",
+            "kerosene_suction",
+            "diesel_suction",
+            "gas_oil_suction",
+            "residue_suction",
+        ],
+    );
+    let (furnace, column) = (screen.furnace, screen.column);
+    let declined = |screen: &Screen| !screen.column_node()["column_reboiler_declined"].is_null();
+
+    screen.run_to(10);
+    let cold = screen.reading();
+    assert!((cold.4 - 87.945).abs() < 0.01 && cold.2 == 4.0, "{cold:?}");
+    screen.send(&format!(
+        r#"{{"cmd":"set_furnace_duty","duty":58000000.0,"node":{furnace}}}"#
+    ));
+    screen.run_to(500);
+    for i in 0..3 {
+        screen.send(&format!(
+            r#"{{"cmd":"set_pumparound_duty","duty":0.0,"node":{column},"pumparound":{i}}}"#
+        ));
+    }
+    let mut last = f64::INFINITY;
+    let mut zero_at = None;
+    let mut declined_ticks = 0;
+    for tick in 500..=2_700i64 {
+        screen.run_to(tick);
+        let running = screen.reading().4;
+        assert!(running <= last, "tick {tick}: {running} MW after {last} MW");
+        last = running;
+        if declined(&screen) {
+            declined_ticks += 1;
+        }
+        if running == 0.0 && zero_at.is_none() {
+            zero_at = Some(tick);
+        }
+        if tick <= 2_390 && (tick - 500) % 10 == 0 && running > 0.0 {
+            let target = (running - 2.5).max(0.0) * 1.0e6;
+            screen.send(&format!(
+                r#"{{"cmd":"set_reboiler_duty","duty":{target:?},"node":{column}}}"#
+            ));
+        }
+    }
+    // A tick after `crude_unit_cold_reference.rs`'s 2 320: the scene sends each
+    // command after its tick, that test before it.
+    assert_eq!(zero_at, Some(2_321), "the tick it reached zero");
+    assert_eq!(declined_ticks, 1_534);
+    let end = screen.reading();
+    assert_eq!(end.4, 0.0, "{end:?}");
+    assert!(!declined(&screen));
+    assert!(
+        (end.2 - 3.070).abs() < 1e-3 && (end.0 - 368.1).abs() < 0.1,
+        "{end:?}"
+    );
+}
