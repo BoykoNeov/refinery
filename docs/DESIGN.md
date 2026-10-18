@@ -27721,3 +27721,158 @@ turn (the furnace step, the pumparounds' cut, the walk); three caught. The
 godot-feature clippy is clean.
 
 **What moved**: nothing in the engine; no plant's numbers.
+
+## 72. A side draw cut back where its tray runs short, and the column screen's keys as a measured region (M67) — specified before building
+
+Ledger rows C17 and C12, the third of `docs/PLAN.md`'s Phase 2, asked for as
+"go" on C12 (2026-10-18). C12's keys are a box set by its worst corner, and on
+the crude and stripped plants the corner is a draw tray run dry: each side draw
+is a fixed share of the feed, so a column that makes less liquid above a draw
+than the draw takes halts (C17). The user's decisions, in plain words
+(2026-10-18), asked with the probe's numbers (§72.0):
+
+1. **Fix the column first (C17)**: a side draw that cannot be filled is cut
+   back, not a halt; then the keys' limits are re-measured, and what limits
+   remain go into measured tables.
+2. **At an edge the key is held, and the screen says what frees it**: the
+   other key, and the value that would. The screen never moves a key the
+   player did not touch.
+3. **The cold plant (key 5) is measured too.**
+4. **A cut-back draw leaves 5 % of the feed's moles** flowing below its tray.
+5. **The cold start-up story may move**, since the shipped story runs a tray
+   dry.
+6. **A cut-back product is named on screen, with how far it is cut**, and a
+   draw cut to nothing is a product that stops, not an edge.
+7. **The tables are cautious**: a setting is off-limits if any measured route
+   to it failed, a walk in screen steps in either order or one jump.
+
+### 72.0 Probed before the forks were offered (2026-10-18)
+
+Throwaway, kept in `tools/steptime/prototypes/m67_0/` with `FINDINGS.md`, which
+has every number below: `probe_cutback.patch`, the trial behind
+`M67_LIQUID_MIN`, with counters, and the driver `m67_0_grid.rs`, the screen's
+own commands through the bridge's `Session`.
+
+- **Off, the trial is the shipped engine** (finding 1): all 67 plants are
+  byte-identical on both fidelities.
+- **Only the stripped plant comes near a dry draw tray** (finding 2). Its
+  least liquid under a draw is 6.55 % of the feed, on the gas-oil tray. The
+  overheated column's is 38.8 %, and every other column's is over 60 %.
+- **At 5 % nothing shipped moves** (finding 3). At 2 % and 5 % every plant is
+  byte-identical on both fidelities. At 10 % the stripped plant's gas oil runs
+  at 84.6 % of its declared rate.
+- **The crude unit** (finding 4): of 400 settings in one jump, 55 of the 85
+  failures run and nothing that ran fails. The cost is product. At reflux 0.5
+  the kerosene runs at 45–46 % of its declared rate; with no pumparounds and
+  reflux 2.5, the gas oil at 30–42 %. The 30 left are the corner of low reflux
+  with low or no pumparounds. There the trays stay wet but the top stage's
+  energy balance does not close: too little takes heat out above the feed.
+- **The crude unit's edge depends on the route** (finding 5): walked into in
+  screen steps, 28 of 62 walks run, and the same end setting can run by one
+  order and fail by the other. At the extreme the answer depends on which
+  start the solve took.
+- **The stripped crude unit** (finding 6): 81 of 83 settings run, against 30
+  before, and the steam floor is gone. Its gas oil runs at 22 % (furnace
+  42.5 MW, steam 0.05) up to 97 % (50 MW, steam 1.0). Pumparounds of 12 MW at
+  a furnace of 45–47.5 MW still fail.
+- **Cost** (finding 7): carried from tick to tick, the cut-back set costs one
+  solve a tick. Without the carry, the plain solve fails every tick at an edge
+  first, at 18–50 iterations, and the cost is two. Crude runs: 5.34 s with a
+  draw cut back, 5.30 s shipped.
+- **The cold plant** (finding 8). The screen's start-up already runs the
+  gas-oil tray to zero on the shipped engine. Cut back, it ends 4 °C apart at
+  the bottom, still held at zero. Freed, it has no edge inside its keys' box:
+  all 90 settings run, identical with and without the trial, with nothing cut
+  back.
+
+### 72.1 Fork 1 — the cut-back draw (C17)
+
+In the heat-balance cascade's Newton (`column_newton.rs`) a side draw is either
+**at its declared share**, its row the mass ratio `W_k = U_k·M̄ − r_k·F`, or
+**cut back**, its row `L_j = L_min` (the liquid leaving its tray held at the
+minimum, the draw taking what is left), `L_min = 0.05·F` in the feed's moles.
+
+- **The active set** is found as the vapour floor's (§66.3) and the wet
+  stages' (§67.17) are:
+  - A converged answer whose draw tray runs under `L_min` cuts that draw back.
+  - A failure whose last iterate runs a draw tray dry (at or under the larger
+    of `L_min` and 1 % of `F`, `physical_cause`'s "dry") cuts it back.
+  - A start outside the physical region is cut back top-down.
+  - A cut-back draw whose ran share would pass its declared one is released.
+  - The retry starts from the last converged answer.
+- **Cut-back starts are built on the solve's own balance**: the top vapour
+  `(R + 1)·D` at the commanded reflux (a held column's own), and each cut
+  leaving `L_min` on every tray down to the next draw, never above its
+  declared rate.
+- **The bottoms** is `1 − Σ` of the others' ran shares. The published split
+  is each draw's ran share.
+- **Carried**: the set is a hint on `CascadeProfile`, beside its free water, so
+  a column at an edge solves once a tick (finding 7).
+- **First the shipped solve**: a column with nothing cut back, and nothing
+  carried, solves first as today, so every shipped plant stays byte-identical
+  (finding 3). If no set holds, the shipped solve's answer stands, or its
+  failure: the trial's fallback returns only that one.
+- **A draw cut to nothing** stops (decision 6): its rate goes to the floor
+  `1e-6·F`, and it is reported.
+- **The cascade model** (`StageCascade`, constant molar overflow) keeps its
+  refusal. It is deferred, a new ledger row.
+
+### 72.2 Fork 2 — reported
+
+The snapshot names each cut-back draw on the column: the draw, its declared
+share and the share it ran at. The field is absent (not serialized) when none
+is cut back, as the declined hold is (§71.2). The column screen names the
+product and how far it is cut ("gas oil at 22 % — its tray is short of
+liquid"), and one cut to nothing as stopped.
+
+### 72.3 Fork 3 — the screen's keys as a measured region
+
+The keys' box (C12) becomes a table per plant over the keys' grid. The steps
+are the screen's own (furnace 2.5 MW, reflux 0.5, pumparounds 0.25 or 1 MW,
+steam 0.05), and the furnace key lands on that grid.
+
+- **Allowed** means every measured route to the setting ran: one jump from
+  the file's state, and walks in screen steps in both orders.
+- **Measured** with the engine of §72.1, the boxes widened where it now runs
+  (the stripped plant's furnace below 52.5 MW).
+- **A press whose target is not allowed is held**, and the screen names the
+  other key and the nearest value of it that frees the press. It never moves
+  a key the player did not touch.
+- **The screen's own leftovers** go with this slice:
+  - the pumparound ceiling follows the coil's and the feed's temperature, not
+    the furnace setting;
+  - two presses in one frame are judged against the values last sent, not a
+    stale snapshot;
+  - the timelines' held beats and `column_screen.rs`'s replays are re-read.
+
+### 72.4 What moves, and what is deferred
+
+**Moves**: no plant's corpus fingerprint (finding 3). The cold plant's
+start-up replay on the column screen moves (decision 5): its gas oil is cut
+back where it ran its tray dry, and it ends a few degrees apart.
+
+**Taken**: C17, C12.
+
+Deferred:
+- the cascade model's dry draw (§72.1);
+- the crude unit's corner, where the top stage's energy balance does not close
+  at low reflux with no pumparounds, which is real heat the column cannot
+  shed (finding 4);
+- the edge's dependence on the route, which the cautious table sidesteps
+  rather than answers (finding 5).
+
+### 72.5 The slices
+
+- **M67.1 — a side draw cut back.** Fork 1, with Fork 2's snapshot field.
+  Gates:
+  - every shipped plant byte-identical on both fidelities;
+  - a fixture whose draw tray runs dry is cut back to `L_min` and released
+    when the column recovers;
+  - a draw cut to nothing;
+  - the carry costs one solve a tick at an edge;
+  - the stripped plant's furnace 45 MW / steam 0.05 runs;
+  - the cold start-up story moves, its new numbers recorded.
+- **M67.2 — the cut-back product on the column screen.** Fork 2's panel line.
+  The godot-feature clippy.
+- **M67.3 — the keys as measured tables.** Fork 3, for keys 1, 4 and 5, with
+  the measurement drivers kept.

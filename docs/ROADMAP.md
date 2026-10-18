@@ -10415,3 +10415,37 @@ by command; a hold the column cannot run at declined for the duty it ran at;
 `crude_unit_cold.toml`, started up by commands to the stripped plant's column;
 the column screen's fifth plant. Its close-out report is at the top of
 `docs/MILESTONES.md`. Next is `docs/PLAN.md`'s Phase 2 (C12).
+
+## M67 — a side draw cut back where its tray runs short, and the column screen's keys as a measured region; ledger rows C17 and C12; opened on a decision
+
+Asked for after M66 closed (2026-10-18) as "go" on C12, the column screen's
+keys as a box set by its worst corner. The probe found the corner is a draw
+tray run dry on the crude and stripped plants, so the user's first decision
+takes C17 with it. The decisions (DESIGN §72):
+- fix the column first: a draw that cannot be filled is cut back, leaving 5 %
+  of the feed's moles below its tray;
+- at an edge the key is held and the screen names the key that frees it;
+- the cold plant is measured too, and its start-up story may move;
+- a cut-back product is named on screen, and one cut to nothing stops;
+- the tables are cautious: off-limits if any measured route failed.
+
+### M67.0 — **SPECIFIED** 2026-10-18: the design note — M67 stays OPEN
+
+DESIGN §72. Probed first (`tools/steptime/prototypes/m67_0/`, `FINDINGS.md`)
+with a trial of the cut-back draw:
+- Off, it is the shipped engine. At 5 % all 67 plants are byte-identical on
+  both fidelities.
+- The crude unit: 55 of its box's 85 failing settings run, at the cost of
+  product (the kerosene down to 45 %, the gas oil to 30 %). The 30 left are
+  low reflux with little or no pumparounds, where the top's energy balance
+  does not close.
+- The stripped crude unit: 81 of 83 run, against 30, and its steam floor is
+  gone (the gas oil at 22–97 %).
+- The cold plant: freed, it has no edge in its box. Its start-up story moves
+  4 °C, because the shipped story runs the gas-oil tray dry.
+- The crude unit's edge depends on the order of the presses.
+- Carried from tick to tick, the cut-back set costs one solve a tick.
+
+Slices: M67.1 a side draw cut back (engine, with the snapshot's field); M67.2
+the cut-back product on the column screen; M67.3 the keys as measured tables.
+No engine code changed.

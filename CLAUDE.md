@@ -189,8 +189,9 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — the next work is
-`docs/PLAN.md`'s Phase 2 (C12, C11, …), each opened as a milestone on the user's word. **Latest closed:
+Work only on the current milestone unless asked. **Current: M67 (open)** — C12 with C17: a side
+draw cut back where its tray runs short, then the column screen's keys as measured tables (DESIGN §72;
+slices in `docs/ROADMAP.md`'s M67). After it, `docs/PLAN.md`'s Phase 2 (C11, …). **Latest closed:
 M66 (2026-10-18)**: a cold start-up — the reboiler held or freed by command, a hold the column cannot run
 at declined for the duty it ran at, `crude_unit_cold.toml` started up to the stripped plant, and the column
 screen's fifth plant (DESIGN §71; C15 taken; C17 new). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
