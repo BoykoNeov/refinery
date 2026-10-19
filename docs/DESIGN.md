@@ -28208,7 +28208,10 @@ settings and at the coil's furnace. Otherwise the reboiler stays held and the
 screen names the key setting that frees it. Run headless: held at 20 MW the
 furnace goes up, the pumparounds come down to 75 % and are held going back up,
 and Y at 65 MW with the pumparounds off is held: "the furnace at 62.5 MW or
-the steam valve at 30 % or the pumparounds at 25 % would free it".
+the steam valve at 30 % or the pumparounds at 25 % would free it". (Since the
+guard on holding below, the keys cannot reach a held reboiler at 20 MW or
+with the pumparounds past 50 %: the press that would hold it there is held.
+The limits' fix still governs a reboiler held inside them.)
 
 **The stripped and cold tables' 100-tick runs were too short near the edge.**
 M67.4 and M67.5 judged the fast keys 100 ticks after the move, from a settled
@@ -28259,5 +28262,7 @@ to move ("the pumparounds at 50 % or less"). The story, as the user chose:
 - the walk lands on zero on tick 821 as before, the draws cut back less deeply
   (at 900 the diesel at 96 %, the gas oil at 15 %; 81 % by 2 700, the reflux
   2.221).
-`crude_unit_cold_reference.rs` keeps the pumparounds-off story: it ends at
-2 700 ticks, before the late failure, so it stays true of the engine.
+`crude_unit_cold_reference.rs` keeps the pumparounds-off story, and it stays
+true of the engine: it holds the reboiler before the pumparounds go off, and
+held, no pumparounds at 58 MW is inside `held_limits`. Only the free table
+closes it, and the screen judged the press with the reboiler still free.
