@@ -10629,3 +10629,23 @@ ticks on) is gone — the M69.1 engine reproduces it to the tick, the new one ru
 20 000. Kept as committed (the user's decision): the cold table holds back ~134
 settings that now run, recorded in C19. No code changed.
 `tools/steptime/prototypes/m69_3/FINDINGS.md`; DESIGN §74.6, §74.7.
+
+## M70 — the stripped plant after a furnace step: the composition and the curve predicted; ledger row A29's leftover; opened on a decision
+
+Asked for as "do it" on M69's two left fixes, probed first; then "yes"
+(2026-10-19) on what the probe found instead. DESIGN §75. Fewer coil cells
+declined: they move the physics.
+
+### M70.0 — **SPECIFIED** 2026-10-19: the probe and the design note — M70 stays OPEN
+
+Probed (`tools/steptime/prototypes/m70_0/`, `FINDINGS.md`): after a 58 → 65 MW
+step the stripped plant re-solves for the residue pump's composition drift,
+which M69.2's predictor does not move; a smoothed density, the composition
+alone and a parabola alone each change nothing; the composition and a parabola
+through three ticks together give one solve a tick, 2.7 ms against 5.1 (still
+past the 2.5 ms frame), answers moved at most 4.0e-7. Four coil cells reach 1.9
+ms with the parabola but move the coil 2 K: declined.
+
+Slices: M70.1 the predictor extended (moves answers; the corpus put to the
+user); M70.2 the stripped and cold tables re-checked (C19). No engine code
+changed.

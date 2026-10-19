@@ -28551,3 +28551,76 @@ on Newton, 9 on Simple (the user's decision); the stripped and cold tables held
 2.5 ms frame on the screen (estimated 8–9 ms; not measured on the screen);
 fewer coil cells or a smoothed density would cut more, and change the physics.
 C11's trigger is now met: re-run `tools/steptime/prototypes/m68_0/`.
+
+## 75. The stripped plant after a furnace step — the composition and the curve predicted (M70) — specified before building
+
+A29's leftover (§74.7): the stripped crude unit after a furnace step solved
+twice a tick for minutes, ~5.1 ms a tick against the 2.5 ms frame. Asked as
+"do it" on the two fixes M69 left (fewer coil cells, a smoothed density),
+probed first; then "yes" (2026-10-19) on the predictor the probe found instead,
+fewer cells declined (they move the physics).
+
+### 75.0 Probed (2026-10-19)
+
+`tools/steptime/prototypes/m70_0/` (`FINDINGS.md`, `probe_m70.patch` on
+77a3982). The stripped plant held 1 500 ticks, its furnace stepped 58 → 65 MW,
+every density check's largest move named.
+- **The second solve is not the coil's.** From the tenth tick after the step
+  the first check's largest move is the residue pump's (5e-7 falling to 1e-7):
+  the column's bottoms drift in COMPOSITION as the feed heats, and the M69.2
+  predictor moves temperatures only.
+- **A smoothed density at the boiling onset changes nothing** (2.0 solves, 5.1
+  ms), the composition predicted alone neither (the coil's middle cells take
+  over at 5e-8: the curvature of its drift, which a straight line misses), the
+  parabola alone neither (2.0 solves; the composition still sets the re-solve).
+- **Both close it**: the composition predicted and the guess a parabola through
+  three ticks, the first check ~1e-10 from the 14th tick after the step, one
+  solve a tick; 2.7 ms against 5.1 (598 of 600 ticks still past 2.5 ms), the
+  same on the screen's build; other steps (to 45 and 75 MW) 1.06 solves, 2.7–2.8
+  ms against 5.2–7.1. The cold start-up 2.8 and 4.1 ms against 5.8 and 7.75. The
+  settled plant 2.53 against 2.45 ms (one run, a loaded machine: to be measured).
+  Answers move at most 4.0e-7 relative against shipped.
+- **Four coil cells** halve no solves (the residue pump still re-solves), make
+  each cheaper (3.3 ms after the step; with the parabola 1.9, 25 of 600 past the
+  frame), and move the physics: the outlet +0.3 to +0.6 K, the coil metal −2.2
+  K, and the file's coil, eight cells' settled one, drifts from the first tick.
+  Declined.
+
+### 75.1 The predictor, extended (M70.1) — moves answers
+
+`Engine::predicted_states` (§74.5), two changes, nothing else:
+- **The composition moved on too**: each zero-volume, not-held node's mass
+  fractions guessed as its temperature is, each clamped at zero and
+  renormalised (`Composition::from_weights`); where that refuses (every
+  fraction clamped), the node keeps its last composition. A composition that
+  moved counts as "moved".
+- **A parabola where three ticks allow it**: `3·now − 3·before + before₂` (the
+  quadratic through three equally spaced ticks, one tick on — Newton's forward
+  differences) for the temperature, the liquid-equivalent and the composition,
+  once the three ticks it reads all ended after the last command; the straight
+  line `2·now − before` on the tick before that, and none on the tick after a
+  command, as now. `states_before2` (the tick before `states_before`) and the
+  ticks since the last command are kept beside `states_before`.
+
+Unchanged: only the first solve and the first density check read the guess;
+the re-solves stop on `SWEPT_DENSITY_TOL` measured from it; a guessed solve
+steps (`step_even_when_converged`); a plant at rest is not guessed.
+
+**Risks, checked while building**: the "moved" test now sees compositions, so
+a boiling plant whose temperatures stand while its compositions drift is now
+guessed, and each guessed solve steps — the corpus's iterations column read, not
+only its fingerprints (M69.2's `pump_gas_lock`, 6 → 6 005 iterations); the guess
+never reaches the states the tick resolves and carries (`resolve_node_states`),
+the coil's first law kept at 1e-12.
+
+**Gates**: `predicted_tick_reference` — the stripped plant after a furnace
+step solves once a tick from the probe's tick on, which fails on the shipped
+engine, the composition alone and the parabola alone; the three M69.2 tests
+unchanged. The corpus on both fidelities: the moves (and any iteration jump)
+put to the user before the baseline is refreshed. The settled stripped plant
+old against new, alternated, fastest of three.
+
+### 75.2 The screen's tables again (M70.2)
+
+C19, owed again by M70.1's move: M69.3's edge check re-run on the new engine,
+each batch under an hour of machine time.

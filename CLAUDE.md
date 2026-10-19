@@ -189,7 +189,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none** — the next is the user's choice.
+Work only on the current milestone unless asked. **Current: M70** (A29's leftover, DESIGN §75): the stripped plant after a furnace
+step — the composition and the curve predicted (M70.1), the stripped and cold screen tables re-checked (M70.2).
 **Latest closed: M69 (2026-10-19)**: a boiling plant's tick — the line flash remembered for a tick, the
 first solve predicted, a guessed solve stepped; A29 taken, 10/9 plants moved; the screen tables held (DESIGN §74). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at

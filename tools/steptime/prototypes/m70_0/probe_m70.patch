@@ -1,0 +1,349 @@
+diff --git a/crates/core/src/energy.rs b/crates/core/src/energy.rs
+index 588b10f..99b90dd 100644
+--- a/crates/core/src/energy.rs
++++ b/crates/core/src/energy.rs
+@@ -1372,6 +1372,7 @@ pub fn swept_density_change(
+         ))
+     };
+     let mut largest = 0.0_f64;
++    let mut where_largest = usize::MAX;
+     for id in graph.node_ids() {
+         if !is_zero_volume(&graph.node(id).kind) {
+             continue;
+@@ -1401,9 +1402,18 @@ pub fn swept_density_change(
+             }
+         }
+         for before in befores {
+-            largest = largest.max((after - before).abs() / after.abs().max(f64::MIN_POSITIVE));
++            let c = (after - before).abs() / after.abs().max(f64::MIN_POSITIVE);
++            if c > largest {
++                largest = c;
++                where_largest = id.0 as usize;
++            }
+         }
+     }
++    {
++        let mut log = crate::probe::CHECKS.lock().unwrap();
++        let pass = log.len() as u32;
++        log.push((pass, largest, where_largest));
++    }
+     Ok(largest)
+ }
+ 
+diff --git a/crates/core/src/engine.rs b/crates/core/src/engine.rs
+index b1d9695..6a27ddf 100644
+--- a/crates/core/src/engine.rs
++++ b/crates/core/src/engine.rs
+@@ -134,6 +134,9 @@ pub struct Engine {
+     /// docs/DESIGN.md §74.5): the predictor's `before`. Empty before the second
+     /// tick.
+     states_before: energy::NodeStates,
++    /// M70.0 probe: the tick before `states_before`, and ticks since a command.
++    states_before2: energy::NodeStates,
++    since_command: u32,
+     /// Whether a command arrived since the last tick: the next tick is not
+     /// predicted (M69.2).
+     commanded: bool,
+@@ -244,6 +247,8 @@ impl Engine {
+             last_solution: None,
+             node_states: energy::NodeStates::default(),
+             states_before: energy::NodeStates::default(),
++            states_before2: energy::NodeStates::default(),
++            since_command: 0,
+             commanded: false,
+             last_cavitation: std::collections::BTreeMap::new(),
+             last_supply_boiling: std::collections::BTreeMap::new(),
+@@ -1237,6 +1242,11 @@ impl Engine {
+         }
+         let mut predicted = self.node_states.clone();
+         let mut moved = false;
++        let quad = std::env::var("M70_QUAD").is_ok() && self.since_command >= 2;
++        let ahead = |now: f64, before: f64, before2: Option<f64>| match (quad, before2) {
++            (true, Some(b2)) => 3.0 * now - 3.0 * before + b2,
++            _ => 2.0 * now - before,
++        };
+         for id in self.graph.node_ids() {
+             if !energy::is_zero_volume(&self.graph.node(id).kind)
+                 || self.node_states.held.contains(&id)
+@@ -1248,9 +1258,33 @@ impl Engine {
+                 self.states_before.temperature.get(&id),
+             ) {
+                 moved |= now.value() != before.value();
++                let b2 = self.states_before2.temperature.get(&id).map(|k| k.value());
+                 predicted
+                     .temperature
+-                    .insert(id, Kelvin(2.0 * now.value() - before.value()));
++                    .insert(id, Kelvin(ahead(now.value(), before.value(), b2)));
++            }
++            if std::env::var("M70_COMP").is_ok() {
++                if let (Some(now), Some(before)) = (
++                    self.node_states.composition.get(&id),
++                    self.states_before.composition.get(&id),
++                ) {
++                    if now != before {
++                        moved = true;
++                        let b2 = self.states_before2.composition.get(&id);
++                        let w: Vec<f64> = now
++                            .fractions()
++                            .iter()
++                            .zip(before.fractions())
++                            .enumerate()
++                            .map(|(c, (n, b))| {
++                                ahead(*n, *b, b2.map(|x| x.fractions()[c])).max(0.0)
++                            })
++                            .collect();
++                        if let Ok(c) = Composition::from_weights(&w) {
++                            predicted.composition.insert(id, c);
++                        }
++                    }
++                }
+             }
+             if let (Some(now), Some(before)) = (
+                 self.node_states.vapour.get(&id),
+@@ -1262,7 +1296,12 @@ impl Engine {
+                 );
+                 moved |= now_le != before_le;
+                 let mut share = *now;
+-                share.liquid_equivalent = Kelvin(2.0 * now_le - before_le);
++                let b2 = self
++                    .states_before2
++                    .vapour
++                    .get(&id)
++                    .map(|v| v.liquid_equivalent.value());
++                share.liquid_equivalent = Kelvin(ahead(now_le, before_le, b2));
+                 predicted.vapour.insert(id, share);
+             }
+         }
+@@ -2616,7 +2655,11 @@ impl Engine {
+             }
+         }
+ 
+-        self.states_before = std::mem::replace(&mut self.node_states, node_states);
++        self.states_before2 = std::mem::replace(
++            &mut self.states_before,
++            std::mem::replace(&mut self.node_states, node_states),
++        );
++        self.since_command = if self.commanded { 0 } else { self.since_command + 1 };
+         self.commanded = false;
+         self.last_solution = Some(solution);
+         self.last_cavitation = cavitation;
+diff --git a/crates/core/src/lib.rs b/crates/core/src/lib.rs
+index 00573be..bdd1d19 100644
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -7,6 +7,7 @@
+ //! - SI units via `units` newtypes on all public APIs.
+ 
+ pub mod components;
++pub mod probe;
+ pub mod energy;
+ pub mod engine;
+ pub mod error;
+diff --git a/crates/core/src/probe.rs b/crates/core/src/probe.rs
+new file mode 100644
+index 0000000..003b2d6
+--- /dev/null
++++ b/crates/core/src/probe.rs
+@@ -0,0 +1,10 @@
++//! M70.0 probe (throwaway): each re-check's largest density move and the node
++//! that set it.
++use std::sync::Mutex;
++
++/// (pass, change, node index) per density check of the tick.
++pub static CHECKS: Mutex<Vec<(u32, f64, usize)>> = Mutex::new(Vec::new());
++
++pub fn take() -> Vec<(u32, f64, usize)> {
++    std::mem::take(&mut *CHECKS.lock().unwrap())
++}
+diff --git a/crates/solvers/src/line_flash.rs b/crates/solvers/src/line_flash.rs
+index b26501e..e26b91f 100644
+--- a/crates/solvers/src/line_flash.rs
++++ b/crates/solvers/src/line_flash.rs
+@@ -836,6 +836,11 @@ fn free_water_flash(
+     })
+ }
+ 
++fn m70_smooth() -> Option<f64> {
++    static Q0: std::sync::OnceLock<Option<f64>> = std::sync::OnceLock::new();
++    *Q0.get_or_init(|| std::env::var("M70_SMOOTH").ok().and_then(|v| v.parse().ok()))
++}
++
+ impl LineFlashModel for EquilibriumLineFlash {
+     fn name(&self) -> &'static str {
+         "equilibrium"
+@@ -921,6 +926,14 @@ impl LineFlashModel for EquilibriumLineFlash {
+             enthalpy,
+         )?;
+         Ok(two_phase.map(|(split, q)| {
++            // M70.0 probe: the density's vapour share smoothed over [0, q0].
++            let q = match m70_smooth() {
++                Some(q0) if q < q0 => {
++                    let x = q / q0;
++                    q0 * x * x * x * (3.0 - 2.0 * x)
++                }
++                _ => q,
++            };
+             // Homogeneous equilibrium: 1/ρ = q/ρ_v + (1 − q)/ρ_l (Wallis 1969,
+             // ch. 2) — specific volumes add by mass.
+             let liquid_volume = (1.0 - q) / split.liquid_density;
+diff --git a/tools/steptime/Cargo.toml b/tools/steptime/Cargo.toml
+index a9e4092..35d05ca 100644
+--- a/tools/steptime/Cargo.toml
++++ b/tools/steptime/Cargo.toml
+@@ -13,3 +13,7 @@ publish = false
+ serde_json = "1"
+ refinery-core = { path = "../../crates/core" }
+ refinery-scenarios = { path = "../../crates/scenarios" }
++
++[profile.godot]
++inherits = "dev"
++opt-level = 2
+diff --git a/tools/steptime/src/bin/m70_0_step.rs b/tools/steptime/src/bin/m70_0_step.rs
+new file mode 100644
+index 0000000..ab269d7
+--- /dev/null
++++ b/tools/steptime/src/bin/m70_0_step.rs
+@@ -0,0 +1,143 @@
++//! M70.0 probe: a plant held, its furnace stepped, every tick timed, its
++//! solves counted and each density re-check's largest move named.
++//!
++//! m70_0_step <scenario.toml> <label> <hold ticks> <furnace MW> <after ticks>
++//!   OUT=<dir>  <label>.csv (a row per tick) and <label>_t<tick>.json snapshots
++
++use refinery_core::graph::NodeId;
++use refinery_core::snapshot::Command;
++use refinery_core::units::Watt;
++use std::time::Instant;
++
++fn main() {
++    let a: Vec<String> = std::env::args().collect();
++    let (path, label) = (&a[1], &a[2]);
++    let hold: u64 = a[3].parse().unwrap();
++    let mw: f64 = a[4].parse().unwrap();
++    let after: u64 = a[5].parse().unwrap();
++    let out = std::env::var("OUT").unwrap_or_else(|_| ".".into());
++    let src = std::fs::read_to_string(path).unwrap();
++    let file = refinery_scenarios::load_str(&src).expect("parse");
++    let mut engine = refinery_scenarios::build_engine(&file).expect("build");
++    let furnace = engine.graph.find_node("furnace").unwrap();
++    let snaps = [hold, hold + 60, hold + 600, hold + after];
++    let mut csv = String::from("tick,wall_us,re_solves,changes,nodes\n");
++    refinery_core::probe::take();
++    let mut walls = Vec::new();
++    let mut solves = Vec::new();
++    if let Ok(pre) = std::env::var("PRE_MW") {
++        engine
++            .apply(Command::SetFurnaceDuty {
++                node: furnace,
++                duty: Watt(pre.parse::<f64>().unwrap() * 1e6),
++            })
++            .unwrap();
++    }
++    let cold = std::env::var("COLD").is_ok();
++    let column = engine.graph.find_node("column").unwrap();
++    for t in 1..=hold + after {
++        // The cold start-up of `crude_unit_cold_reference.rs` (M68.0's driver).
++        if cold {
++            if t == 10 {
++                engine
++                    .apply(Command::SetFurnaceDuty {
++                        node: furnace,
++                        duty: Watt(58.0e6),
++                    })
++                    .unwrap();
++            }
++            if t == 500 {
++                for pumparound in 0..3 {
++                    engine
++                        .apply(Command::SetPumparoundDuty {
++                            node: column,
++                            pumparound,
++                            duty: Watt::ZERO,
++                        })
++                        .unwrap();
++                }
++            }
++            if t >= 500 && t % 10 == 0 {
++                let s = engine.snapshot();
++                let running = s
++                    .nodes
++                    .iter()
++                    .find(|n| n.name == "column")
++                    .unwrap()
++                    .column_duty
++                    .as_ref()
++                    .unwrap()
++                    .reboiler_w;
++                if running > 0.0 {
++                    engine
++                        .apply(Command::SetReboilerDuty {
++                            node: column,
++                            duty: Some(Watt((running - 2.5e6).max(0.0))),
++                        })
++                        .unwrap();
++                }
++            }
++        }
++        if !cold && t == hold + 1 {
++            engine
++                .apply(Command::SetFurnaceDuty {
++                    node: furnace,
++                    duty: Watt(mw * 1e6),
++                })
++                .unwrap();
++        }
++        let start = Instant::now();
++        engine.tick().unwrap_or_else(|e| panic!("tick {t}: {e}"));
++        let wall = start.elapsed().as_nanos() as f64 / 1e3;
++        let checks = refinery_core::probe::take();
++        let snap = engine.snapshot();
++        let changes: Vec<String> = checks.iter().map(|c| format!("{:.2e}", c.1)).collect();
++        let nodes: Vec<String> = checks
++            .iter()
++            .map(|c| {
++                if c.2 == usize::MAX {
++                    "-".to_string()
++                } else {
++                    engine.graph.node(NodeId(c.2 as u32)).name.clone()
++                }
++            })
++            .collect();
++        csv.push_str(&format!(
++            "{t},{wall:.1},{},{},{}\n",
++            snap.solver.re_solves,
++            changes.join(";"),
++            nodes.join(";")
++        ));
++        if t > hold {
++            walls.push(wall);
++            solves.push(1 + snap.solver.re_solves);
++        }
++        if snaps.contains(&t) {
++            std::fs::write(
++                format!("{out}/{label}_t{t}.json"),
++                serde_json::to_string(&snap).unwrap(),
++            )
++            .unwrap();
++        }
++    }
++    std::fs::write(format!("{out}/{label}.csv"), csv).unwrap();
++    let median = |v: &[f64]| {
++        let mut v = v.to_vec();
++        v.sort_by(|a, b| a.partial_cmp(b).unwrap());
++        v[v.len() / 2]
++    };
++    let mean_solves = |s: &[u32]| s.iter().sum::<u32>() as f64 / s.len() as f64;
++    let n = walls.len().min(600);
++    println!(
++        "{label}: after the step, first 60 ticks median {:.2} ms, solves {:.2}; first 600 median {:.2} ms, solves {:.2}, over 2.5 ms {}; ticks {}..{} median {:.2} ms solves {:.2}",
++        median(&walls[..60]) / 1e3,
++        mean_solves(&solves[..60]),
++        median(&walls[..n]) / 1e3,
++        mean_solves(&solves[..n]),
++        walls[..n].iter().filter(|w| **w > 2500.0).count(),
++        n,
++        walls.len(),
++        median(&walls[n..]) / 1e3,
++        mean_solves(&solves[n..]),
++    );
++}
