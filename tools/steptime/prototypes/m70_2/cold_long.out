@@ -1,0 +1,19 @@
+
+running 1 test
+test m67_3_grid::m67_3_grid ... == cold WARM 20 GAP 3000 RUN 10000
+RESULT file:47.5:406.6|steam=0.05+pa=0: RUNS R 4.000 flash 0.849 coil 406.6 feed 360.1 C 112.80 kg/s cond 56.75 reb 26.75 MW bottom 569.0 C | cut 
+RESULT file:47.5:406.6|steam=0.4+pa=0: RUNS R 4.000 flash 0.849 coil 406.6 feed 360.1 C 112.80 kg/s cond 58.15 reb 24.37 MW bottom 547.0 C | cut 
+RESULT file:47.5:406.6|steam=1+pa=0: RUNS R 4.000 flash 0.849 coil 406.6 feed 360.1 C 112.80 kg/s cond 60.55 reb 20.68 MW bottom 514.3 C | cut 
+RESULT file:50:413.9|steam=0.05+pa=0: RUNS R 4.000 flash 0.859 coil 413.9 feed 366.7 C 112.80 kg/s cond 56.75 reb 24.82 MW bottom 566.8 C | cut 
+RESULT file:50:413.9|steam=0.4+pa=0: RUNS R 4.000 flash 0.859 coil 413.9 feed 366.7 C 112.80 kg/s cond 58.15 reb 22.32 MW bottom 542.7 C | cut 
+RESULT file:50:413.9|steam=1+pa=0: RUNS R 4.078 flash 0.859 coil 413.9 feed 366.7 C 112.80 kg/s cond 61.40 reb 19.59 MW bottom 511.2 C | cut 
+RESULT file:62.5:449.6|steam=0.05+pa=0.25: RUNS R 4.000 flash 0.904 coil 449.6 feed 399.1 C 112.80 kg/s cond 56.72 reb 26.40 MW bottom 570.0 C | cut 
+RESULT file:62.5:449.6|steam=0.4+pa=0.25: RUNS R 4.000 flash 0.904 coil 449.6 feed 399.1 C 112.80 kg/s cond 58.12 reb 24.06 MW bottom 548.2 C | cut 
+RESULT file:62.5:449.6|steam=1+pa=0.25: RUNS R 4.000 flash 0.904 coil 449.6 feed 399.1 C 112.80 kg/s cond 60.53 reb 20.42 MW bottom 516.1 C | cut 
+RESULT file:65:456.5|steam=0.05+pa=0.25: RUNS R 4.000 flash 0.912 coil 456.5 feed 405.4 C 112.80 kg/s cond 56.72 reb 24.59 MW bottom 568.1 C | cut 
+RESULT file:65:456.5|steam=0.4+pa=0.25: RUNS R 4.000 flash 0.912 coil 456.5 feed 405.4 C 112.80 kg/s cond 58.12 reb 22.13 MW bottom 544.4 C | cut 
+RESULT file:65:456.5|steam=1+pa=0.25: RUNS R 4.051 flash 0.912 coil 456.5 feed 405.4 C 112.80 kg/s cond 61.08 reb 19.07 MW bottom 512.1 C | cut 
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 297.82s
+

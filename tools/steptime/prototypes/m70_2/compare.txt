@@ -1,0 +1,8 @@
+stripped_inside: old 149 run of 149, new 149 run of 149
+stripped_outside: old 1 run of 122, new 1 run of 122
+cold_inside: old 160 run of 160, new 160 run of 160
+cold_outside: old 134 run of 140, new 134 run of 140
+cold_long: old 12 run of 12, new 12 run of 12
+cold_held: old 12 run of 23, new 12 run of 23
+cold_rows: old 84 run of 84, new 84 run of 84
+str_coils: old 2 run of 2, new 2 run of 2

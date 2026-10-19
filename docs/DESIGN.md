@@ -28711,3 +28711,29 @@ landing not seen; a refused step erring. The eighteenth, a composition that
 moved not counting as "moved", is caught by the corpus only: `pump_gas_lock` on
 Simple, whose first ticks move compositions with every temperature bit-still,
 the one plant where it acts (Newton byte-identical).
+
+### 75.4 The stripped and cold tables re-checked (M70.2)
+
+C19, owed by M70.1's move after a key press (up to 1.6e-5, §75.3; the user's
+decision to re-check rather than skip). M69.3's edge check (§74.6) re-run on
+its own specs on the M70.1 engine, compared spec by spec with M69.3's committed
+output (`tools/steptime/prototypes/m70_2/FINDINGS.md`): the stripped edge 149 of
+149 inside run, 1 of 122 outside (the same one); the cold edge 160 of 160 and
+134 of 140; the cold 10 000-tick rows 12 of 12 and every allowed row 84 of 84;
+the held presses 12 of 23, as recorded; the coils at 40 and 50 MW 384.3 and
+413.9 °C. **Every verdict is M69.3's, and every failure on the same tick.** About
+65 minutes of machine time in two batches (18, 44). Both tables stand as
+committed; `column_screen.rs` unchanged.
+
+### 75.5 M70 closed
+
+A29's leftover taken as far as the guess goes: the stripped plant after a
+furnace step now solves once a tick — its composition guessed and the guess a
+parabola (M70.1) — 0.58 of its tick before, and still past the 2.5 ms frame on
+every tick (measured on a loaded machine). A guessed solve takes one more step
+only where its converged flows are not yet balanced, so the crude units' work
+is unchanged to the count. 10 plants moved on Newton, 11 on Simple (the user's
+decision); the stripped and cold tables held (M70.2). New: C20, a column's
+draws a tick late on a tick that solves once. Not done: fewer coil cells (1.9
+ms with the parabola in the probe, the coil 2 K colder — declined); the settled
+stripped plant's 4–6 % (not traced).

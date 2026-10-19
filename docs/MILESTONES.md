@@ -12,6 +12,36 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M70 is CLOSED (2026-10-19): the stripped plant after a furnace step — its
+composition and its curve predicted — `docs/DEFERRED.md` A29's leftover taken,
+C20 new.** Asked as "do it" on M69's two left fixes (fewer coil cells, a
+smoothed density); probed first, then "yes" on what the probe found instead.
+- **M70.0, the probe** (§75.0, `tools/steptime/prototypes/m70_0/`): after 58 →
+  65 MW the second solve is the residue pump's composition drift, not the
+  coil's; a smoothed density, the composition alone and a parabola alone each
+  leave two solves a tick; both together give one. Fewer cells declined (the
+  coil 2 K colder).
+- **M70.1, the predictor extended** (§75.3): each zero-volume node's composition
+  guessed with its temperature, and the guess a parabola through three ticks
+  that all ended after the last command. The stripped plant after the step 0.58
+  of its tick before (1.04 solves against 2.02), still past 2.5 ms on every
+  tick; the cold start-up 0.62; the held boiling crude unit unchanged; the
+  settled stripped plant 4–6 % slower (not traced). The parabola broke the
+  coil's first law through the solver's tolerance again, so a guessed solve
+  takes one more step only while its converged flows are unbalanced
+  (`BALANCED_BAR`); stepping always had cost the held crude units 15–21 %.
+  Moved, the user's decision: 10 of 67 plants on Newton, 11 on Simple; two gates
+  restated (the product line's march reads the draws the solve read; the wet
+  rundown re-pinned with its script re-run). Mutations: 18, 17 caught by
+  tests, one by the corpus only.
+- **M70.2, the screen tables** (§75.4, `tools/steptime/prototypes/m70_2/`):
+  re-checked because a key press moves answers up to 1.6e-5 (the user's
+  decision); M69.3's edge check, every verdict and failing tick unchanged,
+  about 65 minutes. Both tables stand.
+- **Left open**: A29 (the stripped plant still past the frame after a furnace
+  step; fewer cells declined); C20 (a column's draws a tick late on a tick that
+  solves once); C11.
+
 **M69 is CLOSED (2026-10-19): a boiling plant's tick — the line flash
 remembered, the first solve predicted — `docs/DEFERRED.md` A29 taken.** Asked
 as "Stop C11, do A29", then "memo + predictor" with the probe's numbers.

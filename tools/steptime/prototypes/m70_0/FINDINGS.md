@@ -90,3 +90,11 @@ alone the same; with the parabola 2.8 and 4.1 ms, 1.21 and 1.04 solves.
 **The answers move within the solvers' tolerance** with the parabola (the
 stripped plant, 58 → 65 MW, against shipped at four ticks): at most 4.0e-7
 relative (the residue cooler's pressure), no field over 1e-6.
+
+## To re-run
+
+`run.sh` and `run_godot.sh` name `W:/temp/claude/refinery-m70-0` (a worktree of
+77a3982 with `probe_m70.patch` applied, `tools/steptime` built release and with
+`--profile godot`) and the output folder `W:/temp/claude/m70-0-out`; rebuild
+both there to re-run. The M70.1 measurements used the same driver without the
+probe's log (DESIGN §75.3).

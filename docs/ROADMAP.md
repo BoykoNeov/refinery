@@ -10630,7 +10630,7 @@ ticks on) is gone — the M69.1 engine reproduces it to the tick, the new one ru
 settings that now run, recorded in C19. No code changed.
 `tools/steptime/prototypes/m69_3/FINDINGS.md`; DESIGN §74.6, §74.7.
 
-## M70 — the stripped plant after a furnace step: the composition and the curve predicted; ledger row A29's leftover; opened on a decision
+## M70 — the stripped plant after a furnace step: the composition and the curve predicted; ledger row A29's leftover; opened on a decision; CLOSED 2026-10-19
 
 Asked for as "do it" on M69's two left fixes, probed first; then "yes"
 (2026-10-19) on what the probe found instead. DESIGN §75. Fewer coil cells
@@ -10673,3 +10673,11 @@ re-pinned with its script re-run. DESIGN §75.3.
   `newton_reference` (1 new, 1 widened). Mutations: eighteen, seventeen caught
   by tests, one by the corpus only.
 
+### M70.2 — **LANDED** 2026-10-19: the stripped and cold tables re-checked — M70 CLOSED
+
+C19, owed by M70.1 (a key press moves its answers up to 1.6e-5; the user's
+decision to re-check). M69.3's edge check on its own specs, on the M70.1
+engine: every verdict M69.3's, every failure on the same tick — the stripped
+edge, the cold edge, the cold long rows, every allowed cold row, the held
+presses, two coils; about 65 minutes in two batches. Both tables stand. No code
+changed. `tools/steptime/prototypes/m70_2/FINDINGS.md`; DESIGN §75.4, §75.5.
