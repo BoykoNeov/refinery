@@ -28624,3 +28624,90 @@ old against new, alternated, fastest of three.
 
 C19, owed again by M70.1's move: M69.3's edge check re-run on the new engine,
 each batch under an hour of machine time.
+
+### 75.3 The predictor, built (M70.1)
+
+As §75.1 specifies (`Engine::predicted_states`; `moved_on` and
+`composition_moved_on`, the arithmetic, beside it with unit tests), and one
+change §75.1 did not foresee, in the flow solver.
+
+**The parabola broke the coil's first law, and the leak was the tolerance
+again** (§74.5's mechanism, by another route). With the curve guessed, the
+coil test plant's tick solves once: its one pass starts out of tolerance, one
+Newton step lands inside it 5.9e-8 kg/s out of balance, and the pass stops
+there — the first law missed by 1.6e-10 of the duty (gate 1e-12). M69.2's
+straight line had left a re-solve every tick on that plant, and the re-solve,
+starting converged, took the forced step that closed the balance. The
+composition alone held the gate; the parabola alone broke it.
+
+**So a guessed solve takes one step from a converged iterate that is not yet
+balanced** (`newton_flow.rs`, `BALANCED_BAR`): M69.2's rule (a pass that starts
+converged steps once) widened to the first converged iterate, wherever it
+falls, and narrowed to iterates above `BALANCED_BAR` = 1e-4 of the stop bar
+(`1e-12 kg/s + 1e-12` of the node's traffic). Without the narrowing every
+guessed pass paid a step: the held boiling crude unit 1.0 → 1.6 Newton
+iterations a tick and 15 % slower, the held stripped plant 21 % — and the
+residual log showed those plants' single steps already landing at ~2e-12
+kg/s, so the step bought nothing there. With it, the crude units' iterations
+are unchanged to the count (6 009 in 6 000 ticks); the coil test plant's first
+law 1e-15 of its duty. A step the line search refuses from such an iterate
+leaves it standing, as before.
+
+**Two gates restated** (the user's decision, 2026-10-19):
+- `product_line_reference`'s march read the draw at THIS tick's state, true on
+  a tick that re-solves. On a tick that solves once it read the last tick's: a
+  column's draws (`column_separation`) are neither guessed nor in
+  `swept_density_change` — only the column's feed mix is — so a tick that
+  solves once reads its draws a tick behind (~1e-7 of their density on the
+  product-line plant; already so on M69.2's held boiling crude unit). The
+  march now reads the state the solve read (`re_solves == 0`: the last
+  tick's) and holds at its 1e-9, unloosened. Logged as C20.
+- `wet_rundown_reference`'s junction, pinned where `m62_2/free_water_flash.py`
+  was run, moved 2.2e-9 (the composition guess: the plant still drifts at
+  2 000 ticks, its vent 1.7e-5 a tick, so it is guessed every tick). The
+  script re-run at the new state: vapour 0.127 735 011 7 of the mass (0.127 735
+  012 0 before); the state and the share re-pinned, the engine on it to 1e-10.
+
+**Measured** (the M70.0 driver on the shipped engine and on a worktree of
+0335994, alternated, fastest of three per tick, a machine loaded by other
+work — ratios): the stripped plant 58 → 65 MW, the 600 ticks after the step
+0.58 of shipped (1.04 solves against 2.02; still past 2.5 ms on every tick
+here), the cold start-up after tick 700 0.62; held from their files the boiling
+crude unit unchanged and the stripped plant +3–7 % (1.09 solves against 1.00 in
+its first thousand ticks, the parabola's), its settled ticks +4–6 % in every
+round (not traced: no more solves or iterations); `wet_rundown` 0.61,
+`flashing_rundown` 0.43, `product_cooler` and `water_slug` unchanged.
+
+**Moves** (the user's decision, 2026-10-19): the corpus, 6 000 ticks, against
+the M69.2 baseline — 10 of 67 plants on Newton (the six coil crude units,
+`flashing_rundown`, `product_cooler`, `water_slug`, `wet_rundown`), 11 on Simple
+(the same and `pump_gas_lock`, 2.6e-12), none fails; the rolling baseline
+refreshed. Held from their files (6 000 ticks, a snapshot every 600): the crude
+units at most 4.4e-9 relative, the rest 2e-8 in flows, pressures and
+temperatures (Simple's `flashing_rundown` 7e-7 in a flow; `wet_rundown`'s
+tank-outlet friction heat, 1.9 W, 5.3e-6). **After a key press larger**: the
+stripped plant 58 → 45, 65, 75 MW up to 4.7e-6, 4.3e-7, 1.0e-6; the cold
+start-up 1.6e-5 (the residue cooler's pressure, 10 Pa of 6.4 bar; the heavy
+draws' pumps and coolers lead every case, their flows ~1e-6); the boiling
+crude unit 2.5e-7 — larger than M69.2's 6.5e-7 where C19's edges were last
+re-checked, hence M70.2.
+
+**Gates**: `predicted_tick_reference` (4: the stripped plant after a furnace
+step solves once a tick from the 14th tick and re-solves twice on the third,
+four times were the parabola to reach past the command; the three M69.2 tests
+unchanged), `engine::tests` (2: the line and the parabola one tick on; a
+vanishing component clamped at zero), `newton_reference` (a guessed solve steps
+past its first converged iterate unless it landed balanced; a balanced start
+takes no step; a converged-but-unbalanced start whose step is refused stands),
+`coil_cell_reference`'s first law at 1e-12, unchanged; the two restated gates.
+FULL tier, clippy, fmt.
+
+**Mutations**: eighteen, seventeen caught by their targeted tests — the curve
+never, always, from one tick after a command; the command not resetting the
+count; the count never kept; no `before₂`; a wrong parabola; no composition, its
+guess not inserted, the clamp gone; the temperature or the liquid-equivalent on
+a line only; no extra step; the bar 1 (too loose); always stepping; a balanced
+landing not seen; a refused step erring. The eighteenth, a composition that
+moved not counting as "moved", is caught by the corpus only: `pump_gas_lock` on
+Simple, whose first ticks move compositions with every temperature bit-still,
+the one plant where it acts (Newton byte-identical).

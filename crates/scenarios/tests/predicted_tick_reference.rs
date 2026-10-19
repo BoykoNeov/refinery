@@ -1,14 +1,17 @@
 //! M69.2 — a boiling plant's tick predicted (docs/DESIGN.md §74.5): the first
 //! solve of a tick reads each zero-volume node moved on by the last tick's move,
 //! so the re-solves start closer; not on the tick after a command, and not on a
-//! plant at rest. The coil's first law at 1e-12 of its duty, the gate the
+//! plant at rest; the compositions guessed too, on a curve where three ticks
+//! allow it (M70.1, §75.1). The coil's first law at 1e-12 of its duty, the gate the
 //! predictor first broke, stays in `coil_cell_reference.rs`.
 
 use refinery_core::snapshot::Command;
+use refinery_core::units::Watt;
 use refinery_core::Engine;
 
 const BOILING: &str = include_str!("../../../scenarios/crude_unit_boiling.toml");
 const GAS_LOCK: &str = include_str!("../../../scenarios/pump_gas_lock.toml");
+const STRIPPED: &str = include_str!("../../../scenarios/crude_unit_stripped.toml");
 
 fn build(src: &str) -> Engine {
     let file = refinery_scenarios::load_str(src).expect("the plant parses");
@@ -90,5 +93,51 @@ fn a_plant_at_rest_is_not_guessed() {
     tick(&mut engine);
     for t in 2..=100 {
         assert_eq!(tick(&mut engine).1, 0, "tick {t} took a Newton step");
+    }
+}
+
+/// **The stripped plant after a furnace step solves once a tick** (M70.1,
+/// docs/DESIGN.md §75.1). After 58 → 65 MW its column's bottoms drift in
+/// composition and its coil's middle cells along a curve: guessed as M69.2
+/// did — the temperatures on a straight line — every tick re-solves once,
+/// for the residue pump's density, for good (measured to 200 ticks on). With
+/// the compositions guessed too, and the guess a parabola through the last
+/// three ticks, the first solve lands within `SWEPT_DENSITY_TOL` from the 14th
+/// tick after the step; either alone still re-solves every tick.
+///
+/// **The curve reads only ticks that ended after the command.** On the tick
+/// after the step nothing is guessed; on the next a straight line; from the
+/// third, the parabola through three ticks of the new drift. Measured, the
+/// third tick re-solves twice; a parabola reaching back to the tick before the
+/// step guesses the old drift on and re-solves four times.
+#[test]
+fn the_stripped_plant_after_a_furnace_step_solves_once_a_tick() {
+    let mut engine = build(STRIPPED);
+    for _ in 1..=20 {
+        tick(&mut engine);
+    }
+    let furnace = engine.graph.find_node("furnace").expect("a furnace");
+    engine
+        .apply(Command::SetFurnaceDuty {
+            node: furnace,
+            duty: Watt(65.0e6),
+        })
+        .expect("the furnace steps to 65 MW");
+    tick(&mut engine);
+    tick(&mut engine);
+    assert_eq!(
+        tick(&mut engine).0,
+        2,
+        "the third tick after the step: the parabola reads the new drift only"
+    );
+    for _ in 4..=13 {
+        tick(&mut engine);
+    }
+    for t in 14..=120 {
+        assert_eq!(
+            tick(&mut engine).0,
+            0,
+            "{t} ticks after the step: the predicted first solve stands"
+        );
     }
 }

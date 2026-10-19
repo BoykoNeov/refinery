@@ -199,12 +199,20 @@ fn a_product_line_stands_where_its_march_puts_it() {
     for (product, _, _) in LINES {
         // The draw's LAST flow — the previous tick's, the stored one — at the
         // draw's state as the solve read it: this tick's own sweep on a tick
-        // the boiling plant re-solves (M55.0), so to its density tolerance.
+        // the boiling plant re-solves (M55.0), so to its density tolerance; on a
+        // tick that solves once (a predicted tick, M70.1, docs/DESIGN.md §75.1)
+        // the last tick's, because a column's draws are neither guessed nor
+        // in the density check — only its feed is.
         let flow = edge(&before, &format!("{product}_suction"))
             .stream
             .mass_flow
             .value();
-        let drawn = edge(&now, &format!("{product}_suction"));
+        let read = if now.solver.re_solves == 0 {
+            &before
+        } else {
+            &now
+        };
+        let drawn = edge(read, &format!("{product}_suction"));
         let column = 1.8e5;
         let rho = density(&slate, &engine, drawn, column);
         let pump = column - pipe_drop(&engine, &format!("{product}_suction"), rho, flow);

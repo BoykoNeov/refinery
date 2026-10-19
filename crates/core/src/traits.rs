@@ -173,11 +173,13 @@ pub trait FlowSolver: Send {
     /// Whether this tick's solves start from a GUESS (M69.2, docs/DESIGN.md
     /// §74.5): on a plant whose lines boil, the engine's first solve of a tick
     /// reads each zero-volume node's state moved on by the last tick's move, and
-    /// the re-solves after it start that much closer. A solve that then starts
-    /// inside its tolerance still takes one step, so the flows it hands back
-    /// balance as an iterated solve's do (~1e-12 kg/s on the coil plants), not
-    /// merely within the tolerance (~1e-6 kg/s there) — the coil's first law is
-    /// gated at 1e-12 of its duty. `Engine::tick` sets it before its first
+    /// the re-solves after it start that much closer. A solve then takes one
+    /// step from a converged iterate before it stops — from its start, if that
+    /// is inside its tolerance (M69.2), or from the first iterate that is
+    /// (M70.1, §75.1: a guess good enough that the first solve is the tick's
+    /// only one) — so the flows it hands back balance as an iterated solve's do
+    /// (~1e-12 kg/s on the coil plants), not merely within the tolerance (~1e-6
+    /// kg/s there) — the coil's first law is gated at 1e-12 of its duty. `Engine::tick` sets it before its first
     /// solve, every tick. A no-op by default: a solver that always iterates at
     /// least once (the Simple sweep) has nothing to do.
     fn step_even_when_converged(&mut self, _on: bool) {}

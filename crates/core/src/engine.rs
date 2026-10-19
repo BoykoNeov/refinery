@@ -134,9 +134,17 @@ pub struct Engine {
     /// docs/DESIGN.md §74.5): the predictor's `before`. Empty before the second
     /// tick.
     states_before: energy::NodeStates,
+    /// The resolved states of the tick before `states_before` (M70.1,
+    /// docs/DESIGN.md §75.1): the predictor's `before₂`. Empty before the
+    /// third tick.
+    states_before2: energy::NodeStates,
     /// Whether a command arrived since the last tick: the next tick is not
     /// predicted (M69.2).
     commanded: bool,
+    /// Ticks ended since the tick a command arrived before, that tick's own
+    /// end counted 0 (M70.1): from 2, `node_states`, `states_before` and
+    /// `states_before2` all ended after the last command.
+    ticks_since_command: u32,
     /// The cavitation criterion at every node that has one, from the last tick
     /// (M11, docs/DESIGN.md §13). Empty before the first tick, and missing an
     /// entry for every node the criterion does not apply to.
@@ -244,7 +252,9 @@ impl Engine {
             last_solution: None,
             node_states: energy::NodeStates::default(),
             states_before: energy::NodeStates::default(),
+            states_before2: energy::NodeStates::default(),
             commanded: false,
+            ticks_since_command: 0,
             last_cavitation: std::collections::BTreeMap::new(),
             last_supply_boiling: std::collections::BTreeMap::new(),
             held_equipment: std::collections::BTreeMap::new(),
@@ -1221,13 +1231,16 @@ impl Engine {
 
     /// The states this tick's FIRST flow solve reads on a plant whose lines
     /// boil (M69.2, docs/DESIGN.md §74.5): each zero-volume node's temperature
-    /// and liquid-equivalent temperature [K] moved on by the last tick's move,
-    /// `2·now − before` — a straight-line guess at where this tick ends. `None`,
-    /// so the solve reads the last tick's states as it always did: on a plant
-    /// without the line flash (it re-solves only on its first tick); before the
-    /// third tick (no move to go on); on the tick after a command (a step, not a
-    /// drift — the guess would carry the old drift past it); and where nothing
-    /// moved (a plant at rest predicts itself, and is solved as it was).
+    /// and liquid-equivalent temperature [K] and its mass fractions moved on by
+    /// the last ticks' move — a guess at where this tick ends. A parabola
+    /// through the last three ticks where all three ended after the last
+    /// command (M70.1, §75.1), else the straight line through the last two.
+    /// `None`, so the solve reads the last tick's states as it always did: on a
+    /// plant without the line flash (it re-solves only on its first tick);
+    /// before the third tick (no move to go on); on the tick after a command (a
+    /// step, not a drift — the guess would carry the old drift past it); and
+    /// where nothing moved (a plant at rest predicts itself, and is solved as
+    /// it was).
     ///
     /// Only the first solve's READ moves: the re-solves still stop on
     /// `SWEPT_DENSITY_TOL`, now measured from the guess.
@@ -1235,6 +1248,11 @@ impl Engine {
         if !self.line_flash.carries_vapour() || self.commanded {
             return None;
         }
+        // The parabola only from three ticks that all ended after the command.
+        let curved = self.ticks_since_command >= 2;
+        let ahead = |now: f64, before: f64, before2: Option<f64>| {
+            moved_on(now, before, before2.filter(|_| curved))
+        };
         let mut predicted = self.node_states.clone();
         let mut moved = false;
         for id in self.graph.node_ids() {
@@ -1248,9 +1266,15 @@ impl Engine {
                 self.states_before.temperature.get(&id),
             ) {
                 moved |= now.value() != before.value();
-                predicted
-                    .temperature
-                    .insert(id, Kelvin(2.0 * now.value() - before.value()));
+                let before2 = self.states_before2.temperature.get(&id);
+                predicted.temperature.insert(
+                    id,
+                    Kelvin(ahead(
+                        now.value(),
+                        before.value(),
+                        before2.map(|t| t.value()),
+                    )),
+                );
             }
             if let (Some(now), Some(before)) = (
                 self.node_states.vapour.get(&id),
@@ -1261,9 +1285,27 @@ impl Engine {
                     before.liquid_equivalent.value(),
                 );
                 moved |= now_le != before_le;
+                let before2 = self.states_before2.vapour.get(&id);
                 let mut share = *now;
-                share.liquid_equivalent = Kelvin(2.0 * now_le - before_le);
+                share.liquid_equivalent = Kelvin(ahead(
+                    now_le,
+                    before_le,
+                    before2.map(|v| v.liquid_equivalent.value()),
+                ));
                 predicted.vapour.insert(id, share);
+            }
+            // The composition moved on as the temperature is (M70.1).
+            if let (Some(now), Some(before)) = (
+                self.node_states.composition.get(&id),
+                self.states_before.composition.get(&id),
+            ) {
+                if now != before {
+                    moved = true;
+                    let before2 = self.states_before2.composition.get(&id).filter(|_| curved);
+                    if let Some(guess) = composition_moved_on(now, before, before2) {
+                        predicted.composition.insert(id, guess);
+                    }
+                }
             }
         }
         moved.then_some(predicted)
@@ -2616,7 +2658,15 @@ impl Engine {
             }
         }
 
-        self.states_before = std::mem::replace(&mut self.node_states, node_states);
+        self.states_before2 = std::mem::replace(
+            &mut self.states_before,
+            std::mem::replace(&mut self.node_states, node_states),
+        );
+        self.ticks_since_command = if self.commanded {
+            0
+        } else {
+            self.ticks_since_command.saturating_add(1)
+        };
         self.commanded = false;
         self.last_solution = Some(solution);
         self.last_cavitation = cavitation;
@@ -4301,6 +4351,37 @@ fn track_stopped_pump(
     Ok(())
 }
 
+/// A value one tick on from the last ticks' (M69.2, M70.1, docs/DESIGN.md
+/// §74.5, §75.1): the quadratic through three equally spaced ticks, `3·now −
+/// 3·before + before₂`, or with no `before₂` the line through two, `2·now −
+/// before` (Newton's forward differences, extrapolated one step).
+fn moved_on(now: f64, before: f64, before2: Option<f64>) -> f64 {
+    match before2 {
+        Some(before2) => 3.0 * now - 3.0 * before + before2,
+        None => 2.0 * now - before,
+    }
+}
+
+/// A composition one tick on (M70.1, docs/DESIGN.md §75.1): each mass
+/// fraction by `moved_on`, clamped at zero where a vanishing component would
+/// go negative, the whole renormalised. The moved-on fractions sum to one (the
+/// coefficients do), so the clamp only ever adds to that sum; `None` only for
+/// a slate whose fractions do not line up (never on one plant).
+fn composition_moved_on(
+    now: &Composition,
+    before: &Composition,
+    before2: Option<&Composition>,
+) -> Option<Composition> {
+    let (now, before) = (now.fractions(), before.fractions());
+    if before.len() != now.len() || before2.is_some_and(|c| c.fractions().len() != now.len()) {
+        return None;
+    }
+    let weights: Vec<f64> = (0..now.len())
+        .map(|c| moved_on(now[c], before[c], before2.map(|b| b.fractions()[c])).max(0.0))
+        .collect();
+    Composition::from_weights(&weights).ok()
+}
+
 fn step_loop(
     control: &mut ControlLoop,
     measurement: Option<ControlledValue>,
@@ -4462,5 +4543,41 @@ fn reading_text(value: ControlledValue) -> String {
         ControlledValue::Pressure { pa } => format!("{:.3} bar", pa.value() / 1.0e5),
         ControlledValue::Level { m } => format!("{:.3} m", m.value()),
         ControlledValue::Flow { kg_per_s } => format!("{:.3} kg/s", kg_per_s.value()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The line through two ticks, and the parabola through three, one tick
+    /// on: exact on a quadratic, `t²` at 1, 2, 3 giving 16 at 4; the line
+    /// gives 14.
+    #[test]
+    fn a_value_is_moved_on_by_the_line_or_the_parabola() {
+        assert_eq!(moved_on(9.0, 4.0, None), 14.0);
+        assert_eq!(moved_on(9.0, 4.0, Some(1.0)), 16.0);
+    }
+
+    /// A component vanishing faster than the guess can follow is clamped at
+    /// zero, not carried negative, and the rest renormalised: 0.03 → 0.01 on a
+    /// line would go to −0.01, and 0.02, 0.02, 0.01 on a parabola to −0.01.
+    #[test]
+    fn a_composition_moved_on_clamps_a_vanishing_component() {
+        let c = |w: &[f64]| Composition::from_weights(w).unwrap();
+        let line =
+            composition_moved_on(&c(&[0.01, 0.99]), &c(&[0.03, 0.97]), None).expect("a line guess");
+        assert_eq!(line.fractions()[0], 0.0);
+        assert!((line.fractions()[1] - 1.0).abs() < 1e-15);
+        let parabola = composition_moved_on(
+            &c(&[0.01, 0.99]),
+            &c(&[0.02, 0.98]),
+            Some(&c(&[0.02, 0.98])),
+        )
+        .expect("a parabola guess");
+        assert_eq!(parabola.fractions()[0], 0.0);
+        assert!((parabola.fractions()[1] - 1.0).abs() < 1e-15);
+        let moving = composition_moved_on(&c(&[0.3, 0.7]), &c(&[0.2, 0.8]), None).unwrap();
+        assert!((moving.fractions()[0] - 0.4).abs() < 1e-15);
     }
 }

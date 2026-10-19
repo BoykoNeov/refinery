@@ -61,7 +61,7 @@ fn refusal(source: &str) -> String {
 /// mass vapour (water on IAPWS-IF97's saturation line since M63.2, §68.2) —
 /// and the independent script, flashing the supply's composition at that same
 /// temperature and pressure, finds it in the three-phase state, 1.67 % of the
-/// mass free water beside the oil liquid, and the vapour share 0.127 735 012 0. The junction's `q` is the ENERGY's
+/// mass free water beside the oil liquid, and the vapour share 0.127 735 011 7. The junction's `q` is the ENERGY's
 /// (`settle_full`), the script's the flash's: on a mixture they meet at the
 /// root, and they do here to the script's printed digits.
 ///
@@ -81,16 +81,16 @@ fn the_line_stands_three_phase_after_the_valve_on_the_hand_calculation() {
     let s = engine.snapshot();
     let junction = node(&s, "valve_outlet");
     assert!(
-        (junction.temperature_k / 358.855_459_081_289_5 - 1.0).abs() < 1e-9
-            && (junction.pressure_pa / 150_410.346_041_178_88 - 1.0).abs() < 1e-9,
+        (junction.temperature_k / 358.855_459_145_735_27 - 1.0).abs() < 1e-9
+            && (junction.pressure_pa / 150_410.346_370_733_4 - 1.0).abs() < 1e-9,
         "the junction settled at {} K, {} Pa — not the state the script was run at",
         junction.temperature_k,
         junction.pressure_pa
     );
     let q = junction.vapour_fraction.expect("the line boils");
     assert!(
-        (q - 0.127_735_012_0).abs() < 1e-10,
-        "the junction carries {q} of its mass as vapour, the script 0.127 735 012 0"
+        (q - 0.127_735_011_7).abs() < 1e-10,
+        "the junction carries {q} of its mass as vapour, the script 0.127 735 011 7"
     );
 
     let slate = engine.slate.clone();

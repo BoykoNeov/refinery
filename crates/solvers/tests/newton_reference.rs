@@ -186,6 +186,74 @@ fn a_guessed_solve_steps_from_inside_its_tolerance() {
     );
 }
 
+/// **A guessed solve steps once more from its first converged iterate**
+/// (M70.1, docs/DESIGN.md §75.1). The junction solved, its sink then raised
+/// 100 Pa: the start is out of the tolerance, and one Newton step lands inside
+/// it, out of balance by ~2.5e-9 kg/s. As shipped the solve stops there; told
+/// its solves start from a guess, it takes one more step and the balance
+/// closes to rounding — on a guessed tick the first solve may be the only one,
+/// and it hands back flows balanced as an iterated solve's are.
+#[test]
+fn a_guessed_solve_steps_past_its_first_converged_iterate() {
+    let solve_twice = |guessed: bool, raise: f64| {
+        let sink = |pressure: f64| {
+            node(
+                "snk",
+                NodeKind::Sink {
+                    pressure: Pascal(pressure),
+                    temperature: T_AMBIENT,
+                    composition: Composition::pure(1, 0),
+                },
+            )
+        };
+        let mut g = PlantGraph::new();
+        let src = g.add_node(node(
+            "src",
+            NodeKind::Source {
+                pressure: Pascal(3.0e5),
+                temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
+            },
+        ));
+        let jn = g.add_node(node("jn", NodeKind::Junction));
+        let snk = g.add_node(sink(1.0e5));
+        g.add_pipe(src, jn, pipe("a", 10.0, 0.1));
+        g.add_pipe(jn, snk, pipe("b", 10.0, 0.1));
+        let mut solver = NewtonFlowSolver::default();
+        let slate = Slate::water_only();
+        solver
+            .solve(&g, &slate, &Default::default(), Seconds(0.1))
+            .expect("converges");
+        *g.node_mut(snk) = sink(1.0e5 + raise);
+        solver.step_even_when_converged(guessed);
+        let sol = solver
+            .solve(&g, &slate, &Default::default(), Seconds(0.1))
+            .expect("converges");
+        (sol.diagnostics.iterations, sol.diagnostics.residual)
+    };
+
+    let (iterations, residual) = solve_twice(false, 100.0);
+    assert_eq!(
+        iterations, 1,
+        "as shipped, one step lands inside the tolerance"
+    );
+    assert!(
+        residual > 1e-10,
+        "and stops out of balance by more than rounding: {residual:e} kg/s"
+    );
+    let (iterations, residual) = solve_twice(true, 100.0);
+    assert_eq!(iterations, 2, "from a guess, one step more");
+    assert!(
+        residual < 1e-12,
+        "the second step closes the balance: {residual:e} kg/s"
+    );
+    // Raised 1 Pa, the first step lands balanced to rounding (`BALANCED_BAR`
+    // of the tolerance): nothing is left for a second to close.
+    let (iterations, residual) = solve_twice(true, 1.0);
+    assert_eq!(iterations, 1, "a step that lands balanced is the last");
+    assert!(residual < 1e-12, "{residual:e} kg/s");
+}
+
 /// **A guessed solve already balanced to rounding keeps its start.** Solved
 /// again on the plant it just solved, the step it is told to take can find no
 /// decrease in a balance already at rounding; the line search refuses it, and
@@ -217,16 +285,40 @@ fn a_guessed_solve_at_rounding_keeps_its_start() {
     solver.step_even_when_converged(true);
     let slate = Slate::water_only();
     let mut pressures = Vec::new();
+    let mut iterations = Vec::new();
     for solve in 1..=4 {
         let sol = solver
             .solve(&g, &slate, &Default::default(), Seconds(0.1))
             .unwrap_or_else(|e| panic!("solve {solve}: {e}"));
         pressures.push(sol.node_pressure[&jn].value());
+        iterations.push(sol.diagnostics.iterations);
     }
-    // The second solve's step still polishes the first's answer; from there on
-    // each start is at rounding and stands, bit for bit.
+    // From the second solve each start is balanced to rounding (M70.1,
+    // `BALANCED_BAR`): it takes no step and stands, bit for bit.
     assert_eq!(pressures[2], pressures[1], "{pressures:?}");
     assert_eq!(pressures[3], pressures[1], "{pressures:?}");
+    assert_eq!(&iterations[1..], &[0, 0, 0], "{iterations:?}");
+
+    // Asked for more than rounding can give — a tolerance of 1e-13 of the
+    // node's traffic, rounding inside it but not inside `BALANCED_BAR` of it —
+    // the start is converged but not balanced: the step it is told to take
+    // finds no decrease, the line search refuses it, and the start stands
+    // rather than the refusal reading as divergence.
+    let mut strict = NewtonFlowSolver::default();
+    strict.tol_abs_kg_s = 0.0;
+    strict.tol_rel = 1e-13;
+    strict.step_even_when_converged(true);
+    let mut strict_pressures = Vec::new();
+    for solve in 1..=4 {
+        let sol = strict
+            .solve(&g, &slate, &Default::default(), Seconds(0.1))
+            .unwrap_or_else(|e| panic!("strict solve {solve}: {e}"));
+        strict_pressures.push(sol.node_pressure[&jn].value());
+    }
+    assert_eq!(
+        strict_pressures[3], strict_pressures[2],
+        "{strict_pressures:?}"
+    );
 }
 
 /// A pump between equal-pressure ends must still drive flow from suction to

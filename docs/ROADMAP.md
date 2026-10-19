@@ -10649,3 +10649,27 @@ ms with the parabola but move the coil 2 K: declined.
 Slices: M70.1 the predictor extended (moves answers; the corpus put to the
 user); M70.2 the stripped and cold tables re-checked (C19). No engine code
 changed.
+
+### M70.1 — **LANDED** 2026-10-19: the composition and the curve predicted
+
+Each zero-volume node's composition guessed with its temperature, and the guess
+a parabola through three ticks once all three ended after the last command. The
+stripped plant after 58 → 65 MW solves once a tick: 0.58 of its tick before,
+still past 2.5 ms; the cold start-up 0.62; the held boiling crude unit
+unchanged, the settled stripped plant 4–6 % slower (not traced). The parabola
+broke the coil's first law by the solver's tolerance again (§74.5's mechanism):
+a guessed solve now takes one step from a converged iterate not yet balanced to
+`BALANCED_BAR`, and the crude units' iterations are unchanged to the count.
+Two gates restated (the user's decision): the product line's march reads the
+draws the solve read — a column's draws, outside the density check, a tick late
+on a tick that solves once (C20, new) — and the wet rundown's junction
+re-pinned with its script re-run. DESIGN §75.3.
+
+- Moves (the user's decision): 10 of 67 plants on Newton, 11 on Simple (with
+  `pump_gas_lock`, 2.6e-12); none fails; held from their files at most 4.4e-9
+  on the crude units, after a key press up to 1.6e-5 (the cold start-up), so
+  M70.2 re-checks the tables.
+- Gates: `predicted_tick_reference` (1 new), `engine::tests` (2 new),
+  `newton_reference` (1 new, 1 widened). Mutations: eighteen, seventeen caught
+  by tests, one by the corpus only.
+

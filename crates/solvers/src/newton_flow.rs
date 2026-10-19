@@ -63,6 +63,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Max damped-halvings per Newton step (min step 1/256).
 const MAX_HALVINGS: u32 = 8;
+
+/// The share of the stop bar (`tol_abs_kg_s + tol_rel·scale` at each node)
+/// below which a guessed solve's converged iterate counts as balanced, and
+/// takes no further step (M70.1, docs/DESIGN.md §75.1). Set by the coil's
+/// first law, gated at 1e-12 of its duty: on the coil test plant one step
+/// landed 5.9e-8 kg/s out of balance and missed by 1.6e-10 of the duty, so the
+/// gate needs the balance under ~4e-10 kg/s — 1e-4 of the bar is 1e-12 kg/s
+/// plus 1e-12 of the node's traffic. A Newton step from an iterate above it
+/// lands at rounding (~1e-12 kg/s on the boiling crude units, where most first
+/// steps already do).
+const BALANCED_BAR: f64 = 1e-4;
 /// Further halvings a step may take when it opens a disc the Jacobian holds
 /// shut (`opens_shut_disc`; A26, docs/DESIGN.md §61.6): min step 1/65 536.
 const MAX_OPENING_HALVINGS: u32 = 8;
@@ -110,9 +121,9 @@ pub struct NewtonFlowSolver {
     pub eps_dp: f64,
     /// Warm-start pressures from the previous converged solve, keyed by NodeId.
     warm_start: BTreeMap<NodeId, f64>,
-    /// A pass that starts converged takes one step anyway (M69.2,
-    /// `FlowSolver::step_even_when_converged`): set by the engine on a tick
-    /// whose solves start from a guess.
+    /// A pass takes one step from a converged iterate before it stops (M69.2,
+    /// M70.1, `FlowSolver::step_even_when_converged`): set by the engine on a
+    /// tick whose solves start from a guess.
     step_even_when_converged: bool,
     /// The line flash this solver reads two-phase densities through (M53,
     /// docs/DESIGN.md §58 fork 3). `NoLineFlash` by default, under which every
@@ -332,13 +343,25 @@ impl NewtonFlowSolver {
         let mut merit = half_sq_norm(&r); // ½‖R‖₂²: smooth line-search merit
         history.push(res);
         let mut iterations = 0u32;
-        // From a guess, a pass that starts converged takes one step anyway
-        // (M69.2, docs/DESIGN.md §74.5): the guess lands inside the tolerance,
-        // and accepted there the flows balance only to it.
-        let step_anyway = self.step_even_when_converged && converged;
+        // From a guess, a pass whose converged iterate is not yet balanced to
+        // `BALANCED_BAR` of the tolerance takes one step from it before it stops
+        // (M69.2, M70.1, docs/DESIGN.md §74.5, §75.1): the guess lands inside
+        // the tolerance, or one step from it, and accepted there the flows
+        // balance only to it. An iterate already that close stops as it is.
+        let balanced = |r: &[f64], scale: &[f64]| {
+            crate::network::grade_nodes(
+                r.iter().copied().zip(scale.iter().copied()),
+                BALANCED_BAR * self.tol_abs_kg_s,
+                BALANCED_BAR * self.tol_rel,
+            )
+            .1
+        };
+        let polish = self.step_even_when_converged;
+        let mut polished = balanced(&r, &scale);
 
-        while (!converged || (step_anyway && iterations == 0)) && iterations < self.max_iter {
+        while (!converged || (polish && !polished)) && iterations < self.max_iter {
             iterations += 1;
+            let from_converged = converged;
 
             // Newton direction: J·ΔP = −R.
             let neg_r: Vec<f64> = r.iter().map(|x| -x).collect();
@@ -437,6 +460,7 @@ impl NewtonFlowSolver {
                     pressures = trial;
                     compiled = compiled_t;
                     (res, converged) = grade(&r_t, &scale_t);
+                    polished = polished || balanced(&r_t, &scale_t);
                     merit = merit_t;
                     r = r_t;
                     jac = jac_t;
@@ -446,10 +470,13 @@ impl NewtonFlowSolver {
                 t *= 0.5;
             }
             history.push(res);
-            if !accepted && step_anyway && iterations == 1 {
-                // The step it need not have taken found no decrease: the
-                // converged start stands.
-                break;
+            if from_converged {
+                if !accepted {
+                    // The step it need not have taken found no decrease: the
+                    // converged iterate stands.
+                    break;
+                }
+                polished = true;
             }
             if !accepted {
                 // The exact Newton step is always a descent direction for a
