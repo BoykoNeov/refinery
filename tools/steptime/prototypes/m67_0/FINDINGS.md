@@ -44,15 +44,15 @@ Throwaway, applied to `f13d8a7` (M66 closed) in a detached worktree:
   It prints whether the run held. If it ran, it prints the settled reading,
   the cut-back counters, and the end state: each side draw's share of its
   declared rate, and the lowest liquid under a draw.
-- `run.sh` — runs the suite binary at below-normal priority. `TARGET` picks
-  the build folder.
+- `run.sh` — runs the suite binary at below-normal priority. `TARGET` names
+  the build folder and `OUT` the output folder; both are required.
 
 Run (Windows, release, below-normal priority):
 
 ```
 PLANT=crude|stripped|cold [WARM=1000] [GAP=3000] [RUN=6000] [JOBS=8] \
   [M67_LIQUID_MIN=0.05] [M67_TRACE=1] SPECS='furnace=20+reflux=1+pa=0.5;…' \
-  sh run.sh <label>
+  TARGET=<build folder> OUT=<output folder> sh run.sh <label>
 M67_LIQUID_MIN=0.05 target/release/refinery corpus scenarios --ticks 6000 \
   --jobs 14 --solver newton|simple --baseline B/<fidelity>.json
 ```

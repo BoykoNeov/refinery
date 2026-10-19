@@ -316,14 +316,16 @@ fn slow_the_stripped_timeline() {
 }
 
 /// **The cold crude unit's start-up** (`AUTO_COLD` and `WALKS`, M66.4): the
-/// furnace to 58 MW at 10; the pumparounds off at 500; from 500 to 2 390, every
-/// 10 ticks, the reboiler key — held at the duty it runs at less 2.5 MW, the
+/// furnace to 58 MW at 10; the pumparounds to 25 % at 500 (the screen holds
+/// its 400-tick reboiler press, and its press to turn them off, which the
+/// corrected table closes from 50 MW, §72.12); from 500 to 2 390, every 10
+/// ticks, the reboiler key — held at the duty it runs at less 2.5 MW, the
 /// scene's own arithmetic (its 1 005-tick steam press is the screen's to
 /// hold, while the reboiler is held, and sends nothing; M67.5). The reboiler never
 /// rises and the column declines none of the walk: since M67 (§72.1) it cuts
-/// its gas oil back where the feed is still too cool for the step, and lands
+/// its draws back where the feed is still too cool for the step, and lands
 /// on zero on tick 821 (M66: 2 321, after 1 534 declined ticks); on 2 700 it
-/// is held there, the feed 368.1 °C, the reflux 3.088, the gas oil back to
+/// is held there, the feed 368.1 °C, the reflux 2.221, the gas oil back to
 /// 81 % of its share.
 #[test]
 fn slow_the_cold_start_up_timeline() {
@@ -350,9 +352,10 @@ fn slow_the_cold_start_up_timeline() {
         r#"{{"cmd":"set_furnace_duty","duty":58000000.0,"node":{furnace}}}"#
     ));
     screen.run_to(500);
-    for i in 0..3 {
+    for (i, mw) in [3.75, 3.75, 2.5].iter().enumerate() {
         screen.send(&format!(
-            r#"{{"cmd":"set_pumparound_duty","duty":0.0,"node":{column},"pumparound":{i}}}"#
+            r#"{{"cmd":"set_pumparound_duty","duty":{:?},"node":{column},"pumparound":{i}}}"#,
+            mw * 1.0e6
         ));
     }
     let mut last = f64::INFINITY;
@@ -384,7 +387,7 @@ fn slow_the_cold_start_up_timeline() {
     assert_eq!(end.4, 0.0, "{end:?}");
     assert!(!declined(&screen));
     assert!(
-        (end.2 - 3.088).abs() < 1e-3 && (end.0 - 368.1).abs() < 0.1,
+        (end.2 - 2.221).abs() < 1e-3 && (end.0 - 368.1).abs() < 0.1,
         "{end:?}"
     );
     let cut = &screen.column_node()["column_draws_cut_back"];
@@ -534,48 +537,74 @@ fn region_coil(region: &Value, furnace: f64) -> f64 {
 /// the table allows the file's setting (58 MW, between its grid's 57.5 and
 /// 60, the steam valve at 40 %, no pumparounds), and holds the coil its
 /// furnace settles at; on either side of its edge the column does what the
-/// table says — at 45 MW with the steam wide open, 11 MW of pumparound runs
-/// and 12 does not. A column that moves its edge fails this, and the region
-/// is measured again.
+/// table says, at four points along its pumparound ceiling — at 45 MW with
+/// the steam wide open, 11 MW of pumparound runs and 12 does not; at 40 MW,
+/// 47.5 and 52.5, with the steam at 100 %, 40 % and 10 %, likewise a megawatt
+/// apart (each outside one fails within a few ticks of the move, so a 100-tick
+/// run judges it). A column that moves its edge fails this, and the region is
+/// measured again.
 #[test]
 fn slow_the_stripped_units_region_is_the_columns() {
     let region = region("stripped");
     assert!(region_allows(&region, [57.5, 0.4, 0.0]));
     assert!(region_allows(&region, [60.0, 0.4, 0.0]));
-    let at_45 = (45.0, region_coil(&region, 45.0));
-    assert!(region_allows(&region, [45.0, 1.0, 11.0]));
-    assert!(!region_allows(&region, [45.0, 1.0, 12.0]));
     let file = "crude_unit_stripped.toml";
-    assert!(
-        settled_jump_runs(file, at_45, 1.0, [11.0; 3]),
-        "11 MW at 45 MW"
-    );
-    assert!(
-        !settled_jump_runs(file, at_45, 1.0, [12.0; 3]),
-        "12 MW at 45 MW"
-    );
+    for (furnace, steam, inside, outside) in [
+        (45.0, 1.0, 11.0, 12.0),
+        (40.0, 1.0, 10.0, 11.0),
+        (47.5, 0.4, 11.0, 12.0),
+        (52.5, 0.1, 11.0, 12.0),
+    ] {
+        assert!(region_allows(&region, [furnace, steam, inside]));
+        assert!(!region_allows(&region, [furnace, steam, outside]));
+        let settled = (furnace, region_coil(&region, furnace));
+        assert!(
+            settled_jump_runs(file, settled, steam, [inside; 3]),
+            "{inside} MW at {furnace} MW, steam {steam}"
+        );
+        assert!(
+            !settled_jump_runs(file, settled, steam, [outside; 3]),
+            "{outside} MW at {furnace} MW, steam {steam}"
+        );
+    }
 }
 
 /// **The cold crude unit's region, its reboiler free, is the column's**
 /// (M67.5, DESIGN §72.10): the table allows the file's setting (20 MW, the
 /// steam valve at 40 %, the pumparounds at their 15/15/10 MW), and at its edge
 /// — the hottest furnace with the pumparounds off — the column does what the
-/// table says: at 65 MW and 40 % steam, a quarter of the pumparounds runs and
-/// none does not.
+/// table says: at 65 MW and 40 % steam, half the pumparounds runs and none does
+/// not. (A quarter runs here too, but fails some 8 400 ticks on at full steam,
+/// so the region closes it at every steam setting, §72.12.) At 62.5 MW with
+/// the steam wide open, a quarter runs and none fails at the move. The rest of
+/// its edge, no pumparounds from 50 MW, fails only some 7 500 ticks on, too
+/// late for a test (C19).
 #[test]
 fn slow_the_cold_units_region_is_the_columns() {
     let region = region("cold");
     assert!(region_allows(&region, [20.0, 0.4, 1.0]));
-    assert!(region_allows(&region, [65.0, 0.4, 0.25]));
+    assert!(region_allows(&region, [65.0, 0.4, 0.5]));
+    assert!(!region_allows(&region, [65.0, 0.4, 0.25]));
     assert!(!region_allows(&region, [65.0, 0.4, 0.0]));
     let at_65 = (65.0, region_coil(&region, 65.0));
     let file = "crude_unit_cold.toml";
     assert!(
-        settled_jump_runs(file, at_65, 0.4, [3.75, 3.75, 2.5]),
-        "a quarter of the pumparounds at 65 MW"
+        settled_jump_runs(file, at_65, 0.4, [7.5, 7.5, 5.0]),
+        "half the pumparounds at 65 MW"
     );
     assert!(
         !settled_jump_runs(file, at_65, 0.4, [0.0; 3]),
         "no pumparounds at 65 MW"
+    );
+    assert!(region_allows(&region, [62.5, 1.0, 0.25]));
+    assert!(!region_allows(&region, [62.5, 1.0, 0.0]));
+    let at_62 = (62.5, region_coil(&region, 62.5));
+    assert!(
+        settled_jump_runs(file, at_62, 1.0, [3.75, 3.75, 2.5]),
+        "a quarter of the pumparounds at 62.5 MW"
+    );
+    assert!(
+        !settled_jump_runs(file, at_62, 1.0, [0.0; 3]),
+        "no pumparounds at 62.5 MW"
     );
 }

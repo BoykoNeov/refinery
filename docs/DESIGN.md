@@ -28192,3 +28192,72 @@ Every shipped plant byte-identical throughout; what moved was the cold
 start-up's story (decision 8) and the test fixtures that needed a dry tray.
 New ledger rows: C18, a cold start does not cut its draws back; C19, the
 tables are measurements, owed again when the column changes.
+
+### 72.12 The stripped and cold tables corrected, and the held cold plant's keys (after M67's close)
+
+A review after the close found two faults, both now fixed.
+
+**The held cold plant blocked presses toward safety.** M67.5's limits held the
+furnace whenever its target was under 37.5 MW, so a player who held the
+reboiler on the 20 MW plant could not fire the furnace up. They held the
+pumparounds whenever the target was past 50 %, so 100 % could not come down to
+75 %. Now a press is held only where it moves past the limit and further from
+where the key stands. Freeing the reboiler (Y) is judged too: the column then
+runs free at the keys as they stand, which the region must allow, at the
+settings and at the coil's furnace. Otherwise the reboiler stays held and the
+screen names the key setting that frees it. Run headless: held at 20 MW the
+furnace goes up, the pumparounds come down to 75 % and are held going back up,
+and Y at 65 MW with the pumparounds off is held: "the furnace at 62.5 MW or
+the steam valve at 30 % or the pumparounds at 25 % would free it".
+
+**The stripped and cold tables' 100-tick runs were too short near the edge.**
+M67.4 and M67.5 judged the fast keys 100 ticks after the move, from a settled
+start, never checked against longer runs. Checked now, 14 cells next to the
+edges for 15 000 ticks, all with the charge at its 112.80 kg/s:
+- **On the cold plant free, with the pumparounds off, the column fails late.**
+  Around tick 7 400–8 400, at every steam setting from 52.5 MW and at full
+  steam from 50, "no reflux at which every stage's vapour stands at the
+  floor". The failure tick hardly moves with the steam, so it is a slow state,
+  not the column's. Neither the coil nor the charge is it: both are back at
+  their settled values by 6 000 ticks. Not found within the hour.
+- **On the stripped plant, a pumparound one step under the ceiling** fails 420
+  ticks on (40 MW, 50 %, 10 MW).
+
+The correction, about 45 minutes in all:
+- every allowed cell next to an edge run for 1 000 ticks (1 500 on its second
+  round);
+- the cold plant's pumparounds off and at 25 % run for 10 000 ticks at three
+  steam settings (5, 40, 100 %) at every furnace, a row closed at every steam
+  setting where any of the three failed;
+- repeated on the newly exposed edge until nothing more failed.
+
+Results:
+- **The stripped plant**: 8 edge cells failed, 420–963 ticks on, all on the
+  pumparound ceiling. 2 885 settings are allowed (was 2 893).
+- **The cold plant free**: no pumparounds is closed from 50 MW, and 25 % at
+  65 MW (it fails at full steam, 8 416 ticks on). 1 740 settings are allowed
+  (was 1 880).
+- The second round found nothing more.
+- `tools/steptime/prototypes/m67_3/tighten.py` applies it to a table.
+
+The region tests' pinned pairs moved where the tables did, and more were
+added: four points along the stripped plant's pumparound ceiling (40, 45, 47.5
+and 52.5 MW, the steam at 10–100 %), and a second on the cold plant (62.5 MW,
+full steam: a quarter of the pumparounds runs, none fails at the move). Each
+outside point fails within a few ticks of the move, so a 100-tick run judges
+it. The cold plant's late edge cannot be judged that way. C19's row now names
+the late failure and the run length.
+
+**The cold story on screen changed with the table.** Its press to turn the
+pumparounds off at 58 MW is now past the edge, so the screen holds it. Holding
+the reboiler with the pumparounds still at 100 % then stopped the column at
+tick 1 271. That exposed a third fault: a free reboiler could be held while the
+other keys stood past `held_limits`. Now that press is held too, and names what
+to move ("the pumparounds at 50 % or less"). The story, as the user chose:
+- at 400, the reboiler key pressed with the pumparounds at 100 %, held;
+- at 500, the pumparounds off, held, then to 25 %;
+- the walk lands on zero on tick 821 as before, the draws cut back less deeply
+  (at 900 the diesel at 96 %, the gas oil at 15 %; 81 % by 2 700, the reflux
+  2.221).
+`crude_unit_cold_reference.rs` keeps the pumparounds-off story: it ends at
+2 700 ticks, before the late failure, so it stays true of the engine.

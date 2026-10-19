@@ -65,11 +65,12 @@ fn reading(session: &Session, column: i64, furnace: i64, feed: i64) -> String {
         })
         .unwrap_or_default();
     format!(
-        "{declined}R {:.3} flash {:.3} coil {:.1} feed {:.1} C cond {:.2} reb {:.2} MW bottom {:.1} C | cut {}",
+        "{declined}R {:.3} flash {:.3} coil {:.1} feed {:.1} C {:.2} kg/s cond {:.2} reb {:.2} MW bottom {:.1} C | cut {}",
         op["reflux_ratio"].as_f64().unwrap(),
         op["feed_vapour_fraction"].as_f64().unwrap(),
         s["nodes"][furnace as usize]["kind"]["coil"]["temperature"].as_f64().unwrap() - 273.15,
         feed["temperature"].as_f64().unwrap() - 273.15,
+        feed["mass_flow"].as_f64().unwrap(),
         col["column_duty"]["condenser_w"].as_f64().unwrap() / 1e6,
         col["column_duty"]["reboiler_w"].as_f64().unwrap() / 1e6,
         stages.last().unwrap().as_f64().unwrap() - 273.15,

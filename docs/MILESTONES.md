@@ -51,6 +51,13 @@ plain words along the way:
   down). Free, 1 880 of 1 900 settings.
 - Corpus: 67 of 67 byte-identical on both fidelities at M67.1. M67.2–M67.5
   left the engine untouched.
+- **Corrected after the close** (§72.12): the held cold plant's limits held
+  presses toward safety, and freeing its reboiler was unchecked, both fixed.
+  The stripped and cold tables' 100-tick runs were too short at their edges:
+  re-run longer, the stripped table lost 8 settings and the cold one 140 (no
+  pumparounds from 50 MW, which fails some 7 500 ticks on). A free reboiler
+  could be held past the held limits, now held too; the cold story on screen
+  keeps the pumparounds at 25 % (the user's choice), still zero on 821.
 - **Left open**:
   - C18: a cold start does not cut its draws back.
   - C19: the tables are owed again when the column changes, and their

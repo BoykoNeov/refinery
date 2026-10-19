@@ -10539,3 +10539,10 @@ the pumparounds off. DESIGN §72.10.
 boxes (C12), for the crude unit, the stripped crude unit and the cold plant held
 and free. Its close-out report is at the top of `docs/MILESTONES.md`. Next is
 `docs/PLAN.md`'s Phase 2 (C11).
+
+**M67 corrected after its close (2026-10-19, DESIGN §72.12).** The held cold
+plant's limits held presses toward safety; now a press is held only going past
+its limit, and freeing the reboiler is judged against the free region. The
+stripped and cold tables' edges re-run longer: the stripped table 2 885
+settings, the cold one 1 740 (its pumparounds off fail some 7 500 ticks on from
+50 MW).
