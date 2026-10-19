@@ -57,7 +57,8 @@ plain words along the way:
   re-run longer, the stripped table lost 8 settings and the cold one 140 (no
   pumparounds from 50 MW, which fails some 7 500 ticks on). A free reboiler
   could be held past the held limits, now held too; the cold story on screen
-  keeps the pumparounds at 25 % (the user's choice), still zero on 821.
+  keeps its pumparounds-off walk by the order of its presses, its numbers
+  unchanged.
 - **Left open**:
   - C18: a cold start does not cut its draws back.
   - C19: the tables are owed again when the column changes, and their

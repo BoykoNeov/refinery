@@ -316,16 +316,17 @@ fn slow_the_stripped_timeline() {
 }
 
 /// **The cold crude unit's start-up** (`AUTO_COLD` and `WALKS`, M66.4): the
-/// furnace to 58 MW at 10; the pumparounds to 25 % at 500 (the screen holds
-/// its 400-tick reboiler press, and its press to turn them off, which the
-/// corrected table closes from 50 MW, §72.12); from 500 to 2 390, every 10
+/// furnace to 58 MW at 10; at 500 the pumparounds off and the reboiler held
+/// (the screen holds its 400-tick reboiler press, and its first press to turn
+/// them off, with the reboiler free, §72.12; it sends 50 %, the reboiler, then
+/// off — the same commands before tick 501); from 500 to 2 390, every 10
 /// ticks, the reboiler key — held at the duty it runs at less 2.5 MW, the
 /// scene's own arithmetic (its 1 005-tick steam press is the screen's to
 /// hold, while the reboiler is held, and sends nothing; M67.5). The reboiler never
 /// rises and the column declines none of the walk: since M67 (§72.1) it cuts
-/// its draws back where the feed is still too cool for the step, and lands
+/// its gas oil back where the feed is still too cool for the step, and lands
 /// on zero on tick 821 (M66: 2 321, after 1 534 declined ticks); on 2 700 it
-/// is held there, the feed 368.1 °C, the reflux 2.221, the gas oil back to
+/// is held there, the feed 368.1 °C, the reflux 3.088, the gas oil back to
 /// 81 % of its share.
 #[test]
 fn slow_the_cold_start_up_timeline() {
@@ -352,10 +353,9 @@ fn slow_the_cold_start_up_timeline() {
         r#"{{"cmd":"set_furnace_duty","duty":58000000.0,"node":{furnace}}}"#
     ));
     screen.run_to(500);
-    for (i, mw) in [3.75, 3.75, 2.5].iter().enumerate() {
+    for i in 0..3 {
         screen.send(&format!(
-            r#"{{"cmd":"set_pumparound_duty","duty":{:?},"node":{column},"pumparound":{i}}}"#,
-            mw * 1.0e6
+            r#"{{"cmd":"set_pumparound_duty","duty":0.0,"node":{column},"pumparound":{i}}}"#
         ));
     }
     let mut last = f64::INFINITY;
@@ -387,7 +387,7 @@ fn slow_the_cold_start_up_timeline() {
     assert_eq!(end.4, 0.0, "{end:?}");
     assert!(!declined(&screen));
     assert!(
-        (end.2 - 2.221).abs() < 1e-3 && (end.0 - 368.1).abs() < 0.1,
+        (end.2 - 3.088).abs() < 1e-3 && (end.0 - 368.1).abs() < 0.1,
         "{end:?}"
     );
     let cut = &screen.column_node()["column_draws_cut_back"];

@@ -237,24 +237,26 @@ const AUTO_STRIPPED := {
 }
 ## cold: the start-up (M66, §71.10). The furnace to 58 MW at 10; at 400 the
 ## reboiler key pressed with the pumparounds at 100 %, held (they must be at
-## 50 % or less to hold it, §72.12); at 500 the pumparounds off, held (no
-## pumparounds is past the table's edge from 50 MW, §72.12), then to 25 %;
-## from 500 the reboiler key pressed every 10 ticks (`WALKS`), each press the
-## duty it runs at less 2.5 MW — landing on zero on 821, the diesel and gas
-## oil cut back meanwhile (at 900 the diesel at 96 %, the gas oil at 15 %; the
-## gas oil 81 % by 2 700; M67.1 walked it with the pumparounds off, §72.6); at
+## 50 % or less to hold it, §72.12); at 500 the pumparounds off, held (with the
+## reboiler free, no pumparounds is past the table's edge from 50 MW, §72.12),
+## so to 50 %, the reboiler key pressed (held at the duty it runs at less
+## 2.5 MW), and the pumparounds off, held being inside `held_limits`; from 510
+## the reboiler key pressed every 10 ticks (`WALKS`) — landing on zero on 821,
+## the gas oil cut back meanwhile (to under 1 % at the walk's foot, 81 % by
+## 2 700; M67.1, §72.6; before M67 the column declined the steps and landed
+## near 2 320); at
 ## 1 005 (off the walk's ticks, so its message stays on screen) the steam key
 ## pressed down while the reboiler is held, and the screen holds it — measured
 ## to fail mid-walk (M67.5, §72.10; M66.4 pressed the furnace, which now runs).
 const AUTO_COLD := {
 	10: ["furnace_58"],
 	400: ["reboiler_down"],
-	500: ["pumparounds_0", "pumparounds_0.25"],
+	500: ["pumparounds_0", "pumparounds_0.5", "reboiler_down", "pumparounds_0"],
 	1005: ["steam_down"],
 	2700: ["quit"],
 }
 ## The reboiler key pressed every `[2]` ticks from `[0]` to `[1]` on a timeline.
-const WALKS := {"cold": [500, 2390, 10]}
+const WALKS := {"cold": [510, 2390, 10]}
 const TIMELINES := {
 	"crude": AUTO_CRUDE, "hot": AUTO_HOT, "overheated": AUTO_OVERHEATED, "stripped": AUTO_STRIPPED, "cold": AUTO_COLD
 }
@@ -536,6 +538,8 @@ func _do(action: String) -> void:
 			_set_pumparounds(0.0)
 		"pumparounds_0.25":
 			_set_pumparounds(0.25)
+		"pumparounds_0.5":
+			_set_pumparounds(0.5)
 		"pumparounds_8mw":
 			_set_pumparound_mw(8.0)
 		"pumparounds_12mw":

@@ -28256,13 +28256,15 @@ pumparounds off at 58 MW is now past the edge, so the screen holds it. Holding
 the reboiler with the pumparounds still at 100 % then stopped the column at
 tick 1 271. That exposed a third fault: a free reboiler could be held while the
 other keys stood past `held_limits`. Now that press is held too, and names what
-to move ("the pumparounds at 50 % or less"). The story, as the user chose:
+to move ("the pumparounds at 50 % or less"). The story keeps its
+pumparounds-off walk, as the user chose, by the order of its presses:
 - at 400, the reboiler key pressed with the pumparounds at 100 %, held;
-- at 500, the pumparounds off, held, then to 25 %;
-- the walk lands on zero on tick 821 as before, the draws cut back less deeply
-  (at 900 the diesel at 96 %, the gas oil at 15 %; 81 % by 2 700, the reflux
-  2.221).
-`crude_unit_cold_reference.rs` keeps the pumparounds-off story, and it stays
-true of the engine: it holds the reboiler before the pumparounds go off, and
-held, no pumparounds at 58 MW is inside `held_limits`. Only the free table
-closes it, and the screen judged the press with the reboiler still free.
+- at 500, the pumparounds off, held, the reboiler still free;
+- then, the same tick, the pumparounds to 50 %, the reboiler key (now
+  allowed), and the pumparounds off (allowed: held, no pumparounds at 58 MW is
+  inside `held_limits`; only the free table closes it);
+- the walk from 510, every 10 ticks.
+The engine has the same commands before tick 501 as before the correction, so
+the story's numbers are unchanged: zero on tick 821, at 2 700 the reflux 3.088
+and the gas oil at 81 %. `crude_unit_cold_reference.rs` and the screen tell
+one story.
