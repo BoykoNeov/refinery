@@ -28065,3 +28065,69 @@ column does what the table says: at 20 MW and a reflux of 1, 50 % runs and
 25 % does not; at 0 MW and 1.5, 25 % runs and none does not. A column that
 moves its edge fails it, and the region is measured again. **What moved**:
 nothing in the engine.
+
+### 72.9 The stripped crude unit's keys as a measured region, built (M67.4)
+
+**What the hour allowed.** The stripped plant's coil takes some 1 500 s to
+settle after a furnace step, and while it drifts the plant re-solves every tick
+(A29), at 20–40 ms. Measured as the crude unit was, its grid would cost about
+30 hours. The user's rule (2026-10-19): no batch past an hour. So:
+- **The coil settled once per furnace.** The furnace at F, the reboiler freed
+  (the coil does not care about the column, M66.0 finding 3), 20 000 ticks:
+  353.8 °C at 30 MW to 413.9 at 50, the same at 15 000 ticks as at 20 000.
+  Above 50 MW the freed column fails before the coil has settled, so those
+  coils are the M67.0 probe's long runs (421.1 °C at 52.5 to 456.5 at 65).
+  `tools/steptime/prototypes/m67_3/str_coils.txt`.
+- **Every run starts settled.** It starts from the plant file with its
+  furnace at F and its coil declared at F's settled temperature, the steam
+  valve and the pumparounds the file's (40 %, none). With no drift the fast
+  keys fail on their press or not at all: 20 ticks, the move, 100 ticks.
+- **The routes**, on the screen's grid (the furnace 37.5–65 MW in 2.5 MW
+  steps, the steam valve 5–100 % in 5 %, every pumparound 0–12 MW in 1 MW):
+  1. one jump, the steam and the pumparounds at once;
+  2. steam first, the valve in steps to its setting, then the pumparounds up
+     to 12 MW;
+  3. pumparounds first, then the valve down to 5 % and up to 100 %;
+  each with a press every 20 ticks. A walk's failure marks the setting it
+  failed on, as for the crude unit.
+- **The furnace key is not walked.** A step between two furnace settings is
+  allowed where both are; the coil passes between their settled states. The
+  coil's lag is answered on the screen instead (below).
+- **Under 37.5 MW the plant cannot start held at zero** from a settled file:
+  the first tick's continuation is refused (C18). Those furnaces are not
+  measured, so they are not allowed.
+
+**Measured** (3 120 jumps and 552 walks, 29 minutes on 12 threads; before
+them the coils' 15 runs, 11 minutes, and two checks at 15 000 ticks, 6 more):
+- The jumps ran 2 910. The walks failed 140 times, on 109 settings; 17 of
+  those ran by the jump, so their edge is the route's.
+- 2 893 settings are allowed, all reachable from the file's.
+- The edge is the pumparounds' ceiling, rising with the furnace and the steam:
+  8–10 MW at 37.5 MW, 9–11 at 42.5, 10–12 at 47.5, the grid's 12 everywhere
+  from 55 MW.
+- At 37.5 MW with the steam at 20 % or less the pumparounds also need 3 MW:
+  too little cooling above the feed, the crude unit's low-reflux edge.
+- M64.4's box (§69.10: 52.5–65 MW, steam 10–100 %, 0–8 MW) lies inside.
+
+**The screen.** The plant's entry names `demo/column_region_stripped.json`,
+whose region also holds each grid furnace's settled coil (`coil_c`).
+- **A press is judged twice**: at the furnace setting, and at the furnace
+  whose settled coil the coil stands at now (interpolated; under the coolest
+  it is off the grid). That is §72.3's pumparound ceiling following the coil,
+  not the setting. Raised from 45 to 65 MW, the pumparounds asked to 12 MW a
+  tick later are held: "… past the column's edge while the coil stands at
+  399.7 °C — it waits for the coil to follow the furnace".
+- **The file's 58 MW** is between grid points: a press from it is judged at
+  57.5 and at 60, and the furnace key steps to one of them.
+- **The steam valve and the pumparounds in MW** keys go through the region.
+- **The timeline**: the pumparounds to 12 MW at 3 300, then the furnace asked
+  down to 45 MW at 3 400, held: "the furnace stays at 65.0 MW: 45.0 MW is past
+  the column's edge here — the pumparounds at 11.0 MW each would free it". It
+  replaces M64.4's press past 8 MW, which the region now allows.
+  `column_screen.rs`'s replay sends the 12 MW and reads the fired column at
+  3 300.
+
+**Gates**: `column_screen.rs`, `slow_the_stripped_units_region_is_the_columns`.
+The table allows the file's setting, and at 45 MW with the steam wide open the
+column runs 11 MW of pumparound and not 12, as the table says. Also the
+stripped timeline's replay. **What moved**: nothing in the engine.

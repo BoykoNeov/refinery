@@ -10504,3 +10504,19 @@ user): M67.4 the stripped crude unit, M67.5 the cold plant.
 - Gates: `column_screen.rs` (+1, slow). GDScript run headless: the held press,
   the off-grid press, two presses on one tick. No engine change (no corpus
   run).
+
+### M67.4 — **LANDED** 2026-10-19: the stripped crude unit's keys as a measured region
+
+The stripped crude unit's keys are held by a table measured on the screen's
+grid: the furnace 37.5–65 MW, the steam valve 5–100 %, every pumparound 0–12 MW.
+Every run starts from the file with its coil settled at the furnace's own
+temperature, to fit the hour (the user's rule). 2 893 of 3 120 settings are
+allowed; the edge is a pumparound ceiling rising with the furnace and the
+steam, 8–10 MW at 37.5 MW to 12 from 55. Under 37.5 MW the plant cannot start
+held at zero (C18) and is not measured. A press is judged at the furnace
+setting and at the coil as it stands, so after a furnace step the pumparounds
+wait for the coil. DESIGN §72.9.
+
+- Gates: `column_screen.rs` (+1, slow; the stripped replay moved to 12 MW at
+  3 300). GDScript run headless: the held furnace press, a hold set by the
+  furnace setting, the coil's own hold. No engine change (no corpus run).

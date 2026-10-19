@@ -77,7 +77,42 @@ fn reading(session: &Session, column: i64, furnace: i64, feed: i64) -> String {
     )
 }
 
+/// The plant file with its furnace's duty and its coil's declared temperature
+/// replaced: the furnace's `duty_mw = <x>` line (the pumparounds' duties are
+/// inline tables) and its `coil_temperature_c`.
+fn plant_edit(src: &str, furnace_mw: &str, coil_c: &str) -> String {
+    let mut out = String::new();
+    let (mut furnace_done, mut coil_done) = (false, false);
+    for line in src.lines() {
+        if !furnace_done && line.starts_with("duty_mw = ") {
+            out.push_str(&format!("duty_mw = {furnace_mw}\n"));
+            furnace_done = true;
+        } else if !coil_done && line.starts_with("coil_temperature_c = ") {
+            out.push_str(&format!("coil_temperature_c = {coil_c}\n"));
+            coil_done = true;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    assert!(furnace_done && coil_done, "the file's furnace duty or coil not found");
+    out
+}
+
 fn one_run(plant: &Plant, src: &str, spec: &str, warm: i64, gap: i64, run: i64) -> String {
+    // `file:F:C|…`: the plant file with its furnace at F MW and its coil
+    // declared at C °C, as if settled there (M67.4: a run starts where the
+    // slow coil already stands, rather than waiting on it).
+    let (src, moves_text) = match spec.strip_prefix("file:") {
+        Some(rest) => {
+            let (edit, moves) = rest.split_once('|').unwrap();
+            let (furnace, coil) = edit.split_once(':').unwrap();
+            let edited = plant_edit(src, furnace, coil);
+            (edited, moves)
+        }
+        None => (src.to_string(), spec),
+    };
+    let src = src.as_str();
     let mut session = Session::default();
     assert_eq!(session.load_scenario(src), "null");
     let column = session.node_id("column");
@@ -86,7 +121,7 @@ fn one_run(plant: &Plant, src: &str, spec: &str, warm: i64, gap: i64, run: i64) 
     let valve = if plant.steam { session.node_id("steam_valve") } else { -1 };
     let mut moves: Vec<(i64, &str)> = Vec::new();
     let mut at = warm;
-    for mv in spec.split('>') {
+    for mv in moves_text.split('>') {
         let (body, wait) = mv.split_once('@').map_or((mv, gap), |(b, w)| (b, w.parse().unwrap()));
         moves.push((at, body));
         at += wait;
@@ -143,7 +178,11 @@ fn one_run(plant: &Plant, src: &str, spec: &str, warm: i64, gap: i64, run: i64) 
         let out = session.tick();
         if out != "null" {
             let after_last = t - 1 - last_move;
-            let reached = moves.iter().filter(|(m, _)| *m < t).last().unwrap().1;
+            let reached = moves
+                .iter()
+                .filter(|(m, _)| *m < t)
+                .last()
+                .map_or("nothing yet", |m| m.1);
             let reason: String = out.chars().take(600).collect();
             return format!("RESULT {spec}: FAIL at t={t} ({after_last} after the last move; last sent {reached}): {reason}");
         }

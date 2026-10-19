@@ -7,6 +7,7 @@ steps through allowed ones are kept.
 usage: region.py <plant> <jumps.out> <walks.out> <out.json>
 """
 import itertools
+import os
 import json
 import re
 import sys
@@ -21,8 +22,25 @@ if plant == 'crude':
         'pa': [0.25 * i for i in range(17)],
     }
     FILE = {'furnace': 20.0, 'reflux': 4.0, 'pa': 1.0}
+    COIL = None
+elif plant == 'stripped':
+    KEYS = ['furnace', 'steam', 'pa_mw']
+    GRID = {
+        'furnace': [37.5 + 2.5 * i for i in range(12)],
+        'steam': [round(0.05 * i, 2) for i in range(1, 21)],
+        'pa_mw': [float(i) for i in range(13)],
+    }
+    # The file's furnace (58 MW) is off the grid: its walks start from each
+    # grid furnace's own settled file (`file:F:C|`), steam and pumparounds the
+    # file's.
+    FILE = {'furnace': 58.0, 'steam': 0.4, 'pa_mw': 0.0}
+    # Each furnace's settled coil [°C], measured (`str_coils.txt`, beside this).
+    coils = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'str_coils.txt')
+    COIL = dict(kv.split('=') for kv in open(coils).read().strip().split(','))
 else:
     raise SystemExit('plant ' + plant)
+
+ALIASES = {'pa': 'pa_mw'} if plant == 'stripped' else {}
 
 
 def index(key, value):
@@ -36,6 +54,21 @@ def setting(values):
     return tuple(index(k, values[k]) for k in KEYS)
 
 
+def start_of(spec):
+    """A spec's starting values and its moves: `file:F:C|…` starts at F."""
+    values = dict(FILE)
+    if spec.startswith('file:'):
+        head, spec = spec.split('|', 1)
+        values['furnace'] = float(head.split(':')[1])
+    return values, spec
+
+
+def apply(values, body):
+    for kv in body.split('+'):
+        k, v = kv.split('=')
+        values[ALIASES.get(k, k)] = float(v)
+
+
 def parse(path):
     for line in open(path, encoding='utf8', errors='replace'):
         m = re.match(r'RESULT (\S+): (RUNS|FAIL|COMMAND REFUSED)(.*)', line)
@@ -46,7 +79,8 @@ def parse(path):
 shape = [len(GRID[k]) for k in KEYS]
 jump = {}
 for spec, verdict, rest in parse(jumps_out):
-    values = {k: float(v) for k, v in (kv.split('=') for kv in spec.split('+'))}
+    values, moves = start_of(spec)
+    apply(values, moves)
     jump[setting(values)] = verdict == 'RUNS'
 
 failed_by_walk = {}
@@ -54,13 +88,11 @@ walks = 0
 walk_failures = 0
 for spec, verdict, rest in parse(walks_out):
     walks += 1
-    values = dict(FILE)
+    values, moves = start_of(spec)
     visited = []
-    for move in spec.split('>'):
+    for move in moves.split('>'):
         body = move.split('@')[0]
-        for kv in body.split('+'):
-            k, v = kv.split('=')
-            values[k] = float(v)
+        apply(values, body)
         visited.append((body, setting(values)))
     if verdict == 'RUNS':
         continue
@@ -78,11 +110,24 @@ missing = [s for s in itertools.product(*[range(n) for n in shape]) if s not in 
 assert not missing, missing[:5]
 allowed = {s: jump[s] and s not in failed_by_walk for s in jump}
 
-# Reachable from the file's setting by single steps through allowed settings.
-start = setting(FILE)
-assert allowed[start]
-seen = {start}
-frontier = [start]
+# Reachable from the file's setting by single steps through allowed settings;
+# a file setting between grid points starts from both of its neighbours, and
+# both must be allowed.
+def around(key, value):
+    grid = GRID[key]
+    for i, x in enumerate(grid):
+        if abs(x - value) < 1e-6:
+            return [i]
+    for i in range(len(grid) - 1):
+        if grid[i] < value < grid[i + 1]:
+            return [i, i + 1]
+    raise KeyError((key, value))
+
+
+starts = list(itertools.product(*[around(k, FILE[k]) for k in KEYS]))
+assert all(allowed[s] for s in starts), starts
+seen = set(starts)
+frontier = list(starts)
 while frontier:
     s = frontier.pop()
     for axis in range(len(KEYS)):
@@ -101,11 +146,16 @@ for i in range(shape[0]):
         plane.append(''.join('1' if (i, j, k) in seen else '0' for k in range(shape[2])))
     rows.append(plane)
 
-json.dump({
+region = {
     'keys': KEYS,
     'grid': {k: GRID[k] for k in KEYS},
     'allowed': rows,
-}, open(out_path, 'w'), indent=0)
+}
+if COIL:
+    # Each grid furnace's settled coil [°C]: the scene judges a press at the
+    # furnace whose settled coil the coil stands at now, too (§72.9).
+    region['coil_c'] = [float(COIL['%g' % f]) for f in GRID['furnace']]
+json.dump(region, open(out_path, 'w'), indent=0)
 
 n = len(jump)
 print('settings %d; jumps run %d; walks %d, failed %d, settings a walk failed on %d; '

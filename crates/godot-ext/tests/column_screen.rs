@@ -222,8 +222,9 @@ fn the_overheated_timeline() {
 /// zero, the reflux a result. The steam valve wide open at 600 strips the
 /// bottom cooler; the pumparounds to 8 MW each at 1 500 take heat off the trays
 /// and the reflux and the condenser fall; the furnace to 65 MW at 2 400 flashes
-/// more of the feed and the reflux rises again. The reboiler stays at zero
-/// throughout.
+/// more of the feed and the reflux rises again; the pumparounds to 12 MW each at
+/// 3 300 run (M67.4; the scene's 3 400 furnace press is held by its region and
+/// sends nothing). The reboiler stays at zero throughout.
 #[test]
 fn slow_the_stripped_timeline() {
     let mut screen = Screen::load(
@@ -293,7 +294,7 @@ fn slow_the_stripped_timeline() {
     screen.send(&format!(
         r#"{{"cmd":"set_furnace_duty","duty":65000000.0,"node":{furnace}}}"#
     ));
-    screen.run_to(3600);
+    screen.run_to(3300);
     let fired = screen.reading();
     assert!(
         fired.1 > cooled.1 && fired.0 > cooled.0 + 5.0,
@@ -304,6 +305,14 @@ fn slow_the_stripped_timeline() {
         "the reflux rises: {fired:?} after {cooled:?}"
     );
     assert_eq!(fired.4, 0.0);
+
+    for i in 0..3 {
+        screen.send(&format!(
+            r#"{{"cmd":"set_pumparound_duty","duty":12000000.0,"node":{column},"pumparound":{i}}}"#
+        ));
+    }
+    screen.run_to(3600);
+    assert_eq!(screen.reading().4, 0.0);
 }
 
 /// **The cold crude unit's start-up** (`AUTO_COLD` and `WALKS`, M66.4): the
@@ -384,31 +393,6 @@ fn slow_the_cold_start_up_timeline() {
     assert!((share - 0.811).abs() < 0.005, "the gas oil at {share}");
 }
 
-/// The crude unit's measured region as the scene reads it
-/// (`demo/column_region_crude.json`, M67.3, DESIGN §72.8).
-fn crude_region() -> Value {
-    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../demo/column_region_crude.json");
-    serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
-}
-
-/// Whether the region allows the crude unit's keys at `furnace` MW, `reflux`
-/// and `pumparounds` (a share of the file's 15/15/10 MW), all on its grid.
-fn crude_allows(region: &Value, furnace: f64, reflux: f64, pumparounds: f64) -> bool {
-    let at = |key: &str, value: f64| {
-        region["grid"][key]
-            .as_array()
-            .unwrap()
-            .iter()
-            .position(|x| (x.as_f64().unwrap() - value).abs() < 1e-6)
-            .unwrap_or_else(|| panic!("{key} {value} is not on the grid"))
-    };
-    let row = region["allowed"][at("furnace", furnace)][at("reflux", reflux)]
-        .as_str()
-        .unwrap();
-    row.as_bytes()[at("pa", pumparounds)] == b'1'
-}
-
 /// The crude unit settled at its file's state, then its three keys sent at
 /// once (the region's one-jump route), run `ticks` on: whether it ran.
 fn crude_jump_runs(furnace: f64, reflux: f64, pumparounds: f64, ticks: i64) -> bool {
@@ -444,11 +428,14 @@ fn crude_jump_runs(furnace: f64, reflux: f64, pumparounds: f64, ticks: i64) -> b
 /// its edge fails this, and the region is measured again.
 #[test]
 fn slow_the_crude_units_region_is_the_columns() {
-    let region = crude_region();
-    assert!(crude_allows(&region, 20.0, 4.0, 1.0), "the file's setting");
+    let region = region("crude");
+    assert!(
+        region_allows(&region, [20.0, 4.0, 1.0]),
+        "the file's setting"
+    );
     for (furnace, reflux, inside, outside) in [(20.0, 1.0, 0.5, 0.25), (0.0, 1.5, 0.25, 0.0)] {
-        assert!(crude_allows(&region, furnace, reflux, inside));
-        assert!(!crude_allows(&region, furnace, reflux, outside));
+        assert!(region_allows(&region, [furnace, reflux, inside]));
+        assert!(!region_allows(&region, [furnace, reflux, outside]));
         assert!(
             crude_jump_runs(furnace, reflux, inside, 300),
             "{furnace} MW, reflux {reflux}, pumparounds {inside}"
@@ -458,4 +445,86 @@ fn slow_the_crude_units_region_is_the_columns() {
             "{furnace} MW, reflux {reflux}, pumparounds {outside}"
         );
     }
+}
+
+/// A plant's measured region as the scene reads it (`demo/column_region_*.json`).
+fn region(plant: &str) -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("../../demo/column_region_{plant}.json"));
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+}
+
+/// Whether a region allows its three keys at `values` (in its `keys` order),
+/// all on its grid.
+fn region_allows(region: &Value, values: [f64; 3]) -> bool {
+    let keys = region["keys"].as_array().unwrap();
+    let at: Vec<usize> = keys
+        .iter()
+        .zip(values)
+        .map(|(key, value)| {
+            region["grid"][key.as_str().unwrap()]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|x| (x.as_f64().unwrap() - value).abs() < 1e-6)
+                .unwrap_or_else(|| panic!("{key} {value} is not on the grid"))
+        })
+        .collect();
+    region["allowed"][at[0]][at[1]].as_str().unwrap().as_bytes()[at[2]] == b'1'
+}
+
+/// The stripped crude unit started from its file with its furnace at
+/// `furnace` MW and its coil declared where that furnace settles it (the
+/// region's own start, M67.4), then the steam valve and every pumparound sent
+/// at once on tick 20 (the region's one-jump route), run `ticks` on: whether
+/// it ran.
+fn stripped_jump_runs(furnace: f64, coil_c: f64, steam: f64, pumparound_mw: f64) -> bool {
+    let src = scenario_src("crude_unit_stripped.toml")
+        .replacen("duty_mw = 58.0\n", &format!("duty_mw = {furnace:?}\n"), 1)
+        .replacen(
+            "coil_temperature_c = 436.88\n",
+            &format!("coil_temperature_c = {coil_c:?}\n"),
+            1,
+        );
+    let mut session = Session::default();
+    assert_eq!(session.load_scenario(&src), "null");
+    let (column, valve) = (session.node_id("column"), session.node_id("steam_valve"));
+    for _ in 0..20 {
+        assert_eq!(session.tick(), "null", "the settled start");
+    }
+    let mut send = |json: String| assert_eq!(session.apply_command_json(&json), "null");
+    send(format!(
+        r#"{{"cmd":"set_valve_opening","node":{valve},"opening":{steam:?}}}"#
+    ));
+    for i in 0..3 {
+        send(format!(
+            r#"{{"cmd":"set_pumparound_duty","duty":{:?},"node":{column},"pumparound":{i}}}"#,
+            pumparound_mw * 1.0e6
+        ));
+    }
+    (0..100).all(|_| session.tick() == "null")
+}
+
+/// **The stripped crude unit's region is the column's** (M67.4, DESIGN §72.9):
+/// the table allows the file's setting (58 MW, between its grid's 57.5 and
+/// 60, the steam valve at 40 %, no pumparounds), and holds the coil its
+/// furnace settles at; on either side of its edge the column does what the
+/// table says — at 45 MW with the steam wide open, 11 MW of pumparound runs
+/// and 12 does not. A column that moves its edge fails this, and the region
+/// is measured again.
+#[test]
+fn slow_the_stripped_units_region_is_the_columns() {
+    let region = region("stripped");
+    assert!(region_allows(&region, [57.5, 0.4, 0.0]));
+    assert!(region_allows(&region, [60.0, 0.4, 0.0]));
+    let furnaces = region["grid"]["furnace"].as_array().unwrap();
+    let at_45 = furnaces
+        .iter()
+        .position(|f| f.as_f64() == Some(45.0))
+        .unwrap();
+    let coil = region["coil_c"][at_45].as_f64().unwrap();
+    assert!(region_allows(&region, [45.0, 1.0, 11.0]));
+    assert!(!region_allows(&region, [45.0, 1.0, 12.0]));
+    assert!(stripped_jump_runs(45.0, coil, 1.0, 11.0), "11 MW at 45 MW");
+    assert!(!stripped_jump_runs(45.0, coil, 1.0, 12.0), "12 MW at 45 MW");
 }

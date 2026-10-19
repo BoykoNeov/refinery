@@ -134,19 +134,23 @@ const PLANTS := {
 		# over its first 600 ticks and 24–26 while the coil drifts after a
 		# furnace step (ledger A29); three ticks keep a settled frame near 15 ms.
 		"ticks_per_frame": 3,
-		# The range measured warm from the running plant (M64.4, §69.10): every
-		# corner — the furnace 52.5 or 65 MW, the steam valve 10 % or 100 %,
-		# every pumparound 0 or 8 MW — runs, reached in one step from the
-		# running plant or from the opposite corner. Past it: the furnace at
-		# 50 MW with the steam at 10 % (the bottom stage, as the coil cools),
-		# the pumparounds at 10 MW with the steam at 10 % (at once). The top is
-		# the user's (§69.10): at 65 MW at least about 76 % of the feed boils
-		# off by mass, near a real flash zone's 60–75 %; at 80 MW (which runs)
-		# at least 91 %.
-		"furnace_mw": [52.5, 65.0],
-		"steam": [0.1, 1.0],
-		"pumparound_mw": [0.0, 8.0],
-		"range_ref": "§69.10",
+		# The keys' region, measured on the screen's grid (M67.4, §72.9): each
+		# run starts from the file with its coil settled at the furnace's own
+		# temperature, and a setting is allowed where the one jump of the
+		# steam and the pumparounds and both walks to it ran. Since M67.1 the
+		# gas oil is cut back where its tray runs short, so the furnace reaches
+		# down to 37.5 MW (M64.4's box stopped at 52.5); under it the plant
+		# cannot start held at zero (C18) and is not measured. The pumparounds'
+		# ceiling rises with the furnace and the steam, 8–10 MW at 37.5 to the
+		# grid's 12 from 55 MW. The top is the user's (§69.10): at 65 MW at
+		# least about 76 % of the feed boils off by mass, near a real flash
+		# zone's 60–75 %. The region also holds each furnace's settled coil:
+		# a press is judged at the coil as it stands, too.
+		"region": "res://demo/column_region_stripped.json",
+		"furnace_mw": [37.5, 65.0],
+		"steam": [0.05, 1.0],
+		"pumparound_mw": [0.0, 12.0],
+		"range_ref": "§72.9",
 	},
 	"cold":
 	{
@@ -215,13 +219,16 @@ const AUTO_OVERHEATED := {
 ## stripped: the steam valve wide open at 600 strips the bottom cooler; the
 ## pumparounds to 8 MW each at 1 500 take heat off the trays and the reflux
 ## falls with the condenser's load; the furnace to 65 MW at 2 400 flashes more
-## of the feed and the reflux rises again; at 3 300 the pumparound key is
-## pressed past 8 MW and the screen holds it — the edge of the safe range.
+## of the feed and the reflux rises again; the pumparounds to 12 MW each at
+## 3 300; at 3 400 the furnace asked down to 45 MW, where 12 MW of pumparound
+## is past the column's edge — the screen holds it and says the pumparounds at
+## 11 MW would free it (M67.4's region, §72.9).
 const AUTO_STRIPPED := {
 	600: ["steam_1.0"],
 	1500: ["pumparounds_8mw"],
 	2400: ["furnace_65"],
-	3300: ["pumparounds_up"],
+	3300: ["pumparounds_12mw"],
+	3400: ["furnace_45"],
 	3600: ["quit"],
 }
 ## cold: the start-up (M66, §71.10). The furnace to 58 MW at 10; the
@@ -488,6 +495,8 @@ func _do(action: String) -> void:
 			_set_furnace_mw(70.0)
 		"furnace_65":
 			_set_furnace_mw(65.0)
+		"furnace_45":
+			_set_furnace_mw(45.0)
 		"furnace_110":
 			_set_furnace_mw(110.0)
 		"reflux_up", "reflux_down":
@@ -521,6 +530,8 @@ func _do(action: String) -> void:
 			_set_pumparounds(0.25)
 		"pumparounds_8mw":
 			_set_pumparound_mw(8.0)
+		"pumparounds_12mw":
+			_set_pumparound_mw(12.0)
 		"steam_up", "steam_down":
 			if steam_valve_id < 0:
 				_say("this column has no steam valve", true)
@@ -616,7 +627,11 @@ func _set_pumparounds(scale: float) -> void:
 func _set_pumparound_mw(megawatts: float) -> void:
 	var limits: Array = PLANTS[plant_key]["pumparound_mw"]
 	var held := clampf(megawatts, limits[0], limits[1])
-	if not is_equal_approx(held, megawatts) and is_equal_approx(held, _pumparound_mw()):
+	if not region.is_empty():
+		if _region_holds("pa_mw", megawatts):
+			return
+		held = megawatts
+	elif not is_equal_approx(held, megawatts) and is_equal_approx(held, _pumparound_mw()):
 		_hold("pumparounds", "%.1f MW each" % held)
 		return
 	for i in _pumparounds().size():
@@ -632,7 +647,11 @@ func _set_steam(opening: float) -> void:
 		return
 	var limits: Array = PLANTS[plant_key]["steam"]
 	var held := clampf(opening, limits[0], limits[1])
-	if not is_equal_approx(held, opening) and is_equal_approx(held, _steam_opening()):
+	if not region.is_empty():
+		if _region_holds("steam", opening):
+			return
+		held = opening
+	elif not is_equal_approx(held, opening) and is_equal_approx(held, _steam_opening()):
 		_hold("steam valve", "%.0f %%" % (held * 100.0))
 		return
 	_send("open the steam valve to %.0f %%" % (held * 100.0), {"cmd": "set_valve_opening", "node": steam_valve_id, "opening": held})
@@ -736,6 +755,24 @@ func _region_allows(values: Dictionary) -> bool:
 	return true
 
 
+## On a plant whose region records each grid furnace's settled coil
+## (`coil_c`, M67.4): the furnace setting whose settled coil the coil stands at
+## now — after a furnace step the coil takes some 1 500 s to follow, and the
+## column runs at the coil's heat, not the setting's. Below the grid's coolest
+## coil it is off the grid (no setting allowed); above its hottest, the top.
+func _coil_furnace() -> float:
+	var coils: Array = region["coil_c"]
+	var grid: Array = region["grid"]["furnace"]
+	var coil := _coil_k() - 273.15
+	if coil < float(coils[0]):
+		return float(grid[0]) - 1.0
+	for i in coils.size() - 1:
+		if coil <= float(coils[i + 1]):
+			var share := (coil - float(coils[i])) / (float(coils[i + 1]) - float(coils[i]))
+			return float(grid[i]) + share * (float(grid[i + 1]) - float(grid[i]))
+	return float(grid[-1])
+
+
 ## For a press the region holds: each other key's nearest setting at which the
 ## press's target is allowed. Empty when no single other key frees it.
 func _freeing(target: Dictionary, moved: String) -> String:
@@ -764,11 +801,21 @@ func _freeing(target: Dictionary, moved: String) -> String:
 func _region_holds(key: String, value: float) -> bool:
 	var target := _key_values()
 	target[key] = value
-	if _region_allows(target):
+	# Where the coil still lags a furnace step, the press is judged at the
+	# coil's furnace as well as the setting's (§72.9).
+	var at_coil := {}
+	if region.has("coil_c"):
+		at_coil = target.duplicate()
+		at_coil["furnace"] = _coil_furnace()
+	if _region_allows(target) and (at_coil.is_empty() or _region_allows(at_coil)):
 		return false
 	var now := _key_text(key, _key_value(key))
 	var text: String
-	if _grid_at(key, value).is_empty():
+	if _region_allows(target):
+		text = "%s %s at %s: %s is past the column's edge while the coil stands at %s — it waits for the coil to follow the furnace" % [
+			KEY_WORDS[key], _stays(key), now, _key_text(key, value), _c(_coil_k())
+		]
+	elif _grid_at(key, value).is_empty():
 		text = "%s %s at %s: %s is outside its measured range" % [KEY_WORDS[key], _stays(key), now, _key_text(key, value)]
 	else:
 		var frees := _freeing(target, key)
