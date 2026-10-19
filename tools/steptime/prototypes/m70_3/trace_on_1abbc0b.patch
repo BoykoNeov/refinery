@@ -1,0 +1,59 @@
+diff --git a/crates/solvers/src/line_flash.rs b/crates/solvers/src/line_flash.rs
+index b26501e..2fa2762 100644
+--- a/crates/solvers/src/line_flash.rs
++++ b/crates/solvers/src/line_flash.rs
+@@ -276,6 +276,7 @@ impl EquilibriumLineFlash {
+         thermo: &dyn ThermoModel,
+         enthalpy: &dyn EnthalpyModel,
+     ) -> Result<(Settled, Option<(Split, f64)>), SimError> {
++        FLASHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+         let liquid = Settled {
+             temperature: liquid_equivalent,
+             vapour: None,
+@@ -331,6 +332,8 @@ impl EquilibriumLineFlash {
+         thermo: &dyn ThermoModel,
+         enthalpy: &dyn EnthalpyModel,
+     ) -> Result<Flashed, SimError> {
++        QUESTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++        *BY_INSTANCE.lock().unwrap().entry(self as *const Self as usize).or_insert(0) += 1;
+         let mut key: Vec<u64> = composition
+             .fractions()
+             .iter()
+@@ -1529,3 +1532,8 @@ mod memo_tests {
+         assert!(settle().is_err());
+     }
+ }
++
++/// M70.3 trace (throwaway): flashes computed and questions asked.
++pub static FLASHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static QUESTIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static BY_INSTANCE: std::sync::Mutex<std::collections::BTreeMap<usize, u64>> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+diff --git a/crates/solvers/src/network.rs b/crates/solvers/src/network.rs
+index 095e893..87bc4d5 100644
+--- a/crates/solvers/src/network.rs
++++ b/crates/solvers/src/network.rs
+@@ -211,6 +211,7 @@ impl LineFlash<'_> {
+         if let Some(found) = memo.borrow_mut().recall(slate, &key) {
+             return Ok(found);
+         }
++        MISSES.lock().unwrap().push((liquid_equivalent.value(), pressure.value(), composition.fractions()[0]));
+         let density = answer(self.model)?;
+         memo.borrow_mut().remember(key, density);
+         Ok(density)
+@@ -289,6 +290,7 @@ impl DensityMemo {
+             return Some(*found);
+         }
+         let found = *self.previous.get(key)?;
++        PREV_HITS.lock().unwrap().push((f64::from_bits(key[key.len() - 2]), f64::from_bits(key[key.len() - 1])));
+         self.remember(key.to_vec(), found);
+         Some(found)
+     }
+@@ -4676,3 +4678,8 @@ pub fn march_draw_lines(
+     }
+     Ok(pins)
+ }
++
++/// M70.3 trace (throwaway): (liquid-equivalent K, pressure Pa) of each answer recalled from the previous solve.
++pub static PREV_HITS: std::sync::Mutex<Vec<(f64, f64)>> = std::sync::Mutex::new(Vec::new());
++/// M70.3 trace (throwaway): every question the solver memo could not answer.
++pub static MISSES: std::sync::Mutex<Vec<(f64, f64, f64)>> = std::sync::Mutex::new(Vec::new());

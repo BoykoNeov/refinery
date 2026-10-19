@@ -28675,7 +28675,7 @@ work — ratios): the stripped plant 58 → 65 MW, the 600 ticks after the step
 here), the cold start-up after tick 700 0.62; held from their files the boiling
 crude unit unchanged and the stripped plant +3–7 % (1.09 solves against 1.00 in
 its first thousand ticks, the parabola's), its settled ticks +4–6 % in every
-round (not traced: no more solves or iterations); `wet_rundown` 0.61,
+round (traced in §75.6: the four draw pumps' densities flashed twice); `wet_rundown` 0.61,
 `flashing_rundown` 0.43, `product_cooler` and `water_slug` unchanged.
 
 **Moves** (the user's decision, 2026-10-19): the corpus, 6 000 ticks, against
@@ -28736,4 +28736,23 @@ is unchanged to the count. 10 plants moved on Newton, 11 on Simple (the user's
 decision); the stripped and cold tables held (M70.2). New: C20, a column's
 draws a tick late on a tick that solves once. Not done: fewer coil cells (1.9
 ms with the parabola in the probe, the coil 2 K colder — declined); the settled
-stripped plant's 4–6 % (not traced).
+stripped plant's 4–6 % (traced after the close, §75.6: C20's cause).
+
+### 75.6 The settled stripped plant's 4–6 %, traced (2026-10-20)
+
+Asked as "Trace the 4–6 %" after the close (`tools/steptime/prototypes/m70_3/`).
+Wall time on a loaded machine could not resolve it (seven rounds: 0.99 settled,
+1.02–1.04 earlier, single rounds 0.57–1.85); counting the line flash's work
+could, the same in every round. Settled (ticks 1 000–2 500) the stripped plant
+flashes 214.0 times a tick against 206.7 before M70.1 (+3.5 %; the flash is
+~80 % of the tick), all of it from the composition guess (207 without it, 214
+without the parabola), and every extra question at the four draw pumps, three
+each: the pipe into a pump reads the column's draw (`column_separation`, not
+guessed — C20) and the pipe out reads the pump's own state (guessed since
+M70.1), so the solve flashes the pump's density at its pressure and the
+Jacobian's two neighbours twice where `DensityMemo` used to answer the second.
+Not rounding (compositions moved under 1e-12 left unguessed: 213.7). Before
+the parabola settles (ticks 100–1 000) its 1.09 solves add more: 228.3 against
+209.5. **The cause is C20's**; guessing the draws with the column's feed would
+close both, and move answers again.
+

@@ -10656,7 +10656,7 @@ Each zero-volume node's composition guessed with its temperature, and the guess
 a parabola through three ticks once all three ended after the last command. The
 stripped plant after 58 → 65 MW solves once a tick: 0.58 of its tick before,
 still past 2.5 ms; the cold start-up 0.62; the held boiling crude unit
-unchanged, the settled stripped plant 4–6 % slower (not traced). The parabola
+unchanged, the settled stripped plant 4–6 % slower (traced, §75.6: C20's cause). The parabola
 broke the coil's first law by the solver's tolerance again (§74.5's mechanism):
 a guessed solve now takes one step from a converged iterate not yet balanced to
 `BALANCED_BAR`, and the crude units' iterations are unchanged to the count.

@@ -26,7 +26,7 @@ smoothed density); probed first, then "yes" on what the probe found instead.
   that all ended after the last command. The stripped plant after the step 0.58
   of its tick before (1.04 solves against 2.02), still past 2.5 ms on every
   tick; the cold start-up 0.62; the held boiling crude unit unchanged; the
-  settled stripped plant 4–6 % slower (not traced). The parabola broke the
+  settled stripped plant 4–6 % slower (traced after the close, §75.6: C20's cause). The parabola broke the
   coil's first law through the solver's tolerance again, so a guessed solve
   takes one more step only while its converged flows are unbalanced
   (`BALANCED_BAR`); stepping always had cost the held crude units 15–21 %.
