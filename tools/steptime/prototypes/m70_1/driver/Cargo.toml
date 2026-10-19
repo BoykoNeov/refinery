@@ -1,0 +1,12 @@
+[package]
+name = "m70drv"
+version = "0.0.0"
+edition = "2021"
+publish = false
+[workspace]
+[dependencies]
+serde_json = "1"
+refinery-core = { path = "W:/Claude_projects/refinery/crates/core" }
+refinery-scenarios = { path = "W:/Claude_projects/refinery/crates/scenarios" }
+[profile.release]
+debug = false

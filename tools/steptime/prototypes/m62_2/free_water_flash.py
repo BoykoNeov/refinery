@@ -159,10 +159,12 @@ print(f"  pure water, 1.8 bar: {bisect(lambda t: P - psat_w(t), 250.0, 700.0) - 
 # the supply's 67.9 / 29.1 / 3.0 mass % of light naphtha, heavy naphtha, water.
 # M62.3 moved the state (the tank's outlet draws its water first, so the tank
 # holds less of it and its level and back-pressure shift): 358.7392954 K and
-# 150 476.65 Pa at M62.2, the line below since.
+# 150 476.65 Pa at M62.2. M70.1 moved it (docs/DESIGN.md §75.3: the plant still
+# drifts at 2 000 ticks, and a guessed composition takes another path there):
+# 358.8554590812895 K and 150 410.346 041 178 88 Pa before, the line below since.
 mass = [0.679, 0.291, 0.03]
 molar_mass = [0.100, 0.130, M_W]
 moles = [w / m for w, m in zip(mass, molar_mass)]
 z = [n / sum(moles) for n in moles]
 report("wet rundown junction, at the engine's (T, P)", z[:2], [80 + 273.15, 150 + 273.15], [0.100, 0.130], z[2],
-       [(358.8554590812895 - 273.15, 150410.34604117888)])
+       [(358.85545914573527 - 273.15, 150410.3463707334)])
