@@ -122,3 +122,13 @@ milliseconds swung 3–4 times between runs and are not quoted.
     guard off): `pump_gas_lock` byte-identical again; `water_slug` still moves,
     by the step on its re-solves (12 numbers in 6 000 ticks, 1.4e-12 at most) —
     asked and accepted. The built engine's corpus: `corpus_*_built.txt`.
+
+## To re-apply the probe
+
+`probe_predict.patch` (its final state, with `M69_FORCE` and `M69_MOVED`) is on
+58ffdc1: `git worktree add <dir> 58ffdc1`, then `git -C <dir> apply
+probe_predict.patch`. Its four new files (`crates/core/src/probe.rs`,
+`crates/solvers/src/probe.rs`, `tools/steptime/src/bin/m68_0_count.rs`,
+`m69_0_count.rs`) are in it. The scripts here name the worktree
+`W:/temp/claude/refinery-m68-0` and the output folder
+`W:/temp/claude/m68-0-out`; both were removed at M69's close.

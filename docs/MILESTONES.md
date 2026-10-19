@@ -28,7 +28,7 @@ as "Stop C11, do A29", then "memo + predictor" with the probe's numbers.
   line flash's work 41–66 % of before. Moved, the user's decision: 10 of 67
   plants on Newton (`water_slug` asked separately, 1.4e-12), 9 on Simple.
 - **M69.3, the screen tables** (§74.6, `tools/steptime/prototypes/m69_3/`): an
-  edge check in ~55 minutes on 4 threads. Both tables held. The cold plant's
+  edge check in ~75 minutes on 4 threads. Both tables held; every allowed long row runs. The cold plant's
   late failure (§72.12) is gone; its table kept as committed, the user's
   decision, and C19 says it holds back ~134 settings that now run.
 - **Left open**: A29 for the stripped plant after a furnace step on screen

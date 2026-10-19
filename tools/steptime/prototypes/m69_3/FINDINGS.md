@@ -39,9 +39,25 @@ move, 1 500 ticks (§72.12's second-round length).
    at 550 now run 2 700 ticks (old: fail 1 228 ticks on, `diff_held_*.out`).
    The limit is the same at its other ticks, so it stands.
 
-5. **The coils** (`str_coils.out`, the stripped plant freed 15 000 ticks): 384.3
+5. **No allowed long row fails** (`rows.sh`, `cold_rows.out`, 19 minutes):
+   finding 3 could be a failure moved rather than gone, so every 10 000-tick
+   row the table allows was run — no pumparounds at 20–45 MW, a quarter at
+   20–60 MW (62.5 in finding 3), steam 5, 40 and 100 %: 84 of 84 run.
+
+6. **The coils** (`str_coils.out`, the stripped plant freed 15 000 ticks): 384.3
    °C at 40 MW and 413.9 at 50, `str_coils.txt`'s values.
 
 **Decided** (the user, 2026-10-19, asked with these numbers): keep both tables
 as committed. The cold one now holds back ~134 settings that run, the safe
 side; recorded in C19 so a story that needs them can reopen them.
+
+## To re-run
+
+The scripts name `W:/temp/claude/refinery-m69-3` (a worktree of 0abbca7),
+`W:/temp/claude/refinery-m69-3-old` (of 9f66416) and the output folder
+`W:/temp/claude/m69-3`, all removed at M69's close. To rebuild: a worktree of
+the commit at that path; `../m67_3/m67_3_grid.rs` copied into its
+`crates/godot-ext/tests/` and registered at the end of that folder's
+`suite.rs` (`#[path = "m67_3_grid.rs"] mod m67_3_grid;`); `cargo test --release
+-p refinery-godot-ext --test suite --no-run`; the specs here copied to the
+output folder.

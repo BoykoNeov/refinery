@@ -10623,7 +10623,7 @@ the coil's first law holds at 1e-12, its gate unchanged. DESIGN §74.5.
 C19, owed by M69.2. An edge check, not the full grids (those past 3 hours on
 the 4 threads a shared machine allows; the move at most 6.5e-7): every cell on
 either side of each table's edge, the cold plant's long rows and held presses,
-two coils; about 55 minutes. The stripped table and the cold plant's fast edges
+two coils, then every allowed 10 000-tick row (84, all run); about 75 minutes in three batches. The stripped table and the cold plant's fast edges
 and held limits unchanged; the cold plant's late failure (§72.12, 7 400–8 400
 ticks on) is gone — the M69.1 engine reproduces it to the tick, the new one runs
 20 000. Kept as committed (the user's decision): the cold table holds back ~134

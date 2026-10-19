@@ -28485,7 +28485,7 @@ machine allows, and the predictor moves answers at most 6.5e-7, so only a cell
 already on an edge can flip. Every allowed cell with a disallowed neighbour and
 every disallowed one with an allowed neighbour, one jump from its furnace's
 settled file, 1 500 ticks; the cold plant's 10 000-tick rows; the held presses
-that set `held_limits`; two coils. About 55 minutes of runs, 4 at a time
+that set `held_limits`; two coils. About 75 minutes of runs in three batches, 4 at a time
 (`tools/steptime/prototypes/m69_3/FINDINGS.md`, every number; `m67_3/edges.py`
 lists a band).
 
@@ -28498,8 +28498,11 @@ lists a band).
   ticks on with the pumparounds off from 50 MW or a quarter at 65 MW, "a slow
   state not found": the M69.1 engine reproduces it to the tick (8 416 at 65 MW,
   full steam, as recorded); the M69.2 engine runs the same settings 20 000 ticks
-  to a steady reading. So that state was the engine's, not the plant's, and the
-  predictor or its step removed it; not traced.
+  to a steady reading. The late failure does not appear on the new engine at
+  those settings; its cause is not traced.
+- **No allowed long row fails.** The late failure could have moved rather than
+  gone: every 10 000-tick row the table allows (no pumparounds at 20–45 MW, a
+  quarter at 20–62.5 MW, steam 5, 40 and 100 %; 84 runs, ~20 minutes) runs.
 - **The coils** at 40 and 50 MW settle where `str_coils.txt` says.
 
 **Decided** (the user, 2026-10-19, asked with these numbers): **keep both tables
