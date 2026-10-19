@@ -135,6 +135,8 @@ mod methane_cp_reference;
 mod outlet_control_reference;
 #[path = "overflow_reference.rs"]
 mod overflow_reference;
+#[path = "predicted_tick_reference.rs"]
+mod predicted_tick_reference;
 #[path = "pressure_control_demo.rs"]
 mod pressure_control_demo;
 #[path = "pressure_control_reference.rs"]

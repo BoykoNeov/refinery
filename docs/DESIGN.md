@@ -28413,3 +28413,66 @@ pressure, without the liquid-equivalent. Two are equivalent in every answer
 and cost only time, so no answer can catch them: the engine never calling
 `begin_tick` (the memo never on), and `density` flashing past the memo.
 `tools/steptime` gains the two coil plants' held stories.
+
+### 74.5 The predictor, built (M69.2)
+
+As §74.2 specifies, with the probe's leak traced and closed.
+
+**The leak was the flow solver's tolerance, not the coil.** On a predicted
+tick the first solve lands so close that the re-solves after it start inside
+the Newton tolerance (1e-8 of each node's flow), and a pass that starts
+converged was accepted without a step: its flows balanced to ~9e-7 kg/s on the
+coil test plant, where the shipped engine's passes, each a real step away,
+happened to finish at ~1e-12. About 1.5e-7 kg/s more entered the coil than
+left it, and that times the stream's enthalpy is the gate's 2.4e-9 miss
+exactly; the coil's own arithmetic closed. Restating the gate on the inflow
+alone would have passed it and hidden a conservation 1e5 times looser on every
+predicted tick (the advisor's objection), so the solver steps instead.
+
+**Built.**
+- `Engine::predicted_states`: each zero-volume, not-held node's temperature and
+  liquid-equivalent `2·now − before` (`states_before`, the tick before
+  `node_states`). `None` on a plant without the line flash, before the third
+  tick, on the tick after a command (`commanded`, set by `apply`, cleared by
+  a tick that ends), and where no value moved — a plant at rest predicts
+  itself, and is solved as it was.
+- The first solve and the first density check read the prediction; the
+  re-solves still stop on `SWEPT_DENSITY_TOL`, now measured from it.
+- `FlowSolver::step_even_when_converged` (a no-op by default; the Simple
+  sweep always sweeps once), set by `Engine::tick` before its first solve
+  every tick. On Newton, a pass that starts converged takes one step; a step
+  the line search refuses leaves the converged start standing rather than
+  reading as divergence (a start already at rounding, 2e-14 kg/s, has no
+  decrease to find).
+- Only the first solve was stepped first, in the probe: not enough — the
+  loose finish is the LAST re-solve's. Stepping every solve of every tick
+  moved `pump_gas_lock` (6 → 6 005 iterations a run) for nothing, hence the
+  "nothing moved" guard.
+
+**Measured** (the M69.0 count probe, the three coil stories, counts not wall
+time): a held boiling crude unit solves once a tick (0 re-solves from the
+third tick, against 1); the line flash's work per tick (density and settle
+questions) 54 % of today's held and 52 % after its furnace step on the
+boiling plant, 66 % and 41 % on the stripped, 44 % on the cold start-up. The
+forced step costs 0–2 points of that, on the stripped plant only.
+
+**Moves** (the user's decision, 2026-10-19, including `water_slug`): the
+corpus, 6 000 ticks, against the M69.1 baseline — 10 of 67 plants on Newton
+(the six coil crude units, `flashing_rundown`, `product_cooler`,
+`wet_rundown`, `water_slug`), 9 on Simple (the same without `water_slug`), none
+fails; the rolling baseline refreshed. `water_slug` moves by the forced step
+alone: 12 numbers of 6 000 ticks, the largest physical one 1.4e-12 relative.
+The probe's answers move at most 6.5e-7 against shipped and 6e-8 against the
+unstepped predictor.
+
+**Gates**: `predicted_tick_reference` (3: a drifting boiling plant solves once
+a tick; the tick after a command re-solves as an unpredicted one, the next
+predicted again; a plant at rest takes no Newton step), `newton_reference` (2:
+a guessed solve steps from inside its tolerance and closes the balance to
+rounding; a guessed solve at rounding keeps its start, bit for bit), and
+`coil_cell_reference`'s first law at 1e-12, unchanged. FULL tier, clippy, fmt.
+
+**Mutations**: ten, all caught — no forced step; the engine never asking for
+it; a refused step erring; a plant at rest predicted; a command not guarding;
+the guard never lifting; the density check from the last tick's states; no
+`before` kept; the liquid-equivalent, the temperature not moved on.

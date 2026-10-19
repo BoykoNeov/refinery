@@ -19,7 +19,7 @@ index 588b10f..b4e4876 100644
                  flue_loss.insert(furnace, pass.flue);
                  tube_fire.insert(furnace, pass.fire);
 diff --git a/crates/core/src/engine.rs b/crates/core/src/engine.rs
-index e74541c..6c665f4 100644
+index e74541c..7c6b3de 100644
 --- a/crates/core/src/engine.rs
 +++ b/crates/core/src/engine.rs
 @@ -130,6 +130,10 @@ pub struct Engine {
@@ -50,10 +50,11 @@ index e74541c..6c665f4 100644
          match cmd {
              Command::SetValveOpening { node, opening } => {
                  if !(0.0..=1.0).contains(&opening) || !opening.is_finite() {
-@@ -1282,9 +1289,62 @@ impl Engine {
+@@ -1282,9 +1289,91 @@ impl Engine {
                  dt,
              )
          };
+-        let mut solution =
 +        // M69.0 probe: the predictor. M69_PREDICT=1 extrapolates each
 +        // zero-volume node's temperature and liquid-equivalent by the last
 +        // tick's move for the FIRST solve only; M69_PREDICT=2 skips it on a
@@ -66,6 +67,9 @@ index e74541c..6c665f4 100644
 +                    && !(predict == 2 && self.probe_commanded) =>
 +            {
 +                let mut p = self.node_states.clone();
++                // Whether any value the prediction wrote differs from now: a
++                // plant at rest predicts itself, and is solved as shipped.
++                let mut moved = false;
 +                for id in self.graph.node_ids() {
 +                    if !energy::is_zero_volume(&self.graph.node(id).kind)
 +                        || self.node_states.held.contains(&id)
@@ -73,9 +77,23 @@ index e74541c..6c665f4 100644
 +                        continue;
 +                    }
 +                    let what = std::env::var("M69_WHAT").map_or(0, |v| v.parse().unwrap_or(0));
++                    // M69_ONLY: "cells" the coil cells, "furnace" the furnace,
++                    // "rest" every other zero-volume node, a node name that one.
++                    if let Ok(only) = std::env::var("M69_ONLY") {
++                        let node = self.graph.node(id);
++                        let kind = match node.kind {
++                            NodeKind::CoilCell { .. } => "cells",
++                            NodeKind::Furnace { .. } => "furnace",
++                            _ => "rest",
++                        };
++                        if !only.split(',').any(|o| o == kind || o == node.name) {
++                            continue;
++                        }
++                    }
 +                    if let (Some(now), Some(before), true) =
 +                        (self.node_states.temperature.get(&id), prev.temperature.get(&id), what != 2)
 +                    {
++                        moved |= now.value() != before.value();
 +                        p.temperature
 +                            .insert(id, Kelvin(2.0 * now.value() - before.value()));
 +                    }
@@ -83,6 +101,7 @@ index e74541c..6c665f4 100644
 +                        (self.node_states.vapour.get(&id), prev.vapour.get(&id), what != 1)
 +                    {
 +                        let mut share = *now;
++                        moved |= now.liquid_equivalent.value() != before.liquid_equivalent.value();
 +                        share.liquid_equivalent = Kelvin(
 +                            2.0 * now.liquid_equivalent.value() - before.liquid_equivalent.value(),
 +                        );
@@ -98,23 +117,34 @@ index e74541c..6c665f4 100644
 +                        p.vapour.insert(id, share);
 +                    }
 +                }
-+                crate::probe::count("engine: predicted", 1);
-+                Some(p)
++                if moved || std::env::var("M69_MOVED").is_ok_and(|v| v == "0") {
++                    crate::probe::count("engine: predicted", 1);
++                    Some(p)
++                } else {
++                    None
++                }
 +            }
 +            _ => None,
 +        };
++        crate::probe::PREDICTED_TICK.with(|f| f.set(predicted.is_some()));
 +        let first_read: &energy::NodeStates = predicted.as_ref().unwrap_or(&self.node_states);
 +        let probe_clock = std::time::Instant::now();
-         let mut solution =
++        crate::probe::IN_SOLVE.with(|f| f.set(true));
++        let solution =
              self.flow_solver
 -                .solve(&self.graph, &self.slate, &self.node_states, dt)?;
-+                .solve(&self.graph, &self.slate, first_read, dt)?;
++                .solve(&self.graph, &self.slate, first_read, dt);
++        crate::probe::IN_SOLVE.with(|f| f.set(false));
++        if std::env::var("M69_FORCE").is_ok_and(|v| v == "2") {
++            crate::probe::PREDICTED_TICK.with(|f| f.set(false));
++        }
++        let mut solution = solution?;
 +        crate::probe::add("engine: flow solve", probe_clock);
 +        crate::probe::count("engine: flow iterations", solution.diagnostics.iterations as u64);
  
          // 2b. Resolve the node temperature AND composition fields: inertial
          //     nodes contribute their start-of-tick values, zero-volume nodes mix
-@@ -1292,7 +1352,9 @@ impl Engine {
+@@ -1292,7 +1381,9 @@ impl Engine {
          //     A tank the solve STARVED is a mixing point here too (M24,
          //     docs/DESIGN.md §28 fork 4): its outflow is the mix of what it held
          //     and what it was fed.
@@ -124,7 +154,7 @@ index e74541c..6c665f4 100644
  
          // 1b. The same tick's states, re-solved on (M55.0, docs/DESIGN.md §60.0,
          //     ledger row B50). A zero-volume node has no state of its own: the
-@@ -1317,6 +1379,7 @@ impl Engine {
+@@ -1317,6 +1408,7 @@ impl Engine {
              if !re_solve {
                  break;
              }
@@ -132,7 +162,7 @@ index e74541c..6c665f4 100644
              let change = energy::swept_density_change(
                  &self.graph,
                  &self.slate,
-@@ -1324,9 +1387,11 @@ impl Engine {
+@@ -1324,9 +1416,11 @@ impl Engine {
                  self.thermo.as_ref(),
                  self.enthalpy.as_ref(),
                  &solution.node_pressure,
@@ -145,14 +175,18 @@ index e74541c..6c665f4 100644
              if change <= SWEPT_DENSITY_TOL {
                  break;
              }
-@@ -1336,11 +1401,16 @@ impl Engine {
+@@ -1336,15 +1430,24 @@ impl Engine {
                       re-solves of one tick: the last moved {change:.3e} of itself"
                  )));
              }
 +            let probe_clock = std::time::Instant::now();
++            crate::probe::IN_SOLVE.with(|f| f.set(true));
              let next = self
                  .flow_solver
-                 .solve(&self.graph, &self.slate, &node_states, dt)?;
+-                .solve(&self.graph, &self.slate, &node_states, dt)?;
++                .solve(&self.graph, &self.slate, &node_states, dt);
++            crate::probe::IN_SOLVE.with(|f| f.set(false));
++            let next = next?;
 +            crate::probe::add("engine: flow solve", probe_clock);
 +            crate::probe::count("engine: flow iterations", next.diagnostics.iterations as u64);
              hardest = hardest.max(next.diagnostics.iterations);
@@ -162,7 +196,12 @@ index e74541c..6c665f4 100644
              read = Some(std::mem::replace(&mut node_states, next_states));
              solution = next;
              passes += 1;
-@@ -2542,7 +2612,8 @@ impl Engine {
+         }
++        crate::probe::PREDICTED_TICK.with(|f| f.set(false));
+         solution.diagnostics.iterations = hardest;
+         solution.diagnostics.re_solves = passes - 1;
+ 
+@@ -2542,7 +2645,8 @@ impl Engine {
              }
          }
  
@@ -186,10 +225,10 @@ index 00573be..3cb4bc4 100644
  pub mod traits;
 diff --git a/crates/core/src/probe.rs b/crates/core/src/probe.rs
 new file mode 100644
-index 0000000..c645ce4
+index 0000000..5888b8c
 --- /dev/null
 +++ b/crates/core/src/probe.rs
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,70 @@
 +//! M69.0 probe timers (not for commit): named counts and wall time.
 +
 +use std::cell::RefCell;
@@ -224,6 +263,24 @@ index 0000000..c645ce4
 +}
 +
 +thread_local! {
++    /// Whether this tick's first solve read predicted states (M69.2 prototype).
++    pub static PREDICTED_TICK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++/// M69_FORCE=1: on a predicted tick, a Newton pass that starts converged
++/// takes one step anyway.
++pub fn force_a_step() -> bool {
++    static FORCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *FORCE.get_or_init(|| std::env::var("M69_FORCE").is_ok_and(|v| v == "1" || v == "2"))
++        && PREDICTED_TICK.with(|f| f.get())
++}
++
++thread_local! {
++    /// Whether the flow solver is the asker now (else the engine).
++    pub static IN_SOLVE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++thread_local! {
 +    static PASSES: RefCell<Vec<(f64, BTreeMap<&'static str, u64>)>> = const { RefCell::new(Vec::new()) };
 +    static PASSES_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 +}
@@ -242,6 +299,28 @@ index 0000000..c645ce4
 +    PASSES_ON.with(|on| on.set(true));
 +    PASSES.with(|p| std::mem::take(&mut *p.borrow_mut()))
 +}
+diff --git a/crates/scenarios/tests/coil_cell_reference.rs b/crates/scenarios/tests/coil_cell_reference.rs
+index ac80b80..78cfef4 100644
+--- a/crates/scenarios/tests/coil_cell_reference.rs
++++ b/crates/scenarios/tests/coil_cell_reference.rs
+@@ -191,7 +191,16 @@ fn a_coil_in_cells_closes_its_first_law_every_tick() {
+         // heat in it: the transfer line's is the stream's after the coil.
+         let after = edge(&s, "transfer_line").dissipation_w;
+         let taken = flux("transfer_line") - after - flux("feed_spool") - friction;
+-        worst = worst.max((duty - stored - flue - taken).abs() / duty);
++        let miss = (duty - stored - flue - taken).abs() / duty;
++        let feed = edge(&s, "feed_spool").stream.mass_flow.value();
++        let out = edge(&s, "transfer_line").stream.mass_flow.value();
++        if t <= 8 || miss > 1e-12 && t % 20 == 0 {
++            eprintln!(
++                "M69 tick {t}: miss {miss:e}, re_solves {:?}, residual {:?}, flow in - out {:e} kg/s",
++                s.solver.re_solves, s.solver.residual, feed - out
++            );
++        }
++        worst = worst.max(miss);
+         assert!(
+             friction > 0.0,
+             "tick {t}: the coil's segments carry friction"
 diff --git a/crates/solvers/src/column_newton.rs b/crates/solvers/src/column_newton.rs
 index 7841737..4fc0546 100644
 --- a/crates/solvers/src/column_newton.rs
@@ -527,12 +606,42 @@ index 80f4a5d..30ff4ef 100644
          Ok(two_phase.map(|(split, q)| {
              // Homogeneous equilibrium: 1/ρ = q/ρ_v + (1 − q)/ρ_l (Wallis 1969,
              // ch. 2) — specific volumes add by mass.
+diff --git a/crates/solvers/src/newton_flow.rs b/crates/solvers/src/newton_flow.rs
+index 716af77..5a3fb8d 100644
+--- a/crates/solvers/src/newton_flow.rs
++++ b/crates/solvers/src/newton_flow.rs
+@@ -323,8 +323,13 @@ impl NewtonFlowSolver {
+         let mut merit = half_sq_norm(&r); // ½‖R‖₂²: smooth line-search merit
+         history.push(res);
+         let mut iterations = 0u32;
++        let force = refinery_core::probe::force_a_step();
++        let started_converged = converged;
++        if force && converged {
++            refinery_core::probe::count("solver: forced step", 1);
++        }
+ 
+-        while !converged && iterations < self.max_iter {
++        while (!converged || (force && iterations == 0)) && iterations < self.max_iter {
+             iterations += 1;
+ 
+             // Newton direction: J·ΔP = −R.
+@@ -433,6 +438,10 @@ impl NewtonFlowSolver {
+                 t *= 0.5;
+             }
+             history.push(res);
++            if !accepted && started_converged && iterations == 1 {
++                refinery_core::probe::count("solver: forced step refused", 1);
++                break;
++            }
+             if !accepted {
+                 // The exact Newton step is always a descent direction for a
+                 // C¹ residual; failure to decrease means singularity, not a
 diff --git a/crates/solvers/src/probe.rs b/crates/solvers/src/probe.rs
 new file mode 100644
-index 0000000..c53659f
+index 0000000..963ff59
 --- /dev/null
 +++ b/crates/solvers/src/probe.rs
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,133 @@
 +//! M68.0 probe counters (not for commit): the column solve's work per tick.
 +
 +use std::cell::RefCell;
@@ -624,13 +733,35 @@ index 0000000..c53659f
 +    let mut key: Vec<u64> = fractions.iter().map(|f| f.to_bits()).collect();
 +    key.push(liquid_equivalent.to_bits());
 +    key.push(pressure.to_bits());
-+    let seen = FLASH_KEYS.with(|k| {
++    let solver = refinery_core::probe::IN_SOLVE.with(|f| f.get());
++    // Bits: kind in the low two for the engine, shifted by 2 for the solver.
++    let mine = if solver { kind << 2 } else { kind };
++    let seen_all = FLASH_KEYS.with(|k| {
 +        let mut k = k.borrow_mut();
 +        let entry = k.entry(key).or_insert(0);
 +        let before = *entry;
-+        *entry |= kind;
++        *entry |= mine;
 +        before
 +    });
++    let own_side = if solver { (seen_all >> 2) & 3 } else { seen_all & 3 };
++    let asker = if solver { "solver" } else { "engine" };
++    refinery_core::probe::count(
++        if solver { "flash: asked by solver" } else { "flash: asked by engine" },
++        1,
++    );
++    if own_side != 0 {
++        refinery_core::probe::count(
++            if solver { "flash: repeat on own side (solver)" } else { "flash: repeat on own side (engine)" },
++            1,
++        );
++    } else if seen_all != 0 {
++        refinery_core::probe::count(
++            if solver { "flash: repeat only across (solver)" } else { "flash: repeat only across (engine)" },
++            1,
++        );
++    }
++    let _ = asker;
++    let seen = (seen_all | (seen_all >> 2)) & 3;
 +    if seen != 0 {
 +        refinery_core::probe::count(
 +            if kind == 1 { "flash: density repeat (any)" } else { "flash: settle repeat (any)" },
@@ -644,6 +775,18 @@ index 0000000..c53659f
 +        );
 +    }
 +}
+diff --git a/tools/steptime/Cargo.lock b/tools/steptime/Cargo.lock
+index 84325b0..2c8a191 100644
+--- a/tools/steptime/Cargo.lock
++++ b/tools/steptime/Cargo.lock
+@@ -839,6 +839,7 @@ version = "0.1.0"
+ dependencies = [
+  "refinery-core",
+  "refinery-scenarios",
++ "refinery-solvers",
+  "serde_json",
+ ]
+ 
 diff --git a/tools/steptime/Cargo.toml b/tools/steptime/Cargo.toml
 index a9e4092..32c816f 100644
 --- a/tools/steptime/Cargo.toml

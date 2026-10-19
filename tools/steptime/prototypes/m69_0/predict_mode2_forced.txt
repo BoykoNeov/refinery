@@ -1,0 +1,120 @@
+  crude_unit_boiling tick 2: [chg 4.3e-8 it 1 dens 146 (rep 20/40) settle 82 (rep 4/4)] [chg 2.1e-9 it 1 dens 146 (rep 31/51) settle 82 (rep 4/4)]
+  crude_unit_boiling tick 500: [chg 9.0e-11 it 1 dens 149 (rep 21/40) settle 82 (rep 4/5)]
+  crude_unit_boiling tick 1001: [chg 7.1e-5 it 0 dens 122 (rep 21/40) settle 82 (rep 4/5)] [chg 3.5e-6 it 1 dens 146 (rep 30/50) settle 82 (rep 4/4)] [chg 6.4e-8 it 1 dens 149 (rep 31/51) settle 82 (rep 4/4)] [chg 2.6e-9 it 1 dens 152 (rep 31/51) settle 82 (rep 4/4)]
+  crude_unit_boiling tick 1002: [chg 7.1e-5 it 1 dens 152 (rep 20/40) settle 82 (rep 4/4)] [chg 3.5e-6 it 1 dens 143 (rep 31/51) settle 82 (rep 4/4)] [chg 6.4e-8 it 1 dens 149 (rep 31/51) settle 82 (rep 4/4)] [chg 2.6e-9 it 1 dens 149 (rep 31/51) settle 82 (rep 4/4)]
+  crude_unit_boiling tick 1003: [chg 8.7e-8 it 1 dens 152 (rep 20/40) settle 82 (rep 4/4)] [chg 4.4e-9 it 1 dens 152 (rep 31/51) settle 82 (rep 4/4)]
+  crude_unit_boiling tick 1011: [chg 8.6e-8 it 1 dens 152 (rep 20/40) settle 82 (rep 4/4)] [chg 4.4e-9 it 1 dens 152 (rep 31/51) settle 82 (rep 4/4)]
+  crude_unit_boiling tick 1301: [chg 7.0e-8 it 1 dens 152 (rep 20/40) settle 82 (rep 4/4)] [chg 3.7e-9 it 1 dens 149 (rep 31/51) settle 82 (rep 4/4)]
+== crude_unit_boiling [held] 999 ticks: wall mean 2.41 ms; passes/tick mean 1.00 median 1 max 2
+    column: separate                1.00/tick    0.0 % of wall
+    engine: density change          1.00/tick   13.6 % of wall
+    engine: flow iterations         1.00/tick    0.0 % of wall
+    engine: flow solve              1.00/tick   41.5 % of wall
+    engine: predicted               1.00/tick    0.0 % of wall
+    engine: resolve                 1.00/tick   42.7 % of wall
+    flash: asked by engine        124.12/tick    0.0 % of wall
+    flash: asked by solver        108.21/tick    0.0 % of wall
+    flash: density                150.25/tick   47.6 % of wall
+    flash: density repeat (any)     40.05/tick    0.0 % of wall
+    flash: density repeat (same)     20.26/tick    0.0 % of wall
+    flash: repeat on own side (engine)     24.25/tick    0.0 % of wall
+    flash: repeat only across (engine)     20.02/tick    0.0 % of wall
+    flash: repeat only across (solver)      0.01/tick    0.0 % of wall
+    flash: settle                  82.08/tick   32.2 % of wall
+    flash: settle repeat (any)      4.23/tick    0.0 % of wall
+    flash: settle repeat (same)      4.00/tick    0.0 % of wall
+    resolve: coil cells             1.00/tick   31.0 % of wall
+    solver: forced step             0.00/tick    0.0 % of wall
+    column (separate, all)                       7.5 % of wall (jacobian 3.0 %)
+== crude_unit_boiling [after the step] 1500 ticks: wall mean 5.87 ms; passes/tick mean 2.00 median 2 max 4
+    column: separate                2.00/tick    0.0 % of wall
+    engine: density change          2.00/tick   12.3 % of wall
+    engine: flow iterations         2.00/tick    0.0 % of wall
+    engine: flow solve              2.00/tick   38.5 % of wall
+    engine: predicted               1.00/tick    0.0 % of wall
+    engine: resolve                 2.00/tick   48.0 % of wall
+    flash: asked by engine        248.33/tick    0.0 % of wall
+    flash: asked by solver        216.99/tick    0.0 % of wall
+    flash: density                301.10/tick   43.6 % of wall
+    flash: density repeat (any)     91.14/tick    0.0 % of wall
+    flash: density repeat (same)     51.08/tick    0.0 % of wall
+    flash: repeat on own side (engine)     49.07/tick    0.0 % of wall
+    flash: repeat only across (engine)     40.05/tick    0.0 % of wall
+    flash: repeat only across (solver)     10.03/tick    0.0 % of wall
+    flash: settle                 164.22/tick   30.1 % of wall
+    flash: settle repeat (any)      8.01/tick    0.0 % of wall
+    flash: settle repeat (same)      8.01/tick    0.0 % of wall
+    resolve: coil cells             2.00/tick   29.1 % of wall
+    column (separate, all)                      15.1 % of wall (jacobian 10.6 %)
+  crude_unit_stripped tick 2: [chg 7.2e-9 it 1 dens 142 (rep 22/43) settle 83 (rep 4/4)]
+  crude_unit_stripped tick 500: [chg 1.5e-9 it 1 dens 148 (rep 22/43) settle 83 (rep 4/4)]
+  crude_unit_stripped tick 1001: [chg 3.3e-5 it 0 dens 121 (rep 23/43) settle 83 (rep 4/5)] [chg 3.5e-6 it 1 dens 148 (rep 33/53) settle 83 (rep 5/5)] [chg 3.0e-7 it 1 dens 145 (rep 34/54) settle 83 (rep 5/5)] [chg 2.8e-8 it 1 dens 148 (rep 34/54) settle 83 (rep 5/5)] [chg 4.7e-9 it 0 dens 115 (rep 35/54) settle 83 (rep 6/6)]
+  crude_unit_stripped tick 1002: [chg 3.1e-5 it 1 dens 157 (rep 22/43) settle 83 (rep 4/4)] [chg 3.3e-6 it 1 dens 154 (rep 34/54) settle 83 (rep 5/5)] [chg 2.8e-7 it 1 dens 148 (rep 34/54) settle 83 (rep 5/5)] [chg 2.6e-8 it 1 dens 148 (rep 34/54) settle 83 (rep 5/5)] [chg 2.4e-9 it 1 dens 148 (rep 34/54) settle 83 (rep 5/5)]
+  crude_unit_stripped tick 1003: [chg 1.1e-6 it 1 dens 157 (rep 22/43) settle 83 (rep 4/4)] [chg 1.1e-7 it 1 dens 145 (rep 34/54) settle 83 (rep 5/5)] [chg 9.5e-9 it 1 dens 142 (rep 34/54) settle 83 (rep 5/5)]
+  crude_unit_stripped tick 1011: [chg 5.3e-7 it 1 dens 157 (rep 22/43) settle 83 (rep 4/4)] [chg 7.7e-9 it 1 dens 145 (rep 34/54) settle 83 (rep 5/5)]
+  crude_unit_stripped tick 1301: [chg 3.8e-7 it 1 dens 157 (rep 22/43) settle 83 (rep 4/4)] [chg 4.0e-9 it 1 dens 145 (rep 34/54) settle 83 (rep 5/5)]
+== crude_unit_stripped [held] 999 ticks: wall mean 3.94 ms; passes/tick mean 1.01 median 1 max 3
+    column: separate                1.01/tick    0.0 % of wall
+    engine: density change          1.01/tick   14.6 % of wall
+    engine: flow iterations         1.01/tick    0.0 % of wall
+    engine: flow solve              1.01/tick   40.7 % of wall
+    engine: predicted               1.00/tick    0.0 % of wall
+    engine: resolve                 1.01/tick   42.8 % of wall
+    flash: asked by engine        127.76/tick    0.0 % of wall
+    flash: asked by solver        109.58/tick    0.0 % of wall
+    flash: density                153.84/tick   47.9 % of wall
+    flash: density repeat (any)     43.32/tick    0.0 % of wall
+    flash: density repeat (same)     22.22/tick    0.0 % of wall
+    flash: repeat on own side (engine)     26.18/tick    0.0 % of wall
+    flash: repeat only across (engine)     21.12/tick    0.0 % of wall
+    flash: repeat only across (solver)      0.07/tick    0.0 % of wall
+    flash: settle                  83.50/tick   33.8 % of wall
+    flash: settle repeat (any)      4.05/tick    0.0 % of wall
+    flash: settle repeat (same)      4.03/tick    0.0 % of wall
+    resolve: coil cells             1.01/tick   31.6 % of wall
+    solver: forced step             0.20/tick    0.0 % of wall
+    column (separate, all)                       6.6 % of wall (jacobian 4.2 %)
+== crude_unit_stripped [after the step] 1500 ticks: wall mean 7.56 ms; passes/tick mean 2.01 median 2 max 5
+    column: separate                2.01/tick    0.0 % of wall
+    engine: density change          2.01/tick   14.6 % of wall
+    engine: flow iterations         2.01/tick    0.0 % of wall
+    engine: flow solve              2.01/tick   40.9 % of wall
+    engine: predicted               1.00/tick    0.0 % of wall
+    engine: resolve                 2.01/tick   43.5 % of wall
+    flash: asked by engine        255.02/tick    0.0 % of wall
+    flash: asked by solver        217.36/tick    0.0 % of wall
+    flash: density                305.72/tick   48.1 % of wall
+    flash: density repeat (any)     97.43/tick    0.0 % of wall
+    flash: density repeat (same)     56.27/tick    0.0 % of wall
+    flash: repeat on own side (engine)     54.23/tick    0.0 % of wall
+    flash: repeat only across (engine)     41.15/tick    0.0 % of wall
+    flash: repeat only across (solver)     11.09/tick    0.0 % of wall
+    flash: settle                 166.66/tick   34.1 % of wall
+    flash: settle repeat (any)      9.04/tick    0.0 % of wall
+    flash: settle repeat (same)      9.04/tick    0.0 % of wall
+    resolve: coil cells             2.01/tick   31.8 % of wall
+    solver: forced step             0.87/tick    0.0 % of wall
+    column (separate, all)                       7.0 % of wall (jacobian 4.6 %)
+  crude_unit_cold tick 2: [chg 1.1e-8 it 1 dens 142 (rep 22/43) settle 83 (rep 4/4)] [chg 1.5e-10 it 1 dens 151 (rep 34/54) settle 83 (rep 5/5)]
+  crude_unit_cold tick 500: [chg 6.0e-4 it 1 dens 145 (rep 22/43) settle 83 (rep 4/4)] [chg 1.2e-5 it 1 dens 154 (rep 34/54) settle 83 (rep 5/5)] [chg 2.7e-7 it 1 dens 145 (rep 34/54) settle 83 (rep 5/5)] [chg 9.8e-9 it 1 dens 148 (rep 34/54) settle 83 (rep 5/5)]
+== crude_unit_cold [held] 2399 ticks: wall mean 8.46 ms; passes/tick mean 2.04 median 2 max 5
+    column: separate                2.04/tick    0.0 % of wall
+    engine: density change          2.04/tick   14.3 % of wall
+    engine: flow iterations         2.13/tick    0.0 % of wall
+    engine: flow solve              2.04/tick   40.7 % of wall
+    engine: predicted               0.99/tick    0.0 % of wall
+    engine: resolve                 2.04/tick   44.0 % of wall
+    flash: asked by engine        259.24/tick    0.0 % of wall
+    flash: asked by solver        221.71/tick    0.0 % of wall
+    flash: density                311.53/tick   47.6 % of wall
+    flash: density repeat (any)     99.23/tick    0.0 % of wall
+    flash: density repeat (same)     57.42/tick    0.0 % of wall
+    flash: repeat on own side (engine)     55.30/tick    0.0 % of wall
+    flash: repeat only across (engine)     41.69/tick    0.0 % of wall
+    flash: repeat only across (solver)     11.45/tick    0.0 % of wall
+    flash: settle                 169.43/tick   33.2 % of wall
+    flash: settle repeat (any)      9.22/tick    0.0 % of wall
+    flash: settle repeat (same)      9.22/tick    0.0 % of wall
+    resolve: coil cells             2.04/tick   31.0 % of wall
+    solver: forced step             0.00/tick    0.0 % of wall
+    column (separate, all)                       8.4 % of wall (jacobian 6.0 %)

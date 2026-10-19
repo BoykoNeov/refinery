@@ -96,3 +96,29 @@ milliseconds swung 3–4 times between runs and are not quoted.
     traced; a built predictor traces it and keeps the gate at 1e-12. No other
     published or gated number moved (the cold start-up's walk to zero
     included).
+
+## Traced while building M69.2
+
+12. **The leak is the flow solver's tolerance** (`coil_cell_reference`
+    printing each tick's re-solves, residual and coil flow in − out): with the
+    predictor the last re-solve starts inside the Newton tolerance and is
+    accepted without a step, its residual ~9e-7 kg/s against shipped ~1e-12;
+    ~1.5e-7 kg/s more enters the coil than leaves, which times the stream's
+    enthalpy is the 2.4e-9 miss. `M69_FORCE=1` (`probe_predict.patch`, now with
+    it): every solve of a predicted tick takes one Newton step from a converged
+    start — the miss back to ~1e-15, residuals ~1e-12. `M69_FORCE=2`, the first
+    solve only: the miss stays, the loose finish is the last re-solve's.
+
+13. **The step costs 0–2 points** (`predict_mode2_forced.txt`, `counts3.py
+    shipped predict_mode0.txt predict predict_mode2.txt forced
+    predict_mode2_forced.txt`): the line flash's questions per tick against
+    shipped — boiling 54 % held, 52 % after the step; stripped 65 → 66 % and
+    39 → 41 %; cold 44 %.
+
+14. **Stepping every predicted tick moved two resting plants** (`pump_gas_lock`,
+    `water_slug` on Newton): their prediction equals their state, so the probe
+    left them byte-identical, but the step polished each tick's rounding. A
+    tick where no value moved is now not predicted (`M69_MOVED=0` turns that
+    guard off): `pump_gas_lock` byte-identical again; `water_slug` still moves,
+    by the step on its re-solves (12 numbers in 6 000 ticks, 1.4e-12 at most) —
+    asked and accepted. The built engine's corpus: `corpus_*_built.txt`.

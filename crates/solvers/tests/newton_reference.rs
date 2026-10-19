@@ -123,6 +123,112 @@ fn symmetric_junction_midpoint_pressure() {
     );
 }
 
+/// **A guessed solve takes a step from inside its tolerance** (M69.2,
+/// docs/DESIGN.md §74.5). The junction solved, its sink then raised 0.5 mPa:
+/// warm-started, the next solve starts with the junction out of balance by
+/// ~2e-7 kg/s, inside the tolerance (1e-8 of its ~78 kg/s). As shipped it
+/// accepts that start without a step; told its solves start from a guess
+/// (`step_even_when_converged`), it takes one, and the balance closes to
+/// rounding.
+#[test]
+fn a_guessed_solve_steps_from_inside_its_tolerance() {
+    let solve_twice = |guessed: bool| {
+        let sink = |pressure: f64| {
+            node(
+                "snk",
+                NodeKind::Sink {
+                    pressure: Pascal(pressure),
+                    temperature: T_AMBIENT,
+                    composition: Composition::pure(1, 0),
+                },
+            )
+        };
+        let mut g = PlantGraph::new();
+        let src = g.add_node(node(
+            "src",
+            NodeKind::Source {
+                pressure: Pascal(3.0e5),
+                temperature: T_AMBIENT,
+                composition: Composition::pure(1, 0),
+            },
+        ));
+        let jn = g.add_node(node("jn", NodeKind::Junction));
+        let snk = g.add_node(sink(1.0e5));
+        g.add_pipe(src, jn, pipe("a", 10.0, 0.1));
+        g.add_pipe(jn, snk, pipe("b", 10.0, 0.1));
+        let mut solver = NewtonFlowSolver::default();
+        let slate = Slate::water_only();
+        solver
+            .solve(&g, &slate, &Default::default(), Seconds(0.1))
+            .expect("converges");
+        *g.node_mut(snk) = sink(1.0e5 + 5e-4);
+        solver.step_even_when_converged(guessed);
+        let sol = solver
+            .solve(&g, &slate, &Default::default(), Seconds(0.1))
+            .expect("converges");
+        (sol.diagnostics.iterations, sol.diagnostics.residual)
+    };
+
+    let (iterations, residual) = solve_twice(false);
+    assert_eq!(
+        iterations, 0,
+        "as shipped, a start inside the tolerance stands"
+    );
+    assert!(
+        residual > 1e-8,
+        "the start is out of balance by more than rounding: {residual:e} kg/s"
+    );
+    let (iterations, residual) = solve_twice(true);
+    assert_eq!(iterations, 1, "from a guess, one step");
+    assert!(
+        residual < 1e-10,
+        "the step closes the balance: {residual:e} kg/s"
+    );
+}
+
+/// **A guessed solve already balanced to rounding keeps its start.** Solved
+/// again on the plant it just solved, the step it is told to take can find no
+/// decrease in a balance already at rounding; the line search refuses it, and
+/// the converged start stands rather than the refusal reading as divergence.
+/// Two unequal pipes, so the balance at the root is rounding, not zero.
+#[test]
+fn a_guessed_solve_at_rounding_keeps_its_start() {
+    let mut g = PlantGraph::new();
+    let src = g.add_node(node(
+        "src",
+        NodeKind::Source {
+            pressure: Pascal(3.0e5),
+            temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
+        },
+    ));
+    let jn = g.add_node(node("jn", NodeKind::Junction));
+    let snk = g.add_node(node(
+        "snk",
+        NodeKind::Sink {
+            pressure: Pascal(1.0e5),
+            temperature: T_AMBIENT,
+            composition: Composition::pure(1, 0),
+        },
+    ));
+    g.add_pipe(src, jn, pipe("a", 10.0, 0.1));
+    g.add_pipe(jn, snk, pipe("b", 17.0, 0.08));
+    let mut solver = NewtonFlowSolver::default();
+    solver.step_even_when_converged(true);
+    let slate = Slate::water_only();
+    let mut pressures = Vec::new();
+    for solve in 1..=4 {
+        let sol = solver
+            .solve(&g, &slate, &Default::default(), Seconds(0.1))
+            .unwrap_or_else(|e| panic!("solve {solve}: {e}"));
+        pressures.push(sol.node_pressure[&jn].value());
+    }
+    // The second solve's step still polishes the first's answer; from there on
+    // each start is at rounding and stands, bit for bit.
+    assert_eq!(pressures[2], pressures[1], "{pressures:?}");
+    assert_eq!(pressures[3], pressures[1], "{pressures:?}");
+}
+
 /// A pump between equal-pressure ends must still drive flow from suction to
 /// discharge (source → sink), and mass is conserved through the pump node.
 /// Turning the pump off must reduce the flow (no head to push against the end

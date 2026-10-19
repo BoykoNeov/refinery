@@ -110,6 +110,10 @@ pub struct NewtonFlowSolver {
     pub eps_dp: f64,
     /// Warm-start pressures from the previous converged solve, keyed by NodeId.
     warm_start: BTreeMap<NodeId, f64>,
+    /// A pass that starts converged takes one step anyway (M69.2,
+    /// `FlowSolver::step_even_when_converged`): set by the engine on a tick
+    /// whose solves start from a guess.
+    step_even_when_converged: bool,
     /// The line flash this solver reads two-phase densities through (M53,
     /// docs/DESIGN.md §58 fork 3). `NoLineFlash` by default, under which every
     /// compile is the liquid one bit for bit; the loader sets it from
@@ -135,6 +139,7 @@ impl Default for NewtonFlowSolver {
             tol_rel: 1e-8,
             eps_dp: 1.0,
             warm_start: BTreeMap::new(),
+            step_even_when_converged: false,
             line_flash: OwnedLineFlash::default(),
         }
     }
@@ -180,6 +185,10 @@ impl FlowSolver for NewtonFlowSolver {
         });
         self.warm_start = warm_start;
         out
+    }
+
+    fn step_even_when_converged(&mut self, on: bool) {
+        self.step_even_when_converged = on;
     }
 
     fn name(&self) -> &'static str {
@@ -323,8 +332,12 @@ impl NewtonFlowSolver {
         let mut merit = half_sq_norm(&r); // ½‖R‖₂²: smooth line-search merit
         history.push(res);
         let mut iterations = 0u32;
+        // From a guess, a pass that starts converged takes one step anyway
+        // (M69.2, docs/DESIGN.md §74.5): the guess lands inside the tolerance,
+        // and accepted there the flows balance only to it.
+        let step_anyway = self.step_even_when_converged && converged;
 
-        while !converged && iterations < self.max_iter {
+        while (!converged || (step_anyway && iterations == 0)) && iterations < self.max_iter {
             iterations += 1;
 
             // Newton direction: J·ΔP = −R.
@@ -433,6 +446,11 @@ impl NewtonFlowSolver {
                 t *= 0.5;
             }
             history.push(res);
+            if !accepted && step_anyway && iterations == 1 {
+                // The step it need not have taken found no decrease: the
+                // converged start stands.
+                break;
+            }
             if !accepted {
                 // The exact Newton step is always a descent direction for a
                 // C¹ residual; failure to decrease means singularity, not a

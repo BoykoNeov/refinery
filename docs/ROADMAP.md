@@ -10599,3 +10599,21 @@ instance. The coil plants 5–12 % faster (a loaded machine, ratios). DESIGN
 - Gates: `line_flash::memo_tests` (5). Mutations: five, all caught; two more
   cost only time and change no answer. Corpus: 67 of 67 byte-identical on both
   fidelities.
+
+### M69.2 — **LANDED** 2026-10-19: a boiling plant's re-solves predicted
+
+Where a boiling plant drifts, each tick's first solve reads every zero-volume
+node moved on by the last tick's move (`Engine::predicted_states`); not after
+a command, not before the third tick, not where nothing moved. A held boiling
+crude unit now solves once a tick; the line flash's work per tick 41–66 % of
+what it was before on the three coil stories (counts). The probe's coil-books leak was the
+flow solver accepting a start inside its tolerance: every solve of a predicted
+tick now takes one Newton step (`FlowSolver::step_even_when_converged`), and
+the coil's first law holds at 1e-12, its gate unchanged. DESIGN §74.5.
+
+- Moves (the user's decision): 10 of 67 plants on Newton, 9 on Simple (the
+  coil crude units, `flashing_rundown`, `product_cooler`, `wet_rundown`; on
+  Newton `water_slug` too, by 1.4e-12, asked and accepted); none fails; the
+  rolling baseline refreshed.
+- Gates: `predicted_tick_reference` (3), `newton_reference` (2 new). Mutations:
+  ten, all caught.

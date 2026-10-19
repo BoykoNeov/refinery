@@ -130,6 +130,13 @@ pub struct Engine {
     /// Retained across ticks only to give a zero-volume node with no inflow a
     /// reproducible value to hold (see `energy::resolve_node_states`).
     node_states: energy::NodeStates,
+    /// The resolved states of the tick before `node_states` (M69.2,
+    /// docs/DESIGN.md §74.5): the predictor's `before`. Empty before the second
+    /// tick.
+    states_before: energy::NodeStates,
+    /// Whether a command arrived since the last tick: the next tick is not
+    /// predicted (M69.2).
+    commanded: bool,
     /// The cavitation criterion at every node that has one, from the last tick
     /// (M11, docs/DESIGN.md §13). Empty before the first tick, and missing an
     /// entry for every node the criterion does not apply to.
@@ -236,6 +243,8 @@ impl Engine {
             tick: 0,
             last_solution: None,
             node_states: energy::NodeStates::default(),
+            states_before: energy::NodeStates::default(),
+            commanded: false,
             last_cavitation: std::collections::BTreeMap::new(),
             last_supply_boiling: std::collections::BTreeMap::new(),
             held_equipment: std::collections::BTreeMap::new(),
@@ -265,6 +274,9 @@ impl Engine {
         // the trip guard's message, `check_loop_owned_duty`, `PuncturePipe`'s
         // `pipe(edge)`. Loops and trips are looked up through `Option` already.
         self.check_command_ids(&cmd)?;
+        // A command is a step, not a drift: the next tick is not predicted
+        // (M69.2, docs/DESIGN.md §74.5).
+        self.commanded = true;
         match cmd {
             Command::SetValveOpening { node, opening } => {
                 if !(0.0..=1.0).contains(&opening) || !opening.is_finite() {
@@ -1207,6 +1219,56 @@ impl Engine {
         }
     }
 
+    /// The states this tick's FIRST flow solve reads on a plant whose lines
+    /// boil (M69.2, docs/DESIGN.md §74.5): each zero-volume node's temperature
+    /// and liquid-equivalent temperature [K] moved on by the last tick's move,
+    /// `2·now − before` — a straight-line guess at where this tick ends. `None`,
+    /// so the solve reads the last tick's states as it always did: on a plant
+    /// without the line flash (it re-solves only on its first tick); before the
+    /// third tick (no move to go on); on the tick after a command (a step, not a
+    /// drift — the guess would carry the old drift past it); and where nothing
+    /// moved (a plant at rest predicts itself, and is solved as it was).
+    ///
+    /// Only the first solve's READ moves: the re-solves still stop on
+    /// `SWEPT_DENSITY_TOL`, now measured from the guess.
+    fn predicted_states(&self) -> Option<energy::NodeStates> {
+        if !self.line_flash.carries_vapour() || self.commanded {
+            return None;
+        }
+        let mut predicted = self.node_states.clone();
+        let mut moved = false;
+        for id in self.graph.node_ids() {
+            if !energy::is_zero_volume(&self.graph.node(id).kind)
+                || self.node_states.held.contains(&id)
+            {
+                continue;
+            }
+            if let (Some(now), Some(before)) = (
+                self.node_states.temperature.get(&id),
+                self.states_before.temperature.get(&id),
+            ) {
+                moved |= now.value() != before.value();
+                predicted
+                    .temperature
+                    .insert(id, Kelvin(2.0 * now.value() - before.value()));
+            }
+            if let (Some(now), Some(before)) = (
+                self.node_states.vapour.get(&id),
+                self.states_before.vapour.get(&id),
+            ) {
+                let (now_le, before_le) = (
+                    now.liquid_equivalent.value(),
+                    before.liquid_equivalent.value(),
+                );
+                moved |= now_le != before_le;
+                let mut share = *now;
+                share.liquid_equivalent = Kelvin(2.0 * now_le - before_le);
+                predicted.vapour.insert(id, share);
+            }
+        }
+        moved.then_some(predicted)
+    }
+
     pub fn tick(&mut self) -> Result<(), SimError> {
         let dt = self.config.dt;
         // The line flash may forget the last tick's answers (M69.1,
@@ -1285,9 +1347,18 @@ impl Engine {
                 dt,
             )
         };
-        let mut solution =
-            self.flow_solver
-                .solve(&self.graph, &self.slate, &self.node_states, dt)?;
+        // 1a. Where the plant drifts, the first solve reads where the tick will
+        //     end rather than where the last one did (M69.2, docs/DESIGN.md
+        //     §74.5), so the re-solves below start that much closer; and every
+        //     solve of such a tick takes one step at least, so its flows balance
+        //     as an iterated solve's do.
+        let predicted = self.predicted_states();
+        self.flow_solver
+            .step_even_when_converged(predicted.is_some());
+        let first_read = predicted.as_ref().unwrap_or(&self.node_states);
+        let mut solution = self
+            .flow_solver
+            .solve(&self.graph, &self.slate, first_read, dt)?;
 
         // 2b. Resolve the node temperature AND composition fields: inertial
         //     nodes contribute their start-of-tick values, zero-volume nodes mix
@@ -1327,7 +1398,7 @@ impl Engine {
                 self.thermo.as_ref(),
                 self.enthalpy.as_ref(),
                 &solution.node_pressure,
-                read.as_ref().unwrap_or(&self.node_states),
+                read.as_ref().unwrap_or(first_read),
                 &node_states,
             )?;
             if change <= SWEPT_DENSITY_TOL {
@@ -2545,7 +2616,8 @@ impl Engine {
             }
         }
 
-        self.node_states = node_states;
+        self.states_before = std::mem::replace(&mut self.node_states, node_states);
+        self.commanded = false;
         self.last_solution = Some(solution);
         self.last_cavitation = cavitation;
         self.last_supply_boiling = supply;

@@ -82,8 +82,8 @@ Ticked when it lands; struck when the user rules it out.
 
 - [ ] **A29** — a boiling coil plant re-solves every tick of its coil's drift.
       **M69, OPEN** (DESIGN §74): [x] M69.0 probe and design note (done 2026-10-19,
-      `tools/steptime/prototypes/m69_0/FINDINGS.md`); [x] M69.1 the line flash remembered for a tick (done 2026-10-19, DESIGN §74.4); [ ] M69.2
-      the re-solves predicted; [ ] M69.3 the stripped and cold screen tables re-measured.
+      `tools/steptime/prototypes/m69_0/FINDINGS.md`); [x] M69.1 the line flash remembered for a tick (done 2026-10-19, DESIGN §74.4); [x] M69.2
+      the re-solves predicted (done 2026-10-19, DESIGN §74.5); [ ] M69.3 the stripped and cold screen tables re-measured.
 - [ ] **A24** — the gas-lock story's ticks past the frame on the game solver.
 - [ ] **A25** — the dying pump's 19 sweeps a tick; the engine's sweep unmemoised.
 - [ ] **A27** — the quench cascade's moving valve on the game solver.
