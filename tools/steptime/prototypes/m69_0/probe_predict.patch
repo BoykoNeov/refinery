@@ -1,0 +1,1212 @@
+diff --git a/crates/core/src/energy.rs b/crates/core/src/energy.rs
+index 588b10f..b4e4876 100644
+--- a/crates/core/src/energy.rs
++++ b/crates/core/src/energy.rs
+@@ -1721,6 +1721,7 @@ pub fn resolve_node_states(
+                         graph.node(furnace).name
+                     )));
+                 };
++                let probe_clock = std::time::Instant::now();
+                 let pass = furnace_coil_cells(
+                     graph,
+                     slate,
+@@ -1733,6 +1734,7 @@ pub fn resolve_node_states(
+                     (*duty, metal, *flame_temperature, tubes),
+                     dt,
+                 )?;
++                crate::probe::add("resolve: coil cells", probe_clock);
+                 coil_temperature.insert(furnace, pass.coil);
+                 flue_loss.insert(furnace, pass.flue);
+                 tube_fire.insert(furnace, pass.fire);
+diff --git a/crates/core/src/engine.rs b/crates/core/src/engine.rs
+index e74541c..6c665f4 100644
+--- a/crates/core/src/engine.rs
++++ b/crates/core/src/engine.rs
+@@ -130,6 +130,10 @@ pub struct Engine {
+     /// Retained across ticks only to give a zero-volume node with no inflow a
+     /// reproducible value to hold (see `energy::resolve_node_states`).
+     node_states: energy::NodeStates,
++    /// M69.0 probe: the states of the tick before `node_states`, and whether a
++    /// command arrived since the last tick.
++    probe_prev_states: Option<energy::NodeStates>,
++    probe_commanded: bool,
+     /// The cavitation criterion at every node that has one, from the last tick
+     /// (M11, docs/DESIGN.md §13). Empty before the first tick, and missing an
+     /// entry for every node the criterion does not apply to.
+@@ -236,6 +240,8 @@ impl Engine {
+             tick: 0,
+             last_solution: None,
+             node_states: energy::NodeStates::default(),
++            probe_prev_states: None,
++            probe_commanded: false,
+             last_cavitation: std::collections::BTreeMap::new(),
+             last_supply_boiling: std::collections::BTreeMap::new(),
+             held_equipment: std::collections::BTreeMap::new(),
+@@ -265,6 +271,7 @@ impl Engine {
+         // the trip guard's message, `check_loop_owned_duty`, `PuncturePipe`'s
+         // `pipe(edge)`. Loops and trips are looked up through `Option` already.
+         self.check_command_ids(&cmd)?;
++        self.probe_commanded = true;
+         match cmd {
+             Command::SetValveOpening { node, opening } => {
+                 if !(0.0..=1.0).contains(&opening) || !opening.is_finite() {
+@@ -1282,9 +1289,62 @@ impl Engine {
+                 dt,
+             )
+         };
++        // M69.0 probe: the predictor. M69_PREDICT=1 extrapolates each
++        // zero-volume node's temperature and liquid-equivalent by the last
++        // tick's move for the FIRST solve only; M69_PREDICT=2 skips it on a
++        // tick after a command.
++        let predict = std::env::var("M69_PREDICT").map_or(0, |v| v.parse().unwrap_or(0));
++        let predicted = match &self.probe_prev_states {
++            Some(prev)
++                if predict > 0
++                    && self.line_flash.carries_vapour()
++                    && !(predict == 2 && self.probe_commanded) =>
++            {
++                let mut p = self.node_states.clone();
++                for id in self.graph.node_ids() {
++                    if !energy::is_zero_volume(&self.graph.node(id).kind)
++                        || self.node_states.held.contains(&id)
++                    {
++                        continue;
++                    }
++                    let what = std::env::var("M69_WHAT").map_or(0, |v| v.parse().unwrap_or(0));
++                    if let (Some(now), Some(before), true) =
++                        (self.node_states.temperature.get(&id), prev.temperature.get(&id), what != 2)
++                    {
++                        p.temperature
++                            .insert(id, Kelvin(2.0 * now.value() - before.value()));
++                    }
++                    if let (Some(now), Some(before), true) =
++                        (self.node_states.vapour.get(&id), prev.vapour.get(&id), what != 1)
++                    {
++                        let mut share = *now;
++                        share.liquid_equivalent = Kelvin(
++                            2.0 * now.liquid_equivalent.value() - before.liquid_equivalent.value(),
++                        );
++                        if what == 3 {
++                            share.latent =
++                                JPerKg(2.0 * now.latent.value() - before.latent.value());
++                            if now.mass_fraction < 1.0 {
++                                share.mass_fraction = (2.0 * now.mass_fraction
++                                    - before.mass_fraction)
++                                    .clamp(f64::MIN_POSITIVE, 1.0 - f64::EPSILON);
++                            }
++                        }
++                        p.vapour.insert(id, share);
++                    }
++                }
++                crate::probe::count("engine: predicted", 1);
++                Some(p)
++            }
++            _ => None,
++        };
++        let first_read: &energy::NodeStates = predicted.as_ref().unwrap_or(&self.node_states);
++        let probe_clock = std::time::Instant::now();
+         let mut solution =
+             self.flow_solver
+-                .solve(&self.graph, &self.slate, &self.node_states, dt)?;
++                .solve(&self.graph, &self.slate, first_read, dt)?;
++        crate::probe::add("engine: flow solve", probe_clock);
++        crate::probe::count("engine: flow iterations", solution.diagnostics.iterations as u64);
+ 
+         // 2b. Resolve the node temperature AND composition fields: inertial
+         //     nodes contribute their start-of-tick values, zero-volume nodes mix
+@@ -1292,7 +1352,9 @@ impl Engine {
+         //     A tank the solve STARVED is a mixing point here too (M24,
+         //     docs/DESIGN.md §28 fork 4): its outflow is the mix of what it held
+         //     and what it was fed.
++        let probe_clock = std::time::Instant::now();
+         let mut node_states = resolve(&solution, None)?;
++        crate::probe::add("engine: resolve", probe_clock);
+ 
+         // 1b. The same tick's states, re-solved on (M55.0, docs/DESIGN.md §60.0,
+         //     ledger row B50). A zero-volume node has no state of its own: the
+@@ -1317,6 +1379,7 @@ impl Engine {
+             if !re_solve {
+                 break;
+             }
++            let probe_clock = std::time::Instant::now();
+             let change = energy::swept_density_change(
+                 &self.graph,
+                 &self.slate,
+@@ -1324,9 +1387,11 @@ impl Engine {
+                 self.thermo.as_ref(),
+                 self.enthalpy.as_ref(),
+                 &solution.node_pressure,
+-                read.as_ref().unwrap_or(&self.node_states),
++                read.as_ref().unwrap_or(first_read),
+                 &node_states,
+             )?;
++            crate::probe::add("engine: density change", probe_clock);
++            crate::probe::mark_pass(change);
+             if change <= SWEPT_DENSITY_TOL {
+                 break;
+             }
+@@ -1336,11 +1401,16 @@ impl Engine {
+                      re-solves of one tick: the last moved {change:.3e} of itself"
+                 )));
+             }
++            let probe_clock = std::time::Instant::now();
+             let next = self
+                 .flow_solver
+                 .solve(&self.graph, &self.slate, &node_states, dt)?;
++            crate::probe::add("engine: flow solve", probe_clock);
++            crate::probe::count("engine: flow iterations", next.diagnostics.iterations as u64);
+             hardest = hardest.max(next.diagnostics.iterations);
++            let probe_clock = std::time::Instant::now();
+             let next_states = resolve(&next, Some(&node_states))?;
++            crate::probe::add("engine: resolve", probe_clock);
+             read = Some(std::mem::replace(&mut node_states, next_states));
+             solution = next;
+             passes += 1;
+@@ -2542,7 +2612,8 @@ impl Engine {
+             }
+         }
+ 
+-        self.node_states = node_states;
++        self.probe_prev_states = Some(std::mem::replace(&mut self.node_states, node_states));
++        self.probe_commanded = false;
+         self.last_solution = Some(solution);
+         self.last_cavitation = cavitation;
+         self.last_supply_boiling = supply;
+diff --git a/crates/core/src/lib.rs b/crates/core/src/lib.rs
+index 00573be..3cb4bc4 100644
+--- a/crates/core/src/lib.rs
++++ b/crates/core/src/lib.rs
+@@ -11,6 +11,7 @@ pub mod energy;
+ pub mod engine;
+ pub mod error;
+ pub mod graph;
++pub mod probe;
+ pub mod snapshot;
+ pub mod stream;
+ pub mod traits;
+diff --git a/crates/core/src/probe.rs b/crates/core/src/probe.rs
+new file mode 100644
+index 0000000..c645ce4
+--- /dev/null
++++ b/crates/core/src/probe.rs
+@@ -0,0 +1,52 @@
++//! M69.0 probe timers (not for commit): named counts and wall time.
++
++use std::cell::RefCell;
++use std::collections::BTreeMap;
++use std::time::Instant;
++
++thread_local! {
++    static TIMERS: RefCell<BTreeMap<&'static str, (u64, u64)>> = RefCell::new(BTreeMap::new());
++}
++
++/// Every timer since the last take: name -> (count, ns), and cleared.
++pub fn take() -> BTreeMap<&'static str, (u64, u64)> {
++    TIMERS.with(|t| std::mem::take(&mut *t.borrow_mut()))
++}
++
++/// Adds one count and the time since `since` to `name`.
++pub fn add(name: &'static str, since: Instant) {
++    let ns = since.elapsed().as_nanos() as u64;
++    TIMERS.with(|t| {
++        let mut t = t.borrow_mut();
++        let e = t.entry(name).or_insert((0, 0));
++        e.0 += 1;
++        e.1 += ns;
++    });
++}
++
++/// Adds `n` to `name`'s count alone.
++pub fn count(name: &'static str, n: u64) {
++    TIMERS.with(|t| {
++        t.borrow_mut().entry(name).or_insert((0, 0)).0 += n;
++    });
++}
++
++thread_local! {
++    static PASSES: RefCell<Vec<(f64, BTreeMap<&'static str, u64>)>> = const { RefCell::new(Vec::new()) };
++    static PASSES_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++/// Marks the end of a pass: its density change and every count so far.
++pub fn mark_pass(change: f64) {
++    if !PASSES_ON.with(|on| on.get()) {
++        return;
++    }
++    let counts = TIMERS.with(|t| t.borrow().iter().map(|(k, v)| (*k, v.0)).collect());
++    PASSES.with(|p| p.borrow_mut().push((change, counts)));
++}
++
++/// Every pass marked since the last take, and cleared.
++pub fn take_passes() -> Vec<(f64, BTreeMap<&'static str, u64>)> {
++    PASSES_ON.with(|on| on.set(true));
++    PASSES.with(|p| std::mem::take(&mut *p.borrow_mut()))
++}
+diff --git a/crates/solvers/src/column_newton.rs b/crates/solvers/src/column_newton.rs
+index 7841737..4fc0546 100644
+--- a/crates/solvers/src/column_newton.rs
++++ b/crates/solvers/src/column_newton.rs
+@@ -55,6 +55,8 @@ use crate::heat_balance::{
+     VAPOUR_FLOOR_OF_FEED,
+ };
+ use crate::molar::MoleFractions;
++use crate::probe;
++use std::time::Instant;
+ 
+ /// The most a stage temperature may move in one Newton step [K].
+ ///
+@@ -224,6 +226,20 @@ impl ColumnEquations<'_> {
+         specification: Specification,
+         wet: &[usize],
+     ) -> Result<Evaluation, SimError> {
++        probe::count_eval();
++        let mut clock = Instant::now();
++        let result = self.evaluate_inner(u, specification, wet);
++        probe::lap(14, &mut clock);
++        result
++    }
++
++    fn evaluate_inner(
++        &self,
++        u: &[f64],
++        specification: Specification,
++        wet: &[usize],
++    ) -> Result<Evaluation, SimError> {
++        let mut clock = Instant::now();
+         let plan = self.plan;
+         let slate = self.slate;
+         let n = plan.stages;
+@@ -303,6 +319,7 @@ impl ColumnEquations<'_> {
+                 .map_err(|_| outside("a water vapour rate left the physical region"))?;
+         }
+ 
++        probe::lap(0, &mut clock);
+         let mut k = Vec::with_capacity(n);
+         let mut water_k = Vec::new();
+         for (j, t) in temperatures.iter().enumerate() {
+@@ -325,6 +342,7 @@ impl ColumnEquations<'_> {
+             }
+             k.push(row);
+         }
++        probe::lap(1, &mut clock);
+         // Each component's liquid down the column: the Thomas sweep the fixed
+         // point uses, left UNNORMALISED so the summation can read it.
+         let mut amounts = vec![vec![0.0; slate.len()]; n];
+@@ -335,6 +353,7 @@ impl ColumnEquations<'_> {
+             }
+         }
+ 
++        probe::lap(2, &mut clock);
+         let mut residual = Vec::with_capacity(self.unknowns(specification, wet));
+         // The summation, one per stage: `Σ K·x = 1` (the bubble point).
+         for (row, k_row) in amounts.iter().zip(&k) {
+@@ -344,6 +363,7 @@ impl ColumnEquations<'_> {
+         for row in &amounts {
+             liquid.push(MoleFractions::from_amounts(row)?.fractions().to_vec());
+         }
++        probe::lap(3, &mut clock);
+         let mut h = Vec::with_capacity(n);
+         let mut big_h = Vec::with_capacity(n);
+         for j in 0..n {
+@@ -352,6 +372,7 @@ impl ColumnEquations<'_> {
+             h.push(liquid_enthalpy(slate, &liquid[j], t));
+             big_h.push(liquid_enthalpy(slate, &y, t) + mixture_dh_vap(slate, self.thermo, &y, t)?);
+         }
++        probe::lap(4, &mut clock);
+         // The reflux: stage 1's vapour, condensed, at its own bubble point —
+         // the fixed point's `reflux_enthalpy`.
+         let condensate = equilibrium_vapour(&liquid[0], &k[0])?;
+@@ -374,6 +395,7 @@ impl ColumnEquations<'_> {
+             )?,
+         };
+         let reflux_enthalpy = liquid_enthalpy(slate, &condensate, condenser_t);
++        probe::lap(5, &mut clock);
+         // Water's own enthalpies at each stage, liquid and vapour [J/mol].
+         let mut water_h = Vec::new();
+         let mut water_big_h = Vec::new();
+@@ -383,6 +405,7 @@ impl ColumnEquations<'_> {
+                 water_big_h.push(water.vapour_enthalpy(slate, self.thermo, Kelvin(*t))?);
+             }
+         }
++        probe::lap(6, &mut clock);
+         // Each stage's energy balance but the reboiler's (which is the closure),
+         // and the reboiler's too where its duty is held.
+         for j in 0..n {
+@@ -485,10 +508,12 @@ impl ColumnEquations<'_> {
+         if residual.iter().any(|r| !r.is_finite()) {
+             return Err(outside("a residual is not finite"));
+         }
++        probe::lap(7, &mut clock);
+         let draws = plan.draw_states(&liquid, &k, slate)?;
+         let component_residual =
+             plan.component_residual_with(&draws, self.feed_composition, slate, &ratios)
+                 * self.feed_mass;
++        probe::lap(8, &mut clock);
+         Ok(Evaluation {
+             residual,
+             component_residual,
+@@ -533,6 +558,20 @@ impl ColumnEquations<'_> {
+         specification: Specification,
+         wet: &[usize],
+         max_iterations: u32,
++    ) -> Result<Solved, Unsolved> {
++        probe::with(|c| c.solves += 1);
++        let mut clock = Instant::now();
++        let result = self.solve_inner(start, specification, wet, max_iterations);
++        probe::lap(11, &mut clock);
++        result
++    }
++
++    fn solve_inner(
++        &self,
++        start: &Start<'_>,
++        specification: Specification,
++        wet: &[usize],
++        max_iterations: u32,
+     ) -> Result<Solved, Unsolved> {
+         let n = self.plan.stages;
+         let mut u: Vec<f64> = start.temperatures.to_vec();
+@@ -555,12 +594,15 @@ impl ColumnEquations<'_> {
+         // The free water's sign is the wet set's to judge (§67.17 rule 6), so
+         // the fraction-to-the-boundary rule stops short of it.
+         let bounded = u.len() - wet.len();
+-        let mut current = self
++        probe::set_kind(probe::EVAL_START);
++        let current = self
+             .evaluate(&u, specification, wet)
+             .map_err(|e| Unsolved {
+                 reason: format!("its starting point is outside the physical region ({e})"),
+                 flows: None,
+-            })?;
++            });
++        probe::set_kind(probe::EVAL_OTHER);
++        let mut current = current?;
+         let norm = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>().sqrt();
+         let mut current_norm = norm(&current.residual);
+         let mut iterations = 0u32;
+@@ -587,10 +629,17 @@ impl ColumnEquations<'_> {
+                 });
+             }
+             iterations += 1;
++            probe::with(|c| c.iterations += 1);
+ 
++            let mut clock = Instant::now();
++            probe::set_kind(probe::EVAL_JACOBIAN);
+             let jacobian = self.jacobian(&u, &current.residual, specification, wet);
++            probe::set_kind(probe::EVAL_OTHER);
++            probe::lap(10, &mut clock);
+             let negative: Vec<f64> = current.residual.iter().map(|r| -r).collect();
+-            let Some(step) = solve_dense(jacobian, negative) else {
++            let step = solve_dense(jacobian, negative);
++            probe::lap(9, &mut clock);
++            let Some(step) = step else {
+                 return Err(Unsolved {
+                     reason: format!(
+                         "its Jacobian is singular at iteration {iterations}: {}",
+@@ -611,6 +660,7 @@ impl ColumnEquations<'_> {
+                 }
+             }
+             let mut accepted = None;
++            probe::set_kind(probe::EVAL_SEARCH);
+             for _ in 0..=MAX_HALVINGS {
+                 let trial: Vec<f64> = u.iter().zip(&step).map(|(a, d)| a + scale * d).collect();
+                 if let Ok(evaluation) = self.evaluate(&trial, specification, wet) {
+@@ -624,6 +674,7 @@ impl ColumnEquations<'_> {
+                 }
+                 scale *= 0.5;
+             }
++            probe::set_kind(probe::EVAL_OTHER);
+             let Some((trial, evaluation, trial_norm)) = accepted else {
+                 return Err(Unsolved {
+                     reason: format!(
+@@ -716,6 +767,7 @@ impl ColumnEquations<'_> {
+             let (shifted, signed) = match self.evaluate(&probe, specification, wet) {
+                 Ok(e) => (Some(e.residual), step),
+                 Err(_) => {
++                    crate::probe::with(|c| c.backward += 1);
+                     probe[column] = u[column] - step;
+                     (
+                         self.evaluate(&probe, specification, wet)
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 25b39e2..13bef22 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -332,10 +332,15 @@ impl SeparationModel for HeatBalanceCascade {
+         pass: &ColumnPass<'_>,
+         thermo: &dyn ThermoModel,
+     ) -> Result<Separation, SimError> {
+-        match self.hold_or_decline(pass, thermo) {
++        crate::probe::with(|c| c.separates += 1);
++        let mut clock = std::time::Instant::now();
++        let result = match self.hold_or_decline(pass, thermo) {
+             Ok(separation) => Ok(separation),
+             Err(refusal) => flooded_pass_through(pass, thermo, refusal),
+-        }
++        };
++        crate::probe::lap(13, &mut clock);
++        refinery_core::probe::count("column: separate", 1);
++        result
+     }
+ }
+ 
+@@ -783,6 +788,18 @@ impl HeatBalanceCascade {
+         setup: &ColumnSetup<'_>,
+         warm: Option<&CascadeProfile>,
+         cap: u32,
++    ) -> Result<FixedPointState, SimError> {
++        let mut clock = std::time::Instant::now();
++        let result = self.fixed_point_iterations_inner(setup, warm, cap);
++        crate::probe::lap(12, &mut clock);
++        result
++    }
++
++    fn fixed_point_iterations_inner(
++        &self,
++        setup: &ColumnSetup<'_>,
++        warm: Option<&CascadeProfile>,
++        cap: u32,
+     ) -> Result<FixedPointState, SimError> {
+         let pass = setup.pass;
+         let slate = pass.slate;
+diff --git a/crates/solvers/src/lib.rs b/crates/solvers/src/lib.rs
+index 5c0200a..d054b22 100644
+--- a/crates/solvers/src/lib.rs
++++ b/crates/solvers/src/lib.rs
+@@ -39,6 +39,7 @@ pub mod hydrocracking;
+ pub mod line_flash;
+ pub mod molar;
+ pub mod network;
++pub mod probe;
+ pub mod newton_flow;
+ pub mod reactor;
+ pub mod separation;
+diff --git a/crates/solvers/src/line_flash.rs b/crates/solvers/src/line_flash.rs
+index 80f4a5d..30ff4ef 100644
+--- a/crates/solvers/src/line_flash.rs
++++ b/crates/solvers/src/line_flash.rs
+@@ -774,7 +774,9 @@ impl LineFlashModel for EquilibriumLineFlash {
+         thermo: &dyn ThermoModel,
+         enthalpy: &dyn EnthalpyModel,
+     ) -> Result<Settled, SimError> {
+-        Self::settle_full(
++        crate::probe::flash_question(2, composition.fractions(), liquid_equivalent.value(), pressure.value());
++        let clock = std::time::Instant::now();
++        let r = Self::settle_full(
+             slate,
+             composition,
+             liquid_equivalent,
+@@ -782,7 +784,9 @@ impl LineFlashModel for EquilibriumLineFlash {
+             thermo,
+             enthalpy,
+         )
+-        .map(|(settled, _)| settled)
++        .map(|(settled, _)| settled);
++        refinery_core::probe::add("flash: settle", clock);
++        r
+     }
+ 
+     fn density(
+@@ -794,14 +798,18 @@ impl LineFlashModel for EquilibriumLineFlash {
+         thermo: &dyn ThermoModel,
+         enthalpy: &dyn EnthalpyModel,
+     ) -> Result<Option<TwoPhaseDensity>, SimError> {
+-        let (_, two_phase) = Self::settle_full(
++        crate::probe::flash_question(1, composition.fractions(), liquid_equivalent.value(), pressure.value());
++        let clock = std::time::Instant::now();
++        let r = Self::settle_full(
+             slate,
+             composition,
+             liquid_equivalent,
+             pressure,
+             thermo,
+             enthalpy,
+-        )?;
++        );
++        refinery_core::probe::add("flash: density", clock);
++        let (_, two_phase) = r?;
+         Ok(two_phase.map(|(split, q)| {
+             // Homogeneous equilibrium: 1/ρ = q/ρ_v + (1 − q)/ρ_l (Wallis 1969,
+             // ch. 2) — specific volumes add by mass.
+diff --git a/crates/solvers/src/probe.rs b/crates/solvers/src/probe.rs
+new file mode 100644
+index 0000000..c53659f
+--- /dev/null
++++ b/crates/solvers/src/probe.rs
+@@ -0,0 +1,111 @@
++//! M68.0 probe counters (not for commit): the column solve's work per tick.
++
++use std::cell::RefCell;
++use std::time::Instant;
++
++pub const SECTIONS: [&str; 16] = [
++    "eval:flows+water",
++    "eval:k",
++    "eval:thomas",
++    "eval:summation+normalise",
++    "eval:enthalpy h/H",
++    "eval:condenser",
++    "eval:water enthalpy",
++    "eval:energy+ratios+sat",
++    "eval:draw_states+I7",
++    "newton:dense solve",
++    "newton:jacobian (all)",
++    "newton:solve (all)",
++    "fixed point",
++    "separate (all)",
++    "eval (all)",
++    "spare",
++];
++
++pub const EVAL_START: usize = 0;
++pub const EVAL_JACOBIAN: usize = 1;
++pub const EVAL_SEARCH: usize = 2;
++pub const EVAL_OTHER: usize = 3;
++
++#[derive(Default, Clone, Debug)]
++pub struct Counters {
++    pub separates: u64,
++    pub solves: u64,
++    pub iterations: u64,
++    pub evals: [u64; 4],
++    pub backward: u64,
++    pub ns: [u64; 16],
++}
++
++thread_local! {
++    static COUNTERS: RefCell<Counters> = RefCell::new(Counters::default());
++    static KIND: RefCell<usize> = const { RefCell::new(EVAL_OTHER) };
++}
++
++/// Every counter since the last take, and zeroed.
++pub fn take() -> Counters {
++    COUNTERS.with(|c| std::mem::take(&mut *c.borrow_mut()))
++}
++
++pub(crate) fn with(f: impl FnOnce(&mut Counters)) {
++    COUNTERS.with(|c| f(&mut c.borrow_mut()));
++}
++
++pub(crate) fn set_kind(kind: usize) {
++    KIND.with(|k| *k.borrow_mut() = kind);
++}
++
++pub(crate) fn count_eval() {
++    let kind = KIND.with(|k| *k.borrow());
++    with(|c| c.evals[kind] += 1);
++}
++
++/// Adds the time since `*since` to `section` and restarts the clock.
++pub(crate) fn lap(section: usize, since: &mut Instant) {
++    let now = Instant::now();
++    let ns = (now - *since).as_nanos() as u64;
++    with(|c| c.ns[section] += ns);
++    *since = now;
++}
++
++thread_local! {
++    static FLASH_KEYS: RefCell<std::collections::HashMap<Vec<u64>, u8>> =
++        RefCell::new(std::collections::HashMap::new());
++    static FLASH_ON: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
++/// Forgets the tick's flash questions (the driver, every tick).
++pub fn clear_flash_keys() {
++    FLASH_ON.with(|on| on.set(true));
++    FLASH_KEYS.with(|k| k.borrow_mut().clear());
++}
++
++/// One line-flash question, `kind` 1 a density, 2 a settle: counts it as a
++/// repeat of the same kind, or of either, asked before in this tick.
++pub(crate) fn flash_question(kind: u8, fractions: &[f64], liquid_equivalent: f64, pressure: f64) {
++    if !FLASH_ON.with(|on| on.get()) {
++        return;
++    }
++    let mut key: Vec<u64> = fractions.iter().map(|f| f.to_bits()).collect();
++    key.push(liquid_equivalent.to_bits());
++    key.push(pressure.to_bits());
++    let seen = FLASH_KEYS.with(|k| {
++        let mut k = k.borrow_mut();
++        let entry = k.entry(key).or_insert(0);
++        let before = *entry;
++        *entry |= kind;
++        before
++    });
++    if seen != 0 {
++        refinery_core::probe::count(
++            if kind == 1 { "flash: density repeat (any)" } else { "flash: settle repeat (any)" },
++            1,
++        );
++    }
++    if seen & kind != 0 {
++        refinery_core::probe::count(
++            if kind == 1 { "flash: density repeat (same)" } else { "flash: settle repeat (same)" },
++            1,
++        );
++    }
++}
+diff --git a/tools/steptime/Cargo.toml b/tools/steptime/Cargo.toml
+index a9e4092..32c816f 100644
+--- a/tools/steptime/Cargo.toml
++++ b/tools/steptime/Cargo.toml
+@@ -13,3 +13,4 @@ publish = false
+ serde_json = "1"
+ refinery-core = { path = "../../crates/core" }
+ refinery-scenarios = { path = "../../crates/scenarios" }
++refinery-solvers = { path = "../../crates/solvers" }
+diff --git a/tools/steptime/src/bin/m68_0_count.rs b/tools/steptime/src/bin/m68_0_count.rs
+new file mode 100644
+index 0000000..dbea186
+--- /dev/null
++++ b/tools/steptime/src/bin/m68_0_count.rs
+@@ -0,0 +1,273 @@
++//! M68.0 probe: the column solve's work per tick through each column plant's
++//! story — solves, Newton iterations, evaluations by caller, and where the
++//! time inside them goes (shares only; the machine is loaded).
++//!
++//! cargo run --release --bin m68_0_count -- <scenarios dir> [plant ...]
++//!   DUMP=<dir>  one CSV per plant, a row per tick
++
++use refinery_core::snapshot::{Command, Snapshot};
++use refinery_core::units::Watt;
++use refinery_core::Engine;
++use refinery_solvers::probe::{self, Counters, SECTIONS};
++use std::time::Instant;
++
++enum Beat {
++    Run(u32),
++    Reflux(f64),
++    Pumparounds([f64; 3]),
++    Furnace(f64),
++    Valve(&'static str, f64),
++    /// The cold start-up of `crude_unit_cold_reference.rs`.
++    ColdStartUp,
++}
++
++fn build(path: &str) -> Engine {
++    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
++    let file = refinery_scenarios::load_str(&src).expect("parse");
++    refinery_scenarios::build_engine(&file).expect("build")
++}
++
++fn reboiler_w(s: &Snapshot) -> f64 {
++    s.nodes
++        .iter()
++        .find(|n| n.name == "column")
++        .unwrap()
++        .column_duty
++        .as_ref()
++        .unwrap()
++        .reboiler_w
++}
++
++struct Tick {
++    wall_ns: u64,
++    c: Counters,
++}
++
++fn main() {
++    let args: Vec<String> = std::env::args().collect();
++    let dir = args.get(1).cloned().unwrap_or_else(|| "scenarios".into());
++    let only: Vec<String> = args[2.min(args.len())..].to_vec();
++    let dump = std::env::var("DUMP").ok();
++    use Beat::*;
++    let crude = vec![
++        Run(1000),
++        Reflux(2.0),
++        Run(300),
++        Reflux(4.0),
++        Run(300),
++        Pumparounds([0.0; 3]),
++        Run(300),
++        Reflux(8.0),
++        Run(300),
++        Pumparounds([15.0, 15.0, 10.0]),
++        Reflux(4.0),
++        Furnace(35.0),
++        Run(600),
++    ];
++    let stripped = vec![
++        Run(1000),
++        Pumparounds([0.0, 0.0, 8.0]),
++        Run(300),
++        Furnace(45.0),
++        Run(600),
++        Valve("steam_valve", 0.8),
++        Run(300),
++        Pumparounds([0.0; 3]),
++        Furnace(58.0),
++        Run(600),
++    ];
++    let steady = vec![Run(2000)];
++    let cold = vec![ColdStartUp];
++    let plants: Vec<(&str, &Vec<Beat>)> = vec![
++        ("crude_unit", &crude),
++        ("crude_column_hot_feed", &steady),
++        ("crude_column_overheated", &steady),
++        ("crude_unit_stripped", &stripped),
++        ("crude_unit_cold", &cold),
++        ("crude_unit_wet", &steady),
++        ("crude_unit_wetter", &steady),
++        ("crude_unit_steam", &steady),
++        ("crude_unit_boiling", &steady),
++    ];
++    for (name, beats) in plants {
++        if !only.is_empty() && !only.iter().any(|o| o == name) {
++            continue;
++        }
++        let mut engine = build(&format!("{dir}/{name}.toml"));
++        let column = engine.graph.find_node("column").expect("a column");
++        let mut ticks: Vec<Tick> = Vec::new();
++        probe::take();
++        let mut tick = |engine: &mut Engine, ticks: &mut Vec<Tick>| {
++            let start = Instant::now();
++            engine.tick().expect("a story's tick");
++            let wall_ns = start.elapsed().as_nanos() as u64;
++            ticks.push(Tick {
++                wall_ns,
++                c: probe::take(),
++            });
++        };
++        for beat in beats {
++            let command = match *beat {
++                Run(n) => {
++                    for _ in 0..n {
++                        tick(&mut engine, &mut ticks);
++                    }
++                    continue;
++                }
++                Reflux(r) => vec![Command::SetRefluxRatio {
++                    node: column,
++                    reflux_ratio: r,
++                }],
++                Pumparounds(d) => (0..3)
++                    .map(|i| Command::SetPumparoundDuty {
++                        node: column,
++                        pumparound: i,
++                        duty: Watt(d[i as usize] * 1e6),
++                    })
++                    .collect(),
++                Furnace(mw) => vec![Command::SetFurnaceDuty {
++                    node: engine.graph.find_node("furnace").unwrap(),
++                    duty: Watt(mw * 1e6),
++                }],
++                Valve(v, o) => vec![Command::SetValveOpening {
++                    node: engine.graph.find_node(v).unwrap(),
++                    opening: o,
++                }],
++                ColdStartUp => {
++                    let furnace = engine.graph.find_node("furnace").unwrap();
++                    for t in 1..=2_400u64 {
++                        if t == 10 {
++                            engine
++                                .apply(Command::SetFurnaceDuty {
++                                    node: furnace,
++                                    duty: Watt(58.0e6),
++                                })
++                                .unwrap();
++                        }
++                        if t == 500 {
++                            for pumparound in 0..3 {
++                                engine
++                                    .apply(Command::SetPumparoundDuty {
++                                        node: column,
++                                        pumparound,
++                                        duty: Watt::ZERO,
++                                    })
++                                    .unwrap();
++                            }
++                        }
++                        if t >= 500 && t % 10 == 0 {
++                            let running = reboiler_w(&engine.snapshot());
++                            if running > 0.0 {
++                                engine
++                                    .apply(Command::SetReboilerDuty {
++                                        node: column,
++                                        duty: Some(Watt((running - 2.5e6).max(0.0))),
++                                    })
++                                    .unwrap();
++                            }
++                        }
++                        tick(&mut engine, &mut ticks);
++                    }
++                    continue;
++                }
++            };
++            for c in command {
++                let _ = engine.apply(c);
++            }
++        }
++        report(name, &ticks);
++        if let Some(d) = &dump {
++            let mut text = String::from(
++                "tick,wall_us,separates,solves,iterations,ev_start,ev_jac,ev_search,ev_other,backward,eval_us,jac_us,fixed_us,separate_us\n",
++            );
++            for (i, t) in ticks.iter().enumerate() {
++                let c = &t.c;
++                text.push_str(&format!(
++                    "{},{:.1},{},{},{},{},{},{},{},{},{:.1},{:.1},{:.1},{:.1}\n",
++                    i + 1,
++                    t.wall_ns as f64 / 1e3,
++                    c.separates,
++                    c.solves,
++                    c.iterations,
++                    c.evals[0],
++                    c.evals[1],
++                    c.evals[2],
++                    c.evals[3],
++                    c.backward,
++                    c.ns[14] as f64 / 1e3,
++                    c.ns[10] as f64 / 1e3,
++                    c.ns[12] as f64 / 1e3,
++                    c.ns[13] as f64 / 1e3
++                ));
++            }
++            std::fs::write(format!("{d}/{name}.csv"), text).unwrap();
++        }
++    }
++}
++
++fn report(name: &str, ticks: &[Tick]) {
++    // Tick 1 (the cold start) apart.
++    let rest = &ticks[1..];
++    let n = rest.len() as f64;
++    let sum = |f: &dyn Fn(&Tick) -> u64| rest.iter().map(f).sum::<u64>() as f64;
++    let max = |f: &dyn Fn(&Tick) -> u64| rest.iter().map(f).max().unwrap_or(0);
++    let evals = |t: &Tick| t.c.evals.iter().sum::<u64>();
++    let wall = sum(&|t| t.wall_ns);
++    println!("== {name}  ({} ticks after the first)", rest.len());
++    println!(
++        "  per tick: separates {:.2}  solves {:.2}  iterations {:.2}  evals {:.1} (start {:.2}, jacobian {:.1}, search {:.2}, other {:.2})  backward {:.2}",
++        sum(&|t| t.c.separates) / n,
++        sum(&|t| t.c.solves) / n,
++        sum(&|t| t.c.iterations) / n,
++        sum(&evals) / n,
++        sum(&|t| t.c.evals[0]) / n,
++        sum(&|t| t.c.evals[1]) / n,
++        sum(&|t| t.c.evals[2]) / n,
++        sum(&|t| t.c.evals[3]) / n,
++        sum(&|t| t.c.backward) / n,
++    );
++    let mut e: Vec<u64> = rest.iter().map(evals).collect();
++    e.sort_unstable();
++    println!(
++        "  evals/tick: median {}  p99 {}  max {}   iterations max {}  solves max {}",
++        e[e.len() / 2],
++        e[((e.len() as f64 * 0.99) as usize).min(e.len() - 1)],
++        e[e.len() - 1],
++        max(&|t| t.c.iterations),
++        max(&|t| t.c.solves)
++    );
++    println!(
++        "  first tick: wall {:.2} ms  solves {}  iterations {}  evals {}  fixed point {:.2} ms",
++        ticks[0].wall_ns as f64 / 1e6,
++        ticks[0].c.solves,
++        ticks[0].c.iterations,
++        evals(&ticks[0]),
++        ticks[0].c.ns[12] as f64 / 1e6
++    );
++    println!(
++        "  wall/tick mean {:.3} ms (loaded machine; shares below are of the wall)",
++        wall / n / 1e6
++    );
++    for (i, s) in SECTIONS.iter().enumerate() {
++        let ns = sum(&|t| t.c.ns[i]);
++        if ns > 0.0 {
++            println!("    {s:28} {:5.1} %", 100.0 * ns / wall);
++        }
++    }
++    // The worst 1 % of ticks by evaluations (deterministic): what they spend.
++    let mut order: Vec<&Tick> = rest.iter().collect();
++    order.sort_by_key(|t| std::cmp::Reverse(evals(t)));
++    let top = &order[..(rest.len() / 100).max(1)];
++    let tw: f64 = top.iter().map(|t| t.wall_ns as f64).sum();
++    let tj: f64 = top.iter().map(|t| t.c.ns[10] as f64).sum();
++    let te: f64 = top.iter().map(|t| t.c.ns[14] as f64).sum();
++    let tf: f64 = top.iter().map(|t| t.c.ns[12] as f64).sum();
++    println!(
++        "  worst 1 % by evals ({} ticks): wall mean {:.2} ms, jacobian {:.1} %, all evals {:.1} %, fixed point {:.1} %",
++        top.len(),
++        tw / top.len() as f64 / 1e6,
++        100.0 * tj / tw,
++        100.0 * te / tw,
++        100.0 * tf / tw
++    );
++}
+diff --git a/tools/steptime/src/bin/m69_0_count.rs b/tools/steptime/src/bin/m69_0_count.rs
+new file mode 100644
+index 0000000..8900afd
+--- /dev/null
++++ b/tools/steptime/src/bin/m69_0_count.rs
+@@ -0,0 +1,272 @@
++//! M69.0 probe (A29): a coil plant's tick - its re-solves, and where the time
++//! goes: the flow solve, the resolve (the coil's cells, the column), the line
++//! flash. Shares and counts; the machine is loaded.
++//!
++//! cargo run --release --bin m69_0_count -- <scenarios dir> [plant ...]
++//!   DUMP=<dir>  one CSV per plant, a row per tick
++
++use refinery_core::snapshot::{Command, Snapshot};
++use refinery_core::units::Watt;
++use refinery_core::Engine;
++use refinery_solvers::probe::{self, Counters, SECTIONS};
++use std::time::Instant;
++
++enum Beat {
++    Run(u32),
++    Reflux(f64),
++    Pumparounds([f64; 3]),
++    Furnace(f64),
++    Valve(&'static str, f64),
++    /// The cold start-up of `crude_unit_cold_reference.rs`.
++    ColdStartUp,
++}
++
++fn build(path: &str) -> Engine {
++    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
++    let file = refinery_scenarios::load_str(&src).expect("parse");
++    refinery_scenarios::build_engine(&file).expect("build")
++}
++
++fn reboiler_w(s: &Snapshot) -> f64 {
++    s.nodes
++        .iter()
++        .find(|n| n.name == "column")
++        .unwrap()
++        .column_duty
++        .as_ref()
++        .unwrap()
++        .reboiler_w
++}
++
++struct Tick {
++    wall_ns: u64,
++    c: Counters,
++    t: std::collections::BTreeMap<&'static str, (u64, u64)>,
++}
++
++fn main() {
++    let args: Vec<String> = std::env::args().collect();
++    let dir = args.get(1).cloned().unwrap_or_else(|| "scenarios".into());
++    let only: Vec<String> = args[2.min(args.len())..].to_vec();
++    let dump = std::env::var("DUMP").ok();
++    use Beat::*;
++    // Held from the file, then the furnace stepped as the screen's key does.
++    let boiling = vec![Run(1000), Furnace(25.0), Run(1500)];
++    let stripped = vec![Run(1000), Furnace(65.0), Run(1500)];
++    let steady = vec![Run(1500)];
++    let cold = vec![ColdStartUp];
++    let plants: Vec<(&str, &Vec<Beat>)> = vec![
++        ("crude_unit_boiling", &boiling),
++        ("crude_unit_stripped", &stripped),
++        ("crude_unit_cold", &cold),
++        ("crude_unit_wet", &steady),
++        ("crude_unit", &steady),
++    ];
++    for (name, beats) in plants {
++        if !only.is_empty() && !only.iter().any(|o| o == name) {
++            continue;
++        }
++        let mut engine = build(&format!("{dir}/{name}.toml"));
++        let engine_name = name;
++        let column = engine.graph.find_node("column").expect("a column");
++        let mut ticks: Vec<Tick> = Vec::new();
++        probe::take();
++        refinery_core::probe::take();
++        let mut beat_ticks = Vec::new();
++        let mut pass_log: Vec<Vec<(f64, std::collections::BTreeMap<&'static str, u64>)>> =
++            Vec::new();
++        let mut tick = |engine: &mut Engine, ticks: &mut Vec<Tick>| {
++            probe::clear_flash_keys();
++            let start = Instant::now();
++            engine.tick().expect("a story's tick");
++            let wall_ns = start.elapsed().as_nanos() as u64;
++            ticks.push(Tick {
++                wall_ns,
++                c: probe::take(),
++                t: refinery_core::probe::take(),
++            });
++            pass_log.push(refinery_core::probe::take_passes());
++            if let Ok(d) = std::env::var("SNAPDIR") {
++                let t = ticks.len();
++                if [1000usize, 1002, 1010, 1100, 1500, 2000, 2400, 2500].contains(&t) {
++                    std::fs::write(
++                        format!("{d}/{}_{t}.json", engine_name),
++                        serde_json::to_string(&engine.snapshot()).unwrap(),
++                    )
++                    .unwrap();
++                }
++            }
++        };
++        for beat in beats {
++            let command = match *beat {
++                Run(n) => {
++                    for _ in 0..n {
++                        tick(&mut engine, &mut ticks);
++                    }
++                    continue;
++                }
++                Reflux(r) => vec![Command::SetRefluxRatio {
++                    node: column,
++                    reflux_ratio: r,
++                }],
++                Pumparounds(d) => (0..3)
++                    .map(|i| Command::SetPumparoundDuty {
++                        node: column,
++                        pumparound: i,
++                        duty: Watt(d[i as usize] * 1e6),
++                    })
++                    .collect(),
++                Furnace(mw) => vec![Command::SetFurnaceDuty {
++                    node: engine.graph.find_node("furnace").unwrap(),
++                    duty: Watt(mw * 1e6),
++                }],
++                Valve(v, o) => vec![Command::SetValveOpening {
++                    node: engine.graph.find_node(v).unwrap(),
++                    opening: o,
++                }],
++                ColdStartUp => {
++                    let furnace = engine.graph.find_node("furnace").unwrap();
++                    for t in 1..=2_400u64 {
++                        if t == 10 {
++                            engine
++                                .apply(Command::SetFurnaceDuty {
++                                    node: furnace,
++                                    duty: Watt(58.0e6),
++                                })
++                                .unwrap();
++                        }
++                        if t == 500 {
++                            for pumparound in 0..3 {
++                                engine
++                                    .apply(Command::SetPumparoundDuty {
++                                        node: column,
++                                        pumparound,
++                                        duty: Watt::ZERO,
++                                    })
++                                    .unwrap();
++                            }
++                        }
++                        if t >= 500 && t % 10 == 0 {
++                            let running = reboiler_w(&engine.snapshot());
++                            if running > 0.0 {
++                                engine
++                                    .apply(Command::SetReboilerDuty {
++                                        node: column,
++                                        duty: Some(Watt((running - 2.5e6).max(0.0))),
++                                    })
++                                    .unwrap();
++                            }
++                        }
++                        tick(&mut engine, &mut ticks);
++                    }
++                    continue;
++                }
++            };
++            beat_ticks.push(ticks.len() + 1);
++            for c in command {
++                let _ = engine.apply(c);
++            }
++        }
++        let split = beat_ticks.first().copied().unwrap_or(ticks.len() + 1);
++        // Passes of a few ticks, one line each.
++        let sample: Vec<usize> = [2usize, 500, split, split + 1, split + 2, split + 10, split + 300]
++            .into_iter()
++            .filter(|t| *t <= ticks.len())
++            .collect();
++        for t in sample {
++            let passes = &pass_log[t - 1];
++            let mut line = format!("  {name} tick {t}:");
++            let mut prior: std::collections::BTreeMap<&str, u64> = Default::default();
++            for (change, counts) in passes {
++                let d = |k: &str| counts.get(k).copied().unwrap_or(0) - prior.get(k).copied().unwrap_or(0);
++                line.push_str(&format!(
++                    " [chg {change:.1e} it {} dens {} (rep {}/{}) settle {} (rep {}/{})]",
++                    d("engine: flow iterations"),
++                    d("flash: density"),
++                    d("flash: density repeat (same)"),
++                    d("flash: density repeat (any)"),
++                    d("flash: settle"),
++                    d("flash: settle repeat (same)"),
++                    d("flash: settle repeat (any)"),
++                ));
++                prior = counts.iter().map(|(k, v)| (*k, *v)).collect();
++            }
++            println!("{line}");
++        }
++        // Reported in two windows: held (before the first beat), and after it.
++        report(name, "held", &ticks[1..(split - 1).min(ticks.len())]);
++        if split <= ticks.len() {
++            report(name, "after the step", &ticks[split - 1..]);
++        }
++        if let Some(d) = &dump {
++            let mut text = String::from(
++                "tick,wall_us,passes,flow_iterations,flow_us,resolve_us,coil_us,settle_n,settle_us,density_n,density_us,column_n,column_us\n",
++            );
++            for (i, t) in ticks.iter().enumerate() {
++                let g = |n: &str| t.t.get(n).copied().unwrap_or((0, 0));
++                text.push_str(&format!(
++                    "{},{:.1},{},{},{:.1},{:.1},{:.1},{},{:.1},{},{:.1},{},{:.1}\n",
++                    i + 1,
++                    t.wall_ns as f64 / 1e3,
++                    g("engine: flow solve").0,
++                    g("engine: flow iterations").0,
++                    g("engine: flow solve").1 as f64 / 1e3,
++                    g("engine: resolve").1 as f64 / 1e3,
++                    g("resolve: coil cells").1 as f64 / 1e3,
++                    g("flash: settle").0,
++                    g("flash: settle").1 as f64 / 1e3,
++                    g("flash: density").0,
++                    g("flash: density").1 as f64 / 1e3,
++                    g("column: separate").0,
++                    t.c.ns[13] as f64 / 1e3,
++                ));
++            }
++            std::fs::write(format!("{d}/{name}.csv"), text).unwrap();
++        }
++    }
++}
++
++fn report(name: &str, window: &str, ticks: &[Tick]) {
++    if ticks.is_empty() {
++        return;
++    }
++    let n = ticks.len() as f64;
++    let wall: f64 = ticks.iter().map(|t| t.wall_ns as f64).sum();
++    let mut all: std::collections::BTreeMap<&str, (u64, u64)> = Default::default();
++    for t in ticks {
++        for (k, v) in &t.t {
++            let e = all.entry(k).or_insert((0, 0));
++            e.0 += v.0;
++            e.1 += v.1;
++        }
++    }
++    let column_ns: f64 = ticks.iter().map(|t| t.c.ns[13] as f64).sum();
++    let jac_ns: f64 = ticks.iter().map(|t| t.c.ns[10] as f64).sum();
++    let mut passes: Vec<u64> = ticks
++        .iter()
++        .map(|t| t.t.get("engine: flow solve").map_or(0, |v| v.0))
++        .collect();
++    passes.sort_unstable();
++    println!(
++        "== {name} [{window}] {} ticks: wall mean {:.2} ms; passes/tick mean {:.2} median {} max {}",
++        ticks.len(),
++        wall / n / 1e6,
++        passes.iter().sum::<u64>() as f64 / n,
++        passes[passes.len() / 2],
++        passes[passes.len() - 1]
++    );
++    for (k, (count, ns)) in &all {
++        println!(
++            "    {k:26} {:9.2}/tick  {:5.1} % of wall",
++            *count as f64 / n,
++            100.0 * *ns as f64 / wall
++        );
++    }
++    println!(
++        "    {:26} {:9}       {:5.1} % of wall (jacobian {:.1} %)",
++        "column (separate, all)",
++        "",
++        100.0 * column_ns / wall,
++        100.0 * jac_ns / wall
++    );
++}

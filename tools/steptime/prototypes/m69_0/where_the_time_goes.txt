@@ -1,0 +1,76 @@
+== crude_unit_boiling [held] 999 ticks: wall mean 30.77 ms; passes/tick mean 2.00 median 2 max 2
+    column: separate                2.00/tick    0.0 % of wall
+    engine: density change          2.00/tick   17.0 % of wall
+    engine: flow iterations         1.00/tick    0.0 % of wall
+    engine: flow solve              2.00/tick   37.4 % of wall
+    engine: resolve                 2.00/tick   43.9 % of wall
+    flash: density                264.06/tick   48.6 % of wall
+    flash: settle                 164.00/tick   34.6 % of wall
+    resolve: coil cells             2.00/tick   32.7 % of wall
+    column (separate, all)                       7.3 % of wall (jacobian 2.9 %)
+== crude_unit_boiling [after the step] 1500 ticks: wall mean 45.10 ms; passes/tick mean 4.00 median 4 max 4
+    column: separate                4.00/tick    0.0 % of wall
+    engine: density change          4.00/tick   13.7 % of wall
+    engine: flow iterations         3.00/tick    0.0 % of wall
+    engine: flow solve              4.00/tick   36.5 % of wall
+    engine: resolve                 4.00/tick   49.4 % of wall
+    flash: density                561.07/tick   43.9 % of wall
+    flash: settle                 328.00/tick   31.6 % of wall
+    resolve: coil cells             4.00/tick   30.9 % of wall
+    column (separate, all)                      15.6 % of wall (jacobian 10.4 %)
+== crude_unit_stripped [held] 999 ticks: wall mean 14.57 ms; passes/tick mean 1.62 median 2 max 3
+    column: separate                1.62/tick    0.0 % of wall
+    engine: density change          1.62/tick   17.5 % of wall
+    engine: flow iterations         1.14/tick    0.0 % of wall
+    engine: flow solve              1.62/tick   34.8 % of wall
+    engine: resolve                 1.62/tick   46.7 % of wall
+    flash: density                223.38/tick   44.8 % of wall
+    flash: settle                 134.84/tick   39.1 % of wall
+    resolve: coil cells             1.62/tick   35.4 % of wall
+    column (separate, all)                       5.4 % of wall (jacobian 3.0 %)
+== crude_unit_stripped [after the step] 1500 ticks: wall mean 85.09 ms; passes/tick mean 5.00 median 5 max 5
+    column: separate                5.00/tick    0.0 % of wall
+    engine: density change          5.00/tick   14.7 % of wall
+    engine: flow iterations         4.77/tick    0.0 % of wall
+    engine: flow solve              5.00/tick   40.2 % of wall
+    engine: resolve                 5.00/tick   44.7 % of wall
+    flash: density                730.15/tick   47.5 % of wall
+    flash: settle                 415.00/tick   32.4 % of wall
+    resolve: coil cells             5.00/tick   30.0 % of wall
+    column (separate, all)                       9.9 % of wall (jacobian 7.3 %)
+== crude_unit_cold [held] 2399 ticks: wall mean 83.79 ms; passes/tick mean 4.78 median 5 max 5
+    column: separate                4.78/tick    0.0 % of wall
+    engine: density change          4.78/tick   14.9 % of wall
+    engine: flow iterations         4.49/tick    0.0 % of wall
+    engine: flow solve              4.78/tick   38.8 % of wall
+    engine: resolve                 4.78/tick   45.6 % of wall
+    flash: density                688.03/tick   46.7 % of wall
+    flash: settle                 396.91/tick   32.3 % of wall
+    resolve: coil cells             4.78/tick   29.3 % of wall
+    column (separate, all)                      10.9 % of wall (jacobian 8.2 %)
+== crude_unit_wet [held] 1499 ticks: wall mean 27.57 ms; passes/tick mean 1.75 median 2 max 2
+    column: separate                1.75/tick    0.0 % of wall
+    engine: density change          1.75/tick   14.0 % of wall
+    engine: flow iterations         0.18/tick    0.0 % of wall
+    engine: flow solve              1.75/tick   34.6 % of wall
+    engine: resolve                 1.75/tick   49.9 % of wall
+    flash: density                201.83/tick   42.3 % of wall
+    flash: settle                 143.87/tick   42.5 % of wall
+    resolve: coil cells             1.75/tick   41.1 % of wall
+    column (separate, all)                       3.9 % of wall (jacobian 0.7 %)
+== crude_unit_steam [held] 1499 ticks: wall mean 15.92 ms; passes/tick mean 1.75 median 2 max 2
+    column: separate                1.75/tick    0.0 % of wall
+    engine: density change          1.75/tick   15.7 % of wall
+    engine: flow iterations         0.18/tick    0.0 % of wall
+    engine: flow solve              1.75/tick   33.0 % of wall
+    engine: resolve                 1.75/tick   49.3 % of wall
+    flash: density                205.56/tick   43.4 % of wall
+    flash: settle                 145.62/tick   42.7 % of wall
+    resolve: coil cells             1.75/tick   39.1 % of wall
+    column (separate, all)                       4.3 % of wall (jacobian 1.8 %)
+== crude_unit [held] 1499 ticks: wall mean 1.58 ms; passes/tick mean 1.00 median 1 max 1
+    column: separate                1.00/tick    0.0 % of wall
+    engine: flow iterations         0.00/tick    0.0 % of wall
+    engine: flow solve              1.00/tick    6.1 % of wall
+    engine: resolve                 1.00/tick   92.2 % of wall
+    column (separate, all)                      90.4 % of wall (jacobian 65.7 %)
