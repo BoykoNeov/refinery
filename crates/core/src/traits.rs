@@ -1101,7 +1101,9 @@ pub struct TwoPhaseDensity {
 ///
 /// **Pure, and a function of its arguments alone** (the `BoilOffModel`
 /// contract): the engine and each flow solver hold their own instance, so state
-/// on `self` would let the two disagree.
+/// on `self` would let the two disagree. A memo of the model's own answers is
+/// not such state (M69.1, `begin_tick`): it hands back the bits the arguments
+/// give.
 pub trait LineFlashModel: Send {
     fn name(&self) -> &'static str;
 
@@ -1110,6 +1112,12 @@ pub trait LineFlashModel: Send {
     /// loader's and both supply commands', `docs/DEFERRED.md` B46); `true`
     /// lifts it, because the supply is then modelled rather than misread.
     fn carries_vapour(&self) -> bool;
+
+    /// A tick begins (M69.1, docs/DESIGN.md §74.1): an instance that remembers
+    /// its answers may forget them. `Engine::tick` calls it first, on the
+    /// engine's own instance only. It never changes an answer. A no-op by
+    /// default.
+    fn begin_tick(&self) {}
 
     /// A supply's vapour at its declared state: an isothermal flash at
     /// `(temperature, pressure)` — a source HOLDS its temperature, so the heat

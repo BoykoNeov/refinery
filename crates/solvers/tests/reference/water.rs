@@ -215,7 +215,7 @@ fn a_superheated_steam_supply_carries_the_steam_tables_heat() {
     // 10 bar and 400 °C: superheated, all vapour. Its enthalpy on the engine's
     // datum is h_liquid(T) + latent, latent = λ(T) per kilogram of vapour.
     let thermo = TroutonThermo::new();
-    let flash = EquilibriumLineFlash;
+    let flash = EquilibriumLineFlash::default();
     let enthalpy = ConstantEnthalpy;
     let table = 3263.9e3;
     let enthalpy_of = |component: PseudoComponent| {

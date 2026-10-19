@@ -80,7 +80,7 @@ fn mass_of(slate: &Slate, moles: &[f64]) -> Composition {
 /// The vapour's mass share of the isothermal flash at `(T, P)` — the supply's
 /// flash, which is the line's `flash_on_the_line` read in mass.
 fn vapour_mass_share(slate: &Slate, feed: &Composition, celsius: f64) -> f64 {
-    EquilibriumLineFlash
+    EquilibriumLineFlash::default()
         .supply(
             slate,
             feed,

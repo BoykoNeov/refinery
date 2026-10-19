@@ -388,7 +388,7 @@ fn the_pump_outlets_slope_is_the_slope_at_the_iterate() {
         // A cold engine: the first tick's inputs, where Newton failed.
         let cold = build(&src);
         let flash = OwnedLineFlash::new(
-            Box::new(refinery_solvers::EquilibriumLineFlash),
+            Box::new(refinery_solvers::EquilibriumLineFlash::default()),
             Box::new(refinery_solvers::TroutonThermo::new()),
             Box::new(refinery_solvers::ConstantEnthalpy),
         );

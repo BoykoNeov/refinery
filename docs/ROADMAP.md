@@ -10586,3 +10586,16 @@ Probed (`tools/steptime/prototypes/m69_0/`, `FINDINGS.md`):
 
 Slices: M69.1 the memo (bit for bit); M69.2 the predictor; M69.3 the stripped
 and cold tables re-measured. No engine code changed.
+
+### M69.1 — **LANDED** 2026-10-19: the line flash remembered for a tick
+
+The engine's line flash remembers its answers for one tick, bit for bit
+(`EquilibriumLineFlash`'s memo, emptied by `LineFlashModel::begin_tick`).
+It catches the repeats the engine itself asks, about 12 % of a coil plant's
+flash questions, not the probe's 15 %: the flow solver holds its own
+instance. The coil plants 5–12 % faster (a loaded machine, ratios). DESIGN
+§74.4.
+
+- Gates: `line_flash::memo_tests` (5). Mutations: five, all caught; two more
+  cost only time and change no answer. Corpus: 67 of 67 byte-identical on both
+  fidelities.

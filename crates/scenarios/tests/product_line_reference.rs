@@ -145,7 +145,7 @@ fn edge<'a>(s: &'a Snapshot, name: &str) -> &'a EdgeSnapshot {
 fn density(slate: &Slate, engine: &Engine, stream: &EdgeSnapshot, pressure: f64) -> f64 {
     let composition = &stream.stream.composition;
     let temperature = stream.stream.temperature;
-    match EquilibriumLineFlash
+    match EquilibriumLineFlash::default()
         .density(
             slate,
             composition,

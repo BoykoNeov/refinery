@@ -392,7 +392,7 @@ fn select_enthalpy(name: &str) -> Result<Box<dyn EnthalpyModel>, SimError> {
 fn select_line_flash(name: &str) -> Result<Box<dyn LineFlashModel>, SimError> {
     match name {
         "none" => Ok(Box::new(refinery_solvers::NoLineFlash)),
-        "equilibrium" => Ok(Box::new(refinery_solvers::EquilibriumLineFlash)),
+        "equilibrium" => Ok(Box::new(refinery_solvers::EquilibriumLineFlash::default())),
         other => Err(SimError::Scenario(format!(
             "unknown line flash model '{other}' (valid: none, equilibrium)"
         ))),

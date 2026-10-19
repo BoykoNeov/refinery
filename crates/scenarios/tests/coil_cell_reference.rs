@@ -255,7 +255,7 @@ fn the_crude_enters_its_coil_liquid_and_boils_partway() {
             .enthalpy()
             .temperature_from_enthalpy(&slate, composition, h, 1.0)
             .unwrap();
-        let settled = EquilibriumLineFlash
+        let settled = EquilibriumLineFlash::default()
             .settle(
                 &slate,
                 composition,
@@ -327,7 +327,7 @@ fn each_cell_takes_its_share_and_each_segment_its_friction() {
             .unwrap();
         (
             le,
-            EquilibriumLineFlash
+            EquilibriumLineFlash::default()
                 .settle(
                     &slate,
                     &composition,
@@ -355,7 +355,7 @@ fn each_cell_takes_its_share_and_each_segment_its_friction() {
         let le = enthalpy
             .temperature_from_enthalpy(&slate, &composition, h, 1.0)
             .unwrap();
-        let rho = match EquilibriumLineFlash
+        let rho = match EquilibriumLineFlash::default()
             .density(
                 &slate,
                 &composition,

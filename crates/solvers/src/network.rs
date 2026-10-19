@@ -4149,7 +4149,7 @@ mod density_memo_tests {
 
     fn equilibrium() -> OwnedLineFlash {
         OwnedLineFlash::new(
-            Box::new(EquilibriumLineFlash),
+            Box::new(EquilibriumLineFlash::default()),
             Box::new(TroutonThermo::new()),
             Box::new(ConstantEnthalpy),
         )
@@ -4307,7 +4307,7 @@ mod density_memo_tests {
     #[test]
     fn a_failed_density_is_not_remembered() {
         let owned = OwnedLineFlash::new(
-            Box::new(EquilibriumLineFlash),
+            Box::new(EquilibriumLineFlash::default()),
             Box::new(ConstantThermo),
             Box::new(ConstantEnthalpy),
         );

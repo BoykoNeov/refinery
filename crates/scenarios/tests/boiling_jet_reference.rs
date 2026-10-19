@@ -96,7 +96,7 @@ fn volume(
     liquid_equivalent: Kelvin,
     pressure: f64,
 ) -> f64 {
-    match EquilibriumLineFlash
+    match EquilibriumLineFlash::default()
         .density(
             slate,
             composition,
@@ -135,7 +135,7 @@ fn inlet(engine: &Engine) -> (f64, Kelvin, Composition) {
 fn omega_inlet(engine: &Engine, p0: f64, le: Kelvin, composition: &Composition) -> (f64, f64) {
     let slate = &engine.slate;
     let enthalpy = engine.enthalpy();
-    let boiling = EquilibriumLineFlash
+    let boiling = EquilibriumLineFlash::default()
         .density(
             slate,
             composition,

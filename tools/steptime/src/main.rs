@@ -152,6 +152,9 @@ fn main() {
     // cascade solving every tick, warm from the tick before; and the same
     // plant past its limit (M60.2), the vapour floor binding every tick.
     let hot_feed = vec![Run(6000)];
+    // The coil plants held from their files (M69, docs/DESIGN.md §74): every
+    // tick a line-flash re-solve, the cost A29 names.
+    let coil = vec![Run(1000)];
     for (name, beats) in [
         ("pump_gas_lock", &gas_lock),
         ("flashing_rundown", &rundown),
@@ -162,6 +165,8 @@ fn main() {
         ("crude_column_hot_feed", &hot_feed),
         ("crude_column_overheated", &hot_feed),
         ("crude_unit", &hot_feed),
+        ("crude_unit_boiling", &coil),
+        ("crude_unit_stripped", &coil),
     ] {
         for solver in ["simple", "newton"] {
             if only

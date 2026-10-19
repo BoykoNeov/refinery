@@ -28381,3 +28381,35 @@ decision); the corpus baseline refreshed with it.
 C19: the stripped and cold plants' tables re-run on the new engine
 (`tools/steptime/prototypes/m67_3/`, within an hour each), the crude unit's
 not (no line flash).
+
+### 74.4 The memo, built (M69.1)
+
+As §74.1 specifies: `EquilibriumLineFlash` holds a `FlashMemo` (it is no
+longer a unit struct: `EquilibriumLineFlash::default()`), its `settle` and
+`density` both through `settle_remembered`; `LineFlashModel::begin_tick`, a
+no-op by default, empties it and turns it on, and `Engine::tick` calls it first.
+**Corrected while building**: the probe's ~15 % counted every repeat in a tick,
+but the engine and each flow solver hold their own instance (the trait's
+contract), so the engine's memo catches only the repeats the ENGINE asks — its
+density check reading the state its sweep just settled, its sweeps settling
+again — about 50 of a held boiling tick's 428 flash questions (12 %); the
+other ~50 cross between the engine and the solver and stay. Sharing one memo
+across would need the flow solver's seam in `core` changed; not done.
+
+**Measured** (steptime, the coil plants held 1 000 ticks from their files, old
+and new alternated, fastest of three, a loaded machine — ratios only): the
+boiling crude unit 5–9 % faster, the stripped crude unit 12 % (one round of
+two; the other was noise).
+
+**Gates**: `line_flash::memo_tests` (5: off until an engine ticks it; a
+remembered answer the flash's own bits, the settle and the density at one
+state one answer; a tick or a new slate empties it; the key tells one ulp of
+each input apart; an error never held). FULL tier, clippy, fmt. **Corpus**: 67
+of 67 byte-identical on both fidelities.
+
+**Mutations**: five, all caught by `memo_tests` — the memo on without a tick,
+the slate never compared, a tick that does not empty it, the key without the
+pressure, without the liquid-equivalent. Two are equivalent in every answer
+and cost only time, so no answer can catch them: the engine never calling
+`begin_tick` (the memo never on), and `density` flashing past the memo.
+`tools/steptime` gains the two coil plants' held stories.

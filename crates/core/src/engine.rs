@@ -1209,6 +1209,9 @@ impl Engine {
 
     pub fn tick(&mut self) -> Result<(), SimError> {
         let dt = self.config.dt;
+        // The line flash may forget the last tick's answers (M69.1,
+        // docs/DESIGN.md §74.1): it remembers them for one tick only.
+        self.line_flash.begin_tick();
 
         // A stop that ended without a restart is forgotten once a person has
         // restarted the equipment (M43, docs/DESIGN.md §48), so cutting it

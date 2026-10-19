@@ -63,7 +63,7 @@ fn close(actual: f64, expected: f64, rel: f64) -> bool {
 #[test]
 fn a_pure_cut_flashed_at_one_atmosphere_sits_at_its_boiling_point() {
     let slate = naphtha();
-    let settled = EquilibriumLineFlash
+    let settled = EquilibriumLineFlash::default()
         .settle(
             &slate,
             &light_only(),
@@ -93,7 +93,7 @@ fn a_pure_cut_flashed_at_one_atmosphere_sits_at_its_boiling_point() {
 #[test]
 fn a_liquid_below_its_bubble_point_is_handed_back_untouched() {
     let slate = naphtha();
-    let settled = EquilibriumLineFlash
+    let settled = EquilibriumLineFlash::default()
         .settle(
             &slate,
             &blend(),
@@ -120,7 +120,7 @@ fn a_liquid_below_its_bubble_point_is_handed_back_untouched() {
 #[test]
 fn a_supply_above_its_bubble_point_boils_where_it_stands() {
     let slate = naphtha();
-    let share = EquilibriumLineFlash
+    let share = EquilibriumLineFlash::default()
         .supply(
             &slate,
             &blend(),
@@ -139,7 +139,7 @@ fn a_supply_above_its_bubble_point_boils_where_it_stands() {
         1e-12
     ));
     // At 120 °C the same supply is liquid (its bubble pressure 2.349 bar).
-    let cold = EquilibriumLineFlash
+    let cold = EquilibriumLineFlash::default()
         .supply(
             &slate,
             &blend(),
@@ -168,7 +168,7 @@ fn a_supply_above_its_bubble_point_boils_where_it_stands() {
 fn a_stream_let_down_with_its_enthalpy_held_cools_as_it_boils() {
     let slate = naphtha();
     let thermo = TroutonThermo::new();
-    let settled = EquilibriumLineFlash
+    let settled = EquilibriumLineFlash::default()
         .settle(
             &slate,
             &blend(),
@@ -187,7 +187,7 @@ fn a_stream_let_down_with_its_enthalpy_held_cools_as_it_boils() {
         settled.temperature.value()
     );
     assert!(close(vapour.mass_fraction, 0.147_723_059_624_648, 1e-9));
-    let density = EquilibriumLineFlash
+    let density = EquilibriumLineFlash::default()
         .density(
             &slate,
             &blend(),
@@ -217,7 +217,7 @@ fn every_settle_keeps_the_enthalpy_it_was_handed() {
         for step in 0..40 {
             let pressure = Pascal(2.4e5 * (1.0 - 0.75 * f64::from(step) / 39.0));
             let liquid_equivalent = Kelvin(398.15);
-            let settled = EquilibriumLineFlash
+            let settled = EquilibriumLineFlash::default()
                 .settle(
                     &slate,
                     &composition,
@@ -275,5 +275,5 @@ fn no_line_flash_changes_nothing() {
         None
     );
     assert!(!NoLineFlash.carries_vapour());
-    assert!(EquilibriumLineFlash.carries_vapour());
+    assert!(EquilibriumLineFlash::default().carries_vapour());
 }

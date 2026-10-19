@@ -20,6 +20,9 @@
 //! datum (`energy::T_REF`): a stream's specific enthalpy is `h(T) + latent`, with
 //! `latent = q·λ` per kilogram of the whole stream (`Stream::latent`).
 
+use std::cell::RefCell;
+use std::collections::BTreeMap;
+
 use refinery_core::components::{Composition, Slate};
 use refinery_core::error::SimError;
 use refinery_core::traits::{
@@ -93,7 +96,70 @@ impl LineFlashModel for NoLineFlash {
 ///
 /// Needs a `ThermoModel` with K-values and a bubble pressure — `trouton` — which
 /// the loader requires of a plant selecting it.
-pub struct EquilibriumLineFlash;
+///
+/// **Remembers its answers for a tick** (M69.1, docs/DESIGN.md §74.1), once an
+/// engine ticks it (`LineFlashModel::begin_tick`): within one tick the engine's
+/// density check asks for the density of every boiling node at exactly the
+/// state its sweep has just settled there, and the next re-solve's sweep
+/// settles many of them again — the same `settle_full` (§74.0).
+#[derive(Default)]
+pub struct EquilibriumLineFlash {
+    memo: RefCell<FlashMemo>,
+}
+
+/// `settle_full`'s answers in one tick (M69.1, docs/DESIGN.md §74.1), keyed
+/// on every bit of the composition, the liquid-equivalent temperature and the
+/// pressure (`DensityMemo::key`'s key).
+///
+/// **Why it moves no bit**: `settle_full` is a function of those three, the
+/// slate, and the thermo and enthalpy models. The slate is compared on every
+/// recall, and a different one empties the memo. The models are the engine's,
+/// fixed for its life: `begin_tick` is the engine's own call on its own
+/// instance, and the engine asks that instance with its own two models only.
+/// An instance no engine ticks — a flow solver's, a test's — never turns the
+/// memo on, and flashes every time, as before M69. An `Err` is never
+/// remembered, so it is raised again.
+///
+/// **Bounded by a tick**: emptied by every `begin_tick`, and at most
+/// `FLASH_MEMO_CAPACITY` answers; past that the answer is computed and not
+/// kept. Never iterated (rule 3): looked up, inserted, cleared.
+#[derive(Default)]
+struct FlashMemo {
+    /// Whether an engine has ticked this instance.
+    on: bool,
+    /// The slate the answers were found on.
+    slate: Option<Slate>,
+    answers: BTreeMap<Vec<u64>, Flashed>,
+}
+
+/// One `settle_full` answer: the settled state, and its split where it boils.
+type Flashed = (Settled, Option<(Split, f64)>);
+
+/// Answers one tick's memo may hold (M69.1). A coil plant's tick asks at most
+/// ~1 300 questions after a furnace step (§74.0), so this bounds the memory of
+/// a tick that re-solves to its cap rather than shaping any answer.
+const FLASH_MEMO_CAPACITY: usize = 8192;
+
+impl FlashMemo {
+    /// The answer already found for `key` on `slate` this tick, if any.
+    fn recall(&mut self, slate: &Slate, key: &[u64]) -> Option<Flashed> {
+        if !self.on {
+            return None;
+        }
+        if self.slate.as_ref() != Some(slate) {
+            self.answers.clear();
+            self.slate = Some(slate.clone());
+            return None;
+        }
+        self.answers.get(key).copied()
+    }
+
+    fn remember(&mut self, key: Vec<u64>, answer: Flashed) {
+        if self.on && self.answers.len() < FLASH_MEMO_CAPACITY {
+            self.answers.insert(key, answer);
+        }
+    }
+}
 
 /// Evaluations the isenthalpic flash's temperature search may spend (M56) — a
 /// STRUCTURAL bound, not the working number (the bubble point's arrangement,
@@ -115,6 +181,7 @@ const TEMPERATURE_MAX_EVALUATIONS: u32 = 200;
 const VAPOUR_FRACTION_MAX_EVALUATIONS: u32 = 2_100;
 
 /// One equilibrium state at `(T, P)`, the numbers every caller here reads.
+#[derive(Clone, Copy)]
 struct Split {
     /// Vapour's share of the MASS [-] from the flash (not yet the energy's).
     mass_fraction: f64,
@@ -248,6 +315,49 @@ impl EquilibriumLineFlash {
             }),
         };
         Ok((settled, Some((split, mass_fraction))))
+    }
+
+    /// `settle_full` through this instance's memo (M69.1, docs/DESIGN.md
+    /// §74.1): the answer already found this tick for these exact inputs where
+    /// there is one, else the flash's, remembered. The same bits either way. A
+    /// memo another call holds (never, today: nothing here re-enters) is
+    /// passed by, not waited on.
+    fn settle_remembered(
+        &self,
+        slate: &Slate,
+        composition: &Composition,
+        liquid_equivalent: Kelvin,
+        pressure: Pascal,
+        thermo: &dyn ThermoModel,
+        enthalpy: &dyn EnthalpyModel,
+    ) -> Result<Flashed, SimError> {
+        let mut key: Vec<u64> = composition
+            .fractions()
+            .iter()
+            .map(|fraction| fraction.to_bits())
+            .collect();
+        key.push(liquid_equivalent.value().to_bits());
+        key.push(pressure.value().to_bits());
+        if let Some(found) = self
+            .memo
+            .try_borrow_mut()
+            .ok()
+            .and_then(|mut memo| memo.recall(slate, &key))
+        {
+            return Ok(found);
+        }
+        let answer = Self::settle_full(
+            slate,
+            composition,
+            liquid_equivalent,
+            pressure,
+            thermo,
+            enthalpy,
+        )?;
+        if let Ok(mut memo) = self.memo.try_borrow_mut() {
+            memo.remember(key, answer);
+        }
+        Ok(answer)
     }
 }
 
@@ -735,6 +845,14 @@ impl LineFlashModel for EquilibriumLineFlash {
         true
     }
 
+    /// Empties the memo, and turns it on (M69.1, docs/DESIGN.md §74.1).
+    fn begin_tick(&self) {
+        if let Ok(mut memo) = self.memo.try_borrow_mut() {
+            memo.on = true;
+            memo.answers.clear();
+        }
+    }
+
     fn supply(
         &self,
         slate: &Slate,
@@ -774,7 +892,7 @@ impl LineFlashModel for EquilibriumLineFlash {
         thermo: &dyn ThermoModel,
         enthalpy: &dyn EnthalpyModel,
     ) -> Result<Settled, SimError> {
-        Self::settle_full(
+        self.settle_remembered(
             slate,
             composition,
             liquid_equivalent,
@@ -794,7 +912,7 @@ impl LineFlashModel for EquilibriumLineFlash {
         thermo: &dyn ThermoModel,
         enthalpy: &dyn EnthalpyModel,
     ) -> Result<Option<TwoPhaseDensity>, SimError> {
-        let (_, two_phase) = Self::settle_full(
+        let (_, two_phase) = self.settle_remembered(
             slate,
             composition,
             liquid_equivalent,
@@ -1214,7 +1332,7 @@ mod free_water_tests {
         let mut pinned = 0;
         for step in 0..=600 {
             let liquid_equivalent = Kelvin(370.0 + 0.1 * f64::from(step));
-            let settled = EquilibriumLineFlash
+            let settled = EquilibriumLineFlash::default()
                 .settle(&s, &feed, liquid_equivalent, pressure, &thermo, &enthalpy)
                 .unwrap();
             let t = settled.temperature.value();
@@ -1247,5 +1365,167 @@ mod free_water_tests {
             pinned > 5,
             "the sweep never sat on the pinned point ({pinned})"
         );
+    }
+}
+
+#[cfg(test)]
+mod memo_tests {
+    //! The tick's memo (M69.1, docs/DESIGN.md §74.1): off until an engine
+    //! ticks the instance, the same bits as the flash, one answer for a settle
+    //! and a density at the same state, emptied by a tick and by a new slate,
+    //! and never holding an error.
+
+    use super::*;
+    use crate::{ConstantEnthalpy, TroutonThermo};
+    use refinery_core::components::{Phase, PseudoComponent};
+    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, P_ATM};
+
+    /// Two naphtha cuts, the light one boiling at `light_tb_c`.
+    fn naphtha(light_tb_c: f64) -> Slate {
+        let cut = |name: &str, tb_c: f64, molar_mass: f64, density: f64| PseudoComponent {
+            name: name.into(),
+            tb: Kelvin(tb_c + 273.15),
+            molar_mass: KgPerMol(molar_mass),
+            density: Some(KgPerM3(density)),
+            cp: JPerKgK(2150.0),
+            cp_shape: None,
+            phase: Phase::Liquid,
+            dh_vap: None,
+            cp_vapour: None,
+            free_water: false,
+        };
+        Slate::new(vec![
+            cut("light_naphtha", light_tb_c, 0.100, 680.0),
+            cut("heavy_naphtha", 150.0, 0.130, 750.0),
+        ])
+        .unwrap()
+    }
+
+    /// A settle and a density of the half-and-half naphtha at `celsius` (a
+    /// liquid-equivalent) and one atmosphere.
+    fn ask(
+        flash: &EquilibriumLineFlash,
+        slate: &Slate,
+        celsius: f64,
+    ) -> Result<(Settled, Option<TwoPhaseDensity>), SimError> {
+        let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+        let t = Kelvin(celsius + 273.15);
+        let settled = flash.settle(
+            slate,
+            &feed,
+            t,
+            P_ATM,
+            &TroutonThermo::new(),
+            &ConstantEnthalpy,
+        )?;
+        let density = flash.density(
+            slate,
+            &feed,
+            t,
+            P_ATM,
+            &TroutonThermo::new(),
+            &ConstantEnthalpy,
+        )?;
+        Ok((settled, density))
+    }
+
+    fn held(flash: &EquilibriumLineFlash) -> usize {
+        flash.memo.borrow().answers.len()
+    }
+
+    #[test]
+    fn the_memo_is_off_until_an_engine_ticks_it() {
+        let flash = EquilibriumLineFlash::default();
+        ask(&flash, &naphtha(80.0), 130.0).unwrap();
+        assert_eq!(held(&flash), 0);
+    }
+
+    #[test]
+    fn a_remembered_answer_is_the_flashs_own_bits() {
+        let slate = naphtha(80.0);
+        let flash = EquilibriumLineFlash::default();
+        flash.begin_tick();
+        let first = ask(&flash, &slate, 130.0).unwrap();
+        // The settle and the density at one state are one answer.
+        assert_eq!(held(&flash), 1);
+        let again = ask(&flash, &slate, 130.0).unwrap();
+        let fresh = ask(&EquilibriumLineFlash::default(), &slate, 130.0).unwrap();
+        assert!(first.1.is_some(), "the state boils");
+        for answer in [again, fresh] {
+            assert_eq!(answer.0, first.0);
+            assert_eq!(answer.1, first.1);
+        }
+    }
+
+    #[test]
+    fn a_tick_or_a_new_slate_empties_it() {
+        let flash = EquilibriumLineFlash::default();
+        flash.begin_tick();
+        ask(&flash, &naphtha(80.0), 130.0).unwrap();
+        flash.begin_tick();
+        assert_eq!(held(&flash), 0);
+        ask(&flash, &naphtha(80.0), 130.0).unwrap();
+        // The same question on another slate is answered on that slate.
+        let other = naphtha(60.0);
+        let answer = ask(&flash, &other, 130.0).unwrap();
+        assert_eq!(held(&flash), 1);
+        let fresh = ask(&EquilibriumLineFlash::default(), &other, 130.0).unwrap();
+        assert_eq!(answer.0, fresh.0);
+        assert_eq!(answer.1, fresh.1);
+    }
+
+    /// One ulp of the pressure, of the liquid-equivalent or of a fraction is
+    /// another question, answered as its own.
+    #[test]
+    fn the_key_tells_every_input_apart() {
+        let slate = naphtha(80.0);
+        let flash = EquilibriumLineFlash::default();
+        flash.begin_tick();
+        let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+        let shifted = Composition::from_weights(&[0.5 + 1e-3, 0.5 - 1e-3]).unwrap();
+        let thermo = TroutonThermo::new();
+        let cases = [
+            (&feed, 403.15, P_ATM.value()),
+            (&feed, 403.15, P_ATM.value() * 1.2),
+            (&feed, 405.15, P_ATM.value()),
+            (&shifted, 403.15, P_ATM.value()),
+        ];
+        for (composition, t, p) in cases {
+            let density = |f: &EquilibriumLineFlash| {
+                f.density(
+                    &slate,
+                    composition,
+                    Kelvin(t),
+                    Pascal(p),
+                    &thermo,
+                    &ConstantEnthalpy,
+                )
+                .unwrap()
+            };
+            assert_eq!(density(&flash), density(&EquilibriumLineFlash::default()));
+        }
+        assert_eq!(held(&flash), cases.len());
+    }
+
+    #[test]
+    fn an_error_is_never_remembered() {
+        let slate = naphtha(80.0);
+        let flash = EquilibriumLineFlash::default();
+        flash.begin_tick();
+        // No K-value at a pressure of zero: refused, and refused again.
+        let feed = Composition::from_weights(&[0.5, 0.5]).unwrap();
+        let settle = || {
+            flash.settle(
+                &slate,
+                &feed,
+                Kelvin(403.15),
+                Pascal(0.0),
+                &TroutonThermo::new(),
+                &ConstantEnthalpy,
+            )
+        };
+        assert!(settle().is_err());
+        assert_eq!(held(&flash), 0);
+        assert!(settle().is_err());
     }
 }

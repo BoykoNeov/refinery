@@ -203,7 +203,7 @@ fn flashed(
     let liquid_equivalent = enthalpy
         .temperature_from_enthalpy(slate, composition, specific_enthalpy, 1.0)
         .unwrap();
-    EquilibriumLineFlash
+    EquilibriumLineFlash::default()
         .settle(
             slate,
             composition,
