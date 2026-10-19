@@ -49,6 +49,7 @@ impl SeparationModel for ShortSplitter {
             feed_vapour_fraction: None,
             reflux_ratio: None,
             reboiler_declined: None,
+            cut_back: Vec::new(),
             water_flooded: None,
         })
     }
@@ -234,6 +235,7 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
             feed_vapour_fraction: None,
             reflux_ratio: None,
             reboiler_declined: None,
+            cut_back: Vec::new(),
             water_flooded: None,
         },
     );
@@ -286,6 +288,7 @@ impl SeparationModel for Recorder {
                 vapour: Vec::new(),
                 free_water: Vec::new(),
                 reflux_ratio: None,
+                cut_back: Vec::new(),
             }),
             draws: vec![half.clone(), half],
             condenser_duty: None,
@@ -293,6 +296,7 @@ impl SeparationModel for Recorder {
             feed_vapour_fraction: None,
             reflux_ratio: None,
             reboiler_declined: None,
+            cut_back: Vec::new(),
             water_flooded: None,
         })
     }
@@ -373,6 +377,7 @@ impl SeparationModel for RunningRecorder {
                     reason: format!("call {call}"),
                 }
             }),
+            cut_back: Vec::new(),
             water_flooded: None,
         })
     }

@@ -115,17 +115,21 @@ fn the_cold_plant_starts_where_it_stays_simple() {
 
 /// **The start-up** (§71.3): the furnace to 58 MW on tick 10; the pumparounds
 /// off on tick 500; from then, every 10 ticks, the reboiler held at the duty it
-/// ran at less 2.5 MW — the screen's key. The duty never rises; the column
-/// declines 1 534 ticks of the walk, the feed too cool for the step asked,
-/// and reaches zero on tick 2 320 (on both fidelities, the same tick); on tick
-/// 2 000 it stands at 5.007 MW, a reflux of 2.920, its bottom 419.97 °C; by
-/// 2 400 it is held at zero, its decline gone. Never refused.
+/// ran at less 2.5 MW — the screen's key. The duty never rises and the column
+/// declines none of it: since M67 (§72.1, the user's decision) it cuts its gas
+/// oil back where the feed is still too cool for the step, so the walk
+/// reaches zero on tick 820 (M66: tick 2 320, after 1 534 declined ticks).
+/// The gas oil is cut from tick 740, to 0.7 % of its share at the walk's foot,
+/// and comes back as the feed heats: 64 % on tick 2 000, the reflux 2.895,
+/// the bottom 338.3 °C. Never refused, on both fidelities alike.
 fn the_start_up(flow: &str) {
     let mut engine = build(flow);
     let id = |name: &str| node(&engine.snapshot(), name).id;
     let (furnace, column) = (id("furnace"), id("column"));
     let mut declined = 0;
     let mut zero_at = None;
+    let mut first_cut = None;
+    let mut least = f64::INFINITY;
     let mut last = f64::INFINITY;
     for t in 1..=2_400u64 {
         if t == 10 {
@@ -173,22 +177,43 @@ fn the_start_up(flow: &str) {
         if duty == 0.0 && zero_at.is_none() {
             zero_at = Some(t);
         }
+        // Only the gas oil (draw 4) is ever cut back.
+        let cut = &node(&s, "column").column_draws_cut_back;
+        assert!(cut.iter().all(|c| c.draw == 4), "{flow}, tick {t}: {cut:?}");
+        if let Some(gas_oil) = cut.first() {
+            first_cut.get_or_insert(t);
+            least = least.min(gas_oil.of_declared);
+        }
         if t == 2_000 {
-            assert!((duty - 5.007).abs() < 1.0e-3, "{flow}: {duty} MW");
+            assert_eq!(duty, 0.0, "{flow}");
             assert!(
-                (reflux(&s) - 2.920).abs() < 1.0e-3,
+                (reflux(&s) - 2.895).abs() < 1.0e-3,
                 "{flow}: {}",
                 reflux(&s)
             );
             assert!(
-                (bottom_c(&s) - 419.97).abs() < 0.01,
+                (bottom_c(&s) - 338.31).abs() < 0.01,
                 "{flow}: {} °C",
                 bottom_c(&s)
             );
+            let share = cut.first().map(|c| c.of_declared);
+            assert!(
+                share.is_some_and(|share| (share - 0.641).abs() < 0.005),
+                "{flow}: the gas oil at {share:?}"
+            );
         }
     }
-    assert_eq!(zero_at, Some(2_320), "{flow}: the tick it reached zero");
-    assert_eq!(declined, 1_534, "{flow}: declined ticks");
+    assert_eq!(zero_at, Some(820), "{flow}: the tick it reached zero");
+    assert_eq!(declined, 0, "{flow}: declined ticks");
+    let first_cut = first_cut.expect("the gas oil is cut back");
+    assert!(
+        (721..=740).contains(&first_cut),
+        "{flow}: first cut on tick {first_cut}"
+    );
+    assert!(
+        (0.005..0.010).contains(&least),
+        "{flow}: the gas oil down to {least}"
+    );
     let s = engine.snapshot();
     assert_eq!(reboiler_mw(&s), 0.0);
     assert!(node(&s, "column").column_reboiler_declined.is_none());

@@ -171,8 +171,11 @@ fn the_stripped_crude_unit_closes_its_first_law() {
 /// charge jumps to 127.8 kg/s in one tick. The column's warm start from the
 /// last tick fails there (measured: on every pass of that tick); the
 /// continuation — the same column with its reboiler, walked to zero — starts
-/// it, and the plant runs on: the reboiler at zero, the bottom 359.95 °C on a
-/// reflux of 3.262, and the next ten ticks warm from it. (The loop then
+/// it, and the plant runs on: the reboiler at zero, the bottom 358.80 °C on a
+/// reflux of 3.267, and the next ten ticks warm from it. Its gas oil is cut
+/// back (M67.1, §72.1), to 95 % of its share on the step and 99.6 % ten ticks
+/// on: before M67 the column ran that tray under the minimum liquid, at
+/// 359.95 °C and 3.262. (The loop then
 /// swings the charge back to 125.5 kg/s by tick 150 and climbs to its setpoint
 /// on the integral's 20 s or so, 137.7 at tick 700 — measured, not gated: the
 /// fast tier's budget.)
@@ -192,8 +195,12 @@ fn a_charge_step_is_caught_by_the_fallback(flow: &str) {
     assert_eq!(node(&s, "column").column_duty.unwrap().reboiler_w, 0.0);
     let (bottom, reflux, _, charge) = state(&s);
     assert!((charge - 127.80).abs() < 0.01, "charge {charge} kg/s");
-    assert!((bottom - 359.95).abs() < 0.01, "bottom {bottom} °C");
-    assert!((reflux - 3.262).abs() < 1.0e-3, "reflux {reflux}");
+    assert!((bottom - 358.80).abs() < 0.01, "bottom {bottom} °C");
+    assert!((reflux - 3.267).abs() < 1.0e-3, "reflux {reflux}");
+    let cut = &node(&s, "column").column_draws_cut_back;
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert_eq!(cut[0].draw, 4, "the gas-oil draw");
+    assert!((cut[0].of_declared - 0.954).abs() < 0.005, "{cut:?}");
     run(&mut engine, 10);
     assert_eq!(
         node(&engine.snapshot(), "column")
@@ -214,12 +221,12 @@ fn slow_a_charge_step_is_caught_by_the_fallback_simple() {
     a_charge_step_is_caught_by_the_fallback("simple");
 }
 
-/// **Past its edge the column is refused by name, and the fallback says
-/// where it stopped** (§69.9): 30 MW of pumparound on stage 7 — the column
-/// runs to about 20 — takes the gas-oil and diesel trays' liquid, and the
-/// continuation the warm start's failure sends it to stops short of zero.
+/// **A pumparound that takes the diesel tray's liquid cuts the diesel back**
+/// (M67.1, docs/DESIGN.md §72.1): 30 MW of pumparound on stage 7 — refused
+/// until M67 — runs, its diesel draw at 24 % of its share, the bottom near
+/// 318 °C.
 #[test]
-fn a_pumparound_past_its_edge_is_refused_by_name() {
+fn a_pumparound_that_takes_the_diesel_trays_liquid_cuts_it_back() {
     let mut engine = build("newton");
     run(&mut engine, 10);
     let column = node(&engine.snapshot(), "column").id;
@@ -230,16 +237,78 @@ fn a_pumparound_past_its_edge_is_refused_by_name() {
             duty: Watt(30.0e6),
         })
         .unwrap();
+    engine
+        .tick()
+        .unwrap_or_else(|e| panic!("30 MW on stage 7: {e}"));
+    let s = engine.snapshot();
+    let cut = &node(&s, "column").column_draws_cut_back;
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert_eq!(cut[0].draw, 3, "the diesel draw");
+    assert!((cut[0].of_declared - 0.245).abs() < 0.005, "{cut:?}");
+    let (bottom, _, _, _) = state(&s);
+    assert!((bottom - 317.72).abs() < 0.01, "bottom {bottom} °C");
+}
+
+/// **Past its edge the column is refused by name, and the fallback says
+/// where it stopped** (§69.9): 40 MW of pumparound on stage 7 takes the trays'
+/// liquid faster than cutting the draws back gives it, and the continuation
+/// the warm start's failure sends it to stops short of zero.
+#[test]
+fn a_pumparound_past_its_edge_is_refused_by_name() {
+    let mut engine = build("newton");
+    run(&mut engine, 10);
+    let column = node(&engine.snapshot(), "column").id;
+    engine
+        .apply(Command::SetPumparoundDuty {
+            node: column,
+            pumparound: 2,
+            duty: Watt(40.0e6),
+        })
+        .unwrap();
     let e = engine
         .tick()
-        .expect_err("30 MW on stage 7 is past the column's edge")
+        .expect_err("40 MW on stage 7 is past the column's edge")
         .to_string();
     for part in [
         "starts from the same column with its reboiler",
         "stopped at step",
         "run dry",
-        "30.0 MW on stage 7",
+        "40.0 MW on stage 7",
     ] {
         assert!(e.contains(part), "missing '{part}' in: {e}");
     }
+}
+
+/// **A furnace and a steam rate under the old floor run, the gas oil cut
+/// back** (M67.1, docs/DESIGN.md §72.1): the furnace at 45 MW and the steam
+/// valve at 0.05 from tick 1 000 — a halt some 800 ticks later until M67, the
+/// gas-oil tray run dry (M67.0's finding 6). Now the plant runs on, the
+/// reboiler at zero, its gas oil at 43 % of its share 3 000 ticks on (and
+/// falling with the coil: 35 % at 6 000), the only draw cut back. Its
+/// ticks cost what the coil's drift costs with nothing cut (A29).
+#[test]
+fn slow_a_furnace_and_steam_under_the_old_floor_run_cut_back() {
+    let mut engine = build("newton");
+    run(&mut engine, 1_000);
+    let s = engine.snapshot();
+    let (furnace, valve) = (node(&s, "furnace").id, node(&s, "steam_valve").id);
+    engine
+        .apply(Command::SetFurnaceDuty {
+            node: furnace,
+            duty: Watt(45.0e6),
+        })
+        .unwrap();
+    engine
+        .apply(Command::SetValveOpening {
+            node: valve,
+            opening: 0.05,
+        })
+        .unwrap();
+    run(&mut engine, 3_000);
+    let s = engine.snapshot();
+    assert_eq!(node(&s, "column").column_duty.unwrap().reboiler_w, 0.0);
+    let cut = &node(&s, "column").column_draws_cut_back;
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert_eq!(cut[0].draw, 4, "the gas-oil draw");
+    assert!((cut[0].of_declared - 0.430).abs() < 0.005, "{cut:?}");
 }

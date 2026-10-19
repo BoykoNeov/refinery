@@ -27745,6 +27745,9 @@ than the draw takes halts (C17). The user's decisions, in plain words
    draw cut to nothing is a product that stops, not an edge.
 7. **The tables are cautious**: a setting is off-limits if any measured route
    to it failed, a walk in screen steps in either order or one jump.
+8. **The cold start-up's new story is taken** (asked again 2026-10-19, with
+   M67.1's numbers, §72.6): the walk no longer declines, and the gas oil is
+   nearly stopped until the feed heats.
 
 ### 72.0 Probed before the forks were offered (2026-10-18)
 
@@ -27797,7 +27800,6 @@ minimum, the draw taking what is left), `L_min = 0.05·F` in the feed's moles.
   - A converged answer whose draw tray runs under `L_min` cuts that draw back.
   - A failure whose last iterate runs a draw tray dry (at or under the larger
     of `L_min` and 1 % of `F`, `physical_cause`'s "dry") cuts it back.
-  - A start outside the physical region is cut back top-down.
   - A cut-back draw whose ran share would pass its declared one is released.
   - The retry starts from the last converged answer.
 - **Cut-back starts are built on the solve's own balance**: the top vapour
@@ -27854,7 +27856,9 @@ back where it ran its tray dry, and it ends a few degrees apart.
 **Taken**: C17, C12.
 
 Deferred:
-- the cascade model's dry draw (§72.1);
+- the cascade model's dry draw (§72.1), and with it a cold start's: the cold
+  warm-up solves that model at the declared shares, so a column started cold
+  at a setting that needs a cut is refused (C18, found in M67.1, §72.6);
 - the crude unit's corner, where the top stage's energy balance does not close
   at low reflux with no pumparounds, which is real heat the column cannot
   shed (finding 4);
@@ -27876,3 +27880,92 @@ Deferred:
   The godot-feature clippy.
 - **M67.3 — the keys as measured tables.** Fork 3, for keys 1, 4 and 5, with
   the measurement drivers kept.
+
+### 72.6 A side draw cut back, built (M67.1)
+
+`ColumnEquations::cut_back` and `liquid_minimum` (`column_newton.rs`): a
+cut-back draw's row is `(L_j − L_min)/F`. Its ran share is `U_k·M̄/F_mass`, and
+the bottoms takes `1 − Σ` of the rest (a bottoms share at or under zero is
+outside the physical region). The component residual is read at the ran shares
+(`CascadePlan::component_residual_with`). `HeatBalanceCascade::newton_with_water`
+(`heat_balance.rs`) is the active set around the wet set, now
+`newton_water_set`; `cut_start` sets a start's cut-back draws. Constants:
+- `CUT_BACK_LIQUID_OF_FEED`: 5 %;
+- `RELEASE_MARGIN`: 1e-6;
+- `STOPPED_DRAW_OF_FEED`: 1e-6, a draw cut to nothing;
+- `RECUT_MARGIN_OF_FEED`: 1e-9;
+- `DRY_TRAY_OF_FEED`: 1 %, hoisted from `physical_cause`, which names a tray
+  that dry and now shares it.
+
+The published split is each draw's ran share, and a wet column's oil mass with
+it. `Separation::cut_back` (`traits::CutBackDraw`: the column's draw index, the
+water draw put back, and `of_declared`) is published on the snapshot as
+`NodeSnapshot::column_draws_cut_back`, absent when empty. `CascadeProfile::
+cut_back` carries the set, as plan indices; a warm start reads only indices that
+are side draws on a tray.
+
+Two things the probe's wrapper got wrong, found by the mutation pass's
+survivors:
+- **A released draw starts at the rate it ran at, not its declared one.** On
+  the cut-back answer's vapour the declared rate need not fit.
+- **A draw left ON the minimum is not cut again on rounding** (`RECUT_MARGIN`).
+  With either missing, a step from a reflux of 0.6 back to 1.1 on the crude
+  unit cut the kerosene again on every attempt and was refused. A sweep of 240
+  such steps, from reflux 0.4–0.9 up to +1.0, now gives the answer the uncut
+  start gives on every one (to 1e-6; the cut shares to 1e-6).
+
+The probe's third rule, a start outside the physical region cut back
+top-down, was never taken over the probe's 400 one-jump settings and 62 walks
+on the crude unit, and is dropped.
+
+**Measured on the shipped code**:
+- **Corpus**: 67 of 67 byte-identical on both fidelities.
+- **The crude unit** (the solver's `CrudeUnit` fixture and the plant): a
+  reflux of 0.6 cuts the kerosene to 58.4 %, 0.5 to 45.6 %, 0.2 to 4.5 %.
+  Under 0.2 the column cannot start: no draw above its top trays to cut. A
+  reflux of 0.6 with the pumparounds off is still refused (the top stage's
+  energy balance, §72.4).
+- **The stripped crude unit**:
+  - 30 MW on the stage-7 pumparound runs, its diesel at 24.5 %, the bottom
+    317.7 °C. 40 MW is still refused, by the continuation, a tray dry.
+  - M64.3's charge step lands at 358.80 °C on a reflux of 3.267 (was 359.95
+    and 3.262), its gas oil at 95.4 %.
+  - The furnace at 45 MW with the steam at 0.05 runs: its gas oil at 43 %
+    3 000 ticks on, 35 % at 6 000.
+- **M64.2's cooler feed** (coil 405 °C) runs at a bottom of 343.88 °C (was
+  348.94), its gas oil at 76.4 %.
+- **M66.2's test column**: held at zero it now runs on a 240 °C feed, its side
+  draw at 62 %. It still declines on 180 °C, and the gates moved there. On the
+  plant fixture, a hold at zero declines from a 350 °C coil (feed ~308 °C) for
+  834 ticks and lands on a ~341 °C feed (M66: ~362 °C).
+- **The cold start-up** (decision 8): the walk declines nothing and reaches
+  zero on tick 820 (M66: 2 320, after 1 534 declined ticks). The gas oil is
+  cut from tick ~740, down to 0.68 % of its share at the walk's foot, and
+  comes back as the feed heats: 64 % on tick 2 000 (the reflux 2.895, the
+  bottom 338.31 °C) and 81 % on 2 700. Never refused, on both fidelities
+  alike. The screen's replay lands one tick later, as before.
+- **Cost**: on the stripped plant the coil's drift after a furnace step costs
+  16–44 ms a tick with nothing cut (A29). The same drift with the gas oil cut
+  back costs 18–26. A cut adds nothing measurable once carried.
+- **Started cold, a setting that needs a cut is refused** (C18). The cold
+  warm-up's constant-molar-overflow first iterate takes the declared shares.
+
+**Gates**:
+- `heat_balance.rs`: `a_dry_trays_draw_is_cut_back_and_released` (replacing
+  `a_dry_tray_is_refused_by_name`) and `a_cut_back_column_is_start_insensitive`.
+- `reference/declined_hold.rs`: +1, and three moved to 180 °C;
+  `reference/held_reboiler.rs`: one moved to 180 °C.
+- `crude_unit.rs`: +1, and the halt moved to the pumparounds off.
+- `crude_unit_stripped_reference.rs`: +2 (one slow), and the charge step's
+  numbers.
+- `held_reboiler_reference.rs`: the cooler feed's numbers.
+- `declined_hold_reference.rs`: two moved to a 350 °C coil.
+- `crude_unit_cold_reference.rs` and `column_screen.rs`: the start-up's new
+  story.
+
+**Mutations**: eleven, ten caught. The survivor is the fallback to the uncut
+answer where no set holds, which nothing measured reaches (the probe's crude
+batches never took it).
+
+**What moved**: no plant's fingerprint. The cold start-up story (decision 8);
+M66.2's and M64.2's test fixtures, as listed.

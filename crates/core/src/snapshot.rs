@@ -257,6 +257,16 @@ pub struct ReboilerDeclined {
     pub reason: String,
 }
 
+/// A side draw a column cut back (M67.1, docs/DESIGN.md §72.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DrawCutBack {
+    /// The draw, an index into the column's draws (`NodeKind::Column::draws`).
+    pub draw: usize,
+    /// The share of its declared rate it ran at [-], at most one: near zero
+    /// is a draw that stopped.
+    pub of_declared: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeSnapshot {
     pub id: NodeId,
@@ -327,6 +337,12 @@ pub struct NodeSnapshot {
     /// at the duty it holds, and on every other node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column_reboiler_declined: Option<ReboilerDeclined>,
+    /// The side draws a heat-balance column cut back this tick (M67.1,
+    /// docs/DESIGN.md §72.1): each draw's tray could not supply its declared
+    /// share, so it took what leaves the tray its minimum liquid. **Absent**
+    /// while every draw runs at its declared share, and on every other node.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_draws_cut_back: Vec<DrawCutBack>,
     /// Whether the liquid at this node is boiling, and the bubble pressure the
     /// verdict was made against (M11, docs/DESIGN.md §13).
     ///

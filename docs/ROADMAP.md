@@ -10449,3 +10449,32 @@ with a trial of the cut-back draw:
 Slices: M67.1 a side draw cut back (engine, with the snapshot's field); M67.2
 the cut-back product on the column screen; M67.3 the keys as measured tables.
 No engine code changed.
+
+### M67.1 — **LANDED** 2026-10-19: a side draw cut back
+
+A side draw whose tray cannot supply its share is cut back. It takes what
+leaves its tray 5 % of the feed's moles, is reported on the snapshot
+(`column_draws_cut_back`), carried from tick to tick, and released when the
+column recovers. DESIGN §72.6.
+- Every shipped plant is byte-identical on both fidelities.
+- The crude unit at a reflux of 0.6 runs, its kerosene at 58 %. With the
+  pumparounds off too it is still refused.
+- The stripped crude unit runs 30 MW on its stage-7 pumparound (the diesel at
+  24 %), and the furnace at 45 MW with the steam at 0.05 (the gas oil at 43 %).
+- The cold start-up walks its reboiler to zero by tick 820, its gas oil cut
+  to as little as 0.7 % and coming back as the feed heats. That is the user's
+  second decision on it, asked with these numbers; M66 reached zero on tick
+  2 320 through 1 534 declined ticks.
+- Two faults in the probe's retry were found by the mutation pass and fixed:
+  a released draw's start, and a re-cut on rounding.
+- New ledger row C18: a cold start does not cut its draws back.
+
+- Gates: `heat_balance.rs` (2, one replacing the dry-tray refusal),
+  `reference/declined_hold.rs` (+1, three moved to 180 °C),
+  `reference/held_reboiler.rs` (one moved), `crude_unit.rs` (+1, the halt
+  moved), `crude_unit_stripped_reference.rs` (+2, one slow),
+  `held_reboiler_reference.rs`, `declined_hold_reference.rs` (two moved to a
+  350 °C coil), `crude_unit_cold_reference.rs` and `column_screen.rs` (the
+  start-up's new story). Mutations: eleven, ten caught; the fallback to the
+  uncut answer is unreached. Corpus: 67 of 67 byte-identical on both
+  fidelities.

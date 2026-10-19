@@ -7,8 +7,9 @@
 //! bit.
 //!
 //! The column is `held_reboiler.rs`'s (M62.6's steamed test column): held at
-//! zero it runs on a 330 °C feed and not on a 240 °C one (§69.8); its
-//! reboiler free, it runs on both.
+//! zero it runs on a 330 °C feed, on a 240 °C one with its side draw cut back
+//! (M67.1, §72.1), and not on a 180 °C one (§69.8); its reboiler free, it runs
+//! on all three.
 
 use refinery_core::components::{Composition, Phase, PseudoComponent, Slate};
 use refinery_core::graph::{CascadeSpec, ColumnDraw, NodeId};
@@ -154,14 +155,14 @@ fn free(feed_c: f64) -> (Separation, f64) {
 }
 
 /// **Held at zero where it cannot run, the column runs at its running duty and
-/// says so.** On a 240 °C feed, from the free column: the answer is the
+/// says so.** On a 180 °C feed, from the free column: the answer is the
 /// column held at the duty the free column ran at — to the bit — published at
 /// that duty, the decline naming the zero asked for and the column's own
 /// reason.
 #[test]
 fn a_hold_it_cannot_run_at_is_declined_for_its_running_duty() {
-    let (start, duty) = free(240.0);
-    let declined = separate(&spec(2.0, Some(0.0)), 240.0, Some(&start), running(duty)).unwrap();
+    let (start, duty) = free(180.0);
+    let declined = separate(&spec(2.0, Some(0.0)), 180.0, Some(&start), running(duty)).unwrap();
     assert_eq!(reboiler(&declined), duty);
     let hold = declined
         .reboiler_declined
@@ -180,7 +181,7 @@ fn a_hold_it_cannot_run_at_is_declined_for_its_running_duty() {
         "{}",
         hold.reason
     );
-    let kept = separate(&spec(2.0, Some(duty)), 240.0, Some(&start), running(duty)).unwrap();
+    let kept = separate(&spec(2.0, Some(duty)), 180.0, Some(&start), running(duty)).unwrap();
     assert_eq!(kept.reboiler_declined, None);
     assert_eq!(temperatures(&declined), temperatures(&kept));
     assert_eq!(declined.reflux_ratio, kept.reflux_ratio);
@@ -208,14 +209,14 @@ fn a_hold_it_can_run_at_is_taken() {
 /// of another duty is not this one's, and the column asks.
 #[test]
 fn a_later_pass_of_a_declining_tick_does_not_ask_again() {
-    let (start, duty) = free(240.0);
+    let (start, duty) = free(180.0);
     let earlier = DeclinedHold {
         asked: Watt(0.0),
         reason: "the earlier pass's reason".into(),
     };
     let later = separate(
         &spec(2.0, Some(0.0)),
-        240.0,
+        180.0,
         Some(&start),
         Some(RunningReboiler {
             duty: Watt(duty),
@@ -232,7 +233,7 @@ fn a_later_pass_of_a_declining_tick_does_not_ask_again() {
     };
     let asked = separate(
         &spec(2.0, Some(0.0)),
-        240.0,
+        180.0,
         Some(&start),
         Some(RunningReboiler {
             duty: Watt(duty),
@@ -245,13 +246,13 @@ fn a_later_pass_of_a_declining_tick_does_not_ask_again() {
 }
 
 /// **Where the running duty fails too, the refusal is the column's own
-/// first.** On a 240 °C feed, held at zero, handed a running duty of 1 kW it
+/// first.** On a 180 °C feed, held at zero, handed a running duty of 1 kW it
 /// cannot run at either: the column's refusal at zero, then that it could not
 /// keep the 0.001 MW either, and why.
 #[test]
 fn where_the_running_duty_fails_too_the_column_is_refused_by_its_own_reason() {
-    let (start, _) = free(240.0);
-    let e = separate(&spec(2.0, Some(0.0)), 240.0, Some(&start), running(1.0e3))
+    let (start, _) = free(180.0);
+    let e = separate(&spec(2.0, Some(0.0)), 180.0, Some(&start), running(1.0e3))
         .expect_err("neither duty runs");
     assert!(
         e.starts_with("numerical error: heat-balance cascade"),
@@ -262,6 +263,26 @@ fn where_the_running_duty_fails_too_the_column_is_refused_by_its_own_reason() {
         .unwrap_or_else(|| panic!("{e}"));
     assert!(own.contains("held at 0.000 MW"), "{own}");
     assert!(kept.contains("heat-balance cascade"), "{kept}");
+}
+
+/// **Held at zero where it runs only with a draw cut back, the column takes
+/// it** (M67.1, §72.1). On a 240 °C feed — declined until M67 — the hold is
+/// taken: the reboiler published as zero, no decline, the side draw (stage 3)
+/// cut back and reported, the same answer handed no running duty.
+#[test]
+fn a_hold_it_can_run_at_with_a_draw_cut_back_is_taken() {
+    let (start, duty) = free(240.0);
+    let taken = separate(&spec(2.0, Some(0.0)), 240.0, Some(&start), running(duty)).unwrap();
+    assert_eq!(reboiler(&taken), 0.0);
+    assert_eq!(taken.reboiler_declined, None);
+    assert_eq!(taken.cut_back.len(), 1, "{:?}", taken.cut_back);
+    assert_eq!(taken.cut_back[0].draw, 2);
+    let share = taken.cut_back[0].of_declared;
+    assert!(share > 0.0 && share < 1.0, "{share}");
+    let plain = separate(&spec(2.0, Some(0.0)), 240.0, Some(&start), None).unwrap();
+    for (a, b) in temperatures(&taken).iter().zip(temperatures(&plain)) {
+        assert!((a - b).abs() < 1.0e-8, "{a} K against {b} K");
+    }
 }
 
 /// **A column holding the duty it runs at, or handed none, is untouched**, to

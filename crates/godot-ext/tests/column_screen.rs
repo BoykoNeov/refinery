@@ -311,9 +311,11 @@ fn slow_the_stripped_timeline() {
 /// 10 ticks, the reboiler key — held at the duty it runs at less 2.5 MW, the
 /// scene's own arithmetic (its 1 005-tick furnace press is the screen's to
 /// hold, while the reboiler is held, and sends nothing). The reboiler never
-/// rises; the column declines 1 534 ticks of the walk, the feed still too cool
-/// for the step asked, and lands on zero on tick 2 321; on 2 700 it is held
-/// there, no decline, the feed 368.1 °C and the reflux 3.070.
+/// rises and the column declines none of the walk: since M67 (§72.1) it cuts
+/// its gas oil back where the feed is still too cool for the step, and lands
+/// on zero on tick 821 (M66: 2 321, after 1 534 declined ticks); on 2 700 it
+/// is held there, the feed 368.1 °C, the reflux 3.088, the gas oil back to
+/// 81 % of its share.
 #[test]
 fn slow_the_cold_start_up_timeline() {
     let mut screen = Screen::load(
@@ -367,13 +369,17 @@ fn slow_the_cold_start_up_timeline() {
     }
     // A tick after `crude_unit_cold_reference.rs`'s 2 320: the scene sends each
     // command after its tick, that test before it.
-    assert_eq!(zero_at, Some(2_321), "the tick it reached zero");
-    assert_eq!(declined_ticks, 1_534);
+    assert_eq!(zero_at, Some(821), "the tick it reached zero");
+    assert_eq!(declined_ticks, 0);
     let end = screen.reading();
     assert_eq!(end.4, 0.0, "{end:?}");
     assert!(!declined(&screen));
     assert!(
-        (end.2 - 3.070).abs() < 1e-3 && (end.0 - 368.1).abs() < 0.1,
+        (end.2 - 3.088).abs() < 1e-3 && (end.0 - 368.1).abs() < 0.1,
         "{end:?}"
     );
+    let cut = &screen.column_node()["column_draws_cut_back"];
+    assert_eq!(cut[0]["draw"], 4, "{cut}");
+    let share = cut[0]["of_declared"].as_f64().unwrap();
+    assert!((share - 0.811).abs() < 0.005, "the gas oil at {share}");
 }

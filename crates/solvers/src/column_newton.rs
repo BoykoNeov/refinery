@@ -122,6 +122,13 @@ pub(crate) struct ColumnEquations<'a> {
     /// `feed_molar` and `feed_composition` are the OIL's, and `feed_enthalpy`
     /// is the WHOLE feed's enthalpy flux per mole of oil.
     pub(crate) water: Option<&'a WaterFeed>,
+    /// The side draws cut back (M67.1, docs/DESIGN.md §72.1), as indices into
+    /// the plan's draws: each one's row holds the liquid leaving its tray at
+    /// `liquid_minimum` in place of its mass ratio, and the draw takes what
+    /// that leaves. Empty on a column that runs every draw at its share.
+    pub(crate) cut_back: &'a [usize],
+    /// The liquid a cut-back draw leaves flowing below its tray [mol/s].
+    pub(crate) liquid_minimum: f64,
 }
 
 /// Where a solve starts: temperatures [K], vapours leaving each stage [mol/s]
@@ -152,6 +159,9 @@ pub(crate) struct Solved {
     /// Each stage's water vapour share over its saturation share, `y_w/K_w`
     /// [-]: past 1 a dry stage would hold free water. Empty on a dry feed.
     pub(crate) saturation: Vec<f64>,
+    /// Each draw's share of the feed mass it ran at (M67.1): the declared
+    /// ones, a cut-back draw's own, the bottoms the rest.
+    pub(crate) ratios: Vec<f64>,
 }
 
 /// A solve that did not converge: why, and the flows at its last iterate —
@@ -172,6 +182,7 @@ struct Evaluation {
     water_vapour: Vec<f64>,
     free_water: Vec<f64>,
     saturation: Vec<f64>,
+    ratios: Vec<f64>,
 }
 
 impl ColumnEquations<'_> {
@@ -422,6 +433,7 @@ impl ColumnEquations<'_> {
             residual.push(imbalance / self.energy_scale);
         }
         // Each draw's mass ratio: its molar rate times its molar mass.
+        let mut ratios = plan.mass_ratios.clone();
         for (i, rate) in rates.iter().enumerate() {
             let composition = match plan.locations[i] {
                 DrawLocation::Condenser => &condensate,
@@ -432,8 +444,25 @@ impl ColumnEquations<'_> {
                 .enumerate()
                 .map(|(c, x)| x * slate.get(c).molar_mass.value())
                 .sum();
-            residual
-                .push((rate * molar_mass - plan.mass_ratios[i] * self.feed_mass) / self.feed_mass);
+            match plan.locations[i] {
+                // A cut-back draw (M67.1, §72.1): its tray's liquid down held
+                // at the minimum, its share what that leaves it.
+                DrawLocation::Stage(j) if self.cut_back.contains(&i) => {
+                    residual.push((flows.liquid_down[j] - self.liquid_minimum) / self.feed_molar);
+                    ratios[i] = rate * molar_mass / self.feed_mass;
+                }
+                _ => residual.push(
+                    (rate * molar_mass - plan.mass_ratios[i] * self.feed_mass) / self.feed_mass,
+                ),
+            }
+        }
+        // The bottoms takes what the others leave of the feed.
+        if !self.cut_back.is_empty() {
+            let last = ratios.len() - 1;
+            ratios[last] = 1.0 - ratios[..last].iter().sum::<f64>();
+            if ratios[last] <= 0.0 {
+                return Err(outside("the bottoms' share left the physical region"));
+            }
         }
         if let Specification::Floor(stage) = specification {
             let floor = VAPOUR_FLOOR_OF_FEED * self.feed_molar;
@@ -458,7 +487,8 @@ impl ColumnEquations<'_> {
         }
         let draws = plan.draw_states(&liquid, &k, slate)?;
         let component_residual =
-            plan.component_residual(&draws, self.feed_composition, slate) * self.feed_mass;
+            plan.component_residual_with(&draws, self.feed_composition, slate, &ratios)
+                * self.feed_mass;
         Ok(Evaluation {
             residual,
             component_residual,
@@ -467,6 +497,7 @@ impl ColumnEquations<'_> {
             water_vapour,
             free_water,
             saturation,
+            ratios,
         })
     }
 
@@ -543,6 +574,7 @@ impl ColumnEquations<'_> {
                     water_vapour: current.water_vapour,
                     free_water: current.free_water,
                     saturation: current.saturation,
+                    ratios: current.ratios,
                 });
             }
             if iterations >= max_iterations {

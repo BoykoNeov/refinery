@@ -190,7 +190,8 @@ fn a_hot_plant_holding_zero_starts_on_its_first_tick() {
 /// the plant's own pumparounds, all off, refuses (measured: its warm-up's
 /// stage liquid negative); with 1.5 times the feed's latent heat flow spread
 /// over the stages above the feed it starts, and the column runs at zero with
-/// its bottom near 349 °C.
+/// its bottom near 343.9 °C, its gas oil cut back to 76 % of its share (M67.1,
+/// §72.1; before M67 it ran that tray under the minimum liquid, at 348.9 °C).
 #[test]
 fn a_cooler_feed_starts_on_the_bases_side_cooling() {
     let mut engine = build(&stripped("405.0"));
@@ -201,7 +202,11 @@ fn a_cooler_feed_starts_on_the_bases_side_cooling() {
     assert_eq!(column(&s).column_duty.unwrap().reboiler_w, 0.0);
     let operation = column(&s).column_operation.clone().unwrap();
     let bottom = operation.stage_temperatures_k.last().unwrap() - 273.15;
-    assert!((bottom - 348.94).abs() < 0.05, "bottom {bottom} °C");
+    assert!((bottom - 343.88).abs() < 0.05, "bottom {bottom} °C");
+    let cut = &column(&s).column_draws_cut_back;
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert_eq!(cut[0].draw, 4, "the gas-oil draw");
+    assert!((cut[0].of_declared - 0.764).abs() < 0.005, "{cut:?}");
 }
 
 /// **A cold coil cannot start a column without its reboiler** (§69.0, finding

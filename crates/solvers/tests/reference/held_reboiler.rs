@@ -384,13 +384,14 @@ fn a_declared_column_ignores_an_earlier_pass() {
 }
 
 /// **A walk that stops is refused where it stopped** (M64.2, §69.3). Held at
-/// zero on a 240 °C feed the column cannot run — the steam alone does not
-/// keep its side-draw tray wet — and the continuation stops short of zero:
+/// zero on a 180 °C feed the column cannot run — the steam alone does not
+/// keep its side-draw tray wet, even with the draw cut back (M67.1; on a
+/// 240 °C one it runs so) — and the continuation stops short of zero:
 /// the refusal names the start, the step and the duty it reached, the dry
 /// tray, and the held duty as the setting (not the reflux, a result here).
 #[test]
 fn a_walk_that_stops_is_refused_where_it_stopped() {
-    let e = separate(&spec(2.0, Some(0.0)), 240.0, None).expect_err("held at zero at 240 °C");
+    let e = separate(&spec(2.0, Some(0.0)), 180.0, None).expect_err("held at zero at 180 °C");
     for part in [
         "holding its reboiler at 0.000 MW starts from the same column with its reboiler",
         "the walk from its closure of",

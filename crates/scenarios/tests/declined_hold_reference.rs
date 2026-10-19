@@ -7,7 +7,9 @@
 //! held at zero before the feed can carry it, the column keeps the duty it
 //! ran at, says so, and lands on zero by itself once the feed has heated;
 //! walked down from its running duty, it follows the feed to zero; neither
-//! is ever refused.
+//! is ever refused. Since M67 (§72.1) a column held at zero cuts its gas oil
+//! back where its tray runs short, so it lands on a cooler feed than M66
+//! measured — ~341 °C, not ~362 — and the gates start from a cooler coil.
 
 use refinery_core::graph::NodeId;
 use refinery_core::snapshot::{Command, NodeSnapshot, Snapshot};
@@ -83,21 +85,22 @@ fn feed_c(s: &Snapshot) -> f64 {
 }
 
 /// **Held at zero too early, the column keeps its duty until the feed allows,
-/// then lands** (finding 13). From a coil at 400 °C the feed reaches the
-/// column near 354 °C, under the ~362 °C a column held at zero needs. Held at
-/// zero on tick 10: every tick until the feed has heated, the reboiler is
-/// published at the duty it ran at on tick 9 — exactly — and the decline names
-/// the zero asked for and the dry gas-oil tray; then the column is held at
-/// zero, no decline, and stays there. Never refused.
+/// then lands** (finding 13). From a coil at 350 °C the feed reaches the
+/// column near 308 °C, under the ~341 °C a column held at zero needs with its
+/// gas oil cut back (M67.1). Held at zero on tick 10: every tick until the
+/// feed has heated, the reboiler is published at the duty it ran at on tick
+/// 9 — exactly — and the decline names the zero asked for and the dry gas-oil
+/// tray; then the column is held at zero, no decline, and stays there. Never
+/// refused.
 #[test]
 fn slow_held_at_zero_too_early_the_column_keeps_its_duty_and_lands_later() {
-    let mut engine = started(400.0);
+    let mut engine = started(350.0);
     for _ in 1..9 {
         tick(&mut engine);
     }
     let kept = reboiler_w(&engine.snapshot());
     let early = feed_c(&engine.snapshot());
-    assert!(kept > 10.0e6 && early < 357.0, "{kept} W on {early} °C");
+    assert!(kept > 10.0e6 && early < 320.0, "{kept} W on {early} °C");
     let column = column_id(&engine);
     engine
         .apply(Command::SetReboilerDuty {
@@ -134,20 +137,20 @@ fn slow_held_at_zero_too_early_the_column_keeps_its_duty_and_lands_later() {
     let (at, feed) = landed.expect("the column lands on zero");
     assert!(declined_ticks > 100, "declined only {declined_ticks} ticks");
     assert!(
-        (355.0..370.0).contains(&feed),
+        (335.0..348.0).contains(&feed),
         "landed at tick {at} on a {feed} °C feed"
     );
 }
 
 /// **Walked down from its running duty, the column follows the feed to zero**
-/// (findings 14–15). From a coil at 380 °C, every 10 ticks the reboiler is
+/// (findings 14–15). From a coil at 350 °C, every 10 ticks the reboiler is
 /// held at the duty it ran at less 2.5 MW, as the screen's key does: the duty
 /// never rises, the column declines the steps it cannot take yet (the walk
 /// reaches the edge and waits on the feed), and the reboiler reaches zero.
 /// Never refused.
 #[test]
 fn slow_walked_down_from_its_running_duty_the_column_follows_the_feed() {
-    let mut engine = started(380.0);
+    let mut engine = started(350.0);
     tick(&mut engine);
     let column = column_id(&engine);
     let mut last = reboiler_w(&engine.snapshot());

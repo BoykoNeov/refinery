@@ -28,8 +28,8 @@ use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
 use refinery_core::graph::{CascadeSpec, Pumparound};
 use refinery_core::traits::{
-    CascadeProfile, ColumnPass, DeclinedHold, DrawSeparation, Separation, SeparationModel,
-    ThermoModel,
+    CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, Separation,
+    SeparationModel, ThermoModel,
 };
 use refinery_core::units::{Kelvin, Pascal, Watt};
 
@@ -121,6 +121,36 @@ const BASE_SIDE_COOLING: f64 = 1.5;
 /// a quarter, at every share (M65.0's probe, §70.0). Four halvings reach a
 /// sixteenth.
 const PUMPAROUND_HALVINGS: u32 = 4;
+
+/// The liquid a cut-back side draw leaves flowing below its tray, as a share of
+/// the feed's molar rate (M67.1, docs/DESIGN.md §72.1): 5 %, the user's
+/// choice. A game value standing in for tray hydraulics (C1), which would say
+/// when a tray weeps dry. M67.0 measured the least liquid under a draw over the
+/// corpus at 6.55 % (the stripped crude unit's gas-oil tray), so at 5 % every
+/// shipped plant is what it was to the bit, and at 10 % that one moves.
+const CUT_BACK_LIQUID_OF_FEED: f64 = 0.05;
+
+/// A cut-back draw is released once the share it would run at passes its
+/// declared one by this much [-], so a draw that sits ON the minimum is not
+/// released and cut back again on the last bit.
+const RELEASE_MARGIN: f64 = 1.0e-6;
+
+/// A start's draw is cut back once it would take more than its tray can
+/// leave the minimum by this share of the feed's molar rate — a rounding
+/// margin, so a draw that a solve left ON the minimum is not cut again.
+const RECUT_MARGIN_OF_FEED: f64 = 1.0e-9;
+
+/// A cut-back draw's floor, as a share of the feed's molar rate: a draw cut
+/// to nothing runs here, a product that has stopped (decision 6, §72.1) —
+/// not zero, which the solve's rates may not reach.
+const STOPPED_DRAW_OF_FEED: f64 = 1.0e-6;
+
+/// A share of the feed's molar rate below which a flow counts as gone: 1 %. The
+/// line search never steps a flow through zero, so a solve that stopped at an
+/// edge stopped with that flow close to it — measured at exactly zero on the
+/// crude unit's dry kerosene tray (§66.0). `physical_cause` names a tray this
+/// dry; a failure that leaves a draw's tray this dry cuts that draw back.
+const DRY_TRAY_OF_FEED: f64 = 0.01;
 
 /// Outer iterations of the fixed point when it is solved to convergence on its
 /// own — the reference [`HeatBalanceCascade::fixed_point`] gates Newton
@@ -215,6 +245,11 @@ struct Profile {
     water_vapour: Vec<f64>,
     free_water: Vec<f64>,
     saturation: Vec<f64>,
+    /// Each draw's share of the feed's (the oil's) mass it ran at: its
+    /// declared one, or a cut-back draw's own (M67.1).
+    ratios: Vec<f64>,
+    /// The side draws it ran cut back, as plan indices (M67.1, §72.1).
+    cut_back: Vec<usize>,
 }
 
 impl Profile {
@@ -235,6 +270,8 @@ impl Profile {
             water_vapour: solved.water_vapour,
             free_water: solved.free_water,
             saturation: solved.saturation,
+            ratios: solved.ratios,
+            cut_back: Vec::new(),
         }
     }
 }
@@ -461,6 +498,7 @@ impl HeatBalanceCascade {
                 feed_vapour_fraction: None,
                 reflux_ratio: Some(spec.reflux_ratio),
                 reboiler_declined: None,
+                cut_back: Vec::new(),
                 water_flooded: None,
             });
         }
@@ -637,7 +675,7 @@ impl HeatBalanceCascade {
             };
             result.push(match &setup.water {
                 None => DrawSeparation {
-                    split: plan.mass_ratios[i],
+                    split: profile.ratios[i],
                     composition: draw.moles.to_mass(slate)?,
                     temperature,
                 },
@@ -645,7 +683,7 @@ impl HeatBalanceCascade {
                 // bottoms carries whatever free water reaches the reboiler
                 // (§67.17 rule 8).
                 Some(water) => {
-                    let oil_mass = plan.mass_ratios[i] * setup.feed_mass;
+                    let oil_mass = profile.ratios[i] * setup.feed_mass;
                     let water_mass = if i == last {
                         profile.free_water[plan.stages - 1] * water.molar_mass
                     } else {
@@ -704,6 +742,18 @@ impl HeatBalanceCascade {
             water_condensed,
             spec.reboiler_duty.map(|duty| duty.value()),
         )?;
+        // The cut-back draws by the column's own index, the water draw put back.
+        let cut_back = profile
+            .cut_back
+            .iter()
+            .map(|i| CutBackDraw {
+                draw: match water_draw {
+                    Some((at, _)) if at <= *i => i + 1,
+                    _ => *i,
+                },
+                of_declared: profile.ratios[*i] / plan.mass_ratios[*i],
+            })
+            .collect();
 
         Ok(Separation {
             draws: result,
@@ -713,12 +763,14 @@ impl HeatBalanceCascade {
                 vapour: profile.flows.vapour.clone(),
                 free_water: profile.free_water,
                 reflux_ratio: Some(profile.reflux_ratio),
+                cut_back: profile.cut_back,
             }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
             feed_vapour_fraction: Some(feed_vapour_fraction),
             reflux_ratio: Some(profile.reflux_ratio),
             reboiler_declined: None,
+            cut_back,
             water_flooded: None,
         })
     }
@@ -963,6 +1015,8 @@ impl HeatBalanceCascade {
             water_vapour: dry_water.unwrap_or_default(),
             free_water,
             saturation: Vec::new(),
+            ratios: setup.plan.mass_ratios.clone(),
+            cut_back: Vec::new(),
         })
     }
 
@@ -991,6 +1045,8 @@ impl HeatBalanceCascade {
             energy_scale: setup.feed_molar * latent,
             tolerance: setup.tolerance,
             water: setup.water.as_ref(),
+            cut_back: &[],
+            liquid_minimum: CUT_BACK_LIQUID_OF_FEED * setup.feed_molar,
         };
 
         let mut warm_failure = None;
@@ -1066,6 +1122,23 @@ impl HeatBalanceCascade {
         let wet: Vec<usize> = (0..free_water.len())
             .filter(|j| free_water[*j] > 0.0)
             .collect();
+        // The last tick's cut-back draws start this one's set (M67.1) — a hint:
+        // an index that is not one of this plan's side draws on a tray is not
+        // read.
+        let carried: Vec<usize> = previous
+            .cut_back
+            .iter()
+            .copied()
+            .filter(|i| {
+                *i > 0
+                    && *i < plan.mass_ratios.len() - 1
+                    && matches!(plan.locations[*i], DrawLocation::Stage(_))
+            })
+            .collect();
+        let equations = &ColumnEquations {
+            cut_back: &carried,
+            ..*equations
+        };
         Ok(self.newton_with_water(
             equations,
             &temperatures,
@@ -1407,6 +1480,166 @@ impl HeatBalanceCascade {
         Ok(profile)
     }
 
+    /// Newton under the cut-back draws' active set (M67.1, docs/DESIGN.md
+    /// §72.1), around the wet stages' and the floor's. The first solve is the
+    /// one this column has always had — every draw at its declared share, from
+    /// the start as given — unless the start carries a set (the last tick's,
+    /// `CascadeProfile::cut_back`), so a column that never runs a draw tray
+    /// short is what it was to the bit, and one held at an edge solves once a
+    /// tick. From an answer or a failure the set moves:
+    ///
+    /// - an answer whose draw tray runs under the minimum liquid cuts that draw
+    ///   back, and one whose cut-back draw would take more than its declared
+    ///   share releases it; the next solve starts from that answer;
+    /// - a failure whose last iterate runs a draw tray dry (`physical_cause`'s
+    ///   one per cent of the feed, or the minimum where that is more) cuts that
+    ///   draw back; the next solve starts from this call's start.
+    ///
+    /// A start's cut-back draws are set top-down ([`cut_start`]).
+    ///
+    /// Where no set holds, the first answer stands if there was one (a draw
+    /// tray short of the minimum but wet, as before), else the failure — and a
+    /// carried set that found nothing gives way to the first solve from the
+    /// start as given, so a wrong hint costs a solve, never an answer.
+    #[allow(clippy::too_many_arguments)]
+    fn newton_with_water(
+        &self,
+        equations: &ColumnEquations<'_>,
+        temperatures: &[f64],
+        vapour: &[f64],
+        draw_rates: &[f64],
+        reflux_ratio: Option<f64>,
+        wet: Vec<usize>,
+        free_water: &[f64],
+    ) -> Result<Profile, Unsolved> {
+        let plan = equations.plan;
+        let minimum = equations.liquid_minimum;
+        let side: Vec<usize> = (1..plan.mass_ratios.len() - 1)
+            .filter(|i| matches!(plan.locations[*i], DrawLocation::Stage(_)))
+            .collect();
+        let tray_of = |i: usize| match plan.locations[i] {
+            DrawLocation::Stage(j) => j,
+            DrawLocation::Condenser => 0,
+        };
+        let mut cut: Vec<usize> = equations.cut_back.to_vec();
+        let mut rates = draw_rates.to_vec();
+        if !cut.is_empty() {
+            cut_start(equations, vapour, &mut rates, reflux_ratio, &mut cut);
+        }
+        let mut start_temperatures = temperatures.to_vec();
+        let mut start_vapour = vapour.to_vec();
+        let mut start_reflux = reflux_ratio;
+        let mut start_wet = wet.clone();
+        let mut start_free_water = free_water.to_vec();
+        // The first answer at the declared shares, which stands where no set
+        // holds; never one with a draw cut back, which the release may reject.
+        let mut uncut: Option<Profile> = None;
+        let mut failure = None;
+        for _ in 0..side.len() + 2 {
+            let uncut_attempt = cut.is_empty();
+            let attempt = ColumnEquations {
+                cut_back: &cut,
+                ..*equations
+            };
+            let result = self.newton_water_set(
+                &attempt,
+                &start_temperatures,
+                &start_vapour,
+                &rates,
+                start_reflux,
+                start_wet.clone(),
+                &start_free_water,
+            );
+            match result {
+                Ok(mut profile) => {
+                    // Released: a cut-back draw its tray could fill at its share
+                    // (the margin keeps a draw ON the minimum from flickering).
+                    let release: Vec<usize> = cut
+                        .iter()
+                        .copied()
+                        .filter(|i| {
+                            profile.ratios[*i] > plan.mass_ratios[*i] * (1.0 + RELEASE_MARGIN)
+                        })
+                        .collect();
+                    let add: Vec<usize> = side
+                        .iter()
+                        .copied()
+                        .filter(|i| {
+                            !cut.contains(i)
+                                && profile.flows.liquid_down[tray_of(*i)] < minimum * (1.0 - 1.0e-9)
+                        })
+                        .collect();
+                    if release.is_empty() && add.is_empty() {
+                        profile.cut_back = cut;
+                        return Ok(profile);
+                    }
+                    cut.retain(|i| !release.contains(i));
+                    cut.extend(add);
+                    cut.sort_unstable();
+                    // The next solve from this answer: its own rates, the
+                    // cut-back ones re-cut on its vapour and reflux. A
+                    // released draw starts at the rate it ran at, which its
+                    // tray supplied, not its declared one: on this answer's
+                    // vapour the declared one need not fit (measured: back up
+                    // from a reflux of 0.6 to 1 on the crude unit, the start
+                    // left the physical region and the draw was cut again).
+                    rates = profile_draw_rates(plan, &profile);
+                    start_temperatures = profile.temperatures.clone();
+                    start_vapour = profile.flows.vapour.clone();
+                    start_reflux = Some(profile.reflux_ratio);
+                    start_wet = profile.wet_stages();
+                    start_free_water = profile.free_water.clone();
+                    cut_start(equations, &start_vapour, &mut rates, start_reflux, &mut cut);
+                    if uncut.is_none() && uncut_attempt {
+                        uncut = Some(profile);
+                    }
+                    continue;
+                }
+                Err(unsolved) => {
+                    let dry = minimum.max(DRY_TRAY_OF_FEED * equations.feed_molar) * (1.0 + 1.0e-9);
+                    let add: Vec<usize> = match unsolved.flows.as_deref() {
+                        Some(flows) => side
+                            .iter()
+                            .copied()
+                            .filter(|i| !cut.contains(i) && flows.liquid_down[tray_of(*i)] <= dry)
+                            .collect(),
+                        None => Vec::new(),
+                    };
+                    failure = Some(unsolved);
+                    if add.is_empty() {
+                        break;
+                    }
+                    cut.extend(add);
+                    cut.sort_unstable();
+                }
+            }
+            rates = draw_rates.to_vec();
+            cut_start(equations, &start_vapour, &mut rates, start_reflux, &mut cut);
+        }
+        if let Some(profile) = uncut {
+            return Ok(profile);
+        }
+        if !equations.cut_back.is_empty() {
+            let declared = ColumnEquations {
+                cut_back: &[],
+                ..*equations
+            };
+            return self.newton_water_set(
+                &declared,
+                temperatures,
+                vapour,
+                draw_rates,
+                reflux_ratio,
+                wet,
+                free_water,
+            );
+        }
+        Err(failure.unwrap_or(Unsolved {
+            reason: "found no set of cut-back draws that holds".into(),
+            flows: None,
+        }))
+    }
+
     /// Newton under the wet stages' active set (§67.17 rule 6), around the
     /// floor's: solve with `wet`; every dry stage past saturation turns wet, or
     /// else every wet stage whose free water came out negative turns dry, and
@@ -1416,7 +1649,7 @@ impl HeatBalanceCascade {
     /// measured on the wet-trays reference), and Newton from there fails. A dry
     /// feed has no wet set and is `newton` alone.
     #[allow(clippy::too_many_arguments)]
-    fn newton_with_water(
+    fn newton_water_set(
         &self,
         equations: &ColumnEquations<'_>,
         temperatures: &[f64],
@@ -1616,6 +1849,81 @@ impl HeatBalanceCascade {
 /// AT saturation (one just dried) is not flipped back on its last bit.
 const SATURATION_MARGIN: f64 = 1.0e-9;
 
+/// A start's side draws cut back top-down (M67.1, docs/DESIGN.md §72.1): each
+/// in `cut`, and each that would leave less than the minimum liquid on a tray
+/// between it and the next draw, set to what leaves exactly that — never more
+/// than its rate in `rates`, never under [`STOPPED_DRAW_OF_FEED`] — and added
+/// to `cut`. The balance is the solve's own (`ColumnEquations::evaluate`):
+/// the vapour into the condenser `(R + 1)·D` at the reflux the solve starts at,
+/// every other vapour `vapour`'s.
+fn cut_start(
+    equations: &ColumnEquations<'_>,
+    vapour: &[f64],
+    rates: &mut [f64],
+    reflux_ratio: Option<f64>,
+    cut: &mut Vec<usize>,
+) {
+    let plan = equations.plan;
+    let n = plan.stages;
+    let draws = rates.len();
+    let ran = reflux_ratio.unwrap_or(vapour[0] / rates[0] - 1.0);
+    // The reflux the solve starts at: a held column's its own, else the
+    // commanded one (a floor that binds only adds liquid).
+    let ratio = match equations.spec.reboiler_duty {
+        Some(_) => ran,
+        None => equations.spec.reflux_ratio,
+    };
+    // As the solve's balance: the vapour into the condenser is (R + 1)·D.
+    let top_vapour = (ratio + 1.0) * rates[0];
+    // What each stage's balance adds to the liquid passing down, its draw
+    // aside: the vapour from below and the feed, less the vapour leaving.
+    let gain: Vec<f64> = (0..n - 1)
+        .map(|j| {
+            let feed_here = if j == plan.feed_stage {
+                equations.feed_molar
+            } else {
+                0.0
+            };
+            let leaving = if j == 0 { top_vapour } else { vapour[j] };
+            vapour[j + 1] + feed_here - leaving
+        })
+        .collect();
+    let draw_here = |j: usize| matches!(plan.draw_at_stage[j], Some(i) if i > 0 && i < draws);
+    let mut liquid = ratio * rates[0];
+    for j in 0..n - 1 {
+        let mut down = liquid + gain[j];
+        if draw_here(j) {
+            let i = plan.draw_at_stage[j].unwrap_or(0);
+            // The lowest the liquid falls, relative to this tray's, on the
+            // stages from here down to the next draw.
+            let mut run = 0.0_f64;
+            let mut lowest = 0.0_f64;
+            for (k, stage_gain) in gain.iter().enumerate().skip(j + 1) {
+                if draw_here(k) {
+                    break;
+                }
+                run += stage_gain;
+                lowest = lowest.min(run);
+            }
+            let most = down + lowest - equations.liquid_minimum;
+            // A draw that leaves its tray exactly the minimum — a released
+            // one, starting at the rate it ran at cut back — is not cut again
+            // on rounding.
+            if cut.contains(&i) || rates[i] - most > RECUT_MARGIN_OF_FEED * equations.feed_molar {
+                rates[i] = most
+                    .min(rates[i])
+                    .max(STOPPED_DRAW_OF_FEED * equations.feed_molar);
+                if !cut.contains(&i) {
+                    cut.push(i);
+                }
+            }
+            down -= rates[i];
+        }
+        liquid = down;
+    }
+    cut.sort_unstable();
+}
+
 /// Each draw but the bottoms' molar rate [mol/s], from its mass ratio and its
 /// current molar mass.
 fn draw_rates(plan: &CascadePlan, draws: &[DrawState], feed_mass: f64) -> Vec<f64> {
@@ -1728,6 +2036,7 @@ fn oil_free_feed(
         feed_vapour_fraction: None,
         reflux_ratio: Some(reflux_ratio),
         reboiler_declined: None,
+        cut_back: Vec::new(),
         water_flooded: None,
     })
 }
@@ -1918,6 +2227,7 @@ fn flooded_pass_through(
             feed_vapour_fraction: None,
             reflux_ratio: Some(spec.reflux_ratio),
             reboiler_declined: None,
+            cut_back: Vec::new(),
             water_flooded: Some(refusal.to_string()),
         });
     }
@@ -1951,6 +2261,7 @@ fn flooded_pass_through(
         feed_vapour_fraction: None,
         reflux_ratio: Some(spec.reflux_ratio),
         reboiler_declined: None,
+        cut_back: Vec::new(),
         water_flooded: Some(refusal.to_string()),
     })
 }
@@ -2180,6 +2491,7 @@ fn water_only_inflow(
         feed_vapour_fraction: None,
         reflux_ratio: Some(spec.reflux_ratio),
         reboiler_declined: None,
+        cut_back: Vec::new(),
         water_flooded: None,
     })
 }
@@ -2216,16 +2528,12 @@ fn settings_sentence(spec: &CascadeSpec) -> String {
 /// left to boil up, cannot be reached here: the vapour floor holds the
 /// reboiler's boil-up at 20 % of the feed.)
 ///
-/// A share of the feed's molar rate below which a flow counts as gone: 1 %. The
-/// line search never steps a flow through zero, so a solve that stopped at an
-/// edge stopped with that flow close to it — measured at exactly zero on the
-/// crude unit's dry kerosene tray (§66.0).
+/// A flow counts as gone at [`DRY_TRAY_OF_FEED`] of the feed.
 fn physical_cause(plan: &CascadePlan, flows: Option<&Flows>, feed_molar: f64) -> String {
-    const GONE_SHARE_OF_FEED: f64 = 0.01;
     let Some(flows) = flows else {
         return String::new();
     };
-    let gone = GONE_SHARE_OF_FEED * feed_molar;
+    let gone = DRY_TRAY_OF_FEED * feed_molar;
     let n = plan.stages;
     let driest = (0..n - 1)
         .filter(|j| flows.liquid_down[*j] <= gone)
@@ -4030,28 +4338,108 @@ mod newton_tests {
         assert!(halved_run.reboiler_duty.unwrap().value() < newton.reboiler_duty.unwrap().value());
     }
 
-    /// **A dry tray is refused by name** (§66.2): at a reflux of 0.6 the
-    /// kerosene tray (stage 3) runs dry — its draw takes all the liquid the
-    /// reflux sends it — and the refusal says so beside the settings.
+    /// **A draw whose tray would run dry is cut back, and released when the
+    /// column recovers** (M67.1, §72.1). At a reflux of 0.6 the kerosene
+    /// draw (stage 3) would take all the liquid the reflux sends it — refused
+    /// by name until M66 (§66.2). Now it takes what leaves its tray the
+    /// minimum: cut back, reported, its split its declared share times the
+    /// share it ran at, and the bottoms the rest. Back at a reflux of 4 from
+    /// that answer, the carried cut is released and the column is the one
+    /// that never cut, to Newton's tolerance.
+    /// **A column with a draw cut back is insensitive to its start** (M67.1):
+    /// at a reflux of 0.6 the answer from the uncut column at 4 and from the
+    /// cut-back answer itself (its cut carried) is one answer, to Newton's
+    /// tolerance — the carried cut is a hint. Started cold it is refused, as
+    /// before M67: the cold warm-up runs the constant-molar-overflow cascade at
+    /// the declared shares, which has no cut-back (§72.4, deferred).
     #[test]
-    fn a_dry_tray_is_refused_by_name() {
+    fn a_cut_back_column_is_start_insensitive() {
+        let unit = CrudeUnit::new();
+        let low = CrudeUnit::spec(0.6, 1.0);
+        let running = unit
+            .separate(&HeatBalanceCascade::new(), &CrudeUnit::spec(4.0, 1.0), None)
+            .unwrap();
+        let from_running = unit
+            .separate(&HeatBalanceCascade::new(), &low, running.profile.as_ref())
+            .unwrap();
+        let from_itself = unit
+            .separate(
+                &HeatBalanceCascade::new(),
+                &low,
+                from_running.profile.as_ref(),
+            )
+            .unwrap();
+        assert_eq!(from_itself.cut_back.len(), 1, "{:?}", from_itself.cut_back);
+        let gap = gap(&from_itself, &from_running);
+        assert!(gap < 1e-6, "the starts differ by {gap}");
+        let cold = unit
+            .separate(&HeatBalanceCascade::new(), &low, None)
+            .expect_err("no cut-back in the cold warm-up")
+            .to_string();
+        assert!(cold.contains("could not start"), "{cold}");
+    }
+
+    #[test]
+    fn a_dry_trays_draw_is_cut_back_and_released() {
         let unit = CrudeUnit::new();
         let running = unit
             .separate(&HeatBalanceCascade::new(), &CrudeUnit::spec(4.0, 1.0), None)
             .unwrap();
-        let message = unit
+        assert!(running.cut_back.is_empty(), "{:?}", running.cut_back);
+        let short = unit
             .separate(
                 &HeatBalanceCascade::new(),
                 &CrudeUnit::spec(0.6, 1.0),
                 running.profile.as_ref(),
             )
-            .unwrap_err()
-            .to_string();
+            .unwrap_or_else(|e| panic!("reflux 0.6: {e}"));
+        assert_eq!(short.cut_back.len(), 1, "{:?}", short.cut_back);
+        let kerosene = short.cut_back[0];
+        assert_eq!(kerosene.draw, 1);
         assert!(
-            message.contains("The trays at stage 3 run dry"),
-            "{message}"
+            kerosene.of_declared > 0.0 && kerosene.of_declared < 1.0,
+            "{kerosene:?}"
         );
-        assert!(message.contains("reflux ratio 0.6"), "{message}");
+        assert_eq!(
+            short.profile.as_ref().unwrap().cut_back,
+            vec![1],
+            "the cut is carried"
+        );
+        let declared = running.draws[1].split;
+        assert!((short.draws[1].split - declared * kerosene.of_declared).abs() < 1e-12);
+        let total: f64 = short.draws.iter().map(|d| d.split).sum();
+        assert!((total - 1.0).abs() < 1e-12, "the splits sum to {total}");
+
+        let recovered = unit
+            .separate(
+                &HeatBalanceCascade::new(),
+                &CrudeUnit::spec(4.0, 1.0),
+                short.profile.as_ref(),
+            )
+            .unwrap();
+        assert!(recovered.cut_back.is_empty(), "{:?}", recovered.cut_back);
+        let back = gap(&recovered, &running);
+        assert!(back < 1e-6, "released, the column differs by {back}");
+
+        // A step back up to a reflux of 1.1, where the kerosene's tray fills
+        // its share again: the carried cut converges with the draw taking more
+        // than its share, and is released — the answer the column gives from
+        // the uncut start. (The released draw starts at the rate it ran at,
+        // its tray ON the minimum: measured, a start that cut it again on
+        // rounding never released it here.)
+        let one = CrudeUnit::spec(1.1, 1.0);
+        let released = unit
+            .separate(&HeatBalanceCascade::new(), &one, short.profile.as_ref())
+            .unwrap_or_else(|e| panic!("back to a reflux of 1.1: {e}"));
+        assert!(released.cut_back.is_empty(), "{:?}", released.cut_back);
+        let uncut = unit
+            .separate(&HeatBalanceCascade::new(), &one, running.profile.as_ref())
+            .unwrap();
+        let apart = gap(&released, &uncut);
+        assert!(
+            apart < 1e-6,
+            "released at 1.1, the column differs by {apart}"
+        );
     }
 }
 

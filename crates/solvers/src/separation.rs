@@ -140,6 +140,7 @@ impl SeparationModel for CutPointSplitter {
             feed_vapour_fraction: None,
             reflux_ratio: None,
             reboiler_declined: None,
+            cut_back: Vec::new(),
             water_flooded: None,
         })
     }

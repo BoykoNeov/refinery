@@ -461,6 +461,7 @@ impl SeparationModel for StageCascade {
                 feed_vapour_fraction: None,
                 reflux_ratio: None,
                 reboiler_declined: None,
+                cut_back: Vec::new(),
                 water_flooded: None,
             });
         }
@@ -680,12 +681,14 @@ impl SeparationModel for StageCascade {
                 vapour: Vec::new(),
                 free_water: Vec::new(),
                 reflux_ratio: None,
+                cut_back: Vec::new(),
             }),
             condenser_duty: Some(condenser_duty),
             reboiler_duty: Some(reboiler_duty),
             feed_vapour_fraction: None,
             reflux_ratio: None,
             reboiler_declined: None,
+            cut_back: Vec::new(),
             water_flooded: None,
         })
     }
@@ -1256,13 +1259,25 @@ impl CascadePlan {
         feed: &Composition,
         slate: &Slate,
     ) -> f64 {
+        self.component_residual_with(draws, feed, slate, &self.mass_ratios)
+    }
+
+    /// The same at the shares `ratios`, a cut-back draw's own among them
+    /// (M67.1, docs/DESIGN.md §72.1).
+    pub(crate) fn component_residual_with(
+        &self,
+        draws: &[DrawState],
+        feed: &Composition,
+        slate: &Slate,
+        ratios: &[f64],
+    ) -> f64 {
         let mut worst = 0.0f64;
         for c in 0..self.components {
             let mut out = 0.0;
             for (i, draw) in draws.iter().enumerate() {
                 // A draw's MASS composition, which is the basis its ratio is in.
                 let numerator = draw.moles.fractions()[c] * slate.get(c).molar_mass.value();
-                out += self.mass_ratios[i] * numerator / draw.mean_molar_mass;
+                out += ratios[i] * numerator / draw.mean_molar_mass;
             }
             worst = worst.max((out - feed.fractions()[c]).abs());
         }

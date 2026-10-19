@@ -129,10 +129,36 @@ fn slow_the_screen_range_runs_at_its_corners() {
     }
 }
 
+/// **A reflux too low for the kerosene draw cuts it back** (M67.1,
+/// docs/DESIGN.md §72.1): at a reflux of 0.6 the kerosene tray (stage 3)
+/// would run dry, its draw taking all the liquid the reflux sends it — a halt
+/// until M67 (§66.2). Now the draw takes what leaves the tray its minimum, 58 %
+/// of its share, and the snapshot names it.
+#[test]
+fn a_reflux_too_low_for_the_kerosene_draw_cuts_it_back() {
+    let mut engine = engine();
+    let column = id(&engine, "column");
+    run(&mut engine, 1000).expect("the plant settles");
+    assert!(node(&engine.snapshot(), "column")
+        .column_draws_cut_back
+        .is_empty());
+    engine
+        .apply(Command::SetRefluxRatio {
+            node: column,
+            reflux_ratio: 0.6,
+        })
+        .unwrap();
+    let s = run(&mut engine, 1000).expect("reflux 0.6 runs, its kerosene cut back");
+    let cut = &node(&s, "column").column_draws_cut_back;
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert_eq!(cut[0].draw, 1, "the kerosene draw");
+    assert!((cut[0].of_declared - 0.584).abs() < 0.005, "{cut:?}");
+}
+
 /// Past the range the run halts, and the reason names the settings it could
-/// not settle at (the user's decision, §65.9) — and, since M61, the physical
-/// edge it stopped at (§66.2): at a reflux of 0.6 the kerosene tray (stage 3)
-/// runs dry, its draw taking all the liquid the reflux sends it.
+/// not settle at (the user's decision, §65.9): a reflux of 0.6 with the
+/// pumparounds off takes too little heat out above the feed for the top stage
+/// to balance, cut back or not (§72.4).
 #[test]
 fn past_the_range_the_halt_names_the_settings() {
     let mut engine = engine();
@@ -144,12 +170,23 @@ fn past_the_range_the_halt_names_the_settings() {
             reflux_ratio: 0.6,
         })
         .unwrap();
-    let halt = run(&mut engine, 1000).expect_err("reflux 0.6 is past the range");
+    for pumparound in 0..PUMPAROUND_MW.len() {
+        engine
+            .apply(Command::SetPumparoundDuty {
+                node: column,
+                pumparound: pumparound as u32,
+                duty: Watt(0.0),
+            })
+            .unwrap();
+    }
+    let halt = run(&mut engine, 1000).expect_err("reflux 0.6 with no pumparounds is past it");
     assert!(
-        halt.contains("could not settle at reflux ratio 0.6 with its pumparounds at 15.0 MW"),
+        halt.contains(
+            "could not settle at reflux ratio 0.6 with its pumparounds at 0.0 MW on stage 4, \
+             0.0 MW on stage 6, 0.0 MW on stage 7"
+        ),
         "{halt}"
     );
-    assert!(halt.contains("The trays at stage 3 run dry"), "{halt}");
 }
 
 /// `SetPumparoundDuty` writes one pumparound's duty, which the column's `kind`

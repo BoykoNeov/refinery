@@ -14,8 +14,8 @@ use crate::graph::{
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, ColumnOperation, Command, ComponentSnapshot, ControlSnapshot,
-    EdgeSnapshot, NodeSnapshot, PumpSuctionSnapshot, PumpTwoPhaseSnapshot, ReboilerDeclined,
-    RestartBar, Snapshot, SupplyBoiling, TripSnapshot, TripStop,
+    DrawCutBack, EdgeSnapshot, NodeSnapshot, PumpSuctionSnapshot, PumpTwoPhaseSnapshot,
+    ReboilerDeclined, RestartBar, Snapshot, SupplyBoiling, TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, LineFlashModel, ReactionModel,
@@ -3693,6 +3693,20 @@ impl Engine {
                             asked_w: declined.asked.value(),
                             reason: declined.reason.clone(),
                         }),
+                    column_draws_cut_back: self
+                        .node_states
+                        .column_separation
+                        .get(&id)
+                        .map(|s| {
+                            s.cut_back
+                                .iter()
+                                .map(|cut| DrawCutBack {
+                                    draw: cut.draw,
+                                    of_declared: cut.of_declared,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                     column_operation: self.node_states.column_separation.get(&id).and_then(|s| {
                         let (feed_vapour_fraction, reflux_ratio) =
                             s.feed_vapour_fraction.zip(s.reflux_ratio)?;

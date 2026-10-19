@@ -662,6 +662,12 @@ pub struct CascadeProfile {
     /// wet crude unit, past the 1e-6 the floor-first test allows, and every
     /// solve tried the floor first and failed it.
     pub reflux_ratio: Option<f64>,
+    /// The side draws this iterate ran cut back (M67.1, docs/DESIGN.md §72.1),
+    /// as indices into the model's own draws, or empty. The next tick's Newton
+    /// starts with them cut back, so a column held at an edge solves once a
+    /// tick rather than failing its plain solve first. A hint like the rest of
+    /// this struct.
+    pub cut_back: Vec<usize>,
 }
 
 /// The outcome of one column pass: every draw's split, plus the column's two
@@ -740,6 +746,22 @@ pub struct Separation {
     /// §71.2): the duty asked for, and the column's own reason. The published
     /// `reboiler_duty` is the duty it ran at. `None` from every other pass.
     pub reboiler_declined: Option<DeclinedHold>,
+    /// The side draws the column cut back this pass (M67.1, docs/DESIGN.md
+    /// §72.1): a draw whose tray could not supply its declared share took what
+    /// leaves the tray below its minimum liquid. Its `split` is the share it
+    /// ran at. Empty from every pass that ran every draw at its declared share,
+    /// and from every fidelity that never cuts one back.
+    pub cut_back: Vec<CutBackDraw>,
+}
+
+/// A side draw a column cut back this pass (M67.1, docs/DESIGN.md §72.1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CutBackDraw {
+    /// The draw, an index into `ColumnPass::draws` and `Separation::draws`.
+    pub draw: usize,
+    /// The share of its declared rate it ran at [-], at most one: near zero
+    /// is a draw that stopped.
+    pub of_declared: f64,
 }
 
 /// A held reboiler duty a column declined this pass (M66.2, docs/DESIGN.md
