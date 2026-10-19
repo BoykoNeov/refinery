@@ -62,6 +62,8 @@ Ticked when it lands; struck when the user rules it out.
       column screen (done 2026-10-19, DESIGN §72.7); [x] M67.3 the crude unit's keys as a measured region (done 2026-10-19, DESIGN §72.8);
       [x] M67.4 the stripped crude unit's (done 2026-10-19, DESIGN §72.9); [x] M67.5 the cold plant's (done 2026-10-19, DESIGN §72.10).
 - [ ] **C11** — Newton's Jacobian by forward differences (cost; feeds Phase 3). Re-check the column screen's measured tables before it lands (C19).
+      **M68, CLOSED 2026-10-19 on the measurement** (DESIGN §73): the column is the frame's cost nowhere but one ~8 ms
+      key-press tick on the crude unit; the user's decision: A29 next, C11 re-measured after it.
 - [ ] **C9** — a pumparound as a real liquid circuit, not a side cooler.
 - [ ] **B3** (open clause) — a flashing feed into a column, a partial condenser,
       a vapour side draw; M7's three refusals.

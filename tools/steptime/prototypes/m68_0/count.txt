@@ -1,0 +1,180 @@
+== crude_unit  (2799 ticks after the first)
+  per tick: separates 1.00  solves 1.00  iterations 1.02  evals 25.6 (start 1.00, jacobian 23.4, search 1.18, other 0.00)  backward 0.01
+  evals/tick: median 25  p99 25  max 758   iterations max 21  solves max 2
+  first tick: wall 4.08 ms  solves 2  iterations 6  evals 146  fixed point 2.11 ms
+  wall/tick mean 0.426 ms (loaded machine; shares below are of the wall)
+    eval:flows+water               1.1 %
+    eval:k                         8.7 %
+    eval:thomas                   17.0 %
+    eval:summation+normalise       4.6 %
+    eval:enthalpy h/H              9.8 %
+    eval:condenser                20.0 %
+    eval:water enthalpy            0.2 %
+    eval:energy+ratios+sat         1.0 %
+    eval:draw_states+I7            1.9 %
+    newton:dense solve             0.9 %
+    newton:jacobian (all)         62.8 %
+    newton:solve (all)            69.2 %
+    separate (all)                90.5 %
+    eval (all)                    66.5 %
+  worst 1 % by evals (27 ticks): wall mean 0.88 ms, jacobian 80.6 %, all evals 83.5 %, fixed point 0.0 %
+== crude_column_hot_feed  (1999 ticks after the first)
+  per tick: separates 1.00  solves 1.00  iterations 0.49  evals 9.8 (start 1.00, jacobian 8.3, search 0.49, other 0.00)  backward 0.00
+  evals/tick: median 1  p99 37  max 37   iterations max 2  solves max 1
+  first tick: wall 2.65 ms  solves 2  iterations 2  evals 38  fixed point 1.95 ms
+  wall/tick mean 0.245 ms (loaded machine; shares below are of the wall)
+    eval:flows+water               0.9 %
+    eval:k                         5.6 %
+    eval:thomas                   13.3 %
+    eval:summation+normalise       4.0 %
+    eval:enthalpy h/H              6.7 %
+    eval:condenser                14.4 %
+    eval:water enthalpy            0.2 %
+    eval:energy+ratios+sat         0.9 %
+    eval:draw_states+I7            1.3 %
+    newton:dense solve             0.6 %
+    newton:jacobian (all)         43.3 %
+    newton:solve (all)            51.3 %
+    separate (all)                86.9 %
+    eval (all)                    49.0 %
+  worst 1 % by evals (19 ticks): wall mean 0.61 ms, jacobian 64.9 %, all evals 70.6 %, fixed point 0.0 %
+== crude_column_overheated  (1999 ticks after the first)
+  per tick: separates 1.00  solves 1.00  iterations 0.47  evals 9.9 (start 1.00, jacobian 8.4, search 0.47, other 0.00)  backward 0.00
+  evals/tick: median 1  p99 39  max 76   iterations max 4  solves max 2
+  first tick: wall 2.07 ms  solves 2  iterations 2  evals 38  fixed point 1.43 ms
+  wall/tick mean 0.192 ms (loaded machine; shares below are of the wall)
+    eval:flows+water               0.9 %
+    eval:k                         5.8 %
+    eval:thomas                    9.4 %
+    eval:summation+normalise       3.5 %
+    eval:enthalpy h/H              6.7 %
+    eval:condenser                14.5 %
+    eval:water enthalpy            0.2 %
+    eval:energy+ratios+sat         0.8 %
+    eval:draw_states+I7            1.2 %
+    newton:dense solve             0.6 %
+    newton:jacobian (all)         39.3 %
+    newton:solve (all)            46.7 %
+    separate (all)                87.9 %
+    eval (all)                    44.6 %
+  worst 1 % by evals (19 ticks): wall mean 0.51 ms, jacobian 70.7 %, all evals 74.3 %, fixed point 0.0 %
+== crude_unit_stripped  (2799 ticks after the first)
+  per tick: separates 3.37  solves 3.37  iterations 2.32  evals 61.5 (start 3.37, jacobian 55.8, search 2.32, other 0.00)  backward 0.00
+  evals/tick: median 105  p99 105  max 256   iterations max 10  solves max 6
+  first tick: wall 50.89 ms  solves 20  iterations 58  evals 1469  fixed point 1.14 ms
+  wall/tick mean 10.625 ms (loaded machine; shares below are of the wall)
+    eval:flows+water               0.2 %
+    eval:k                         1.1 %
+    eval:thomas                    1.5 %
+    eval:summation+normalise       0.5 %
+    eval:enthalpy h/H              1.0 %
+    eval:condenser                 1.7 %
+    eval:water enthalpy            0.2 %
+    eval:energy+ratios+sat         0.1 %
+    eval:draw_states+I7            0.2 %
+    newton:dense solve             0.1 %
+    newton:jacobian (all)          6.3 %
+    newton:solve (all)             7.1 %
+    separate (all)                 8.9 %
+    eval (all)                     6.8 %
+  worst 1 % by evals (27 ticks): wall mean 15.72 ms, jacobian 7.7 %, all evals 8.3 %, fixed point 0.0 %
+== crude_unit_cold  (2399 ticks after the first)
+  per tick: separates 4.78  solves 4.78  iterations 4.13  evals 107.2 (start 4.78, jacobian 98.3, search 4.13, other 0.00)  backward 0.00
+  evals/tick: median 105  p99 155  max 231   iterations max 9  solves max 6
+  first tick: wall 45.07 ms  solves 8  iterations 41  evals 1264  fixed point 8.65 ms
+  wall/tick mean 14.508 ms (loaded machine; shares below are of the wall)
+    eval:flows+water               0.2 %
+    eval:k                         1.4 %
+    eval:thomas                    1.8 %
+    eval:summation+normalise       0.6 %
+    eval:enthalpy h/H              1.2 %
+    eval:condenser                 2.2 %
+    eval:water enthalpy            0.3 %
+    eval:energy+ratios+sat         0.2 %
+    eval:draw_states+I7            0.3 %
+    newton:dense solve             0.1 %
+    newton:jacobian (all)          7.7 %
+    newton:solve (all)             8.6 %
+    separate (all)                10.4 %
+    eval (all)                     8.3 %
+  worst 1 % by evals (23 ticks): wall mean 16.01 ms, jacobian 11.4 %, all evals 12.0 %, fixed point 0.0 %
+== crude_unit_wet  (1999 ticks after the first)
+  per tick: separates 1.57  solves 1.57  iterations 0.23  evals 7.0 (start 1.57, jacobian 5.2, search 0.23, other 0.00)  backward 0.00
+  evals/tick: median 2  p99 50  max 50   iterations max 2  solves max 2
+  first tick: wall 36.75 ms  solves 7  iterations 21  evals 511  fixed point 8.74 ms
+  wall/tick mean 3.809 ms (loaded machine; shares below are of the wall)
+    eval:flows+water               0.1 %
+    eval:k                         0.4 %
+    eval:thomas                    0.5 %
+    eval:summation+normalise       0.2 %
+    eval:enthalpy h/H              0.3 %
+    eval:condenser                 0.6 %
+    eval:water enthalpy            0.1 %
+    eval:energy+ratios+sat         0.0 %
+    eval:draw_states+I7            0.1 %
+    newton:dense solve             0.0 %
+    newton:jacobian (all)          1.6 %
+    newton:solve (all)             2.3 %
+    separate (all)                 4.5 %
+    eval (all)                     2.2 %
+  worst 1 % by evals (19 ticks): wall mean 4.88 ms, jacobian 10.2 %, all evals 10.8 %, fixed point 0.0 %
+== crude_unit_wetter  (1999 ticks after the first)
+  per tick: separates 1.00  solves 1.00  iterations 0.09  evals 3.2 (start 1.00, jacobian 2.1, search 0.09, other 0.00)  backward 0.00
+  evals/tick: median 1  p99 25  max 25   iterations max 1  solves max 1
+  first tick: wall 28.71 ms  solves 6  iterations 11  evals 270  fixed point 4.24 ms
+  wall/tick mean 2.667 ms (loaded machine; shares below are of the wall)
+    eval:flows+water               0.0 %
+    eval:k                         0.3 %
+    eval:thomas                    0.4 %
+    eval:summation+normalise       0.1 %
+    eval:enthalpy h/H              0.3 %
+    eval:condenser                 0.4 %
+    eval:water enthalpy            0.1 %
+    eval:energy+ratios+sat         0.0 %
+    eval:draw_states+I7            0.1 %
+    newton:dense solve             0.0 %
+    newton:jacobian (all)          1.1 %
+    newton:solve (all)             1.7 %
+    separate (all)                 4.1 %
+    eval (all)                     1.7 %
+  worst 1 % by evals (19 ticks): wall mean 2.86 ms, jacobian 10.2 %, all evals 10.9 %, fixed point 0.0 %
+== crude_unit_steam  (1999 ticks after the first)
+  per tick: separates 1.57  solves 1.57  iterations 0.23  evals 7.0 (start 1.57, jacobian 5.2, search 0.23, other 0.00)  backward 0.00
+  evals/tick: median 2  p99 50  max 50   iterations max 2  solves max 2
+  first tick: wall 65.71 ms  solves 8  iterations 41  evals 1299  fixed point 12.80 ms
+  wall/tick mean 4.159 ms (loaded machine; shares below are of the wall)
+    eval:flows+water               0.1 %
+    eval:k                         0.4 %
+    eval:thomas                    0.5 %
+    eval:summation+normalise       0.2 %
+    eval:enthalpy h/H              0.3 %
+    eval:condenser                 0.5 %
+    eval:water enthalpy            0.1 %
+    eval:energy+ratios+sat         0.0 %
+    eval:draw_states+I7            0.1 %
+    newton:dense solve             0.0 %
+    newton:jacobian (all)          1.6 %
+    newton:solve (all)             2.3 %
+    separate (all)                 4.4 %
+    eval (all)                     2.2 %
+  worst 1 % by evals (19 ticks): wall mean 6.31 ms, jacobian 10.4 %, all evals 11.1 %, fixed point 0.0 %
+== crude_unit_boiling  (1999 ticks after the first)
+  per tick: separates 2.00  solves 2.00  iterations 0.39  evals 11.4 (start 2.00, jacobian 9.0, search 0.39, other 0.00)  backward 0.00
+  evals/tick: median 2  p99 50  max 50   iterations max 2  solves max 2
+  first tick: wall 33.92 ms  solves 8  iterations 24  evals 584  fixed point 9.19 ms
+  wall/tick mean 3.996 ms (loaded machine; shares below are of the wall)
+    eval:flows+water               0.1 %
+    eval:k                         0.4 %
+    eval:thomas                    0.6 %
+    eval:summation+normalise       0.2 %
+    eval:enthalpy h/H              0.5 %
+    eval:condenser                 1.0 %
+    eval:water enthalpy            0.0 %
+    eval:energy+ratios+sat         0.1 %
+    eval:draw_states+I7            0.1 %
+    newton:dense solve             0.0 %
+    newton:jacobian (all)          2.4 %
+    newton:solve (all)             3.2 %
+    separate (all)                 7.8 %
+    eval (all)                     3.1 %
+  worst 1 % by evals (19 ticks): wall mean 4.39 ms, jacobian 11.1 %, all evals 11.9 %, fixed point 0.0 %

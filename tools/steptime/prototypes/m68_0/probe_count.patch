@@ -1,0 +1,600 @@
+diff --git a/crates/solvers/src/column_newton.rs b/crates/solvers/src/column_newton.rs
+index 7841737..4fc0546 100644
+--- a/crates/solvers/src/column_newton.rs
++++ b/crates/solvers/src/column_newton.rs
+@@ -55,6 +55,8 @@ use crate::heat_balance::{
+     VAPOUR_FLOOR_OF_FEED,
+ };
+ use crate::molar::MoleFractions;
++use crate::probe;
++use std::time::Instant;
+ 
+ /// The most a stage temperature may move in one Newton step [K].
+ ///
+@@ -224,6 +226,20 @@ impl ColumnEquations<'_> {
+         specification: Specification,
+         wet: &[usize],
+     ) -> Result<Evaluation, SimError> {
++        probe::count_eval();
++        let mut clock = Instant::now();
++        let result = self.evaluate_inner(u, specification, wet);
++        probe::lap(14, &mut clock);
++        result
++    }
++
++    fn evaluate_inner(
++        &self,
++        u: &[f64],
++        specification: Specification,
++        wet: &[usize],
++    ) -> Result<Evaluation, SimError> {
++        let mut clock = Instant::now();
+         let plan = self.plan;
+         let slate = self.slate;
+         let n = plan.stages;
+@@ -303,6 +319,7 @@ impl ColumnEquations<'_> {
+                 .map_err(|_| outside("a water vapour rate left the physical region"))?;
+         }
+ 
++        probe::lap(0, &mut clock);
+         let mut k = Vec::with_capacity(n);
+         let mut water_k = Vec::new();
+         for (j, t) in temperatures.iter().enumerate() {
+@@ -325,6 +342,7 @@ impl ColumnEquations<'_> {
+             }
+             k.push(row);
+         }
++        probe::lap(1, &mut clock);
+         // Each component's liquid down the column: the Thomas sweep the fixed
+         // point uses, left UNNORMALISED so the summation can read it.
+         let mut amounts = vec![vec![0.0; slate.len()]; n];
+@@ -335,6 +353,7 @@ impl ColumnEquations<'_> {
+             }
+         }
+ 
++        probe::lap(2, &mut clock);
+         let mut residual = Vec::with_capacity(self.unknowns(specification, wet));
+         // The summation, one per stage: `Σ K·x = 1` (the bubble point).
+         for (row, k_row) in amounts.iter().zip(&k) {
+@@ -344,6 +363,7 @@ impl ColumnEquations<'_> {
+         for row in &amounts {
+             liquid.push(MoleFractions::from_amounts(row)?.fractions().to_vec());
+         }
++        probe::lap(3, &mut clock);
+         let mut h = Vec::with_capacity(n);
+         let mut big_h = Vec::with_capacity(n);
+         for j in 0..n {
+@@ -352,6 +372,7 @@ impl ColumnEquations<'_> {
+             h.push(liquid_enthalpy(slate, &liquid[j], t));
+             big_h.push(liquid_enthalpy(slate, &y, t) + mixture_dh_vap(slate, self.thermo, &y, t)?);
+         }
++        probe::lap(4, &mut clock);
+         // The reflux: stage 1's vapour, condensed, at its own bubble point —
+         // the fixed point's `reflux_enthalpy`.
+         let condensate = equilibrium_vapour(&liquid[0], &k[0])?;
+@@ -374,6 +395,7 @@ impl ColumnEquations<'_> {
+             )?,
+         };
+         let reflux_enthalpy = liquid_enthalpy(slate, &condensate, condenser_t);
++        probe::lap(5, &mut clock);
+         // Water's own enthalpies at each stage, liquid and vapour [J/mol].
+         let mut water_h = Vec::new();
+         let mut water_big_h = Vec::new();
+@@ -383,6 +405,7 @@ impl ColumnEquations<'_> {
+                 water_big_h.push(water.vapour_enthalpy(slate, self.thermo, Kelvin(*t))?);
+             }
+         }
++        probe::lap(6, &mut clock);
+         // Each stage's energy balance but the reboiler's (which is the closure),
+         // and the reboiler's too where its duty is held.
+         for j in 0..n {
+@@ -485,10 +508,12 @@ impl ColumnEquations<'_> {
+         if residual.iter().any(|r| !r.is_finite()) {
+             return Err(outside("a residual is not finite"));
+         }
++        probe::lap(7, &mut clock);
+         let draws = plan.draw_states(&liquid, &k, slate)?;
+         let component_residual =
+             plan.component_residual_with(&draws, self.feed_composition, slate, &ratios)
+                 * self.feed_mass;
++        probe::lap(8, &mut clock);
+         Ok(Evaluation {
+             residual,
+             component_residual,
+@@ -533,6 +558,20 @@ impl ColumnEquations<'_> {
+         specification: Specification,
+         wet: &[usize],
+         max_iterations: u32,
++    ) -> Result<Solved, Unsolved> {
++        probe::with(|c| c.solves += 1);
++        let mut clock = Instant::now();
++        let result = self.solve_inner(start, specification, wet, max_iterations);
++        probe::lap(11, &mut clock);
++        result
++    }
++
++    fn solve_inner(
++        &self,
++        start: &Start<'_>,
++        specification: Specification,
++        wet: &[usize],
++        max_iterations: u32,
+     ) -> Result<Solved, Unsolved> {
+         let n = self.plan.stages;
+         let mut u: Vec<f64> = start.temperatures.to_vec();
+@@ -555,12 +594,15 @@ impl ColumnEquations<'_> {
+         // The free water's sign is the wet set's to judge (§67.17 rule 6), so
+         // the fraction-to-the-boundary rule stops short of it.
+         let bounded = u.len() - wet.len();
+-        let mut current = self
++        probe::set_kind(probe::EVAL_START);
++        let current = self
+             .evaluate(&u, specification, wet)
+             .map_err(|e| Unsolved {
+                 reason: format!("its starting point is outside the physical region ({e})"),
+                 flows: None,
+-            })?;
++            });
++        probe::set_kind(probe::EVAL_OTHER);
++        let mut current = current?;
+         let norm = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>().sqrt();
+         let mut current_norm = norm(&current.residual);
+         let mut iterations = 0u32;
+@@ -587,10 +629,17 @@ impl ColumnEquations<'_> {
+                 });
+             }
+             iterations += 1;
++            probe::with(|c| c.iterations += 1);
+ 
++            let mut clock = Instant::now();
++            probe::set_kind(probe::EVAL_JACOBIAN);
+             let jacobian = self.jacobian(&u, &current.residual, specification, wet);
++            probe::set_kind(probe::EVAL_OTHER);
++            probe::lap(10, &mut clock);
+             let negative: Vec<f64> = current.residual.iter().map(|r| -r).collect();
+-            let Some(step) = solve_dense(jacobian, negative) else {
++            let step = solve_dense(jacobian, negative);
++            probe::lap(9, &mut clock);
++            let Some(step) = step else {
+                 return Err(Unsolved {
+                     reason: format!(
+                         "its Jacobian is singular at iteration {iterations}: {}",
+@@ -611,6 +660,7 @@ impl ColumnEquations<'_> {
+                 }
+             }
+             let mut accepted = None;
++            probe::set_kind(probe::EVAL_SEARCH);
+             for _ in 0..=MAX_HALVINGS {
+                 let trial: Vec<f64> = u.iter().zip(&step).map(|(a, d)| a + scale * d).collect();
+                 if let Ok(evaluation) = self.evaluate(&trial, specification, wet) {
+@@ -624,6 +674,7 @@ impl ColumnEquations<'_> {
+                 }
+                 scale *= 0.5;
+             }
++            probe::set_kind(probe::EVAL_OTHER);
+             let Some((trial, evaluation, trial_norm)) = accepted else {
+                 return Err(Unsolved {
+                     reason: format!(
+@@ -716,6 +767,7 @@ impl ColumnEquations<'_> {
+             let (shifted, signed) = match self.evaluate(&probe, specification, wet) {
+                 Ok(e) => (Some(e.residual), step),
+                 Err(_) => {
++                    crate::probe::with(|c| c.backward += 1);
+                     probe[column] = u[column] - step;
+                     (
+                         self.evaluate(&probe, specification, wet)
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 25b39e2..2ef7186 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -332,10 +332,14 @@ impl SeparationModel for HeatBalanceCascade {
+         pass: &ColumnPass<'_>,
+         thermo: &dyn ThermoModel,
+     ) -> Result<Separation, SimError> {
+-        match self.hold_or_decline(pass, thermo) {
++        crate::probe::with(|c| c.separates += 1);
++        let mut clock = std::time::Instant::now();
++        let result = match self.hold_or_decline(pass, thermo) {
+             Ok(separation) => Ok(separation),
+             Err(refusal) => flooded_pass_through(pass, thermo, refusal),
+-        }
++        };
++        crate::probe::lap(13, &mut clock);
++        result
+     }
+ }
+ 
+@@ -783,6 +787,18 @@ impl HeatBalanceCascade {
+         setup: &ColumnSetup<'_>,
+         warm: Option<&CascadeProfile>,
+         cap: u32,
++    ) -> Result<FixedPointState, SimError> {
++        let mut clock = std::time::Instant::now();
++        let result = self.fixed_point_iterations_inner(setup, warm, cap);
++        crate::probe::lap(12, &mut clock);
++        result
++    }
++
++    fn fixed_point_iterations_inner(
++        &self,
++        setup: &ColumnSetup<'_>,
++        warm: Option<&CascadeProfile>,
++        cap: u32,
+     ) -> Result<FixedPointState, SimError> {
+         let pass = setup.pass;
+         let slate = pass.slate;
+diff --git a/crates/solvers/src/lib.rs b/crates/solvers/src/lib.rs
+index 5c0200a..d054b22 100644
+--- a/crates/solvers/src/lib.rs
++++ b/crates/solvers/src/lib.rs
+@@ -39,6 +39,7 @@ pub mod hydrocracking;
+ pub mod line_flash;
+ pub mod molar;
+ pub mod network;
++pub mod probe;
+ pub mod newton_flow;
+ pub mod reactor;
+ pub mod separation;
+diff --git a/crates/solvers/src/probe.rs b/crates/solvers/src/probe.rs
+new file mode 100644
+index 0000000..5b3542e
+--- /dev/null
++++ b/crates/solvers/src/probe.rs
+@@ -0,0 +1,69 @@
++//! M68.0 probe counters (not for commit): the column solve's work per tick.
++
++use std::cell::RefCell;
++use std::time::Instant;
++
++pub const SECTIONS: [&str; 16] = [
++    "eval:flows+water",
++    "eval:k",
++    "eval:thomas",
++    "eval:summation+normalise",
++    "eval:enthalpy h/H",
++    "eval:condenser",
++    "eval:water enthalpy",
++    "eval:energy+ratios+sat",
++    "eval:draw_states+I7",
++    "newton:dense solve",
++    "newton:jacobian (all)",
++    "newton:solve (all)",
++    "fixed point",
++    "separate (all)",
++    "eval (all)",
++    "spare",
++];
++
++pub const EVAL_START: usize = 0;
++pub const EVAL_JACOBIAN: usize = 1;
++pub const EVAL_SEARCH: usize = 2;
++pub const EVAL_OTHER: usize = 3;
++
++#[derive(Default, Clone, Debug)]
++pub struct Counters {
++    pub separates: u64,
++    pub solves: u64,
++    pub iterations: u64,
++    pub evals: [u64; 4],
++    pub backward: u64,
++    pub ns: [u64; 16],
++}
++
++thread_local! {
++    static COUNTERS: RefCell<Counters> = RefCell::new(Counters::default());
++    static KIND: RefCell<usize> = const { RefCell::new(EVAL_OTHER) };
++}
++
++/// Every counter since the last take, and zeroed.
++pub fn take() -> Counters {
++    COUNTERS.with(|c| std::mem::take(&mut *c.borrow_mut()))
++}
++
++pub(crate) fn with(f: impl FnOnce(&mut Counters)) {
++    COUNTERS.with(|c| f(&mut c.borrow_mut()));
++}
++
++pub(crate) fn set_kind(kind: usize) {
++    KIND.with(|k| *k.borrow_mut() = kind);
++}
++
++pub(crate) fn count_eval() {
++    let kind = KIND.with(|k| *k.borrow());
++    with(|c| c.evals[kind] += 1);
++}
++
++/// Adds the time since `*since` to `section` and restarts the clock.
++pub(crate) fn lap(section: usize, since: &mut Instant) {
++    let now = Instant::now();
++    let ns = (now - *since).as_nanos() as u64;
++    with(|c| c.ns[section] += ns);
++    *since = now;
++}
+diff --git a/tools/steptime/Cargo.toml b/tools/steptime/Cargo.toml
+index a9e4092..32c816f 100644
+--- a/tools/steptime/Cargo.toml
++++ b/tools/steptime/Cargo.toml
+@@ -13,3 +13,4 @@ publish = false
+ serde_json = "1"
+ refinery-core = { path = "../../crates/core" }
+ refinery-scenarios = { path = "../../crates/scenarios" }
++refinery-solvers = { path = "../../crates/solvers" }
+diff --git a/tools/steptime/src/bin/m68_0_count.rs b/tools/steptime/src/bin/m68_0_count.rs
+new file mode 100644
+index 0000000..dbea186
+--- /dev/null
++++ b/tools/steptime/src/bin/m68_0_count.rs
+@@ -0,0 +1,273 @@
++//! M68.0 probe: the column solve's work per tick through each column plant's
++//! story — solves, Newton iterations, evaluations by caller, and where the
++//! time inside them goes (shares only; the machine is loaded).
++//!
++//! cargo run --release --bin m68_0_count -- <scenarios dir> [plant ...]
++//!   DUMP=<dir>  one CSV per plant, a row per tick
++
++use refinery_core::snapshot::{Command, Snapshot};
++use refinery_core::units::Watt;
++use refinery_core::Engine;
++use refinery_solvers::probe::{self, Counters, SECTIONS};
++use std::time::Instant;
++
++enum Beat {
++    Run(u32),
++    Reflux(f64),
++    Pumparounds([f64; 3]),
++    Furnace(f64),
++    Valve(&'static str, f64),
++    /// The cold start-up of `crude_unit_cold_reference.rs`.
++    ColdStartUp,
++}
++
++fn build(path: &str) -> Engine {
++    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
++    let file = refinery_scenarios::load_str(&src).expect("parse");
++    refinery_scenarios::build_engine(&file).expect("build")
++}
++
++fn reboiler_w(s: &Snapshot) -> f64 {
++    s.nodes
++        .iter()
++        .find(|n| n.name == "column")
++        .unwrap()
++        .column_duty
++        .as_ref()
++        .unwrap()
++        .reboiler_w
++}
++
++struct Tick {
++    wall_ns: u64,
++    c: Counters,
++}
++
++fn main() {
++    let args: Vec<String> = std::env::args().collect();
++    let dir = args.get(1).cloned().unwrap_or_else(|| "scenarios".into());
++    let only: Vec<String> = args[2.min(args.len())..].to_vec();
++    let dump = std::env::var("DUMP").ok();
++    use Beat::*;
++    let crude = vec![
++        Run(1000),
++        Reflux(2.0),
++        Run(300),
++        Reflux(4.0),
++        Run(300),
++        Pumparounds([0.0; 3]),
++        Run(300),
++        Reflux(8.0),
++        Run(300),
++        Pumparounds([15.0, 15.0, 10.0]),
++        Reflux(4.0),
++        Furnace(35.0),
++        Run(600),
++    ];
++    let stripped = vec![
++        Run(1000),
++        Pumparounds([0.0, 0.0, 8.0]),
++        Run(300),
++        Furnace(45.0),
++        Run(600),
++        Valve("steam_valve", 0.8),
++        Run(300),
++        Pumparounds([0.0; 3]),
++        Furnace(58.0),
++        Run(600),
++    ];
++    let steady = vec![Run(2000)];
++    let cold = vec![ColdStartUp];
++    let plants: Vec<(&str, &Vec<Beat>)> = vec![
++        ("crude_unit", &crude),
++        ("crude_column_hot_feed", &steady),
++        ("crude_column_overheated", &steady),
++        ("crude_unit_stripped", &stripped),
++        ("crude_unit_cold", &cold),
++        ("crude_unit_wet", &steady),
++        ("crude_unit_wetter", &steady),
++        ("crude_unit_steam", &steady),
++        ("crude_unit_boiling", &steady),
++    ];
++    for (name, beats) in plants {
++        if !only.is_empty() && !only.iter().any(|o| o == name) {
++            continue;
++        }
++        let mut engine = build(&format!("{dir}/{name}.toml"));
++        let column = engine.graph.find_node("column").expect("a column");
++        let mut ticks: Vec<Tick> = Vec::new();
++        probe::take();
++        let mut tick = |engine: &mut Engine, ticks: &mut Vec<Tick>| {
++            let start = Instant::now();
++            engine.tick().expect("a story's tick");
++            let wall_ns = start.elapsed().as_nanos() as u64;
++            ticks.push(Tick {
++                wall_ns,
++                c: probe::take(),
++            });
++        };
++        for beat in beats {
++            let command = match *beat {
++                Run(n) => {
++                    for _ in 0..n {
++                        tick(&mut engine, &mut ticks);
++                    }
++                    continue;
++                }
++                Reflux(r) => vec![Command::SetRefluxRatio {
++                    node: column,
++                    reflux_ratio: r,
++                }],
++                Pumparounds(d) => (0..3)
++                    .map(|i| Command::SetPumparoundDuty {
++                        node: column,
++                        pumparound: i,
++                        duty: Watt(d[i as usize] * 1e6),
++                    })
++                    .collect(),
++                Furnace(mw) => vec![Command::SetFurnaceDuty {
++                    node: engine.graph.find_node("furnace").unwrap(),
++                    duty: Watt(mw * 1e6),
++                }],
++                Valve(v, o) => vec![Command::SetValveOpening {
++                    node: engine.graph.find_node(v).unwrap(),
++                    opening: o,
++                }],
++                ColdStartUp => {
++                    let furnace = engine.graph.find_node("furnace").unwrap();
++                    for t in 1..=2_400u64 {
++                        if t == 10 {
++                            engine
++                                .apply(Command::SetFurnaceDuty {
++                                    node: furnace,
++                                    duty: Watt(58.0e6),
++                                })
++                                .unwrap();
++                        }
++                        if t == 500 {
++                            for pumparound in 0..3 {
++                                engine
++                                    .apply(Command::SetPumparoundDuty {
++                                        node: column,
++                                        pumparound,
++                                        duty: Watt::ZERO,
++                                    })
++                                    .unwrap();
++                            }
++                        }
++                        if t >= 500 && t % 10 == 0 {
++                            let running = reboiler_w(&engine.snapshot());
++                            if running > 0.0 {
++                                engine
++                                    .apply(Command::SetReboilerDuty {
++                                        node: column,
++                                        duty: Some(Watt((running - 2.5e6).max(0.0))),
++                                    })
++                                    .unwrap();
++                            }
++                        }
++                        tick(&mut engine, &mut ticks);
++                    }
++                    continue;
++                }
++            };
++            for c in command {
++                let _ = engine.apply(c);
++            }
++        }
++        report(name, &ticks);
++        if let Some(d) = &dump {
++            let mut text = String::from(
++                "tick,wall_us,separates,solves,iterations,ev_start,ev_jac,ev_search,ev_other,backward,eval_us,jac_us,fixed_us,separate_us\n",
++            );
++            for (i, t) in ticks.iter().enumerate() {
++                let c = &t.c;
++                text.push_str(&format!(
++                    "{},{:.1},{},{},{},{},{},{},{},{},{:.1},{:.1},{:.1},{:.1}\n",
++                    i + 1,
++                    t.wall_ns as f64 / 1e3,
++                    c.separates,
++                    c.solves,
++                    c.iterations,
++                    c.evals[0],
++                    c.evals[1],
++                    c.evals[2],
++                    c.evals[3],
++                    c.backward,
++                    c.ns[14] as f64 / 1e3,
++                    c.ns[10] as f64 / 1e3,
++                    c.ns[12] as f64 / 1e3,
++                    c.ns[13] as f64 / 1e3
++                ));
++            }
++            std::fs::write(format!("{d}/{name}.csv"), text).unwrap();
++        }
++    }
++}
++
++fn report(name: &str, ticks: &[Tick]) {
++    // Tick 1 (the cold start) apart.
++    let rest = &ticks[1..];
++    let n = rest.len() as f64;
++    let sum = |f: &dyn Fn(&Tick) -> u64| rest.iter().map(f).sum::<u64>() as f64;
++    let max = |f: &dyn Fn(&Tick) -> u64| rest.iter().map(f).max().unwrap_or(0);
++    let evals = |t: &Tick| t.c.evals.iter().sum::<u64>();
++    let wall = sum(&|t| t.wall_ns);
++    println!("== {name}  ({} ticks after the first)", rest.len());
++    println!(
++        "  per tick: separates {:.2}  solves {:.2}  iterations {:.2}  evals {:.1} (start {:.2}, jacobian {:.1}, search {:.2}, other {:.2})  backward {:.2}",
++        sum(&|t| t.c.separates) / n,
++        sum(&|t| t.c.solves) / n,
++        sum(&|t| t.c.iterations) / n,
++        sum(&evals) / n,
++        sum(&|t| t.c.evals[0]) / n,
++        sum(&|t| t.c.evals[1]) / n,
++        sum(&|t| t.c.evals[2]) / n,
++        sum(&|t| t.c.evals[3]) / n,
++        sum(&|t| t.c.backward) / n,
++    );
++    let mut e: Vec<u64> = rest.iter().map(evals).collect();
++    e.sort_unstable();
++    println!(
++        "  evals/tick: median {}  p99 {}  max {}   iterations max {}  solves max {}",
++        e[e.len() / 2],
++        e[((e.len() as f64 * 0.99) as usize).min(e.len() - 1)],
++        e[e.len() - 1],
++        max(&|t| t.c.iterations),
++        max(&|t| t.c.solves)
++    );
++    println!(
++        "  first tick: wall {:.2} ms  solves {}  iterations {}  evals {}  fixed point {:.2} ms",
++        ticks[0].wall_ns as f64 / 1e6,
++        ticks[0].c.solves,
++        ticks[0].c.iterations,
++        evals(&ticks[0]),
++        ticks[0].c.ns[12] as f64 / 1e6
++    );
++    println!(
++        "  wall/tick mean {:.3} ms (loaded machine; shares below are of the wall)",
++        wall / n / 1e6
++    );
++    for (i, s) in SECTIONS.iter().enumerate() {
++        let ns = sum(&|t| t.c.ns[i]);
++        if ns > 0.0 {
++            println!("    {s:28} {:5.1} %", 100.0 * ns / wall);
++        }
++    }
++    // The worst 1 % of ticks by evaluations (deterministic): what they spend.
++    let mut order: Vec<&Tick> = rest.iter().collect();
++    order.sort_by_key(|t| std::cmp::Reverse(evals(t)));
++    let top = &order[..(rest.len() / 100).max(1)];
++    let tw: f64 = top.iter().map(|t| t.wall_ns as f64).sum();
++    let tj: f64 = top.iter().map(|t| t.c.ns[10] as f64).sum();
++    let te: f64 = top.iter().map(|t| t.c.ns[14] as f64).sum();
++    let tf: f64 = top.iter().map(|t| t.c.ns[12] as f64).sum();
++    println!(
++        "  worst 1 % by evals ({} ticks): wall mean {:.2} ms, jacobian {:.1} %, all evals {:.1} %, fixed point {:.1} %",
++        top.len(),
++        tw / top.len() as f64 / 1e6,
++        100.0 * tj / tw,
++        100.0 * te / tw,
++        100.0 * tf / tw
++    );
++}

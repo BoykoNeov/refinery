@@ -28268,3 +28268,50 @@ The engine has the same commands before tick 501 as before the correction, so
 the story's numbers are unchanged: zero on tick 821, at 2 700 the reflux 3.088
 and the gas oil at 81 %. `crude_unit_cold_reference.rs` and the screen tell
 one story.
+
+## 73. What the column's Newton costs — measured, and C11 deferred again (M68)
+
+Ledger row C11, the next of `docs/PLAN.md`'s Phase 2, asked for as "go with
+it" (2026-10-19): Newton's Jacobian is built by forward differences, one
+evaluation of the column per unknown, and an analytic Jacobian or a reused one
+would cost less (§66.4). Probed first, because a cheaper Jacobian that moves
+Newton's path moves every column plant's fingerprint and re-opens C19 (the
+column screen's measured tables, within an hour each).
+
+### 73.0 Probed (2026-10-19)
+
+Throwaway, kept in `tools/steptime/prototypes/m68_0/` with `FINDINGS.md`,
+which has every number below: `probe_count.patch` (counters in
+`ColumnEquations` and `HeatBalanceCascade`, and a driver that plays nine column
+plants through key presses, the cold start-up, or 2 000 held ticks). The
+machine was loaded by other work, so the counts decide and the timer gives
+shares only; one evaluation costs about 11 µs on the crude unit.
+
+- **The dry plants: the column is the tick, one Newton step a tick.** The
+  crude unit takes one iteration, 25 evaluations, on 2 794 of 2 799 ticks
+  (0.43 ms, the Jacobian ~63 %); the hot-fed and overheated columns often need
+  no step.
+- **A big key press on the crude unit is one tick of 700–760 evaluations**,
+  about 8 ms, then 25 again: the reflux 4 → 2, and the furnace 20 → 35 MW with
+  the other keys back (19–21 iterations over two solves). A smaller step:
+  97–121 evaluations.
+- **The coil plants: the column is 4–10 % of the tick.** Wet, steamed,
+  boiling, stripped and cold: their ticks are the coil re-solving through its
+  drift (A29). The column runs once per re-solve, 1.6–4.8 times a tick, about
+  1–2 ms of it on the stripped and cold plants.
+- **A bit-identical Jacobian is bounded at ~10 %** of the crude unit's tick:
+  the condenser's bubble point (20 % of the tick), the Thomas sweeps (17 %) and
+  the enthalpies (10 %) move with every column of the Jacobian; only the
+  K-values a column leaves unchanged and `draw_states` with I7's residual can be
+  skipped. Not built.
+
+### 73.1 The decision
+
+**C11 stops at the measurement** (the user, 2026-10-19, asked with the numbers
+above): its trigger, "a column whose solve is the frame's cost", is met only by
+the crude unit's single ~8 ms tick after a big key press; on every plant that
+misses the frame, the coil's drift (A29) is the cost, and curing it removes the
+column's repeat solves too. A29 is next. C11 stays open with this probe as its
+instrument: re-run it after A29.
+
+No engine code changed; no corpus run.

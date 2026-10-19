@@ -10546,3 +10546,24 @@ its limit, and freeing the reboiler is judged against the free region. The
 stripped and cold tables' edges re-run longer: the stripped table 2 885
 settings, the cold one 1 740 (its pumparounds off fail some 7 500 ticks on from
 50 MW).
+
+## M68 — what the column's Newton costs, measured; ledger row C11; opened on a decision, closed on the measurement
+
+Asked for after M67 closed (2026-10-19) as "go with it" on C11, Newton's
+Jacobian by forward differences. DESIGN §73.
+
+### M68.0 — **MEASURED** 2026-10-19: the probe — M68 CLOSED on it
+
+Probed (`tools/steptime/prototypes/m68_0/`, `FINDINGS.md`), counting the
+column's solves, Newton's iterations and evaluations per tick on nine plants:
+- the crude unit: one Newton step a tick, 25 evaluations, 0.43 ms; one tick of
+  ~8 ms (700–760 evaluations) after a big key press;
+- the coil plants (wet, steamed, boiling, stripped, cold): the column is 4–10 %
+  of the tick, the coil's drift (A29) the rest;
+- a bit-identical Jacobian saves at most ~10 % of the crude unit's tick.
+
+The user's decision: C11 stops here, A29 next; C11 re-measured by this probe
+after A29. No engine code changed (no corpus run).
+
+**M68 — CLOSED 2026-10-19.** A measurement only. Its close-out report is at the
+top of `docs/MILESTONES.md`. Next: A29.

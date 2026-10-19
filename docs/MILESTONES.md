@@ -12,6 +12,20 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M68 is CLOSED (2026-10-19): what the column's Newton costs, measured —
+`docs/DEFERRED.md` C11 measured and left open.** Asked as "go with it" on C11
+(the column's Jacobian built by forward differences, one column evaluation per
+unknown). Measured first, because a cheaper Jacobian that changes the solver's
+path moves every column plant and re-opens the screen's measured tables (C19).
+- **M68.0, the probe** (§73.0, `tools/steptime/prototypes/m68_0/`): counts,
+  not timings, on a machine loaded by other work. The crude unit takes one
+  Newton step a tick (25 evaluations, 0.43 ms), and one ~8 ms tick after a big
+  key press. On the coil plants the column is 4–10 % of the tick; the coil's
+  drift (A29) is the rest. An identical-answers trim saves at most ~10 %.
+- **Decided in plain words** (§73.1): stop C11 at the measurement, A29 next.
+- No engine code changed (no corpus run).
+- **Left open**: C11, its trigger now "re-run M68.0's probe after A29".
+
 **M67 is CLOSED (2026-10-19): a side draw cut back, and the column screen's keys
 as measured regions — `docs/DEFERRED.md` C17 and C12 taken, C18 and C19 new.**
 Asked as "go" on C12 (the screen's keys a box set by its worst corner). The
