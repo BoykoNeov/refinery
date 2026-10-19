@@ -189,8 +189,9 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none open** — next is A29 (`docs/PLAN.md`
-Phase 3, the user's word), then the rest of the plan, each opened as a milestone on the user's word.
+Work only on the current milestone unless asked. **Current: M69** (A29, DESIGN §74): the line flash
+remembered for a tick (M69.1), a coil plant's re-solves predicted (M69.2), the stripped and cold screen
+tables re-measured (M69.3).
 **Latest closed: M68 (2026-10-19)**: the column's Newton cost measured — the column is the frame's cost
 nowhere but one ~8 ms key-press tick on the crude unit; C11 left open, re-measured after A29 (DESIGN §73). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at

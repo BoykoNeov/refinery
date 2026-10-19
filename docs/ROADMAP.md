@@ -10567,3 +10567,22 @@ after A29. No engine code changed (no corpus run).
 
 **M68 — CLOSED 2026-10-19.** A measurement only. Its close-out report is at the
 top of `docs/MILESTONES.md`. Next: A29.
+
+## M69 — a coil plant's tick: the line flash remembered for a tick, its re-solves predicted; ledger row A29; opened on a decision
+
+Asked for as "Stop C11, do A29" (2026-10-19). DESIGN §74. The user's decision:
+the memo and the predictor, as one change that moves answers, the screen's
+stripped and cold tables re-measured once; the probe's coil-books leak traced
+and closed first.
+
+### M69.0 — **SPECIFIED** 2026-10-19: the probe and the design note — M69 stays OPEN
+
+Probed (`tools/steptime/prototypes/m69_0/`, `FINDINGS.md`):
+- the line flash ~80 % of a coil plant's tick, the re-solves 2 held and 4–5
+  after a furnace step;
+- a memo for the tick bounded at ~15 %, bit for bit;
+- a predictor halves the passes; answers move at most 6.5e-7; 9 of 67 plants
+  move, none fails; the coil's first-law gate misses by 2.4e-9 (not traced).
+
+Slices: M69.1 the memo (bit for bit); M69.2 the predictor; M69.3 the stripped
+and cold tables re-measured. No engine code changed.

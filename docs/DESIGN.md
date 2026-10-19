@@ -28315,3 +28315,69 @@ column's repeat solves too. A29 is next. C11 stays open with this probe as its
 instrument: re-run it after A29.
 
 No engine code changed; no corpus run.
+
+## 74. A coil plant's tick — the line flash remembered for a tick, and its re-solves predicted (M69) — specified before building
+
+Ledger row A29, asked for as "Stop C11, do A29" (2026-10-19, M68's decision):
+a boiling coil plant re-solves every tick of its coil's drift. Probed first
+(`tools/steptime/prototypes/m69_0/`, `FINDINGS.md`, which has every number
+below). The user's decision, in plain words (2026-10-19), asked with the
+probe's numbers: **build the memo and the predictor, as one change that moves
+answers, so the column screen's stripped and cold tables (C19) are re-measured
+once; the coil's books leak the probe found is traced and closed first.**
+Fewer coil cells and a smoothed density were offered and not taken: they
+change the physics.
+
+### 74.0 Probed (2026-10-19)
+
+- **The line flash is the tick.** On the boiling, stripped, cold and wet
+  plants `density` and `settle` take ~80 % of the wall; the coil's cells
+  30–43 %; the column 4–15 %.
+- **The re-solves multiply it**: 2 a tick held on the boiling plant, 4 after
+  its furnace step; the stripped plant 1.6 and 5; the cold start-up 4.8. Each
+  pass's density change falls ~20 times (1.4e-4, 7.0e-6, 1.3e-7, 5.1e-9
+  against `SWEPT_DENSITY_TOL` 1e-8).
+- **A third of a tick's `density` questions repeat one asked earlier in the
+  same tick** with the same bits (as a density or a settle — both are
+  `settle_full`), and 5 % of its `settle` questions: across the seams the
+  flow solve's `DensityMemo` (M56.0) does not reach — the engine's density
+  check, the resolve's coil cells, the next solve. A memo for the tick bounds
+  at ~15 % of it, bit for bit.
+- **A predictor** — the first solve of a tick reading each zero-volume node's
+  temperature and liquid-equivalent moved on by the last tick's move — halves
+  the passes: boiling 2 → 1 held, 4 → 2 after its step; stripped 1.6 → 1.0 and
+  5 → 2.0; cold 4.8 → 2.0. After a key press it neither overshoots nor helps
+  for two ticks. Answers move at most 6.5e-7 relative (the cold plant's cut
+  gas oil share); 9 of 67 plants move on each fidelity (the six coil crude
+  units, `flashing_rundown`, `product_cooler`, `wet_rundown`), none fails.
+- **One gate fails with it**: the coil's first law misses by 2.4e-9 of its
+  duty on every tick from the third (gate 1e-12, shipped 1.3e-14), with or
+  without later re-solves — the liquid-equivalent's guess reaches past the
+  first solve. Not traced in the probe.
+- What is left after both: a coil plant's tick ~0.35–0.45 of today's after a
+  step; the stripped plant on the screen ~8–9 ms after a furnace step (an
+  estimate from the counts), still past the 2.5 ms frame.
+
+### 74.1 The memo (M69.1) — bit for bit
+
+`EquilibriumLineFlash` remembers `settle_full`'s answer for the tick, keyed
+on the bits of the composition, the liquid-equivalent temperature and the
+pressure, and on which thermo and enthalpy models asked; the slate is compared
+on every recall, as `DensityMemo`'s. `density` and `settle` both read it. A new
+`LineFlashModel::begin_tick` (a no-op by default) empties it; `Engine::tick`
+calls it first. Bounded as `DensityMemo` is; never iterated; an `Err` never
+remembered; a borrow it cannot take answers without the memo. Gate: the corpus
+byte-identical on both fidelities.
+
+### 74.2 The predictor (M69.2) — moves answers
+
+As probed, guarded on the tick after a command, on plants whose line flash
+carries vapour, from the third tick; the leak traced and closed first, the
+coil's first-law gate kept at 1e-12. Its fingerprints move (the user's
+decision); the corpus baseline refreshed with it.
+
+### 74.3 The screen's tables again (M69.3)
+
+C19: the stripped and cold plants' tables re-run on the new engine
+(`tools/steptime/prototypes/m67_3/`, within an hour each), the crude unit's
+not (no line flash).
