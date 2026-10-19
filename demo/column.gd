@@ -66,13 +66,18 @@ const PLANTS := {
 			["residue_draw", "residue"],
 		],
 		"ticks_per_frame": 8,
-		# The range measured warm from the running plant under Newton (M61.2,
-		# §66.7): every corner of it — the furnace 0 or 40 MW, the reflux 1.5 or
-		# 15, the pumparounds 50 % or 400 % — runs in one step. Below it a low
-		# reflux with low pumparounds runs the gas-oil tray dry.
+		# The keys' region, measured on the screen's grid (M67.3, §72.8): a
+		# setting is allowed where its one jump from the file's state and both
+		# walks to it (reflux first, pumparounds first) ran. Since M67.1 a draw
+		# whose tray runs short is cut back rather than the column halting, so
+		# the region reaches below M61.2's box (§66.7); a low reflux with the
+		# pumparounds low or off is still past the column's edge. The box below
+		# is the grid's outer limits.
+		"region": "res://demo/column_region_crude.json",
 		"furnace_mw": [0.0, 40.0],
-		"reflux": [1.5, 15.0],
-		"pumparounds": [0.5, 4.0],
+		"reflux": [0.5, 15.0],
+		"pumparounds": [0.0, 4.0],
+		"range_ref": "§72.8",
 	},
 	"hot":
 	{
@@ -181,13 +186,15 @@ const PLANTS := {
 ##
 ## crude: the furnace up to 30 MW at 600 heats the feed and flashes more of it;
 ## the reflux down to 1.5 at 1 500 (where M60's solve halted, §66.7) and the
-## pumparounds to 150 % at 2 400 run as set; at 3 000 the reflux key is pressed
-## below 1.5 and the screen holds it — the edge of the safe range.
+## pumparounds to 150 % at 2 400 run as set; at 3 000 the pumparounds asked to
+## 25 %, past the column's edge at that reflux, and the screen holds them and
+## says the furnace at 22.5 MW or the reflux at 2.0 would free them (M67.3's
+## region, §72.8).
 const AUTO_CRUDE := {
 	600: ["furnace_30"],
 	1500: ["reflux_1.5"],
 	2400: ["pumparounds_1.5"],
-	3000: ["reflux_down"],
+	3000: ["pumparounds_0.25"],
 	3300: ["quit"],
 }
 ## hot: the furnace to 70 MW at 600 and to 110 MW at 1 500 runs the reflux up
@@ -272,6 +279,10 @@ var snapshot: Dictionary = {}
 var halted := ""
 var auto_run := false
 var shots_dir := ""
+## The plant's measured key region (M67.3, DESIGN §72.8), or empty where its
+## keys are a box: the keys' names, each key's grid, and `allowed[i][j][k]`,
+## "1" where the setting at grid indices i, j, k runs by every measured route.
+var region := {}
 var paused := false
 var finished := false
 var shooting := false
@@ -329,6 +340,12 @@ func _load(key: String) -> void:
 		return
 
 	snapshot = JSON.parse_string(sim.snapshot_json())
+	region = {}
+	if plant.has("region"):
+		region = JSON.parse_string(FileAccess.get_file_as_string(plant["region"]))
+		if region == null:
+			_halt("the plant's region %s does not read" % plant["region"])
+			return
 	design_pumparounds = []
 	for pumparound in _pumparounds():
 		design_pumparounds.append(float(pumparound["duty"]))
@@ -462,7 +479,7 @@ func _do(action: String) -> void:
 	match action:
 		"furnace_up", "furnace_down":
 			var step := DUTY_STEP_MW if action == "furnace_up" else -DUTY_STEP_MW
-			_set_furnace_mw(_duty_w() / 1.0e6 + step)
+			_set_furnace_mw(_grid_step("furnace", _duty_w() / 1.0e6, step))
 		"furnace_30":
 			_set_furnace_mw(30.0)
 		"furnace_58":
@@ -500,6 +517,8 @@ func _do(action: String) -> void:
 			_set_pumparounds(1.5)
 		"pumparounds_0":
 			_set_pumparounds(0.0)
+		"pumparounds_0.25":
+			_set_pumparounds(0.25)
 		"pumparounds_8mw":
 			_set_pumparound_mw(8.0)
 		"steam_up", "steam_down":
@@ -544,6 +563,10 @@ func _held_back(what: String, raises_edge: bool) -> bool:
 func _set_furnace_mw(megawatts: float) -> void:
 	if _held_back("the furnace", megawatts < _duty_w() / 1.0e6):
 		return
+	if not region.is_empty():
+		if not _region_holds("furnace", megawatts):
+			_send("fire the furnace at %.1f MW" % megawatts, {"cmd": "set_furnace_duty", "node": furnace_id, "duty": megawatts * 1.0e6})
+		return
 	var limits: Array = PLANTS[plant_key]["furnace_mw"]
 	var held := clampf(megawatts, limits[0], limits[1])
 	if not is_equal_approx(held, megawatts) and is_equal_approx(held, _duty_w() / 1.0e6):
@@ -553,6 +576,10 @@ func _set_furnace_mw(megawatts: float) -> void:
 
 
 func _set_reflux(ratio: float) -> void:
+	if not region.is_empty():
+		if not _region_holds("reflux", ratio):
+			_send("set the reflux ratio to %.1f" % ratio, {"cmd": "set_reflux_ratio", "node": column_id, "reflux_ratio": ratio})
+		return
 	var limits: Array = PLANTS[plant_key]["reflux"]
 	var held := clampf(ratio, limits[0], limits[1])
 	if not is_equal_approx(held, ratio) and is_equal_approx(held, _reflux_set()):
@@ -570,7 +597,11 @@ func _set_pumparounds(scale: float) -> void:
 		return
 	var limits: Array = PLANTS[plant_key]["pumparounds"]
 	var held := clampf(scale, limits[0], limits[1])
-	if not is_equal_approx(held, scale) and is_equal_approx(held, _pumparound_scale()):
+	if not region.is_empty():
+		if _region_holds("pa", scale):
+			return
+		held = scale
+	elif not is_equal_approx(held, scale) and is_equal_approx(held, _pumparound_scale()):
 		_hold("pumparounds", "%.0f %%" % (held * 100.0))
 		return
 	for i in design_pumparounds.size():
@@ -616,11 +647,148 @@ func _hold(what: String, at: String) -> void:
 		print("column: t=%d  HELD: %s" % [sim.tick_index(), text])
 
 
+## What the region's keys are called on screen, and how their settings read.
+const KEY_WORDS := {"furnace": "the furnace", "reflux": "the reflux", "pa": "the pumparounds", "pa_mw": "the pumparounds", "steam": "the steam valve"}
+
+
+func _stays(key: String) -> String:
+	return "stay" if key in ["pa", "pa_mw"] else "stays"
+
+
+func _key_text(key: String, value: float) -> String:
+	match key:
+		"furnace":
+			return "%.1f MW" % value
+		"reflux":
+			return "%.1f" % value
+		"pa", "steam":
+			return "%.0f %%" % (value * 100.0)
+		"pa_mw":
+			return "%.1f MW each" % value
+	return str(value)
+
+
+## A region key's setting as the plant holds it now (the snapshot, refreshed
+## after every command sent, so two presses in one frame see the first).
+func _key_value(key: String) -> float:
+	match key:
+		"furnace":
+			return _duty_w() / 1.0e6
+		"reflux":
+			return _reflux_set()
+		"pa":
+			return _pumparound_scale()
+		"pa_mw":
+			return _pumparound_mw()
+		"steam":
+			return _steam_opening()
+	return 0.0
+
+
+func _key_values() -> Dictionary:
+	var values := {}
+	for key in region["keys"]:
+		values[key] = _key_value(key)
+	return values
+
+
+## The grid indices a setting sits on: one where it is on the grid, the two
+## either side where it falls between (a file's 58 MW on a 2.5 MW grid), none
+## outside the grid.
+func _grid_at(key: String, value: float) -> Array:
+	var grid: Array = region["grid"][key]
+	for i in grid.size():
+		if absf(float(grid[i]) - value) < 1e-6:
+			return [i]
+	for i in grid.size() - 1:
+		if value > float(grid[i]) and value < float(grid[i + 1]):
+			return [i, i + 1]
+	return []
+
+
+## A key's next setting a step up or down: on the region's grid, so a setting
+## between two of its points (the file's) moves to the nearer one that way.
+func _grid_step(key: String, value: float, step: float) -> float:
+	if region.is_empty() or not region["grid"].has(key):
+		return value + step
+	var at := _grid_at(key, value)
+	var grid: Array = region["grid"][key]
+	if at.size() == 2:
+		return float(grid[at[1]]) if step > 0.0 else float(grid[at[0]])
+	return value + step
+
+
+## Whether the region allows the keys at `values`: every grid setting around
+## them runs by every measured route (§72.8).
+func _region_allows(values: Dictionary) -> bool:
+	var keys: Array = region["keys"]
+	var around := []
+	for key in keys:
+		var at := _grid_at(key, float(values[key]))
+		if at.is_empty():
+			return false
+		around.append(at)
+	for i in around[0]:
+		for j in around[1]:
+			for k in around[2]:
+				if str(region["allowed"][i][j])[k] != "1":
+					return false
+	return true
+
+
+## For a press the region holds: each other key's nearest setting at which the
+## press's target is allowed. Empty when no single other key frees it.
+func _freeing(target: Dictionary, moved: String) -> String:
+	var options: Array[String] = []
+	for key in region["keys"]:
+		if key == moved:
+			continue
+		var best := 0.0
+		var best_distance := INF
+		for value in region["grid"][key]:
+			var trial := target.duplicate()
+			trial[key] = float(value)
+			var distance := absf(float(value) - float(target[key]))
+			if distance < best_distance and _region_allows(trial):
+				best = float(value)
+				best_distance = distance
+		if best_distance < INF:
+			options.append("%s at %s" % [KEY_WORDS[key], _key_text(key, best)])
+	return " or ".join(options)
+
+
+## The region's refusal (M67.3, the user's decision 2, §72): a press whose
+## target the column does not run at by every measured route is held, and the
+## screen says which other key, at what setting, would free it. It never moves
+## a key the player did not touch. True when the press was held.
+func _region_holds(key: String, value: float) -> bool:
+	var target := _key_values()
+	target[key] = value
+	if _region_allows(target):
+		return false
+	var now := _key_text(key, _key_value(key))
+	var text: String
+	if _grid_at(key, value).is_empty():
+		text = "%s %s at %s: %s is outside its measured range" % [KEY_WORDS[key], _stays(key), now, _key_text(key, value)]
+	else:
+		var frees := _freeing(target, key)
+		text = "%s %s at %s: %s is past the column's edge here — %s" % [
+			KEY_WORDS[key], _stays(key), now, _key_text(key, value), (frees + " would free it") if frees != "" else "no other key frees it"
+		]
+	text += " (DESIGN %s)" % PLANTS[plant_key]["range_ref"]
+	_say(text, true)
+	if auto_run:
+		print("column: t=%d  HELD: %s" % [sim.tick_index(), text])
+	return true
+
+
 ## Send one command and put the engine's answer on screen.
 func _send(what: String, command: Dictionary) -> void:
 	var text := JSON.stringify(command)
 	var err = JSON.parse_string(sim.apply_command(text))
 	if err == null:
+		# The settings as sent: a second press before the next tick reads them.
+		snapshot = JSON.parse_string(sim.snapshot_json())
 		_say(what, false)
 		if auto_run:
 			print("column: t=%d  %s  %s" % [sim.tick_index(), what, text])
@@ -1124,6 +1292,9 @@ func _draw_panel() -> void:
 	_text(Vector2(PANEL_X, y), "SAFE RANGE OF THE KEYS", DIM)
 	y += 22
 	var plant: Dictionary = PLANTS[plant_key]
+	if not region.is_empty():
+		_text(Vector2(PANEL_X, y), "measured, each key's edge set by the others:", DIM, 14)
+		y += 18
 	var low: float = plant["furnace_mw"][0]
 	_text(Vector2(PANEL_X, y), ("furnace  %.0f–%.0f MW" if low == roundf(low) else "furnace  %.1f–%.0f MW") % [low, plant["furnace_mw"][1]], DIM, 14)
 	if plant.has("reflux"):

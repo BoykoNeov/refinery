@@ -383,3 +383,79 @@ fn slow_the_cold_start_up_timeline() {
     let share = cut[0]["of_declared"].as_f64().unwrap();
     assert!((share - 0.811).abs() < 0.005, "the gas oil at {share}");
 }
+
+/// The crude unit's measured region as the scene reads it
+/// (`demo/column_region_crude.json`, M67.3, DESIGN §72.8).
+fn crude_region() -> Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../demo/column_region_crude.json");
+    serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+}
+
+/// Whether the region allows the crude unit's keys at `furnace` MW, `reflux`
+/// and `pumparounds` (a share of the file's 15/15/10 MW), all on its grid.
+fn crude_allows(region: &Value, furnace: f64, reflux: f64, pumparounds: f64) -> bool {
+    let at = |key: &str, value: f64| {
+        region["grid"][key]
+            .as_array()
+            .unwrap()
+            .iter()
+            .position(|x| (x.as_f64().unwrap() - value).abs() < 1e-6)
+            .unwrap_or_else(|| panic!("{key} {value} is not on the grid"))
+    };
+    let row = region["allowed"][at("furnace", furnace)][at("reflux", reflux)]
+        .as_str()
+        .unwrap();
+    row.as_bytes()[at("pa", pumparounds)] == b'1'
+}
+
+/// The crude unit settled at its file's state, then its three keys sent at
+/// once (the region's one-jump route), run `ticks` on: whether it ran.
+fn crude_jump_runs(furnace: f64, reflux: f64, pumparounds: f64, ticks: i64) -> bool {
+    let mut screen = Screen::load(
+        "crude_unit.toml",
+        "furnace",
+        "transfer_line",
+        &["naphtha_draw"],
+    );
+    screen.run_to(1000);
+    let (furnace_id, column) = (screen.furnace, screen.column);
+    screen.send(&format!(
+        r#"{{"cmd":"set_furnace_duty","duty":{:?},"node":{furnace_id}}}"#,
+        furnace * 1.0e6
+    ));
+    screen.send(&format!(
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":{reflux:?}}}"#
+    ));
+    for (i, mw) in [15.0, 15.0, 10.0].iter().enumerate() {
+        screen.send(&format!(
+            r#"{{"cmd":"set_pumparound_duty","duty":{:?},"node":{column},"pumparound":{i}}}"#,
+            mw * pumparounds * 1.0e6
+        ));
+    }
+    (0..ticks).all(|_| screen.session.tick() == "null")
+}
+
+/// **The crude unit's region is the column's** (M67.3, DESIGN §72.8): the
+/// table the scene holds its keys by holds the file's own setting, and on
+/// either side of its edge the column does what the table says — at 20 MW and
+/// a reflux of 1, the pumparounds at 50 % run and at 25 % do not; at 0 MW and
+/// a reflux of 1.5, at 25 % they run and off they do not. A column that moves
+/// its edge fails this, and the region is measured again.
+#[test]
+fn slow_the_crude_units_region_is_the_columns() {
+    let region = crude_region();
+    assert!(crude_allows(&region, 20.0, 4.0, 1.0), "the file's setting");
+    for (furnace, reflux, inside, outside) in [(20.0, 1.0, 0.5, 0.25), (0.0, 1.5, 0.25, 0.0)] {
+        assert!(crude_allows(&region, furnace, reflux, inside));
+        assert!(!crude_allows(&region, furnace, reflux, outside));
+        assert!(
+            crude_jump_runs(furnace, reflux, inside, 300),
+            "{furnace} MW, reflux {reflux}, pumparounds {inside}"
+        );
+        assert!(
+            !crude_jump_runs(furnace, reflux, outside, 300),
+            "{furnace} MW, reflux {reflux}, pumparounds {outside}"
+        );
+    }
+}

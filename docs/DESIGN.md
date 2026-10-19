@@ -27879,7 +27879,10 @@ Deferred:
 - **M67.2 — the cut-back product on the column screen.** Fork 2's panel line.
   The godot-feature clippy.
 - **M67.3 — the keys as measured tables.** Fork 3, for keys 1, 4 and 5, with
-  the measurement drivers kept.
+  the measurement drivers kept. Split on measuring, one slice per plant, each
+  batch within an hour of machine time (the user, 2026-10-19): **M67.3** the
+  crude unit (key 1), **M67.4** the stripped crude unit (key 4), **M67.5** the
+  cold plant (key 5).
 
 ### 72.6 A side draw cut back, built (M67.1)
 
@@ -27992,3 +27995,73 @@ product and the panel line.
 **Gates**: `column_screen.rs`'s cold timeline reads the field through the
 bridge (M67.1). The godot-feature clippy is clean; the binding is unchanged.
 **What moved**: nothing in the engine.
+
+### 72.8 The crude unit's keys as a measured region, built (M67.3)
+
+**The routes**, on the screen's grid: the furnace 0–40 MW in 2.5 MW steps,
+the reflux 0.5–15 in 0.5, the pumparounds 0–400 % of the file's 15/15/10 MW in
+25 % steps. That is 8 670 settings, below M61.2's box at both low ends (§66.7).
+A setting is **allowed** when all three routes ran:
+1. **One jump**: from the file's state settled at tick 1 000 (20 MW, reflux 4,
+   100 %), all three keys at once, then 3 000 ticks.
+2. **Reflux first**: the furnace to its setting at 1 000, 3 000 ticks, then the
+   reflux in screen steps from 4, then the pumparounds in screen steps from
+   100 %, a press every 300 ticks, then 3 000 ticks. Each run walks one row to
+   its end (the pumparounds down to 0 or up to 400 %).
+3. **Pumparounds first**: the same, the pumparounds before the reflux.
+
+A walk that failed marks the setting it failed on. The ones it never reached it
+says nothing of. The allowed settings kept are those reachable from the file's
+by single steps through allowed ones; all of them are.
+
+The furnace's drift does not set the edge here. At 0 and 40 MW, 36 settings
+across the edge, every failure came on the jump's own tick and every setting
+that ran still ran 20 000 ticks on. So 3 000 ticks after the last move suffice.
+
+**Measured** (the shipped engine; 8 670 jumps and 1 598 walks, about 70
+minutes on 14 threads):
+- The jumps ran 8 568 of 8 670. The walks failed 75 times, on 64 settings;
+  18 of those settings ran by the jump, so their edge is the route's.
+- 8 550 settings are allowed, all reachable. What is not is the corner of a
+  low reflux with low or no pumparounds, its edge a little higher at a hot
+  furnace:
+  - up to 22.5 MW: a reflux of 0.5–1 needs the pumparounds at 50 %, and 1.5–2
+    needs them on;
+  - from 25 MW: a reflux of 1.5 needs 50 %, and 2.5 needs them on (the
+    walks');
+  - from 35 MW: a reflux of 0.5–1 needs 75 %.
+  - The edge is not monotone, and the table keeps what was measured: a
+    reflux of 2.5 with the pumparounds off is allowed at 37.5 and 40 MW but
+    not at 25–35, and at 40 MW a reflux of 3 with them off is not (the walks').
+
+**The screen** (`demo/column.gd`): the plant's entry names its region,
+`demo/column_region_crude.json`: the keys, their grids, and per furnace and
+reflux a row of the pumparounds' settings, "1" where allowed. The table is
+written by `tools/steptime/prototypes/m67_3/region.py`; its driver
+(`m67_3_grid.rs`, `specs_crude.py`, `run.sh`) is kept beside it.
+- **A press whose target the region does not allow is held** (decision 2).
+  The screen names, for each other key, its nearest setting at which the
+  target is allowed: "the pumparounds stay at 150 %: 25 % is past the column's
+  edge here — the furnace at 22.5 MW or the reflux at 2.0 would free it". Off
+  the grid: "… is outside its measured range". It sends nothing, and it moves
+  no other key.
+- **The furnace key lands on the grid**: from a setting between two of its
+  points (none on this plant's file) a press goes to the nearer one that way.
+  A setting between grid points is allowed only where both neighbours are.
+- **Two presses before the next tick**: the scene re-reads the snapshot after
+  every command it sends, so the second press is judged against the first's
+  setting (measured headless: two pumparound presses on one tick step 150 →
+  125 → 100 %).
+- **The timeline**: at 3 000 the pumparounds are asked to 25 % and held, with
+  the message above, in place of M61.2's reflux press below 1.5, which the
+  region now allows. `column_screen.rs`'s replay is unchanged (a held press
+  sends nothing).
+- **The panel** reads "measured, each key's edge set by the others:" above the
+  grid's outer limits.
+
+**Gates**: `column_screen.rs`, `slow_the_crude_units_region_is_the_columns`.
+The table allows the file's setting, and on either side of its edge the
+column does what the table says: at 20 MW and a reflux of 1, 50 % runs and
+25 % does not; at 0 MW and 1.5, 25 % runs and none does not. A column that
+moves its edge fails it, and the region is measured again. **What moved**:
+nothing in the engine.

@@ -10488,3 +10488,19 @@ DESIGN §72.7.
 
 - Gates: `column_screen.rs` (M67.1's cold timeline reads the field). The
   godot-feature clippy is clean. No engine change (no corpus run).
+
+### M67.3 — **LANDED** 2026-10-19: the crude unit's keys as a measured region
+
+The crude unit's keys are held by a table measured on the screen's grid: the
+furnace 0–40 MW, the reflux 0.5–15, the pumparounds 0–400 %. A setting is
+allowed where one jump and both walks to it ran: 8 550 of 8 670. That reaches
+below M61.2's box at both low ends; what is not allowed is a low reflux with
+the pumparounds low or off. A press past the edge is held, and the screen names
+the other key's nearest setting that frees it. The furnace key lands on the
+grid, and two presses in one frame see each other. DESIGN §72.8. M67.3 is split
+on measuring, one plant a slice, each batch within an hour of machine time (the
+user): M67.4 the stripped crude unit, M67.5 the cold plant.
+
+- Gates: `column_screen.rs` (+1, slow). GDScript run headless: the held press,
+  the off-grid press, two presses on one tick. No engine change (no corpus
+  run).

@@ -59,7 +59,8 @@ Ticked when it lands; struck when the user rules it out.
       found sets that corner. **M67, OPEN** (DESIGN §72): [x] M67.0 probe and
       design note (done 2026-10-18, `tools/steptime/prototypes/m67_0/FINDINGS.md`);
       [x] M67.1 a side draw cut back (done 2026-10-19, DESIGN §72.6); [x] M67.2 the cut-back product on the
-      column screen (done 2026-10-19, DESIGN §72.7); [ ] M67.3 the keys as measured tables.
+      column screen (done 2026-10-19, DESIGN §72.7); [x] M67.3 the crude unit's keys as a measured region (done 2026-10-19, DESIGN §72.8);
+      [ ] M67.4 the stripped crude unit's; [ ] M67.5 the cold plant's.
 - [ ] **C11** — Newton's Jacobian by forward differences (cost; feeds Phase 3).
 - [ ] **C9** — a pumparound as a real liquid circuit, not a side cooler.
 - [ ] **B3** (open clause) — a flashing feed into a column, a partial condenser,
