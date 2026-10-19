@@ -58,8 +58,8 @@ Ticked when it lands; struck when the user rules it out.
       **C17** (a side draw cut back where its tray runs short), which the probe
       found sets that corner. **M67, OPEN** (DESIGN §72): [x] M67.0 probe and
       design note (done 2026-10-18, `tools/steptime/prototypes/m67_0/FINDINGS.md`);
-      [x] M67.1 a side draw cut back (done 2026-10-19, DESIGN §72.6); [ ] M67.2 the cut-back product on the
-      column screen; [ ] M67.3 the keys as measured tables.
+      [x] M67.1 a side draw cut back (done 2026-10-19, DESIGN §72.6); [x] M67.2 the cut-back product on the
+      column screen (done 2026-10-19, DESIGN §72.7); [ ] M67.3 the keys as measured tables.
 - [ ] **C11** — Newton's Jacobian by forward differences (cost; feeds Phase 3).
 - [ ] **C9** — a pumparound as a real liquid circuit, not a side cooler.
 - [ ] **B3** (open clause) — a flashing feed into a column, a partial condenser,

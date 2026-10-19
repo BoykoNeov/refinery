@@ -27969,3 +27969,26 @@ batches never took it).
 
 **What moved**: no plant's fingerprint. The cold start-up story (decision 8);
 M66.2's and M64.2's test fixtures, as listed.
+
+### 72.7 The cut-back product on the column screen, built (M67.2)
+
+`demo/column.gd` reads `column_draws_cut_back` (`_cut_back()`). It computes
+nothing; every number is the snapshot's.
+- **The product**: a cut-back product's name reads in warning with how far it
+  is cut, "gas oil  at 16 %", or "STOPPED" under half a per cent of its share
+  (`CUT_STOPPED`; M67.1's floor is a millionth). Its flow and temperature
+  stand below as before.
+- **The panel**: a line under the reboiler's, "products cut back: their trays
+  are short of liquid".
+- **The printed readout** ends "cut back: gas oil at 8 %".
+- The cold plant's header and timeline comments tell the new start-up.
+
+Run headless on the cold timeline, the readout names the gas oil at 8 % on
+tick 900, 29 % on 1 200, 57 % on 1 800 and 81 % on 2 700. The reboiler is at
+zero from 821, and the screen's frame costs 28–41 ms a tick (three ticks a
+frame, the machine under other load). The screenshot at 1 005 shows the
+product and the panel line.
+
+**Gates**: `column_screen.rs`'s cold timeline reads the field through the
+bridge (M67.1). The godot-feature clippy is clean; the binding is unchanged.
+**What moved**: nothing in the engine.

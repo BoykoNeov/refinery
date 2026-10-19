@@ -24,8 +24,10 @@
 #               start-up (M66, §71): the furnace low, the column on its
 #               reboiler. Start it: fire the furnace, take the pumparounds off,
 #               walk the reboiler down from the duty it runs at (T/G), free it
-#               again (Y). A step the feed is still too cool for is declined by
-#               the column, which keeps the duty it ran at and says so.
+#               again (Y). Where the feed is still too cool for a step the
+#               column cuts its gas oil back (M67, §72) and the product reads
+#               in warning with how far it is cut; a step even that cannot
+#               carry is declined, the column keeping the duty it ran at.
 #
 # Same rule as every screen: this script computes nothing physical. Every
 # number it draws is a snapshot field — the stage temperatures and vapour, the
@@ -217,8 +219,10 @@ const AUTO_STRIPPED := {
 }
 ## cold: the start-up (M66, §71.10). The furnace to 58 MW at 10; the
 ## pumparounds off at 500; from 500 the reboiler key pressed every 10 ticks
-## (`WALKS`), each press the duty it runs at less 2.5 MW — the column declining
-## the steps the feed is still too cool for, landing on zero near 2 320; at
+## (`WALKS`), each press the duty it runs at less 2.5 MW — landing on zero on
+## 821, the gas oil cut back meanwhile (to under 1 % at the walk's foot, 81 %
+## by 2 700; M67.1, §72.6; before M67 the column declined the steps and
+## landed near 2 320); at
 ## 1 005 (off the walk's ticks, so its message stays on screen) the furnace
 ## key pressed down while the reboiler is held, and the screen holds it.
 const AUTO_COLD := {
@@ -683,6 +687,23 @@ func _declined() -> Dictionary:
 	return _column().get("column_reboiler_declined", {})
 
 
+## The side draws the column cut back this tick (M67.1, docs/DESIGN.md §72.1):
+## each draw's index to the share of its declared rate it ran at — its tray
+## could not supply its share, so it took what leaves the tray its minimum
+## liquid. Empty while every draw runs at its share.
+func _cut_back() -> Dictionary:
+	var shares := {}
+	for cut in _column().get("column_draws_cut_back", []):
+		shares[int(cut["draw"])] = float(cut["of_declared"])
+	return shares
+
+
+## A cut-back product's share in words: a percentage, or stopped once it rounds
+## to nothing.
+func _cut_words(share: float) -> String:
+	return "STOPPED" if share < CUT_STOPPED else "at %.0f %%" % (share * 100.0)
+
+
 ## Whether the column runs above the reflux it is set to (never on a held one).
 func _raised() -> bool:
 	return not _held() and _reflux_ran() > _reflux_set() + 1e-9
@@ -788,6 +809,12 @@ func _readout(tick: int) -> String:
 			line += "  reboiler held"
 		else:
 			line += "  reboiler DECLINED %.2f MW" % (float(_declined()["asked_w"]) / 1.0e6)
+	var cut := _cut_back()
+	if not cut.is_empty():
+		var named: Array[String] = []
+		for i in cut:
+			named.append("%s %s" % [PLANTS[plant_key]["draws"][i][1], _cut_words(cut[i])])
+		line += "  cut back: %s" % ", ".join(named)
 	return line
 
 
@@ -798,6 +825,9 @@ const COLUMN_RECT := Rect2(330, 130, 100, 380)
 const PRODUCT_X := 520.0
 const BAR_WIDTH := 140.0
 const PANEL_X := 800.0
+## A cut-back draw under this share of its declared rate reads as stopped: its
+## percentage would round to nothing (M67.1's floor is a millionth).
+const CUT_STOPPED := 0.005
 
 const BACKGROUND := Color(0.09, 0.10, 0.12)
 const SHELL := Color(0.42, 0.45, 0.50)
@@ -1002,7 +1032,12 @@ func _draw_products() -> void:
 			draw_rect(Rect2(Vector2(x, y - 8), Vector2(width, 16)), CUT_COLORS[c % CUT_COLORS.size()])
 			x += width
 		draw_rect(Rect2(Vector2(PRODUCT_X, y - 8), Vector2(BAR_WIDTH, 16)), SHELL, false, 1.0)
-		_text(Vector2(PRODUCT_X + BAR_WIDTH + 8, y - 2), plant["draws"][i][1], INK, 13)
+		# A product cut back (M67.1) is named in warning, with how far it is cut.
+		var cut := _cut_back()
+		if cut.has(i):
+			_text(Vector2(PRODUCT_X + BAR_WIDTH + 8, y - 2), "%s  %s" % [plant["draws"][i][1], _cut_words(cut[i])], WARN, 13)
+		else:
+			_text(Vector2(PRODUCT_X + BAR_WIDTH + 8, y - 2), plant["draws"][i][1], INK, 13)
 		_text(
 			Vector2(PRODUCT_X + BAR_WIDTH + 8, y + 12),
 			"%.1f kg/s  %s" % [float(edge["stream"]["mass_flow"]), _c(float(edge["stream"]["temperature"]))],
@@ -1054,6 +1089,10 @@ func _draw_panel() -> void:
 	# A hold the column declined (M66.2): it keeps the duty it ran at.
 	if not _declined().is_empty():
 		_text(Vector2(PANEL_X + 12, y - 4), "asked %.2f MW: DECLINED, kept the duty it ran at" % (float(_declined()["asked_w"]) / 1.0e6), WARN, 13)
+		y += 18
+	# Products cut back (M67.1): their trays could not supply their shares.
+	if not _cut_back().is_empty():
+		_text(Vector2(PANEL_X + 12, y - 4), "products cut back: their trays are short of liquid", WARN, 13)
 		y += 18
 	if steam_valve_id >= 0:
 		_text(Vector2(PANEL_X, y), "steam          %6.3f kg/s (%.0f %%)" % [_steam_kg_s(), _steam_opening() * 100.0], STEAM)

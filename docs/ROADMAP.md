@@ -10478,3 +10478,13 @@ column recovers. DESIGN §72.6.
   start-up's new story). Mutations: eleven, ten caught; the fallback to the
   uncut answer is unreached. Corpus: 67 of 67 byte-identical on both
   fidelities.
+
+### M67.2 — **LANDED** 2026-10-19: the cut-back product on the column screen
+
+`demo/column.gd` names a cut-back product in warning with how far it is cut
+("gas oil  at 16 %", or STOPPED), adds a panel line, and ends the printed
+readout "cut back: …". The cold plant's comments tell the new start-up.
+DESIGN §72.7.
+
+- Gates: `column_screen.rs` (M67.1's cold timeline reads the field). The
+  godot-feature clippy is clean. No engine change (no corpus run).
