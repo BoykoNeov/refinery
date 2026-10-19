@@ -37,6 +37,17 @@ elif plant == 'stripped':
     # Each furnace's settled coil [°C], measured (`str_coils.txt`, beside this).
     coils = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'str_coils.txt')
     COIL = dict(kv.split('=') for kv in open(coils).read().strip().split(','))
+elif plant == 'cold':
+    # Its reboiler free (M67.5): the stripped plant's keys but the pumparounds
+    # a share of the file's 15/15/10 MW, the furnace from the file's 20 MW.
+    KEYS = ['furnace', 'steam', 'pa']
+    GRID = {
+        'furnace': [20 + 2.5 * i for i in range(19)],
+        'steam': [round(0.05 * i, 2) for i in range(1, 21)],
+        'pa': [0.25 * i for i in range(5)],
+    }
+    FILE = {'furnace': 20.0, 'steam': 0.4, 'pa': 1.0}
+    COIL = dict(kv.split('=') for kv in open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cold_coils.txt')).read().strip().split(','))
 else:
     raise SystemExit('plant ' + plant)
 

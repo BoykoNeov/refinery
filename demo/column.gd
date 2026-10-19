@@ -173,14 +173,18 @@ const PLANTS := {
 		# this plant was added (M66.4, §71.11). The stripped plant's three.
 		"ticks_per_frame": 3,
 		# The reboiler on keys (T/G, Y): a hold the column cannot run at yet is
-		# declined (M66.2). While it is held the keys that could raise the
-		# column's edge — the furnace down, the steam down, the pumparounds —
-		# are the screen's to hold (§71.11); free, the box below.
+		# declined (M66.2). While it is held, measured on the start-up's walk
+		# and after it lands (M67.5, §72.10): the furnace down runs to 37.5 MW,
+		# the pumparounds to 50 %; the steam down does not (mid-walk), so it
+		# stays. M66.4 held all three (§71.11). Free, the keys' region,
+		# measured as the stripped plant's (§72.10).
 		"reboiler": true,
+		"held_limits": {"furnace_min": 37.5, "pumparounds_max": 0.5},
+		"region": "res://demo/column_region_cold.json",
 		"furnace_mw": [20.0, 65.0],
-		"steam": [0.1, 1.0],
+		"steam": [0.05, 1.0],
 		"pumparounds": [0.0, 1.0],
-		"range_ref": "§71.11",
+		"range_ref": "§72.10",
 	},
 }
 
@@ -237,12 +241,13 @@ const AUTO_STRIPPED := {
 ## 821, the gas oil cut back meanwhile (to under 1 % at the walk's foot, 81 %
 ## by 2 700; M67.1, §72.6; before M67 the column declined the steps and
 ## landed near 2 320); at
-## 1 005 (off the walk's ticks, so its message stays on screen) the furnace
-## key pressed down while the reboiler is held, and the screen holds it.
+## 1 005 (off the walk's ticks, so its message stays on screen) the steam key
+## pressed down while the reboiler is held, and the screen holds it — measured
+## to fail mid-walk (M67.5, §72.10; M66.4 pressed the furnace, which now runs).
 const AUTO_COLD := {
 	10: ["furnace_58"],
 	500: ["pumparounds_0"],
-	1005: ["furnace_down"],
+	1005: ["steam_down"],
 	2700: ["quit"],
 }
 ## The reboiler key pressed every `[2]` ticks from `[0]` to `[1]` on a timeline.
@@ -557,24 +562,31 @@ func _do(action: String) -> void:
 			_send("free the reboiler: it closes the column at the reflux of %.1f" % _reflux_set(), {"cmd": "set_reboiler_duty", "node": column_id, "duty": null})
 
 
-## On a plant whose reboiler is on a key, while it is held: the keys that could
-## raise the column's edge are held by the screen (§71.11) — the column runs on
-## its edge through the walk, and a decline protects only the reboiler's own
-## commands. True when `what` was held.
-func _held_back(what: String, raises_edge: bool) -> bool:
+## On a plant whose reboiler is on a key, while it is held: the presses past
+## what was measured to run held are held by the screen (§71.11, measured
+## again by M67.5, §72.10) — the column runs on its edge through the walk, and
+## a decline protects only the reboiler's own commands. True when `what` was
+## held.
+func _held_back(what: String, raises_edge: bool, why: String = "it could take the column past its edge") -> bool:
 	if not (PLANTS[plant_key].has("reboiler") and _held() and raises_edge):
 		return false
-	var text := "%s stays while the reboiler is held: it could take the column past its edge (Y frees it)" % what
+	var text := "%s %s while the reboiler is held: %s (Y frees it)" % [what, "stay" if what == "the pumparounds" else "stays", why]
 	_say(text, true)
 	if auto_run:
 		print("column: t=%d  HELD: %s" % [sim.tick_index(), text])
 	return true
 
 
+## A plant's measured limit on a key while its reboiler is held (M67.5).
+func _held_limit(name: String, otherwise: float) -> float:
+	return float(PLANTS[plant_key].get("held_limits", {}).get(name, otherwise))
+
+
 func _set_furnace_mw(megawatts: float) -> void:
-	if _held_back("the furnace", megawatts < _duty_w() / 1.0e6):
+	var lowest := _held_limit("furnace_min", INF)
+	if _held_back("the furnace", megawatts < lowest, "under %.1f MW it was not measured to run held" % lowest):
 		return
-	if not region.is_empty():
+	if _region_applies():
 		if not _region_holds("furnace", megawatts):
 			_send("fire the furnace at %.1f MW" % megawatts, {"cmd": "set_furnace_duty", "node": furnace_id, "duty": megawatts * 1.0e6})
 		return
@@ -587,7 +599,7 @@ func _set_furnace_mw(megawatts: float) -> void:
 
 
 func _set_reflux(ratio: float) -> void:
-	if not region.is_empty():
+	if _region_applies():
 		if not _region_holds("reflux", ratio):
 			_send("set the reflux ratio to %.1f" % ratio, {"cmd": "set_reflux_ratio", "node": column_id, "reflux_ratio": ratio})
 		return
@@ -604,11 +616,12 @@ func _set_pumparounds(scale: float) -> void:
 	if design_pumparounds.is_empty():
 		_say("this column has no pumparounds", true)
 		return
-	if _held_back("the pumparounds", not is_equal_approx(scale, _pumparound_scale())):
+	var most := _held_limit("pumparounds_max", -INF)
+	if _held_back("the pumparounds", scale > most + 1e-9, "past %.0f %% the column cannot run held" % (most * 100.0)):
 		return
 	var limits: Array = PLANTS[plant_key]["pumparounds"]
 	var held := clampf(scale, limits[0], limits[1])
-	if not region.is_empty():
+	if _region_applies():
 		if _region_holds("pa", scale):
 			return
 		held = scale
@@ -627,7 +640,7 @@ func _set_pumparounds(scale: float) -> void:
 func _set_pumparound_mw(megawatts: float) -> void:
 	var limits: Array = PLANTS[plant_key]["pumparound_mw"]
 	var held := clampf(megawatts, limits[0], limits[1])
-	if not region.is_empty():
+	if _region_applies():
 		if _region_holds("pa_mw", megawatts):
 			return
 		held = megawatts
@@ -647,7 +660,7 @@ func _set_steam(opening: float) -> void:
 		return
 	var limits: Array = PLANTS[plant_key]["steam"]
 	var held := clampf(opening, limits[0], limits[1])
-	if not region.is_empty():
+	if _region_applies():
 		if _region_holds("steam", opening):
 			return
 		held = opening
@@ -735,6 +748,12 @@ func _grid_step(key: String, value: float, step: float) -> float:
 	if at.size() == 2:
 		return float(grid[at[1]]) if step > 0.0 else float(grid[at[0]])
 	return value + step
+
+
+## Whether the region judges a press now: on a plant whose reboiler is on a
+## key, its region is the column free (M67.5); held, `held_limits` judge.
+func _region_applies() -> bool:
+	return not region.is_empty() and not (PLANTS[plant_key].has("reboiler") and _held())
 
 
 ## Whether the region allows the keys at `values`: every grid setting around
@@ -1363,9 +1382,9 @@ func _draw_panel() -> void:
 		)
 	if plant.has("reboiler"):
 		y += 18
-		_text(Vector2(PANEL_X, y), "reboiler held: furnace and steam up only,", DIM, 14)
+		_text(Vector2(PANEL_X, y), "reboiler held: furnace to %.1f MW, steam up only," % _held_limit("furnace_min", 0.0), DIM, 14)
 		y += 18
-		_text(Vector2(PANEL_X, y), "  the pumparounds where they are", DIM, 14)
+		_text(Vector2(PANEL_X, y), "  the pumparounds to %.0f %%" % (_held_limit("pumparounds_max", 0.0) * 100.0), DIM, 14)
 
 
 func _text(at: Vector2, text: String, color: Color, size: int = 16) -> void:

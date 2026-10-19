@@ -318,8 +318,8 @@ fn slow_the_stripped_timeline() {
 /// **The cold crude unit's start-up** (`AUTO_COLD` and `WALKS`, M66.4): the
 /// furnace to 58 MW at 10; the pumparounds off at 500; from 500 to 2 390, every
 /// 10 ticks, the reboiler key — held at the duty it runs at less 2.5 MW, the
-/// scene's own arithmetic (its 1 005-tick furnace press is the screen's to
-/// hold, while the reboiler is held, and sends nothing). The reboiler never
+/// scene's own arithmetic (its 1 005-tick steam press is the screen's to
+/// hold, while the reboiler is held, and sends nothing; M67.5). The reboiler never
 /// rises and the column declines none of the walk: since M67 (§72.1) it cuts
 /// its gas oil back where the feed is still too cool for the step, and lands
 /// on zero on tick 821 (M66: 2 321, after 1 534 declined ticks); on 2 700 it
@@ -473,19 +473,33 @@ fn region_allows(region: &Value, values: [f64; 3]) -> bool {
     region["allowed"][at[0]][at[1]].as_str().unwrap().as_bytes()[at[2]] == b'1'
 }
 
-/// The stripped crude unit started from its file with its furnace at
+/// A steam-stripped plant started from its file with its furnace at
 /// `furnace` MW and its coil declared where that furnace settles it (the
-/// region's own start, M67.4), then the steam valve and every pumparound sent
-/// at once on tick 20 (the region's one-jump route), run `ticks` on: whether
-/// it ran.
-fn stripped_jump_runs(furnace: f64, coil_c: f64, steam: f64, pumparound_mw: f64) -> bool {
-    let src = scenario_src("crude_unit_stripped.toml")
-        .replacen("duty_mw = 58.0\n", &format!("duty_mw = {furnace:?}\n"), 1)
-        .replacen(
-            "coil_temperature_c = 436.88\n",
-            &format!("coil_temperature_c = {coil_c:?}\n"),
-            1,
-        );
+/// regions' own start, M67.4), then the steam valve and the pumparounds
+/// (`pumparound_mw`, one per pumparound) sent at once on tick 20 (the regions'
+/// one-jump route), run 100 ticks on: whether it ran. `file`'s furnace is its
+/// first `duty_mw = ` line, its coil its `coil_temperature_c`.
+fn settled_jump_runs(
+    file: &str,
+    (furnace, coil_c): (f64, f64),
+    steam: f64,
+    pumparound_mw: [f64; 3],
+) -> bool {
+    let src: String = scenario_src(file)
+        .lines()
+        .scan((false, false), |done, line| {
+            let out = if !done.0 && line.starts_with("duty_mw = ") {
+                done.0 = true;
+                format!("duty_mw = {furnace:?}")
+            } else if !done.1 && line.starts_with("coil_temperature_c = ") {
+                done.1 = true;
+                format!("coil_temperature_c = {coil_c:?}")
+            } else {
+                line.to_string()
+            };
+            Some(out + "\n")
+        })
+        .collect();
     let mut session = Session::default();
     assert_eq!(session.load_scenario(&src), "null");
     let (column, valve) = (session.node_id("column"), session.node_id("steam_valve"));
@@ -496,13 +510,24 @@ fn stripped_jump_runs(furnace: f64, coil_c: f64, steam: f64, pumparound_mw: f64)
     send(format!(
         r#"{{"cmd":"set_valve_opening","node":{valve},"opening":{steam:?}}}"#
     ));
-    for i in 0..3 {
+    for (i, mw) in pumparound_mw.iter().enumerate() {
         send(format!(
             r#"{{"cmd":"set_pumparound_duty","duty":{:?},"node":{column},"pumparound":{i}}}"#,
-            pumparound_mw * 1.0e6
+            mw * 1.0e6
         ));
     }
     (0..100).all(|_| session.tick() == "null")
+}
+
+/// A region's settled coil at a grid furnace [°C].
+fn region_coil(region: &Value, furnace: f64) -> f64 {
+    let at = region["grid"]["furnace"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|f| f.as_f64() == Some(furnace))
+        .unwrap();
+    region["coil_c"][at].as_f64().unwrap()
 }
 
 /// **The stripped crude unit's region is the column's** (M67.4, DESIGN §72.9):
@@ -517,14 +542,40 @@ fn slow_the_stripped_units_region_is_the_columns() {
     let region = region("stripped");
     assert!(region_allows(&region, [57.5, 0.4, 0.0]));
     assert!(region_allows(&region, [60.0, 0.4, 0.0]));
-    let furnaces = region["grid"]["furnace"].as_array().unwrap();
-    let at_45 = furnaces
-        .iter()
-        .position(|f| f.as_f64() == Some(45.0))
-        .unwrap();
-    let coil = region["coil_c"][at_45].as_f64().unwrap();
+    let at_45 = (45.0, region_coil(&region, 45.0));
     assert!(region_allows(&region, [45.0, 1.0, 11.0]));
     assert!(!region_allows(&region, [45.0, 1.0, 12.0]));
-    assert!(stripped_jump_runs(45.0, coil, 1.0, 11.0), "11 MW at 45 MW");
-    assert!(!stripped_jump_runs(45.0, coil, 1.0, 12.0), "12 MW at 45 MW");
+    let file = "crude_unit_stripped.toml";
+    assert!(
+        settled_jump_runs(file, at_45, 1.0, [11.0; 3]),
+        "11 MW at 45 MW"
+    );
+    assert!(
+        !settled_jump_runs(file, at_45, 1.0, [12.0; 3]),
+        "12 MW at 45 MW"
+    );
+}
+
+/// **The cold crude unit's region, its reboiler free, is the column's**
+/// (M67.5, DESIGN §72.10): the table allows the file's setting (20 MW, the
+/// steam valve at 40 %, the pumparounds at their 15/15/10 MW), and at its edge
+/// — the hottest furnace with the pumparounds off — the column does what the
+/// table says: at 65 MW and 40 % steam, a quarter of the pumparounds runs and
+/// none does not.
+#[test]
+fn slow_the_cold_units_region_is_the_columns() {
+    let region = region("cold");
+    assert!(region_allows(&region, [20.0, 0.4, 1.0]));
+    assert!(region_allows(&region, [65.0, 0.4, 0.25]));
+    assert!(!region_allows(&region, [65.0, 0.4, 0.0]));
+    let at_65 = (65.0, region_coil(&region, 65.0));
+    let file = "crude_unit_cold.toml";
+    assert!(
+        settled_jump_runs(file, at_65, 0.4, [3.75, 3.75, 2.5]),
+        "a quarter of the pumparounds at 65 MW"
+    );
+    assert!(
+        !settled_jump_runs(file, at_65, 0.4, [0.0; 3]),
+        "no pumparounds at 65 MW"
+    );
 }

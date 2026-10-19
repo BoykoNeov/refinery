@@ -12,6 +12,54 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M67 is CLOSED (2026-10-19): a side draw cut back, and the column screen's keys
+as measured regions — `docs/DEFERRED.md` C17 and C12 taken, C18 and C19 new.**
+Asked as "go" on C12 (the screen's keys a box set by its worst corner). The
+probe found that corner is a draw tray run dry, so C17 came first. Decided in
+plain words along the way:
+- fix the column first: a draw its tray cannot fill is cut back, leaving 5 % of
+  the feed's moles below it;
+- at an edge the key is held and the screen names what frees it;
+- a cut-back product is named on screen, and one cut to nothing stops;
+- the tables are cautious: off-limits if any measured route failed;
+- the cold plant measured too, and its start-up may move. Asked again with
+  M67.1's numbers: yes, it walks to zero by tick 820 with its gas oil cut
+  back;
+- no measurement batch past an hour of machine time.
+
+- **M67.0, the probe and the design note** (§72.0–§72.5): with the cut-back
+  draw, at 5 % every plant byte-identical. The crude unit ran 55 of its old
+  box's 85 failing settings, the stripped unit 81 of 83, and the freed cold
+  plant had no edge in its box.
+- **M67.1, a side draw cut back** (§72.6): an active set around the wet
+  stages', the plain solve first, carried on the profile, released when the
+  column recovers, reported (`column_draws_cut_back`). Two faults in the
+  probe's retry were found by the mutation pass and fixed. The cold start-up
+  no longer declines its walk.
+- **M67.2, the cut-back product on the screen** (§72.7): "gas oil at 16 %",
+  or STOPPED; a panel line.
+- **M67.3, the crude unit's keys as a measured region** (§72.8): 8 550 of
+  8 670 settings on the screen's grid, below M61.2's box. A press past the
+  edge is held, naming the other key's freeing setting. The furnace key lands
+  on the grid, and two presses before a tick see each other.
+- **M67.4, the stripped crude unit's** (§72.9): runs start from the file with
+  its coil settled, to fit the hour. 2 893 of 3 120, down to 37.5 MW. A press
+  is judged at the coil as it stands too, so the pumparounds wait for the
+  coil after a furnace step.
+- **M67.5, the cold plant's** (§72.10): held, measured limits replace M66.4's
+  blanket hold (the furnace to 37.5 MW, the pumparounds to 50 %, no steam
+  down). Free, 1 880 of 1 900 settings.
+- Corpus: 67 of 67 byte-identical on both fidelities at M67.1. M67.2–M67.5
+  left the engine untouched.
+- **Left open**:
+  - C18: a cold start does not cut its draws back.
+  - C19: the tables are owed again when the column changes, and their
+    unmeasured routes.
+  - The crude unit's low-reflux corner, where the top's energy balance does
+    not close.
+  - M67.1's one surviving mutation: the fallback to the uncut answer, which
+    nothing measured reaches.
+
 **M66 is CLOSED (2026-10-18): a cold start-up — the reboiler handed down by
 command — `docs/DEFERRED.md` C15 taken, C17 new.** Asked as "C15: starting the
 steam-stripped crude unit from a cold plant — do it". The probe found the

@@ -28131,3 +28131,64 @@ whose region also holds each grid furnace's settled coil (`coil_c`).
 The table allows the file's setting, and at 45 MW with the steam wide open the
 column runs 11 MW of pumparound and not 12, as the table says. Also the
 stripped timeline's replay. **What moved**: nothing in the engine.
+
+### 72.10 The cold crude unit's keys, held and free, measured (M67.5)
+
+**Held** (its reboiler on the start-up's walk, or held at zero after it).
+M66.4 held three keys while the reboiler was held: the furnace down, the steam
+down, the pumparounds (§71.11). That rested on the engine before M67.1.
+Measured again on the screen's own start-up, a press at ticks 550–2 000 (the
+walk reaches zero at 820), run 2 700 ticks on, 63 runs
+(`specs_cold_held.py`):
+- **The furnace down runs**: one, four or eight steps, to 37.5 MW, at every
+  tick. The gas oil is cut back.
+- **The steam down does not**, mid-walk: one step fails at 650 and 750, four
+  steps from 650 to 850, seven from 650 to 1 000. From 1 500, held at zero, it
+  runs.
+- **The pumparounds**: to 25 % and 50 % they run at every tick; to 100 % they
+  fail at every tick.
+- **The failures are not the start's outside the physical region**. Most read
+  "its starting point is outside the physical region", the rule M67.1 dropped
+  (§72.6). Rebuilt with that rule back, the same 16 presses fail the same way.
+
+So while the reboiler is held the screen holds the furnace under 37.5 MW, the
+pumparounds past 50 % and the steam down (`held_limits`). The panel says so.
+One combination was run on the screen headless: the furnace at 37.5 MW and the
+pumparounds at 50 %, both while held, ran. The timeline's held press at 1 005
+is now the steam's, since the furnace's runs; `column_screen.rs`'s replay is
+unchanged.
+
+**Free**, its region measured as the stripped plant's (§72.9): every run
+starts from the file with its furnace at F and its coil settled there, the
+reboiler free.
+- The coils at 22.5–27.5 MW were measured as for the stripped plant (330.1,
+  338.1, 346.0 °C); at 20 MW it is the file's 322.06; from 30 MW the stripped
+  plant's.
+- The grid: the furnace 20–65 MW, the steam valve 5–100 %, the pumparounds
+  0–100 % of the file's 15/15/10 MW in 25 % steps.
+- 1 900 jumps and 570 walks, 17 minutes; the held presses and the coils 8
+  minutes before them.
+- 1 880 settings are allowed, all reachable. The 20 that are not are the
+  hottest furnaces with the pumparounds off: 62.5 MW with the steam at 75 %
+  or more, 65 MW with it at 35 % or more. The column runs too hot above the
+  feed with nothing taking its heat, the free column's own edge, as on the
+  stripped plant's coil runs above 50 MW.
+- The region judges a press only while the reboiler is free (a held column is
+  `held_limits`'); it holds the coils, so after a furnace step a press waits
+  for the coil, as on the stripped plant.
+
+**Gates**: `column_screen.rs`, `slow_the_cold_units_region_is_the_columns`. The
+table allows the file's setting, and at 65 MW and 40 % steam a quarter of the
+pumparounds runs and none does not, as the table says. The cold timeline's
+replay is unchanged. **What moved**: nothing in the engine.
+
+### 72.11 M67 closed
+
+C17 and C12 taken. A side draw whose tray runs short is cut back (M67.1) and
+named on the screen (M67.2). The column screen's keys are measured regions, not
+boxes: the crude unit (M67.3), the stripped crude unit (M67.4), the cold plant
+held and free (M67.5). The measurements fit an hour each, the user's rule.
+Every shipped plant byte-identical throughout; what moved was the cold
+start-up's story (decision 8) and the test fixtures that needed a dry tray.
+New ledger rows: C18, a cold start does not cut its draws back; C19, the
+tables are measurements, owed again when the column changes.

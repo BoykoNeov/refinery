@@ -10520,3 +10520,22 @@ wait for the coil. DESIGN §72.9.
 - Gates: `column_screen.rs` (+1, slow; the stripped replay moved to 12 MW at
   3 300). GDScript run headless: the held furnace press, a hold set by the
   furnace setting, the coil's own hold. No engine change (no corpus run).
+
+### M67.5 — **LANDED** 2026-10-19: the cold plant's keys, held and free
+
+While its reboiler is held, the cold plant's presses were measured again on the
+start-up's walk. The furnace down runs to 37.5 MW, the pumparounds to 50 %, and
+the steam down does not, so the screen holds those three past their measured
+limits (M66.4 held all three). Free, its keys are a measured region as the
+stripped plant's: 1 880 of 1 900 settings, the edge the hottest furnace with
+the pumparounds off. DESIGN §72.10.
+
+- Gates: `column_screen.rs` (+1, slow; the cold replay unchanged). GDScript run
+  headless: the held steam press, the furnace held under 37.5 MW, the
+  pumparounds held past 50 %. No engine change (no corpus run).
+
+**M67 — CLOSED 2026-10-19.** A side draw cut back where its tray runs short
+(C17), named on the screen; the column screen's keys as measured regions, not
+boxes (C12), for the crude unit, the stripped crude unit and the cold plant held
+and free. Its close-out report is at the top of `docs/MILESTONES.md`. Next is
+`docs/PLAN.md`'s Phase 2 (C11).
