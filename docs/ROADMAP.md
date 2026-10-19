@@ -10568,7 +10568,7 @@ after A29. No engine code changed (no corpus run).
 **M68 — CLOSED 2026-10-19.** A measurement only. Its close-out report is at the
 top of `docs/MILESTONES.md`. Next: A29.
 
-## M69 — a coil plant's tick: the line flash remembered for a tick, its re-solves predicted; ledger row A29; opened on a decision
+## M69 — a coil plant's tick: the line flash remembered for a tick, its re-solves predicted; ledger row A29; CLOSED 2026-10-19
 
 Asked for as "Stop C11, do A29" (2026-10-19). DESIGN §74. The user's decision:
 the memo and the predictor, as one change that moves answers, the screen's
@@ -10617,3 +10617,15 @@ the coil's first law holds at 1e-12, its gate unchanged. DESIGN §74.5.
   rolling baseline refreshed.
 - Gates: `predicted_tick_reference` (3), `newton_reference` (2 new). Mutations:
   ten, all caught.
+
+### M69.3 — **LANDED** 2026-10-19: the stripped and cold tables re-checked — M69 CLOSED
+
+C19, owed by M69.2. An edge check, not the full grids (those past 3 hours on
+the 4 threads a shared machine allows; the move at most 6.5e-7): every cell on
+either side of each table's edge, the cold plant's long rows and held presses,
+two coils; about 55 minutes. The stripped table and the cold plant's fast edges
+and held limits unchanged; the cold plant's late failure (§72.12, 7 400–8 400
+ticks on) is gone — the M69.1 engine reproduces it to the tick, the new one runs
+20 000. Kept as committed (the user's decision): the cold table holds back ~134
+settings that now run, recorded in C19. No code changed.
+`tools/steptime/prototypes/m69_3/FINDINGS.md`; DESIGN §74.6, §74.7.

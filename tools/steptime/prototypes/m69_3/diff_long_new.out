@@ -1,0 +1,10 @@
+
+running 1 test
+test m67_3_grid::m67_3_grid ... == cold WARM 20 GAP 3000 RUN 10000
+RESULT file:50:413.9|steam=1+pa=0: RUNS R 4.078 flash 0.859 coil 413.9 feed 366.7 C 112.80 kg/s cond 61.40 reb 19.59 MW bottom 511.2 C | cut 
+RESULT file:65:456.5|steam=1+pa=0.25: RUNS R 4.051 flash 0.912 coil 456.5 feed 405.4 C 112.80 kg/s cond 61.08 reb 19.07 MW bottom 512.1 C | cut 
+RESULT file:52.5:421.1|steam=0.4+pa=0: RUNS R 4.088 flash 0.869 coil 421.1 feed 373.2 C 112.80 kg/s cond 59.12 reb 21.45 MW bottom 540.9 C | cut 
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 75.20s
+

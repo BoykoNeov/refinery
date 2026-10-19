@@ -12,6 +12,29 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M69 is CLOSED (2026-10-19): a boiling plant's tick — the line flash
+remembered, the first solve predicted — `docs/DEFERRED.md` A29 taken.** Asked
+as "Stop C11, do A29", then "memo + predictor" with the probe's numbers.
+- **M69.0, the probe** (§74.0, `tools/steptime/prototypes/m69_0/`): the line
+  flash ~80 % of a coil plant's tick, re-solved 2–5 times; a predictor halves
+  the passes but broke the coil's first-law gate.
+- **M69.1, the memo** (§74.4): the engine's line flash remembers its answers
+  for a tick, bit for bit; 5–12 % faster.
+- **M69.2, the predictor** (§74.5): a drifting tick's first solve reads each
+  zero-volume node moved on by the last tick's move (not after a command, not
+  where nothing moved). The gate's leak was the solver accepting a guessed
+  start inside its tolerance, so a guessed solve now takes one step; the
+  first law holds at 1e-12. A held boiling crude unit solves once a tick; the
+  line flash's work 41–66 % of before. Moved, the user's decision: 10 of 67
+  plants on Newton (`water_slug` asked separately, 1.4e-12), 9 on Simple.
+- **M69.3, the screen tables** (§74.6, `tools/steptime/prototypes/m69_3/`): an
+  edge check in ~55 minutes on 4 threads. Both tables held. The cold plant's
+  late failure (§72.12) is gone; its table kept as committed, the user's
+  decision, and C19 says it holds back ~134 settings that now run.
+- **Left open**: A29 for the stripped plant after a furnace step on screen
+  (still past the frame, estimated); C11, its trigger now met (re-run M68.0's
+  probe).
+
 **M68 is CLOSED (2026-10-19): what the column's Newton costs, measured —
 `docs/DEFERRED.md` C11 measured and left open.** Asked as "go with it" on C11
 (the column's Jacobian built by forward differences, one column evaluation per

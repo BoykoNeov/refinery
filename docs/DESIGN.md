@@ -28476,3 +28476,48 @@ rounding; a guessed solve at rounding keeps its start, bit for bit), and
 it; a refused step erring; a plant at rest predicted; a command not guarding;
 the guard never lifting; the density check from the last tick's states; no
 `before` kept; the liquid-equivalent, the temperature not moved on.
+
+### 74.6 The stripped and cold tables re-checked (M69.3)
+
+C19, owed by M69.2's move. **An edge check, not the full grids**: those cost
+about 2 hours on 12 threads (§72.9, §72.10, §72.12), past 3 on the 4 a shared
+machine allows, and the predictor moves answers at most 6.5e-7, so only a cell
+already on an edge can flip. Every allowed cell with a disallowed neighbour and
+every disallowed one with an allowed neighbour, one jump from its furnace's
+settled file, 1 500 ticks; the cold plant's 10 000-tick rows; the held presses
+that set `held_limits`; two coils. About 55 minutes of runs, 4 at a time
+(`tools/steptime/prototypes/m69_3/FINDINGS.md`, every number; `m67_3/edges.py`
+lists a band).
+
+- **The stripped plant: unchanged.** Inside the edge 149 of 149 run; outside 121
+  of 122 fail, and the one that runs does so on the M69.1 engine too.
+- **The cold plant's fast edges and held limits: unchanged.** Inside 160 of 160
+  run; the steam-down failures land on the recorded ticks; the pumparounds to
+  100 % fail on the press at 1 000 and 2 000 (at 550 they now run).
+- **The cold plant's late edge is gone.** §72.12's slow failure, 7 400–8 400
+  ticks on with the pumparounds off from 50 MW or a quarter at 65 MW, "a slow
+  state not found": the M69.1 engine reproduces it to the tick (8 416 at 65 MW,
+  full steam, as recorded); the M69.2 engine runs the same settings 20 000 ticks
+  to a steady reading. So that state was the engine's, not the plant's, and the
+  predictor or its step removed it; not traced.
+- **The coils** at 40 and 50 MW settle where `str_coils.txt` says.
+
+**Decided** (the user, 2026-10-19, asked with these numbers): **keep both tables
+as committed.** The cold table now holds back about 134 settings that run — the
+safe side; C19 records it, so a screen story that needs them can reopen them
+(re-run at 10 000 ticks and widen). Nothing on the screen moved;
+`column_screen.rs` unchanged.
+
+### 74.7 M69 closed
+
+A29 taken for the memo and the predictor. A boiling plant's tick now remembers
+its line flash's answers (M69.1, bit for bit) and reads its first solve moved
+on by the last tick's move (M69.2): a held boiling crude unit solves once a
+tick, and the line flash's work on the three coil stories is 41–66 % of
+before. The probe's coil-books leak was the flow solver accepting a guessed
+start inside its tolerance; a guessed solve now takes one step. 10 plants moved
+on Newton, 9 on Simple (the user's decision); the stripped and cold tables held
+(M69.3). Not done: the stripped plant after a furnace step is still past the
+2.5 ms frame on the screen (estimated 8–9 ms; not measured on the screen);
+fewer coil cells or a smoothed density would cut more, and change the physics.
+C11's trigger is now met: re-run `tools/steptime/prototypes/m68_0/`.

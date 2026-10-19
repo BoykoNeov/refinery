@@ -1,0 +1,8 @@
+
+running 1 test
+test m67_3_grid::m67_3_grid ... == cold WARM 10 GAP 3000 RUN 2700
+RESULT furnace=58@490>pa=0+walk=2.5@50>pa=1: RUNS R 0.264 flash 0.869 coil 421.6 feed 373.7 C 112.56 kg/s cond 16.78 reb 10.95 MW bottom 397.3 C | cut 2:0.156
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 100.77s
+

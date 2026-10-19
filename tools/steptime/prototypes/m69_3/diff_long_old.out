@@ -1,0 +1,10 @@
+
+running 1 test
+test m67_3_grid::m67_3_grid ... == cold WARM 20 GAP 3000 RUN 10000
+RESULT file:50:413.9|steam=1+pa=0: FAIL at t=7440 (7419 after the last move; last sent steam=1+pa=0): {"code":"numerical","message":"numerical error: heat-balance cascade found no reflux at which every stage's vapour stands at the floor. The column could not settle at reflux ratio 4 with its pumparounds at 0.0 MW on stage 4, 0.0 MW on stage 6, 0.0 MW on stage 7 — outside the range it runs in."}
+RESULT file:65:456.5|steam=1+pa=0.25: FAIL at t=8416 (8395 after the last move; last sent steam=1+pa=0.25): {"code":"numerical","message":"numerical error: heat-balance cascade found no reflux at which every stage's vapour stands at the floor. The column could not settle at reflux ratio 4 with its pumparounds at 3.8 MW on stage 4, 3.8 MW on stage 6, 2.5 MW on stage 7 — outside the range it runs in. Started again from its pumparounds halved, up to 4 times (docs/DESIGN.md §70.1), it did not start either: at 0.0625 of them, heat-balance cascade could not start: numerical error: heat-balance cascade: the liquid leaving stage 7 is -1.7441e2 mol/s, which is negative. The side draws above it take more liqu
+RESULT file:52.5:421.1|steam=0.4+pa=0: FAIL at t=7581 (7560 after the last move; last sent steam=0.4+pa=0): {"code":"numerical","message":"numerical error: heat-balance cascade found no reflux at which every stage's vapour stands at the floor. The column could not settle at reflux ratio 4 with its pumparounds at 0.0 MW on stage 4, 0.0 MW on stage 6, 0.0 MW on stage 7 — outside the range it runs in."}
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 129.34s
+

@@ -1,0 +1,8 @@
+
+running 1 test
+test m67_3_grid::m67_3_grid ... == cold WARM 10 GAP 3000 RUN 2700
+RESULT furnace=58@490>pa=0+walk=2.5@50>pa=1: FAIL at t=1779 (1228 after the last move; last sent pa=1): {"code":"numerical","message":"numerical error: heat-balance cascade: a column holding its reboiler at 15.946 MW starts from the same column with its reboiler (docs/DESIGN.md §69.3), and the walk from its closure of 68.454 MW stopped at step 10 of 10, the reboiler at 15.946 MW: Newton did not converge in 50 iterations: the worst equation is the energy balance of stage 10, off by 6.759e-6 (scaled) against a tolerance of 8.905e-8. The column could not settle with its reboiler held at 15.946 MW and its pumparounds at 15.0 MW on stage 4, 15.0 MW on stage 6, 10.0 MW on stage 7 — outside the range i
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 63.41s
+

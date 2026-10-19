@@ -1,0 +1,9 @@
+
+running 1 test
+test m67_3_grid::m67_3_grid ... == stripped WARM 20 GAP 3000 RUN 15000
+RESULT furnace=40+free=1: RUNS R 4.000 flash 0.812 coil 384.3 feed 340.5 C 112.80 kg/s cond 58.15 reb 30.44 MW bottom 556.3 C | cut 
+RESULT furnace=50+free=1: RUNS R 4.000 flash 0.859 coil 413.9 feed 366.7 C 112.80 kg/s cond 58.15 reb 22.32 MW bottom 542.7 C | cut 
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 128.09s
+
