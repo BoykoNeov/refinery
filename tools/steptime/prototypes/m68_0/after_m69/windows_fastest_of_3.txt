@@ -1,14 +1,23 @@
 # fastest of three runs per tick (rep1-3), machine ~19-42 % busy with other work
+# a window starts on its command's tick (commands at 1001, 1301, 1901, 2201; cold: 10, 500, then the reboiler every 10 ticks)
 ## crude_unit_stripped
 settled                      ticks 2-1000: wall median   2.47 p90   2.69 max    7.32 ms, over 2.5 ms 477/999; column  7.1 %; solves/tick 1.01; evals/tick 12.9
-after_pumparound             ticks 1002-1301: wall median   2.44 p90   3.75 max   18.10 ms, over 2.5 ms 126/300; column  3.3 %; solves/tick 1.01; evals/tick 2.8
-after_furnace45_first60      ticks 1302-1361: wall median   7.69 p90  11.09 max   18.92 ms, over 2.5 ms 60/60; column  6.8 %; solves/tick 2.60; evals/tick 30.9
-after_furnace45              ticks 1302-1901: wall median   6.22 p90   7.97 max   18.92 ms, over 2.5 ms 600/600; column  7.5 %; solves/tick 2.07; evals/tick 27.8
-after_steam                  ticks 1902-2201: wall median   6.83 p90   7.96 max    9.43 ms, over 2.5 ms 300/300; column  7.7 %; solves/tick 2.01; evals/tick 27.5
-after_pa0+furnace58          ticks 2202-2800: wall median   6.44 p90   8.06 max   19.57 ms, over 2.5 ms 599/599; column  7.6 %; solves/tick 2.02; evals/tick 27.4
+after_pumparound             ticks 1001-1300: wall median   2.44 p90   3.75 max    4.29 ms, over 2.5 ms 126/300; column  3.2 %; solves/tick 1.00; evals/tick 2.7
+after_furnace45_first60      ticks 1301-1360: wall median   7.72 p90  11.19 max   18.92 ms, over 2.5 ms 60/60; column  7.0 %; solves/tick 2.63; evals/tick 32.2
+after_furnace45              ticks 1301-1900: wall median   6.22 p90   7.97 max   18.92 ms, over 2.5 ms 600/600; column  7.5 %; solves/tick 2.07; evals/tick 27.6
+after_steam                  ticks 1901-2200: wall median   6.83 p90   7.96 max   16.76 ms, over 2.5 ms 300/300; column  7.8 %; solves/tick 2.02; evals/tick 27.9
+after_pa0+furnace58          ticks 2201-2800: wall median   6.45 p90   8.08 max   19.57 ms, over 2.5 ms 600/600; column  7.6 %; solves/tick 2.02; evals/tick 27.6
+settled                2-1000: over 477/999; inside without the Jacobian 422; inside without the whole column 454
+after_pumparound       1001-1300: over 126/300; inside without the Jacobian 6; inside without the whole column 24
+after_furnace45_first60 1301-1360: over 60/60; inside without the Jacobian 0; inside without the whole column 0
+after_furnace45        1301-1900: over 600/600; inside without the Jacobian 0; inside without the whole column 0
+after_steam            1901-2200: over 300/300; inside without the Jacobian 0; inside without the whole column 0
+after_pa0+furnace58    2201-2800: over 600/600; inside without the Jacobian 0; inside without the whole column 0
 ## crude_unit_boiling
 held                         ticks 2-2000: wall median   2.34 p90   3.02 max    5.74 ms, over 2.5 ms 790/1999; column  7.0 %; solves/tick 1.00; evals/tick 5.6
+held                   2-2000: over 790/1999; inside without the Jacobian 56; inside without the whole column 170
 ## crude_unit_cold
-startup                      ticks 2-500: wall median   7.12 p90   8.76 max   13.44 ms, over 2.5 ms 499/499; column 11.7 %; solves/tick 2.01; evals/tick 50.0
-startup                      ticks 501-1500: wall median   6.02 p90   7.95 max   20.33 ms, over 2.5 ms 1000/1000; column  9.3 %; solves/tick 2.10; evals/tick 37.3
+startup                      ticks 2-499: wall median   7.12 p90   8.74 max   13.44 ms, over 2.5 ms 498/498; column 11.7 %; solves/tick 2.00; evals/tick 49.7
+startup                      ticks 500-1500: wall median   6.02 p90   7.95 max   20.33 ms, over 2.5 ms 1001/1001; column  9.4 %; solves/tick 2.10; evals/tick 37.5
 startup                      ticks 1501-2400: wall median   6.09 p90   7.59 max    8.66 ms, over 2.5 ms 900/900; column  7.8 %; solves/tick 2.00; evals/tick 27.0
+startup                2-2400: over 2399/2399; inside without the Jacobian 0; inside without the whole column 0

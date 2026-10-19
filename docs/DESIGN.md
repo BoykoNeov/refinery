@@ -28328,8 +28328,11 @@ three runs per tick.
 - **The column's repeat solves went with A29's.** Column solves a tick: the
   stripped plant 3.37 → 1.56, the cold start-up 4.78 → 2.04, the boiling plant
   2.00 → 1.00; evaluations 61.5 → 19.7, 107.2 → 36.1, 11.4 → 5.6.
-- **The column is still 4–12 % of every coil plant's tick**, so a cheaper
-  Jacobian would bring none of them inside the 2.5 ms budget.
+- **The column is still 4–12 % of every coil plant's tick.** Without the
+  Jacobian's time, no tick far past the 2.5 ms budget comes inside it (none
+  after a furnace step, none on the cold start-up); the settled stripped and
+  held boiling plants run at the line (medians 2.47 and 2.34 ms on a busy
+  machine), where it would tip some ticks, which this run cannot judge.
 - **The stripped plant after a furnace step, measured** (§74.7 had it
   estimated): a median 6.2 ms a tick over the minute after 20 → 45 MW, 7.7 ms
   over its first 60 ticks, every tick past the budget, about two solves a tick

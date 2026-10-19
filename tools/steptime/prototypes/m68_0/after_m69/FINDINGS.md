@@ -9,7 +9,9 @@ commit) in a temporary worktree; the column files it touches have not changed
 since its base, 58ffdc1. `cargo build --release` of `m68_0_count`, run over
 the nine column plants with `DUMP` (`count.txt`), then the stripped, boiling
 and cold plants three more times. `minof.py` keeps each tick's fastest run
-and `windows.py` summarises windows of the story (`windows_fastest_of_3.txt`).
+and `windows.py` summarises windows of the story, each starting on its
+command's tick, and `flip.py` counts the ticks over 2.5 ms that would come
+inside it without the Jacobian or the column (`windows_fastest_of_3.txt`).
 The machine was 19–42 % busy with other work, so the counts decide and the
 times are the fastest of three, upper bounds.
 
@@ -25,13 +27,22 @@ hot-fed and overheated columns'.
    wet and steamed 1.57 → 1.00. Evaluations a tick: stripped 61.5 → 19.7
    (median 105 → 27), cold 107.2 → 36.1, boiling 11.4 → 5.6, wet and steamed
    7.0 → 4.2. The worst ticks are unchanged (stripped 256, cold 231): those
-   are the ticks right after a command, where M69's predictor does not act.
+   are command ticks (the stripped plant's steam valve at tick 1901, the cold
+   start-up's first reboiler step-down that bites, tick 730), where M69's
+   predictor does not act.
 
 2. **The column is still not the cost on any furnace plant.** It is 4–12 % of
    their tick (`separate (all)`): 7 % on the stripped plant, 9 % on the cold
    start-up, 7 % on the boiling plant, 4 % on the wet and steamed ones. With
-   the column made free, every tick below that misses 2.5 ms would still miss
-   it.
+   the column made free, no tick far past 2.5 ms comes inside it: after a
+   furnace step and through the cold start-up, not one (`flip.py`, which
+   takes off the Jacobian's time, the part C11 would cut, and as an upper
+   bound the whole column's). The ticks AT the line are another matter: the
+   settled stripped plant runs a median 2.47 ms and the held boiling plant
+   2.34 ms, and of their ticks over 2.5 ms, 422 of 477 and 56 of 790 would
+   come inside without the Jacobian. On a machine this busy, and in a build
+   faster than the screen's, those ticks sit on the line; this run cannot
+   say which side of it they are on.
 
 3. **The stripped plant after a furnace step, measured** (M69 left it
    estimated at 8–9 ms). Fastest of three, per tick, in the probe's release
