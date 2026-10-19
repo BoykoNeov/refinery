@@ -28316,6 +28316,30 @@ instrument: re-run it after A29.
 
 No engine code changed; no corpus run.
 
+### 73.2 Re-run after M69 (2026-10-19)
+
+C11's instrument, re-run as its row asked once A29 was taken: M68.0's
+`probe_count.patch` unchanged on ed5fa07, every number in
+`tools/steptime/prototypes/m68_0/after_m69/FINDINGS.md`. The crude unit's
+counts match M68's to the digit (it did not move at M69), so the probe is the
+same probe. The machine was busy with other work; times are the fastest of
+three runs per tick.
+
+- **The column's repeat solves went with A29's.** Column solves a tick: the
+  stripped plant 3.37 → 1.56, the cold start-up 4.78 → 2.04, the boiling plant
+  2.00 → 1.00; evaluations 61.5 → 19.7, 107.2 → 36.1, 11.4 → 5.6.
+- **The column is still 4–12 % of every coil plant's tick**, so a cheaper
+  Jacobian would bring none of them inside the 2.5 ms budget.
+- **The stripped plant after a furnace step, measured** (§74.7 had it
+  estimated): a median 6.2 ms a tick over the minute after 20 → 45 MW, 7.7 ms
+  over its first 60 ticks, every tick past the budget, about two solves a tick
+  with the coil still drifting; the cold start-up 6–7 ms throughout.
+- **The crude unit's big key press is unchanged**: one tick of 758
+  evaluations, about 8 ms, the only place C11's trigger is met.
+
+C11 stays open, unchanged; A29's leftover is the larger cost. No engine code
+changed; no corpus run.
+
 ## 74. A coil plant's tick — the line flash remembered for a tick, and its re-solves predicted (M69) — specified before building
 
 Ledger row A29, asked for as "Stop C11, do A29" (2026-10-19, M68's decision):
