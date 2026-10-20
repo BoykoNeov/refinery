@@ -1,0 +1,713 @@
+diff --git a/crates/solvers/src/column_newton.rs b/crates/solvers/src/column_newton.rs
+index 6f7093c..6df9cf2 100644
+--- a/crates/solvers/src/column_newton.rs
++++ b/crates/solvers/src/column_newton.rs
+@@ -57,6 +57,8 @@ use crate::heat_balance::{
+     VAPOUR_FLOOR_OF_FEED,
+ };
+ use crate::molar::MoleFractions;
++use crate::probe::{self, Method};
++use std::time::Instant;
+ 
+ /// The most a stage temperature may move in one Newton step [K].
+ ///
+@@ -232,6 +234,18 @@ impl ColumnEquations<'_> {
+         u: &[f64],
+         specification: Specification,
+         wet: &[usize],
++    ) -> Result<Evaluation, SimError> {
++        let clock = Instant::now();
++        let result = self.evaluate_inner(u, specification, wet);
++        probe::count_eval(clock.elapsed().as_nanos() as u64);
++        result
++    }
++
++    fn evaluate_inner(
++        &self,
++        u: &[f64],
++        specification: Specification,
++        wet: &[usize],
+     ) -> Result<Evaluation, SimError> {
+         let plan = self.plan;
+         let slate = self.slate;
+@@ -561,6 +575,33 @@ impl ColumnEquations<'_> {
+         specification: Specification,
+         wet: &[usize],
+         max_iterations: u32,
++    ) -> Result<Solved, Unsolved> {
++        probe::with(|c| {
++            c.solves.push(probe::SolveRow {
++                spec: format!("{specification:?}"),
++                ..Default::default()
++            })
++        });
++        let clock = Instant::now();
++        let result = self.solve_inner(start, specification, wet, max_iterations);
++        let ns = clock.elapsed().as_nanos() as u64;
++        probe::with(|c| {
++            let row = c.solves.last_mut().unwrap();
++            row.ns = ns;
++            row.ok = result.is_ok();
++            if let Err(e) = &result {
++                row.reason = e.reason.chars().take(160).collect();
++            }
++        });
++        result
++    }
++
++    fn solve_inner(
++        &self,
++        start: &Start<'_>,
++        specification: Specification,
++        wet: &[usize],
++        max_iterations: u32,
+     ) -> Result<Solved, Unsolved> {
+         let n = self.plan.stages;
+         let mut u: Vec<f64> = start.temperatures.to_vec();
+@@ -583,12 +624,23 @@ impl ColumnEquations<'_> {
+         // The free water's sign is the wet set's to judge (§67.17 rule 6), so
+         // the fraction-to-the-boundary rule stops short of it.
+         let bounded = u.len() - wet.len();
+-        let mut current = self
++        probe::with(|c| c.solves.last_mut().unwrap().unknowns = u.len());
++        probe::set_kind(probe::EVAL_START);
++        let current = self
+             .evaluate(&u, specification, wet)
+             .map_err(|e| Unsolved {
+                 reason: format!("its starting point is outside the physical region ({e})"),
+                 flows: None,
+-            })?;
++            });
++        probe::set_kind(probe::EVAL_OTHER);
++        let mut current = current?;
++        let method = probe::method();
++        // The Jacobian the next step is taken on, and whether it is a forward
++        // difference at the current iterate.
++        let mut jacobian: Option<Vec<Vec<f64>>> = None;
++        let mut fresh = false;
++        let mut age = 0u32;
++        let mut refresh = false;
+         let norm = |r: &[f64]| r.iter().map(|x| x * x).sum::<f64>().sqrt();
+         let mut current_norm = norm(&current.residual);
+         let mut iterations = 0u32;
+@@ -615,10 +667,31 @@ impl ColumnEquations<'_> {
+                 });
+             }
+             iterations += 1;
++            probe::with(|c| c.solves.last_mut().unwrap().iterations += 1);
+ 
+-            let jacobian = self.jacobian(&u, &current.residual, specification, wet);
++            let need = match method {
++                Method::Fd => true,
++                Method::Broyden => jacobian.is_none() || refresh,
++                Method::Chord(k) => jacobian.is_none() || refresh || age >= k,
++            };
++            if need {
++                probe::set_kind(probe::EVAL_JACOBIAN);
++                jacobian = Some(self.jacobian(&u, &current.residual, specification, wet));
++                probe::set_kind(probe::EVAL_OTHER);
++                probe::with(|c| c.solves.last_mut().unwrap().fd_jacobians += 1);
++                fresh = true;
++                age = 0;
++                refresh = false;
++            }
+             let negative: Vec<f64> = current.residual.iter().map(|r| -r).collect();
+-            let Some(step) = solve_dense(jacobian, negative) else {
++            let step = solve_dense(jacobian.clone().unwrap(), negative);
++            if step.is_none() && !fresh {
++                refresh = true;
++                iterations -= 1;
++                probe::with(|c| c.solves.last_mut().unwrap().iterations -= 1);
++                continue;
++            }
++            let Some(step) = step else {
+                 return Err(Unsolved {
+                     reason: format!(
+                         "its Jacobian is singular at iteration {iterations}: {}",
+@@ -639,6 +712,8 @@ impl ColumnEquations<'_> {
+                 }
+             }
+             let mut accepted = None;
++            let mut halvings = 0u32;
++            probe::set_kind(probe::EVAL_SEARCH);
+             for _ in 0..=MAX_HALVINGS {
+                 let trial: Vec<f64> = u.iter().zip(&step).map(|(a, d)| a + scale * d).collect();
+                 if let Ok(evaluation) = self.evaluate(&trial, specification, wet) {
+@@ -651,7 +726,20 @@ impl ColumnEquations<'_> {
+                     }
+                 }
+                 scale *= 0.5;
++                halvings += 1;
++            }
++            probe::set_kind(probe::EVAL_OTHER);
++            if accepted.is_none() && !fresh {
++                // A reused Jacobian with no descent: refresh it here and try
++                // the iteration again — never a refusal today's Newton solves.
++                refresh = true;
++                iterations -= 1;
++                probe::with(|c| c.solves.last_mut().unwrap().iterations -= 1);
++                continue;
+             }
++            let max_dt = step[..n]
++                .iter()
++                .fold(0.0f64, |m, d| m.max((scale * d).abs()));
+             let Some((trial, evaluation, trial_norm)) = accepted else {
+                 return Err(Unsolved {
+                     reason: format!(
+@@ -661,6 +749,55 @@ impl ColumnEquations<'_> {
+                     flows: Some(Box::new(current.flows)),
+                 });
+             };
++            probe::with(|c| {
++                c.solves.last_mut().unwrap().steps.push(probe::Step {
++                    scale,
++                    halvings,
++                    max_dt,
++                    norm: trial_norm,
++                    fresh,
++                })
++            });
++            if method != Method::Fd {
++                if halvings > 0 || trial_norm > probe::refresh_ratio() * current_norm {
++                    refresh = true;
++                }
++                if method == Method::Broyden {
++                    // Broyden's "good" update (Broyden 1965; Dennis & Schnabel,
++                    // Numerical Methods for Unconstrained Optimization, 8.1),
++                    // in the unknowns scaled by their sizes:
++                    // J += (y - J s)(D^2 s)^T / (s^T D^2 s).
++                    let jac = jacobian.as_mut().unwrap();
++                    let s: Vec<f64> = trial.iter().zip(&u).map(|(a, b)| a - b).collect();
++                    let y: Vec<f64> = evaluation
++                        .residual
++                        .iter()
++                        .zip(&current.residual)
++                        .map(|(a, b)| a - b)
++                        .collect();
++                    let weight: Vec<f64> = u
++                        .iter()
++                        .enumerate()
++                        .map(|(i, v)| {
++                            let size = if i < n { 1.0 } else { v.abs().max(1.0e-3) };
++                            1.0 / (size * size)
++                        })
++                        .collect();
++                    let ds: Vec<f64> = s.iter().zip(&weight).map(|(a, w)| a * w).collect();
++                    let denominator: f64 = s.iter().zip(&ds).map(|(a, b)| a * b).sum();
++                    if denominator > 0.0 {
++                        for (row, y_row) in jac.iter_mut().zip(&y) {
++                            let js: f64 = row.iter().zip(&s).map(|(a, b)| a * b).sum();
++                            let factor = (y_row - js) / denominator;
++                            for (entry, d) in row.iter_mut().zip(&ds) {
++                                *entry += factor * d;
++                            }
++                        }
++                    }
++                }
++                fresh = false;
++                age += 1;
++            }
+             u = trial;
+             current = evaluation;
+             current_norm = trial_norm;
+@@ -749,6 +886,7 @@ impl ColumnEquations<'_> {
+             let (shifted, signed) = match self.evaluate(&probe, specification, wet) {
+                 Ok(e) => (Some(e.residual), step),
+                 Err(_) => {
++                    crate::probe::with(|c| c.solves.last_mut().unwrap().backward += 1);
+                     probe[column] = u[column] - step;
+                     (
+                         self.evaluate(&probe, specification, wet)
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 8d08bd8..495dce9 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -362,6 +362,7 @@ impl SeparationModel for HeatBalanceCascade {
+         pass: &ColumnPass<'_>,
+         thermo: &dyn ThermoModel,
+     ) -> Result<Separation, SimError> {
++        crate::probe::with(|c| c.separates += 1);
+         match self.hold_or_decline(pass, thermo) {
+             Ok(separation) => Ok(separation),
+             Err(refusal) => flooded_pass_through(pass, thermo, refusal),
+@@ -1098,7 +1099,10 @@ impl HeatBalanceCascade {
+             // A warm Newton that fails is retried cold, where the aids are.
+             match self.warm_newton(setup, &equations, previous)? {
+                 Ok(profile) => return Ok(profile),
+-                Err(unsolved) => warm_failure = Some(unsolved),
++                Err(unsolved) => {
++                    crate::probe::with(|c| c.warm_failures += 1);
++                    warm_failure = Some(unsolved)
++                }
+             }
+         }
+ 
+@@ -1156,6 +1160,7 @@ impl HeatBalanceCascade {
+         warm_failure: Option<&Unsolved>,
+     ) -> Result<Profile, SimError> {
+         let plan = &setup.plan;
++        crate::probe::with(|c| c.cold_paths += 1);
+         let refused = match self.cold_start(setup, equations, warm_failure) {
+             Ok(profile) => return Ok(profile),
+             Err(refused) => refused,
+@@ -1966,7 +1971,13 @@ impl HeatBalanceCascade {
+         // The reflux the start ran at: a warm start's own, where its profile
+         // carries it, else its top vapour over its distillate.
+         let ran = reflux_ratio.unwrap_or_else(|| vapour[0] / draw_rates[0] - 1.0);
+-        if ran > declared * (1.0 + 1.0e-6) {
++        let above = ran > declared * (1.0 + 1.0e-6);
++        let order = std::env::var("PROBE_ORDER").is_ok();
++        let at_floor = vapour[1..]
++            .iter()
++            .any(|v| *v <= floor * (1.0 + PROBE_AT_FLOOR));
++        let floor_first = above && (!order || at_floor);
++        if floor_first {
+             if let Ok(solved) = equations.solve(
+                 &start,
+                 Specification::Floor(lowest(vapour)),
+@@ -1980,6 +1991,41 @@ impl HeatBalanceCascade {
+         }
+         let declared_solve =
+             equations.solve(&start, Specification::Reflux, wet, self.max_iterations);
++        // Today's floor-first attempt, late: wherever the declared solve did
++        // not return a column standing above the floor, so every answer
++        // today's order returns, this one returns too.
++        let stands = matches!(&declared_solve,
++            Ok(solved) if solved.flows.vapour[1..].iter().all(|v| *v >= floor));
++        if above && !floor_first && stands && std::env::var("PROBE_DETECT").is_ok() {
++            // Would today's order have returned something else? Only where its
++            // floor-first attempt converges AND holds.
++            if let Ok(solved) = equations.solve(
++                &start,
++                Specification::Floor(lowest(vapour)),
++                wet,
++                self.max_iterations,
++            ) {
++                if holds(&solved) {
++                    eprintln!(
++                        "PROBE_DIVERGE ran {ran} declared {declared} floor reflux {}",
++                        solved.reflux_ratio
++                    );
++                }
++            }
++        }
++        if above && !floor_first && !stands {
++            crate::probe::with(|c| c.late_floor += 1);
++            if let Ok(solved) = equations.solve(
++                &start,
++                Specification::Floor(lowest(vapour)),
++                wet,
++                self.max_iterations,
++            ) {
++                if holds(&solved) {
++                    return Ok(profile(solved));
++                }
++            }
++        }
+         let mut binding = match &declared_solve {
+             Ok(solved) if solved.flows.vapour[1..].iter().all(|v| *v >= floor) => {
+                 return declared_solve.map(profile);
+@@ -2029,6 +2075,9 @@ impl HeatBalanceCascade {
+ /// AT saturation (one just dried) is not flipped back on its last bit.
+ const SATURATION_MARGIN: f64 = 1.0e-9;
+ 
++/// PROBE: a start whose lowest vapour is this close over the floor is at it.
++const PROBE_AT_FLOOR: f64 = 1.0e-6;
++
+ /// A start's side draws cut back top-down (M67.1, docs/DESIGN.md §72.1): each
+ /// in `cut`, and each that would leave less than the minimum liquid on a tray
+ /// between it and the next draw, set to what leaves exactly that — never more
+diff --git a/crates/solvers/src/lib.rs b/crates/solvers/src/lib.rs
+index 5c0200a..d054b22 100644
+--- a/crates/solvers/src/lib.rs
++++ b/crates/solvers/src/lib.rs
+@@ -39,6 +39,7 @@ pub mod hydrocracking;
+ pub mod line_flash;
+ pub mod molar;
+ pub mod network;
++pub mod probe;
+ pub mod newton_flow;
+ pub mod reactor;
+ pub mod separation;
+diff --git a/crates/solvers/src/probe.rs b/crates/solvers/src/probe.rs
+new file mode 100644
+index 0000000..028c506
+--- /dev/null
++++ b/crates/solvers/src/probe.rs
+@@ -0,0 +1,108 @@
++//! M72.5 probe counters (not for commit): each column solve on a tick, and the
++//! Jacobian candidate the solve runs on (`PROBE_JAC`).
++
++use std::cell::RefCell;
++use std::sync::OnceLock;
++
++pub const EVAL_START: usize = 0;
++pub const EVAL_JACOBIAN: usize = 1;
++pub const EVAL_SEARCH: usize = 2;
++pub const EVAL_OTHER: usize = 3;
++
++/// The Jacobian a Newton step is taken on.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub enum Method {
++    /// Today's: forward differences every iteration.
++    Fd,
++    /// Forward differences on iteration 1 and on a refresh; Broyden's rank-1
++    /// ("good") update in between, scaled by the unknowns' sizes.
++    Broyden,
++    /// One forward-difference Jacobian reused for up to `k` iterations.
++    Chord(u32),
++}
++
++/// `PROBE_JAC` = fd | broyden | chord<k>; `PROBE_RATIO` the residual drop past
++/// which a reused Jacobian is refreshed (default 0.5).
++pub fn method() -> Method {
++    static METHOD: OnceLock<Method> = OnceLock::new();
++    *METHOD.get_or_init(|| match std::env::var("PROBE_JAC").as_deref() {
++        Ok("broyden") => Method::Broyden,
++        Ok(s) if s.starts_with("chord") => Method::Chord(s[5..].parse().unwrap_or(3)),
++        _ => Method::Fd,
++    })
++}
++
++pub fn refresh_ratio() -> f64 {
++    static RATIO: OnceLock<f64> = OnceLock::new();
++    *RATIO.get_or_init(|| {
++        std::env::var("PROBE_RATIO")
++            .ok()
++            .and_then(|v| v.parse().ok())
++            .unwrap_or(0.5)
++    })
++}
++
++#[derive(Default, Clone, Debug)]
++pub struct Step {
++    pub scale: f64,
++    pub halvings: u32,
++    pub max_dt: f64,
++    pub norm: f64,
++    pub fresh: bool,
++}
++
++#[derive(Default, Clone, Debug)]
++pub struct SolveRow {
++    pub spec: String,
++    pub unknowns: usize,
++    pub ok: bool,
++    pub iterations: u32,
++    pub fd_jacobians: u32,
++    pub evals: [u64; 4],
++    pub backward: u64,
++    pub ns: u64,
++    pub steps: Vec<Step>,
++    pub reason: String,
++}
++
++#[derive(Default, Clone, Debug)]
++pub struct Counters {
++    pub separates: u64,
++    pub warm_failures: u64,
++    pub cold_paths: u64,
++    pub late_floor: u64,
++    pub evals: [u64; 4],
++    pub eval_ns: u64,
++    pub fixed_point_ns: u64,
++    pub solves: Vec<SolveRow>,
++}
++
++thread_local! {
++    static COUNTERS: RefCell<Counters> = RefCell::new(Counters::default());
++    static KIND: RefCell<usize> = const { RefCell::new(EVAL_OTHER) };
++}
++
++/// Every counter since the last take, and zeroed.
++pub fn take() -> Counters {
++    COUNTERS.with(|c| std::mem::take(&mut *c.borrow_mut()))
++}
++
++pub(crate) fn with<R>(f: impl FnOnce(&mut Counters) -> R) -> R {
++    COUNTERS.with(|c| f(&mut c.borrow_mut()))
++}
++
++pub(crate) fn set_kind(kind: usize) {
++    KIND.with(|k| *k.borrow_mut() = kind);
++}
++
++/// One evaluation of `ns`, charged to the open solve and the tick.
++pub(crate) fn count_eval(ns: u64) {
++    let kind = KIND.with(|k| *k.borrow());
++    with(|c| {
++        c.evals[kind] += 1;
++        c.eval_ns += ns;
++        if let Some(row) = c.solves.last_mut() {
++            row.evals[kind] += 1;
++        }
++    });
++}
+diff --git a/tools/steptime/Cargo.lock b/tools/steptime/Cargo.lock
+index 84325b0..2c8a191 100644
+--- a/tools/steptime/Cargo.lock
++++ b/tools/steptime/Cargo.lock
+@@ -839,6 +839,7 @@ version = "0.1.0"
+ dependencies = [
+  "refinery-core",
+  "refinery-scenarios",
++ "refinery-solvers",
+  "serde_json",
+ ]
+ 
+diff --git a/tools/steptime/Cargo.toml b/tools/steptime/Cargo.toml
+index a9e4092..32c816f 100644
+--- a/tools/steptime/Cargo.toml
++++ b/tools/steptime/Cargo.toml
+@@ -13,3 +13,4 @@ publish = false
+ serde_json = "1"
+ refinery-core = { path = "../../crates/core" }
+ refinery-scenarios = { path = "../../crates/scenarios" }
++refinery-solvers = { path = "../../crates/solvers" }
+diff --git a/tools/steptime/src/bin/m72_5_count.rs b/tools/steptime/src/bin/m72_5_count.rs
+new file mode 100644
+index 0000000..7812373
+--- /dev/null
++++ b/tools/steptime/src/bin/m72_5_count.rs
+@@ -0,0 +1,241 @@
++//! M72.5 probe (not for commit): the column's solves on the ticks after each
++//! key press, per Jacobian candidate (`PROBE_JAC` = fd | broyden | chord<k>).
++//!
++//! cargo run --release --bin m72_5_count -- <scenarios dir> <out dir> [plant ...]
++//!   prints each key press's first ticks solve by solve, and a summary;
++//!   writes <out dir>/<plant>.json — the snapshots after each key press and at
++//!   each beat's end — for `compare.py` to set one candidate against another.
++
++use refinery_core::snapshot::Command;
++use refinery_core::units::{Kelvin, KgPerSec, Watt};
++use refinery_core::Engine;
++use refinery_solvers::probe::{self, Counters};
++use std::time::Instant;
++
++#[derive(Clone, Copy)]
++enum Beat {
++    Run(u32),
++    Reflux(f64),
++    Furnace(f64),
++    LoopFlow(u32, f64),
++    LoopReturn(u32, f64),
++}
++
++fn build(path: &str) -> Engine {
++    let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
++    let file = refinery_scenarios::load_str(&src).expect("parse");
++    refinery_scenarios::build_engine(&file).expect("build")
++}
++
++fn label(beat: Beat) -> String {
++    match beat {
++        Beat::Run(n) => format!("run {n}"),
++        Beat::Reflux(r) => format!("reflux -> {r}"),
++        Beat::Furnace(mw) => format!("furnace -> {mw} MW"),
++        Beat::LoopFlow(l, f) => format!("loop {} flow -> {f} kg/s", l + 1),
++        Beat::LoopReturn(l, c) => format!("loop {} return -> {c} C", l + 1),
++    }
++}
++
++fn evals(c: &Counters) -> u64 {
++    c.evals.iter().sum()
++}
++
++fn main() {
++    let args: Vec<String> = std::env::args().collect();
++    let dir = args[1].clone();
++    let out = args[2].clone();
++    let only: Vec<String> = args[3..].to_vec();
++    let method = std::env::var("PROBE_JAC").unwrap_or_else(|_| "fd".into());
++    use Beat::*;
++    let common = vec![
++        Run(1000),
++        Reflux(2.0),
++        Run(300),
++        Reflux(4.0),
++        Run(300),
++        Furnace(35.0),
++        Run(300),
++        Furnace(20.0),
++        Run(300),
++        Reflux(6.0),
++        Run(300),
++        Reflux(4.0),
++        Run(300),
++    ];
++    let mut loops = common.clone();
++    loops.extend([
++        LoopFlow(0, 120.0),
++        Run(300),
++        LoopFlow(0, 85.0),
++        Run(300),
++        LoopReturn(1, 180.0),
++        Run(300),
++        LoopReturn(1, 215.0),
++        Run(300),
++        LoopFlow(2, 40.0),
++        Run(300),
++        LoopFlow(2, 65.0),
++        Run(300),
++    ]);
++    let plants: Vec<(&str, &Vec<Beat>)> =
++        vec![("crude_unit", &common), ("crude_unit_loops", &loops)];
++    for (name, beats) in plants {
++        if !only.is_empty() && !only.iter().any(|o| o == name) {
++            continue;
++        }
++        let mut engine = build(&format!("{dir}/{name}.toml"));
++        let column = engine.graph.find_node("column").expect("a column");
++        let furnace = engine.graph.find_node("furnace").expect("a furnace");
++        println!("== {name}  [{method}]");
++        probe::take();
++        let mut walls: Vec<f64> = Vec::new();
++        let mut all_evals = 0u64;
++        let mut keep: Vec<serde_json::Value> = Vec::new();
++        let mut since_press = u32::MAX;
++        let mut press = String::new();
++        let mut worst: Vec<(f64, String)> = Vec::new();
++        let mut most = (0u64, 0usize, String::new());
++        for beat in beats {
++            let command = match *beat {
++                Run(n) => {
++                    for _ in 0..n {
++                        let start = Instant::now();
++                        let result = engine.tick();
++                        let wall = start.elapsed().as_secs_f64() * 1e3;
++                        let c = probe::take();
++                        if let Err(e) = result {
++                            println!("  HALT after {press}: {e}");
++                            break;
++                        }
++                        walls.push(wall);
++                        all_evals += evals(&c);
++                        if walls.len() > 1 && evals(&c) > most.0 {
++                            most = (evals(&c), walls.len(), format!("{press} +{}", since_press.saturating_add(1)));
++                        }
++                        since_press = since_press.saturating_add(1);
++                        if walls.len() == 1 {
++                            println!(
++                                "  tick 1 (cold): {wall:.2} ms, {} evals, {} solves",
++                                evals(&c),
++                                c.solves.len()
++                            );
++                        }
++                        if since_press <= 3 {
++                            print_tick(since_press, wall, &c);
++                            if since_press == 1 {
++                                worst.push((wall, press.clone()));
++                                keep.push(serde_json::json!({
++                                    "at": format!("after {press}"),
++                                    "snapshot": serde_json::to_value(engine.snapshot()).unwrap(),
++                                }));
++                            }
++                        }
++                    }
++                    keep.push(serde_json::json!({
++                        "at": format!("end of {} ticks", walls.len()),
++                        "snapshot": serde_json::to_value(engine.snapshot()).unwrap(),
++                    }));
++                    continue;
++                }
++                Reflux(r) => Command::SetRefluxRatio {
++                    node: column,
++                    reflux_ratio: r,
++                },
++                Furnace(mw) => Command::SetFurnaceDuty {
++                    node: furnace,
++                    duty: Watt(mw * 1e6),
++                },
++                LoopFlow(l, f) => Command::SetLoopFlow {
++                    node: column,
++                    pumparound_loop: l,
++                    flow: KgPerSec(f),
++                },
++                LoopReturn(l, c) => Command::SetLoopReturnTemperature {
++                    node: column,
++                    pumparound_loop: l,
++                    temperature: Kelvin(c + 273.15),
++                },
++            };
++            press = label(*beat);
++            println!("  -- {press}");
++            engine.apply(command).expect("a command");
++            since_press = 0;
++        }
++        let mut sorted = walls[1..].to_vec();
++        sorted.sort_by(|a, b| a.total_cmp(b));
++        println!(
++            "  most evals after tick 1: {} at tick {} ({})
++  summary: {} ticks, evals {all_evals}, wall median {:.3} ms, p99 {:.3}, max {:.2}; key-press ticks: {}",
++            most.0,
++            most.1,
++            most.2,
++            walls.len(),
++            sorted[sorted.len() / 2],
++            sorted[sorted.len() * 99 / 100],
++            sorted[sorted.len() - 1],
++            worst
++                .iter()
++                .map(|(w, p)| format!("{p} {w:.1}"))
++                .collect::<Vec<_>>()
++                .join("; ")
++        );
++        std::fs::write(
++            format!("{out}/{name}.json"),
++            serde_json::to_string(&keep).unwrap(),
++        )
++        .unwrap();
++    }
++}
++
++fn print_tick(k: u32, wall: f64, c: &Counters) {
++    println!(
++        "    tick +{k}: {wall:.2} ms  separates {}  warm failures {}  cold paths {}  late floor {}  evals {} (start {}, jacobian {}, search {}, other {})  eval time {:.2} ms",
++        c.separates,
++        c.warm_failures,
++        c.cold_paths,
++        c.late_floor,
++        evals(c),
++        c.evals[0],
++        c.evals[1],
++        c.evals[2],
++        c.evals[3],
++        c.eval_ns as f64 / 1e6
++    );
++    for row in &c.solves {
++        let halvings: u32 = row.steps.iter().map(|s| s.halvings).sum();
++        let capped = row.steps.iter().filter(|s| s.max_dt >= 24.999).count();
++        let steps: Vec<String> = row
++            .steps
++            .iter()
++            .map(|s| {
++                format!(
++                    "{}{:.2}/{:.0}K/{:.1e}",
++                    if s.fresh { "" } else { "~" },
++                    s.scale,
++                    s.max_dt,
++                    s.norm
++                )
++            })
++            .collect();
++        println!(
++            "      {:9} n={} {} it {} fd {} evals {}+{}+{} back {} halvings {} at-25K {} {:.2} ms {}",
++            row.spec,
++            row.unknowns,
++            if row.ok { "ok " } else { "ERR" },
++            row.iterations,
++            row.fd_jacobians,
++            row.evals[0],
++            row.evals[1],
++            row.evals[2],
++            row.backward,
++            halvings,
++            capped,
++            row.ns as f64 / 1e6,
++            if row.ok { "" } else { &row.reason }
++        );
++        if row.iterations > 1 {
++            println!("        steps (scale/max dT/norm, ~ = reused): {}", steps.join(" "));
++        }
++    }
++}
