@@ -28839,6 +28839,22 @@ re-checked after (M71.2).
 **Measured**: the work as probed (§76.0), the corpus byte-identical to the
 probe's fallback variant on both fidelities.
 
+**The choice, measured where it acts** (2026-10-20, after a side note: the
+corpus presses no key, so "identical" there could not tell the two options
+apart — they differ only on the tick after a command). The shipped engine
+against a worktree of f0269c6 with the draws skipped on that tick, on the
+key-press stories: the stripped plant 58 → 45, 65, 75 MW, the boiling crude
+unit 58 → 65 MW, the cold start-up (191 commands, a reboiler step every 10
+ticks): **bit-identical** — every tick's re-solves, iterations and residual,
+and the final snapshots — and no guess dropped on either. The rule did skip the
+draws on exactly the tick after each command (checked). Why nothing moves: that
+tick re-solves (4 of them after a furnace step, 1–4 in the cold start-up), each
+pass reading what the last resolved, and the passes shrink a difference ~20
+times each, so what the first solve read is gone below the last bit. The
+options part only where the guess breaks the first solve outright — the wet
+slug's recovery — and there the shipped engine pays one failed attempt before
+the unguessed solve.
+
 **Moves** (the user's decision, 2026-10-20): the six coil crude units on each
 fidelity, iterations unchanged to the count, none fails; the rolling baseline
 refreshed. Held from their files 6e-10 to 2.5e-8; after a key press against
