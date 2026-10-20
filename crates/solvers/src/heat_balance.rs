@@ -1906,7 +1906,9 @@ impl HeatBalanceCascade {
     /// Newton under the vapour floor's active set (§66.3): the declared reflux
     /// first, and where that leaves a stage under the floor, the floor on the
     /// stage that binds with the reflux an unknown. A start that ran above its
-    /// declared reflux tries the floor first, on the stage it bound.
+    /// declared reflux with a stage at the floor tries the floor first, on the
+    /// stage it bound; one above it off the floor (the reflux lowered, M72.5,
+    /// §77.14) tries the declared reflux first and the floor after it.
     #[allow(clippy::too_many_arguments)]
     fn newton(
         &self,
@@ -1966,20 +1968,42 @@ impl HeatBalanceCascade {
         // The reflux the start ran at: a warm start's own, where its profile
         // carries it, else its top vapour over its distillate.
         let ran = reflux_ratio.unwrap_or_else(|| vapour[0] / draw_rates[0] - 1.0);
-        if ran > declared * (1.0 + 1.0e-6) {
-            if let Ok(solved) = equations.solve(
-                &start,
-                Specification::Floor(lowest(vapour)),
-                wet,
-                self.max_iterations,
-            ) {
-                if holds(&solved) {
-                    return Ok(profile(solved));
-                }
+        let above = ran > declared * (1.0 + 1.0e-6);
+        // Above the declared reflux AT the floor: the floor bound the start, so
+        // it is tried first (§66.3). Above it off the floor, the player lowered
+        // the reflux, and the floor solve has no answer to find (§77.14).
+        let at_floor = vapour[1..]
+            .iter()
+            .any(|v| *v <= floor * (1.0 + AT_FLOOR_MARGIN));
+        let floor_first = above && at_floor;
+        let floor_solve = || {
+            equations
+                .solve(
+                    &start,
+                    Specification::Floor(lowest(vapour)),
+                    wet,
+                    self.max_iterations,
+                )
+                .ok()
+                .filter(|solved| holds(solved))
+        };
+        if floor_first {
+            if let Some(solved) = floor_solve() {
+                return Ok(profile(solved));
             }
         }
         let declared_solve =
             equations.solve(&start, Specification::Reflux, wet, self.max_iterations);
+        // The floor-first attempt, late, wherever the declared solve did not
+        // return a column standing above the floor — so every answer the
+        // floor-first order returns, this order returns too.
+        let stands = matches!(&declared_solve,
+            Ok(solved) if solved.flows.vapour[1..].iter().all(|v| *v >= floor));
+        if above && !floor_first && !stands {
+            if let Some(solved) = floor_solve() {
+                return Ok(profile(solved));
+            }
+        }
         let mut binding = match &declared_solve {
             Ok(solved) if solved.flows.vapour[1..].iter().all(|v| *v >= floor) => {
                 return declared_solve.map(profile);
@@ -2028,6 +2052,14 @@ impl HeatBalanceCascade {
 /// this much over `K_w` [-] — a rounding margin, so a stage that a solve left
 /// AT saturation (one just dried) is not flipped back on its last bit.
 const SATURATION_MARGIN: f64 = 1.0e-9;
+
+/// A start's stage vapour within this share over the vapour floor counts as
+/// AT the floor [-] (M72.5, docs/DESIGN.md §77.14): a column Newton held at the
+/// floor carries the floor's own number on that stage to rounding (1e-16), so
+/// a millionth sees it, and no column standing freely above the floor sits
+/// that close to it. A cold start's floored answer sits 2e-6 over: its first
+/// warm tick takes the declared-first order, the same answer.
+const AT_FLOOR_MARGIN: f64 = 1.0e-6;
 
 /// A start's side draws cut back top-down (M67.1, docs/DESIGN.md §72.1): each
 /// in `cut`, and each that would leave less than the minimum liquid on a tray
@@ -4255,7 +4287,7 @@ mod newton_tests {
     use crate::{ConstantAlphaThermo, TroutonThermo};
     use refinery_core::components::{Phase, PseudoComponent};
     use refinery_core::graph::{ColumnDraw, NodeId, Pumparound, PumparoundLoop};
-    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, KgPerSec, P_ATM};
+    use refinery_core::units::{JPerKgK, JPerMol, KgPerM3, KgPerMol, KgPerSec, P_ATM};
 
     /// The largest relative gap between two separations: every draw's mass
     /// fractions (absolute), both duties and the reflux they ran at.
@@ -4552,6 +4584,16 @@ mod newton_tests {
             spec: &CascadeSpec,
             seed: Option<&CascadeProfile>,
         ) -> Result<Separation, SimError> {
+            self.separate_on(model, spec, seed, &TroutonThermo::new())
+        }
+
+        fn separate_on(
+            &self,
+            model: &HeatBalanceCascade,
+            spec: &CascadeSpec,
+            seed: Option<&CascadeProfile>,
+            thermo: &dyn ThermoModel,
+        ) -> Result<Separation, SimError> {
             model.separate(
                 &ColumnPass {
                     slate: &self.slate,
@@ -4567,7 +4609,7 @@ mod newton_tests {
                     earlier_pass: None,
                     steam: None,
                 },
-                &TroutonThermo::new(),
+                thermo,
             )
         }
     }
@@ -4845,6 +4887,209 @@ mod newton_tests {
         assert!(
             apart < 1e-6,
             "released at 1.1, the column differs by {apart}"
+        );
+    }
+
+    /// A thermo model's K-values, counted: a solve's cost in the residual's own
+    /// unit, which wall time cannot gate (it moves with the machine and the
+    /// profile).
+    struct Counting<M> {
+        inner: M,
+        k_values: std::cell::Cell<u64>,
+    }
+
+    impl<M: ThermoModel> Counting<M> {
+        fn new(inner: M) -> Self {
+            Self {
+                inner,
+                k_values: std::cell::Cell::new(0),
+            }
+        }
+
+        /// The K-values `run` evaluated.
+        fn count<T>(&self, run: impl FnOnce() -> T) -> (T, u64) {
+            let before = self.k_values.get();
+            let out = run();
+            (out, self.k_values.get() - before)
+        }
+    }
+
+    impl<M: ThermoModel> ThermoModel for Counting<M> {
+        fn name(&self) -> &'static str {
+            self.inner.name()
+        }
+
+        fn k_value(
+            &self,
+            slate: &Slate,
+            component: usize,
+            temperature: Kelvin,
+            pressure: Pascal,
+        ) -> Result<f64, SimError> {
+            self.k_values.set(self.k_values.get() + 1);
+            self.inner.k_value(slate, component, temperature, pressure)
+        }
+
+        fn dh_vap(
+            &self,
+            slate: &Slate,
+            component: usize,
+            temperature: Kelvin,
+        ) -> Result<JPerMol, SimError> {
+            self.inner.dh_vap(slate, component, temperature)
+        }
+
+        fn bubble_pressure(
+            &self,
+            slate: &Slate,
+            composition: &Composition,
+            temperature: Kelvin,
+        ) -> Result<Pascal, SimError> {
+            self.inner.bubble_pressure(slate, composition, temperature)
+        }
+    }
+
+    /// The K-values of two key presses on a column settled before each: the
+    /// reflux lowered 4 → 2, and raised 2 → 4.
+    fn lowered_and_raised(unit: &CrudeUnit, spec: &CascadeSpec) -> (u64, u64) {
+        let model = HeatBalanceCascade::new();
+        let thermo = Counting::new(TroutonThermo::new());
+        let at = |reflux_ratio: f64| CascadeSpec {
+            reflux_ratio,
+            ..spec.clone()
+        };
+        let settled = |reflux: f64| {
+            let spec = at(reflux);
+            let mut run = unit.separate_on(&model, &spec, None, &thermo).unwrap();
+            for _ in 0..3 {
+                run = unit
+                    .separate_on(&model, &spec, run.profile.as_ref(), &thermo)
+                    .unwrap();
+            }
+            run
+        };
+        let press = |from: f64, to: f64| {
+            let start = settled(from);
+            let (run, cost) = thermo.count(|| {
+                unit.separate_on(&model, &at(to), start.profile.as_ref(), &thermo)
+                    .unwrap()
+            });
+            assert_eq!(run.reflux_ratio, Some(to), "the floor does not bind");
+            cost
+        };
+        (press(4.0, 2.0), press(2.0, 4.0))
+    }
+
+    /// **A lowered reflux solves the declared reflux first** (M72.5, C11,
+    /// docs/DESIGN.md §77.14): warm from the column at 4, the start runs above
+    /// the declared 2 because the player lowered it, not because the floor
+    /// bound. The floor-first solve has no answer there; it ground to a
+    /// failure before the declared solve converged in 4 Newton steps, so the
+    /// reflux lowered 4 → 2 cost 4.3 times the K-values of the reflux raised
+    /// 2 → 4 on the ten-tray crude unit (90 450 against 21 048) and 9.3 times
+    /// on the 13-tray loop column (265 392 against 28 572; the probe's
+    /// `tools/steptime/prototypes/m72_5/FINDINGS.md`). Declared first, 1.07
+    /// and 1.01 times: the two key presses one cost.
+    #[test]
+    fn a_lowered_reflux_solves_the_declared_reflux_first() {
+        let unit = CrudeUnit::new();
+        let ten = CrudeUnit::spec(4.0, 1.0);
+        let (thirteen_unit, thirteen) = thirteen_trays();
+        for (label, unit, spec) in [
+            ("ten trays", &unit, &ten),
+            ("thirteen", &thirteen_unit, &thirteen),
+        ] {
+            let (lowered, raised) = lowered_and_raised(unit, spec);
+            assert!(
+                lowered <= 2 * raised,
+                "{label}: the reflux lowered 4 → 2 spent {lowered} K-values, raised 2 → 4 \
+                 {raised}"
+            );
+        }
+    }
+
+    /// **A reflux lowered onto the floor lands on it** (M72.5, §77.14): a feed
+    /// 60 K past its bubble point, running free of the floor at a reflux of 2,
+    /// lowered to 0.5 — the start above the declared reflux and off the floor,
+    /// so the declared reflux is solved first, leaves a stage under the floor,
+    /// and the floor is solved after it: the column the floor holds at a reflux
+    /// of 0.79, as from cold.
+    #[test]
+    fn a_reflux_lowered_onto_the_floor_lands_on_it() {
+        let slate = three_cut_slate();
+        let thermo = Counting::new(
+            ConstantAlphaThermo::with_temperature_exponent(
+                &slate,
+                vec![3.0, 1.0, 0.25],
+                Kelvin(400.0),
+                10.0,
+            )
+            .unwrap()
+            .with_dh_vap(&slate, vec![30_000.0, 36_000.0, 45_000.0])
+            .unwrap(),
+        );
+        let feed = Composition::from_weights(&[0.3, 0.3, 0.4]).unwrap();
+        let moles = MoleFractions::from_mass(&feed, &slate).unwrap();
+        let bubble =
+            bubble_temperature_unnormalized(&slate, &thermo, moles.fractions(), P_ATM, "feed")
+                .unwrap();
+        let draws = vec![
+            ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
+            ColumnDraw::by_stage(NodeId(2), 8, None),
+        ];
+        let at = |reflux_ratio: f64, seed: Option<&CascadeProfile>| {
+            let spec = CascadeSpec {
+                stages: 8,
+                feed_stage: 4,
+                reflux_ratio,
+                pumparounds: Vec::new(),
+                steam: None,
+                reboiler_duty: None,
+                loops: Vec::new(),
+            };
+            HeatBalanceCascade::new()
+                .separate(
+                    &ColumnPass {
+                        slate: &slate,
+                        draws: &draws,
+                        smearing: Kelvin(0.0),
+                        pressure: P_ATM,
+                        feed: &feed,
+                        feed_flow: KgPerSec(10.0),
+                        temperature: Kelvin(bubble.value() + 60.0),
+                        cascade: Some(&spec),
+                        seed,
+                        running_reboiler: None,
+                        earlier_pass: None,
+                        steam: None,
+                    },
+                    &thermo,
+                )
+                .unwrap()
+        };
+        let free = at(2.0, None);
+        assert_eq!(free.reflux_ratio, Some(2.0), "the floor does not bind at 2");
+        let lowered = at(0.5, free.profile.as_ref());
+        assert!(
+            lowered.reflux_ratio.unwrap() > 0.7,
+            "{:?}",
+            lowered.reflux_ratio
+        );
+        let cold = at(0.5, None);
+        let apart = gap(&lowered, &cold);
+        assert!(apart < 1e-6, "lowered and cold differ by {apart}");
+
+        // Held there, the next tick solves the floor first: a floored column's
+        // settled tick costs what a free one's does.
+        let free_settled = at(2.0, free.profile.as_ref());
+        let (_, free_tick) = thermo.count(|| at(2.0, free_settled.profile.as_ref()));
+        let (held, floored_tick) = thermo.count(|| at(0.5, lowered.profile.as_ref()));
+        let drift = gap(&held, &lowered);
+        assert!(drift < 1e-6, "held at the floor, the column moved {drift}");
+        assert!(
+            floored_tick <= 2 * free_tick,
+            "a settled tick held at the floor spent {floored_tick} K-values, a free one \
+             {free_tick}"
         );
     }
 }

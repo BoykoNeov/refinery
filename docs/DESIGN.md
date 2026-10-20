@@ -29302,9 +29302,9 @@ each return at its setpoint, no cooler at capacity; the products' liquid mole
 fractions at the draw trays 81.3 / 78.0 / 75.8 % (the ten-tray side-cooled
 crude unit's 72.4 / 67.9 / 66.6 %); the trays inside the loops carrying 1.45–2.1
 times the liquid of the tray above. **Cost** (release, two runs agreeing):
-a cold start — the first cold path refused, the retry started — 60 ms (tick
+a cold start — the first cold path refused, the retry started — 60 ms (20–25 ms since M72.5; tick
 1, and any tick whose warm start fails; the reflux 4 → 2 did not); a
-steady tick 0.87 ms; the tick after a reflux 4 → 2, 29–33 ms (M72.5's, C11),
+steady tick 0.87 ms; the tick after a reflux 4 → 2, 29–33 ms (C11; 2.3–2.7 ms since M72.5, §77.14),
 then 0.9 ms. On the retry the full start duty starts it from a half to 24
 times the declared, so the halvings are never reached on a start that
 succeeds.
@@ -29420,3 +29420,75 @@ start changes above.
 
 **What moved**: nothing — the corpus byte-identical, 68 plants on both flow
 solvers.
+
+### 77.14 The key-press hitch, built (M72.5, C11)
+
+**Probed first** (`tools/steptime/prototypes/m72_5/`, `FINDINGS.md`): the slow
+tick after a big key press was not the forward-difference Jacobian. Lowering
+the reflux leaves the warm start running above the declared reflux, and §66.3
+read that as "the floor bound the last tick" and solved the floor first. The
+start ran above it because the player lowered it; the floor solve has no
+answer there and ground to a failure (600 residual evaluations on the crude
+unit, 1 715 on the loop plant) before the declared solve converged in 3–4
+Newton steps. A cheaper Jacobian (Broyden's update between forward-difference
+ones) would have halved what is left, but it moves every heat-balance plant
+within the solve's tolerance, the corpus and the column screen's three tables
+(C19). **The user's decision** (2026-10-20): the order fix alone.
+
+**The order** (`HeatBalanceCascade::newton`): a start above its declared
+reflux tries the floor first only where one of its stages' vapour is AT the
+floor (within `AT_FLOOR_MARGIN`, a millionth) — what a floor-bound column's
+warm start looks like. Otherwise the declared reflux is solved first, and the
+floor-first attempt runs after it wherever the declared solve did not return
+a column standing above the floor (failed, or a stage under it). So every
+answer the old order returns, this one returns too, except where the floor
+solve converges and holds AND the declared solve returns a standing column:
+two answers at two refluxes, which a reflux that only raises the vapour does
+not have. The probe's detector for that case never fired on the full test
+suite, and the corpus is byte-identical.
+
+A cold start's floored answer sits 2e-6 over the floor on the stage it binds
+(Newton's own floor answer sits on it to 1e-16), so the first warm tick after a
+cold start that the floor holds takes the declared-first order: one extra
+solve, once, the same answer.
+
+**Cost** (residual evaluations as the probe counted them; walls the probe's,
+release, below-normal priority, the logic the same to the bit):
+
+| | before | after |
+|---|---|---|
+| crude unit, the tick after a reflux 4 → 2 | 700 evaluations, 5.6–12 ms | 97, 1.3–1.8 ms |
+| loop plant, the tick after a reflux 4 → 2 | 1 848, 23–35 ms | 133, 2.3–2.7 ms |
+| loop plant, cold tick 1 | 2 708, 50–72 ms | 904, 20–25 ms |
+
+Every key press on both plants is now at or under the 2.5 ms budget, the loop
+plant's reflux press at its edge. A steady tick is unchanged (one Newton
+step). Broyden stays open on C11.
+
+**Gates** (`heat_balance::newton_tests`, by K-values counted through the
+thermo model, the probe's unit made a gate as M9.3's was):
+`a_lowered_reflux_solves_the_declared_reflux_first` — the reflux lowered
+4 → 2 costs at most twice the reflux raised 2 → 4, on the ten-tray crude unit
+and the 13-tray loop column (before: 4.3 and 9.3 times; after: 1.07 and
+1.01). `a_reflux_lowered_onto_the_floor_lands_on_it` — a feed 60 K past its
+bubble point, free at a reflux of 2, lowered to 0.5: the declared solve
+leaves a stage under the floor, the floor solved after it holds the column at
+0.79, as from cold (1e-6); and held there, its settled tick costs what a free
+column's does (393 K-values each).
+
+**Mutations** (`--lib heat_balance::`, then the corpus on both solvers for
+the survivors): six. Caught: the old order (floor first wherever above); the
+late attempt even where the declared solve stands; "at the floor" read as
+EVERY stage at it (the floored column's settled tick then costs more). Three
+survived, the corpus byte-identical on both solvers with each, argued: the
+margin zero (Newton's floored start sits on the floor to rounding, at or
+under it); the floor first wherever at the floor, raised or not (a raised
+reflux's floor answer runs under the declared reflux and is refused — one
+wasted solve); and no late attempt — the active-set walk that follows tries
+the floor on the declared solve's lowest stage, the same solve wherever that
+is the start's lowest stage. It differs only where the declared solve fails
+outright and the floor holds, reached by no test or plant; kept because it is
+what makes the new order return every answer the old one did.
+
+**What moved**: nothing — the corpus byte-identical, 68 plants on both flow
+solvers; the full tier 1 231 tests, the column screen's table gates among them.

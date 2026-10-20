@@ -10810,10 +10810,32 @@ that retry is a loop column's only: on every column it started the cold crude
 unit where the column screen's table says it stops. DESIGN §77.12.
 
 - Settled as the probe found: duties 15.06 / 17.05 / 12.79 MW, products
-  81.3 / 78.0 / 75.8 % (ten trays: 72 / 68 / 67). A cold start 60 ms, steady
-  0.87 ms, the tick after a reflux 4 → 2 29–33 ms (M72.5's).
+  81.3 / 78.0 / 75.8 % (ten trays: 72 / 68 / 67). A cold start 60 ms
+  (20–25 since M72.5), steady 0.87 ms, the tick after a reflux 4 → 2
+  29–33 ms (2.3–2.7 since M72.5).
 - Gates: the first start refuses and the retry starts it; the hand-over ends
   on the column's own equations; tick 1 on both solvers; the plant as its
   file says; the books every tick on both. Mutations: twelve, six
   caught, six argued. Corpus 67 of 67 byte-identical on both fidelities, the
   new plant runs on both.
+
+### M72.5 — **LANDED** 2026-10-20: the key-press hitch (C11)
+
+Probed (`tools/steptime/prototypes/m72_5/`): the slow tick after the reflux
+is lowered was a failed floor solve tried first, not the Jacobian — the warm
+start ran above the declared reflux because the player lowered it, and
+§66.3 read that as the floor binding. The user's decision: the order fix
+alone, Broyden left open on C11 (it moves every column plant and the screen's
+tables). Now the floor is tried first only where a stage of the start sits at
+the floor; elsewhere the declared reflux first, and the floor after it
+wherever that does not stand. DESIGN §77.14.
+
+- The tick after a reflux 4 → 2: crude unit 700 → 97 evaluations (5.6–12 →
+  1.3–1.8 ms), loop plant 1 848 → 133 (23–35 → 2.3–2.7 ms); the loop plant's
+  cold start 50–72 → 20–25 ms. Every key press at or under the 2.5 ms budget.
+- Gates (`heat_balance::newton_tests`, K-values counted): a lowered reflux
+  costs at most twice a raised one on both columns (was 4.3 and 9.3 times);
+  a reflux lowered onto the floor lands on it, and its settled tick costs a
+  free one's. Mutations: six, three caught, three argued (the corpus
+  byte-identical with each). Corpus 68 of 68 byte-identical on both
+  fidelities.
