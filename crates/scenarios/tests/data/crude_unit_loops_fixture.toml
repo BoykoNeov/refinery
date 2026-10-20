@@ -1,0 +1,287 @@
+# M72.2 test fixture (docs/DESIGN.md §77.2): `crude_unit.toml` with its three
+# pumparounds as LOOPS on the map. Each draws its product tray's liquid (stages
+# 3, 5 and 7), falls 15 m to a pump, runs through a cooler the column drives,
+# and climbs back into the stage above. The probe's layout and flows (§77.0).
+# A test fixture, not a shipped plant: the shipped one is M72.4's, on 13 trays.
+
+[meta]
+name = "crude_unit_loops_fixture"
+description = "The crude unit with its three pumparounds as loops on the map: a pump and a cooler each, back into the stage above."
+
+[simulation]
+dt = 0.1
+
+[[components]]
+name = "light_naphtha"
+tb_c = 70.0
+molar_mass_kg_per_mol = 0.095
+density_kg_per_m3 = 680.0
+cp_j_per_kg_k = 2200.0
+
+[[components]]
+name = "heavy_naphtha"
+tb_c = 150.0
+molar_mass_kg_per_mol = 0.13
+density_kg_per_m3 = 750.0
+cp_j_per_kg_k = 2100.0
+
+[[components]]
+name = "kerosene"
+tb_c = 220.0
+molar_mass_kg_per_mol = 0.17
+density_kg_per_m3 = 800.0
+cp_j_per_kg_k = 2050.0
+
+[[components]]
+name = "diesel"
+tb_c = 300.0
+molar_mass_kg_per_mol = 0.22
+density_kg_per_m3 = 850.0
+cp_j_per_kg_k = 2000.0
+
+[[components]]
+name = "gas_oil"
+tb_c = 380.0
+molar_mass_kg_per_mol = 0.3
+density_kg_per_m3 = 900.0
+cp_j_per_kg_k = 1950.0
+
+[[components]]
+name = "residue"
+tb_c = 560.0
+molar_mass_kg_per_mol = 0.55
+density_kg_per_m3 = 980.0
+cp_j_per_kg_k = 1850.0
+
+[fidelity]
+flow = "newton"
+thermo = "trouton"
+separation = "heat_balance"
+reactions = "none"
+boiloff = "none"
+
+[nodes.crude_source]
+type = "source"
+pressure_bar = 30.0
+temperature_c = 270.0
+composition = { light_naphtha = 0.08, heavy_naphtha = 0.14, kerosene = 0.16, diesel = 0.20, gas_oil = 0.14, residue = 0.28 }
+
+[nodes.furnace]
+type = "furnace"
+duty_mw = 20.0
+coil_heat_capacity_mj_per_k = 45.0
+coil_ua_kw_per_k = 600
+coil_temperature_c = 359.5
+flame_temperature_c = 1951.1
+tube_failure_c = 550.0
+tube_rupture_area_cm2 = 1.0
+fluid_heating_value_mj_per_kg = 42.686
+
+[nodes.column]
+type = "column"
+pressure_bar = 1.8
+draws = [
+    { outlet = "naphtha_tank", stage = 0, draw_ratio = 0.22 },
+    { outlet = "kerosene_tank", stage = 3, draw_ratio = 0.16 },
+    { outlet = "diesel_tank", stage = 5, draw_ratio = 0.2 },
+    { outlet = "gas_oil_tank", stage = 7, draw_ratio = 0.14 },
+    { outlet = "residue_tank", stage = 10 },
+]
+
+[nodes.column.cascade]
+stages = 10
+feed_stage = 8
+reflux_ratio = 4.0
+loops = [
+    { draw_stage = 3, return_stage = 2, outlet = "kero_pa_pump", flow_kg_per_s = 85.0, return_temperature_c = 150.0, cooler_capacity_mw = 40.0, start_duty_mw = 15.0 },
+    { draw_stage = 5, return_stage = 4, outlet = "diesel_pa_pump", flow_kg_per_s = 95.0, return_temperature_c = 215.0, cooler_capacity_mw = 40.0, start_duty_mw = 15.0 },
+    { draw_stage = 7, return_stage = 6, outlet = "gas_oil_pa_pump", flow_kg_per_s = 65.0, return_temperature_c = 270.0, cooler_capacity_mw = 40.0, start_duty_mw = 10.0 },
+]
+
+[nodes.naphtha_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { light_naphtha = 1.0 }
+
+[nodes.kerosene_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { kerosene = 1.0 }
+
+[nodes.diesel_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { diesel = 1.0 }
+
+[nodes.gas_oil_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { gas_oil = 1.0 }
+
+[nodes.residue_tank]
+type = "tank"
+area_m2 = 30.0
+height_m = 30.0
+initial_level_m = 0.5
+temperature_c = 40.0
+composition = { residue = 1.0 }
+
+[nodes.kero_pa_pump]
+type = "pump"
+h0_m = 60.0
+a = 1000.0
+on = true
+
+[nodes.kero_pa_cooler]
+type = "cooler"
+duty_mw = 0.0
+
+[nodes.diesel_pa_pump]
+type = "pump"
+h0_m = 60.0
+a = 1000.0
+on = true
+
+[nodes.diesel_pa_cooler]
+type = "cooler"
+duty_mw = 0.0
+
+[nodes.gas_oil_pa_pump]
+type = "pump"
+h0_m = 60.0
+a = 1000.0
+on = true
+
+[nodes.gas_oil_pa_cooler]
+type = "cooler"
+duty_mw = 0.0
+
+[[pipes]]
+name = "crude_line"
+from = "crude_source"
+to = "furnace"
+length_m = 30.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "transfer_line"
+from = "furnace"
+to = "column"
+length_m = 15.0
+diameter_m = 0.08
+
+[[pipes]]
+name = "naphtha_draw"
+from = "column"
+to = "naphtha_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "kerosene_draw"
+from = "column"
+to = "kerosene_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "diesel_draw"
+from = "column"
+to = "diesel_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "gas_oil_draw"
+from = "column"
+to = "gas_oil_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "residue_draw"
+from = "column"
+to = "residue_tank"
+length_m = 20.0
+diameter_m = 0.15
+
+[[pipes]]
+name = "kero_pa_suction"
+from = "column"
+to = "kero_pa_pump"
+length_m = 20.0
+diameter_m = 0.3
+elevation_change_m = -15.0
+
+[[pipes]]
+name = "kero_pa_discharge"
+from = "kero_pa_pump"
+to = "kero_pa_cooler"
+length_m = 30.0
+diameter_m = 0.3
+
+[[pipes]]
+name = "kero_pa_return"
+from = "kero_pa_cooler"
+to = "column"
+length_m = 30.0
+diameter_m = 0.3
+elevation_change_m = 15.6
+
+[[pipes]]
+name = "diesel_pa_suction"
+from = "column"
+to = "diesel_pa_pump"
+length_m = 20.0
+diameter_m = 0.3
+elevation_change_m = -15.0
+
+[[pipes]]
+name = "diesel_pa_discharge"
+from = "diesel_pa_pump"
+to = "diesel_pa_cooler"
+length_m = 30.0
+diameter_m = 0.3
+
+[[pipes]]
+name = "diesel_pa_return"
+from = "diesel_pa_cooler"
+to = "column"
+length_m = 30.0
+diameter_m = 0.3
+elevation_change_m = 15.6
+
+[[pipes]]
+name = "gas_oil_pa_suction"
+from = "column"
+to = "gas_oil_pa_pump"
+length_m = 20.0
+diameter_m = 0.3
+elevation_change_m = -15.0
+
+[[pipes]]
+name = "gas_oil_pa_discharge"
+from = "gas_oil_pa_pump"
+to = "gas_oil_pa_cooler"
+length_m = 30.0
+diameter_m = 0.3
+
+[[pipes]]
+name = "gas_oil_pa_return"
+from = "gas_oil_pa_cooler"
+to = "column"
+length_m = 30.0
+diameter_m = 0.3
+elevation_change_m = 15.6

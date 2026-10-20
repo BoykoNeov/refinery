@@ -791,7 +791,7 @@ pub struct Separation {
 }
 
 /// How one pumparound loop ran this pass (M72.1, docs/DESIGN.md §77.1).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LoopRun {
     /// The circulation it ran at [kg/s].
     pub flow: KgPerSec,
@@ -802,6 +802,12 @@ pub struct LoopRun {
     pub duty: Watt,
     /// The cooler ran at its capacity, the return warmer than its setpoint.
     pub at_capacity: bool,
+    /// What the loop draws (M72.2, docs/DESIGN.md §77.2): its draw stage's
+    /// liquid, as mass fractions, at that stage's temperature [K] — the state
+    /// its line's first pipe carries, as a draw's `DrawSeparation` is its
+    /// line's.
+    pub drawn: Composition,
+    pub drawn_temperature: Kelvin,
 }
 
 /// A side draw a column cut back this pass (M67.1, docs/DESIGN.md §72.1).

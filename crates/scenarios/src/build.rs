@@ -197,6 +197,10 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // docs/DESIGN.md §67.18) — before the topology is validated, which counts
     // it as the column's second inlet.
     resolve_steam_inlets(&mut graph, scenario)?;
+    // Step 2a'''': each pumparound loop's line, back into its column (M72.2,
+    // docs/DESIGN.md §77.2) — before the topology is validated, which counts
+    // a loop's two pipes at its column.
+    resolve_loop_lines(&mut graph, scenario)?;
 
     // Step 2b: thermally pair the exchanger sides, after every node exists so
     // both ends of a coupling can be resolved regardless of file order.
@@ -267,6 +271,22 @@ pub fn build_engine(scenario: &ScenarioFile) -> Result<Engine, SimError> {
     // column draw. It runs after `plant_phases` because a loop's seeded
     // measurement is a real read of the finished plant, not a placeholder.
     build_controls(&mut graph, &slate, &scenario.controls, &scenario.pipes)?;
+    // A loop's cooler is its column's to drive (M72.2, docs/DESIGN.md §77.2).
+    for control in graph.controls() {
+        if let Some(node) = control.actuator.node() {
+            if let Some((column, _)) = graph.loop_cooler(node) {
+                return Err(SimError::Scenario(format!(
+                    "control loop '{}' drives cooler '{}', the pumparound loop cooler of \
+                     column '{}': its duty is the column's, set each tick to bring the loop \
+                     to its return temperature (docs/DESIGN.md §77.2). Set the return \
+                     temperature instead",
+                    control.name,
+                    graph.node(node).name,
+                    graph.node(column).name
+                )));
+            }
+        }
+    }
 
     // Step 3c: the trips (M22), after every node exists, for the same reason.
     build_trips(&mut graph, &slate, &scenario.trips, &scenario.pipes)?;
@@ -4652,6 +4672,14 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
             (true, Some(def)) => {
                 // Pumparounds are heat on the stage balances, which only the
                 // heat-balance cascade solves; `StageCascade` would read nothing.
+                if !def.loops.is_empty() && scenario.fidelity.separation != "heat_balance" {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' declares pumparound loops, but [fidelity] separation \
+                         is \"{}\": a loop's liquid joins the stage balances only \
+                         separation = \"heat_balance\" solves (docs/DESIGN.md §77.1).",
+                        scenario.fidelity.separation
+                    )));
+                }
                 if !def.pumparounds.is_empty() && scenario.fidelity.separation != "heat_balance" {
                     return Err(SimError::Scenario(format!(
                         "column '{name}' declares pumparounds, but [fidelity] separation is \
@@ -4677,7 +4705,22 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                     // (`resolve_steam_inlets`).
                     steam: None,
                     reboiler_duty: def.reboiler_duty_mw.map(|mw| Watt(mw * 1.0e6)),
-                    loops: Vec::new(),
+                    // Each loop's line resolved once the pipes exist
+                    // (`resolve_loop_lines`, M72.2).
+                    loops: def
+                        .loops
+                        .iter()
+                        .map(|l| refinery_core::graph::PumparoundLoop {
+                            draw_stage: l.draw_stage,
+                            return_stage: l.return_stage,
+                            flow: KgPerSec(l.flow_kg_per_s),
+                            return_temperature: c_to_k(l.return_temperature_c),
+                            cooler_capacity: Watt(l.cooler_capacity_mw * 1.0e6),
+                            start_duty: Watt(l.start_duty_mw * 1.0e6),
+                            line: Vec::new(),
+                            cooler: None,
+                        })
+                        .collect(),
                 };
                 // One source of truth for the cascade's structural rules: the model
                 // that has to satisfy them. Duplicating them here would be two
@@ -4746,6 +4789,156 @@ fn resolve_steam_inlets(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                 stage: steam.stage,
                 edge,
             });
+        }
+    }
+    Ok(())
+}
+
+/// Resolve each pumparound loop into its LINE — the pipes from its column
+/// through pumps and one cooler back into the column (M72.2, docs/DESIGN.md
+/// §77.2) — and refuse, by name, a line that is not one. Run before the
+/// topology is validated, so the walk checks each node's pipes itself: one
+/// declared from it, onward. Refused: a line through any other kind (a
+/// junction, a valve, a leak path's split, a cooling-water cooler — its duty a
+/// result the column cannot hold to a return temperature); a second cooler or
+/// none; a line pump declaring `npsh_required_m`, as on a draw line; a line
+/// that ends anywhere but its own column.
+fn resolve_loop_lines(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Result<(), SimError> {
+    for (name, def) in &scenario.nodes {
+        let NodeDef::Column {
+            cascade: Some(cascade),
+            ..
+        } = def
+        else {
+            continue;
+        };
+        if cascade.loops.is_empty() {
+            continue;
+        }
+        let column = graph.find_node(name).ok_or_else(|| {
+            SimError::Scenario(format!("internal: column '{name}' was not built"))
+        })?;
+        for (index, declared) in cascade.loops.iter().enumerate() {
+            let outlet = graph.find_node(&declared.outlet).ok_or_else(|| {
+                SimError::Scenario(format!(
+                    "column '{name}' pumparound loop references unknown outlet node '{}'",
+                    declared.outlet
+                ))
+            })?;
+            let first = graph
+                .incident(column)
+                .into_iter()
+                .find(|&(_, other, incoming)| !incoming && other == outlet)
+                .map(|(edge, _, _)| edge)
+                .ok_or_else(|| {
+                    SimError::Scenario(format!(
+                        "column '{name}' pumparound loop to '{}' has no pipe from the column",
+                        declared.outlet
+                    ))
+                })?;
+            let mut line = vec![first];
+            let mut cooler = None;
+            let mut at = outlet;
+            loop {
+                let here = &graph.node(at).name;
+                match &graph.node(at).kind {
+                    NodeKind::Pump { suction, .. } => {
+                        if suction.is_some() {
+                            return Err(SimError::Scenario(format!(
+                                "pump '{here}' is on a pumparound loop of column '{name}' and \
+                                 declares npsh_required_m: a line pump is pinned at its line's \
+                                 pressure, and M50's suction model reads the flow solve's state \
+                                 of its inlet (docs/DESIGN.md §67.13, §77.2). Remove the key"
+                            )));
+                        }
+                    }
+                    NodeKind::Cooler { .. } => {
+                        if cooler.is_some() {
+                            return Err(SimError::Scenario(format!(
+                                "the pumparound loop of column '{name}' through '{}' has a \
+                                 second cooler, '{here}': the column drives one cooler to its \
+                                 loop's return temperature (docs/DESIGN.md §77.2)",
+                                declared.outlet
+                            )));
+                        }
+                        cooler = Some(at);
+                    }
+                    NodeKind::WaterCooler { .. } => {
+                        return Err(SimError::Scenario(format!(
+                            "the pumparound loop of column '{name}' runs through '{here}', a \
+                             cooling-water cooler: its duty is a result of its water, so the \
+                             loop's return temperature would lag the column's own; a loop's \
+                             cooler is a `cooler` the column drives (docs/DESIGN.md §77.2)"
+                        )));
+                    }
+                    NodeKind::Junction if here.ends_with("__leak_point") => {
+                        return Err(SimError::Scenario(format!(
+                            "a pipe on the pumparound loop of column '{name}' declares a leak \
+                             path: a loop's flow is prescribed, and a hole in it would be a \
+                             pressure-driven flow off it (docs/DESIGN.md §3b, §77.2)"
+                        )));
+                    }
+                    other => {
+                        return Err(SimError::Scenario(format!(
+                            "the pumparound loop of column '{name}' runs through '{here}' \
+                             ({other:?}): a loop's line holds only pumps and one cooler between \
+                             the column and its return (docs/DESIGN.md §77.2)"
+                        )));
+                    }
+                }
+                let mut out = graph
+                    .incident(at)
+                    .into_iter()
+                    .filter(|&(_, _, incoming)| !incoming);
+                let (edge, next) = match (out.next(), out.next()) {
+                    (Some((edge, next, _)), None) => (edge, next),
+                    _ => {
+                        return Err(SimError::Scenario(format!(
+                            "the pumparound loop of column '{name}' does not leave '{here}' by \
+                             exactly one pipe declared from it: a loop's pipes run from the \
+                             column back to it, each declared from upstream (docs/DESIGN.md \
+                             §77.2)"
+                        )))
+                    }
+                };
+                line.push(edge);
+                if next == column {
+                    break;
+                }
+                if matches!(
+                    graph.node(next).kind,
+                    NodeKind::Column { .. }
+                        | NodeKind::Tank(_)
+                        | NodeKind::Sink { .. }
+                        | NodeKind::Atmosphere
+                        | NodeKind::Source { .. }
+                ) || line.len() > graph.edge_ids().count()
+                {
+                    return Err(SimError::Scenario(format!(
+                        "the pumparound loop of column '{name}' through '{}' ends at '{}' \
+                         instead of coming back into its column (docs/DESIGN.md §77.2)",
+                        declared.outlet,
+                        graph.node(next).name
+                    )));
+                }
+                at = next;
+            }
+            let Some(cooler) = cooler else {
+                return Err(SimError::Scenario(format!(
+                    "the pumparound loop of column '{name}' through '{}' has no cooler: a loop \
+                     returns at its cooler's temperature, and its line needs one `cooler` \
+                     (docs/DESIGN.md §77.2)",
+                    declared.outlet
+                )));
+            };
+            if let NodeKind::Column {
+                cascade: Some(spec),
+                ..
+            } = &mut graph.node_mut(column).kind
+            {
+                spec.loops[index].line = line;
+                spec.loops[index].cooler = Some(cooler);
+            }
         }
     }
     Ok(())

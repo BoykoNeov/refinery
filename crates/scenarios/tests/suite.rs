@@ -151,6 +151,8 @@ mod pump_gas_lock_reference;
 mod pump_stop_reference;
 #[path = "pump_two_phase_reference.rs"]
 mod pump_two_phase_reference;
+#[path = "pumparound_loop_reference.rs"]
+mod pumparound_loop_reference;
 #[path = "quench_reference.rs"]
 mod quench_reference;
 #[path = "reactor_reference.rs"]

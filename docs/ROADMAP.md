@@ -10756,3 +10756,22 @@ capacity flag, and each stage's liquid. DESIGN §77.10.
   stages' balances by hand, the closure, Newton against the fixed point, the
   capacity, a loop at zero flow, the refusals. Mutations: seventeen, sixteen
   caught, one argued. Corpus byte-identical on both fidelities.
+
+### M72.2 — **LANDED** 2026-10-20: the loop on the map
+
+Each loop a line on the plant map — the column's pipe out to a pump, a cooler
+the column drives, a pipe back into the stage above — declared on the cascade
+block (`loops = [...]`) and walked by the loader, refused by name where it is
+not one. Every pipe of the line carries the loop's flow; the line's pressures
+are marched from the column; the cooler takes the duty the column computed
+that tick, so the loop returns at exactly the temperature the column's
+balances took. Two commands: the loop's flow and its return temperature; the
+cooler's duty refused by hand. A line that falls short still halts here, as a
+draw line does — moved to M72.3 with the stopped pump. DESIGN §77.11.
+
+- Gates (`pumparound_loop_reference`, on a test fixture: the crude unit with
+  its pumparounds as loops): the line's flows to the bit, the return at its
+  setpoint, the duties the probe's within 0.1 %; the books every tick on both
+  solvers; the line's pressures by hand; the commands and refusals.
+  Mutations: sixteen, fourteen caught, two argued. Corpus byte-identical on
+  both fidelities.

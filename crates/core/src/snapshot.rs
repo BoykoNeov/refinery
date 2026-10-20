@@ -233,6 +233,26 @@ pub enum Command {
         pumparound: u32,
         duty: Watt,
     },
+    /// A pumparound loop's circulation [kg/s] (M72.2, docs/DESIGN.md §77.3):
+    /// finite and >= 0, zero a loop that is not running. `pumparound_loop`
+    /// indexes the column's `loops` in the order the file lists them. Its
+    /// consequence is the loop's flow on `ColumnOperation::loops` and on every
+    /// pipe of its line. Refused on a node that is not a column with loops, and
+    /// for a loop it does not have.
+    SetLoopFlow {
+        node: NodeId,
+        pumparound_loop: u32,
+        flow: KgPerSec,
+    },
+    /// The temperature a pumparound loop's cooler returns it at [K] (M72.2,
+    /// docs/DESIGN.md §77.3): finite and above absolute zero. Its consequence
+    /// is the loop's return temperature and duty on `ColumnOperation::loops`
+    /// — the return warmer than asked where the cooler is at its capacity.
+    SetLoopReturnTemperature {
+        node: NodeId,
+        pumparound_loop: u32,
+        temperature: Kelvin,
+    },
     /// Hold a heat-balance cascade column's reboiler at `duty` [W], or free it
     /// with `None` (M66, docs/DESIGN.md §71.1) — the file's `reboiler_duty_mw`,
     /// from the next tick on. Held, the bottom stage's energy balance is an

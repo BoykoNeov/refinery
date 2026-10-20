@@ -900,7 +900,7 @@ pub struct CascadeSpec {
 /// returned to `return_stage`, one stage up. Its duty is a RESULT — the heat
 /// the cooling takes out of the circulating liquid — and the trays between the
 /// two stages carry the circulation on top of their own liquid.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PumparoundLoop {
     /// The stage it draws from, one-based from the top, strictly between the
     /// top stage and the reboiler.
@@ -918,6 +918,18 @@ pub struct PumparoundLoop {
     /// The duty a cold start brings the cooler in at [W], ≥ 0, before the
     /// held return temperature takes over (§77.5) — a game value.
     pub start_duty: Watt,
+    /// The loop's LINE on the map (M72.2, docs/DESIGN.md §77.2): its pipes in
+    /// order from the column, through its pumps and its one cooler, the last
+    /// pipe back INTO the column — every one carrying the loop's flow,
+    /// prescribed, as a draw line's carry its draw. Written by the loader;
+    /// empty on a loop built by hand without one, and then not serialized.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub line: Vec<EdgeId>,
+    /// The cooler on the line, whose duty the column writes each tick — the
+    /// heat that brings the loop to its return temperature. `None` exactly
+    /// when `line` is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cooler: Option<NodeId>,
 }
 
 /// A steam inlet on a cascade column (M62.6, docs/DESIGN.md §67.18): the pipe
@@ -2893,7 +2905,8 @@ impl PlantGraph {
             && coil_of(from) == coil_of(to)
     }
 
-    /// Whether `edge` is a pipe of a draw LINE (M62.4b, docs/DESIGN.md §67.13).
+    /// Whether `edge` is a pipe of a draw LINE (M62.4b, docs/DESIGN.md §67.13)
+    /// or of a pumparound loop's (M72.2, §77.2): prescribed, either way.
     /// Asked of every edge on every pass of a flow solve, so it answers from
     /// the edge's own ends first: a line pipe leaves a column, a pump or a
     /// cooler, and every other pipe is refused before any walk.
@@ -2909,8 +2922,89 @@ impl PlantGraph {
             return false;
         }
         self.node_ids().any(|id| match &self.node(id).kind {
-            NodeKind::Column { draws, .. } => draws.iter().any(|d| d.line.contains(&edge)),
+            NodeKind::Column { draws, cascade, .. } => {
+                draws.iter().any(|d| d.line.contains(&edge))
+                    || cascade
+                        .as_ref()
+                        .is_some_and(|spec| spec.loops.iter().any(|l| l.line.contains(&edge)))
+            }
             _ => false,
+        })
+    }
+
+    /// Every pumparound loop's LINE (M72.2, docs/DESIGN.md §77.2): the column,
+    /// the loop's index on it, and the line's pipes in order from the column,
+    /// the last back into it. Ascending by column, then by loop; empty on
+    /// every plant without one.
+    pub fn loop_lines(&self) -> Vec<(NodeId, usize, &[EdgeId])> {
+        let mut lines = Vec::new();
+        for id in self.node_ids() {
+            if let NodeKind::Column {
+                cascade: Some(spec),
+                ..
+            } = &self.node(id).kind
+            {
+                for (index, pumparound) in spec.loops.iter().enumerate() {
+                    if !pumparound.line.is_empty() {
+                        lines.push((id, index, pumparound.line.as_slice()));
+                    }
+                }
+            }
+        }
+        lines
+    }
+
+    /// The column and loop whose line `edge` brings back INTO its column — a
+    /// loop's last pipe (M72.2, docs/DESIGN.md §77.2): the column reads it on
+    /// its own, never as feed, and does not wait on it.
+    pub fn loop_return(&self, edge: EdgeId) -> Option<(NodeId, usize)> {
+        let (_, to) = self.endpoints(edge);
+        let NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } = &self.node(to).kind
+        else {
+            return None;
+        };
+        spec.loops
+            .iter()
+            .position(|l| l.line.last() == Some(&edge))
+            .map(|index| (to, index))
+    }
+
+    /// The column and loop whose line `edge` leaves the column by — a loop's
+    /// first pipe, carrying the draw stage's liquid (M72.2).
+    pub fn loop_draw(&self, edge: EdgeId) -> Option<(NodeId, usize)> {
+        let (from, _) = self.endpoints(edge);
+        let NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } = &self.node(from).kind
+        else {
+            return None;
+        };
+        spec.loops
+            .iter()
+            .position(|l| l.line.first() == Some(&edge))
+            .map(|index| (from, index))
+    }
+
+    /// The column and loop whose cooler `node` is (M72.2): its duty is the
+    /// column's to write.
+    pub fn loop_cooler(&self, node: NodeId) -> Option<(NodeId, usize)> {
+        if !matches!(self.node(node).kind, NodeKind::Cooler { .. }) {
+            return None;
+        }
+        self.node_ids().find_map(|id| match &self.node(id).kind {
+            NodeKind::Column {
+                cascade: Some(spec),
+                ..
+            } => spec
+                .loops
+                .iter()
+                .position(|l| l.cooler == Some(node))
+                .map(|index| (id, index)),
+            _ => None,
         })
     }
 

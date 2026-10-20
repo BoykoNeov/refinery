@@ -657,10 +657,17 @@ pub fn validate_degrees(graph: &PlantGraph) -> Result<(), SimError> {
             // One feed, one outlet per draw. The feed is stored INTO the column
             // and each draw OUT of it (the loader enforces the direction), so the
             // graph-direction in/out counts are exactly (1, N).
-            NodeKind::Column { draws, cascade, .. } => Some((
-                1 + usize::from(cascade.as_ref().is_some_and(|spec| spec.steam.is_some())),
-                draws.len(),
-            )),
+            // A pumparound loop adds a pipe out and one back (M72.2).
+            NodeKind::Column { draws, cascade, .. } => {
+                let loops = cascade
+                    .as_ref()
+                    .map_or(0, |spec| spec.loops.iter().filter(|l| !l.line.is_empty()).count());
+                Some((
+                    1 + usize::from(cascade.as_ref().is_some_and(|spec| spec.steam.is_some()))
+                        + loops,
+                    draws.len() + loops,
+                ))
+            }
             _ => None,
         };
         if let Some((want_in, want_out)) = expected {
@@ -1766,6 +1773,21 @@ fn drawn_state<'a>(
     previous_states: &'a NodeStates,
     edge: EdgeId,
 ) -> Option<(&'a Composition, Kelvin)> {
+    // A pumparound loop's first pipe draws its stage's liquid (M72.2,
+    // docs/DESIGN.md §77.2), from the previous separation as a draw's.
+    if let Some((column, index)) = graph.loop_draw(edge) {
+        let pipe = graph.pipe(edge);
+        return Some(
+            match previous_states
+                .column_separation
+                .get(&column)
+                .and_then(|separation| separation.loops.get(index))
+            {
+                Some(run) => (&run.drawn, run.drawn_temperature),
+                None => (&pipe.stream.composition, pipe.stream.temperature),
+            },
+        );
+    }
     let (column, index, _) = graph
         .draw_lines()
         .into_iter()
@@ -4582,7 +4604,11 @@ pub fn march_draw_lines(
     flash: LineFlash<'_>,
 ) -> Result<DrawLinePins, SimError> {
     let mut pins = DrawLinePins::default();
-    for (column, _, line) in graph.draw_lines() {
+    // A pumparound loop's line marches the same way, its "store" its own
+    // column (M72.2, docs/DESIGN.md §77.2).
+    let mut lines = graph.draw_lines();
+    lines.extend(graph.loop_lines());
+    for (column, _, line) in lines {
         let NodeKind::Column { pressure, .. } = &graph.node(column).kind else {
             continue;
         };

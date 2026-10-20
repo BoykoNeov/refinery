@@ -59,9 +59,9 @@ use crate::graph::{
     HydrogenKinetics, NodeId, NodeKind, PlantGraph, SteamInlet,
 };
 use crate::traits::{
-    ColumnPass, ColumnSteam, DrawSeparation, EnthalpyModel, InflowEnthalpy, LineFlashModel,
-    Reaction, ReactionModel, RunningReboiler, Separation, SeparationModel, Settled, StarvedTank,
-    ThermoModel, VapourShare,
+    ColumnPass, ColumnSteam, EnthalpyModel, InflowEnthalpy, LineFlashModel, Reaction,
+    ReactionModel, RunningReboiler, Separation, SeparationModel, Settled, StarvedTank, ThermoModel,
+    VapourShare,
 };
 use crate::units::{
     JPerKgK, Kelvin, Kg, KgPerSec, Pascal, Seconds, Watt, WattPerKelvin, T_AMBIENT,
@@ -377,8 +377,8 @@ pub fn edge_composition_at<'a>(
         ))
     })?;
 
-    if let Some(cut) = column_draw_at(graph, separations, upwind, edge)? {
-        return Ok(Cow::Borrowed(&cut.composition));
+    if let Some((drawn, _)) = column_draw_at(graph, separations, upwind, edge)? {
+        return Ok(Cow::Borrowed(drawn));
     }
 
     Ok(Cow::Borrowed(feed))
@@ -407,10 +407,25 @@ fn column_draw_at<'a>(
     separations: &'a BTreeMap<NodeId, Separation>,
     upwind: NodeId,
     edge: EdgeId,
-) -> Result<Option<&'a DrawSeparation>, SimError> {
+) -> Result<Option<(&'a Composition, Kelvin)>, SimError> {
     let NodeKind::Column { draws, .. } = &graph.node(upwind).kind else {
         return Ok(None);
     };
+    // A pumparound loop's first pipe carries its draw stage's liquid (M72.2,
+    // docs/DESIGN.md §77.2), as a draw carries its cut.
+    if let Some((_, index)) = graph.loop_draw(edge) {
+        let run = separations
+            .get(&upwind)
+            .and_then(|separation| separation.loops.get(index))
+            .ok_or_else(|| {
+                SimError::Numerical(format!(
+                    "internal: column '{}' reported no run for the pumparound loop on pipe '{}'",
+                    graph.node(upwind).name,
+                    graph.pipe(edge).name
+                ))
+            })?;
+        return Ok(Some((&run.drawn, run.drawn_temperature)));
+    }
     // The upwind node is a column, so this edge leaves it: it must be a draw.
     let draw = draw_index_for_edge(graph, edge, upwind, draws)?;
     let separation = separations.get(&upwind).ok_or_else(|| {
@@ -431,7 +446,7 @@ fn column_draw_at<'a>(
             draws.len()
         ))
     })?;
-    Ok(Some(cut))
+    Ok(Some((&cut.composition, cut.temperature)))
 }
 
 /// Which draw of `column` the `edge` leaving it feeds, by matching the edge's far
@@ -555,7 +570,7 @@ pub fn edge_temperature_at(
     // the latent-bug class this function's own note above rejects, so the gate for
     // this arm puts a real `ambient_ua` on a draw pipe.
     let inlet = match column_draw_at(graph, separations, upwind, edge)? {
-        Some(cut) => cut.temperature,
+        Some((_, temperature)) => temperature,
         None => temperature.get(&upwind).copied().ok_or_else(|| {
             SimError::Numerical(format!(
                 "internal: upwind node '{}' of pipe '{}' unresolved during the temperature sweep",
@@ -663,9 +678,32 @@ pub fn stream_cp_at(
 /// its inlet plus `Q/(ṁ·cp)` — it needs the analytic plug-flow transform, which
 /// is its own change to how transport works (docs/DESIGN.md §4a).
 pub fn heat_load(node: &crate::graph::Node) -> Watt {
+    heat_load_with(node, None)
+}
+
+/// `heat_load`, with a pumparound loop's cooler taking the duty its column
+/// computed THIS tick (M72.2, docs/DESIGN.md §77.2) — the heat that brings the
+/// loop to the return the column's own stage balances took — in place of the
+/// one stored on the node, which the engine writes after the sweep. Every
+/// other node: `heat_load`.
+pub(crate) fn loop_heat_load(
+    graph: &PlantGraph,
+    separations: &BTreeMap<NodeId, Separation>,
+    node: NodeId,
+) -> Watt {
+    let duty = graph.loop_cooler(node).and_then(|(column, index)| {
+        separations
+            .get(&column)
+            .and_then(|separation| separation.loops.get(index))
+            .map(|run| run.duty)
+    });
+    heat_load_with(graph.node(node), duty)
+}
+
+fn heat_load_with(node: &crate::graph::Node, cooler_duty: Option<Watt>) -> Watt {
     let unit_term = match &node.kind {
         NodeKind::Furnace { duty, .. } => duty.value(),
-        NodeKind::Cooler { duty } => -duty.value(),
+        NodeKind::Cooler { duty } => -cooler_duty.unwrap_or(*duty).value(),
         // The tank's temperature is its START-of-tick value here, which is what
         // makes this an explicit-Euler term like every other slow state.
         NodeKind::Tank(tank) => ambient_exchange(tank.ambient_ua, tank.temperature).value(),
@@ -943,6 +981,9 @@ fn mixed_inflow_edges(
     if let Some(inlet) = column_steam_inlet(graph, node) {
         inflows.retain(|(edge, _, _)| *edge != inlet.edge);
     }
+    // Nor a pumparound loop's return (M72.2, docs/DESIGN.md §77.2): the column
+    // took that liquid into its own stage balances.
+    inflows.retain(|(edge, _, _)| graph.loop_return(*edge).is_none());
     inflows
 }
 
@@ -1494,7 +1535,13 @@ pub fn resolve_node_states(
     // the sweep's own flows carry the draw on each from the moment its column
     // separates. On every plant without one, nothing below reads these.
     let lines = graph.draw_lines();
-    let line_edge = |edge: EdgeId| lines.iter().any(|(_, _, line)| line.contains(&edge));
+    // And every pumparound loop's (M72.2, docs/DESIGN.md §77.2), whose last
+    // pipe comes back into its column: the column never waits on it.
+    let loop_lines = graph.loop_lines();
+    let line_edge = |edge: EdgeId| {
+        lines.iter().any(|(_, _, line)| line.contains(&edge))
+            || loop_lines.iter().any(|(_, _, line)| line.contains(&edge))
+    };
     let mut flows: Cow<BTreeMap<EdgeId, f64>> = Cow::Borrowed(edge_mass_flow);
 
     // 1. Inertial nodes are the roots of the sweep: known before it starts.
@@ -1625,7 +1672,9 @@ pub fn resolve_node_states(
         let line_deps = sides
             .iter()
             .flat_map(|&id| graph.incident(id))
-            .filter(|&(edge, _, incoming)| incoming && line_edge(edge))
+            .filter(|&(edge, _, incoming)| {
+                incoming && line_edge(edge) && graph.loop_return(edge).is_none()
+            })
             .count();
         pending.insert(leader, deps + line_deps);
     }
@@ -2199,6 +2248,16 @@ pub fn resolve_node_states(
                                 let drawn = cut.split * feed_flow;
                                 line_writes.extend(line.iter().map(|&edge| (edge, drawn)));
                             }
+                            // Each loop's line carries its circulation, the
+                            // engine's loop write to the bit (M72.2, §77.2).
+                            for (column, index, line) in &loop_lines {
+                                if *column != id {
+                                    continue;
+                                }
+                                let flow =
+                                    pass.loops.get(*index).map_or(0.0, |run| run.flow.value());
+                                line_writes.extend(line.iter().map(|&edge| (edge, flow)));
+                            }
                             separations.insert(id, pass);
                         }
                     }
@@ -2224,7 +2283,7 @@ pub fn resolve_node_states(
                 // A draw line's pipe was counted by topology, and is cleared so
                 // (M62.4b): out of `id` along the line, whatever its flow.
                 if line_edge(edge) {
-                    if incoming {
+                    if incoming || graph.loop_return(edge).is_some() {
                         continue;
                     }
                 } else {
@@ -2618,7 +2677,7 @@ fn mix_inflows(
     // junction (the damage model's "fire on a node" would do nothing at all).
     // A FURNACE does not come through here since M34: its heat goes into its
     // coil first (`furnace_coil`, docs/DESIGN.md §37).
-    let heat_input = heat_load(graph.node(node)).value();
+    let heat_input = loop_heat_load(graph, separations, node).value();
 
     if let Some(totals) = inflow_totals(
         graph,

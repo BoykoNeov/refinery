@@ -1205,6 +1205,11 @@ pub(crate) fn validate_topology(graph: &PlantGraph, slate: &Slate) -> Result<(),
             if incoming {
                 continue; // the feed edge; its single-ness is a degree check
             }
+            // A pumparound loop's pipe out (M72.2, docs/DESIGN.md §77.2): its
+            // line was resolved and checked whole (`resolve_loop_lines`).
+            if graph.loop_draw(eid).is_some() {
+                continue;
+            }
             match outlet_hits.get_mut(&other) {
                 Some(count) => *count += 1,
                 None => {

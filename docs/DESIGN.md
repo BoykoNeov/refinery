@@ -29119,7 +29119,8 @@ retry only where a start refuses); M72.5's moves put to the user. Deferred:
   commands, the snapshot; the books every tick on both fidelities; the
   refusals by name.
 - **M72.3 — a tray that runs short**: the product, then the loop; a stopped
-  pump.
+  pump, and a loop line that falls short delivering what it can (§77.2's, moved
+  here from M72.2, §77.11).
 - **M72.4 — the plant**: `crude_unit_loops.toml`, the cold start on fixed
   duties and its hand-over, the sharp seed's retry; settled numbers against
   the probe's.
@@ -29181,3 +29182,77 @@ circulations carried on a warm start are a starting guess (Newton lands on the
 same answer from the feed-based one), and the paths that carry them — the
 walks and a re-solve after a cut-back — first meet a loop in M72.4's cold
 start. **Corpus**: 67 of 67 plants byte-identical on both fidelities.
+
+
+### 77.11 The loop on the map, built (M72.2)
+
+As §77.2 specifies, one change: **a loop line that falls short still halts**
+in M72.2, as a draw line does (§67.13) — its delivered flow, and a stopped pump
+stopping its loop, are M72.3's with the tray that runs short.
+
+- **The file**: `loops = [{ draw_stage, return_stage, outlet, flow_kg_per_s,
+  return_temperature_c, cooler_capacity_mw, start_duty_mw }]` on the cascade
+  block; refused off `separation = "heat_balance"`. `resolve_loop_lines`
+  walks each line from its `outlet` before the topology is validated (which
+  counts a loop's pipe out and its pipe back at its column), and records the
+  line (`PumparoundLoop::line`, its last pipe the RETURN) and its one cooler
+  (`PumparoundLoop::cooler`). Refused by name: a node other than a pump or a
+  `cooler`; a cooling-water cooler; a second cooler, or none; a line pump with
+  `npsh_required_m`; a leak path on a line pipe; a node with other than one
+  pipe declared from it; a line ending anywhere but its own column; a control
+  loop driving a loop's cooler.
+- **The graph** (`loop_lines`, `loop_draw`, `loop_return`, `loop_cooler`): a
+  loop's pipes are line pipes (`is_draw_line_edge`), so the flow solve guards
+  them to zero and the network's degree check counts one more in and out at
+  the column per loop.
+- **The march** (`network::march_draw_lines`) runs each loop line from the
+  column as a draw line, its first pipe at the loop's drawn liquid
+  (`drawn_state`: the previous separation's `LoopRun::drawn`, its draw
+  stage's liquid at that stage's temperature), its "store" the column's
+  pressure.
+- **The sweep**: a loop's line nodes wait on their pipe in by topology; the
+  column waits on no return and is not released by one (both counts skip
+  `loop_return`), nor mixes it (`mixed_inflow_edges`); once the column
+  separates, every pipe of each loop carries `LoopRun::flow`; the loop's first
+  pipe carries `LoopRun::drawn` at `drawn_temperature` (`column_draw_at`); and
+  the loop's cooler settles on the duty its column computed THIS tick
+  (`energy::loop_heat_load`), so it returns at the column's `h_ret` — the same
+  `Σ w·cp·(T − T_REF)` the column's `liquid_enthalpy` is, per mole.
+- **The engine** keeps a loop's pipes out of the column's feed and its draws,
+  writes `LoopRun::flow` on every pipe of each line, and writes each loop's
+  duty onto its cooler's node after the sweep (the snapshot shows it).
+- **Commands**: `SetLoopFlow` and `SetLoopReturnTemperature` (each refused out
+  of range, for a loop the column lacks, on a node that is no column with
+  loops); `SetCoolerDuty` refused on a loop's cooler, naming its column. The
+  bridge's referents and its wire-format and acceptance sweeps carry both (the
+  acceptance on the scenarios crate's fixture, until M72.4 ships a plant).
+
+**Gates** (`crates/scenarios/tests/pumparound_loop_reference.rs`, on
+`crates/scenarios/tests/data/crude_unit_loops_fixture.toml` — the crude unit
+with its three pumparounds as loops, §77.0's layout and flows): every pipe of
+each line carries the column's flow to the bit, each cooler returns at its
+setpoint to 1e-9 K, its duty the column's, the duties the probe's within 0.1 %
+(14.21, 14.90, 10.93 MW); **the books every tick for 300 ticks on both
+solvers** — the column's mass (each loop's out and back cancelling) to 1e-9,
+its heat (feed, reboiler, loops out and back, products, condenser) to 1e-9 of
+the reboiler, each cooler's first law to 1e-9; the line's pressures against a
+hand march at the loop's last flow and drawn density, to 1e-9; the two
+commands and their consequences, and the five refusals; the loader's
+refusals by name. A second
+cooler's refusal added to those after the mutation pass found it untested.
+
+**Mutations**: sixteen, fourteen caught by `pumparound_loop_reference` (the
+column waiting on its return; the return releasing its column again — caught
+as a hang, every plant-running test sweeping the column and its line without
+end; the cooler on the stored duty; no circulation in the sweep or written by
+the engine; the loop's first pipe read as a draw; the cooler keeping its
+file's duty; a hand-set duty admitted; the march without the drawn liquid; the
+loop lines unmarched; the column's loop pipes uncounted; a second cooler; a
+control loop on the cooler; the loop's pipe out a stray outlet). Two argued,
+equivalent at every flow the engine reaches: the return mixed into the
+column's feed (`mixed_inflow_edges`), and the engine counting a loop's pipes
+as feed or draw — both read the return while the flow solve has it at its
+guarded zero (the sweep writes the loop's flow only once the column has
+separated, the engine overwrites it after), so they add nothing; the guards
+keep it so if that order ever changes. **Corpus**: 67 of 67 plants
+byte-identical on both fidelities.

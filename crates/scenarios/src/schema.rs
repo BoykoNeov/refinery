@@ -786,6 +786,27 @@ pub struct CascadeDef {
     /// balance. Only `separation = "heat_balance"` models it.
     #[serde(default)]
     pub reboiler_duty_mw: Option<f64>,
+    /// Pumparound LOOPS (M72, docs/DESIGN.md §77): liquid drawn off a stage
+    /// through a line of pumps and one cooler on the map, back into the
+    /// stage above. Only `separation = "heat_balance"` models them.
+    #[serde(default)]
+    pub loops: Vec<LoopDef>,
+}
+
+/// A pumparound loop: `{ draw_stage = 4, return_stage = 3, outlet =
+/// "kero_pa_pump", flow_kg_per_s = 85.0, return_temperature_c = 150.0,
+/// cooler_capacity_mw = 30.0, start_duty_mw = 15.0 }`. `outlet` is the line's
+/// first node; its pipes run from the column through pumps and one `cooler`
+/// back into the column.
+#[derive(Debug, Deserialize)]
+pub struct LoopDef {
+    pub draw_stage: u32,
+    pub return_stage: u32,
+    pub outlet: String,
+    pub flow_kg_per_s: f64,
+    pub return_temperature_c: f64,
+    pub cooler_capacity_mw: f64,
+    pub start_duty_mw: f64,
 }
 
 /// A cascade column's steam inlet: the pipe its steam arrives by and the stage

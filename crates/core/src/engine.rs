@@ -504,6 +504,18 @@ impl Engine {
             Command::SetCoolerDuty { node, duty } => {
                 check_duty(duty, "cooler")?;
                 self.check_loop_owned_duty(node, duty, "cooler")?;
+                // A pumparound loop's cooler is its column's to drive (M72.2,
+                // docs/DESIGN.md §77.2).
+                if let Some((column, index)) = self.graph.loop_cooler(node) {
+                    return Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{}') is the cooler of pumparound loop {index} of column \
+                         '{}', whose duty the column sets each tick to bring the loop to its \
+                         return temperature: set that (`SetLoopReturnTemperature`, \
+                         docs/DESIGN.md §77.3)",
+                        self.graph.node(node).name,
+                        self.graph.node(column).name
+                    )));
+                }
                 match &mut self.graph.node_mut(node).kind {
                     NodeKind::Cooler { duty: d } => {
                         *d = duty;
@@ -805,6 +817,36 @@ impl Engine {
                         "{node:?} ('{name}') is not a column with pumparounds"
                     ))),
                 }
+            }
+            // A pumparound loop's two handles (M72.2, docs/DESIGN.md §77.3).
+            Command::SetLoopFlow {
+                node,
+                pumparound_loop,
+                flow,
+            } => {
+                if !flow.value().is_finite() || flow.value() < 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "a pumparound loop's flow must be finite and >= 0 kg/s. Got {} kg/s",
+                        flow.value()
+                    )));
+                }
+                self.with_loop(node, pumparound_loop, |pumparound| pumparound.flow = flow)
+            }
+            Command::SetLoopReturnTemperature {
+                node,
+                pumparound_loop,
+                temperature,
+            } => {
+                if !temperature.value().is_finite() || temperature.value() <= 0.0 {
+                    return Err(SimError::InvalidCommand(format!(
+                        "a pumparound loop's return temperature must be finite and above \
+                         absolute zero. Got {} K",
+                        temperature.value()
+                    )));
+                }
+                self.with_loop(node, pumparound_loop, |pumparound| {
+                    pumparound.return_temperature = temperature;
+                })
             }
             // A loop is put in AUTO or MANUAL. The transfer is bumpless in both
             // directions (docs/DESIGN.md §10 fork 4), and the two directions cost
@@ -1599,6 +1641,11 @@ impl Engine {
             let mut feed_alone = 0.0;
             let mut draw_edges: Vec<(crate::graph::EdgeId, usize, f64)> = Vec::new();
             for (eid, other, incoming) in self.graph.incident(nid) {
+                // A pumparound loop's pipes, out and back, are neither feed nor
+                // draw (M72.2, docs/DESIGN.md §77.2): written below.
+                if self.graph.loop_draw(eid).is_some() || self.graph.loop_return(eid).is_some() {
+                    continue;
+                }
                 if let Some(idx) = draws.iter().position(|d| d.outlet == other) {
                     // +1 when the column is the edge's source (graph-direction
                     // flow leaves the column), −1 when it is the target.
@@ -1643,6 +1690,19 @@ impl Engine {
                     draw_writes.extend(line.iter().skip(1).map(|&edge| (edge, drawn)));
                 }
             }
+            // Each pumparound loop's line carries the circulation the column
+            // ran on every pipe, out and back — the flow the sweep carried on
+            // it, to the bit (M72.2, docs/DESIGN.md §77.2).
+            for (column, index, line) in self.graph.loop_lines() {
+                if column != nid {
+                    continue;
+                }
+                let flow = separation
+                    .loops
+                    .get(index)
+                    .map_or(0.0, |run| run.flow.value());
+                draw_writes.extend(line.iter().map(|&edge| (edge, flow)));
+            }
         }
         for (eid, flow) in draw_writes {
             self.graph.pipe_mut(eid).stream.mass_flow = KgPerSec(flow);
@@ -1650,6 +1710,32 @@ impl Engine {
             // reader of `edge_mass_flow` (a mass-balance check, a frontend) sees
             // the prescribed draw and not the solver's placeholder zero.
             solution.edge_mass_flow.insert(eid, flow);
+        }
+        // Each pumparound loop's cooler keeps the duty its column wrote this
+        // tick — the one the sweep settled it on (`energy::loop_heat_load`) —
+        // so its node, and the snapshot, show it (M72.2, docs/DESIGN.md §77.2).
+        let mut cooler_writes: Vec<(NodeId, Watt)> = Vec::new();
+        for (column, index, _) in self.graph.loop_lines() {
+            let cooler = match &self.graph.node(column).kind {
+                NodeKind::Column {
+                    cascade: Some(spec),
+                    ..
+                } => spec.loops[index].cooler,
+                _ => None,
+            };
+            let duty = node_states
+                .column_separation
+                .get(&column)
+                .and_then(|separation| separation.loops.get(index))
+                .map_or(Watt::ZERO, |run| run.duty);
+            if let Some(cooler) = cooler {
+                cooler_writes.push((cooler, duty));
+            }
+        }
+        for (cooler, written) in cooler_writes {
+            if let NodeKind::Cooler { duty } = &mut self.graph.node_mut(cooler).kind {
+                *duty = written;
+            }
         }
 
         // 2c. Transport: an edge's stream takes its OUTLET temperature — its
@@ -3760,6 +3846,8 @@ impl Engine {
             | Command::SetSourceComposition { node, .. }
             | Command::SetRefluxRatio { node, .. }
             | Command::SetPumparoundDuty { node, .. }
+            | Command::SetLoopFlow { node, .. }
+            | Command::SetLoopReturnTemperature { node, .. }
             | Command::SetReboilerDuty { node, .. } => {
                 (!self.graph.has_node(node)).then(|| format!("{node:?} names no node"))
             }
@@ -3782,6 +3870,38 @@ impl Engine {
                  from another plant, or from before a reload, addresses nothing"
             ))),
             None => Ok(()),
+        }
+    }
+
+    /// Write one pumparound loop of column `node` (M72.2, docs/DESIGN.md
+    /// §77.3), or refuse: not a column with loops, or no such loop.
+    fn with_loop(
+        &mut self,
+        node: NodeId,
+        pumparound_loop: u32,
+        write: impl FnOnce(&mut crate::graph::PumparoundLoop),
+    ) -> Result<(), SimError> {
+        let name = self.graph.node(node).name.clone();
+        match &mut self.graph.node_mut(node).kind {
+            NodeKind::Column {
+                cascade: Some(spec),
+                ..
+            } if !spec.loops.is_empty() => {
+                let count = spec.loops.len();
+                match spec.loops.get_mut(pumparound_loop as usize) {
+                    Some(slot) => {
+                        write(slot);
+                        Ok(())
+                    }
+                    None => Err(SimError::InvalidCommand(format!(
+                        "{node:?} ('{name}') has {count} pumparound loop(s); there is no loop \
+                         {pumparound_loop}"
+                    ))),
+                }
+            }
+            _ => Err(SimError::InvalidCommand(format!(
+                "{node:?} ('{name}') is not a column with pumparound loops"
+            ))),
         }
     }
 

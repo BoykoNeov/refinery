@@ -733,7 +733,7 @@ impl HeatBalanceCascade {
         }
         // Each loop as it ran, and the trays' liquid where a loop loads them
         // (M72.1, §77.1).
-        let runs = loop_runs(plan, spec, slate, &profile);
+        let runs = loop_runs(plan, spec, slate, &profile)?;
         let stage_liquid = if spec.loops.is_empty() {
             Vec::new()
         } else {
@@ -1987,43 +1987,46 @@ fn profile_draw_rates(plan: &CascadePlan, profile: &Profile) -> Vec<f64> {
 /// How each declared loop ran on a solved profile (M72.1, docs/DESIGN.md
 /// §77.1), in `CascadeSpec::loops`' order: a running loop's circulation, its
 /// return and the duty `P·(h_d − h_ret)` [W]; a loop at zero flow at its
-/// setpoint with no duty.
+/// setpoint with no duty. Each draws its stage's liquid at that stage's
+/// temperature, running or not — the state its line's first pipe carries
+/// (M72.2, §77.2).
 fn loop_runs(
     plan: &CascadePlan,
     spec: &CascadeSpec,
     slate: &Slate,
     profile: &Profile,
-) -> Vec<LoopRun> {
+) -> Result<Vec<LoopRun>, SimError> {
     let molar: Vec<f64> = plan
         .loops
         .iter()
         .map(|l| profile.flows.circulation_out[l.draw])
         .collect();
     let returns = plan.loop_returns(slate, &profile.liquid, &profile.temperatures, &molar);
-    let mut runs: Vec<LoopRun> = spec
-        .loops
-        .iter()
-        .map(|declared| LoopRun {
+    let mut runs = Vec::with_capacity(spec.loops.len());
+    for declared in &spec.loops {
+        let draw = declared.draw_stage as usize - 1;
+        runs.push(LoopRun {
             flow: KgPerSec(0.0),
             return_temperature: declared.return_temperature,
             duty: Watt::ZERO,
             at_capacity: false,
-        })
-        .collect();
+            drawn: MoleFractions::from_amounts(&profile.liquid[draw])?.to_mass(slate)?,
+            drawn_temperature: Kelvin(profile.temperatures[draw]),
+        });
+    }
     for ((l, flow), back) in plan.loops.iter().zip(&molar).zip(&returns) {
         let x = &profile.liquid[l.draw];
         let drawn = liquid_enthalpy(slate, x, Kelvin(profile.temperatures[l.draw]));
         // The return's temperature from its enthalpy: `h = c̄p·(T − T_REF)`
         // per mole at constant heat capacity, the datum `liquid_enthalpy`'s.
         let molar_cp = mixture_molar_cp(slate, x);
-        runs[l.index] = LoopRun {
-            flow: KgPerSec(flow * crate::cascade::molar_mass(slate, x)),
-            return_temperature: Kelvin(T_REF.value() + back.enthalpy / molar_cp),
-            duty: Watt(flow * (drawn - back.enthalpy)),
-            at_capacity: back.at_capacity,
-        };
+        let run = &mut runs[l.index];
+        run.flow = KgPerSec(flow * crate::cascade::molar_mass(slate, x));
+        run.return_temperature = Kelvin(T_REF.value() + back.enthalpy / molar_cp);
+        run.duty = Watt(flow * (drawn - back.enthalpy));
+        run.at_capacity = back.at_capacity;
     }
-    runs
+    Ok(runs)
 }
 
 /// The heat each stage's side cooling removes [W] on a held column's base
@@ -4776,6 +4779,8 @@ mod loop_tests {
             return_temperature: Kelvin(stage_three - 20.0),
             cooler_capacity: Watt(capacity),
             start_duty: Watt(0.0),
+            line: Vec::new(),
+            cooler: None,
         }
     }
 
@@ -4807,8 +4812,9 @@ mod loop_tests {
     #[test]
     fn a_loop_returns_at_its_setpoint_and_its_duty_is_the_result() {
         let declared = the_loop(10.0e6);
-        let separation = separate(&HeatBalanceCascade::new(), &spec(vec![declared])).unwrap();
-        let run = separation.loops[0];
+        let separation =
+            separate(&HeatBalanceCascade::new(), &spec(vec![declared.clone()])).unwrap();
+        let run = separation.loops[0].clone();
         assert!(!run.at_capacity);
         assert!(
             (run.return_temperature.value() - declared.return_temperature.value()).abs() < 1e-9,
@@ -4838,7 +4844,8 @@ mod loop_tests {
     #[test]
     fn the_stages_a_loop_joins_balance_by_hand() {
         let declared = the_loop(10.0e6);
-        let separation = separate(&HeatBalanceCascade::new(), &spec(vec![declared])).unwrap();
+        let separation =
+            separate(&HeatBalanceCascade::new(), &spec(vec![declared.clone()])).unwrap();
         let slate = slate();
         let profile = separation.profile.as_ref().unwrap();
         let (h, big_h) = enthalpies(&separation);
@@ -4945,8 +4952,8 @@ mod loop_tests {
         let free = separate(&HeatBalanceCascade::new(), &spec(vec![the_loop(10.0e6)])).unwrap();
         let capacity = 0.5 * free.loops[0].duty.value();
         let declared = the_loop(capacity);
-        let held = separate(&HeatBalanceCascade::new(), &spec(vec![declared])).unwrap();
-        let run = held.loops[0];
+        let held = separate(&HeatBalanceCascade::new(), &spec(vec![declared.clone()])).unwrap();
+        let run = held.loops[0].clone();
         assert!(run.at_capacity, "{run:?}");
         assert!((run.duty.value() / capacity - 1.0).abs() < 1e-9, "{run:?}");
         assert!(
@@ -4985,6 +4992,8 @@ mod loop_tests {
             return_temperature: Kelvin(380.0),
             cooler_capacity: Watt(1.0e6),
             start_duty: Watt(0.0),
+            line: Vec::new(),
+            cooler: None,
         };
         let refusal = |loops: Vec<PumparoundLoop>, pumparounds: Vec<Pumparound>| {
             let spec = CascadeSpec {
@@ -5001,7 +5010,7 @@ mod loop_tests {
                 vec![PumparoundLoop {
                     draw_stage: 1,
                     return_stage: 0,
-                    ..good
+                    ..good.clone()
                 }],
                 "strictly between the top stage",
             ),
@@ -5009,45 +5018,45 @@ mod loop_tests {
                 vec![PumparoundLoop {
                     draw_stage: 8,
                     return_stage: 7,
-                    ..good
+                    ..good.clone()
                 }],
                 "strictly between the top stage",
             ),
             (
                 vec![PumparoundLoop {
                     return_stage: 1,
-                    ..good
+                    ..good.clone()
                 }],
                 "returns to the stage above its draw",
             ),
             (
                 vec![PumparoundLoop {
                     flow: KgPerSec(-1.0),
-                    ..good
+                    ..good.clone()
                 }],
                 "must be finite and >= 0",
             ),
             (
                 vec![PumparoundLoop {
                     cooler_capacity: Watt(0.0),
-                    ..good
+                    ..good.clone()
                 }],
                 "must be finite and positive",
             ),
             (
                 vec![PumparoundLoop {
                     start_duty: Watt(-1.0),
-                    ..good
+                    ..good.clone()
                 }],
                 "starts at a duty",
             ),
             (
                 vec![
-                    good,
+                    good.clone(),
                     PumparoundLoop {
                         draw_stage: 4,
                         return_stage: 3,
-                        ..good
+                        ..good.clone()
                     },
                 ],
                 "stage 3 is in two pumparounds",
@@ -5058,7 +5067,7 @@ mod loop_tests {
             assert!(message.contains(phrase), "{message}");
         }
         let message = refusal(
-            vec![good],
+            vec![good.clone()],
             vec![Pumparound {
                 stage: 2,
                 duty: Watt(1.0e5),
