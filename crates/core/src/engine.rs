@@ -1501,12 +1501,14 @@ impl Engine {
                 solution.diagnostics.re_solves = passes - 1;
                 Ok((solution, node_states, passes))
             };
-        // A guess that fails is dropped (M71.1, docs/DESIGN.md §76.2): the
-        // span above writes nothing a second run reads — a flow solver commits
-        // its warm start only from a converged solve, and its density memo
-        // answers by every bit of the question — so the tick is solved again
-        // from the last tick's states, as an unguessed tick is. A failure there
-        // too is the tick's.
+        // A guess that fails is dropped (M71.1, docs/DESIGN.md §76.2): the tick
+        // is solved again from the last tick's states, with no forced step. A
+        // failure there too is the tick's. What the failed run leaves: a flow
+        // solver commits its warm start only from a converged solve, so a
+        // failed first solve leaves nothing, but a guessed solve that converged
+        // before a later part failed leaves its pressures as the retry's start
+        // (deterministic, within the solver's tolerance); its density memo
+        // answers by every bit of the question.
         let predicted = self.predicted_states();
         self.flow_solver
             .step_even_when_converged(predicted.is_some());

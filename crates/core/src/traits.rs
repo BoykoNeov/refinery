@@ -136,7 +136,9 @@ pub struct SolveDiagnostics {
     /// Whether the engine dropped this tick's guess (M71.1, docs/DESIGN.md
     /// §76.2): its guessed solves failed, and the tick was solved again from
     /// the last tick's states. False — and absent from the wire — on every
-    /// other tick. Written by the engine, never by a solver.
+    /// other tick. Written by the engine, never by a solver. On such a tick
+    /// `iterations` and `re_solves` describe the retry only, not the failed
+    /// guessed attempt before it.
     #[serde(default, skip_serializing_if = "is_false")]
     pub guess_dropped: bool,
 }

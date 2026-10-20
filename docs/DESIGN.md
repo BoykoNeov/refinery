@@ -28822,11 +28822,17 @@ re-checked after (M71.2).
 - **The fallback**: the tick's guessed span — the first solve, its resolve,
   the density checks and re-solves — is one closure run on the guess, and run
   again from the last tick's states when it fails; a failure there is the
-  tick's. Nothing in the span writes what the retry reads (both flow solvers
-  commit their warm start only from a converged solve; their `DensityMemo`
-  answers by every bit; the separation and reaction models hold no state). The
-  retried tick is unguessed in every way: no forced step.
-  `SolveDiagnostics::guess_dropped` (absent from the wire when false) says so.
+  tick's. The retry reads the last tick's states and takes no forced step.
+  **What the span leaves behind**: a flow solver commits its warm start only
+  from a converged solve, so a guess whose FIRST solve fails (the wet slug's)
+  leaves nothing; but where the first solve converged and a later part failed
+  (a density check, a resolve, a re-solve), the solver kept that solve's
+  pressures as its warm start, and the retry starts its iterations from them —
+  deterministic, and within the solver's tolerance of a retry started from the
+  last tick's. `DensityMemo` answers by every bit, and the separation and
+  reaction models hold no state, so neither moves an answer.
+  `SolveDiagnostics::guess_dropped` (absent from the wire when false) says so;
+  on such a tick the iterations and re-solves reported are the retry's only.
 - `product_line_reference` back to its premise: the march at this tick's
   draws, at 1e-9. C20 closed.
 
@@ -28852,7 +28858,10 @@ count not reported. Caught by the corpus only: the draws never on the parabola
 as "moved" (no shipped plant moves a draw with nothing else moving: the corpus
 byte-identical); a held column guessed (that check was redundant, and removed);
 the retried tick still forced to step (it changes only which iterate within the
-tolerance the retry stops on).
+tolerance the retry stops on). And untested, said here: the one fallback the
+tests and corpus reach fails in its first solve, so a fallback that covered the
+first solve alone would pass them all — the span's later parts are covered by
+the code's shape, not by a test.
 
 ### 76.3 The stripped and cold tables re-checked (M71.2)
 
