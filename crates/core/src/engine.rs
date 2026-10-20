@@ -1469,6 +1469,7 @@ impl Engine {
                 &self.node_states,
                 earlier,
                 &solution.starved,
+                &solution.loop_delivered,
                 dt,
             )
         };
@@ -4050,6 +4051,14 @@ impl Engine {
                                 return_temperature_k: run.return_temperature.value(),
                                 duty_w: run.duty.value(),
                                 at_capacity: run.at_capacity,
+                                // What its line fell short by (M72.3, §77.13).
+                                short_kg_s: declared
+                                    .line
+                                    .first()
+                                    .and_then(|e| sol.and_then(|s| s.loop_delivered.get(e)))
+                                    .map_or(0.0, |delivered| {
+                                        (declared.flow.value() - delivered.value()).max(0.0)
+                                    }),
                             })
                             .collect();
                         Some(ColumnOperation {

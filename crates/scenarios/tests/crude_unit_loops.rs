@@ -6,7 +6,8 @@
 
 use refinery_core::engine::Engine;
 use refinery_core::graph::NodeKind;
-use refinery_core::snapshot::{NodeSnapshot, Snapshot};
+use refinery_core::snapshot::{Command, NodeSnapshot, Snapshot};
+use refinery_core::units::KgPerSec;
 use refinery_scenarios::{build_engine, load_str};
 
 const PLANT: &str = include_str!("../../../scenarios/crude_unit_loops.toml");
@@ -151,4 +152,63 @@ fn the_books_close_every_tick_newton() {
 #[test]
 fn the_books_close_every_tick_simple() {
     super::pumparound_loop_reference::the_books_close_every_tick(PLANT, "simple", 300);
+}
+
+/// **A short tray cuts its product back; the loop keeps its setting** (M72.3,
+/// docs/DESIGN.md §77.13, the user's decision): the reflux walked down to
+/// 0.05, the gas oil's tray runs short and its product alone is cut back —
+/// every loop at its set flow, none short. A loop takes back to the tray
+/// above what it draws, and its cooling MAKES liquid, so slowing one would
+/// only dry its tray further (measured: the gas-oil loop up from 65 to 85 kg/s
+/// released the gas oil). Turned down to 50 kg/s the gas oil is all but gone
+/// (7 % of its share, measured) and the column runs; at 40 there is no product
+/// left to give way, and the column refuses as any column past its edge —
+/// the general refusal ("could not settle"), which does not name the tray.
+#[test]
+fn a_short_tray_cuts_its_product_and_the_loops_hold() {
+    let mut engine = engine("newton");
+    run(&mut engine, 300).expect("the plant runs");
+    let column = engine.graph.find_node("column").unwrap();
+    let mut snapshot = None;
+    for reflux in [2.0, 1.0, 0.5, 0.2, 0.1, 0.05] {
+        engine
+            .apply(Command::SetRefluxRatio {
+                node: column,
+                reflux_ratio: reflux,
+            })
+            .unwrap();
+        snapshot = Some(run(&mut engine, 50).unwrap_or_else(|e| panic!("reflux {reflux}: {e}")));
+    }
+    let snapshot = snapshot.unwrap();
+    let cut = &node(&snapshot, "column").column_draws_cut_back;
+    assert_eq!(cut.len(), 1, "{cut:?}");
+    assert_eq!(cut[0].draw, 3, "the gas oil: {cut:?}");
+    assert!(
+        cut[0].of_declared > 0.0 && cut[0].of_declared < 1.0,
+        "{cut:?}"
+    );
+    let operation = node(&snapshot, "column").column_operation.clone().unwrap();
+    for (run, (flow, _, _)) in operation.loops.iter().zip(LOOPS) {
+        assert!((run.flow_kg_s / flow - 1.0).abs() < 1e-9, "{run:?}");
+        assert_eq!(run.short_kg_s, 0.0, "{run:?}");
+    }
+    let gas_oil_loop = |engine: &mut Engine, flow: f64| {
+        engine
+            .apply(Command::SetLoopFlow {
+                node: column,
+                pumparound_loop: 2,
+                flow: KgPerSec(flow),
+            })
+            .unwrap();
+    };
+    gas_oil_loop(&mut engine, 50.0);
+    let low = run(&mut engine, 20).expect("the gas-oil loop at 50 kg/s");
+    let cut = &node(&low, "column").column_draws_cut_back;
+    assert!(cut.len() == 1 && cut[0].of_declared < 0.1, "{cut:?}");
+    gas_oil_loop(&mut engine, 40.0);
+    let refused = run(&mut engine, 20).expect_err("no product left to give way at 40 kg/s");
+    assert!(
+        refused.contains("could not settle at reflux ratio 0.05"),
+        "{refused}"
+    );
 }

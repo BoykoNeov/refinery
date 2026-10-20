@@ -1762,6 +1762,14 @@ impl HeatBalanceCascade {
                     start_wet = profile.wet_stages();
                     start_free_water = profile.free_water.clone();
                     cut_start(equations, &start_vapour, &mut rates, start_reflux, &mut cut);
+                    // Nor is a released draw cut again before its next solve
+                    // (M72.3, docs/DESIGN.md §77.13): the start cuts a draw for
+                    // a tray between it and the next draw, the solve holds its
+                    // own — measured on the 13-tray loop column at a reflux of
+                    // 0.05, the diesel was cut for the tray under it, ran over
+                    // its share, was released and cut again until the passes
+                    // ran out, and the gas oil's tray stood at 2 mol/s uncut.
+                    cut.retain(|i| !release.contains(i));
                     if uncut.is_none() && uncut_attempt {
                         uncut = Some(profile);
                     }
@@ -4636,6 +4644,45 @@ mod newton_tests {
             );
             assert!((run.duty.value() / duty - 1.0).abs() < 2e-3, "{run:?}");
         }
+    }
+
+    /// **On a loop column a short tray's product is cut back, and the set
+    /// settles** (M72.3, docs/DESIGN.md §77.13): at a reflux of 0.05 the
+    /// gas oil is cut back, and the gas-oil loop turned up — which wets its
+    /// tray — lets it take more, its tray held at the minimum, then turned back
+    /// down. Before M72.3 a released draw was cut again by the next start, the
+    /// passes ran out at 80 kg/s and the uncut answer stood, the gas-oil tray
+    /// at 2 mol/s against a minimum of 24; back down at 75 the column refused.
+    #[test]
+    fn a_short_trays_product_is_cut_back_on_a_loop_column() {
+        let (unit, mut spec) = thirteen_trays();
+        let model = HeatBalanceCascade::new();
+        let mut last = unit.separate(&model, &spec, None).unwrap();
+        for reflux in [2.0, 1.0, 0.5, 0.3, 0.2, 0.1, 0.05] {
+            spec.reflux_ratio = reflux;
+            last = unit
+                .separate(&model, &spec, last.profile.as_ref())
+                .unwrap_or_else(|e| panic!("reflux {reflux}: {e}"));
+        }
+        let mut held = Vec::new();
+        let mut shares = Vec::new();
+        for flow in [70.0, 75.0, 80.0, 75.0] {
+            spec.loops[2].flow = KgPerSec(flow);
+            last = unit
+                .separate(&model, &spec, last.profile.as_ref())
+                .unwrap_or_else(|e| panic!("the gas-oil loop at {flow} kg/s: {e}"));
+            assert_eq!(last.cut_back.len(), 1, "{flow} kg/s: {:?}", last.cut_back);
+            assert_eq!(last.cut_back[0].draw, 3, "{flow} kg/s: the gas oil");
+            held.push(last.stage_liquid[9]);
+            shares.push(last.cut_back[0].of_declared);
+        }
+        // The gas-oil tray held at one minimum throughout, the share rising
+        // with the loop and back.
+        for liquid in &held {
+            assert!((liquid / held[0] - 1.0).abs() < 1e-6, "{held:?}");
+        }
+        assert!(shares[0] < shares[1] && shares[1] < shares[2], "{shares:?}");
+        assert!((shares[3] / shares[1] - 1.0).abs() < 1e-6, "{shares:?}");
     }
 
     /// **The hand-over ends on the column's own equations** (§77.5): the cold

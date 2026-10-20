@@ -1516,6 +1516,7 @@ pub fn resolve_node_states(
     previous: &NodeStates,
     earlier: Option<&NodeStates>,
     starved: &BTreeMap<NodeId, StarvedTank>,
+    loop_delivered: &BTreeMap<EdgeId, KgPerSec>,
     dt: Seconds,
 ) -> Result<NodeStates, SimError> {
     let mut temperature: BTreeMap<NodeId, Kelvin> = BTreeMap::new();
@@ -2174,6 +2175,31 @@ pub fn resolve_node_states(
                                     mixed,
                                 )?),
                             };
+                            // A loop whose line delivers less than its set
+                            // flow runs at what it delivers (M72.3,
+                            // docs/DESIGN.md §77.13); the setpoint stays the
+                            // column's own.
+                            let cascade = match cascade.as_ref() {
+                                Some(spec)
+                                    if spec.loops.iter().any(|l| {
+                                        l.line
+                                            .first()
+                                            .is_some_and(|e| loop_delivered.contains_key(e))
+                                    }) =>
+                                {
+                                    let mut short = spec.clone();
+                                    for l in &mut short.loops {
+                                        if let Some(delivered) =
+                                            l.line.first().and_then(|e| loop_delivered.get(e))
+                                        {
+                                            l.flow =
+                                                KgPerSec(delivered.value().min(l.flow.value()));
+                                        }
+                                    }
+                                    Some(Cow::Owned(short))
+                                }
+                                other => other.map(Cow::Borrowed),
+                            };
                             let pass = separation.separate(
                                 &ColumnPass {
                                     slate,
@@ -2183,7 +2209,7 @@ pub fn resolve_node_states(
                                     feed,
                                     feed_flow: column_feed_flow(graph, edge_mass_flow, id),
                                     temperature: mixed,
-                                    cascade: cascade.as_ref(),
+                                    cascade: cascade.as_deref(),
                                     // The warm start, and it needs no engine
                                     // state: the previous tick's `NodeStates`
                                     // is already an argument to this sweep, and
@@ -4617,6 +4643,7 @@ mod tests {
             &NodeStates::default(),
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
             Seconds(1.0),
         )
         .map(|states| states.temperature)
@@ -4641,6 +4668,7 @@ mod tests {
             &everywhere_atmospheric(graph),
             &NodeStates::default(),
             None,
+            &BTreeMap::new(),
             &BTreeMap::new(),
             Seconds(1.0),
         )
@@ -4830,6 +4858,7 @@ mod tests {
                 &everywhere_atmospheric(&g),
                 &previous,
                 None,
+                &BTreeMap::new(),
                 &BTreeMap::new(),
                 Seconds(1.0),
             )
@@ -5355,6 +5384,7 @@ mod tests {
             &previous,
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
             Seconds(1.0),
         )
         .unwrap()
@@ -5683,6 +5713,7 @@ mod tests {
                 &NodeStates::default(),
                 None,
                 &BTreeMap::new(),
+                &BTreeMap::new(),
                 Seconds(1.0),
             )
             .unwrap();
@@ -5773,6 +5804,7 @@ mod tests {
                 &everywhere_atmospheric(&g),
                 &NodeStates::default(),
                 None,
+                &BTreeMap::new(),
                 &BTreeMap::new(),
                 Seconds(1.0),
             )
@@ -5947,6 +5979,7 @@ mod tests {
                 &everywhere_atmospheric(g),
                 previous,
                 None,
+                &BTreeMap::new(),
                 &BTreeMap::new(),
                 Seconds(dt),
             )

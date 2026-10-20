@@ -10776,6 +10776,28 @@ draw line does — moved to M72.3 with the stopped pump. DESIGN §77.11.
   Mutations: sixteen, fourteen caught, two argued. Corpus byte-identical on
   both fidelities.
 
+### M72.3 — **LANDED** 2026-10-20: a tray that runs short, and a line that falls short
+
+Probed first on the shipped plant: down to a reflux of 0.05 the column runs,
+the gas oil cut back; and a loop turned UP wets its tray, so §77.4's "then the
+loop" would raise it past the player's setting. The user's decision: the loop
+keeps its setting; the product is cut back, past that the column refuses. A
+cut-back set that flickered (a released draw cut again by the next start, the
+gas oil's tray left at 2 mol/s, a refusal on the way back) fixed. A loop line
+that cannot deliver its set flow delivers the most it can — a stopped pump
+stops its loop, the column runs on — reported short by how much. DESIGN §77.13.
+
+- Gates: the column alone at a reflux of 0.05, the gas-oil loop up and back,
+  the gas oil the one draw cut back; a stopped pump's loop at zero, the books
+  every tick, back at its setpoint restarted (both solvers); a line asked for
+  250 kg/s delivering 201, arriving at the column by hand to 1e-9; the shipped
+  plant's short tray, the loops held, the refusal past the edge. Mutations:
+  ten, seven caught by the tests, one by the corpus only (a loop pinned at
+  its setpoint, not where it ran — `crude_unit_loops` moved), two survived and
+  removed (where a released draw restarts, and the start's liquid balance
+  counting the loops; Newton lands on the same bits either way). Corpus 68 of
+  68 byte-identical on both fidelities.
+
 ### M72.4 — **LANDED** 2026-10-20: the plant and its cold start
 
 `scenarios/crude_unit_loops.toml`: the crude unit on thirteen trays, its three

@@ -75,6 +75,18 @@ pub struct HydraulicSolution {
     /// every plant without a line flash, and skipped in serialization then.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub pump_two_phase: BTreeMap<NodeId, PumpTwoPhaseState>,
+    /// Each pumparound loop whose LINE cannot deliver its set flow this tick
+    /// (M72.3, docs/DESIGN.md §77.13), keyed by the loop's first pipe: the
+    /// most it delivers [kg/s], `0 ≤ ṁ < ` the setpoint — the flow at which the
+    /// line's march, at the stored state, arrives back at its column's
+    /// pressure, or zero where it cannot at any (a pump stopped, tripped or
+    /// gas-locked). The column runs the loop at it. Data across the seam, as
+    /// `pump_two_phase` is: the march is the solver's element physics.
+    ///
+    /// Empty on every tick whose loops all deliver, so on every plant before
+    /// M72.3, and skipped in serialization then.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub loop_delivered: BTreeMap<EdgeId, KgPerSec>,
 }
 
 /// One pump's two-phase inlet at a solution (M54, docs/DESIGN.md §59).

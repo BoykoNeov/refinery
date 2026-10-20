@@ -29063,6 +29063,13 @@ is still short, the loop's flow becomes the result — the same liquid held,
 the loop's mass equation swapped for it — reported, released when the tray
 recovers (M67.1's release rule). The column keeps running.
 
+**Changed by the user's decision (2026-10-20, §77.13): the loop does not give
+way.** A loop returns one stage up what it draws, so its circulation takes no
+liquid off its tray, and its cooling condenses liquid — a SLOWER loop leaves
+its tray drier (measured). Held at the minimum, the swapped equation would turn
+the loop UP past the player's setting. So the product is cut back, and past
+that the column refuses, as any column past its edge.
+
 ### 77.5 Fork 5 — the cold start
 
 **On fixed duties first, then handed over**: a column with loops starts cold
@@ -29327,3 +29334,89 @@ keeping the loops' start duties (never reached on this plant, above); and
 M72.1's argued one, the walk's circulations started at half — a starting guess,
 Newton lands on the same answer from it. **Corpus**: 67 of 67 plants
 byte-identical on both fidelities; `crude_unit_loops` new, 6 000 ticks on both.
+
+### 77.13 A tray that runs short, and a line that falls short, built (M72.3)
+
+**Probed first, on the shipped plant** (`crude_unit_loops.toml`, a throwaway
+test, not kept): the reflux walked from 4 down to 0.05 — the column never
+halts; from 0.15 the gas oil is cut back (98 % of its share at 0.15, 29 % at
+0.05), every loop at its setting. §77.0 finding 9's halt at a reflux of 0.2
+was the ten-tray layout's. Then the gas-oil loop moved at a reflux of 0.05:
+**up from 65 to 85 kg/s the gas oil's tray WETS** — cut back 29 → 38 → 49 %,
+released at 85 — and down it dries. A loop returns one stage up what it draws,
+so its circulation takes nothing off its own tray (`liquid_down[d]` is
+independent of `P`), and its cooling condenses liquid on the stages it
+joins. §77.4's second step would therefore hold the tray by turning the loop
+UP past the player's setting, and fail outright with the cooler at capacity
+(more flow, no more duty). **The user's decision** (2026-10-20): the loop
+keeps its setting; the product is cut back, and past that the column refuses.
+
+**A cut-back set that did not settle** (M67.1's, met here first): at a reflux
+of 0.05 with the gas-oil loop at 80–85 kg/s, the gas oil's tray under the
+minimum cut the gas oil back — and the start (`cut_start`) cut the diesel too,
+for stage 8 between its draw and the gas oil's, a hair under the minimum. The
+solve holds a cut draw's OWN tray, so the diesel then ran over its share and
+was released, the next start cut it again, and so on until the passes ran out;
+the uncut answer stood, the gas oil's tray at 2 mol/s against a minimum of
+24, and the loop turned back down to 75 refused. **Fixed**: a draw released on
+an answer is not cut again by the start of the next solve (`newton_with_water`).
+Now the loop runs from 85 down to 50 kg/s smoothly, the gas oil at 7 % of its
+share there, in small steps or one jump from 65 alike; at 45 there is no
+product left to give way and the column refuses. Two more changes were built
+and removed, no gate nor plant telling them apart (§70's habit): the released
+draw restarted at the rate it ran at rather than the start's cut rate, and
+`cut_start`'s liquid balance counting each loop's circulation as the solve's
+does. Both move only where Newton starts, and it lands on the same bits —
+the corpus identical with either removed, on both flow solvers. So `cut_start`
+still does not count a loop's circulation: on a loop column it reads the
+loop's return stage drier, and its draw stage wetter, by the circulation, and
+the solve corrects it. A gate for it needs `cut_start` called alone, on a
+`ColumnEquations` the tests cannot yet build.
+
+**A loop line that falls short delivers what it can** (§77.2, moved from
+M72.2): `network::march_draw_lines` marches each loop's line at its SET flow;
+a line that arrives back under the column's pressure delivers the most it can
+— the flow at which its march, at the stored state, arrives at the column's
+pressure, by 60 bisections (2⁻⁶⁰ of the setpoint), or zero where even no flow
+reaches it (the return enters 0.6 m above the draw on the shipped plant, so a
+stopped, tripped or gas-locked pump stops its loop). The line is pinned at
+that flow. `HydraulicSolution::loop_delivered` carries it, by the loop's first
+pipe, to the sweep, which runs the column with that loop at the delivered
+flow (`energy::resolve_node_states`, a copy of the cascade only on a tick a
+loop is short); the setpoint stays the column's. Reported as
+`LoopOperation::short_kg_s` — the setpoint less the flow, absent while the
+line delivers. A loop that delivers its setpoint is pinned at its stored flow
+as before, so every running plant marches to the bit as it did; a line whose
+stored flow (above a new, lower setpoint) falls short is pinned at the
+setpoint instead of refusing. A draw line keeps its refusal.
+
+**Gates.** `heat_balance::newton_tests::a_short_trays_product_is_cut_back_on_a_loop_column`
+(the 13-tray column alone: reflux 0.05, the gas-oil loop 70 → 75 → 80 → 75 kg/s,
+the gas oil the one draw cut back throughout, its tray held at one minimum,
+its share rising with the loop and back). `pumparound_loop_reference`: a
+stopped kerosene pump stops its loop — nothing on its line, its cooler idle,
+short by 85 kg/s, the other two loops at their setpoints, the books every tick
+— and restarted it is back at its setpoint, nothing short on the wire (one
+test per flow solver); the diesel loop asked for 250 kg/s delivers 201, its
+line arriving at the column's 1.8 bar by hand from the cooler's pinned
+pressure and the return pipe's drop to 1e-9 (measured 2e-10 Pa), a part in a
+million more arriving under it, short by the rest; turned back to 95, short
+of nothing. `crude_unit_loops::a_short_tray_cuts_its_product_and_the_loops_hold`:
+the shipped plant's reflux walked to 0.05, the gas oil alone cut back, every
+loop at its setting; the gas-oil loop at 50 kg/s runs, the gas oil under
+10 % of its share; at 40 the column refuses — the general refusal ("could not
+settle at reflux ratio 0.05"), which does not name the tray.
+
+**Mutations** (each against the test module it should fail): ten. Caught
+by the tests: a released draw cut again (`newton_tests`); a short line
+delivering nothing, no bisections, the column run at the setpoint and not the
+delivered flow, the short always zero, the short always on the wire, the
+delivered flows not handed from the march to the sweep
+(`pumparound_loop_reference`). Caught by the corpus only: a loop pinned at
+its new setpoint rather than where it ran (`crude_unit_loops` moved, both
+solvers) — the guard that every running plant marches to the bit as before,
+which CI, with no baseline, does not check. Survived and removed: the two
+start changes above.
+
+**What moved**: nothing — the corpus byte-identical, 68 plants on both flow
+solvers.

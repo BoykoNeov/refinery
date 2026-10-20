@@ -151,53 +151,58 @@ fn a_loop_line_carries_its_circulation_and_returns_at_its_setpoint() {
 /// plant is too).
 pub(super) fn the_books_close_every_tick(src: &str, solver: &str, ticks: u32) {
     let mut engine = plant_of(src, solver);
-    let slate = engine.slate.clone();
     for t in 1..=ticks {
         tick(&mut engine, t);
-        let s = engine.snapshot();
-        let feed = edge(&s, "transfer_line");
-        let products: f64 = PRODUCTS.iter().map(|p| flow(&s, p)).sum();
-        let mass = feed.stream.mass_flow.value();
+        the_books_close(&engine, solver, t);
+    }
+}
+
+/// The books of [`the_books_close_every_tick`] on the tick just run.
+fn the_books_close(engine: &Engine, solver: &str, t: u32) {
+    let slate = &engine.slate;
+    let s = engine.snapshot();
+    let feed = edge(&s, "transfer_line");
+    let products: f64 = PRODUCTS.iter().map(|p| flow(&s, p)).sum();
+    let mass = feed.stream.mass_flow.value();
+    assert!(
+        (products - mass).abs() < 1e-9 * mass,
+        "{solver} tick {t}: {products} kg/s out for {mass} kg/s in"
+    );
+    let column = node(&s, "column");
+    let duty = column.column_duty.unwrap();
+    // The feed enters at the column's own mixed temperature.
+    let feed_cp: f64 = feed
+        .stream
+        .composition
+        .fractions()
+        .iter()
+        .enumerate()
+        .map(|(c, w)| w * slate.get(c).cp.value())
+        .sum();
+    let mut energy = mass * feed_cp * (column.temperature_k - T_REF.value()) + duty.reboiler_w
+        - duty.condenser_w;
+    for p in PRODUCTS {
+        energy -= enthalpy_flow(slate, edge(&s, p));
+    }
+    for (name, _, _) in LOOPS {
+        let out = edge(&s, &format!("{name}_pa_suction"));
+        let back = edge(&s, &format!("{name}_pa_return"));
+        assert_eq!(out.stream.mass_flow, back.stream.mass_flow);
+        energy += enthalpy_flow(slate, back) - enthalpy_flow(slate, out);
+        // The cooler: what arrives less its duty is what leaves.
+        let arriving = enthalpy_flow(slate, edge(&s, &format!("{name}_pa_discharge")));
+        let removed = cooler_duty(&s, &format!("{name}_pa_cooler"));
+        let leaving = enthalpy_flow(slate, back);
         assert!(
-            (products - mass).abs() < 1e-9 * mass,
-            "{solver} tick {t}: {products} kg/s out for {mass} kg/s in"
-        );
-        let column = node(&s, "column");
-        let duty = column.column_duty.unwrap();
-        // The feed enters at the column's own mixed temperature.
-        let feed_cp: f64 = feed
-            .stream
-            .composition
-            .fractions()
-            .iter()
-            .enumerate()
-            .map(|(c, w)| w * slate.get(c).cp.value())
-            .sum();
-        let mut energy = mass * feed_cp * (column.temperature_k - T_REF.value()) + duty.reboiler_w
-            - duty.condenser_w;
-        for p in PRODUCTS {
-            energy -= enthalpy_flow(&slate, edge(&s, p));
-        }
-        for (name, _, _) in LOOPS {
-            let out = edge(&s, &format!("{name}_pa_suction"));
-            let back = edge(&s, &format!("{name}_pa_return"));
-            assert_eq!(out.stream.mass_flow, back.stream.mass_flow);
-            energy += enthalpy_flow(&slate, back) - enthalpy_flow(&slate, out);
-            // The cooler: what arrives less its duty is what leaves.
-            let arriving = enthalpy_flow(&slate, edge(&s, &format!("{name}_pa_discharge")));
-            let removed = cooler_duty(&s, &format!("{name}_pa_cooler"));
-            let leaving = enthalpy_flow(&slate, back);
-            assert!(
-                (arriving - removed - leaving).abs() < 1e-9 * arriving.abs(),
-                "{solver} tick {t}: {name}'s cooler off by {} W",
-                arriving - removed - leaving
-            );
-        }
-        assert!(
-            energy.abs() < 1e-9 * duty.reboiler_w,
-            "{solver} tick {t}: the column's heat off by {energy} W"
+            (arriving - removed - leaving).abs() <= 1e-9 * arriving.abs(),
+            "{solver} tick {t}: {name}'s cooler off by {} W",
+            arriving - removed - leaving
         );
     }
+    assert!(
+        energy.abs() < 1e-9 * duty.reboiler_w,
+        "{solver} tick {t}: the column's heat off by {energy} W"
+    );
 }
 
 #[test]
@@ -451,4 +456,157 @@ fn a_loop_line_that_is_not_one_is_refused() {
         message.contains("returns to the stage above its draw"),
         "{message}"
     );
+}
+
+/// Each loop's faceplate on the column, in the order the file lists them.
+fn loops(s: &Snapshot) -> Vec<refinery_core::snapshot::LoopOperation> {
+    node(s, "column").column_operation.clone().unwrap().loops
+}
+
+/// **A stopped pump stops its loop, and the column runs on** (M72.3,
+/// docs/DESIGN.md §77.13): the kerosene loop's pump switched off, its line
+/// cannot push even a trickle back up into the column (the return enters
+/// 0.6 m above the draw), so the loop delivers nothing — reported short by its
+/// whole 85 kg/s, every pipe of its line still, its cooler idle — while the
+/// other two run at their setpoints and the books close every tick. Started
+/// again, it is back at its setpoint on the next tick, short of nothing. Until
+/// M72.3 the tick refused: "cannot deliver its 85.0000 kg/s".
+fn a_stopped_pump_stops_its_loop(solver: &str) {
+    let mut engine = plant(solver);
+    for t in 1..=150 {
+        tick(&mut engine, t);
+    }
+    let pump = engine.graph.find_node("kero_pa_pump").unwrap();
+    engine
+        .apply(Command::SetPumpOn {
+            node: pump,
+            on: false,
+        })
+        .unwrap();
+    for t in 151..=170 {
+        tick(&mut engine, t);
+        the_books_close(&engine, solver, t);
+        let s = engine.snapshot();
+        let runs = loops(&s);
+        assert_eq!(runs[0].flow_kg_s, 0.0, "{solver} tick {t}: {:?}", runs[0]);
+        assert_eq!(runs[0].short_kg_s, 85.0, "{solver} tick {t}: {:?}", runs[0]);
+        assert_eq!(runs[0].duty_w, 0.0, "{solver} tick {t}");
+        for pipe in ["suction", "discharge", "return"] {
+            assert_eq!(
+                flow(&s, &format!("kero_pa_{pipe}")),
+                0.0,
+                "{solver} tick {t}"
+            );
+        }
+        assert_eq!(cooler_duty(&s, "kero_pa_cooler"), 0.0, "{solver} tick {t}");
+        for (k, (_, declared, _)) in LOOPS.iter().enumerate().skip(1) {
+            assert!(
+                (runs[k].flow_kg_s - declared).abs() < 1e-9 * declared,
+                "{solver} tick {t}: {:?}",
+                runs[k]
+            );
+            assert_eq!(runs[k].short_kg_s, 0.0);
+        }
+        assert!(node(&s, "column").column_draws_cut_back.is_empty());
+    }
+    engine
+        .apply(Command::SetPumpOn {
+            node: pump,
+            on: true,
+        })
+        .unwrap();
+    tick(&mut engine, 171);
+    the_books_close(&engine, solver, 171);
+    let runs = loops(&engine.snapshot());
+    assert!(
+        (runs[0].flow_kg_s - 85.0).abs() < 1e-9 * 85.0,
+        "{solver}: {:?}",
+        runs[0]
+    );
+    assert_eq!(runs[0].short_kg_s, 0.0, "{solver}: {:?}", runs[0]);
+    let json = serde_json::to_string(&engine.snapshot()).unwrap();
+    assert!(
+        !json.contains("short_kg_s"),
+        "absent while every line delivers"
+    );
+}
+
+#[test]
+fn a_stopped_pump_stops_its_loop_newton() {
+    a_stopped_pump_stops_its_loop("newton");
+}
+
+#[test]
+fn a_stopped_pump_stops_its_loop_simple() {
+    a_stopped_pump_stops_its_loop("simple");
+}
+
+/// **A line that falls short delivers what it can** (M72.3, §77.13): the
+/// diesel loop asked for 250 kg/s, more than its pump's curve (60 m less
+/// 1 000·Q² m) can push round its line, runs at the flow at which its line's
+/// march arrives back at the column's 1.8 bar — by hand from the published
+/// cooler pressure and the return pipe's drop at that flow, to 1e-9 (measured
+/// 2e-10 Pa; 201 kg/s) — and no more: a part in a million more arrives under
+/// it. Reported short by the rest; the
+/// column runs, its books closed. Turned back down to 95 kg/s, it delivers
+/// that, short of nothing.
+#[test]
+fn a_loop_line_that_falls_short_delivers_what_it_can() {
+    let mut engine = plant("newton");
+    let slate = engine.slate.clone();
+    for t in 1..=150 {
+        tick(&mut engine, t);
+    }
+    let column = engine.graph.find_node("column").unwrap();
+    let set = |engine: &mut Engine, flow: f64| {
+        engine
+            .apply(Command::SetLoopFlow {
+                node: column,
+                pumparound_loop: 1,
+                flow: KgPerSec(flow),
+            })
+            .unwrap();
+    };
+    set(&mut engine, 250.0);
+    for t in 151..=160 {
+        tick(&mut engine, t);
+        the_books_close(&engine, "newton", t);
+    }
+    let before = engine.snapshot();
+    tick(&mut engine, 161);
+    let now = engine.snapshot();
+    let run = loops(&now)[1];
+    assert!(run.flow_kg_s > 95.0 && run.flow_kg_s < 250.0, "{run:?}");
+    assert!(
+        (run.short_kg_s - (250.0 - run.flow_kg_s)).abs() < 1e-12 * 250.0,
+        "{run:?}"
+    );
+    assert_eq!(flow(&now, "diesel_pa_return"), run.flow_kg_s);
+    // The return pipe's drop from the cooler's pinned pressure, at the
+    // cooler's last state (the march's upwind, this plant solving once a
+    // tick), lands on the column's pressure at the delivered flow.
+    let back = &edge(&before, "diesel_pa_return").stream;
+    let cooler = node(&now, "diesel_pa_cooler").pressure_pa;
+    let rho = back
+        .composition
+        .density_at(&slate, Pascal(cooler), back.temperature)
+        .unwrap()
+        .value();
+    let arrival = |flow: f64| cooler - pipe_drop(&engine, "diesel_pa_return", rho, flow);
+    assert!(
+        (arrival(run.flow_kg_s) - COLUMN_PA).abs() < 1e-9 * COLUMN_PA,
+        "arrives at {} Pa at {} kg/s",
+        arrival(run.flow_kg_s),
+        run.flow_kg_s
+    );
+    assert!(
+        arrival(run.flow_kg_s * (1.0 + 1.0e-6)) < COLUMN_PA,
+        "a part in a million more still arrives"
+    );
+    set(&mut engine, 95.0);
+    tick(&mut engine, 162);
+    the_books_close(&engine, "newton", 162);
+    let run = loops(&engine.snapshot())[1];
+    assert!((run.flow_kg_s - 95.0).abs() < 1e-9 * 95.0, "{run:?}");
+    assert_eq!(run.short_kg_s, 0.0, "{run:?}");
 }

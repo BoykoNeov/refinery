@@ -3117,6 +3117,8 @@ where
     // A line pump's two-phase state is the march's (M62.4b, docs/DESIGN.md
     // §67.13): the solve's own flow on its outlet is the draw guard's zero.
     solution.pump_two_phase.extend(pins.pump_two_phase);
+    // And what a short loop line delivers (M72.3, §77.13).
+    solution.loop_delivered = pins.loop_delivered;
     Ok(solution)
 }
 
@@ -4134,6 +4136,8 @@ pub fn finalize(
         vessel_residual: BTreeMap::new(),
         pump_suction: edges.pump_suction,
         pump_two_phase: edges.pump_two_phase,
+        // The driver's, from the line march (`march_draw_lines`).
+        loop_delivered: BTreeMap::new(),
     })
 }
 
@@ -4584,6 +4588,32 @@ pub struct DrawLinePins {
     /// Each line pump's state at the line's flow, where its suction is a
     /// boiling plant's (`compile_edge_at`'s two-phase pump branch).
     pub pump_two_phase: BTreeMap<NodeId, PumpTwoPhaseState>,
+    /// Each pumparound loop whose line cannot deliver its set flow, by its
+    /// first pipe: the most it delivers [kg/s] (M72.3, docs/DESIGN.md §77.13)
+    /// — `HydraulicSolution::loop_delivered`.
+    pub loop_delivered: BTreeMap<EdgeId, KgPerSec>,
+}
+
+/// Bisection steps on a short loop line's flow (M72.3): 2^-60 of its
+/// setpoint, under an `f64`'s spacing at it.
+const LOOP_DELIVERY_BISECTIONS: u32 = 60;
+
+/// One line marched at one flow: where it arrives [Pa], and its pins.
+struct LineMarch {
+    arrival: f64,
+    /// The store the line ends at — a draw's tank, a loop's own column —
+    /// and its pressure [Pa].
+    store: (NodeId, f64),
+    pressure: Vec<(NodeId, f64)>,
+    pump_two_phase: Vec<(NodeId, PumpTwoPhaseState)>,
+}
+
+impl LineMarch {
+    /// Whether the line arrives at its store's pressure at least — the rest
+    /// its control valve, implicit.
+    fn reaches(&self) -> bool {
+        self.arrival >= self.store.1
+    }
 }
 
 /// March every draw line from its column's pinned pressure, edge by edge,
@@ -4597,6 +4627,15 @@ pub struct DrawLinePins {
 /// separation, the pipe's stored stream. The last edge's arrival must reach
 /// its store's pressure — the rest is the line's control valve, implicit — or
 /// the line cannot deliver its draw, and the solve refuses, naming it.
+///
+/// **A pumparound loop's line does not refuse** (M72.3, docs/DESIGN.md
+/// §77.13): marched at its set flow, a line that arrives short of its column
+/// delivers the most it can — the flow at which the march arrives at the
+/// column's pressure, by bisection on the march at the stored state, or zero
+/// where even no flow cannot (the return enters higher than the draw, so a
+/// stopped pump stops its loop) — pinned at that flow and reported in
+/// `loop_delivered`. A loop that delivers its setpoint is pinned at its stored
+/// flow, as a draw line is.
 pub fn march_draw_lines(
     graph: &PlantGraph,
     slate: &Slate,
@@ -4604,102 +4643,185 @@ pub fn march_draw_lines(
     flash: LineFlash<'_>,
 ) -> Result<DrawLinePins, SimError> {
     let mut pins = DrawLinePins::default();
+    let march = |column: NodeId, line: &[EdgeId], mass_flow: f64| {
+        march_line(
+            graph,
+            slate,
+            previous_states,
+            flash,
+            column,
+            line,
+            mass_flow,
+        )
+    };
+    let pin = |pins: &mut DrawLinePins, marched: LineMarch| {
+        pins.pressure.extend(marched.pressure);
+        pins.pump_two_phase.extend(marched.pump_two_phase);
+    };
+    for (column, _, line) in graph.draw_lines() {
+        let mass_flow = graph.pipe(line[0]).stream.mass_flow.value().max(0.0);
+        let marched = march(column, line, mass_flow)?;
+        if !marched.reaches() {
+            let (store, store_pressure) = marched.store;
+            return Err(SimError::Numerical(format!(
+                "the draw line of column '{}' through '{}' cannot deliver its {mass_flow:.4} \
+                 kg/s to '{}': it arrives at {:.4} bar against the store's {:.4} bar. A \
+                 line's pump must push its draw through its pipes and coolers to its store \
+                 (docs/DESIGN.md §67.13): start or strengthen the pump, or widen the line",
+                graph.node(column).name,
+                graph.node(graph.endpoints(line[0]).1).name,
+                graph.node(store).name,
+                marched.arrival / 1e5,
+                store_pressure / 1e5
+            )));
+        }
+        pin(&mut pins, marched);
+    }
     // A pumparound loop's line marches the same way, its "store" its own
     // column (M72.2, docs/DESIGN.md §77.2).
-    let mut lines = graph.draw_lines();
-    lines.extend(graph.loop_lines());
-    for (column, _, line) in lines {
-        let NodeKind::Column { pressure, .. } = &graph.node(column).kind else {
+    for (column, index, line) in graph.loop_lines() {
+        let NodeKind::Column {
+            cascade: Some(spec),
+            ..
+        } = &graph.node(column).kind
+        else {
             continue;
         };
-        let mass_flow = graph.pipe(line[0]).stream.mass_flow.value().max(0.0);
-        let mut here = pressure.value();
-        for (k, &eid) in line.iter().enumerate() {
-            let (src, tgt) = graph.endpoints(eid);
-            let pipe = graph.pipe(eid);
-            let (rho, branch, pump) = if k == 0 {
-                // The draw itself: its separation's composition and temperature.
-                let (composition, temperature) = drawn_state(graph, previous_states, eid)
-                    .ok_or_else(|| {
-                        SimError::Numerical(format!(
-                            "internal: pipe '{}' starts a draw line but carries no draw",
-                            pipe.name
-                        ))
-                    })?;
-                let at = Pascal(here.max(RHO_EVAL_P_FLOOR));
-                let (liquid, offer) = state_densities(slate, composition, temperature, at, flash)?;
-                let rho = offer.map_or(liquid, |two_phase| two_phase.mixture.value());
-                let k_pipe = pipe_resistance(
-                    pipe.friction_factor,
-                    pipe.length.value(),
-                    pipe.diameter.value(),
-                    rho,
-                );
-                let branch = QuadraticBranch::pipe(k_pipe, rho * G * pipe.elevation_change.value());
-                (rho, branch, None)
-            } else {
-                let pressures = BTreeMap::from([(src, here), (tgt, here)]);
-                let compiled = compile_edge_at(
-                    graph,
-                    eid,
-                    slate,
-                    previous_states,
-                    &pressures,
-                    flash,
-                    src,
-                    None,
-                )?;
-                (compiled.rho, compiled.branch, compiled.pump_two_phase)
-            };
-            // Δp = α·Q|Q| + β, the branch's own law (`QuadraticBranch::flow`).
-            let q = mass_flow / rho;
-            let drop = branch.alpha * q * q.abs() + branch.beta;
-            if let Some(t) = pump {
-                pins.pump_two_phase.insert(
-                    src,
-                    PumpTwoPhaseState {
-                        void_fraction: t.void_fraction,
-                        head_multiplier: t.head_multiplier,
-                        pressure_rise: Pascal(
-                            -(t.pump_branch.alpha * q * q.abs() + t.pump_branch.beta),
-                        ),
-                    },
-                );
-            }
-            let next = here - drop;
-            if !next.is_finite() {
-                return Err(SimError::Numerical(format!(
-                    "the draw line of column '{}' marched to a non-finite pressure on pipe '{}'",
-                    graph.node(column).name,
-                    pipe.name
-                )));
-            }
-            if k + 1 < line.len() {
-                pins.pressure.insert(tgt, next);
-                here = next;
-                continue;
-            }
-            let store = fixed_pressure(graph.node(tgt), slate).ok_or_else(|| {
-                SimError::Numerical(format!(
-                    "internal: the draw line of column '{}' ends at '{}', which pins no pressure",
-                    graph.node(column).name,
-                    graph.node(tgt).name
-                ))
-            })?;
-            if next < store {
-                return Err(SimError::Numerical(format!(
-                    "the draw line of column '{}' through '{}' cannot deliver its {mass_flow:.4} \
-                     kg/s to '{}': it arrives at {:.4} bar against the store's {:.4} bar. A \
-                     line's pump must push its draw through its pipes and coolers to its store \
-                     (docs/DESIGN.md §67.13): start or strengthen the pump, or widen the line",
-                    graph.node(column).name,
-                    graph.node(graph.endpoints(line[0]).1).name,
-                    graph.node(tgt).name,
-                    next / 1e5,
-                    store / 1e5
-                )));
-            }
+        let set = spec.loops[index].flow.value();
+        let stored = graph.pipe(line[0]).stream.mass_flow.value().max(0.0);
+        let marched = march(column, line, stored)?;
+        if stored == set && marched.reaches() {
+            pin(&mut pins, marched);
+            continue;
         }
+        let at_set = march(column, line, set)?;
+        if at_set.reaches() {
+            // It delivers its setpoint: pinned where it ran, as a draw line
+            // is, unless that flow (above a new, lower setpoint) falls short.
+            pin(&mut pins, if marched.reaches() { marched } else { at_set });
+            continue;
+        }
+        // Short: the most it delivers, `lo` arriving at the column at least.
+        let at_zero = march(column, line, 0.0)?;
+        let (delivered, marched) = if !at_zero.reaches() {
+            (0.0, at_zero)
+        } else {
+            let (mut lo, mut hi) = ((0.0, at_zero), set);
+            for _ in 0..LOOP_DELIVERY_BISECTIONS {
+                let mid = 0.5 * (lo.0 + hi);
+                let at_mid = march(column, line, mid)?;
+                if at_mid.reaches() {
+                    lo = (mid, at_mid);
+                } else {
+                    hi = mid;
+                }
+            }
+            lo
+        };
+        pins.loop_delivered.insert(line[0], KgPerSec(delivered));
+        pin(&mut pins, marched);
     }
     Ok(pins)
+}
+
+/// One draw or loop line marched from its column at `mass_flow` [kg/s]
+/// (`march_draw_lines`).
+fn march_line(
+    graph: &PlantGraph,
+    slate: &Slate,
+    previous_states: &NodeStates,
+    flash: LineFlash<'_>,
+    column: NodeId,
+    line: &[EdgeId],
+    mass_flow: f64,
+) -> Result<LineMarch, SimError> {
+    let NodeKind::Column { pressure, .. } = &graph.node(column).kind else {
+        return Err(SimError::Numerical(format!(
+            "internal: a draw line starts at '{}', which is no column",
+            graph.node(column).name
+        )));
+    };
+    let mut marched = LineMarch {
+        arrival: f64::NAN,
+        store: (column, f64::NAN),
+        pressure: Vec::with_capacity(line.len()),
+        pump_two_phase: Vec::new(),
+    };
+    let mut here = pressure.value();
+    for (k, &eid) in line.iter().enumerate() {
+        let (src, tgt) = graph.endpoints(eid);
+        let pipe = graph.pipe(eid);
+        let (rho, branch, pump) = if k == 0 {
+            // The draw itself: its separation's composition and temperature.
+            let (composition, temperature) =
+                drawn_state(graph, previous_states, eid).ok_or_else(|| {
+                    SimError::Numerical(format!(
+                        "internal: pipe '{}' starts a draw line but carries no draw",
+                        pipe.name
+                    ))
+                })?;
+            let at = Pascal(here.max(RHO_EVAL_P_FLOOR));
+            let (liquid, offer) = state_densities(slate, composition, temperature, at, flash)?;
+            let rho = offer.map_or(liquid, |two_phase| two_phase.mixture.value());
+            let k_pipe = pipe_resistance(
+                pipe.friction_factor,
+                pipe.length.value(),
+                pipe.diameter.value(),
+                rho,
+            );
+            let branch = QuadraticBranch::pipe(k_pipe, rho * G * pipe.elevation_change.value());
+            (rho, branch, None)
+        } else {
+            let pressures = BTreeMap::from([(src, here), (tgt, here)]);
+            let compiled = compile_edge_at(
+                graph,
+                eid,
+                slate,
+                previous_states,
+                &pressures,
+                flash,
+                src,
+                None,
+            )?;
+            (compiled.rho, compiled.branch, compiled.pump_two_phase)
+        };
+        // Δp = α·Q|Q| + β, the branch's own law (`QuadraticBranch::flow`).
+        let q = mass_flow / rho;
+        let drop = branch.alpha * q * q.abs() + branch.beta;
+        if let Some(t) = pump {
+            marched.pump_two_phase.push((
+                src,
+                PumpTwoPhaseState {
+                    void_fraction: t.void_fraction,
+                    head_multiplier: t.head_multiplier,
+                    pressure_rise: Pascal(
+                        -(t.pump_branch.alpha * q * q.abs() + t.pump_branch.beta),
+                    ),
+                },
+            ));
+        }
+        let next = here - drop;
+        if !next.is_finite() {
+            return Err(SimError::Numerical(format!(
+                "the draw line of column '{}' marched to a non-finite pressure on pipe '{}'",
+                graph.node(column).name,
+                pipe.name
+            )));
+        }
+        if k + 1 < line.len() {
+            marched.pressure.push((tgt, next));
+            here = next;
+            continue;
+        }
+        let store = fixed_pressure(graph.node(tgt), slate).ok_or_else(|| {
+            SimError::Numerical(format!(
+                "internal: the draw line of column '{}' ends at '{}', which pins no pressure",
+                graph.node(column).name,
+                graph.node(tgt).name
+            ))
+        })?;
+        marched.arrival = next;
+        marched.store = (tgt, store);
+    }
+    Ok(marched)
 }

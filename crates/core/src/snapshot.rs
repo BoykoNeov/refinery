@@ -751,6 +751,12 @@ pub struct ColumnOperation {
     pub loops: Vec<LoopOperation>,
 }
 
+/// Whether a flow is zero — what keeps `LoopOperation::short_kg_s` off the
+/// wire while a loop's line delivers its setpoint.
+fn is_zero_f64(value: &f64) -> bool {
+    *value == 0.0
+}
+
 /// One pumparound loop's faceplate — see `ColumnOperation::loops`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct LoopOperation {
@@ -767,6 +773,12 @@ pub struct LoopOperation {
     /// Its cooler ran at capacity, the return warmer than the setpoint.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub at_capacity: bool,
+    /// How far short of its set flow its line delivered it [kg/s] (M72.3,
+    /// docs/DESIGN.md §77.13): the setpoint less `flow_kg_s`, the whole of it
+    /// where the line's pump is stopped. **Absent** while the line delivers
+    /// its setpoint.
+    #[serde(default, skip_serializing_if = "is_zero_f64")]
+    pub short_kg_s: f64,
 }
 
 /// One control loop's faceplate — what a frontend draws and what §7's rule
