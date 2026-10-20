@@ -462,12 +462,10 @@ fn fixture(cmd: &Command) -> Fixture {
         Command::SetPumparoundDuty { .. } => Fixture::shipped("crude_unit.toml", "column"),
         // M66: the stripped crude unit's reboiler, held where it is.
         Command::SetReboilerDuty { .. } => Fixture::shipped("crude_unit_stripped.toml", "column"),
-        // M72.2: the loop fixture's column — no shipped plant has loops before
-        // M72.4's, so the scenarios crate's test fixture, by its path.
-        Command::SetLoopFlow { .. } | Command::SetLoopReturnTemperature { .. } => Fixture::shipped(
-            "../crates/scenarios/tests/data/crude_unit_loops_fixture.toml",
-            "column",
-        ),
+        // M72.4: the crude unit whose pumparounds are loops on the map.
+        Command::SetLoopFlow { .. } | Command::SetLoopReturnTemperature { .. } => {
+            Fixture::shipped("crude_unit_loops.toml", "column")
+        }
         // A vent is legal only on a gas-locked pump that is stopped, so the
         // inline flashing pump plant is run until it locks, then stopped — see
         // `Fixture::GasLocked` (M54, docs/DESIGN.md §59.2).

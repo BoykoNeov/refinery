@@ -10775,3 +10775,23 @@ draw line does — moved to M72.3 with the stopped pump. DESIGN §77.11.
   solvers; the line's pressures by hand; the commands and refusals.
   Mutations: sixteen, fourteen caught, two argued. Corpus byte-identical on
   both fidelities.
+
+### M72.4 — **LANDED** 2026-10-20: the plant and its cold start
+
+`scenarios/crude_unit_loops.toml`: the crude unit on thirteen trays, its three
+pumparounds loops on the map at 85 / 95 / 65 kg/s returning at 150 / 215 /
+270 °C. Cold, each loop starts on its cooler's start duty and is handed to its
+return temperature over ten Newton solves; the halvings halve the start
+duties; a loop column whose cold start still refuses tries again with the
+feed's boiling-order seed held for its whole warm-up. By the user's decision
+that retry is a loop column's only: on every column it started the cold crude
+unit where the column screen's table says it stops. DESIGN §77.12.
+
+- Settled as the probe found: duties 15.06 / 17.05 / 12.79 MW, products
+  81.3 / 78.0 / 75.8 % (ten trays: 72 / 68 / 67). Tick 1 60 ms once, steady
+  0.87 ms, the tick after a reflux 4 → 2 29–33 ms (M72.5's).
+- Gates: the first start refuses and the retry starts it; the hand-over ends
+  on the column's own equations; tick 1 on both solvers; the plant as its
+  file says; the books every tick on both. Mutations: twelve, seven
+  caught, five argued. Corpus 67 of 67 byte-identical on both fidelities, the
+  new plant runs on both.

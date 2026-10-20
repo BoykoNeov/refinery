@@ -29071,7 +29071,8 @@ the duty a crew would bring the cooler in at), then hands each loop to its
 held return temperature in `CONTINUATION_STEPS` Newton solves (finding 7).
 The halvings (§70.1) halve the start duties. **A refused cold start tries
 again with the sharp seed held for the whole warm-up** (finding 8) — a retry,
-so no shipped plant, none of which refuses, moves.
+so no shipped plant, none of which refuses, moves. (Built a loop column's
+only: on every column it moved the screen's cold table, §77.12.)
 
 ### 77.6 Fork 6 — the key-press hitch (C11)
 
@@ -29256,3 +29257,70 @@ guarded zero (the sweep writes the loop's flow only once the column has
 separated, the engine overwrites it after), so they add nothing; the guards
 keep it so if that order ever changes. **Corpus**: 67 of 67 plants
 byte-identical on both fidelities.
+
+### 77.12 The plant and its cold start, built (M72.4)
+
+As §77.5 and §77.7 specify, with one change by the user's decision: **the
+boiling-order seed's retry is a loop column's only.** Tried on every column, it
+started a column the screen's tables measured refusing — the cold crude unit
+at 62.5 MW with its pumparounds off and the steam wide open
+(`column_screen::slow_the_cold_units_region_is_the_columns`) — so it would have
+moved the cold table's edge (C19). Asked (2026-10-20), the user kept every
+existing column as measured.
+
+- **The plant**: `scenarios/crude_unit_loops.toml` — the crude unit's crude,
+  furnace, draws and reflux on a 13-tray column (draws on 4, 7, 10, the feed
+  on 11), three loops 4→3, 7→6, 10→9 at 85 / 95 / 65 kg/s returning at 150 /
+  215 / 270 °C, each a pump and a cooler on the map (M72.2's line: a 15 m fall
+  to the pump, a 15.6 m climb back), each cooler of 30 MW (a game value, about
+  twice its duty), brought in cold at 15 / 15 / 10 MW.
+- **The hand-over** (`HeatBalanceCascade::cold_start`): a column with loops
+  starts on its loops' start duties (`LoopPlan::hand_over` 0 — each return
+  `h_d − Q_start/P`) as M61 starts any column (`cold_start_on`), then walks the
+  share to 1 in `CONTINUATION_STEPS` Newton solves, each from the last, the
+  last the column's own equations exactly. Inside the cold start, so the
+  halvings' starts hand over too.
+- **The halvings** (§70.1) halve the loops' start duties beside the side
+  coolers' duties, and a column whose only cooling is its loops has something
+  to halve (`cold_path`).
+- **The retry** (`solve_by_newton`): a loop column whose cold path refuses,
+  halvings and all, runs it again with the sharp seed held for the whole
+  warm-up (`ColumnSetup::sharp_seed`, `SHARP_SEED_ITERATIONS` → 30). Not where
+  the feed floods (§70.2); a refusal there keeps the first refusal's words and
+  adds the retry's.
+
+**Settled** (the probe's held-return column, §77.0 finding 7, on both flow
+solvers): duties 15.06 / 17.05 / 12.79 MW from tick 1 and through 3 000 ticks,
+each return at its setpoint, no cooler at capacity; the products' liquid mole
+fractions at the draw trays 81.3 / 78.0 / 75.8 % (the ten-tray side-cooled
+crude unit's 72.4 / 67.9 / 66.6 %); the trays inside the loops carrying 1.45–2.1
+times the liquid of the tray above. **Cost** (release, two runs agreeing):
+tick 1 — the first cold path refused, the retry started — 60 ms, once; a
+steady tick 0.87 ms; the tick after a reflux 4 → 2, 29–33 ms (M72.5's, C11),
+then 0.9 ms. On the retry the full start duty starts it from a half to 24
+times the declared, so the halvings are never reached on a start that
+succeeds.
+
+**Gates** (`heat_balance::newton_tests`, the column alone; and
+`crates/scenarios/tests/crude_unit_loops.rs`, the plant): the first cold path
+refuses (halvings and all) and the retry starts it, every loop at its setpoint
+at the probe's duties; the hand-over ends on the column's own equations (Newton
+warm from the cold answer lands on it, 1e-6); the plant starts cold on tick 1
+on both flow solvers, the loops where declared; it runs as its file says
+(purities at least five points over the ten-tray column's, the loop trays'
+loads, the declared reflux, the coil far under its limit); the books every
+tick for 300 ticks on both solvers (M72.2's check, on this plant). The bridge's
+loop commands now play on this plant; the furnace census counts 36.
+
+**Mutations**: twelve. Seven caught: no hand-over; the start at the held
+return; the retry off; the fixed point ignoring the held seed; a loop column
+with nothing to halve (the refusal then names no halvings); the retry where
+the feed floods (`wetter_crude_reference`); the retry on every column (the cold
+unit's region). Five argued, equivalent at every answer: the walk a step short,
+and the walk's last solve on its own plan — the last solve is the column's own
+equations either way, so only the path differs; the retry with the seed held
+29 iterations of 30 (it has margin: 10 refuses, 29 and 30 start); the halvings
+keeping the loops' start duties (never reached on this plant, above); and
+M72.1's argued one, the walk's circulations started at half — a starting guess,
+Newton lands on the same answer from it. **Corpus**: 67 of 67 plants
+byte-identical on both fidelities; `crude_unit_loops` new, 6 000 ticks on both.

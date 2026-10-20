@@ -41,7 +41,12 @@ fn build(src: &str) -> Result<Engine, String> {
 }
 
 fn plant(solver: &str) -> Engine {
-    build(&PLANT.replace("flow = \"newton\"", &format!("flow = \"{solver}\""))).unwrap()
+    plant_of(PLANT, solver)
+}
+
+/// A plant with loops on the flow solver `solver`.
+fn plant_of(src: &str, solver: &str) -> Engine {
+    build(&src.replace("flow = \"newton\"", &format!("flow = \"{solver}\""))).unwrap()
 }
 
 fn tick(engine: &mut Engine, t: u32) {
@@ -141,11 +146,13 @@ fn a_loop_line_carries_its_circulation_and_returns_at_its_setpoint() {
 /// column passes its feed's mass out by its products, each loop's out and back
 /// cancelling; its heat — feed, reboiler, each loop's liquid out at its draw
 /// stage and back at its return, against the products and the condenser —
-/// closes to rounding; each cooler takes out exactly its duty.
-fn the_books_close_every_tick(solver: &str) {
-    let mut engine = plant(solver);
+/// closes to rounding; each cooler takes out exactly its duty. `src` is a
+/// plant whose loops and products are named as the fixture's (M72.4's shipped
+/// plant is too).
+pub(super) fn the_books_close_every_tick(src: &str, solver: &str, ticks: u32) {
+    let mut engine = plant_of(src, solver);
     let slate = engine.slate.clone();
-    for t in 1..=300 {
+    for t in 1..=ticks {
         tick(&mut engine, t);
         let s = engine.snapshot();
         let feed = edge(&s, "transfer_line");
@@ -195,12 +202,12 @@ fn the_books_close_every_tick(solver: &str) {
 
 #[test]
 fn the_books_close_every_tick_newton() {
-    the_books_close_every_tick("newton");
+    the_books_close_every_tick(PLANT, "newton", 300);
 }
 
 #[test]
 fn the_books_close_every_tick_simple() {
-    the_books_close_every_tick("simple");
+    the_books_close_every_tick(PLANT, "simple", 300);
 }
 
 /// `k·Q|Q| + ρ·g·Δz` [Pa], a pipe's drop at `mass_flow` (Darcy–Weisbach).

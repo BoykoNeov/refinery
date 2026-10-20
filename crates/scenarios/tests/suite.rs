@@ -53,6 +53,8 @@ mod crude_unit;
 mod crude_unit_boiling_reference;
 #[path = "crude_unit_cold_reference.rs"]
 mod crude_unit_cold_reference;
+#[path = "crude_unit_loops.rs"]
+mod crude_unit_loops;
 #[path = "crude_unit_steam_reference.rs"]
 mod crude_unit_steam_reference;
 #[path = "crude_unit_stripped_reference.rs"]

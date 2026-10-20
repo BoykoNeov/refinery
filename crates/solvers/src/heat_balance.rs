@@ -54,6 +54,15 @@ use crate::molar::MoleFractions;
 /// the reboiler exceeded the feed's and tick 1 failed on a negative bottoms —
 /// on `StageCascade` as well. Ten iterations of the sharp split started it (102
 /// iterations to converge at a saturated feed); one or three did not.
+///
+/// A taller column needs it longer (M72.0's probe, docs/DESIGN.md §77.0
+/// finding 8): on 11, 12 and 13 trays the draws above the reboiler carried
+/// more moles than the feed once it ended, and held for the whole warm-up
+/// ([`COLD_WARM_UP_ITERATIONS`]) every layout started. So a column with
+/// pumparound loops whose cold start refuses tries again with it held (§77.5)
+/// — a retry, and on loop columns only (the user's decision, §77.12): on every
+/// other column it would start some that the column screen's tables measured
+/// refusing (the cold crude unit at 62.5 MW, its pumparounds off).
 const SHARP_SEED_ITERATIONS: u32 = 10;
 
 /// The smallest vapour any stage below the top may carry, as a share of the
@@ -180,6 +189,10 @@ pub struct HeatBalanceCascade {
     max_iterations: u32,
     seed_offset: Kelvin,
     method: Method,
+    /// Whether a refused cold start tries again with the boiling-order seed
+    /// held (M72.4, docs/DESIGN.md §77.5): off only for the gate that shows
+    /// the first start refuses.
+    seed_retry: bool,
 }
 
 impl HeatBalanceCascade {
@@ -192,6 +205,7 @@ impl HeatBalanceCascade {
             max_iterations: Self::DEFAULT_MAX_ITERATIONS,
             seed_offset: Kelvin::ZERO,
             method: Method::Newton,
+            seed_retry: true,
         }
     }
 
@@ -223,6 +237,17 @@ impl HeatBalanceCascade {
             max_iterations: FIXED_POINT_MAX_ITERATIONS,
             seed_offset: Kelvin::ZERO,
             method: Method::FixedPoint,
+            seed_retry: true,
+        }
+    }
+
+    /// Newton without the boiling-order seed's retry (M72.4, §77.5): the gate
+    /// that the shipped 13-tray column refuses its first cold start.
+    #[cfg(test)]
+    pub(crate) fn without_seed_retry() -> Self {
+        Self {
+            seed_retry: false,
+            ..Self::new()
         }
     }
 }
@@ -291,6 +316,7 @@ struct FixedPointState {
 }
 
 /// Everything a column's solve reads that the iterations do not change.
+#[derive(Clone)]
 struct ColumnSetup<'a> {
     pass: &'a ColumnPass<'a>,
     thermo: &'a dyn ThermoModel,
@@ -316,6 +342,10 @@ struct ColumnSetup<'a> {
     /// hold to (M66.2, docs/DESIGN.md §71.2): the continuation there costs
     /// 160–204 ms a held-back tick and reaches nothing the warm start does not.
     continuation: bool,
+    /// The cold warm-up's iterations on the feed's sharp split by boiling
+    /// order ([`SHARP_SEED_ITERATIONS`]; the whole warm-up on the retry of a
+    /// refused cold start, M72.4, docs/DESIGN.md §77.5).
+    sharp_seed: u32,
 }
 
 impl SeparationModel for HeatBalanceCascade {
@@ -637,6 +667,7 @@ impl HeatBalanceCascade {
             tolerance,
             water,
             continuation,
+            sharp_seed: SHARP_SEED_ITERATIONS,
         };
 
         let profile = match self.method {
@@ -861,7 +892,7 @@ impl HeatBalanceCascade {
 
             let mut previous = plan.draw_states(&liquid, &k, slate)?;
             if let Some(masses) = &sharp {
-                if iterations <= SHARP_SEED_ITERATIONS {
+                if iterations <= setup.sharp_seed {
                     for (state, mass) in previous.iter_mut().zip(masses) {
                         if let Some(mass) = mass {
                             state.mean_molar_mass = *mass;
@@ -1085,19 +1116,62 @@ impl HeatBalanceCascade {
             }
             return self.continuation(setup, &equations, held.value());
         }
-        let refused = match self.cold_start(setup, &equations, warm_failure.as_ref()) {
+        let refused = match self.cold_path(setup, &equations, warm_failure.as_ref()) {
+            Ok(profile) => return Ok(profile),
+            Err(refused) => refused,
+        };
+        // A column with pumparound loops whose cold start refuses, halvings
+        // and all, tries once more with the feed's boiling-order seed held for
+        // its whole warm-up (M72.4, docs/DESIGN.md §77.5, §77.12): a taller
+        // column needs it longer. Only a loop column — on any other it would
+        // start columns the screen's tables measured refusing — and not where
+        // the feed floods, which no seed fractionates (§70.2).
+        if !self.seed_retry
+            || plan.loops.is_empty()
+            || setup.sharp_seed >= COLD_WARM_UP_ITERATIONS
+            || flooding(setup.pass).is_some()
+        {
+            return Err(refused);
+        }
+        let held = ColumnSetup {
+            sharp_seed: COLD_WARM_UP_ITERATIONS,
+            ..setup.clone()
+        };
+        self.cold_path(&held, &equations, warm_failure.as_ref())
+            .map_err(|retry| match refused {
+                SimError::Numerical(reason) => SimError::Numerical(format!(
+                    "{reason} Started again with its feed's boiling-order seed held for its \
+                     whole warm-up (docs/DESIGN.md §77.5), it did not start either: {retry}"
+                )),
+                other => other,
+            })
+    }
+
+    /// An unheld column's way in from cold: M61's cold start, then — refused —
+    /// its pumparounds halved (M65.1, docs/DESIGN.md §70.1).
+    fn cold_path(
+        &self,
+        setup: &ColumnSetup<'_>,
+        equations: &ColumnEquations<'_>,
+        warm_failure: Option<&Unsolved>,
+    ) -> Result<Profile, SimError> {
+        let plan = &setup.plan;
+        let refused = match self.cold_start(setup, equations, warm_failure) {
             Ok(profile) => return Ok(profile),
             Err(refused) => refused,
         };
         // A cold start that refuses starts again from its pumparounds halved
-        // (M65.1, docs/DESIGN.md §70.1); a column with none has nothing to halve,
+        // (M65.1, docs/DESIGN.md §70.1) — side coolers' duties and loops'
+        // start duties (M72.4, §77.5); a column with none has nothing to halve,
         // and a feed wet enough to flood floods (M65.2, §70.2) — its halvings
         // cost half a second a tick on the flooded crude unit, and a column fed
         // that much water does not fractionate.
-        if plan.side_heat.iter().all(|heat| *heat == 0.0) || flooding(setup.pass).is_some() {
+        let nothing_to_halve = plan.side_heat.iter().all(|heat| *heat == 0.0)
+            && plan.loops.iter().all(|l| l.start_duty == 0.0);
+        if nothing_to_halve || flooding(setup.pass).is_some() {
             return Err(refused);
         }
-        self.halved_start(setup, &equations)
+        self.halved_start(setup, equations)
             .map_err(|how| match refused {
                 SimError::Numerical(reason) => SimError::Numerical(format!("{reason} {how}")),
                 other => other,
@@ -1163,10 +1237,76 @@ impl HeatBalanceCascade {
         ))
     }
 
+    /// A cold start. A column with pumparound loops starts on their start
+    /// duties — each return `h_d − Q_start/P` — and hands them to their held
+    /// return temperatures in [`CONTINUATION_STEPS`] Newton solves, each from
+    /// the last, the last the column's own equations exactly (M72.4,
+    /// docs/DESIGN.md §77.5): from the warm-up's rough temperatures a held
+    /// return implies a duty far off, and the stage below the feed loses its
+    /// vapour (§77.0, finding 7). Every other column: [`Self::cold_start_on`].
+    fn cold_start(
+        &self,
+        setup: &ColumnSetup<'_>,
+        equations: &ColumnEquations<'_>,
+        warm_failure: Option<&Unsolved>,
+    ) -> Result<Profile, SimError> {
+        if setup.plan.loops.is_empty() {
+            return self.cold_start_on(setup, equations, warm_failure);
+        }
+        let handed = |share: f64| {
+            let mut plan = setup.plan.clone();
+            for l in plan.loops.iter_mut() {
+                l.hand_over = share;
+            }
+            plan
+        };
+        let start_plan = handed(0.0);
+        let start_setup = ColumnSetup {
+            plan: start_plan.clone(),
+            ..setup.clone()
+        };
+        let start_equations = ColumnEquations {
+            plan: &start_plan,
+            ..*equations
+        };
+        let mut profile = self.cold_start_on(&start_setup, &start_equations, warm_failure)?;
+        for step in 1..=CONTINUATION_STEPS {
+            let last = step == CONTINUATION_STEPS;
+            let step_plan = handed(f64::from(step) / f64::from(CONTINUATION_STEPS));
+            let walked = ColumnEquations {
+                plan: &step_plan,
+                ..*equations
+            };
+            let step_equations = if last { equations } else { &walked };
+            profile = self
+                .newton_with_water(
+                    step_equations,
+                    &profile.temperatures,
+                    &profile.flows.vapour,
+                    &profile_draw_rates(&setup.plan, &profile),
+                    Some(profile.reflux_ratio),
+                    profile.wet_stages(),
+                    &profile.free_water,
+                )
+                .map_err(|unsolved| {
+                    SimError::Numerical(format!(
+                        "heat-balance cascade started on its pumparound loops' start duties \
+                         (docs/DESIGN.md §77.5), and the hand-over to their return \
+                         temperatures stopped at step {step} of {CONTINUATION_STEPS}: Newton \
+                         {}.{}{}",
+                        unsolved.reason,
+                        physical_cause(&setup.plan, unsolved.flows.as_deref(), setup.feed_molar),
+                        settings_sentence(setup.spec)
+                    ))
+                })?;
+        }
+        Ok(profile)
+    }
+
     /// M61's cold start (§66.1): a short fixed-point warm-up, then Newton. A
     /// refusal names the cold failure, with the warm one's physical cause where
     /// only the warm attempt's last iterate shows an edge.
-    fn cold_start(
+    fn cold_start_on(
         &self,
         setup: &ColumnSetup<'_>,
         equations: &ColumnEquations<'_>,
@@ -1284,6 +1424,11 @@ impl HeatBalanceCascade {
         for heat in base_plan.side_heat.iter_mut() {
             *heat *= share;
         }
+        // And each loop's start duty (M72.4, §77.5): the cold start hands the
+        // loop to its return temperature, so the walk back has none to walk.
+        for l in base_plan.loops.iter_mut() {
+            l.start_duty *= share;
+        }
         let base_spec = CascadeSpec {
             pumparounds: setup
                 .spec
@@ -1310,6 +1455,7 @@ impl HeatBalanceCascade {
             tolerance: setup.tolerance,
             water: setup.water.clone(),
             continuation: setup.continuation,
+            sharp_seed: setup.sharp_seed,
         };
         let base_equations = ColumnEquations {
             plan: &base_plan,
@@ -1411,6 +1557,7 @@ impl HeatBalanceCascade {
             tolerance: setup.tolerance,
             water: setup.water.clone(),
             continuation: setup.continuation,
+            sharp_seed: setup.sharp_seed,
         };
         let base_equations = ColumnEquations {
             plan: &base_plan,
@@ -4099,7 +4246,7 @@ mod newton_tests {
     use super::*;
     use crate::{ConstantAlphaThermo, TroutonThermo};
     use refinery_core::components::{Phase, PseudoComponent};
-    use refinery_core::graph::{ColumnDraw, NodeId, Pumparound};
+    use refinery_core::graph::{ColumnDraw, NodeId, Pumparound, PumparoundLoop};
     use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, KgPerSec, P_ATM};
 
     /// The largest relative gap between two separations: every draw's mass
@@ -4414,6 +4561,105 @@ mod newton_tests {
                 },
                 &TroutonThermo::new(),
             )
+        }
+    }
+
+    /// The shipped 13-tray crude unit's column (`scenarios/crude_unit_loops.toml`,
+    /// M72.4, docs/DESIGN.md §77.7): the crude unit's cuts and feed, the draws
+    /// on trays 4, 7 and 10, the feed on 11, three pumparound loops 4→3, 7→6,
+    /// 10→9 at 85 / 95 / 65 kg/s returning at 150 / 215 / 270 °C, brought in
+    /// cold at 15 / 15 / 10 MW.
+    fn thirteen_trays() -> (CrudeUnit, CascadeSpec) {
+        let mut unit = CrudeUnit::new();
+        unit.draws = vec![
+            ColumnDraw::by_stage(NodeId(1), 0, Some(0.22)),
+            ColumnDraw::by_stage(NodeId(2), 4, Some(0.16)),
+            ColumnDraw::by_stage(NodeId(3), 7, Some(0.20)),
+            ColumnDraw::by_stage(NodeId(4), 10, Some(0.14)),
+            ColumnDraw::by_stage(NodeId(5), 13, None),
+        ];
+        let loops = [
+            (4, 85.0, 150.0, 15.0e6),
+            (7, 95.0, 215.0, 15.0e6),
+            (10, 65.0, 270.0, 10.0e6),
+        ]
+        .iter()
+        .map(|(draw, flow, back_c, start)| PumparoundLoop {
+            draw_stage: *draw,
+            return_stage: draw - 1,
+            flow: KgPerSec(*flow),
+            return_temperature: Kelvin(back_c + 273.15),
+            cooler_capacity: Watt(30.0e6),
+            start_duty: Watt(*start),
+            line: Vec::new(),
+            cooler: None,
+        })
+        .collect();
+        let spec = CascadeSpec {
+            stages: 13,
+            feed_stage: 11,
+            reflux_ratio: 4.0,
+            pumparounds: Vec::new(),
+            steam: None,
+            reboiler_duty: None,
+            loops,
+        };
+        (unit, spec)
+    }
+
+    /// **The 13-tray column with loops starts cold only on the retry** (§77.5):
+    /// started as every column starts — its loops on their start duties and
+    /// handed over, then halved — it refuses (the boiling-order seed ends too
+    /// soon on thirteen trays, §77.0 finding 8); with the seed held for its
+    /// whole warm-up it starts, and every loop returns at its setpoint at the
+    /// duty §77.0 finding 7 measured (15.06, 17.05, 12.79 MW).
+    #[test]
+    fn the_thirteen_tray_column_with_loops_starts_cold_on_the_retry() {
+        let (unit, spec) = thirteen_trays();
+        let refused = unit
+            .separate(&HeatBalanceCascade::without_seed_retry(), &spec, None)
+            .expect_err("the first cold start refuses");
+        let message = refused.to_string();
+        assert!(
+            message.contains("Started again from its pumparounds halved, up to 4 times"),
+            "{message}"
+        );
+        let started = unit
+            .separate(&HeatBalanceCascade::new(), &spec, None)
+            .expect("the retry starts it");
+        let probe = [15.06e6, 17.05e6, 12.79e6];
+        for ((run, declared), duty) in started.loops.iter().zip(&spec.loops).zip(probe) {
+            assert!(!run.at_capacity, "{run:?}");
+            assert!(
+                (run.return_temperature.value() - declared.return_temperature.value()).abs() < 1e-9,
+                "{run:?}"
+            );
+            assert!((run.duty.value() / duty - 1.0).abs() < 2e-3, "{run:?}");
+        }
+    }
+
+    /// **The hand-over ends on the column's own equations** (§77.5): the cold
+    /// start's answer is a solution of the column with its returns held — Newton
+    /// warm from it lands where it stands.
+    #[test]
+    fn the_hand_over_ends_on_the_columns_own_equations() {
+        let (unit, spec) = thirteen_trays();
+        let cold = unit
+            .separate(&HeatBalanceCascade::new(), &spec, None)
+            .unwrap();
+        let warm = unit
+            .separate(&HeatBalanceCascade::new(), &spec, cold.profile.as_ref())
+            .unwrap();
+        let gap = gap(&cold, &warm);
+        assert!(
+            gap < 1e-6,
+            "the cold start and Newton warm from it differ by {gap}"
+        );
+        for (a, b) in cold.loops.iter().zip(&warm.loops) {
+            assert!(
+                (a.duty.value() / b.duty.value() - 1.0).abs() < 1e-6,
+                "{a:?} {b:?}"
+            );
         }
     }
 
