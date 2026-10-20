@@ -94,6 +94,7 @@ fn spec(share: f64) -> CascadeSpec {
             .collect(),
         steam: None,
         reboiler_duty: None,
+        loops: Vec::new(),
     }
 }
 

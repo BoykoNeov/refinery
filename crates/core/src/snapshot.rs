@@ -719,6 +719,34 @@ pub struct ColumnOperation {
     /// the feed stage on dry trays the water draw's molar rate.
     #[serde(default)]
     pub stage_vapour_mol_s: Vec<f64>,
+    /// The liquid leaving each stage downward [mol/s], in the same order, zero
+    /// at the reboiler — the trays' liquid load, the circulation included
+    /// between a loop's two stages (M72.1, docs/DESIGN.md §77.1). Only on a
+    /// column with pumparound loops; absent, and not serialized, elsewhere.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stage_liquid_mol_s: Vec<f64>,
+    /// Each pumparound loop as it ran, in the order the column declares them
+    /// (M72.1, §77.1). Absent on a column without loops.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<LoopOperation>,
+}
+
+/// One pumparound loop's faceplate — see `ColumnOperation::loops`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LoopOperation {
+    /// The stage it draws from, one-based from the top.
+    pub draw_stage: u32,
+    /// The stage it returns to, one-based from the top.
+    pub return_stage: u32,
+    /// The circulation it ran at [kg/s].
+    pub flow_kg_s: f64,
+    /// The temperature it returned at [K].
+    pub return_temperature_k: f64,
+    /// The heat its cooler took out [W], ≥ 0.
+    pub duty_w: f64,
+    /// Its cooler ran at capacity, the return warmer than the setpoint.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub at_capacity: bool,
 }
 
 /// One control loop's faceplate — what a frontend draws and what §7's rule

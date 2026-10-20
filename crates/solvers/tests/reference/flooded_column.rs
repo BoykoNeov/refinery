@@ -85,6 +85,7 @@ fn spec(pumparounds: Vec<Pumparound>) -> CascadeSpec {
         pumparounds,
         steam: None,
         reboiler_duty: None,
+        loops: Vec::new(),
     }
 }
 

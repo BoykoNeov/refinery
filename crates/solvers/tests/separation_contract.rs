@@ -51,6 +51,8 @@ impl SeparationModel for ShortSplitter {
             reboiler_declined: None,
             cut_back: Vec::new(),
             water_flooded: None,
+            loops: Vec::new(),
+            stage_liquid: Vec::new(),
         })
     }
 }
@@ -237,6 +239,8 @@ fn a_short_draw_list_is_refused_by_the_composition_reader() {
             reboiler_declined: None,
             cut_back: Vec::new(),
             water_flooded: None,
+            loops: Vec::new(),
+            stage_liquid: Vec::new(),
         },
     );
 
@@ -298,6 +302,8 @@ impl SeparationModel for Recorder {
             reboiler_declined: None,
             cut_back: Vec::new(),
             water_flooded: None,
+            loops: Vec::new(),
+            stage_liquid: Vec::new(),
         })
     }
 }
@@ -379,6 +385,8 @@ impl SeparationModel for RunningRecorder {
             }),
             cut_back: Vec::new(),
             water_flooded: None,
+            loops: Vec::new(),
+            stage_liquid: Vec::new(),
         })
     }
 }

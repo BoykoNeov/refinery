@@ -125,6 +125,7 @@ impl Case {
             pumparounds: Vec::new(),
             steam: None,
             reboiler_duty: None,
+            loops: Vec::new(),
         }
     }
 

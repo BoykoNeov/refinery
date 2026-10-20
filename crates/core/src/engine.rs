@@ -14,8 +14,9 @@ use crate::graph::{
 };
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, ColumnOperation, Command, ComponentSnapshot, ControlSnapshot,
-    DrawCutBack, EdgeSnapshot, NodeSnapshot, PumpSuctionSnapshot, PumpTwoPhaseSnapshot,
-    ReboilerDeclined, RestartBar, Snapshot, SupplyBoiling, TripSnapshot, TripStop,
+    DrawCutBack, EdgeSnapshot, LoopOperation, NodeSnapshot, PumpSuctionSnapshot,
+    PumpTwoPhaseSnapshot, ReboilerDeclined, RestartBar, Snapshot, SupplyBoiling, TripSnapshot,
+    TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, LineFlashModel, ReactionModel,
@@ -3909,11 +3910,35 @@ impl Engine {
                             ),
                             None => (Vec::new(), Vec::new()),
                         };
+                        // Each loop beside the stages it joins (M72.1, §77.1).
+                        let declared: &[crate::graph::PumparoundLoop] =
+                            match &self.graph.node(id).kind {
+                                NodeKind::Column {
+                                    cascade: Some(spec),
+                                    ..
+                                } => &spec.loops,
+                                _ => &[],
+                            };
+                        let loops = s
+                            .loops
+                            .iter()
+                            .zip(declared)
+                            .map(|(run, declared)| LoopOperation {
+                                draw_stage: declared.draw_stage,
+                                return_stage: declared.return_stage,
+                                flow_kg_s: run.flow.value(),
+                                return_temperature_k: run.return_temperature.value(),
+                                duty_w: run.duty.value(),
+                                at_capacity: run.at_capacity,
+                            })
+                            .collect();
                         Some(ColumnOperation {
                             feed_vapour_fraction,
                             reflux_ratio,
                             stage_temperatures_k,
                             stage_vapour_mol_s,
+                            stage_liquid_mol_s: s.stage_liquid.clone(),
+                            loops,
                         })
                     }),
                     // Absent wherever the criterion does not apply, which is

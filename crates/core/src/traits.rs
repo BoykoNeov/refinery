@@ -780,6 +780,28 @@ pub struct Separation {
     /// ran at. Empty from every pass that ran every draw at its declared share,
     /// and from every fidelity that never cuts one back.
     pub cut_back: Vec<CutBackDraw>,
+    /// Each pumparound loop's run this pass (M72.1, docs/DESIGN.md §77.1), in
+    /// `CascadeSpec::loops`' order. Empty from a column without loops, and
+    /// from a pass that did not fractionate (an idle or flooded column).
+    pub loops: Vec<LoopRun>,
+    /// Each stage's liquid leaving downward [mol/s], top stage first, zero at
+    /// the reboiler — reported only by a column with loops (§77.1), whose
+    /// trays carry the circulation; empty otherwise.
+    pub stage_liquid: Vec<f64>,
+}
+
+/// How one pumparound loop ran this pass (M72.1, docs/DESIGN.md §77.1).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoopRun {
+    /// The circulation it ran at [kg/s].
+    pub flow: KgPerSec,
+    /// The temperature it returned at [K]: its cooler's setpoint, or warmer
+    /// where the cooler was at its capacity.
+    pub return_temperature: Kelvin,
+    /// The heat its cooler took out [W], ≥ 0 — a result.
+    pub duty: Watt,
+    /// The cooler ran at its capacity, the return warmer than its setpoint.
+    pub at_capacity: bool,
 }
 
 /// A side draw a column cut back this pass (M67.1, docs/DESIGN.md §72.1).

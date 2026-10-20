@@ -10743,3 +10743,16 @@ thirteen trays against 8.3 today.
 Slices: M72.1 the loop in the column's equations; M72.2 the loop on the map;
 M72.3 a tray that runs short; M72.4 the plant and its cold start; M72.5 the
 key-press hitch (C11); M72.6 the column screen's key 6. No engine code changed.
+
+### M72.1 — **LANDED** 2026-10-20: the loop in the column's equations
+
+A pumparound loop on the heat-balance cascade: drawn off a stage, returned one
+up at its cooler's temperature, its circulation in kg/s a Newton unknown, its
+duty the result and in the closure; the cooler's capacity caps it. Published
+on a column with loops: each loop's flow, return temperature, duty and
+capacity flag, and each stage's liquid. DESIGN §77.10.
+
+- Gates (`heat_balance::loop_tests`): the setpoint and the duty by hand, both
+  stages' balances by hand, the closure, Newton against the fixed point, the
+  capacity, a loop at zero flow, the refusals. Mutations: seventeen, sixteen
+  caught, one argued. Corpus byte-identical on both fidelities.

@@ -28,10 +28,10 @@ use refinery_core::energy::T_REF;
 use refinery_core::error::SimError;
 use refinery_core::graph::{CascadeSpec, Pumparound};
 use refinery_core::traits::{
-    CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, Separation,
+    CascadeProfile, ColumnPass, CutBackDraw, DeclinedHold, DrawSeparation, LoopRun, Separation,
     SeparationModel, ThermoModel,
 };
-use refinery_core::units::{Kelvin, Pascal, Watt};
+use refinery_core::units::{Kelvin, KgPerSec, Pascal, Watt};
 
 use crate::bubble::{bubble_temperature, bubble_temperature_unnormalized};
 use crate::cascade::{
@@ -500,6 +500,8 @@ impl HeatBalanceCascade {
                 reboiler_declined: None,
                 cut_back: Vec::new(),
                 water_flooded: None,
+                loops: Vec::new(),
+                stage_liquid: Vec::new(),
             });
         }
 
@@ -729,6 +731,14 @@ impl HeatBalanceCascade {
                 },
             );
         }
+        // Each loop as it ran, and the trays' liquid where a loop loads them
+        // (M72.1, §77.1).
+        let runs = loop_runs(plan, spec, slate, &profile);
+        let stage_liquid = if spec.loops.is_empty() {
+            Vec::new()
+        } else {
+            profile.flows.liquid_down.clone()
+        };
         let (condenser_duty, reboiler_duty) = column_duties(
             slate,
             thermo,
@@ -738,7 +748,8 @@ impl HeatBalanceCascade {
             condenser_t,
             &result,
             pass,
-            plan.side_heat.iter().sum(),
+            plan.side_heat.iter().sum::<f64>()
+                + runs.iter().map(|run| run.duty.value()).sum::<f64>(),
             water_condensed,
             spec.reboiler_duty.map(|duty| duty.value()),
         )?;
@@ -772,6 +783,8 @@ impl HeatBalanceCascade {
             reboiler_declined: None,
             cut_back,
             water_flooded: None,
+            loops: runs,
+            stage_liquid,
         })
     }
 }
@@ -1143,7 +1156,7 @@ impl HeatBalanceCascade {
             equations,
             &temperatures,
             &previous.vapour,
-            &draw_rates(plan, &draws, setup.feed_mass),
+            &draw_rates(plan, &draws, setup.feed_mass, slate, &previous.liquid),
             previous.reflux_ratio,
             wet,
             free_water,
@@ -1189,7 +1202,13 @@ impl HeatBalanceCascade {
             equations,
             &state.temperatures,
             &vapour,
-            &draw_rates(plan, &state.draws, setup.feed_mass),
+            &draw_rates(
+                plan,
+                &state.draws,
+                setup.feed_mass,
+                setup.pass.slate,
+                &state.liquid,
+            ),
             None,
             Vec::new(),
             &[],
@@ -1411,7 +1430,13 @@ impl HeatBalanceCascade {
                 &base_equations,
                 &state.temperatures,
                 &vapour,
-                &draw_rates(plan, &state.draws, setup.feed_mass),
+                &draw_rates(
+                    plan,
+                    &state.draws,
+                    setup.feed_mass,
+                    setup.pass.slate,
+                    &state.liquid,
+                ),
                 None,
                 Vec::new(),
                 &[],
@@ -1925,22 +1950,80 @@ fn cut_start(
 }
 
 /// Each draw but the bottoms' molar rate [mol/s], from its mass ratio and its
-/// current molar mass.
-fn draw_rates(plan: &CascadePlan, draws: &[DrawState], feed_mass: f64) -> Vec<f64> {
-    (0..plan.mass_ratios.len() - 1)
+/// current molar mass — then each running loop's circulation [mol/s] at
+/// `liquid`, the unknowns Newton carries after the draws' (§77.1).
+fn draw_rates(
+    plan: &CascadePlan,
+    draws: &[DrawState],
+    feed_mass: f64,
+    slate: &Slate,
+    liquid: &[Vec<f64>],
+) -> Vec<f64> {
+    let mut rates: Vec<f64> = (0..plan.mass_ratios.len() - 1)
         .map(|i| plan.mass_ratios[i] * feed_mass / draws[i].mean_molar_mass)
-        .collect()
+        .collect();
+    rates.extend(plan.loop_molar_flows(slate, liquid));
+    rates
 }
 
 /// Each draw but the bottoms' molar rate [mol/s] as a solved profile ran it:
-/// the distillate the condenser's, every side draw its stage's.
+/// the distillate the condenser's, every side draw its stage's — then each
+/// running loop's circulation [mol/s].
 fn profile_draw_rates(plan: &CascadePlan, profile: &Profile) -> Vec<f64> {
-    (0..plan.mass_ratios.len() - 1)
+    let mut rates: Vec<f64> = (0..plan.mass_ratios.len() - 1)
         .map(|i| match plan.locations[i] {
             DrawLocation::Condenser => profile.flows.vapour[0] - profile.flows.reflux,
             DrawLocation::Stage(j) => profile.flows.liquid_drawn[j],
         })
-        .collect()
+        .collect();
+    rates.extend(
+        plan.loops
+            .iter()
+            .map(|l| profile.flows.circulation_out[l.draw]),
+    );
+    rates
+}
+
+/// How each declared loop ran on a solved profile (M72.1, docs/DESIGN.md
+/// §77.1), in `CascadeSpec::loops`' order: a running loop's circulation, its
+/// return and the duty `P·(h_d − h_ret)` [W]; a loop at zero flow at its
+/// setpoint with no duty.
+fn loop_runs(
+    plan: &CascadePlan,
+    spec: &CascadeSpec,
+    slate: &Slate,
+    profile: &Profile,
+) -> Vec<LoopRun> {
+    let molar: Vec<f64> = plan
+        .loops
+        .iter()
+        .map(|l| profile.flows.circulation_out[l.draw])
+        .collect();
+    let returns = plan.loop_returns(slate, &profile.liquid, &profile.temperatures, &molar);
+    let mut runs: Vec<LoopRun> = spec
+        .loops
+        .iter()
+        .map(|declared| LoopRun {
+            flow: KgPerSec(0.0),
+            return_temperature: declared.return_temperature,
+            duty: Watt::ZERO,
+            at_capacity: false,
+        })
+        .collect();
+    for ((l, flow), back) in plan.loops.iter().zip(&molar).zip(&returns) {
+        let x = &profile.liquid[l.draw];
+        let drawn = liquid_enthalpy(slate, x, Kelvin(profile.temperatures[l.draw]));
+        // The return's temperature from its enthalpy: `h = c̄p·(T − T_REF)`
+        // per mole at constant heat capacity, the datum `liquid_enthalpy`'s.
+        let molar_cp = mixture_molar_cp(slate, x);
+        runs[l.index] = LoopRun {
+            flow: KgPerSec(flow * crate::cascade::molar_mass(slate, x)),
+            return_temperature: Kelvin(T_REF.value() + back.enthalpy / molar_cp),
+            duty: Watt(flow * (drawn - back.enthalpy)),
+            at_capacity: back.at_capacity,
+        };
+    }
+    runs
 }
 
 /// The heat each stage's side cooling removes [W] on a held column's base
@@ -2038,6 +2121,8 @@ fn oil_free_feed(
         reboiler_declined: None,
         cut_back: Vec::new(),
         water_flooded: None,
+        loops: Vec::new(),
+        stage_liquid: Vec::new(),
     })
 }
 
@@ -2229,6 +2314,8 @@ fn flooded_pass_through(
             reboiler_declined: None,
             cut_back: Vec::new(),
             water_flooded: Some(refusal.to_string()),
+            loops: Vec::new(),
+            stage_liquid: Vec::new(),
         });
     }
     let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
@@ -2263,6 +2350,8 @@ fn flooded_pass_through(
         reboiler_declined: None,
         cut_back: Vec::new(),
         water_flooded: Some(refusal.to_string()),
+        loops: Vec::new(),
+        stage_liquid: Vec::new(),
     })
 }
 
@@ -2493,6 +2582,8 @@ fn water_only_inflow(
         reboiler_declined: None,
         cut_back: Vec::new(),
         water_flooded: None,
+        loops: Vec::new(),
+        stage_liquid: Vec::new(),
     })
 }
 
@@ -2659,8 +2750,16 @@ fn stage_balance_flows(
 
     // A pumparound's heat, per mole: the stage balances are molar flows times
     // molar enthalpies, so its watts enter as they are (J/s against mol/s ·
-    // J/mol).
-    let side_heat = &plan.side_heat;
+    // J/mol). A loop (M72.1, §77.1) adds its circulation to the material
+    // balances and, in the sweep's form, `P·(h_r − h_ret)` on its return stage
+    // — `R_j + (in_j − out_j)·h_j`, its draw cancelling on the stage it leaves.
+    let molar = plan.loop_molar_flows(slate, state.liquid);
+    let (into, out) = plan.circulation(&molar);
+    let returns = plan.loop_returns(slate, state.liquid, state.temperatures, &molar);
+    let removed = plan.removed_heat(&liquid_enthalpies, &molar, &returns);
+    let side_heat: Vec<f64> = (0..stages)
+        .map(|j| removed[j] + (into[j] - out[j]) * liquid_enthalpies[j])
+        .collect();
     // The top-down sweep from a top vapour `top` and a reflux `top − D`. With
     // the enthalpies of this iterate fixed, every rate it returns is AFFINE in
     // `top`: the liquid from above enters each balance linearly and the
@@ -2700,7 +2799,8 @@ fn stage_balance_flows(
                     / (vapour_enthalpies[j + 1] - here)
             };
             // Material balance on stage j.
-            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
+            liquid_down[j] =
+                liquid_in[j] + vapour[j + 1] + feed_here + into[j] - drawn[j] - out[j] - vapour[j];
             liquid_in[j + 1] = liquid_down[j];
             enthalpy_above = here;
         }
@@ -2758,7 +2858,8 @@ fn stage_balance_flows(
             } else {
                 0.0
             };
-            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
+            liquid_down[j] =
+                liquid_in[j] + vapour[j + 1] + feed_here + into[j] - drawn[j] - out[j] - vapour[j];
             liquid_in[j + 1] = liquid_down[j];
         }
     }
@@ -2811,6 +2912,8 @@ fn stage_balance_flows(
             liquid_drawn: drawn,
             vapour,
             reflux,
+            circulation_in: into,
+            circulation_out: out,
         },
         reflux_ratio,
     ))
@@ -3238,6 +3341,7 @@ mod tests {
             pumparounds: Vec::new(),
             steam: None,
             reboiler_duty: None,
+            loops: Vec::new(),
         }
     }
 
@@ -3728,6 +3832,7 @@ mod start_tests {
             pumparounds: Vec::new(),
             steam: None,
             reboiler_duty: None,
+            loops: Vec::new(),
         };
         model.separate(
             &ColumnPass {
@@ -3818,6 +3923,7 @@ mod pumparound_tests {
             pumparounds,
             steam: None,
             reboiler_duty: None,
+            loops: Vec::new(),
         }
     }
 
@@ -4093,6 +4199,7 @@ mod newton_tests {
                     .unwrap_or_default(),
                 steam: None,
                 reboiler_duty: None,
+                loops: Vec::new(),
             };
             let pass = ColumnPass {
                 slate: &slate,
@@ -4128,6 +4235,7 @@ mod newton_tests {
             pumparounds: Vec::new(),
             steam: None,
             reboiler_duty: None,
+            loops: Vec::new(),
         };
         let scorching = HeatBalanceCascade::new()
             .separate(
@@ -4185,6 +4293,7 @@ mod newton_tests {
             pumparounds: Vec::new(),
             steam: None,
             reboiler_duty: None,
+            loops: Vec::new(),
         };
         let at = |offset: f64, seed: Option<&CascadeProfile>| {
             HeatBalanceCascade::new()
@@ -4275,6 +4384,7 @@ mod newton_tests {
                     .collect(),
                 steam: None,
                 reboiler_duty: None,
+                loops: Vec::new(),
             }
         }
 
@@ -4510,6 +4620,7 @@ mod steam_tests {
             pumparounds: Vec::new(),
             steam: None,
             reboiler_duty: None,
+            loops: Vec::new(),
         };
         // 0.15 kg/s of steam at 400 °C, as its liquid-equivalent temperature.
         let latent = 40_650.0 / 0.018015 + (2000.0 - 4184.0) * 300.0;
@@ -4548,5 +4659,414 @@ mod steam_tests {
                 assert!((x.split - y.split).abs() < 1e-6, "stage {stage}");
             }
         }
+    }
+}
+
+/// Pumparound loops (M72.1, docs/DESIGN.md §77.1): liquid drawn off a stage,
+/// cooled to a held temperature and returned one stage up.
+#[cfg(test)]
+mod loop_tests {
+    use super::*;
+    use crate::ConstantAlphaThermo;
+    use refinery_core::components::{Phase, PseudoComponent};
+    use refinery_core::graph::{ColumnDraw, NodeId, PumparoundLoop};
+    use refinery_core::units::{JPerKgK, KgPerM3, KgPerMol, KgPerSec, P_ATM};
+
+    fn slate() -> Slate {
+        Slate::new(
+            [
+                ("light", 350.0, 0.100),
+                ("middle", 420.0, 0.150),
+                ("heavy", 500.0, 0.250),
+            ]
+            .iter()
+            .map(|(name, tb, molar_mass)| PseudoComponent {
+                name: (*name).into(),
+                tb: Kelvin(*tb),
+                molar_mass: KgPerMol(*molar_mass),
+                density: Some(KgPerM3(800.0)),
+                cp: JPerKgK(2000.0),
+                cp_shape: None,
+                phase: Phase::Liquid,
+                dh_vap: None,
+                cp_vapour: None,
+                free_water: false,
+            })
+            .collect(),
+        )
+        .unwrap()
+    }
+
+    fn thermo(slate: &Slate) -> ConstantAlphaThermo {
+        ConstantAlphaThermo::with_temperature_exponent(
+            slate,
+            vec![3.0, 1.0, 0.25],
+            Kelvin(400.0),
+            10.0,
+        )
+        .unwrap()
+        .with_dh_vap(slate, vec![30_000.0, 36_000.0, 45_000.0])
+        .unwrap()
+    }
+
+    fn spec(loops: Vec<PumparoundLoop>) -> CascadeSpec {
+        CascadeSpec {
+            stages: 8,
+            feed_stage: 4,
+            reflux_ratio: 2.0,
+            pumparounds: Vec::new(),
+            steam: None,
+            reboiler_duty: None,
+            loops,
+        }
+    }
+
+    fn draws() -> Vec<ColumnDraw> {
+        vec![
+            ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
+            ColumnDraw::by_stage(NodeId(2), 8, None),
+        ]
+    }
+
+    fn feed() -> Composition {
+        Composition::from_weights(&[0.3, 0.3, 0.4]).unwrap()
+    }
+
+    fn separate(model: &dyn SeparationModel, spec: &CascadeSpec) -> Result<Separation, SimError> {
+        let slate = slate();
+        let thermo = thermo(&slate);
+        let feed = feed();
+        let moles = MoleFractions::from_mass(&feed, &slate).unwrap();
+        let hot = Kelvin(
+            bubble_temperature_unnormalized(&slate, &thermo, moles.fractions(), P_ATM, "feed")
+                .unwrap()
+                .value()
+                + 15.0,
+        );
+        let draws = draws();
+        model.separate(
+            &ColumnPass {
+                slate: &slate,
+                draws: &draws,
+                smearing: Kelvin(0.0),
+                pressure: P_ATM,
+                feed: &feed,
+                feed_flow: KgPerSec(10.0),
+                temperature: hot,
+                cascade: Some(spec),
+                seed: None,
+                running_reboiler: None,
+                earlier_pass: None,
+                steam: None,
+            },
+            &thermo,
+        )
+    }
+
+    /// The loop the gates run: drawn off stage 3, returned to stage 2, 3 kg/s
+    /// (about a third of the feed's moles) returned 20 K under stage 3's
+    /// temperature without it.
+    fn the_loop(capacity: f64) -> PumparoundLoop {
+        let bare = separate(&HeatBalanceCascade::new(), &spec(Vec::new())).unwrap();
+        let stage_three = bare.profile.unwrap().temperatures[2].value();
+        PumparoundLoop {
+            draw_stage: 3,
+            return_stage: 2,
+            flow: KgPerSec(3.0),
+            return_temperature: Kelvin(stage_three - 20.0),
+            cooler_capacity: Watt(capacity),
+            start_duty: Watt(0.0),
+        }
+    }
+
+    /// A stage's liquid and vapour molar enthalpies [J/mol] on a solved
+    /// profile, by hand from its temperature and liquid.
+    fn enthalpies(separation: &Separation) -> (Vec<f64>, Vec<f64>) {
+        let slate = slate();
+        let thermo = thermo(&slate);
+        let profile = separation.profile.as_ref().unwrap();
+        let t: Vec<f64> = profile.temperatures.iter().map(|t| t.value()).collect();
+        let k = stage_k_values_profile(&slate, &thermo, &t, P_ATM).unwrap();
+        let mut liquid = Vec::new();
+        let mut vapour = Vec::new();
+        for j in 0..t.len() {
+            let x = &profile.liquid[j];
+            let y = equilibrium_vapour(x, &k[j]).unwrap();
+            liquid.push(liquid_enthalpy(&slate, x, Kelvin(t[j])));
+            vapour.push(
+                liquid_enthalpy(&slate, &y, Kelvin(t[j]))
+                    + mixture_dh_vap(&slate, &thermo, &y, Kelvin(t[j])).unwrap(),
+            );
+        }
+        (liquid, vapour)
+    }
+
+    /// **A loop returns at its cooler's setpoint, at its declared flow, and
+    /// its duty is the result**: `P·(h_d − h_ret)` by hand from the draw
+    /// stage's liquid, `P` the flow over that liquid's molar mass.
+    #[test]
+    fn a_loop_returns_at_its_setpoint_and_its_duty_is_the_result() {
+        let declared = the_loop(10.0e6);
+        let separation = separate(&HeatBalanceCascade::new(), &spec(vec![declared])).unwrap();
+        let run = separation.loops[0];
+        assert!(!run.at_capacity);
+        assert!(
+            (run.return_temperature.value() - declared.return_temperature.value()).abs() < 1e-9,
+            "{run:?}"
+        );
+        assert!((run.flow.value() - 3.0).abs() < 1e-6, "{run:?}");
+        let slate = slate();
+        let profile = separation.profile.as_ref().unwrap();
+        let x = &profile.liquid[2];
+        let molar = 3.0 / crate::cascade::molar_mass(&slate, x);
+        let by_hand = molar
+            * (liquid_enthalpy(&slate, x, profile.temperatures[2])
+                - liquid_enthalpy(&slate, x, declared.return_temperature));
+        assert!(by_hand > 0.0);
+        assert!(
+            (run.duty.value() / by_hand - 1.0).abs() < 1e-6,
+            "the loop's duty {} W against {by_hand} W by hand",
+            run.duty.value()
+        );
+        assert_eq!(separation.stage_liquid.len(), 8);
+    }
+
+    /// **The stages a loop joins balance with it, by hand** from what the
+    /// column publishes: the return stage takes the circulation in at
+    /// `h_ret` and sends it down with its own liquid; the draw stage sends it
+    /// out at its own enthalpy.
+    #[test]
+    fn the_stages_a_loop_joins_balance_by_hand() {
+        let declared = the_loop(10.0e6);
+        let separation = separate(&HeatBalanceCascade::new(), &spec(vec![declared])).unwrap();
+        let slate = slate();
+        let profile = separation.profile.as_ref().unwrap();
+        let (h, big_h) = enthalpies(&separation);
+        let v = &profile.vapour;
+        let l = &separation.stage_liquid;
+        let x = &profile.liquid[2];
+        let p = 3.0 / crate::cascade::molar_mass(&slate, x);
+        let h_ret = liquid_enthalpy(&slate, x, declared.return_temperature);
+        // Stage 2 (index 1): the stage-1 liquid and the stage-3 vapour in, the
+        // circulation returned; its liquid and vapour out.
+        let material = l[0] + v[2] + p - l[1] - v[1];
+        assert!(
+            material.abs() < 1e-9 * v[1],
+            "stage 2's moles off by {material}"
+        );
+        let scale = v[1] * big_h[1];
+        let energy = l[0] * h[0] + v[2] * big_h[2] + p * h_ret - l[1] * h[1] - v[1] * big_h[1];
+        assert!(
+            energy.abs() < 1e-6 * scale,
+            "stage 2's energy off by {energy} W"
+        );
+        // Stage 3 (index 2): the circulation leaves with its own liquid.
+        let material = l[1] + v[3] - p - l[2] - v[2];
+        assert!(
+            material.abs() < 1e-9 * v[2],
+            "stage 3's moles off by {material}"
+        );
+        let energy = l[1] * h[1] + v[3] * big_h[3] - (l[2] + p) * h[2] - v[2] * big_h[2];
+        assert!(
+            energy.abs() < 1e-6 * scale,
+            "stage 3's energy off by {energy} W"
+        );
+        // The trays between carry the circulation: stage 2 sends down more
+        // than stage 1 does by more than the loop's own flow less its vapour.
+        assert!(
+            l[1] > p,
+            "stage 2's liquid {} under the circulation {p}",
+            l[1]
+        );
+    }
+
+    /// **The closure is the reboiler stage's own balance with a loop in the
+    /// column**: the closure counts the loop's duty by formula; only stage
+    /// balances that take its liquid out and back agree with it.
+    #[test]
+    fn with_a_loop_the_closure_is_still_the_reboiler_stage() {
+        let separation =
+            separate(&HeatBalanceCascade::new(), &spec(vec![the_loop(10.0e6)])).unwrap();
+        let profile = separation.profile.as_ref().unwrap();
+        let (h, big_h) = enthalpies(&separation);
+        let n = 7;
+        let into = separation.stage_liquid[n - 1];
+        let bottoms = into - profile.vapour[n];
+        let stage = profile.vapour[n] * big_h[n] + bottoms * h[n] - into * h[n - 1];
+        let closure = separation.reboiler_duty.unwrap().value();
+        assert!(
+            (closure - stage).abs() <= 1e-6 * closure,
+            "closure {closure} W against the stage's {stage} W"
+        );
+    }
+
+    /// **Newton lands where the fixed point does** with a loop's circulation
+    /// among its unknowns.
+    #[test]
+    fn newton_lands_where_the_fixed_point_does_with_a_loop() {
+        let spec = spec(vec![the_loop(10.0e6)]);
+        let newton = separate(&HeatBalanceCascade::new(), &spec).unwrap();
+        let fixed = separate(&HeatBalanceCascade::fixed_point(), &spec).unwrap();
+        let mut worst = 0.0f64;
+        for (a, b) in newton.draws.iter().zip(&fixed.draws) {
+            for (p, q) in a
+                .composition
+                .fractions()
+                .iter()
+                .zip(b.composition.fractions())
+            {
+                worst = worst.max((p - q).abs());
+            }
+        }
+        let relative = |p: f64, q: f64| (p - q).abs() / p.abs().max(q.abs());
+        worst = worst.max(relative(
+            newton.reboiler_duty.unwrap().value(),
+            fixed.reboiler_duty.unwrap().value(),
+        ));
+        assert!(worst < 1e-6, "Newton and the fixed point differ by {worst}");
+        // The loop's duty is a temperature DIFFERENCE times a heat capacity, so
+        // it magnifies the two solves' agreement on the draw stage's
+        // temperature by `T_d/(T_d − T_ret)` — about 18 here.
+        let draw = newton.profile.as_ref().unwrap().temperatures[2].value();
+        let magnified = draw / (draw - spec.loops[0].return_temperature.value());
+        let duty = relative(newton.loops[0].duty.value(), fixed.loops[0].duty.value());
+        assert!(
+            duty < 1e-6 * magnified,
+            "the loop's duty differs by {duty}, against {} magnified",
+            1e-6 * magnified
+        );
+    }
+
+    /// **Past its capacity the cooler takes out its capacity and the return
+    /// warms** (§77.3): asked for twice what it can do, the loop's duty is
+    /// the capacity and it returns above its setpoint.
+    #[test]
+    fn past_its_capacity_the_return_warms() {
+        let free = separate(&HeatBalanceCascade::new(), &spec(vec![the_loop(10.0e6)])).unwrap();
+        let capacity = 0.5 * free.loops[0].duty.value();
+        let declared = the_loop(capacity);
+        let held = separate(&HeatBalanceCascade::new(), &spec(vec![declared])).unwrap();
+        let run = held.loops[0];
+        assert!(run.at_capacity, "{run:?}");
+        assert!((run.duty.value() / capacity - 1.0).abs() < 1e-9, "{run:?}");
+        assert!(
+            run.return_temperature.value() > declared.return_temperature.value() + 1.0,
+            "{run:?}"
+        );
+    }
+
+    /// **A loop at zero flow is no loop**: the column answers exactly as it
+    /// does without one, and reports the loop idle.
+    #[test]
+    fn a_loop_at_zero_flow_is_no_loop() {
+        let bare = separate(&HeatBalanceCascade::new(), &spec(Vec::new())).unwrap();
+        let idle_loop = PumparoundLoop {
+            flow: KgPerSec(0.0),
+            ..the_loop(10.0e6)
+        };
+        let idle = separate(&HeatBalanceCascade::new(), &spec(vec![idle_loop])).unwrap();
+        for (a, b) in bare.draws.iter().zip(&idle.draws) {
+            assert_eq!(a.composition.fractions(), b.composition.fractions());
+            assert_eq!(a.split, b.split);
+        }
+        assert_eq!(bare.reboiler_duty, idle.reboiler_duty);
+        assert_eq!(idle.loops[0].flow.value(), 0.0);
+        assert_eq!(idle.loops[0].duty.value(), 0.0);
+        assert!(bare.loops.is_empty() && bare.stage_liquid.is_empty());
+    }
+
+    /// Where a loop may not go, and what it may not be — refused by the plan.
+    #[test]
+    fn a_misplaced_loop_is_refused() {
+        let good = PumparoundLoop {
+            draw_stage: 3,
+            return_stage: 2,
+            flow: KgPerSec(3.0),
+            return_temperature: Kelvin(380.0),
+            cooler_capacity: Watt(1.0e6),
+            start_duty: Watt(0.0),
+        };
+        let refusal = |loops: Vec<PumparoundLoop>, pumparounds: Vec<Pumparound>| {
+            let spec = CascadeSpec {
+                pumparounds,
+                ..spec(loops)
+            };
+            match CascadePlan::new(&spec, &draws(), 3) {
+                Ok(_) => panic!("{spec:?} was admitted"),
+                Err(e) => e.to_string(),
+            }
+        };
+        let cases = [
+            (
+                vec![PumparoundLoop {
+                    draw_stage: 1,
+                    return_stage: 0,
+                    ..good
+                }],
+                "strictly between the top stage",
+            ),
+            (
+                vec![PumparoundLoop {
+                    draw_stage: 8,
+                    return_stage: 7,
+                    ..good
+                }],
+                "strictly between the top stage",
+            ),
+            (
+                vec![PumparoundLoop {
+                    return_stage: 1,
+                    ..good
+                }],
+                "returns to the stage above its draw",
+            ),
+            (
+                vec![PumparoundLoop {
+                    flow: KgPerSec(-1.0),
+                    ..good
+                }],
+                "must be finite and >= 0",
+            ),
+            (
+                vec![PumparoundLoop {
+                    cooler_capacity: Watt(0.0),
+                    ..good
+                }],
+                "must be finite and positive",
+            ),
+            (
+                vec![PumparoundLoop {
+                    start_duty: Watt(-1.0),
+                    ..good
+                }],
+                "starts at a duty",
+            ),
+            (
+                vec![
+                    good,
+                    PumparoundLoop {
+                        draw_stage: 4,
+                        return_stage: 3,
+                        ..good
+                    },
+                ],
+                "stage 3 is in two pumparounds",
+            ),
+        ];
+        for (loops, phrase) in cases {
+            let message = refusal(loops, Vec::new());
+            assert!(message.contains(phrase), "{message}");
+        }
+        let message = refusal(
+            vec![good],
+            vec![Pumparound {
+                stage: 2,
+                duty: Watt(1.0e5),
+            }],
+        );
+        assert!(
+            message.contains("stage 2 is in two pumparounds"),
+            "{message}"
+        );
     }
 }

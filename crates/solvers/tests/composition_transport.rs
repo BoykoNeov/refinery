@@ -860,6 +860,7 @@ fn build_cascade_plant(inputs: &CascadeInputs) -> PlantGraph {
                 pumparounds: Vec::new(),
                 steam: None,
                 reboiler_duty: None,
+                loops: Vec::new(),
             }),
         },
     ));

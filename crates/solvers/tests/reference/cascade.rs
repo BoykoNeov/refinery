@@ -152,6 +152,7 @@ fn two_product(stages: u32, feed_stage: u32, reflux_ratio: f64, d_over_f: f64) -
             pumparounds: Vec::new(),
             steam: None,
             reboiler_duty: None,
+            loops: Vec::new(),
         },
         draws: vec![
             ColumnDraw::by_stage(NodeId(1), 0, Some(d_over_f)),
@@ -486,6 +487,7 @@ fn equal_volatility_produces_no_separation_at_any_stage_count() {
                     pumparounds: Vec::new(),
                     steam: None,
                     reboiler_duty: None,
+                    loops: Vec::new(),
                 },
                 draws: vec![
                     ColumnDraw::by_stage(NodeId(1), 0, Some(0.3)),
@@ -535,6 +537,7 @@ fn the_splits_are_the_declared_mass_ratios_and_the_components_balance() {
             pumparounds: Vec::new(),
             steam: None,
             reboiler_duty: None,
+            loops: Vec::new(),
         },
         draws: vec![
             ColumnDraw::by_stage(NodeId(1), 0, Some(0.25)),

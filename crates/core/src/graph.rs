@@ -887,6 +887,37 @@ pub struct CascadeSpec {
     /// serialized.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reboiler_duty: Option<Watt>,
+    /// Pumparound LOOPS (M72, docs/DESIGN.md §77): liquid drawn off a stage,
+    /// cooled and returned one stage up. Only the heat-balance cascade reads
+    /// them; empty on every column that predates them, and then not
+    /// serialized, which keeps every such plant byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub loops: Vec<PumparoundLoop>,
+}
+
+/// A pumparound loop on a heat-balance cascade (M72, docs/DESIGN.md §77.1):
+/// liquid drawn off `draw_stage` at `flow`, cooled to `return_temperature` and
+/// returned to `return_stage`, one stage up. Its duty is a RESULT — the heat
+/// the cooling takes out of the circulating liquid — and the trays between the
+/// two stages carry the circulation on top of their own liquid.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PumparoundLoop {
+    /// The stage it draws from, one-based from the top, strictly between the
+    /// top stage and the reboiler.
+    pub draw_stage: u32,
+    /// The stage it returns to: `draw_stage − 1`, the only one admitted (the
+    /// stage balances stay tridiagonal, §77.1).
+    pub return_stage: u32,
+    /// The circulation [kg/s], ≥ 0; zero is a loop that is not running.
+    pub flow: KgPerSec,
+    /// The temperature its cooler returns it at [K].
+    pub return_temperature: Kelvin,
+    /// The most its cooler can take out [W], > 0: past it the return warms
+    /// (§77.3).
+    pub cooler_capacity: Watt,
+    /// The duty a cold start brings the cooler in at [W], ≥ 0, before the
+    /// held return temperature takes over (§77.5) — a game value.
+    pub start_duty: Watt,
 }
 
 /// A steam inlet on a cascade column (M62.6, docs/DESIGN.md §67.18): the pipe

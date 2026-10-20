@@ -29126,3 +29126,58 @@ retry only where a start refuses); M72.5's moves put to the user. Deferred:
 - **M72.5 — the key-press hitch** (C11): probed, then built; moves to the
   user.
 - **M72.6 — the column screen's key 6** and its measured table.
+
+### 77.10 The loop in the column's equations, built (M72.1)
+
+As §77.1 specifies. `PumparoundLoop` in `CascadeSpec::loops` (core, absent
+from the wire when empty); `CascadePlan::loops` the running ones (a loop at
+zero flow is planned out, so the column answers exactly as without it), with
+the refusals by name — a draw at the top or the reboiler, a return other than
+the stage above, a negative flow or start duty, a cooler of no capacity, a
+stage in two loops or in a loop and a side cooler. The stage equations:
+
+- **Each component's Thomas sweep**: the draw stage's diagonal loses the
+  circulation, the return stage's superdiagonal gains it (`P·x_{r+1}`).
+- **The fixed point's sweep**: the circulation in each material balance, and in
+  the energy term `R_j + (in_j − out_j)·h_j` (`CascadePlan::removed_heat`:
+  `−P·h_ret` on the return stage, `P·h_d` on the draw), the loop's molar flow
+  from its mass flow over the iterate's draw-stage molar mass.
+- **Newton**: each running loop's circulation an unknown after the draws'
+  (`[T, V, U, P, R?, FW]`), its equation `P·M̄(x_d) − ṁ = 0` after the draws'
+  mass ratios; the draw-rate vectors the solves are started from carry the
+  circulations after the draws, so a warm start carries them too. A column
+  with no loops has no new unknown, equation or term.
+- **The return** (`CascadePlan::loop_returns`): `h(x_d, T_ret)`, blended
+  toward `h_d − Q_start/P` by the hand-over share §77.5's cold start will
+  walk (1 everywhere in M72.1), and never below `h_d − Q_max/P` — the cooler at
+  capacity, reported.
+- **The closure** counts each loop's duty `P·(h_d − h_ret)` beside the side
+  coolers'. `Separation::loops` reports each declared loop (an idle one at its
+  setpoint, no duty) and `Separation::stage_liquid` each stage's liquid down;
+  the snapshot's `ColumnOperation` publishes both as `loops` and
+  `stage_liquid_mol_s`, absent on a column without loops.
+
+**Gates** (`heat_balance::loop_tests`, the 8-stage three-cut fixture, a loop
+drawn off stage 3 at 3 kg/s returned to stage 2 at 20 K under stage 3's
+temperature without it): the loop returns at its setpoint at its flow, its
+duty `P·(h_d − h_ret)` by hand; both stages it joins balance in moles and
+energy by hand from what the column publishes; the closure is the reboiler
+stage's own balance; Newton lands where the fixed point does (the loop's duty
+to `1e-6·T_d/(T_d − T_ret)`: a duty is a temperature DIFFERENCE, so it
+magnifies the two solves' 6e-5 K agreement on the draw stage about 18 times);
+past its capacity the duty is the capacity and the return warms; a loop at zero
+flow is no loop, exactly; the refusals.
+
+**Mutations**: seventeen, sixteen caught by `heat_balance::loop_tests` (the
+return carrying no `x_d`; the draw taking no liquid; the return's and the
+draw's enthalpy each dropped; the capacity test inverted; the hand-over
+ignored; a stage in two loops; any return stage; an idle loop planned; the
+circulation out of the sweep's energy term and out of its material balance;
+the closure without the loops; the return temperature off its datum — first
+written as `273.15 +`, which IS `T_REF`, an equivalent, then as half the
+heat capacity; the stage liquid always published; Newton's circulation at
+half its mass; Newton's draw stage keeping its circulation). One argued: the
+circulations carried on a warm start are a starting guess (Newton lands on the
+same answer from the feed-based one), and the paths that carry them — the
+walks and a re-solve after a cut-back — first meet a loop in M72.4's cold
+start. **Corpus**: 67 of 67 plants byte-identical on both fidelities.

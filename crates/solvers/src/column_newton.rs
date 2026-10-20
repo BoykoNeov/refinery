@@ -10,11 +10,13 @@
 //!
 //! ```text
 //!   unknowns   T_j (every stage), V_j (every stage below the top), U_k (every draw
-//!              but the bottoms), and R when the vapour floor binds
+//!              but the bottoms), P_l (every running pumparound loop, M72.1), and R
+//!              when the vapour floor binds
 //!   S_j = Σ_c K_jc·x_jc − 1                          every stage (x unnormalised)
 //!   E_j = L_{j−1}·h_{j−1} + V_{j+1}·H_{j+1} + F_j·h_F
 //!         − (L_j + U_j)·h_j − V_j·H_j − Q_j           every stage but the reboiler
 //!   W_k = U_k·M̄(x_k) − r_k·F                         every draw but the bottoms
+//!   C_l = P_l·M̄(x_d) − ṁ_l                           every running loop (§77.1)
 //!   V_b = 0.20·F                                      the binding stage, floor active
 //!   E_N with Q_reb held                               the reboiler held (M64), R unknown
 //! ```
@@ -48,7 +50,7 @@ use refinery_core::units::{Kelvin, Pascal};
 
 use crate::bubble::bubble_temperature_unnormalized;
 use crate::cascade::{
-    mixture_dh_vap, CascadePlan, DrawLocation, Flows, COMPONENT_RESIDUAL_KG_PER_S,
+    mixture_dh_vap, molar_mass, CascadePlan, DrawLocation, Flows, COMPONENT_RESIDUAL_KG_PER_S,
 };
 use crate::heat_balance::{
     condenser_temperature, equilibrium_vapour, liquid_enthalpy, water_vapour_profile, WaterFeed,
@@ -133,7 +135,7 @@ pub(crate) struct ColumnEquations<'a> {
 
 /// Where a solve starts: temperatures [K], vapours leaving each stage [mol/s]
 /// (the first is what the condenser takes), and each draw but the bottoms' molar
-/// rate [mol/s].
+/// rate [mol/s] followed by each running loop's circulation [mol/s] (M72.1).
 pub(crate) struct Start<'a> {
     pub(crate) temperatures: &'a [f64],
     pub(crate) vapour: &'a [f64],
@@ -190,16 +192,23 @@ impl ColumnEquations<'_> {
         self.plan.mass_ratios.len() - 1
     }
 
+    /// The running pumparound loops, whose circulations follow the draws in
+    /// the unknowns (M72.1, docs/DESIGN.md §77.1).
+    fn loop_count(&self) -> usize {
+        self.plan.loops.len()
+    }
+
     fn unknowns(&self, specification: Specification, wet: &[usize]) -> usize {
         self.free_water_offset(specification) + wet.len()
     }
 
     /// Where the wet stages' free water starts in the unknowns: after the
-    /// temperatures, the vapours, the draws and the floor's reflux.
+    /// temperatures, the vapours, the draws, the loops and the floor's reflux.
     fn free_water_offset(&self, specification: Specification) -> usize {
         let n = self.plan.stages;
         2 * n - 1
             + self.draw_count()
+            + self.loop_count()
             + usize::from(matches!(
                 specification,
                 Specification::Floor(_) | Specification::Held(_)
@@ -210,7 +219,7 @@ impl ColumnEquations<'_> {
         match specification {
             Specification::Reflux => self.spec.reflux_ratio,
             Specification::Floor(_) | Specification::Held(_) => {
-                u[2 * self.plan.stages - 1 + self.draw_count()]
+                u[2 * self.plan.stages - 1 + self.draw_count() + self.loop_count()]
             }
         }
     }
@@ -230,14 +239,18 @@ impl ColumnEquations<'_> {
         let draws = self.draw_count();
         let temperatures = &u[..n];
         let rates = &u[2 * n - 1..2 * n - 1 + draws];
+        let circulations = &u[2 * n - 1 + draws..2 * n - 1 + draws + self.loop_count()];
         let reflux_ratio = self.reflux_ratio(u, specification);
         let outside = |what: &str| SimError::Numerical(format!("column Newton: {what}"));
         if temperatures.iter().any(|t| !t.is_finite() || *t <= 0.0) {
             return Err(outside("a stage temperature left the physical region"));
         }
-        if !rates.iter().all(|r| positive(*r)) || !positive(reflux_ratio) {
+        if !rates.iter().all(|r| positive(*r))
+            || !circulations.iter().all(|p| positive(*p))
+            || !positive(reflux_ratio)
+        {
             return Err(outside(
-                "a draw rate or the reflux left the physical region",
+                "a draw rate, a loop's circulation or the reflux left the physical region",
             ));
         }
 
@@ -259,6 +272,7 @@ impl ColumnEquations<'_> {
             }
         }
         let reflux = reflux_ratio * distillate;
+        let (into, out) = plan.circulation(circulations);
         let mut liquid_in = vec![0.0; n];
         let mut liquid_down = vec![0.0; n];
         liquid_in[0] = reflux;
@@ -268,7 +282,8 @@ impl ColumnEquations<'_> {
             } else {
                 0.0
             };
-            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
+            liquid_down[j] =
+                liquid_in[j] + vapour[j + 1] + feed_here + into[j] - drawn[j] - out[j] - vapour[j];
             liquid_in[j + 1] = liquid_down[j];
         }
         let feed_last = if n - 1 == plan.feed_stage {
@@ -288,6 +303,8 @@ impl ColumnEquations<'_> {
             liquid_drawn: drawn,
             vapour,
             reflux,
+            circulation_in: into,
+            circulation_out: out,
         };
 
         // The water: the free water on the wet stages, the vapour from it.
@@ -374,6 +391,10 @@ impl ColumnEquations<'_> {
             )?,
         };
         let reflux_enthalpy = liquid_enthalpy(slate, &condensate, condenser_t);
+        // The side coolers' heat, and each loop's liquid leaving and returning
+        // (M72.1, §77.1).
+        let returns = plan.loop_returns(slate, &liquid, temperatures, circulations);
+        let removed = plan.removed_heat(&h, circulations, &returns);
         // Water's own enthalpies at each stage, liquid and vapour [J/mol].
         let mut water_h = Vec::new();
         let mut water_big_h = Vec::new();
@@ -407,7 +428,7 @@ impl ColumnEquations<'_> {
                 flows.liquid_in[j] * above + from_below + feed_here * self.feed_enthalpy + held
                     - (flows.liquid_down[j] + flows.liquid_drawn[j]) * h[j]
                     - flows.vapour[j] * big_h[j]
-                    - plan.side_heat[j];
+                    - removed[j];
             let imbalance = if let Some(water) = self.water {
                 let from_above = if j == 0 {
                     0.0
@@ -455,6 +476,13 @@ impl ColumnEquations<'_> {
                     (rate * molar_mass - plan.mass_ratios[i] * self.feed_mass) / self.feed_mass,
                 ),
             }
+        }
+        // Each running loop's circulation: its molar rate times its draw
+        // stage's molar mass (§77.1).
+        for (l, circulation) in plan.loops.iter().zip(circulations) {
+            residual.push(
+                (circulation * molar_mass(slate, &liquid[l.draw]) - l.mass_flow) / self.feed_mass,
+            );
         }
         // The bottoms takes what the others leave of the feed.
         if !self.cut_back.is_empty() {
@@ -675,6 +703,11 @@ impl ColumnEquations<'_> {
             format!("the energy balance of stage {}", worst - n + 1)
         } else if worst < energies + self.draw_count() {
             format!("the mass ratio of draw {}", worst - energies + 1)
+        } else if worst < energies + self.draw_count() + self.loop_count() {
+            format!(
+                "the circulation of pumparound loop {}",
+                self.plan.loops[worst - energies - self.draw_count()].index + 1
+            )
         } else if worst < self.free_water_offset(specification) {
             "the vapour floor".to_string()
         } else {
