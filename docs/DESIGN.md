@@ -29450,7 +29450,9 @@ suite, and the corpus is byte-identical.
 A cold start's floored answer sits 2e-6 over the floor on the stage it binds
 (Newton's own floor answer sits on it to 1e-16), so the first warm tick after a
 cold start that the floor holds takes the declared-first order: one extra
-solve, once, the same answer.
+solve, once, the same answer. Counted on the corpus (6 000 ticks, both flow
+solvers): the one plant whose column the floor holds took the floor first on
+5 934 ticks, and the late floor attempt ran on no tick of any plant.
 
 **Cost** (residual evaluations as the probe counted them; walls the probe's,
 release, below-normal priority, the logic the same to the bit):
@@ -29491,4 +29493,4 @@ outright and the floor holds, reached by no test or plant; kept because it is
 what makes the new order return every answer the old one did.
 
 **What moved**: nothing — the corpus byte-identical, 68 plants on both flow
-solvers; the full tier 1 231 tests, the column screen's table gates among them.
+solvers; the full tier 1 232 tests, the column screen's table gates among them.

@@ -4452,9 +4452,11 @@ mod newton_tests {
     /// **A floor that stops binding lets go** (§66.3): a column held at the
     /// floor (a feed 60 K past its bubble point, the reflux lifted to 0.79
     /// above its declared 0.5) whose feed then cools to 40 K past it runs at
-    /// exactly its declared reflux again — warm from the floored profile, which
-    /// tries the floor first and must refuse the floored answer it finds there,
-    /// a reflux of 0.37, below the declared one (the M61.1 mutation pass).
+    /// exactly its declared reflux again — warm from the floored profile, whose
+    /// floor attempt must refuse the floored answer it finds there, a reflux of
+    /// 0.37, below the declared one (the M61.1 mutation pass). The profile is a
+    /// cold start's, 2e-6 over the floor, so since M72.5 that attempt is the
+    /// late one, after the declared solve leaves a stage under the floor.
     #[test]
     fn a_floor_that_stops_binding_lets_go() {
         let slate = three_cut_slate();
