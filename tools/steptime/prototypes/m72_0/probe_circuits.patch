@@ -1,0 +1,509 @@
+diff --git a/crates/solvers/src/cascade.rs b/crates/solvers/src/cascade.rs
+index 55c7890..cbb5864 100644
+--- a/crates/solvers/src/cascade.rs
++++ b/crates/solvers/src/cascade.rs
+@@ -768,6 +768,32 @@ pub(crate) struct Flows {
+     /// ITERATE rather than an input — see `StageCascade`'s docs — but only the
+     /// reflux appears in a stage row, through the condenser fold.
+     pub(crate) reflux: f64,
++    /// PROBE M72.0: pumparound liquid returned INTO stage j [mol/s].
++    pub(crate) circulation_in: Vec<f64>,
++    /// PROBE M72.0: pumparound liquid drawn OFF stage j into its circuit [mol/s].
++    pub(crate) circulation_out: Vec<f64>,
++}
++
++/// PROBE M72.0: a pumparound as a liquid circuit — drawn off `draw`, cooled by
++/// the declared duty, returned to `ret` = `draw − 1`.
++#[derive(Clone, Debug)]
++pub(crate) struct Circuit {
++    pub(crate) ret: usize,
++    pub(crate) draw: usize,
++    /// The declared stage (zero-based) whose `side_heat` is the circuit's duty.
++    pub(crate) stage: usize,
++    /// Circulation [kg/s].
++    pub(crate) mass_flow: f64,
++    /// The return's temperature [K], held by its cooler; `None`: the declared
++    /// duty sets it.
++    pub(crate) ret_temperature: Option<f64>,
++    /// PROBE: the share of the cooling to the held return temperature [-]: 0
++    /// returns at the draw's own enthalpy, 1 at the setpoint.
++    pub(crate) cooling: f64,
++    /// PROBE: 1 the cooler holds the return temperature; 0 the declared duty
++    /// sets it; between, a blend of the two return enthalpies (the start-up's
++    /// hand-over).
++    pub(crate) mode: f64,
+ }
+ 
+ /// Everything about a cascade column that does not change between iterations: the
+@@ -786,9 +812,95 @@ pub(crate) struct CascadePlan {
+     /// Heat removed on each stage [W] by a pumparound (M60, §65.4); zero on
+     /// every stage of a column without one.
+     pub(crate) side_heat: Vec<f64>,
++    /// PROBE M72.0: the circuits (empty: every pumparound a side cooler).
++    pub(crate) circuits: Vec<Circuit>,
+ }
+ 
+ impl CascadePlan {
++    /// PROBE M72.0: each stage's circulation in and out [mol/s].
++    pub(crate) fn circulation(&self, molar: &[f64]) -> (Vec<f64>, Vec<f64>) {
++        let mut into = vec![0.0; self.stages];
++        let mut out = vec![0.0; self.stages];
++        for (c, p) in self.circuits.iter().zip(molar) {
++            into[c.ret] += p;
++            out[c.draw] += p;
++        }
++        (into, out)
++    }
++
++    /// PROBE: each circuit's molar return enthalpy [J/mol] where its cooler
++    /// holds its temperature.
++    pub(crate) fn return_enthalpies(
++        &self,
++        slate: &refinery_core::components::Slate,
++        liquid: &[Vec<f64>],
++        temperatures: &[f64],
++        molar: &[f64],
++    ) -> Vec<Option<f64>> {
++        self.circuits
++            .iter()
++            .zip(molar)
++            .map(|(c, p)| {
++                c.ret_temperature.map(|t| {
++                    let set =
++                        crate::heat_balance::liquid_enthalpy(slate, &liquid[c.draw], Kelvin(t));
++                    let own = crate::heat_balance::liquid_enthalpy(
++                        slate,
++                        &liquid[c.draw],
++                        Kelvin(temperatures[c.draw]),
++                    );
++                    let held = own + c.cooling * (set - own);
++                    let by_duty = own - self.side_heat[c.stage] / p;
++                    c.mode * held + (1.0 - c.mode) * by_duty
++                })
++            })
++            .collect()
++    }
++
++    /// PROBE: each circuit's molar flow from its mass flow over x_d's molar mass.
++    pub(crate) fn circuit_molar(
++        &self,
++        slate: &refinery_core::components::Slate,
++        liquid: &[Vec<f64>],
++    ) -> Vec<f64> {
++        self.circuits
++            .iter()
++            .map(|c| {
++                let m: f64 = liquid[c.draw]
++                    .iter()
++                    .enumerate()
++                    .map(|(k, x)| x * slate.get(k).molar_mass.value())
++                    .sum();
++                c.mass_flow / m
++            })
++            .collect()
++    }
++
++    /// PROBE M72.0: the heat each stage's balance loses beyond its liquid,
++    /// vapour and product draws [W] — `R_j` in `in − out − R_j = 0` — given
++    /// each stage's liquid molar enthalpy `h`. A side cooler's duty; a
++    /// circuit's `Q − P·h_d` on its return stage (the return arrives at
++    /// `h_d − Q/P`) and `P·h_d` on its draw stage.
++    pub(crate) fn removed_heat(
++        &self,
++        h: &[f64],
++        molar: &[f64],
++        h_ret: &[Option<f64>],
++    ) -> Vec<f64> {
++        let mut removed = self.side_heat.clone();
++        for c in &self.circuits {
++            removed[c.stage] -= self.side_heat[c.stage];
++        }
++        for ((c, p), hr) in self.circuits.iter().zip(molar).zip(h_ret) {
++            match hr {
++                Some(hr) => removed[c.ret] -= p * hr,
++                None => removed[c.ret] += self.side_heat[c.stage] - p * h[c.draw],
++            }
++            removed[c.draw] += p * h[c.draw];
++        }
++        removed
++    }
++
+     /// Validate the geometry once, so the iteration below can read it without a
+     /// guard on every access.
+     ///
+@@ -974,6 +1086,52 @@ impl CascadePlan {
+             side_heat[stage - 1] = duty;
+         }
+ 
++        // PROBE M72.0: PROBE_PA_FLOW_MOL_S = one molar circulation per
++        // pumparound in declared order; PROBE_PA_SHIFT = "down" (return on the
++        // declared stage, drawn from the one below) or "up" (drawn from the
++        // declared stage, returned to the one above).
++        let mut circuits = Vec::new();
++        let returns: Vec<Option<f64>> = std::env::var("PROBE_PA_TRET_C")
++            .map(|l| {
++                l.split(',')
++                    .map(|v| Some(v.trim().parse::<f64>().unwrap() + 273.15))
++                    .collect()
++            })
++            .unwrap_or_default();
++        if let Ok(list) = std::env::var("PROBE_PA_FLOW_KG_S") {
++            let shift = std::env::var("PROBE_PA_SHIFT").unwrap_or_else(|_| "down".into());
++            let flows: Vec<f64> = list.split(',').map(|v| v.trim().parse().unwrap()).collect();
++            for (pumparound, flow) in spec.pumparounds.iter().zip(flows) {
++                let s = pumparound.stage as usize - 1;
++                let (ret, draw) = if shift == "up" {
++                    (s - 1, s)
++                } else if let Some(pairs) = shift.strip_prefix("pairs:") {
++                    // "pairs:3-2,5-4,7-6" one-based draw-return, in declared order.
++                    let k = spec.pumparounds.iter().position(|p| p.stage == pumparound.stage).unwrap();
++                    let pair = pairs.split(',').nth(k).unwrap();
++                    let mut it = pair.split('-').map(|v| v.parse::<usize>().unwrap() - 1);
++                    let d = it.next().unwrap();
++                    let r = it.next().unwrap();
++                    assert_eq!(r + 1, d);
++                    (r, d)
++                } else {
++                    (s, s + 1)
++                };
++                let k = circuits.len();
++                if flow > 0.0 {
++                    circuits.push(Circuit {
++                        ret,
++                        draw,
++                        stage: s,
++                        mass_flow: flow,
++                        ret_temperature: returns.get(k).copied().flatten(),
++                        cooling: 1.0,
++                        mode: 1.0,
++                    });
++                }
++            }
++        }
++
+         Ok(Self {
+             stages,
+             feed_stage: spec.feed_stage as usize - 1,
+@@ -982,6 +1140,7 @@ impl CascadePlan {
+             draw_at_stage,
+             components,
+             side_heat,
++            circuits,
+         })
+     }
+ 
+@@ -1118,6 +1277,8 @@ impl CascadePlan {
+             liquid_drawn: drawn,
+             vapour: vec![vapour; self.stages],
+             reflux,
++            circulation_in: vec![0.0; self.stages],
++            circulation_out: vec![0.0; self.stages],
+         })
+     }
+ 
+@@ -1197,7 +1358,8 @@ impl CascadePlan {
+ 
+         for j in 0..n {
+             let k_here = k[j][component];
+-            let leaving = flows.liquid_down[j] + flows.liquid_drawn[j];
++            let leaving =
++                flows.liquid_down[j] + flows.liquid_drawn[j] + flows.circulation_out[j];
+             diagonal[j] = -(leaving + flows.vapour[j] * k_here);
+             if j == 0 {
+                 // The condenser fold: + L·K_1, so the diagonal becomes
+@@ -1207,7 +1369,8 @@ impl CascadePlan {
+                 sub[j] = flows.liquid_in[j];
+             }
+             if j + 1 < n {
+-                sup[j] = flows.vapour[j + 1] * k[j + 1][component];
++                // PROBE M72.0: a circuit's return carries x of the stage below.
++                sup[j] = flows.vapour[j + 1] * k[j + 1][component] + flows.circulation_in[j];
+             }
+             if j == self.feed_stage {
+                 rhs[j] = -feed_molar * feed_fraction;
+diff --git a/crates/solvers/src/column_newton.rs b/crates/solvers/src/column_newton.rs
+index 7841737..d767f3c 100644
+--- a/crates/solvers/src/column_newton.rs
++++ b/crates/solvers/src/column_newton.rs
+@@ -191,7 +191,13 @@ impl ColumnEquations<'_> {
+     }
+ 
+     fn unknowns(&self, specification: Specification, wet: &[usize]) -> usize {
+-        self.free_water_offset(specification) + wet.len()
++        self.free_water_offset(specification) + wet.len() + self.plan.circuits.len()
++    }
++
++    /// PROBE: the circuits' molar flows' start [mol/s], at the feed's molar mass.
++    fn circuit_start(&self) -> Vec<f64> {
++        let m = self.feed_mass / self.feed_molar;
++        self.plan.circuits.iter().map(|c| c.mass_flow / m).collect()
+     }
+ 
+     /// Where the wet stages' free water starts in the unknowns: after the
+@@ -259,6 +265,11 @@ impl ColumnEquations<'_> {
+             }
+         }
+         let reflux = reflux_ratio * distillate;
++        let molar = u[u.len() - plan.circuits.len()..].to_vec();
++        if !molar.iter().all(|p| positive(*p)) {
++            return Err(outside("a circulation left the physical region"));
++        }
++        let (into, out) = plan.circulation(&molar);
+         let mut liquid_in = vec![0.0; n];
+         let mut liquid_down = vec![0.0; n];
+         liquid_in[0] = reflux;
+@@ -268,7 +279,9 @@ impl ColumnEquations<'_> {
+             } else {
+                 0.0
+             };
+-            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
++            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j]
++                + into[j]
++                - out[j];
+             liquid_in[j + 1] = liquid_down[j];
+         }
+         let feed_last = if n - 1 == plan.feed_stage {
+@@ -288,6 +301,8 @@ impl ColumnEquations<'_> {
+             liquid_drawn: drawn,
+             vapour,
+             reflux,
++            circulation_in: into,
++            circulation_out: out,
+         };
+ 
+         // The water: the free water on the wet stages, the vapour from it.
+@@ -374,6 +389,8 @@ impl ColumnEquations<'_> {
+             )?,
+         };
+         let reflux_enthalpy = liquid_enthalpy(slate, &condensate, condenser_t);
++        let h_ret = plan.return_enthalpies(slate, &liquid, temperatures, &molar);
++        let removed = plan.removed_heat(&h, &molar, &h_ret);
+         // Water's own enthalpies at each stage, liquid and vapour [J/mol].
+         let mut water_h = Vec::new();
+         let mut water_big_h = Vec::new();
+@@ -407,7 +424,7 @@ impl ColumnEquations<'_> {
+                 flows.liquid_in[j] * above + from_below + feed_here * self.feed_enthalpy + held
+                     - (flows.liquid_down[j] + flows.liquid_drawn[j]) * h[j]
+                     - flows.vapour[j] * big_h[j]
+-                    - plan.side_heat[j];
++                    - removed[j];
+             let imbalance = if let Some(water) = self.water {
+                 let from_above = if j == 0 {
+                     0.0
+@@ -476,6 +493,15 @@ impl ColumnEquations<'_> {
+                     / self.feed_molar,
+             );
+         }
++        // PROBE: each circulation's mass.
++        for (c, p) in plan.circuits.iter().zip(&molar) {
++            let m: f64 = liquid[c.draw]
++                .iter()
++                .enumerate()
++                .map(|(k, x)| x * slate.get(k).molar_mass.value())
++                .sum();
++            residual.push((p * m - c.mass_flow) / self.feed_mass);
++        }
+         let saturation = water_vapour
+             .iter()
+             .zip(&water_k)
+@@ -519,6 +545,7 @@ impl ColumnEquations<'_> {
+         for j in wet {
+             u.push(start.free_water.get(*j).copied().unwrap_or(0.0));
+         }
++        u.extend(self.circuit_start());
+         let evaluation = self.evaluate(&u, Specification::Held(0.0), wet)?;
+         // The held balance follows the other stages' (§69.1): after the n
+         // bubble points and the n − 1 energy balances above it.
+@@ -552,9 +579,10 @@ impl ColumnEquations<'_> {
+         for j in wet {
+             u.push(start.free_water.get(*j).copied().unwrap_or(0.0));
+         }
++        u.extend(self.circuit_start());
+         // The free water's sign is the wet set's to judge (§67.17 rule 6), so
+         // the fraction-to-the-boundary rule stops short of it.
+-        let bounded = u.len() - wet.len();
++        let bounded = u.len() - wet.len() - self.plan.circuits.len();
+         let mut current = self
+             .evaluate(&u, specification, wet)
+             .map_err(|e| Unsolved {
+@@ -566,6 +594,77 @@ impl ColumnEquations<'_> {
+         let mut iterations = 0u32;
+         loop {
+             if self.converged(&current) {
++                if std::env::var("PROBE_PRINT").is_ok() {
++                    let f = &current.flows;
++                    let fmt = |v: &[f64]| {
++                        v.iter().map(|x| format!("{x:.1}")).collect::<Vec<_>>().join(" ")
++                    };
++                    let temps: Vec<f64> = u[..n].iter().map(|t| t - 273.15).collect();
++                    let mut returns = Vec::new();
++                    let molar = &u[u.len() - self.plan.circuits.len()..];
++                    let h_ret =
++                        self.plan
++                            .return_enthalpies(self.slate, &current.liquid, &u[..n], molar);
++                    for ((c, p), hr) in self.plan.circuits.iter().zip(molar).zip(&h_ret) {
++                        let hd = liquid_enthalpy(
++                            self.slate,
++                            &current.liquid[c.draw],
++                            Kelvin(u[c.draw]),
++                        );
++                        let cp =
++                            crate::cascade::mixture_molar_cp(self.slate, &current.liquid[c.draw]);
++                        let (q, tret) = match hr {
++                            Some(hr) => (p * (hd - hr), c.ret_temperature.unwrap() - 273.15),
++                            None => {
++                                let q = self.plan.side_heat[c.stage];
++                                (q, u[c.draw] - q / (p * cp) - 273.15)
++                            }
++                        };
++                        returns.push(format!(
++                            "{}->{} m={:.1}kg/s P={:.1} Q={:.2}MW Tdraw={:.1} Tret={:.1}",
++                            c.draw + 1,
++                            c.ret + 1,
++                            c.mass_flow,
++                            p,
++                            q / 1e6,
++                            u[c.draw] - 273.15,
++                            tret
++                        ));
++                    }
++                    let mm: Vec<f64> = current
++                        .liquid
++                        .iter()
++                        .map(|x| {
++                            x.iter()
++                                .enumerate()
++                                .map(|(c, v)| v * self.slate.get(c).molar_mass.value())
++                                .sum::<f64>()
++                        })
++                        .collect();
++                    eprintln!(
++                        "PROBE it={iterations} R={:.3}
++  T  {}
++  V  {}
++  Ldn {}
++  Ldn_kg {}
++  U  {}
++  circ {}
++  x  {}",
++                        self.reflux_ratio(&u, specification),
++                        fmt(&temps),
++                        fmt(&f.vapour),
++                        fmt(&f.liquid_down),
++                        fmt(&f.liquid_down.iter().zip(&mm).map(|(l, m)| l * m).collect::<Vec<_>>()),
++                        fmt(&f.liquid_drawn),
++                        returns.join("; "),
++                        current
++                            .liquid
++                            .iter()
++                            .map(|x| x.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>().join(","))
++                            .collect::<Vec<_>>()
++                            .join(" | ")
++                    );
++                }
+                 return Ok(Solved {
+                     temperatures: u[..n].to_vec(),
+                     liquid: current.liquid,
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index 25b39e2..d5930de 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -54,7 +54,7 @@ use crate::molar::MoleFractions;
+ /// the reboiler exceeded the feed's and tick 1 failed on a negative bottoms —
+ /// on `StageCascade` as well. Ten iterations of the sharp split started it (102
+ /// iterations to converge at a saturated feed); one or three did not.
+-const SHARP_SEED_ITERATIONS: u32 = 10;
++const SHARP_SEED_ITERATIONS: u32 = 30;
+ 
+ /// The smallest vapour any stage below the top may carry, as a share of the
+ /// feed's molar rate [-] (DESIGN §65.3).
+@@ -1237,7 +1237,8 @@ impl HeatBalanceCascade {
+             }
+         }
+         let mut failure = String::new();
+-        for halvings in 1..=PUMPAROUND_HALVINGS {
++        let first = u32::from(std::env::var("PROBE_START").as_deref() != Ok("duty"));
++        for halvings in first..=PUMPAROUND_HALVINGS {
+             match self.walked_back(setup, equations, 0.5f64.powi(halvings as i32)) {
+                 Ok(profile) => return Ok(profile),
+                 Err(how) => failure = how,
+@@ -1265,6 +1266,19 @@ impl HeatBalanceCascade {
+         for heat in base_plan.side_heat.iter_mut() {
+             *heat *= share;
+         }
++        for circuit in base_plan.circuits.iter_mut() {
++            if std::env::var("PROBE_START").as_deref() == Ok("duty") {
++                circuit.mode = 0.0;
++            }
++            if std::env::var("PROBE_WALK").as_deref() == Ok("flow") {
++                circuit.mass_flow *= share;
++            } else if std::env::var("PROBE_WALK").as_deref() == Ok("both") {
++                circuit.mass_flow *= share;
++                circuit.cooling *= share;
++            } else {
++                circuit.cooling *= share;
++            }
++        }
+         let base_spec = CascadeSpec {
+             pumparounds: setup
+                 .spec
+@@ -1310,6 +1324,11 @@ impl HeatBalanceCascade {
+             for (heat, target) in step_plan.side_heat.iter_mut().zip(&plan.side_heat) {
+                 *heat += fraction * (target - *heat);
+             }
++            for (circuit, target) in step_plan.circuits.iter_mut().zip(&plan.circuits) {
++                circuit.cooling += fraction * (target.cooling - circuit.cooling);
++                circuit.mass_flow += fraction * (target.mass_flow - circuit.mass_flow);
++                circuit.mode += fraction * (target.mode - circuit.mode);
++            }
+             let walked = ColumnEquations {
+                 plan: &step_plan,
+                 ..*equations
+@@ -2660,7 +2679,15 @@ fn stage_balance_flows(
+     // A pumparound's heat, per mole: the stage balances are molar flows times
+     // molar enthalpies, so its watts enter as they are (J/s against mol/s ·
+     // J/mol).
+-    let side_heat = &plan.side_heat;
++    let _ = &plan.side_heat;
++    // PROBE M72.0: circuits.
++    let molar = plan.circuit_molar(slate, state.liquid);
++    let (into, out) = plan.circulation(&molar);
++    let h_ret = plan.return_enthalpies(slate, state.liquid, state.temperatures, &molar);
++    let removed = plan.removed_heat(&liquid_enthalpies, &molar, &h_ret);
++    let side_heat: Vec<f64> = (0..stages)
++        .map(|j| removed[j] + (into[j] - out[j]) * liquid_enthalpies[j])
++        .collect();
+     // The top-down sweep from a top vapour `top` and a reflux `top − D`. With
+     // the enthalpies of this iterate fixed, every rate it returns is AFFINE in
+     // `top`: the liquid from above enters each balance linearly and the
+@@ -2700,7 +2727,9 @@ fn stage_balance_flows(
+                     / (vapour_enthalpies[j + 1] - here)
+             };
+             // Material balance on stage j.
+-            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
++            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j]
++                + into[j]
++                - out[j];
+             liquid_in[j + 1] = liquid_down[j];
+             enthalpy_above = here;
+         }
+@@ -2758,7 +2787,9 @@ fn stage_balance_flows(
+             } else {
+                 0.0
+             };
+-            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j];
++            liquid_down[j] = liquid_in[j] + vapour[j + 1] + feed_here - drawn[j] - vapour[j]
++                + into[j]
++                - out[j];
+             liquid_in[j + 1] = liquid_down[j];
+         }
+     }
+@@ -2811,6 +2842,8 @@ fn stage_balance_flows(
+             liquid_drawn: drawn,
+             vapour,
+             reflux,
++            circulation_in: into,
++            circulation_out: out,
+         },
+         reflux_ratio,
+     ))

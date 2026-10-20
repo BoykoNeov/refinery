@@ -1,0 +1,64 @@
+diff --git a/crates/scenarios/tests/crude_unit.rs b/crates/scenarios/tests/crude_unit.rs
+index 86fd65c..83f40c6 100644
+--- a/crates/scenarios/tests/crude_unit.rs
++++ b/crates/scenarios/tests/crude_unit.rs
+@@ -244,3 +244,59 @@ fn pumparounds_need_the_heat_balance_model() {
+         "{refusal}"
+     );
+ }
++
++#[test]
++fn probe_m72_cut_back_with_loops() {
++    for reflux in [0.6, 0.4, 0.3, 0.2, 0.1] {
++        let mut engine = engine();
++        let column = id(&engine, "column");
++        run(&mut engine, 1000).expect("settles");
++        engine
++            .apply(Command::SetRefluxRatio { node: column, reflux_ratio: reflux })
++            .unwrap();
++        match run(&mut engine, 1000) {
++            Ok(s) => {
++                let c = node(&s, "column");
++                println!(
++                    "PROBE reflux {reflux}: ran at {:?}, cut {:?}",
++                    c.column_operation.as_ref().map(|o| o.reflux_ratio),
++                    c.column_draws_cut_back
++                );
++            }
++            Err(e) => println!("PROBE reflux {reflux}: HALT {}", &e[..e.len().min(300)]),
++        }
++    }
++}
++
++#[test]
++#[ignore]
++fn probe_m72_timing() {
++    let path = std::env::var("PROBE_SCENARIO").unwrap();
++    let text = std::fs::read_to_string(path).unwrap();
++    let mut engine = build_engine(&load_str(&text).unwrap()).unwrap();
++    let column = id(&engine, "column");
++    run(&mut engine, 1000).expect("settles");
++    let mut steady = Vec::new();
++    for _ in 0..300 {
++        let t = std::time::Instant::now();
++        engine.tick().unwrap();
++        steady.push(t.elapsed().as_secs_f64() * 1e3);
++    }
++    steady.sort_by(|a, b| a.partial_cmp(b).unwrap());
++    let reflux: f64 = std::env::var("PROBE_REFLUX").map(|v| v.parse().unwrap()).unwrap_or(2.0);
++    engine
++        .apply(Command::SetRefluxRatio { node: column, reflux_ratio: reflux })
++        .unwrap();
++    let mut after = Vec::new();
++    for _ in 0..20 {
++        let t = std::time::Instant::now();
++        engine.tick().unwrap();
++        after.push(t.elapsed().as_secs_f64() * 1e3);
++    }
++    println!(
++        "PROBE steady median {:.3} ms p90 {:.3}; after key press first ticks {:?}",
++        steady[150],
++        steady[270],
++        after.iter().take(5).map(|v| format!("{v:.2}")).collect::<Vec<_>>()
++    );
++}

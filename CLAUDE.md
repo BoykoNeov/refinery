@@ -189,7 +189,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none** — the next is the user's choice.
+Work only on the current milestone unless asked. **Current: M72** — a pumparound loop on the map, back into the column (C9, C11; DESIGN §77).
 **Latest closed: M71 (2026-10-20)**: a column's draws guessed with its feed (C20), a failed guess solved
 again unguessed; the six coil crude units moved; the screen tables held (DESIGN §76). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at

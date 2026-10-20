@@ -28901,3 +28901,228 @@ unguessed (`guess_dropped`); the wet slug's recovery is the one such tick in
 the tests and corpus. The six coil crude units moved (the user's decision);
 the tables held (M71.2). Still open: A29 (the stripped plant past the frame
 after a furnace step); the last 1.3 % is the draw pumps' last bits.
+
+## 77. A pumparound whose liquid goes somewhere — a loop on the map, back into the column (M72) — specified before building
+
+C9 (§65.4): a pumparound is heat taken off one stage; its liquid — drawn off a
+tray, pumped through a cooler and returned higher up — is not modelled. Asked
+after M71 as "what is next"; the user chose the columns (2026-10-20): the
+pumparound loop first, then trays that flood or weep (C1, shown first, then
+the products worsened), then a column that takes time to change (C2); real
+weeping on new plants only. Probed first (§77.0), then five decisions in plain
+words:
+
+1. **The player sets the loop's flow and its return temperature**; the heat it
+   takes out is the result — over "heat removed + flow", although the cold
+   start's aids work on duties (§77.5 says what that costs).
+2. **A tray shared by a product draw and a loop runs short: the product gives
+   way first, then the loop** — the column keeps running and names both.
+3. **The loop is a real pump and cooler on the plant map**, its line back into
+   the column — over a loop inside the column model alone.
+4. **The new plant gets the column screen's key 6** and its measured table.
+5. **Thirteen trays, and the key-press hitch fixed in this milestone** (C11
+   taken, §77.6) — over ten trays, or thirteen with the hitch left measured.
+
+### 77.0 Probed (2026-10-20)
+
+`tools/steptime/prototypes/m72_0/` (`FINDINGS.md`, `probe_circuits.patch`
+and `probe_tests.patch` on 4b09fc2, the two 13-tray files). The heat-balance
+cascade with each pumparound as a liquid circuit — drawn off stage `d`, its
+heat taken out, returned to stage `r = d − 1` with the composition of `d` —
+selected by environment variables; the shipped crude unit and two 13-tray
+versions of it:
+
+1. **The trays inside a loop carry 1.6–2.2 times the liquid the side cooler
+   gives them** (the crude unit, each loop drawn off its product tray and
+   returned one above: stage 2 106 → 230 kg/s, stage 4 126 → 259, stage 6
+   152 → 243). Flooding (C1) measured on the side cooler would read half the
+   load where a crude column floods first — the reason the loop comes first.
+2. **The products 2–3 points less pure** at the draw trays (mole fractions:
+   kerosene 72 → 69 %, diesel 68 → 65 %, gas oil 67 → 64 %): a pumparound's
+   trays cool more than they separate. With two of the loops returned onto the
+   kerosene and diesel trays instead, 4–11 points — the layout matters, not
+   the loop.
+3. **Thirteen trays win it back and more**: side coolers 83 / 80 / 77 %, the
+   loops 81 / 78 / 76 % (draws on 4, 7, 10, the feed on 11, loops 4→3, 7→6,
+   10→9).
+4. **No cost of its own**: a return one stage up keeps every component's
+   balance tridiagonal (the return's `P·x_d` sits on the superdiagonal), the
+   heat books close — `the_reboiler_closure_is_its_own_stage_balance` and
+   `with_a_pumparound_the_closure_is_still_the_reboiler_stage` pass with the
+   loops on — and 3 000 ticks of the crude unit take 1.05 s either way.
+5. **The flow in kg/s** (what a meter reads) is one Newton unknown per loop,
+   `P·M̄(x_d) = ṁ`, as a draw's rate is; it converges (two to three steps a
+   tick in the probe, which restarts each loop's molar flow from the feed's
+   molar mass every tick — carried from the last solve, one, as today).
+6. **A return temperature held** (the user's decision 1) is
+   `h_ret = h(x_d, T_ret)`, explicit; the duty is the result (14.2, 14.9,
+   10.9 MW on the crude unit at 150, 215, 270 °C). With the duty held instead,
+   a small flow asks for an impossible return: −125 °C at 100 mol/s against
+   15 MW, solved quietly — a finite, plausible, wrong number.
+7. **Cold, a held return temperature does not start the 13-tray column**: the
+   warm-up's rough temperatures put the duty it implies far off (the stage
+   below the feed loses its vapour). Walking the cooling as a share, or the
+   loop flows, from small does not start it either — with little cooling the
+   gas-oil tray has no liquid, loops or not. **Started on fixed duties, then
+   handed to the held return temperatures in `CONTINUATION_STEPS` Newton
+   solves** (the return enthalpy blended from the duty's `h_d − Q/P` to
+   `h(x_d, T_ret)`), it starts and settles, two steps a tick.
+8. **Every taller layout (11, 12, 13 trays) refuses its cold start even with
+   side coolers**: the sharp boiling-order seed (§65.1) ends after 10
+   iterations and the draws' moles then exceed the feed's. Held for the whole
+   30-iteration warm-up, all start.
+9. **A loop on a tray that runs short halts**: at a reflux of 0.2 the loop
+   keeps drawing its flow and the tray's liquid goes negative, where the side
+   cooler's column cuts the product back (M67.1). At 0.3–0.6 the loop above
+   the kerosene tray keeps it wet and no draw is cut back at all.
+10. **The cost on a key press** (release, the tick after a reflux 4 → 2, two
+    runs agreeing): the shipped crude unit 8.3 ms, ten trays with held-return
+    loops 11.5 ms, thirteen trays 30 ms with side coolers and 25 ms with the
+    loops — against the 2.5 ms budget. Steady: 0.52, 1.44, 0.70, 1.33 ms (the
+    loop rows at two to three steps a tick, see 5).
+
+### 77.1 Fork 1 — the loop in the column's equations
+
+A **loop** on a heat-balance cascade: drawn off stage `d`, returned to stage
+`r = d − 1` (one stage up, the loader refuses any other: the balances stay
+tridiagonal and the Thomas sweep exact), at a mass flow `ṁ` [kg/s]. In the
+stage equations (§65.0, §66):
+
+```text
+  material   L_j = L_{j−1} + V_{j+1} + F_j + P·[j = r] − U_j − P·[j = d] − V_j
+  component  row r gains + P·x_{d,c} (on the superdiagonal); row d loses P·x_{d,c}
+  energy     E_r gains + P·h_ret;  E_d loses − P·h_d
+  unknown    P (mol/s), with  P·M̄(x_d) − ṁ = 0  beside the draws' W_k
+  h_ret      h(x_d, T_ret) held, or h_d − Q_max/P where the cooler is at capacity (§77.3)
+  duty       Q = P·(h_d − h_ret), a result, in the reboiler's closure beside ΣQ_side
+```
+
+The trays between `r` and `d` carry `P` more liquid; nothing else changes. A
+column's loops and its side coolers (M60's `pumparounds`) may not share a
+stage; the old form keeps its arithmetic and every shipped plant its bytes.
+Published, only on a column with loops (so no shipped snapshot moves): each
+loop's flow, return temperature, duty and whether it is cut back or at
+capacity; and each stage's liquid down [mol/s], which C1 will read.
+
+### 77.2 Fork 2 — the loop on the map
+
+**A loop line**: the column → its draw pipe → pumps and coolers, each one pipe
+in and one out → a return pipe INTO the column. Declared on the column's
+cascade block (`loops = [{ draw_stage, return_stage, outlet, flow_kg_per_s,
+return_temperature_c, cooler_capacity_mw, start_duty_mw }]`), `outlet` the
+line's first node; the loader follows it, as M62.4b's draw lines, to the edge
+back into the column, which it records as the loop's **return**. Changed by
+name, from M62.4b and M62.6:
+
+- **The loop back §67.13 refuses** is admitted for a line declared as a loop,
+  and only one that ends at its own column; a draw line keeps the refusal.
+- **The flow is the loop's on every edge of the line**, prescribed, written
+  after the sweep, guarded to zero in the flow solve (`network::edge_flows`),
+  as a draw line's — the return edge too.
+- **The line's pressures marched from the column**, as a draw line's; the
+  arrival at the return must reach the column's pressure, the surplus the
+  line's flow valve (implicit, perfectly tuned, as a draw line's level valve).
+  **A loop that falls short does not halt** (a draw line does): it delivers
+  the most its line can at the column's pressure — the flow at which the march
+  arrives at it, by bisection on the march at the stored state — so a pump
+  switched off, tripped or gas-locked stops its loop (the return enters
+  higher than the draw: no flow falls back by gravity), and the column runs on
+  without that cooling. Reported: the loop short of its flow, by how much.
+- **The return is not the column's dependency** (the steam inlet is, §67.18):
+  the sweep would wait on a line that waits on the column. Every place that
+  takes "every inflow but the steam" as the feed (`energy` mixing,
+  `column_steam_inlet`'s readers, the reverse-feed refusal) excludes the
+  return too.
+- **The loop's cooler is a `cooler` the column drives**: each tick the column
+  writes its duty, `Q = P·(h_d − h_ret)`, and the cooler then settles its
+  outlet by its own law — so the return arrives at exactly `h_ret` if the
+  column's `liquid_enthalpy` and the sweep's enthalpy agree, which is the gate
+  that keeps the books closed inside the tick (a return read a tick late
+  would need an in-transit term for energy and every component). Its duty is
+  refused to `SetCoolerDuty` and to a temperature loop while the loop owns
+  it. A cooling-water cooler is refused on a loop (its duty a result of `UA`,
+  the return temperature then lagging the column's).
+- **The line's pump** is a draw line's (§67.13): pinned, its head the march's;
+  `npsh_required_m` refused; its suction must fall.
+
+### 77.3 Fork 3 — what the player sets
+
+`Command::SetLoopFlow { node, pumparound_loop, flow }` and
+`Command::SetLoopReturnTemperature { node, pumparound_loop, temperature }`,
+each refused out of range by name; the snapshot reports both. The duty is the
+result; past the loop's `cooler_capacity_mw` the cooler runs at its capacity
+and the return warms — `h_ret = h_d − Q_max/P`, the duty form the probe ran
+— reported as at capacity. A loop whose line delivers less (§77.2) runs at
+what it delivers.
+
+### 77.4 Fork 4 — a tray that runs short
+
+The product draw first, as M67.1 cuts one back (its tray's liquid down held at
+`CUT_BACK_LIQUID_OF_FEED · F`); if the product is cut to nothing and the tray
+is still short, the loop's flow becomes the result — the same liquid held,
+the loop's mass equation swapped for it — reported, released when the tray
+recovers (M67.1's release rule). The column keeps running.
+
+### 77.5 Fork 5 — the cold start
+
+**On fixed duties first, then handed over**: a column with loops starts cold
+with each loop's return at `h_d − Q_start/P` (`start_duty_mw`, a game value:
+the duty a crew would bring the cooler in at), then hands each loop to its
+held return temperature in `CONTINUATION_STEPS` Newton solves (finding 7).
+The halvings (§70.1) halve the start duties. **A refused cold start tries
+again with the sharp seed held for the whole warm-up** (finding 8) — a retry,
+so no shipped plant, none of which refuses, moves.
+
+### 77.6 Fork 6 — the key-press hitch (C11)
+
+Taken in M72 (the user's decision 5): the tick after a big key press solves
+Newton from far off, ~700 residual evaluations on the shipped crude unit,
+more on thirteen trays. Probed in its own slice — an analytic Jacobian, or
+Broyden updates between full ones — against that tick on the shipped crude
+unit and the new plant. **What it would move**: a different Jacobian takes
+Newton down a different path, so every heat-balance plant's answers within
+the tolerance, the corpus and the column screen's three tables (C19) — put to
+the user with the numbers before anything lands, as every move is.
+
+### 77.7 Fork 7 — the plant, and the screen
+
+`scenarios/crude_unit_loops.toml`: the crude unit's crude and furnace, a
+13-tray column (draws on 4, 7, 10, the feed on 11), three loops 4→3, 7→6,
+10→9 at 85 / 95 / 65 kg/s returning at 150 / 215 / 270 °C, each line a pump
+and a cooler on the map. The column screen's key 6 plays it, its keys the
+loops' flows and return temperatures beside the reflux and the furnace; its
+measured table (C19's method) in batches of at most an hour.
+
+### 77.8 What moves, what is deferred
+
+Every shipped plant byte-identical through M72.4 (new file, new keys, the
+retry only where a start refuses); M72.5's moves put to the user. Deferred:
+
+- **A return further up than one stage** (a correction to the Thomas sweep,
+  Sherman–Morrison per loop: small, unasked).
+- **The loop's holdup and transit time** — C2's: the line holds no liquid.
+- **A cooling-water cooler on a loop**, and a temperature loop on one (§77.2).
+- **The product drawn off the loop** (a real kerosene draw is often taken from
+  its pumparound's discharge): the product leaves its tray as today.
+
+### 77.9 The slices
+
+- **M72.1 — the loop in the column's equations.** `PumparoundLoop` in
+  `CascadeSpec` (core), the heat-balance cascade's material, component and
+  energy terms, `P` a Newton unknown carried between solves, the duty in the
+  closure, the published fields. Gates by inline fixture: the closure against
+  the reboiler stage; a hand calculation of one stage's balance with a loop;
+  Newton against the fixed point; the return enthalpy against the sweep's.
+- **M72.2 — the loop on the map.** The loader's `loops` (the line resolved
+  back to its column, its cooler and pump), the guards, the sweep's return,
+  the march and the delivered flow, the cooler driven by the column, the two
+  commands, the snapshot; the books every tick on both fidelities; the
+  refusals by name.
+- **M72.3 — a tray that runs short**: the product, then the loop; a stopped
+  pump.
+- **M72.4 — the plant**: `crude_unit_loops.toml`, the cold start on fixed
+  duties and its hand-over, the sharp seed's retry; settled numbers against
+  the probe's.
+- **M72.5 — the key-press hitch** (C11): probed, then built; moves to the
+  user.
+- **M72.6 — the column screen's key 6** and its measured table.

@@ -10719,3 +10719,27 @@ C19, owed by M71.1 (the user's decision). M69.3's edge check on the M71.1
 engine against M70.2's results: every verdict and failing tick unchanged, about
 31 minutes in two batches. Both tables stand. No code changed.
 `tools/steptime/prototypes/m71_2/FINDINGS.md`; DESIGN §76.3, §76.4.
+
+## M72 — a pumparound whose liquid goes somewhere: a loop on the map, back into the column; ledger rows C9 and C11; opened on a decision
+
+Asked after M71 as "what is next" (2026-10-20): the user chose the columns —
+the pumparound loop first, then flooding and weeping (C1), then holdup (C2) —
+and, after the probe, the loop's flow and return temperature as the handles, a
+real pump and cooler on the map, the product before the loop on a short tray,
+key 6 on the column screen, and thirteen trays with the key-press hitch fixed
+here (C11). DESIGN §77.
+
+### M72.0 — **SPECIFIED** 2026-10-20: the probe — M72 stays OPEN
+
+Probed (`tools/steptime/prototypes/m72_0/`, `FINDINGS.md`): each pumparound a
+liquid circuit drawn off a tray and returned one above. The trays inside a loop
+carry 1.6–2.2 times the side cooler's liquid; the products 2–3 points less pure
+on ten trays, 81 / 78 / 76 % on thirteen (today 72 / 68 / 67); no cost of its
+own and the heat books closed. A held return temperature does not start cold
+(started on fixed duties and handed over, it does); taller columns need the
+sharp seed longer; a loop on a short tray halts; a big key press 25 ms on
+thirteen trays against 8.3 today.
+
+Slices: M72.1 the loop in the column's equations; M72.2 the loop on the map;
+M72.3 a tray that runs short; M72.4 the plant and its cold start; M72.5 the
+key-press hitch (C11); M72.6 the column screen's key 6. No engine code changed.
