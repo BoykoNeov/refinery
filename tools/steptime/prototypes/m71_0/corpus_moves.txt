@@ -1,0 +1,14 @@
+newton: 6 of 67 moved, all status ok: True
+  crude_unit_boiling     iterations 6009 -> 6009, worst 10 -> 10
+  crude_unit_cold        iterations 6009 -> 6009, worst 11 -> 11
+  crude_unit_steam       iterations 6009 -> 6009, worst 11 -> 11
+  crude_unit_stripped    iterations 6009 -> 6009, worst 11 -> 11
+  crude_unit_wet         iterations 6008 -> 6008, worst 10 -> 10
+  crude_unit_wetter      iterations 6008 -> 6008, worst 10 -> 10
+simple: 6 of 67 moved, all status ok: True
+  crude_unit_boiling     iterations 6033 -> 6033, worst 34 -> 34
+  crude_unit_cold        iterations 9020 -> 9020, worst 33 -> 33
+  crude_unit_steam       iterations 6032 -> 6032, worst 33 -> 33
+  crude_unit_stripped    iterations 6030 -> 6030, worst 31 -> 31
+  crude_unit_wet         iterations 6032 -> 6032, worst 33 -> 33
+  crude_unit_wetter      iterations 6031 -> 6031, worst 32 -> 32

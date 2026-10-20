@@ -28756,3 +28756,53 @@ the parabola settles (ticks 100–1 000) its 1.09 solves add more: 228.3 against
 209.5. **The cause is C20's**; guessing the draws with the column's feed would
 close both, and move answers again.
 
+## 76. A column's draws guessed with its feed (M71) — specified before building
+
+C20 (§75.3, §75.6): a column's draws (`NodeStates::column_separation`) are
+neither guessed nor in the density check, so on a tick that solves once the
+flow solve reads them a tick late, and since M70.1 the pump below each draw is
+guessed while its draw is not. Asked as "Yes, as M71" (2026-10-20), probed first.
+
+### 76.0 Probed (2026-10-20)
+
+`tools/steptime/prototypes/m71_0/` (`FINDINGS.md`, `probe_draws.patch` on
+b882379). Each draw of each not-held column moved on as a node is (its
+temperature by `moved_on`, its composition by `composition_moved_on`, the
+parabola on the same ticks):
+- **The work**: the settled stripped plant 214.0 → 209.4 line-flash flashes a
+  tick (206.7 before M70.1: §75.6's 3.5 % down to 1.3 %, the rest the draw
+  pumps' last bits); after 58 → 65 MW 253.0 → 248.7; the cold start-up 252.2 →
+  244.8. Solves and iterations unchanged. The stripped plant after a furnace
+  step is still past the 2.5 ms frame.
+- **The lag closes**: the product line's march at this tick's draws holds at
+  1e-9 again.
+- **M70.1's key-press moves were mostly the lag**: against the engine before
+  M70.1, the largest move after a key press 3.3e-7 on the stripped plant (M70.1
+  4.7e-6) and 1.1e-6 on the cold start-up (1.6e-5); the heavy draws' pump and
+  cooler pressures back within ~1e-8.
+- **The corpus**: the six coil crude units move on each fidelity, iterations
+  unchanged; none fails.
+- **A draw guessed across a command broke a run**: the wet slug's recovery,
+  the kerosene line "at −536 748 bar". Mended by not guessing the draws on the
+  tick after a command's, or by a fallback — the guessed tick solved again,
+  unguessed, when its guessed solve fails; with the rule nothing in the tests or
+  corpus reaches the fallback, without it the fallback fires once (that tick),
+  the corpus identical. A column that floods or recovers with no command is
+  covered only by the fallback.
+
+### 76.1 The specification (M71.1) — the user's choices pending
+
+- `Engine::predicted_states` guesses each draw's temperature and composition
+  as a node's (§75.1), from the ticks the draw rule allows.
+- **The fallback** (the side note's safety net, now in the plan): the guessed
+  span — the first solve through the last re-solve, checked while building to
+  write nothing the retry reads — is run again from the last tick's states,
+  unguessed, when any part of it fails; a failure there too is the tick's.
+  Covers M69/M70's node guesses as well as the draws'. Made visible as a
+  `SolveDiagnostics` field (absent when false), never by I/O in `core`.
+- `product_line_reference` back to its premise before §75.3 (the march at this
+  tick's draws); C20 closed.
+- Gates: the corpus on both fidelities, moves put to the user; the stripped and
+  cold tables' edge check (M70.2's), because the draws are guessed where the
+  tables live — floods, cut-back draws, the cold warm-up — and because the
+  fallback can let a setting that failed by a guess run.

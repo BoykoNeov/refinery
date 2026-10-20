@@ -1,0 +1,91 @@
+diff --git a/crates/core/src/engine.rs b/crates/core/src/engine.rs
+index d8b737e..c5a9fa4 100644
+--- a/crates/core/src/engine.rs
++++ b/crates/core/src/engine.rs
+@@ -1308,6 +1308,49 @@ impl Engine {
+                 }
+             }
+         }
++        // M71.0 probe: each column draw's composition and temperature moved on
++        // as a node's are (M71_DRAWS=1).
++        // M71_SINCE=1: draws guessed only from ticks that all ended after the
++        // last command (the line from one tick after, as the parabola from two).
++        let draws_from_command =
++            std::env::var("M71_SINCE").is_err() || self.ticks_since_command >= 1;
++        if std::env::var("M71_DRAWS").is_ok() && draws_from_command {
++            for (column, separation) in &self.node_states.column_separation {
++                if self.node_states.held.contains(column) {
++                    continue;
++                }
++                let Some(before) = self.states_before.column_separation.get(column) else {
++                    continue;
++                };
++                if before.draws.len() != separation.draws.len() {
++                    continue;
++                }
++                let before2 = self
++                    .states_before2
++                    .column_separation
++                    .get(column)
++                    .filter(|s| curved && s.draws.len() == separation.draws.len());
++                let mut guessed = separation.clone();
++                for (k, draw) in guessed.draws.iter_mut().enumerate() {
++                    let (b, b2) = (&before.draws[k], before2.map(|s| &s.draws[k]));
++                    if draw.composition == b.composition && draw.temperature == b.temperature {
++                        continue;
++                    }
++                    moved = true;
++                    draw.temperature = Kelvin(ahead(
++                        draw.temperature.value(),
++                        b.temperature.value(),
++                        b2.map(|d| d.temperature.value()),
++                    ));
++                    if let Some(c) =
++                        composition_moved_on(&draw.composition, &b.composition, b2.map(|d| &d.composition))
++                    {
++                        draw.composition = c;
++                    }
++                }
++                predicted.column_separation.insert(*column, guessed);
++            }
++        }
+         moved.then_some(predicted)
+     }
+ 
+@@ -1394,13 +1437,32 @@ impl Engine {
+         //     §74.5), so the re-solves below start that much closer; and every
+         //     solve of such a tick takes one step at least, so its flows balance
+         //     as an iterated solve's do.
+-        let predicted = self.predicted_states();
++        let mut predicted = self.predicted_states();
+         self.flow_solver
+             .step_even_when_converged(predicted.is_some());
++        // M71.0 probe (M71_FALLBACK=1): a guessed first solve that fails is
++        // solved again from the last tick's states, unguessed.
++        let guessed = match predicted.as_ref() {
++            Some(guess) => Some(self.flow_solver.solve(&self.graph, &self.slate, guess, dt)),
++            None => None,
++        };
++        let mut solution = match guessed {
++            Some(Ok(solution)) => solution,
++            Some(Err(e)) => {
++                if std::env::var("M71_FALLBACK").is_err() {
++                    return Err(e);
++                }
++                eprintln!("M71 FALLBACK at tick {}: {e}", self.tick + 1);
++                predicted = None;
++                self.flow_solver.step_even_when_converged(false);
++                self.flow_solver
++                    .solve(&self.graph, &self.slate, &self.node_states, dt)?
++            }
++            None => self
++                .flow_solver
++                .solve(&self.graph, &self.slate, &self.node_states, dt)?,
++        };
+         let first_read = predicted.as_ref().unwrap_or(&self.node_states);
+-        let mut solution = self
+-            .flow_solver
+-            .solve(&self.graph, &self.slate, first_read, dt)?;
+ 
+         // 2b. Resolve the node temperature AND composition fields: inertial
+         //     nodes contribute their start-of-tick values, zero-volume nodes mix

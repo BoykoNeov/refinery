@@ -10681,3 +10681,20 @@ engine: every verdict M69.3's, every failure on the same tick — the stripped
 edge, the cold edge, the cold long rows, every allowed cold row, the held
 presses, two coils; about 65 minutes in two batches. Both tables stand. No code
 changed. `tools/steptime/prototypes/m70_2/FINDINGS.md`; DESIGN §75.4, §75.5.
+
+## M71 — a column's draws guessed with its feed: ledger row C20, and the settled stripped plant's 3.5 %; opened on a decision
+
+Asked as "Yes, as M71" (2026-10-20) on the fix §75.6 named. DESIGN §76.
+
+### M71.0 — **SPECIFIED** 2026-10-20: the probe — M71 stays OPEN
+
+Probed (`tools/steptime/prototypes/m71_0/`, `FINDINGS.md`): the draws guessed
+take the settled stripped plant's line-flash work 214.0 → 209.4 a tick (206.7
+before M70.1), close C20's lag, and shrink M70.1's moves after a key press to
+3.3e-7 / 1.1e-6 against the engine before M70.1; the six coil crude units move,
+iterations unchanged. A draw guessed across a command broke the wet slug's
+recovery; a no-guess-after-a-command rule or a fallback (solve the tick again
+unguessed) each mends it.
+
+Slices: M71.1 the draws guessed and the fallback; M71.2 the stripped and cold
+tables re-checked. No engine code changed.
