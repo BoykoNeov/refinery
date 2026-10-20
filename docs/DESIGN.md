@@ -28853,3 +28853,26 @@ as "moved" (no shipped plant moves a draw with nothing else moving: the corpus
 byte-identical); a held column guessed (that check was redundant, and removed);
 the retried tick still forced to step (it changes only which iterate within the
 tolerance the retry stops on).
+
+### 76.3 The stripped and cold tables re-checked (M71.2)
+
+C19, owed by M71.1 (the user's decision): M69.3's edge check on its own specs,
+on the M71.1 engine, compared spec by spec with M70.2's committed output
+(`tools/steptime/prototypes/m71_2/FINDINGS.md`): the stripped edge 149 of 149
+inside, 1 of 122 outside; the cold edge 160 of 160 and 134 of 140; the cold
+long rows 12 of 12 and every allowed row 84 of 84; the held presses 12 of 23;
+the coils 384.3 and 413.9 °C. **Every verdict and failing tick unchanged**; no
+setting outside an edge flipped to running. About 31 minutes in two batches.
+Both tables stand; `column_screen.rs` unchanged.
+
+### 76.4 M71 closed
+
+C20 taken: a column's draws are guessed with its feed (M71.1), so a tick that
+solves once reads them at this tick's state, and the pump below each draw no
+longer disagrees with it — the settled stripped plant's line-flash work 1.3 %
+above where it stood before M70.1, not 3.5 %, and M70.1's moves after a key
+press undone to within 1.1e-6. A guessed tick that fails is solved again
+unguessed (`guess_dropped`); the wet slug's recovery is the one such tick in
+the tests and corpus. The six coil crude units moved (the user's decision);
+the tables held (M71.2). Still open: A29 (the stripped plant past the frame
+after a furnace step); the last 1.3 % is the draw pumps' last bits.

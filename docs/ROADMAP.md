@@ -10682,7 +10682,7 @@ edge, the cold edge, the cold long rows, every allowed cold row, the held
 presses, two coils; about 65 minutes in two batches. Both tables stand. No code
 changed. `tools/steptime/prototypes/m70_2/FINDINGS.md`; DESIGN §75.4, §75.5.
 
-## M71 — a column's draws guessed with its feed: ledger row C20, and the settled stripped plant's 3.5 %; opened on a decision
+## M71 — a column's draws guessed with its feed: ledger row C20, and the settled stripped plant's 3.5 %; opened on a decision; CLOSED 2026-10-20
 
 Asked as "Yes, as M71" (2026-10-20) on the fix §75.6 named. DESIGN §76.
 
@@ -10712,3 +10712,10 @@ product line's march at this tick's draws again. DESIGN §76.2.
   before M70.1. Rolling baseline refreshed.
 - Gates: the wet slug's one dropped guess; `product_line_reference` at its
   premise. Mutations: ten, six caught by tests, one by the corpus, three argued.
+
+### M71.2 — **LANDED** 2026-10-20: the stripped and cold tables re-checked — M71 CLOSED
+
+C19, owed by M71.1 (the user's decision). M69.3's edge check on the M71.1
+engine against M70.2's results: every verdict and failing tick unchanged, about
+31 minutes in two batches. Both tables stand. No code changed.
+`tools/steptime/prototypes/m71_2/FINDINGS.md`; DESIGN §76.3, §76.4.

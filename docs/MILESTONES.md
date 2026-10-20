@@ -12,6 +12,26 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M71 is CLOSED (2026-10-20): a column's draws guessed with its feed —
+`docs/DEFERRED.md` C20 taken.** Asked as "Trace the 4–6 %" after M70 (traced
+to C20's cause, §75.6), then "Yes, as M71".
+- **M71.0, the probe** (§76.0, `tools/steptime/prototypes/m71_0/`): the draws
+  guessed bring the settled stripped plant's line-flash work 214.0 → 209.4 a
+  tick (206.7 before M70.1), close the lag, and shrink M70.1's key-press moves
+  to within 1.1e-6 of the engine before it. A draw guessed across a command
+  broke the wet slug's recovery (−536 748 bar); a no-guess rule or a fallback
+  each mends it.
+- **M71.1, built** (§76.2): the draws guessed on the ticks a node is; a guessed
+  tick that fails solved again unguessed (`guess_dropped`, the user's choice of
+  the fallback alone, after a side note asked for a safety net). The six coil
+  crude units moved on each fidelity, iterations unchanged (the user's
+  decision). `product_line_reference` back to its premise. Mutations: ten, six
+  caught by tests, one by the corpus, three argued.
+- **M71.2, the screen tables** (§76.3, `tools/steptime/prototypes/m71_2/`):
+  re-checked, every verdict and failing tick unchanged, about 31 minutes.
+- **Left open**: A29 (the stripped plant still past the frame after a furnace
+  step); C11.
+
 **M70 is CLOSED (2026-10-19): the stripped plant after a furnace step — its
 composition and its curve predicted — `docs/DEFERRED.md` A29's leftover taken,
 C20 new.** Asked as "do it" on M69's two left fixes (fewer coil cells, a

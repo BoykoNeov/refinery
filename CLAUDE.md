@@ -189,10 +189,9 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M71** (C20, DESIGN §76): a column's draws guessed with its feed, and a
-guessed tick solved again unguessed when it fails (M71.1); the stripped and cold tables re-checked (M71.2).
-**Latest closed: M70 (2026-10-19)**: the stripped plant after a furnace step — its composition guessed, the
-guess a parabola, a guessed solve stepped only while unbalanced; 0.58 of its tick, still past the frame; 10/11 plants moved; the screen tables held (DESIGN §75). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none** — the next is the user's choice.
+**Latest closed: M71 (2026-10-20)**: a column's draws guessed with its feed (C20), a failed guess solved
+again unguessed; the six coil crude units moved; the screen tables held (DESIGN §76). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 

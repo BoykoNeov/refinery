@@ -1,0 +1,156 @@
+
+running 1 test
+test m67_3_grid::m67_3_grid ... == stripped WARM 20 GAP 3000 RUN 1500
+RESULT file:37.5:376.8|steam=0.05+pa=3: RUNS R 1.504 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 29.29 reb 0.00 MW bottom 324.2 C | cut 3:0.881 4:0.108
+RESULT file:37.5:376.8|steam=0.05+pa=8: RUNS R 0.260 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 15.39 reb 0.00 MW bottom 315.3 C | cut 2:0.171 3:0.732
+RESULT file:37.5:376.8|steam=0.1+pa=3: RUNS R 1.542 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 29.89 reb 0.00 MW bottom 322.3 C | cut 3:0.922 4:0.101
+RESULT file:37.5:376.8|steam=0.1+pa=8: RUNS R 0.300 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 16.05 reb 0.00 MW bottom 313.3 C | cut 2:0.232 3:0.724
+RESULT file:37.5:376.8|steam=0.15+pa=3: RUNS R 1.572 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 30.43 reb 0.00 MW bottom 320.8 C | cut 3:0.954 4:0.096
+RESULT file:37.5:376.8|steam=0.15+pa=8: RUNS R 0.332 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 16.62 reb 0.00 MW bottom 311.8 C | cut 2:0.280 3:0.716
+RESULT file:37.5:376.8|steam=0.2+pa=3: RUNS R 1.599 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 30.93 reb 0.00 MW bottom 319.6 C | cut 3:0.981 4:0.091
+RESULT file:37.5:376.8|steam=0.2+pa=8: RUNS R 0.360 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 17.15 reb 0.00 MW bottom 310.6 C | cut 2:0.322 3:0.709
+RESULT file:37.5:376.8|steam=0.25+pa=0: RUNS R 2.392 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 39.84 reb 0.00 MW bottom 319.1 C | cut 4:0.091
+RESULT file:37.5:376.8|steam=0.25+pa=1: RUNS R 2.134 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 37.00 reb 0.00 MW bottom 318.9 C | cut 4:0.092
+RESULT file:37.5:376.8|steam=0.25+pa=2: RUNS R 1.877 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 34.18 reb 0.00 MW bottom 318.7 C | cut 4:0.094
+RESULT file:37.5:376.8|steam=0.25+pa=8: RUNS R 0.386 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 17.65 reb 0.00 MW bottom 309.5 C | cut 2:0.359 3:0.703
+RESULT file:37.5:376.8|steam=0.3+pa=9: RUNS R 0.175 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 15.43 reb 0.00 MW bottom 304.0 C | cut 2:0.031 3:0.852
+RESULT file:37.5:376.8|steam=0.35+pa=9: RUNS R 0.198 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 15.90 reb 0.00 MW bottom 303.1 C | cut 2:0.064 3:0.845
+RESULT file:37.5:376.8|steam=0.4+pa=9: RUNS R 0.219 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 16.36 reb 0.00 MW bottom 302.3 C | cut 2:0.096 3:0.839
+RESULT file:37.5:376.8|steam=0.45+pa=9: RUNS R 0.240 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 16.81 reb 0.00 MW bottom 301.6 C | cut 2:0.126 3:0.833
+RESULT file:37.5:376.8|steam=0.5+pa=9: RUNS R 0.260 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 17.25 reb 0.00 MW bottom 301.0 C | cut 2:0.155 3:0.827
+RESULT file:37.5:376.8|steam=0.55+pa=9: RUNS R 0.279 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 17.68 reb 0.00 MW bottom 300.4 C | cut 2:0.183 3:0.821
+RESULT file:37.5:376.8|steam=0.6+pa=9: RUNS R 0.298 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 18.11 reb 0.00 MW bottom 299.8 C | cut 2:0.209 3:0.815
+RESULT file:37.5:376.8|steam=0.65+pa=9: RUNS R 0.316 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 18.52 reb 0.00 MW bottom 299.3 C | cut 2:0.234 3:0.810
+RESULT file:37.5:376.8|steam=0.7+pa=9: RUNS R 0.333 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 18.93 reb 0.00 MW bottom 298.9 C | cut 2:0.259 3:0.805
+RESULT file:37.5:376.8|steam=0.75+pa=9: RUNS R 0.350 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 19.33 reb 0.00 MW bottom 298.4 C | cut 2:0.282 3:0.800
+RESULT file:37.5:376.8|steam=0.8+pa=9: RUNS R 0.366 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 19.73 reb 0.00 MW bottom 298.0 C | cut 2:0.305 3:0.795
+RESULT file:37.5:376.8|steam=0.85+pa=9: RUNS R 0.382 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 20.12 reb 0.00 MW bottom 297.7 C | cut 2:0.326 3:0.791
+RESULT file:37.5:376.8|steam=0.9+pa=9: RUNS R 0.398 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 20.51 reb 0.00 MW bottom 297.4 C | cut 2:0.347 3:0.787
+RESULT file:37.5:376.8|steam=0.95+pa=10: RUNS R 0.179 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 18.22 reb 0.00 MW bottom 292.2 C | cut 2:0.022 3:0.928
+RESULT file:37.5:376.8|steam=1+pa=10: RUNS R 0.194 flash 0.797 coil 376.5 feed 333.8 C 112.81 kg/s cond 18.61 reb 0.00 MW bottom 291.9 C | cut 2:0.043 3:0.923
+RESULT file:40:384.3|steam=0.05+pa=3: RUNS R 1.629 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 30.66 reb 0.00 MW bottom 330.5 C | cut 4:0.058
+RESULT file:40:384.3|steam=0.05+pa=8: RUNS R 0.380 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 16.78 reb 0.00 MW bottom 322.0 C | cut 2:0.357 3:0.703
+RESULT file:40:384.3|steam=0.1+pa=0: RUNS R 2.436 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 39.72 reb 0.00 MW bottom 328.9 C | cut 4:0.113
+RESULT file:40:384.3|steam=0.1+pa=1: RUNS R 2.177 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 36.87 reb 0.00 MW bottom 328.8 C | cut 4:0.114
+RESULT file:40:384.3|steam=0.1+pa=2: RUNS R 1.920 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 34.05 reb 0.00 MW bottom 328.6 C | cut 4:0.115
+RESULT file:40:384.3|steam=0.1+pa=9: RUNS R 0.183 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 14.70 reb 0.00 MW bottom 315.2 C | cut 2:0.047 3:0.849
+RESULT file:40:384.3|steam=0.15+pa=0: RUNS R 2.465 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 40.24 reb 0.00 MW bottom 327.4 C | cut 4:0.159
+RESULT file:40:384.3|steam=0.15+pa=1: RUNS R 2.206 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 37.39 reb 0.00 MW bottom 327.2 C | cut 4:0.159
+RESULT file:40:384.3|steam=0.15+pa=2: RUNS R 1.949 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 34.56 reb 0.00 MW bottom 327.0 C | cut 4:0.161
+RESULT file:40:384.3|steam=0.15+pa=9: RUNS R 0.216 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 15.28 reb 0.00 MW bottom 313.6 C | cut 2:0.097 3:0.842
+RESULT file:40:384.3|steam=0.2+pa=0: RUNS R 2.490 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 40.71 reb 0.00 MW bottom 326.1 C | cut 4:0.197
+RESULT file:40:384.3|steam=0.2+pa=1: RUNS R 2.231 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 37.87 reb 0.00 MW bottom 325.9 C | cut 4:0.198
+RESULT file:40:384.3|steam=0.2+pa=2: RUNS R 1.974 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 35.04 reb 0.00 MW bottom 325.8 C | cut 4:0.199
+RESULT file:40:384.3|steam=0.2+pa=9: RUNS R 0.245 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 15.82 reb 0.00 MW bottom 312.4 C | cut 2:0.140 3:0.834
+RESULT file:40:384.3|steam=0.25+pa=9: RUNS R 0.271 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 16.33 reb 0.00 MW bottom 311.2 C | cut 2:0.179 3:0.827
+RESULT file:40:384.3|steam=0.3+pa=9: RUNS R 0.295 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 16.82 reb 0.00 MW bottom 310.3 C | cut 2:0.214 3:0.821
+RESULT file:40:384.3|steam=0.35+pa=9: RUNS R 0.318 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 17.29 reb 0.00 MW bottom 309.4 C | cut 2:0.248 3:0.815
+RESULT file:40:384.3|steam=0.4+pa=9: RUNS R 0.340 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 17.75 reb 0.00 MW bottom 308.6 C | cut 2:0.279 3:0.809
+RESULT file:40:384.3|steam=0.45+pa=9: RUNS R 0.360 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 18.19 reb 0.00 MW bottom 307.9 C | cut 2:0.308 3:0.804
+RESULT file:40:384.3|steam=0.5+pa=9: RUNS R 0.380 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 18.63 reb 0.00 MW bottom 307.3 C | cut 2:0.335 3:0.799
+RESULT file:40:384.3|steam=0.55+pa=10: RUNS R 0.166 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 16.38 reb 0.00 MW bottom 301.7 C | cut 2:0.010 3:0.940
+RESULT file:40:384.3|steam=0.6+pa=10: RUNS R 0.185 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 16.80 reb 0.00 MW bottom 301.1 C | cut 2:0.037 3:0.934
+RESULT file:40:384.3|steam=0.65+pa=10: RUNS R 0.203 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 17.23 reb 0.00 MW bottom 300.6 C | cut 2:0.063 3:0.929
+RESULT file:40:384.3|steam=0.7+pa=10: RUNS R 0.221 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 17.64 reb 0.00 MW bottom 300.1 C | cut 2:0.087 3:0.924
+RESULT file:40:384.3|steam=0.75+pa=10: RUNS R 0.238 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 18.05 reb 0.00 MW bottom 299.7 C | cut 2:0.111 3:0.919
+RESULT file:40:384.3|steam=0.8+pa=10: RUNS R 0.254 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 18.45 reb 0.00 MW bottom 299.3 C | cut 2:0.135 3:0.914
+RESULT file:40:384.3|steam=0.85+pa=10: RUNS R 0.271 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 18.85 reb 0.00 MW bottom 298.9 C | cut 2:0.157 3:0.909
+RESULT file:40:384.3|steam=0.9+pa=10: RUNS R 0.286 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 19.24 reb 0.00 MW bottom 298.6 C | cut 2:0.179 3:0.905
+RESULT file:40:384.3|steam=0.95+pa=10: RUNS R 0.302 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 19.62 reb 0.00 MW bottom 298.3 C | cut 2:0.200 3:0.901
+RESULT file:40:384.3|steam=1+pa=10: RUNS R 0.317 flash 0.812 coil 384.0 feed 340.3 C 112.81 kg/s cond 20.01 reb 0.00 MW bottom 298.0 C | cut 2:0.221 3:0.896
+RESULT file:42.5:391.8|steam=0.05+pa=0: RUNS R 2.524 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 40.49 reb 0.00 MW bottom 337.0 C | cut 4:0.194
+RESULT file:42.5:391.8|steam=0.05+pa=1: RUNS R 2.264 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 37.64 reb 0.00 MW bottom 336.9 C | cut 4:0.194
+RESULT file:42.5:391.8|steam=0.05+pa=2: RUNS R 2.006 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 34.80 reb 0.00 MW bottom 336.7 C | cut 4:0.195
+RESULT file:42.5:391.8|steam=0.05+pa=9: RUNS R 0.264 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 15.43 reb 0.00 MW bottom 323.9 C | cut 2:0.173 3:0.827
+RESULT file:42.5:391.8|steam=0.1+pa=9: RUNS R 0.303 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 16.09 reb 0.00 MW bottom 321.9 C | cut 2:0.233 3:0.819
+RESULT file:42.5:391.8|steam=0.15+pa=9: RUNS R 0.335 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 16.66 reb 0.00 MW bottom 320.3 C | cut 2:0.281 3:0.812
+RESULT file:42.5:391.8|steam=0.2+pa=9: RUNS R 0.364 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 17.20 reb 0.00 MW bottom 319.0 C | cut 2:0.323 3:0.806
+RESULT file:42.5:391.8|steam=0.25+pa=10: RUNS R 0.157 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 15.01 reb 0.00 MW bottom 312.7 C | cut 2:0.002 3:0.947
+RESULT file:42.5:391.8|steam=0.3+pa=10: RUNS R 0.182 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 15.50 reb 0.00 MW bottom 311.7 C | cut 2:0.038 3:0.941
+RESULT file:42.5:391.8|steam=0.35+pa=10: RUNS R 0.205 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 15.98 reb 0.00 MW bottom 310.8 C | cut 2:0.072 3:0.935
+RESULT file:42.5:391.8|steam=0.4+pa=10: RUNS R 0.227 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 16.45 reb 0.00 MW bottom 310.0 C | cut 2:0.104 3:0.929
+RESULT file:42.5:391.8|steam=0.45+pa=10: RUNS R 0.248 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 16.90 reb 0.00 MW bottom 309.3 C | cut 2:0.134 3:0.924
+RESULT file:42.5:391.8|steam=0.5+pa=10: RUNS R 0.268 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 17.34 reb 0.00 MW bottom 308.6 C | cut 2:0.163 3:0.918
+RESULT file:42.5:391.8|steam=0.55+pa=10: RUNS R 0.287 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 17.77 reb 0.00 MW bottom 308.0 C | cut 2:0.190 3:0.913
+RESULT file:42.5:391.8|steam=0.6+pa=10: RUNS R 0.306 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 18.19 reb 0.00 MW bottom 307.5 C | cut 2:0.216 3:0.908
+RESULT file:42.5:391.8|steam=0.65+pa=10: RUNS R 0.324 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 18.61 reb 0.00 MW bottom 307.0 C | cut 2:0.241 3:0.903
+RESULT file:42.5:391.8|steam=0.7+pa=10: RUNS R 0.341 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 19.02 reb 0.00 MW bottom 306.6 C | cut 2:0.265 3:0.899
+RESULT file:42.5:391.8|steam=0.75+pa=10: RUNS R 0.358 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 19.42 reb 0.00 MW bottom 306.2 C | cut 2:0.288 3:0.894
+RESULT file:42.5:391.8|steam=0.8+pa=10: RUNS R 0.374 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 19.81 reb 0.00 MW bottom 305.8 C | cut 2:0.310 3:0.891
+RESULT file:42.5:391.8|steam=0.85+pa=10: RUNS R 0.390 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 20.20 reb 0.00 MW bottom 305.5 C | cut 2:0.332 3:0.887
+RESULT file:42.5:391.8|steam=0.9+pa=11: RUNS R 0.177 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 17.98 reb 0.00 MW bottom 298.9 C | cut 2:0.018
+RESULT file:42.5:391.8|steam=0.95+pa=11: RUNS R 0.192 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 18.37 reb 0.00 MW bottom 298.7 C | cut 2:0.038
+RESULT file:42.5:391.8|steam=1+pa=11: RUNS R 0.207 flash 0.825 coil 391.5 feed 346.8 C 112.81 kg/s cond 18.75 reb 0.00 MW bottom 298.6 C | cut 2:0.058
+RESULT file:45:399.2|steam=0.05+pa=9: RUNS R 0.382 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 16.80 reb 0.00 MW bottom 331.0 C | cut 2:0.356 3:0.802
+RESULT file:45:399.2|steam=0.1+pa=10: RUNS R 0.188 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 14.75 reb 0.00 MW bottom 323.4 C | cut 2:0.052 3:0.941
+RESULT file:45:399.2|steam=0.15+pa=10: RUNS R 0.221 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 15.34 reb 0.00 MW bottom 321.8 C | cut 2:0.101 3:0.934
+RESULT file:45:399.2|steam=0.2+pa=10: RUNS R 0.250 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 15.88 reb 0.00 MW bottom 320.4 C | cut 2:0.144 3:0.927
+RESULT file:45:399.2|steam=0.25+pa=10: RUNS R 0.276 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 16.39 reb 0.00 MW bottom 319.3 C | cut 2:0.183 3:0.921
+RESULT file:45:399.2|steam=0.3+pa=10: RUNS R 0.300 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 16.88 reb 0.00 MW bottom 318.3 C | cut 2:0.218 3:0.915
+RESULT file:45:399.2|steam=0.35+pa=10: RUNS R 0.323 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 17.35 reb 0.00 MW bottom 317.4 C | cut 2:0.251 3:0.910
+RESULT file:45:399.2|steam=0.4+pa=10: RUNS R 0.345 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 17.81 reb 0.00 MW bottom 316.7 C | cut 2:0.282 3:0.905
+RESULT file:45:399.2|steam=0.45+pa=10: RUNS R 0.365 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 18.25 reb 0.00 MW bottom 316.0 C | cut 2:0.310 3:0.900
+RESULT file:45:399.2|steam=0.5+pa=10: RUNS R 0.385 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 18.68 reb 0.00 MW bottom 315.4 C | cut 2:0.337 3:0.896
+RESULT file:45:399.2|steam=0.55+pa=11: RUNS R 0.178 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 16.50 reb 0.00 MW bottom 308.0 C | cut 2:0.026
+RESULT file:45:399.2|steam=0.6+pa=11: RUNS R 0.196 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 16.93 reb 0.00 MW bottom 307.6 C | cut 2:0.051
+RESULT file:45:399.2|steam=0.65+pa=11: RUNS R 0.214 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 17.34 reb 0.00 MW bottom 307.3 C | cut 2:0.076
+RESULT file:45:399.2|steam=0.7+pa=11: RUNS R 0.231 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 17.75 reb 0.00 MW bottom 307.0 C | cut 2:0.100
+RESULT file:45:399.2|steam=0.75+pa=11: RUNS R 0.248 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 18.16 reb 0.00 MW bottom 306.7 C | cut 2:0.122
+RESULT file:45:399.2|steam=0.8+pa=11: RUNS R 0.264 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 18.55 reb 0.00 MW bottom 306.5 C | cut 2:0.144
+RESULT file:45:399.2|steam=0.85+pa=11: RUNS R 0.279 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 18.94 reb 0.00 MW bottom 306.3 C | cut 2:0.166
+RESULT file:45:399.2|steam=0.9+pa=11: RUNS R 0.295 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 19.33 reb 0.00 MW bottom 306.1 C | cut 2:0.186 3:0.998
+RESULT file:45:399.2|steam=0.95+pa=11: RUNS R 0.310 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 19.71 reb 0.00 MW bottom 305.8 C | cut 2:0.207 3:0.994
+RESULT file:45:399.2|steam=1+pa=11: RUNS R 0.324 flash 0.837 coil 399.0 feed 353.3 C 112.81 kg/s cond 20.09 reb 0.00 MW bottom 305.6 C | cut 2:0.227 3:0.990
+RESULT file:47.5:406.6|steam=0.05+pa=10: RUNS R 0.267 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 15.46 reb 0.00 MW bottom 332.5 C | cut 2:0.175 3:0.923
+RESULT file:47.5:406.6|steam=0.1+pa=10: RUNS R 0.306 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 16.12 reb 0.00 MW bottom 330.4 C | cut 2:0.234 3:0.916
+RESULT file:47.5:406.6|steam=0.15+pa=10: RUNS R 0.339 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 16.70 reb 0.00 MW bottom 328.8 C | cut 2:0.281 3:0.910
+RESULT file:47.5:406.6|steam=0.2+pa=10: RUNS R 0.367 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 17.23 reb 0.00 MW bottom 327.5 C | cut 2:0.322 3:0.904
+RESULT file:47.5:406.6|steam=0.25+pa=11: RUNS R 0.166 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 15.11 reb 0.00 MW bottom 319.0 C | cut 2:0.015
+RESULT file:47.5:406.6|steam=0.3+pa=11: RUNS R 0.191 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 15.61 reb 0.00 MW bottom 318.2 C | cut 2:0.050
+RESULT file:47.5:406.6|steam=0.35+pa=11: RUNS R 0.214 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 16.08 reb 0.00 MW bottom 317.5 C | cut 2:0.083
+RESULT file:47.5:406.6|steam=0.4+pa=11: RUNS R 0.235 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 16.54 reb 0.00 MW bottom 316.9 C | cut 2:0.114
+RESULT file:47.5:406.6|steam=0.45+pa=11: RUNS R 0.256 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 16.98 reb 0.00 MW bottom 316.4 C | cut 2:0.143
+RESULT file:47.5:406.6|steam=0.5+pa=11: RUNS R 0.275 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 17.42 reb 0.00 MW bottom 315.9 C | cut 2:0.170
+RESULT file:47.5:406.6|steam=0.55+pa=11: RUNS R 0.294 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 17.84 reb 0.00 MW bottom 315.5 C | cut 2:0.196
+RESULT file:47.5:406.6|steam=0.6+pa=11: RUNS R 0.312 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 18.26 reb 0.00 MW bottom 315.2 C | cut 2:0.221
+RESULT file:47.5:406.6|steam=0.65+pa=11: RUNS R 0.329 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 18.67 reb 0.00 MW bottom 314.8 C | cut 2:0.245 3:0.999
+RESULT file:47.5:406.6|steam=0.7+pa=11: RUNS R 0.346 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 19.07 reb 0.00 MW bottom 314.5 C | cut 2:0.268 3:0.995
+RESULT file:47.5:406.6|steam=0.75+pa=11: RUNS R 0.363 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 19.47 reb 0.00 MW bottom 314.1 C | cut 2:0.290 3:0.991
+RESULT file:47.5:406.6|steam=0.8+pa=11: RUNS R 0.379 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 19.86 reb 0.00 MW bottom 313.8 C | cut 2:0.312 3:0.988
+RESULT file:47.5:406.6|steam=0.85+pa=12: RUNS R 0.182 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 17.80 reb 0.00 MW bottom 303.0 C | cut 2:0.025
+RESULT file:47.5:406.6|steam=0.9+pa=12: RUNS R 0.197 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 18.20 reb 0.00 MW bottom 302.8 C | cut 2:0.046
+RESULT file:47.5:406.6|steam=0.95+pa=12: RUNS R 0.212 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 18.58 reb 0.00 MW bottom 302.6 C | cut 2:0.067
+RESULT file:47.5:406.6|steam=1+pa=12: RUNS R 0.227 flash 0.848 coil 406.4 feed 359.9 C 112.81 kg/s cond 18.96 reb 0.00 MW bottom 302.5 C | cut 2:0.087
+RESULT file:50:413.9|steam=0.05+pa=10: RUNS R 0.384 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 16.81 reb 0.00 MW bottom 339.9 C | cut 2:0.353 3:0.901
+RESULT file:50:413.9|steam=0.1+pa=11: RUNS R 0.194 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 14.82 reb 0.00 MW bottom 330.3 C | cut 2:0.060
+RESULT file:50:413.9|steam=0.15+pa=11: RUNS R 0.227 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 15.40 reb 0.00 MW bottom 328.8 C | cut 2:0.108
+RESULT file:50:413.9|steam=0.2+pa=11: RUNS R 0.256 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 15.94 reb 0.00 MW bottom 327.7 C | cut 2:0.150
+RESULT file:50:413.9|steam=0.25+pa=11: RUNS R 0.282 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 16.45 reb 0.00 MW bottom 326.8 C | cut 2:0.188
+RESULT file:50:413.9|steam=0.3+pa=11: RUNS R 0.305 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 16.93 reb 0.00 MW bottom 326.0 C | cut 2:0.222
+RESULT file:50:413.9|steam=0.35+pa=11: RUNS R 0.328 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 17.39 reb 0.00 MW bottom 325.4 C | cut 2:0.253
+RESULT file:50:413.9|steam=0.4+pa=11: RUNS R 0.349 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 17.84 reb 0.00 MW bottom 324.8 C | cut 2:0.282
+RESULT file:50:413.9|steam=0.45+pa=11: RUNS R 0.369 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 18.28 reb 0.00 MW bottom 324.2 C | cut 2:0.310 3:0.998
+RESULT file:50:413.9|steam=0.5+pa=12: RUNS R 0.176 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 16.26 reb 0.00 MW bottom 312.5 C | cut 2:0.024
+RESULT file:50:413.9|steam=0.55+pa=12: RUNS R 0.195 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 16.69 reb 0.00 MW bottom 312.0 C | cut 2:0.051
+RESULT file:50:413.9|steam=0.6+pa=12: RUNS R 0.214 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 17.12 reb 0.00 MW bottom 311.6 C | cut 2:0.077
+RESULT file:50:413.9|steam=0.65+pa=12: RUNS R 0.232 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 17.53 reb 0.00 MW bottom 311.3 C | cut 2:0.102
+RESULT file:50:413.9|steam=0.7+pa=12: RUNS R 0.249 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 17.94 reb 0.00 MW bottom 311.0 C | cut 2:0.126
+RESULT file:50:413.9|steam=0.75+pa=12: RUNS R 0.265 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 18.34 reb 0.00 MW bottom 310.7 C | cut 2:0.148
+RESULT file:50:413.9|steam=0.8+pa=12: RUNS R 0.281 flash 0.859 coil 413.7 feed 366.5 C 112.80 kg/s cond 18.74 reb 0.00 MW bottom 310.5 C | cut 2:0.170
+RESULT file:52.5:421.1|steam=0.05+pa=11: RUNS R 0.270 flash 0.868 coil 421.0 feed 373.1 C 112.80 kg/s cond 15.49 reb 0.00 MW bottom 340.3 C | cut 2:0.176
+RESULT file:52.5:421.1|steam=0.1+pa=11: RUNS R 0.309 flash 0.868 coil 421.0 feed 373.1 C 112.80 kg/s cond 16.14 reb 0.00 MW bottom 338.4 C | cut 2:0.234
+RESULT file:52.5:421.1|steam=0.15+pa=11: RUNS R 0.340 flash 0.868 coil 421.0 feed 373.1 C 112.80 kg/s cond 16.71 reb 0.00 MW bottom 337.0 C | cut 2:0.280
+RESULT file:52.5:421.1|steam=0.2+pa=11: RUNS R 0.368 flash 0.868 coil 421.0 feed 373.1 C 112.80 kg/s cond 17.24 reb 0.00 MW bottom 335.9 C | cut 2:0.319
+RESULT file:52.5:421.1|steam=0.25+pa=12: RUNS R 0.180 flash 0.868 coil 421.0 feed 373.1 C 112.80 kg/s cond 15.25 reb 0.00 MW bottom 323.1 C | cut 2:0.035
+RESULT file:52.5:421.1|steam=0.3+pa=12: RUNS R 0.205 flash 0.868 coil 421.0 feed 373.1 C 112.80 kg/s cond 15.75 reb 0.00 MW bottom 322.3 C | cut 2:0.071
+RESULT file:52.5:421.1|steam=0.35+pa=12: RUNS R 0.228 flash 0.868 coil 421.0 feed 373.1 C 112.80 kg/s cond 16.23 reb 0.00 MW bottom 321.6 C | cut 2:0.104
+RESULT file:52.5:421.1|steam=0.4+pa=12: RUNS R 0.250 flash 0.868 coil 421.0 feed 373.1 C 112.80 kg/s cond 16.69 reb 0.00 MW bottom 321.0 C | cut 2:0.135
+RESULT file:52.5:421.1|steam=0.45+pa=12: RUNS R 0.270 flash 0.868 coil 421.0 feed 373.1 C 112.80 kg/s cond 17.14 reb 0.00 MW bottom 320.4 C | cut 2:0.164
+RESULT file:55:428.3|steam=0.05+pa=12: RUNS R 0.163 flash 0.878 coil 428.2 feed 379.7 C 112.80 kg/s cond 14.24 reb 0.00 MW bottom 336.5 C | cut 2:0.015
+RESULT file:55:428.3|steam=0.1+pa=12: RUNS R 0.205 flash 0.878 coil 428.2 feed 379.7 C 112.80 kg/s cond 14.92 reb 0.00 MW bottom 334.6 C | cut 2:0.076
+RESULT file:55:428.3|steam=0.15+pa=12: RUNS R 0.238 flash 0.878 coil 428.2 feed 379.7 C 112.80 kg/s cond 15.51 reb 0.00 MW bottom 333.1 C | cut 2:0.125
+RESULT file:55:428.3|steam=0.2+pa=12: RUNS R 0.267 flash 0.878 coil 428.2 feed 379.7 C 112.80 kg/s cond 16.06 reb 0.00 MW bottom 332.0 C | cut 2:0.167
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 250.26s
+
