@@ -29295,7 +29295,8 @@ each return at its setpoint, no cooler at capacity; the products' liquid mole
 fractions at the draw trays 81.3 / 78.0 / 75.8 % (the ten-tray side-cooled
 crude unit's 72.4 / 67.9 / 66.6 %); the trays inside the loops carrying 1.45–2.1
 times the liquid of the tray above. **Cost** (release, two runs agreeing):
-tick 1 — the first cold path refused, the retry started — 60 ms, once; a
+a cold start — the first cold path refused, the retry started — 60 ms (tick
+1, and any tick whose warm start fails; the reflux 4 → 2 did not); a
 steady tick 0.87 ms; the tick after a reflux 4 → 2, 29–33 ms (M72.5's, C11),
 then 0.9 ms. On the retry the full start duty starts it from a half to 24
 times the declared, so the halvings are never reached on a start that
@@ -29312,11 +29313,13 @@ loads, the declared reflux, the coil far under its limit); the books every
 tick for 300 ticks on both solvers (M72.2's check, on this plant). The bridge's
 loop commands now play on this plant; the furnace census counts 36.
 
-**Mutations**: twelve. Seven caught: no hand-over; the start at the held
+**Mutations**: twelve. Six caught: no hand-over; the start at the held
 return; the retry off; the fixed point ignoring the held seed; a loop column
-with nothing to halve (the refusal then names no halvings); the retry where
-the feed floods (`wetter_crude_reference`); the retry on every column (the cold
-unit's region). Five argued, equivalent at every answer: the walk a step short,
+with nothing to halve (the refusal then names no halvings); the retry on every
+column (the cold unit's region). Six argued, equivalent at every answer: the
+retry where the feed floods — caught by `wetter_crude_reference` while the
+retry was every column's, and unreachable once it is a loop column's, no loop
+column being fed water; the walk a step short,
 and the walk's last solve on its own plan — the last solve is the column's own
 equations either way, so only the path differs; the retry with the seed held
 29 iterations of 30 (it has margin: 10 refuses, 29 and 30 start); the halvings

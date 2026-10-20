@@ -10788,10 +10788,10 @@ that retry is a loop column's only: on every column it started the cold crude
 unit where the column screen's table says it stops. DESIGN §77.12.
 
 - Settled as the probe found: duties 15.06 / 17.05 / 12.79 MW, products
-  81.3 / 78.0 / 75.8 % (ten trays: 72 / 68 / 67). Tick 1 60 ms once, steady
+  81.3 / 78.0 / 75.8 % (ten trays: 72 / 68 / 67). A cold start 60 ms, steady
   0.87 ms, the tick after a reflux 4 → 2 29–33 ms (M72.5's).
 - Gates: the first start refuses and the retry starts it; the hand-over ends
   on the column's own equations; tick 1 on both solvers; the plant as its
-  file says; the books every tick on both. Mutations: twelve, seven
-  caught, five argued. Corpus 67 of 67 byte-identical on both fidelities, the
+  file says; the books every tick on both. Mutations: twelve, six
+  caught, six argued. Corpus 67 of 67 byte-identical on both fidelities, the
   new plant runs on both.
