@@ -28662,6 +28662,8 @@ leaves it standing, as before.
   product-line plant; already so on M69.2's held boiling crude unit). The
   march now reads the state the solve read (`re_solves == 0`: the last
   tick's) and holds at its 1e-9, unloosened. Logged as C20.
+  (Superseded by M71.1, §76.2: the draws guessed, the march reads this tick's
+  draws again.)
 - `wet_rundown_reference`'s junction, pinned where `m62_2/free_water_flash.py`
   was run, moved 2.2e-9 (the composition guess: the plant still drifts at
   2 000 ticks, its vent 1.7e-5 a tick, so it is guessed every tick). The
@@ -28806,3 +28808,48 @@ parabola on the same ticks):
   cold tables' edge check (M70.2's), because the draws are guessed where the
   tables live — floods, cut-back draws, the cold warm-up — and because the
   fallback can let a setting that failed by a guess run.
+
+### 76.2 Built (M71.1)
+
+The user's choices (2026-10-20): **the fallback alone** (no draw rule of its
+own: a draw is guessed on exactly the ticks a node is), and the tables
+re-checked after (M71.2).
+- `Engine::predicted_states` moves each column's draws (`column_separation`)
+  on as a node: temperature by `moved_on`, composition by
+  `composition_moved_on`, the parabola from the same ticks; a draw that moved
+  counts as "moved". (The probe's held-column skip is gone: a held column's
+  draws stand still, and the corpus is byte-identical without it.)
+- **The fallback**: the tick's guessed span — the first solve, its resolve,
+  the density checks and re-solves — is one closure run on the guess, and run
+  again from the last tick's states when it fails; a failure there is the
+  tick's. Nothing in the span writes what the retry reads (both flow solvers
+  commit their warm start only from a converged solve; their `DensityMemo`
+  answers by every bit; the separation and reaction models hold no state). The
+  retried tick is unguessed in every way: no forced step.
+  `SolveDiagnostics::guess_dropped` (absent from the wire when false) says so.
+- `product_line_reference` back to its premise: the march at this tick's
+  draws, at 1e-9. C20 closed.
+
+**Measured**: the work as probed (§76.0), the corpus byte-identical to the
+probe's fallback variant on both fidelities.
+
+**Moves** (the user's decision, 2026-10-20): the six coil crude units on each
+fidelity, iterations unchanged to the count, none fails; the rolling baseline
+refreshed. Held from their files 6e-10 to 2.5e-8; after a key press against
+M70.1 up to 4.7e-6 (the stripped plant to 45 MW) and 1.6e-5 (the cold
+start-up), against the engine before M70.1 3.3e-7 and 1.1e-6 — M70.1's
+key-press moves were the draws' lag.
+
+**Gates**: `wetter_crude_reference::slow_a_wet_slug_floods_the_column_and_passes`
+now also asserts the one dropped guess (tick 2 after the step back, measured
+the only one); `product_line_reference` at its premise; the M69/M70 gates
+unchanged. FULL tier, clippy, fmt.
+
+**Mutations**: ten. Caught by tests: the draws not guessed, their temperature
+or composition not moved; no fallback; the drop not reported; the re-solve
+count not reported. Caught by the corpus only: the draws never on the parabola
+(the six crude units move). Not caught, and why: a draw that moved not counted
+as "moved" (no shipped plant moves a draw with nothing else moving: the corpus
+byte-identical); a held column guessed (that check was redundant, and removed);
+the retried tick still forced to step (it changes only which iterate within the
+tolerance the retry stops on).

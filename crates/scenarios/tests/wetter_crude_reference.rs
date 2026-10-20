@@ -368,6 +368,13 @@ fn slow_the_crudes_water_steps_by_command_and_back() {
 /// **A wet slug past the flood, and the column separating again**: the crude
 /// stepped to 50 % water floods the column within ticks (a flash zone, §70.2);
 /// stepped back to the shipped crude, it fractionates again.
+///
+/// **And the one guess on this plant that fails is dropped** (M71.1,
+/// docs/DESIGN.md §76.2): on the second tick after the step back, the straight
+/// line from the flooded column's draws through the separated ones guesses a
+/// state the kerosene line cannot deliver from (it "arrives at −536 748 bar"),
+/// so that tick is solved again from its last states, unguessed — measured, the
+/// only such tick of the story.
 #[test]
 fn slow_a_wet_slug_floods_the_column_and_passes() {
     let mut engine = build(WET);
@@ -382,16 +389,25 @@ fn slow_a_wet_slug_floods_the_column_and_passes() {
     }
     set_crude(&mut engine, 0.003).expect("the shipped crude");
     let mut separated_at = None;
+    let mut dropped = Vec::new();
     for tick in 1..=400 {
         let s = run(&mut engine, 1).unwrap_or_else(|e| panic!("after tick {tick}: {e}"));
         if separated_at.is_none() && node(&s, "column").column_flooded.is_none() {
             separated_at = Some(tick);
+        }
+        if s.solver.guess_dropped {
+            dropped.push(tick);
         }
     }
     // The supply's composition reaches the column on the tick it is set: the
     // lines between are carried quasi-steady.
     assert_eq!(flooded_at, Some(1), "the slug floods the column");
     assert_eq!(separated_at, Some(1), "the column separates again");
+    assert_eq!(
+        dropped,
+        vec![2],
+        "the guess dropped where it fails, and only there"
+    );
 }
 
 /// **A supply's composition is refused by name** where it is not one: the

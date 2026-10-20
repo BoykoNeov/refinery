@@ -133,6 +133,18 @@ pub struct SolveDiagnostics {
     /// the engine, never by a solver.
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub re_solves: u32,
+    /// Whether the engine dropped this tick's guess (M71.1, docs/DESIGN.md
+    /// §76.2): its guessed solves failed, and the tick was solved again from
+    /// the last tick's states. False — and absent from the wire — on every
+    /// other tick. Written by the engine, never by a solver.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub guess_dropped: bool,
+}
+
+/// Whether a flag is false — what keeps `SolveDiagnostics::guess_dropped` off
+/// the wire on a tick that kept its guess or had none.
+fn is_false(flag: &bool) -> bool {
+    !*flag
 }
 
 /// Whether a count is zero — what keeps `SolveDiagnostics::re_solves` off the

@@ -10698,3 +10698,17 @@ unguessed) each mends it.
 
 Slices: M71.1 the draws guessed and the fallback; M71.2 the stripped and cold
 tables re-checked. No engine code changed.
+
+### M71.1 — **LANDED** 2026-10-20: the draws guessed, the fallback
+
+Each column's draws guessed with its feed, on the ticks a node is guessed; a
+guessed tick that fails is solved again unguessed (`guess_dropped`), the user's
+choice over a no-guess rule after a command. The settled stripped plant's
+line-flash work 214.0 → 209.4 a tick (206.7 before M70.1); C20 closed — the
+product line's march at this tick's draws again. DESIGN §76.2.
+
+- Moves (the user's decision): the six coil crude units on each fidelity,
+  iterations unchanged; after a key press back within 1.1e-6 of the engine
+  before M70.1. Rolling baseline refreshed.
+- Gates: the wet slug's one dropped guess; `product_line_reference` at its
+  premise. Mutations: ten, six caught by tests, one by the corpus, three argued.

@@ -88,7 +88,7 @@ Ticked when it lands; struck when the user rules it out.
       `tools/steptime/prototypes/m70_0/FINDINGS.md`); [x] M70.1 the composition and the curve predicted (done 2026-10-19, DESIGN §75.3); [x] M70.2
       the stripped and cold screen tables re-checked (done 2026-10-19, DESIGN §75.4).
       **M71, OPEN** (C20, DESIGN §76): [x] M71.0 probe (done 2026-10-20,
-      `tools/steptime/prototypes/m71_0/FINDINGS.md`); [ ] M71.1 the draws guessed, the fallback; [ ] M71.2
+      `tools/steptime/prototypes/m71_0/FINDINGS.md`); [x] M71.1 the draws guessed, the fallback (done 2026-10-20, DESIGN §76.2); [ ] M71.2
       the stripped and cold screen tables re-checked.
 - [ ] **A24** — the gas-lock story's ticks past the frame on the game solver.
 - [ ] **A25** — the dying pump's 19 sweeps a tick; the engine's sweep unmemoised.

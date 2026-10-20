@@ -1308,6 +1308,46 @@ impl Engine {
                 }
             }
         }
+        // Each column's draws moved on as a node is (M71.1, §76.2): the flow
+        // solve reads a draw line's first pipe from them (`column_separation`),
+        // so a draw left behind reads a tick late beside the guessed pump
+        // below it.
+        for (column, separation) in &self.node_states.column_separation {
+            let Some(before) = self.states_before.column_separation.get(column) else {
+                continue;
+            };
+            if before.draws.len() != separation.draws.len() {
+                continue;
+            }
+            let before2 = self
+                .states_before2
+                .column_separation
+                .get(column)
+                .filter(|s| curved && s.draws.len() == separation.draws.len());
+            let mut guessed = separation.clone();
+            for (k, draw) in guessed.draws.iter_mut().enumerate() {
+                let (draw_before, draw_before2) = (&before.draws[k], before2.map(|s| &s.draws[k]));
+                if draw.composition == draw_before.composition
+                    && draw.temperature == draw_before.temperature
+                {
+                    continue;
+                }
+                moved = true;
+                draw.temperature = Kelvin(ahead(
+                    draw.temperature.value(),
+                    draw_before.temperature.value(),
+                    draw_before2.map(|d| d.temperature.value()),
+                ));
+                if let Some(guess) = composition_moved_on(
+                    &draw.composition,
+                    &draw_before.composition,
+                    draw_before2.map(|d| &d.composition),
+                ) {
+                    draw.composition = guess;
+                }
+            }
+            predicted.column_separation.insert(*column, guessed);
+        }
         moved.then_some(predicted)
     }
 
@@ -1394,22 +1434,7 @@ impl Engine {
         //     §74.5), so the re-solves below start that much closer; and every
         //     solve of such a tick takes one step at least, so its flows balance
         //     as an iterated solve's do.
-        let predicted = self.predicted_states();
-        self.flow_solver
-            .step_even_when_converged(predicted.is_some());
-        let first_read = predicted.as_ref().unwrap_or(&self.node_states);
-        let mut solution = self
-            .flow_solver
-            .solve(&self.graph, &self.slate, first_read, dt)?;
-
-        // 2b. Resolve the node temperature AND composition fields: inertial
-        //     nodes contribute their start-of-tick values, zero-volume nodes mix
-        //     their inflows in flow order (docs/DESIGN.md §4a).
-        //     A tank the solve STARVED is a mixing point here too (M24,
-        //     docs/DESIGN.md §28 fork 4): its outflow is the mix of what it held
-        //     and what it was fed.
-        let mut node_states = resolve(&solution, None)?;
-
+        //
         // 1b. The same tick's states, re-solved on (M55.0, docs/DESIGN.md §60.0,
         //     ledger row B50). A zero-volume node has no state of its own: the
         //     solve read the one the LAST tick resolved, so on the tick a
@@ -1426,43 +1451,83 @@ impl Engine {
         //     and relief plants on nearly every tick, at about twice their wall
         //     time, to move their answers by 1e-6.
         let re_solve = self.line_flash.carries_vapour() || self.tick == 0;
-        let mut passes = 1;
-        let mut hardest = solution.diagnostics.iterations;
-        let mut read: Option<energy::NodeStates> = None;
-        loop {
-            if !re_solve {
-                break;
+        let solve_states =
+            |flow_solver: &mut Box<dyn FlowSolver>,
+             first_read: &energy::NodeStates|
+             -> Result<(HydraulicSolution, energy::NodeStates, u32), SimError> {
+                let mut solution = flow_solver.solve(&self.graph, &self.slate, first_read, dt)?;
+                // 2b. Resolve the node temperature AND composition fields: inertial
+                //     nodes contribute their start-of-tick values, zero-volume nodes
+                //     mix their inflows in flow order (docs/DESIGN.md §4a). A tank
+                //     the solve STARVED is a mixing point here too (M24,
+                //     docs/DESIGN.md §28 fork 4): its outflow is the mix of what it
+                //     held and what it was fed.
+                let mut node_states = resolve(&solution, None)?;
+                let mut passes = 1;
+                let mut hardest = solution.diagnostics.iterations;
+                let mut read: Option<energy::NodeStates> = None;
+                loop {
+                    if !re_solve {
+                        break;
+                    }
+                    let change = energy::swept_density_change(
+                        &self.graph,
+                        &self.slate,
+                        self.line_flash.as_ref(),
+                        self.thermo.as_ref(),
+                        self.enthalpy.as_ref(),
+                        &solution.node_pressure,
+                        read.as_ref().unwrap_or(first_read),
+                        &node_states,
+                    )?;
+                    if change <= SWEPT_DENSITY_TOL {
+                        break;
+                    }
+                    if passes == MAX_STATE_PASSES {
+                        return Err(SimError::Numerical(format!(
+                            "the zero-volume nodes' densities did not settle within \
+                         {MAX_STATE_PASSES} re-solves of one tick: the last moved \
+                         {change:.3e} of itself"
+                        )));
+                    }
+                    let next = flow_solver.solve(&self.graph, &self.slate, &node_states, dt)?;
+                    hardest = hardest.max(next.diagnostics.iterations);
+                    let next_states = resolve(&next, Some(&node_states))?;
+                    read = Some(std::mem::replace(&mut node_states, next_states));
+                    solution = next;
+                    passes += 1;
+                }
+                solution.diagnostics.iterations = hardest;
+                solution.diagnostics.re_solves = passes - 1;
+                Ok((solution, node_states, passes))
+            };
+        // A guess that fails is dropped (M71.1, docs/DESIGN.md §76.2): the
+        // span above writes nothing a second run reads — a flow solver commits
+        // its warm start only from a converged solve, and its density memo
+        // answers by every bit of the question — so the tick is solved again
+        // from the last tick's states, as an unguessed tick is. A failure there
+        // too is the tick's.
+        let predicted = self.predicted_states();
+        self.flow_solver
+            .step_even_when_converged(predicted.is_some());
+        let guessed = predicted
+            .as_ref()
+            .map(|guess| solve_states(&mut self.flow_solver, guess));
+        let (mut solution, node_states, guess_dropped) = match guessed {
+            Some(Ok((solution, node_states, _))) => (solution, node_states, false),
+            Some(Err(_)) => {
+                self.flow_solver.step_even_when_converged(false);
+                let (solution, node_states, _) =
+                    solve_states(&mut self.flow_solver, &self.node_states)?;
+                (solution, node_states, true)
             }
-            let change = energy::swept_density_change(
-                &self.graph,
-                &self.slate,
-                self.line_flash.as_ref(),
-                self.thermo.as_ref(),
-                self.enthalpy.as_ref(),
-                &solution.node_pressure,
-                read.as_ref().unwrap_or(first_read),
-                &node_states,
-            )?;
-            if change <= SWEPT_DENSITY_TOL {
-                break;
+            None => {
+                let (solution, node_states, _) =
+                    solve_states(&mut self.flow_solver, &self.node_states)?;
+                (solution, node_states, false)
             }
-            if passes == MAX_STATE_PASSES {
-                return Err(SimError::Numerical(format!(
-                    "the zero-volume nodes' densities did not settle within {MAX_STATE_PASSES} \
-                     re-solves of one tick: the last moved {change:.3e} of itself"
-                )));
-            }
-            let next = self
-                .flow_solver
-                .solve(&self.graph, &self.slate, &node_states, dt)?;
-            hardest = hardest.max(next.diagnostics.iterations);
-            let next_states = resolve(&next, Some(&node_states))?;
-            read = Some(std::mem::replace(&mut node_states, next_states));
-            solution = next;
-            passes += 1;
-        }
-        solution.diagnostics.iterations = hardest;
-        solution.diagnostics.re_solves = passes - 1;
+        };
+        solution.diagnostics.guess_dropped = guess_dropped;
 
         // 2. Apply flows to edge streams.
         for eid in self.graph.edge_ids().collect::<Vec<_>>() {

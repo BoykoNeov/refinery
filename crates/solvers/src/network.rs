@@ -4104,6 +4104,7 @@ pub fn finalize(
             residual,
             converged: true,
             re_solves: 0,
+            guess_dropped: false,
         },
         // Filled by the driver from the pass it ACCEPTS, never by a pass: a pass
         // does not know whether it will be kept (`solve_with_active_anchoring`).
