@@ -532,6 +532,7 @@ impl HeatBalanceCascade {
                 water_flooded: None,
                 loops: Vec::new(),
                 stage_liquid: Vec::new(),
+                trays: Vec::new(),
             });
         }
 
@@ -770,6 +771,23 @@ impl HeatBalanceCascade {
         } else {
             profile.flows.liquid_down.clone()
         };
+        // Each tray's hydraulics at the converged loads, on a column that
+        // declares its trays (M73.1, docs/DESIGN.md §78.3).
+        let trays = if spec.trays.is_empty() {
+            Vec::new()
+        } else {
+            crate::trays::column_trays(
+                slate,
+                spec,
+                pass.pressure,
+                &profile.temperatures,
+                &profile.liquid,
+                &k,
+                &profile.flows,
+                &profile.water_vapour,
+                &profile.free_water,
+            )?
+        };
         let (condenser_duty, reboiler_duty) = column_duties(
             slate,
             thermo,
@@ -816,6 +834,7 @@ impl HeatBalanceCascade {
             water_flooded: None,
             loops: runs,
             stage_liquid,
+            trays,
         })
     }
 }
@@ -2313,6 +2332,7 @@ fn oil_free_feed(
         water_flooded: None,
         loops: Vec::new(),
         stage_liquid: Vec::new(),
+        trays: Vec::new(),
     })
 }
 
@@ -2506,6 +2526,7 @@ fn flooded_pass_through(
             water_flooded: Some(refusal.to_string()),
             loops: Vec::new(),
             stage_liquid: Vec::new(),
+            trays: Vec::new(),
         });
     }
     let mut draws: Vec<DrawSeparation> = (0..plan.mass_ratios.len())
@@ -2542,6 +2563,7 @@ fn flooded_pass_through(
         water_flooded: Some(refusal.to_string()),
         loops: Vec::new(),
         stage_liquid: Vec::new(),
+        trays: Vec::new(),
     })
 }
 
@@ -2774,6 +2796,7 @@ fn water_only_inflow(
         water_flooded: None,
         loops: Vec::new(),
         stage_liquid: Vec::new(),
+        trays: Vec::new(),
     })
 }
 
@@ -3532,6 +3555,7 @@ mod tests {
             steam: None,
             reboiler_duty: None,
             loops: Vec::new(),
+            trays: Vec::new(),
         }
     }
 
@@ -4023,6 +4047,7 @@ mod start_tests {
             steam: None,
             reboiler_duty: None,
             loops: Vec::new(),
+            trays: Vec::new(),
         };
         model.separate(
             &ColumnPass {
@@ -4114,6 +4139,7 @@ mod pumparound_tests {
             steam: None,
             reboiler_duty: None,
             loops: Vec::new(),
+            trays: Vec::new(),
         }
     }
 
@@ -4390,6 +4416,7 @@ mod newton_tests {
                 steam: None,
                 reboiler_duty: None,
                 loops: Vec::new(),
+                trays: Vec::new(),
             };
             let pass = ColumnPass {
                 slate: &slate,
@@ -4426,6 +4453,7 @@ mod newton_tests {
             steam: None,
             reboiler_duty: None,
             loops: Vec::new(),
+            trays: Vec::new(),
         };
         let scorching = HeatBalanceCascade::new()
             .separate(
@@ -4486,6 +4514,7 @@ mod newton_tests {
             steam: None,
             reboiler_duty: None,
             loops: Vec::new(),
+            trays: Vec::new(),
         };
         let at = |offset: f64, seed: Option<&CascadeProfile>| {
             HeatBalanceCascade::new()
@@ -4577,6 +4606,7 @@ mod newton_tests {
                 steam: None,
                 reboiler_duty: None,
                 loops: Vec::new(),
+                trays: Vec::new(),
             }
         }
 
@@ -4655,6 +4685,7 @@ mod newton_tests {
             steam: None,
             reboiler_duty: None,
             loops,
+            trays: Vec::new(),
         };
         (unit, spec)
     }
@@ -5048,6 +5079,7 @@ mod newton_tests {
                 steam: None,
                 reboiler_duty: None,
                 loops: Vec::new(),
+                trays: Vec::new(),
             };
             HeatBalanceCascade::new()
                 .separate(
@@ -5164,6 +5196,7 @@ mod steam_tests {
             steam: None,
             reboiler_duty: None,
             loops: Vec::new(),
+            trays: Vec::new(),
         };
         // 0.15 kg/s of steam at 400 °C, as its liquid-equivalent temperature.
         let latent = 40_650.0 / 0.018015 + (2000.0 - 4184.0) * 300.0;
@@ -5261,6 +5294,7 @@ mod loop_tests {
             steam: None,
             reboiler_duty: None,
             loops,
+            trays: Vec::new(),
         }
     }
 

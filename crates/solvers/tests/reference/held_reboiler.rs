@@ -92,6 +92,7 @@ fn spec(reflux_ratio: f64, reboiler_duty: Option<f64>) -> CascadeSpec {
         steam: None,
         reboiler_duty: reboiler_duty.map(Watt),
         loops: Vec::new(),
+        trays: Vec::new(),
     }
 }
 

@@ -800,6 +800,48 @@ pub struct Separation {
     /// the reboiler — reported only by a column with loops (§77.1), whose
     /// trays carry the circulation; empty otherwise.
     pub stage_liquid: Vec<f64>,
+    /// Each tray's hydraulics at this pass's converged loads (M73.1,
+    /// docs/DESIGN.md §78.3), top tray first, one per stage above the
+    /// reboiler — reported only by a column that declares its trays
+    /// (`CascadeSpec::trays`); empty otherwise, and from a pass that did not
+    /// fractionate.
+    pub trays: Vec<TrayHydraulics>,
+}
+
+/// How one sieve tray ran this pass (M73.1, docs/DESIGN.md §78.3, §78.4.1):
+/// what its loads come to against its geometry. A READING — nothing in the
+/// column's solve is driven by it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TrayHydraulics {
+    /// The tray's stage, one-based from the top.
+    pub stage: u32,
+    /// The vapour's velocity through the net area over its velocity at jet
+    /// flood [-] (Fair's chart): past one the tray floods.
+    pub flood_fraction: f64,
+    /// The vapour's velocity through the holes over its velocity at the weep
+    /// point [-] (Eduljee): under one the tray weeps.
+    pub weep_margin: f64,
+    /// The vapour's pressure drop across the tray [Pa]: dry plate, the liquid
+    /// on it, and the residual head.
+    pub pressure_drop: Pascal,
+    /// The clear liquid backed up in its downcomer over the most it holds,
+    /// half the tray spacing plus the weir [-]: past one the tray floods.
+    pub downcomer_backup: f64,
+}
+
+impl TrayHydraulics {
+    /// Past jet flood or with its downcomer backed up past its limit: either
+    /// way the tray above fills (docs/DESIGN.md §78.3). The one definition the
+    /// snapshot's list of flooding trays is made from.
+    pub fn flooding(&self) -> bool {
+        self.flood_fraction > 1.0 || self.downcomer_backup > 1.0
+    }
+
+    /// Its holes run slower than its weep point: liquid falls through them.
+    /// The one definition the snapshot's list of weeping trays is made from.
+    pub fn weeping(&self) -> bool {
+        self.weep_margin < 1.0
+    }
 }
 
 /// How one pumparound loop ran this pass (M72.1, docs/DESIGN.md §77.1).

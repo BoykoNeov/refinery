@@ -10885,7 +10885,7 @@ pressure feedback probed (and the user's past-flood decision); M73.2 the
 pressure fed back; M73.3 the plant; M73.4 the column screen's key 7 and its
 measured table. No engine code changed.
 
-### M73.1 — IN PROGRESS: the trays declared and their hydraulics reported
+### M73.1 — **DONE** 2026-10-21: the trays declared and their hydraulics reported
 
 **The formula check** (2026-10-21, DESIGN §78.4.1,
 `tools/steptime/prototypes/m73_1/`): every correlation against Perry's
@@ -10898,3 +10898,12 @@ downcomer clearance field, the weir's length from the downcomer's share,
 Fair's limits refused at load. Re-run on the probe's loads: the trays 5–7 %
 narrower; the loop plant and the crude unit now weep below a reflux of about
 1.8 (was 2.5) and still flood from 5.5.
+
+**Built** (DESIGN §78.7): tray sections on the cascade block, refused by name
+outside the ranges checked; each tray's flood fraction, weep margin, pressure
+drop and downcomer backup on the column's operation, and the trays flooding
+or weeping named. On the loop plant with five sections inline: every tray
+inside its window at the file's settings, all weeping at a reflux of 1, nine
+flooding at 6; the plant otherwise bit-identical. Mutations: 18, all caught.
+Every shipped plant byte-identical. Next: M73.2.0, the pressure feedback
+probed, and the user's past-flood decision.

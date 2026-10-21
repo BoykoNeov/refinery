@@ -15,8 +15,8 @@ use crate::graph::{
 use crate::snapshot::{
     CavitationSnapshot, ColumnDuty, ColumnOperation, Command, ComponentSnapshot, ControlSnapshot,
     DrawCutBack, EdgeSnapshot, LoopOperation, NodeSnapshot, PumpSuctionSnapshot,
-    PumpTwoPhaseSnapshot, ReboilerDeclined, RestartBar, Snapshot, SupplyBoiling, TripSnapshot,
-    TripStop,
+    PumpTwoPhaseSnapshot, ReboilerDeclined, RestartBar, Snapshot, SupplyBoiling, TrayOperation,
+    TripSnapshot, TripStop,
 };
 use crate::traits::{
     BoilOffModel, EnthalpyModel, FlowSolver, HydraulicSolution, LineFlashModel, ReactionModel,
@@ -4061,6 +4061,15 @@ impl Engine {
                                     }),
                             })
                             .collect();
+                        // Each tray's hydraulics, and the lists named from
+                        // them by their one definition (M73.1, §78.3).
+                        let named = |test: fn(&crate::traits::TrayHydraulics) -> bool| {
+                            s.trays
+                                .iter()
+                                .filter(|tray| test(tray))
+                                .map(|tray| tray.stage)
+                                .collect()
+                        };
                         Some(ColumnOperation {
                             feed_vapour_fraction,
                             reflux_ratio,
@@ -4068,6 +4077,19 @@ impl Engine {
                             stage_vapour_mol_s,
                             stage_liquid_mol_s: s.stage_liquid.clone(),
                             loops,
+                            trays: s
+                                .trays
+                                .iter()
+                                .map(|tray| TrayOperation {
+                                    stage: tray.stage,
+                                    flood_fraction: tray.flood_fraction,
+                                    weep_margin: tray.weep_margin,
+                                    pressure_drop_pa: tray.pressure_drop.value(),
+                                    downcomer_backup: tray.downcomer_backup,
+                                })
+                                .collect(),
+                            trays_flooding: named(crate::traits::TrayHydraulics::flooding),
+                            trays_weeping: named(crate::traits::TrayHydraulics::weeping),
                         })
                     }),
                     // Absent wherever the criterion does not apply, which is

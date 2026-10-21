@@ -44,6 +44,7 @@ pub mod reactor;
 pub mod separation;
 pub mod simple_flow;
 pub mod thermo;
+pub mod trays;
 
 pub use boiloff::{FlashBoilOff, NoBoilOff};
 pub use bubble::bubble_temperature;

@@ -29781,7 +29781,7 @@ What each check found:
 **The reference test** is [N]'s two sections, not Dutta's Example 5.1: Dutta
 uses Kister & Haas for flooding, the 0.48·F_w weir crest, `C0` 0.73 and a
 dry-head weep test — none of the set built here. Flooding is tested apart,
-against the three chart readings above at 2 %.
+against the three chart readings above at 2.5 %.
 
 **What the check changes in §78.2's schema**:
 
@@ -29862,3 +29862,66 @@ saved loads in `W:\temp\claude\m73_0\out`, re-made by M73.0's 8-minute sweep):
 - **M73.4 — the column screen**: key 7, the trays flooding or weeping shown,
   and its measured table — in batches of under an hour each (M72.6's took
   about 3 h 10 min in five).
+
+### 78.7 The trays declared and their hydraulics reported, built (M73.1)
+
+As §78.2–§78.4.1 specify, one pressure still.
+
+- **`TraySection`** (core, `CascadeSpec::trays`, absent from the wire when
+  empty): `from`, `to`, the diameter, spacing, weir, hole diameter and
+  `clearance` as `Meter`, the hole and downcomer shares, the passes. In the
+  file, `trays = [{ from, to, diameter_m, spacing_m, weir_height_m,
+  hole_diameter_m, hole_area_share, downcomer_share, clearance_m, passes }]`
+  on the cascade block, `deny_unknown_fields` (a plate thickness is refused,
+  not taken for a key the correlations read); refused on any separation but
+  `"heat_balance"`. New units `MeterPerSec`, `NewtonPerMeter`.
+- **`refinery_solvers::trays`**: `TrayGeometry::of` (the areas, the weir as the
+  downcomer's chord, `C0` between its two published points), `sieve_tray` (the
+  checked set in Sinnott's millimetres, returning SI), `flood_capacity` (the
+  fit), the game-value liquid density and surface tension, and `validate`,
+  which `CascadePlan::new` calls, so `StageCascade::validate` refuses a bad
+  file by name: sections top down, contiguous, every stage but the reboiler in
+  one, a loop's two stages in one section, each number inside §78.4.1's ranges.
+- **The loads, decided while building** (as the probe took them): tray `j`
+  carries the vapour rising from stage `j + 1` — its oil at `y = K·x`
+  normalized, its water vapour beside it, an ideal gas at that stage's
+  temperature and the column's pressure — and the liquid LEAVING stage `j`:
+  down, drawn and into a loop, its oil and its free water. Computed once after
+  the converged solve (`heat_balance`, beside the loops' runs), into
+  `Separation::trays` (`TrayHydraulics`); a non-finite reading is an `Err`,
+  and no vapour reads as no flood and full weeping, finite.
+- **The snapshot**: `ColumnOperation::trays` (`TrayOperation`: stage, flood
+  fraction, weep margin, pressure drop [Pa], downcomer backup of its limit),
+  and `trays_flooding` / `trays_weeping`, the stages named by
+  `TrayHydraulics::flooding` (past jet flood OR the downcomer past its limit)
+  and `::weeping` — one definition each, the lists made from it in the engine.
+  All three absent on a column without trays.
+
+**Gates**: `tests/reference/sieve_tray.rs` — NPTEL's two sections to their
+printed rounding (every head, the weep velocities at the minimum liquid), its
+tray declared as a section within 0.5 % of its stated areas and weir, the
+fit against three chart readings at 2.5 % (and NPTEL's top-section reading
+pinned 11–15 % above it), Perry's Example 9 at its 76.1 % of flood to 2 %;
+`trays::tests` — the chord, `C0`, a multipass tray dividing its liquid and
+flow parameter, finite readings with no vapour or no liquid;
+`scenarios/tests/tray_hydraulics.rs` on the loop plant with five sections
+inline (6.1 / 7.4 / 8.3 / 8.8 / 8.3 m, each loop's stages in one): at the
+file's settings every tray inside its window (60–80 % of flood, 1.24–1.84
+times its weep point, downcomers 71–92 % of their limit, 123 mbar over the
+column); the reflux walked 2 → 1 → 1.5 → 3 → 5 → 6, the lists exactly the
+trays past their limits at each step, every tray weeping at 1, none named at
+3, nine flooding at 6; each loop's draw tray carrying its circulation; the
+fixture and its plant bit-identical on both solvers once the tray keys are
+taken out (the trays move nothing); no tray key on a plant without trays;
+fourteen refusals by name.
+
+**Mutations**: eighteen, eighteen caught — the crest's 750, `K2`'s slope, the
+weep point's 0.90, the dry plate's 51, the residual's 12.5e3, the downcomer's
+166, the backup without `h_w + h_ow`, its limit doubled, `C_sb`'s exponent,
+σ's power (Perry's Example 9), the flow parameter not per pass, `C0`'s 15 %
+point, the chord's half angle, the vapour taken from the tray itself, a loop
+across two sections admitted, flooding as `&&`, the trays not reported — and
+the loop's draw left out of the tray's liquid, missed by the first pass and
+caught by the draw-tray test written for it.
+
+**Every shipped plant byte-identical** on both fidelities (68 of 68).

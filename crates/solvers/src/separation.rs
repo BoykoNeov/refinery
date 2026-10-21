@@ -144,6 +144,7 @@ impl SeparationModel for CutPointSplitter {
             water_flooded: None,
             loops: Vec::new(),
             stage_liquid: Vec::new(),
+            trays: Vec::new(),
         })
     }
 }

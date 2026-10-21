@@ -126,6 +126,7 @@ impl Case {
             steam: None,
             reboiler_duty: None,
             loops: Vec::new(),
+            trays: Vec::new(),
         }
     }
 

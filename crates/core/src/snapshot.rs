@@ -749,6 +749,42 @@ pub struct ColumnOperation {
     /// (M72.1, §77.1). Absent on a column without loops.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<LoopOperation>,
+    /// Each tray's hydraulics, top tray first, one per stage above the
+    /// reboiler (M73.1, docs/DESIGN.md §78.3). Only on a column that declares
+    /// its trays; absent, and not serialized, elsewhere.
+    ///
+    /// **No tray pressure yet**: every stage still solves at the column's one
+    /// pressure, so the drop is published and the pressure is not (§78.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trays: Vec<TrayOperation>,
+    /// The trays flooding, by stage (one-based from the top): past jet flood
+    /// or with the downcomer backed up past its limit. Made from `trays` by
+    /// `TrayHydraulics::flooding` and nothing else, so the two cannot
+    /// disagree. Absent while none floods.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trays_flooding: Vec<u32>,
+    /// The trays weeping, by stage: holes slower than the weep point. Made
+    /// from `trays` by `TrayHydraulics::weeping`. Absent while none weeps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trays_weeping: Vec<u32>,
+}
+
+/// One tray's hydraulics — see `ColumnOperation::trays`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TrayOperation {
+    /// The tray's stage, one-based from the top.
+    pub stage: u32,
+    /// The vapour's velocity over its velocity at jet flood [-]; past one
+    /// the tray floods.
+    pub flood_fraction: f64,
+    /// The holes' vapour velocity over the weep point's [-]; under one the
+    /// tray weeps.
+    pub weep_margin: f64,
+    /// The pressure drop across the tray [Pa].
+    pub pressure_drop_pa: f64,
+    /// The downcomer's clear-liquid backup over its limit [-]; past one the
+    /// tray floods.
+    pub downcomer_backup: f64,
 }
 
 /// Whether a flow is zero — what keeps `LoopOperation::short_kg_s` off the

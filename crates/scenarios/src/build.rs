@@ -4680,6 +4680,12 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                         scenario.fidelity.separation
                     )));
                 }
+                if !def.trays.is_empty() && scenario.fidelity.separation != "heat_balance" {
+                    return Err(SimError::Scenario(format!(
+                        "column '{name}' declares its trays, but [fidelity] separation is                          \"{}\": a tray's hydraulics are read off the stage loads only                          separation = \"heat_balance\" solves (docs/DESIGN.md §78.2).",
+                        scenario.fidelity.separation
+                    )));
+                }
                 if !def.pumparounds.is_empty() && scenario.fidelity.separation != "heat_balance" {
                     return Err(SimError::Scenario(format!(
                         "column '{name}' declares pumparounds, but [fidelity] separation is \
@@ -4719,6 +4725,22 @@ fn resolve_column_draws(graph: &mut PlantGraph, scenario: &ScenarioFile) -> Resu
                             start_duty: Watt(l.start_duty_mw * 1.0e6),
                             line: Vec::new(),
                             cooler: None,
+                        })
+                        .collect(),
+                    trays: def
+                        .trays
+                        .iter()
+                        .map(|t| refinery_core::graph::TraySection {
+                            from: t.from,
+                            to: t.to,
+                            diameter: Meter(t.diameter_m),
+                            spacing: Meter(t.spacing_m),
+                            weir_height: Meter(t.weir_height_m),
+                            hole_diameter: Meter(t.hole_diameter_m),
+                            hole_area_share: t.hole_area_share,
+                            downcomer_share: t.downcomer_share,
+                            clearance: Meter(t.clearance_m),
+                            passes: t.passes,
                         })
                         .collect(),
                 };

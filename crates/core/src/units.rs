@@ -59,6 +59,10 @@ unit!(/// Length [m].
     Meter);
 unit!(/// Area [m²].
     SquareMeter);
+unit!(/// Velocity [m/s] — a vapour's through a tray's areas (M73.1).
+    MeterPerSec);
+unit!(/// Surface tension [N/m] — a tray's liquid (M73.1).
+    NewtonPerMeter);
 unit!(/// Time [s].
     Seconds);
 unit!(/// Energy [J].

@@ -791,6 +791,33 @@ pub struct CascadeDef {
     /// stage above. Only `separation = "heat_balance"` models them.
     #[serde(default)]
     pub loops: Vec<LoopDef>,
+    /// The trays, one geometry per section of stages (M73.1, docs/DESIGN.md
+    /// §78.2): `trays = [{ from = 1, to = 4, diameter_m = 6.5, ... }]`, top
+    /// down, every stage but the reboiler in one. Only `separation =
+    /// "heat_balance"` reads them, to report each tray's hydraulics.
+    #[serde(default)]
+    pub trays: Vec<TraySectionDef>,
+}
+
+/// One section of sieve trays: `{ from = 1, to = 4, diameter_m = 6.5,
+/// spacing_m = 0.61, weir_height_m = 0.05, hole_diameter_m = 0.005,
+/// hole_area_share = 0.10, downcomer_share = 0.12, clearance_m = 0.04,
+/// passes = 4 }`. Lengths in metres. **`deny_unknown_fields`**: a key the
+/// correlations do not read (a plate thickness, say) is refused rather than
+/// taken for one they do.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraySectionDef {
+    pub from: u32,
+    pub to: u32,
+    pub diameter_m: f64,
+    pub spacing_m: f64,
+    pub weir_height_m: f64,
+    pub hole_diameter_m: f64,
+    pub hole_area_share: f64,
+    pub downcomer_share: f64,
+    pub clearance_m: f64,
+    pub passes: u32,
 }
 
 /// A pumparound loop: `{ draw_stage = 4, return_stage = 3, outlet =

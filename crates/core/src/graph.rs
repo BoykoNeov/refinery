@@ -893,6 +893,43 @@ pub struct CascadeSpec {
     /// serialized, which keeps every such plant byte-identical.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub loops: Vec<PumparoundLoop>,
+    /// The column's trays, one geometry per section of stages (M73.1,
+    /// docs/DESIGN.md §78.2): every stage but the reboiler in exactly one
+    /// section. Only the heat-balance cascade reads them, to report each
+    /// tray's hydraulics after its solve; empty on every column that predates
+    /// them, and then not serialized, which keeps every such plant
+    /// byte-identical.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub trays: Vec<TraySection>,
+}
+
+/// One section of sieve trays on a heat-balance cascade (M73.1, docs/DESIGN.md
+/// §78.2, §78.4.1): stages `from..=to`, one-based from the top, all built to
+/// this geometry. The loader refuses each number outside the range its
+/// correlations were checked over (`refinery_solvers::trays`).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct TraySection {
+    /// The section's first stage, one-based from the top.
+    pub from: u32,
+    /// The section's last stage, `>= from`, above the reboiler.
+    pub to: u32,
+    /// The column's inside diameter [m].
+    pub diameter: Meter,
+    /// The distance from one tray to the next [m].
+    pub spacing: Meter,
+    /// The outlet weir's height [m].
+    pub weir_height: Meter,
+    /// A perforation's diameter [m]; the plate is taken as thick as its holes.
+    pub hole_diameter: Meter,
+    /// The holes' total area over the tray's active (bubbling) area [-].
+    pub hole_area_share: f64,
+    /// The downcomer's area over the column's [-]; its chord is the weir.
+    pub downcomer_share: f64,
+    /// The gap under the downcomer's apron [m], below the weir so the
+    /// downcomer stays sealed.
+    pub clearance: Meter,
+    /// The liquid's paths across the tray, 1 to 4.
+    pub passes: u32,
 }
 
 /// A pumparound loop on a heat-balance cascade (M72, docs/DESIGN.md §77.1):

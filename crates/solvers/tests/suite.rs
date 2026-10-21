@@ -53,6 +53,8 @@ mod reference_hydrocracking;
 mod reference_line_flash;
 #[path = "reference/orifice.rs"]
 mod reference_orifice;
+#[path = "reference/sieve_tray.rs"]
+mod reference_sieve_tray;
 #[path = "reference/steam_column.rs"]
 mod reference_steam_column;
 #[path = "reference/two_phase_head.rs"]

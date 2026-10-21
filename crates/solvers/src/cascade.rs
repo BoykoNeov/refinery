@@ -465,6 +465,7 @@ impl SeparationModel for StageCascade {
                 water_flooded: None,
                 loops: Vec::new(),
                 stage_liquid: Vec::new(),
+                trays: Vec::new(),
             });
         }
 
@@ -694,6 +695,7 @@ impl SeparationModel for StageCascade {
             water_flooded: None,
             loops: Vec::new(),
             stage_liquid: Vec::new(),
+            trays: Vec::new(),
         })
     }
 }
@@ -1174,6 +1176,10 @@ impl CascadePlan {
                 });
             }
         }
+
+        // The trays' sections, where the column declares them (M73.1,
+        // docs/DESIGN.md §78.2).
+        crate::trays::validate(spec)?;
 
         Ok(Self {
             stages,
@@ -1821,6 +1827,7 @@ mod tests {
             steam: None,
             reboiler_duty: None,
             loops: Vec::new(),
+            trays: Vec::new(),
         }
     }
 
