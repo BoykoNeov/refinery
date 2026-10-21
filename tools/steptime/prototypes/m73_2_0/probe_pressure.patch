@@ -1,0 +1,219 @@
+diff --git a/crates/scenarios/tests/suite.rs b/crates/scenarios/tests/suite.rs
+index f431122..6483c17 100644
+--- a/crates/scenarios/tests/suite.rs
++++ b/crates/scenarios/tests/suite.rs
+@@ -219,3 +219,5 @@ mod water_slug_reference;
+ mod wet_rundown_reference;
+ #[path = "wetter_crude_reference.rs"]
+ mod wetter_crude_reference;
++#[path = "m73_2_0_probe.rs"]
++mod m73_2_0_probe;
+diff --git a/crates/solvers/src/cascade.rs b/crates/solvers/src/cascade.rs
+index ffa8d82..6a8099a 100644
+--- a/crates/solvers/src/cascade.rs
++++ b/crates/solvers/src/cascade.rs
+@@ -1637,6 +1637,21 @@ pub(crate) fn mixture_molar_cp(slate: &Slate, fractions: &[f64]) -> f64 {
+         .sum()
+ }
+ 
++thread_local! {
++    /// M73.2.0 PROBE: each stage's pressure [Pa] while a probe solve sets it.
++    pub(crate) static PROBE_STAGE_PRESSURES: std::cell::RefCell<Option<Vec<f64>>> =
++        const { std::cell::RefCell::new(None) };
++}
++
++/// M73.2.0 PROBE: stage `j`'s (zero-based) pressure, the column's own when no
++/// probe profile is set.
++pub(crate) fn probe_stage_pressure(j: usize, pressure: Pascal) -> Pascal {
++    PROBE_STAGE_PRESSURES.with(|p| match &*p.borrow() {
++        Some(v) if j < v.len() => Pascal(v[j]),
++        _ => pressure,
++    })
++}
++
+ /// Every stage's bubble temperature [K] at its liquid composition.
+ pub(crate) fn bubble_profile(
+     slate: &Slate,
+@@ -1651,7 +1666,7 @@ pub(crate) fn bubble_profile(
+                 slate,
+                 thermo,
+                 x,
+-                pressure,
++                probe_stage_pressure(j, pressure),
+                 &format!("stage {} of {}", j + 1, liquid.len()),
+             )?
+             .value(),
+@@ -1669,7 +1684,13 @@ pub(crate) fn stage_k_values_profile(
+ ) -> Result<Vec<Vec<f64>>, SimError> {
+     let mut k = Vec::with_capacity(stage_t.len());
+     for (j, t) in stage_t.iter().enumerate() {
+-        k.push(stage_k_values(slate, thermo, Kelvin(*t), pressure, j + 1)?);
++        k.push(stage_k_values(
++            slate,
++            thermo,
++            Kelvin(*t),
++            probe_stage_pressure(j, pressure),
++            j + 1,
++        )?);
+     }
+     Ok(k)
+ }
+diff --git a/crates/solvers/src/column_newton.rs b/crates/solvers/src/column_newton.rs
+index 6f7093c..97ac067 100644
+--- a/crates/solvers/src/column_newton.rs
++++ b/crates/solvers/src/column_newton.rs
+@@ -325,7 +325,12 @@ impl ColumnEquations<'_> {
+         for (j, t) in temperatures.iter().enumerate() {
+             let mut row = Vec::with_capacity(slate.len());
+             for c in 0..slate.len() {
+-                let value = self.thermo.k_value(slate, c, Kelvin(*t), self.pressure)?;
++                let value = self.thermo.k_value(
++                    slate,
++                    c,
++                    Kelvin(*t),
++                    crate::cascade::probe_stage_pressure(j, self.pressure),
++                )?;
+                 if !value.is_finite() || value <= 0.0 {
+                     return Err(outside("a K-value left the physical region"));
+                 }
+diff --git a/crates/solvers/src/heat_balance.rs b/crates/solvers/src/heat_balance.rs
+index e024bd8..db9fd48 100644
+--- a/crates/solvers/src/heat_balance.rs
++++ b/crates/solvers/src/heat_balance.rs
+@@ -439,6 +439,15 @@ impl HeatBalanceCascade {
+         pass: &ColumnPass<'_>,
+         thermo: &dyn ThermoModel,
+         continuation: bool,
++    ) -> Result<Separation, SimError> {
++        crate::probe::fractionate(pass, thermo, |p| self.fractionate_inner(p, thermo, continuation))
++    }
++
++    fn fractionate_inner(
++        &self,
++        pass: &ColumnPass<'_>,
++        thermo: &dyn ThermoModel,
++        continuation: bool,
+     ) -> Result<Separation, SimError> {
+         let slate = pass.slate;
+         let spec = pass.cascade.ok_or_else(|| {
+@@ -599,16 +608,19 @@ impl HeatBalanceCascade {
+             }
+         };
+         let feed = MoleFractions::from_mass(&feed_composition, slate)?;
++        // M73.2.0 PROBE: the feed flashes at its stage's pressure (§78.1).
++        let feed_pressure =
++            crate::cascade::probe_stage_pressure(spec.feed_stage as usize - 1, pass.pressure);
+         let seed = bubble_temperature_unnormalized(
+             slate,
+             thermo,
+             feed.fractions(),
+-            pass.pressure,
++            feed_pressure,
+             "the feed",
+         )?;
+         let feed_vapour_fraction = match &water {
+             None => {
+-                adiabatic_flash_share(slate, thermo, &feed, pass.temperature, seed, pass.pressure)?
++                adiabatic_flash_share(slate, thermo, &feed, pass.temperature, seed, feed_pressure)?
+             }
+             // The whole feed's share, oil and water, by the free-water flash
+             // from its own wet bubble point (§67.17 rule 11).
+@@ -3322,7 +3334,9 @@ fn oil_bubble_profile(
+ ) -> Result<Vec<f64>, SimError> {
+     let mut temperatures = Vec::with_capacity(liquid.len());
+     for (j, x) in liquid.iter().enumerate() {
+-        let pressure = pass.pressure.value() * oil_vapour[j] / (oil_vapour[j] + water_vapour[j]);
++        let pressure = crate::cascade::probe_stage_pressure(j, pass.pressure).value()
++            * oil_vapour[j]
++            / (oil_vapour[j] + water_vapour[j]);
+         temperatures.push(
+             bubble_temperature_unnormalized(
+                 slate,
+diff --git a/crates/solvers/src/lib.rs b/crates/solvers/src/lib.rs
+index b9b0b6e..64b9330 100644
+--- a/crates/solvers/src/lib.rs
++++ b/crates/solvers/src/lib.rs
+@@ -45,6 +45,7 @@ pub mod separation;
+ pub mod simple_flow;
+ pub mod thermo;
+ pub mod trays;
++pub mod probe;
+ 
+ pub use boiloff::{FlashBoilOff, NoBoilOff};
+ pub use bubble::bubble_temperature;
+diff --git a/crates/solvers/src/trays.rs b/crates/solvers/src/trays.rs
+index 48c1cd6..e426e7a 100644
+--- a/crates/solvers/src/trays.rs
++++ b/crates/solvers/src/trays.rs
+@@ -340,6 +340,41 @@ fn surface_tension(slate: &Slate, liquid: &[f64], temperature: f64) -> f64 {
+     }
+ }
+ 
++thread_local! {
++    /// M73.2.0 PROBE: each tray's pressure drop at 100 % of jet flood when it
++    /// is past it (its own otherwise), from the last `column_trays` [Pa].
++    pub(crate) static PROBE_CAPPED: std::cell::RefCell<Vec<f64>> =
++        const { std::cell::RefCell::new(Vec::new()) };
++}
++
++/// M73.2.0 PROBE: the tray's pressure drop with its vapour cut to where it
++/// stands at exactly 100 % of jet flood, the liquid as it is (bisection: the
++/// flood fraction rises with the vapour, the flow parameter falling with it).
++pub(crate) fn capped_drop(geometry: &TrayGeometry, load: &TrayLoad) -> f64 {
++    let fraction = |scale: f64| {
++        let scaled = TrayLoad {
++            vapour: KgPerSec(load.vapour.value() * scale),
++            ..*load
++        };
++        let tray = sieve_tray(geometry, &scaled);
++        (tray.net_velocity.value() / tray.flood_velocity.value(), tray.pressure_drop.value())
++    };
++    let (flood, drop) = fraction(1.0);
++    if !(flood > 1.0) {
++        return drop;
++    }
++    let (mut low, mut high) = (0.0, 1.0);
++    for _ in 0..60 {
++        let middle = 0.5 * (low + high);
++        if fraction(middle).0 > 1.0 {
++            high = middle;
++        } else {
++            low = middle;
++        }
++    }
++    fraction(low).1
++}
++
+ /// The section a stage's tray is in, by the loader's ordering (sections top
+ /// down, contiguous).
+ fn section_of(trays: &[TraySection], stage: u32) -> Option<&TraySection> {
+@@ -369,6 +404,7 @@ pub(crate) fn column_trays(
+         .map_or(0.0, |index| slate.get(index).molar_mass.value());
+     let molar_mass = |c: usize| slate.get(c).molar_mass.value();
+     let stages = temperatures.len();
++    PROBE_CAPPED.with(|c| c.borrow_mut().clear());
+     let mut out = Vec::with_capacity(stages.saturating_sub(1));
+     for j in 0..stages.saturating_sub(1) {
+         let stage = j as u32 + 1;
+@@ -396,7 +432,9 @@ pub(crate) fn column_trays(
+             oil_molar_mass
+         };
+         // Ideal gas: ρV = P·M̄/(R·T).
+-        let vapour_density = pressure.value() * mean_molar_mass / (R_GAS * temperatures[below]);
++        let vapour_density = crate::cascade::probe_stage_pressure(below, pressure).value()
++            * mean_molar_mass
++            / (R_GAS * temperatures[below]);
+         // The liquid leaving the tray, its oil and its free water.
+         let liquid_molar_mass: f64 = liquid[j]
+             .iter()
+@@ -418,7 +456,9 @@ pub(crate) fn column_trays(
+                 "tray hydraulics: tray {stage}'s vapour has density {vapour_density} kg/m³."
+             )));
+         }
+-        let reading = sieve_tray(&TrayGeometry::of(section), &load).reading(stage);
++        let geometry = TrayGeometry::of(section);
++        let reading = sieve_tray(&geometry, &load).reading(stage);
++        PROBE_CAPPED.with(|c| c.borrow_mut().push(capped_drop(&geometry, &load)));
+         let finite = reading.flood_fraction.is_finite()
+             && reading.weep_margin.is_finite()
+             && reading.pressure_drop.is_finite()

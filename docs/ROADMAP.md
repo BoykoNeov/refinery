@@ -10907,3 +10907,18 @@ inside its window at the file's settings, all weeping at a reflux of 1, nine
 flooding at 6; the plant otherwise bit-identical. Mutations: 18, all caught.
 Every shipped plant byte-identical. Next: M73.2.0, the pressure feedback
 probed, and the user's past-flood decision.
+
+### M73.2.0 — **PROBED** 2026-10-21: the pressure feedback — the past-flood decision waiting
+
+Probed (`tools/steptime/prototypes/m73_2_0/`, `FINDINGS.md`, DESIGN §78.8) on
+M73.1's fixture, every stage at its own pressure (checked on every tick): at
+the file's settings the bottom 5.5 K hotter and every product within 0.16
+points; along the reflux line 0.5–15 the bottom +3.7 to +15.4 K with the drop
+as it reads, +7.5 K at most capped at 100 % of flood; every setting ran in
+every mode. Lagged a tick, the column is wrong on the tick a key moves (up to
+9.9 K at the bottom) and after every load, and its answer hangs on the tick
+before; solved within the tick it lands on the same column at 3–5 solves when
+a key moves, one when steady (2.4–5.3 ms a moved tick, 0.5 ms steady), and
+needs no hand-over at the cold start. Refusing past flood halts the column
+screen, or stops its reflux key at 4.5–5.0 against 0.5–15. No engine code
+changed. Next: the user's past-flood decision, then M73.2.

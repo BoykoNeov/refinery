@@ -1,0 +1,88 @@
+E1 file settings, cold start:
+  off       t=  0 wall= 14.05ms passes=3 solves= 3 dP=   0.0 Tbot=586.19 Ttop=163.46 feedvf=0.6626 pur=[96.48, 81.29, 77.95, 75.8, 96.6] duty={'condenser_w': 45.127, 'reboiler_w': 85.148}
+  off       t=  1 wall=  0.83ms passes=1 solves= 1 dP=   0.0 Tbot=586.19 Ttop=163.46 feedvf=0.6626 pur=[96.48, 81.29, 77.95, 75.8, 96.6] duty={'condenser_w': 45.127, 'reboiler_w': 85.148}
+  off       t=  2 wall=  0.61ms passes=1 solves= 1 dP=   0.0 Tbot=586.19 Ttop=163.46 feedvf=0.6626 pur=[96.48, 81.29, 77.95, 75.8, 96.6] duty={'condenser_w': 45.127, 'reboiler_w': 85.149}
+  off       t=599 wall=  0.51ms passes=1 solves= 1 dP=   0.0 Tbot=586.20 Ttop=163.46 feedvf=0.6605 pur=[96.48, 81.29, 77.95, 75.8, 96.6] duty={'condenser_w': 45.127, 'reboiler_w': 85.315}
+   warm wall mean 0.529 ms
+  lag_raw   t=  0 wall= 15.52ms passes=3 solves= 3 dP=   0.0 Tbot=586.19 Ttop=163.46 feedvf=0.6626 pur=[96.48, 81.29, 77.95, 75.8, 96.6] duty={'condenser_w': 45.127, 'reboiler_w': 85.148}
+  lag_raw   t=  1 wall=  1.21ms passes=1 solves= 1 dP= 123.0 Tbot=591.72 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.584}
+  lag_raw   t=  2 wall=  1.00ms passes=1 solves= 1 dP= 122.1 Tbot=591.68 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.575}
+  lag_raw   t=599 wall=  0.51ms passes=1 solves= 1 dP= 122.1 Tbot=591.69 Ttop=163.49 feedvf=0.6522 pur=[96.46, 81.23, 77.85, 75.65, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.741}
+   warm wall mean 0.581 ms
+  lag_cap   t=  0 wall= 15.03ms passes=3 solves= 3 dP=   0.0 Tbot=586.19 Ttop=163.46 feedvf=0.6626 pur=[96.48, 81.29, 77.95, 75.8, 96.6] duty={'condenser_w': 45.127, 'reboiler_w': 85.148}
+  lag_cap   t=  1 wall=  1.20ms passes=1 solves= 1 dP= 123.0 Tbot=591.72 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.584}
+  lag_cap   t=  2 wall=  0.99ms passes=1 solves= 1 dP= 122.1 Tbot=591.68 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.575}
+  lag_cap   t=599 wall=  0.51ms passes=1 solves= 1 dP= 122.1 Tbot=591.69 Ttop=163.49 feedvf=0.6522 pur=[96.46, 81.23, 77.85, 75.65, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.741}
+   warm wall mean 0.537 ms
+  solve_raw t=  0 wall= 22.23ms passes=3 solves= 9 dP= 122.1 Tbot=591.68 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.574}
+  solve_raw t=  1 wall=  0.51ms passes=1 solves= 1 dP= 122.1 Tbot=591.68 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.574}
+  solve_raw t=  2 wall=  0.53ms passes=1 solves= 1 dP= 122.1 Tbot=591.68 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.575}
+  solve_raw t=599 wall=  0.51ms passes=1 solves= 1 dP= 122.1 Tbot=591.69 Ttop=163.49 feedvf=0.6522 pur=[96.46, 81.23, 77.85, 75.65, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.741}
+   warm wall mean 0.537 ms
+  solve_cap t=  0 wall= 21.93ms passes=3 solves= 9 dP= 122.1 Tbot=591.68 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.574}
+  solve_cap t=  1 wall=  0.50ms passes=1 solves= 1 dP= 122.1 Tbot=591.68 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.574}
+  solve_cap t=  2 wall=  0.53ms passes=1 solves= 1 dP= 122.1 Tbot=591.68 Ttop=163.49 feedvf=0.6543 pur=[96.46, 81.23, 77.85, 75.64, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.575}
+  solve_cap t=599 wall=  0.51ms passes=1 solves= 1 dP= 122.1 Tbot=591.69 Ttop=163.49 feedvf=0.6522 pur=[96.46, 81.23, 77.85, 75.65, 96.54] duty={'condenser_w': 45.133, 'reboiler_w': 86.741}
+   warm wall mean 0.545 ms
+
+Lag against solve, after the jump (tick>=300): max |dP diff| mbar, max |Tbot diff| K, ticks with dP diff > 1 mbar
+  raw R=  0.5  dP  44.47  Tbot  2.09  ticks>1mbar 1  (first ticks dP: [44.5, 0.0, 0.0, 0.0])
+  raw R=    1  dP  38.21  Tbot  1.73  ticks>1mbar 1  (first ticks dP: [38.2, 0.0, 0.0, 0.0])
+  raw R=  1.5  dP  32.29  Tbot  1.44  ticks>1mbar 1  (first ticks dP: [32.3, 0.1, 0.0, 0.0])
+  raw R=    2  dP  26.32  Tbot  1.17  ticks>1mbar 1  (first ticks dP: [26.3, 0.1, 0.0, 0.0])
+  raw R=  2.5  dP  20.16  Tbot  0.89  ticks>1mbar 1  (first ticks dP: [20.2, 0.1, 0.0, 0.0])
+  raw R=    3  dP  13.74  Tbot  0.61  ticks>1mbar 1  (first ticks dP: [13.7, 0.1, 0.0, 0.0])
+  raw R=  3.5  dP   7.03  Tbot  0.31  ticks>1mbar 1  (first ticks dP: [7.0, 0.0, 0.0, 0.0])
+  raw R=    4  dP   0.00  Tbot  0.00  ticks>1mbar 0  (first ticks dP: [0.0, 0.0, 0.0, 0.0])
+  raw R=  4.5  dP   7.36  Tbot  0.32  ticks>1mbar 1  (first ticks dP: [7.4, 0.1, 0.0, 0.0])
+  raw R=    5  dP  15.06  Tbot  0.66  ticks>1mbar 1  (first ticks dP: [15.1, 0.2, 0.0, 0.0])
+  raw R=  5.5  dP  23.09  Tbot  1.00  ticks>1mbar 1  (first ticks dP: [23.1, 0.3, 0.0, 0.0])
+  raw R=    6  dP  31.47  Tbot  1.37  ticks>1mbar 1  (first ticks dP: [31.5, 0.5, 0.0, 0.0])
+  raw R=  6.5  dP  40.19  Tbot  1.74  ticks>1mbar 1  (first ticks dP: [40.2, 0.7, 0.0, 0.0])
+  raw R=    7  dP  49.25  Tbot  2.13  ticks>1mbar 1  (first ticks dP: [49.3, 0.9, 0.0, 0.0])
+  raw R=  7.5  dP  58.65  Tbot  2.53  ticks>1mbar 2  (first ticks dP: [58.7, 1.2, 0.0, 0.0])
+  raw R=    8  dP  68.39  Tbot  2.94  ticks>1mbar 2  (first ticks dP: [68.4, 1.6, 0.0, 0.0])
+  raw R=  8.5  dP  78.50  Tbot  3.37  ticks>1mbar 2  (first ticks dP: [78.5, 2.0, 0.0, 0.0])
+  raw R=    9  dP  88.91  Tbot  3.81  ticks>1mbar 2  (first ticks dP: [88.9, 2.5, 0.1, 0.0])
+  raw R=  9.5  dP  99.64  Tbot  4.26  ticks>1mbar 2  (first ticks dP: [99.6, 3.1, 0.1, 0.0])
+  raw R=   10  dP 110.71  Tbot  4.72  ticks>1mbar 2  (first ticks dP: [110.7, 3.7, 0.1, 0.0])
+  raw R= 10.5  dP 122.08  Tbot  5.19  ticks>1mbar 2  (first ticks dP: [122.1, 4.4, 0.1, 0.0])
+  raw R=   11  dP 133.78  Tbot  5.67  ticks>1mbar 2  (first ticks dP: [133.8, 5.3, 0.2, 0.0])
+  raw R= 11.5  dP 145.78  Tbot  6.17  ticks>1mbar 2  (first ticks dP: [145.8, 6.2, 0.2, 0.0])
+  raw R=   12  dP 158.09  Tbot  6.67  ticks>1mbar 2  (first ticks dP: [158.1, 7.2, 0.3, 0.0])
+  raw R= 12.5  dP 170.69  Tbot  7.19  ticks>1mbar 2  (first ticks dP: [170.7, 8.3, 0.3, 0.0])
+  raw R=   13  dP 183.59  Tbot  7.71  ticks>1mbar 2  (first ticks dP: [183.6, 9.6, 0.4, 0.0])
+  raw R= 13.5  dP 196.78  Tbot  8.24  ticks>1mbar 2  (first ticks dP: [196.8, 11.0, 0.5, 0.0])
+  raw R=   14  dP 210.25  Tbot  8.78  ticks>1mbar 2  (first ticks dP: [210.3, 12.4, 0.6, 0.0])
+  raw R= 14.5  dP 224.00  Tbot  9.33  ticks>1mbar 2  (first ticks dP: [224.0, 14.1, 0.7, 0.0])
+  raw R=   15  dP 237.98  Tbot  9.89  ticks>1mbar 2  (first ticks dP: [238.0, 15.8, 0.8, 0.0])
+  cap R=  0.5  dP  44.47  Tbot  2.09  ticks>1mbar 1  (first ticks dP: [44.5, 0.0, 0.0, 0.0])
+  cap R=    1  dP  38.21  Tbot  1.73  ticks>1mbar 1  (first ticks dP: [38.2, 0.0, 0.0, 0.0])
+  cap R=  1.5  dP  32.29  Tbot  1.44  ticks>1mbar 1  (first ticks dP: [32.3, 0.1, 0.0, 0.0])
+  cap R=    2  dP  26.32  Tbot  1.17  ticks>1mbar 1  (first ticks dP: [26.3, 0.1, 0.0, 0.0])
+  cap R=  2.5  dP  20.16  Tbot  0.89  ticks>1mbar 1  (first ticks dP: [20.2, 0.1, 0.0, 0.0])
+  cap R=    3  dP  13.74  Tbot  0.61  ticks>1mbar 1  (first ticks dP: [13.7, 0.1, 0.0, 0.0])
+  cap R=  3.5  dP   7.03  Tbot  0.31  ticks>1mbar 1  (first ticks dP: [7.0, 0.0, 0.0, 0.0])
+  cap R=    4  dP   0.00  Tbot  0.00  ticks>1mbar 0  (first ticks dP: [0.0, 0.0, 0.0, 0.0])
+  cap R=  4.5  dP   7.36  Tbot  0.32  ticks>1mbar 1  (first ticks dP: [7.4, 0.1, 0.0, 0.0])
+  cap R=    5  dP  15.06  Tbot  0.66  ticks>1mbar 1  (first ticks dP: [15.1, 0.2, 0.0, 0.0])
+  cap R=  5.5  dP  22.62  Tbot  0.98  ticks>1mbar 1  (first ticks dP: [22.6, 0.3, 0.0, 0.0])
+  cap R=    6  dP  28.18  Tbot  1.22  ticks>1mbar 1  (first ticks dP: [28.2, 0.3, 0.0, 0.0])
+  cap R=  6.5  dP  31.15  Tbot  1.35  ticks>1mbar 1  (first ticks dP: [31.1, 0.1, 0.0, 0.0])
+  cap R=    7  dP  32.44  Tbot  1.41  ticks>1mbar 1  (first ticks dP: [32.4, 0.2, 0.0, 0.0])
+  cap R=  7.5  dP  33.73  Tbot  1.46  ticks>1mbar 1  (first ticks dP: [33.7, 0.2, 0.0, 0.0])
+  cap R=    8  dP  35.02  Tbot  1.52  ticks>1mbar 1  (first ticks dP: [35.0, 0.2, 0.0, 0.0])
+  cap R=  8.5  dP  36.31  Tbot  1.57  ticks>1mbar 1  (first ticks dP: [36.3, 0.2, 0.0, 0.0])
+  cap R=    9  dP  37.47  Tbot  1.62  ticks>1mbar 1  (first ticks dP: [37.5, 0.2, 0.0, 0.0])
+  cap R=  9.5  dP  38.34  Tbot  1.66  ticks>1mbar 1  (first ticks dP: [38.3, 0.2, 0.0, 0.0])
+  cap R=   10  dP  39.20  Tbot  1.70  ticks>1mbar 1  (first ticks dP: [39.2, 0.2, 0.0, 0.0])
+  cap R= 10.5  dP  40.06  Tbot  1.73  ticks>1mbar 1  (first ticks dP: [40.1, 0.2, 0.0, 0.0])
+  cap R=   11  dP  40.90  Tbot  1.77  ticks>1mbar 1  (first ticks dP: [40.9, 0.2, 0.0, 0.0])
+  cap R= 11.5  dP  41.73  Tbot  1.81  ticks>1mbar 1  (first ticks dP: [41.7, 0.2, 0.0, 0.0])
+  cap R=   12  dP  42.55  Tbot  1.84  ticks>1mbar 1  (first ticks dP: [42.6, 0.2, 0.0, 0.0])
+  cap R= 12.5  dP  43.37  Tbot  1.88  ticks>1mbar 1  (first ticks dP: [43.4, 0.2, 0.0, 0.0])
+  cap R=   13  dP  44.17  Tbot  1.91  ticks>1mbar 1  (first ticks dP: [44.2, 0.2, 0.0, 0.0])
+  cap R= 13.5  dP  44.97  Tbot  1.94  ticks>1mbar 1  (first ticks dP: [45.0, 0.2, 0.0, 0.0])
+  cap R=   14  dP  45.76  Tbot  1.98  ticks>1mbar 1  (first ticks dP: [45.8, 0.2, 0.0, 0.0])
+  cap R= 14.5  dP  46.54  Tbot  2.01  ticks>1mbar 1  (first ticks dP: [46.5, 0.2, 0.0, 0.0])
+  cap R=   15  dP  47.31  Tbot  2.04  ticks>1mbar 1  (first ticks dP: [47.3, 0.2, 0.0, 0.0])

@@ -29649,6 +29649,9 @@ vapour density and one pressure. Both go — on columns that declare trays only:
   drop fed back is past flood**, where the correlation means nothing
   (finding 5) — capped at its value at 100 % of flood (a game value), or the
   column refusing past flood. The user decides with the probe's numbers.
+  **Probed (§78.8)**: solved within the pass, re-solved until the drops
+  settle, lands where the lag does a tick later at 2–4 more warm solves on a
+  tick a key moves; the past-flood rule is the user's, waiting.
 
 ### 78.2 The geometry, declared per section
 
@@ -29945,3 +29948,60 @@ the loop's draw left out of the tray's liquid, missed by the first pass and
 caught by the draw-tray test written for it.
 
 **Every shipped plant byte-identical** on both fidelities (68 of 68).
+
+### 78.8 The pressure feedback probed (M73.2.0, 2026-10-21)
+
+`tools/steptime/prototypes/m73_2_0/` (`FINDINGS.md`): M73.1's fixture (the
+loop plant, its five sections inline, sized at one pressure) with every site
+that read the column's one pressure reading its stage's instead — the K-values
+and bubble points of the fixed point, of Newton and after the solve, the wet
+bubble profile, the feed's seed and flash at the feed stage's, each tray's
+vapour density at the stage below's; the condenser at the top. Checked on every
+tick: `Σ K(T_j, P_j)·x_j = 1` at each stage's own pressure to 8.4e-8, and off
+by 4.3e-2 or more at the column's. Three modes — one pressure, **lagged** (the
+last tick's drops), **solved** (within the pass, re-solved at the drops it
+read until they move under 0.5 Pa) — and two rules past flood, **raw** and
+**capped** (the vapour cut by bisection to exactly 100 % of jet flood, the
+liquid as it is). From cold at the file's settings, and the reflux line
+0.5–15 jumped to from 4 on fresh engines:
+
+1. **At the file's settings**: the bottom 5.5 K hotter (586.2 → 591.7 °C;
+   §78.0's estimate 5–7 K), the top +0.03 K; every product within 0.16 points
+   of its purity; the reboiler +1.4 MW; the feed's flash share 0.663 → 0.654.
+2. **Along the line**: the bottom +3.7 K at a reflux of 0.5 to +15.4 K at 15
+   raw (the drop 78 → 360 mbar); **capped +7.5 K at most**, the drop levelling
+   at 150–170 mbar once the trays pass flood (from about 6). The purities
+   move 0.52 points at most raw, 0.23 capped. Weeping as at one pressure.
+3. **Every mode ran every setting**; no solve refused on 0.5–15.
+4. **Lagged and solved land on the same column**, to 0.1 mbar from the second
+   tick after a jump. On the jump tick the lag runs at the old drops — up to
+   238 mbar and 9.9 K at the bottom off (to 15, raw), 47 mbar and 2.0 K
+   capped; no ringing. After every load its first tick is at one pressure,
+   the next 5.5 K hotter at the bottom. And the lag makes a pass's answer
+   depend on the tick before — against `ColumnPass::seed`'s contract (the
+   same fixed point whatever the history holds), which the solved mode keeps:
+   the last tick's drops are only its first guess.
+5. **Solved, 3–5 solves on a tick a key moves, one on a steady tick**; each
+   re-solve cuts the drops' error 10–15 times. Coupled this weakly, the
+   pressures inside Newton (an unknown per stage) buy nothing the re-solve
+   does not.
+6. **Cost, one thread, release**: a tick the reflux moves 1.2–1.9 ms at one
+   pressure, 2.4–5.3 ms solved; a steady tick 0.5–0.6 ms in every mode; the
+   cold first tick 14 → 22 ms.
+7. **The cold start needs no hand-over**: solved, the first solve is at one
+   pressure and the next at its drops; started straight at the settled
+   profile it starts too (6 solves).
+8. **"Refuse past flood" is a halt on this screen**: a dry column's refusal
+   is an `Err` (`flooded_pass_through` answers only a feed mostly water), the
+   tick fails and `column.gd` halts; to keep running, the screen's measured
+   region must stop the key first — the reflux ending at 5.0 (jet flood only)
+   or 4.5 (jet flood or downcomer backup, the multipass-leaning reading,
+   C21), with the other keys at the file's, against 0.5–15: 20 or 21 of the
+   line's 30 settings, against decision 4.
+9. **Capped, a flooded column still reads flooded**: the cap holds only the
+   drop fed back; the trays' readings and lists stay the raw ones.
+
+Not probed: a wet or steamed column; draw and loop lines at their own stage's
+pressure (the network side); tray sizes chosen at the fed-back pressures
+(M73.3). **Waiting: the user's past-flood decision**, then M73.2 builds the
+solved mode with it.
