@@ -189,7 +189,7 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: none** — the next is the user's choice.
+Work only on the current milestone unless asked. **Current: M73** — trays that flood or weep (C1), DESIGN §78; M73.0 probed, M73.1 next.
 **Latest closed: M72 (2026-10-21)**: a pumparound loop on the map, back into the column (C9), the key-press
 hitch fixed (C11); a 13-tray plant on key 6 with its measured table; every plant byte-identical (DESIGN §77). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at

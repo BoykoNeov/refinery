@@ -10857,3 +10857,30 @@ reflux that frees it. DESIGN §77.15.
 - Gates: `column_screen.rs` (+2, slow). GDScript run headless (1.0–1.1 ms a
   tick, eight a frame); the godot-feature clippy. The gated edge flipped in
   the table, the gate fails. No engine change (no corpus run).
+
+## M73 — trays that flood or weep: tray sizes per section, flooding, weeping and the pressure drop fed back; ledger row C1; opened on a decision
+
+Asked after M72 as "what is next" (2026-10-21): the user chose 1, flooding
+and weeping (C1) — earlier decided as shown first, then the products
+worsened, real weeping on new plants only — and, after the probe, the loop
+plant first, tray sizes per section, the pressure drop fed back into each
+stage, and the screen's keys kept at their full range. DESIGN §78.
+
+### M73.0 — **SPECIFIED** 2026-10-21: the probe — M73 stays OPEN
+
+Probed (`tools/steptime/prototypes/m73_0/`, `FINDINGS.md`): each converged
+column's tray loads over a sample of the screen's allowed settings, sieve-tray
+hydraulics on them offline, each tray designed on the file's settings. The
+trays come out 6.2–9.5 m across; the keys move a tray's vapour 0.3 to 3.9
+times its design load against a tray's 0.6–1.25; with the other keys at the
+file's, the loop plant and the crude unit weep below a reflux of 2.5 and flood
+from 5.5 (the screen allows 0.5–15); the furnace barely moves a tray; real
+weeping comes far above the vapour floor, which stays; the pressure drop
+100–165 mbar at the file's settings, about 5–7 K at the bottom if fed back
+(estimated). The correlations were written from memory and are checked before
+any code.
+
+Slices: M73.1 the trays declared and their hydraulics reported; M73.2.0 the
+pressure feedback probed (and the user's past-flood decision); M73.2 the
+pressure fed back; M73.3 the plant; M73.4 the column screen's key 7 and its
+measured table. No engine code changed.

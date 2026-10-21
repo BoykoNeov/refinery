@@ -2970,6 +2970,10 @@ tray hydraulics (uniform pressure across the column, which is what "fixed
 operating pressure" already asserts) is therefore not a convenience; it is the
 condition under which fork 1's verdict is safe. If a later slice wants flooding,
 it must revisit **this fork**, not just add a correlation.
+**Revisited by M73 (§78.1, 2026-10-21)**: on a column that declares trays, a
+stage's vapour density is the ideal gas of its vapour at its own pressure,
+and each stage solves at that pressure (the user's decision). Columns without
+trays keep this verdict as written.
 
 Mass ⇄ mole conversion at the boundary deserves its own line, because M4.2's
 real crux turned out to be units rather than the ODE. Compositions in this
@@ -29560,3 +29564,157 @@ setting, and on either side of its edge the column does what the table says
 gate fails. **Not measured**: the return walked first; key orders beyond two;
 the loops apart; the long check by other routes (C19). **What moved**:
 nothing in the engine.
+
+## 78. Trays that flood or weep — tray sizes per section, and the pressure drop fed back (M73) — specified before building
+
+C1 (§5, "Deferred from M7"): a stage has no size, so nothing says when its
+tray floods (too much vapour carries the liquid up) or weeps (too little lets
+it fall through the holes), and the column runs at one pressure. Asked after
+M72 as "what is next"; the user chose 1, flooding and weeping (2026-10-21).
+Decided earlier (§77 intro, 2026-10-20): **shown first, then the products
+worsened**; **real weeping on new plants only**. Probed (§78.0), then four
+decisions in plain words (2026-10-21):
+
+1. **The loop plant first** — a new file copied from `crude_unit_loops.toml`
+   (the original untouched) — over the crude unit or the stripped plant.
+2. **Tray sizes per section** — one size for each stretch of trays, as real
+   crude columns are built — over one size for the column or one per tray.
+3. **The pressure drop fed back** — each stage solves at its own pressure —
+   over shown only. Chosen knowing every product on the new plant shifts
+   (the bottom about 5–7 K hotter, estimated).
+4. **The screen's keys keep their full range** — the player can push the
+   trays into flooding and weeping and see it — over narrowing them to the
+   window the trays work in.
+
+### 78.0 Probed (2026-10-21)
+
+`tools/steptime/prototypes/m73_0/` (`FINDINGS.md`): each converged column's
+tray loads (temperatures, liquid and vapour compositions, flows, the loops'
+circulation, the water vapour) dumped over a sample of the column screen's
+ALLOWED settings — loops 347, crude unit 163, stripped 135, about 8 minutes —
+and sieve-tray hydraulics computed on them offline, each tray designed on the
+file's own settings (80 % of flood, 0.61 m spacing, 50 mm weir, 5 mm holes at
+10 % of the active area, four liquid passes):
+
+1. **Sizes**: 6.2–9.5 m across on the two reboiled plants, widest where the
+   loops run and above the reboiler — a real column's size for 100 kg/s of
+   crude.
+2. **The keys move a tray's vapour 0.3 to 3.2–3.9 times its design load**; a
+   sieve tray works from about 0.6 (weeping) to 1.25 (flooding). No geometry
+   spans what the screen allows.
+3. **The reflux window, the other keys at the file's**: the loop plant and
+   the crude unit weep below a reflux of 2.5 and flood from 5.5 — the screen
+   allows 0.5–15. The furnace barely moves a tray (the reboiler makes up the
+   difference). The stripped plant's trays above the feed never flood; its two
+   steam trays weep below 45 % steam valve and flood from 70 %.
+4. **Weeping comes long before the vapour floor**: a tray weeps below 0.8–1.7
+   times the feed's molar rate of vapour; `VAPOUR_FLOOR_OF_FEED` holds 0.20.
+   The floor stays, as the solve's aid it also is (§65.0), with real weeping
+   reported beside it.
+5. **The pressure drop**: 100–165 mbar over the column at the file's settings
+   (6–9 % of 1.8 bar); 60–630 mbar over the allowed region — 335 mbar on the
+   loop plant's reflux line alone at 15, at 268 % of flood, where no
+   pressure-drop correlation holds.
+6. **The design point decides the counts, not the properties**: surface
+   tension ±50 % leaves the flooded settings unchanged.
+
+**Not yet checked**: the probe's correlations and constants were written from
+memory (Fair's flooding chart as a curve fit, Sinnott's weep constant `K2`);
+they are checked against published sources before any engine code (§78.4).
+
+### 78.1 Fork 1 of §5 revisited — a stage now needs a vapour density
+
+§5 fork 1's verdict was safe on one condition: no tray hydraulics, so no
+vapour density and one pressure. Both go — on columns that declare trays only:
+
+- **The vapour density** is the ideal gas of the stage's vapour, `y = K·x`
+  plus its water vapour, at the stage's temperature and pressure — what
+  `Composition::density_at` already says for a gas (§3a). No new property.
+- **The liquid's density hot, and its surface tension**, are estimates local
+  to the tray hydraulics in `solvers`: the declared (15 °C) density lighter by
+  a slope per kelvin, and a surface tension from a critical temperature
+  estimated off each cut's boiling point. `Composition::density_at` is NOT
+  changed — every plant reads it.
+- **Each stage at its own pressure** (decision 3): the top stage at the
+  column's declared pressure, each stage below it higher by the trays above.
+  Its K-values, bubble point and vapour density read it. The boundaries,
+  decided here rather than found while building:
+  - the network's column node keeps the DECLARED (top) pressure — the
+    condenser's, what every shipped line already reads;
+  - the feed flashes at the feed stage's pressure;
+  - draw lines and loop lines start at their own stage's pressure (M72.2
+    marched the loop lines from the column's) — on the new plant only.
+- **Open, for M73.2.0's probe**: the pressure drop from the last tick's
+  loads, or solved inside Newton with the stages; and **what the pressure
+  drop fed back is past flood**, where the correlation means nothing
+  (finding 5) — capped at its value at 100 % of flood (a game value), or the
+  column refusing past flood. The user decides with the probe's numbers.
+
+### 78.2 The geometry, declared per section
+
+On the cascade block, optional and absent on every shipped column (then not
+serialized, so all 68 plants stay byte-identical):
+
+```toml
+trays = [
+    { from = 1, to = 2, diameter_m = 6.5, spacing_m = 0.61, weir_height_m = 0.05,
+      hole_diameter_m = 0.005, hole_area_share = 0.10, downcomer_share = 0.12, passes = 4 },
+]
+```
+
+Every stage but the reboiler in exactly one section, refused by name
+otherwise; a loop's draw and return stages in one section. Lengths as
+`Meter` (in `core::units`). The sections' numbers are sized offline with the
+probe's script before they go in the file, every tray checked inside its
+window at the file's settings — a lightly loaded tray in a wide section can
+weep at normal settings (one diameter for the whole column: the top trays at
+0.74–0.90 of their weep point).
+
+### 78.3 What is reported
+
+Per tray on `ColumnOperation`, only on a column with trays: its pressure, % of
+flood, weep margin (hole velocity over the weep point's), pressure drop and
+downcomer backup (of its limit); and the trays flooding or weeping, named, so
+a frontend shows them. Nothing else in the snapshot changes.
+
+### 78.4 The correlations, checked before they are built
+
+Each checked against a published source (and cited in the code) before M73.1
+writes it: Fair's flooding chart (a curve fit, or Kister & Haas, 1990), the
+weep point (Sinnott, *Coulson & Richardson* Vol. 6, eq. 11.84, and its `K2`),
+the Francis weir crest, the dry-plate drop (checked: Sinnott's
+`51·(u_h/C0)²·ρV/ρL` mm is Kister's `0.186/C0²·(ρV/ρL)·u_h²` in, one law in
+two sets of units), the residual head, the downcomer backup. The reference
+test is a published worked example with every input stated — candidate:
+Dutta, *Principles of Mass Transfer and Separation Processes* (2007),
+Example 5.1.
+
+### 78.5 What moves, what is deferred
+
+- **Shipped plants**: nothing (no `trays`, no hydraulics, one pressure).
+- **The new plant**: its products shift with the pressure profile (decision
+  3), measured in M73.2.0.
+- **Deferred to their own decision**: how the products worsen (entrainment —
+  liquid carried up a tray, the shape of a loop's return, still tridiagonal —
+  or a tray efficiency that falls as a tray weeps, which changes what a stage
+  is); valve trays (they weep much later; offered only with a published weep
+  correlation); trays on the shipped plants.
+
+### 78.6 The slices
+
+- **M73.1 — the trays declared and their hydraulics reported**: the
+  correlations checked (§78.4) and the reference test; the geometry on the
+  cascade, loaded and refused by name; each tray's hydraulics computed after
+  the solve and published (§78.3). One pressure still. Gated on a test
+  fixture; the corpus byte-identical.
+- **M73.2.0 — the pressure feedback probed**: lagged a tick or solved in
+  Newton (cost and solves a tick), the 13-tray cold start (started at one
+  pressure and handed over, as the coolers' duties are), the products' real
+  shift, the reflux line 0.5–15 under each past-flood rule. Then the user's
+  past-flood decision.
+- **M73.2 — the pressure fed back** (§78.1), its boundaries as decided.
+- **M73.3 — the plant**: a new file from `crude_unit_loops.toml`, its
+  sections sized offline, its cold start.
+- **M73.4 — the column screen**: key 7, the trays flooding or weeping shown,
+  and its measured table — in batches of under an hour each (M72.6's took
+  about 3 h 10 min in five).

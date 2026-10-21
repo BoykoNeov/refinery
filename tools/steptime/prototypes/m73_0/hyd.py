@@ -2,7 +2,8 @@
 
 Reads `LOADS <spec>: <json>` lines (the probe hook in heat_balance.rs) and,
 for a chosen geometry, gives each tray's % of flood, weep margin, pressure
-drop and downcomer backup. Correlations (all SI, cited):
+drop and downcomer backup. Correlations (all SI; the forms and constants written from memory in the
+probe and NOT yet checked against the sources named):
 
 - Flooding: Fair's chart (Fair, Petro/Chem Eng. 33(10) 45, 1961) as fitted by
   Lygeros & Magoulas, Hydrocarbon Processing 65(12) 43 (1986):
@@ -10,7 +11,7 @@ drop and downcomer backup. Correlations (all SI, cited):
   u_nf = C_sb (sigma/20)^0.2 sqrt((rhoL - rhoV)/rhoV) on the NET area.
 - Weep point: Sinnott (Coulson & Richardson Vol. 6, 4th ed., eq. 11.84):
   u_h,min = (K2 - 0.90 (25.4 - d_h)) / sqrt(rhoV), K2 from Fig. 11.30
-  (digitised roughly, below).
+  (values below written from memory, NOT yet checked against the figure).
 - Weir crest: Francis weir, Sinnott eq. 11.85: h_ow = 750 (Lw/(rhoL lw))^(2/3) mm.
 - Dry plate: Sinnott eq. 11.88: h_d = 51 (u_h/C0)^2 rhoV/rhoL mm, C0 0.84.
 - Residual head: Sinnott eq. 11.89: h_r = 12.5e3/rhoL mm.
@@ -24,7 +25,7 @@ import sys
 R = 8.314462618
 WATER_MW = 0.018015
 
-# Sinnott Fig. 11.30, K2 against (hw + how) [mm] -- read by eye, +-0.3.
+# Sinnott Fig. 11.30, K2 against (hw + how) [mm] -- from memory, unverified.
 K2_TABLE = [(0, 29.6), (20, 29.9), (40, 30.3), (60, 30.6), (80, 30.8), (100, 30.9), (140, 31.0)]
 
 

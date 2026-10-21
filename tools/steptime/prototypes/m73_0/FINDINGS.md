@@ -21,24 +21,25 @@ plants only**. No engine code changed.
   reflux, pumparounds 0–4×), stripped 135 (furnace 37.5–65, steam 5–100 %,
   pumparounds 0–12 MW). One jump each at tick 1 000, then 4 000 ticks; 14
   threads, about 8 minutes in all.
-- `hyd.py`: sieve-tray hydraulics on those loads, each correlation cited in
-  the file — Fair's flooding chart as fitted by Lygeros & Magoulas (1986),
+- `hyd.py`: sieve-tray hydraulics on those loads, each correlation named in
+  the file — **written from memory in the probe, not yet checked against the
+  sources** (checked before any engine code, DESIGN §78.4) — Fair's flooding chart as fitted by Lygeros & Magoulas (1986),
   Sinnott's weep point (C&R Vol. 6 eq. 11.84), Francis weir crest, dry-plate
   and residual heads, downcomer backup (eqs. 11.85–11.92). Vapour density
   ideal gas at the stage's T and P (the water vapour included); liquid density
   by volume from the cuts' declared densities, each 0.65 kg/m³ lighter per K
   above 15 °C; surface tension per cut from a critical temperature estimated
   off its boiling point. `analyze.py <plant> [sigma_scale] [expand]` and
-  `bykey.py <plant>` read `W:\temp\claude\m73_0\out\` (`base_<plant>.out`
-  kept here; the sweeps, 3.3 MB, re-run in 8 minutes).
+  `bykey.py <plant>` (`base_<plant>.out` kept here; the sweeps, 3.3 MB,
+  re-run in 8 minutes).
 - Geometry: each tray designed on the plant file's own settings — diameter
   at 80 % of flood, 0.61 m spacing, 50 mm weir, 5 mm holes at 10 % of the
   active area, downcomers 12 % of the column, clearance at 0.40 m/s under the
   downcomer, and the fewest liquid passes (1, 2, 4) holding the downcomer's
-  backup at 0.6 of its limit � four on every tray, and still 0.66�0.83 at the
+  backup at 0.6 of its limit — four on every tray, and still 0.66–0.83 at the
   file's settings. Or the whole column at its widest tray's diameter.
 - `lines.py <plant>`: one key moved alone from the file's settings (the
-  reflux 0.5�15 on the loop plant and the crude unit; the steam valve 5�100 %
+  reflux 0.5–15 on the loop plant and the crude unit; the steam valve 5–100 %
   on the stripped plant), the worst tray's flood, weep and backup.
 - The scripts read `$M73_OUT` (default `W:\temp\claude\m73_0\out`).
 
@@ -55,14 +56,24 @@ plants only**. No engine code changed.
    runs from about 0.6 of its design vapour (weeping, finding 4) to 1.25
    (flooding); a valve tray down to about 0.25. No tray geometry spans what
    the screen allows.
-3. **So most of the allowed region floods or weeps.** Each tray its own:
-   loops — 207 of 347 sampled settings flood a tray, 162 weep one; crude unit
-   116 / 81 of 163; stripped 65 / 91 of 135. One diameter: loops 158 / 214,
-   crude 104 / 106, stripped 0 / 135 (its steam trays weep everywhere).
-   **The reflux is the key that floods** (every setting at 8 and 15 floods,
-   none weeps; at 0.5–2 every one weeps), then the loops' flow and a colder
-   return; **the furnace barely matters** on a reboiled column — the
-   reboiler makes up whatever the feed does not bring (`bykey.py`).
+3. **On the two reboiled plants most of the allowed region floods or weeps.**
+   The counts follow from the design point (finding 6), so they are
+   examples. Each tray its own: loops — 207 of 347 sampled settings flood a
+   tray, 162 weep one; crude unit 116 / 81 of 163. One diameter: loops
+   158 / 213, crude 104 / 106. **The reflux is the key that floods** (every
+   setting at 8 and 15 floods, none weeps; at 0.5–2 every one weeps), then
+   the loops' flow and a colder return; **the furnace barely matters** on a
+   reboiled column — the reboiler makes up whatever the feed does not bring
+   (`bykey.py`). **The stripped plant is different**: its trays above the
+   feed peak at 92–98 % of flood and never flood; its 65 floods (of 135) are
+   all on the two steam-only trays under the feed, driven by the steam valve
+   (one diameter: no floods, and those two trays weep everywhere).
+3a. **Each key's window alone, the others at the file's** (`lines.py`,
+   `line_<plant>.txt`): the loop plant and the crude unit weep below a reflux
+   of 2.5 (the tray above the reboiler, then the top trays) and flood from
+   5.5 (97–98 % at 5; the top trays) — against the screen's 0.5–15. The
+   stripped plant's steam valve: its bottom tray weeps below 45 % open and
+   the tray under the feed floods from 70 % (99 % at 65) — against 5–100 %.
 4. **Weeping comes long before the vapour floor.** Designed at the file's
    settings, a tray weeps below 0.8–1.7 times the feed's molar rate of
    vapour; `VAPOUR_FLOOR_OF_FEED` holds 0.20. The floor never decides where a
@@ -78,9 +89,11 @@ plants only**. No engine code changed.
    (the tray is designed with the same property it is checked with) and the
    weeping count 162 → 127 / 175; liquid density at its 15 °C value, 119.
    What a tray is designed for matters far more than the properties.
-7. **The downcomers back up** at the file's settings already on single-pass
-   trays this wide (backup 1.0–1.3 of the limit): the loops' liquid, 240–290
-   kg/s on one weir, is two- or four-pass liquid. Passes are a geometry field.
+7. **The downcomers want four liquid passes** on every tray this wide: on one
+   pass they back up past their limit at the file's settings already (the
+   loops' 240–290 kg/s on one weir). On four, past the limit on 207 / 111 / 4
+   of the sampled settings (loops / crude / stripped), close to the flooded
+   ones. Passes are a geometry field.
 
 ## What "the products worse" would cost (not built)
 
