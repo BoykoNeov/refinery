@@ -29843,6 +29843,25 @@ saved loads in `W:\temp\claude\m73_0\out`, re-made by M73.0's 8-minute sweep):
   or a tray efficiency that falls as a tray weeps, which changes what a stage
   is); valve trays (they weep much later; offered only with a published weep
   correlation); trays on the shipped plants.
+- **A multipass tray is unchecked** (noted 2026-10-21, after M73.1; ledger
+  row C21). Every source checked describes a one-pass tray, and the worked
+  example the set reproduces is one; a four-pass tray is §78.4.1's named
+  simplification — a one-pass tray's areas, the liquid split four ways, each
+  pass over a weir the side downcomer's chord. Only the flow parameter per
+  pass has a source (Perry). What leans on the rest, most first: the
+  **downcomer backup** (each pass's weir length and apron — a real four-pass
+  tray's side weirs are shorter than that chord, its centre ones nearly the
+  diameter), and with it **the flooding end of the reflux window** — at a
+  reflux of 5 the first trays named flooding are past their downcomer limit,
+  not their jet flood; then **jet flood and weeping** through the areas
+  (centre and off-centre downcomers take tray area a one-pass layout does
+  not). The window (weeping below about 1.8, flooding from about 5–5.5) is
+  the right shape and size, not checked physics for four passes. **Settled in
+  M73.3, before M73.4's measured table**: a published multipass layout
+  (Kister, *Distillation Design*, ch. 6; Perry §14, "Number of Passes" and
+  "Multipass Balancing") built and tested against, or else the new plant on
+  two passes where its downcomers allow and four passes labelled a game
+  approximation here and on the screen.
 
 ### 78.6 The slices
 
@@ -29858,7 +29877,8 @@ saved loads in `W:\temp\claude\m73_0\out`, re-made by M73.0's 8-minute sweep):
   past-flood decision.
 - **M73.2 — the pressure fed back** (§78.1), its boundaries as decided.
 - **M73.3 — the plant**: a new file from `crude_unit_loops.toml`, its
-  sections sized offline, its cold start.
+  sections sized offline, its cold start; the multipass layout settled first
+  (§78.5, C21).
 - **M73.4 — the column screen**: key 7, the trays flooding or weeping shown,
   and its measured table — in batches of under an hour each (M72.6's took
   about 3 h 10 min in five).
