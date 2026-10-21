@@ -30061,8 +30061,9 @@ One boundary decided while building (below, the loop's return).
   previous separation's, a tick late as the drawn liquid already is
   (`line_stage_pressure`); the distillate's at the condenser, every line of a
   column without trays, and every line before a column's first separation, at
-  the column's declared pressure, as before. **Decided while building: a
-  loop arrives against its RETURN stage's pressure**, not the column's — §78.1
+  the column's declared pressure, as before. **Decided while building, and
+  confirmed by the user (2026-10-21): a loop arrives against its RETURN
+  stage's pressure**, not the column's — §78.1
   named only where lines start; a loop arriving at the top's pressure would be
   handed its return tray's height over the top for free (40–110 mbar on the
   loop plant). The network's column node keeps its declared pressure, so the

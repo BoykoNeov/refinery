@@ -10936,7 +10936,8 @@ drops the first guess; past jet flood the drop fed back is the tray's at 100 %
 of flood, the trays still reading flooded. The feed flashes at its stage's
 pressure; the condenser and the column node stay at the declared one. Draw
 and loop lines start at their stage's pressure, and a loop arrives against its
-return stage's — decided while building, the other end of §78.1's boundary.
+return stage's — decided while building, the other end of §78.1's boundary,
+confirmed by the user.
 Each tray now publishes the pressure it ran at. On M73.1's fixture: the bottom
 5.49 K hotter, every product within 0.16 points, the feed's flash share 0.6615
 → 0.6532 (the probe's 5.5 K, 0.663 → 0.654); at a reflux of 15 the column runs
