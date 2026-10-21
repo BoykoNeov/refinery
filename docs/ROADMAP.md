@@ -10884,3 +10884,17 @@ Slices: M73.1 the trays declared and their hydraulics reported; M73.2.0 the
 pressure feedback probed (and the user's past-flood decision); M73.2 the
 pressure fed back; M73.3 the plant; M73.4 the column screen's key 7 and its
 measured table. No engine code changed.
+
+### M73.1 — IN PROGRESS: the trays declared and their hydraulics reported
+
+**The formula check** (2026-10-21, DESIGN §78.4.1,
+`tools/steptime/prototypes/m73_1/`): every correlation against Perry's
+Handbook (8th ed., §14), Souza et al. (2022, 2025) and a published worked
+example (NPTEL's sieve tray by Sinnott's method), which the set reproduces to
+0.7 % (one figure 1.9 %, a rounding). Fixed: the weep constant `K2` (the
+probe's table 0.3 high), the flow parameter divided by the passes on a
+multipass tray (Perry), the orifice coefficient by the hole share; added: a
+downcomer clearance field, the weir's length from the downcomer's share,
+Fair's limits refused at load. Re-run on the probe's loads: the trays 5–7 %
+narrower; the loop plant and the crude unit now weep below a reflux of about
+1.8 (was 2.5) and still flood from 5.5.

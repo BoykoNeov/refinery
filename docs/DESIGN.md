@@ -29658,9 +29658,13 @@ serialized, so all 68 plants stay byte-identical):
 ```toml
 trays = [
     { from = 1, to = 2, diameter_m = 6.5, spacing_m = 0.61, weir_height_m = 0.05,
-      hole_diameter_m = 0.005, hole_area_share = 0.10, downcomer_share = 0.12, passes = 4 },
+      hole_diameter_m = 0.005, hole_area_share = 0.10, downcomer_share = 0.12,
+      clearance_m = 0.04, passes = 4 },
 ]
 ```
+
+(`clearance_m` added by the check, §78.4.1, with the limits each field is
+refused outside.)
 
 Every stage but the reboiler in exactly one section, refused by name
 otherwise; a loop's draw and return stages in one section. Lengths as
@@ -29677,6 +29681,14 @@ flood, weep margin (hole velocity over the weep point's), pressure drop and
 downcomer backup (of its limit); and the trays flooding or weeping, named, so
 a frontend shows them. Nothing else in the snapshot changes.
 
+**M73.1 publishes no per-tray pressure** (§78.4.1's review): every stage
+still solves at the column's one pressure, so a tray's pressure is not yet a
+number the column ran at. Its pressure DROP is published; the pressure
+arrives with M73.2, when the stages solve at it. "Flooding" names a tray past
+its jet flood (100 % of flood) or with its downcomer backed up past its limit
+— both fill the tray above (Perry 14-38); "weeping" a tray whose holes run
+slower than its weep point.
+
 ### 78.4 The correlations, checked before they are built
 
 Each checked against a published source (and cited in the code) before M73.1
@@ -29688,6 +29700,138 @@ two sets of units), the residual head, the downcomer backup. The reference
 test is a published worked example with every input stated — candidate:
 Dutta, *Principles of Mass Transfer and Separation Processes* (2007),
 Example 5.1.
+
+#### 78.4.1 Checked (M73.1, 2026-10-21)
+
+Each correlation against a published source, and the whole set against
+worked examples that state every input (`tools/steptime/prototypes/m73_1/`,
+`check.py`). Sources:
+
+- **[P]** Perry's *Chemical Engineers' Handbook*, 8th ed. (2008), Section 14
+  (Kister et al.), pp. 14-37–14-38: eqs. 14-89–14-91, the restrictions on
+  Fig. 14-31, the hole-area correction, Example 9.
+- **[S25]** Souza et al., *Ind. Eng. Chem. Res.* 64 (2025) 2256–2273,
+  doi:10.1021/acs.iecr.4c03115: the fits against 328 points digitized off
+  Fair's chart.
+- **[S22]** Souza et al., *Chem. Eng. Res. Des.* 180 (2022) 1–12: Sinnott's
+  sieve-tray set restated as equations (eqs. 2, 55, 66–72, 75–77).
+- **[N]** NPTEL, *Chemical Engineering Design II*, Module 7, Lectures 4–5
+  (IIT, archive.nptel.ac.in/content/storage2/courses/103103027/pdf/mod7.pdf):
+  a sieve tray designed by Sinnott's method (*Coulson & Richardson* Vol. 6,
+  3rd ed., pp. 567–576), acetone–water, every input stated.
+
+What each check found:
+
+1. **Flooding, Fair's chart** — `C_sb = 0.0105 + 8.127e-4·TS^0.755·
+   exp(−1.463·F_LV^0.842)` m/s, `TS` mm (Lygeros & Magoulas 1986): **as
+   written**, [P] eq. 14-90 ([S25] gives the same law with `TS` in m,
+   `0.1496·TS^0.755`). Its error against Fair's own curves, [S25] Table 5:
+   3.1 % average, 6.7 % worst at 0.61 m spacing; 4.6 / 15 % at 0.46 m. Against
+   the chart as read in three examples: 0.992 ([P] Example 9, 500 mm), 0.996
+   (Dutta 5.1, 18 in), 0.980 ([N] bottom section); 0.87 against [N]'s top
+   section (600 mm, `F_LV` 0.033) — the fit falls with `F_LV` where Fair's
+   wider-spacing curves are flat or rise (libpf.com, 2012-03-05), so it is
+   low there, toward flooding sooner. Kept, with [S25]'s numbers cited.
+   `U_nf = C_sb·(σ/20)^0.2·√((ρL − ρV)/ρV)` on the NET area, [P] 14-91.
+2. **Two things the probe missed**, both from [P] p. 14-37:
+   - **on a multipass tray the flow parameter's `L/G` is divided by the
+     number of passes** — four passes, as every tray of the probe's designs
+     has, raise `C_sb` 11–20 % at the file's loads on the loop plant and the
+     crude unit (flow parameters 0.08–0.15 on one pass), up to 68 % on the
+     stripped plant's steam trays (0.42–0.55); the chemengonline article
+     "Entrainment flooding and weeping velocities" (2025) says the same;
+   - **Fair's restrictions**: a low- or non-foaming system, the weir under
+     15 % of the tray spacing, holes 13 mm or less, and the hole area 10 % of
+     the active area or more — at 8 % and 6 % `U_nf` times 0.90 and 0.80.
+3. **Weep point** — `u_h,min = (K2 − 0.90·(25.4 − d_h))/√ρV` (Eduljee 1959;
+   Sinnott eq. 11.84): **as written** ([S22] eq. 66, [N] reproduces). **`K2`
+   was wrong**: the probe's table, from memory, reads about 0.3 high near
+   55–60 mm (+1.7 % on the weep velocity). Replaced by Ogboja & Kuye's fit of
+   Sinnott's Fig. 11.30, `K2 = 23.48 + 1.66·ln(h_w + h_ow [mm])` ([S22]
+   eq. 67): 30.12 / 30.32 against [N]'s 30.2 at 54.7 mm and 30.3 at 61.5 mm,
+   30.58 against Sinnott's own example's 30.6 at about 72 mm. A logarithm
+   that runs away at small depth, checked only from 55 to 72 mm: the loader
+   refuses a weir under 25 mm (weirs of 40–90 mm are the common ones above
+   atmospheric pressure, [N] §7.6.3; 6–12 mm under vacuum, which this plant
+   is not).
+4. **Orifice coefficient `C0`** (Sinnott Fig. 11.34) depends on the hole
+   share and the plate's thickness: 0.84 at 10 % (Sinnott's example) and 0.88
+   at 15 % ([N], p. 576), both at a plate as thick as its holes. The schema
+   names no thickness, so **the plate is as thick as its holes**, the hole
+   share admitted from 0.10 to 0.15 and `C0` straight between the two
+   published points. Outside them the loader refuses by name. (Ogboja &
+   Kuye's fit of the chart, [S22] eq. 73, came out of the PDF garbled; not
+   used.) At 10 % or more Fair's hole correction is 1, so it is never applied.
+5. **As written**, every one reproducing [N] to its rounding: the Francis weir
+   crest `h_ow = 750·(L_w/(ρL·l_w))^(2/3)` mm; the dry plate
+   `51·(u_h/C0)²·ρV/ρL` mm; the residual head `12.5e3/ρL` mm (Hunt et al.
+   1955); the total `h_t = h_d + (h_w + h_ow) + h_r`; the downcomer's loss
+   `166·(L_wd/(ρL·A_m))²` mm (Cicalese et al. 1947), `A_m` the smaller of the
+   clearance area `h_ap·l_w` and the downcomer's; the backup
+   `h_b = (h_w + h_ow) + h_t + h_dc`, flooded past `(TS + h_w)/2` — [P]
+   eqs. 14-92–14-93 with the downcomer froth at half the liquid's density.
+   [N] top | bottom section, computed against published: weir crest
+   27.24 / 27.2 | 18.67 / 18.7 mm; at the minimum rate 21.47 / 21.5 |
+   14.72 / 14.7; weep velocity 12.66 / 12.6 | 21.70 / 21.8 m/s; dry plate
+   37.51 / 37.5 | 50.14 / 50.2 mm; residual 16.80 / 16.8 | 13.09 / 13; total
+   121.6 / 122 | 121.9 / 122; downcomer loss 8.83 / 8.8 | 2.84 / 2.9; backup
+   197.6 / 198 | 183.4 / 184. Every one within 0.7 % but the bottom
+   downcomer loss (1.9 %, a published 2.9 rounded from 2.84).
+
+**The reference test** is [N]'s two sections, not Dutta's Example 5.1: Dutta
+uses Kister & Haas for flooding, the 0.48·F_w weir crest, `C0` 0.73 and a
+dry-head weep test — none of the set built here. Flooding is tested apart,
+against the three chart readings above at 2 %.
+
+**What the check changes in §78.2's schema**:
+
+- **`clearance_m`, a new field**: the gap under the downcomer, which the
+  backup needs. Sinnott sets it 5–10 mm under the weir; the loader refuses one
+  at or above the weir (the downcomer unsealed). The probe sized it per tray
+  at 0.40 m/s under the downcomer.
+- **The weir's length from `downcomer_share`** by the segment's geometry
+  (the chord of a circular segment of that share of the column's area):
+  0.727 of the diameter at 10 %, 0.764 at 12 % — Sinnott's Fig. 11.31 reads
+  0.73 and 0.76–0.77. The probe took 0.77 throughout.
+- **A multipass tray, a simplification named**: the tray's areas as a
+  single-pass tray's (net `A_c − A_d`, active `A_c − 2·A_d`), the liquid
+  split evenly between the passes, each over a weir the downcomer's chord
+  long, and the flow parameter's `L/G` per pass ([P]). A real four-pass
+  tray's centre and off-centre downcomers are none of these; none of the
+  sources gives their geometry. Pinned by its own unit test (one pass must
+  give the single-pass numbers; four quarter the weir load).
+- **Refused by name at load**: spacing outside Fair's curves (0.15–0.90 m);
+  the weir under 25 mm or over 15 % of the spacing; holes over 13 mm; the hole
+  share outside 0.10–0.15; the downcomer share outside (0, 0.5) (no active
+  area left); the clearance at or above the weir; passes outside 1–4.
+
+**The liquid's properties at the tray — game values, named.** No source was
+found for the probe's estimates, so they stay as estimates and are said to be:
+the density each cut's declared (15 °C) one, 0.65 kg/m³ lighter per kelvin
+above (petroleum liquids expand about 0.0006–0.0011 per K; this is 0.0008 at
+800 kg/m³), floored at 300 kg/m³; the surface tension each cut 27 mN/m at
+15 °C falling to zero at a critical temperature `1.15·Tb + 120 K` (n-hexane
+513 against 507.6 K, n-decane 634 against 617.7 K), with the corresponding-
+states exponent 11/9 (Brock & Bird, *AIChE J.* 1 (1955) 174; the probe
+rounded it to 1.25), mole-fraction averaged, floored at 1 mN/m. Each cut's
+boiling point read from the slate (the probe's script hard-coded them).
+Fair's chart reads σ to the 0.2 power: ±50 % moves `U_nf` +8 / −13 %, and the
+probe's flooded count not at all (§78.0 finding 6).
+
+**§78.0's numbers re-run with the checked set** (the probe's saved loads, the
+same design rule — `check.py`, `hyd.py`, `lines.py`, `analyze.py` there; the
+saved loads in `W:\temp\claude\m73_0\out`, re-made by M73.0's 8-minute sweep):
+
+- **The trays 5–7 % narrower**: the loop plant 5.9–8.8 m (was 6.2–9.5), the
+  crude unit 5.9–8.2.
+- **The reflux window, the other keys at the file's**: the loop plant and the
+  crude unit now **weep below a reflux of about 1.8** (was 2.5) and still
+  **flood from 5.5** (97 % at 5). The stripped plant's steam valve: weeping
+  below 20–25 % open (was 45 %), flooding from about 57 % (was 70 %).
+- **Over the sampled settings**: loop plant 203 of 347 flood a tray (was 207),
+  120 weep one (was 162); crude unit 116 / 60 of 163 (was 116 / 81).
+- **The pressure drop at the file's settings**: 127 mbar on the loop plant,
+  92 on the crude unit, 90 on the stripped plant (was 115 / 85 / 81).
 
 ### 78.5 What moves, what is deferred
 
