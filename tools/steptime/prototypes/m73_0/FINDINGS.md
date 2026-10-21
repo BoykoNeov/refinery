@@ -40,7 +40,7 @@ plants only**. No engine code changed.
 - `lines.py <plant>`: one key moved alone from the file's settings (the
   reflux 0.5–15 on the loop plant and the crude unit; the steam valve 5–100 %
   on the stripped plant), the worst tray's flood, weep and backup.
-- The scripts read `$M73_OUT` (default `W:	emp\claude\m73_0\out`).
+- The scripts read `$M73_OUT` (default `W:\temp\claude\m73_0\out`).
 
 ## Findings
 
