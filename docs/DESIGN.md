@@ -29494,3 +29494,69 @@ what makes the new order return every answer the old one did.
 
 **What moved**: nothing — the corpus byte-identical, 68 plants on both flow
 solvers; the full tier 1 232 tests, the column screen's table gates among them.
+
+### 77.15 The loop plant's keys as a measured region, built (M72.6)
+
+**The screen.** Key 6 loads `crude_unit_loops.toml`. Beside the furnace and
+the reflux, E/D move every loop's flow by 25 % of the file's (85 / 95 /
+65 kg/s, 0–200 %), and R/F move every loop's return temperature by 20 K from
+the file's (150 / 215 / 270 °C, −60 to +60 K); the three loops move together
+(the user's decision, 2026-10-21), so the table has four keys. The furnace
+steps 5 MW on this plant (`furnace_step_mw`), so the grid fits batches of an
+hour. Each loop is drawn from its draw tray up to its return tray, its flow,
+return temperature and duty beside it, "AT LIMIT" where its cooler is at its
+capacity and "SHORT" where its line falls short (§77.13). Measured headless:
+1.0–1.1 ms a tick through the timeline, so eight ticks a frame.
+
+**The routes** (C19's, §72.8), on the grid: the furnace 0–40 MW in 5 MW
+steps, the reflux 0.5–15 in 0.5, the flow 0–200 % in 25 %, the return −60 to
++60 K in 20 K: 17 010 settings. One jump from the file's state settled at tick
+1 000, all four keys on one tick, then 3 000 ticks; reflux first (the furnace,
+the reflux, the flow, then the return walked to −60 and to +60); loops first
+(the flow, the return, then the reflux walked to 0.5 and to 15); a press
+every 300 ticks. `tools/steptime/prototypes/m72_6/` (`FINDINGS.md`): five
+batches on 14 threads, each under an hour, about 2 h 20 min in all — the first
+jump batch was stopped four minutes in, its estimate past the hour, and split.
+
+**Measured** (the shipped engine):
+- The jumps ran 16 209 of 17 010. Every failure came on the jump's own tick,
+  and the same 89 settings of the reflux, flow and return fail at every
+  furnace duty: the column fails before the furnace has moved the feed.
+- The walks failed 514 of 5 994 times, on 284 settings; 26 of them ran by the
+  jump, all at 25–40 MW. So the furnace moves the edge only by the routes that
+  settle it first, and only above the file's 20 MW.
+- 16 183 settings are allowed, all reachable. Up to 20 MW the table is the
+  same at every duty: a reflux of 2 or less needs the loops running, and more
+  of them the warmer they return — at 0.5, 50 % at −60 K, 75 % at the file's
+  return, 125 % at +20 K and nothing at +40 K; at 2, 25 % up to +20 K and
+  150 % at +60 K. From 2.5 everything runs. From 25 MW the walks take a step
+  more in places (at 0.5 and the file's return 100 % from 30 MW), and with the
+  loops stopped a reflux of 2.5 is refused at 25 MW; at 40 MW a reflux of 3
+  with them stopped at the file's return is refused while 2.5 is allowed. The
+  table keeps what was measured, as §72.8's did.
+- **The long check**: at 0 and 40 MW, 34 allowed settings on the edge, and
+  the timeline's two, jumped to and run 20 000 ticks: all 36 ran
+  (`edge.py`, `long.specs`, `long.out`).
+
+**The region** generalized: `allowed` nests one list per key but the last, a
+string of "0"/"1"; the screen's look-up, its "would free it" search and the
+test helper read three keys or four. A press past the edge is held and names
+the other key that frees it, as §72.8.
+
+**The timeline** (`--auto --plant=loops`): the furnace to 30 MW at 600; the
+flow to 150 % at 1 500 (the loops' duty 45 → 69 MW); to 200 % at 2 400, two
+coolers at their 30 MW ("AT LIMIT"); the return +40 K at 3 300, which frees
+them (50 MW); the reflux to 1.5 at 3 600, which runs as set; at 3 900 the
+return key to +60 K is held: "the loops' return temperatures stay at +40 K:
++60 K is past the column's edge here — the reflux at 2.0 would free it".
+
+**Gates** (`column_screen.rs`, slow): `slow_the_loop_plant_timeline`
+replays it, the capacity flags and the duties by direction, the region's
+answer at the held press and its freeing reflux.
+`slow_the_loop_units_region_is_the_columns`: the table allows the file's
+setting, and on either side of its edge the column does what the table says
+(20 MW, reflux 1, 50 %: +0 K runs, +20 K does not; 0 MW, reflux 2, 25 %:
++20 K runs, +40 K does not). The edge bit at 20 MW flipped in the table, the
+gate fails. **Not measured**: the return walked first; key orders beyond two;
+the loops apart; the long check by other routes (C19). **What moved**:
+nothing in the engine.

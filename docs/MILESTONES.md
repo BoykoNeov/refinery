@@ -12,6 +12,47 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M72 is CLOSED (2026-10-21): a pumparound whose liquid goes somewhere — a
+loop on the map, back into the column — `docs/DEFERRED.md` C9 taken, C11's
+hitch fixed.** Asked as "what is next" after M71; the user chose the columns
+(the loop first, then C1, then C2) and, after the probe, the loop's flow and
+return temperature as its handles, a real pump and cooler on the map, thirteen
+trays, and key 6 on the column screen.
+- **M72.0, the probe** (§77.0, `tools/steptime/prototypes/m72_0/`): the trays
+  inside a loop carry 1.6–2.2 times the side cooler's liquid; on thirteen
+  trays the products 81 / 78 / 76 % pure (ten: 72 / 68 / 67); a big key press
+  25 ms on thirteen trays.
+- **M72.1, the loop in the column's equations** (§77.10): drawn off a stage,
+  returned one up at its cooler's temperature, its flow a Newton unknown, its
+  duty the result, capped by the cooler. Mutations: 17, 16 caught.
+- **M72.2, the loop on the map** (§77.11): a pipe, a pump, a cooler the
+  column drives, a pipe back; two commands, the flow and the return
+  temperature. Mutations: 16, 14 caught.
+- **M72.3, a tray that runs short** (§77.13): the loop keeps its setting, the
+  product is cut back, past that the column refuses; a loop line short of its
+  flow delivers what it can, a stopped pump stops its loop. Mutations: 10, 7
+  caught by tests, 1 by the corpus.
+- **M72.4, the plant** (§77.12): `scenarios/crude_unit_loops.toml`, its cold
+  start on the coolers' start duties handed to their return temperatures, a
+  refused start retried with the feed's seed held (loop columns only, the
+  user's decision). Mutations: 12, 6 caught, 6 argued.
+- **M72.5, the key-press hitch** (§77.14, C11): a failed floor solve tried
+  first, not the Jacobian; the declared reflux solved first, the tick after a
+  reflux 4 → 2 at 1.3–1.8 ms (crude unit) and 2.3–2.7 (loop plant). Broyden
+  left open (it moves every column plant and the screen's tables).
+- **M72.6, key 6 and its measured table** (§77.15,
+  `tools/steptime/prototypes/m72_6/`): the furnace, the reflux, the loops'
+  flow and return temperatures moved together (the user's decision); 16 183 of
+  17 010 settings allowed, measured in five batches of under an hour (about
+  2 h 20 min); 36 edge settings ran 20 000 ticks; the timeline runs two coolers
+  at their limit and holds a warmer return past the edge.
+- **Every shipped plant byte-identical** through M72 on both fidelities; one
+  plant added (68).
+- **Left open**: C11's Broyden update; C1 (flooding and weeping) and C2
+  (holdup), the user's next columns; §77.8's deferrals (a return more than
+  one tray up, the loop's holdup, a cooling-water cooler, a product drawn off
+  the loop).
+
 **M71 is CLOSED (2026-10-20): a column's draws guessed with its feed —
 `docs/DEFERRED.md` C20 taken.** Asked as "Trace the 4–6 %" after M70 (traced
 to C20's cause, §75.6), then "Yes, as M71".

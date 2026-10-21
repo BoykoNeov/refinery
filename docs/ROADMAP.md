@@ -10720,7 +10720,7 @@ engine against M70.2's results: every verdict and failing tick unchanged, about
 31 minutes in two batches. Both tables stand. No code changed.
 `tools/steptime/prototypes/m71_2/FINDINGS.md`; DESIGN §76.3, §76.4.
 
-## M72 — a pumparound whose liquid goes somewhere: a loop on the map, back into the column; ledger rows C9 and C11; opened on a decision
+## M72 — a pumparound whose liquid goes somewhere: a loop on the map, back into the column; ledger rows C9 and C11; opened on a decision; CLOSED 2026-10-21
 
 Asked after M71 as "what is next" (2026-10-20): the user chose the columns —
 the pumparound loop first, then flooding and weeping (C1), then holdup (C2) —
@@ -10839,3 +10839,21 @@ wherever that does not stand. DESIGN §77.14.
   free one's. Mutations: six, three caught, three argued (the corpus
   byte-identical with each). Corpus 68 of 68 byte-identical on both
   fidelities.
+
+### M72.6 — **LANDED** 2026-10-21: the column screen's key 6 and its measured table
+
+Key 6 plays the loop plant. Its keys are the furnace (5 MW steps), the
+reflux, the loops' flow (E/D, 0–200 % of the file's) and their return
+temperatures (R/F, −60 to +60 K); the three loops move together (the user's
+decision), so the table has four keys. Measured by C19's routes in five
+batches of under an hour, about 2 h 20 min in all
+(`tools/steptime/prototypes/m72_6/`): 16 183 of 17 010 settings allowed, all
+reachable. A low reflux needs the loops running, more of them the warmer they
+return; the jumps fail the same at every furnace duty, the walks a step more
+from 25 MW. 36 settings on the edge ran 20 000 ticks. The timeline runs two
+coolers at their limit and holds a warmer return past the edge, naming the
+reflux that frees it. DESIGN §77.15.
+
+- Gates: `column_screen.rs` (+2, slow). GDScript run headless (1.0–1.1 ms a
+  tick, eight a frame); the godot-feature clippy. The gated edge flipped in
+  the table, the gate fails. No engine change (no corpus run).

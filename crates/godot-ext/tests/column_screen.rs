@@ -457,9 +457,10 @@ fn region(plant: &str) -> Value {
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
 }
 
-/// Whether a region allows its three keys at `values` (in its `keys` order),
-/// all on its grid.
-fn region_allows(region: &Value, values: [f64; 3]) -> bool {
+/// Whether a region allows its keys at `values` (in its `keys` order), all on
+/// its grid: `allowed` nests one list per key but the last, a string (three
+/// keys, or the loop plant's four, M72.6).
+fn region_allows<const N: usize>(region: &Value, values: [f64; N]) -> bool {
     let keys = region["keys"].as_array().unwrap();
     let at: Vec<usize> = keys
         .iter()
@@ -473,7 +474,10 @@ fn region_allows(region: &Value, values: [f64; 3]) -> bool {
                 .unwrap_or_else(|| panic!("{key} {value} is not on the grid"))
         })
         .collect();
-    region["allowed"][at[0]][at[1]].as_str().unwrap().as_bytes()[at[2]] == b'1'
+    assert_eq!(at.len(), keys.len(), "one value per key");
+    let (last, outer) = at.split_last().unwrap();
+    let row = outer.iter().fold(&region["allowed"], |node, &i| &node[i]);
+    row.as_str().unwrap().as_bytes()[*last] == b'1'
 }
 
 /// A steam-stripped plant started from its file with its furnace at
@@ -607,4 +611,167 @@ fn slow_the_cold_units_region_is_the_columns() {
         !settled_jump_runs(file, at_62, 1.0, [0.0; 3]),
         "no pumparounds at 62.5 MW"
     );
+}
+
+/// The loop plant's file flows (kg/s) and return temperatures (°C), as the
+/// scene reads them from the column at load (`crude_unit_loops.toml`).
+const LOOP_FLOWS: [f64; 3] = [85.0, 95.0, 65.0];
+const LOOP_RETURNS_C: [f64; 3] = [150.0, 215.0, 270.0];
+
+impl Screen {
+    /// The loop plant (M72.6): the scene's names for it.
+    fn loops() -> Self {
+        Screen::load(
+            "crude_unit_loops.toml",
+            "furnace",
+            "transfer_line",
+            &[
+                "naphtha_draw",
+                "kerosene_draw",
+                "diesel_draw",
+                "gas_oil_draw",
+                "residue_draw",
+            ],
+        )
+    }
+
+    /// `_set_loops_flow`: every loop at `share` of its file's flow.
+    fn send_loops_flow(&mut self, share: f64) {
+        let column = self.column;
+        for (i, flow) in LOOP_FLOWS.iter().enumerate() {
+            self.send(&format!(
+                r#"{{"cmd":"set_loop_flow","flow":{:?},"node":{column},"pumparound_loop":{i}}}"#,
+                flow * share
+            ));
+        }
+    }
+
+    /// `_set_loops_return`: every loop returning `kelvin` from its file's.
+    fn send_loops_return(&mut self, kelvin: f64) {
+        let column = self.column;
+        for (i, celsius) in LOOP_RETURNS_C.iter().enumerate() {
+            self.send(&format!(
+                r#"{{"cmd":"set_loop_return_temperature","node":{column},"pumparound_loop":{i},"temperature":{:?}}}"#,
+                celsius + 273.15 + kelvin
+            ));
+        }
+    }
+
+    /// Each loop's cooler duty (MW) and whether it runs at its capacity.
+    fn loop_duties(&self) -> Vec<(f64, bool)> {
+        self.column_node()["column_operation"]["loops"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|run| {
+                (
+                    run["duty_w"].as_f64().unwrap() / 1e6,
+                    run["at_capacity"].as_bool().unwrap_or(false),
+                )
+            })
+            .collect()
+    }
+}
+
+/// **The loop plant** (`AUTO_LOOPS`, M72.6): the furnace to 30 MW at 600; the
+/// loops' flow to 150 % at 1 500 takes more heat off the trays; to 200 % at
+/// 2 400 runs two coolers at their capacity; their return 40 K warmer at 3 300
+/// takes less off and frees them; the reflux to 1.5 at 3 600 runs as set; the
+/// return key pressed to +60 K at 3 900 is past the table's edge, which the
+/// reflux at 2.0 clears — the screen holds it, and the column runs on.
+#[test]
+fn slow_the_loop_plant_timeline() {
+    let mut screen = Screen::loops();
+    screen.run_to(600);
+    assert_eq!(screen.reading().2, 4.0);
+    let total = |duties: &[(f64, bool)]| duties.iter().map(|d| d.0).sum::<f64>();
+    let at_file = screen.loop_duties();
+    assert!(at_file.iter().all(|d| !d.1), "{at_file:?}");
+
+    let furnace = screen.furnace;
+    screen.send(&format!(
+        r#"{{"cmd":"set_furnace_duty","duty":30000000.0,"node":{furnace}}}"#
+    ));
+    screen.run_to(1500);
+    let before = total(&screen.loop_duties());
+
+    screen.send_loops_flow(1.5);
+    screen.run_to(2400);
+    let faster = total(&screen.loop_duties());
+    assert!(faster > before + 5.0, "{faster} MW after {before}");
+
+    screen.send_loops_flow(2.0);
+    screen.run_to(3300);
+    let full = screen.loop_duties();
+    assert_eq!(full.iter().filter(|d| d.1).count(), 2, "{full:?}");
+
+    screen.send_loops_return(40.0);
+    screen.run_to(3600);
+    let warmer = screen.loop_duties();
+    assert!(warmer.iter().all(|d| !d.1), "{warmer:?}");
+    assert!(
+        total(&warmer) < total(&full) - 5.0,
+        "{warmer:?} after {full:?}"
+    );
+
+    let column = screen.column;
+    screen.send(&format!(
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":1.5}}"#
+    ));
+    screen.run_to(3900);
+    assert_eq!(screen.reading().2, 1.5);
+
+    let region = region("loops");
+    assert!(region_allows(&region, [30.0, 1.5, 2.0, 40.0]));
+    assert!(!region_allows(&region, [30.0, 1.5, 2.0, 60.0]));
+    assert!(region_allows(&region, [30.0, 2.0, 2.0, 60.0]));
+    screen.run_to(4200);
+    assert_eq!(screen.reading().2, 1.5);
+}
+
+/// The loop plant settled at its file's state, then its four keys sent at once
+/// (the region's one-jump route), run `ticks` on: whether it ran.
+fn loops_jump_runs(furnace: f64, reflux: f64, flow: f64, ret: f64, ticks: i64) -> bool {
+    let mut screen = Screen::loops();
+    screen.run_to(1000);
+    let (furnace_id, column) = (screen.furnace, screen.column);
+    screen.send(&format!(
+        r#"{{"cmd":"set_furnace_duty","duty":{:?},"node":{furnace_id}}}"#,
+        furnace * 1.0e6
+    ));
+    screen.send(&format!(
+        r#"{{"cmd":"set_reflux_ratio","node":{column},"reflux_ratio":{reflux:?}}}"#
+    ));
+    screen.send_loops_flow(flow);
+    screen.send_loops_return(ret);
+    (0..ticks).all(|_| screen.session.tick() == "null")
+}
+
+/// **The loop plant's region is the column's** (M72.6, DESIGN §77.15): the
+/// table holds the file's own setting, and on either side of its edge the
+/// column does what the table says — at 20 MW and a reflux of 1, the loops at
+/// half their flow run returning as declared and not 20 K warmer; at 0 MW and
+/// a reflux of 2, at a quarter of their flow they run 20 K warmer and not
+/// 40 K. A failing jump fails on its first tick, so a short run decides it.
+#[test]
+fn slow_the_loop_units_region_is_the_columns() {
+    let region = region("loops");
+    assert!(
+        region_allows(&region, [20.0, 4.0, 1.0, 0.0]),
+        "the file's setting"
+    );
+    for (furnace, reflux, flow, inside, outside) in
+        [(20.0, 1.0, 0.5, 0.0, 20.0), (0.0, 2.0, 0.25, 20.0, 40.0)]
+    {
+        assert!(region_allows(&region, [furnace, reflux, flow, inside]));
+        assert!(!region_allows(&region, [furnace, reflux, flow, outside]));
+        assert!(
+            loops_jump_runs(furnace, reflux, flow, inside, 100),
+            "{furnace} MW, reflux {reflux}, flow {flow}, return {inside:+} K"
+        );
+        assert!(
+            !loops_jump_runs(furnace, reflux, flow, outside, 100),
+            "{furnace} MW, reflux {reflux}, flow {flow}, return {outside:+} K"
+        );
+    }
 }

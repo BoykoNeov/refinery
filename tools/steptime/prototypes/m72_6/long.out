@@ -1,0 +1,43 @@
+
+running 1 test
+test m72_6_grid::m72_6_grid ... == loops WARM 1000 GAP 3000 RUN 20000
+RESULT furnace=0+reflux=0.5+flow=0.5+ret=-60: RUNS loops 11.3MW/12.4MW/8.2MW R 0.500 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 14.13 reb 55.98 MW bottom 583.7 C | cut 
+RESULT furnace=0+reflux=0.5+flow=0.75+ret=0: RUNS loops 8.9MW/8.9MW/4.7MW R 0.500 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 14.22 reb 44.55 MW bottom 549.6 C | cut 3:0.904
+RESULT furnace=0+reflux=0.5+flow=1.5+ret=20: RUNS loops 12.3MW/13.8MW/9.8MW R 0.500 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 14.22 reb 59.99 MW bottom 584.5 C | cut 
+RESULT furnace=0+reflux=1+flow=0.25+ret=-60: RUNS loops 5.9MW/5.9MW/3.3MW R 1.000 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 18.64 reb 39.86 MW bottom 488.2 C | cut 3:0.565
+RESULT furnace=0+reflux=1+flow=0.5+ret=0: RUNS loops 6.5MW/6.1MW/2.7MW R 1.000 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 18.67 reb 40.38 MW bottom 494.1 C | cut 3:0.615
+RESULT furnace=0+reflux=1+flow=1.25+ret=20: RUNS loops 11.9MW/12.8MW/8.9MW R 1.000 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 18.62 reb 62.79 MW bottom 584.8 C | cut 
+RESULT furnace=0+reflux=1+flow=2+ret=40: RUNS loops 11.8MW/12.1MW/8.3MW R 1.000 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 18.68 reb 61.18 MW bottom 584.7 C | cut 
+RESULT furnace=0+reflux=1.5+flow=0.25+ret=-20: RUNS loops 4.3MW/4.2MW/2.0MW R 1.500 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 23.12 reb 40.14 MW bottom 491.2 C | cut 3:0.590
+RESULT furnace=0+reflux=1.5+flow=0.75+ret=40: RUNS loops 5.0MW/3.5MW/-0.7MW R 1.500 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 23.16 reb 36.53 MW bottom 457.6 C | cut 3:0.223
+RESULT furnace=0+reflux=1.5+flow=1.5+ret=40: RUNS loops 10.0MW/9.9MW/6.3MW R 1.500 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 23.11 reb 59.94 MW bottom 584.4 C | cut 
+RESULT furnace=0+reflux=2+flow=0.25+ret=-60: RUNS loops 6.2MW/6.5MW/4.2MW R 2.000 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 27.48 reb 55.05 MW bottom 583.3 C | cut 
+RESULT furnace=0+reflux=2+flow=0.25+ret=0: RUNS loops 3.6MW/3.5MW/1.8MW R 2.000 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 27.57 reb 45.78 MW bottom 564.8 C | cut 3:0.952
+RESULT furnace=0+reflux=2+flow=0.75+ret=40: RUNS loops 5.4MW/4.9MW/2.1MW R 2.000 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 27.59 reb 50.22 MW bottom 581.8 C | cut 
+RESULT furnace=0+reflux=2+flow=1.5+ret=60: RUNS loops 5.4MW/3.2MW/-2.2MW R 2.000 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 27.67 reb 41.33 MW bottom 505.5 C | cut 3:0.698
+RESULT furnace=0+reflux=2.5+flow=0+ret=-60: RUNS loops 0.0MW/0.0MW/0.0MW R 2.500 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 32.04 reb 38.44 MW bottom 473.5 C | cut 3:0.412
+RESULT furnace=0+reflux=2.5+flow=0+ret=0: RUNS loops 0.0MW/0.0MW/0.0MW R 2.500 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 32.04 reb 38.44 MW bottom 473.5 C | cut 3:0.412
+RESULT furnace=0+reflux=2.5+flow=0+ret=60: RUNS loops 0.0MW/0.0MW/0.0MW R 2.500 flash 0.415 coil 271.1 feed 271.4 C 103.57 kg/s cond 32.04 reb 38.44 MW bottom 473.5 C | cut 3:0.412
+RESULT furnace=40+reflux=0.5+flow=0.5+ret=-60: RUNS loops 11.3MW/12.4MW/8.2MW R 0.500 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 14.13 reb 23.80 MW bottom 569.5 C | cut 
+RESULT furnace=40+reflux=0.5+flow=0.75+ret=-20: RUNS loops 11.6MW/12.8MW/8.6MW R 0.500 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 14.16 reb 24.93 MW bottom 571.1 C | cut 
+RESULT furnace=40+reflux=0.5+flow=1.5+ret=20: RUNS loops 12.3MW/13.8MW/9.8MW R 0.500 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 14.22 reb 28.05 MW bottom 574.6 C | cut 
+RESULT furnace=40+reflux=1+flow=0.25+ret=-60: RUNS loops 6.2MW/6.5MW/4.2MW R 1.997 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 27.46 reb 22.75 MW bottom 567.7 C | cut 
+RESULT furnace=40+reflux=1+flow=0.75+ret=0: RUNS loops 9.8MW/10.3MW/6.6MW R 1.000 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 18.61 reb 23.22 MW bottom 568.6 C | cut 
+RESULT furnace=40+reflux=1+flow=1.5+ret=40: RUNS loops 9.6MW/9.1MW/5.2MW R 1.267 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 21.06 reb 22.82 MW bottom 567.9 C | cut 
+RESULT furnace=40+reflux=1.5+flow=0.25+ret=-60: RUNS loops 6.2MW/6.5MW/4.2MW R 1.997 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 27.46 reb 22.75 MW bottom 567.7 C | cut 
+RESULT furnace=40+reflux=1.5+flow=0.5+ret=0: RUNS loops 7.0MW/7.2MW/4.5MW R 1.803 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 25.76 reb 22.77 MW bottom 567.8 C | cut 
+RESULT furnace=40+reflux=1.5+flow=0.75+ret=40: RUNS loops 5.6MW/5.3MW/2.9MW R 2.344 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 30.62 reb 22.78 MW bottom 567.8 C | cut 
+RESULT furnace=40+reflux=1.5+flow=1.5+ret=40: RUNS loops 10.0MW/9.9MW/6.4MW R 1.500 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 23.11 reb 28.00 MW bottom 574.5 C | cut 
+RESULT furnace=40+reflux=2+flow=0.25+ret=-60: RUNS loops 6.2MW/6.5MW/4.2MW R 2.000 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 27.48 reb 22.79 MW bottom 567.8 C | cut 
+RESULT furnace=40+reflux=2+flow=0.25+ret=0: RUNS loops 3.7MW/3.8MW/2.3MW R 2.775 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 34.40 reb 22.74 MW bottom 567.7 C | cut 
+RESULT furnace=40+reflux=2+flow=0.75+ret=40: RUNS loops 5.6MW/5.3MW/2.9MW R 2.344 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 30.62 reb 22.78 MW bottom 567.8 C | cut 
+RESULT furnace=40+reflux=2+flow=1.5+ret=60: RUNS loops 5.9MW/4.8MW/1.8MW R 2.488 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 31.97 reb 22.80 MW bottom 567.9 C | cut 
+RESULT furnace=40+reflux=2.5+flow=0+ret=-60: RUNS loops 0.0MW/0.0MW/0.0MW R 3.841 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 43.86 reb 22.72 MW bottom 567.6 C | cut 
+RESULT furnace=40+reflux=2.5+flow=0+ret=0: RUNS loops 0.0MW/0.0MW/0.0MW R 3.841 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 43.86 reb 22.72 MW bottom 567.6 C | cut 
+RESULT furnace=40+reflux=2.5+flow=0+ret=60: RUNS loops 0.0MW/0.0MW/0.0MW R 3.841 flash 0.812 coil 432.6 feed 424.1 C 103.57 kg/s cond 43.86 reb 22.72 MW bottom 567.6 C | cut 
+RESULT furnace=30+reflux=1.5+flow=2+ret=40: RUNS loops 13.3MW/14.4MW/11.2MW R 1.500 flash 0.744 coil 395.2 feed 388.7 C 103.57 kg/s cond 23.09 reb 48.73 MW bottom 583.0 C | cut 
+RESULT furnace=30+reflux=2+flow=2+ret=60: RUNS loops 7.2MW/5.3MW/0.8MW R 2.000 flash 0.744 coil 395.2 feed 388.7 C 103.57 kg/s cond 27.66 reb 26.33 MW bottom 570.4 C | cut 
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 43 filtered out; finished in 59.60s
+

@@ -28,6 +28,13 @@
 #               column cuts its gas oil back (M67, §72) and the product reads
 #               in warning with how far it is cut; a step even that cannot
 #               carry is declined, the column keeping the duty it ran at.
+#   loops       scenarios/crude_unit_loops.toml — the crude unit on thirteen
+#               trays, its three pumparounds loops on the map (M72, §77): each
+#               a pump and a cooler, back into the tray above. Its keys move
+#               the three loops together: their flow as a share of the file's
+#               (E/D) and their return temperatures from the file's (R/F); the
+#               heat each takes out is the result. A loop whose cooler runs at
+#               its limit returns warmer than set and reads in warning.
 #
 # Same rule as every screen: this script computes nothing physical. Every
 # number it draws is a snapshot field — the stage temperatures and vapour, the
@@ -38,7 +45,7 @@
 # to MW (CLAUDE.md rule 4).
 #
 # Interactive:  godot --path . res://demo/column.tscn
-#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 switch plants)
+#               (keys listed on screen and in _input; 1 / 2 / 3 / 4 / 5 / 6 switch plants)
 # Recorded:     godot --headless --path . res://demo/column.tscn --quit-after 20000 -- --auto [--plant=hot]
 #               ...runs that plant's scripted timeline (TIMELINES) and prints a
 #               `t=` line at a fixed interval plus one line per command.
@@ -186,6 +193,36 @@ const PLANTS := {
 		"pumparounds": [0.0, 1.0],
 		"range_ref": "§72.10",
 	},
+	"loops":
+	{
+		"scenario": "res://scenarios/crude_unit_loops.toml",
+		"title": "A crude unit on thirteen trays: its pumparounds loops, a pump and a cooler each",
+		"furnace": "furnace",
+		"feed_pipe": "transfer_line",
+		"draws":
+		[
+			["naphtha_draw", "naphtha"],
+			["kerosene_draw", "kerosene"],
+			["diesel_draw", "diesel"],
+			["gas_oil_draw", "gas oil"],
+			["residue_draw", "residue"],
+		],
+		# Measured on the screen (M72.6, §77.15): 1.0–1.1 ms a tick through its
+		# timeline, so eight ticks keep a frame near 9 ms.
+		"ticks_per_frame": 8,
+		# The keys' region, measured on the screen's grid (M72.6, §77.15), the
+		# crude unit's routes with four keys: the three loops move together,
+		# their flow a share of the file's and their return temperatures moved
+		# from the file's (the user's decision). The furnace steps 5 MW here,
+		# so the grid fits the hour a measurement batch may take.
+		"region": "res://demo/column_region_loops.json",
+		"furnace_step_mw": 5.0,
+		"furnace_mw": [0.0, 40.0],
+		"reflux": [0.5, 15.0],
+		"loop_flow": [0.0, 2.0],
+		"loop_return_k": [-60.0, 60.0],
+		"range_ref": "§77.15",
+	},
 }
 
 ## Scripted timelines for the recorded runs, in ticks. Each is replayed with the
@@ -255,10 +292,26 @@ const AUTO_COLD := {
 	1005: ["steam_down"],
 	2700: ["quit"],
 }
+## loops: the furnace to 30 MW at 600; the loops' flow to 150 % at 1 500 takes
+## more heat off the trays; to 200 % at 2 400 runs two coolers at their
+## capacity; their return 40 K warmer at 3 300 takes less off and frees them;
+## the reflux down to 1.5 at 3 600 runs as set; at 3 900 the return key
+## pressed to +60 K, past the column's edge at that reflux, and the screen
+## holds it and says the reflux at 2.0 would free it (M72.6's region, §77.15).
+const AUTO_LOOPS := {
+	600: ["furnace_30"],
+	1500: ["loops_flow_1.5"],
+	2400: ["loops_flow_2"],
+	3300: ["loops_return_40"],
+	3600: ["reflux_1.5"],
+	3900: ["loops_return_up"],
+	4200: ["quit"],
+}
 ## The reboiler key pressed every `[2]` ticks from `[0]` to `[1]` on a timeline.
 const WALKS := {"cold": [510, 2390, 10]}
 const TIMELINES := {
-	"crude": AUTO_CRUDE, "hot": AUTO_HOT, "overheated": AUTO_OVERHEATED, "stripped": AUTO_STRIPPED, "cold": AUTO_COLD
+	"crude": AUTO_CRUDE, "hot": AUTO_HOT, "overheated": AUTO_OVERHEATED, "stripped": AUTO_STRIPPED, "cold": AUTO_COLD,
+	"loops": AUTO_LOOPS
 }
 const AUTO_SHOT_TICKS := {
 	"crude": [600, 1500, 2400, 3000],
@@ -266,6 +319,7 @@ const AUTO_SHOT_TICKS := {
 	"overheated": [600, 1200],
 	"stripped": [600, 1500, 2400, 3300],
 	"cold": [500, 1005, 2000, 2400],
+	"loops": [1500, 2400, 3300, 3900],
 }
 const PRINT_EVERY := 300
 
@@ -277,6 +331,10 @@ const PUMPAROUND_STEP := 0.25
 ## this much [MW], not by a share of a duty the file declares.
 const PUMPAROUND_STEP_MW := 1.0
 const STEAM_STEP := 0.05
+## The loops' keys: their flow by this share of the file's, their return
+## temperatures by this many kelvin.
+const LOOP_FLOW_STEP := 0.25
+const LOOP_RETURN_STEP_K := 20.0
 const MAX_TICKS_PER_FRAME := 64
 
 @onready var sim: RefinerySim = $Sim
@@ -292,6 +350,10 @@ var draw_ids: Array = []
 ## The pumparounds' duties as the file declares them [W]: the 100 % the keys
 ## scale from.
 var design_pumparounds: Array = []
+## The loops' flows [kg/s] and return temperatures [K] as the file declares
+## them: the 100 % and the 0 K the loop keys move from.
+var design_loop_flows: Array = []
+var design_loop_returns: Array = []
 var snapshot: Dictionary = {}
 var halted := ""
 var auto_run := false
@@ -323,7 +385,7 @@ func _ready() -> void:
 		elif arg.begins_with("--shots="):
 			shots_dir = arg.trim_prefix("--shots=")
 	if not PLANTS.has(plant_key):
-		_halt("no plant '%s' (crude | hot | overheated | stripped | cold)" % plant_key)
+		_halt("no plant '%s' (crude | hot | overheated | stripped | cold | loops)" % plant_key)
 		return
 	_load(plant_key)
 
@@ -366,6 +428,11 @@ func _load(key: String) -> void:
 	design_pumparounds = []
 	for pumparound in _pumparounds():
 		design_pumparounds.append(float(pumparound["duty"]))
+	design_loop_flows = []
+	design_loop_returns = []
+	for pumparound_loop in _loop_settings():
+		design_loop_flows.append(float(pumparound_loop["flow"]))
+		design_loop_returns.append(float(pumparound_loop["return_temperature"]))
 	_say("loaded %s" % plant["scenario"], false)
 	print("column: loaded %s" % plant["scenario"])
 	queue_redraw()
@@ -456,6 +523,8 @@ func _input(event: InputEvent) -> void:
 			_load("stripped")
 		KEY_5:
 			_load("cold")
+		KEY_6:
+			_load("loops")
 		KEY_SPACE:
 			paused = not paused
 		KEY_BRACKETLEFT:
@@ -470,14 +539,16 @@ func _input(event: InputEvent) -> void:
 			_do("reflux_up")
 		KEY_S:
 			_do("reflux_down")
+		# On the loop plant E/D move the loops' flow and R/F their return
+		# temperatures; it has neither pumparound duties nor a steam valve.
 		KEY_E:
-			_do("pumparounds_up")
+			_do("loops_flow_up" if _has_loops() else "pumparounds_up")
 		KEY_D:
-			_do("pumparounds_down")
+			_do("loops_flow_down" if _has_loops() else "pumparounds_down")
 		KEY_R:
-			_do("steam_up")
+			_do("loops_return_up" if _has_loops() else "steam_up")
 		KEY_F:
-			_do("steam_down")
+			_do("loops_return_down" if _has_loops() else "steam_down")
 		KEY_T:
 			_do("reboiler_up")
 		KEY_G:
@@ -495,7 +566,8 @@ func _do(action: String) -> void:
 	var plant: Dictionary = PLANTS[plant_key]
 	match action:
 		"furnace_up", "furnace_down":
-			var step := DUTY_STEP_MW if action == "furnace_up" else -DUTY_STEP_MW
+			var size: float = plant.get("furnace_step_mw", DUTY_STEP_MW)
+			var step := size if action == "furnace_up" else -size
 			_set_furnace_mw(_grid_step("furnace", _duty_w() / 1.0e6, step))
 		"furnace_30":
 			_set_furnace_mw(30.0)
@@ -551,6 +623,16 @@ func _do(action: String) -> void:
 			_set_steam(snappedf(_steam_opening() + (STEAM_STEP if action == "steam_up" else -STEAM_STEP), STEAM_STEP))
 		"steam_1.0":
 			_set_steam(1.0)
+		"loops_flow_1.5":
+			_set_loops_flow(1.5)
+		"loops_flow_2":
+			_set_loops_flow(2.0)
+		"loops_return_40":
+			_set_loops_return(40.0)
+		"loops_flow_up", "loops_flow_down":
+			_set_loops_flow(_loops_flow_share() + (LOOP_FLOW_STEP if action == "loops_flow_up" else -LOOP_FLOW_STEP))
+		"loops_return_up", "loops_return_down":
+			_set_loops_return(_loops_return_k() + (LOOP_RETURN_STEP_K if action == "loops_return_up" else -LOOP_RETURN_STEP_K))
 		"reboiler_up", "reboiler_down":
 			if not plant.has("reboiler"):
 				_say("this plant's reboiler is not on a key", true)
@@ -705,6 +787,51 @@ func _set_steam(opening: float) -> void:
 	_send("open the steam valve to %.0f %%" % (held * 100.0), {"cmd": "set_valve_opening", "node": steam_valve_id, "opening": held})
 
 
+## Every loop's flow to `share` of the flow its file declares (M72.6): the
+## heat each takes out is the column's result.
+func _set_loops_flow(share: float) -> void:
+	if not _has_loops():
+		_say("this column has no pumparound loops", true)
+		return
+	var limits: Array = PLANTS[plant_key]["loop_flow"]
+	var held := clampf(share, limits[0], limits[1])
+	if _region_applies():
+		if _region_holds("flow", share):
+			return
+		held = share
+	elif not is_equal_approx(held, share) and is_equal_approx(held, _loops_flow_share()):
+		_hold("the loops' flow", "%.0f %%" % (held * 100.0))
+		return
+	for i in design_loop_flows.size():
+		_send(
+			"loop %s to %.1f kg/s" % [_loop_name(i), float(design_loop_flows[i]) * held],
+			{"cmd": "set_loop_flow", "node": column_id, "pumparound_loop": i, "flow": float(design_loop_flows[i]) * held}
+		)
+
+
+## Every loop's return temperature `kelvin` from the one its file declares
+## (M72.6): its cooler takes out what that needs, up to its capacity.
+func _set_loops_return(kelvin: float) -> void:
+	if not _has_loops():
+		_say("this column has no pumparound loops", true)
+		return
+	var limits: Array = PLANTS[plant_key]["loop_return_k"]
+	var held := clampf(kelvin, limits[0], limits[1])
+	if _region_applies():
+		if _region_holds("ret", kelvin):
+			return
+		held = kelvin
+	elif not is_equal_approx(held, kelvin) and is_equal_approx(held, _loops_return_k()):
+		_hold("the loops' return temperatures", "%+.0f K" % held)
+		return
+	for i in design_loop_returns.size():
+		var target := float(design_loop_returns[i]) + held
+		_send(
+			"loop %s to return at %s" % [_loop_name(i), _c(target)],
+			{"cmd": "set_loop_return_temperature", "node": column_id, "pumparound_loop": i, "temperature": target}
+		)
+
+
 ## The screen's own refusal: the key is at the edge of the safe range.
 func _hold(what: String, at: String) -> void:
 	var ref: String = PLANTS[plant_key].get("range_ref", "§65.9, §66.7")
@@ -715,11 +842,19 @@ func _hold(what: String, at: String) -> void:
 
 
 ## What the region's keys are called on screen, and how their settings read.
-const KEY_WORDS := {"furnace": "the furnace", "reflux": "the reflux", "pa": "the pumparounds", "pa_mw": "the pumparounds", "steam": "the steam valve"}
+const KEY_WORDS := {
+	"furnace": "the furnace",
+	"reflux": "the reflux",
+	"pa": "the pumparounds",
+	"pa_mw": "the pumparounds",
+	"steam": "the steam valve",
+	"flow": "the loops' flow",
+	"ret": "the loops' return temperatures",
+}
 
 
 func _stays(key: String) -> String:
-	return "stay" if key in ["pa", "pa_mw"] else "stays"
+	return "stay" if key in ["pa", "pa_mw", "ret"] else "stays"
 
 
 func _key_text(key: String, value: float) -> String:
@@ -728,10 +863,12 @@ func _key_text(key: String, value: float) -> String:
 			return "%.1f MW" % value
 		"reflux":
 			return "%.1f" % value
-		"pa", "steam":
+		"pa", "steam", "flow":
 			return "%.0f %%" % (value * 100.0)
 		"pa_mw":
 			return "%.1f MW each" % value
+		"ret":
+			return "%+.0f K" % value
 	return str(value)
 
 
@@ -749,6 +886,10 @@ func _key_value(key: String) -> float:
 			return _pumparound_mw()
 		"steam":
 			return _steam_opening()
+		"flow":
+			return _loops_flow_share()
+		"ret":
+			return _loops_return_k()
 	return 0.0
 
 
@@ -792,7 +933,8 @@ func _region_applies() -> bool:
 
 
 ## Whether the region allows the keys at `values`: every grid setting around
-## them runs by every measured route (§72.8).
+## them runs by every measured route (§72.8). `allowed` nests one list per key
+## but the last, whose settings are a string — three keys or four (M72.6).
 func _region_allows(values: Dictionary) -> bool:
 	var keys: Array = region["keys"]
 	var around := []
@@ -801,11 +943,18 @@ func _region_allows(values: Dictionary) -> bool:
 		if at.is_empty():
 			return false
 		around.append(at)
-	for i in around[0]:
-		for j in around[1]:
-			for k in around[2]:
-				if str(region["allowed"][i][j])[k] != "1":
-					return false
+	return _all_allowed(region["allowed"], around, 0)
+
+
+## Whether every setting below `node`, the indices of key `depth` on taken
+## from `around[depth]` on, is allowed.
+func _all_allowed(node, around: Array, depth: int) -> bool:
+	for i in around[depth]:
+		if depth == around.size() - 1:
+			if str(node)[i] != "1":
+				return false
+		elif not _all_allowed(node[i], around, depth + 1):
+			return false
 	return true
 
 
@@ -963,6 +1112,45 @@ func _pumparound_mw() -> float:
 	return float(_pumparounds()[0]["duty"]) / 1.0e6
 
 
+## The column's pumparound loops as SET (M72.2): each one's flow [kg/s] and
+## return temperature [K], refreshed after every command sent. What a loop
+## RAN at is `_loop_runs()`: short where its line cannot deliver, warmer
+## where its cooler is at capacity — so the keys read these.
+func _loop_settings() -> Array:
+	return _cascade().get("loops", [])
+
+
+## Each loop as it ran this tick (M72.1): flow, return temperature, duty,
+## `at_capacity`, `short_kg_s`. Empty before the first tick.
+func _loop_runs() -> Array:
+	return _operation().get("loops", [])
+
+
+func _has_loops() -> bool:
+	return not design_loop_flows.is_empty()
+
+
+## The loops' flow as a share of the file's — the keys keep them together, so
+## the first loop's.
+func _loops_flow_share() -> float:
+	if not _has_loops():
+		return 1.0
+	return float(_loop_settings()[0]["flow"]) / float(design_loop_flows[0])
+
+
+## The loops' return temperatures from the file's [K], the first loop's.
+func _loops_return_k() -> float:
+	if not _has_loops():
+		return 0.0
+	return float(_loop_settings()[0]["return_temperature"]) - float(design_loop_returns[0])
+
+
+## A loop by its two trays, "4→3".
+func _loop_name(i: int) -> String:
+	var settings: Dictionary = _loop_settings()[i]
+	return "%d→%d" % [int(settings["draw_stage"]), int(settings["return_stage"])]
+
+
 ## Whether the column holds its reboiler (`reboiler_duty_mw`, M64): its
 ## reflux is then a result, and its declared `reflux_ratio` only a seed.
 func _held() -> bool:
@@ -1101,6 +1289,11 @@ func _readout(tick: int) -> String:
 			line += "  reboiler held"
 		else:
 			line += "  reboiler DECLINED %.2f MW" % (float(_declined()["asked_w"]) / 1.0e6)
+	if _has_loops():
+		var duties: Array[String] = []
+		for run in _loop_runs():
+			duties.append("%.1f%s" % [float(run["duty_w"]) / 1.0e6, _loop_flag(run)])
+		line += "  loops=%.0f%% return %+.0f K, %s MW" % [_loops_flow_share() * 100.0, _loops_return_k(), "/".join(duties)]
 	var cut := _cut_back()
 	if not cut.is_empty():
 		var named: Array[String] = []
@@ -1180,8 +1373,10 @@ func _draw() -> void:
 		keys = "Up/Down furnace   R/F steam   E/D pumparounds   T/G reboiler   Y free it   Space pause   [ ] speed"
 	elif steam_valve_id >= 0:
 		keys = "Up/Down furnace   R/F steam   E/D pumparounds   Space pause   [ ] speed"
+	elif _has_loops():
+		keys = "Up/Down furnace   W/S reflux   E/D loops' flow   R/F loops' return   Space pause   [ ] speed"
 	_text(Vector2(30, 600), keys, DIM)
-	_text(Vector2(30, 624), "1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up", DIM)
+	_text(Vector2(30, 624), "1 crude unit   2 hot feed   3 overheated   4 stripped by steam   5 cold start-up   6 loops", DIM)
 	if halted != "":
 		draw_multiline_string(
 			ThemeDB.fallback_font, Vector2(30, 90), "HALTED — %s" % halted, HORIZONTAL_ALIGNMENT_LEFT,
@@ -1295,6 +1490,38 @@ func _draw_column() -> void:
 		draw_circle(at + Vector2(16, 0), 6, COOLER)
 		_text(at + Vector2(26, 16), "%.1f MW off" % (float(pumparound["duty"]) / 1.0e6), COOLER, 11)
 
+	# Pumparound loops (M72): a line out of the draw tray, through its
+	# cooler, back into the tray above; its flow, return and duty beside it,
+	# in warning where the cooler is at its limit or the line falls short.
+	var runs := _loop_runs()
+	for i in runs.size():
+		var run: Dictionary = runs[i]
+		var draw_y := _stage_y(int(run["draw_stage"]) - 1)
+		var return_y := _stage_y(int(run["return_stage"]) - 1)
+		var x := COLUMN_RECT.end.x + 16
+		var running := float(run["flow_kg_s"]) > 0.0
+		var color := COOLER if running else DIM
+		draw_polyline(
+			PackedVector2Array([Vector2(COLUMN_RECT.end.x, draw_y), Vector2(x, draw_y), Vector2(x, return_y), Vector2(COLUMN_RECT.end.x, return_y)]),
+			color, 3.0
+		)
+		draw_circle(Vector2(x, (draw_y + return_y) * 0.5), 6, color)
+		var flagged := _loop_flag(run) != ""
+		_text(Vector2(x + 10, return_y + 4), "%.0f kg/s → %s" % [float(run["flow_kg_s"]), _c(float(run["return_temperature_k"]))], WARN if flagged else color, 10)
+		_text(Vector2(x + 10, return_y + 15), "%.1f MW off%s" % [float(run["duty_w"]) / 1.0e6, _loop_flag(run)], WARN if flagged else color, 10)
+
+
+## A loop's trouble in a few words (M72.3): its cooler at capacity (it
+## returns warmer than set), its line short of the flow set. Empty while it
+## runs as set.
+func _loop_flag(run: Dictionary) -> String:
+	var flag := ""
+	if run.get("at_capacity", false):
+		flag += " AT LIMIT"
+	if float(run.get("short_kg_s", 0.0)) > 0.0:
+		flag += " SHORT %.0f kg/s" % float(run["short_kg_s"])
+	return flag
+
 
 ## Each product: its pipe from its stage, its flow and temperature, and its
 ## composition as a bar of the slate's cuts.
@@ -1402,6 +1629,17 @@ func _draw_panel() -> void:
 	elif not _pumparounds().is_empty():
 		_text(Vector2(PANEL_X, y), "pumparounds    %6.2f MW (%.0f %%)" % [total / 1.0e6, _pumparound_scale() * 100.0], COOLER)
 		y += 22
+	if _has_loops():
+		var taken := 0.0
+		var flagged := false
+		for run in _loop_runs():
+			taken += float(run["duty_w"])
+			flagged = flagged or _loop_flag(run) != ""
+		_text(Vector2(PANEL_X, y), "loops          %6.2f MW (%.0f %%, return %+.0f K)" % [taken / 1.0e6, _loops_flow_share() * 100.0, _loops_return_k()], COOLER)
+		y += 22
+		if flagged:
+			_text(Vector2(PANEL_X + 12, y - 4), "a loop runs short of its setting: see it on the column", WARN, 13)
+			y += 18
 
 	y += 18
 	_text(Vector2(PANEL_X, y), "FURNACE", DIM)
@@ -1435,6 +1673,16 @@ func _draw_panel() -> void:
 		_text(
 			Vector2(PANEL_X, y),
 			"pumparounds  %.0f–%.0f %%" % [plant["pumparounds"][0] * 100.0, plant["pumparounds"][1] * 100.0],
+			DIM,
+			14
+		)
+	if plant.has("loop_flow"):
+		y += 18
+		_text(
+			Vector2(PANEL_X, y),
+			"loops  %.0f–%.0f %%, return %+.0f to %+.0f K" % [
+				plant["loop_flow"][0] * 100.0, plant["loop_flow"][1] * 100.0, plant["loop_return_k"][0], plant["loop_return_k"][1]
+			],
 			DIM,
 			14
 		)

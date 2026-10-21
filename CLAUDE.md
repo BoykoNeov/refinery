@@ -148,8 +148,8 @@ godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on scre
 godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
-godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold)
-godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold]
+godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops)
+godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops]
 ```
 
 ## Testing
@@ -189,9 +189,9 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M72** — a pumparound loop on the map, back into the column (C9, C11; DESIGN §77).
-**Latest closed: M71 (2026-10-20)**: a column's draws guessed with its feed (C20), a failed guess solved
-again unguessed; the six coil crude units moved; the screen tables held (DESIGN §76). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none** — the next is the user's choice.
+**Latest closed: M72 (2026-10-21)**: a pumparound loop on the map, back into the column (C9), the key-press
+hitch fixed (C11); a 13-tray plant on key 6 with its measured table; every plant byte-identical (DESIGN §77). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 
