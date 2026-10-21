@@ -29,3 +29,6 @@ export_presets.cfg
 
 # The steptime tool builds in its own workspace (tools/steptime/Cargo.toml).
 /tools/steptime/target/
+
+# Reference books and papers (copyrighted; local only)
+/articles/
