@@ -12,6 +12,44 @@ in `docs/DESIGN.md`) now point at this file.
 
 ---
 
+**M73 is CLOSED (2026-10-22): trays that flood or weep — tray sizes per
+section, each stage at its own pressure — `docs/DEFERRED.md` C1 taken, C21
+settled.** Asked as "what is next" after M72; the user chose flooding and
+weeping (C1) — shown first, then the products worsened; real weeping on new
+plants only — and, after the probe, the loop plant first, sizes per section,
+the pressure drop fed back, and the screen's keys kept at their full range.
+- **M73.0, the probe** (§78.0, `tools/steptime/prototypes/m73_0/`): trays
+  6.2–9.5 m across; the keys move a tray's vapour 0.3 to 3.9 times its design
+  load against the 0.6–1.25 a sieve tray works in; the loop plant weeps below
+  a reflux of 2.5 (1.8 once the correlations were checked) and floods from
+  5.5 of the screen's 0.5–15.
+- **M73.1, the trays declared and their hydraulics reported** (§78.7): every
+  correlation checked against Perry, Souza and a worked example before it was
+  built (three fixed, three added); each tray's flood, weep margin, drop and
+  downcomer backup on the snapshot, the trays flooding and weeping named.
+  Mutations: 18, all caught.
+- **M73.2, each stage at its own pressure** (§78.8–§78.9): re-solved within the
+  tick until the drops settle; past flood the drop fed back capped at 100 %
+  of flood (the user's decision), the trays still reading flooded; a loop
+  arriving against its return stage's pressure. The bottom 5.5 K hotter, the
+  products within 0.16 points. Mutations: 16, 13 caught, 3 argued.
+- **M73.3, the multipass layout and the plant** (§78.10, C21): Nutter's
+  published four-pass layout with tuned weirs, on books the user supplied,
+  tested against Nutter's tables; the fixture re-sized (0.76 m, six
+  sections); `scenarios/crude_unit_trays.toml`. Mutations: 7, all caught.
+- **M73.4, key 7 and its measured table** (§78.11,
+  `tools/steptime/prototypes/m73_4/`): the trays' readings and the trays
+  flooding or weeping on screen; measured on key 6's grid with 1 000 ticks
+  after each last move (the user's choice), 2 h 18 min in six batches: 16 199
+  of 17 010 settings allowed — every one the loop plant allows and 16 more;
+  every tray inside its window on 1 542; 36 edge settings ran 20 000 ticks.
+- **Every shipped plant byte-identical** through M73 on both fidelities; one
+  plant added (69).
+- **Left open**: the products do not worsen with the trays (C23); sieve trays
+  only, tuned (C24); trays on one plant (C25); a wet or steamed column with
+  trays (C22); the reflux floor kept beside real weeping (C8); C2 (holdup),
+  the user's next column item.
+
 **M72 is CLOSED (2026-10-21): a pumparound whose liquid goes somewhere — a
 loop on the map, back into the column — `docs/DEFERRED.md` C9 taken, C11's
 hitch fixed.** Asked as "what is next" after M71; the user chose the columns

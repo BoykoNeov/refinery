@@ -10858,7 +10858,7 @@ reflux that frees it. DESIGN §77.15.
   tick, eight a frame); the godot-feature clippy. The gated edge flipped in
   the table, the gate fails. No engine change (no corpus run).
 
-## M73 — trays that flood or weep: tray sizes per section, flooding, weeping and the pressure drop fed back; ledger row C1; opened on a decision
+## M73 — trays that flood or weep: tray sizes per section, flooding, weeping and the pressure drop fed back; ledger row C1; opened on a decision; CLOSED 2026-10-22
 
 Asked after M72 as "what is next" (2026-10-21): the user chose 1, flooding
 and weeping (C1) — earlier decided as shown first, then the products
@@ -10969,3 +10969,24 @@ test speaks for it. It starts cold as the loop plant does (the same
 hand-over) and runs the corpus's 6 000 ticks on both fidelities; every other
 plant byte-identical, 68 of 68. Next: M73.4, the column screen's key 7 and
 its measured table.
+
+### M73.4 — **DONE** 2026-10-22: the column screen's key 7 and its measured table
+
+Key 7 plays the tray plant with the loop plant's keys; each tray's share of
+flood, the holes' margin, the downcomers' backup and the pressure over the
+column top left, the trays flooding or weeping named there and outlined on the
+column. The keys go past both; the table holds only where the column runs.
+Measured on key 6's grid and routes, each run settled 1 000 ticks after its
+last move (the user's choice: a tick here costs about three times the loop
+plant's), in six batches of under an hour, 2 h 18 min in all
+(`tools/steptime/prototypes/m73_4/`): 16 199 of 17 010 settings allowed, all
+reachable — every one the loop plant allows and 16 more, so the trays did not
+move the edge inward; the pressure re-solve never gave up. The trays weep below
+a reflux of 2 and flood from 5.5, every tray inside its window on 1 542
+settings; 36 edge settings ran 20 000 ticks. The timeline walks the reflux
+through weeping and flooding, floods the loops' trays while the top ones weep,
+and holds a warmer return past the edge. DESIGN §78.11.
+
+- Gates: `column_screen.rs` (+2, slow); either edge bit flipped, a gate
+  fails. GDScript run headless (1.1–1.6 ms a tick, six a frame); the
+  godot-feature clippy. No engine change (no corpus run).

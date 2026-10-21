@@ -148,8 +148,8 @@ godot --path . res://demo/pump.tscn          # the M51 pump screen (keys on scre
 godot --headless --path . res://demo/pump.tscn --quit-after 20000 -- --auto [--plant=boiling|gaslock]
 godot --path . res://demo/reactor.tscn       # the M57.5 reactor screen (keys on screen; 4 = M58 wall; 5/6 = M59 hydrogen)
 godot --headless --path . res://demo/reactor.tscn --quit-after 400000 -- --auto [--plant=trip|quench|wall|hydrogen|h2quench]
-godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops)
-godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops]
+godot --path . res://demo/column.tscn        # the M60.4 column screen (keys on screen; 1 crude unit, 2 hot feed, 3 overheated, 4 M64 stripped, 5 M66 cold, 6 M72 loops, 7 M73 trays)
+godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [--plant=crude|hot|overheated|stripped|cold|loops|trays]
 ```
 
 ## Testing
@@ -189,9 +189,8 @@ godot --headless --path . res://demo/column.tscn --quit-after 40000 -- --auto [-
 
 ## Current milestone
 
-Work only on the current milestone unless asked. **Current: M73** — trays that flood or weep (C1), DESIGN §78; M73.1 built (the trays' hydraulics reported), M73.2 built (each stage at its own pressure, the drop capped past flood, §78.9), M73.3 built (the multipass layout settled on Nutter's, C21, §78.10; the plant `crude_unit_trays.toml`), M73.4 next (the column screen's key 7 and its measured table).
-**Latest closed: M72 (2026-10-21)**: a pumparound loop on the map, back into the column (C9), the key-press
-hitch fixed (C11); a 13-tray plant on key 6 with its measured table; every plant byte-identical (DESIGN §77). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
+Work only on the current milestone unless asked. **Current: none** — M73 closed; the next is the user's choice.
+**Latest closed: M73 (2026-10-22)**: trays that flood or weep (C1) — sieve trays sized per section, each stage at its own pressure, the drop capped past flood, the multipass layout on Nutter's (C21); the tray plant on key 7 with its measured table; every plant byte-identical (DESIGN §78). Every close-out report is at the top of `docs/MILESTONES.md`; read the relevant one
 before touching that milestone's code. When a milestone closes, write its box at
 the top of `docs/MILESTONES.md` and update only the line above.
 
