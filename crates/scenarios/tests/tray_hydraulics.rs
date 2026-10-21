@@ -1,8 +1,9 @@
 //! M73.1 — a column's trays declared and their hydraulics reported
 //! (docs/DESIGN.md §78.2, §78.3): the loop plant (`scenarios/crude_unit_loops.
 //! toml`, untouched) with tray sections added inline — the slice's test
-//! fixture, and M73.2's (`tray_pressure.rs`, each stage at its own pressure);
-//! the new plant is M73.3's.
+//! fixture, and M73.2's (`tray_pressure.rs`, each stage at its own pressure).
+//! M73.3's plant, `scenarios/crude_unit_trays.toml`, is this fixture as a
+//! file, and is tested to be (below), so every test here speaks for it.
 //!
 //! The sections are sized as §78.2 says, offline on the file's settings, on
 //! the multipass layout §78.10 settles (`tools/steptime/prototypes/m73_3/`):
@@ -20,6 +21,7 @@ use refinery_scenarios::{build_engine, load_str};
 
 pub(super) const PLANT: &str = include_str!("../../../scenarios/crude_unit_loops.toml");
 const CASCADE_PLANT: &str = include_str!("../../../scenarios/crude_column_cascade.toml");
+const TRAY_PLANT: &str = include_str!("../../../scenarios/crude_unit_trays.toml");
 const ANCHOR: &str = "reflux_ratio = 4.0\nloops = [";
 /// The loop plant's twelve trays in six sections, each loop's two stages
 /// (3–4, 6–7, 9–10) in one: (from, to, diameter [m], downcomer share, hole
@@ -208,6 +210,38 @@ fn the_reflux_floods_and_weeps_the_trays_by_name() {
             assert!(operation.trays_weeping.is_empty(), "{operation:?}");
         }
     }
+}
+
+/// **The plant file is the fixture** (M73.3, docs/DESIGN.md §78.10): the
+/// tray plant and the fixture, from cold, every tick the same snapshot to the
+/// byte for 1 000 ticks (the cold start's hand-over and the loops' coolers
+/// settled in it) on both flow solvers — so every test of the fixture is a
+/// test of the shipped plant, and the loop plant it was copied from has no
+/// trays.
+fn the_plant_file_is_the_fixture(solver: &str) {
+    let mut plant = engine_of(&on_solver(TRAY_PLANT, solver)).unwrap();
+    let mut fixture = engine_of(&on_solver(&fixture(), solver)).unwrap();
+    for tick in 0..1000 {
+        plant.tick().unwrap();
+        fixture.tick().unwrap();
+        let (a, b) = (plant.snapshot(), fixture.snapshot());
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap(),
+            "tick {tick}"
+        );
+    }
+    assert_eq!(operation(&plant.snapshot()).trays.len(), 12);
+}
+
+#[test]
+fn slow_the_plant_file_is_the_fixture_newton() {
+    the_plant_file_is_the_fixture("newton");
+}
+
+#[test]
+fn slow_the_plant_file_is_the_fixture_simple() {
+    the_plant_file_is_the_fixture("simple");
 }
 
 /// **A column without trays publishes no tray key**: the shipped plants'

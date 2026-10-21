@@ -30254,3 +30254,13 @@ by name, the window above by name (four at 6, by jet flood; twelve at 8).
 cap the whole downcomer, the side share not divided, the net area divided by
 the passes, the floor at 3 %, the floor not over the passes, the floor
 dropped.
+
+**The plant** (M73.3): `scenarios/crude_unit_trays.toml` — `crude_unit_loops.
+toml`, untouched, copied with the six sections above in its cascade block and
+nothing else changed. `tray_hydraulics.rs::slow_the_plant_file_is_the_
+fixture_*` holds it to the fixture snapshot for snapshot, 1 000 ticks from
+cold, on both flow solvers (and fails at one section 0.1 m wider), so the
+fixture's tests are the plant's. Its cold start is the loop plant's (§77.5);
+the corpus runs it 6 000
+ticks on both fidelities with the loop plant's solver iterations. It is the
+37th furnace plant `burnout_reference.rs` counts.

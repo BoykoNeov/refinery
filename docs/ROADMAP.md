@@ -10945,7 +10945,7 @@ on, its pressure span held at 156 mbar where the raw drops add up to 373.
 Mutations: sixteen, thirteen caught, three argued equivalent. Every shipped plant byte-identical, 68 of 68 on both fidelities.
 Next: M73.3, the plant (its multipass layout settled first, C21).
 
-### M73.3 — **IN PROGRESS** 2026-10-21: the multipass layout settled (C21); the plant next
+### M73.3 — **DONE** 2026-10-21: the multipass layout settled (C21), and the plant
 
 **The layout settled** (DESIGN §78.10), on books the user supplied (local,
 not shipped): Nutter's published area layout (Ludwig Vol. 2, 4th ed.,
@@ -10960,5 +10960,12 @@ re-sized by Kister's rules: 0.76 m spacing, six sections, every tray inside
 its window at the file's settings (72–79 % of flood, downcomers 59–80 %); the
 reflux window much as before (weeping below about 2, flooding from 5.5), its
 first floods now by jet flood; every moved number in §78.10, old → new.
-Mutations: seven, all caught. Every shipped plant byte-identical. Next: the
-plant file, on the fixture's sections.
+Mutations: seven, all caught. Every shipped plant byte-identical.
+
+**The plant**: `scenarios/crude_unit_trays.toml`, the loop plant (untouched)
+with the fixture's six sections — tested to be the fixture, snapshot for
+snapshot for 1 000 ticks from cold on both flow solvers, so every fixture
+test speaks for it. It starts cold as the loop plant does (the same
+hand-over) and runs the corpus's 6 000 ticks on both fidelities; every other
+plant byte-identical, 68 of 68. Next: M73.4, the column screen's key 7 and
+its measured table.
