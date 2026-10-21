@@ -29651,7 +29651,9 @@ vapour density and one pressure. Both go — on columns that declare trays only:
   column refusing past flood. The user decides with the probe's numbers.
   **Probed (§78.8)**: solved within the pass, re-solved until the drops
   settle, lands where the lag does a tick later at 2–4 more warm solves on a
-  tick a key moves; the past-flood rule is the user's, waiting.
+  tick a key moves. **Decided (2026-10-21): capped** — past jet flood the
+  drop fed back is the tray's at exactly 100 % of flood (a game value), the
+  column runs on and its trays still read flooded.
 
 ### 78.2 The geometry, declared per section
 
@@ -30007,5 +30009,9 @@ liquid as it is). From cold at the file's settings, and the reflux line
 
 Not probed: a wet or steamed column; draw and loop lines at their own stage's
 pressure (the network side); tray sizes chosen at the fed-back pressures
-(M73.3). **Waiting: the user's past-flood decision**, then M73.2 builds the
-solved mode with it.
+(M73.3).
+
+**Decided (2026-10-21), the user, on these numbers: capped** — over refusing,
+which would halt the screen or stop its reflux key at 4.5–5.0 against decision
+4. M73.2 builds the solved mode (re-solved within the pass, the last tick's
+drops its first guess) with the capped drop.

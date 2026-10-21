@@ -10908,7 +10908,7 @@ flooding at 6; the plant otherwise bit-identical. Mutations: 18, all caught.
 Every shipped plant byte-identical. Next: M73.2.0, the pressure feedback
 probed, and the user's past-flood decision.
 
-### M73.2.0 — **PROBED** 2026-10-21: the pressure feedback — the past-flood decision waiting
+### M73.2.0 — **PROBED** 2026-10-21: the pressure feedback — decided: capped past flood
 
 Probed (`tools/steptime/prototypes/m73_2_0/`, `FINDINGS.md`, DESIGN §78.8) on
 M73.1's fixture, every stage at its own pressure (checked on every tick): at
@@ -10922,4 +10922,6 @@ before; solved within the tick it lands on the same column at 3–5 solves when
 a key moves, one when steady (2.4–5.3 ms a moved tick, 0.5 ms steady), and
 needs no hand-over at the cold start. Refusing past flood halts the column
 screen, or stops its reflux key at 4.5–5.0 against 0.5–15. No engine code
-changed. Next: the user's past-flood decision, then M73.2.
+changed. **Decided (2026-10-21), the user: capped** — past jet flood the drop
+fed back is the tray's at 100 % of flood, the column runs on, the trays still
+read flooded. Next: M73.2, the solved mode built with the capped drop.
